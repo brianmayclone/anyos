@@ -6,13 +6,13 @@
 //! - Error: cause support
 //! - structuredClone
 
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::rc::Rc;
 use core::cell::RefCell;
 
-use crate::value::*;
 use super::Vm;
+use crate::value::*;
 
 // ═══════════════════════════════════════════════════════════
 // Array.prototype additions (ES2023+)
@@ -23,8 +23,12 @@ pub fn array_find_last(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     if let JsValue::Array(arr) = &this {
-        let entries: Vec<(usize, JsValue)> = arr.borrow().elements.iter()
-            .map(|(&k, v)| (k, v.clone())).collect();
+        let entries: Vec<(usize, JsValue)> = arr
+            .borrow()
+            .elements
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
         for &(i, ref el) in entries.iter().rev() {
             let result = vm.invoke_function(
                 &callback,
@@ -45,8 +49,12 @@ pub fn array_find_last_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     if let JsValue::Array(arr) = &this {
-        let entries: Vec<(usize, JsValue)> = arr.borrow().elements.iter()
-            .map(|(&k, v)| (k, v.clone())).collect();
+        let entries: Vec<(usize, JsValue)> = arr
+            .borrow()
+            .elements
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
         for &(i, ref el) in entries.iter().rev() {
             vm.invoke_function(
                 &callback,
@@ -97,8 +105,15 @@ pub fn array_to_spliced(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let dense = arr.borrow().to_dense_vec();
         let len = dense.len();
         let start_raw = args.first().map(|v| v.to_number() as i64).unwrap_or(0);
-        let start = if start_raw < 0 { (len as i64 + start_raw).max(0) as usize } else { (start_raw as usize).min(len) };
-        let delete_count = args.get(1).map(|v| (v.to_number() as usize).min(len - start)).unwrap_or(len - start);
+        let start = if start_raw < 0 {
+            (len as i64 + start_raw).max(0) as usize
+        } else {
+            (start_raw as usize).min(len)
+        };
+        let delete_count = args
+            .get(1)
+            .map(|v| (v.to_number() as usize).min(len - start))
+            .unwrap_or(len - start);
         let items: Vec<JsValue> = args.iter().skip(2).cloned().collect();
 
         let mut result = Vec::with_capacity(len - delete_count + items.len());
@@ -120,7 +135,11 @@ pub fn array_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let mut dense = arr.borrow().to_dense_vec();
         let len = dense.len();
         let idx_raw = args.first().map(|v| v.to_number() as i64).unwrap_or(0);
-        let idx = if idx_raw < 0 { (len as i64 + idx_raw) as usize } else { idx_raw as usize };
+        let idx = if idx_raw < 0 {
+            (len as i64 + idx_raw) as usize
+        } else {
+            idx_raw as usize
+        };
         let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
         if idx < len {
             dense[idx] = value;
@@ -152,8 +171,12 @@ pub fn object_group_by(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     let result = JsValue::new_object();
     if let JsValue::Array(arr) = &items {
-        let entries: Vec<(usize, JsValue)> = arr.borrow().elements.iter()
-            .map(|(&k, v)| (k, v.clone())).collect();
+        let entries: Vec<(usize, JsValue)> = arr
+            .borrow()
+            .elements
+            .iter()
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
         for (i, item) in entries.iter().map(|(k, v)| (*k, v)) {
             vm.invoke_function(
                 &callback,
@@ -209,14 +232,17 @@ fn deep_clone(val: &JsValue) -> JsValue {
             new_obj.internal_tag = o.internal_tag.clone();
             for (k, prop) in &o.properties {
                 let cloned_val = deep_clone(&prop.value);
-                new_obj.properties.insert(k.clone(), Property {
-                    value: cloned_val,
-                    writable: prop.writable,
-                    enumerable: prop.enumerable,
-                    configurable: prop.configurable,
-                    getter: prop.getter.clone(),
-                    setter: prop.setter.clone(),
-                });
+                new_obj.properties.insert(
+                    k.clone(),
+                    Property {
+                        value: cloned_val,
+                        writable: prop.writable,
+                        enumerable: prop.enumerable,
+                        configurable: prop.configurable,
+                        getter: prop.getter.clone(),
+                        setter: prop.setter.clone(),
+                    },
+                );
             }
             if let Some(ref proto) = o.prototype {
                 new_obj.prototype = Some(proto.clone()); // share prototype

@@ -5,25 +5,31 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use libjs::JsValue;
-use libjs::Vm;
 use libjs::value::JsObject;
 use libjs::vm::native_fn;
+use libjs::JsValue;
+use libjs::Vm;
 
-use super::{get_bridge, this_node_id, arg_string, DomMutation};
+use super::{arg_string, get_bridge, this_node_id, DomMutation};
 
 /// Create a classList object bound to the given node/class.
 pub fn make_class_list(node_id: i64, initial_class: &str) -> JsValue {
     let mut obj = JsObject::new();
     obj.set(String::from("__nodeId"), JsValue::Number(node_id as f64));
-    obj.set(String::from("__value"), JsValue::String(String::from(initial_class)));
+    obj.set(
+        String::from("__value"),
+        JsValue::String(String::from(initial_class)),
+    );
 
     obj.set(String::from("add"), native_fn("add", cl_add));
     obj.set(String::from("remove"), native_fn("remove", cl_remove));
     obj.set(String::from("toggle"), native_fn("toggle", cl_toggle));
     obj.set(String::from("contains"), native_fn("contains", cl_contains));
     obj.set(String::from("item"), native_fn("item", cl_item));
-    obj.set(String::from("toString"), native_fn("toString", cl_to_string));
+    obj.set(
+        String::from("toString"),
+        native_fn("toString", cl_to_string),
+    );
 
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
@@ -42,7 +48,10 @@ fn get_class_value(vm: &Vm) -> String {
 fn set_class_value(vm: &mut Vm, new_val: &str) {
     let nid = this_node_id(vm);
     if let JsValue::Object(obj) = &vm.current_this {
-        obj.borrow_mut().set(String::from("__value"), JsValue::String(String::from(new_val)));
+        obj.borrow_mut().set(
+            String::from("__value"),
+            JsValue::String(String::from(new_val)),
+        );
     }
     if let Some(bridge) = get_bridge(vm) {
         if nid >= 0 {

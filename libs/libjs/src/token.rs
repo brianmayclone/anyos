@@ -23,7 +23,7 @@ pub enum TokenKind {
     // Literals
     Number(f64),
     String(String),
-    Template(String),      // template literal segment
+    Template(String),       // template literal segment
     RegExp(String, String), // pattern, flags
     Bool(bool),
     Null,
@@ -76,64 +76,64 @@ pub enum TokenKind {
     Debugger,
 
     // Punctuation
-    LParen,     // (
-    RParen,     // )
-    LBrace,     // {
-    RBrace,     // }
-    LBracket,   // [
-    RBracket,   // ]
-    Semicolon,  // ;
-    Comma,      // ,
-    Dot,        // .
-    DotDotDot,  // ...
-    Colon,      // :
-    Question,   // ?
-    QuestionDot, // ?.
+    LParen,           // (
+    RParen,           // )
+    LBrace,           // {
+    RBrace,           // }
+    LBracket,         // [
+    RBracket,         // ]
+    Semicolon,        // ;
+    Comma,            // ,
+    Dot,              // .
+    DotDotDot,        // ...
+    Colon,            // :
+    Question,         // ?
+    QuestionDot,      // ?.
     QuestionQuestion, // ??
-    Arrow,      // =>
+    Arrow,            // =>
 
     // Operators
-    Plus,       // +
-    Minus,      // -
-    Star,       // *
-    StarStar,   // **
-    Slash,      // /
-    Percent,    // %
-    Amp,        // &
-    AmpAmp,     // &&
-    Pipe,       // |
-    PipePipe,   // ||
-    Caret,      // ^
-    Tilde,      // ~
-    Bang,       // !
-    Lt,         // <
-    Gt,         // >
-    LtEq,      // <=
-    GtEq,      // >=
-    EqEq,       // ==
-    BangEq,     // !=
-    EqEqEq,     // ===
-    BangEqEq,   // !==
-    LtLt,       // <<
-    GtGt,       // >>
-    GtGtGt,     // >>>
+    Plus,     // +
+    Minus,    // -
+    Star,     // *
+    StarStar, // **
+    Slash,    // /
+    Percent,  // %
+    Amp,      // &
+    AmpAmp,   // &&
+    Pipe,     // |
+    PipePipe, // ||
+    Caret,    // ^
+    Tilde,    // ~
+    Bang,     // !
+    Lt,       // <
+    Gt,       // >
+    LtEq,     // <=
+    GtEq,     // >=
+    EqEq,     // ==
+    BangEq,   // !=
+    EqEqEq,   // ===
+    BangEqEq, // !==
+    LtLt,     // <<
+    GtGt,     // >>
+    GtGtGt,   // >>>
 
     // Assignment
-    Eq,         // =
-    PlusEq,     // +=
-    MinusEq,    // -=
-    StarEq,     // *=
-    SlashEq,    // /=
-    PercentEq,  // %=
-    AmpEq,      // &=
-    PipeEq,     // |=
-    CaretEq,    // ^=
-    LtLtEq,     // <<=
-    GtGtEq,     // >>=
-    GtGtGtEq,   // >>>=
-    StarStarEq,  // **=
-    AmpAmpEq,   // &&=
-    PipePipeEq,  // ||=
+    Eq,                 // =
+    PlusEq,             // +=
+    MinusEq,            // -=
+    StarEq,             // *=
+    SlashEq,            // /=
+    PercentEq,          // %=
+    AmpEq,              // &=
+    PipeEq,             // |=
+    CaretEq,            // ^=
+    LtLtEq,             // <<=
+    GtGtEq,             // >>=
+    GtGtGtEq,           // >>>=
+    StarStarEq,         // **=
+    AmpAmpEq,           // &&=
+    PipePipeEq,         // ||=
     QuestionQuestionEq, // ??=
 
     // Increment/Decrement

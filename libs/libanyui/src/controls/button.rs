@@ -228,15 +228,7 @@ impl Button {
             return;
         }
 
-        crate::draw::fill_rounded_rect(
-            surface,
-            x + 3,
-            y + 1,
-            w.saturating_sub(6),
-            1,
-            0,
-            color,
-        );
+        crate::draw::fill_rounded_rect(surface, x + 3, y + 1, w.saturating_sub(6), 1, 0, color);
     }
 
     fn draw_bottom_inner_shadow(
@@ -277,11 +269,21 @@ struct Palette {
 }
 
 impl Control for Button {
-    fn base(&self) -> &ControlBase { &self.text_base.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.text_base.base }
-    fn text_base(&self) -> Option<&crate::control::TextControlBase> { Some(&self.text_base) }
-    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> { Some(&mut self.text_base) }
-    fn kind(&self) -> ControlKind { ControlKind::Button }
+    fn base(&self) -> &ControlBase {
+        &self.text_base.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.text_base.base
+    }
+    fn text_base(&self) -> Option<&crate::control::TextControlBase> {
+        Some(&self.text_base)
+    }
+    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> {
+        Some(&mut self.text_base)
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::Button
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
@@ -295,15 +297,7 @@ impl Control for Button {
 
         if b.focused && !b.disabled {
             self.draw_focus_glow(surface, x, y, w, h, corner, pal.focus_glow);
-            crate::draw::draw_rounded_border(
-                surface,
-                x,
-                y,
-                w,
-                h,
-                corner,
-                pal.focus_ring,
-            );
+            crate::draw::draw_rounded_border(surface, x, y, w, h, corner, pal.focus_ring);
             if w > 4 && h > 4 {
                 crate::draw::draw_rounded_border(
                     surface,
@@ -339,14 +333,7 @@ impl Control for Button {
         let tx = x + ((w as i32 - tw as i32) / 2);
         let ty = y + ((h as i32 - th as i32) / 2) + content_offset_y - 1;
 
-        crate::draw::draw_text_sized(
-            surface,
-            tx,
-            ty,
-            pal.text,
-            &self.text_base.text,
-            font_size,
-        );
+        crate::draw::draw_text_sized(surface, tx, ty, pal.text, &self.text_base.text, font_size);
     }
 
     fn is_interactive(&self) -> bool {

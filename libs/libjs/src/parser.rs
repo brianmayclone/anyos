@@ -3,14 +3,14 @@
 //! Parses a token stream into an AST (Abstract Syntax Tree).
 
 use alloc::boxed::Box;
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::vec;
-use alloc::string::ToString;
 use alloc::format;
+use alloc::string::String;
+use alloc::string::ToString;
+use alloc::vec;
+use alloc::vec::Vec;
 
-use crate::token::{Token, TokenKind};
 use crate::ast::*;
+use crate::token::{Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -29,16 +29,28 @@ const MAX_PARSER_DEPTH: usize = 128;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, pos: 0, errors: Vec::new(), no_in: false, depth: 0 }
+        Parser {
+            tokens,
+            pos: 0,
+            errors: Vec::new(),
+            no_in: false,
+            depth: 0,
+        }
     }
 
     /// Return the number of tokens that were NOT consumed by parse_program().
     pub fn remaining_tokens(&self) -> usize {
-        if self.pos >= self.tokens.len() { 0 } else { self.tokens.len() - self.pos }
+        if self.pos >= self.tokens.len() {
+            0
+        } else {
+            self.tokens.len() - self.pos
+        }
     }
 
     /// Current token index (for diagnostics).
-    pub fn current_pos(&self) -> usize { self.pos }
+    pub fn current_pos(&self) -> usize {
+        self.pos
+    }
 
     /// Get token at a specific index (for diagnostics).
     pub fn token_at(&self, idx: usize) -> Option<&Token> {
@@ -123,7 +135,8 @@ impl Parser {
     /// ECMAScript — they only have special meaning in specific syntactic contexts
     /// (e.g. `import ... as ...`, `for ... of ...`).
     fn is_contextual_keyword(&self, kind: &TokenKind) -> bool {
-        matches!(kind,
+        matches!(
+            kind,
             TokenKind::As | TokenKind::From | TokenKind::Of |
             TokenKind::Async | TokenKind::Yield | TokenKind::Await |
             TokenKind::Let | TokenKind::With |
@@ -140,45 +153,162 @@ impl Parser {
                 s
             }
             // Keywords are valid property names after `.` in member expressions.
-            TokenKind::Delete => { self.pos += 1; String::from("delete") }
-            TokenKind::In => { self.pos += 1; String::from("in") }
-            TokenKind::Return => { self.pos += 1; String::from("return") }
-            TokenKind::New => { self.pos += 1; String::from("new") }
-            TokenKind::Class => { self.pos += 1; String::from("class") }
-            TokenKind::Super => { self.pos += 1; String::from("super") }
-            TokenKind::This => { self.pos += 1; String::from("this") }
-            TokenKind::Default => { self.pos += 1; String::from("default") }
-            TokenKind::Var => { self.pos += 1; String::from("var") }
-            TokenKind::Let => { self.pos += 1; String::from("let") }
-            TokenKind::Const => { self.pos += 1; String::from("const") }
-            TokenKind::Function => { self.pos += 1; String::from("function") }
-            TokenKind::If => { self.pos += 1; String::from("if") }
-            TokenKind::Else => { self.pos += 1; String::from("else") }
-            TokenKind::While => { self.pos += 1; String::from("while") }
-            TokenKind::For => { self.pos += 1; String::from("for") }
-            TokenKind::Do => { self.pos += 1; String::from("do") }
-            TokenKind::Switch => { self.pos += 1; String::from("switch") }
-            TokenKind::Case => { self.pos += 1; String::from("case") }
-            TokenKind::Break => { self.pos += 1; String::from("break") }
-            TokenKind::Continue => { self.pos += 1; String::from("continue") }
-            TokenKind::Throw => { self.pos += 1; String::from("throw") }
-            TokenKind::Try => { self.pos += 1; String::from("try") }
-            TokenKind::Catch => { self.pos += 1; String::from("catch") }
-            TokenKind::Finally => { self.pos += 1; String::from("finally") }
-            TokenKind::Typeof => { self.pos += 1; String::from("typeof") }
-            TokenKind::Void => { self.pos += 1; String::from("void") }
-            TokenKind::Instanceof => { self.pos += 1; String::from("instanceof") }
-            TokenKind::Extends => { self.pos += 1; String::from("extends") }
-            TokenKind::Import => { self.pos += 1; String::from("import") }
-            TokenKind::Export => { self.pos += 1; String::from("export") }
-            TokenKind::Async => { self.pos += 1; String::from("async") }
-            TokenKind::Await => { self.pos += 1; String::from("await") }
-            TokenKind::Yield => { self.pos += 1; String::from("yield") }
-            TokenKind::Of => { self.pos += 1; String::from("of") }
-            TokenKind::From => { self.pos += 1; String::from("from") }
-            TokenKind::As => { self.pos += 1; String::from("as") }
-            TokenKind::With => { self.pos += 1; String::from("with") }
-            TokenKind::Debugger => { self.pos += 1; String::from("debugger") }
+            TokenKind::Delete => {
+                self.pos += 1;
+                String::from("delete")
+            }
+            TokenKind::In => {
+                self.pos += 1;
+                String::from("in")
+            }
+            TokenKind::Return => {
+                self.pos += 1;
+                String::from("return")
+            }
+            TokenKind::New => {
+                self.pos += 1;
+                String::from("new")
+            }
+            TokenKind::Class => {
+                self.pos += 1;
+                String::from("class")
+            }
+            TokenKind::Super => {
+                self.pos += 1;
+                String::from("super")
+            }
+            TokenKind::This => {
+                self.pos += 1;
+                String::from("this")
+            }
+            TokenKind::Default => {
+                self.pos += 1;
+                String::from("default")
+            }
+            TokenKind::Var => {
+                self.pos += 1;
+                String::from("var")
+            }
+            TokenKind::Let => {
+                self.pos += 1;
+                String::from("let")
+            }
+            TokenKind::Const => {
+                self.pos += 1;
+                String::from("const")
+            }
+            TokenKind::Function => {
+                self.pos += 1;
+                String::from("function")
+            }
+            TokenKind::If => {
+                self.pos += 1;
+                String::from("if")
+            }
+            TokenKind::Else => {
+                self.pos += 1;
+                String::from("else")
+            }
+            TokenKind::While => {
+                self.pos += 1;
+                String::from("while")
+            }
+            TokenKind::For => {
+                self.pos += 1;
+                String::from("for")
+            }
+            TokenKind::Do => {
+                self.pos += 1;
+                String::from("do")
+            }
+            TokenKind::Switch => {
+                self.pos += 1;
+                String::from("switch")
+            }
+            TokenKind::Case => {
+                self.pos += 1;
+                String::from("case")
+            }
+            TokenKind::Break => {
+                self.pos += 1;
+                String::from("break")
+            }
+            TokenKind::Continue => {
+                self.pos += 1;
+                String::from("continue")
+            }
+            TokenKind::Throw => {
+                self.pos += 1;
+                String::from("throw")
+            }
+            TokenKind::Try => {
+                self.pos += 1;
+                String::from("try")
+            }
+            TokenKind::Catch => {
+                self.pos += 1;
+                String::from("catch")
+            }
+            TokenKind::Finally => {
+                self.pos += 1;
+                String::from("finally")
+            }
+            TokenKind::Typeof => {
+                self.pos += 1;
+                String::from("typeof")
+            }
+            TokenKind::Void => {
+                self.pos += 1;
+                String::from("void")
+            }
+            TokenKind::Instanceof => {
+                self.pos += 1;
+                String::from("instanceof")
+            }
+            TokenKind::Extends => {
+                self.pos += 1;
+                String::from("extends")
+            }
+            TokenKind::Import => {
+                self.pos += 1;
+                String::from("import")
+            }
+            TokenKind::Export => {
+                self.pos += 1;
+                String::from("export")
+            }
+            TokenKind::Async => {
+                self.pos += 1;
+                String::from("async")
+            }
+            TokenKind::Await => {
+                self.pos += 1;
+                String::from("await")
+            }
+            TokenKind::Yield => {
+                self.pos += 1;
+                String::from("yield")
+            }
+            TokenKind::Of => {
+                self.pos += 1;
+                String::from("of")
+            }
+            TokenKind::From => {
+                self.pos += 1;
+                String::from("from")
+            }
+            TokenKind::As => {
+                self.pos += 1;
+                String::from("as")
+            }
+            TokenKind::With => {
+                self.pos += 1;
+                String::from("with")
+            }
+            TokenKind::Debugger => {
+                self.pos += 1;
+                String::from("debugger")
+            }
             _ => {
                 self.pos += 1;
                 String::from("_error_")
@@ -219,7 +349,9 @@ impl Parser {
             TokenKind::Throw => Some(self.parse_throw()),
             TokenKind::Try => Some(self.parse_try()),
             TokenKind::Function => {
-                if matches!(self.peek2(), TokenKind::Ident(_) | TokenKind::Star) || self.is_contextual_keyword(self.peek2()) {
+                if matches!(self.peek2(), TokenKind::Ident(_) | TokenKind::Star)
+                    || self.is_contextual_keyword(self.peek2())
+                {
                     Some(self.parse_function_decl(false))
                 } else {
                     Some(self.parse_expr_stmt())
@@ -275,17 +407,31 @@ impl Parser {
             if let Some(stmt) = self.parse_statement() {
                 stmts.push(stmt);
             }
-            if self.pos == before { self.pos += 1; }
+            if self.pos == before {
+                self.pos += 1;
+            }
         }
         stmts
     }
 
     fn parse_var_decl(&mut self) -> Stmt {
         let kind = match self.peek() {
-            TokenKind::Var => { self.pos += 1; VarKind::Var }
-            TokenKind::Let => { self.pos += 1; VarKind::Let }
-            TokenKind::Const => { self.pos += 1; VarKind::Const }
-            _ => { self.pos += 1; VarKind::Var }
+            TokenKind::Var => {
+                self.pos += 1;
+                VarKind::Var
+            }
+            TokenKind::Let => {
+                self.pos += 1;
+                VarKind::Let
+            }
+            TokenKind::Const => {
+                self.pos += 1;
+                VarKind::Const
+            }
+            _ => {
+                self.pos += 1;
+                VarKind::Var
+            }
         };
 
         let mut decls = Vec::new();
@@ -361,7 +507,10 @@ impl Parser {
             if self.eat(&TokenKind::DotDotDot) {
                 let inner = self.parse_binding_pattern();
                 // Use empty key as sentinel; compiler checks Pattern::Rest on value
-                props.push(ObjPatProp { key: String::new(), value: Pattern::Rest(Box::new(inner)) });
+                props.push(ObjPatProp {
+                    key: String::new(),
+                    value: Pattern::Rest(Box::new(inner)),
+                });
                 self.eat(&TokenKind::Comma);
                 break;
             }
@@ -397,7 +546,11 @@ impl Parser {
         } else {
             None
         };
-        Stmt::If { condition, consequent, alternate }
+        Stmt::If {
+            condition,
+            consequent,
+            alternate,
+        }
     }
 
     fn parse_while(&mut self) -> Stmt {
@@ -429,10 +582,22 @@ impl Parser {
             TokenKind::Semicolon => None,
             TokenKind::Var | TokenKind::Let | TokenKind::Const => {
                 let kind = match self.peek() {
-                    TokenKind::Var => { self.pos += 1; VarKind::Var }
-                    TokenKind::Let => { self.pos += 1; VarKind::Let }
-                    TokenKind::Const => { self.pos += 1; VarKind::Const }
-                    _ => { self.pos += 1; VarKind::Var }
+                    TokenKind::Var => {
+                        self.pos += 1;
+                        VarKind::Var
+                    }
+                    TokenKind::Let => {
+                        self.pos += 1;
+                        VarKind::Let
+                    }
+                    TokenKind::Const => {
+                        self.pos += 1;
+                        VarKind::Const
+                    }
+                    _ => {
+                        self.pos += 1;
+                        VarKind::Var
+                    }
                 };
                 let name = self.parse_binding_pattern();
                 // Check for for-in / for-of
@@ -471,7 +636,10 @@ impl Parser {
                 } else {
                     None
                 };
-                let mut decls = vec![VarDeclarator { name, init: init_val }];
+                let mut decls = vec![VarDeclarator {
+                    name,
+                    init: init_val,
+                }];
                 while self.eat(&TokenKind::Comma) {
                     let n = self.parse_binding_pattern();
                     let i = if self.eat(&TokenKind::Eq) {
@@ -532,12 +700,20 @@ impl Parser {
         };
         self.expect(&TokenKind::RParen);
         let body = Box::new(self.parse_statement().unwrap_or(Stmt::Empty));
-        Stmt::For { init, test, update, body }
+        Stmt::For {
+            init,
+            test,
+            update,
+            body,
+        }
     }
 
     fn parse_return(&mut self) -> Stmt {
         self.expect(&TokenKind::Return);
-        let value = if matches!(self.peek(), TokenKind::Semicolon | TokenKind::RBrace | TokenKind::Eof) {
+        let value = if matches!(
+            self.peek(),
+            TokenKind::Semicolon | TokenKind::RBrace | TokenKind::Eof
+        ) {
             None
         } else {
             Some(self.parse_expression())
@@ -598,7 +774,10 @@ impl Parser {
             cases.push(SwitchCase { test, consequent });
         }
         self.expect(&TokenKind::RBrace);
-        Stmt::Switch { discriminant, cases }
+        Stmt::Switch {
+            discriminant,
+            cases,
+        }
     }
 
     fn parse_throw(&mut self) -> Stmt {
@@ -639,7 +818,11 @@ impl Parser {
             None
         };
 
-        Stmt::Try { block, catch, finally }
+        Stmt::Try {
+            block,
+            catch,
+            finally,
+        }
     }
 
     fn parse_import(&mut self) -> Stmt {
@@ -671,7 +854,9 @@ impl Parser {
                     imported.clone()
                 };
                 specifiers.push(ImportSpecifier::Named { imported, local });
-                if !self.eat(&TokenKind::Comma) { break; }
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
             }
             self.expect(&TokenKind::RBrace);
         }
@@ -690,7 +875,9 @@ impl Parser {
                             imported.clone()
                         };
                         specifiers.push(ImportSpecifier::Named { imported, local });
-                        if !self.eat(&TokenKind::Comma) { break; }
+                        if !self.eat(&TokenKind::Comma) {
+                            break;
+                        }
                     }
                     self.expect(&TokenKind::RBrace);
                 } else if self.eat(&TokenKind::Star) {
@@ -724,17 +911,33 @@ impl Parser {
                 // export default function name() {}
                 let stmt = self.parse_function_decl(false);
                 match stmt {
-                    Stmt::FunctionDecl { name, params, body, is_async, is_generator } => {
-                        Expr::FunctionExpr { name: Some(name), params, body, is_async, is_generator }
-                    }
+                    Stmt::FunctionDecl {
+                        name,
+                        params,
+                        body,
+                        is_async,
+                        is_generator,
+                    } => Expr::FunctionExpr {
+                        name: Some(name),
+                        params,
+                        body,
+                        is_async,
+                        is_generator,
+                    },
                     _ => Expr::Undefined,
                 }
             } else if matches!(self.peek(), TokenKind::Class) {
                 let stmt = self.parse_class_decl();
                 match stmt {
-                    Stmt::ClassDecl { name, super_class, body } => {
-                        Expr::ClassExpr { name: Some(name), super_class: super_class.map(Box::new), body }
-                    }
+                    Stmt::ClassDecl {
+                        name,
+                        super_class,
+                        body,
+                    } => Expr::ClassExpr {
+                        name: Some(name),
+                        super_class: super_class.map(Box::new),
+                        body,
+                    },
                     _ => Expr::Undefined,
                 }
             } else {
@@ -757,7 +960,9 @@ impl Parser {
                     local.clone()
                 };
                 specifiers.push(ExportSpecifier { local, exported });
-                if !self.eat(&TokenKind::Comma) { break; }
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
             }
             self.expect(&TokenKind::RBrace);
             // Re-export: export { ... } from 'module'
@@ -818,7 +1023,13 @@ impl Parser {
         self.expect(&TokenKind::LBrace);
         let body = self.parse_block_body();
         self.expect(&TokenKind::RBrace);
-        Stmt::FunctionDecl { name, params, body, is_async, is_generator }
+        Stmt::FunctionDecl {
+            name,
+            params,
+            body,
+            is_async,
+            is_generator,
+        }
     }
 
     fn parse_class_decl(&mut self) -> Stmt {
@@ -830,7 +1041,11 @@ impl Parser {
             None
         };
         let body = self.parse_class_body();
-        Stmt::ClassDecl { name, super_class, body }
+        Stmt::ClassDecl {
+            name,
+            super_class,
+            body,
+        }
     }
 
     fn parse_class_body(&mut self) -> Vec<ClassMember> {
@@ -885,7 +1100,12 @@ impl Parser {
                     self.expect(&TokenKind::RBrace);
                     members.push(ClassMember {
                         key: PropKey::Ident(priv_name),
-                        kind: ClassMemberKind::Method { params, body, is_generator: priv_is_generator, is_async: false },
+                        kind: ClassMemberKind::Method {
+                            params,
+                            body,
+                            is_generator: priv_is_generator,
+                            is_async: false,
+                        },
                         is_static,
                     });
                 } else {
@@ -908,7 +1128,12 @@ impl Parser {
             // Check for get/set accessor in class body (ES spec §14.3)
             let is_get = matches!(self.peek(), TokenKind::Ident(ref s) if s == "get");
             let is_set = matches!(self.peek(), TokenKind::Ident(ref s) if s == "set");
-            if (is_get || is_set) && !matches!(self.peek2(), TokenKind::LParen | TokenKind::Eq | TokenKind::Semicolon | TokenKind::RBrace) {
+            if (is_get || is_set)
+                && !matches!(
+                    self.peek2(),
+                    TokenKind::LParen | TokenKind::Eq | TokenKind::Semicolon | TokenKind::RBrace
+                )
+            {
                 self.pos += 1; // skip 'get'/'set'
                 let key = self.parse_prop_key();
                 if is_get {
@@ -940,8 +1165,14 @@ impl Parser {
 
             // Check for async method: async name() { ... } or async * name() { ... }
             let is_async = if matches!(self.peek(), TokenKind::Async)
-                && !matches!(self.peek2(), TokenKind::LParen | TokenKind::Eq | TokenKind::Semicolon | TokenKind::Colon | TokenKind::RBrace)
-            {
+                && !matches!(
+                    self.peek2(),
+                    TokenKind::LParen
+                        | TokenKind::Eq
+                        | TokenKind::Semicolon
+                        | TokenKind::Colon
+                        | TokenKind::RBrace
+                ) {
                 self.pos += 1; // skip 'async'
                 true
             } else {
@@ -964,9 +1195,18 @@ impl Parser {
                 let kind = if is_ctor {
                     ClassMemberKind::Constructor { params, body }
                 } else {
-                    ClassMemberKind::Method { params, body, is_generator, is_async }
+                    ClassMemberKind::Method {
+                        params,
+                        body,
+                        is_generator,
+                        is_async,
+                    }
                 };
-                members.push(ClassMember { key, kind, is_static });
+                members.push(ClassMember {
+                    key,
+                    kind,
+                    is_static,
+                });
             } else {
                 // Property
                 let value = if self.eat(&TokenKind::Eq) {
@@ -988,9 +1228,18 @@ impl Parser {
 
     fn parse_prop_key(&mut self) -> PropKey {
         match self.peek().clone() {
-            TokenKind::Ident(s) => { self.pos += 1; PropKey::Ident(s) }
-            TokenKind::String(s) => { self.pos += 1; PropKey::String(s) }
-            TokenKind::Number(n) => { self.pos += 1; PropKey::Number(n) }
+            TokenKind::Ident(s) => {
+                self.pos += 1;
+                PropKey::Ident(s)
+            }
+            TokenKind::String(s) => {
+                self.pos += 1;
+                PropKey::String(s)
+            }
+            TokenKind::Number(n) => {
+                self.pos += 1;
+                PropKey::Number(n)
+            }
             TokenKind::LBracket => {
                 self.pos += 1;
                 let expr = self.parse_assignment_expr();
@@ -1012,7 +1261,11 @@ impl Parser {
             // Rest parameter
             if self.eat(&TokenKind::DotDotDot) {
                 let pattern = self.parse_binding_pattern();
-                params.push(Param { pattern, default: None, is_rest: true });
+                params.push(Param {
+                    pattern,
+                    default: None,
+                    is_rest: true,
+                });
                 break;
             }
             let pattern = self.parse_binding_pattern();
@@ -1021,7 +1274,11 @@ impl Parser {
             } else {
                 None
             };
-            params.push(Param { pattern, default, is_rest: false });
+            params.push(Param {
+                pattern,
+                default,
+                is_rest: false,
+            });
             if !self.eat(&TokenKind::Comma) {
                 break;
             }
@@ -1164,7 +1421,9 @@ impl Parser {
     }
 
     fn parse_arrow_function(&mut self, is_async: bool) -> Expr {
-        let params = if matches!(self.peek(), TokenKind::Ident(_)) && matches!(self.peek2(), TokenKind::Arrow) {
+        let params = if matches!(self.peek(), TokenKind::Ident(_))
+            && matches!(self.peek2(), TokenKind::Arrow)
+        {
             let name = self.ident_str();
             vec![Param {
                 pattern: Pattern::Ident(name),
@@ -1186,7 +1445,11 @@ impl Parser {
             ArrowBody::Expr(Box::new(self.parse_assignment_expr()))
         };
 
-        Expr::Arrow { params, body, is_async }
+        Expr::Arrow {
+            params,
+            body,
+            is_async,
+        }
     }
 
     fn assignment_op(&self) -> Option<AssignOp> {
@@ -1609,6 +1872,46 @@ impl Parser {
         expr
     }
 
+    fn parse_new_callee_expr(&mut self) -> Expr {
+        let mut expr = if matches!(self.peek(), TokenKind::New) {
+            self.parse_left_hand_side_expr()
+        } else {
+            self.parse_primary()
+        };
+
+        loop {
+            match self.peek() {
+                TokenKind::Dot => {
+                    self.pos += 1;
+                    let prop = if let TokenKind::PrivateIdent(ref name) = self.peek().clone() {
+                        let n = name.clone();
+                        self.pos += 1;
+                        n
+                    } else {
+                        self.ident_str()
+                    };
+                    expr = Expr::Member {
+                        object: Box::new(expr),
+                        property: prop,
+                        computed: false,
+                    };
+                }
+                TokenKind::LBracket => {
+                    self.pos += 1;
+                    let index = self.parse_expression();
+                    self.expect(&TokenKind::RBracket);
+                    expr = Expr::Index {
+                        object: Box::new(expr),
+                        index: Box::new(index),
+                    };
+                }
+                _ => break,
+            }
+        }
+
+        expr
+    }
+
     fn parse_arguments(&mut self) -> Vec<Expr> {
         self.expect(&TokenKind::LParen);
         let mut args = Vec::new();
@@ -1642,7 +1945,7 @@ impl Parser {
                 return Expr::Undefined;
             }
             self.pos += 1;
-            let callee = self.parse_left_hand_side_expr();
+            let callee = self.parse_new_callee_expr();
             let arguments = if matches!(self.peek(), TokenKind::LParen) {
                 self.parse_arguments()
             } else {
@@ -1736,7 +2039,16 @@ impl Parser {
                 if self.eat(&TokenKind::Star) {
                     let arg = self.parse_assignment_expr();
                     Expr::YieldDelegate(Box::new(arg))
-                } else if matches!(self.peek(), TokenKind::Semicolon | TokenKind::RBrace | TokenKind::RParen | TokenKind::RBracket | TokenKind::Comma | TokenKind::Colon | TokenKind::Eof) {
+                } else if matches!(
+                    self.peek(),
+                    TokenKind::Semicolon
+                        | TokenKind::RBrace
+                        | TokenKind::RParen
+                        | TokenKind::RBracket
+                        | TokenKind::Comma
+                        | TokenKind::Colon
+                        | TokenKind::Eof
+                ) {
                     Expr::Yield(None)
                 } else {
                     let arg = self.parse_assignment_expr();
@@ -1794,7 +2106,10 @@ impl Parser {
             // Check for async method shorthand: { async foo() { } }
             // async is a modifier when followed by an identifier/keyword + '(' (not colon/comma)
             let is_async_method = matches!(self.peek(), TokenKind::Async)
-                && !matches!(self.peek2(), TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace | TokenKind::LParen);
+                && !matches!(
+                    self.peek2(),
+                    TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace | TokenKind::LParen
+                );
             if is_async_method {
                 self.pos += 1; // skip 'async'
                 let is_generator = self.eat(&TokenKind::Star);
@@ -1824,7 +2139,12 @@ impl Parser {
             // Check for get/set accessor
             let is_get = matches!(self.peek(), TokenKind::Ident(ref s) if s == "get");
             let is_set = matches!(self.peek(), TokenKind::Ident(ref s) if s == "set");
-            if (is_get || is_set) && !matches!(self.peek2(), TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace | TokenKind::LParen) {
+            if (is_get || is_set)
+                && !matches!(
+                    self.peek2(),
+                    TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace | TokenKind::LParen
+                )
+            {
                 let accessor_kind = if is_get { PropKind::Get } else { PropKind::Set };
                 self.pos += 1; // skip 'get' or 'set'
                 let key = self.parse_prop_key();
@@ -1854,7 +2174,10 @@ impl Parser {
 
             // Shorthand property: { x } → { x: x }
             // CoverInitializedName: { x = default } → { x: x = default }
-            if matches!(self.peek(), TokenKind::Comma | TokenKind::RBrace | TokenKind::Eq) {
+            if matches!(
+                self.peek(),
+                TokenKind::Comma | TokenKind::RBrace | TokenKind::Eq
+            ) {
                 if let PropKey::Ident(ref name) = key {
                     let value = if self.eat(&TokenKind::Eq) {
                         // { x = default } — shorthand with default (destructuring pattern)
@@ -1931,7 +2254,13 @@ impl Parser {
         self.expect(&TokenKind::LBrace);
         let body = self.parse_block_body();
         self.expect(&TokenKind::RBrace);
-        Expr::FunctionExpr { name, params, body, is_async, is_generator }
+        Expr::FunctionExpr {
+            name,
+            params,
+            body,
+            is_async,
+            is_generator,
+        }
     }
 
     fn parse_class_expr(&mut self) -> Expr {
@@ -1948,6 +2277,10 @@ impl Parser {
             None
         };
         let body = self.parse_class_body();
-        Expr::ClassExpr { name, super_class, body }
+        Expr::ClassExpr {
+            name,
+            super_class,
+            body,
+        }
     }
 }

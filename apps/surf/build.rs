@@ -1,8 +1,10 @@
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let project_root = std::path::PathBuf::from(&manifest_dir)
-        .parent().unwrap() // apps/
-        .parent().unwrap() // project root
+        .parent()
+        .unwrap() // apps/
+        .parent()
+        .unwrap() // project root
         .to_path_buf();
     let link_ld = project_root.join("libs").join("stdlib").join("link.ld");
     println!("cargo:rustc-link-arg=-T{}", link_ld.display());
@@ -12,7 +14,10 @@ fn main() {
 
     // Link BearSSL static library (architecture-specific)
     if target_arch == "x86_64" {
-        let bearssl_dir = project_root.join("third_party").join("bearssl").join("build_x64");
+        let bearssl_dir = project_root
+            .join("third_party")
+            .join("bearssl")
+            .join("build_x64");
         println!("cargo:rustc-link-search=native={}", bearssl_dir.display());
         println!("cargo:rustc-link-lib=static=bearssl_x64");
     } else if target_arch == "aarch64" {

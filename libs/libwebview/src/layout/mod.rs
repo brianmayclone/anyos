@@ -11,9 +11,9 @@
 
 pub mod block;
 pub mod flex;
+pub mod form;
 pub mod grid;
 pub mod inline;
-pub mod form;
 pub mod table;
 
 use alloc::string::String;
@@ -21,15 +21,14 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    ComputedStyle, Display, FontWeight, FontStyleVal, TextAlignVal,
-    ListStyle, ListStylePosition, TextDeco, TextTransform, FloatVal, Position, ClearVal,
-    OverflowVal, PseudoStyles,
+    ClearVal, ComputedStyle, Display, FloatVal, FontStyleVal, FontWeight, ListStyle,
+    ListStylePosition, OverflowVal, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
 };
 use crate::ImageCache;
 
 // Re-export sub-module public items.
-pub use form::{FormFieldPos, collect_form_positions};
 use block::build_block;
+pub use form::{collect_form_positions, FormFieldPos};
 use inline::{layout_inline_content, layout_inline_content_with_pseudo};
 
 // ---------------------------------------------------------------------------
@@ -246,14 +245,22 @@ impl LayoutBox {
             is_fixed: false,
             is_out_of_flow: false,
             // Per-side borders
-            border_top_width: 0, border_right_width: 0,
-            border_bottom_width: 0, border_left_width: 0,
-            border_top_color: 0, border_right_color: 0,
-            border_bottom_color: 0, border_left_color: 0,
-            border_top_left_radius: 0, border_top_right_radius: 0,
-            border_bottom_right_radius: 0, border_bottom_left_radius: 0,
+            border_top_width: 0,
+            border_right_width: 0,
+            border_bottom_width: 0,
+            border_left_width: 0,
+            border_top_color: 0,
+            border_right_color: 0,
+            border_bottom_color: 0,
+            border_left_color: 0,
+            border_top_left_radius: 0,
+            border_top_right_radius: 0,
+            border_bottom_right_radius: 0,
+            border_bottom_left_radius: 0,
             // Outline
-            outline_width: 0, outline_color: 0, outline_offset: 0,
+            outline_width: 0,
+            outline_color: 0,
+            outline_offset: 0,
             // Shadows
             box_shadows: Vec::new(),
             text_shadows: Vec::new(),
@@ -293,7 +300,13 @@ impl LayoutBox {
         }
     }
 
-    pub(super) fn new_text(text: String, font_size: i32, bold: bool, italic: bool, color: u32) -> Self {
+    pub(super) fn new_text(
+        text: String,
+        font_size: i32,
+        bold: bool,
+        italic: bool,
+        color: u32,
+    ) -> Self {
         let mut b = LayoutBox::new(None, BoxType::Inline);
         b.text = Some(text);
         b.font_size = font_size;
@@ -316,7 +329,11 @@ pub(super) fn measure_text(text: &str, font_size: i32, bold: bool) -> (i32, i32)
 
 pub(super) fn font_size_px(style: &ComputedStyle) -> i32 {
     let s = style.font_size;
-    if s <= 0 { 16 } else { s }
+    if s <= 0 {
+        16
+    } else {
+        s
+    }
 }
 
 pub(super) fn is_bold(style: &ComputedStyle) -> bool {
@@ -328,7 +345,12 @@ pub(super) fn is_italic(style: &ComputedStyle) -> bool {
 }
 
 pub(super) fn edges_from(top: i32, right: i32, bottom: i32, left: i32) -> Edges {
-    Edges { top, right, bottom, left }
+    Edges {
+        top,
+        right,
+        bottom,
+        left,
+    }
 }
 
 pub(super) fn link_href(dom: &Dom, node_id: NodeId) -> Option<String> {
@@ -360,12 +382,16 @@ pub(super) fn list_marker_for(dom: &Dom, node_id: NodeId, style: &ComputedStyle)
     // Suffix: space after the marker (wider gap for inside to separate from text)
     let suffix = if inside { " " } else { " " };
     match style.list_style {
-        ListStyle::Disc   => Some(concat_str("\u{2022}", suffix)),  // • BULLET
-        ListStyle::Circle => Some(concat_str("\u{25CB}", suffix)),  // ○ WHITE CIRCLE
-        ListStyle::Square => Some(concat_str("\u{25A0}", suffix)),  // ■ BLACK SQUARE
-        ListStyle::Decimal | ListStyle::LowerAlpha | ListStyle::UpperAlpha
-        | ListStyle::LowerLatin | ListStyle::UpperLatin
-        | ListStyle::LowerRoman | ListStyle::UpperRoman => {
+        ListStyle::Disc => Some(concat_str("\u{2022}", suffix)), // • BULLET
+        ListStyle::Circle => Some(concat_str("\u{25CB}", suffix)), // ○ WHITE CIRCLE
+        ListStyle::Square => Some(concat_str("\u{25A0}", suffix)), // ■ BLACK SQUARE
+        ListStyle::Decimal
+        | ListStyle::LowerAlpha
+        | ListStyle::UpperAlpha
+        | ListStyle::LowerLatin
+        | ListStyle::UpperLatin
+        | ListStyle::LowerRoman
+        | ListStyle::UpperRoman => {
             let idx = li_index(dom, node_id);
             let mut s = String::new();
             match style.list_style {
@@ -392,31 +418,51 @@ fn concat_str(a: &str, b: &str) -> String {
 
 /// Count this `<li>`'s 1-based index among its `<li>` siblings.
 fn li_index(dom: &Dom, node_id: NodeId) -> u32 {
-    let Some(parent) = dom.get(node_id).parent else { return 1; };
+    let Some(parent) = dom.get(node_id).parent else {
+        return 1;
+    };
     // Honour the `start` attribute on the parent <ol>.
-    let start: u32 = dom.attr(parent, "start")
+    let start: u32 = dom
+        .attr(parent, "start")
         .and_then(|s| s.parse::<i32>().ok())
         .map(|v| v.max(1) as u32)
         .unwrap_or(1);
     let mut idx = start;
     for &sib in &dom.get(parent).children {
-        if sib == node_id { break; }
-        if dom.tag(sib) == Some(Tag::Li) { idx += 1; }
+        if sib == node_id {
+            break;
+        }
+        if dom.tag(sib) == Some(Tag::Li) {
+            idx += 1;
+        }
     }
     idx
 }
 
 fn format_decimal(out: &mut String, mut n: u32) {
-    if n == 0 { out.push('0'); return; }
+    if n == 0 {
+        out.push('0');
+        return;
+    }
     let mut buf = [0u8; 10];
     let mut i = 0;
-    while n > 0 { buf[i] = b'0' + (n % 10) as u8; n /= 10; i += 1; }
-    while i > 0 { i -= 1; out.push(buf[i] as char); }
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        out.push(buf[i] as char);
+    }
 }
 
 /// a–z, then aa–az, ba–bz, … (CSS `lower-alpha` / `lower-latin`)
 fn format_alpha(out: &mut String, n: u32, upper: bool) {
-    if n == 0 { out.push(if upper { 'A' } else { 'a' }); return; }
+    if n == 0 {
+        out.push(if upper { 'A' } else { 'a' });
+        return;
+    }
     let base: u32 = 26;
     // Convert to bijective base-26 (1=a, 26=z, 27=aa, …)
     let mut chars: [u8; 8] = [0; 8];
@@ -436,16 +482,23 @@ fn format_alpha(out: &mut String, n: u32, upper: bool) {
 
 /// Standard roman numerals (I–MMMCMXCIX = 1–3999); fallback to decimal beyond that.
 fn format_roman(out: &mut String, n: u32, upper: bool) {
-    if n == 0 || n > 3999 { format_decimal(out, n); return; }
-    const VALS: &[u32]  = &[1000,900,500,400,100,90,50,40,10,9,5,4,1];
-    const SYMS: &[&str] = &["M","CM","D","CD","C","XC","L","XL","X","IX","V","IV","I"];
+    if n == 0 || n > 3999 {
+        format_decimal(out, n);
+        return;
+    }
+    const VALS: &[u32] = &[1000, 900, 500, 400, 100, 90, 50, 40, 10, 9, 5, 4, 1];
+    const SYMS: &[&str] = &[
+        "M", "CM", "D", "CD", "C", "XC", "L", "XL", "X", "IX", "V", "IV", "I",
+    ];
     let mut v = n;
     for (&val, &sym) in VALS.iter().zip(SYMS.iter()) {
         while v >= val {
             if upper {
                 out.push_str(sym);
             } else {
-                for c in sym.chars() { out.push(c.to_ascii_lowercase()); }
+                for c in sym.chars() {
+                    out.push(c.to_ascii_lowercase());
+                }
             }
             v -= val;
         }
@@ -463,25 +516,40 @@ pub(crate) fn svg_inline_key(node_id: NodeId) -> String {
     } else {
         let mut buf = [0u8; 20];
         let mut pos = 20usize;
-        while n > 0 { pos -= 1; buf[pos] = b'0' + (n % 10) as u8; n /= 10; }
-        for &b in &buf[pos..] { s.push(b as char); }
+        while n > 0 {
+            pos -= 1;
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        for &b in &buf[pos..] {
+            s.push(b as char);
+        }
     }
     s.push_str("__");
     s
 }
 
-pub(super) fn image_dimensions(dom: &Dom, node_id: NodeId, max_width: i32, images: &ImageCache) -> (i32, i32) {
+pub(super) fn image_dimensions(
+    dom: &Dom,
+    node_id: NodeId,
+    max_width: i32,
+    images: &ImageCache,
+) -> (i32, i32) {
     // Get natural dimensions from image cache (actual decoded image size).
     let src = dom.attr(node_id, "src");
-    let natural = src.and_then(|s| images.get_ref(s)).map(|e| {
-        (e.width.min(65535) as i32, e.height.min(65535) as i32)
-    });
+    let natural = src
+        .and_then(|s| images.get_ref(s))
+        .map(|e| (e.width.min(65535) as i32, e.height.min(65535) as i32));
 
     // HTML attributes override natural size; fall back to natural; then 300x150.
-    let w = dom.attr(node_id, "width").and_then(parse_attr_int)
+    let w = dom
+        .attr(node_id, "width")
+        .and_then(parse_attr_int)
         .or(natural.map(|(w, _)| w))
         .unwrap_or(300);
-    let h = dom.attr(node_id, "height").and_then(parse_attr_int)
+    let h = dom
+        .attr(node_id, "height")
+        .and_then(parse_attr_int)
         .or(natural.map(|(_, h)| h))
         .unwrap_or(150);
 
@@ -517,7 +585,11 @@ pub(super) fn parse_attr_int(s: &str) -> Option<i32> {
             break;
         }
     }
-    if val > 0 { Some(val) } else { None }
+    if val > 0 {
+        Some(val)
+    } else {
+        None
+    }
 }
 
 pub(super) fn is_ascii_ws(b: u8) -> bool {
@@ -556,14 +628,20 @@ pub struct CounterValues {
 impl CounterValues {
     pub fn empty(count: usize) -> Self {
         let mut per_node = Vec::with_capacity(count);
-        for _ in 0..count { per_node.push(Vec::new()); }
+        for _ in 0..count {
+            per_node.push(Vec::new());
+        }
         CounterValues { per_node }
     }
 
     pub fn get(&self, node_id: NodeId, name: &str) -> i32 {
-        if node_id >= self.per_node.len() { return 0; }
+        if node_id >= self.per_node.len() {
+            return 0;
+        }
         for &(ref n, v) in self.per_node[node_id].iter().rev() {
-            if n.as_str() == name { return v; }
+            if n.as_str() == name {
+                return v;
+            }
         }
         0
     }
@@ -600,14 +678,26 @@ fn walk_counters(
                 let name = parts[i].to_ascii_lowercase();
                 let val = if i + 1 < parts.len() {
                     parts[i + 1].parse::<i32>().unwrap_or(0)
-                } else { 0 };
+                } else {
+                    0
+                };
                 // Find and update existing entry, or add new one
                 let mut found = false;
                 for entry in state.iter_mut().rev() {
-                    if entry.0 == name { entry.1 = val; found = true; break; }
+                    if entry.0 == name {
+                        entry.1 = val;
+                        found = true;
+                        break;
+                    }
                 }
-                if !found { state.push((name, val)); }
-                i += if i + 1 < parts.len() && parts[i + 1].parse::<i32>().is_ok() { 2 } else { 1 };
+                if !found {
+                    state.push((name, val));
+                }
+                i += if i + 1 < parts.len() && parts[i + 1].parse::<i32>().is_ok() {
+                    2
+                } else {
+                    1
+                };
             }
         }
 
@@ -619,13 +709,25 @@ fn walk_counters(
                 let name = parts[i].to_ascii_lowercase();
                 let inc = if i + 1 < parts.len() {
                     parts[i + 1].parse::<i32>().unwrap_or(1)
-                } else { 1 };
+                } else {
+                    1
+                };
                 let mut found = false;
                 for entry in state.iter_mut().rev() {
-                    if entry.0 == name { entry.1 += inc; found = true; break; }
+                    if entry.0 == name {
+                        entry.1 += inc;
+                        found = true;
+                        break;
+                    }
                 }
-                if !found { state.push((name, inc)); }
-                i += if i + 1 < parts.len() && parts[i + 1].parse::<i32>().is_ok() { 2 } else { 1 };
+                if !found {
+                    state.push((name, inc));
+                }
+                i += if i + 1 < parts.len() && parts[i + 1].parse::<i32>().is_ok() {
+                    2
+                } else {
+                    1
+                };
             }
         }
 
@@ -643,7 +745,9 @@ fn walk_counters(
 
 /// Resolve `\x01COUNTER:name\x01` markers in a content string using counter values.
 pub fn resolve_counters_in_content(text: &str, node_id: NodeId, cv: &CounterValues) -> String {
-    if !text.contains('\x01') { return String::from(text); }
+    if !text.contains('\x01') {
+        return String::from(text);
+    }
     let mut out = String::with_capacity(text.len() + 4);
     let bytes = text.as_bytes();
     let mut i = 0;
@@ -651,7 +755,9 @@ pub fn resolve_counters_in_content(text: &str, node_id: NodeId, cv: &CounterValu
         if bytes[i] == b'\x01' {
             i += 1;
             let start = i;
-            while i < bytes.len() && bytes[i] != b'\x01' { i += 1; }
+            while i < bytes.len() && bytes[i] != b'\x01' {
+                i += 1;
+            }
             let marker = core::str::from_utf8(&bytes[start..i]).unwrap_or("");
             if let Some(name) = marker.strip_prefix("COUNTER:") {
                 let val = cv.get(node_id, name);
@@ -661,15 +767,27 @@ pub fn resolve_counters_in_content(text: &str, node_id: NodeId, cv: &CounterValu
                     out.push('0');
                 } else {
                     let neg = num < 0;
-                    if neg { num = -num; }
+                    if neg {
+                        num = -num;
+                    }
                     let mut digits = [0u8; 12];
                     let mut d = 0;
-                    while num > 0 { digits[d] = (num % 10) as u8 + b'0'; num /= 10; d += 1; }
-                    if neg { out.push('-'); }
-                    for k in (0..d).rev() { out.push(digits[k] as char); }
+                    while num > 0 {
+                        digits[d] = (num % 10) as u8 + b'0';
+                        num /= 10;
+                        d += 1;
+                    }
+                    if neg {
+                        out.push('-');
+                    }
+                    for k in (0..d).rev() {
+                        out.push(digits[k] as char);
+                    }
                 }
             }
-            if i < bytes.len() { i += 1; } // skip closing \x01
+            if i < bytes.len() {
+                i += 1;
+            } // skip closing \x01
         } else {
             out.push(bytes[i] as char);
             i += 1;
@@ -683,10 +801,25 @@ pub fn resolve_counters_in_content(text: &str, node_id: NodeId, cv: &CounterValu
 // ---------------------------------------------------------------------------
 
 /// Build a layout tree from the DOM and computed styles.
-pub fn layout(dom: &Dom, styles: &[ComputedStyle], pseudo: &mut PseudoStyles, viewport_width: i32, images: &ImageCache) -> LayoutBox {
-    crate::debug_surf!("[layout] layout start: {} nodes, viewport_width={}", dom.nodes.len(), viewport_width);
+pub fn layout(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &mut PseudoStyles,
+    viewport_width: i32,
+    viewport_height: i32,
+    images: &ImageCache,
+) -> LayoutBox {
+    crate::debug_surf!(
+        "[layout] layout start: {} nodes, viewport_width={}",
+        dom.nodes.len(),
+        viewport_width
+    );
     #[cfg(feature = "debug_surf")]
-    crate::debug_surf!("[layout]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
+    crate::debug_surf!(
+        "[layout]   RSP=0x{:X} heap=0x{:X}",
+        crate::debug_rsp(),
+        crate::debug_heap_pos()
+    );
 
     // Pre-pass: compute CSS counter values and resolve counter() references in
     // pseudo-element content strings.
@@ -717,45 +850,82 @@ pub fn layout(dom: &Dom, styles: &[ComputedStyle], pseudo: &mut PseudoStyles, vi
     root.bg_color = style.background_color;
     root.color = style.color;
     root.padding = edges_from(
-        style.padding_top, style.padding_right,
-        style.padding_bottom, style.padding_left,
+        style.padding_top,
+        style.padding_right,
+        style.padding_bottom,
+        style.padding_left,
     );
     root.margin = edges_from(
-        style.margin_top, style.margin_right,
-        style.margin_bottom, style.margin_left,
+        style.margin_top,
+        style.margin_right,
+        style.margin_bottom,
+        style.margin_left,
     );
 
-    let content_width = viewport_width - root.padding.left - root.padding.right
-        - root.margin.left - root.margin.right;
+    let content_width = viewport_width
+        - root.padding.left
+        - root.padding.right
+        - root.margin.left
+        - root.margin.right;
 
     let children = &dom.get(body_id).children;
     let child_ids: Vec<NodeId> = children.iter().copied().collect();
-    crate::debug_surf!("[layout] body has {} direct children, content_width={}", child_ids.len(), content_width);
+    crate::debug_surf!(
+        "[layout] body has {} direct children, content_width={}",
+        child_ids.len(),
+        content_width
+    );
 
     // Dispatch to the correct layout mode based on body's display property.
     let height = if matches!(style.display, Display::Flex | Display::InlineFlex) {
-        flex::layout_flex(dom, styles, pseudo, &child_ids, content_width, &mut root, images, viewport_width)
+        flex::layout_flex(
+            dom,
+            styles,
+            pseudo,
+            &child_ids,
+            content_width,
+            viewport_height,
+            &mut root,
+            images,
+            viewport_width,
+        )
     } else if matches!(style.display, Display::Grid | Display::InlineGrid) {
-        grid::layout_grid(dom, styles, pseudo, &child_ids, content_width, &mut root, images, viewport_width)
+        grid::layout_grid(
+            dom,
+            styles,
+            pseudo,
+            &child_ids,
+            content_width,
+            &mut root,
+            images,
+            viewport_width,
+        )
     } else {
-        layout_children(dom, styles, pseudo, &child_ids, content_width, &mut root, body_id, images, viewport_width)
+        layout_children(
+            dom,
+            styles,
+            pseudo,
+            &child_ids,
+            content_width,
+            &mut root,
+            body_id,
+            images,
+            viewport_width,
+        )
     };
 
     root.height = height + root.padding.top + root.padding.bottom;
-
-    // Debug: show layout tree summary
-    anyos_std::println!("[layout] root h={} children={}", root.height, root.children.len());
-    for (ci, child) in root.children.iter().enumerate() {
-        anyos_std::println!("[layout]   child[{}] y={} h={} w={} nid={:?} children={}",
-            ci, child.y, child.height, child.width, child.node_id, child.children.len());
-    }
 
     // Post-pass: compute subtree_bottom for tile rasterizer culling.
     compute_subtree_bottom(&mut root);
 
     crate::debug_surf!("[layout] layout done: root height={}", root.height);
     #[cfg(feature = "debug_surf")]
-    crate::debug_surf!("[layout]   RSP=0x{:X} heap=0x{:X}", crate::debug_rsp(), crate::debug_heap_pos());
+    crate::debug_surf!(
+        "[layout]   RSP=0x{:X} heap=0x{:X}",
+        crate::debug_rsp(),
+        crate::debug_heap_pos()
+    );
     root
 }
 
@@ -799,8 +969,19 @@ pub(super) fn layout_children(
     images: &ImageCache,
     viewport_w: i32,
 ) -> i32 {
-    layout_children_ex(dom, styles, pseudo, child_ids, available_width, parent,
-        _parent_node, images, viewport_w, None, None)
+    layout_children_ex(
+        dom,
+        styles,
+        pseudo,
+        child_ids,
+        available_width,
+        parent,
+        _parent_node,
+        images,
+        viewport_w,
+        None,
+        None,
+    )
 }
 
 /// Like `layout_children` but also accepts optional pre-built block pseudo-element boxes
@@ -854,8 +1035,17 @@ pub(super) fn layout_children_ex(
         // that text would render it as visible characters on the page.
         if style.display == Display::Contents && dom.tag(cid) != Some(Tag::Svg) {
             let grandchildren: Vec<NodeId> = dom.get(cid).children.iter().copied().collect();
-            let h = layout_children(dom, styles, pseudo, &grandchildren, available_width,
-                parent, cid, images, viewport_w);
+            let h = layout_children(
+                dom,
+                styles,
+                pseudo,
+                &grandchildren,
+                available_width,
+                parent,
+                cid,
+                images,
+                viewport_w,
+            );
             cursor_y += h;
             i += 1;
             continue;
@@ -883,11 +1073,19 @@ pub(super) fn layout_children_ex(
 
             // ── Floated elements ──
             if float_val != FloatVal::None {
-                let stf_width = shrink_to_fit_width(dom, styles, pseudo, cid, available_width, images, viewport_w);
+                let stf_width = shrink_to_fit_width(
+                    dom,
+                    styles,
+                    pseudo,
+                    cid,
+                    available_width,
+                    images,
+                    viewport_w,
+                );
                 let mut placed = if is_table_element(dom, cid) {
                     table::layout_table(dom, styles, pseudo, cid, stf_width, images, viewport_w)
                 } else {
-                    build_block(dom, styles, pseudo, cid, stf_width, images, viewport_w)
+                    build_block(dom, styles, pseudo, cid, stf_width, images, viewport_w, 0)
                 };
 
                 let total_w = placed.width + placed.margin.left + placed.margin.right;
@@ -901,7 +1099,8 @@ pub(super) fn layout_children_ex(
                     placed.x = bw + parent.padding.left + li + placed.margin.left;
                 } else {
                     let right_edge = available_width - ri;
-                    placed.x = bw + parent.padding.left + right_edge - placed.width - placed.margin.right;
+                    placed.x =
+                        bw + parent.padding.left + right_edge - placed.width - placed.margin.right;
                 }
                 placed.y = place_y + placed.margin.top;
 
@@ -924,9 +1123,26 @@ pub(super) fn layout_children_ex(
             let effective_avail = (available_width - li - ri).max(0);
 
             let child_box = if is_table_element(dom, cid) {
-                table::layout_table(dom, styles, pseudo, cid, effective_avail, images, viewport_w)
+                table::layout_table(
+                    dom,
+                    styles,
+                    pseudo,
+                    cid,
+                    effective_avail,
+                    images,
+                    viewport_w,
+                )
             } else {
-                build_block(dom, styles, pseudo, cid, effective_avail, images, viewport_w)
+                build_block(
+                    dom,
+                    styles,
+                    pseudo,
+                    cid,
+                    effective_avail,
+                    images,
+                    viewport_w,
+                    0,
+                )
             };
 
             let collapsed = if prev_margin_bottom > child_box.margin.top {
@@ -948,7 +1164,8 @@ pub(super) fn layout_children_ex(
             if parent_align == TextAlignVal::Center {
                 let total_child_w = placed.width + placed.margin.left + placed.margin.right;
                 if total_child_w < effective_avail {
-                    placed.x = bw + parent.padding.left + li + (effective_avail - total_child_w) / 2;
+                    placed.x =
+                        bw + parent.padding.left + li + (effective_avail - total_child_w) / 2;
                 }
             } else if parent_align == TextAlignVal::Right {
                 let total_child_w = placed.width + placed.margin.left + placed.margin.right;
@@ -987,15 +1204,26 @@ pub(super) fn layout_children_ex(
             // skip the run entirely.
             {
                 let has_no_pseudo = {
-                    let before_ps = if _parent_node < pseudo.before.len() { pseudo.before[_parent_node].as_ref() } else { None };
-                    let after_ps  = if _parent_node < pseudo.after.len()  { pseudo.after[_parent_node].as_ref()  } else { None };
+                    let before_ps = if _parent_node < pseudo.before.len() {
+                        pseudo.before[_parent_node].as_ref()
+                    } else {
+                        None
+                    };
+                    let after_ps = if _parent_node < pseudo.after.len() {
+                        pseudo.after[_parent_node].as_ref()
+                    } else {
+                        None
+                    };
                     before_ps.is_none() && after_ps.is_none()
                 };
                 let all_whitespace = inline_ids.iter().all(|&nid| {
-                    if styles[nid].display == Display::None { return true; }
+                    if styles[nid].display == Display::None {
+                        return true;
+                    }
                     match &dom.get(nid).node_type {
-                        crate::dom::NodeType::Text(t) =>
-                            t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r')),
+                        crate::dom::NodeType::Text(t) => {
+                            t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\r'))
+                        }
                         _ => false,
                     }
                 });
@@ -1015,29 +1243,62 @@ pub(super) fn layout_children_ex(
 
             // Check if parent block node has inline ::before/::after pseudo-elements.
             // These are only injected into the FIRST inline run (for ::before) and LAST (for ::after).
-            let is_first_run = run_start == 0 || child_ids[..run_start].iter().all(|&id| styles[id].display == Display::None);
-            let is_last_run = i >= child_ids.len() || child_ids[i..].iter().all(|&id| {
-                let s = &styles[id];
-                s.display == Display::None || is_block_level(dom, id, s)
-            });
+            let is_first_run = run_start == 0
+                || child_ids[..run_start]
+                    .iter()
+                    .all(|&id| styles[id].display == Display::None);
+            let is_last_run = i >= child_ids.len()
+                || child_ids[i..].iter().all(|&id| {
+                    let s = &styles[id];
+                    s.display == Display::None || is_block_level(dom, id, s)
+                });
 
             let before_inline_ps = if is_first_run && _parent_node < pseudo.before.len() {
                 pseudo.before[_parent_node].as_ref().filter(|ps| {
-                    !matches!(ps.display, Display::Block | Display::FlowRoot | Display::InlineBlock
-                        | Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid)
+                    !matches!(
+                        ps.display,
+                        Display::Block
+                            | Display::FlowRoot
+                            | Display::InlineBlock
+                            | Display::Flex
+                            | Display::InlineFlex
+                            | Display::Grid
+                            | Display::InlineGrid
+                    )
                 })
-            } else { None };
+            } else {
+                None
+            };
             let after_inline_ps = if is_last_run && _parent_node < pseudo.after.len() {
                 pseudo.after[_parent_node].as_ref().filter(|ps| {
-                    !matches!(ps.display, Display::Block | Display::FlowRoot | Display::InlineBlock
-                        | Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid)
+                    !matches!(
+                        ps.display,
+                        Display::Block
+                            | Display::FlowRoot
+                            | Display::InlineBlock
+                            | Display::Flex
+                            | Display::InlineFlex
+                            | Display::Grid
+                            | Display::InlineGrid
+                    )
                 })
-            } else { None };
+            } else {
+                None
+            };
 
             let line_boxes = layout_inline_content_with_pseudo(
-                dom, styles, pseudo, &inline_ids, inline_avail, bw + parent.padding.left + li, images,
-                parent_align, parent_style.line_height, viewport_w,
-                before_inline_ps, after_inline_ps,
+                dom,
+                styles,
+                pseudo,
+                &inline_ids,
+                inline_avail,
+                bw + parent.padding.left + li,
+                images,
+                parent_align,
+                parent_style.line_height,
+                viewport_w,
+                before_inline_ps,
+                after_inline_ps,
             );
             for lb in line_boxes {
                 let h = lb.height;
@@ -1056,12 +1317,33 @@ pub(super) fn layout_children_ex(
         let is_fixed_pos = abs_style.position == Position::Fixed;
 
         // Fixed elements are sized against the viewport; absolute elements against the container.
-        let sizing_width = if is_fixed_pos { viewport_w } else { available_width };
+        let sizing_width = if is_fixed_pos {
+            viewport_w
+        } else {
+            available_width
+        };
 
         let mut abs_box = if is_table_element(dom, abs_id) {
-            table::layout_table(dom, styles, pseudo, abs_id, sizing_width, images, viewport_w)
+            table::layout_table(
+                dom,
+                styles,
+                pseudo,
+                abs_id,
+                sizing_width,
+                images,
+                viewport_w,
+            )
         } else {
-            build_block(dom, styles, pseudo, abs_id, sizing_width, images, viewport_w)
+            build_block(
+                dom,
+                styles,
+                pseudo,
+                abs_id,
+                sizing_width,
+                images,
+                viewport_w,
+                0,
+            )
         };
 
         if is_fixed_pos {
@@ -1126,22 +1408,30 @@ pub(super) fn layout_children_ex(
         let has_overflow_bfc = !matches!(s.overflow_x, OverflowVal::Visible)
             || !matches!(s.overflow_y, OverflowVal::Visible);
         // display: flow-root / inline-block / flex / inline-flex / grid / inline-grid.
-        let has_display_bfc = matches!(s.display,
-            Display::FlowRoot | Display::InlineBlock
-            | Display::Flex | Display::InlineFlex
-            | Display::Grid | Display::InlineGrid
+        let has_display_bfc = matches!(
+            s.display,
+            Display::FlowRoot
+                | Display::InlineBlock
+                | Display::Flex
+                | Display::InlineFlex
+                | Display::Grid
+                | Display::InlineGrid
         );
         // Floated or absolutely positioned elements also establish a BFC.
         let has_float_bfc = s.float != crate::style::FloatVal::None;
-        let has_pos_bfc = matches!(s.position,
-            crate::style::Position::Absolute | crate::style::Position::Fixed);
+        let has_pos_bfc = matches!(
+            s.position,
+            crate::style::Position::Absolute | crate::style::Position::Fixed
+        );
         has_overflow_bfc || has_display_bfc || has_float_bfc || has_pos_bfc
     } else {
         false
     };
 
     if parent_is_bfc && !float_ctx.floats.is_empty() {
-        let float_bottom = float_ctx.floats.iter()
+        let float_bottom = float_ctx
+            .floats
+            .iter()
             .map(|f| f.y + f.height)
             .max()
             .unwrap_or(0);
@@ -1160,14 +1450,18 @@ pub(super) fn apply_text_transform(text: &str, transform: TextTransform) -> Stri
         TextTransform::Uppercase => {
             let mut out = String::with_capacity(text.len());
             for ch in text.chars() {
-                for c in ch.to_uppercase() { out.push(c); }
+                for c in ch.to_uppercase() {
+                    out.push(c);
+                }
             }
             out
         }
         TextTransform::Lowercase => {
             let mut out = String::with_capacity(text.len());
             for ch in text.chars() {
-                for c in ch.to_lowercase() { out.push(c); }
+                for c in ch.to_lowercase() {
+                    out.push(c);
+                }
             }
             out
         }
@@ -1176,7 +1470,9 @@ pub(super) fn apply_text_transform(text: &str, transform: TextTransform) -> Stri
             let mut prev_ws = true;
             for ch in text.chars() {
                 if prev_ws && ch.is_alphabetic() {
-                    for c in ch.to_uppercase() { out.push(c); }
+                    for c in ch.to_uppercase() {
+                        out.push(c);
+                    }
                 } else {
                     out.push(ch);
                 }
@@ -1189,14 +1485,22 @@ pub(super) fn apply_text_transform(text: &str, transform: TextTransform) -> Stri
 
 /// Determine whether a node should generate a block-level box.
 fn is_block_level(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> bool {
-    if matches!(style.display, Display::Block | Display::FlowRoot | Display::Flex | Display::Grid | Display::ListItem) {
+    if matches!(
+        style.display,
+        Display::Block | Display::FlowRoot | Display::Flex | Display::Grid | Display::ListItem
+    ) {
         return true;
     }
     if let Some(tag) = dom.tag(node_id) {
         if tag == Tag::Hr || tag == Tag::Table {
             return true;
         }
-        if tag.is_block() && style.display != Display::Inline && style.display != Display::InlineFlex && style.display != Display::InlineBlock && style.display != Display::InlineGrid {
+        if tag.is_block()
+            && style.display != Display::Inline
+            && style.display != Display::InlineFlex
+            && style.display != Display::InlineBlock
+            && style.display != Display::InlineGrid
+        {
             return true;
         }
     }
@@ -1227,7 +1531,7 @@ pub(crate) fn is_inside_svg(dom: &Dom, node_id: NodeId) -> bool {
 // ---------------------------------------------------------------------------
 
 struct PlacedFloat {
-    side: FloatVal,  // Left or Right
+    side: FloatVal, // Left or Right
     x: i32,
     y: i32,
     width: i32,
@@ -1241,7 +1545,10 @@ struct FloatContext {
 
 impl FloatContext {
     fn new(container_width: i32) -> Self {
-        FloatContext { floats: Vec::new(), container_width }
+        FloatContext {
+            floats: Vec::new(),
+            container_width,
+        }
     }
 
     /// Total width consumed by left floats overlapping the given Y band.
@@ -1250,7 +1557,9 @@ impl FloatContext {
         for f in &self.floats {
             if f.side == FloatVal::Left && f.y < y + h && f.y + f.height > y {
                 let right = f.x + f.width;
-                if right > max_right { max_right = right; }
+                if right > max_right {
+                    max_right = right;
+                }
             }
         }
         max_right
@@ -1261,7 +1570,9 @@ impl FloatContext {
         let mut max_left = self.container_width;
         for f in &self.floats {
             if f.side == FloatVal::Right && f.y < y + h && f.y + f.height > y {
-                if f.x < max_left { max_left = f.x; }
+                if f.x < max_left {
+                    max_left = f.x;
+                }
             }
         }
         self.container_width - max_left
@@ -1286,7 +1597,9 @@ impl FloatContext {
             };
             if dominated {
                 let bot = f.y + f.height;
-                if bot > max_bottom { max_bottom = bot; }
+                if bot > max_bottom {
+                    max_bottom = bot;
+                }
             }
         }
         max_bottom
@@ -1304,7 +1617,9 @@ impl FloatContext {
                 return y;
             }
             y += 1;
-            if y > start_y + 10000 { return y; } // safety cap
+            if y > start_y + 10000 {
+                return y;
+            } // safety cap
         }
     }
 
@@ -1353,24 +1668,39 @@ fn measure_min_content(
 ) -> i32 {
     use crate::dom::NodeType;
     let st = &styles[node_id];
-    if st.display == Display::None { return 0; }
+    if st.display == Display::None {
+        return 0;
+    }
 
     // Explicit width → that IS the min-content width.
-    if let Some(w) = st.width { if w > 0 { return w; } }
-    if st.width_min_content || st.width_max_content { return 0; }
+    if let Some(w) = st.width {
+        if w > 0 {
+            return w;
+        }
+    }
+    if st.width_min_content || st.width_max_content {
+        return 0;
+    }
 
-    let pad_border = st.padding_left + st.padding_right + st.border_width * 2
-        + st.border_left.width + st.border_right.width;
+    let pad_border = st.padding_left
+        + st.padding_right
+        + st.border_width * 2
+        + st.border_left.width
+        + st.border_right.width;
 
     if let NodeType::Text(ref text) = dom.nodes[node_id].node_type {
-        if is_inside_svg(dom, node_id) { return 0; }
+        if is_inside_svg(dom, node_id) {
+            return 0;
+        }
         // Find the longest word (non-breaking run).
         let fs = st.font_size.max(1);
         let bold = matches!(st.font_weight, crate::style::FontWeight::Bold);
         let mut max_w = 0i32;
         for word in text.split_whitespace() {
             let (w, _) = measure_text(word, fs, bold);
-            if w > max_w { max_w = w; }
+            if w > max_w {
+                max_w = w;
+            }
         }
         return max_w;
     }
@@ -1384,7 +1714,9 @@ fn measure_min_content(
     let mut max_child_w = 0i32;
     for &cid in &dom.nodes[node_id].children {
         let cw = measure_min_content(dom, styles, pseudo, cid, images, viewport_w);
-        if cw > max_child_w { max_child_w = cw; }
+        if cw > max_child_w {
+            max_child_w = cw;
+        }
     }
     max_child_w + pad_border
 }
@@ -1404,19 +1736,25 @@ fn shrink_to_fit_width(
     let style = &styles[node_id];
     // If explicit width is set, use it.
     if let Some(w) = style.width {
-        if w > 0 { return w.min(max_width); }
+        if w > 0 {
+            return w.min(max_width);
+        }
     }
     // Percentage width.
     if let Some(pct) = style.width_pct {
         let w = (max_width as i64 * pct as i64 / 10000) as i32;
-        if w > 0 { return w.min(max_width); }
+        if w > 0 {
+            return w.min(max_width);
+        }
     }
     // Otherwise, use max-content width (natural width without forced line-wrapping).
     // This is the correct CSS shrink-to-fit algorithm: it prevents block children
     // (like <figcaption>) from expanding the float to the full container width.
     let mc = flex::measure_max_content(dom, styles, pseudo, node_id, images, viewport_w);
-    let pad_border = style.padding_left + style.padding_right
-        + style.border_left.width + style.border_right.width
+    let pad_border = style.padding_left
+        + style.padding_right
+        + style.border_left.width
+        + style.border_right.width
         + style.border_width * 2;
     (mc + pad_border).max(1).min(max_width)
 }

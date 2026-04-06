@@ -15,13 +15,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use libjs::JsValue;
-use libjs::Vm;
 use libjs::value::JsObject;
 use libjs::vm::native_fn;
+use libjs::JsValue;
+use libjs::Vm;
 
-use super::{get_bridge, arg_string};
-use super::{PendingWsConnect, PendingWsSend, PendingWsClose};
+use super::{arg_string, get_bridge};
+use super::{PendingWsClose, PendingWsConnect, PendingWsSend};
 
 // ═══════════════════════════════════════════════════════════
 // WebSocket ID allocator
@@ -74,33 +74,45 @@ fn ws_ctor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     // readyState constants.
     obj.set(String::from("CONNECTING"), JsValue::Number(0.0));
-    obj.set(String::from("OPEN"),       JsValue::Number(1.0));
-    obj.set(String::from("CLOSING"),    JsValue::Number(2.0));
-    obj.set(String::from("CLOSED"),     JsValue::Number(3.0));
+    obj.set(String::from("OPEN"), JsValue::Number(1.0));
+    obj.set(String::from("CLOSING"), JsValue::Number(2.0));
+    obj.set(String::from("CLOSED"), JsValue::Number(3.0));
 
     // State.
-    obj.set(String::from("readyState"),     JsValue::Number(0.0)); // CONNECTING
-    obj.set(String::from("url"),            JsValue::String(url.clone()));
-    obj.set(String::from("protocol"),       JsValue::String(String::new()));
-    obj.set(String::from("extensions"),     JsValue::String(String::new()));
+    obj.set(String::from("readyState"), JsValue::Number(0.0)); // CONNECTING
+    obj.set(String::from("url"), JsValue::String(url.clone()));
+    obj.set(String::from("protocol"), JsValue::String(String::new()));
+    obj.set(String::from("extensions"), JsValue::String(String::new()));
     obj.set(String::from("bufferedAmount"), JsValue::Number(0.0));
-    obj.set(String::from("binaryType"),     JsValue::String(String::from("blob")));
+    obj.set(
+        String::from("binaryType"),
+        JsValue::String(String::from("blob")),
+    );
 
     // Internal: unique socket ID used to route callbacks back to this object.
     obj.set(String::from("_ws_id"), JsValue::Number(ws_id as f64));
 
     // Event handlers (set by the script).
-    obj.set(String::from("onopen"),    JsValue::Null);
+    obj.set(String::from("onopen"), JsValue::Null);
     obj.set(String::from("onmessage"), JsValue::Null);
-    obj.set(String::from("onerror"),   JsValue::Null);
-    obj.set(String::from("onclose"),   JsValue::Null);
+    obj.set(String::from("onerror"), JsValue::Null);
+    obj.set(String::from("onclose"), JsValue::Null);
 
     // Methods.
-    obj.set(String::from("send"),              native_fn("send",              ws_send));
-    obj.set(String::from("close"),             native_fn("close",             ws_close));
-    obj.set(String::from("addEventListener"),  native_fn("addEventListener",  ws_add_event_listener));
-    obj.set(String::from("removeEventListener"), native_fn("removeEventListener", ws_noop));
-    obj.set(String::from("dispatchEvent"),     native_fn("dispatchEvent",     ws_noop));
+    obj.set(String::from("send"), native_fn("send", ws_send));
+    obj.set(String::from("close"), native_fn("close", ws_close));
+    obj.set(
+        String::from("addEventListener"),
+        native_fn("addEventListener", ws_add_event_listener),
+    );
+    obj.set(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", ws_noop),
+    );
+    obj.set(
+        String::from("dispatchEvent"),
+        native_fn("dispatchEvent", ws_noop),
+    );
 
     let ws_val = JsValue::Object(Rc::new(RefCell::new(obj)));
 
@@ -126,11 +138,15 @@ fn ws_ctor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn ws_send(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let data = arg_string(args, 0);
     let ws_id = get_this_ws_id(vm);
-    if ws_id == 0 { return JsValue::Undefined; }
+    if ws_id == 0 {
+        return JsValue::Undefined;
+    }
 
     // Only allowed in OPEN state (readyState == 1).
     let ready_state = get_this_prop(vm, "readyState").to_number() as u8;
-    if ready_state != 1 { return JsValue::Undefined; }
+    if ready_state != 1 {
+        return JsValue::Undefined;
+    }
 
     if let Some(bridge) = get_bridge(vm) {
         bridge.pending_ws_sends.push(PendingWsSend {
@@ -145,10 +161,14 @@ fn ws_send(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 /// `ws.close([code[, reason]])` — initiate the closing handshake.
 fn ws_close(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let ws_id = get_this_ws_id(vm);
-    if ws_id == 0 { return JsValue::Undefined; }
+    if ws_id == 0 {
+        return JsValue::Undefined;
+    }
 
     let ready_state = get_this_prop(vm, "readyState").to_number() as u8;
-    if ready_state == 2 || ready_state == 3 { return JsValue::Undefined; }
+    if ready_state == 2 || ready_state == 3 {
+        return JsValue::Undefined;
+    }
 
     let code = args.first().map(|v| v.to_number() as u16).unwrap_or(1000);
     let reason = arg_string(args, 1);
@@ -156,7 +176,11 @@ fn ws_close(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     set_this_prop(vm, "readyState", JsValue::Number(2.0)); // CLOSING
 
     if let Some(bridge) = get_bridge(vm) {
-        bridge.pending_ws_closes.push(PendingWsClose { id: ws_id, code, reason });
+        bridge.pending_ws_closes.push(PendingWsClose {
+            id: ws_id,
+            code,
+            reason,
+        });
     }
     JsValue::Undefined
 }
@@ -166,17 +190,19 @@ fn ws_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let event_type = arg_string(args, 0);
     let callback = args.get(1).cloned().unwrap_or(JsValue::Null);
     let prop_name = match event_type.as_str() {
-        "open"    => "onopen",
+        "open" => "onopen",
         "message" => "onmessage",
-        "error"   => "onerror",
-        "close"   => "onclose",
-        _         => return JsValue::Undefined,
+        "error" => "onerror",
+        "close" => "onclose",
+        _ => return JsValue::Undefined,
     };
     set_this_prop(vm, prop_name, callback);
     JsValue::Undefined
 }
 
-fn ws_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }
+fn ws_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Undefined
+}
 
 // ═══════════════════════════════════════════════════════════
 // RFC 6455 frame codec (client-side)
@@ -231,7 +257,13 @@ fn encode_frame(first_byte: u8, payload: &[u8], ws_id: u64) -> Vec<u8> {
     let plen = payload.len();
 
     // Header size: 2 bytes + 2 or 8 bytes for extended length + 4 mask bytes.
-    let header_len = if plen < 126 { 2 } else if plen < 65536 { 4 } else { 10 };
+    let header_len = if plen < 126 {
+        2
+    } else if plen < 65536 {
+        4
+    } else {
+        10
+    };
     let mut frame = Vec::with_capacity(header_len + 4 + plen);
 
     // Byte 0: FIN + opcode.
@@ -276,15 +308,25 @@ pub struct WsFrame {
 
 impl WsFrame {
     /// True if this is a text data frame (opcode 0x1 or continuation).
-    pub fn is_text(&self)   -> bool { self.opcode == 0x1 || self.opcode == 0x0 }
+    pub fn is_text(&self) -> bool {
+        self.opcode == 0x1 || self.opcode == 0x0
+    }
     /// True if this is a binary data frame.
-    pub fn is_binary(&self) -> bool { self.opcode == 0x2 }
+    pub fn is_binary(&self) -> bool {
+        self.opcode == 0x2
+    }
     /// True if this is a close control frame.
-    pub fn is_close(&self)  -> bool { self.opcode == 0x8 }
+    pub fn is_close(&self) -> bool {
+        self.opcode == 0x8
+    }
     /// True if this is a ping control frame.
-    pub fn is_ping(&self)   -> bool { self.opcode == 0x9 }
+    pub fn is_ping(&self) -> bool {
+        self.opcode == 0x9
+    }
     /// True if this is a pong control frame.
-    pub fn is_pong(&self)   -> bool { self.opcode == 0xA }
+    pub fn is_pong(&self) -> bool {
+        self.opcode == 0xA
+    }
 
     /// Extract the close code and reason from a close frame payload.
     pub fn close_info(&self) -> (u16, &str) {
@@ -307,23 +349,29 @@ pub fn decode_frames(buf: &[u8]) -> (Vec<WsFrame>, usize) {
 
     while pos < buf.len() {
         // Need at least 2 header bytes.
-        if pos + 2 > buf.len() { break; }
+        if pos + 2 > buf.len() {
+            break;
+        }
 
         let b0 = buf[pos];
         let b1 = buf[pos + 1];
-        let fin    = (b0 & 0x80) != 0;
+        let fin = (b0 & 0x80) != 0;
         let opcode = b0 & 0x0F;
         let masked = (b1 & 0x80) != 0;
-        let len7   = (b1 & 0x7F) as usize;
+        let len7 = (b1 & 0x7F) as usize;
 
         let (payload_len, header_extra): (usize, usize) = if len7 < 126 {
             (len7, 0)
         } else if len7 == 126 {
-            if pos + 4 > buf.len() { break; } // wait for more data
+            if pos + 4 > buf.len() {
+                break;
+            } // wait for more data
             let n = ((buf[pos + 2] as usize) << 8) | buf[pos + 3] as usize;
             (n, 2)
         } else {
-            if pos + 10 > buf.len() { break; }
+            if pos + 10 > buf.len() {
+                break;
+            }
             let mut n = 0usize;
             for i in 0..8 {
                 n = (n << 8) | buf[pos + 2 + i] as usize;
@@ -334,20 +382,29 @@ pub fn decode_frames(buf: &[u8]) -> (Vec<WsFrame>, usize) {
         let header_len = 2 + header_extra + if masked { 4 } else { 0 };
 
         // Wait until the full frame is in the buffer.
-        if pos + header_len + payload_len > buf.len() { break; }
+        if pos + header_len + payload_len > buf.len() {
+            break;
+        }
 
         let mask_offset = 2 + header_extra;
         let data_offset = mask_offset + if masked { 4 } else { 0 };
 
-        let raw = &buf[pos + data_offset .. pos + data_offset + payload_len];
+        let raw = &buf[pos + data_offset..pos + data_offset + payload_len];
         let payload: Vec<u8> = if masked {
-            let mk = &buf[pos + mask_offset .. pos + mask_offset + 4];
-            raw.iter().enumerate().map(|(i, &b)| b ^ mk[i % 4]).collect()
+            let mk = &buf[pos + mask_offset..pos + mask_offset + 4];
+            raw.iter()
+                .enumerate()
+                .map(|(i, &b)| b ^ mk[i % 4])
+                .collect()
         } else {
             raw.to_vec()
         };
 
-        frames.push(WsFrame { opcode, payload, fin });
+        frames.push(WsFrame {
+            opcode,
+            payload,
+            fin,
+        });
         pos += header_len + payload_len;
     }
 
@@ -367,13 +424,29 @@ pub fn base64_encode(input: &[u8]) -> String {
     let mut i = 0;
     while i < input.len() {
         let b0 = input[i] as u32;
-        let b1 = if i + 1 < input.len() { input[i + 1] as u32 } else { 0 };
-        let b2 = if i + 2 < input.len() { input[i + 2] as u32 } else { 0 };
+        let b1 = if i + 1 < input.len() {
+            input[i + 1] as u32
+        } else {
+            0
+        };
+        let b2 = if i + 2 < input.len() {
+            input[i + 2] as u32
+        } else {
+            0
+        };
         let triple = (b0 << 16) | (b1 << 8) | b2;
         out.push(B64[((triple >> 18) & 63) as usize] as char);
         out.push(B64[((triple >> 12) & 63) as usize] as char);
-        out.push(if i + 1 < input.len() { B64[((triple >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if i + 2 < input.len() { B64[(triple & 63) as usize] as char } else { '=' });
+        out.push(if i + 1 < input.len() {
+            B64[((triple >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if i + 2 < input.len() {
+            B64[(triple & 63) as usize] as char
+        } else {
+            '='
+        });
         i += 3;
     }
     out
@@ -383,9 +456,13 @@ pub fn base64_encode(input: &[u8]) -> String {
 /// Uses a simple LCG seeded by the current WS ID counter.
 pub fn generate_ws_key(ws_id: u64) -> String {
     let mut bytes = [0u8; 16];
-    let mut state: u64 = ws_id.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state: u64 = ws_id
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     for chunk in bytes.chunks_mut(8) {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let b = state.to_le_bytes();
         for (d, s) in chunk.iter_mut().zip(b.iter()) {
             *d = *s;
@@ -444,7 +521,9 @@ pub fn build_upgrade_request(
     if !protocols.is_empty() {
         req.push_str("Sec-WebSocket-Protocol: ");
         for (i, p) in protocols.iter().enumerate() {
-            if i > 0 { req.push_str(", "); }
+            if i > 0 {
+                req.push_str(", ");
+            }
             req.push_str(p);
         }
         req.push_str("\r\n");
@@ -471,8 +550,12 @@ pub fn parse_upgrade_response(response: &[u8]) -> Option<String> {
         return None;
     }
     // Extract Sec-WebSocket-Protocol if present.
-    let protocol = text.lines()
-        .find(|l| l.to_ascii_lowercase().starts_with("sec-websocket-protocol:"))
+    let protocol = text
+        .lines()
+        .find(|l| {
+            l.to_ascii_lowercase()
+                .starts_with("sec-websocket-protocol:")
+        })
         .and_then(|l| l.splitn(2, ':').nth(1))
         .map(|v| String::from(v.trim()))
         .unwrap_or_else(String::new);

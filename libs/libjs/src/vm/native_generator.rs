@@ -4,15 +4,15 @@
 //! The GeneratorObject stores a suspended call frame (chunk, ip, locals, stack).
 //! Calling `.next(value)` resumes execution from where `yield` suspended it.
 
+use alloc::collections::BTreeMap;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::rc::Rc;
 use core::cell::RefCell;
-use alloc::collections::BTreeMap;
 
+use super::Vm;
 use crate::bytecode::Chunk;
 use crate::value::*;
-use super::Vm;
 
 /// Internal tag for generator objects.
 pub const GENERATOR_TAG: &str = "__generator__";
@@ -114,7 +114,9 @@ pub fn create_generator_object(
 fn get_gen_id(this: &JsValue) -> Option<u32> {
     if let JsValue::Object(obj) = this {
         let o = obj.borrow();
-        if o.internal_tag.as_deref() != Some(GENERATOR_TAG) { return None; }
+        if o.internal_tag.as_deref() != Some(GENERATOR_TAG) {
+            return None;
+        }
         if let JsValue::Number(n) = o.get(GEN_FRAME_KEY) {
             return Some(n as u32);
         }
@@ -169,11 +171,22 @@ pub fn generator_next(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     // Run the generator's bytecode in the VM from the saved IP
     let result = vm.run_generator_step(
-        chunk, ip, locals, upvalue_cells, this_val, stack_snapshot, send_val
+        chunk,
+        ip,
+        locals,
+        upvalue_cells,
+        this_val,
+        stack_snapshot,
+        send_val,
     );
 
     match result {
-        GeneratorResult::Yielded { value, ip: new_ip, locals: new_locals, stack: new_stack } => {
+        GeneratorResult::Yielded {
+            value,
+            ip: new_ip,
+            locals: new_locals,
+            stack: new_stack,
+        } => {
             // Save the new state
             if let Some(frame) = get_frame(gen_id) {
                 frame.ip = new_ip;
@@ -263,11 +276,22 @@ pub fn generator_throw(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     vm.pending_exception = Some(err);
 
     let result = vm.run_generator_step(
-        chunk, ip, locals, upvalue_cells, this_val, stack_snapshot, JsValue::Undefined,
+        chunk,
+        ip,
+        locals,
+        upvalue_cells,
+        this_val,
+        stack_snapshot,
+        JsValue::Undefined,
     );
 
     match result {
-        GeneratorResult::Yielded { value, ip: new_ip, locals: new_locals, stack: new_stack } => {
+        GeneratorResult::Yielded {
+            value,
+            ip: new_ip,
+            locals: new_locals,
+            stack: new_stack,
+        } => {
             if let Some(frame) = get_frame(gen_id) {
                 frame.ip = new_ip;
                 frame.locals = new_locals;

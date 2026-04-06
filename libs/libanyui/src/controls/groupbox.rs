@@ -1,24 +1,36 @@
-use crate::control::{Control, ControlBase, TextControlBase, ControlKind};
+use crate::control::{prepare_render, Control, ControlBase, ControlKind, TextControlBase};
 
 pub struct GroupBox {
     pub(crate) text_base: TextControlBase,
 }
 
 impl GroupBox {
-    pub fn new(text_base: TextControlBase) -> Self { Self { text_base } }
+    pub fn new(text_base: TextControlBase) -> Self {
+        Self { text_base }
+    }
 }
 
 impl Control for GroupBox {
-    fn base(&self) -> &ControlBase { &self.text_base.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.text_base.base }
-    fn text_base(&self) -> Option<&crate::control::TextControlBase> { Some(&self.text_base) }
-    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> { Some(&mut self.text_base) }
-    fn kind(&self) -> ControlKind { ControlKind::GroupBox }
+    fn base(&self) -> &ControlBase {
+        &self.text_base.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.text_base.base
+    }
+    fn text_base(&self) -> Option<&crate::control::TextControlBase> {
+        Some(&self.text_base)
+    }
+    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> {
+        Some(&mut self.text_base)
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::GroupBox
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let ctx = prepare_render(b, ax, ay);
+        let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
         let corner = crate::theme::card_corner();
         let inset = crate::theme::scale_i32(10);
@@ -32,7 +44,7 @@ impl Control for GroupBox {
             w,
             border_h,
             corner,
-            crate::controls::chrome::card_palette(b.hovered),
+            crate::controls::chrome::card_palette(ctx.hovered),
         );
 
         // Title label (overlaps top border)
@@ -40,8 +52,22 @@ impl Control for GroupBox {
             let fs = crate::draw::scale_font(self.text_base.text_style.font_size);
             let (tw, _) = crate::draw::text_size_at(&self.text_base.text, fs);
             let label_h = crate::theme::scale(16);
-            crate::draw::fill_rect(surface, x + inset, y + crate::theme::scale_i32(2), tw + crate::theme::scale(12), label_h, tc.window_bg);
-            crate::draw::draw_text_sized(surface, x + crate::theme::scale_i32(14), y + crate::theme::scale_i32(1), tc.text_secondary, &self.text_base.text, fs);
+            crate::draw::fill_rect(
+                surface,
+                x + inset,
+                y + crate::theme::scale_i32(2),
+                tw + crate::theme::scale(12),
+                label_h,
+                tc.window_bg,
+            );
+            crate::draw::draw_text_sized(
+                surface,
+                x + crate::theme::scale_i32(14),
+                y + crate::theme::scale_i32(1),
+                tc.text_secondary,
+                &self.text_base.text,
+                fs,
+            );
         }
     }
 }

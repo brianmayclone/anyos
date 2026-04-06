@@ -1,22 +1,30 @@
-use crate::control::{Control, ControlBase, ControlKind};
+use crate::control::{prepare_render, Control, ControlBase, ControlKind};
 
 pub struct ProgressBar {
     pub(crate) base: ControlBase,
 }
 
 impl ProgressBar {
-    pub fn new(base: ControlBase) -> Self { Self { base } }
+    pub fn new(base: ControlBase) -> Self {
+        Self { base }
+    }
 }
 
 impl Control for ProgressBar {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::ProgressBar }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::ProgressBar
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let ctx = prepare_render(b, ax, ay);
+        let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
         let r = h / 2;
 
@@ -27,7 +35,7 @@ impl Control for ProgressBar {
             w,
             h,
             r,
-            crate::controls::chrome::field_palette(0, b.hovered, false, b.disabled),
+            crate::controls::chrome::field_palette(0, ctx.hovered, false, ctx.disabled),
         );
 
         let val = b.state.min(100);
@@ -40,7 +48,12 @@ impl Control for ProgressBar {
                 fill_w,
                 h - 4,
                 r.saturating_sub(2),
-                crate::controls::chrome::accent_palette(tc.accent, b.hovered, false, b.disabled),
+                crate::controls::chrome::accent_palette(
+                    tc.accent,
+                    ctx.hovered,
+                    false,
+                    ctx.disabled,
+                ),
             );
         }
     }

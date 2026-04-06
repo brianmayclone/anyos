@@ -5,13 +5,21 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(base: ControlBase) -> Self { Self { base } }
+    pub fn new(base: ControlBase) -> Self {
+        Self { base }
+    }
 }
 
 impl Control for Window {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::Window }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::Window
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();

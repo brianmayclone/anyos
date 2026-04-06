@@ -43,7 +43,9 @@ macro_rules! debug_surf {
 #[inline(always)]
 pub fn debug_rsp() -> u64 {
     let rsp: u64;
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+    }
     rsp
 }
 
@@ -54,21 +56,21 @@ pub fn debug_heap_pos() -> u64 {
     anyos_std::process::sbrk(0) as u64
 }
 
+pub mod css;
 pub mod dom;
 pub mod html;
-pub mod css;
-pub mod style;
-pub mod layout;
 pub mod js;
+pub mod layout;
 mod renderer;
+pub mod style;
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use libanyui_client::{self as ui};
 
-pub use renderer::{ImageCache, ImageEntry, FormControl, HitKind};
-pub use layout::{LayoutBox, FormFieldKind};
+pub use layout::{FormFieldKind, LayoutBox};
+pub use renderer::{FormControl, HitKind, ImageCache, ImageEntry};
 
 /// A WebView renders HTML content inside a ScrollView using libanyui controls.
 ///
@@ -85,18 +87,30 @@ static mut WEB_FONT_MAP: *const Vec<(String, u32)> = core::ptr::null();
 /// Tries each name in order; returns the first registered match.
 pub fn lookup_web_font(family: &str) -> Option<u32> {
     unsafe {
-        if WEB_FONT_MAP.is_null() { return None; }
+        if WEB_FONT_MAP.is_null() {
+            return None;
+        }
         let map = &*WEB_FONT_MAP;
         // Try the whole string first (fastest path for single-name entries).
         let lower = family.to_ascii_lowercase();
-        if let Some(id) = map.iter().find(|(f, _)| f.as_str() == lower.as_str()).map(|(_, id)| *id) {
+        if let Some(id) = map
+            .iter()
+            .find(|(f, _)| f.as_str() == lower.as_str())
+            .map(|(_, id)| *id)
+        {
             return Some(id);
         }
         // Parse comma-separated list and try each entry.
         for part in lower.split(',') {
             let name = part.trim().trim_matches('\'').trim_matches('"').trim();
-            if name.is_empty() { continue; }
-            if let Some(id) = map.iter().find(|(f, _)| f.as_str() == name).map(|(_, id)| *id) {
+            if name.is_empty() {
+                continue;
+            }
+            if let Some(id) = map
+                .iter()
+                .find(|(f, _)| f.as_str() == name)
+                .map(|(_, id)| *id)
+            {
                 return Some(id);
             }
         }
@@ -173,7 +187,7 @@ impl WebView {
         content_view.set_color(0xFFFFFFFF); // white background
         scroll_view.add(&content_view);
 
-        Self {
+        let mut webview = Self {
             scroll_view,
             content_view,
             renderer: renderer::Renderer::new(),
@@ -202,7 +216,9 @@ impl WebView {
             prev_styles: Vec::new(),
             anim_overrides: Vec::new(),
             scroll_offsets: Vec::new(),
-        }
+        };
+        webview.js_runtime.set_viewport(w, h);
+        webview
     }
 
     /// Returns the ScrollView container (add this to your window).
@@ -281,7 +297,10 @@ impl WebView {
     /// Look up a web font ID by family name. Returns None if not registered.
     pub fn web_font_id(&self, family: &str) -> Option<u32> {
         let lower = family.to_ascii_lowercase();
-        self.web_fonts.iter().find(|(f, _)| f == &lower).map(|(_, id)| *id)
+        self.web_fonts
+            .iter()
+            .find(|(f, _)| f == &lower)
+            .map(|(_, id)| *id)
     }
 
     /// Return all `@font-face` rules across all stylesheets (inline + external + default).
@@ -355,9 +374,16 @@ impl WebView {
         // Parse HTML → DOM.
         debug_surf!("[webview] html::parse start");
         let mut parsed_dom = html::parse(html_text);
-        debug_surf!("[webview] html::parse done: {} nodes", parsed_dom.nodes.len());
+        debug_surf!(
+            "[webview] html::parse done: {} nodes",
+            parsed_dom.nodes.len()
+        );
         #[cfg(feature = "debug_surf")]
-        anyos_std::println!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
+        anyos_std::println!(
+            "[webview]   RSP=0x{:X} heap=0x{:X}",
+            debug_rsp(),
+            debug_heap_pos()
+        );
 
         // NOTE: We do NOT replace "client-nojs" with "client-js" on the <html>
         // element.  Modern sites (Wikipedia, etc.) use client-nojs as a fallback
@@ -377,13 +403,19 @@ impl WebView {
         debug_surf!("[webview] JS execute_scripts start");
         let url = self.current_url.clone();
         self.js_runtime.execute_scripts(&parsed_dom, &url);
-        debug_surf!("[webview] JS execute_scripts done: {} console lines, {} mutations",
-            self.js_runtime.console.len(), self.js_runtime.mutations.len());
+        debug_surf!(
+            "[webview] JS execute_scripts done: {} console lines, {} mutations",
+            self.js_runtime.console.len(),
+            self.js_runtime.mutations.len()
+        );
 
         // Apply DOM mutations recorded during JS execution (e.g. React/Vue renders)
         // and re-layout so the mutated content becomes visible.
         if !self.js_runtime.mutations.is_empty() {
-            debug_surf!("[webview] applying {} JS mutations + relayout", self.js_runtime.mutations.len());
+            debug_surf!(
+                "[webview] applying {} JS mutations + relayout",
+                self.js_runtime.mutations.len()
+            );
             self.extract_scroll_offsets();
             self.js_runtime.apply_mutations(&mut parsed_dom);
             self.inline_sheets_dirty = true; // JS may have altered <style> tags
@@ -535,6 +567,7 @@ impl WebView {
         }
         self.viewport_width = w as i32;
         self.viewport_height = h;
+        self.js_runtime.set_viewport(w, h);
         self.scroll_view.set_size(w, h);
 
         // If we have a DOM, re-layout (invalidates cached layout tree).
@@ -581,8 +614,9 @@ impl WebView {
         if !self.js_runtime.active_animations.is_empty()
             || !self.js_runtime.active_transitions.is_empty()
         {
-            let (any_active, overrides) =
-                self.js_runtime.advance_animations(delta_ms, &self.keyframes);
+            let (any_active, overrides) = self
+                .js_runtime
+                .advance_animations(delta_ms, &self.keyframes);
             if !overrides.is_empty() {
                 // Store overrides; they will be applied on top of computed
                 // styles inside `do_layout_and_render`.
@@ -682,7 +716,9 @@ impl WebView {
             return self.renderer.hit_test_link_at(mx, doc_y);
         }
         // Legacy: real control link_map lookup.
-        self.renderer.link_map.iter()
+        self.renderer
+            .link_map
+            .iter()
             .find(|(id, _)| *id == control_id)
             .map(|(_, url)| url.as_str())
     }
@@ -759,7 +795,10 @@ impl WebView {
     /// Collect form data for a form containing the given DOM node_id.
     /// Used for canvas-based submit hit regions.
     pub fn collect_form_data_for_node(&self, node_id: usize) -> Vec<(String, String)> {
-        let dom = match self.dom_val.as_ref() { Some(d) => d, None => return Vec::new() };
+        let dom = match self.dom_val.as_ref() {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
 
         // Find the parent <form> node.
         let mut form_node = None;
@@ -771,7 +810,10 @@ impl WebView {
             }
             cur = dom.get(id).parent;
         }
-        let form_id = match form_node { Some(id) => id, None => return Vec::new() };
+        let form_id = match form_node {
+            Some(id) => id,
+            None => return Vec::new(),
+        };
 
         // Collect all form controls that are descendants of this form.
         let mut data = Vec::new();
@@ -779,17 +821,26 @@ impl WebView {
             let mut is_child = false;
             let mut up = Some(fc.node_id);
             while let Some(id) = up {
-                if id == form_id { is_child = true; break; }
+                if id == form_id {
+                    is_child = true;
+                    break;
+                }
                 up = dom.get(id).parent;
             }
-            if !is_child { continue; }
+            if !is_child {
+                continue;
+            }
 
             let name = dom.attr(fc.node_id, "name").unwrap_or("");
-            if name.is_empty() { continue; }
+            if name.is_empty() {
+                continue;
+            }
 
             match fc.kind {
                 FormFieldKind::TextInput | FormFieldKind::Password => {
-                    if fc.control_id == 0 { continue; }
+                    if fc.control_id == 0 {
+                        continue;
+                    }
                     let ctrl = ui::Control::from_id(fc.control_id);
                     let mut buf = [0u8; 2048];
                     let len = ctrl.get_text(&mut buf);
@@ -797,7 +848,9 @@ impl WebView {
                     data.push((String::from(name), String::from(val)));
                 }
                 FormFieldKind::Checkbox => {
-                    if fc.control_id == 0 { continue; }
+                    if fc.control_id == 0 {
+                        continue;
+                    }
                     let ctrl = ui::Control::from_id(fc.control_id);
                     if ctrl.get_state() != 0 {
                         let val = dom.attr(fc.node_id, "value").unwrap_or("on");
@@ -805,7 +858,9 @@ impl WebView {
                     }
                 }
                 FormFieldKind::Radio => {
-                    if fc.control_id == 0 { continue; }
+                    if fc.control_id == 0 {
+                        continue;
+                    }
                     let ctrl = ui::Control::from_id(fc.control_id);
                     if ctrl.get_state() != 0 {
                         let val = dom.attr(fc.node_id, "value").unwrap_or("");
@@ -817,7 +872,9 @@ impl WebView {
                     data.push((String::from(name), String::from(val)));
                 }
                 FormFieldKind::Textarea => {
-                    if fc.control_id == 0 { continue; }
+                    if fc.control_id == 0 {
+                        continue;
+                    }
                     let ctrl = ui::Control::from_id(fc.control_id);
                     let mut buf = [0u8; 8192];
                     let len = ctrl.get_text(&mut buf);
@@ -837,14 +894,22 @@ impl WebView {
         for m in &self.js_runtime.mutations {
             match m {
                 js::DomMutation::SetScrollTop { node_id, value } => {
-                    if let Some(entry) = self.scroll_offsets.iter_mut().find(|(id, _, _)| *id == *node_id) {
+                    if let Some(entry) = self
+                        .scroll_offsets
+                        .iter_mut()
+                        .find(|(id, _, _)| *id == *node_id)
+                    {
                         entry.1 = *value;
                     } else {
                         self.scroll_offsets.push((*node_id, *value, 0));
                     }
                 }
                 js::DomMutation::SetScrollLeft { node_id, value } => {
-                    if let Some(entry) = self.scroll_offsets.iter_mut().find(|(id, _, _)| *id == *node_id) {
+                    if let Some(entry) = self
+                        .scroll_offsets
+                        .iter_mut()
+                        .find(|(id, _, _)| *id == *node_id)
+                    {
                         entry.2 = *value;
                     } else {
                         self.scroll_offsets.push((*node_id, 0, *value));
@@ -872,7 +937,10 @@ impl WebView {
 
     /// Internal: collect stylesheets, resolve styles, layout, and render controls.
     fn do_layout_and_render(&mut self, d: &dom::Dom) {
-        debug_surf!("[webview] do_layout_and_render: {} DOM nodes", d.nodes.len());
+        debug_surf!(
+            "[webview] do_layout_and_render: {} DOM nodes",
+            d.nodes.len()
+        );
 
         // ── Stylesheet pipeline — parse once, reuse on every relayout ────────────
         //
@@ -890,10 +958,18 @@ impl WebView {
             self.inline_sheets.clear();
             let mut inline_count = 0u32;
             for (i, node) in d.nodes.iter().enumerate() {
-                if let dom::NodeType::Element { tag: dom::Tag::Style, .. } = &node.node_type {
+                if let dom::NodeType::Element {
+                    tag: dom::Tag::Style,
+                    ..
+                } = &node.node_type
+                {
                     let css_text = d.text_content(i);
                     if !css_text.is_empty() {
-                        debug_surf!("[webview] parse inline <style> #{}: {} bytes", inline_count, css_text.len());
+                        debug_surf!(
+                            "[webview] parse inline <style> #{}: {} bytes",
+                            inline_count,
+                            css_text.len()
+                        );
                         self.inline_sheets.push(css::parse_stylesheet(&css_text));
                         inline_count += 1;
                     }
@@ -904,21 +980,31 @@ impl WebView {
             debug_surf!("[webview] parsed {} inline <style> blocks", inline_count);
         }
 
-        debug_surf!("[webview] total stylesheets: {} (1 default + {} external + {} inline)",
+        debug_surf!(
+            "[webview] total stylesheets: {} (1 default + {} external + {} inline)",
             1 + self.external_sheets.len() + self.inline_sheets.len(),
-            self.external_sheets.len(), self.inline_sheets.len());
+            self.external_sheets.len(),
+            self.inline_sheets.len()
+        );
 
         // Phase B: Resolve styles using zero-copy references to pre-parsed sheets.
         let vw = self.viewport_width;
-        let vh = if self.viewport_height > 0 { self.viewport_height as i32 } else { self.viewport_width };
+        let vh = if self.viewport_height > 0 {
+            self.viewport_height as i32
+        } else {
+            self.viewport_width
+        };
         debug_surf!("[webview] resolve_styles start ({} nodes)", d.nodes.len());
         let (mut styles, mut pseudo_styles) = {
-            let mut all_sheets: Vec<&css::Stylesheet> = Vec::with_capacity(
-                1 + self.external_sheets.len() + self.inline_sheets.len()
-            );
+            let mut all_sheets: Vec<&css::Stylesheet> =
+                Vec::with_capacity(1 + self.external_sheets.len() + self.inline_sheets.len());
             all_sheets.push(&self.default_sheet);
-            for sheet in &self.external_sheets { all_sheets.push(sheet); }
-            for sheet in &self.inline_sheets { all_sheets.push(sheet); }
+            for sheet in &self.external_sheets {
+                all_sheets.push(sheet);
+            }
+            for sheet in &self.inline_sheets {
+                all_sheets.push(sheet);
+            }
             style::resolve_styles(d, &all_sheets, vw, vh, &mut self.inline_style_cache)
         };
         debug_surf!("[webview] resolve_styles done: {} styles", styles.len());
@@ -948,7 +1034,8 @@ impl WebView {
 
         // Detect CSS property changes and start transitions.
         if !self.prev_styles.is_empty() {
-            self.js_runtime.start_transitions(&self.prev_styles, &styles);
+            self.js_runtime
+                .start_transitions(&self.prev_styles, &styles);
         }
         // Save a snapshot of resolved styles *before* animation overrides
         // so transition detection compares the base styles next time.
@@ -957,12 +1044,20 @@ impl WebView {
         // Apply pending animation/transition overrides on top of the
         // resolved styles so layout uses the interpolated values.
         if !self.anim_overrides.is_empty() {
-            let root_fs = if !styles.is_empty() { styles[0].font_size } else { 16 };
+            let root_fs = if !styles.is_empty() {
+                styles[0].font_size
+            } else {
+                16
+            };
             for (node_id, decls) in &self.anim_overrides {
                 if *node_id < styles.len() {
                     let parent_fs = {
                         let pid = d.nodes.get(*node_id).and_then(|n| n.parent).unwrap_or(0);
-                        if pid < styles.len() { styles[pid].font_size } else { root_fs }
+                        if pid < styles.len() {
+                            styles[pid].font_size
+                        } else {
+                            root_fs
+                        }
                     };
                     for decl in decls {
                         style::apply_declaration(&mut styles[*node_id], decl, parent_fs, root_fs);
@@ -972,17 +1067,33 @@ impl WebView {
         }
 
         #[cfg(feature = "debug_surf")]
-        debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
+        debug_surf!(
+            "[webview]   RSP=0x{:X} heap=0x{:X}",
+            debug_rsp(),
+            debug_heap_pos()
+        );
 
         // Drop old layout tree before allocating the new one — avoids holding
         // two full trees in memory simultaneously (can save several MB on complex pages).
         self.layout_root = None;
 
         // Layout.
-        debug_surf!("[webview] layout start (viewport_width={})", self.viewport_width);
+        debug_surf!(
+            "[webview] layout start (viewport_width={})",
+            self.viewport_width
+        );
         // Set web font map for renderer access.
-        unsafe { WEB_FONT_MAP = &self.web_fonts as *const _; }
-        let mut root = layout::layout(d, &styles, &mut pseudo_styles, self.viewport_width, &self.images);
+        unsafe {
+            WEB_FONT_MAP = &self.web_fonts as *const _;
+        }
+        let mut root = layout::layout(
+            d,
+            &styles,
+            &mut pseudo_styles,
+            self.viewport_width,
+            self.viewport_height as i32,
+            &self.images,
+        );
         // Apply JS scroll offsets (element.scrollTop/scrollLeft) to layout boxes.
         if !self.scroll_offsets.is_empty() {
             Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
@@ -991,8 +1102,16 @@ impl WebView {
         #[cfg(feature = "debug_surf")]
         {
             let box_count = count_layout_boxes(&root);
-            debug_surf!("[webview] layout done: {} boxes, height={}", box_count, self.total_height_val);
-            debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
+            debug_surf!(
+                "[webview] layout done: {} boxes, height={}",
+                box_count,
+                self.total_height_val
+            );
+            debug_surf!(
+                "[webview]   RSP=0x{:X} heap=0x{:X}",
+                debug_rsp(),
+                debug_heap_pos()
+            );
         }
 
         // Soft-clear: reset hit regions and mark form controls for GC.
@@ -1031,9 +1150,16 @@ impl WebView {
             self.submit_cb_ud,
         );
         self.last_render_scroll_y = 0;
-        debug_surf!("[webview] renderer done: {} form_controls", self.renderer.control_count());
+        debug_surf!(
+            "[webview] renderer done: {} form_controls",
+            self.renderer.control_count()
+        );
         #[cfg(feature = "debug_surf")]
-        debug_surf!("[webview]   RSP=0x{:X} heap=0x{:X}", debug_rsp(), debug_heap_pos());
+        debug_surf!(
+            "[webview]   RSP=0x{:X} heap=0x{:X}",
+            debug_rsp(),
+            debug_heap_pos()
+        );
 
         // Cache layout tree for scroll re-renders (no relayout needed on scroll).
         self.layout_root = Some(root);
@@ -1076,7 +1202,11 @@ impl WebView {
         }
         // Legacy: real control lookup.
         let dom = self.dom_val.as_ref()?;
-        let fc = self.renderer.form_controls.iter().find(|fc| fc.control_id == control_id)?;
+        let fc = self
+            .renderer
+            .form_controls
+            .iter()
+            .find(|fc| fc.control_id == control_id)?;
         let mut cur = Some(fc.node_id);
         while let Some(id) = cur {
             if dom.tag(id) == Some(dom::Tag::Form) {
@@ -1097,8 +1227,16 @@ impl WebView {
             return self.collect_form_data_for_node(node_id);
         }
         // Legacy: real control lookup.
-        let dom = match self.dom_val.as_ref() { Some(d) => d, None => return Vec::new() };
-        let fc = match self.renderer.form_controls.iter().find(|fc| fc.control_id == control_id) {
+        let dom = match self.dom_val.as_ref() {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+        let fc = match self
+            .renderer
+            .form_controls
+            .iter()
+            .find(|fc| fc.control_id == control_id)
+        {
             Some(f) => f,
             None => return Vec::new(),
         };
@@ -1123,7 +1261,9 @@ fn calc_total_height(root: &LayoutBox) -> i32 {
     let bottom = root.y + root.height;
     let mut max = bottom;
     for child in &root.children {
-        if child.is_fixed { continue; }
+        if child.is_fixed {
+            continue;
+        }
         let ch = child_total_height(child, root.y);
         if ch > max {
             max = ch;
@@ -1137,7 +1277,9 @@ fn child_total_height(bx: &LayoutBox, parent_y: i32) -> i32 {
     let bottom = abs_y + bx.height;
     let mut max = bottom;
     for child in &bx.children {
-        if child.is_fixed { continue; }
+        if child.is_fixed {
+            continue;
+        }
         let ch = child_total_height(child, abs_y);
         if ch > max {
             max = ch;

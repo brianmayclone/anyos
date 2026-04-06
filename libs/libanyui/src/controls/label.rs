@@ -1,19 +1,31 @@
-use crate::control::{Control, ControlBase, TextControlBase, ControlKind};
+use crate::control::{Control, ControlBase, ControlKind, TextControlBase};
 
 pub struct Label {
     pub(crate) text_base: TextControlBase,
 }
 
 impl Label {
-    pub fn new(text_base: TextControlBase) -> Self { Self { text_base } }
+    pub fn new(text_base: TextControlBase) -> Self {
+        Self { text_base }
+    }
 }
 
 impl Control for Label {
-    fn base(&self) -> &ControlBase { &self.text_base.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.text_base.base }
-    fn text_base(&self) -> Option<&crate::control::TextControlBase> { Some(&self.text_base) }
-    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> { Some(&mut self.text_base) }
-    fn kind(&self) -> ControlKind { ControlKind::Label }
+    fn base(&self) -> &ControlBase {
+        &self.text_base.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.text_base.base
+    }
+    fn text_base(&self) -> Option<&crate::control::TextControlBase> {
+        Some(&self.text_base)
+    }
+    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> {
+        Some(&mut self.text_base)
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::Label
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
@@ -64,7 +76,11 @@ impl Control for Label {
         let mut start = 0;
         let mut line_idx = 0;
         loop {
-            let end = text[start..].iter().position(|&b| b == b'\n').map(|p| start + p).unwrap_or(text.len());
+            let end = text[start..]
+                .iter()
+                .position(|&b| b == b'\n')
+                .map(|p| start + p)
+                .unwrap_or(text.len());
             let line = &text[start..end];
 
             let tx = if align == 1 {
@@ -91,7 +107,9 @@ impl Control for Label {
             line_y += line_h;
             line_idx += 1;
 
-            if end >= text.len() { break; }
+            if end >= text.len() {
+                break;
+            }
             start = end + 1;
         }
     }

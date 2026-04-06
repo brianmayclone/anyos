@@ -22,7 +22,13 @@ pub struct ScrollView {
 
 impl ScrollView {
     pub fn new(base: ControlBase) -> Self {
-        Self { base, scroll_y: 0, content_height: 0, dragging_thumb: false, drag_anchor: 0 }
+        Self {
+            base,
+            scroll_y: 0,
+            content_height: 0,
+            dragging_thumb: false,
+            drag_anchor: 0,
+        }
     }
 
     /// Returns (track_h, thumb_h, max_scroll) if the scrollbar is visible.
@@ -32,8 +38,8 @@ impl ScrollView {
             return None;
         }
         let track_h = (h - 4) as i32;
-        let thumb_h = ((h as u64 * track_h as u64) / self.content_height as u64)
-            .max(MIN_THUMB as u64) as i32;
+        let thumb_h =
+            ((h as u64 * track_h as u64) / self.content_height as u64).max(MIN_THUMB as u64) as i32;
         let max_scroll = (self.content_height - h) as i32;
         Some((track_h, thumb_h, max_scroll))
     }
@@ -49,7 +55,13 @@ impl ScrollView {
     }
 
     /// Set scroll_y from a thumb-top position (inverse of thumb_y).
-    fn set_scroll_from_thumb(&mut self, thumb_top: i32, track_h: i32, thumb_h: i32, max_scroll: i32) {
+    fn set_scroll_from_thumb(
+        &mut self,
+        thumb_top: i32,
+        track_h: i32,
+        thumb_h: i32,
+        max_scroll: i32,
+    ) {
         let clamped = thumb_top.max(0).min(track_h - thumb_h);
         let new_scroll = if track_h > thumb_h {
             (clamped as i64 * max_scroll as i64 / (track_h - thumb_h) as i64) as i32
@@ -62,9 +74,15 @@ impl ScrollView {
 }
 
 impl Control for ScrollView {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::ScrollView }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::ScrollView
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
@@ -79,20 +97,39 @@ impl Control for ScrollView {
             let bar_x = x + w as i32 - bar_w as i32 - bar_pad;
 
             // Track
-            let track_pad_h = if h > (bar_pad as u32 * 2) { h - bar_pad as u32 * 2 } else { 1 };
-            crate::draw::fill_rect(surface, bar_x, y + bar_pad, bar_w, track_pad_h, tc.scrollbar_track);
+            let track_pad_h = if h > (bar_pad as u32 * 2) {
+                h - bar_pad as u32 * 2
+            } else {
+                1
+            };
+            crate::draw::fill_rect(
+                surface,
+                bar_x,
+                y + bar_pad,
+                bar_w,
+                track_pad_h,
+                tc.scrollbar_track,
+            );
 
             // Thumb — metrics are still in logical space so scale the thumb height for rendering
             let ty = self.thumb_y(track_h, thumb_h, max_scroll);
             let phys_ty = crate::theme::scale_i32(ty);
             let phys_thumb_h = crate::theme::scale(thumb_h as u32);
             crate::draw::fill_rounded_rect(
-                surface, bar_x, y + phys_ty, bar_w, phys_thumb_h, thumb_r, tc.scrollbar,
+                surface,
+                bar_x,
+                y + phys_ty,
+                bar_w,
+                phys_thumb_h,
+                thumb_r,
+                tc.scrollbar,
             );
         }
     }
 
-    fn is_interactive(&self) -> bool { true }
+    fn is_interactive(&self) -> bool {
+        true
+    }
 
     fn scrollbar_hit_x(&self) -> Option<i32> {
         if self.scrollbar_metrics().is_some() {
@@ -168,7 +205,9 @@ pub fn update_scroll_bounds(controls: &mut [alloc::boxed::Box<dyn Control>]) {
                     let b = controls[idx].base();
                     if b.visible {
                         let bottom = b.y + b.h as i32;
-                        if bottom > max_bottom { max_bottom = bottom; }
+                        if bottom > max_bottom {
+                            max_bottom = bottom;
+                        }
                     }
                 }
             }
@@ -177,7 +216,9 @@ pub fn update_scroll_bounds(controls: &mut [alloc::boxed::Box<dyn Control>]) {
             sv.content_height = max_bottom.max(0) as u32;
             let max_scroll = if sv.content_height > sv.base.h {
                 (sv.content_height - sv.base.h) as i32
-            } else { 0 };
+            } else {
+                0
+            };
             sv.scroll_y = sv.scroll_y.min(max_scroll).max(0);
             sv.base.state = sv.scroll_y as u32;
         }

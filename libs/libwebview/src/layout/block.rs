@@ -5,25 +5,36 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    ComputedStyle, Display, BoxSizing, OverflowVal, Visibility, Position,
-    PseudoStyles, FontWeight, FontStyleVal, TextDeco, ListStylePosition,
+    BoxSizing, ComputedStyle, Display, FontStyleVal, FontWeight, ListStylePosition, OverflowVal,
+    Position, PseudoStyles, TextDeco, Visibility,
 };
 use crate::ImageCache;
 
-use super::{
-    LayoutBox, BoxType, FormFieldKind,
-    font_size_px, is_bold, is_italic, edges_from,
-    link_href, list_marker_for, image_dimensions, parse_attr_int,
-    layout_children, layout_children_ex,
-};
 use super::flex::layout_flex;
 use super::grid::layout_grid;
+use super::{
+    edges_from, font_size_px, image_dimensions, is_bold, is_italic, layout_children,
+    layout_children_ex, link_href, list_marker_for, parse_attr_int, BoxType, FormFieldKind,
+    LayoutBox,
+};
 
 /// Build a block-level layout box for a single DOM node.
 ///
 /// `viewport_w` is the full viewport width, passed down to child layout calls
 /// so that `position:fixed` descendants can be positioned correctly.
-pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, node_id: NodeId, available_width: i32, images: &ImageCache, viewport_w: i32) -> LayoutBox {
+pub fn build_block(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    available_width: i32,
+    images: &ImageCache,
+    viewport_w: i32,
+    // Definite height of the containing block (0 = no definite height / auto).
+    // Used to resolve percentage heights. Per CSS spec, if the parent has no
+    // definite height, `height: X%` computes to `auto`.
+    parent_height: i32,
+) -> LayoutBox {
     let style = &styles[node_id];
     let tag = dom.tag(node_id);
 
@@ -76,7 +87,8 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
     bx.box_shadows = style.box_shadows.clone();
     bx.text_shadows = style.text_shadows.clone();
     // Text overflow
-    bx.text_overflow_ellipsis = matches!(style.text_overflow, crate::style::TextOverflowVal::Ellipsis);
+    bx.text_overflow_ellipsis =
+        matches!(style.text_overflow, crate::style::TextOverflowVal::Ellipsis);
     // Background image
     bx.background_image = style.background_image.clone();
     bx.background_size = style.background_size;
@@ -93,8 +105,7 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
     // - Positioned elements with explicit z-index (not auto) — includes z-index: 0
     // - Elements with opacity < 1
     // - Elements with CSS transform
-    bx.creates_stacking_context =
-        (style.position != Position::Static && !style.z_index_auto)
+    bx.creates_stacking_context = (style.position != Position::Static && !style.z_index_auto)
         || style.opacity < 255
         || style.transform_tx != 0
         || style.transform_ty != 0
@@ -116,12 +127,16 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
     bx.text_decoration_thickness = style.text_decoration_thickness;
     bx.text_underline_offset = style.text_underline_offset;
     bx.margin = edges_from(
-        style.margin_top, style.margin_right,
-        style.margin_bottom, style.margin_left,
+        style.margin_top,
+        style.margin_right,
+        style.margin_bottom,
+        style.margin_left,
     );
     bx.padding = edges_from(
-        style.padding_top, style.padding_right,
-        style.padding_bottom, style.padding_left,
+        style.padding_top,
+        style.padding_right,
+        style.padding_bottom,
+        style.padding_left,
     );
 
     // ---- Width resolution ----
@@ -130,17 +145,38 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
 
     // max-content / min-content / fit-content: measure intrinsic width.
     let intrinsic_w: Option<i32> = if style.width_max_content {
-        let content_w = super::intrinsic_width(dom, styles, pseudo, node_id, available_width, images, viewport_w);
+        let content_w = super::intrinsic_width(
+            dom,
+            styles,
+            pseudo,
+            node_id,
+            available_width,
+            images,
+            viewport_w,
+        );
         let pad_border = bx.padding.left + bx.padding.right + border2;
-        Some(if is_border_box { content_w + pad_border } else { content_w + pad_border })
+        Some(if is_border_box {
+            content_w + pad_border
+        } else {
+            content_w + pad_border
+        })
     } else if style.width_min_content {
         // min-content: use the minimum (longest unbreakable word).
-        let content_w = super::intrinsic_min_width(dom, styles, pseudo, node_id, images, viewport_w);
+        let content_w =
+            super::intrinsic_min_width(dom, styles, pseudo, node_id, images, viewport_w);
         let pad_border = bx.padding.left + bx.padding.right + border2;
         Some(content_w + pad_border)
     } else if style.width_fit_content {
         // fit-content: min(max-content, max(min-content, available)).
-        let max_w = super::intrinsic_width(dom, styles, pseudo, node_id, available_width, images, viewport_w);
+        let max_w = super::intrinsic_width(
+            dom,
+            styles,
+            pseudo,
+            node_id,
+            available_width,
+            images,
+            viewport_w,
+        );
         let min_w = super::intrinsic_min_width(dom, styles, pseudo, node_id, images, viewport_w);
         let avail = available_width - bx.margin.left - bx.margin.right;
         let pad_border = bx.padding.left + bx.padding.right + border2;
@@ -193,13 +229,25 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
     };
     if let Some(mw) = style.max_width {
         let max = resolve_min_max(mw);
-        let max_outer = if is_border_box { max } else { max + bx.padding.left + bx.padding.right + border2 };
-        if bx.width > max_outer { bx.width = max_outer; }
+        let max_outer = if is_border_box {
+            max
+        } else {
+            max + bx.padding.left + bx.padding.right + border2
+        };
+        if bx.width > max_outer {
+            bx.width = max_outer;
+        }
     }
     if style.min_width > 0 || style.min_width < 0 {
         let min = resolve_min_max(style.min_width);
-        let min_outer = if is_border_box { min } else { min + bx.padding.left + bx.padding.right + border2 };
-        if bx.width < min_outer { bx.width = min_outer; }
+        let min_outer = if is_border_box {
+            min
+        } else {
+            min + bx.padding.left + bx.padding.right + border2
+        };
+        if bx.width < min_outer {
+            bx.width = min_outer;
+        }
     }
 
     // Clamp to available space.
@@ -217,10 +265,14 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
         }
     } else if style.margin_left_auto {
         let remaining = available_width - bx.width - bx.margin.right;
-        if remaining > 0 { bx.margin.left = remaining; }
+        if remaining > 0 {
+            bx.margin.left = remaining;
+        }
     } else if style.margin_right_auto {
         let remaining = available_width - bx.width - bx.margin.left;
-        if remaining > 0 { bx.margin.right = remaining; }
+        if remaining > 0 {
+            bx.margin.right = remaining;
+        }
     }
 
     // Handle <hr> specifically.
@@ -250,13 +302,19 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
     // image cache under the synthetic key "__svg_<node_id>__".
     if tag == Some(Tag::Svg) {
         let key = super::svg_inline_key(node_id);
-        let natural = images.get_ref(&key).map(|e| {
-            (e.width.min(65535) as i32, e.height.min(65535) as i32)
-        });
-        let w = dom.attr(node_id, "width").and_then(parse_attr_int)
-            .or(natural.map(|(w, _)| w)).unwrap_or(100);
-        let h = dom.attr(node_id, "height").and_then(parse_attr_int)
-            .or(natural.map(|(_, h)| h)).unwrap_or(100);
+        let natural = images
+            .get_ref(&key)
+            .map(|e| (e.width.min(65535) as i32, e.height.min(65535) as i32));
+        let w = dom
+            .attr(node_id, "width")
+            .and_then(parse_attr_int)
+            .or(natural.map(|(w, _)| w))
+            .unwrap_or(100);
+        let h = dom
+            .attr(node_id, "height")
+            .and_then(parse_attr_int)
+            .or(natural.map(|(_, h)| h))
+            .unwrap_or(100);
         let w = w.min(bx.width.max(1));
         bx.image_src = Some(key);
         bx.image_width = Some(w);
@@ -294,9 +352,13 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
                 bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
                 bx.form_field = Some(FormFieldKind::Submit);
                 bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
-                bx.text = bx.form_value.clone().or_else(|| Some(String::from(
-                    if input_type == "reset" { "Reset" } else { "Submit" }
-                )));
+                bx.text = bx.form_value.clone().or_else(|| {
+                    Some(String::from(if input_type == "reset" {
+                        "Reset"
+                    } else {
+                        "Submit"
+                    }))
+                });
             }
             "password" => {
                 let input_h = if let Some(h) = style.height { h } else { 28 };
@@ -310,19 +372,28 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
                 bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
                 bx.form_field = Some(FormFieldKind::Range);
                 // Compute percentage and encode as 0..1000 in form_value.
-                let min_v: f32 = dom.attr(node_id, "min")
-                    .and_then(|s| s.parse::<f32>().ok()).unwrap_or(0.0);
-                let max_v: f32 = dom.attr(node_id, "max")
-                    .and_then(|s| s.parse::<f32>().ok()).unwrap_or(100.0);
-                let cur_v: f32 = dom.attr(node_id, "value")
-                    .and_then(|s| s.parse::<f32>().ok()).unwrap_or(50.0);
+                let min_v: f32 = dom
+                    .attr(node_id, "min")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let max_v: f32 = dom
+                    .attr(node_id, "max")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(100.0);
+                let cur_v: f32 = dom
+                    .attr(node_id, "value")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(50.0);
                 let pct = if max_v > min_v {
                     ((cur_v - min_v) / (max_v - min_v)).min(1.0).max(0.0)
-                } else { 0.5 };
+                } else {
+                    0.5
+                };
                 let pct_i = (pct * 1000.0) as i32;
                 let mut val_str = String::new();
-                if pct_i >= 1000 { val_str.push('X'); }
-                else {
+                if pct_i >= 1000 {
+                    val_str.push('X');
+                } else {
                     val_str.push((b'0' + (pct_i / 100 % 10) as u8) as char);
                     val_str.push((b'0' + (pct_i / 10 % 10) as u8) as char);
                     val_str.push((b'0' + (pct_i % 10) as u8) as char);
@@ -340,7 +411,7 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
         }
         return bx;
     }
-    if tag == Some(Tag::Button) {
+    if tag == Some(Tag::Button) && button_uses_native_control(dom, node_id) {
         let btn_h = if let Some(h) = style.height { h } else { 45 };
         bx.height = btn_h + bx.padding.top + bx.padding.bottom + border2;
         // Extract button text from children.
@@ -355,10 +426,24 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
         return bx;
     }
     if tag == Some(Tag::Textarea) {
-        let cols = dom.attr(node_id, "cols").and_then(|s| s.parse::<i32>().ok()).unwrap_or(20);
-        let rows = dom.attr(node_id, "rows").and_then(|s| s.parse::<i32>().ok()).unwrap_or(2);
-        let ta_w = if let Some(w) = style.width { w } else { (cols * 8).max(80) };
-        let ta_h = if let Some(h) = style.height { h } else { (rows * 18).max(28) };
+        let cols = dom
+            .attr(node_id, "cols")
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(20);
+        let rows = dom
+            .attr(node_id, "rows")
+            .and_then(|s| s.parse::<i32>().ok())
+            .unwrap_or(2);
+        let ta_w = if let Some(w) = style.width {
+            w
+        } else {
+            (cols * 8).max(80)
+        };
+        let ta_h = if let Some(h) = style.height {
+            h
+        } else {
+            (rows * 18).max(28)
+        };
         bx.width = ta_w + bx.padding.left + bx.padding.right + border2;
         bx.height = ta_h + bx.padding.top + bx.padding.bottom + border2;
         bx.form_field = Some(FormFieldKind::Textarea);
@@ -383,43 +468,84 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
     let children: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
 
     // Determine which pseudo-elements exist and whether they are block-level.
-    let before_is_block = node_id < pseudo.before.len() && pseudo.before[node_id].as_ref()
-        .map(|ps| is_block_pseudo(ps)).unwrap_or(false);
-    let after_is_block = node_id < pseudo.after.len() && pseudo.after[node_id].as_ref()
-        .map(|ps| is_block_pseudo(ps)).unwrap_or(false);
+    let before_is_block = node_id < pseudo.before.len()
+        && pseudo.before[node_id]
+            .as_ref()
+            .map(|ps| is_block_pseudo(ps))
+            .unwrap_or(false);
+    let after_is_block = node_id < pseudo.after.len()
+        && pseudo.after[node_id]
+            .as_ref()
+            .map(|ps| is_block_pseudo(ps))
+            .unwrap_or(false);
 
     let content_h = if matches!(style.display, Display::Flex | Display::InlineFlex) {
         // Flex containers: inject block pseudo-elements as first/last flex children.
         if before_is_block {
-            if let Some(pb) = build_pseudo_element_box(pseudo.before[node_id].as_ref().unwrap(), inner_w, images, viewport_w) {
+            if let Some(pb) = build_pseudo_element_box(
+                pseudo.before[node_id].as_ref().unwrap(),
+                inner_w,
+                images,
+                viewport_w,
+            ) {
                 bx.children.push(pb);
             }
         }
-        let fh = layout_flex(dom, styles, pseudo, &children, inner_w, &mut bx, images, viewport_w);
+        let fh = layout_flex(
+            dom,
+            styles,
+            pseudo,
+            &children,
+            inner_w,
+            parent_height,
+            &mut bx,
+            images,
+            viewport_w,
+        );
         if after_is_block {
-            if let Some(pb) = build_pseudo_element_box(pseudo.after[node_id].as_ref().unwrap(), inner_w, images, viewport_w) {
+            if let Some(pb) = build_pseudo_element_box(
+                pseudo.after[node_id].as_ref().unwrap(),
+                inner_w,
+                images,
+                viewport_w,
+            ) {
                 bx.children.push(pb);
             }
         }
         fh
     } else if matches!(style.display, Display::Grid | Display::InlineGrid) {
-        layout_grid(dom, styles, pseudo, &children, inner_w, &mut bx, images, viewport_w)
+        layout_grid(
+            dom, styles, pseudo, &children, inner_w, &mut bx, images, viewport_w,
+        )
     } else {
         // Block containers: block-level pseudo-elements go into flow via layout_children_ex.
         // This ensures ::before and ::after are properly placed within the normal flow,
         // accounting for their heights in the cursor_y progression.
         let before_box = if before_is_block {
-            build_pseudo_element_box(pseudo.before[node_id].as_ref().unwrap(), inner_w, images, viewport_w)
+            build_pseudo_element_box(
+                pseudo.before[node_id].as_ref().unwrap(),
+                inner_w,
+                images,
+                viewport_w,
+            )
         } else {
             None
         };
         let after_box = if after_is_block {
-            build_pseudo_element_box(pseudo.after[node_id].as_ref().unwrap(), inner_w, images, viewport_w)
+            build_pseudo_element_box(
+                pseudo.after[node_id].as_ref().unwrap(),
+                inner_w,
+                images,
+                viewport_w,
+            )
         } else {
             None
         };
 
-        let ch = layout_children_ex(dom, styles, pseudo, &children, inner_w, &mut bx, node_id, images, viewport_w, before_box, after_box);
+        let ch = layout_children_ex(
+            dom, styles, pseudo, &children, inner_w, &mut bx, node_id, images, viewport_w,
+            before_box, after_box,
+        );
 
         // ── Parent-child top margin collapse (CSS §8.3.1) ──────────────────────
         // If this block has no border-top and no padding-top and is not a BFC
@@ -437,17 +563,21 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
         // - absolutely/fixed positioned elements
         let is_bfc = !matches!(style.overflow_x, OverflowVal::Visible)
             || !matches!(style.overflow_y, OverflowVal::Visible)
-            || matches!(style.display, Display::InlineBlock | Display::FlowRoot
-                | Display::Flex | Display::InlineFlex
-                | Display::Grid | Display::InlineGrid)
+            || matches!(
+                style.display,
+                Display::InlineBlock
+                    | Display::FlowRoot
+                    | Display::Flex
+                    | Display::InlineFlex
+                    | Display::Grid
+                    | Display::InlineGrid
+            )
             || style.float != crate::style::FloatVal::None
             || matches!(style.position, Position::Absolute | Position::Fixed);
-        if !is_bfc && bx.border_width == 0 && bx.padding.top == 0
-            && style.border_top.width == 0
-        {
+        if !is_bfc && bx.border_width == 0 && bx.padding.top == 0 && style.border_top.width == 0 {
             // Find first in-flow child — its y == its margin.top (since cursor_y was 0).
             if let Some(first_child) = bx.children.iter().find(|c| !c.is_out_of_flow) {
-                let first_margin = first_child.y;  // y == 0 + margin.top at layout start
+                let first_margin = first_child.y; // y == 0 + margin.top at layout start
                 if first_margin > 0 {
                     // Collapse: add first child's margin into parent's own margin.
                     if first_margin > bx.margin.top {
@@ -474,18 +604,20 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
     let explicit_h = if let Some(h) = style.height {
         Some(h)
     } else if let Some(pct) = style.height_pct {
-        // Percentage heights require a definite parent height.
-        // For now, compute against viewport height (approximated as available_width
-        // since we don't track parent heights separately). This is imperfect but
-        // handles common cases like `height: 100%` on body children.
-        if pct > 0 {
-            Some((available_width as i64 * pct as i64 / 10000) as i32)
+        // Percentage heights require a definite parent height (CSS spec §10.5).
+        // If parent_height == 0 (no definite height), treat as `auto`.
+        if pct > 0 && parent_height > 0 {
+            Some((parent_height as i64 * pct as i64 / 10000) as i32)
         } else {
             None
         }
     } else if let Some((px100, pct100)) = style.height_calc {
         let px_part = px100 / 100;
-        let pct_part = (available_width as i64 * pct100 as i64 / 10000) as i32;
+        let pct_part = if parent_height > 0 {
+            (parent_height as i64 * pct100 as i64 / 10000) as i32
+        } else {
+            0
+        };
         Some(px_part + pct_part)
     } else {
         None
@@ -511,25 +643,43 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
 
     // Apply min-height / max-height.
     if let Some(mh) = style.max_height {
-        let max_h = if is_border_box { mh } else { mh + bx.padding.top + bx.padding.bottom + border2 };
-        if bx.height > max_h { bx.height = max_h; }
+        let max_h = if is_border_box {
+            mh
+        } else {
+            mh + bx.padding.top + bx.padding.bottom + border2
+        };
+        if bx.height > max_h {
+            bx.height = max_h;
+        }
     }
     if style.min_height > 0 {
-        let min_h = if is_border_box { style.min_height } else {
+        let min_h = if is_border_box {
+            style.min_height
+        } else {
             style.min_height + bx.padding.top + bx.padding.bottom + border2
         };
-        if bx.height < min_h { bx.height = min_h; }
+        if bx.height < min_h {
+            bx.height = min_h;
+        }
     }
 
     // Apply position:relative offset (does not affect child layout).
     if style.position == Position::Relative {
-        if let Some(t) = style.top { bx.y += t; }
-        if let Some(l) = style.left_offset { bx.x += l; }
+        if let Some(t) = style.top {
+            bx.y += t;
+        }
+        if let Some(l) = style.left_offset {
+            bx.x += l;
+        }
         if style.top.is_none() {
-            if let Some(b) = style.bottom_offset { bx.y -= b; }
+            if let Some(b) = style.bottom_offset {
+                bx.y -= b;
+            }
         }
         if style.left_offset.is_none() {
-            if let Some(r) = style.right_offset { bx.x -= r; }
+            if let Some(r) = style.right_offset {
+                bx.x -= r;
+            }
         }
     }
 
@@ -555,6 +705,25 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
     bx
 }
 
+fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
+    let children = &dom.get(node_id).children;
+    if children.is_empty() {
+        return true;
+    }
+    let mut saw_nonempty_text = false;
+    for &cid in children {
+        match &dom.get(cid).node_type {
+            crate::dom::NodeType::Text(t) => {
+                if !t.trim().is_empty() {
+                    saw_nonempty_text = true;
+                }
+            }
+            crate::dom::NodeType::Element { .. } => return false,
+        }
+    }
+    saw_nonempty_text
+}
+
 // ---------------------------------------------------------------------------
 // Pseudo-element helpers
 // ---------------------------------------------------------------------------
@@ -562,13 +731,17 @@ pub fn build_block(dom: &Dom, styles: &[ComputedStyle], pseudo: &PseudoStyles, n
 /// Returns true if the pseudo-element's display property is block-level.
 /// Inline pseudo-elements are injected into the inline flow by layout_children/layout_inline_content.
 fn is_block_pseudo(ps: &ComputedStyle) -> bool {
-    matches!(ps.display,
-        Display::Block | Display::FlowRoot | Display::InlineBlock
-        | Display::Flex | Display::InlineFlex
-        | Display::Grid | Display::InlineGrid
+    matches!(
+        ps.display,
+        Display::Block
+            | Display::FlowRoot
+            | Display::InlineBlock
+            | Display::Flex
+            | Display::InlineFlex
+            | Display::Grid
+            | Display::InlineGrid
     )
 }
-
 
 /// Build a LayoutBox for a `::before` or `::after` pseudo-element.
 ///
@@ -589,10 +762,15 @@ pub(super) fn build_pseudo_element_box(
 ) -> Option<LayoutBox> {
     let content_text = ps.content.as_deref().unwrap_or("");
     let has_text = !content_text.is_empty();
-    let is_block = matches!(ps.display,
-        Display::Block | Display::FlowRoot | Display::InlineBlock
-        | Display::Flex | Display::InlineFlex
-        | Display::Grid | Display::InlineGrid
+    let is_block = matches!(
+        ps.display,
+        Display::Block
+            | Display::FlowRoot
+            | Display::InlineBlock
+            | Display::Flex
+            | Display::InlineFlex
+            | Display::Grid
+            | Display::InlineGrid
     );
 
     // URL content: render as image box
@@ -601,7 +779,8 @@ pub(super) fn build_pseudo_element_box(
             let mut ib = LayoutBox::new(None, BoxType::Inline);
             ib.image_src = Some(url.clone());
             // Estimate dimensions from cache; default to icon size if not found
-            let sz = images.get_ref(url.as_str())
+            let sz = images
+                .get_ref(url.as_str())
                 .map(|e| (e.width.min(65535) as i32, e.height.min(65535) as i32))
                 .unwrap_or((16, 16));
             ib.width = sz.0.min(available_w);
@@ -643,8 +822,18 @@ pub(super) fn build_pseudo_element_box(
         pb.border_bottom_right_radius = ps.border_bottom_right_radius;
         pb.border_bottom_left_radius = ps.border_bottom_left_radius;
         pb.border_radius = ps.border_radius;
-        pb.padding = super::edges_from(ps.padding_top, ps.padding_right, ps.padding_bottom, ps.padding_left);
-        pb.margin = super::edges_from(ps.margin_top, ps.margin_right, ps.margin_bottom, ps.margin_left);
+        pb.padding = super::edges_from(
+            ps.padding_top,
+            ps.padding_right,
+            ps.padding_bottom,
+            ps.padding_left,
+        );
+        pb.margin = super::edges_from(
+            ps.margin_top,
+            ps.margin_right,
+            ps.margin_bottom,
+            ps.margin_left,
+        );
         pb.background_image = ps.background_image.clone();
         pb.background_size = ps.background_size;
         pb.background_repeat = ps.background_repeat;
@@ -656,7 +845,8 @@ pub(super) fn build_pseudo_element_box(
 
         // Determine box width
         let border2 = pb.border_top_width + pb.border_bottom_width;
-        let pad_h = pb.padding.left + pb.padding.right + pb.border_left_width + pb.border_right_width;
+        let pad_h =
+            pb.padding.left + pb.padding.right + pb.border_left_width + pb.border_right_width;
         let inner_for_text = (available_w - pad_h).max(0);
         if let Some(w) = ps.width {
             pb.width = w;
@@ -676,12 +866,19 @@ pub(super) fn build_pseudo_element_box(
             pb.height = pb.padding.top + pb.padding.bottom + border2;
         }
         // Apply min/max height
-        if let Some(mh) = ps.max_height { if pb.height > mh { pb.height = mh; } }
-        if ps.min_height > 0 && pb.height < ps.min_height { pb.height = ps.min_height; }
+        if let Some(mh) = ps.max_height {
+            if pb.height > mh {
+                pb.height = mh;
+            }
+        }
+        if ps.min_height > 0 && pb.height < ps.min_height {
+            pb.height = ps.min_height;
+        }
 
         // Add text content as inline child
         if has_text {
-            let mut tb = LayoutBox::new_text(String::from(content_text), fs, bold, italic, ps.color);
+            let mut tb =
+                LayoutBox::new_text(String::from(content_text), fs, bold, italic, ps.color);
             tb.bg_color = 0;
             tb.text_decoration = ps.text_decoration;
             tb.x = pb.padding.left + pb.border_left_width;
@@ -690,14 +887,18 @@ pub(super) fn build_pseudo_element_box(
             let (tw, th) = super::measure_text(content_text, fs, bold);
             tb.width = tw.min(inner_for_text);
             tb.height = th.max(fs + 2);
-            pb.height = pb.height.max(tb.y + tb.height + pb.padding.bottom + pb.border_bottom_width);
+            pb.height = pb
+                .height
+                .max(tb.y + tb.height + pb.padding.bottom + pb.border_bottom_width);
             pb.children.push(tb);
         }
 
         // Skip completely empty boxes with no visual properties
         let has_visual = pb.bg_color != 0
-            || pb.border_top_width > 0 || pb.border_right_width > 0
-            || pb.border_bottom_width > 0 || pb.border_left_width > 0
+            || pb.border_top_width > 0
+            || pb.border_right_width > 0
+            || pb.border_bottom_width > 0
+            || pb.border_left_width > 0
             || pb.border_width > 0
             || !matches!(pb.background_image, crate::style::BackgroundImageVal::None)
             || pb.height > 0;

@@ -5,21 +5,38 @@ pub struct Sidebar {
 }
 
 impl Sidebar {
-    pub fn new(base: ControlBase) -> Self { Self { base } }
+    pub fn new(base: ControlBase) -> Self {
+        Self { base }
+    }
 }
 
 impl Control for Sidebar {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::Sidebar }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::Sidebar
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        crate::draw::fill_rect(surface, p.x, p.y, p.w, p.h, crate::theme::colors().sidebar_bg);
+        crate::draw::fill_rect(
+            surface,
+            p.x,
+            p.y,
+            p.w,
+            p.h,
+            crate::theme::colors().sidebar_bg,
+        );
     }
 
-    fn is_interactive(&self) -> bool { true }
+    fn is_interactive(&self) -> bool {
+        true
+    }
 
     fn handle_click(&mut self, _lx: i32, ly: i32, _button: u32) -> EventResponse {
         // Select item based on y position (32px per item)

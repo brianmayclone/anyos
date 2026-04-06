@@ -12,8 +12,8 @@
 //! - Flags: `g`, `i`, `m`, `s`, `u`, `y`
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 /// Compiled regex node (instruction).
 #[derive(Debug, Clone)]
@@ -25,7 +25,10 @@ enum Node {
     /// Match any character (`.` — respects dotAll flag).
     Dot,
     /// Match a character class.
-    CharClass { ranges: Vec<(char, char)>, negated: bool },
+    CharClass {
+        ranges: Vec<(char, char)>,
+        negated: bool,
+    },
     /// Shorthand class: `\d`
     Digit,
     /// Shorthand class: `\D`
@@ -47,7 +50,12 @@ enum Node {
     /// Non-word boundary `\B`.
     NotWordBoundary,
     /// Greedy quantifier.
-    Quantifier { min: u32, max: Option<u32>, lazy: bool, child: Vec<Node> },
+    Quantifier {
+        min: u32,
+        max: Option<u32>,
+        lazy: bool,
+        child: Vec<Node>,
+    },
     /// Alternation: try left first, then right.
     Alternation(Vec<Vec<Node>>),
     /// Capturing group.
@@ -97,12 +105,24 @@ impl RegexFlags {
 
     pub fn to_string(&self) -> String {
         let mut s = String::new();
-        if self.global { s.push('g'); }
-        if self.ignore_case { s.push('i'); }
-        if self.multiline { s.push('m'); }
-        if self.dot_all { s.push('s'); }
-        if self.unicode { s.push('u'); }
-        if self.sticky { s.push('y'); }
+        if self.global {
+            s.push('g');
+        }
+        if self.ignore_case {
+            s.push('i');
+        }
+        if self.multiline {
+            s.push('m');
+        }
+        if self.dot_all {
+            s.push('s');
+        }
+        if self.unicode {
+            s.push('u');
+        }
+        if self.sticky {
+            s.push('y');
+        }
         s
     }
 }
@@ -126,7 +146,9 @@ impl Match {
     }
 
     pub fn group<'a>(&self, index: usize, input: &'a str) -> Option<&'a str> {
-        if index >= self.groups.len() { return None; }
+        if index >= self.groups.len() {
+            return None;
+        }
         self.groups[index].map(|(s, e)| {
             let start = char_to_byte(input, s);
             let end = char_to_byte(input, e);
@@ -136,7 +158,10 @@ impl Match {
 }
 
 pub fn char_to_byte(s: &str, char_idx: usize) -> usize {
-    s.char_indices().nth(char_idx).map(|(i, _)| i).unwrap_or(s.len())
+    s.char_indices()
+        .nth(char_idx)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len())
 }
 
 // ── Parser ──
@@ -166,12 +191,19 @@ impl<'a> RegexParser<'a> {
 
     fn advance(&mut self) -> Option<char> {
         let ch = self.chars.get(self.pos).copied();
-        if ch.is_some() { self.pos += 1; }
+        if ch.is_some() {
+            self.pos += 1;
+        }
         ch
     }
 
     fn eat(&mut self, c: char) -> bool {
-        if self.peek() == Some(c) { self.pos += 1; true } else { false }
+        if self.peek() == Some(c) {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
     }
 
     fn parse(&mut self) -> Vec<Node> {
@@ -193,7 +225,9 @@ impl<'a> RegexParser<'a> {
     fn parse_sequence(&mut self) -> Vec<Node> {
         let mut nodes = Vec::new();
         while let Some(ch) = self.peek() {
-            if ch == ')' || ch == '|' { break; }
+            if ch == ')' || ch == '|' {
+                break;
+            }
             if let Some(node) = self.parse_atom() {
                 let node = self.parse_quantifier(node);
                 nodes.push(node);
@@ -230,9 +264,18 @@ impl<'a> RegexParser<'a> {
                 }
             }
             '[' => Some(self.parse_char_class()),
-            '^' => { self.advance(); Some(Node::AnchorStart) }
-            '$' => { self.advance(); Some(Node::AnchorEnd) }
-            '.' => { self.advance(); Some(Node::Dot) }
+            '^' => {
+                self.advance();
+                Some(Node::AnchorStart)
+            }
+            '$' => {
+                self.advance();
+                Some(Node::AnchorEnd)
+            }
+            '.' => {
+                self.advance();
+                Some(Node::Dot)
+            }
             '\\' => {
                 self.advance();
                 Some(self.parse_escape())
@@ -296,7 +339,10 @@ impl<'a> RegexParser<'a> {
                 if self.eat('{') {
                     let mut val = 0u32;
                     while let Some(d) = self.peek() {
-                        if d == '}' { self.advance(); break; }
+                        if d == '}' {
+                            self.advance();
+                            break;
+                        }
                         val = val * 16 + hex_val(d);
                         self.advance();
                     }
@@ -333,7 +379,10 @@ impl<'a> RegexParser<'a> {
         let mut ranges = Vec::new();
 
         while let Some(ch) = self.peek() {
-            if ch == ']' { self.advance(); break; }
+            if ch == ']' {
+                self.advance();
+                break;
+            }
 
             let start = self.parse_class_char();
             if self.eat('-') {
@@ -383,7 +432,10 @@ impl<'a> RegexParser<'a> {
                     if self.eat('{') {
                         let mut val = 0u32;
                         while let Some(d) = self.peek() {
-                            if d == '}' { self.advance(); break; }
+                            if d == '}' {
+                                self.advance();
+                                break;
+                            }
                             val = val * 16 + hex_val(d);
                             self.advance();
                         }
@@ -407,13 +459,24 @@ impl<'a> RegexParser<'a> {
     fn parse_quantifier(&mut self, node: Node) -> Node {
         // Quantifiers don't apply to anchors
         match &node {
-            Node::AnchorStart | Node::AnchorEnd | Node::WordBoundary | Node::NotWordBoundary => return node,
+            Node::AnchorStart | Node::AnchorEnd | Node::WordBoundary | Node::NotWordBoundary => {
+                return node
+            }
             _ => {}
         }
         let (min, max) = match self.peek() {
-            Some('*') => { self.advance(); (0u32, None) }
-            Some('+') => { self.advance(); (1u32, None) }
-            Some('?') => { self.advance(); (0u32, Some(1u32)) }
+            Some('*') => {
+                self.advance();
+                (0u32, None)
+            }
+            Some('+') => {
+                self.advance();
+                (1u32, None)
+            }
+            Some('?') => {
+                self.advance();
+                (0u32, Some(1u32))
+            }
             Some('{') => {
                 let saved = self.pos;
                 self.advance();
@@ -427,7 +490,12 @@ impl<'a> RegexParser<'a> {
             _ => return node,
         };
         let lazy = self.eat('?');
-        Node::Quantifier { min, max, lazy, child: vec![node] }
+        Node::Quantifier {
+            min,
+            max,
+            lazy,
+            child: vec![node],
+        }
     }
 
     fn parse_braces(&mut self) -> Option<(u32, Option<u32>)> {
@@ -442,7 +510,9 @@ impl<'a> RegexParser<'a> {
                 break;
             }
         }
-        if !has_digit { return None; }
+        if !has_digit {
+            return None;
+        }
 
         if self.eat('}') {
             return Some((n, Some(n)));
@@ -521,7 +591,9 @@ impl<'a> ExecState<'a> {
             Node::Dot => {
                 if pos < self.chars.len() {
                     let c = self.chars[pos];
-                    if self.flags.dot_all || (c != '\n' && c != '\r' && c != '\u{2028}' && c != '\u{2029}') {
+                    if self.flags.dot_all
+                        || (c != '\n' && c != '\r' && c != '\u{2028}' && c != '\u{2029}')
+                    {
                         Some(pos + 1)
                     } else {
                         None
@@ -573,7 +645,9 @@ impl<'a> ExecState<'a> {
                 }
             }
             Node::CharClass { ranges, negated } => {
-                if pos >= self.chars.len() { return None; }
+                if pos >= self.chars.len() {
+                    return None;
+                }
                 let c = self.chars[pos];
                 let mut in_class = false;
                 for &(lo, hi) in ranges {
@@ -582,8 +656,14 @@ impl<'a> ExecState<'a> {
                         break;
                     }
                 }
-                if *negated { in_class = !in_class; }
-                if in_class { Some(pos + 1) } else { None }
+                if *negated {
+                    in_class = !in_class;
+                }
+                if in_class {
+                    Some(pos + 1)
+                } else {
+                    None
+                }
             }
             Node::AnchorStart => {
                 if self.flags.multiline {
@@ -593,7 +673,11 @@ impl<'a> ExecState<'a> {
                         None
                     }
                 } else {
-                    if pos == 0 { Some(pos) } else { None }
+                    if pos == 0 {
+                        Some(pos)
+                    } else {
+                        None
+                    }
                 }
             }
             Node::AnchorEnd => {
@@ -604,18 +688,46 @@ impl<'a> ExecState<'a> {
                         None
                     }
                 } else {
-                    if pos == self.chars.len() { Some(pos) } else { None }
+                    if pos == self.chars.len() {
+                        Some(pos)
+                    } else {
+                        None
+                    }
                 }
             }
             Node::WordBoundary => {
-                let before = if pos > 0 { is_word_char(self.chars[pos - 1]) } else { false };
-                let after = if pos < self.chars.len() { is_word_char(self.chars[pos]) } else { false };
-                if before != after { Some(pos) } else { None }
+                let before = if pos > 0 {
+                    is_word_char(self.chars[pos - 1])
+                } else {
+                    false
+                };
+                let after = if pos < self.chars.len() {
+                    is_word_char(self.chars[pos])
+                } else {
+                    false
+                };
+                if before != after {
+                    Some(pos)
+                } else {
+                    None
+                }
             }
             Node::NotWordBoundary => {
-                let before = if pos > 0 { is_word_char(self.chars[pos - 1]) } else { false };
-                let after = if pos < self.chars.len() { is_word_char(self.chars[pos]) } else { false };
-                if before == after { Some(pos) } else { None }
+                let before = if pos > 0 {
+                    is_word_char(self.chars[pos - 1])
+                } else {
+                    false
+                };
+                let after = if pos < self.chars.len() {
+                    is_word_char(self.chars[pos])
+                } else {
+                    false
+                };
+                if before == after {
+                    Some(pos)
+                } else {
+                    None
+                }
             }
             Node::Alternation(branches) => {
                 for branch in branches {
@@ -641,16 +753,16 @@ impl<'a> ExecState<'a> {
                     None
                 }
             }
-            Node::NonCapGroup { body } => {
-                self.exec_nodes(body, pos)
-            }
+            Node::NonCapGroup { body } => self.exec_nodes(body, pos),
             Node::Backref(n) => {
                 let idx = *n as usize;
                 if idx < self.groups.len() {
                     if let Some((gs, ge)) = self.groups[idx] {
                         let group_chars = &self.chars[gs..ge];
                         let len = group_chars.len();
-                        if pos + len > self.chars.len() { return None; }
+                        if pos + len > self.chars.len() {
+                            return None;
+                        }
                         if self.flags.ignore_case {
                             for i in 0..len {
                                 if to_lower(self.chars[pos + i]) != to_lower(group_chars[i]) {
@@ -673,13 +785,23 @@ impl<'a> ExecState<'a> {
                     Some(pos)
                 }
             }
-            Node::Quantifier { min, max, lazy, child } => {
-                self.exec_quantifier(child, *min, *max, *lazy, pos)
-            }
+            Node::Quantifier {
+                min,
+                max,
+                lazy,
+                child,
+            } => self.exec_quantifier(child, *min, *max, *lazy, pos),
         }
     }
 
-    fn exec_quantifier(&mut self, child: &[Node], min: u32, max: Option<u32>, lazy: bool, pos: usize) -> Option<usize> {
+    fn exec_quantifier(
+        &mut self,
+        child: &[Node],
+        min: u32,
+        max: Option<u32>,
+        lazy: bool,
+        pos: usize,
+    ) -> Option<usize> {
         if lazy {
             self.exec_quantifier_lazy(child, min, max, pos)
         } else {
@@ -687,7 +809,13 @@ impl<'a> ExecState<'a> {
         }
     }
 
-    fn exec_quantifier_greedy(&mut self, child: &[Node], min: u32, max: Option<u32>, start_pos: usize) -> Option<usize> {
+    fn exec_quantifier_greedy(
+        &mut self,
+        child: &[Node],
+        min: u32,
+        max: Option<u32>,
+        start_pos: usize,
+    ) -> Option<usize> {
         // Collect all possible match positions greedily
         let mut positions = Vec::new();
         let mut pos = start_pos;
@@ -725,13 +853,21 @@ impl<'a> ExecState<'a> {
         None
     }
 
-    fn exec_quantifier_lazy(&mut self, child: &[Node], min: u32, _max: Option<u32>, start_pos: usize) -> Option<usize> {
+    fn exec_quantifier_lazy(
+        &mut self,
+        child: &[Node],
+        min: u32,
+        _max: Option<u32>,
+        start_pos: usize,
+    ) -> Option<usize> {
         let mut pos = start_pos;
 
         // First, match minimum required
         for _ in 0..min {
             if let Some(next) = self.exec_nodes(child, pos) {
-                if next == pos { break; }
+                if next == pos {
+                    break;
+                }
                 pos = next;
             } else {
                 return None;
@@ -826,7 +962,10 @@ fn is_word_char(c: char) -> bool {
 }
 
 fn is_whitespace(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}' | '\u{00A0}' | '\u{FEFF}')
+    matches!(
+        c,
+        ' ' | '\t' | '\n' | '\r' | '\u{000B}' | '\u{000C}' | '\u{00A0}' | '\u{FEFF}'
+    )
 }
 
 fn to_lower(c: char) -> char {

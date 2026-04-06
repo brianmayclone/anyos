@@ -37,7 +37,9 @@ struct SelectorPart<'a> {
 /// Find the first element matching a CSS selector.
 pub fn find_first(dom: &Dom, selector: &str) -> Option<usize> {
     let sel = selector.trim();
-    if sel.is_empty() { return None; }
+    if sel.is_empty() {
+        return None;
+    }
 
     // Comma-separated: try each group.
     if sel.contains(',') {
@@ -50,7 +52,9 @@ pub fn find_first(dom: &Dom, selector: &str) -> Option<usize> {
     }
 
     let parts = parse_selector(sel);
-    if parts.is_empty() { return None; }
+    if parts.is_empty() {
+        return None;
+    }
 
     for i in 0..dom.nodes.len() {
         if matches_parsed(dom, i, &parts) {
@@ -64,15 +68,21 @@ pub fn find_first(dom: &Dom, selector: &str) -> Option<usize> {
 pub fn find_all(dom: &Dom, selector: &str) -> Vec<usize> {
     let sel = selector.trim();
     let mut results = Vec::new();
-    if sel.is_empty() { return results; }
+    if sel.is_empty() {
+        return results;
+    }
 
     // Comma-separated: union of each group.
     if sel.contains(',') {
         for group in sel.split(',') {
             let group = group.trim();
-            if group.is_empty() { continue; }
+            if group.is_empty() {
+                continue;
+            }
             let parts = parse_selector(group);
-            if parts.is_empty() { continue; }
+            if parts.is_empty() {
+                continue;
+            }
             for i in 0..dom.nodes.len() {
                 if matches_parsed(dom, i, &parts) && !results.contains(&i) {
                     results.push(i);
@@ -83,7 +93,9 @@ pub fn find_all(dom: &Dom, selector: &str) -> Vec<usize> {
     }
 
     let parts = parse_selector(sel);
-    if parts.is_empty() { return results; }
+    if parts.is_empty() {
+        return results;
+    }
 
     for i in 0..dom.nodes.len() {
         if matches_parsed(dom, i, &parts) {
@@ -96,15 +108,21 @@ pub fn find_all(dom: &Dom, selector: &str) -> Vec<usize> {
 /// Check if a node matches a CSS selector string (public API kept for compat).
 pub fn matches_selector(dom: &Dom, node_id: usize, selector: &str) -> bool {
     let sel = selector.trim();
-    if sel.is_empty() { return false; }
+    if sel.is_empty() {
+        return false;
+    }
 
     // Comma-separated: match any group.
     if sel.contains(',') {
-        return sel.split(',').any(|s| matches_selector(dom, node_id, s.trim()));
+        return sel
+            .split(',')
+            .any(|s| matches_selector(dom, node_id, s.trim()));
     }
 
     let parts = parse_selector(sel);
-    if parts.is_empty() { return false; }
+    if parts.is_empty() {
+        return false;
+    }
     matches_parsed(dom, node_id, &parts)
 }
 
@@ -121,10 +139,14 @@ fn parse_selector(sel: &str) -> Vec<SelectorPart<'_>> {
     let mut i = 0;
 
     // Skip leading whitespace.
-    while i < len && bytes[i] == b' ' { i += 1; }
+    while i < len && bytes[i] == b' ' {
+        i += 1;
+    }
 
     loop {
-        if i >= len { break; }
+        if i >= len {
+            break;
+        }
 
         // Read compound selector (until whitespace or combinator char).
         let start = i;
@@ -144,28 +166,50 @@ fn parse_selector(sel: &str) -> Vec<SelectorPart<'_>> {
 
         if i > start {
             let compound = &sel[start..i];
-            let combinator = if parts.is_empty() { None } else { Some(Combinator::Descendant) };
+            let combinator = if parts.is_empty() {
+                None
+            } else {
+                Some(Combinator::Descendant)
+            };
             // The combinator will be overridden below if an explicit combinator is found.
-            parts.push(SelectorPart { combinator, compound });
+            parts.push(SelectorPart {
+                combinator,
+                compound,
+            });
         }
 
         // Skip whitespace and look for combinator.
         let mut found_combinator: Option<Combinator> = None;
         while i < len {
             match bytes[i] {
-                b' ' => { i += 1; }
-                b'>' => { found_combinator = Some(Combinator::Child); i += 1; }
-                b'+' => { found_combinator = Some(Combinator::Adjacent); i += 1; }
-                b'~' => { found_combinator = Some(Combinator::General); i += 1; }
+                b' ' => {
+                    i += 1;
+                }
+                b'>' => {
+                    found_combinator = Some(Combinator::Child);
+                    i += 1;
+                }
+                b'+' => {
+                    found_combinator = Some(Combinator::Adjacent);
+                    i += 1;
+                }
+                b'~' => {
+                    found_combinator = Some(Combinator::General);
+                    i += 1;
+                }
                 _ => break,
             }
         }
         // Skip trailing whitespace after combinator.
-        while i < len && bytes[i] == b' ' { i += 1; }
+        while i < len && bytes[i] == b' ' {
+            i += 1;
+        }
 
         // If we found an explicit combinator, record it on the NEXT part.
         if let Some(comb) = found_combinator {
-            if i >= len { break; } // trailing combinator, ignore
+            if i >= len {
+                break;
+            } // trailing combinator, ignore
 
             // Read next compound.
             let start2 = i;
@@ -181,7 +225,10 @@ fn parse_selector(sel: &str) -> Vec<SelectorPart<'_>> {
                 i += 1;
             }
             if i > start2 {
-                parts.push(SelectorPart { combinator: Some(comb), compound: &sel[start2..i] });
+                parts.push(SelectorPart {
+                    combinator: Some(comb),
+                    compound: &sel[start2..i],
+                });
             }
         }
     }
@@ -193,8 +240,11 @@ fn parse_selector(sel: &str) -> Vec<SelectorPart<'_>> {
 fn in_brackets(bytes: &[u8], start: usize, pos: usize) -> bool {
     let mut depth = 0i32;
     for j in start..pos {
-        if bytes[j] == b'[' { depth += 1; }
-        else if bytes[j] == b']' { depth -= 1; }
+        if bytes[j] == b'[' {
+            depth += 1;
+        } else if bytes[j] == b']' {
+            depth -= 1;
+        }
     }
     depth > 0
 }
@@ -205,7 +255,9 @@ fn in_brackets(bytes: &[u8], start: usize, pos: usize) -> bool {
 
 /// Match a node against a parsed selector chain.
 fn matches_parsed(dom: &Dom, node_id: usize, parts: &[SelectorPart<'_>]) -> bool {
-    if parts.is_empty() { return false; }
+    if parts.is_empty() {
+        return false;
+    }
 
     // The rightmost part must match the candidate node itself.
     let last = parts.len() - 1;
@@ -235,7 +287,9 @@ fn matches_parsed(dom: &Dom, node_id: usize, parts: &[SelectorPart<'_>]) -> bool
                     }
                     ancestor = dom.nodes[anc_id].parent;
                 }
-                if !found { return false; }
+                if !found {
+                    return false;
+                }
             }
             Combinator::Child => {
                 // Direct parent must match.
@@ -267,7 +321,9 @@ fn matches_parsed(dom: &Dom, node_id: usize, parts: &[SelectorPart<'_>]) -> bool
                     }
                     sib = prev_element_sibling(dom, sid);
                 }
-                if !found { return false; }
+                if !found {
+                    return false;
+                }
             }
         }
     }
@@ -298,7 +354,9 @@ fn prev_element_sibling(dom: &Dom, node_id: usize) -> Option<usize> {
 /// Match a single compound selector against a node.
 /// A compound selector is e.g. `div.cls#id[attr=val]`.
 fn matches_compound(dom: &Dom, node_id: usize, compound: &str) -> bool {
-    if node_id >= dom.nodes.len() { return false; }
+    if node_id >= dom.nodes.len() {
+        return false;
+    }
 
     let node = &dom.nodes[node_id];
     let (tag, attrs) = match &node.node_type {
@@ -307,11 +365,15 @@ fn matches_compound(dom: &Dom, node_id: usize, compound: &str) -> bool {
     };
 
     // Universal selector matches everything.
-    if compound == "*" { return true; }
+    if compound == "*" {
+        return true;
+    }
 
     // Tokenize compound into sub-parts: tag, .class, #id, [attr].
     let parts = tokenize_compound(compound);
-    if parts.is_empty() { return false; }
+    if parts.is_empty() {
+        return false;
+    }
 
     for part in &parts {
         match part {
@@ -327,26 +389,25 @@ fn matches_compound(dom: &Dom, node_id: usize, compound: &str) -> bool {
                 }
             }
             CompoundPart::Class(cls) => {
-                if !attrs.iter().any(|a| {
-                    a.name == "class" && a.value.split_whitespace().any(|c| c == *cls)
-                }) {
+                if !attrs
+                    .iter()
+                    .any(|a| a.name == "class" && a.value.split_whitespace().any(|c| c == *cls))
+                {
                     return false;
                 }
             }
-            CompoundPart::Attr(name, val) => {
-                match val {
-                    Some(v) => {
-                        if !attrs.iter().any(|a| a.name == *name && a.value == *v) {
-                            return false;
-                        }
-                    }
-                    None => {
-                        if !attrs.iter().any(|a| a.name == *name) {
-                            return false;
-                        }
+            CompoundPart::Attr(name, val) => match val {
+                Some(v) => {
+                    if !attrs.iter().any(|a| a.name == *name && a.value == *v) {
+                        return false;
                     }
                 }
-            }
+                None => {
+                    if !attrs.iter().any(|a| a.name == *name) {
+                        return false;
+                    }
+                }
+            },
         }
     }
     true
@@ -408,10 +469,15 @@ fn tokenize_compound(s: &str) -> Vec<CompoundPart<'_>> {
                     i += 1;
                 }
                 let inner = &s[start..i];
-                if i < len { i += 1; } // skip ']'
+                if i < len {
+                    i += 1;
+                } // skip ']'
                 if let Some(eq_pos) = inner.find('=') {
                     let name = inner[..eq_pos].trim();
-                    let val = inner[eq_pos + 1..].trim().trim_matches('"').trim_matches('\'');
+                    let val = inner[eq_pos + 1..]
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('\'');
                     parts.push(CompoundPart::Attr(name, Some(val)));
                 } else {
                     parts.push(CompoundPart::Attr(inner.trim(), None));

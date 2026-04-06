@@ -15,13 +15,21 @@ use alloc::vec::Vec;
 pub type ControlId = u32;
 
 /// Compositor IPC event types (from libcompositor.dlib poll_event).
+#[allow(dead_code)]
 pub const COMP_EVENT_KEY_DOWN: u32 = 0x3001;
+#[allow(dead_code)]
 pub const COMP_EVENT_KEY_UP: u32 = 0x3002;
+#[allow(dead_code)]
 pub const COMP_EVENT_MOUSE_DOWN: u32 = 0x3003;
+#[allow(dead_code)]
 pub const COMP_EVENT_MOUSE_UP: u32 = 0x3004;
+#[allow(dead_code)]
 pub const COMP_EVENT_MOUSE_SCROLL: u32 = 0x3005;
+#[allow(dead_code)]
 pub const COMP_EVENT_WINDOW_RESIZE: u32 = 0x3006;
+#[allow(dead_code)]
 pub const COMP_EVENT_WINDOW_CLOSE: u32 = 0x3007;
+#[allow(dead_code)]
 pub const COMP_EVENT_MOUSE_MOVE: u32 = 0x300A;
 
 /// Callback event types (passed to user callbacks).
@@ -33,6 +41,7 @@ pub const EVENT_BLUR: u32 = 5;
 pub const EVENT_CLOSE: u32 = 6;
 pub const EVENT_RESIZE: u32 = 7;
 pub const EVENT_SCROLL: u32 = 8;
+#[allow(dead_code)]
 pub const EVENT_DRAG: u32 = 9;
 pub const EVENT_CONTEXT_MENU: u32 = 10;
 pub const EVENT_DOUBLE_CLICK: u32 = 11;
@@ -51,19 +60,19 @@ const NUM_CALLBACK_SLOTS: usize = 21;
 
 // ── Key codes (must match compositor's encode_scancode output) ───────
 
-pub const KEY_ENTER: u32     = 0x100;
+pub const KEY_ENTER: u32 = 0x100;
 pub const KEY_BACKSPACE: u32 = 0x101;
-pub const KEY_TAB: u32       = 0x102;
-pub const KEY_ESCAPE: u32    = 0x103;
-pub const KEY_SPACE: u32     = 0x104;
-pub const KEY_UP: u32        = 0x105;
-pub const KEY_DOWN: u32      = 0x106;
-pub const KEY_LEFT: u32      = 0x107;
-pub const KEY_RIGHT: u32     = 0x108;
-pub const KEY_DELETE: u32    = 0x120;
-pub const KEY_HOME: u32      = 0x121;
-pub const KEY_END: u32       = 0x122;
-pub const KEY_PAGE_UP: u32   = 0x123;
+pub const KEY_TAB: u32 = 0x102;
+pub const KEY_ESCAPE: u32 = 0x103;
+pub const KEY_SPACE: u32 = 0x104;
+pub const KEY_UP: u32 = 0x105;
+pub const KEY_DOWN: u32 = 0x106;
+pub const KEY_LEFT: u32 = 0x107;
+pub const KEY_RIGHT: u32 = 0x108;
+pub const KEY_DELETE: u32 = 0x120;
+pub const KEY_HOME: u32 = 0x121;
+pub const KEY_END: u32 = 0x122;
+pub const KEY_PAGE_UP: u32 = 0x123;
 pub const KEY_PAGE_DOWN: u32 = 0x124;
 
 // Keyboard modifier flags (bitmask in event[4])
@@ -82,7 +91,15 @@ pub struct Padding {
 }
 
 impl Padding {
-    pub const fn all(v: i32) -> Self { Self { left: v, top: v, right: v, bottom: v } }
+    #[allow(dead_code)]
+    pub const fn all(v: i32) -> Self {
+        Self {
+            left: v,
+            top: v,
+            right: v,
+            bottom: v,
+        }
+    }
 }
 
 /// Outer spacing (space reserved around a control, between it and siblings/parent).
@@ -95,7 +112,15 @@ pub struct Margin {
 }
 
 impl Margin {
-    pub const fn all(v: i32) -> Self { Self { left: v, top: v, right: v, bottom: v } }
+    #[allow(dead_code)]
+    pub const fn all(v: i32) -> Self {
+        Self {
+            left: v,
+            top: v,
+            right: v,
+            bottom: v,
+        }
+    }
 }
 
 /// Dock style — how a control docks within its parent's client area.
@@ -143,7 +168,11 @@ pub struct TextStyle {
 
 impl Default for TextStyle {
     fn default() -> Self {
-        Self { font_size: 14, font_id: 0, text_color: 0 }
+        Self {
+            font_size: 14,
+            font_id: 0,
+            text_color: 0,
+        }
     }
 }
 
@@ -157,7 +186,11 @@ pub enum Orientation {
 
 impl Orientation {
     pub fn from_u32(v: u32) -> Self {
-        if v == 1 { Self::Horizontal } else { Self::Vertical }
+        if v == 1 {
+            Self::Horizontal
+        } else {
+            Self::Vertical
+        }
     }
 }
 
@@ -377,6 +410,18 @@ pub struct ControlBase {
     callbacks: [Option<CallbackSlot>; NUM_CALLBACK_SLOTS],
 }
 
+/// Common render-time values derived from a control's base state.
+#[derive(Clone, Copy)]
+pub struct RenderContext {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub disabled: bool,
+    pub hovered: bool,
+    pub focused: bool,
+}
+
 impl ControlBase {
     pub fn new(id: ControlId, parent: ControlId, x: i32, y: i32, w: u32, h: u32) -> Self {
         Self {
@@ -423,11 +468,13 @@ impl ControlBase {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_color(mut self, color: u32) -> Self {
         self.color = color;
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_state(mut self, state: u32) -> Self {
         self.state = state;
         self
@@ -452,6 +499,22 @@ impl ControlBase {
     }
 }
 
+/// Prepare physical bounds and common interaction flags for rendering.
+#[inline(always)]
+pub fn prepare_render(base: &ControlBase, parent_abs_x: i32, parent_abs_y: i32) -> RenderContext {
+    let bounds =
+        crate::draw::scale_bounds(parent_abs_x, parent_abs_y, base.x, base.y, base.w, base.h);
+    RenderContext {
+        x: bounds.x,
+        y: bounds.y,
+        w: bounds.w,
+        h: bounds.h,
+        disabled: base.disabled,
+        hovered: base.hovered,
+        focused: base.focused,
+    }
+}
+
 // ── TextControlBase — ControlBase + font properties for text controls ──
 
 /// Extended base for controls that display text (Label, Button, TextField, etc.).
@@ -464,7 +527,11 @@ pub struct TextControlBase {
 
 impl TextControlBase {
     pub fn new(base: ControlBase) -> Self {
-        Self { base, text: Vec::new(), text_style: TextStyle::default() }
+        Self {
+            base,
+            text: Vec::new(),
+            text_style: TextStyle::default(),
+        }
     }
 
     pub fn with_text(mut self, text: &[u8]) -> Self {
@@ -490,8 +557,14 @@ impl TextControlBase {
         }
     }
 
-    pub fn font_size(&self) -> u16 { self.text_style.font_size }
-    pub fn font_id(&self) -> u16 { self.text_style.font_id }
+    #[allow(dead_code)]
+    pub fn font_size(&self) -> u16 {
+        self.text_style.font_size
+    }
+    #[allow(dead_code)]
+    pub fn font_id(&self) -> u16 {
+        self.text_style.font_id
+    }
 }
 
 // ── EventResponse — return value from virtual event handlers ────────
@@ -510,17 +583,48 @@ pub struct EventResponse {
 
 impl EventResponse {
     /// Event was ignored (not consumed).
-    pub const IGNORED: Self = Self { consumed: false, fire_click: false, fire_change: false, fire_submit: false };
+    pub const IGNORED: Self = Self {
+        consumed: false,
+        fire_click: false,
+        fire_change: false,
+        fire_submit: false,
+    };
     /// Event was consumed, but no callback needed.
-    pub const CONSUMED: Self = Self { consumed: true, fire_click: false, fire_change: false, fire_submit: false };
+    pub const CONSUMED: Self = Self {
+        consumed: true,
+        fire_click: false,
+        fire_change: false,
+        fire_submit: false,
+    };
     /// Event consumed -> fire on_click callback.
-    pub const CLICK: Self = Self { consumed: true, fire_click: true, fire_change: false, fire_submit: false };
+    pub const CLICK: Self = Self {
+        consumed: true,
+        fire_click: true,
+        fire_change: false,
+        fire_submit: false,
+    };
     /// Event consumed -> fire on_change callback.
-    pub const CHANGED: Self = Self { consumed: true, fire_click: false, fire_change: true, fire_submit: false };
+    pub const CHANGED: Self = Self {
+        consumed: true,
+        fire_click: false,
+        fire_change: true,
+        fire_submit: false,
+    };
     /// Event consumed -> fire both callbacks.
-    pub const CLICK_AND_CHANGED: Self = Self { consumed: true, fire_click: true, fire_change: true, fire_submit: false };
+    #[allow(dead_code)]
+    pub const CLICK_AND_CHANGED: Self = Self {
+        consumed: true,
+        fire_click: true,
+        fire_change: true,
+        fire_submit: false,
+    };
     /// Event consumed -> fire on_submit callback (Enter key in text fields).
-    pub const SUBMIT: Self = Self { consumed: true, fire_click: false, fire_change: false, fire_submit: true };
+    pub const SUBMIT: Self = Self {
+        consumed: true,
+        fire_click: false,
+        fire_change: false,
+        fire_submit: true,
+    };
 }
 
 // ── Control trait — virtual base class ──────────────────────────────
@@ -565,14 +669,19 @@ pub trait Control {
     }
 
     /// Whether this control displays text (and supports TextStyle properties).
+    #[allow(dead_code)]
     fn is_text_control(&self) -> bool {
         self.text_base().is_some()
     }
 
     /// Access the TextControlBase (only for text controls).
-    fn text_base(&self) -> Option<&TextControlBase> { None }
+    fn text_base(&self) -> Option<&TextControlBase> {
+        None
+    }
     /// Mutable access to the TextControlBase.
-    fn text_base_mut(&mut self) -> Option<&mut TextControlBase> { None }
+    fn text_base_mut(&mut self) -> Option<&mut TextControlBase> {
+        None
+    }
 
     /// Set font size. Default delegates to text_base_mut; override for non-text controls.
     fn set_font_size(&mut self, size: u16) {
@@ -628,17 +737,23 @@ pub trait Control {
     /// If the control has a built-in scrollbar, returns the local-X threshold
     /// at which a click should target the scrollbar (bypassing child hit-test).
     /// Returns `None` (default) when no scrollbar is present.
-    fn scrollbar_hit_x(&self) -> Option<i32> { None }
+    fn scrollbar_hit_x(&self) -> Option<i32> {
+        None
+    }
 
     /// If the control has a built-in divider (e.g. SplitView), returns true
     /// when the click at (lx, ly) — in local coordinates — hits the divider zone.
     /// When true, `hit_test()` returns this control instead of recursing into children.
-    fn divider_hit(&self, _lx: i32, _ly: i32) -> bool { false }
+    fn divider_hit(&self, _lx: i32, _ly: i32) -> bool {
+        false
+    }
 
     /// Returns a cursor shape ID when the mouse is at (lx, ly) in local coordinates.
     /// 0 = Arrow (default), 1 = ResizeEW, 2 = ResizeNS.
     /// The event loop sends this to the compositor via CMD_SET_CURSOR.
-    fn cursor_at(&self, _lx: i32, _ly: i32) -> u32 { 0 }
+    fn cursor_at(&self, _lx: i32, _ly: i32) -> u32 {
+        0
+    }
 
     /// Called when mouse is clicked (down + up on same control).
     /// This is a higher-level event synthesized by the event loop.
@@ -659,7 +774,12 @@ pub trait Control {
     /// Called when a key is pressed while this control has focus.
     /// `char_code` is the ASCII character (0 if non-printable).
     /// `modifiers` is a bitmask of MOD_SHIFT, MOD_CTRL, etc.
-    fn handle_key_down(&mut self, _keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
+    fn handle_key_down(
+        &mut self,
+        _keycode: u32,
+        _char_code: u32,
+        _modifiers: u32,
+    ) -> EventResponse {
         EventResponse::IGNORED
     }
 
@@ -753,6 +873,7 @@ pub trait Control {
             tb.set_text(t);
         }
     }
+    #[allow(dead_code)]
     fn color(&self) -> u32 {
         self.base().color
     }
@@ -785,9 +906,11 @@ pub trait Control {
     }
 
     // Convenience aliases
+    #[allow(dead_code)]
     fn set_on_click(&mut self, cb: Callback, ud: u64) {
         self.base_mut().set_callback(EVENT_CLICK, cb, ud);
     }
+    #[allow(dead_code)]
     fn set_on_change(&mut self, cb: Callback, ud: u64) {
         self.base_mut().set_callback(EVENT_CHANGE, cb, ud);
     }
@@ -844,7 +967,9 @@ pub fn hit_test(
     // ScrollView/Expander: offset children's Y for hit-testing
     let child_abs_y = match controls[idx].kind() {
         ControlKind::ScrollView => abs_y - b.state as i32,
-        ControlKind::Expander if b.state != 0 => abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        ControlKind::Expander if b.state != 0 => {
+            abs_y + crate::controls::expander::HEADER_HEIGHT as i32
+        }
         _ => abs_y,
     };
 
@@ -863,9 +988,10 @@ pub fn hit_test(
 
     // This node is the target if interactive or has any relevant callback.
     // Disabled controls are never hit targets, even if they have callbacks.
-    if !b.disabled && (controls[idx].is_interactive()
-        || b.get_callback(EVENT_CLICK).is_some()
-        || b.get_callback(EVENT_MOUSE_DOWN).is_some())
+    if !b.disabled
+        && (controls[idx].is_interactive()
+            || b.get_callback(EVENT_CLICK).is_some()
+            || b.get_callback(EVENT_MOUSE_DOWN).is_some())
     {
         Some(root)
     } else {
@@ -889,7 +1015,9 @@ pub fn cursor_at_point(
         None => return 0,
     };
     let b = controls[idx].base();
-    if !b.visible { return 0; }
+    if !b.visible {
+        return 0;
+    }
 
     let abs_x = parent_x + b.x;
     let abs_y = parent_y + b.y;
@@ -912,7 +1040,9 @@ pub fn cursor_at_point(
     let children: Vec<ControlId> = b.children.to_vec();
     for &child_id in children.iter().rev() {
         let c = cursor_at_point(controls, child_id, px, py, abs_x, child_abs_y);
-        if c != 0 { return c; }
+        if c != 0 {
+            return c;
+        }
     }
     0
 }
@@ -949,7 +1079,9 @@ pub fn hit_test_any(
     // ScrollView/Expander: offset children's Y
     let child_abs_y = match controls[idx].kind() {
         ControlKind::ScrollView => abs_y - b.state as i32,
-        ControlKind::Expander if b.state != 0 => abs_y + crate::controls::expander::HEADER_HEIGHT as i32,
+        ControlKind::Expander if b.state != 0 => {
+            abs_y + crate::controls::expander::HEADER_HEIGHT as i32
+        }
         _ => abs_y,
     };
 

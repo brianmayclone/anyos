@@ -33,16 +33,10 @@ pub enum Stmt {
     },
 
     /// While loop: `while (cond) body`
-    While {
-        condition: Expr,
-        body: Box<Stmt>,
-    },
+    While { condition: Expr, body: Box<Stmt> },
 
     /// Do-while loop: `do body while (cond)`
-    DoWhile {
-        body: Box<Stmt>,
-        condition: Expr,
-    },
+    DoWhile { body: Box<Stmt>, condition: Expr },
 
     /// For loop: `for (init; test; update) body`
     For {
@@ -108,10 +102,7 @@ pub enum Stmt {
     },
 
     /// Labeled statement: `label: stmt`
-    Labeled {
-        label: String,
-        body: Box<Stmt>,
-    },
+    Labeled { label: String, body: Box<Stmt> },
 
     /// Empty statement: `;`
     Empty,
@@ -150,7 +141,10 @@ pub enum ExportDecl {
     /// `export function name() {}`, `export class name {}`, `export const x = ...`
     Decl(Box<Stmt>),
     /// `export { ... } from 'module'` (re-export)
-    ReExport { specifiers: Vec<ExportSpecifier>, source: String },
+    ReExport {
+        specifiers: Vec<ExportSpecifier>,
+        source: String,
+    },
 }
 
 /// Export specifier: `name` or `name as alias`.
@@ -201,10 +195,7 @@ pub enum Expr {
     },
 
     /// Computed member access: `obj[expr]`
-    Index {
-        object: Box<Expr>,
-        index: Box<Expr>,
-    },
+    Index { object: Box<Expr>, index: Box<Expr> },
 
     /// Function call: `func(args)`
     Call {
@@ -311,10 +302,7 @@ pub enum Expr {
     },
 
     /// Optional chaining: `a?.b`
-    OptionalChain {
-        object: Box<Expr>,
-        property: String,
-    },
+    OptionalChain { object: Box<Expr>, property: String },
 
     /// Optional call: `a?.(args)`
     OptionalCall {
@@ -323,16 +311,10 @@ pub enum Expr {
     },
 
     /// Tagged template: tag`template`
-    TaggedTemplate {
-        tag: Box<Expr>,
-        template: String,
-    },
+    TaggedTemplate { tag: Box<Expr>, template: String },
 
     /// Regular expression literal: `/pattern/flags`
-    RegExp {
-        pattern: String,
-        flags: String,
-    },
+    RegExp { pattern: String, flags: String },
 }
 
 /// Arrow function body — either an expression or a block.
@@ -474,10 +456,10 @@ pub enum ClassMemberKind {
 /// Unary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnaryOp {
-    Neg,      // -
-    Pos,      // +
-    Not,      // !
-    BitNot,   // ~
+    Neg,    // -
+    Pos,    // +
+    Not,    // !
+    BitNot, // ~
     Typeof,
     Void,
     Delete,
@@ -493,62 +475,64 @@ pub enum UpdateOp {
 /// Binary operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
-    Add,      // +
-    Sub,      // -
-    Mul,      // *
-    Div,      // /
-    Mod,      // %
-    Exp,      // **
-    Eq,       // ==
-    Ne,       // !=
-    StrictEq, // ===
-    StrictNe, // !==
-    Lt,       // <
-    Le,       // <=
-    Gt,       // >
-    Ge,       // >=
-    BitAnd,   // &
-    BitOr,    // |
-    BitXor,   // ^
-    Shl,      // <<
-    Shr,      // >>
-    UShr,     // >>>
-    In,       // in
+    Add,        // +
+    Sub,        // -
+    Mul,        // *
+    Div,        // /
+    Mod,        // %
+    Exp,        // **
+    Eq,         // ==
+    Ne,         // !=
+    StrictEq,   // ===
+    StrictNe,   // !==
+    Lt,         // <
+    Le,         // <=
+    Gt,         // >
+    Ge,         // >=
+    BitAnd,     // &
+    BitOr,      // |
+    BitXor,     // ^
+    Shl,        // <<
+    Shr,        // >>
+    UShr,       // >>>
+    In,         // in
     InstanceOf, // instanceof
 }
 
 /// Logical operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogicalOp {
-    And,            // &&
-    Or,             // ||
+    And,             // &&
+    Or,              // ||
     NullishCoalesce, // ??
 }
 
 /// Assignment operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssignOp {
-    Assign,     // =
-    AddAssign,  // +=
-    SubAssign,  // -=
-    MulAssign,  // *=
-    DivAssign,  // /=
-    ModAssign,  // %=
-    ExpAssign,  // **=
-    BitAndAssign, // &=
-    BitOrAssign,  // |=
-    BitXorAssign, // ^=
-    ShlAssign,    // <<=
-    ShrAssign,    // >>=
-    UShrAssign,   // >>>=
-    AndAssign,    // &&=
-    OrAssign,     // ||=
+    Assign,        // =
+    AddAssign,     // +=
+    SubAssign,     // -=
+    MulAssign,     // *=
+    DivAssign,     // /=
+    ModAssign,     // %=
+    ExpAssign,     // **=
+    BitAndAssign,  // &=
+    BitOrAssign,   // |=
+    BitXorAssign,  // ^=
+    ShlAssign,     // <<=
+    ShrAssign,     // >>=
+    UShrAssign,    // >>>=
+    AndAssign,     // &&=
+    OrAssign,      // ||=
     NullishAssign, // ??=
 }
 
 /// Return a summary of an expression tree (for diagnostics). Depth-limited.
 pub fn expr_summary(expr: &Expr, depth: usize) -> String {
-    if depth > 5 { return String::from("..."); }
+    if depth > 5 {
+        return String::from("...");
+    }
     match expr {
         Expr::Number(n) => alloc::format!("Number({})", n),
         Expr::String(s) => alloc::format!("String({:?})", &s[..s.len().min(30)]),
@@ -556,19 +540,43 @@ pub fn expr_summary(expr: &Expr, depth: usize) -> String {
         Expr::Null => String::from("Null"),
         Expr::Undefined => String::from("Undefined"),
         Expr::Ident(name) => alloc::format!("Ident({})", name),
-        Expr::Unary { op, argument, .. } => alloc::format!("Unary({:?}, {})", op, expr_summary(argument, depth+1)),
-        Expr::Binary { op, left, right } => alloc::format!("Binary({:?}, {}, {})", op, expr_summary(left, depth+1), expr_summary(right, depth+1)),
-        Expr::Call { callee, arguments } => alloc::format!("Call({}, {} args)", expr_summary(callee, depth+1), arguments.len()),
-        Expr::FunctionExpr { name, params, .. } => alloc::format!("FunctionExpr({}, {} params)", name.as_deref().unwrap_or("anon"), params.len()),
+        Expr::Unary { op, argument, .. } => {
+            alloc::format!("Unary({:?}, {})", op, expr_summary(argument, depth + 1))
+        }
+        Expr::Binary { op, left, right } => alloc::format!(
+            "Binary({:?}, {}, {})",
+            op,
+            expr_summary(left, depth + 1),
+            expr_summary(right, depth + 1)
+        ),
+        Expr::Call { callee, arguments } => alloc::format!(
+            "Call({}, {} args)",
+            expr_summary(callee, depth + 1),
+            arguments.len()
+        ),
+        Expr::FunctionExpr { name, params, .. } => alloc::format!(
+            "FunctionExpr({}, {} params)",
+            name.as_deref().unwrap_or("anon"),
+            params.len()
+        ),
         Expr::Arrow { params, .. } => alloc::format!("Arrow({} params)", params.len()),
-        Expr::Member { object, property, computed } => {
+        Expr::Member {
+            object,
+            property,
+            computed,
+        } => {
             if *computed {
-                alloc::format!("Member({}, [computed])", expr_summary(object, depth+1))
+                alloc::format!("Member({}, [computed])", expr_summary(object, depth + 1))
             } else {
-                alloc::format!("Member({}, .{})", expr_summary(object, depth+1), property)
+                alloc::format!("Member({}, .{})", expr_summary(object, depth + 1), property)
             }
         }
-        Expr::Assign { op, left, right } => alloc::format!("Assign({:?}, {}, {})", op, expr_summary(left, depth+1), expr_summary(right, depth+1)),
+        Expr::Assign { op, left, right } => alloc::format!(
+            "Assign({:?}, {}, {})",
+            op,
+            expr_summary(left, depth + 1),
+            expr_summary(right, depth + 1)
+        ),
         Expr::Sequence(exprs) => alloc::format!("Sequence({} exprs)", exprs.len()),
         _ => alloc::format!("{:?}", core::mem::discriminant(expr)),
     }

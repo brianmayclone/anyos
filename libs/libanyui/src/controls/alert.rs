@@ -1,24 +1,36 @@
-use crate::control::{Control, ControlBase, TextControlBase, ControlKind};
+use crate::control::{prepare_render, Control, ControlBase, ControlKind, TextControlBase};
 
 pub struct Alert {
     pub(crate) text_base: TextControlBase,
 }
 
 impl Alert {
-    pub fn new(text_base: TextControlBase) -> Self { Self { text_base } }
+    pub fn new(text_base: TextControlBase) -> Self {
+        Self { text_base }
+    }
 }
 
 impl Control for Alert {
-    fn base(&self) -> &ControlBase { &self.text_base.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.text_base.base }
-    fn text_base(&self) -> Option<&crate::control::TextControlBase> { Some(&self.text_base) }
-    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> { Some(&mut self.text_base) }
-    fn kind(&self) -> ControlKind { ControlKind::Alert }
+    fn base(&self) -> &ControlBase {
+        &self.text_base.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.text_base.base
+    }
+    fn text_base(&self) -> Option<&crate::control::TextControlBase> {
+        Some(&self.text_base)
+    }
+    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> {
+        Some(&mut self.text_base)
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::Alert
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let ctx = prepare_render(b, ax, ay);
+        let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
 
         // Dark overlay behind the alert
@@ -32,18 +44,39 @@ impl Control for Alert {
 
         // SDF shadow (Alert is rare and small — SDF cost acceptable)
         crate::draw::draw_shadow_rounded_rect(
-            surface, cx, cy, card_w, card_h, corner as i32,
-            0, crate::theme::popup_shadow_offset_y(),
+            surface,
+            cx,
+            cy,
+            card_w,
+            card_h,
+            corner as i32,
+            0,
+            crate::theme::popup_shadow_offset_y(),
             crate::theme::popup_shadow_spread(),
             crate::theme::POPUP_SHADOW_ALPHA,
         );
 
-        crate::controls::chrome::draw_surface(surface, cx, cy, card_w, card_h, corner, crate::controls::chrome::card_palette(false));
+        crate::controls::chrome::draw_surface(
+            surface,
+            cx,
+            cy,
+            card_w,
+            card_h,
+            corner,
+            crate::controls::chrome::card_palette(false),
+        );
 
         if !self.text_base.text.is_empty() {
             let fs = crate::draw::scale_font(crate::theme::FONT_SIZE_LARGE);
             let text_pad = crate::theme::scale_i32(20);
-            crate::draw::draw_text_sized(surface, cx + text_pad, cy + text_pad, tc.text, &self.text_base.text, fs);
+            crate::draw::draw_text_sized(
+                surface,
+                cx + text_pad,
+                cy + text_pad,
+                tc.text,
+                &self.text_base.text,
+                fs,
+            );
         }
     }
 }

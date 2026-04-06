@@ -3,9 +3,9 @@
 //! Enforces a minimum height of 36px (or the tallest child + padding,
 //! whichever is larger) so toolbar buttons are always visible.
 
+use crate::control::{find_idx, ChildLayout, Control, ControlBase, ControlKind};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, ControlKind, ChildLayout, find_idx};
 
 /// Absolute minimum toolbar height in pixels.
 const MIN_HEIGHT: u32 = 36;
@@ -28,9 +28,15 @@ impl Toolbar {
 }
 
 impl Control for Toolbar {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::Toolbar }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::Toolbar
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();

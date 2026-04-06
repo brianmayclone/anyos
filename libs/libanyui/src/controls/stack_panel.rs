@@ -1,8 +1,8 @@
 //! StackPanel — layout container that stacks children vertically or horizontally.
 
+use crate::control::{find_idx, ChildLayout, Control, ControlBase, ControlKind, Orientation};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, ControlKind, ChildLayout, Orientation, find_idx};
 
 pub struct StackPanel {
     pub(crate) base: ControlBase,
@@ -11,14 +11,23 @@ pub struct StackPanel {
 
 impl StackPanel {
     pub fn new(base: ControlBase) -> Self {
-        Self { base, orientation: Orientation::Vertical }
+        Self {
+            base,
+            orientation: Orientation::Vertical,
+        }
     }
 }
 
 impl Control for StackPanel {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::StackPanel }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::StackPanel
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         // StackPanel is transparent — only renders its background if color is set
@@ -49,11 +58,23 @@ impl Control for StackPanel {
 
             match self.orientation {
                 Orientation::Vertical => {
-                    result.push(ChildLayout { id: child_id, x: cursor_x + m.left, y: cursor_y + m.top, w: None, h: None });
+                    result.push(ChildLayout {
+                        id: child_id,
+                        x: cursor_x + m.left,
+                        y: cursor_y + m.top,
+                        w: None,
+                        h: None,
+                    });
                     cursor_y += controls[ci].base().h as i32 + m.top + m.bottom;
                 }
                 Orientation::Horizontal => {
-                    result.push(ChildLayout { id: child_id, x: cursor_x + m.left, y: cursor_y + m.top, w: None, h: None });
+                    result.push(ChildLayout {
+                        id: child_id,
+                        x: cursor_x + m.left,
+                        y: cursor_y + m.top,
+                        w: None,
+                        h: None,
+                    });
                     cursor_x += controls[ci].base().w as i32 + m.left + m.right;
                 }
             }

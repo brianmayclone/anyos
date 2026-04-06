@@ -6,14 +6,14 @@
 //! - WeakRef.deref() always returns the held value (never collected).
 //! - FinalizationRegistry is a stub.
 
+use alloc::collections::BTreeMap;
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::rc::Rc;
 use core::cell::RefCell;
-use alloc::collections::BTreeMap;
 
+use super::{native_fn, Vm};
 use crate::value::*;
-use super::{Vm, native_fn};
 
 // ═══════════════════════════════════════════════════════════
 // WeakMap
@@ -65,7 +65,11 @@ pub fn weakmap_get(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let key = args.first().cloned().unwrap_or(JsValue::Undefined);
     if let Some(ptr) = obj_ptr(&key) {
         let val = this.get_property(&wm_key(ptr));
-        if val.is_undefined() { JsValue::Undefined } else { val }
+        if val.is_undefined() {
+            JsValue::Undefined
+        } else {
+            val
+        }
     } else {
         JsValue::Undefined
     }

@@ -1,16 +1,16 @@
 //! RegExp built-in object and prototype methods.
 
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::vec;
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::rc::Rc;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::cell::RefCell;
-use alloc::collections::BTreeMap;
 
-use crate::value::*;
-use crate::regexp::Regex;
 use super::Vm;
+use crate::regexp::Regex;
+use crate::value::*;
 
 /// Internal tag for RegExp objects.
 pub const REGEXP_TAG: &str = "__regexp__";
@@ -37,14 +37,26 @@ pub fn create_regexp_object(vm: &Vm, pattern: &str, flags: &str) -> JsValue {
 
     let mut obj = JsObject::with_tag(REGEXP_TAG);
     obj.prototype = Some(vm.regexp_proto.clone());
-    obj.set(String::from(REGEX_SRC_KEY), JsValue::String(String::from(pattern)));
-    obj.set(String::from(REGEX_FLAGS_KEY), JsValue::String(String::from(flags)));
+    obj.set(
+        String::from(REGEX_SRC_KEY),
+        JsValue::String(String::from(pattern)),
+    );
+    obj.set(
+        String::from(REGEX_FLAGS_KEY),
+        JsValue::String(String::from(flags)),
+    );
     obj.set(String::from(LAST_INDEX_KEY), JsValue::Number(0.0));
 
     // Store flags as individual boolean properties (non-enumerable)
     obj.set_hidden(String::from("global"), JsValue::Bool(regex.flags.global));
-    obj.set_hidden(String::from("ignoreCase"), JsValue::Bool(regex.flags.ignore_case));
-    obj.set_hidden(String::from("multiline"), JsValue::Bool(regex.flags.multiline));
+    obj.set_hidden(
+        String::from("ignoreCase"),
+        JsValue::Bool(regex.flags.ignore_case),
+    );
+    obj.set_hidden(
+        String::from("multiline"),
+        JsValue::Bool(regex.flags.multiline),
+    );
     obj.set_hidden(String::from("dotAll"), JsValue::Bool(regex.flags.dot_all));
     obj.set_hidden(String::from("unicode"), JsValue::Bool(regex.flags.unicode));
     obj.set_hidden(String::from("sticky"), JsValue::Bool(regex.flags.sticky));
@@ -60,7 +72,9 @@ pub fn create_regexp_object(vm: &Vm, pattern: &str, flags: &str) -> JsValue {
 pub fn get_regex(val: &JsValue) -> Option<Regex> {
     if let JsValue::Object(obj) = val {
         let o = obj.borrow();
-        if o.internal_tag.as_deref() != Some(REGEXP_TAG) { return None; }
+        if o.internal_tag.as_deref() != Some(REGEXP_TAG) {
+            return None;
+        }
         let source = match o.get(REGEX_SRC_KEY) {
             JsValue::String(s) => s,
             _ => return None,
@@ -89,7 +103,8 @@ fn get_last_index(val: &JsValue) -> usize {
 
 fn set_last_index(val: &JsValue, idx: usize) {
     if let JsValue::Object(obj) = val {
-        obj.borrow_mut().set(String::from(LAST_INDEX_KEY), JsValue::Number(idx as f64));
+        obj.borrow_mut()
+            .set(String::from(LAST_INDEX_KEY), JsValue::Number(idx as f64));
     }
 }
 
@@ -135,7 +150,11 @@ pub fn regexp_test(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         None => return JsValue::Bool(false),
     };
 
-    let start = if is_global_or_sticky(&this) { get_last_index(&this) } else { 0 };
+    let start = if is_global_or_sticky(&this) {
+        get_last_index(&this)
+    } else {
+        0
+    };
     let result = regex.test(&input, start);
     if is_global_or_sticky(&this) {
         if result {
@@ -158,7 +177,11 @@ pub fn regexp_exec(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         None => return JsValue::Null,
     };
 
-    let start = if is_global_or_sticky(&this) { get_last_index(&this) } else { 0 };
+    let start = if is_global_or_sticky(&this) {
+        get_last_index(&this)
+    } else {
+        0
+    };
     match regex.exec(&input, start) {
         Some(m) => {
             if is_global_or_sticky(&this) {
@@ -251,15 +274,13 @@ pub fn string_match(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 None => return JsValue::Null,
             }
         }
-        JsValue::String(s) => {
-            match Regex::new(s, "") {
-                Ok(r) => {
-                    let rv = create_regexp_object(vm, s, "");
-                    (r, rv)
-                }
-                Err(_) => return JsValue::Null,
+        JsValue::String(s) => match Regex::new(s, "") {
+            Ok(r) => {
+                let rv = create_regexp_object(vm, s, "");
+                (r, rv)
             }
-        }
+            Err(_) => return JsValue::Null,
+        },
         _ => {
             let s = arg.to_js_string();
             match Regex::new(&s, "") {
@@ -278,7 +299,8 @@ pub fn string_match(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if matches.is_empty() {
             return JsValue::Null;
         }
-        let elements: Vec<JsValue> = matches.iter()
+        let elements: Vec<JsValue> = matches
+            .iter()
             .map(|m| JsValue::String(String::from(m.full_match(&this_str))))
             .collect();
         JsValue::new_array(elements)
@@ -307,12 +329,10 @@ pub fn string_search(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
 
     match regex {
-        Some(r) => {
-            match r.exec(&this_str, 0) {
-                Some(m) => JsValue::Number(m.start as f64),
-                None => JsValue::Number(-1.0),
-            }
-        }
+        Some(r) => match r.exec(&this_str, 0) {
+            Some(m) => JsValue::Number(m.start as f64),
+            None => JsValue::Number(-1.0),
+        },
         None => JsValue::Number(-1.0),
     }
 }
@@ -387,7 +407,10 @@ pub fn string_replace_regexp(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn string_split_regexp(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this_str = vm.current_this.to_js_string();
     let sep = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let limit = args.get(1).map(|v| v.to_number() as usize).unwrap_or(usize::MAX);
+    let limit = args
+        .get(1)
+        .map(|v| v.to_number() as usize)
+        .unwrap_or(usize::MAX);
 
     let is_regexp = if let JsValue::Object(obj) = &sep {
         obj.borrow().internal_tag.as_deref() == Some(REGEXP_TAG)
@@ -416,11 +439,15 @@ pub fn string_split_regexp(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 // Collect substring before match
                 let part: String = chars[last_end..m.start].iter().collect();
                 result.push(JsValue::String(part));
-                if result.len() >= limit { break; }
+                if result.len() >= limit {
+                    break;
+                }
 
                 // Collect capturing groups
                 for i in 1..m.groups.len() {
-                    if result.len() >= limit { break; }
+                    if result.len() >= limit {
+                        break;
+                    }
                     match m.group(i, &this_str) {
                         Some(s) => result.push(JsValue::String(String::from(s))),
                         None => result.push(JsValue::Undefined),
@@ -453,8 +480,14 @@ fn apply_replacement(out: &mut String, replace: &str, m: &crate::regexp::Match, 
     while i < len {
         if chars[i] == '$' && i + 1 < len {
             match chars[i + 1] {
-                '$' => { out.push('$'); i += 2; }
-                '&' => { out.push_str(m.full_match(input)); i += 2; }
+                '$' => {
+                    out.push('$');
+                    i += 2;
+                }
+                '&' => {
+                    out.push_str(m.full_match(input));
+                    i += 2;
+                }
                 '`' => {
                     // Text before match
                     let before = &input[..crate::regexp::char_to_byte(input, m.start)];
@@ -482,7 +515,10 @@ fn apply_replacement(out: &mut String, replace: &str, m: &crate::regexp::Match, 
                         out.push_str(s);
                     }
                 }
-                _ => { out.push('$'); i += 1; }
+                _ => {
+                    out.push('$');
+                    i += 1;
+                }
             }
         } else {
             out.push(chars[i]);
@@ -512,7 +548,8 @@ pub fn string_match_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
 
     let matches = regex.exec_all(&this_str);
-    let elements: Vec<JsValue> = matches.iter()
+    let elements: Vec<JsValue> = matches
+        .iter()
         .map(|m| build_exec_result(vm, m, &this_str))
         .collect();
     JsValue::new_array(elements)

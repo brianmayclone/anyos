@@ -3,7 +3,7 @@
 //! Each icon is 16x16 and drawn at a given position and color.
 //! Icons are identified by ID constants.
 
-use crate::draw::{Surface, fill_rect};
+use crate::draw::{fill_rect, Surface};
 
 // ── Icon IDs ────────────────────────────────────────────────────────
 

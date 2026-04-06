@@ -5,10 +5,213 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+use super::{CallFrame, Vm};
 use crate::value::*;
-use super::{Vm, CallFrame};
 
 impl Vm {
+    fn is_constructable_value(&mut self, value: &JsValue) -> bool {
+        match value {
+            JsValue::Function(_) => true,
+            JsValue::Object(obj_rc)
+                if obj_rc.borrow().internal_tag.as_deref()
+                    == Some(super::native_proxy::PROXY_TAG) =>
+            {
+                super::native_proxy::proxy_target(value)
+                    .map(|target| self.is_constructable_value(&target))
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
+    }
+
+    fn unwrap_namespace_constructor_candidate(
+        &mut self,
+        value: &JsValue,
+        preferred_prop: Option<&str>,
+        depth: usize,
+    ) -> Option<JsValue> {
+        if depth == 0 {
+            return None;
+        }
+        if self.is_constructable_value(value) {
+            return Some(value.clone());
+        }
+
+        if let Some(prop_name) = preferred_prop {
+            let candidate = self.get_property_invoking_getter(value, prop_name);
+            if self.is_constructable_value(&candidate) {
+                return Some(candidate);
+            }
+            if let Some(unwrapped) =
+                self.unwrap_namespace_constructor_candidate(&candidate, None, depth - 1)
+            {
+                return Some(unwrapped);
+            }
+        }
+
+        let keys = match value {
+            JsValue::Object(obj) => {
+                let mut keys = obj.borrow().keys();
+                keys.sort();
+                keys
+            }
+            _ => return None,
+        };
+
+        if keys.len() != 1 {
+            return None;
+        }
+
+        let candidate = self.get_property_invoking_getter(value, &keys[0]);
+        if self.is_constructable_value(&candidate) {
+            return Some(candidate);
+        }
+        self.unwrap_namespace_constructor_candidate(&candidate, None, depth - 1)
+    }
+
+    fn constructor_prototype_from_value(
+        &mut self,
+        value: &JsValue,
+    ) -> Option<Rc<RefCell<JsObject>>> {
+        match value {
+            JsValue::Function(func_rc) => {
+                let maybe_proto = {
+                    let f = func_rc.borrow();
+                    if let Some(JsValue::Object(proto_obj)) = f.own_props.get("prototype") {
+                        Some(proto_obj.clone())
+                    } else {
+                        f.prototype.clone()
+                    }
+                };
+                if maybe_proto.is_some() {
+                    return maybe_proto;
+                }
+
+                let proto = Rc::new(RefCell::new(JsObject::new()));
+                proto.borrow_mut().set(
+                    String::from("constructor"),
+                    JsValue::Function(func_rc.clone()),
+                );
+                func_rc.borrow_mut().prototype = Some(proto.clone());
+                Some(proto)
+            }
+            JsValue::Object(obj_rc)
+                if obj_rc.borrow().internal_tag.as_deref()
+                    == Some(super::native_proxy::PROXY_TAG) =>
+            {
+                super::native_proxy::proxy_target(value)
+                    .and_then(|target| self.constructor_prototype_from_value(&target))
+            }
+            _ => None,
+        }
+    }
+
+    pub(super) fn construct_with_new_target(
+        &mut self,
+        ctor: &JsValue,
+        args: &[JsValue],
+        new_target: &JsValue,
+    ) -> bool {
+        let mut ctor = ctor.clone();
+        loop {
+            match ctor {
+                JsValue::Function(func_rc) => {
+                    let kind = func_rc.borrow().kind.clone();
+
+                    let is_arrow = match &kind {
+                        FnKind::Bytecode(chunk) => chunk.is_arrow,
+                        _ => false,
+                    };
+                    if is_arrow {
+                        let name = func_rc.borrow().name.clone().unwrap_or_default();
+                        let msg = alloc::format!(
+                            "{} is not a constructor",
+                            if name.is_empty() {
+                                "(intermediate value)".into()
+                            } else {
+                                name
+                            }
+                        );
+                        let exc = self.make_type_error(&msg);
+                        if !self.handle_exception(exc) {
+                            self.stack.push(JsValue::Undefined);
+                        }
+                        return true;
+                    }
+
+                    let ctor_proto = self
+                        .constructor_prototype_from_value(new_target)
+                        .or(Some(self.object_proto.clone()));
+                    let new_obj = JsValue::Object(Rc::new(RefCell::new(JsObject {
+                        properties: alloc::collections::BTreeMap::new(),
+                        prototype: ctor_proto,
+                        internal_tag: None,
+                        primitive_value: None,
+                        set_hook: None,
+                        set_hook_data: core::ptr::null_mut(),
+                    })));
+
+                    self.current_this = new_obj.clone();
+
+                    match kind {
+                        FnKind::Native(native_fn) => {
+                            let result = native_fn(self, args);
+                            if let Some(exc) = self.pending_exception.take() {
+                                if !self.handle_exception(exc) {
+                                    self.stack.push(JsValue::Undefined);
+                                }
+                            } else if result.is_object() || result.is_array() {
+                                self.stack.push(result);
+                            } else {
+                                self.stack.push(new_obj);
+                            }
+                        }
+                        FnKind::Bytecode(chunk) => {
+                            let captured_upvalues = func_rc.borrow().upvalues.clone();
+                            let local_count = chunk.local_count as usize;
+                            let mut locals: Vec<Rc<RefCell<JsValue>>> = (0..local_count)
+                                .map(|_| Rc::new(RefCell::new(JsValue::Undefined)))
+                                .collect();
+                            for (i, arg) in args.iter().enumerate() {
+                                if i < local_count {
+                                    *locals[i].borrow_mut() = arg.clone();
+                                }
+                            }
+                            let ctor_ref = JsValue::Function(func_rc.clone());
+                            let frame = CallFrame {
+                                chunk,
+                                ip: 0,
+                                stack_base: self.stack.len(),
+                                locals,
+                                upvalue_cells: captured_upvalues,
+                                this_val: new_obj,
+                                is_constructor: true,
+                                all_args: args.to_vec(),
+                                self_ref: ctor_ref,
+                            };
+                            self.frames.push(frame);
+                        }
+                    }
+                    return true;
+                }
+                JsValue::Object(ref obj_rc)
+                    if obj_rc.borrow().internal_tag.as_deref()
+                        == Some(super::native_proxy::PROXY_TAG) =>
+                {
+                    if let Some(result) = super::native_proxy::proxy_construct(self, &ctor, args) {
+                        self.stack.push(result);
+                        return true;
+                    }
+                    if let Some(target) = super::native_proxy::proxy_target(&ctor) {
+                        ctor = target;
+                        continue;
+                    }
+                }
+                _ => return false,
+            }
+        }
+    }
+
     /// Regular function call: Stack = [..., callee, arg1..argN]
     pub fn call_function(&mut self, argc: usize) {
         if self.stack.len() < argc + 1 {
@@ -49,7 +252,12 @@ impl Vm {
     const MAX_CALL_DEPTH: usize = 100;
 
     /// Invoke a function value with the given arguments and this binding.
-    pub(super) fn invoke_function(&mut self, callee: &JsValue, args: &[JsValue], this_val: JsValue) {
+    pub(super) fn invoke_function(
+        &mut self,
+        callee: &JsValue,
+        args: &[JsValue],
+        this_val: JsValue,
+    ) {
         // Guard against stack overflow from deep recursion
         if self.frames.len() >= Self::MAX_CALL_DEPTH {
             let err = self.make_range_error("Maximum call stack size exceeded");
@@ -130,6 +338,23 @@ impl Vm {
                     }
                 }
             }
+            JsValue::Object(ref obj_rc)
+                if obj_rc.borrow().internal_tag.as_deref()
+                    == Some(super::native_proxy::PROXY_TAG) =>
+            {
+                if let Some(result) =
+                    super::native_proxy::proxy_apply(self, callee, &this_val, args)
+                {
+                    self.stack.push(result);
+                } else if let Some(target) = super::native_proxy::proxy_target(callee) {
+                    self.invoke_function(&target, args, this_val);
+                } else {
+                    let exc = self.make_type_error("is not a function");
+                    if !self.handle_exception(exc) {
+                        self.stack.push(JsValue::Undefined);
+                    }
+                }
+            }
             _other => {
                 // Try to extract the method name from the current call frame's bytecode
                 let mut context = alloc::string::String::new();
@@ -142,7 +367,9 @@ impl Vm {
                             let check_ip = ip - back;
                             if check_ip < code.len() {
                                 if let crate::bytecode::Op::GetPropNamed(ci) = &code[check_ip] {
-                                    if let Some(crate::bytecode::Constant::String(s)) = consts.get(*ci as usize) {
+                                    if let Some(crate::bytecode::Constant::String(s)) =
+                                        consts.get(*ci as usize)
+                                    {
                                         // Show the `this` object type for method calls
                                         let this_desc = match &this_val {
                                             JsValue::Undefined => "undefined",
@@ -152,10 +379,15 @@ impl Vm {
                                             JsValue::Bool(_) => "bool",
                                             JsValue::Object(o) => {
                                                 let b = o.borrow();
-                                                if b.has("__nodeId") { "DOMElement" }
-                                                else if b.internal_tag.as_deref() == Some("Map") { "Map" }
-                                                else if b.internal_tag.as_deref() == Some("Set") { "Set" }
-                                                else { "object" }
+                                                if b.has("__nodeId") {
+                                                    "DOMElement"
+                                                } else if b.internal_tag.as_deref() == Some("Map") {
+                                                    "Map"
+                                                } else if b.internal_tag.as_deref() == Some("Set") {
+                                                    "Set"
+                                                } else {
+                                                    "object"
+                                                }
                                             }
                                             JsValue::Array(_) => "array",
                                             JsValue::Function(_) => "function",
@@ -165,7 +397,9 @@ impl Vm {
                                     }
                                 }
                                 if let crate::bytecode::Op::LoadGlobal(ci) = &code[check_ip] {
-                                    if let Some(crate::bytecode::Constant::String(s)) = consts.get(*ci as usize) {
+                                    if let Some(crate::bytecode::Constant::String(s)) =
+                                        consts.get(*ci as usize)
+                                    {
                                         context = alloc::format!(" global={}", s);
                                         break;
                                     }
@@ -177,7 +411,9 @@ impl Vm {
                 let mut stack = alloc::string::String::new();
                 for (fi, frame) in self.frames.iter().rev().take(6).enumerate() {
                     let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
-                    if fi > 0 { stack.push_str(" <- "); }
+                    if fi > 0 {
+                        stack.push_str(" <- ");
+                    }
                     stack.push_str(fname);
                 }
                 // ES2023 §7.3.13: TypeError when calling a non-callable value.
@@ -207,104 +443,91 @@ impl Vm {
         let args: Vec<JsValue> = self.stack[args_start..].to_vec();
         self.stack.truncate(ctor_idx);
 
-        match ctor {
-            JsValue::Function(func_rc) => {
-                let kind = func_rc.borrow().kind.clone();
+        if self.construct_with_new_target(&ctor, &args, &ctor) {
+            return;
+        }
 
-                // ES2023 §14.2.17: Arrow functions are not constructable
-                let is_arrow = match &kind {
-                    FnKind::Bytecode(chunk) => chunk.is_arrow,
-                    _ => false,
-                };
-                if is_arrow {
-                    let name = func_rc.borrow().name.clone().unwrap_or_default();
-                    let msg = alloc::format!("{} is not a constructor", if name.is_empty() { "(intermediate value)".into() } else { name });
-                    let exc = self.make_type_error(&msg);
-                    if !self.handle_exception(exc) {
-                        self.stack.push(JsValue::Undefined);
-                        return;
+        {
+            let mut context = alloc::string::String::new();
+            let mut fallback_prop: Option<alloc::string::String> = None;
+            if let Some(frame) = self.frames.last() {
+                let ip = frame.ip;
+                let code = &frame.chunk.code;
+                let consts = &frame.chunk.constants;
+                if ip >= 1 {
+                    for back in 1..ip.min(10) {
+                        let check_ip = ip - back;
+                        if check_ip < code.len() {
+                            if let crate::bytecode::Op::LoadGlobal(ci) = &code[check_ip] {
+                                if let Some(crate::bytecode::Constant::String(s)) =
+                                    consts.get(*ci as usize)
+                                {
+                                    context = alloc::format!(" global={}", s);
+                                    break;
+                                }
+                            }
+                            if let crate::bytecode::Op::GetPropNamed(ci) = &code[check_ip] {
+                                if let Some(crate::bytecode::Constant::String(s)) =
+                                    consts.get(*ci as usize)
+                                {
+                                    context = alloc::format!(" prop={}", s);
+                                    fallback_prop = Some(s.clone());
+                                    break;
+                                }
+                            }
+                        }
                     }
+                }
+            }
+
+            if let Some(maybe_ctor) =
+                self.unwrap_namespace_constructor_candidate(&ctor, fallback_prop.as_deref(), 4)
+            {
+                if self.construct_with_new_target(&maybe_ctor, &args, &maybe_ctor) {
+                    self.log_engine("[libjs] recovered constructor via namespace wrapper");
                     return;
                 }
-
-                // Use Constructor.prototype as the new object's prototype (JS spec).
-                // Prefer own_props["prototype"] (set by `Dog.prototype = ...` assignments)
-                // over the internal prototype field.
-                let ctor_proto = {
-                    let f = func_rc.borrow();
-                    if let Some(JsValue::Object(proto_obj)) = f.own_props.get("prototype") {
-                        Some(proto_obj.clone())
-                    } else if let Some(ref proto) = f.prototype {
-                        Some(proto.clone())
-                    } else {
-                        // Lazy-create prototype with constructor back-link (ES2023 §10.2.4)
-                        drop(f);
-                        let proto = Rc::new(RefCell::new(JsObject::new()));
-                        proto.borrow_mut().set(
-                            String::from("constructor"),
-                            JsValue::Function(func_rc.clone()),
-                        );
-                        func_rc.borrow_mut().prototype = Some(proto.clone());
-                        Some(proto)
-                    }
-                };
-                let new_obj = JsValue::Object(Rc::new(RefCell::new(JsObject {
-                    properties: alloc::collections::BTreeMap::new(),
-                    prototype: ctor_proto.or(Some(self.object_proto.clone())),
-                    internal_tag: None,
-                    primitive_value: None,
-                    set_hook: None,
-                    set_hook_data: core::ptr::null_mut(),
-                })));
-
-                self.current_this = new_obj.clone();
-
-                match kind {
-                    FnKind::Native(native_fn) => {
-                        let result = native_fn(self, &args);
-                        if let Some(exc) = self.pending_exception.take() {
-                            if !self.handle_exception(exc) {
-                                self.stack.push(JsValue::Undefined);
-                            }
-                        } else if result.is_object() || result.is_array() {
-                            self.stack.push(result);
-                        } else {
-                            self.stack.push(new_obj);
-                        }
-                    }
-                    FnKind::Bytecode(chunk) => {
-                        let captured_upvalues = func_rc.borrow().upvalues.clone();
-                        let local_count = chunk.local_count as usize;
-                        let mut locals: Vec<Rc<RefCell<JsValue>>> = (0..local_count)
-                            .map(|_| Rc::new(RefCell::new(JsValue::Undefined)))
-                            .collect();
-                        for (i, arg) in args.iter().enumerate() {
-                            if i < local_count {
-                                *locals[i].borrow_mut() = arg.clone();
-                            }
-                        }
-                        let ctor_ref = JsValue::Function(func_rc.clone());
-                        let frame = CallFrame {
-                            chunk,
-                            ip: 0,
-                            stack_base: self.stack.len(),
-                            locals,
-                            upvalue_cells: captured_upvalues,
-                            this_val: new_obj,
-                            is_constructor: true,
-                            all_args: args.to_vec(),
-                            self_ref: ctor_ref,
-                        };
-                        self.frames.push(frame);
-                    }
-                }
             }
-            _ => {
-                let exc = self.make_type_error("is not a constructor");
-                if !self.handle_exception(exc) {
-                    self.stack.push(JsValue::Undefined);
+
+            let value_type = match &ctor {
+                JsValue::Undefined => "undefined",
+                JsValue::Null => "null",
+                JsValue::Bool(_) => "bool",
+                JsValue::Number(_) => "number",
+                JsValue::String(_) => "string",
+                JsValue::Object(obj) => {
+                    let b = obj.borrow();
+                    let mut keys = b.keys();
+                    keys.sort();
+                    let preview: alloc::vec::Vec<alloc::string::String> =
+                        keys.into_iter().take(6).collect();
+                    self.log_engine(&alloc::format!(
+                        "[libjs] WARN: constructor target object keys={:?}{}",
+                        preview,
+                        context
+                    ));
+                    if let Some(tag) = &b.internal_tag {
+                        self.log_engine(&alloc::format!(
+                            "[libjs] WARN: constructor target object tag={}{}",
+                            tag,
+                            context
+                        ));
+                    }
+                    "object"
                 }
+                JsValue::Array(_) => "array",
+                JsValue::Function(_) => "function",
+            };
+            self.log_engine(&alloc::format!(
+                "[libjs] WARN: new on non-constructor type={}{}",
+                value_type,
+                context
+            ));
+            let exc = self.make_type_error("is not a constructor");
+            if !self.handle_exception(exc) {
+                self.stack.push(JsValue::Undefined);
             }
+            return;
         }
     }
 
@@ -384,7 +607,9 @@ impl Vm {
         }
 
         // Get `this` from the current constructor frame.
-        let this_val = self.frames.last()
+        let this_val = self
+            .frames
+            .last()
             .map(|f| f.this_val.clone())
             .unwrap_or(JsValue::Undefined);
 
@@ -435,7 +660,9 @@ impl Vm {
                 let mut stack_info = alloc::string::String::new();
                 for (fi, frame) in self.frames.iter().rev().take(6).enumerate() {
                     let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
-                    if fi > 0 { stack_info.push_str(" <- "); }
+                    if fi > 0 {
+                        stack_info.push_str(" <- ");
+                    }
                     stack_info.push_str(fname);
                 }
                 let super_type = match &super_ctor {
@@ -447,16 +674,41 @@ impl Vm {
                     JsValue::Bool(_) => "bool",
                     _ => "other",
                 };
-                self.log_engine(&alloc::format!("[libjs] WARN: super() called on non-function (got {}) [{}]", super_type, stack_info));
+                self.log_engine(&alloc::format!(
+                    "[libjs] WARN: super() called on non-function (got {}) [{}]",
+                    super_type,
+                    stack_info
+                ));
                 self.stack.push(JsValue::Undefined);
             }
         }
     }
 
-    /// Simplified instanceof check.
-    /// `left instanceof right` — basic implementation.
-    /// TODO: proper prototype chain walk (requires all constructors to have .prototype set)
-    pub fn instance_of(&self, left: &JsValue, _right: &JsValue) -> bool {
-        matches!(left, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_))
+    /// `left instanceof right` — walks the left-hand prototype chain and
+    /// compares it against `right.prototype`.
+    pub fn instance_of(&self, left: &JsValue, right: &JsValue) -> bool {
+        let target_proto = match right {
+            JsValue::Function(func) => func.borrow().prototype.clone(),
+            _ => None,
+        };
+        let Some(target_proto) = target_proto else {
+            return false;
+        };
+
+        let mut current_proto = match left {
+            JsValue::Object(obj) => obj.borrow().prototype.clone(),
+            JsValue::Array(_) => Some(self.array_proto.clone()),
+            JsValue::Function(func) => func.borrow().prototype.clone(),
+            _ => None,
+        };
+
+        while let Some(proto) = current_proto {
+            if Rc::ptr_eq(&proto, &target_proto) {
+                return true;
+            }
+            current_proto = proto.borrow().prototype.clone();
+        }
+
+        false
     }
 }

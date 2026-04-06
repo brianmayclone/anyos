@@ -5,16 +5,16 @@
 //! injection.  This mirrors how real browsers (Chromium/Blink, Gecko)
 //! expose the DOM to their JavaScript engines.
 
-mod element;
 mod classlist;
 mod document;
-mod window;
-mod xhr;
+mod element;
 mod fetch;
-mod storage;
 mod http;
 mod selector;
+mod storage;
 pub mod websocket;
+mod window;
+mod xhr;
 
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
@@ -23,12 +23,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use libjs::{JsEngine, JsValue, Vm};
 use libjs::value::JsArray;
 use libjs::vm::native_fn;
+use libjs::{JsEngine, JsValue, Vm};
 
-use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::css::{Declaration, KeyframeSet};
+use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{apply_timing, TimingFunction, TransitionDef};
 
 // ═══════════════════════════════════════════════════════════
@@ -46,7 +46,9 @@ static mut VIRTUAL_NODES_TARGET: *mut Vec<VirtualNode> = core::ptr::null_mut();
 /// textContent, innerHTML, className, value, etc.
 fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
     let mutations = unsafe {
-        if MUTATION_TARGET.is_null() { return; }
+        if MUTATION_TARGET.is_null() {
+            return;
+        }
         &mut *MUTATION_TARGET
     };
     // Decode node_id from pointer (round-trips correctly for negative i64 on 64-bit).
@@ -195,7 +197,9 @@ impl DomBridge {
 /// Retrieve the DomBridge from vm.userdata.
 fn get_bridge(vm: &mut Vm) -> Option<&mut DomBridge> {
     let ptr = vm.userdata;
-    if ptr.is_null() { return None; }
+    if ptr.is_null() {
+        return None;
+    }
     unsafe { Some(&mut *(ptr as *mut DomBridge)) }
 }
 
@@ -217,26 +221,73 @@ struct VirtualNode {
 /// A recorded DOM mutation from JavaScript.
 #[derive(Clone)]
 pub enum DomMutation {
-    SetAttribute { node_id: i64, name: String, value: String },
-    SetTextContent { node_id: i64, text: String },
-    RemoveAttribute { node_id: i64, name: String },
-    CreateElement { virtual_id: i64, tag: String },
-    CreateTextNode { virtual_id: i64, text: String },
-    AppendChild { parent_id: i64, child_id: i64 },
-    RemoveChild { parent_id: i64, child_id: i64 },
-    InsertBefore { parent_id: i64, new_child_id: i64, ref_child_id: i64 },
-    ReplaceChild { parent_id: i64, new_child_id: i64, old_child_id: i64 },
-    RemoveNode { node_id: i64 },
-    SetInnerHTML { node_id: i64, html: String },
-    SetStyleProperty { node_id: i64, property: String, value: String },
+    SetAttribute {
+        node_id: i64,
+        name: String,
+        value: String,
+    },
+    SetTextContent {
+        node_id: i64,
+        text: String,
+    },
+    RemoveAttribute {
+        node_id: i64,
+        name: String,
+    },
+    CreateElement {
+        virtual_id: i64,
+        tag: String,
+    },
+    CreateTextNode {
+        virtual_id: i64,
+        text: String,
+    },
+    AppendChild {
+        parent_id: i64,
+        child_id: i64,
+    },
+    RemoveChild {
+        parent_id: i64,
+        child_id: i64,
+    },
+    InsertBefore {
+        parent_id: i64,
+        new_child_id: i64,
+        ref_child_id: i64,
+    },
+    ReplaceChild {
+        parent_id: i64,
+        new_child_id: i64,
+        old_child_id: i64,
+    },
+    RemoveNode {
+        node_id: i64,
+    },
+    SetInnerHTML {
+        node_id: i64,
+        html: String,
+    },
+    SetStyleProperty {
+        node_id: i64,
+        property: String,
+        value: String,
+    },
     /// A `document.cookie = "..."` assignment from JavaScript.
     /// The host application should parse this Set-Cookie string and update its
     /// cookie jar accordingly.
-    SetCookie { value: String },
+    SetCookie {
+        value: String,
+    },
     /// Set the vertical scroll offset on an overflow container (JS `element.scrollTop = n`).
-    SetScrollTop { node_id: usize, value: i32 },
+    SetScrollTop {
+        node_id: usize,
+        value: i32,
+    },
     /// Set the horizontal scroll offset on an overflow container (JS `element.scrollLeft = n`).
-    SetScrollLeft { node_id: usize, value: i32 },
+    SetScrollLeft {
+        node_id: usize,
+        value: i32,
+    },
 }
 
 /// A pending HTTP request from XMLHttpRequest / fetch.
@@ -282,15 +333,22 @@ pub enum EventData {
     None,
     /// MouseEvent (click, mousedown, mouseup, mousemove, mouseover, mouseout, mouseenter, mouseleave).
     Mouse {
-        client_x: f64, client_y: f64,
-        page_x: f64,   page_y: f64,
-        screen_x: f64, screen_y: f64,
-        offset_x: f64, offset_y: f64,
+        client_x: f64,
+        client_y: f64,
+        page_x: f64,
+        page_y: f64,
+        screen_x: f64,
+        screen_y: f64,
+        offset_x: f64,
+        offset_y: f64,
         /// 0=main, 1=aux, 2=secondary
         button: u8,
         /// Bitmask of currently pressed buttons.
         buttons: u8,
-        ctrl_key: bool, shift_key: bool, alt_key: bool, meta_key: bool,
+        ctrl_key: bool,
+        shift_key: bool,
+        alt_key: bool,
+        meta_key: bool,
     },
     /// KeyboardEvent (keydown, keyup, keypress).
     Keyboard {
@@ -304,7 +362,10 @@ pub enum EventData {
         which: u32,
         /// Legacy charCode (only meaningful for keypress).
         char_code: u32,
-        ctrl_key: bool, shift_key: bool, alt_key: bool, meta_key: bool,
+        ctrl_key: bool,
+        shift_key: bool,
+        alt_key: bool,
+        meta_key: bool,
         /// True when the key is held down and auto-repeat fires.
         repeat: bool,
         is_composing: bool,
@@ -324,25 +385,39 @@ pub enum EventData {
     },
     /// WheelEvent (wheel).
     Wheel {
-        delta_x: f64, delta_y: f64, delta_z: f64,
+        delta_x: f64,
+        delta_y: f64,
+        delta_z: f64,
         /// 0=pixel, 1=line, 2=page
         delta_mode: u32,
-        client_x: f64, client_y: f64,
-        ctrl_key: bool, shift_key: bool, alt_key: bool, meta_key: bool,
+        client_x: f64,
+        client_y: f64,
+        ctrl_key: bool,
+        shift_key: bool,
+        alt_key: bool,
+        meta_key: bool,
     },
     /// PointerEvent (pointerdown, pointerup, pointermove, etc.).
     Pointer {
-        client_x: f64, client_y: f64,
-        page_x: f64,   page_y: f64,
-        screen_x: f64, screen_y: f64,
+        client_x: f64,
+        client_y: f64,
+        page_x: f64,
+        page_y: f64,
+        screen_x: f64,
+        screen_y: f64,
         pointer_id: i32,
         /// "mouse", "pen", or "touch".
         pointer_type: String,
         pressure: f64,
-        tilt_x: f64, tilt_y: f64,
+        tilt_x: f64,
+        tilt_y: f64,
         is_primary: bool,
-        button: u8, buttons: u8,
-        ctrl_key: bool, shift_key: bool, alt_key: bool, meta_key: bool,
+        button: u8,
+        buttons: u8,
+        ctrl_key: bool,
+        shift_key: bool,
+        alt_key: bool,
+        meta_key: bool,
     },
 }
 
@@ -467,6 +542,9 @@ pub struct JsRuntime {
     pub active_transitions: Vec<ActiveTransition>,
     /// Total elapsed time since page load (ms) — used as DOMHighResTimeStamp for rAF callbacks.
     total_elapsed_ms: u64,
+    /// Viewport dimensions exposed to `window`.
+    viewport_width: u32,
+    viewport_height: u32,
 }
 
 impl JsRuntime {
@@ -489,7 +567,14 @@ impl JsRuntime {
             active_animations: Vec::new(),
             active_transitions: Vec::new(),
             total_elapsed_ms: 0,
+            viewport_width: 1024,
+            viewport_height: 768,
         }
+    }
+
+    pub fn set_viewport(&mut self, width: u32, height: u32) {
+        self.viewport_width = width.max(1);
+        self.viewport_height = height.max(1);
     }
 
     /// Set the cookie string that will be exposed as `document.cookie` during
@@ -507,7 +592,11 @@ impl JsRuntime {
     pub fn collect_script_entries(dom: &Dom) -> Vec<ScriptEntry> {
         let mut entries = Vec::new();
         for i in 0..dom.nodes.len() {
-            if let NodeType::Element { tag: Tag::Script, attrs } = &dom.nodes[i].node_type {
+            if let NodeType::Element {
+                tag: Tag::Script,
+                attrs,
+            } = &dom.nodes[i].node_type
+            {
                 // Check type attribute — skip non-JS types.
                 let type_attr = attrs.iter().find(|a| a.name == "type");
                 if let Some(t) = type_attr {
@@ -516,9 +605,14 @@ impl JsRuntime {
                         && lower != "text/javascript"
                         && lower != "application/javascript"
                         && lower != "module"
-                    { continue; }
+                    {
+                        continue;
+                    }
                 }
-                let src = attrs.iter().find(|a| a.name == "src").map(|a| a.value.as_str());
+                let src = attrs
+                    .iter()
+                    .find(|a| a.name == "src")
+                    .map(|a| a.value.as_str());
                 if let Some(url) = src {
                     if !url.is_empty() {
                         entries.push(ScriptEntry::External(String::from(url)));
@@ -543,11 +637,16 @@ impl JsRuntime {
     /// * `url` — the current page URL, used to populate `window.location` /
     ///   `document.location` inside the JS environment.
     pub fn execute_script_sources(&mut self, dom: &Dom, url: &str, scripts: &[String]) {
-        if scripts.is_empty() { return; }
+        if scripts.is_empty() {
+            return;
+        }
 
         let total_bytes: usize = scripts.iter().map(|s| s.len()).sum();
-        anyos_std::println!("[js] {} script(s) to execute, {} bytes total",
-            scripts.len(), total_bytes);
+        anyos_std::println!(
+            "[js] {} script(s) to execute, {} bytes total",
+            scripts.len(),
+            total_bytes
+        );
 
         // Cap large pages: limit total number of scripts.
         // Script size limit raised to 4 MiB to support modern bundlers (Vite, webpack)
@@ -584,13 +683,20 @@ impl JsRuntime {
         self.setup_native_api(dom, url, &self.cookies.clone());
 
         // Enable property-write interception.
-        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>; }
+        unsafe {
+            MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
+            VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
+        }
 
         // Execute each script (with limits to keep UI responsive).
         let script_count = scripts.len().min(MAX_SCRIPTS);
         for (idx, script) in scripts.iter().take(script_count).enumerate() {
             if script.len() > MAX_SCRIPT_BYTES {
-                anyos_std::println!("[js] skipping script #{} ({} bytes — too large)", idx, script.len());
+                anyos_std::println!(
+                    "[js] skipping script #{} ({} bytes — too large)",
+                    idx,
+                    script.len()
+                );
                 continue;
             }
             // Reset step counter and engine state before each script so each gets the full budget.
@@ -600,19 +706,32 @@ impl JsRuntime {
             // Clear any leftover call frames from aborted scripts (e.g. step-limit abort).
             self.engine.vm().frames.clear();
             self.engine.vm().stack.clear();
-            anyos_std::println!("[js] eval #{}: {} bytes (frames={} stack={})",
-                idx, script.len(), self.engine.vm().frames.len(), self.engine.vm().stack.len());
+            anyos_std::println!(
+                "[js] eval #{}: {} bytes (frames={} stack={})",
+                idx,
+                script.len(),
+                self.engine.vm().frames.len(),
+                self.engine.vm().stack.len()
+            );
             let result = self.engine.eval(script);
 
             // --- Per-script diagnostics ---
             let steps_used = self.engine.vm().steps;
             let hit_limit = steps_used > self.engine.vm().step_limit;
             if hit_limit {
-                anyos_std::println!("[js] !! script #{} HIT STEP LIMIT ({}/{}) — execution aborted",
-                    idx, steps_used, self.engine.vm().step_limit);
+                anyos_std::println!(
+                    "[js] !! script #{} HIT STEP LIMIT ({}/{}) — execution aborted",
+                    idx,
+                    steps_used,
+                    self.engine.vm().step_limit
+                );
             } else {
-                anyos_std::println!("[js] script #{} completed: {} steps (limit {})",
-                    idx, steps_used, self.engine.vm().step_limit);
+                anyos_std::println!(
+                    "[js] script #{} completed: {} steps (limit {})",
+                    idx,
+                    steps_used,
+                    self.engine.vm().step_limit
+                );
             }
 
             // Check for unhandled exceptions.
@@ -664,12 +783,18 @@ impl JsRuntime {
             }
         }
         if scripts.len() > script_count {
-            anyos_std::println!("[js] skipped {} script(s) (limit={})",
-                scripts.len() - script_count, MAX_SCRIPTS);
+            anyos_std::println!(
+                "[js] skipped {} script(s) (limit={})",
+                scripts.len() - script_count,
+                MAX_SCRIPTS
+            );
         }
 
         // Disable interception.
-        unsafe { MUTATION_TARGET = core::ptr::null_mut(); VIRTUAL_NODES_TARGET = core::ptr::null_mut(); }
+        unsafe {
+            MUTATION_TARGET = core::ptr::null_mut();
+            VIRTUAL_NODES_TARGET = core::ptr::null_mut();
+        }
 
         self.mutations = bridge.mutations;
         self.virtual_nodes = bridge.virtual_nodes;
@@ -682,8 +807,11 @@ impl JsRuntime {
         self.pending_ws_closes.extend(bridge.pending_ws_closes);
         self.ws_registry.extend(bridge.ws_registry);
         self.engine.vm().userdata = core::ptr::null_mut();
-        crate::debug_surf!("[js] execute_script_sources complete: {} mutations, {} listeners",
-            self.mutations.len(), self.event_listeners.len());
+        crate::debug_surf!(
+            "[js] execute_script_sources complete: {} mutations, {} listeners",
+            self.mutations.len(),
+            self.event_listeners.len()
+        );
     }
 
     /// Execute all `<script>` tags in the DOM (inline only, skips external).
@@ -695,12 +823,13 @@ impl JsRuntime {
     ///   `document.location` inside the JS environment.
     pub fn execute_scripts(&mut self, dom: &Dom, url: &str) {
         let entries = Self::collect_script_entries(dom);
-        let scripts: Vec<String> = entries.into_iter().filter_map(|e| {
-            match e {
+        let scripts: Vec<String> = entries
+            .into_iter()
+            .filter_map(|e| match e {
                 ScriptEntry::Inline(text) => Some(text),
                 ScriptEntry::External(_) => None,
-            }
-        }).collect();
+            })
+            .collect();
         self.execute_script_sources(dom, url, &scripts);
     }
 
@@ -712,7 +841,10 @@ impl JsRuntime {
         let vm = self.engine.vm();
 
         // Event callback storage (only tiny bit of eval for array init).
-        vm.set_global("__eventCallbacks", JsValue::Array(Rc::new(RefCell::new(JsArray::new()))));
+        vm.set_global(
+            "__eventCallbacks",
+            JsValue::Array(Rc::new(RefCell::new(JsArray::new()))),
+        );
 
         // Create document object natively.
         let doc = document::make_document(vm, dom, url, cookies);
@@ -722,7 +854,7 @@ impl JsRuntime {
         let origin = extract_origin(url);
 
         // Create window object natively.
-        let win = window::make_window(vm, doc, &origin);
+        let win = window::make_window(vm, doc, &origin, self.viewport_width, self.viewport_height);
         vm.set_global("window", win.clone());
         vm.set_global("self", win.clone());
         vm.set_global("globalThis", win.clone());
@@ -732,18 +864,40 @@ impl JsRuntime {
         // Explicitly mirror all window constructors/functions as top-level globals so that
         // modern bundlers (Vite/React) that reference them without the `window.` prefix work.
         for key in &[
-            "MutationObserver", "ResizeObserver", "IntersectionObserver",
-            "AbortController", "queueMicrotask",
-            "TextEncoder", "TextDecoder",
-            "URL", "URLSearchParams",
-            "CustomEvent", "Event",
-            "structuredClone", "DOMParser",
-            "performance", "history", "location",
-            "localStorage", "sessionStorage",
-            "navigator", "screen",
-            "matchMedia", "getSelection",
-            "scrollTo", "scrollBy",
-            "confirm", "prompt",
+            "Node",
+            "Element",
+            "HTMLElement",
+            "CustomElementRegistry",
+            "customElements",
+            "MutationObserver",
+            "ResizeObserver",
+            "IntersectionObserver",
+            "AbortController",
+            "queueMicrotask",
+            "TextEncoder",
+            "TextDecoder",
+            "URL",
+            "URLSearchParams",
+            "CustomEvent",
+            "Event",
+            "structuredClone",
+            "DOMParser",
+            "performance",
+            "history",
+            "location",
+            "localStorage",
+            "sessionStorage",
+            "navigator",
+            "screen",
+            "matchMedia",
+            "getSelection",
+            "scrollTo",
+            "scrollBy",
+            "confirm",
+            "prompt",
+            "__tcfapi",
+            "__cmp",
+            "__uspapi",
         ] {
             let val = win.get_property(key);
             if !val.is_undefined() {
@@ -762,10 +916,22 @@ impl JsRuntime {
         // Timer globals.
         vm.set_global("setTimeout", native_fn("setTimeout", native_set_timeout));
         vm.set_global("setInterval", native_fn("setInterval", native_set_interval));
-        vm.set_global("clearTimeout", native_fn("clearTimeout", native_clear_timeout));
-        vm.set_global("clearInterval", native_fn("clearInterval", native_clear_interval));
-        vm.set_global("requestAnimationFrame", native_fn("requestAnimationFrame", native_request_animation_frame));
-        vm.set_global("cancelAnimationFrame", native_fn("cancelAnimationFrame", native_clear_timeout));
+        vm.set_global(
+            "clearTimeout",
+            native_fn("clearTimeout", native_clear_timeout),
+        );
+        vm.set_global(
+            "clearInterval",
+            native_fn("clearInterval", native_clear_interval),
+        );
+        vm.set_global(
+            "requestAnimationFrame",
+            native_fn("requestAnimationFrame", native_request_animation_frame),
+        );
+        vm.set_global(
+            "cancelAnimationFrame",
+            native_fn("cancelAnimationFrame", native_clear_timeout),
+        );
     }
 
     pub fn eval(&mut self, source: &str) -> JsValue {
@@ -798,9 +964,15 @@ impl JsRuntime {
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
 
-        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>; }
+        unsafe {
+            MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
+            VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
+        }
         let result = self.engine.eval(source);
-        unsafe { MUTATION_TARGET = core::ptr::null_mut(); VIRTUAL_NODES_TARGET = core::ptr::null_mut(); }
+        unsafe {
+            MUTATION_TARGET = core::ptr::null_mut();
+            VIRTUAL_NODES_TARGET = core::ptr::null_mut();
+        }
 
         for msg in self.engine.console_output() {
             self.console.push(msg.clone());
@@ -809,15 +981,20 @@ impl JsRuntime {
         self.mutations.extend(bridge.mutations);
         self.event_listeners.extend(bridge.event_listeners);
         self.apply_remove_listeners(&bridge.remove_listeners);
-        self.pending_http_requests.extend(bridge.pending_http_requests);
+        self.pending_http_requests
+            .extend(bridge.pending_http_requests);
         self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
         self.engine.vm().userdata = core::ptr::null_mut();
         result
     }
 
-    pub fn get_console(&self) -> &[String] { &self.console }
-    pub fn clear_console(&mut self) { self.console.clear(); }
+    pub fn get_console(&self) -> &[String] {
+        &self.console
+    }
+    pub fn clear_console(&mut self) {
+        self.console.clear();
+    }
 
     /// Reset the entire JS runtime for a new page navigation.
     /// Creates a fresh JS engine and clears all accumulated state
@@ -892,7 +1069,10 @@ impl JsRuntime {
         if let Some(ws_obj) = self.find_ws(id) {
             let evt = JsValue::new_object();
             evt.set_property(String::from("data"), JsValue::String(String::from(data)));
-            evt.set_property(String::from("type"), JsValue::String(String::from("message")));
+            evt.set_property(
+                String::from("type"),
+                JsValue::String(String::from("message")),
+            );
             evt.set_property(String::from("origin"), JsValue::String(String::new()));
             evt.set_property(String::from("source"), JsValue::Null);
             let cb = ws_obj.get_property("onmessage");
@@ -937,7 +1117,8 @@ impl JsRuntime {
 
     /// Find a WebSocket JS object in the registry by ID.
     fn find_ws(&self, id: u64) -> Option<JsValue> {
-        self.ws_registry.iter()
+        self.ws_registry
+            .iter()
             .find(|(wid, _)| *wid == id)
             .map(|(_, v)| v.clone())
     }
@@ -949,7 +1130,9 @@ impl JsRuntime {
 
     /// Fire a WS callback (onopen/onmessage/onerror/onclose) through the VM.
     fn fire_ws_callback(&mut self, cb: JsValue, this: &JsValue, args: &[JsValue]) {
-        if !matches!(cb, JsValue::Function(_)) { return; }
+        if !matches!(cb, JsValue::Function(_)) {
+            return;
+        }
         self.engine.vm().call_value(&cb, args, this.clone());
         for msg in self.engine.console_output() {
             self.console.push(msg.clone());
@@ -968,21 +1151,38 @@ impl JsRuntime {
                 DomMutation::CreateElement { virtual_id, tag } => {
                     let real_tag = Tag::from_str(tag);
                     // Copy attributes from virtual node if they were set before insertion
-                    let attrs: Vec<crate::dom::Attr> = self.virtual_nodes.iter()
+                    let attrs: Vec<crate::dom::Attr> = self
+                        .virtual_nodes
+                        .iter()
                         .find(|vn| vn.id == *virtual_id)
-                        .map(|vn| vn.attrs.iter().map(|(k, v)| crate::dom::Attr {
-                            name: k.clone(),
-                            value: v.clone(),
-                        }).collect())
+                        .map(|vn| {
+                            vn.attrs
+                                .iter()
+                                .map(|(k, v)| crate::dom::Attr {
+                                    name: k.clone(),
+                                    value: v.clone(),
+                                })
+                                .collect()
+                        })
                         .unwrap_or_default();
-                    let real_id = dom.add_node(NodeType::Element { tag: real_tag, attrs }, None);
+                    let real_id = dom.add_node(
+                        NodeType::Element {
+                            tag: real_tag,
+                            attrs,
+                        },
+                        None,
+                    );
                     id_map.insert(*virtual_id, real_id);
                 }
                 DomMutation::CreateTextNode { virtual_id, text } => {
                     let real_id = dom.add_node(NodeType::Text(text.clone()), None);
                     id_map.insert(*virtual_id, real_id);
                 }
-                DomMutation::SetAttribute { node_id, name, value } => {
+                DomMutation::SetAttribute {
+                    node_id,
+                    name,
+                    value,
+                } => {
                     if let Some(real_id) = resolve_id(*node_id, &id_map) {
                         dom.set_attr(real_id, name, value);
                     }
@@ -997,21 +1197,31 @@ impl JsRuntime {
                         dom.set_text(real_id, text);
                     }
                 }
-                DomMutation::AppendChild { parent_id, child_id } => {
+                DomMutation::AppendChild {
+                    parent_id,
+                    child_id,
+                } => {
                     let real_parent = resolve_id(*parent_id, &id_map);
                     let real_child = resolve_id(*child_id, &id_map);
                     if let (Some(p), Some(c)) = (real_parent, real_child) {
                         dom.append_child(p, c);
                     }
                 }
-                DomMutation::RemoveChild { parent_id, child_id } => {
+                DomMutation::RemoveChild {
+                    parent_id,
+                    child_id,
+                } => {
                     let real_parent = resolve_id(*parent_id, &id_map);
                     let real_child = resolve_id(*child_id, &id_map);
                     if let (Some(p), Some(c)) = (real_parent, real_child) {
                         dom.remove_child(p, c);
                     }
                 }
-                DomMutation::InsertBefore { parent_id, new_child_id, ref_child_id } => {
+                DomMutation::InsertBefore {
+                    parent_id,
+                    new_child_id,
+                    ref_child_id,
+                } => {
                     let real_parent = resolve_id(*parent_id, &id_map);
                     let real_new = resolve_id(*new_child_id, &id_map);
                     let real_ref = resolve_id(*ref_child_id, &id_map);
@@ -1019,7 +1229,11 @@ impl JsRuntime {
                         dom.insert_before(p, n, r);
                     }
                 }
-                DomMutation::ReplaceChild { parent_id, new_child_id, old_child_id } => {
+                DomMutation::ReplaceChild {
+                    parent_id,
+                    new_child_id,
+                    old_child_id,
+                } => {
                     let real_parent = resolve_id(*parent_id, &id_map);
                     let real_new = resolve_id(*new_child_id, &id_map);
                     let real_old = resolve_id(*old_child_id, &id_map);
@@ -1039,7 +1253,9 @@ impl JsRuntime {
                 DomMutation::SetInnerHTML { node_id, html } => {
                     if let Some(real_id) = resolve_id(*node_id, &id_map) {
                         // Remove old children.
-                        let children: Vec<usize> = dom.nodes.get(real_id)
+                        let children: Vec<usize> = dom
+                            .nodes
+                            .get(real_id)
                             .map(|n| n.children.clone())
                             .unwrap_or_default();
                         for cid in children {
@@ -1052,11 +1268,14 @@ impl JsRuntime {
                         }
                     }
                 }
-                DomMutation::SetStyleProperty { node_id, property, value } => {
+                DomMutation::SetStyleProperty {
+                    node_id,
+                    property,
+                    value,
+                } => {
                     // Store style as a `style` attribute for now.
                     if let Some(real_id) = resolve_id(*node_id, &id_map) {
-                        let existing = String::from(dom.attr(real_id, "style")
-                            .unwrap_or(""));
+                        let existing = String::from(dom.attr(real_id, "style").unwrap_or(""));
                         let new_style = if existing.is_empty() {
                             alloc::format!("{}: {}", property, value)
                         } else {
@@ -1115,14 +1334,19 @@ impl JsRuntime {
         let target_idx = path.len().saturating_sub(1);
 
         // Fast exit: skip work entirely when no registered listener matches.
-        let has_any = path.iter().any(|&nid|
-            self.event_listeners.iter().any(|l| l.node_id == nid && l.event == event_name)
-        );
-        if !has_any { return true; }
+        let has_any = path.iter().any(|&nid| {
+            self.event_listeners
+                .iter()
+                .any(|l| l.node_id == nid && l.event == event_name)
+        });
+        if !has_any {
+            return true;
+        }
 
         // Whether this event type bubbles by default.
         // (focus/blur/scroll/load do not bubble — they have focused-capture semantics.)
-        let bubbles = !matches!(event_name,
+        let bubbles = !matches!(
+            event_name,
             "focus" | "blur" | "scroll" | "load" | "unload" | "error"
         );
         let cancelable = !matches!(event_name, "scroll" | "load" | "unload");
@@ -1151,27 +1375,43 @@ impl JsRuntime {
             remove_listeners: Vec::new(),
         };
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
-        unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>; }
+        unsafe {
+            MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
+            VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
+        }
 
         // ── Phase 1: CAPTURE (eventPhase = 1) ───────────────────────────────
         // Fire capture-listeners from root down to (but not including) the target.
         'capture: for i in 0..target_idx {
-            if bridge.propagation_stopped || bridge.immediate_stopped { break; }
+            if bridge.propagation_stopped || bridge.immediate_stopped {
+                break;
+            }
             let nid = path[i];
             let cur_el = element::make_element(self.engine.vm(), nid as i64);
             evt.set_property(String::from("currentTarget"), cur_el);
             evt.set_property(String::from("eventPhase"), JsValue::Number(1.0));
 
-            let matching: Vec<JsValue> = self.event_listeners.iter()
+            let matching: Vec<JsValue> = self
+                .event_listeners
+                .iter()
                 .filter(|l| l.node_id == nid && l.event == event_name && l.capture)
                 .map(|l| l.callback.clone())
                 .collect();
 
             for cb in &matching {
-                self.engine.vm().call_value(cb, &[evt.clone()], JsValue::Undefined);
-                evt.set_property(String::from("defaultPrevented"), JsValue::Bool(bridge.prevented));
-                if bridge.immediate_stopped { break 'capture; }
-                if bridge.propagation_stopped { break 'capture; }
+                self.engine
+                    .vm()
+                    .call_value(cb, &[evt.clone()], JsValue::Undefined);
+                evt.set_property(
+                    String::from("defaultPrevented"),
+                    JsValue::Bool(bridge.prevented),
+                );
+                if bridge.immediate_stopped {
+                    break 'capture;
+                }
+                if bridge.propagation_stopped {
+                    break 'capture;
+                }
             }
         }
 
@@ -1182,15 +1422,24 @@ impl JsRuntime {
             evt.set_property(String::from("currentTarget"), cur_el);
             evt.set_property(String::from("eventPhase"), JsValue::Number(2.0));
 
-            let matching: Vec<JsValue> = self.event_listeners.iter()
+            let matching: Vec<JsValue> = self
+                .event_listeners
+                .iter()
                 .filter(|l| l.node_id == node_id && l.event == event_name)
                 .map(|l| l.callback.clone())
                 .collect();
 
             'target: for cb in &matching {
-                self.engine.vm().call_value(cb, &[evt.clone()], JsValue::Undefined);
-                evt.set_property(String::from("defaultPrevented"), JsValue::Bool(bridge.prevented));
-                if bridge.immediate_stopped { break 'target; }
+                self.engine
+                    .vm()
+                    .call_value(cb, &[evt.clone()], JsValue::Undefined);
+                evt.set_property(
+                    String::from("defaultPrevented"),
+                    JsValue::Bool(bridge.prevented),
+                );
+                if bridge.immediate_stopped {
+                    break 'target;
+                }
                 // stopPropagation at target does NOT prevent remaining at-target
                 // listeners per spec §10.3 step 6.3.  Only stopImmediatePropagation does.
             }
@@ -1205,20 +1454,32 @@ impl JsRuntime {
                 evt.set_property(String::from("currentTarget"), cur_el);
                 evt.set_property(String::from("eventPhase"), JsValue::Number(3.0));
 
-                let matching: Vec<JsValue> = self.event_listeners.iter()
+                let matching: Vec<JsValue> = self
+                    .event_listeners
+                    .iter()
                     .filter(|l| l.node_id == nid && l.event == event_name && !l.capture)
                     .map(|l| l.callback.clone())
                     .collect();
 
                 for cb in &matching {
-                    self.engine.vm().call_value(cb, &[evt.clone()], JsValue::Undefined);
-                    evt.set_property(String::from("defaultPrevented"), JsValue::Bool(bridge.prevented));
-                    if bridge.immediate_stopped || bridge.propagation_stopped { break 'bubble; }
+                    self.engine
+                        .vm()
+                        .call_value(cb, &[evt.clone()], JsValue::Undefined);
+                    evt.set_property(
+                        String::from("defaultPrevented"),
+                        JsValue::Bool(bridge.prevented),
+                    );
+                    if bridge.immediate_stopped || bridge.propagation_stopped {
+                        break 'bubble;
+                    }
                 }
             }
         }
 
-        unsafe { MUTATION_TARGET = core::ptr::null_mut(); VIRTUAL_NODES_TARGET = core::ptr::null_mut(); }
+        unsafe {
+            MUTATION_TARGET = core::ptr::null_mut();
+            VIRTUAL_NODES_TARGET = core::ptr::null_mut();
+        }
 
         // Collect all side-effects from the dispatch.
         for msg in self.engine.console_output() {
@@ -1228,7 +1489,8 @@ impl JsRuntime {
         self.mutations.extend(bridge.mutations);
         self.event_listeners.extend(bridge.event_listeners);
         self.apply_remove_listeners(&bridge.remove_listeners);
-        self.pending_http_requests.extend(bridge.pending_http_requests);
+        self.pending_http_requests
+            .extend(bridge.pending_http_requests);
         self.next_timer_id = bridge.next_timer_id;
         self.timers.extend(bridge.timers);
         self.engine.vm().userdata = core::ptr::null_mut();
@@ -1243,7 +1505,9 @@ impl JsRuntime {
         self.total_elapsed_ms += delta_ms;
 
         // Short-circuit: no allocation or work when there are no timers.
-        if self.timers.is_empty() { return 0; }
+        if self.timers.is_empty() {
+            return 0;
+        }
 
         let mut fired = 0usize;
         let mut keep = Vec::new();
@@ -1263,16 +1527,19 @@ impl JsRuntime {
                     timers: Vec::new(),
                     next_timer_id: self.next_timer_id,
                     propagation_stopped: false,
-            immediate_stopped: false,
-            prevented: false,
-            pending_ws_connects: Vec::new(),
-            pending_ws_sends: Vec::new(),
-            pending_ws_closes: Vec::new(),
-            ws_registry: Vec::new(),
-            remove_listeners: Vec::new(),
+                    immediate_stopped: false,
+                    prevented: false,
+                    pending_ws_connects: Vec::new(),
+                    pending_ws_sends: Vec::new(),
+                    pending_ws_closes: Vec::new(),
+                    ws_registry: Vec::new(),
+                    remove_listeners: Vec::new(),
                 };
                 self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
-                unsafe { MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>; VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>; }
+                unsafe {
+                    MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
+                    VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
+                }
 
                 // Timer callbacks get a generous step budget for React initial renders.
                 self.engine.set_step_limit(5_000_000);
@@ -1283,12 +1550,17 @@ impl JsRuntime {
                 } else {
                     Vec::new()
                 };
-                self.engine.vm().call_value(&t.callback, &cb_args, JsValue::Undefined);
+                self.engine
+                    .vm()
+                    .call_value(&t.callback, &cb_args, JsValue::Undefined);
 
                 // Clear any timer callback exceptions so next timer can run fresh.
                 self.engine.vm().last_exception = None;
 
-                unsafe { MUTATION_TARGET = core::ptr::null_mut(); VIRTUAL_NODES_TARGET = core::ptr::null_mut(); }
+                unsafe {
+                    MUTATION_TARGET = core::ptr::null_mut();
+                    VIRTUAL_NODES_TARGET = core::ptr::null_mut();
+                }
                 for msg in self.engine.console_output() {
                     self.console.push(msg.clone());
                 }
@@ -1300,7 +1572,8 @@ impl JsRuntime {
                 self.engine.vm().engine_log.clear();
                 self.mutations.extend(bridge.mutations);
                 self.event_listeners.extend(bridge.event_listeners);
-                self.pending_http_requests.extend(bridge.pending_http_requests);
+                self.pending_http_requests
+                    .extend(bridge.pending_http_requests);
                 self.next_timer_id = bridge.next_timer_id;
                 // New timers created during callback.
                 keep.extend(bridge.timers);
@@ -1323,18 +1596,20 @@ impl JsRuntime {
     /// Apply pending removeEventListener requests collected during JS execution.
     fn apply_remove_listeners(&mut self, removals: &[(usize, String, JsValue, bool)]) {
         for (node_id, event, callback, capture) in removals {
-            if let Some(pos) = self.event_listeners.iter().position(|l|
+            if let Some(pos) = self.event_listeners.iter().position(|l| {
                 l.node_id == *node_id
-                && l.event == *event
-                && l.capture == *capture
-                && l.callback.strict_eq(callback)
-            ) {
+                    && l.event == *event
+                    && l.capture == *capture
+                    && l.callback.strict_eq(callback)
+            }) {
                 self.event_listeners.remove(pos);
             }
         }
     }
 
-    pub fn engine(&mut self) -> &mut JsEngine { &mut self.engine }
+    pub fn engine(&mut self) -> &mut JsEngine {
+        &mut self.engine
+    }
 
     /// Detect CSS property changes between old and new computed styles and
     /// start `ActiveTransition` entries for properties that have a
@@ -1351,12 +1626,16 @@ impl JsRuntime {
         for node_id in 0..count {
             let old_s = &old_styles[node_id];
             let new_s = &new_styles[node_id];
-            if new_s.transitions.is_empty() { continue; }
+            if new_s.transitions.is_empty() {
+                continue;
+            }
 
             // For each transition definition on this node, check if the
             // corresponding property changed between old and new styles.
             for tdef in &new_s.transitions {
-                if tdef.duration_ms == 0 { continue; }
+                if tdef.duration_ms == 0 {
+                    continue;
+                }
 
                 // "all" means every animatable property.
                 let props: Vec<Property> = if tdef.property == "all" {
@@ -1374,7 +1653,9 @@ impl JsRuntime {
                     // Both must exist and differ.
                     let (from, to) = match (old_decl, new_decl) {
                         (Some(f), Some(t)) => {
-                            if f.value == t.value { continue; }
+                            if f.value == t.value {
+                                continue;
+                            }
                             (f, t)
                         }
                         _ => continue,
@@ -1386,7 +1667,9 @@ impl JsRuntime {
                         tr.node_id == node_id
                             && core::mem::discriminant(&tr.to_decl.property) == dominated
                     });
-                    if already { continue; }
+                    if already {
+                        continue;
+                    }
 
                     self.active_transitions.push(ActiveTransition {
                         node_id,
@@ -1407,13 +1690,12 @@ impl JsRuntime {
     /// style requests an animation that is not already running.
     ///
     /// Call this after `execute_scripts()` / relayout when styles change.
-    pub fn start_animations(
-        &mut self,
-        styles: &[crate::style::ComputedStyle],
-    ) {
+    pub fn start_animations(&mut self, styles: &[crate::style::ComputedStyle]) {
         for (node_id, style) in styles.iter().enumerate() {
             'anim: for adef in &style.animations {
-                if adef.name.is_empty() || adef.duration_ms == 0 { continue; }
+                if adef.name.is_empty() || adef.duration_ms == 0 {
+                    continue;
+                }
                 // Check if this animation is already running for this node.
                 for active in &self.active_animations {
                     if active.node_id == node_id && active.keyframe_name == adef.name {
@@ -1463,7 +1745,9 @@ impl JsRuntime {
             anim.elapsed_ms = anim_elapsed + anim.delay_ms as u64;
 
             let dur = anim.duration_ms as u64;
-            if dur == 0 { continue; }
+            if dur == 0 {
+                continue;
+            }
 
             // Compute t ∈ [0, 1000] within the current iteration.
             let iter_elapsed = anim_elapsed % dur;
@@ -1487,8 +1771,8 @@ impl JsRuntime {
             if new_iter > anim.current_iteration {
                 anim.current_iteration = new_iter;
             }
-            let finished = anim.iteration_count != 0
-                && anim.current_iteration >= anim.iteration_count;
+            let finished =
+                anim.iteration_count != 0 && anim.current_iteration >= anim.iteration_count;
 
             if !finished {
                 any_active = true;
@@ -1501,7 +1785,9 @@ impl JsRuntime {
         let transitions = core::mem::take(&mut self.active_transitions);
         let mut keep_transitions = Vec::new();
         for mut tr in transitions {
-            if tr.duration_ms == 0 { continue; }
+            if tr.duration_ms == 0 {
+                continue;
+            }
             tr.elapsed_ms += delta_ms;
             let elapsed = tr.elapsed_ms.saturating_sub(tr.delay_ms as u64);
             let t_raw = ((elapsed * 1000) / tr.duration_ms as u64).min(1000) as i32;
@@ -1539,7 +1825,9 @@ fn this_node_id(vm: &Vm) -> i64 {
 
 /// Get a string argument at given index.
 fn arg_string(args: &[JsValue], index: usize) -> String {
-    args.get(index).map(|v| v.to_js_string()).unwrap_or_else(String::new)
+    args.get(index)
+        .map(|v| v.to_js_string())
+        .unwrap_or_else(String::new)
 }
 
 /// Create a JS array from a Vec.
@@ -1561,7 +1849,9 @@ fn read_attribute(vm: &mut Vm, node_id: i64, name: &str) -> JsValue {
             }
         } else if let Some(vn) = bridge.get_virtual(node_id) {
             for (k, v) in &vn.attrs {
-                if k == name { return JsValue::String(v.clone()); }
+                if k == name {
+                    return JsValue::String(v.clone());
+                }
             }
             return JsValue::Null;
         }
@@ -1611,8 +1901,32 @@ fn read_child_ids(vm: &mut Vm, node_id: i64) -> Vec<i64> {
             let dom = bridge.dom();
             let nid = node_id as usize;
             if nid < dom.nodes.len() {
-                return dom.get(nid).children.iter()
+                return dom
+                    .get(nid)
+                    .children
+                    .iter()
                     .filter(|&&cid| matches!(&dom.nodes[cid].node_type, NodeType::Element { .. }))
+                    .map(|&cid| cid as i64)
+                    .collect();
+            }
+        } else if let Some(vn) = bridge.get_virtual(node_id) {
+            return vn.child_ids.clone();
+        }
+    }
+    Vec::new()
+}
+
+/// Read all direct child node IDs, including text nodes.
+fn read_all_child_node_ids(vm: &mut Vm, node_id: i64) -> Vec<i64> {
+    if let Some(bridge) = get_bridge(vm) {
+        if node_id >= 0 {
+            let dom = bridge.dom();
+            let nid = node_id as usize;
+            if nid < dom.nodes.len() {
+                return dom
+                    .get(nid)
+                    .children
+                    .iter()
                     .map(|&cid| cid as i64)
                     .collect();
             }
@@ -1662,7 +1976,9 @@ fn read_node_type(vm: &mut Vm, node_id: i64) -> f64 {
 
 /// Read innerHTML for a real node.
 fn read_inner_html(vm: &mut Vm, node_id: i64) -> String {
-    if node_id < 0 { return String::new(); }
+    if node_id < 0 {
+        return String::new();
+    }
     if let Some(bridge) = get_bridge(vm) {
         let dom = bridge.dom();
         let nid = node_id as usize;
@@ -1684,7 +2000,9 @@ fn serialize_node(dom: &Dom, node_id: usize, out: &mut String) {
         NodeType::Element { tag, attrs } => {
             out.push('<');
             let tn = tag.tag_name();
-            for b in tn.as_bytes() { out.push((*b | 32) as char); }
+            for b in tn.as_bytes() {
+                out.push((*b | 32) as char);
+            }
             for a in attrs {
                 out.push(' ');
                 out.push_str(&a.name);
@@ -1697,7 +2015,9 @@ fn serialize_node(dom: &Dom, node_id: usize, out: &mut String) {
                 serialize_node(dom, cid, out);
             }
             out.push_str("</");
-            for b in tn.as_bytes() { out.push((*b | 32) as char); }
+            for b in tn.as_bytes() {
+                out.push((*b | 32) as char);
+            }
             out.push('>');
         }
     }
@@ -1736,9 +2056,12 @@ fn resolve_id(id: i64, map: &BTreeMap<i64, usize>) -> Option<usize> {
 /// Build a CloseEvent-like JS object for `onclose` callbacks.
 fn make_close_event(code: u16, reason: &str, was_clean: bool) -> JsValue {
     let evt = JsValue::new_object();
-    evt.set_property(String::from("type"),     JsValue::String(String::from("close")));
-    evt.set_property(String::from("code"),     JsValue::Number(code as f64));
-    evt.set_property(String::from("reason"),   JsValue::String(String::from(reason)));
+    evt.set_property(String::from("type"), JsValue::String(String::from("close")));
+    evt.set_property(String::from("code"), JsValue::Number(code as f64));
+    evt.set_property(
+        String::from("reason"),
+        JsValue::String(String::from(reason)),
+    );
     evt.set_property(String::from("wasClean"), JsValue::Bool(was_clean));
     evt
 }
@@ -1761,96 +2084,145 @@ fn build_event_object(
     let evt = JsValue::new_object();
 
     // ── W3C Event interface (common to all events) ───────────────────────
-    evt.set_property(String::from("type"),             JsValue::String(String::from(event_name)));
-    evt.set_property(String::from("target"),           target.clone());
-    evt.set_property(String::from("currentTarget"),    target);
-    evt.set_property(String::from("bubbles"),          JsValue::Bool(bubbles));
-    evt.set_property(String::from("cancelable"),       JsValue::Bool(cancelable));
+    evt.set_property(
+        String::from("type"),
+        JsValue::String(String::from(event_name)),
+    );
+    evt.set_property(String::from("target"), target.clone());
+    evt.set_property(String::from("currentTarget"), target);
+    evt.set_property(String::from("bubbles"), JsValue::Bool(bubbles));
+    evt.set_property(String::from("cancelable"), JsValue::Bool(cancelable));
     evt.set_property(String::from("defaultPrevented"), JsValue::Bool(false));
-    evt.set_property(String::from("composed"),         JsValue::Bool(true));
-    evt.set_property(String::from("isTrusted"),        JsValue::Bool(true));
-    evt.set_property(String::from("timeStamp"),        JsValue::Number(0.0));
+    evt.set_property(String::from("composed"), JsValue::Bool(true));
+    evt.set_property(String::from("isTrusted"), JsValue::Bool(true));
+    evt.set_property(String::from("timeStamp"), JsValue::Number(0.0));
     // eventPhase: 0=NONE before dispatch; updated per phase inside dispatch_event.
-    evt.set_property(String::from("eventPhase"),       JsValue::Number(0.0));
-    evt.set_property(String::from("NONE"),             JsValue::Number(0.0));
-    evt.set_property(String::from("CAPTURING_PHASE"),  JsValue::Number(1.0));
-    evt.set_property(String::from("AT_TARGET"),        JsValue::Number(2.0));
-    evt.set_property(String::from("BUBBLING_PHASE"),   JsValue::Number(3.0));
+    evt.set_property(String::from("eventPhase"), JsValue::Number(0.0));
+    evt.set_property(String::from("NONE"), JsValue::Number(0.0));
+    evt.set_property(String::from("CAPTURING_PHASE"), JsValue::Number(1.0));
+    evt.set_property(String::from("AT_TARGET"), JsValue::Number(2.0));
+    evt.set_property(String::from("BUBBLING_PHASE"), JsValue::Number(3.0));
 
     // Control methods — implementations read/write DomBridge via vm.userdata.
-    evt.set_property(String::from("preventDefault"),
-        native_fn("preventDefault", native_prevent_default));
-    evt.set_property(String::from("stopPropagation"),
-        native_fn("stopPropagation", native_stop_propagation));
-    evt.set_property(String::from("stopImmediatePropagation"),
-        native_fn("stopImmediatePropagation", native_stop_immediate_propagation));
-    evt.set_property(String::from("composedPath"),
-        native_fn("composedPath", |_, _| make_array(Vec::new())));
+    evt.set_property(
+        String::from("preventDefault"),
+        native_fn("preventDefault", native_prevent_default),
+    );
+    evt.set_property(
+        String::from("stopPropagation"),
+        native_fn("stopPropagation", native_stop_propagation),
+    );
+    evt.set_property(
+        String::from("stopImmediatePropagation"),
+        native_fn(
+            "stopImmediatePropagation",
+            native_stop_immediate_propagation,
+        ),
+    );
+    evt.set_property(
+        String::from("composedPath"),
+        native_fn("composedPath", |_, _| make_array(Vec::new())),
+    );
 
     // ── Type-specific properties ─────────────────────────────────────────
     match data {
         EventData::None => {}
 
         EventData::Mouse {
-            client_x, client_y, page_x, page_y,
-            screen_x, screen_y, offset_x, offset_y,
-            button, buttons,
-            ctrl_key, shift_key, alt_key, meta_key,
+            client_x,
+            client_y,
+            page_x,
+            page_y,
+            screen_x,
+            screen_y,
+            offset_x,
+            offset_y,
+            button,
+            buttons,
+            ctrl_key,
+            shift_key,
+            alt_key,
+            meta_key,
         } => {
-            evt.set_property(String::from("clientX"),   JsValue::Number(*client_x));
-            evt.set_property(String::from("clientY"),   JsValue::Number(*client_y));
-            evt.set_property(String::from("pageX"),     JsValue::Number(*page_x));
-            evt.set_property(String::from("pageY"),     JsValue::Number(*page_y));
-            evt.set_property(String::from("screenX"),   JsValue::Number(*screen_x));
-            evt.set_property(String::from("screenY"),   JsValue::Number(*screen_y));
-            evt.set_property(String::from("offsetX"),   JsValue::Number(*offset_x));
-            evt.set_property(String::from("offsetY"),   JsValue::Number(*offset_y));
-            evt.set_property(String::from("x"),         JsValue::Number(*client_x));
-            evt.set_property(String::from("y"),         JsValue::Number(*client_y));
-            evt.set_property(String::from("button"),    JsValue::Number(*button as f64));
-            evt.set_property(String::from("buttons"),   JsValue::Number(*buttons as f64));
-            evt.set_property(String::from("ctrlKey"),   JsValue::Bool(*ctrl_key));
-            evt.set_property(String::from("shiftKey"),  JsValue::Bool(*shift_key));
-            evt.set_property(String::from("altKey"),    JsValue::Bool(*alt_key));
-            evt.set_property(String::from("metaKey"),   JsValue::Bool(*meta_key));
+            evt.set_property(String::from("clientX"), JsValue::Number(*client_x));
+            evt.set_property(String::from("clientY"), JsValue::Number(*client_y));
+            evt.set_property(String::from("pageX"), JsValue::Number(*page_x));
+            evt.set_property(String::from("pageY"), JsValue::Number(*page_y));
+            evt.set_property(String::from("screenX"), JsValue::Number(*screen_x));
+            evt.set_property(String::from("screenY"), JsValue::Number(*screen_y));
+            evt.set_property(String::from("offsetX"), JsValue::Number(*offset_x));
+            evt.set_property(String::from("offsetY"), JsValue::Number(*offset_y));
+            evt.set_property(String::from("x"), JsValue::Number(*client_x));
+            evt.set_property(String::from("y"), JsValue::Number(*client_y));
+            evt.set_property(String::from("button"), JsValue::Number(*button as f64));
+            evt.set_property(String::from("buttons"), JsValue::Number(*buttons as f64));
+            evt.set_property(String::from("ctrlKey"), JsValue::Bool(*ctrl_key));
+            evt.set_property(String::from("shiftKey"), JsValue::Bool(*shift_key));
+            evt.set_property(String::from("altKey"), JsValue::Bool(*alt_key));
+            evt.set_property(String::from("metaKey"), JsValue::Bool(*meta_key));
             evt.set_property(String::from("movementX"), JsValue::Number(0.0));
             evt.set_property(String::from("movementY"), JsValue::Number(0.0));
             evt.set_property(String::from("relatedTarget"), JsValue::Null);
         }
 
         EventData::Keyboard {
-            key, code, key_code, which, char_code,
-            ctrl_key, shift_key, alt_key, meta_key,
-            repeat, is_composing,
+            key,
+            code,
+            key_code,
+            which,
+            char_code,
+            ctrl_key,
+            shift_key,
+            alt_key,
+            meta_key,
+            repeat,
+            is_composing,
         } => {
-            evt.set_property(String::from("key"),          JsValue::String(key.clone()));
-            evt.set_property(String::from("code"),         JsValue::String(code.clone()));
-            evt.set_property(String::from("keyCode"),      JsValue::Number(*key_code as f64));
-            evt.set_property(String::from("which"),        JsValue::Number(*which as f64));
-            evt.set_property(String::from("charCode"),     JsValue::Number(*char_code as f64));
-            evt.set_property(String::from("ctrlKey"),      JsValue::Bool(*ctrl_key));
-            evt.set_property(String::from("shiftKey"),     JsValue::Bool(*shift_key));
-            evt.set_property(String::from("altKey"),       JsValue::Bool(*alt_key));
-            evt.set_property(String::from("metaKey"),      JsValue::Bool(*meta_key));
-            evt.set_property(String::from("repeat"),       JsValue::Bool(*repeat));
-            evt.set_property(String::from("isComposing"),  JsValue::Bool(*is_composing));
-            evt.set_property(String::from("location"),     JsValue::Number(0.0));
-            evt.set_property(String::from("DOM_KEY_LOCATION_STANDARD"), JsValue::Number(0.0));
-            evt.set_property(String::from("DOM_KEY_LOCATION_LEFT"),     JsValue::Number(1.0));
-            evt.set_property(String::from("DOM_KEY_LOCATION_RIGHT"),    JsValue::Number(2.0));
-            evt.set_property(String::from("DOM_KEY_LOCATION_NUMPAD"),   JsValue::Number(3.0));
+            evt.set_property(String::from("key"), JsValue::String(key.clone()));
+            evt.set_property(String::from("code"), JsValue::String(code.clone()));
+            evt.set_property(String::from("keyCode"), JsValue::Number(*key_code as f64));
+            evt.set_property(String::from("which"), JsValue::Number(*which as f64));
+            evt.set_property(String::from("charCode"), JsValue::Number(*char_code as f64));
+            evt.set_property(String::from("ctrlKey"), JsValue::Bool(*ctrl_key));
+            evt.set_property(String::from("shiftKey"), JsValue::Bool(*shift_key));
+            evt.set_property(String::from("altKey"), JsValue::Bool(*alt_key));
+            evt.set_property(String::from("metaKey"), JsValue::Bool(*meta_key));
+            evt.set_property(String::from("repeat"), JsValue::Bool(*repeat));
+            evt.set_property(String::from("isComposing"), JsValue::Bool(*is_composing));
+            evt.set_property(String::from("location"), JsValue::Number(0.0));
+            evt.set_property(
+                String::from("DOM_KEY_LOCATION_STANDARD"),
+                JsValue::Number(0.0),
+            );
+            evt.set_property(String::from("DOM_KEY_LOCATION_LEFT"), JsValue::Number(1.0));
+            evt.set_property(String::from("DOM_KEY_LOCATION_RIGHT"), JsValue::Number(2.0));
+            evt.set_property(
+                String::from("DOM_KEY_LOCATION_NUMPAD"),
+                JsValue::Number(3.0),
+            );
             // getModifierState stub.
-            evt.set_property(String::from("getModifierState"),
-                native_fn("getModifierState", |_, _| JsValue::Bool(false)));
+            evt.set_property(
+                String::from("getModifierState"),
+                native_fn("getModifierState", |_, _| JsValue::Bool(false)),
+            );
         }
 
-        EventData::Input { data: input_data, input_type, is_composing } => {
-            evt.set_property(String::from("data"),
+        EventData::Input {
+            data: input_data,
+            input_type,
+            is_composing,
+        } => {
+            evt.set_property(
+                String::from("data"),
                 match input_data {
                     Some(s) => JsValue::String(s.clone()),
-                    None    => JsValue::Null,
-                });
-            evt.set_property(String::from("inputType"),   JsValue::String(input_type.clone()));
+                    None => JsValue::Null,
+                },
+            );
+            evt.set_property(
+                String::from("inputType"),
+                JsValue::String(input_type.clone()),
+            );
             evt.set_property(String::from("isComposing"), JsValue::Bool(*is_composing));
             // dataTransfer is null for plain text input.
             evt.set_property(String::from("dataTransfer"), JsValue::Null);
@@ -1863,65 +2235,97 @@ fn build_event_object(
         }
 
         EventData::Wheel {
-            delta_x, delta_y, delta_z, delta_mode,
-            client_x, client_y,
-            ctrl_key, shift_key, alt_key, meta_key,
+            delta_x,
+            delta_y,
+            delta_z,
+            delta_mode,
+            client_x,
+            client_y,
+            ctrl_key,
+            shift_key,
+            alt_key,
+            meta_key,
         } => {
-            evt.set_property(String::from("deltaX"),    JsValue::Number(*delta_x));
-            evt.set_property(String::from("deltaY"),    JsValue::Number(*delta_y));
-            evt.set_property(String::from("deltaZ"),    JsValue::Number(*delta_z));
-            evt.set_property(String::from("deltaMode"), JsValue::Number(*delta_mode as f64));
+            evt.set_property(String::from("deltaX"), JsValue::Number(*delta_x));
+            evt.set_property(String::from("deltaY"), JsValue::Number(*delta_y));
+            evt.set_property(String::from("deltaZ"), JsValue::Number(*delta_z));
+            evt.set_property(
+                String::from("deltaMode"),
+                JsValue::Number(*delta_mode as f64),
+            );
             evt.set_property(String::from("DOM_DELTA_PIXEL"), JsValue::Number(0.0));
-            evt.set_property(String::from("DOM_DELTA_LINE"),  JsValue::Number(1.0));
-            evt.set_property(String::from("DOM_DELTA_PAGE"),  JsValue::Number(2.0));
+            evt.set_property(String::from("DOM_DELTA_LINE"), JsValue::Number(1.0));
+            evt.set_property(String::from("DOM_DELTA_PAGE"), JsValue::Number(2.0));
             // WheelEvent extends MouseEvent.
-            evt.set_property(String::from("clientX"),   JsValue::Number(*client_x));
-            evt.set_property(String::from("clientY"),   JsValue::Number(*client_y));
-            evt.set_property(String::from("ctrlKey"),   JsValue::Bool(*ctrl_key));
-            evt.set_property(String::from("shiftKey"),  JsValue::Bool(*shift_key));
-            evt.set_property(String::from("altKey"),    JsValue::Bool(*alt_key));
-            evt.set_property(String::from("metaKey"),   JsValue::Bool(*meta_key));
-            evt.set_property(String::from("button"),    JsValue::Number(0.0));
-            evt.set_property(String::from("buttons"),   JsValue::Number(0.0));
+            evt.set_property(String::from("clientX"), JsValue::Number(*client_x));
+            evt.set_property(String::from("clientY"), JsValue::Number(*client_y));
+            evt.set_property(String::from("ctrlKey"), JsValue::Bool(*ctrl_key));
+            evt.set_property(String::from("shiftKey"), JsValue::Bool(*shift_key));
+            evt.set_property(String::from("altKey"), JsValue::Bool(*alt_key));
+            evt.set_property(String::from("metaKey"), JsValue::Bool(*meta_key));
+            evt.set_property(String::from("button"), JsValue::Number(0.0));
+            evt.set_property(String::from("buttons"), JsValue::Number(0.0));
         }
 
         EventData::Pointer {
-            client_x, client_y, page_x, page_y,
-            screen_x, screen_y,
-            pointer_id, pointer_type, pressure,
-            tilt_x, tilt_y, is_primary,
-            button, buttons,
-            ctrl_key, shift_key, alt_key, meta_key,
+            client_x,
+            client_y,
+            page_x,
+            page_y,
+            screen_x,
+            screen_y,
+            pointer_id,
+            pointer_type,
+            pressure,
+            tilt_x,
+            tilt_y,
+            is_primary,
+            button,
+            buttons,
+            ctrl_key,
+            shift_key,
+            alt_key,
+            meta_key,
         } => {
             // PointerEvent extends MouseEvent.
-            evt.set_property(String::from("clientX"),     JsValue::Number(*client_x));
-            evt.set_property(String::from("clientY"),     JsValue::Number(*client_y));
-            evt.set_property(String::from("pageX"),       JsValue::Number(*page_x));
-            evt.set_property(String::from("pageY"),       JsValue::Number(*page_y));
-            evt.set_property(String::from("screenX"),     JsValue::Number(*screen_x));
-            evt.set_property(String::from("screenY"),     JsValue::Number(*screen_y));
-            evt.set_property(String::from("button"),      JsValue::Number(*button as f64));
-            evt.set_property(String::from("buttons"),     JsValue::Number(*buttons as f64));
-            evt.set_property(String::from("ctrlKey"),     JsValue::Bool(*ctrl_key));
-            evt.set_property(String::from("shiftKey"),    JsValue::Bool(*shift_key));
-            evt.set_property(String::from("altKey"),      JsValue::Bool(*alt_key));
-            evt.set_property(String::from("metaKey"),     JsValue::Bool(*meta_key));
+            evt.set_property(String::from("clientX"), JsValue::Number(*client_x));
+            evt.set_property(String::from("clientY"), JsValue::Number(*client_y));
+            evt.set_property(String::from("pageX"), JsValue::Number(*page_x));
+            evt.set_property(String::from("pageY"), JsValue::Number(*page_y));
+            evt.set_property(String::from("screenX"), JsValue::Number(*screen_x));
+            evt.set_property(String::from("screenY"), JsValue::Number(*screen_y));
+            evt.set_property(String::from("button"), JsValue::Number(*button as f64));
+            evt.set_property(String::from("buttons"), JsValue::Number(*buttons as f64));
+            evt.set_property(String::from("ctrlKey"), JsValue::Bool(*ctrl_key));
+            evt.set_property(String::from("shiftKey"), JsValue::Bool(*shift_key));
+            evt.set_property(String::from("altKey"), JsValue::Bool(*alt_key));
+            evt.set_property(String::from("metaKey"), JsValue::Bool(*meta_key));
             // PointerEvent-specific.
-            evt.set_property(String::from("pointerId"),   JsValue::Number(*pointer_id as f64));
-            evt.set_property(String::from("pointerType"), JsValue::String(pointer_type.clone()));
-            evt.set_property(String::from("pressure"),    JsValue::Number(*pressure));
+            evt.set_property(
+                String::from("pointerId"),
+                JsValue::Number(*pointer_id as f64),
+            );
+            evt.set_property(
+                String::from("pointerType"),
+                JsValue::String(pointer_type.clone()),
+            );
+            evt.set_property(String::from("pressure"), JsValue::Number(*pressure));
             evt.set_property(String::from("tangentialPressure"), JsValue::Number(0.0));
-            evt.set_property(String::from("tiltX"),       JsValue::Number(*tilt_x));
-            evt.set_property(String::from("tiltY"),       JsValue::Number(*tilt_y));
-            evt.set_property(String::from("twist"),       JsValue::Number(0.0));
-            evt.set_property(String::from("isPrimary"),   JsValue::Bool(*is_primary));
-            evt.set_property(String::from("width"),       JsValue::Number(1.0));
-            evt.set_property(String::from("height"),      JsValue::Number(1.0));
+            evt.set_property(String::from("tiltX"), JsValue::Number(*tilt_x));
+            evt.set_property(String::from("tiltY"), JsValue::Number(*tilt_y));
+            evt.set_property(String::from("twist"), JsValue::Number(0.0));
+            evt.set_property(String::from("isPrimary"), JsValue::Bool(*is_primary));
+            evt.set_property(String::from("width"), JsValue::Number(1.0));
+            evt.set_property(String::from("height"), JsValue::Number(1.0));
             evt.set_property(String::from("relatedTarget"), JsValue::Null);
-            evt.set_property(String::from("getCoalescedEvents"),
-                native_fn("getCoalescedEvents", |_, _| make_array(Vec::new())));
-            evt.set_property(String::from("getPredictedEvents"),
-                native_fn("getPredictedEvents", |_, _| make_array(Vec::new())));
+            evt.set_property(
+                String::from("getCoalescedEvents"),
+                native_fn("getCoalescedEvents", |_, _| make_array(Vec::new())),
+            );
+            evt.set_property(
+                String::from("getPredictedEvents"),
+                native_fn("getPredictedEvents", |_, _| make_array(Vec::new())),
+            );
         }
     }
 
@@ -1962,14 +2366,16 @@ fn native_remove_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let event = arg_string(args, 0);
     let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
     let capture = match args.get(2) {
-        Some(JsValue::Bool(b))   => *b,
+        Some(JsValue::Bool(b)) => *b,
         Some(JsValue::Object(_)) => args[2].get_property("capture").to_boolean(),
-        _                        => false,
+        _ => false,
     };
     let nid = this_node_id(vm);
     let node_id = if nid >= 0 { nid as usize } else { usize::MAX };
     if let Some(bridge) = get_bridge(vm) {
-        bridge.remove_listeners.push((node_id, event, callback, capture));
+        bridge
+            .remove_listeners
+            .push((node_id, event, callback, capture));
     }
     JsValue::Undefined
 }
@@ -1981,7 +2387,7 @@ fn native_remove_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn native_stop_immediate_propagation(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if let Some(bridge) = get_bridge(vm) {
         bridge.propagation_stopped = true;
-        bridge.immediate_stopped   = true;
+        bridge.immediate_stopped = true;
     }
     JsValue::Undefined
 }
@@ -2019,7 +2425,10 @@ fn extract_origin(url: &str) -> String {
 
 fn native_set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let delay = args.get(1).map(|v| v.to_number().max(0.0) as u64).unwrap_or(0);
+    let delay = args
+        .get(1)
+        .map(|v| v.to_number().max(0.0) as u64)
+        .unwrap_or(0);
     if let Some(bridge) = get_bridge(vm) {
         let id = bridge.next_timer_id;
         bridge.next_timer_id += 1;
@@ -2038,7 +2447,10 @@ fn native_set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 fn native_set_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let delay = args.get(1).map(|v| v.to_number().max(1.0) as u64).unwrap_or(10);
+    let delay = args
+        .get(1)
+        .map(|v| v.to_number().max(1.0) as u64)
+        .unwrap_or(10);
     if let Some(bridge) = get_bridge(vm) {
         let id = bridge.next_timer_id;
         bridge.next_timer_id += 1;
@@ -2092,7 +2504,9 @@ fn native_request_animation_frame(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// Interpolate a complete keyframe set at time `t` (0–1000 fixed-point).
 fn interpolate_keyframe(kf: &KeyframeSet, t: i32) -> Vec<crate::css::Declaration> {
-    if kf.stops.is_empty() { return Vec::new(); }
+    if kf.stops.is_empty() {
+        return Vec::new();
+    }
 
     let t_pct = t / 10; // map 0–1000 → 0–100
 
@@ -2100,7 +2514,9 @@ fn interpolate_keyframe(kf: &KeyframeSet, t: i32) -> Vec<crate::css::Declaration
     let mut prev_idx = 0usize;
     let mut next_idx = 0usize;
     for (i, stop) in kf.stops.iter().enumerate() {
-        if stop.offset <= t_pct { prev_idx = i; }
+        if stop.offset <= t_pct {
+            prev_idx = i;
+        }
     }
     next_idx = prev_idx;
     for (i, stop) in kf.stops.iter().enumerate() {
@@ -2123,8 +2539,9 @@ fn interpolate_keyframe(kf: &KeyframeSet, t: i32) -> Vec<crate::css::Declaration
 
     let mut result = Vec::new();
     for next_decl in &next.declarations {
-        let from_decl = prev.declarations.iter()
-            .find(|d| core::mem::discriminant(&d.property) == core::mem::discriminant(&next_decl.property));
+        let from_decl = prev.declarations.iter().find(|d| {
+            core::mem::discriminant(&d.property) == core::mem::discriminant(&next_decl.property)
+        });
         if let Some(blended) = interpolate_decl(from_decl, next_decl, seg_t) {
             result.push(blended);
         }
@@ -2142,18 +2559,14 @@ fn interpolate_decl(
 
     let from_val = from.map(|d| &d.value);
     let blended = match (&from_val, &to.value) {
-        (Some(CssValue::Number(a)), CssValue::Number(b)) => {
-            CssValue::Number(lerp_i32(*a, *b, t))
-        }
+        (Some(CssValue::Number(a)), CssValue::Number(b)) => CssValue::Number(lerp_i32(*a, *b, t)),
         (Some(CssValue::Length(a, ua)), CssValue::Length(b, ub)) if ua == ub => {
             CssValue::Length(lerp_i32(*a, *b, t), *ub)
         }
         (Some(CssValue::Percentage(a)), CssValue::Percentage(b)) => {
             CssValue::Percentage(lerp_i32(*a, *b, t))
         }
-        (Some(CssValue::Color(a)), CssValue::Color(b)) => {
-            CssValue::Color(lerp_color(*a, *b, t))
-        }
+        (Some(CssValue::Color(a)), CssValue::Color(b)) => CssValue::Color(lerp_color(*a, *b, t)),
         _ => {
             if t >= 1000 {
                 to.value.clone()
@@ -2180,8 +2593,18 @@ fn lerp_i32(a: i32, b: i32, t: i32) -> i32 {
 
 /// Per-channel linear interpolation for packed ARGB colors.
 fn lerp_color(a: u32, b: u32, t: i32) -> u32 {
-    let la = [(a >> 24) & 0xFF, (a >> 16) & 0xFF, (a >> 8) & 0xFF, a & 0xFF];
-    let lb = [(b >> 24) & 0xFF, (b >> 16) & 0xFF, (b >> 8) & 0xFF, b & 0xFF];
+    let la = [
+        (a >> 24) & 0xFF,
+        (a >> 16) & 0xFF,
+        (a >> 8) & 0xFF,
+        a & 0xFF,
+    ];
+    let lb = [
+        (b >> 24) & 0xFF,
+        (b >> 16) & 0xFF,
+        (b >> 8) & 0xFF,
+        b & 0xFF,
+    ];
     let mut out = 0u32;
     for i in 0..4 {
         let v = lerp_i32(la[i] as i32 * 100, lb[i] as i32 * 100, t) / 100;

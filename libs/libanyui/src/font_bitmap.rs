@@ -116,12 +116,19 @@ static FONT_DATA: [[u8; 7]; 95] = [
 
 /// Draw text to a pixel buffer using the embedded bitmap font (proportional, 6px/char).
 pub fn draw_text(
-    pixels: *mut u32, stride: u32, buf_h: u32,
-    x: i32, y: i32, text: &[u8], color: u32,
+    pixels: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    text: &[u8],
+    color: u32,
 ) {
     let mut cx = x;
     for &ch in text {
-        if ch == 0 { break; }
+        if ch == 0 {
+            break;
+        }
         let idx = if ch >= 0x20 && ch <= 0x7E {
             (ch - 0x20) as usize
         } else {
@@ -130,14 +137,18 @@ pub fn draw_text(
         let glyph = &FONT_DATA[idx];
         for row in 0..CHAR_H as i32 {
             let py = y + row;
-            if py < 0 || py >= buf_h as i32 { continue; }
+            if py < 0 || py >= buf_h as i32 {
+                continue;
+            }
             let bits = glyph[row as usize];
             for col in 0..CHAR_W as i32 {
                 if bits & (0x10 >> col) != 0 {
                     let px = cx + col;
                     if px >= 0 && px < stride as i32 {
                         let di = py as usize * stride as usize + px as usize;
-                        unsafe { *pixels.add(di) = color; }
+                        unsafe {
+                            *pixels.add(di) = color;
+                        }
                     }
                 }
             }
@@ -148,13 +159,20 @@ pub fn draw_text(
 
 /// Draw text using monospace spacing (8px/char) for terminal-style output.
 pub fn draw_text_mono(
-    pixels: *mut u32, stride: u32, buf_h: u32,
-    x: i32, y: i32, text: &[u8], color: u32,
+    pixels: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    text: &[u8],
+    color: u32,
 ) {
     let mut cx = x;
     let y_offset = 4; // Center 7px glyph in 16px cell
     for &ch in text {
-        if ch == 0 { break; }
+        if ch == 0 {
+            break;
+        }
         let idx = if ch >= 0x20 && ch <= 0x7E {
             (ch - 0x20) as usize
         } else {
@@ -163,14 +181,18 @@ pub fn draw_text_mono(
         let glyph = &FONT_DATA[idx];
         for row in 0..CHAR_H as i32 {
             let py = y + y_offset + row;
-            if py < 0 || py >= buf_h as i32 { continue; }
+            if py < 0 || py >= buf_h as i32 {
+                continue;
+            }
             let bits = glyph[row as usize];
             for col in 0..CHAR_W as i32 {
                 if bits & (0x10 >> col) != 0 {
                     let px = cx + col + 1; // Center 5px in 8px cell
                     if px >= 0 && px < stride as i32 {
                         let di = py as usize * stride as usize + px as usize;
-                        unsafe { *pixels.add(di) = color; }
+                        unsafe {
+                            *pixels.add(di) = color;
+                        }
                     }
                 }
             }
@@ -182,5 +204,9 @@ pub fn draw_text_mono(
 /// Measure proportional text width in pixels.
 pub fn text_width(text: &[u8]) -> u32 {
     let len = text.iter().take_while(|&&c| c != 0).count() as u32;
-    if len == 0 { 0 } else { len * CELL_W - 1 }
+    if len == 0 {
+        0
+    } else {
+        len * CELL_W - 1
+    }
 }

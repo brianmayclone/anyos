@@ -1,4 +1,4 @@
-use crate::control::{Control, ControlBase, ControlKind, EventResponse, ChildLayout, Orientation};
+use crate::control::{ChildLayout, Control, ControlBase, ControlKind, EventResponse, Orientation};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
@@ -55,9 +55,15 @@ impl SplitView {
 }
 
 impl Control for SplitView {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::SplitView }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::SplitView
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
@@ -77,7 +83,9 @@ impl Control for SplitView {
         }
     }
 
-    fn is_interactive(&self) -> bool { true }
+    fn is_interactive(&self) -> bool {
+        true
+    }
 
     fn divider_hit(&self, lx: i32, ly: i32) -> bool {
         if !self.resizable {

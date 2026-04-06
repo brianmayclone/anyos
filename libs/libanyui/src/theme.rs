@@ -58,81 +58,81 @@ pub struct ThemeColors {
 // ── Built-in default palettes (overwritten by .conf at runtime) ─────────
 
 static mut DARK: ThemeColors = ThemeColors {
-    window_bg:        0xFF0D1117,
-    text:             0xFFE6EDF3,
-    text_secondary:   0xFF8B949E,
-    text_disabled:    0xFF484F58,
-    accent:           0xFF2563EB,
-    accent_hover:     0xFF3B82F6,
-    destructive:      0xFFEF4444,
-    success:          0xFF22C55E,
-    warning:          0xFFF59E0B,
-    control_bg:       0xFF21262D,
-    control_hover:    0xFF30363D,
-    control_pressed:  0xFF161B22,
-    input_bg:         0xFF0D1117,
-    input_border:     0xFF30363D,
-    input_focus:      0xFF2563EB,
-    separator:        0xFF21262D,
-    selection:        0xFF1C3A6E,
-    sidebar_bg:       0xFF161B22,
-    card_bg:          0xFF161B22,
-    card_border:      0xFF30363D,
-    badge_red:        0xFFEF4444,
-    toggle_on:        0xFF2563EB,
-    toggle_off:       0xFF30363D,
-    toggle_thumb:     0xFFFFFFFF,
-    scrollbar:        0xFF484F58,
-    scrollbar_track:  0xFF161B22,
-    check_mark:       0xFFFFFFFF,
-    toolbar_bg:       0xFF161B22,
-    tab_inactive_bg:  0xFF161B22,
-    tab_hover_bg:     0xFF21262D,
-    tab_border_active:0xFF2563EB,
-    editor_bg:        0xFF0D1117,
-    editor_line_hl:   0xFF161B22,
-    editor_selection:  0xFF1C3A6E,
-    alt_row_bg:       0xFF0D1117,
-    placeholder_bg:   0xFF161B22,
+    window_bg: 0xFF0D1117,
+    text: 0xFFE6EDF3,
+    text_secondary: 0xFF8B949E,
+    text_disabled: 0xFF484F58,
+    accent: 0xFF2563EB,
+    accent_hover: 0xFF3B82F6,
+    destructive: 0xFFEF4444,
+    success: 0xFF22C55E,
+    warning: 0xFFF59E0B,
+    control_bg: 0xFF21262D,
+    control_hover: 0xFF30363D,
+    control_pressed: 0xFF161B22,
+    input_bg: 0xFF0D1117,
+    input_border: 0xFF30363D,
+    input_focus: 0xFF2563EB,
+    separator: 0xFF21262D,
+    selection: 0xFF1C3A6E,
+    sidebar_bg: 0xFF161B22,
+    card_bg: 0xFF161B22,
+    card_border: 0xFF30363D,
+    badge_red: 0xFFEF4444,
+    toggle_on: 0xFF2563EB,
+    toggle_off: 0xFF30363D,
+    toggle_thumb: 0xFFFFFFFF,
+    scrollbar: 0xFF484F58,
+    scrollbar_track: 0xFF161B22,
+    check_mark: 0xFFFFFFFF,
+    toolbar_bg: 0xFF161B22,
+    tab_inactive_bg: 0xFF161B22,
+    tab_hover_bg: 0xFF21262D,
+    tab_border_active: 0xFF2563EB,
+    editor_bg: 0xFF0D1117,
+    editor_line_hl: 0xFF161B22,
+    editor_selection: 0xFF1C3A6E,
+    alt_row_bg: 0xFF0D1117,
+    placeholder_bg: 0xFF161B22,
 };
 
 static mut LIGHT: ThemeColors = ThemeColors {
-    window_bg:        0xFFF5F5F7,
-    text:             0xFF1D1D1F,
-    text_secondary:   0xFF86868B,
-    text_disabled:    0xFFC7C7CC,
-    accent:           0xFF007AFF,
-    accent_hover:     0xFF0A84FF,
-    destructive:      0xFFFF3B30,
-    success:          0xFF34C759,
-    warning:          0xFFFF9F0A,
-    control_bg:       0xFFE5E5EA,
-    control_hover:    0xFFD1D1D6,
-    control_pressed:  0xFFC7C7CC,
-    input_bg:         0xFFFFFFFF,
-    input_border:     0xFFC7C7CC,
-    input_focus:      0xFF007AFF,
-    separator:        0xFFC6C6C8,
-    selection:        0xFF007AFF,
-    sidebar_bg:       0xFFF2F2F7,
-    card_bg:          0xFFFFFFFF,
-    card_border:      0xFFD1D1D6,
-    badge_red:        0xFFFF3B30,
-    toggle_on:        0xFF34C759,
-    toggle_off:       0xFFE5E5EA,
-    toggle_thumb:     0xFFFFFFFF,
-    scrollbar:        0xFFA0A0A5,
-    scrollbar_track:  0xFFE5E5EA,
-    check_mark:       0xFFFFFFFF,
-    toolbar_bg:       0xFFE8E8ED,
-    tab_inactive_bg:  0xFFE0E0E0,
-    tab_hover_bg:     0xFFD0D0D0,
-    tab_border_active:0xFF007ACC,
-    editor_bg:        0xFFF5F5F7,
-    editor_line_hl:   0xFFE8E8EC,
-    editor_selection:  0xFFBBDEFB,
-    alt_row_bg:       0xFFF0F0F2,
-    placeholder_bg:   0xFFE0E0E0,
+    window_bg: 0xFFF5F5F7,
+    text: 0xFF1D1D1F,
+    text_secondary: 0xFF86868B,
+    text_disabled: 0xFFC7C7CC,
+    accent: 0xFF007AFF,
+    accent_hover: 0xFF0A84FF,
+    destructive: 0xFFFF3B30,
+    success: 0xFF34C759,
+    warning: 0xFFFF9F0A,
+    control_bg: 0xFFE5E5EA,
+    control_hover: 0xFFD1D1D6,
+    control_pressed: 0xFFC7C7CC,
+    input_bg: 0xFFFFFFFF,
+    input_border: 0xFFC7C7CC,
+    input_focus: 0xFF007AFF,
+    separator: 0xFFC6C6C8,
+    selection: 0xFF007AFF,
+    sidebar_bg: 0xFFF2F2F7,
+    card_bg: 0xFFFFFFFF,
+    card_border: 0xFFD1D1D6,
+    badge_red: 0xFFFF3B30,
+    toggle_on: 0xFF34C759,
+    toggle_off: 0xFFE5E5EA,
+    toggle_thumb: 0xFFFFFFFF,
+    scrollbar: 0xFFA0A0A5,
+    scrollbar_track: 0xFFE5E5EA,
+    check_mark: 0xFFFFFFFF,
+    toolbar_bg: 0xFFE8E8ED,
+    tab_inactive_bg: 0xFFE0E0E0,
+    tab_hover_bg: 0xFFD0D0D0,
+    tab_border_active: 0xFF007ACC,
+    editor_bg: 0xFFF5F5F7,
+    editor_line_hl: 0xFFE8E8EC,
+    editor_selection: 0xFFBBDEFB,
+    alt_row_bg: 0xFFF0F0F2,
+    placeholder_bg: 0xFFE0E0E0,
 };
 
 // ── Theme flag and accessors ────────────────────────────────────────────────
@@ -148,7 +148,9 @@ static mut CURRENT_THEME_LOCAL: u32 = 0;
 
 /// Set the local theme fallback (used before shared page is available).
 pub fn set_theme(light: bool) {
-    unsafe { CURRENT_THEME_LOCAL = if light { 1 } else { 0 }; }
+    unsafe {
+        CURRENT_THEME_LOCAL = if light { 1 } else { 0 };
+    }
 }
 
 /// Get the current theme flag (0 = dark, 1 = light).
@@ -165,7 +167,13 @@ pub fn get_theme() -> u32 {
 #[inline(always)]
 pub fn colors() -> &'static ThemeColors {
     let t = unsafe { core::ptr::read_volatile(THEME_SHARED_ADDR) };
-    unsafe { if t == 0 { &DARK } else { &LIGHT } }
+    unsafe {
+        if t == 0 {
+            &*core::ptr::addr_of!(DARK)
+        } else {
+            &*core::ptr::addr_of!(LIGHT)
+        }
+    }
 }
 
 /// Check if the current theme is light.
@@ -199,28 +207,34 @@ const STYLE_DIR: &str = "/System/compositor/themes/style/";
 /// Also loads the current accent style preference if set.
 pub fn load_from_disk() {
     if let Some(data) = read_file(DARK_CONF_PATH) {
-        unsafe { parse_conf_into(&data, &mut DARK); }
+        parse_conf_into(&data, core::ptr::addr_of_mut!(DARK));
     }
     if let Some(data) = read_file(LIGHT_CONF_PATH) {
-        unsafe { parse_conf_into(&data, &mut LIGHT); }
+        parse_conf_into(&data, core::ptr::addr_of_mut!(LIGHT));
     }
     load_current_style();
 }
 
 /// Read the current style name from disk and apply accent overrides.
 fn load_current_style() {
-    let Some(data) = read_file(CURRENT_STYLE_PATH) else { return };
+    let Some(data) = read_file(CURRENT_STYLE_PATH) else {
+        return;
+    };
     let name = match core::str::from_utf8(&data) {
         Ok(s) => s.trim(),
         Err(_) => return,
     };
-    if name.is_empty() { return; }
+    if name.is_empty() {
+        return;
+    }
 
     let mut path_buf = [0u8; 128];
     let prefix = STYLE_DIR.as_bytes();
     let suffix = b".conf";
     let total = prefix.len() + name.len() + suffix.len();
-    if total > path_buf.len() { return; }
+    if total > path_buf.len() {
+        return;
+    }
 
     path_buf[..prefix.len()].copy_from_slice(prefix);
     path_buf[prefix.len()..prefix.len() + name.len()].copy_from_slice(name.as_bytes());
@@ -231,7 +245,9 @@ fn load_current_style() {
         Err(_) => return,
     };
 
-    let Some(style_data) = read_file(path) else { return };
+    let Some(style_data) = read_file(path) else {
+        return;
+    };
     if let Some((da, dh, la, lh)) = parse_style_conf(&style_data) {
         apply_accent_style(da, dh, la, lh);
     }
@@ -249,11 +265,15 @@ pub fn parse_style_conf(data: &[u8]) -> Option<(u32, u32, u32, u32)> {
 
     for line in text.split('\n') {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') { continue; }
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
         let Some(eq) = line.find('=') else { continue };
         let key = line[..eq].trim();
         let val_str = line[eq + 1..].trim();
-        let Some(val) = parse_hex_color(val_str) else { continue };
+        let Some(val) = parse_hex_color(val_str) else {
+            continue;
+        };
 
         match key {
             "ACCENT_DARK" => da = Some(val),
@@ -272,12 +292,14 @@ pub fn parse_style_conf(data: &[u8]) -> Option<(u32, u32, u32, u32)> {
 /// `dark_accent`/`dark_hover` override DARK, `light_accent`/`light_hover` override LIGHT.
 pub fn apply_accent_style(dark_accent: u32, dark_hover: u32, light_accent: u32, light_hover: u32) {
     unsafe {
-        DARK.accent = dark_accent;
-        DARK.accent_hover = dark_hover;
-        DARK.input_focus = dark_accent;
-        LIGHT.accent = light_accent;
-        LIGHT.accent_hover = light_hover;
-        LIGHT.input_focus = light_accent;
+        let dark = core::ptr::addr_of_mut!(DARK);
+        (*dark).accent = dark_accent;
+        (*dark).accent_hover = dark_hover;
+        (*dark).input_focus = dark_accent;
+        let light = core::ptr::addr_of_mut!(LIGHT);
+        (*light).accent = light_accent;
+        (*light).accent_hover = light_hover;
+        (*light).input_focus = light_accent;
     }
 }
 
@@ -300,7 +322,7 @@ fn read_file(path: &str) -> Option<Vec<u8>> {
 }
 
 /// Parse `KEY=0xAARRGGBB` lines into a `ThemeColors` struct.
-fn parse_conf_into(data: &[u8], tc: &mut ThemeColors) {
+fn parse_conf_into(data: &[u8], tc: *mut ThemeColors) {
     let text = match core::str::from_utf8(data) {
         Ok(s) => s,
         Err(_) => return,
@@ -314,46 +336,50 @@ fn parse_conf_into(data: &[u8], tc: &mut ThemeColors) {
         let Some(eq) = line.find('=') else { continue };
         let key = line[..eq].trim();
         let val_str = line[eq + 1..].trim();
-        let Some(val) = parse_hex_color(val_str) else { continue };
+        let Some(val) = parse_hex_color(val_str) else {
+            continue;
+        };
 
-        match key {
-            "WINDOW_BG"        => tc.window_bg = val,
-            "TEXT"             => tc.text = val,
-            "TEXT_SECONDARY"   => tc.text_secondary = val,
-            "TEXT_DISABLED"    => tc.text_disabled = val,
-            "ACCENT"           => tc.accent = val,
-            "ACCENT_HOVER"     => tc.accent_hover = val,
-            "DESTRUCTIVE"      => tc.destructive = val,
-            "SUCCESS"          => tc.success = val,
-            "WARNING"          => tc.warning = val,
-            "CONTROL_BG"       => tc.control_bg = val,
-            "CONTROL_HOVER"    => tc.control_hover = val,
-            "CONTROL_PRESSED"  => tc.control_pressed = val,
-            "INPUT_BG"         => tc.input_bg = val,
-            "INPUT_BORDER"     => tc.input_border = val,
-            "INPUT_FOCUS"      => tc.input_focus = val,
-            "SEPARATOR"        => tc.separator = val,
-            "SELECTION"        => tc.selection = val,
-            "SIDEBAR_BG"       => tc.sidebar_bg = val,
-            "CARD_BG"          => tc.card_bg = val,
-            "CARD_BORDER"      => tc.card_border = val,
-            "BADGE_RED"        => tc.badge_red = val,
-            "TOGGLE_ON"        => tc.toggle_on = val,
-            "TOGGLE_OFF"       => tc.toggle_off = val,
-            "TOGGLE_THUMB"     => tc.toggle_thumb = val,
-            "SCROLLBAR"        => tc.scrollbar = val,
-            "SCROLLBAR_TRACK"  => tc.scrollbar_track = val,
-            "CHECK_MARK"       => tc.check_mark = val,
-            "TOOLBAR_BG"       => tc.toolbar_bg = val,
-            "TAB_INACTIVE_BG"  => tc.tab_inactive_bg = val,
-            "TAB_HOVER_BG"     => tc.tab_hover_bg = val,
-            "TAB_BORDER_ACTIVE"=> tc.tab_border_active = val,
-            "EDITOR_BG"        => tc.editor_bg = val,
-            "EDITOR_LINE_HL"   => tc.editor_line_hl = val,
-            "EDITOR_SELECTION"  => tc.editor_selection = val,
-            "ALT_ROW_BG"       => tc.alt_row_bg = val,
-            "PLACEHOLDER_BG"   => tc.placeholder_bg = val,
-            _ => {} // unknown key — silently skip
+        unsafe {
+            match key {
+                "WINDOW_BG" => (*tc).window_bg = val,
+                "TEXT" => (*tc).text = val,
+                "TEXT_SECONDARY" => (*tc).text_secondary = val,
+                "TEXT_DISABLED" => (*tc).text_disabled = val,
+                "ACCENT" => (*tc).accent = val,
+                "ACCENT_HOVER" => (*tc).accent_hover = val,
+                "DESTRUCTIVE" => (*tc).destructive = val,
+                "SUCCESS" => (*tc).success = val,
+                "WARNING" => (*tc).warning = val,
+                "CONTROL_BG" => (*tc).control_bg = val,
+                "CONTROL_HOVER" => (*tc).control_hover = val,
+                "CONTROL_PRESSED" => (*tc).control_pressed = val,
+                "INPUT_BG" => (*tc).input_bg = val,
+                "INPUT_BORDER" => (*tc).input_border = val,
+                "INPUT_FOCUS" => (*tc).input_focus = val,
+                "SEPARATOR" => (*tc).separator = val,
+                "SELECTION" => (*tc).selection = val,
+                "SIDEBAR_BG" => (*tc).sidebar_bg = val,
+                "CARD_BG" => (*tc).card_bg = val,
+                "CARD_BORDER" => (*tc).card_border = val,
+                "BADGE_RED" => (*tc).badge_red = val,
+                "TOGGLE_ON" => (*tc).toggle_on = val,
+                "TOGGLE_OFF" => (*tc).toggle_off = val,
+                "TOGGLE_THUMB" => (*tc).toggle_thumb = val,
+                "SCROLLBAR" => (*tc).scrollbar = val,
+                "SCROLLBAR_TRACK" => (*tc).scrollbar_track = val,
+                "CHECK_MARK" => (*tc).check_mark = val,
+                "TOOLBAR_BG" => (*tc).toolbar_bg = val,
+                "TAB_INACTIVE_BG" => (*tc).tab_inactive_bg = val,
+                "TAB_HOVER_BG" => (*tc).tab_hover_bg = val,
+                "TAB_BORDER_ACTIVE" => (*tc).tab_border_active = val,
+                "EDITOR_BG" => (*tc).editor_bg = val,
+                "EDITOR_LINE_HL" => (*tc).editor_line_hl = val,
+                "EDITOR_SELECTION" => (*tc).editor_selection = val,
+                "ALT_ROW_BG" => (*tc).alt_row_bg = val,
+                "PLACEHOLDER_BG" => (*tc).placeholder_bg = val,
+                _ => {} // unknown key — silently skip
+            }
         }
     }
 }
@@ -458,32 +484,77 @@ pub fn unscale_u32(val: u32) -> u32 {
 /// Logical base values for sizing constants. These are the values at 100%.
 /// All public accessors return DPI-scaled values.
 
-#[inline(always)] pub fn button_height() -> u32 { scale(28) }
-#[inline(always)] pub fn button_padding_h() -> u32 { scale(16) }
-#[inline(always)] pub fn button_corner() -> u32 { scale(8) }
-#[inline(always)] pub fn input_height() -> u32 { scale(28) }
-#[inline(always)] pub fn input_corner() -> u32 { scale(8) }
-#[inline(always)] pub fn toggle_width() -> u32 { scale(36) }
-#[inline(always)] pub fn toggle_height() -> u32 { scale(20) }
-#[inline(always)] pub fn toggle_thumb_size() -> u32 { scale(16) }
-#[inline(always)] pub fn checkbox_size() -> u32 { scale(18) }
-#[inline(always)] pub fn radio_size() -> u32 { scale(18) }
-#[inline(always)] pub fn card_corner() -> u32 { scale(8) }
-#[inline(always)] pub fn tooltip_corner() -> u32 { scale(6) }
-#[inline(always)] pub fn alert_corner() -> u32 { scale(10) }
+#[inline(always)]
+pub fn button_height() -> u32 {
+    scale(28)
+}
+#[inline(always)]
+pub fn button_padding_h() -> u32 {
+    scale(16)
+}
+#[inline(always)]
+pub fn button_corner() -> u32 {
+    scale(8)
+}
+#[inline(always)]
+pub fn input_height() -> u32 {
+    scale(28)
+}
+#[inline(always)]
+pub fn input_corner() -> u32 {
+    scale(8)
+}
+#[inline(always)]
+pub fn toggle_width() -> u32 {
+    scale(36)
+}
+#[inline(always)]
+pub fn toggle_height() -> u32 {
+    scale(20)
+}
+#[inline(always)]
+pub fn toggle_thumb_size() -> u32 {
+    scale(16)
+}
+#[inline(always)]
+pub fn checkbox_size() -> u32 {
+    scale(18)
+}
+#[inline(always)]
+pub fn radio_size() -> u32 {
+    scale(18)
+}
+#[inline(always)]
+pub fn card_corner() -> u32 {
+    scale(8)
+}
+#[inline(always)]
+pub fn tooltip_corner() -> u32 {
+    scale(6)
+}
+#[inline(always)]
+pub fn alert_corner() -> u32 {
+    scale(10)
+}
 
 /// Logical font size constants (NOT scaled — scaling happens at render time
 /// via `draw::scale_font()` when passing to libfont).
-pub const FONT_SIZE_SMALL: u16   = 13;
+pub const FONT_SIZE_SMALL: u16 = 13;
 pub const FONT_SIZE_DEFAULT: u16 = 13;
-pub const FONT_SIZE_NORMAL: u16  = 16;
-pub const FONT_SIZE_LARGE: u16   = 20;
-pub const FONT_SIZE_TITLE: u16   = 24;
+pub const FONT_SIZE_NORMAL: u16 = 16;
+pub const FONT_SIZE_LARGE: u16 = 20;
+pub const FONT_SIZE_TITLE: u16 = 24;
 
 /// Shadow spread for floating elements (Alert, Tooltip, ContextMenu).
 /// DPI-scaled to maintain proportional appearance.
-#[inline(always)] pub fn popup_shadow_spread() -> i32 { scale_i32(8) }
+#[inline(always)]
+pub fn popup_shadow_spread() -> i32 {
+    scale_i32(8)
+}
 /// Shadow alpha for floating elements (constant — alpha does not scale).
 pub const POPUP_SHADOW_ALPHA: u32 = 50;
 /// Shadow Y-offset for floating elements (light comes from above).
-#[inline(always)] pub fn popup_shadow_offset_y() -> i32 { scale_i32(2) }
+#[inline(always)]
+pub fn popup_shadow_offset_y() -> i32 {
+    scale_i32(2)
+}

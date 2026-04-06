@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 
 use libanyui_client::{self as ui, Widget};
 
-use crate::layout::{LayoutBox, FormFieldKind};
+use crate::layout::{FormFieldKind, LayoutBox};
 use crate::style::TextDeco;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -47,7 +47,11 @@ pub struct ImageCache {
 
 impl ImageCache {
     pub fn new() -> Self {
-        ImageCache { entries: Vec::new(), generation: 0, total_bytes: 0 }
+        ImageCache {
+            entries: Vec::new(),
+            generation: 0,
+            total_bytes: 0,
+        }
     }
 
     /// Look up a cached image by URL.  Bumps the LRU generation on hit.
@@ -84,7 +88,13 @@ impl ImageCache {
 
         self.generation += 1;
         let gen = self.generation;
-        self.entries.push(ImageEntry { src, pixels, width, height, generation: gen });
+        self.entries.push(ImageEntry {
+            src,
+            pixels,
+            width,
+            height,
+            generation: gen,
+        });
         self.total_bytes += new_bytes;
         self.evict_to_budget();
     }
@@ -97,7 +107,10 @@ impl ImageCache {
 
     fn evict_to_budget(&mut self) {
         while self.total_bytes > IMAGE_CACHE_MAX_BYTES && !self.entries.is_empty() {
-            let min_idx = self.entries.iter().enumerate()
+            let min_idx = self
+                .entries
+                .iter()
+                .enumerate()
                 .min_by_key(|(_, e)| e.generation)
                 .map(|(i, _)| i)
                 .unwrap_or(0);
@@ -168,11 +181,24 @@ enum DrawKind {
     /// Fill a rounded rectangle with corner radii.
     RoundedRect { color: u32, radii: [i32; 4] }, // [tl, tr, br, bl]
     /// Draw a dashed/dotted horizontal or vertical border line.
-    DashedLine { color: u32, dash_len: i32, gap_len: i32, vertical: bool },
+    DashedLine {
+        color: u32,
+        dash_len: i32,
+        gap_len: i32,
+        vertical: bool,
+    },
     /// Draw a text string.
-    Text { color: u32, font_id: u32, font_size: u16, text: String },
+    Text {
+        color: u32,
+        font_id: u32,
+        font_size: u16,
+        text: String,
+    },
     /// Blit an image (looked up from ImageCache by src URL at rasterize time).
-    Image { src: String, object_fit: crate::style::ObjectFit },
+    Image {
+        src: String,
+        object_fit: crate::style::ObjectFit,
+    },
 }
 
 /// A flat display list built from the layout tree in correct paint order.
@@ -191,14 +217,22 @@ pub(crate) struct DisplayList {
 
 impl DisplayList {
     pub fn new() -> Self {
-        Self { cmds: Vec::new(), max_h: 0, clip_stack: Vec::new() }
+        Self {
+            cmds: Vec::new(),
+            max_h: 0,
+            clip_stack: Vec::new(),
+        }
     }
 
     /// Build the display list from a layout tree.  Walks the tree once
     /// in CSS2 Appendix E stacking order, emitting DrawCmds back-to-front.
     /// The root element always forms the initial stacking context.
     pub fn build(root: &LayoutBox) -> Self {
-        let mut dl = DisplayList { cmds: Vec::new(), max_h: 0, clip_stack: Vec::new() };
+        let mut dl = DisplayList {
+            cmds: Vec::new(),
+            max_h: 0,
+            clip_stack: Vec::new(),
+        };
         dl.flatten(root, 0, 0);
         dl
     }
@@ -239,7 +273,9 @@ impl DisplayList {
                 let y0 = draw_y.max(clip_draw_y);
                 let x1 = (cmd.x + cmd.w).min(clip_x + clip_w);
                 let y1 = (draw_y + cmd.h).min(clip_draw_y + clip_h);
-                if x1 <= x0 || y1 <= y0 { continue; } // fully clipped
+                if x1 <= x0 || y1 <= y0 {
+                    continue;
+                } // fully clipped
                 (x0, y0, x1 - x0, y1 - y0)
             } else {
                 (cmd.x, draw_y, cmd.w, cmd.h)
@@ -252,25 +288,41 @@ impl DisplayList {
                 DrawKind::RoundedRect { color, radii } => {
                     fill_rounded_rect_buf(buf, stride, buf_h, cx, cy, cw, ch, *color, *radii);
                 }
-                DrawKind::DashedLine { color, dash_len, gap_len, vertical } => {
-                    fill_dashed_buf(buf, stride, buf_h, cx, cy, cw, ch, *color, *dash_len, *gap_len, *vertical);
+                DrawKind::DashedLine {
+                    color,
+                    dash_len,
+                    gap_len,
+                    vertical,
+                } => {
+                    fill_dashed_buf(
+                        buf, stride, buf_h, cx, cy, cw, ch, *color, *dash_len, *gap_len, *vertical,
+                    );
                 }
-                DrawKind::Text { color, font_id, font_size, text } => {
+                DrawKind::Text {
+                    color,
+                    font_id,
+                    font_size,
+                    text,
+                } => {
                     // Text clipping is harder — for now, draw at original position
                     // (the fill_rect clipping handles most visual cases).
                     libfont_client::draw_string_buf(
-                        buf, stride, buf_h,
-                        cmd.x, draw_y,
-                        *color, *font_id, *font_size,
-                        text,
+                        buf, stride, buf_h, cmd.x, draw_y, *color, *font_id, *font_size, text,
                     );
                 }
                 DrawKind::Image { src, object_fit } => {
                     if let Some(entry) = images.get_ref(src) {
                         blit_image_scaled(
-                            buf, stride, buf_h,
-                            cx, cy, cw, ch,
-                            &entry.pixels, entry.width, entry.height,
+                            buf,
+                            stride,
+                            buf_h,
+                            cx,
+                            cy,
+                            cw,
+                            ch,
+                            &entry.pixels,
+                            entry.width,
+                            entry.height,
                             *object_fit,
                         );
                     }
@@ -323,10 +375,16 @@ impl DisplayList {
         };
 
         // Check if we have border-radius.
-        let has_radius = bx.border_top_left_radius > 0 || bx.border_top_right_radius > 0
-            || bx.border_bottom_right_radius > 0 || bx.border_bottom_left_radius > 0;
-        let radii = [bx.border_top_left_radius, bx.border_top_right_radius,
-                     bx.border_bottom_right_radius, bx.border_bottom_left_radius];
+        let has_radius = bx.border_top_left_radius > 0
+            || bx.border_top_right_radius > 0
+            || bx.border_bottom_right_radius > 0
+            || bx.border_bottom_left_radius > 0;
+        let radii = [
+            bx.border_top_left_radius,
+            bx.border_top_right_radius,
+            bx.border_bottom_right_radius,
+            bx.border_bottom_left_radius,
+        ];
 
         // Box shadows (behind the background, outer shadows only).
         for shadow in &bx.box_shadows {
@@ -342,15 +400,36 @@ impl DisplayList {
                         let ext = (s + 1) * shadow.blur / steps;
                         let alpha_frac = 255 / (steps + 1) / (s + 1);
                         let c = alpha_blend(shadow.color, alpha_frac as u32);
-                        self.push(sx - ext, sy - ext, sw + ext * 2, sh + ext * 2,
-                            DrawKind::Rect { color: c });
+                        self.push(
+                            sx - ext,
+                            sy - ext,
+                            sw + ext * 2,
+                            sh + ext * 2,
+                            DrawKind::Rect { color: c },
+                        );
                     }
                 }
                 if has_radius {
-                    self.push(sx, sy, sw, sh,
-                        DrawKind::RoundedRect { color: shadow.color, radii });
+                    self.push(
+                        sx,
+                        sy,
+                        sw,
+                        sh,
+                        DrawKind::RoundedRect {
+                            color: shadow.color,
+                            radii,
+                        },
+                    );
                 } else {
-                    self.push(sx, sy, sw, sh, DrawKind::Rect { color: shadow.color });
+                    self.push(
+                        sx,
+                        sy,
+                        sw,
+                        sh,
+                        DrawKind::Rect {
+                            color: shadow.color,
+                        },
+                    );
                 }
             }
         }
@@ -361,20 +440,50 @@ impl DisplayList {
             let overlay_alpha = (blur_strength * 8).min(160) as u32;
             let overlay_color = 0x00FFFFFF | (overlay_alpha << 24);
             if has_radius {
-                self.push(abs_x, abs_y, draw_w, draw_h,
-                    DrawKind::RoundedRect { color: overlay_color, radii });
+                self.push(
+                    abs_x,
+                    abs_y,
+                    draw_w,
+                    draw_h,
+                    DrawKind::RoundedRect {
+                        color: overlay_color,
+                        radii,
+                    },
+                );
             } else {
-                self.push(abs_x, abs_y, draw_w, draw_h, DrawKind::Rect { color: overlay_color });
+                self.push(
+                    abs_x,
+                    abs_y,
+                    draw_w,
+                    draw_h,
+                    DrawKind::Rect {
+                        color: overlay_color,
+                    },
+                );
             }
         }
 
         // Background.
         if bx.bg_color != 0 && bx.bg_color != 0x00000000 {
             if has_radius {
-                self.push(abs_x, abs_y, draw_w, draw_h,
-                    DrawKind::RoundedRect { color: bx.bg_color, radii });
+                self.push(
+                    abs_x,
+                    abs_y,
+                    draw_w,
+                    draw_h,
+                    DrawKind::RoundedRect {
+                        color: bx.bg_color,
+                        radii,
+                    },
+                );
             } else {
-                self.push(abs_x, abs_y, draw_w, draw_h, DrawKind::Rect { color: bx.bg_color });
+                self.push(
+                    abs_x,
+                    abs_y,
+                    draw_w,
+                    draw_h,
+                    DrawKind::Rect { color: bx.bg_color },
+                );
             }
         }
 
@@ -387,15 +496,35 @@ impl DisplayList {
                 let s = shadow.spread.max(1);
                 let c = shadow.color;
                 self.push(abs_x, abs_y, draw_w, s, DrawKind::Rect { color: c });
-                self.push(abs_x, abs_y + draw_h - s, draw_w, s, DrawKind::Rect { color: c });
-                self.push(abs_x, abs_y + s, s, (draw_h - s * 2).max(0), DrawKind::Rect { color: c });
-                self.push(abs_x + draw_w - s, abs_y + s, s, (draw_h - s * 2).max(0), DrawKind::Rect { color: c });
+                self.push(
+                    abs_x,
+                    abs_y + draw_h - s,
+                    draw_w,
+                    s,
+                    DrawKind::Rect { color: c },
+                );
+                self.push(
+                    abs_x,
+                    abs_y + s,
+                    s,
+                    (draw_h - s * 2).max(0),
+                    DrawKind::Rect { color: c },
+                );
+                self.push(
+                    abs_x + draw_w - s,
+                    abs_y + s,
+                    s,
+                    (draw_h - s * 2).max(0),
+                    DrawKind::Rect { color: c },
+                );
             }
         }
 
         // Per-side borders (litehtml-style: each side can have different width/color/style).
-        let has_per_side = bx.border_top_width > 0 || bx.border_right_width > 0
-            || bx.border_bottom_width > 0 || bx.border_left_width > 0;
+        let has_per_side = bx.border_top_width > 0
+            || bx.border_right_width > 0
+            || bx.border_bottom_width > 0
+            || bx.border_left_width > 0;
         if has_per_side {
             let w = draw_w;
             let h = draw_h;
@@ -403,41 +532,107 @@ impl DisplayList {
             let (ts, rs, bs, ls) = self.border_styles_for(bx);
             // Top border
             if bx.border_top_width > 0 && bx.border_top_color != 0 {
-                self.emit_border_edge(abs_x, abs_y, w, bx.border_top_width,
-                    bx.border_top_color, ts, false);
+                self.emit_border_edge(
+                    abs_x,
+                    abs_y,
+                    w,
+                    bx.border_top_width,
+                    bx.border_top_color,
+                    ts,
+                    false,
+                );
             }
             // Bottom border
             if bx.border_bottom_width > 0 && bx.border_bottom_color != 0 {
-                self.emit_border_edge(abs_x, abs_y + h - bx.border_bottom_width, w, bx.border_bottom_width,
-                    bx.border_bottom_color, bs, false);
+                self.emit_border_edge(
+                    abs_x,
+                    abs_y + h - bx.border_bottom_width,
+                    w,
+                    bx.border_bottom_width,
+                    bx.border_bottom_color,
+                    bs,
+                    false,
+                );
             }
             // Left border
             if bx.border_left_width > 0 && bx.border_left_color != 0 {
                 let inner_h = (h - bx.border_top_width - bx.border_bottom_width).max(0);
-                self.emit_border_edge(abs_x, abs_y + bx.border_top_width, bx.border_left_width, inner_h,
-                    bx.border_left_color, ls, true);
+                self.emit_border_edge(
+                    abs_x,
+                    abs_y + bx.border_top_width,
+                    bx.border_left_width,
+                    inner_h,
+                    bx.border_left_color,
+                    ls,
+                    true,
+                );
             }
             // Right border
             if bx.border_right_width > 0 && bx.border_right_color != 0 {
                 let inner_h = (h - bx.border_top_width - bx.border_bottom_width).max(0);
-                self.emit_border_edge(abs_x + w - bx.border_right_width, abs_y + bx.border_top_width,
-                    bx.border_right_width, inner_h, bx.border_right_color, rs, true);
+                self.emit_border_edge(
+                    abs_x + w - bx.border_right_width,
+                    abs_y + bx.border_top_width,
+                    bx.border_right_width,
+                    inner_h,
+                    bx.border_right_color,
+                    rs,
+                    true,
+                );
             }
         } else if bx.border_width > 0 && bx.border_color != 0 && bx.border_color != 0x00000000 {
             // Fallback: unified border (legacy path)
             let bw = bx.border_width;
             let w = draw_w;
             let h = draw_h;
-            self.push(abs_x, abs_y, w, bw, DrawKind::Rect { color: bx.border_color });
-            self.push(abs_x, abs_y + h - bw, w, bw, DrawKind::Rect { color: bx.border_color });
+            self.push(
+                abs_x,
+                abs_y,
+                w,
+                bw,
+                DrawKind::Rect {
+                    color: bx.border_color,
+                },
+            );
+            self.push(
+                abs_x,
+                abs_y + h - bw,
+                w,
+                bw,
+                DrawKind::Rect {
+                    color: bx.border_color,
+                },
+            );
             let inner_h = (h - bw * 2).max(0);
-            self.push(abs_x, abs_y + bw, bw, inner_h, DrawKind::Rect { color: bx.border_color });
-            self.push(abs_x + w - bw, abs_y + bw, bw, inner_h, DrawKind::Rect { color: bx.border_color });
+            self.push(
+                abs_x,
+                abs_y + bw,
+                bw,
+                inner_h,
+                DrawKind::Rect {
+                    color: bx.border_color,
+                },
+            );
+            self.push(
+                abs_x + w - bw,
+                abs_y + bw,
+                bw,
+                inner_h,
+                DrawKind::Rect {
+                    color: bx.border_color,
+                },
+            );
         }
 
         // Horizontal rule.
         if bx.is_hr {
-            self.push(abs_x, abs_y, draw_w, 1, DrawKind::Rect { color: 0xFF999999 });
+            self.push(
+                abs_x,
+                abs_y,
+                draw_w,
+                1,
+                DrawKind::Rect { color: 0xFF999999 },
+            );
         }
 
         // List marker.
@@ -452,12 +647,32 @@ impl DisplayList {
                 //   abs_x + border + padding.left - 20
                 let border = bx.border_width;
                 let marker_x = abs_x + border + bx.padding.left - 20;
-                self.push(marker_x, abs_y, 20, draw_h,
-                    DrawKind::Text { color, font_id: 0, font_size, text: marker.clone() });
+                self.push(
+                    marker_x,
+                    abs_y,
+                    20,
+                    draw_h,
+                    DrawKind::Text {
+                        color,
+                        font_id: 0,
+                        font_size,
+                        text: marker.clone(),
+                    },
+                );
             } else {
                 // outside (default): marker hangs 20px to the left of abs_x.
-                self.push(abs_x - 20, abs_y, 20, draw_h,
-                    DrawKind::Text { color, font_id: 0, font_size, text: marker.clone() });
+                self.push(
+                    abs_x - 20,
+                    abs_y,
+                    20,
+                    draw_h,
+                    DrawKind::Text {
+                        color,
+                        font_id: 0,
+                        font_size,
+                        text: marker.clone(),
+                    },
+                );
             }
         }
 
@@ -466,42 +681,94 @@ impl DisplayList {
             if !text.is_empty() && bx.form_field.is_none() {
                 let font_id = if bx.custom_font_id != 0 {
                     bx.custom_font_id
-                } else if bx.bold { 1u32 } else if bx.italic { 3u32 } else { 0u32 };
+                } else if bx.bold {
+                    1u32
+                } else if bx.italic {
+                    3u32
+                } else {
+                    0u32
+                };
                 let font_size = bx.font_size.max(1) as u16;
                 let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
 
                 // Text shadows (behind the text).
                 for ts in &bx.text_shadows {
-                    self.push(abs_x + ts.offset_x, abs_y + ts.offset_y, draw_w, draw_h,
-                        DrawKind::Text { color: ts.color, font_id, font_size, text: text.clone() });
+                    self.push(
+                        abs_x + ts.offset_x,
+                        abs_y + ts.offset_y,
+                        draw_w,
+                        draw_h,
+                        DrawKind::Text {
+                            color: ts.color,
+                            font_id,
+                            font_size,
+                            text: text.clone(),
+                        },
+                    );
                 }
 
-                self.push(abs_x, abs_y, draw_w, draw_h,
-                    DrawKind::Text { color, font_id, font_size, text: text.clone() });
+                self.push(
+                    abs_x,
+                    abs_y,
+                    draw_w,
+                    draw_h,
+                    DrawKind::Text {
+                        color,
+                        font_id,
+                        font_size,
+                        text: text.clone(),
+                    },
+                );
 
                 // Text decorations with sub-property support.
-                let deco_color = if bx.text_decoration_color != 0 { bx.text_decoration_color } else { color };
-                let deco_thick = if bx.text_decoration_thickness > 0 { bx.text_decoration_thickness } else { 1 };
+                let deco_color = if bx.text_decoration_color != 0 {
+                    bx.text_decoration_color
+                } else {
+                    color
+                };
+                let deco_thick = if bx.text_decoration_thickness > 0 {
+                    bx.text_decoration_thickness
+                } else {
+                    1
+                };
                 let deco_offset = bx.text_underline_offset;
 
                 // Overline.
                 if bx.text_decoration == TextDeco::Overline {
-                    self.emit_text_deco_line(abs_x, abs_y, draw_w, deco_thick,
-                        deco_color, bx.text_decoration_style);
+                    self.emit_text_deco_line(
+                        abs_x,
+                        abs_y,
+                        draw_w,
+                        deco_thick,
+                        deco_color,
+                        bx.text_decoration_style,
+                    );
                 }
 
                 // Underline — only if text-decoration says so (not just because it's a link).
                 // Per CSS spec, `text-decoration: none` on a link suppresses the underline.
                 if bx.text_decoration == TextDeco::Underline {
                     let y_pos = abs_y + draw_h - deco_thick + deco_offset;
-                    self.emit_text_deco_line(abs_x, y_pos, draw_w, deco_thick,
-                        deco_color, bx.text_decoration_style);
+                    self.emit_text_deco_line(
+                        abs_x,
+                        y_pos,
+                        draw_w,
+                        deco_thick,
+                        deco_color,
+                        bx.text_decoration_style,
+                    );
                 }
 
                 // Line-through.
                 if bx.text_decoration == TextDeco::LineThrough {
-                    self.emit_text_deco_line(abs_x, abs_y + draw_h / 2, draw_w, deco_thick,
-                        deco_color, bx.text_decoration_style);
+                    self.emit_text_deco_line(
+                        abs_x,
+                        abs_y + draw_h / 2,
+                        draw_w,
+                        deco_thick,
+                        deco_color,
+                        bx.text_decoration_style,
+                    );
                 }
             }
         }
@@ -510,7 +777,16 @@ impl DisplayList {
         if let Some(ref src) = bx.image_src {
             let dw = bx.image_width.unwrap_or(draw_w);
             let dh = bx.image_height.unwrap_or(draw_h);
-            self.push(abs_x, abs_y, dw, dh, DrawKind::Image { src: src.clone(), object_fit: bx.object_fit });
+            self.push(
+                abs_x,
+                abs_y,
+                dw,
+                dh,
+                DrawKind::Image {
+                    src: src.clone(),
+                    object_fit: bx.object_fit,
+                },
+            );
         }
 
         // Form control pixel drawing.
@@ -550,18 +826,52 @@ impl DisplayList {
             let ow_total = draw_w + (ow + off) * 2;
             let oh_total = draw_h + (ow + off) * 2;
             // Top
-            self.push(ox, oy, ow_total, ow, DrawKind::Rect { color: bx.outline_color });
+            self.push(
+                ox,
+                oy,
+                ow_total,
+                ow,
+                DrawKind::Rect {
+                    color: bx.outline_color,
+                },
+            );
             // Bottom
-            self.push(ox, oy + oh_total - ow, ow_total, ow, DrawKind::Rect { color: bx.outline_color });
+            self.push(
+                ox,
+                oy + oh_total - ow,
+                ow_total,
+                ow,
+                DrawKind::Rect {
+                    color: bx.outline_color,
+                },
+            );
             // Left
             let inner_h = (oh_total - ow * 2).max(0);
-            self.push(ox, oy + ow, ow, inner_h, DrawKind::Rect { color: bx.outline_color });
+            self.push(
+                ox,
+                oy + ow,
+                ow,
+                inner_h,
+                DrawKind::Rect {
+                    color: bx.outline_color,
+                },
+            );
             // Right
-            self.push(ox + ow_total - ow, oy + ow, ow, inner_h, DrawKind::Rect { color: bx.outline_color });
+            self.push(
+                ox + ow_total - ow,
+                oy + ow,
+                ow,
+                inner_h,
+                DrawKind::Rect {
+                    color: bx.outline_color,
+                },
+            );
         }
 
         // Recurse into children, with optional clip rect for overflow:hidden.
-        let pushed_clip = if bx.overflow_hidden && draw_w > 0 && draw_h > 0 {
+        // Note: draw_h == 0 is intentionally allowed here (height: 0; overflow: hidden
+        // must clip ALL child content — a zero-height clip rect achieves this).
+        let pushed_clip = if bx.overflow_hidden && draw_w > 0 {
             // Intersect with any existing clip rect.
             let new_clip = (abs_x, abs_y, draw_w, draw_h);
             let clip = if let Some(&(cx, cy, cw, ch)) = self.clip_stack.last() {
@@ -651,23 +961,51 @@ impl DisplayList {
     }
 
     /// Emit a border edge with the given style (solid/dashed/dotted).
-    fn emit_border_edge(&mut self, x: i32, y: i32, w: i32, h: i32,
-                        color: u32, style: crate::style::BorderStyleVal, vertical: bool) {
+    fn emit_border_edge(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        color: u32,
+        style: crate::style::BorderStyleVal,
+        vertical: bool,
+    ) {
         use crate::style::BorderStyleVal;
         match style {
             BorderStyleVal::Dashed => {
                 // Dashed: dash_len = 3 * border_width, gap = same
                 let bw = if vertical { w } else { h };
                 let dash = (bw * 3).max(3);
-                self.push(x, y, w, h,
-                    DrawKind::DashedLine { color, dash_len: dash, gap_len: dash, vertical });
+                self.push(
+                    x,
+                    y,
+                    w,
+                    h,
+                    DrawKind::DashedLine {
+                        color,
+                        dash_len: dash,
+                        gap_len: dash,
+                        vertical,
+                    },
+                );
             }
             BorderStyleVal::Dotted => {
                 // Dotted: dash = border_width (square dots), gap = border_width
                 let bw = if vertical { w } else { h };
                 let dot = bw.max(1);
-                self.push(x, y, w, h,
-                    DrawKind::DashedLine { color, dash_len: dot, gap_len: dot, vertical });
+                self.push(
+                    x,
+                    y,
+                    w,
+                    h,
+                    DrawKind::DashedLine {
+                        color,
+                        dash_len: dot,
+                        gap_len: dot,
+                        vertical,
+                    },
+                );
             }
             BorderStyleVal::Double => {
                 // Double: two lines with a gap in between.
@@ -728,21 +1066,51 @@ impl DisplayList {
     }
 
     /// Get per-side border styles from the LayoutBox.
-    fn border_styles_for(&self, bx: &LayoutBox) -> (crate::style::BorderStyleVal, crate::style::BorderStyleVal,
-                                                     crate::style::BorderStyleVal, crate::style::BorderStyleVal) {
+    fn border_styles_for(
+        &self,
+        bx: &LayoutBox,
+    ) -> (
+        crate::style::BorderStyleVal,
+        crate::style::BorderStyleVal,
+        crate::style::BorderStyleVal,
+        crate::style::BorderStyleVal,
+    ) {
         use crate::style::BorderStyleVal;
         let fallback = BorderStyleVal::Solid;
-        let ts = if bx.border_top_style != BorderStyleVal::None { bx.border_top_style } else { fallback };
-        let rs = if bx.border_right_style != BorderStyleVal::None { bx.border_right_style } else { fallback };
-        let bs = if bx.border_bottom_style != BorderStyleVal::None { bx.border_bottom_style } else { fallback };
-        let ls = if bx.border_left_style != BorderStyleVal::None { bx.border_left_style } else { fallback };
+        let ts = if bx.border_top_style != BorderStyleVal::None {
+            bx.border_top_style
+        } else {
+            fallback
+        };
+        let rs = if bx.border_right_style != BorderStyleVal::None {
+            bx.border_right_style
+        } else {
+            fallback
+        };
+        let bs = if bx.border_bottom_style != BorderStyleVal::None {
+            bx.border_bottom_style
+        } else {
+            fallback
+        };
+        let ls = if bx.border_left_style != BorderStyleVal::None {
+            bx.border_left_style
+        } else {
+            fallback
+        };
         (ts, rs, bs, ls)
     }
 
     /// Emit draw commands for a linear gradient background.
     /// Emit a text decoration line (underline/overline/line-through) with style support.
-    fn emit_text_deco_line(&mut self, x: i32, y: i32, w: i32, thickness: i32,
-                           color: u32, style: crate::style::TextDecorationStyle) {
+    fn emit_text_deco_line(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        thickness: i32,
+        color: u32,
+        style: crate::style::TextDecorationStyle,
+    ) {
         use crate::style::TextDecorationStyle;
         match style {
             TextDecorationStyle::Solid => {
@@ -754,13 +1122,33 @@ impl DisplayList {
                 self.push(x, y + t * 2, w, t, DrawKind::Rect { color });
             }
             TextDecorationStyle::Dotted => {
-                self.push(x, y, w, thickness,
-                    DrawKind::DashedLine { color, dash_len: thickness, gap_len: thickness, vertical: false });
+                self.push(
+                    x,
+                    y,
+                    w,
+                    thickness,
+                    DrawKind::DashedLine {
+                        color,
+                        dash_len: thickness,
+                        gap_len: thickness,
+                        vertical: false,
+                    },
+                );
             }
             TextDecorationStyle::Dashed => {
                 let dash = (thickness * 3).max(3);
-                self.push(x, y, w, thickness,
-                    DrawKind::DashedLine { color, dash_len: dash, gap_len: dash, vertical: false });
+                self.push(
+                    x,
+                    y,
+                    w,
+                    thickness,
+                    DrawKind::DashedLine {
+                        color,
+                        dash_len: dash,
+                        gap_len: dash,
+                        vertical: false,
+                    },
+                );
             }
             TextDecorationStyle::Wavy => {
                 // Approximate wavy as alternating up/down segments.
@@ -770,12 +1158,26 @@ impl DisplayList {
                 while pos < w {
                     let seg = half.min(w - pos);
                     // Up segment
-                    self.push(x + pos, y - thickness, seg, thickness, DrawKind::Rect { color });
+                    self.push(
+                        x + pos,
+                        y - thickness,
+                        seg,
+                        thickness,
+                        DrawKind::Rect { color },
+                    );
                     pos += half;
-                    if pos >= w { break; }
+                    if pos >= w {
+                        break;
+                    }
                     let seg = half.min(w - pos);
                     // Down segment
-                    self.push(x + pos, y + thickness, seg, thickness, DrawKind::Rect { color });
+                    self.push(
+                        x + pos,
+                        y + thickness,
+                        seg,
+                        thickness,
+                        DrawKind::Rect { color },
+                    );
                     pos += half;
                 }
             }
@@ -798,7 +1200,9 @@ impl DisplayList {
                     let dimension = if is_horizontal { bx.width } else { bx.height };
                     let stripe_count = dimension.min(64).max(2);
                     let stripe_size = dimension / stripe_count;
-                    if stripe_size <= 0 { return; }
+                    if stripe_size <= 0 {
+                        return;
+                    }
 
                     let reversed = angle == 270 || angle == 0;
                     for i in 0..stripe_count {
@@ -808,11 +1212,19 @@ impl DisplayList {
 
                         if is_horizontal {
                             let sx = abs_x + i * stripe_size;
-                            let sw = if i == stripe_count - 1 { bx.width - i * stripe_size } else { stripe_size };
+                            let sw = if i == stripe_count - 1 {
+                                bx.width - i * stripe_size
+                            } else {
+                                stripe_size
+                            };
                             self.push(sx, abs_y, sw, bx.height, DrawKind::Rect { color });
                         } else {
                             let sy = abs_y + i * stripe_size;
-                            let sh = if i == stripe_count - 1 { bx.height - i * stripe_size } else { stripe_size };
+                            let sh = if i == stripe_count - 1 {
+                                bx.height - i * stripe_size
+                            } else {
+                                stripe_size
+                            };
                             self.push(abs_x, sy, bx.width, sh, DrawKind::Rect { color });
                         }
                     }
@@ -833,24 +1245,39 @@ impl DisplayList {
                     // Render as horizontal scan-line stripes, max 64 for perf.
                     let stripe_count = bx.height.min(64).max(2);
                     let stripe_h = bx.height / stripe_count;
-                    if stripe_h <= 0 { return; }
+                    if stripe_h <= 0 {
+                        return;
+                    }
 
                     for i in 0..stripe_count {
-                        let cy = (i * bx.height / stripe_count) as f32 + stripe_h as f32 / 2.0 - half_h;
+                        let cy =
+                            (i * bx.height / stripe_count) as f32 + stripe_h as f32 / 2.0 - half_h;
                         let cx = 0.0_f32; // center of scanline
                         let proj = (cx * dx + cy * dy) / grad_len + 0.5;
                         let t = (proj * 10000.0).max(0.0).min(10000.0) as i32;
                         let color = interpolate_gradient_color(stops, t);
                         let sy = abs_y + i * stripe_h;
-                        let sh = if i == stripe_count - 1 { bx.height - i * stripe_h } else { stripe_h };
+                        let sh = if i == stripe_count - 1 {
+                            bx.height - i * stripe_h
+                        } else {
+                            stripe_h
+                        };
                         self.push(abs_x, sy, bx.width, sh, DrawKind::Rect { color });
                     }
                 }
             }
             BackgroundImageVal::Url(ref src) => {
                 if !src.is_empty() {
-                    self.push(abs_x, abs_y, bx.width, bx.height,
-                        DrawKind::Image { src: src.clone(), object_fit: bx.object_fit });
+                    self.push(
+                        abs_x,
+                        abs_y,
+                        bx.width,
+                        bx.height,
+                        DrawKind::Image {
+                            src: src.clone(),
+                            object_fit: bx.object_fit,
+                        },
+                    );
                 }
             }
             _ => {}
@@ -859,15 +1286,43 @@ impl DisplayList {
 
     /// Emit draw commands for a submit/button element.
     fn emit_submit(&mut self, x: i32, y: i32, bx: &LayoutBox) {
-        let label_text = if let Some(ref t) = bx.text { t.clone() } else { String::from("Submit") };
+        let label_text = if let Some(ref t) = bx.text {
+            t.clone()
+        } else {
+            String::from("Submit")
+        };
 
         // Default web button bg + border if no CSS styling.
         if bx.bg_color == 0 && bx.border_width == 0 {
-            self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: 0xFFE0E0E0 });
+            self.push(
+                x,
+                y,
+                bx.width,
+                bx.height,
+                DrawKind::Rect { color: 0xFFE0E0E0 },
+            );
             self.push(x, y, bx.width, 1, DrawKind::Rect { color: 0xFF808080 });
-            self.push(x, y + bx.height - 1, bx.width, 1, DrawKind::Rect { color: 0xFF808080 });
-            self.push(x, y + 1, 1, (bx.height - 2).max(0), DrawKind::Rect { color: 0xFF808080 });
-            self.push(x + bx.width - 1, y + 1, 1, (bx.height - 2).max(0), DrawKind::Rect { color: 0xFF808080 });
+            self.push(
+                x,
+                y + bx.height - 1,
+                bx.width,
+                1,
+                DrawKind::Rect { color: 0xFF808080 },
+            );
+            self.push(
+                x,
+                y + 1,
+                1,
+                (bx.height - 2).max(0),
+                DrawKind::Rect { color: 0xFF808080 },
+            );
+            self.push(
+                x + bx.width - 1,
+                y + 1,
+                1,
+                (bx.height - 2).max(0),
+                DrawKind::Rect { color: 0xFF808080 },
+            );
         }
 
         // Center text in button.
@@ -876,35 +1331,97 @@ impl DisplayList {
         let (tw, _) = libfont_client::measure(0, font_size, &label_text);
         let tx = x + (bx.width - tw as i32) / 2;
         let ty = y + (bx.height - font_size as i32) / 2;
-        self.push(tx, ty, tw as i32, font_size as i32,
-            DrawKind::Text { color: text_color, font_id: 0, font_size, text: label_text });
+        self.push(
+            tx,
+            ty,
+            tw as i32,
+            font_size as i32,
+            DrawKind::Text {
+                color: text_color,
+                font_id: 0,
+                font_size,
+                text: label_text,
+            },
+        );
     }
 
     /// Draw a text input / search / password field as a simple rectangle with border.
     fn emit_text_input(&mut self, x: i32, y: i32, bx: &LayoutBox) {
-        let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
+        let bg = if bx.bg_color != 0 {
+            bx.bg_color
+        } else {
+            0xFFFFFFFF
+        };
         let border_color = 0xFF767676;
         // Background fill.
         self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: bg });
         // 1px border.
-        self.push(x, y, bx.width, 1, DrawKind::Rect { color: border_color });
-        self.push(x, y + bx.height - 1, bx.width, 1, DrawKind::Rect { color: border_color });
-        self.push(x, y, 1, bx.height, DrawKind::Rect { color: border_color });
-        self.push(x + bx.width - 1, y, 1, bx.height, DrawKind::Rect { color: border_color });
+        self.push(
+            x,
+            y,
+            bx.width,
+            1,
+            DrawKind::Rect {
+                color: border_color,
+            },
+        );
+        self.push(
+            x,
+            y + bx.height - 1,
+            bx.width,
+            1,
+            DrawKind::Rect {
+                color: border_color,
+            },
+        );
+        self.push(
+            x,
+            y,
+            1,
+            bx.height,
+            DrawKind::Rect {
+                color: border_color,
+            },
+        );
+        self.push(
+            x + bx.width - 1,
+            y,
+            1,
+            bx.height,
+            DrawKind::Rect {
+                color: border_color,
+            },
+        );
         // Show placeholder or value text.
         let text = if let Some(ref v) = bx.form_value {
-            if !v.is_empty() { Some((v.clone(), if bx.color != 0 { bx.color } else { 0xFF000000 })) }
-            else if let Some(ref ph) = bx.form_placeholder { Some((ph.clone(), 0xFF999999)) }
-            else { None }
+            if !v.is_empty() {
+                Some((v.clone(), if bx.color != 0 { bx.color } else { 0xFF000000 }))
+            } else if let Some(ref ph) = bx.form_placeholder {
+                Some((ph.clone(), 0xFF999999))
+            } else {
+                None
+            }
         } else if let Some(ref ph) = bx.form_placeholder {
             Some((ph.clone(), 0xFF999999))
-        } else { None };
+        } else {
+            None
+        };
         if let Some((txt, color)) = text {
             let font_size = bx.font_size.max(1) as u16;
             let tx = x + 4;
             let ty = y + (bx.height - font_size as i32) / 2;
-            self.push(tx, ty, bx.width - 8, font_size as i32,
-                DrawKind::Text { color, font_id: 0, font_size, text: txt });
+            self.push(
+                tx,
+                ty,
+                bx.width - 8,
+                font_size as i32,
+                DrawKind::Text {
+                    color,
+                    font_id: 0,
+                    font_size,
+                    text: txt,
+                },
+            );
         }
     }
 
@@ -928,25 +1445,51 @@ impl DisplayList {
         let cy = y + (bx.height - sz) / 2;
         let r = sz / 2;
         // Simple circle: rounded rect with radius = half size.
-        self.push(cx, cy, sz, sz, DrawKind::RoundedRect { color: 0xFFFFFFFF, radii: [r, r, r, r] });
+        self.push(
+            cx,
+            cy,
+            sz,
+            sz,
+            DrawKind::RoundedRect {
+                color: 0xFFFFFFFF,
+                radii: [r, r, r, r],
+            },
+        );
         // Border ring.
         self.push(cx + 1, cy, sz - 2, 1, DrawKind::Rect { color: 0xFF767676 });
-        self.push(cx + 1, cy + sz - 1, sz - 2, 1, DrawKind::Rect { color: 0xFF767676 });
+        self.push(
+            cx + 1,
+            cy + sz - 1,
+            sz - 2,
+            1,
+            DrawKind::Rect { color: 0xFF767676 },
+        );
         self.push(cx, cy + 1, 1, sz - 2, DrawKind::Rect { color: 0xFF767676 });
-        self.push(cx + sz - 1, cy + 1, 1, sz - 2, DrawKind::Rect { color: 0xFF767676 });
+        self.push(
+            cx + sz - 1,
+            cy + 1,
+            1,
+            sz - 2,
+            DrawKind::Rect { color: 0xFF767676 },
+        );
     }
 
     /// Draw an `<input type="range">` as a track with a thumb indicator.
     fn emit_range(&mut self, x: i32, y: i32, bx: &LayoutBox) {
         // Decode percentage from form_value (encoded as 0..1000 or "X" for 100%).
         let pct = if let Some(ref v) = bx.form_value {
-            if v == "X" { 1.0f32 }
-            else {
+            if v == "X" {
+                1.0f32
+            } else {
                 let bytes = v.as_bytes();
-                let n = bytes.iter().fold(0i32, |acc, &b| acc * 10 + (b - b'0') as i32);
+                let n = bytes
+                    .iter()
+                    .fold(0i32, |acc, &b| acc * 10 + (b - b'0') as i32);
                 (n as f32) / 1000.0
             }
-        } else { 0.5 };
+        } else {
+            0.5
+        };
 
         let w = bx.width;
         let h = bx.height;
@@ -955,12 +1498,30 @@ impl DisplayList {
         let r = track_h / 2;
 
         // Track background (light gray, rounded).
-        self.push(x, track_y, w, track_h, DrawKind::RoundedRect { color: 0xFFE0E0E0, radii: [r, r, r, r] });
+        self.push(
+            x,
+            track_y,
+            w,
+            track_h,
+            DrawKind::RoundedRect {
+                color: 0xFFE0E0E0,
+                radii: [r, r, r, r],
+            },
+        );
 
         // Filled portion (blue).
         let fill_w = ((w as f32) * pct) as i32;
         if fill_w > 0 {
-            self.push(x, track_y, fill_w, track_h, DrawKind::RoundedRect { color: 0xFF4A90D9, radii: [r, r, r, r] });
+            self.push(
+                x,
+                track_y,
+                fill_w,
+                track_h,
+                DrawKind::RoundedRect {
+                    color: 0xFF4A90D9,
+                    radii: [r, r, r, r],
+                },
+            );
         }
 
         // Thumb circle.
@@ -968,56 +1529,145 @@ impl DisplayList {
         let thumb_r = thumb_sz / 2;
         let thumb_x = x + fill_w - thumb_r;
         let thumb_y = y + (h - thumb_sz) / 2;
-        self.push(thumb_x, thumb_y, thumb_sz, thumb_sz, DrawKind::RoundedRect { color: 0xFF4A90D9, radii: [thumb_r, thumb_r, thumb_r, thumb_r] });
+        self.push(
+            thumb_x,
+            thumb_y,
+            thumb_sz,
+            thumb_sz,
+            DrawKind::RoundedRect {
+                color: 0xFF4A90D9,
+                radii: [thumb_r, thumb_r, thumb_r, thumb_r],
+            },
+        );
         // Thumb border.
-        self.push(thumb_x + 1, thumb_y, thumb_sz - 2, 1, DrawKind::Rect { color: 0xFF3A7BC8 });
-        self.push(thumb_x + 1, thumb_y + thumb_sz - 1, thumb_sz - 2, 1, DrawKind::Rect { color: 0xFF3A7BC8 });
-        self.push(thumb_x, thumb_y + 1, 1, thumb_sz - 2, DrawKind::Rect { color: 0xFF3A7BC8 });
-        self.push(thumb_x + thumb_sz - 1, thumb_y + 1, 1, thumb_sz - 2, DrawKind::Rect { color: 0xFF3A7BC8 });
+        self.push(
+            thumb_x + 1,
+            thumb_y,
+            thumb_sz - 2,
+            1,
+            DrawKind::Rect { color: 0xFF3A7BC8 },
+        );
+        self.push(
+            thumb_x + 1,
+            thumb_y + thumb_sz - 1,
+            thumb_sz - 2,
+            1,
+            DrawKind::Rect { color: 0xFF3A7BC8 },
+        );
+        self.push(
+            thumb_x,
+            thumb_y + 1,
+            1,
+            thumb_sz - 2,
+            DrawKind::Rect { color: 0xFF3A7BC8 },
+        );
+        self.push(
+            thumb_x + thumb_sz - 1,
+            thumb_y + 1,
+            1,
+            thumb_sz - 2,
+            DrawKind::Rect { color: 0xFF3A7BC8 },
+        );
     }
 
     /// Draw a `<progress>` element as a track with a colored fill bar.
     fn emit_progress(&mut self, x: i32, y: i32, bx: &LayoutBox) {
         // Decode percentage from form_value (encoded as 0..1000 or "X" for 100%).
         let pct = if let Some(ref v) = bx.form_value {
-            if v == "X" { 1.0f32 }
-            else {
+            if v == "X" {
+                1.0f32
+            } else {
                 let bytes = v.as_bytes();
-                let n = bytes.iter().fold(0i32, |acc, &b| acc * 10 + (b - b'0') as i32);
+                let n = bytes
+                    .iter()
+                    .fold(0i32, |acc, &b| acc * 10 + (b - b'0') as i32);
                 (n as f32) / 1000.0
             }
-        } else { 0.0 };
+        } else {
+            0.0
+        };
 
         let w = bx.width;
         let h = bx.height;
         let r = 4;
 
         // Track background (light gray, rounded).
-        self.push(x, y, w, h, DrawKind::RoundedRect { color: 0xFFE0E0E0, radii: [r, r, r, r] });
+        self.push(
+            x,
+            y,
+            w,
+            h,
+            DrawKind::RoundedRect {
+                color: 0xFFE0E0E0,
+                radii: [r, r, r, r],
+            },
+        );
 
         // Fill bar (blue).
         let fill_w = ((w as f32) * pct) as i32;
         if fill_w > 0 {
             let fr = if pct >= 0.99 { r } else { 0 };
-            self.push(x, y, fill_w, h, DrawKind::RoundedRect {
-                color: 0xFF4A90D9,
-                radii: [r, fr, fr, r],
-            });
+            self.push(
+                x,
+                y,
+                fill_w,
+                h,
+                DrawKind::RoundedRect {
+                    color: 0xFF4A90D9,
+                    radii: [r, fr, fr, r],
+                },
+            );
         }
     }
 
     /// Draw a `<select>` dropdown as a text field with a dropdown arrow.
     fn emit_select(&mut self, x: i32, y: i32, bx: &LayoutBox) {
-        let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
+        let bg = if bx.bg_color != 0 {
+            bx.bg_color
+        } else {
+            0xFFFFFFFF
+        };
         let border_color = 0xFF767676;
 
         // Background fill.
         self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: bg });
         // 1px border.
-        self.push(x, y, bx.width, 1, DrawKind::Rect { color: border_color });
-        self.push(x, y + bx.height - 1, bx.width, 1, DrawKind::Rect { color: border_color });
-        self.push(x, y, 1, bx.height, DrawKind::Rect { color: border_color });
-        self.push(x + bx.width - 1, y, 1, bx.height, DrawKind::Rect { color: border_color });
+        self.push(
+            x,
+            y,
+            bx.width,
+            1,
+            DrawKind::Rect {
+                color: border_color,
+            },
+        );
+        self.push(
+            x,
+            y + bx.height - 1,
+            bx.width,
+            1,
+            DrawKind::Rect {
+                color: border_color,
+            },
+        );
+        self.push(
+            x,
+            y,
+            1,
+            bx.height,
+            DrawKind::Rect {
+                color: border_color,
+            },
+        );
+        self.push(
+            x + bx.width - 1,
+            y,
+            1,
+            bx.height,
+            DrawKind::Rect {
+                color: border_color,
+            },
+        );
 
         // Draw the selected option text.
         if let Some(ref txt) = bx.text {
@@ -1025,8 +1675,18 @@ impl DisplayList {
             let text_color = if bx.color != 0 { bx.color } else { 0xFF000000 };
             let tx = x + 6;
             let ty = y + (bx.height - font_size as i32) / 2;
-            self.push(tx, ty, bx.width - 30, font_size as i32,
-                DrawKind::Text { color: text_color, font_id: 0, font_size, text: txt.clone() });
+            self.push(
+                tx,
+                ty,
+                bx.width - 30,
+                font_size as i32,
+                DrawKind::Text {
+                    color: text_color,
+                    font_id: 0,
+                    font_size,
+                    text: txt.clone(),
+                },
+            );
         }
 
         // Dropdown arrow indicator (small downward-pointing triangle).
@@ -1044,9 +1704,18 @@ impl DisplayList {
 
     #[inline]
     fn push(&mut self, x: i32, y: i32, w: i32, h: i32, kind: DrawKind) {
-        if h > self.max_h { self.max_h = h; }
+        if h > self.max_h {
+            self.max_h = h;
+        }
         let clip = self.clip_stack.last().copied();
-        self.cmds.push(DrawCmd { x, y, w, h, kind, clip });
+        self.cmds.push(DrawCmd {
+            x,
+            y,
+            w,
+            h,
+            kind,
+            clip,
+        });
     }
 }
 
@@ -1075,11 +1744,16 @@ struct TileCache {
 
 impl TileCache {
     fn new() -> Self {
-        Self { tiles: Vec::new(), generation: 0, free_bufs: Vec::new() }
+        Self {
+            tiles: Vec::new(),
+            generation: 0,
+            free_bufs: Vec::new(),
+        }
     }
 
     fn get(&self, row: u32) -> Option<&[u32]> {
-        self.tiles.iter()
+        self.tiles
+            .iter()
             .find(|t| t.row == row)
             .map(|t| t.pixels.as_slice())
     }
@@ -1099,7 +1773,10 @@ impl TileCache {
         }
 
         if self.tiles.len() >= MAX_CACHED_TILES {
-            let min_idx = self.tiles.iter().enumerate()
+            let min_idx = self
+                .tiles
+                .iter()
+                .enumerate()
                 .min_by_key(|(_, t)| t.generation)
                 .map(|(i, _)| i)
                 .unwrap_or(0);
@@ -1109,7 +1786,11 @@ impl TileCache {
             }
         }
 
-        self.tiles.push(CachedTile { row, pixels, generation: gen });
+        self.tiles.push(CachedTile {
+            row,
+            pixels,
+            generation: gen,
+        });
     }
 
     fn invalidate_all(&mut self) {
@@ -1125,7 +1806,9 @@ impl TileCache {
     fn take_buf(&mut self, pixel_count: usize, clear_color: u32) -> Vec<u32> {
         if let Some(mut buf) = self.free_bufs.pop() {
             buf.resize(pixel_count, clear_color);
-            for px in buf.iter_mut() { *px = clear_color; }
+            for px in buf.iter_mut() {
+                *px = clear_color;
+            }
             buf
         } else {
             let mut buf = Vec::with_capacity(pixel_count);
@@ -1233,8 +1916,10 @@ impl Renderer {
 
     pub fn hit_test_link_at(&self, x: i32, doc_y: i32) -> Option<&str> {
         for region in &self.hit_regions {
-            if x >= region.x && x < region.x + region.w
-                && doc_y >= region.y && doc_y < region.y + region.h
+            if x >= region.x
+                && x < region.x + region.w
+                && doc_y >= region.y
+                && doc_y < region.y + region.h
             {
                 if let HitKind::Link(ref url) = region.kind {
                     return Some(url.as_str());
@@ -1246,8 +1931,10 @@ impl Renderer {
 
     pub fn hit_test_submit_at(&self, x: i32, doc_y: i32) -> Option<usize> {
         for region in &self.hit_regions {
-            if x >= region.x && x < region.x + region.w
-                && doc_y >= region.y && doc_y < region.y + region.h
+            if x >= region.x
+                && x < region.x + region.w
+                && doc_y >= region.y
+                && doc_y < region.y + region.h
             {
                 if let HitKind::Submit(node_id) = region.kind {
                     return Some(node_id);
@@ -1276,8 +1963,13 @@ impl Renderer {
         submit_cb: Option<ui::Callback>,
         submit_cb_ud: u64,
     ) {
-        crate::debug_surf!("[render] full render start ({}x{}, vp_h={}, scroll_y={})",
-            doc_w, doc_h, viewport_h, scroll_y);
+        crate::debug_surf!(
+            "[render] full render start ({}x{}, vp_h={}, scroll_y={})",
+            doc_w,
+            doc_h,
+            viewport_h,
+            scroll_y
+        );
 
         let w = doc_w.max(1);
         let clear_color = if bg_color != 0 { bg_color } else { 0xFFFFFFFF };
@@ -1296,8 +1988,11 @@ impl Renderer {
 
         // 3. Build display list (flat, Y-sorted draw commands).
         self.display_list = DisplayList::build(root);
-        crate::debug_surf!("[render] display list: {} commands, max_h={}",
-            self.display_list.cmds.len(), self.display_list.max_h);
+        crate::debug_surf!(
+            "[render] display list: {} commands, max_h={}",
+            self.display_list.cmds.len(),
+            self.display_list.max_h
+        );
 
         // 4. Compute visible tile rows.
         let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
@@ -1334,8 +2029,12 @@ impl Renderer {
             }
         });
 
-        crate::debug_surf!("[render] full render done: {} tile canvases, {} hit_regions, {} form_controls",
-            self.tile_canvases.len(), self.hit_regions.len(), self.form_controls.len());
+        crate::debug_surf!(
+            "[render] full render done: {} tile canvases, {} hit_regions, {} form_controls",
+            self.tile_canvases.len(),
+            self.hit_regions.len(),
+            self.form_controls.len()
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -1402,7 +2101,11 @@ impl Renderer {
 
         // Evict distant tile canvases.
         let keep_first = first_row.saturating_sub(4);
-        let keep_last = (last_row + 4).min(if doc_h > 0 { (doc_h - 1) / TILE_HEIGHT } else { 0 });
+        let keep_last = (last_row + 4).min(if doc_h > 0 {
+            (doc_h - 1) / TILE_HEIGHT
+        } else {
+            0
+        });
         self.tile_canvases.retain(|tc| {
             if tc.row < keep_first || tc.row > keep_last {
                 ui::Control::from_id(tc.canvas.id()).remove();
@@ -1414,10 +2117,16 @@ impl Renderer {
 
         while self.tile_canvases.len() > MAX_TILE_CANVASES {
             let vp_center_row = ((scroll_y + viewport_h as i32 / 2).max(0) as u32) / TILE_HEIGHT;
-            let farthest_idx = self.tile_canvases.iter().enumerate()
+            let farthest_idx = self
+                .tile_canvases
+                .iter()
+                .enumerate()
                 .max_by_key(|(_, tc)| {
-                    if tc.row > vp_center_row { tc.row - vp_center_row }
-                    else { vp_center_row - tc.row }
+                    if tc.row > vp_center_row {
+                        tc.row - vp_center_row
+                    } else {
+                        vp_center_row - tc.row
+                    }
                 })
                 .map(|(i, _)| i)
                 .unwrap_or(0);
@@ -1449,8 +2158,11 @@ impl Renderer {
 
         self.display_list.rasterize_tile(
             images,
-            buf.as_mut_ptr(), doc_w, TILE_HEIGHT,
-            tile_y_start, tile_y_end,
+            buf.as_mut_ptr(),
+            doc_w,
+            TILE_HEIGHT,
+            tile_y_start,
+            tile_y_end,
         );
 
         buf
@@ -1463,7 +2175,9 @@ impl Renderer {
         };
 
         let tile_y = (row * TILE_HEIGHT) as i32;
-        let tile_h = TILE_HEIGHT.min(doc_h.saturating_sub(row * TILE_HEIGHT)).max(1);
+        let tile_h = TILE_HEIGHT
+            .min(doc_h.saturating_sub(row * TILE_HEIGHT))
+            .max(1);
 
         let c = ui::Canvas::new(doc_w, tile_h);
         c.set_position(0, tile_y);
@@ -1504,8 +2218,10 @@ impl Renderer {
             if !text.is_empty() && bx.form_field.is_none() {
                 if let Some(ref url) = bx.link_url {
                     self.hit_regions.push(HitRegion {
-                        x: abs_x, y: abs_y,
-                        w: bx.width, h: bx.height,
+                        x: abs_x,
+                        y: abs_y,
+                        w: bx.width,
+                        h: bx.height,
                         kind: HitKind::Link(url.clone()),
                     });
                 }
@@ -1538,16 +2254,27 @@ impl Renderer {
 
         match kind {
             FormFieldKind::TextInput | FormFieldKind::Password => {
-                if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
+                if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
                     ctrl.set_size(w as u32, h as u32);
-                    let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
+                    let bg = if bx.bg_color != 0 {
+                        bx.bg_color
+                    } else {
+                        0xFFFFFFFF
+                    };
                     let fg = if bx.color != 0 { bx.color } else { 0xFF000000 };
                     ctrl.set_color(bg);
                     ctrl.set_text_color(fg);
                     fc.seen = true;
-                    fc.doc_x = x; fc.doc_y = y; fc.doc_w = w; fc.doc_h = h;
+                    fc.doc_x = x;
+                    fc.doc_y = y;
+                    fc.doc_w = w;
+                    fc.doc_h = h;
                 } else {
                     let tf = ui::TextField::new();
                     if kind == FormFieldKind::Password {
@@ -1555,7 +2282,11 @@ impl Renderer {
                     }
                     tf.set_position(x, y);
                     tf.set_size(w as u32, h as u32);
-                    let bg = if bx.bg_color != 0 { bx.bg_color } else { 0xFFFFFFFF };
+                    let bg = if bx.bg_color != 0 {
+                        bx.bg_color
+                    } else {
+                        0xFFFFFFFF
+                    };
                     let fg = if bx.color != 0 { bx.color } else { 0xFF000000 };
                     tf.set_color(bg);
                     tf.set_text_color(fg);
@@ -1572,27 +2303,43 @@ impl Renderer {
                     parent.add(&tf);
                     let id = tf.id();
                     self.form_controls.push(FormControl {
-                        control_id: id, node_id, kind,
-                        name: String::new(), seen: true,
-                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
+                        control_id: id,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
                     });
                 }
             }
 
             FormFieldKind::Submit | FormFieldKind::ButtonEl => {
                 self.hit_regions.push(HitRegion {
-                    x, y, w, h,
+                    x,
+                    y,
+                    w,
+                    h,
                     kind: HitKind::Submit(node_id),
                 });
             }
 
             FormFieldKind::Checkbox => {
-                if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
+                if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
                     ctrl.set_size(w as u32, h as u32);
                     fc.seen = true;
-                    fc.doc_x = x; fc.doc_y = y; fc.doc_w = w; fc.doc_h = h;
+                    fc.doc_x = x;
+                    fc.doc_y = y;
+                    fc.doc_w = w;
+                    fc.doc_h = h;
                 } else {
                     let cb = ui::Checkbox::new("");
                     cb.set_position(x, y);
@@ -1600,20 +2347,33 @@ impl Renderer {
                     parent.add(&cb);
                     let id = cb.id();
                     self.form_controls.push(FormControl {
-                        control_id: id, node_id, kind,
-                        name: String::new(), seen: true,
-                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
+                        control_id: id,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
                     });
                 }
             }
 
             FormFieldKind::Radio => {
-                if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
+                if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
                     ctrl.set_size(w as u32, h as u32);
                     fc.seen = true;
-                    fc.doc_x = x; fc.doc_y = y; fc.doc_w = w; fc.doc_h = h;
+                    fc.doc_x = x;
+                    fc.doc_y = y;
+                    fc.doc_w = w;
+                    fc.doc_h = h;
                 } else {
                     let rb = ui::RadioButton::new("");
                     rb.set_position(x, y);
@@ -1621,20 +2381,33 @@ impl Renderer {
                     parent.add(&rb);
                     let id = rb.id();
                     self.form_controls.push(FormControl {
-                        control_id: id, node_id, kind,
-                        name: String::new(), seen: true,
-                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
+                        control_id: id,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
                     });
                 }
             }
 
             FormFieldKind::Textarea => {
-                if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
+                if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
                     ctrl.set_size(w as u32, h as u32);
                     fc.seen = true;
-                    fc.doc_x = x; fc.doc_y = y; fc.doc_w = w; fc.doc_h = h;
+                    fc.doc_x = x;
+                    fc.doc_y = y;
+                    fc.doc_w = w;
+                    fc.doc_h = h;
                 } else {
                     let ta = ui::TextArea::new();
                     ta.set_position(x, y);
@@ -1644,22 +2417,42 @@ impl Renderer {
                     parent.add(&ta);
                     let id = ta.id();
                     self.form_controls.push(FormControl {
-                        control_id: id, node_id, kind,
-                        name: String::new(), seen: true,
-                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
+                        control_id: id,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
                     });
                 }
             }
 
             FormFieldKind::Hidden => {
-                if !self.form_controls.iter().any(|fc| fc.node_id == node_id && fc.kind == kind) {
+                if !self
+                    .form_controls
+                    .iter()
+                    .any(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
                     self.form_controls.push(FormControl {
-                        control_id: 0, node_id, kind,
-                        name: String::new(), seen: true,
-                        doc_x: x, doc_y: y, doc_w: w, doc_h: h,
+                        control_id: 0,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
                     });
                 } else {
-                    if let Some(fc) = self.form_controls.iter_mut().find(|fc| fc.node_id == node_id && fc.kind == kind) {
+                    if let Some(fc) = self
+                        .form_controls
+                        .iter_mut()
+                        .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                    {
                         fc.seen = true;
                     }
                 }
@@ -1675,13 +2468,17 @@ impl Renderer {
     /// Returns the control_id of the first matching TextInput/Password/Textarea control.
     pub fn hit_test_form_at(&self, x: i32, doc_y: i32) -> Option<u32> {
         for fc in &self.form_controls {
-            if fc.control_id == 0 { continue; }
+            if fc.control_id == 0 {
+                continue;
+            }
             match fc.kind {
                 FormFieldKind::TextInput | FormFieldKind::Password | FormFieldKind::Textarea => {}
                 _ => continue,
             }
-            if x >= fc.doc_x && x < fc.doc_x + fc.doc_w
-                && doc_y >= fc.doc_y && doc_y < fc.doc_y + fc.doc_h
+            if x >= fc.doc_x
+                && x < fc.doc_x + fc.doc_w
+                && doc_y >= fc.doc_y
+                && doc_y < fc.doc_y + fc.doc_h
             {
                 return Some(fc.control_id);
             }
@@ -1695,8 +2492,19 @@ impl Renderer {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Fill a rectangle directly in the ARGB pixel buffer with clipping.
-fn fill_rect_buf(buf: *mut u32, stride: u32, buf_h: u32, x: i32, y: i32, w: i32, h: i32, color: u32) {
-    if w <= 0 || h <= 0 || buf.is_null() { return; }
+fn fill_rect_buf(
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: u32,
+) {
+    if w <= 0 || h <= 0 || buf.is_null() {
+        return;
+    }
     let s = stride as i32;
     let bh = buf_h as i32;
 
@@ -1704,7 +2512,9 @@ fn fill_rect_buf(buf: *mut u32, stride: u32, buf_h: u32, x: i32, y: i32, w: i32,
     let y0 = y.max(0);
     let x1 = (x + w).min(s);
     let y1 = (y + h).min(bh);
-    if x0 >= x1 || y0 >= y1 { return; }
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
 
     let cw = (x1 - x0) as usize;
     let alpha = (color >> 24) & 0xFF;
@@ -1749,9 +2559,16 @@ fn fill_rect_buf(buf: *mut u32, stride: u32, buf_h: u32, x: i32, y: i32, w: i32,
 
 /// Blit image pixels into the buffer with scaling and clipping.
 fn blit_image_buf(
-    buf: *mut u32, stride: u32, buf_h: u32,
-    dx: i32, dy: i32, dw: i32, dh: i32,
-    src: &[u32], src_w: u32, src_h: u32,
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    dx: i32,
+    dy: i32,
+    dw: i32,
+    dh: i32,
+    src: &[u32],
+    src_w: u32,
+    src_h: u32,
 ) {
     if dw <= 0 || dh <= 0 || src.is_empty() || src_w == 0 || src_h == 0 || buf.is_null() {
         return;
@@ -1763,19 +2580,27 @@ fn blit_image_buf(
     let y0 = dy.max(0);
     let x1 = (dx + dw).min(s);
     let y1 = (dy + dh).min(bh);
-    if x0 >= x1 || y0 >= y1 { return; }
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
 
     unsafe {
         for row in y0..y1 {
             let sy = ((row - dy) as u64 * src_h as u64 / dh as u64) as usize;
-            if sy >= src_h as usize { continue; }
+            if sy >= src_h as usize {
+                continue;
+            }
             let dst_offset = row as usize * stride as usize;
             let src_row = sy * src_w as usize;
             for col in x0..x1 {
                 let sx = ((col - dx) as u64 * src_w as u64 / dw as u64) as usize;
-                if sx >= src_w as usize { continue; }
+                if sx >= src_w as usize {
+                    continue;
+                }
                 let src_idx = src_row + sx;
-                if src_idx >= src.len() { continue; }
+                if src_idx >= src.len() {
+                    continue;
+                }
                 let pixel = src[src_idx];
                 let alpha = (pixel >> 24) & 0xFF;
                 let dst_idx = dst_offset + col as usize;
@@ -1796,9 +2621,16 @@ fn blit_image_buf(
 
 /// Blit image with object-fit semantics.
 fn blit_image_scaled(
-    buf: *mut u32, stride: u32, buf_h: u32,
-    dx: i32, dy: i32, dw: i32, dh: i32,
-    src: &[u32], src_w: u32, src_h: u32,
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    dx: i32,
+    dy: i32,
+    dw: i32,
+    dh: i32,
+    src: &[u32],
+    src_w: u32,
+    src_h: u32,
     fit: crate::style::ObjectFit,
 ) {
     use crate::style::ObjectFit;
@@ -1859,8 +2691,12 @@ fn blit_image_scaled(
 
 /// Interpolate a color along a gradient at position `t` (0..10000).
 fn interpolate_gradient_color(stops: &[crate::style::GradientStop], t: i32) -> u32 {
-    if stops.is_empty() { return 0xFF000000; }
-    if stops.len() == 1 { return stops[0].color; }
+    if stops.is_empty() {
+        return 0xFF000000;
+    }
+    if stops.len() == 1 {
+        return stops[0].color;
+    }
 
     // Find the two stops that bracket `t`.
     let t_clamped = t.max(0).min(10000);
@@ -1869,7 +2705,9 @@ fn interpolate_gradient_color(stops: &[crate::style::GradientStop], t: i32) -> u
         if stop.position >= t_clamped {
             // Interpolate between prev and stop.
             let range = stop.position - prev.position;
-            if range <= 0 { return stop.color; }
+            if range <= 0 {
+                return stop.color;
+            }
             let frac = ((t_clamped - prev.position) * 255 / range) as u32;
             return lerp_color(prev.color, stop.color, frac);
         }
@@ -1883,8 +2721,8 @@ fn lerp_color(c0: u32, c1: u32, frac: u32) -> u32 {
     let inv = 255 - frac;
     let a = (((c0 >> 24) & 0xFF) * inv + ((c1 >> 24) & 0xFF) * frac) / 255;
     let r = (((c0 >> 16) & 0xFF) * inv + ((c1 >> 16) & 0xFF) * frac) / 255;
-    let g = (((c0 >> 8)  & 0xFF) * inv + ((c1 >> 8)  & 0xFF) * frac) / 255;
-    let b = (( c0        & 0xFF) * inv + ( c1        & 0xFF) * frac) / 255;
+    let g = (((c0 >> 8) & 0xFF) * inv + ((c1 >> 8) & 0xFF) * frac) / 255;
+    let b = ((c0 & 0xFF) * inv + (c1 & 0xFF) * frac) / 255;
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
@@ -1920,11 +2758,19 @@ fn lighten_color(color: u32, amount: u32) -> u32 {
 /// Fill a rounded rectangle. `radii` = [top-left, top-right, bottom-right, bottom-left].
 /// Uses a simple per-pixel distance check against corner circles.
 fn fill_rounded_rect_buf(
-    buf: *mut u32, stride: u32, buf_h: u32,
-    x: i32, y: i32, w: i32, h: i32,
-    color: u32, radii: [i32; 4],
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: u32,
+    radii: [i32; 4],
 ) {
-    if w <= 0 || h <= 0 || buf.is_null() { return; }
+    if w <= 0 || h <= 0 || buf.is_null() {
+        return;
+    }
     let s = stride as i32;
     let bh = buf_h as i32;
 
@@ -1932,10 +2778,14 @@ fn fill_rounded_rect_buf(
     let y0 = y.max(0);
     let x1 = (x + w).min(s);
     let y1 = (y + h).min(bh);
-    if x0 >= x1 || y0 >= y1 { return; }
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
 
     let alpha = (color >> 24) & 0xFF;
-    if alpha == 0 { return; }
+    if alpha == 0 {
+        return;
+    }
 
     let [rtl, rtr, rbr, rbl] = radii;
 
@@ -1948,7 +2798,9 @@ fn fill_rounded_rect_buf(
 
                 // Check if this pixel falls inside a rounded corner.
                 let inside = is_inside_rounded_rect(rx, ry, w, h, rtl, rtr, rbr, rbl);
-                if !inside { continue; }
+                if !inside {
+                    continue;
+                }
 
                 let dst_idx = offset + col as usize;
                 if alpha >= 255 {
@@ -1968,8 +2820,16 @@ fn fill_rounded_rect_buf(
 
 /// Check if point (px, py) relative to rect origin is inside a rounded rect.
 #[inline]
-fn is_inside_rounded_rect(px: i32, py: i32, w: i32, h: i32,
-                          rtl: i32, rtr: i32, rbr: i32, rbl: i32) -> bool {
+fn is_inside_rounded_rect(
+    px: i32,
+    py: i32,
+    w: i32,
+    h: i32,
+    rtl: i32,
+    rtr: i32,
+    rbr: i32,
+    rbl: i32,
+) -> bool {
     // Top-left corner
     if px < rtl && py < rtl {
         let dx = rtl - px;
@@ -2003,13 +2863,25 @@ fn is_inside_rounded_rect(px: i32, py: i32, w: i32, h: i32,
 
 /// Fill a dashed/dotted line pattern within the given rect.
 fn fill_dashed_buf(
-    buf: *mut u32, stride: u32, buf_h: u32,
-    x: i32, y: i32, w: i32, h: i32,
-    color: u32, dash_len: i32, gap_len: i32, vertical: bool,
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    color: u32,
+    dash_len: i32,
+    gap_len: i32,
+    vertical: bool,
 ) {
-    if w <= 0 || h <= 0 || buf.is_null() || dash_len <= 0 { return; }
+    if w <= 0 || h <= 0 || buf.is_null() || dash_len <= 0 {
+        return;
+    }
     let cycle = dash_len + gap_len;
-    if cycle <= 0 { return; }
+    if cycle <= 0 {
+        return;
+    }
 
     if vertical {
         // Vertical dashed line: iterate along height, fill dash segments.
@@ -2044,15 +2916,24 @@ fn sin_approx(x: f32) -> f32 {
     let pi = core::f32::consts::PI;
     let two_pi = 2.0 * pi;
     let mut a = x % two_pi;
-    if a < 0.0 { a += two_pi; }
+    if a < 0.0 {
+        a += two_pi;
+    }
 
-    let sign = if a > pi { a -= pi; -1.0 } else { 1.0 };
+    let sign = if a > pi {
+        a -= pi;
+        -1.0
+    } else {
+        1.0
+    };
 
     // Bhaskara I approximation for [0, PI]:
     // sin(x) ≈ 16x(PI-x) / (5*PI^2 - 4x(PI-x))
     let num = 16.0 * a * (pi - a);
     let den = 5.0 * pi * pi - 4.0 * a * (pi - a);
-    if den.abs() < 0.001 { return 0.0; }
+    if den.abs() < 0.001 {
+        return 0.0;
+    }
     sign * num / den
 }
 

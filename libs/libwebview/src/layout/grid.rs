@@ -25,13 +25,12 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId};
 use crate::style::{
-    AlignItems, ComputedStyle, Display, GridLine, GridArea, GridTrackSize, Position,
-    PseudoStyles,
+    AlignItems, ComputedStyle, Display, GridArea, GridLine, GridTrackSize, Position, PseudoStyles,
 };
 use crate::ImageCache;
 
-use super::LayoutBox;
 use super::block::build_block;
+use super::LayoutBox;
 
 // ────────────────────────────────────────────────────────────
 // Public entry-point
@@ -67,7 +66,8 @@ pub fn layout_grid(
             match src[0] {
                 GridTrackSize::AutoFill { min_px } | GridTrackSize::AutoFit { min_px } => {
                     let min_px = min_px.max(1);
-                    let num_cols = ((available_width + col_gap) / (min_px + col_gap)).max(1) as usize;
+                    let num_cols =
+                        ((available_width + col_gap) / (min_px + col_gap)).max(1) as usize;
                     resolved_templates = vec![GridTrackSize::Fr(100); num_cols];
                     &resolved_templates
                 }
@@ -85,14 +85,22 @@ pub fn layout_grid(
         .iter()
         .filter_map(|&cid| {
             let st = &styles[cid];
-            if st.display == Display::None { return None; }
-            if matches!(st.position, Position::Absolute | Position::Fixed) { return None; }
+            if st.display == Display::None {
+                return None;
+            }
+            if matches!(st.position, Position::Absolute | Position::Fixed) {
+                return None;
+            }
             // Skip whitespace-only text nodes (CSS Grid §4) and SVG raw text.
             if let crate::dom::NodeType::Text(ref t) = dom.get(cid).node_type {
-                if t.bytes().all(|b| b == b' ' || b == b'\n' || b == b'\r' || b == b'\t') {
+                if t.bytes()
+                    .all(|b| b == b' ' || b == b'\n' || b == b'\r' || b == b'\t')
+                {
                     return None;
                 }
-                if super::is_inside_svg(dom, cid) { return None; }
+                if super::is_inside_svg(dom, cid) {
+                    return None;
+                }
             }
             Some(GridItem {
                 node_id: cid,
@@ -119,9 +127,13 @@ pub fn layout_grid(
     let template_areas = &parent_style.grid_template_areas;
     if !template_areas.is_empty() {
         for item in &mut items {
-            resolve_named_area(&mut item.col_start, &mut item.col_end,
-                               &mut item.row_start, &mut item.row_end,
-                               template_areas);
+            resolve_named_area(
+                &mut item.col_start,
+                &mut item.col_end,
+                &mut item.row_start,
+                &mut item.row_end,
+                template_areas,
+            );
         }
     }
 
@@ -130,13 +142,20 @@ pub fn layout_grid(
     // (minimum 1).  Items that exceed the explicit grid extend it implicitly.
     // If grid-template-areas defines more columns, use that.
     let areas_max_col = template_areas.iter().map(|a| a.col_end).max().unwrap_or(0) as usize;
-    let explicit_cols = col_templates.len().max(1).max(areas_max_col.saturating_sub(1));
+    let explicit_cols = col_templates
+        .len()
+        .max(1)
+        .max(areas_max_col.saturating_sub(1));
 
     // ── 5. Auto-place all items ──────────────────────────────────────────
     auto_place(&mut items, explicit_cols);
 
     // Total column count needed (explicit + implicit).
-    let total_cols = items.iter().map(|it| it.placed_col + it.span_cols).max().unwrap_or(1);
+    let total_cols = items
+        .iter()
+        .map(|it| it.placed_col + it.span_cols)
+        .max()
+        .unwrap_or(1);
 
     // ── 5. Resolve column pixel widths ────────────────────────────────────
     let col_widths = resolve_col_widths(
@@ -148,7 +167,11 @@ pub fn layout_grid(
     );
 
     // ── 6. Total row count ────────────────────────────────────────────────
-    let total_rows = items.iter().map(|it| it.placed_row + it.span_rows).max().unwrap_or(1);
+    let total_rows = items
+        .iter()
+        .map(|it| it.placed_row + it.span_rows)
+        .max()
+        .unwrap_or(1);
 
     let row_templates = &parent_style.grid_template_rows;
     let auto_row = &parent_style.grid_auto_rows;
@@ -156,17 +179,21 @@ pub fn layout_grid(
     // ── 7. Measure each item at its column span width ─────────────────────
     for item in &mut items {
         let col_w = span_width(&col_widths, item.placed_col, item.span_cols, col_gap);
-        let bx = build_block(dom, styles, pseudo, item.node_id, col_w, images, viewport_w);
+        let bx = build_block(
+            dom,
+            styles,
+            pseudo,
+            item.node_id,
+            col_w,
+            images,
+            viewport_w,
+            0,
+        );
         item.layout = Some(bx);
     }
 
     // ── 8. Resolve row heights ────────────────────────────────────────────
-    let row_heights = resolve_row_heights(
-        row_templates,
-        auto_row,
-        total_rows,
-        &items,
-    );
+    let row_heights = resolve_row_heights(row_templates, auto_row, total_rows, &items);
 
     // ── 9. Position every item ────────────────────────────────────────────
     let mut cursor_y = 0i32;
@@ -179,7 +206,8 @@ pub fn layout_grid(
         }
         y
         // (we'll use `cursor_y` differently — just store and use offsets)
-        ; offsets
+        ;
+        offsets
     };
     // Recompute total height from row_offsets.
     cursor_y = if !row_offsets.is_empty() {
@@ -257,8 +285,10 @@ fn resolve_span(start: &GridLine, end: &GridLine, _explicit: usize) -> (Option<u
 /// If all four lines of an item are Named with the same name, look up the area
 /// and set explicit col/row start/end.
 fn resolve_named_area(
-    col_start: &mut GridLine, col_end: &mut GridLine,
-    row_start: &mut GridLine, row_end: &mut GridLine,
+    col_start: &mut GridLine,
+    col_end: &mut GridLine,
+    row_start: &mut GridLine,
+    row_end: &mut GridLine,
     areas: &[GridArea],
 ) {
     // Case 1: grid-area: areaName → all four are Named("areaName")
@@ -307,10 +337,8 @@ fn auto_place(items: &mut Vec<GridItem>, explicit_cols: usize) {
 
     // Pre-pass: resolve items with fully explicit positions.
     for item in items.iter_mut() {
-        let (col_start, span_cols) =
-            resolve_span(&item.col_start, &item.col_end, explicit_cols);
-        let (row_start, span_rows) =
-            resolve_span(&item.row_start, &item.row_end, explicit_cols);
+        let (col_start, span_cols) = resolve_span(&item.col_start, &item.col_end, explicit_cols);
+        let (row_start, span_rows) = resolve_span(&item.row_start, &item.row_end, explicit_cols);
         item.span_cols = span_cols.max(1);
         item.span_rows = span_rows.max(1);
 
@@ -336,7 +364,9 @@ fn auto_place(items: &mut Vec<GridItem>, explicit_cols: usize) {
         };
 
         // Already fully placed above.
-        if col_start.is_some() && row_start.is_some() { continue; }
+        if col_start.is_some() && row_start.is_some() {
+            continue;
+        }
 
         let span_c = item.span_cols;
         let span_r = item.span_rows;
@@ -371,7 +401,9 @@ fn ensure_rows(occupied: &mut Vec<Vec<bool>>, row: usize, cols: usize) {
     }
     // Widen existing rows if the grid grew.
     for r in occupied.iter_mut() {
-        while r.len() < cols { r.push(false); }
+        while r.len() < cols {
+            r.push(false);
+        }
     }
 }
 
@@ -415,7 +447,11 @@ fn find_slot(
     loop {
         if c + span_c > num_cols {
             // Wrap to next row.
-            c = if fixed_col.is_some() { fixed_col.unwrap() } else { 0 };
+            c = if fixed_col.is_some() {
+                fixed_col.unwrap()
+            } else {
+                0
+            };
             r += 1;
         }
         if fits(occupied, r, c, span_r, span_c) {
@@ -430,15 +466,11 @@ fn find_slot(
 }
 
 /// Check whether a span fits at (row, col) without overlap.
-fn fits(
-    occupied: &Vec<Vec<bool>>,
-    row: usize,
-    col: usize,
-    span_r: usize,
-    span_c: usize,
-) -> bool {
+fn fits(occupied: &Vec<Vec<bool>>, row: usize, col: usize, span_r: usize, span_c: usize) -> bool {
     for r in row..row + span_r {
-        if r >= occupied.len() { continue; } // empty row = free
+        if r >= occupied.len() {
+            continue;
+        } // empty row = free
         let row_data = &occupied[r];
         for c in col..col + span_c {
             if c < row_data.len() && row_data[c] {
@@ -471,7 +503,11 @@ fn resolve_col_widths(
 
     // Extend template with auto_track for implicit columns.
     let track_for = |idx: usize| -> &GridTrackSize {
-        if idx < templates.len() { &templates[idx] } else { auto_track }
+        if idx < templates.len() {
+            &templates[idx]
+        } else {
+            auto_track
+        }
     };
 
     let total_gap = col_gap * (total_cols.saturating_sub(1) as i32);
@@ -482,14 +518,24 @@ fn resolve_col_widths(
     let mut fr_total = 0i32; // sum of fr values (×100 fixed-point)
     for i in 0..total_cols {
         match track_for(i) {
-            GridTrackSize::Px(px) => { widths.push(*px); fixed_total += px; }
+            GridTrackSize::Px(px) => {
+                widths.push(*px);
+                fixed_total += px;
+            }
             GridTrackSize::Percent(pct) => {
                 let px = (available as i64 * *pct as i64 / 10000) as i32;
                 widths.push(px);
                 fixed_total += px;
             }
-            GridTrackSize::Fr(f) => { widths.push(0); fr_total += f; }
-            GridTrackSize::Minmax { min_px, max_px, max_is_fr } => {
+            GridTrackSize::Fr(f) => {
+                widths.push(0);
+                fr_total += f;
+            }
+            GridTrackSize::Minmax {
+                min_px,
+                max_px,
+                max_is_fr,
+            } => {
                 if *max_is_fr {
                     // Behaves like fr(max_px) with a minimum floor of min_px.
                     widths.push(0);
@@ -509,7 +555,9 @@ fn resolve_col_widths(
             | GridTrackSize::MinContent
             | GridTrackSize::MaxContent
             | GridTrackSize::AutoFill { .. }
-            | GridTrackSize::AutoFit { .. } => { widths.push(0); }
+            | GridTrackSize::AutoFit { .. } => {
+                widths.push(0);
+            }
         }
     }
 
@@ -521,7 +569,11 @@ fn resolve_col_widths(
                 GridTrackSize::Fr(f) => {
                     widths[i] = (free as i64 * *f as i64 / fr_total as i64) as i32;
                 }
-                GridTrackSize::Minmax { min_px, max_px, max_is_fr: true } => {
+                GridTrackSize::Minmax {
+                    min_px,
+                    max_px,
+                    max_is_fr: true,
+                } => {
                     let fr_share = (free as i64 * *max_px as i64 / fr_total as i64) as i32;
                     widths[i] = fr_share.max(*min_px);
                 }
@@ -531,10 +583,12 @@ fn resolve_col_widths(
     } else {
         // No fr tracks — distribute remaining free space equally to auto tracks.
         let auto_count = (0..total_cols)
-            .filter(|&i| matches!(
-                track_for(i),
-                GridTrackSize::Auto | GridTrackSize::MinContent | GridTrackSize::MaxContent
-            ))
+            .filter(|&i| {
+                matches!(
+                    track_for(i),
+                    GridTrackSize::Auto | GridTrackSize::MinContent | GridTrackSize::MaxContent
+                )
+            })
             .count() as i32;
         if auto_count > 0 {
             let share = free / auto_count;
@@ -561,7 +615,11 @@ fn resolve_row_heights(
     items: &[GridItem],
 ) -> Vec<i32> {
     let track_for = |idx: usize| -> &GridTrackSize {
-        if idx < templates.len() { &templates[idx] } else { auto_track }
+        if idx < templates.len() {
+            &templates[idx]
+        } else {
+            auto_track
+        }
     };
 
     let mut heights: Vec<i32> = vec![0; total_rows];
@@ -570,7 +628,11 @@ fn resolve_row_heights(
     for r in 0..total_rows {
         match track_for(r) {
             GridTrackSize::Px(px) => heights[r] = *px,
-            GridTrackSize::Minmax { min_px, max_px, max_is_fr } => {
+            GridTrackSize::Minmax {
+                min_px,
+                max_px,
+                max_is_fr,
+            } => {
                 if !max_is_fr && *max_px >= 0 {
                     heights[r] = (*max_px).max(*min_px);
                 } else {
@@ -598,8 +660,14 @@ fn resolve_row_heights(
                         heights[r] = item_h;
                     }
                 }
-                GridTrackSize::Minmax { min_px, max_is_fr: true, .. }
-                | GridTrackSize::Minmax { min_px, max_px: -1, .. } => {
+                GridTrackSize::Minmax {
+                    min_px,
+                    max_is_fr: true,
+                    ..
+                }
+                | GridTrackSize::Minmax {
+                    min_px, max_px: -1, ..
+                } => {
                     // fr or auto max — grow from content, respecting min floor
                     if item_h > heights[r] {
                         heights[r] = item_h.max(*min_px);
@@ -630,7 +698,9 @@ fn col_offset(col_widths: &[i32], col: usize, col_gap: i32) -> i32 {
 fn span_width(col_widths: &[i32], col: usize, span: usize, col_gap: i32) -> i32 {
     let mut w = 0i32;
     for i in col..col + span {
-        if i > col { w += col_gap; }
+        if i > col {
+            w += col_gap;
+        }
         w += col_widths.get(i).copied().unwrap_or(0);
     }
     w.max(0)
@@ -640,7 +710,9 @@ fn span_width(col_widths: &[i32], col: usize, span: usize, col_gap: i32) -> i32 
 fn span_height(row_heights: &[i32], row: usize, span: usize, row_gap: i32) -> i32 {
     let mut h = 0i32;
     for i in row..row + span {
-        if i > row { h += row_gap; }
+        if i > row {
+            h += row_gap;
+        }
         h += row_heights.get(i).copied().unwrap_or(0);
     }
     h.max(0)

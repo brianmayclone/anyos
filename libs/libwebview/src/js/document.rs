@@ -5,24 +5,35 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+use libjs::value::{JsArray, JsObject};
+use libjs::vm::native_fn;
 use libjs::JsValue;
 use libjs::Vm;
-use libjs::value::{JsObject, JsArray};
-use libjs::vm::native_fn;
 
 use crate::dom::{Dom, NodeType, Tag};
 
-use super::{get_bridge, arg_string, make_array, dom_property_hook, DomMutation, VirtualNode};
 use super::element;
 use super::selector;
+use super::{arg_string, dom_property_hook, get_bridge, make_array, DomMutation, VirtualNode};
 
 // ═══════════════════════════════════════════════════════════
 // URL parsing helper
 // ═══════════════════════════════════════════════════════════
 
 /// Parse a URL string into its Location object fields.
-/// Returns `(protocol, hostname, port, pathname, search, hash, origin)`.
-fn parse_location_fields(url: &str) -> (String, String, String, String, String, String, String) {
+/// Returns `(protocol, hostname, host, port, pathname, search, hash, origin)`.
+fn parse_location_fields(
+    url: &str,
+) -> (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+) {
     let mut s = url;
 
     // protocol (scheme + colon, e.g. "https:")
@@ -62,9 +73,18 @@ fn parse_location_fields(url: &str) -> (String, String, String, String, String, 
 
     // search (query string)
     let (pathname, search) = if let Some(pos) = path_search.find('?') {
-        (String::from(&path_search[..pos]), String::from(&path_search[pos..]))
+        (
+            String::from(&path_search[..pos]),
+            String::from(&path_search[pos..]),
+        )
     } else {
         (String::from(path_search), String::new())
+    };
+
+    let host = if port.is_empty() {
+        hostname.clone()
+    } else {
+        alloc::format!("{}:{}", hostname, port)
     };
 
     // origin = protocol + "//" + hostname (+ port if non-standard)
@@ -72,15 +92,17 @@ fn parse_location_fields(url: &str) -> (String, String, String, String, String, 
     origin.push_str("//");
     origin.push_str(&hostname);
     if !port.is_empty() {
-        let is_default = (protocol == "http:" && port == "80")
-            || (protocol == "https:" && port == "443");
+        let is_default =
+            (protocol == "http:" && port == "80") || (protocol == "https:" && port == "443");
         if !is_default {
             origin.push(':');
             origin.push_str(&port);
         }
     }
 
-    (protocol, hostname, port, pathname, search, hash, origin)
+    (
+        protocol, hostname, host, port, pathname, search, hash, origin,
+    )
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -92,12 +114,18 @@ fn parse_location_fields(url: &str) -> (String, String, String, String, String, 
 /// `DomMutation::SetCookie` so the host application (e.g. surf) can update
 /// its cookie jar.
 fn doc_property_hook(_data: *mut u8, key: &str, value: &libjs::JsValue) {
-    if key != "cookie" { return; }
+    if key != "cookie" {
+        return;
+    }
     let mutations = unsafe {
-        if super::MUTATION_TARGET.is_null() { return; }
+        if super::MUTATION_TARGET.is_null() {
+            return;
+        }
         &mut *super::MUTATION_TARGET
     };
-    mutations.push(DomMutation::SetCookie { value: value.to_js_string() });
+    mutations.push(DomMutation::SetCookie {
+        value: value.to_js_string(),
+    });
 }
 
 /// Create the native `document` host object.
@@ -108,7 +136,10 @@ fn doc_property_hook(_data: *mut u8, key: &str, value: &libjs::JsValue) {
 ///               as `DomMutation::SetCookie` mutations.
 pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValue {
     let body_id = dom.find_body().unwrap_or(0);
-    let head_id: usize = dom.nodes.iter().enumerate()
+    let head_id: usize = dom
+        .nodes
+        .iter()
+        .enumerate()
         .find(|(_, n)| matches!(&n.node_type, NodeType::Element { tag: Tag::Head, .. }))
         .map(|(i, _)| i)
         .unwrap_or(0);
@@ -120,7 +151,7 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
 
     // Parse URL into location fields.
     let href = String::from(url);
-    let (protocol, hostname, port, pathname, search, hash, origin) =
+    let (protocol, hostname, host, port, pathname, search, hash, origin) =
         parse_location_fields(url);
 
     let mut obj = JsObject::new();
@@ -131,60 +162,139 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     obj.set(String::from("body"), body_el.clone());
     obj.set(String::from("head"), head_el);
     // cookie — readable; writes are intercepted by doc_property_hook
-    obj.set(String::from("cookie"), JsValue::String(String::from(cookies)));
-    obj.set(String::from("readyState"), JsValue::String(String::from("complete")));
+    obj.set(
+        String::from("cookie"),
+        JsValue::String(String::from(cookies)),
+    );
+    obj.set(
+        String::from("readyState"),
+        JsValue::String(String::from("complete")),
+    );
     obj.set(String::from("referrer"), JsValue::String(String::new()));
     obj.set(String::from("domain"), JsValue::String(hostname.clone()));
     obj.set(String::from("URL"), JsValue::String(href.clone()));
-    obj.set(String::from("characterSet"), JsValue::String(String::from("UTF-8")));
-    obj.set(String::from("contentType"), JsValue::String(String::from("text/html")));
-    obj.set(String::from("compatMode"), JsValue::String(String::from("CSS1Compat")));
+    obj.set(
+        String::from("characterSet"),
+        JsValue::String(String::from("UTF-8")),
+    );
+    obj.set(
+        String::from("contentType"),
+        JsValue::String(String::from("text/html")),
+    );
+    obj.set(
+        String::from("compatMode"),
+        JsValue::String(String::from("CSS1Compat")),
+    );
     obj.set(String::from("defaultView"), JsValue::Null);
 
     // location sub-object — all fields populated from the current URL.
     let loc = JsValue::new_object();
     loc.set_property(String::from("href"), JsValue::String(href));
     loc.set_property(String::from("hostname"), JsValue::String(hostname));
+    loc.set_property(String::from("host"), JsValue::String(host));
     loc.set_property(String::from("port"), JsValue::String(port));
     loc.set_property(String::from("pathname"), JsValue::String(pathname));
     loc.set_property(String::from("protocol"), JsValue::String(protocol));
     loc.set_property(String::from("search"), JsValue::String(search));
     loc.set_property(String::from("hash"), JsValue::String(hash));
     loc.set_property(String::from("origin"), JsValue::String(origin));
-    loc.set_property(String::from("assign"), native_fn("assign", |_,_| JsValue::Undefined));
-    loc.set_property(String::from("replace"), native_fn("replace", |_,_| JsValue::Undefined));
-    loc.set_property(String::from("reload"), native_fn("reload", |_,_| JsValue::Undefined));
+    loc.set_property(
+        String::from("assign"),
+        native_fn("assign", |_, _| JsValue::Undefined),
+    );
+    loc.set_property(
+        String::from("replace"),
+        native_fn("replace", |_, _| JsValue::Undefined),
+    );
+    loc.set_property(
+        String::from("reload"),
+        native_fn("reload", |_, _| JsValue::Undefined),
+    );
     obj.set(String::from("location"), loc);
 
     // implementation sub-object.
     let impl_obj = JsValue::new_object();
-    impl_obj.set_property(String::from("hasFeature"), native_fn("hasFeature", |_,_| JsValue::Bool(true)));
+    impl_obj.set_property(
+        String::from("hasFeature"),
+        native_fn("hasFeature", |_, _| JsValue::Bool(true)),
+    );
     obj.set(String::from("implementation"), impl_obj);
 
     // ── Native methods ──
-    obj.set(String::from("getElementById"), native_fn("getElementById", doc_get_element_by_id));
-    obj.set(String::from("getElementsByTagName"), native_fn("getElementsByTagName", doc_get_elements_by_tag_name));
-    obj.set(String::from("getElementsByClassName"), native_fn("getElementsByClassName", doc_get_elements_by_class_name));
-    obj.set(String::from("querySelector"), native_fn("querySelector", doc_query_selector));
-    obj.set(String::from("querySelectorAll"), native_fn("querySelectorAll", doc_query_selector_all));
-    obj.set(String::from("createElement"), native_fn("createElement", doc_create_element));
-    obj.set(String::from("createElementNS"), native_fn("createElementNS", doc_create_element_ns));
-    obj.set(String::from("createTextNode"), native_fn("createTextNode", doc_create_text_node));
-    obj.set(String::from("createDocumentFragment"), native_fn("createDocumentFragment", doc_create_document_fragment));
-    obj.set(String::from("createComment"), native_fn("createComment", doc_create_comment));
-    obj.set(String::from("createEvent"), native_fn("createEvent", doc_create_event));
-    obj.set(String::from("addEventListener"), native_fn("addEventListener", doc_add_event_listener));
-    obj.set(String::from("removeEventListener"), native_fn("removeEventListener", super::native_remove_event_listener));
-    obj.set(String::from("dispatchEvent"), native_fn("dispatchEvent", |_,_| JsValue::Bool(true)));
+    obj.set(
+        String::from("getElementById"),
+        native_fn("getElementById", doc_get_element_by_id),
+    );
+    obj.set(
+        String::from("getElementsByTagName"),
+        native_fn("getElementsByTagName", doc_get_elements_by_tag_name),
+    );
+    obj.set(
+        String::from("getElementsByClassName"),
+        native_fn("getElementsByClassName", doc_get_elements_by_class_name),
+    );
+    obj.set(
+        String::from("querySelector"),
+        native_fn("querySelector", doc_query_selector),
+    );
+    obj.set(
+        String::from("querySelectorAll"),
+        native_fn("querySelectorAll", doc_query_selector_all),
+    );
+    obj.set(
+        String::from("createElement"),
+        native_fn("createElement", doc_create_element),
+    );
+    obj.set(
+        String::from("createElementNS"),
+        native_fn("createElementNS", doc_create_element_ns),
+    );
+    obj.set(
+        String::from("createTextNode"),
+        native_fn("createTextNode", doc_create_text_node),
+    );
+    obj.set(
+        String::from("createDocumentFragment"),
+        native_fn("createDocumentFragment", doc_create_document_fragment),
+    );
+    obj.set(
+        String::from("createComment"),
+        native_fn("createComment", doc_create_comment),
+    );
+    obj.set(
+        String::from("createEvent"),
+        native_fn("createEvent", doc_create_event),
+    );
+    obj.set(
+        String::from("addEventListener"),
+        native_fn("addEventListener", doc_add_event_listener),
+    );
+    obj.set(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", super::native_remove_event_listener),
+    );
+    obj.set(
+        String::from("dispatchEvent"),
+        native_fn("dispatchEvent", |_, _| JsValue::Bool(true)),
+    );
 
     // W3C DOM: activeElement defaults to <body>.
     obj.set(String::from("activeElement"), body_el.clone());
     // createTreeWalker / createRange stubs (used by React hydration).
-    obj.set(String::from("createTreeWalker"), native_fn("createTreeWalker", doc_create_tree_walker));
-    obj.set(String::from("createRange"), native_fn("createRange", doc_create_range));
+    obj.set(
+        String::from("createTreeWalker"),
+        native_fn("createTreeWalker", doc_create_tree_walker),
+    );
+    obj.set(
+        String::from("createRange"),
+        native_fn("createRange", doc_create_range),
+    );
     // hidden (used by some React checks).
     obj.set(String::from("hidden"), JsValue::Bool(false));
-    obj.set(String::from("visibilityState"), JsValue::String(String::from("visible")));
+    obj.set(
+        String::from("visibilityState"),
+        JsValue::String(String::from("visible")),
+    );
 
     // Install property-write hook to intercept `document.cookie = "..."`.
     obj.set_hook = Some(doc_property_hook);
@@ -199,7 +309,9 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
 
 fn doc_get_element_by_id(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let id = arg_string(args, 0);
-    if id.is_empty() { return JsValue::Null; }
+    if id.is_empty() {
+        return JsValue::Null;
+    }
     if let Some(bridge) = get_bridge(vm) {
         let dom = bridge.dom();
         for (i, node) in dom.nodes.iter().enumerate() {
@@ -227,31 +339,43 @@ fn doc_get_elements_by_tag_name(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             }
         }
     }
-    let results: Vec<JsValue> = ids.iter().map(|&id| element::make_element(vm, id)).collect();
+    let results: Vec<JsValue> = ids
+        .iter()
+        .map(|&id| element::make_element(vm, id))
+        .collect();
     make_array(results)
 }
 
 fn doc_get_elements_by_class_name(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let class_name = arg_string(args, 0);
-    if class_name.is_empty() { return make_array(Vec::new()); }
+    if class_name.is_empty() {
+        return make_array(Vec::new());
+    }
     let mut ids = Vec::new();
     if let Some(bridge) = get_bridge(vm) {
         let dom = bridge.dom();
         for (i, node) in dom.nodes.iter().enumerate() {
             if let NodeType::Element { attrs, .. } = &node.node_type {
-                if attrs.iter().any(|a| a.name == "class" && a.value.split_whitespace().any(|c| c == class_name)) {
+                if attrs.iter().any(|a| {
+                    a.name == "class" && a.value.split_whitespace().any(|c| c == class_name)
+                }) {
                     ids.push(i as i64);
                 }
             }
         }
     }
-    let results: Vec<JsValue> = ids.iter().map(|&id| element::make_element(vm, id)).collect();
+    let results: Vec<JsValue> = ids
+        .iter()
+        .map(|&id| element::make_element(vm, id))
+        .collect();
     make_array(results)
 }
 
 fn doc_query_selector(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let sel = arg_string(args, 0);
-    if sel.is_empty() { return JsValue::Null; }
+    if sel.is_empty() {
+        return JsValue::Null;
+    }
     if let Some(bridge) = get_bridge(vm) {
         let dom = bridge.dom();
         if let Some(id) = selector::find_first(dom, &sel) {
@@ -263,11 +387,16 @@ fn doc_query_selector(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 fn doc_query_selector_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let sel = arg_string(args, 0);
-    if sel.is_empty() { return make_array(Vec::new()); }
+    if sel.is_empty() {
+        return make_array(Vec::new());
+    }
     if let Some(bridge) = get_bridge(vm) {
         let dom = bridge.dom();
         let ids = selector::find_all(dom, &sel);
-        let elems: Vec<JsValue> = ids.iter().map(|&id| element::make_element(vm, id as i64)).collect();
+        let elems: Vec<JsValue> = ids
+            .iter()
+            .map(|&id| element::make_element(vm, id as i64))
+            .collect();
         return make_array(elems);
     }
     make_array(Vec::new())
@@ -277,7 +406,10 @@ fn doc_create_element(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let tag = arg_string(args, 0).to_ascii_uppercase();
     let virtual_id = if let Some(bridge) = get_bridge(vm) {
         let id = bridge.alloc_virtual_id();
-        bridge.mutations.push(DomMutation::CreateElement { virtual_id: id, tag: tag.clone() });
+        bridge.mutations.push(DomMutation::CreateElement {
+            virtual_id: id,
+            tag: tag.clone(),
+        });
         bridge.virtual_nodes.push(VirtualNode {
             id,
             tag: tag.clone(),
@@ -301,7 +433,10 @@ fn doc_create_element_ns(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let tag = arg_string(args, 1).to_ascii_uppercase();
     let virtual_id = if let Some(bridge) = get_bridge(vm) {
         let id = bridge.alloc_virtual_id();
-        bridge.mutations.push(DomMutation::CreateElement { virtual_id: id, tag: tag.clone() });
+        bridge.mutations.push(DomMutation::CreateElement {
+            virtual_id: id,
+            tag: tag.clone(),
+        });
         bridge.virtual_nodes.push(VirtualNode {
             id,
             tag: tag.clone(),
@@ -326,7 +461,10 @@ fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let text = arg_string(args, 0);
     let virtual_id = if let Some(bridge) = get_bridge(vm) {
         let id = bridge.alloc_virtual_id();
-        bridge.mutations.push(DomMutation::CreateTextNode { virtual_id: id, text: text.clone() });
+        bridge.mutations.push(DomMutation::CreateTextNode {
+            virtual_id: id,
+            text: text.clone(),
+        });
         id
     } else {
         -9999
@@ -334,7 +472,10 @@ fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut obj = JsObject::new();
     obj.set(String::from("__nodeId"), JsValue::Number(virtual_id as f64));
     obj.set(String::from("nodeType"), JsValue::Number(3.0));
-    obj.set(String::from("nodeName"), JsValue::String(String::from("#text")));
+    obj.set(
+        String::from("nodeName"),
+        JsValue::String(String::from("#text")),
+    );
     obj.set(String::from("textContent"), JsValue::String(text.clone()));
     obj.set(String::from("nodeValue"), JsValue::String(text.clone()));
     obj.set(String::from("data"), JsValue::String(text.clone()));
@@ -350,23 +491,59 @@ fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn doc_create_document_fragment(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let mut obj = JsObject::new();
     obj.set(String::from("nodeType"), JsValue::Number(11.0));
-    obj.set(String::from("nodeName"), JsValue::String(String::from("#document-fragment")));
-    obj.set(String::from("children"), JsValue::Array(Rc::new(RefCell::new(JsArray::new()))));
-    obj.set(String::from("childNodes"), JsValue::Array(Rc::new(RefCell::new(JsArray::new()))));
+    obj.set(
+        String::from("nodeName"),
+        JsValue::String(String::from("#document-fragment")),
+    );
+    obj.set(
+        String::from("children"),
+        JsValue::Array(Rc::new(RefCell::new(JsArray::new()))),
+    );
+    obj.set(
+        String::from("childNodes"),
+        JsValue::Array(Rc::new(RefCell::new(JsArray::new()))),
+    );
     obj.set(String::from("firstChild"), JsValue::Null);
     obj.set(String::from("lastChild"), JsValue::Null);
     obj.set(String::from("childElementCount"), JsValue::Number(0.0));
     obj.set(String::from("textContent"), JsValue::String(String::new()));
-    obj.set(String::from("appendChild"), native_fn("appendChild", frag_append_child));
-    obj.set(String::from("removeChild"), native_fn("removeChild", frag_remove_child));
-    obj.set(String::from("insertBefore"), native_fn("insertBefore", frag_insert_before));
-    obj.set(String::from("cloneNode"), native_fn("cloneNode", frag_clone_node));
-    obj.set(String::from("querySelector"), native_fn("querySelector", frag_query_selector));
-    obj.set(String::from("querySelectorAll"), native_fn("querySelectorAll", frag_query_selector_all));
-    obj.set(String::from("getElementById"), native_fn("getElementById", frag_get_element_by_id));
-    obj.set(String::from("append"), native_fn("append", frag_append_child));
+    obj.set(
+        String::from("appendChild"),
+        native_fn("appendChild", frag_append_child),
+    );
+    obj.set(
+        String::from("removeChild"),
+        native_fn("removeChild", frag_remove_child),
+    );
+    obj.set(
+        String::from("insertBefore"),
+        native_fn("insertBefore", frag_insert_before),
+    );
+    obj.set(
+        String::from("cloneNode"),
+        native_fn("cloneNode", frag_clone_node),
+    );
+    obj.set(
+        String::from("querySelector"),
+        native_fn("querySelector", frag_query_selector),
+    );
+    obj.set(
+        String::from("querySelectorAll"),
+        native_fn("querySelectorAll", frag_query_selector_all),
+    );
+    obj.set(
+        String::from("getElementById"),
+        native_fn("getElementById", frag_get_element_by_id),
+    );
+    obj.set(
+        String::from("append"),
+        native_fn("append", frag_append_child),
+    );
     obj.set(String::from("prepend"), native_fn("prepend", frag_prepend));
-    obj.set(String::from("replaceChildren"), native_fn("replaceChildren", frag_replace_children));
+    obj.set(
+        String::from("replaceChildren"),
+        native_fn("replaceChildren", frag_replace_children),
+    );
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
@@ -375,7 +552,10 @@ fn doc_create_comment(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let virtual_id = if let Some(bridge) = get_bridge(vm) {
         let id = bridge.alloc_virtual_id();
         // Comment nodes are invisible but serve as DOM anchors for React
-        bridge.mutations.push(DomMutation::CreateTextNode { virtual_id: id, text: String::new() });
+        bridge.mutations.push(DomMutation::CreateTextNode {
+            virtual_id: id,
+            text: String::new(),
+        });
         id
     } else {
         -9999
@@ -383,7 +563,10 @@ fn doc_create_comment(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut obj = JsObject::new();
     obj.set(String::from("__nodeId"), JsValue::Number(virtual_id as f64));
     obj.set(String::from("nodeType"), JsValue::Number(8.0));
-    obj.set(String::from("nodeName"), JsValue::String(String::from("#comment")));
+    obj.set(
+        String::from("nodeName"),
+        JsValue::String(String::from("#comment")),
+    );
     obj.set(String::from("textContent"), JsValue::String(text.clone()));
     obj.set(String::from("data"), JsValue::String(text));
     obj.set(String::from("parentNode"), JsValue::Null);
@@ -399,8 +582,14 @@ fn doc_create_event(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let evt = JsValue::new_object();
     evt.set_property(String::from("type"), JsValue::String(typ));
     evt.set_property(String::from("target"), JsValue::Null);
-    evt.set_property(String::from("preventDefault"), native_fn("preventDefault", doc_noop));
-    evt.set_property(String::from("stopPropagation"), native_fn("stopPropagation", doc_noop));
+    evt.set_property(
+        String::from("preventDefault"),
+        native_fn("preventDefault", doc_noop),
+    );
+    evt.set_property(
+        String::from("stopPropagation"),
+        native_fn("stopPropagation", doc_noop),
+    );
     evt
 }
 
@@ -408,9 +597,9 @@ fn doc_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let event = arg_string(args, 0);
     let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
     let capture = match args.get(2) {
-        Some(JsValue::Bool(b))   => *b,
+        Some(JsValue::Bool(b)) => *b,
         Some(JsValue::Object(_)) => args[2].get_property("capture").to_boolean(),
-        _                        => false,
+        _ => false,
     };
 
     // For DOMContentLoaded/load, fire immediately since doc is already loaded.
@@ -433,7 +622,9 @@ fn doc_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Undefined
 }
 
-fn doc_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }
+fn doc_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Undefined
+}
 
 /// createTreeWalker (W3C DOM §5.2) — traverses the DOM tree depth-first.
 ///
@@ -445,7 +636,10 @@ fn doc_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }
 /// `nextNode()` does a depth-first pre-order traversal starting from root.
 fn doc_create_tree_walker(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let root = args.first().cloned().unwrap_or(JsValue::Null);
-    let what_to_show = args.get(1).map(|v| v.to_number() as u32).unwrap_or(0xFFFFFFFF);
+    let what_to_show = args
+        .get(1)
+        .map(|v| v.to_number() as u32)
+        .unwrap_or(0xFFFFFFFF);
     let root_id = super::element::extract_node_id_pub(&root);
 
     // Pre-build a flat list of all matching descendant node_ids in document order.
@@ -458,55 +652,78 @@ fn doc_create_tree_walker(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 
     // Store as a JS array of numbers for the walker methods to iterate.
-    let ids_arr: Vec<JsValue> = node_ids.iter().map(|&id| JsValue::Number(id as f64)).collect();
+    let ids_arr: Vec<JsValue> = node_ids
+        .iter()
+        .map(|&id| JsValue::Number(id as f64))
+        .collect();
     let walker = JsValue::new_object();
     walker.set_property(String::from("root"), root.clone());
     walker.set_property(String::from("currentNode"), root);
-    walker.set_property(String::from("whatToShow"), JsValue::Number(what_to_show as f64));
+    walker.set_property(
+        String::from("whatToShow"),
+        JsValue::Number(what_to_show as f64),
+    );
     walker.set_property(String::from("__ids"), JsValue::new_array(ids_arr));
     walker.set_property(String::from("__pos"), JsValue::Number(-1.0));
 
-    walker.set_property(String::from("nextNode"), native_fn("nextNode", |vm, _| {
-        let pos = vm.current_this.get_property("__pos").to_number() as i64;
-        let ids = vm.current_this.get_property("__ids");
-        let next_pos = pos + 1;
-        if let JsValue::Array(arr) = &ids {
-            let a = arr.borrow();
-            if (next_pos as usize) < a.len() {
-                vm.current_this.set_property(
-                    String::from("__pos"), JsValue::Number(next_pos as f64));
-                let nid = a.elements[&(next_pos as usize)].to_number() as i64;
-                let el = super::element::make_element(vm, nid);
-                vm.current_this.set_property(String::from("currentNode"), el.clone());
-                return el;
-            }
-        }
-        JsValue::Null
-    }));
-
-    walker.set_property(String::from("previousNode"), native_fn("previousNode", |vm, _| {
-        let pos = vm.current_this.get_property("__pos").to_number() as i64;
-        let ids = vm.current_this.get_property("__ids");
-        let prev_pos = pos - 1;
-        if prev_pos >= 0 {
+    walker.set_property(
+        String::from("nextNode"),
+        native_fn("nextNode", |vm, _| {
+            let pos = vm.current_this.get_property("__pos").to_number() as i64;
+            let ids = vm.current_this.get_property("__ids");
+            let next_pos = pos + 1;
             if let JsValue::Array(arr) = &ids {
                 let a = arr.borrow();
-                if (prev_pos as usize) < a.len() {
-                    vm.current_this.set_property(
-                        String::from("__pos"), JsValue::Number(prev_pos as f64));
-                    let nid = a.elements[&(prev_pos as usize)].to_number() as i64;
+                if (next_pos as usize) < a.len() {
+                    vm.current_this
+                        .set_property(String::from("__pos"), JsValue::Number(next_pos as f64));
+                    let nid = a.elements[&(next_pos as usize)].to_number() as i64;
                     let el = super::element::make_element(vm, nid);
-                    vm.current_this.set_property(String::from("currentNode"), el.clone());
+                    vm.current_this
+                        .set_property(String::from("currentNode"), el.clone());
                     return el;
                 }
             }
-        }
-        JsValue::Null
-    }));
+            JsValue::Null
+        }),
+    );
 
-    walker.set_property(String::from("firstChild"), native_fn("firstChild", |_, _| JsValue::Null));
-    walker.set_property(String::from("lastChild"), native_fn("lastChild", |_, _| JsValue::Null));
-    walker.set_property(String::from("parentNode"), native_fn("parentNode", |_, _| JsValue::Null));
+    walker.set_property(
+        String::from("previousNode"),
+        native_fn("previousNode", |vm, _| {
+            let pos = vm.current_this.get_property("__pos").to_number() as i64;
+            let ids = vm.current_this.get_property("__ids");
+            let prev_pos = pos - 1;
+            if prev_pos >= 0 {
+                if let JsValue::Array(arr) = &ids {
+                    let a = arr.borrow();
+                    if (prev_pos as usize) < a.len() {
+                        vm.current_this
+                            .set_property(String::from("__pos"), JsValue::Number(prev_pos as f64));
+                        let nid = a.elements[&(prev_pos as usize)].to_number() as i64;
+                        let el = super::element::make_element(vm, nid);
+                        vm.current_this
+                            .set_property(String::from("currentNode"), el.clone());
+                        return el;
+                    }
+                }
+            }
+            JsValue::Null
+        }),
+    );
+
+    walker.set_property(
+        String::from("firstChild"),
+        native_fn("firstChild", |_, _| JsValue::Null),
+    );
+    walker.set_property(
+        String::from("lastChild"),
+        native_fn("lastChild", |_, _| JsValue::Null),
+    );
+    walker.set_property(
+        String::from("parentNode"),
+        native_fn("parentNode", |_, _| JsValue::Null),
+    );
 
     walker
 }
@@ -541,26 +758,62 @@ fn doc_create_range(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     range.set_property(String::from("endContainer"), JsValue::Null);
     range.set_property(String::from("endOffset"), JsValue::Number(0.0));
     range.set_property(String::from("collapsed"), JsValue::Bool(true));
-    range.set_property(String::from("setStart"),
-        native_fn("setStart", doc_noop));
-    range.set_property(String::from("setEnd"),
-        native_fn("setEnd", doc_noop));
-    range.set_property(String::from("selectNode"),
-        native_fn("selectNode", doc_noop));
-    range.set_property(String::from("selectNodeContents"),
-        native_fn("selectNodeContents", doc_noop));
-    range.set_property(String::from("collapse"),
-        native_fn("collapse", doc_noop));
-    range.set_property(String::from("cloneRange"),
-        native_fn("cloneRange", doc_create_range));
-    range.set_property(String::from("getBoundingClientRect"),
-        native_fn("getBoundingClientRect", |_, _| {
+    range.set_property(String::from("setStart"), native_fn("setStart", doc_noop));
+    range.set_property(String::from("setEnd"), native_fn("setEnd", doc_noop));
+    range.set_property(
+        String::from("selectNode"),
+        native_fn("selectNode", |vm, args| {
+            let node = args.first().cloned().unwrap_or(JsValue::Null);
+            if let JsValue::Object(cur) = &vm.current_this {
+                let mut r = cur.borrow_mut();
+                r.set(String::from("startContainer"), node.clone());
+                r.set(String::from("endContainer"), node);
+                r.set(String::from("collapsed"), JsValue::Bool(false));
+            }
+            JsValue::Undefined
+        }),
+    );
+    range.set_property(
+        String::from("selectNodeContents"),
+        native_fn("selectNodeContents", |vm, args| {
+            let node = args.first().cloned().unwrap_or(JsValue::Null);
+            if let JsValue::Object(cur) = &vm.current_this {
+                let mut r = cur.borrow_mut();
+                r.set(String::from("startContainer"), node.clone());
+                r.set(String::from("endContainer"), node);
+                r.set(String::from("collapsed"), JsValue::Bool(false));
+            }
+            JsValue::Undefined
+        }),
+    );
+    range.set_property(String::from("collapse"), native_fn("collapse", doc_noop));
+    range.set_property(
+        String::from("cloneRange"),
+        native_fn("cloneRange", doc_create_range),
+    );
+    range.set_property(
+        String::from("getBoundingClientRect"),
+        native_fn("getBoundingClientRect", |vm, _| {
+            let start = vm.current_this.get_property("startContainer");
+            let target = if start.is_null() || start.is_undefined() {
+                vm.current_this.get_property("endContainer")
+            } else {
+                start
+            };
+            let rect_fn = target.get_property("getBoundingClientRect");
+            if rect_fn.is_function() {
+                vm.call_value(&rect_fn, &[], target);
+                return vm.stack.pop().unwrap_or(JsValue::new_object());
+            }
             let rect = JsValue::new_object();
-            for k in &["top","left","bottom","right","width","height","x","y"] {
+            for k in &[
+                "top", "left", "bottom", "right", "width", "height", "x", "y",
+            ] {
                 rect.set_property(String::from(*k), JsValue::Number(0.0));
             }
             rect
-        }));
+        }),
+    );
     range
 }
 
@@ -587,11 +840,15 @@ fn frag_remove_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             if let JsValue::Array(arr) = &p.value {
                 let child_id = if let JsValue::Object(cobj) = &child {
                     cobj.borrow().get("__nodeId").to_number() as i64
-                } else { -9999 };
+                } else {
+                    -9999
+                };
                 arr.borrow_mut().elements.retain(|_k, el| {
                     if let JsValue::Object(eobj) = el {
                         eobj.borrow().get("__nodeId").to_number() as i64 != child_id
-                    } else { true }
+                    } else {
+                        true
+                    }
                 });
             }
         }
@@ -612,9 +869,11 @@ fn frag_insert_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     arr_mut.push(new_child.clone());
                 } else {
                     let ref_id = ref_child.get_property("__nodeId").to_number() as i64;
-                    let pos = arr_mut.elements.iter().find(|(_k, el)| {
-                        el.get_property("__nodeId").to_number() as i64 == ref_id
-                    }).map(|(k, _)| *k);
+                    let pos = arr_mut
+                        .elements
+                        .iter()
+                        .find(|(_k, el)| el.get_property("__nodeId").to_number() as i64 == ref_id)
+                        .map(|(k, _)| *k);
                     if let Some(idx) = pos {
                         arr_mut.insert_and_shift(idx, new_child.clone());
                     } else {
@@ -673,7 +932,9 @@ fn frag_query_selector_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 /// getElementById on a DocumentFragment.
 fn frag_get_element_by_id(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let id = arg_string(args, 0);
-    if id.is_empty() { return JsValue::Null; }
+    if id.is_empty() {
+        return JsValue::Null;
+    }
     if let JsValue::Object(obj) = &vm.current_this {
         let o = obj.borrow();
         if let Some(p) = o.properties.get("children") {
@@ -726,7 +987,9 @@ fn frag_replace_children(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 /// Supports: tag name, #id, .class (shallow, single-level only).
 fn frag_matches_selector(el: &JsValue, sel: &str) -> bool {
     let sel = sel.trim();
-    if sel.is_empty() { return false; }
+    if sel.is_empty() {
+        return false;
+    }
     if sel.starts_with('#') {
         let id = el.get_property("id").to_js_string();
         return id == &sel[1..];

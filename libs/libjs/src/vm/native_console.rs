@@ -2,8 +2,8 @@
 
 use alloc::string::String;
 
-use crate::value::*;
 use super::Vm;
+use crate::value::*;
 
 // ═══════════════════════════════════════════════════════════
 // console methods
@@ -29,7 +29,9 @@ pub fn console_error(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut stack = String::from(" [at: ");
     for (fi, frame) in vm.frames.iter().rev().take(6).enumerate() {
         let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
-        if fi > 0 { stack.push_str(" <- "); }
+        if fi > 0 {
+            stack.push_str(" <- ");
+        }
         stack.push_str(fname);
     }
     stack.push(']');
@@ -45,7 +47,9 @@ pub fn console_error(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn format_args_to_string(args: &[JsValue]) -> String {
     let mut out = String::new();
     for (i, arg) in args.iter().enumerate() {
-        if i > 0 { out.push(' '); }
+        if i > 0 {
+            out.push(' ');
+        }
         match arg {
             JsValue::String(s) => out.push_str(s),
             JsValue::Undefined => out.push_str("undefined"),
@@ -58,7 +62,9 @@ fn format_args_to_string(args: &[JsValue]) -> String {
                 out.push('[');
                 let mut first = true;
                 for (_, el) in arr.iter_entries() {
-                    if !first { out.push_str(", "); }
+                    if !first {
+                        out.push_str(", ");
+                    }
                     first = false;
                     out.push_str(&el.to_js_string());
                 }

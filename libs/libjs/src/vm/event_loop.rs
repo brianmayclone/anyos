@@ -96,7 +96,9 @@ impl EventLoop {
     pub fn tick(&mut self, dt_ms: u32) -> Vec<Task> {
         let mut fired = Vec::new();
         for timer in &mut self.timers {
-            if timer.cleared { continue; }
+            if timer.cleared {
+                continue;
+            }
             timer.elapsed_ms += dt_ms;
             if timer.elapsed_ms >= timer.delay_ms {
                 fired.push(Task {

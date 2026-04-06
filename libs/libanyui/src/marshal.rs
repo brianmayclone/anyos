@@ -40,7 +40,10 @@ pub enum UiCommandKind {
     /// Set size.
     SetSize { w: u32, h: u32 },
     /// Execute an arbitrary callback on the UI thread.
-    Dispatch { callback: extern "C" fn(u64), userdata: u64 },
+    Dispatch {
+        callback: extern "C" fn(u64),
+        userdata: u64,
+    },
 }
 
 /// Spinlock-based ring buffer for marshal commands.
@@ -71,7 +74,8 @@ impl MarshalQueue {
     }
 
     fn release(&self) {
-        self.lock.store(false, core::sync::atomic::Ordering::Release);
+        self.lock
+            .store(false, core::sync::atomic::Ordering::Release);
     }
 
     fn push(&mut self, cmd: UiCommand) -> bool {
@@ -101,9 +105,10 @@ static mut QUEUE: MarshalQueue = MarshalQueue::new();
 /// Push a command to the marshal queue (thread-safe).
 fn marshal_push(cmd: UiCommand) {
     unsafe {
-        QUEUE.acquire();
-        let _ = QUEUE.push(cmd);
-        QUEUE.release();
+        let queue = core::ptr::addr_of_mut!(QUEUE);
+        (*queue).acquire();
+        let _ = (*queue).push(cmd);
+        (*queue).release();
     }
 }
 
@@ -112,9 +117,10 @@ fn marshal_push(cmd: UiCommand) {
 pub fn drain(st: &mut crate::AnyuiState) {
     loop {
         let cmd = unsafe {
-            QUEUE.acquire();
-            let c = QUEUE.pop();
-            QUEUE.release();
+            let queue = core::ptr::addr_of_mut!(QUEUE);
+            (*queue).acquire();
+            let c = (*queue).pop();
+            (*queue).release();
             c
         };
         let cmd = match cmd {
@@ -168,11 +174,16 @@ pub extern "C" fn anyui_marshal_set_text(id: ControlId, text: *const u8, len: u3
     let mut buf = [0u8; 128];
     let copy_len = (len as usize).min(128);
     if !text.is_null() && copy_len > 0 {
-        unsafe { core::ptr::copy_nonoverlapping(text, buf.as_mut_ptr(), copy_len); }
+        unsafe {
+            core::ptr::copy_nonoverlapping(text, buf.as_mut_ptr(), copy_len);
+        }
     }
     marshal_push(UiCommand {
         target_id: id,
-        kind: UiCommandKind::SetText { buf, len: copy_len as u32 },
+        kind: UiCommandKind::SetText {
+            buf,
+            len: copy_len as u32,
+        },
     });
 }
 
@@ -196,7 +207,9 @@ pub extern "C" fn anyui_marshal_set_state(id: ControlId, value: u32) {
 pub extern "C" fn anyui_marshal_set_visible(id: ControlId, visible: u32) {
     marshal_push(UiCommand {
         target_id: id,
-        kind: UiCommandKind::SetVisible { visible: visible != 0 },
+        kind: UiCommandKind::SetVisible {
+            visible: visible != 0,
+        },
     });
 }
 

@@ -5,22 +5,29 @@
 //! defineProperty, getPrototypeOf, setPrototypeOf, isExtensible,
 //! preventExtensions, apply, construct.
 
+use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use alloc::collections::BTreeMap;
 
+use super::{native_fn, Vm};
 use crate::value::*;
-use super::{Vm, native_fn};
 
 pub const PROXY_TAG: &str = "__proxy__";
+const REFLECT_METADATA_KEY: &str = "__reflect_metadata__";
+const REFLECT_CLASS_METADATA_SLOT: &str = "__class__";
 
 // ═══════════════════════════════════════════════════════════
 // Helper: invoke a trap function (works for both native and bytecode)
 // ═══════════════════════════════════════════════════════════
 
-fn invoke_trap(vm: &mut Vm, handler: &JsValue, trap_name: &str, args: &[JsValue]) -> Option<JsValue> {
+fn invoke_trap(
+    vm: &mut Vm,
+    handler: &JsValue,
+    trap_name: &str,
+    args: &[JsValue],
+) -> Option<JsValue> {
     let trap_fn = handler.get_property(trap_name);
     if trap_fn.is_undefined() || trap_fn.is_null() {
         return None;
@@ -36,14 +43,22 @@ fn invoke_trap(vm: &mut Vm, handler: &JsValue, trap_name: &str, args: &[JsValue]
 fn get_target_handler(this: &JsValue) -> Option<(JsValue, JsValue)> {
     if let JsValue::Object(obj) = this {
         let o = obj.borrow();
-        if o.internal_tag.as_deref() != Some(PROXY_TAG) { return None; }
+        if o.internal_tag.as_deref() != Some(PROXY_TAG) {
+            return None;
+        }
         let target = o.get("__target");
         let handler = o.get("__handler");
-        if target.is_null() { return None; } // revoked
+        if target.is_null() {
+            return None;
+        } // revoked
         Some((target, handler))
     } else {
         None
     }
+}
+
+pub fn proxy_target(proxy: &JsValue) -> Option<JsValue> {
+    get_target_handler(proxy).map(|(target, _)| target)
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -87,7 +102,16 @@ fn proxy_revoke(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 /// `handler.get(target, property, receiver)` trap.
 pub fn proxy_get(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<JsValue> {
     let (target, handler) = get_target_handler(proxy)?;
-    match invoke_trap(vm, &handler, "get", &[target.clone(), JsValue::String(String::from(key)), proxy.clone()]) {
+    match invoke_trap(
+        vm,
+        &handler,
+        "get",
+        &[
+            target.clone(),
+            JsValue::String(String::from(key)),
+            proxy.clone(),
+        ],
+    ) {
         Some(val) => Some(val),
         None => Some(vm.get_property_with_proto(&target, key)),
     }
@@ -96,7 +120,17 @@ pub fn proxy_get(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<JsValue> {
 /// `handler.set(target, property, value, receiver)` trap. Returns true if set succeeded.
 pub fn proxy_set(vm: &mut Vm, proxy: &JsValue, key: &str, value: &JsValue) -> Option<bool> {
     let (target, handler) = get_target_handler(proxy)?;
-    match invoke_trap(vm, &handler, "set", &[target.clone(), JsValue::String(String::from(key)), value.clone(), proxy.clone()]) {
+    match invoke_trap(
+        vm,
+        &handler,
+        "set",
+        &[
+            target.clone(),
+            JsValue::String(String::from(key)),
+            value.clone(),
+            proxy.clone(),
+        ],
+    ) {
         Some(result) => Some(result.to_boolean()),
         None => {
             target.set_property(String::from(key), value.clone());
@@ -108,7 +142,12 @@ pub fn proxy_set(vm: &mut Vm, proxy: &JsValue, key: &str, value: &JsValue) -> Op
 /// `handler.has(target, property)` trap.
 pub fn proxy_has(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
     let (target, handler) = get_target_handler(proxy)?;
-    match invoke_trap(vm, &handler, "has", &[target.clone(), JsValue::String(String::from(key))]) {
+    match invoke_trap(
+        vm,
+        &handler,
+        "has",
+        &[target.clone(), JsValue::String(String::from(key))],
+    ) {
         Some(result) => Some(result.to_boolean()),
         None => {
             if let JsValue::Object(t) = &target {
@@ -123,7 +162,12 @@ pub fn proxy_has(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
 /// `handler.deleteProperty(target, property)` trap.
 pub fn proxy_delete(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
     let (target, handler) = get_target_handler(proxy)?;
-    match invoke_trap(vm, &handler, "deleteProperty", &[target.clone(), JsValue::String(String::from(key))]) {
+    match invoke_trap(
+        vm,
+        &handler,
+        "deleteProperty",
+        &[target.clone(), JsValue::String(String::from(key))],
+    ) {
         Some(result) => Some(result.to_boolean()),
         None => Some(target.delete_property(key)),
     }
@@ -149,10 +193,20 @@ pub fn proxy_own_keys(vm: &mut Vm, proxy: &JsValue) -> Option<Vec<String>> {
 }
 
 /// `handler.apply(target, thisArg, argumentsList)` trap (for function proxies).
-pub fn proxy_apply(vm: &mut Vm, proxy: &JsValue, this_arg: &JsValue, args: &[JsValue]) -> Option<JsValue> {
+pub fn proxy_apply(
+    vm: &mut Vm,
+    proxy: &JsValue,
+    this_arg: &JsValue,
+    args: &[JsValue],
+) -> Option<JsValue> {
     let (target, handler) = get_target_handler(proxy)?;
     let args_array = JsValue::new_array(args.to_vec());
-    match invoke_trap(vm, &handler, "apply", &[target.clone(), this_arg.clone(), args_array]) {
+    match invoke_trap(
+        vm,
+        &handler,
+        "apply",
+        &[target.clone(), this_arg.clone(), args_array],
+    ) {
         Some(val) => Some(val),
         None => {
             // No trap — call target directly
@@ -166,7 +220,12 @@ pub fn proxy_apply(vm: &mut Vm, proxy: &JsValue, this_arg: &JsValue, args: &[JsV
 pub fn proxy_construct(vm: &mut Vm, proxy: &JsValue, args: &[JsValue]) -> Option<JsValue> {
     let (target, handler) = get_target_handler(proxy)?;
     let args_array = JsValue::new_array(args.to_vec());
-    match invoke_trap(vm, &handler, "construct", &[target.clone(), args_array, proxy.clone()]) {
+    match invoke_trap(
+        vm,
+        &handler,
+        "construct",
+        &[target.clone(), args_array, proxy.clone()],
+    ) {
         Some(val) => Some(val),
         None => None, // Let normal new() handle it
     }
@@ -175,6 +234,77 @@ pub fn proxy_construct(vm: &mut Vm, proxy: &JsValue, args: &[JsValue]) -> Option
 // ═══════════════════════════════════════════════════════════
 // Reflect API
 // ═══════════════════════════════════════════════════════════
+
+fn metadata_slot_name(args: &[JsValue], idx: usize) -> String {
+    match args.get(idx) {
+        Some(v) if !v.is_null() && !v.is_undefined() => v.to_js_string(),
+        _ => String::from(REFLECT_CLASS_METADATA_SLOT),
+    }
+}
+
+fn get_metadata_root(target: &JsValue, create: bool) -> Option<JsValue> {
+    match target {
+        JsValue::Object(obj) => {
+            let existing = obj.borrow().get(REFLECT_METADATA_KEY);
+            if !existing.is_undefined() {
+                return Some(existing);
+            }
+            if create {
+                let root = JsValue::new_object();
+                obj.borrow_mut()
+                    .set_hidden(String::from(REFLECT_METADATA_KEY), root.clone());
+                Some(root)
+            } else {
+                None
+            }
+        }
+        JsValue::Function(func) => {
+            let existing = func.borrow().own_props.get(REFLECT_METADATA_KEY).cloned();
+            if existing.is_some() {
+                return existing;
+            }
+            if create {
+                let root = JsValue::new_object();
+                func.borrow_mut()
+                    .own_props
+                    .insert(String::from(REFLECT_METADATA_KEY), root.clone());
+                Some(root)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn get_metadata_bucket(target: &JsValue, slot: &str, create: bool) -> Option<JsValue> {
+    let root = get_metadata_root(target, create)?;
+    let existing = root.get_property(slot);
+    if !existing.is_undefined() {
+        return Some(existing);
+    }
+    if create {
+        let bucket = JsValue::new_object();
+        root.set_property(String::from(slot), bucket.clone());
+        Some(bucket)
+    } else {
+        None
+    }
+}
+
+fn target_prototype_value(target: &JsValue) -> JsValue {
+    match target {
+        JsValue::Object(obj) => match &obj.borrow().prototype {
+            Some(proto) => JsValue::Object(proto.clone()),
+            None => JsValue::Null,
+        },
+        JsValue::Function(func) => match &func.borrow().prototype {
+            Some(proto) => JsValue::Object(proto.clone()),
+            None => JsValue::Null,
+        },
+        _ => JsValue::Null,
+    }
+}
 
 pub fn reflect_get(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
@@ -210,8 +340,11 @@ pub fn reflect_own_keys(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let JsValue::Object(obj) = &target {
         // Reflect.ownKeys returns ALL own keys: string + symbol (ES2023 §26.1.11)
         let o = obj.borrow();
-        let mut keys: Vec<JsValue> = o.own_property_names()
-            .into_iter().map(JsValue::String).collect();
+        let mut keys: Vec<JsValue> = o
+            .own_property_names()
+            .into_iter()
+            .map(JsValue::String)
+            .collect();
         keys.extend(o.own_symbol_keys().into_iter().map(JsValue::String));
         JsValue::new_array(keys)
     } else {
@@ -236,51 +369,44 @@ pub fn reflect_apply(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn reflect_construct(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
     let args_list = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let new_target = args.get(2).cloned().unwrap_or_else(|| target.clone());
 
     let call_args: Vec<JsValue> = if let JsValue::Array(arr) = &args_list {
         arr.borrow().to_dense_vec()
     } else {
         Vec::new()
     };
-    // Use the VM's new_object mechanism
-    vm.stack.push(target);
-    for a in &call_args {
-        vm.stack.push(a.clone());
+
+    if vm.construct_with_new_target(&target, &call_args, &new_target) {
+        return vm.stack.pop().unwrap_or(JsValue::Undefined);
     }
-    vm.new_object(call_args.len());
-    vm.stack.pop().unwrap_or(JsValue::Undefined)
+
+    let err = vm.make_type_error("target is not a constructor");
+    vm.throw_native(err);
+    JsValue::Undefined
 }
 
 pub fn reflect_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
-    let desc = args.get(2).cloned().unwrap_or(JsValue::Undefined);
-    // Delegate to Object.defineProperty logic
-    if let JsValue::Object(obj) = &target {
-        if let JsValue::Object(desc_obj) = &desc {
-            let d = desc_obj.borrow();
-            let value = d.get("value");
-            let writable = if d.has_own("writable") { d.get("writable").to_boolean() } else { true };
-            let enumerable = if d.has_own("enumerable") { d.get("enumerable").to_boolean() } else { true };
-            let configurable = if d.has_own("configurable") { d.get("configurable").to_boolean() } else { true };
-            let prop = Property {
-                value, writable, enumerable, configurable,
-                getter: None, setter: None,
-            };
-            obj.borrow_mut().properties.insert(key, prop);
+    match target {
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
+            super::native_object::object_define_property(vm, args);
+            JsValue::Bool(true)
+        }
+        _ => {
+            let err = vm.make_type_error("Reflect.defineProperty called on non-object");
+            vm.throw_native(err);
+            JsValue::Undefined
         }
     }
-    JsValue::Bool(true)
 }
 
 pub fn reflect_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
-        Some(JsValue::Object(obj)) => {
-            match &obj.borrow().prototype {
-                Some(proto) => JsValue::Object(proto.clone()),
-                None => JsValue::Null,
-            }
-        }
+        Some(JsValue::Object(obj)) => match &obj.borrow().prototype {
+            Some(proto) => JsValue::Object(proto.clone()),
+            None => JsValue::Null,
+        },
         _ => JsValue::Null,
     }
 }
@@ -290,8 +416,12 @@ pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let proto = args.get(1).cloned().unwrap_or(JsValue::Null);
     if let JsValue::Object(obj) = &target {
         match &proto {
-            JsValue::Object(p) => { obj.borrow_mut().prototype = Some(p.clone()); }
-            JsValue::Null => { obj.borrow_mut().prototype = None; }
+            JsValue::Object(p) => {
+                obj.borrow_mut().prototype = Some(p.clone());
+            }
+            JsValue::Null => {
+                obj.borrow_mut().prototype = None;
+            }
             _ => {}
         }
     }
@@ -308,20 +438,147 @@ pub fn reflect_prevent_extensions(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Bool(true)
 }
 
+pub fn reflect_define_metadata(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let metadata_key = args
+        .first()
+        .cloned()
+        .unwrap_or(JsValue::Undefined)
+        .to_js_string();
+    let metadata_value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let target = args.get(2).cloned().unwrap_or(JsValue::Undefined);
+    let slot = metadata_slot_name(args, 3);
+    if let Some(bucket) = get_metadata_bucket(&target, &slot, true) {
+        bucket.set_property(metadata_key, metadata_value);
+    }
+    JsValue::Undefined
+}
+
+pub fn reflect_get_own_metadata(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let metadata_key = args
+        .first()
+        .cloned()
+        .unwrap_or(JsValue::Undefined)
+        .to_js_string();
+    let target = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let slot = metadata_slot_name(args, 2);
+    if let Some(bucket) = get_metadata_bucket(&target, &slot, false) {
+        return bucket.get_property(&metadata_key);
+    }
+    JsValue::Undefined
+}
+
+pub fn reflect_get_metadata(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let mut target = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let metadata_key = args
+        .first()
+        .cloned()
+        .unwrap_or(JsValue::Undefined)
+        .to_js_string();
+    let slot = metadata_slot_name(args, 2);
+    loop {
+        if let Some(bucket) = get_metadata_bucket(&target, &slot, false) {
+            let value = bucket.get_property(&metadata_key);
+            if !value.is_undefined() {
+                return value;
+            }
+        }
+        target = target_prototype_value(&target);
+        if target.is_null() || target.is_undefined() {
+            return JsValue::Undefined;
+        }
+        let _ = vm;
+    }
+}
+
+pub fn reflect_metadata(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let metadata_key = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let metadata_value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let mut bound_args = Vec::new();
+    bound_args.push(metadata_key);
+    bound_args.push(metadata_value);
+    JsValue::Function(Rc::new(RefCell::new(JsFunction {
+        name: Some(String::from("metadata")),
+        params: Vec::new(),
+        kind: FnKind::Native(reflect_metadata_decorator),
+        this_binding: None,
+        bound_args,
+        upvalues: Vec::new(),
+        prototype: None,
+        own_props: BTreeMap::new(),
+        arity: Some(2),
+        super_class: None,
+    })))
+}
+
+fn reflect_metadata_decorator(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if args.len() < 3 {
+        return JsValue::Undefined;
+    }
+    let metadata_key = args[0].clone();
+    let metadata_value = args[1].clone();
+    let target = args[2].clone();
+    if args.len() >= 4 {
+        let property_key = args[3].clone();
+        reflect_define_metadata(vm, &[metadata_key, metadata_value, target, property_key])
+    } else {
+        reflect_define_metadata(vm, &[metadata_key, metadata_value, target])
+    }
+}
+
 /// Install the Reflect object into globals.
 pub fn install_reflect(vm: &mut Vm) {
     let reflect = JsValue::new_object();
     reflect.set_property(String::from("get"), native_fn("get", reflect_get));
     reflect.set_property(String::from("set"), native_fn("set", reflect_set));
     reflect.set_property(String::from("has"), native_fn("has", reflect_has));
-    reflect.set_property(String::from("deleteProperty"), native_fn("deleteProperty", reflect_delete_property));
-    reflect.set_property(String::from("ownKeys"), native_fn("ownKeys", reflect_own_keys));
+    reflect.set_property(
+        String::from("deleteProperty"),
+        native_fn("deleteProperty", reflect_delete_property),
+    );
+    reflect.set_property(
+        String::from("ownKeys"),
+        native_fn("ownKeys", reflect_own_keys),
+    );
     reflect.set_property(String::from("apply"), native_fn("apply", reflect_apply));
-    reflect.set_property(String::from("construct"), native_fn("construct", reflect_construct));
-    reflect.set_property(String::from("defineProperty"), native_fn("defineProperty", reflect_define_property));
-    reflect.set_property(String::from("getPrototypeOf"), native_fn("getPrototypeOf", reflect_get_prototype_of));
-    reflect.set_property(String::from("setPrototypeOf"), native_fn("setPrototypeOf", reflect_set_prototype_of));
-    reflect.set_property(String::from("isExtensible"), native_fn("isExtensible", reflect_is_extensible));
-    reflect.set_property(String::from("preventExtensions"), native_fn("preventExtensions", reflect_prevent_extensions));
+    reflect.set_property(
+        String::from("construct"),
+        native_fn("construct", reflect_construct),
+    );
+    reflect.set_property(
+        String::from("defineProperty"),
+        native_fn("defineProperty", reflect_define_property),
+    );
+    reflect.set_property(
+        String::from("getPrototypeOf"),
+        native_fn("getPrototypeOf", reflect_get_prototype_of),
+    );
+    reflect.set_property(
+        String::from("setPrototypeOf"),
+        native_fn("setPrototypeOf", reflect_set_prototype_of),
+    );
+    reflect.set_property(
+        String::from("isExtensible"),
+        native_fn("isExtensible", reflect_is_extensible),
+    );
+    reflect.set_property(
+        String::from("preventExtensions"),
+        native_fn("preventExtensions", reflect_prevent_extensions),
+    );
+    reflect.set_property(
+        String::from("defineMetadata"),
+        native_fn("defineMetadata", reflect_define_metadata),
+    );
+    reflect.set_property(
+        String::from("getOwnMetadata"),
+        native_fn("getOwnMetadata", reflect_get_own_metadata),
+    );
+    reflect.set_property(
+        String::from("getMetadata"),
+        native_fn("getMetadata", reflect_get_metadata),
+    );
+    reflect.set_property(
+        String::from("metadata"),
+        native_fn("metadata", reflect_metadata),
+    );
     vm.set_global("Reflect", reflect);
 }

@@ -1,4 +1,4 @@
-use crate::control::{Control, ControlBase, TextControlBase, ControlKind, EventResponse};
+use crate::control::{Control, ControlBase, ControlKind, EventResponse, TextControlBase};
 
 pub struct TextArea {
     pub(crate) text_base: TextControlBase,
@@ -11,15 +11,25 @@ pub struct TextArea {
 
 impl TextArea {
     pub fn new(text_base: TextControlBase) -> Self {
-        Self { text_base, cursor_pos: 0, focused: false, scroll_y: 0, max_length: 0 }
+        Self {
+            text_base,
+            cursor_pos: 0,
+            focused: false,
+            scroll_y: 0,
+            max_length: 0,
+        }
     }
 
     /// Count newlines in text to determine total line count.
     fn line_count(&self) -> usize {
-        if self.text_base.text.is_empty() { return 1; }
+        if self.text_base.text.is_empty() {
+            return 1;
+        }
         let mut count = 1usize;
         for &b in &self.text_base.text {
-            if b == b'\n' { count += 1; }
+            if b == b'\n' {
+                count += 1;
+            }
         }
         count
     }
@@ -41,11 +51,6 @@ impl TextArea {
         (ch - vh).max(0)
     }
 
-    /// Clamp scroll_y to valid range.
-    fn clamp_scroll(&mut self) {
-        self.scroll_y = self.scroll_y.clamp(0, self.max_scroll());
-    }
-
     /// Auto-scroll to bottom (for output append use case).
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_y = self.max_scroll();
@@ -53,11 +58,21 @@ impl TextArea {
 }
 
 impl Control for TextArea {
-    fn base(&self) -> &ControlBase { &self.text_base.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.text_base.base }
-    fn text_base(&self) -> Option<&crate::control::TextControlBase> { Some(&self.text_base) }
-    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> { Some(&mut self.text_base) }
-    fn kind(&self) -> ControlKind { ControlKind::TextArea }
+    fn base(&self) -> &ControlBase {
+        &self.text_base.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.text_base.base
+    }
+    fn text_base(&self) -> Option<&crate::control::TextControlBase> {
+        Some(&self.text_base)
+    }
+    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> {
+        Some(&mut self.text_base)
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::TextArea
+    }
 
     fn set_text(&mut self, t: &[u8]) {
         self.text_base.set_text(t);
@@ -75,7 +90,8 @@ impl Control for TextArea {
         };
         let tc = crate::theme::colors();
         let corner = crate::theme::input_corner();
-        let palette = crate::controls::chrome::flat_field_palette(bg, b.hovered, self.focused, b.disabled);
+        let palette =
+            crate::controls::chrome::flat_field_palette(bg, b.hovered, self.focused, b.disabled);
 
         if self.focused && !b.disabled {
             crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
@@ -115,12 +131,19 @@ impl Control for TextArea {
                         let line_data = &text[line_start..i];
                         if !line_data.is_empty() {
                             crate::draw::draw_text_ex(
-                                &clipped, x + pad_x, line_y, text_color,
-                                line_data, font_id, font_size,
+                                &clipped,
+                                x + pad_x,
+                                line_y,
+                                text_color,
+                                line_data,
+                                font_id,
+                                font_size,
                             );
                         }
                     }
-                    if line_idx > last_vis { break; }
+                    if line_idx > last_vis {
+                        break;
+                    }
                     line_idx += 1;
                     line_start = i + 1;
                 }
@@ -139,10 +162,18 @@ impl Control for TextArea {
                 }
             }
             let col_slice = &text[col_start..cpos];
-            let cx_offset = crate::draw::text_width_n_at(col_slice, col_slice.len(), font_size) as i32;
+            let cx_offset =
+                crate::draw::text_width_n_at(col_slice, col_slice.len(), font_size) as i32;
             let cy = y + pad_y + (cur_line as i32) * lh - scaled_scroll_y;
             let cursor_w = crate::theme::scale(2);
-            crate::draw::fill_rect(&clipped, x + pad_x + cx_offset, cy, cursor_w, font_size as u32, tc.accent);
+            crate::draw::fill_rect(
+                &clipped,
+                x + pad_x + cx_offset,
+                cy,
+                cursor_w,
+                font_size as u32,
+                tc.accent,
+            );
         }
 
         // Scrollbar
@@ -153,20 +184,48 @@ impl Control for TextArea {
             let bar_x = x + w as i32 - bar_w as i32 - crate::theme::scale_i32(2);
             let track_y = y + crate::theme::scale_i32(2);
             let track_h = view_h;
-            crate::controls::chrome::draw_surface(&clipped, bar_x, track_y, bar_w, track_h as u32, bar_w / 2, crate::controls::chrome::flat_field_palette(tc.scrollbar_track, false, false, false));
-            let thumb_h = ((view_h as i64 * track_h as i64) / content_h as i64).max(crate::theme::scale_i32(20) as i64) as i32;
+            crate::controls::chrome::draw_surface(
+                &clipped,
+                bar_x,
+                track_y,
+                bar_w,
+                track_h as u32,
+                bar_w / 2,
+                crate::controls::chrome::flat_field_palette(
+                    tc.scrollbar_track,
+                    false,
+                    false,
+                    false,
+                ),
+            );
+            let thumb_h = ((view_h as i64 * track_h as i64) / content_h as i64)
+                .max(crate::theme::scale_i32(20) as i64) as i32;
             let max_scroll = crate::theme::scale_i32(self.max_scroll());
             let scroll_frac = if max_scroll > 0 {
                 (scaled_scroll_y as i64 * (track_h - thumb_h) as i64 / max_scroll as i64) as i32
-            } else { 0 };
+            } else {
+                0
+            };
             let thumb_y = track_y + scroll_frac.max(0).min(track_h - thumb_h);
             let thumb_r = crate::theme::scale(3);
-            crate::controls::chrome::draw_surface(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, thumb_r, crate::controls::chrome::neutral_palette(true, false, false));
+            crate::controls::chrome::draw_surface(
+                &clipped,
+                bar_x,
+                thumb_y,
+                bar_w,
+                thumb_h as u32,
+                thumb_r,
+                crate::controls::chrome::neutral_palette(true, false, false),
+            );
         }
     }
 
-    fn is_interactive(&self) -> bool { true }
-    fn accepts_focus(&self) -> bool { true }
+    fn is_interactive(&self) -> bool {
+        true
+    }
+    fn accepts_focus(&self) -> bool {
+        true
+    }
 
     fn handle_click(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
         self.cursor_pos = self.text_base.text.len();
@@ -206,10 +265,14 @@ impl Control for TextArea {
                 EventResponse::CONSUMED
             }
         } else if keycode == crate::control::KEY_LEFT {
-            if self.cursor_pos > 0 { self.cursor_pos -= 1; }
+            if self.cursor_pos > 0 {
+                self.cursor_pos -= 1;
+            }
             EventResponse::CONSUMED
         } else if keycode == crate::control::KEY_RIGHT {
-            if self.cursor_pos < self.text_base.text.len() { self.cursor_pos += 1; }
+            if self.cursor_pos < self.text_base.text.len() {
+                self.cursor_pos += 1;
+            }
             EventResponse::CONSUMED
         } else {
             EventResponse::IGNORED

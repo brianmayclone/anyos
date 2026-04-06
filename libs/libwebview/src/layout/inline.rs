@@ -4,15 +4,16 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use crate::style::{ComputedStyle, Display, Position, WhiteSpace, TextDeco, TextTransform, TextAlignVal, VerticalAlign, PseudoStyles};
+use crate::style::{
+    ComputedStyle, Display, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
+    VerticalAlign, WhiteSpace,
+};
 use crate::ImageCache;
 
 use super::{
-    LayoutBox, BoxType, FormFieldKind,
-    font_size_px, is_bold, is_italic, inherited_link,
-    image_dimensions, measure_text, parse_attr_int,
-    is_ascii_ws, ascii_lower_str, size_attr_width,
-    apply_text_transform,
+    apply_text_transform, ascii_lower_str, font_size_px, image_dimensions, inherited_link,
+    is_ascii_ws, is_bold, is_italic, measure_text, parse_attr_int, size_attr_width, BoxType,
+    FormFieldKind, LayoutBox,
 };
 
 /// Represents a single inline fragment before line-breaking.
@@ -38,8 +39,18 @@ pub fn layout_inline_content(
     viewport_w: i32,
 ) -> Vec<LayoutBox> {
     layout_inline_content_with_pseudo(
-        dom, styles, pseudo, child_ids, available_width, start_x, images,
-        text_align, line_height, viewport_w, None, None,
+        dom,
+        styles,
+        pseudo,
+        child_ids,
+        available_width,
+        start_x,
+        images,
+        text_align,
+        line_height,
+        viewport_w,
+        None,
+        None,
     )
 }
 
@@ -64,8 +75,12 @@ pub fn layout_inline_content_with_pseudo(
         let dom_node = dom.get(first_cid);
         if let Some(pid) = dom_node.parent {
             styles[pid].text_indent
-        } else { 0 }
-    } else { 0 };
+        } else {
+            0
+        }
+    } else {
+        0
+    };
 
     // 1. Flatten all inline children into fragments.
     let mut fragments: Vec<InlineFragment> = Vec::new();
@@ -82,7 +97,12 @@ pub fn layout_inline_content_with_pseudo(
                 tb.bg_color = bps.background_color;
                 tb.text_decoration = bps.text_decoration;
                 tb.letter_spacing = bps.letter_spacing;
-                fragments.push(InlineFragment { width: tw, height: th, layout_box: tb, breaks_after: false });
+                fragments.push(InlineFragment {
+                    width: tw,
+                    height: th,
+                    layout_box: tb,
+                    breaks_after: false,
+                });
             }
         }
     }
@@ -92,7 +112,17 @@ pub fn layout_inline_content_with_pseudo(
         if style.display == Display::None {
             continue;
         }
-        collect_inline_fragments(dom, styles, pseudo, cid, &mut fragments, available_width, images, 0, viewport_w);
+        collect_inline_fragments(
+            dom,
+            styles,
+            pseudo,
+            cid,
+            &mut fragments,
+            available_width,
+            images,
+            0,
+            viewport_w,
+        );
     }
 
     // Inject parent's ::after pseudo-element as last fragment (inline display only).
@@ -107,7 +137,12 @@ pub fn layout_inline_content_with_pseudo(
                 tb.bg_color = aps.background_color;
                 tb.text_decoration = aps.text_decoration;
                 tb.letter_spacing = aps.letter_spacing;
-                fragments.push(InlineFragment { width: tw, height: th, layout_box: tb, breaks_after: false });
+                fragments.push(InlineFragment {
+                    width: tw,
+                    height: th,
+                    layout_box: tb,
+                    breaks_after: false,
+                });
             }
         }
     }
@@ -125,11 +160,27 @@ pub fn layout_inline_content_with_pseudo(
     for frag in fragments {
         let fw = frag.width;
         let fh = frag.height;
-        let _cur_avail = if lines.is_empty() { first_line_width } else { available_width };
+        let _cur_avail = if lines.is_empty() {
+            first_line_width
+        } else {
+            available_width
+        };
 
         // Check if we need to wrap.
-        if line_x > 0 && line_x + fw > (if lines.is_empty() { available_width } else { available_width }) && !line.children.is_empty() {
-            line.height = line_h.max(line_height);
+        if line_x > 0
+            && line_x + fw
+                > (if lines.is_empty() {
+                    available_width
+                } else {
+                    available_width
+                })
+            && !line.children.is_empty()
+        {
+            line.height = if line_h > 0 {
+                line_h.max(line_height)
+            } else {
+                0
+            };
             lines.push(line);
             line = LayoutBox::new(None, BoxType::LineBox);
             line.x = start_x;
@@ -152,7 +203,15 @@ pub fn layout_inline_content_with_pseudo(
         line.children.push(child);
 
         if frag.breaks_after {
-            line.height = if line_h > 0 { line_h.max(line_height) } else { line_height.max(16) };
+            // Use line_h when > 0; do NOT apply a minimum height for lines that
+            // consist entirely of zero-height content (e.g. a collapsed
+            // overflow:hidden block).  Applying line_height.max(16) here would
+            // give phantom height to every collapsed dropdown in the page.
+            line.height = if line_h > 0 {
+                line_h.max(line_height)
+            } else {
+                0
+            };
             lines.push(line);
             line = LayoutBox::new(None, BoxType::LineBox);
             line.x = start_x;
@@ -164,7 +223,13 @@ pub fn layout_inline_content_with_pseudo(
 
     // Flush last line.
     if !line.children.is_empty() {
-        line.height = line_h.max(line_height);
+        // Same rule as in breaks_after: zero-height-only content produces a 0-height
+        // line box (e.g. a trailing whitespace-only text node inside an inline element).
+        line.height = if line_h > 0 {
+            line_h.max(line_height)
+        } else {
+            0
+        };
         lines.push(line);
     }
 
@@ -173,7 +238,9 @@ pub fn layout_inline_content_with_pseudo(
     if text_align != TextAlignVal::Left {
         for (line_idx, ln) in lines.iter_mut().enumerate() {
             // Calculate used width of content in this line.
-            let used: i32 = ln.children.last()
+            let used: i32 = ln
+                .children
+                .last()
                 .map(|c| (c.x - start_x) + c.width)
                 .unwrap_or(0);
             let free = available_width - used;
@@ -301,8 +368,18 @@ fn collect_inline_fragments(
             } else if style.white_space == WhiteSpace::Nowrap {
                 emit_nowrap_fragments(&transformed, fs, bold, italic, color, link, deco, out);
             } else {
-                emit_word_fragments(&transformed, fs, bold, italic, color, link, deco,
-                    style.letter_spacing, style.word_spacing, out);
+                emit_word_fragments(
+                    &transformed,
+                    fs,
+                    bold,
+                    italic,
+                    color,
+                    link,
+                    deco,
+                    style.letter_spacing,
+                    style.word_spacing,
+                    out,
+                );
             }
             // Propagate inherited background color to newly emitted text fragments.
             if inherited_bg != 0 {
@@ -357,13 +434,19 @@ fn collect_inline_fragments(
             // Handle inline <svg> as replaced element.
             if *tag == Tag::Svg {
                 let key = super::svg_inline_key(node_id);
-                let natural = images.get_ref(&key).map(|e| {
-                    (e.width.min(65535) as i32, e.height.min(65535) as i32)
-                });
-                let iw = dom.attr(node_id, "width").and_then(parse_attr_int)
-                    .or(natural.map(|(w, _)| w)).unwrap_or(100);
-                let ih = dom.attr(node_id, "height").and_then(parse_attr_int)
-                    .or(natural.map(|(_, h)| h)).unwrap_or(100);
+                let natural = images
+                    .get_ref(&key)
+                    .map(|e| (e.width.min(65535) as i32, e.height.min(65535) as i32));
+                let iw = dom
+                    .attr(node_id, "width")
+                    .and_then(parse_attr_int)
+                    .or(natural.map(|(w, _)| w))
+                    .unwrap_or(100);
+                let ih = dom
+                    .attr(node_id, "height")
+                    .and_then(parse_attr_int)
+                    .or(natural.map(|(_, h)| h))
+                    .unwrap_or(100);
                 let iw = iw.min(available_width.max(1));
                 let mut img = LayoutBox::new(Some(node_id), BoxType::Inline);
                 img.image_src = Some(key);
@@ -387,21 +470,33 @@ fn collect_inline_fragments(
                 return;
             }
 
-            // Handle <button>
-            if *tag == Tag::Button {
+            // Render only plain-text buttons as native form controls.
+            // Rich buttons with SVG/text children should keep their DOM content.
+            if *tag == Tag::Button && button_uses_native_control(dom, node_id) {
                 emit_button_fragment(dom, styles, node_id, out);
                 return;
             }
 
             // Handle <textarea>
             if *tag == Tag::Textarea {
-                let cols = dom.attr(node_id, "cols").and_then(parse_attr_int).unwrap_or(20);
-                let rows = dom.attr(node_id, "rows").and_then(parse_attr_int).unwrap_or(2);
+                let cols = dom
+                    .attr(node_id, "cols")
+                    .and_then(parse_attr_int)
+                    .unwrap_or(20);
+                let rows = dom
+                    .attr(node_id, "rows")
+                    .and_then(parse_attr_int)
+                    .unwrap_or(2);
                 let w = (cols * 8).max(80).min(600);
                 let h = (rows * 18).max(28).min(400);
                 let mut ta = LayoutBox::new(Some(node_id), BoxType::Inline);
                 ta.form_field = Some(FormFieldKind::Textarea);
-                out.push(InlineFragment { width: w, height: h, layout_box: ta, breaks_after: false });
+                out.push(InlineFragment {
+                    width: w,
+                    height: h,
+                    layout_box: ta,
+                    breaks_after: false,
+                });
                 return;
             }
 
@@ -442,19 +537,30 @@ fn collect_inline_fragments(
                     sel.bg_color = styles[node_id].background_color;
                     sel.color = styles[node_id].color;
                 }
-                out.push(InlineFragment { width: w, height: 28, layout_box: sel, breaks_after: false });
+                out.push(InlineFragment {
+                    width: w,
+                    height: 28,
+                    layout_box: sel,
+                    breaks_after: false,
+                });
                 return;
             }
 
             // Handle <progress>
             if *tag == Tag::Progress {
-                let max_val: f32 = dom.attr(node_id, "max")
+                let max_val: f32 = dom
+                    .attr(node_id, "max")
                     .and_then(|s| s.parse::<f32>().ok())
                     .unwrap_or(1.0);
-                let cur_val: f32 = dom.attr(node_id, "value")
+                let cur_val: f32 = dom
+                    .attr(node_id, "value")
                     .and_then(|s| s.parse::<f32>().ok())
                     .unwrap_or(0.0);
-                let pct = if max_val > 0.0 { (cur_val / max_val).min(1.0).max(0.0) } else { 0.0 };
+                let pct = if max_val > 0.0 {
+                    (cur_val / max_val).min(1.0).max(0.0)
+                } else {
+                    0.0
+                };
 
                 let w = 200;
                 let h = 20;
@@ -473,10 +579,20 @@ fn collect_inline_fragments(
                     (b'0' + (pct_i / 10 % 10) as u8) as char,
                     (b'0' + (pct_i % 10) as u8) as char,
                 ];
-                for &d in &digits { val_str.push(d); }
-                if pct_i >= 1000 { val_str.clear(); val_str.push('X'); } // 100%
+                for &d in &digits {
+                    val_str.push(d);
+                }
+                if pct_i >= 1000 {
+                    val_str.clear();
+                    val_str.push('X');
+                } // 100%
                 pb.form_value = Some(val_str);
-                out.push(InlineFragment { width: w, height: h, layout_box: pb, breaks_after: false });
+                out.push(InlineFragment {
+                    width: w,
+                    height: h,
+                    layout_box: pb,
+                    breaks_after: false,
+                });
                 return;
             }
 
@@ -485,11 +601,25 @@ fn collect_inline_fragments(
             // inline formatting and is laid out as a block box on its own "line".
             // We treat it like an inline-block that fills available width and
             // forces a line break after.
-            if matches!(style.display, Display::Block | Display::FlowRoot
-                | Display::Flex | Display::Grid | Display::ListItem)
-            {
+            if matches!(
+                style.display,
+                Display::Block
+                    | Display::FlowRoot
+                    | Display::Flex
+                    | Display::Grid
+                    | Display::ListItem
+            ) {
                 use super::block::build_block;
-                let mut block_box = build_block(dom, styles, pseudo, node_id, available_width, images, viewport_w);
+                let mut block_box = build_block(
+                    dom,
+                    styles,
+                    pseudo,
+                    node_id,
+                    available_width,
+                    images,
+                    viewport_w,
+                    0,
+                );
                 let w = block_box.width + block_box.margin.left + block_box.margin.right;
                 let h = block_box.height + block_box.margin.top + block_box.margin.bottom;
                 // Skip empty blocks (no content, no padding/border) to avoid
@@ -498,7 +628,12 @@ fn collect_inline_fragments(
                     return;
                 }
                 block_box.box_type = BoxType::InlineBlock;
-                out.push(InlineFragment { width: w, height: h, layout_box: block_box, breaks_after: true });
+                out.push(InlineFragment {
+                    width: w,
+                    height: h,
+                    layout_box: block_box,
+                    breaks_after: true,
+                });
                 return;
             }
 
@@ -509,16 +644,25 @@ fn collect_inline_fragments(
                 // wide as its content (CSS §10.3.9 "Inline replaced elements, block-level
                 // replaced elements in normal flow, and inline-block elements").
                 let stf_w = if style.width.is_some() || style.width_pct.is_some() {
-                    available_width  // explicit width → honour it
+                    available_width // explicit width → honour it
                 } else {
-                    super::flex::measure_max_content(dom, styles, pseudo, node_id, images, viewport_w)
-                        .min(available_width).max(1)
+                    super::flex::measure_max_content(
+                        dom, styles, pseudo, node_id, images, viewport_w,
+                    )
+                    .min(available_width)
+                    .max(1)
                 };
-                let mut block_box = build_block(dom, styles, pseudo, node_id, stf_w, images, viewport_w);
+                let mut block_box =
+                    build_block(dom, styles, pseudo, node_id, stf_w, images, viewport_w, 0);
                 block_box.box_type = BoxType::InlineBlock;
                 let w = block_box.width + block_box.margin.left + block_box.margin.right;
                 let h = block_box.height + block_box.margin.top + block_box.margin.bottom;
-                out.push(InlineFragment { width: w, height: h, layout_box: block_box, breaks_after: false });
+                out.push(InlineFragment {
+                    width: w,
+                    height: h,
+                    layout_box: block_box,
+                    breaks_after: false,
+                });
                 return;
             }
 
@@ -532,7 +676,12 @@ fn collect_inline_fragments(
             let left_space = ml + pl;
             if left_space > 0 {
                 let spacer = LayoutBox::new(None, BoxType::Inline);
-                out.push(InlineFragment { width: left_space, height: 0, layout_box: spacer, breaks_after: false });
+                out.push(InlineFragment {
+                    width: left_space,
+                    height: 0,
+                    layout_box: spacer,
+                    breaks_after: false,
+                });
             }
 
             // Inject ::before pseudo-element content.
@@ -542,28 +691,45 @@ fn collect_inline_fragments(
                         if !text.is_empty() {
                             let fs = if ps.font_size > 0 { ps.font_size } else { 16 };
                             let bold = matches!(ps.font_weight, crate::style::FontWeight::Bold);
-                            let italic = matches!(ps.font_style, crate::style::FontStyleVal::Italic);
+                            let italic =
+                                matches!(ps.font_style, crate::style::FontStyleVal::Italic);
                             let (tw, th) = measure_text(text, fs, bold);
-                            let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
+                            let mut tb =
+                                LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
                             tb.bg_color = ps.background_color;
                             tb.text_decoration = ps.text_decoration;
-                            out.push(InlineFragment { width: tw, height: th, layout_box: tb, breaks_after: false });
+                            out.push(InlineFragment {
+                                width: tw,
+                                height: th,
+                                layout_box: tb,
+                                breaks_after: false,
+                            });
                         }
                     }
                 }
             }
 
             let children: Vec<NodeId> = node.children.iter().copied().collect();
-            let child_bg = if style.background_color != 0 { style.background_color } else { inherited_bg };
+            let child_bg = if style.background_color != 0 {
+                style.background_color
+            } else {
+                inherited_bg
+            };
 
             // CSS 2.1 §9.2.1.1: When an inline element contains block-level
             // children, whitespace-only text nodes between blocks are stripped
             // (they do not generate anonymous inline boxes).
             let has_block_child = children.iter().any(|&cid| {
                 let cs = &styles[cid];
-                cs.display != Display::None && matches!(cs.display,
-                    Display::Block | Display::FlowRoot | Display::Flex
-                    | Display::Grid | Display::ListItem)
+                cs.display != Display::None
+                    && matches!(
+                        cs.display,
+                        Display::Block
+                            | Display::FlowRoot
+                            | Display::Flex
+                            | Display::Grid
+                            | Display::ListItem
+                    )
             });
 
             for &cid in &children {
@@ -579,7 +745,17 @@ fn collect_inline_fragments(
                         }
                     }
                 }
-                collect_inline_fragments(dom, styles, pseudo, cid, out, available_width, images, child_bg, viewport_w);
+                collect_inline_fragments(
+                    dom,
+                    styles,
+                    pseudo,
+                    cid,
+                    out,
+                    available_width,
+                    images,
+                    child_bg,
+                    viewport_w,
+                );
             }
 
             // Inject ::after pseudo-element content.
@@ -589,12 +765,19 @@ fn collect_inline_fragments(
                         if !text.is_empty() {
                             let fs = if ps.font_size > 0 { ps.font_size } else { 16 };
                             let bold = matches!(ps.font_weight, crate::style::FontWeight::Bold);
-                            let italic = matches!(ps.font_style, crate::style::FontStyleVal::Italic);
+                            let italic =
+                                matches!(ps.font_style, crate::style::FontStyleVal::Italic);
                             let (tw, th) = measure_text(text, fs, bold);
-                            let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
+                            let mut tb =
+                                LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
                             tb.bg_color = ps.background_color;
                             tb.text_decoration = ps.text_decoration;
-                            out.push(InlineFragment { width: tw, height: th, layout_box: tb, breaks_after: false });
+                            out.push(InlineFragment {
+                                width: tw,
+                                height: th,
+                                layout_box: tb,
+                                breaks_after: false,
+                            });
                         }
                     }
                 }
@@ -604,7 +787,12 @@ fn collect_inline_fragments(
             let right_space = pr + mr;
             if right_space > 0 {
                 let spacer = LayoutBox::new(None, BoxType::Inline);
-                out.push(InlineFragment { width: right_space, height: 0, layout_box: spacer, breaks_after: false });
+                out.push(InlineFragment {
+                    width: right_space,
+                    height: 0,
+                    layout_box: spacer,
+                    breaks_after: false,
+                });
             }
         }
     }
@@ -622,12 +810,19 @@ fn emit_nowrap_fragments(
     out: &mut Vec<InlineFragment>,
 ) {
     let collapsed = collapse_whitespace(text);
-    if collapsed.is_empty() { return; }
+    if collapsed.is_empty() {
+        return;
+    }
     let (w, h) = measure_text(&collapsed, font_size, bold);
     let mut wbox = LayoutBox::new_text(collapsed, font_size, bold, italic, color);
     wbox.link_url = link;
     wbox.text_decoration = deco;
-    out.push(InlineFragment { width: w, height: h, layout_box: wbox, breaks_after: false });
+    out.push(InlineFragment {
+        width: w,
+        height: h,
+        layout_box: wbox,
+        breaks_after: false,
+    });
 }
 
 /// Collapse whitespace sequences to single spaces.
@@ -674,18 +869,33 @@ fn emit_input_fragment(
             let mut hid = LayoutBox::new(Some(node_id), BoxType::Inline);
             hid.form_field = Some(FormFieldKind::Hidden);
             hid.form_value = dom.attr(node_id, "value").map(String::from);
-            out.push(InlineFragment { width: 0, height: 0, layout_box: hid, breaks_after: false });
+            out.push(InlineFragment {
+                width: 0,
+                height: 0,
+                layout_box: hid,
+                breaks_after: false,
+            });
             return;
         }
         "checkbox" => {
             let mut cb = LayoutBox::new(Some(node_id), BoxType::Inline);
             cb.form_field = Some(FormFieldKind::Checkbox);
-            out.push(InlineFragment { width: 20, height: 20, layout_box: cb, breaks_after: false });
+            out.push(InlineFragment {
+                width: 20,
+                height: 20,
+                layout_box: cb,
+                breaks_after: false,
+            });
         }
         "radio" => {
             let mut rb = LayoutBox::new(Some(node_id), BoxType::Inline);
             rb.form_field = Some(FormFieldKind::Radio);
-            out.push(InlineFragment { width: 20, height: 20, layout_box: rb, breaks_after: false });
+            out.push(InlineFragment {
+                width: 20,
+                height: 20,
+                layout_box: rb,
+                breaks_after: false,
+            });
         }
         "submit" | "button" | "reset" => {
             let label = dom.attr(node_id, "value").unwrap_or("Submit");
@@ -696,7 +906,12 @@ fn emit_input_fragment(
             btn.text = Some(String::from(label));
             btn.bg_color = css_bg;
             btn.color = css_fg;
-            out.push(InlineFragment { width: w, height: 28, layout_box: btn, breaks_after: false });
+            out.push(InlineFragment {
+                width: w,
+                height: 28,
+                layout_box: btn,
+                breaks_after: false,
+            });
         }
         "password" => {
             let w = size_attr_width(dom, node_id, 200);
@@ -706,22 +921,34 @@ fn emit_input_fragment(
             tf.form_value = dom.attr(node_id, "value").map(String::from);
             tf.bg_color = css_bg;
             tf.color = css_fg;
-            out.push(InlineFragment { width: w, height: 28, layout_box: tf, breaks_after: false });
+            out.push(InlineFragment {
+                width: w,
+                height: 28,
+                layout_box: tf,
+                breaks_after: false,
+            });
         }
         "range" => {
             // HTML5 range slider.
-            let min_val: f32 = dom.attr(node_id, "min")
+            let min_val: f32 = dom
+                .attr(node_id, "min")
                 .and_then(|s| s.parse::<f32>().ok())
                 .unwrap_or(0.0);
-            let max_val: f32 = dom.attr(node_id, "max")
+            let max_val: f32 = dom
+                .attr(node_id, "max")
                 .and_then(|s| s.parse::<f32>().ok())
                 .unwrap_or(100.0);
-            let cur_val: f32 = dom.attr(node_id, "value")
+            let cur_val: f32 = dom
+                .attr(node_id, "value")
                 .and_then(|s| s.parse::<f32>().ok())
                 .unwrap_or(50.0);
             let pct = if max_val > min_val {
-                ((cur_val - min_val) / (max_val - min_val)).min(1.0).max(0.0)
-            } else { 0.5 };
+                ((cur_val - min_val) / (max_val - min_val))
+                    .min(1.0)
+                    .max(0.0)
+            } else {
+                0.5
+            };
 
             let w = 200;
             let h = 28;
@@ -733,13 +960,23 @@ fn emit_input_fragment(
                 (b'0' + (pct_i / 10 % 10) as u8) as char,
                 (b'0' + (pct_i % 10) as u8) as char,
             ];
-            for &d in &digits { val_str.push(d); }
-            if pct_i >= 1000 { val_str.clear(); val_str.push('X'); } // 100%
+            for &d in &digits {
+                val_str.push(d);
+            }
+            if pct_i >= 1000 {
+                val_str.clear();
+                val_str.push('X');
+            } // 100%
             let mut rng = LayoutBox::new(Some(node_id), BoxType::Inline);
             rng.form_field = Some(FormFieldKind::Range);
             rng.form_value = Some(val_str);
             rng.bg_color = css_bg;
-            out.push(InlineFragment { width: w, height: h, layout_box: rng, breaks_after: false });
+            out.push(InlineFragment {
+                width: w,
+                height: h,
+                layout_box: rng,
+                breaks_after: false,
+            });
         }
         _ => {
             let w = size_attr_width(dom, node_id, 200);
@@ -749,7 +986,12 @@ fn emit_input_fragment(
             tf.form_value = dom.attr(node_id, "value").map(String::from);
             tf.bg_color = css_bg;
             tf.color = css_fg;
-            out.push(InlineFragment { width: w, height: 28, layout_box: tf, breaks_after: false });
+            out.push(InlineFragment {
+                width: w,
+                height: 28,
+                layout_box: tf,
+                breaks_after: false,
+            });
         }
     }
 }
@@ -767,7 +1009,11 @@ fn emit_button_fragment(
     let (bw, _) = measure_text(label, 14, false);
     let w = (bw + 24).max(60);
     let btn_type = dom.attr(node_id, "type").unwrap_or("submit");
-    let kind = if btn_type == "submit" { FormFieldKind::Submit } else { FormFieldKind::ButtonEl };
+    let kind = if btn_type == "submit" {
+        FormFieldKind::Submit
+    } else {
+        FormFieldKind::ButtonEl
+    };
     let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
     btn.form_field = Some(kind);
     btn.text = Some(String::from(label));
@@ -776,7 +1022,31 @@ fn emit_button_fragment(
         btn.bg_color = styles[node_id].background_color;
         btn.color = styles[node_id].color;
     }
-    out.push(InlineFragment { width: w, height: 28, layout_box: btn, breaks_after: false });
+    out.push(InlineFragment {
+        width: w,
+        height: 28,
+        layout_box: btn,
+        breaks_after: false,
+    });
+}
+
+fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
+    let children = &dom.get(node_id).children;
+    if children.is_empty() {
+        return true;
+    }
+    let mut saw_nonempty_text = false;
+    for &cid in children {
+        match &dom.get(cid).node_type {
+            crate::dom::NodeType::Text(t) => {
+                if !t.trim().is_empty() {
+                    saw_nonempty_text = true;
+                }
+            }
+            crate::dom::NodeType::Element { .. } => return false,
+        }
+    }
+    saw_nonempty_text
 }
 
 /// Emit word fragments for normal text (collapse whitespace, break on words).
@@ -823,14 +1093,22 @@ fn emit_word_fragments(
     let has_trailing_space = len > 1 && is_ascii_ws(bytes[len - 1]);
 
     if words.is_empty() {
+        // Whitespace-only text node (e.g. "\n  " between block siblings).
+        // Per CSS §9.2.1 and white-space:normal collapsing rules, such nodes
+        // collapse to a single space CHARACTER but must NOT contribute any line
+        // height — otherwise every indentation newline between block children of
+        // an inline element (like <a-menu>) would add ~19 px of phantom height.
+        // We emit a zero-height space so the word-spacing gap is preserved without
+        // affecting the line box height calculation.
         if has_leading_space {
-            let (sw, sh) = measure_text(" ", font_size, bold);
-            let mut space_box = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
+            let (sw, _sh) = measure_text(" ", font_size, bold);
+            let mut space_box =
+                LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
             space_box.link_url = link.clone();
             space_box.text_decoration = deco;
             out.push(InlineFragment {
                 width: sw,
-                height: sh,
+                height: 0, // No height: whitespace-only nodes must not set line height
                 layout_box: space_box,
                 breaks_after: false,
             });
@@ -906,7 +1184,8 @@ fn emit_preformatted_fragments(
         if start < i {
             if let Ok(seg) = core::str::from_utf8(&bytes[start..i]) {
                 let (sw, sh) = measure_text(seg, font_size, bold);
-                let mut sbox = LayoutBox::new_text(String::from(seg), font_size, bold, italic, color);
+                let mut sbox =
+                    LayoutBox::new_text(String::from(seg), font_size, bold, italic, color);
                 sbox.link_url = link.clone();
                 sbox.text_decoration = deco;
                 out.push(InlineFragment {

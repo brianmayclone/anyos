@@ -10,23 +10,23 @@
 #![no_std]
 #![no_main]
 
-mod http;
-mod deflate;
-mod tls;
-mod tab;
-mod resources;
-mod ui;
 mod callbacks;
-mod ws;
+mod deflate;
+mod http;
 mod net_worker;
+mod resources;
+mod tab;
+mod tls;
+mod ui;
+mod ws;
 
 anyos_std::entry!(main);
 
 extern crate libfont_client;
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use anyos_std::i18n;
 
 use libanyui_client as ui_lib;
@@ -41,7 +41,9 @@ use ui_lib::Widget;
 #[inline(always)]
 pub(crate) fn debug_rsp() -> u64 {
     let rsp: u64;
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) rsp); }
+    unsafe {
+        core::arch::asm!("mov {}, rsp", out(reg) rsp);
+    }
     rsp
 }
 
@@ -99,6 +101,8 @@ struct AppState {
     relayout_dirty: [bool; 16],
     /// Timer ID for the relayout debounce timer (0 = not running).
     relayout_timer: u32,
+    /// Timer ID for debounced viewport resize handling (0 = not running).
+    resize_timer: u32,
 }
 
 static mut STATE: Option<AppState> = None;
@@ -162,24 +166,35 @@ fn ws_start_poll_timer() {
 
         // Inbound: poll each connection and deliver to the owning tab's runtime.
         for tab_i in 0..st.tabs.len() {
-            let tab_conn_ids: Vec<u64> = st.ws_connections
+            let tab_conn_ids: Vec<u64> = st
+                .ws_connections
                 .iter()
                 .filter(|c| c.tab_idx == tab_i)
                 .map(|c| c.id)
                 .collect();
-            if tab_conn_ids.is_empty() { continue; }
+            if tab_conn_ids.is_empty() {
+                continue;
+            }
 
             let runtime = st.tabs[tab_i].webview.js_runtime();
             let mut tab_conns: Vec<ws::WsConn> = Vec::new();
             let mut rest: Vec<ws::WsConn> = Vec::new();
             let all = core::mem::replace(&mut st.ws_connections, Vec::new());
             for c in all {
-                if c.tab_idx == tab_i { tab_conns.push(c); } else { rest.push(c); }
+                if c.tab_idx == tab_i {
+                    tab_conns.push(c);
+                } else {
+                    rest.push(c);
+                }
             }
             let to_close = ws::poll_connections(&mut tab_conns, runtime);
             ws::remove_connections(&mut tab_conns, &to_close);
-            for c in tab_conns { st.ws_connections.push(c); }
-            for c in rest { st.ws_connections.push(c); }
+            for c in tab_conns {
+                st.ws_connections.push(c);
+            }
+            for c in rest {
+                st.ws_connections.push(c);
+            }
         }
 
         if st.ws_connections.is_empty() {
@@ -201,18 +216,34 @@ fn ws_start_poll_timer() {
 /// `ensure_anim_timer()` when new work arrives (page load, scroll, etc.).
 pub(crate) fn start_anim_timer() {
     let st = state();
-    if st.anim_timer != 0 { return; }
+    if st.anim_timer != 0 {
+        return;
+    }
     static mut IDLE_TICKS: u32 = 0;
     st.anim_timer = ui_lib::set_timer(16, || {
         let st = state();
+        let net_results = net_worker::drain_results();
+        if !net_results.is_empty() {
+            anyos_std::println!(
+                "[surf] tick-drain: {} result(s) while anim timer active",
+                net_results.len()
+            );
+            process_fetched_results(net_results);
+        }
         let changed = st.tabs[st.active_tab].webview.tick(16);
         if changed {
-            unsafe { IDLE_TICKS = 0; }
+            unsafe {
+                IDLE_TICKS = 0;
+            }
         } else {
-            unsafe { IDLE_TICKS += 1; }
+            unsafe {
+                IDLE_TICKS += 1;
+            }
             // After ~300 ms of no work (20 ticks × 16ms), stop the timer.
             if unsafe { IDLE_TICKS } > 20 {
-                unsafe { IDLE_TICKS = 0; }
+                unsafe {
+                    IDLE_TICKS = 0;
+                }
                 if st.anim_timer != 0 {
                     ui_lib::kill_timer(st.anim_timer);
                     st.anim_timer = 0;
@@ -230,6 +261,36 @@ pub(crate) fn ensure_anim_timer() {
     start_anim_timer();
 }
 
+/// Resize the active tab's webview to match the content area.
+fn resize_active_webview_now() {
+    let st = state();
+    let (w, h) = st.content_view.get_size();
+    if w <= 0 || h <= 0 || st.active_tab >= st.tabs.len() {
+        return;
+    }
+    anyos_std::println!("[surf] apply resize: {}x{}", w, h);
+    st.tabs[st.active_tab].webview.resize(w, h);
+}
+
+/// Debounce expensive webview resize work during window drags.
+fn schedule_active_webview_resize(delay_ms: u32) {
+    let st = state();
+    if st.resize_timer != 0 {
+        ui_lib::kill_timer(st.resize_timer);
+        st.resize_timer = 0;
+    }
+    st.resize_timer = ui_lib::set_timer(delay_ms, || {
+        let st = state();
+        let timer_id = st.resize_timer;
+        st.resize_timer = 0;
+        if timer_id != 0 {
+            ui_lib::kill_timer(timer_id);
+        }
+        resize_active_webview_now();
+        ensure_anim_timer();
+    });
+}
+
 // ═══════════════════════════════════════════════════════════
 // Network worker result processing
 // ═══════════════════════════════════════════════════════════
@@ -241,14 +302,31 @@ pub(crate) fn ensure_anim_timer() {
 /// Restarted by `ensure_net_poll_timer()` when new fetches are submitted.
 fn start_net_poll_timer() {
     let st = state();
-    if st.net_poll_timer != 0 { return; }
+    if st.net_poll_timer != 0 {
+        return;
+    }
     static mut EMPTY_POLLS: u32 = 0;
     st.net_poll_timer = ui_lib::set_timer(50, || {
         let results = net_worker::drain_results();
         if results.is_empty() {
-            unsafe { EMPTY_POLLS += 1; }
+            let st = state();
+            let tab_waiting_on_network = st.tabs.iter().any(|tab| {
+                tab.is_loading || tab.pending_script_count > 0 || tab.pending_stylesheet_count > 0
+            });
+            if tab_waiting_on_network || net_worker::has_pending_activity() {
+                unsafe {
+                    EMPTY_POLLS = 0;
+                }
+                return;
+            }
+
+            unsafe {
+                EMPTY_POLLS += 1;
+            }
             if unsafe { EMPTY_POLLS } > 60 {
-                unsafe { EMPTY_POLLS = 0; }
+                unsafe {
+                    EMPTY_POLLS = 0;
+                }
                 let st = state();
                 if st.net_poll_timer != 0 {
                     ui_lib::kill_timer(st.net_poll_timer);
@@ -257,7 +335,9 @@ fn start_net_poll_timer() {
             }
             return;
         }
-        unsafe { EMPTY_POLLS = 0; }
+        unsafe {
+            EMPTY_POLLS = 0;
+        }
         process_fetched_results(results);
     });
 }
@@ -273,30 +353,94 @@ pub(crate) fn ensure_net_poll_timer() {
 /// immediate relayouts.  A separate debounce timer (`flush_relayout`)
 /// coalesces all pending relayouts into one pass every 300 ms.
 fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
+    let mut nav_count = 0usize;
+    let mut css_count = 0usize;
+    let mut image_count = 0usize;
+    let mut font_count = 0usize;
+    let mut script_count = 0usize;
+    for result in &results {
+        match result {
+            net_worker::FetchResult::NavDone { .. } | net_worker::FetchResult::NavError { .. } => {
+                nav_count += 1;
+            }
+            net_worker::FetchResult::CssDone { .. } => css_count += 1,
+            net_worker::FetchResult::ImageDone { .. } => image_count += 1,
+            net_worker::FetchResult::FontDone { .. } => font_count += 1,
+            net_worker::FetchResult::ScriptDone { .. } => script_count += 1,
+        }
+    }
+    anyos_std::println!(
+        "[surf] drain_results: total={} nav={} css={} image={} font={} script={}",
+        results.len(),
+        nav_count,
+        css_count,
+        image_count,
+        font_count,
+        script_count
+    );
+
     for result in results {
         match result {
-            net_worker::FetchResult::NavDone { response, url, cookies, generation } => {
+            net_worker::FetchResult::NavDone {
+                response,
+                url,
+                cookies,
+                generation,
+            } => {
                 handle_nav_done(response, url, cookies, generation);
             }
-            net_worker::FetchResult::NavError { error_msg, generation } => {
+            net_worker::FetchResult::NavError {
+                error_msg,
+                generation,
+            } => {
                 handle_nav_error(error_msg, generation);
             }
-            net_worker::FetchResult::CssDone { tab_index, href, body, headers, generation } => {
+            net_worker::FetchResult::CssDone {
+                tab_index,
+                href,
+                body,
+                headers,
+                generation,
+            } => {
                 if handle_css_done(tab_index, href, body, headers, generation) {
                     mark_relayout_dirty(tab_index);
                 }
             }
-            net_worker::FetchResult::ImageDone { tab_index, src, body, headers, generation } => {
+            net_worker::FetchResult::ImageDone {
+                tab_index,
+                src,
+                body,
+                headers,
+                generation,
+            } => {
                 if handle_image_done(tab_index, src, body, headers, generation) {
                     mark_relayout_dirty(tab_index);
                 }
             }
-            net_worker::FetchResult::FontDone { tab_index, family, body, generation } => {
+            net_worker::FetchResult::FontDone {
+                tab_index,
+                family,
+                body,
+                generation,
+            } => {
                 if handle_font_done(tab_index, family, body, generation) {
                     mark_relayout_dirty(tab_index);
                 }
             }
-            net_worker::FetchResult::ScriptDone { tab_index, slot, body, headers, generation } => {
+            net_worker::FetchResult::ScriptDone {
+                tab_index,
+                slot,
+                body,
+                headers,
+                generation,
+            } => {
+                anyos_std::println!(
+                    "[surf] received ScriptDone: tab={} slot={} bytes={} gen={}",
+                    tab_index,
+                    slot,
+                    body.len(),
+                    generation
+                );
                 handle_script_done(tab_index, slot, body, headers, generation);
             }
         }
@@ -336,7 +480,10 @@ fn flush_relayout() {
     // Check if new dirty flags were set during the relayouts above
     // (unlikely but possible if relayout triggers further resource loads).
     for &d in &st.relayout_dirty {
-        if d { any_dirty = true; break; }
+        if d {
+            any_dirty = true;
+            break;
+        }
     }
 
     if !any_dirty {
@@ -394,8 +541,14 @@ fn handle_nav_done(
     // Set URL and cookies on the JS runtime before rendering.
     st.tabs[tab_idx].webview.set_url(&url_str);
     let is_secure = base_url.scheme == "https";
-    if let Some(cookie_hdr) = st.cookies.cookie_header(&base_url.host, &base_url.path, is_secure) {
-        st.tabs[tab_idx].webview.js_runtime().set_cookies(&cookie_hdr);
+    if let Some(cookie_hdr) = st
+        .cookies
+        .cookie_header(&base_url.host, &base_url.path, is_secure)
+    {
+        st.tabs[tab_idx]
+            .webview
+            .js_runtime()
+            .set_cookies(&cookie_hdr);
     } else {
         st.tabs[tab_idx].webview.js_runtime().set_cookies("");
     }
@@ -404,46 +557,10 @@ fn handle_nav_done(
     // after external scripts have been fetched, matching the surf-host flow).
     st.tabs[tab_idx].webview.set_html_no_js(&body_text);
 
-    // Collect script entries (inline + external) in document order.
-    // Inline scripts are stored immediately; external scripts are queued
-    // for async fetch via the net_worker.  Once all external fetches
-    // complete, scripts are executed in document order via execute_js().
-    let generation = st.tabs[tab_idx].nav_generation;
-    {
-        let entries = st.tabs[tab_idx].webview.script_entries();
-        let mut pending = Vec::with_capacity(entries.len());
-        let mut ext_count = 0usize;
-        for (slot, entry) in entries.iter().enumerate() {
-            match entry {
-                libwebview::js::ScriptEntry::Inline(text) => {
-                    pending.push(Some(text.clone()));
-                }
-                libwebview::js::ScriptEntry::External(src_url) => {
-                    let full_url = http::resolve_url(&base_url, src_url);
-                    anyos_std::println!("[surf] queuing script fetch [{}]: {}", slot, src_url);
-                    net_worker::submit(net_worker::FetchRequest::Script {
-                        tab_index: tab_idx,
-                        slot,
-                        src: src_url.clone(),
-                        url: full_url,
-                        generation,
-                    });
-                    pending.push(None); // placeholder — filled when fetch completes
-                    ext_count += 1;
-                }
-            }
-        }
-        st.tabs[tab_idx].pending_scripts = pending;
-        st.tabs[tab_idx].pending_script_count = ext_count;
-
-        // If there are no external scripts, execute immediately.
-        if ext_count == 0 && !entries.is_empty() {
-            execute_pending_scripts(tab_idx);
-        }
-    }
-
     // Extract page title.
-    let title = st.tabs[tab_idx].webview.get_title()
+    let title = st.tabs[tab_idx]
+        .webview
+        .get_title()
         .unwrap_or_else(String::new);
 
     // Update navigation history — only push if URL differs from current position.
@@ -482,15 +599,62 @@ fn handle_nav_done(
     // Connect any WebSockets that JS requested during set_html().
     connect_pending_ws(tab_idx);
 
-    // Queue external CSS, images, and web fonts for async fetch via the worker thread.
-    // Queue external CSS, images, and web fonts.
-    if let Some(dom) = st.tabs[tab_idx].webview.dom() {
-        resources::queue_stylesheets(dom, &base_url, tab_idx);
-        resources::queue_images(dom, &base_url, tab_idx);
+    let generation = st.tabs[tab_idx].nav_generation;
+
+    // Match surf-host more closely: queue stylesheets first, but do not let
+    // hundreds of images block external scripts in the single network worker.
+    let pending_stylesheet_count = if let Some(dom) = st.tabs[tab_idx].webview.dom() {
+        let css_count = resources::queue_stylesheets(dom, &base_url, tab_idx);
         resources::queue_inline_svgs(dom, tab_idx);
-    }
+        css_count
+    } else {
+        0
+    };
+    st.tabs[tab_idx].pending_stylesheet_count = pending_stylesheet_count;
     // Queue @font-face downloads from inline <style> blocks.
     resources::queue_font_faces(&st.tabs[tab_idx].webview, &base_url, tab_idx);
+
+    // Collect script entries (inline + external) in document order.
+    // External scripts are queued after stylesheets/fonts, but before images,
+    // so app boot code is not delayed behind hundreds of media downloads.
+    {
+        let entries = st.tabs[tab_idx].webview.script_entries();
+        let mut pending = Vec::with_capacity(entries.len());
+        let mut ext_count = 0usize;
+        for (slot, entry) in entries.iter().enumerate() {
+            match entry {
+                libwebview::js::ScriptEntry::Inline(text) => {
+                    pending.push(Some(text.clone()));
+                }
+                libwebview::js::ScriptEntry::External(src_url) => {
+                    let full_url = http::resolve_url(&base_url, src_url);
+                    anyos_std::println!("[surf] queuing script fetch [{}]: {}", slot, src_url);
+                    net_worker::submit(net_worker::FetchRequest::Script {
+                        tab_index: tab_idx,
+                        slot,
+                        src: src_url.clone(),
+                        url: full_url,
+                        generation,
+                    });
+                    pending.push(None);
+                    ext_count += 1;
+                }
+            }
+        }
+        st.tabs[tab_idx].pending_scripts = pending;
+        st.tabs[tab_idx].pending_script_count = ext_count;
+    }
+
+    if let Some(dom) = st.tabs[tab_idx].webview.dom() {
+        resources::queue_images(dom, &base_url, tab_idx);
+    }
+
+    // Match the surf-host order more closely: run scripts only after
+    // the initial external stylesheet chain has finished loading.
+    if st.tabs[tab_idx].pending_script_count == 0 && st.tabs[tab_idx].pending_stylesheet_count == 0
+    {
+        execute_pending_scripts(tab_idx);
+    }
 
     // Restart animation/scroll tick timer (may have been stopped while idle).
     ensure_anim_timer();
@@ -521,8 +685,26 @@ fn handle_css_done(
     generation: u32,
 ) -> bool {
     let st = state();
-    if tab_index >= st.tabs.len() { return false; }
-    if st.tabs[tab_index].nav_generation != generation { return false; }
+    if tab_index >= st.tabs.len() {
+        return false;
+    }
+    if st.tabs[tab_index].nav_generation != generation {
+        return false;
+    }
+
+    if st.tabs[tab_index].pending_stylesheet_count > 0 {
+        st.tabs[tab_index].pending_stylesheet_count -= 1;
+    }
+
+    if body.is_empty() {
+        anyos_std::println!("[surf] skipped empty/failed CSS: {}", href);
+        if st.tabs[tab_index].pending_script_count == 0
+            && st.tabs[tab_index].pending_stylesheet_count == 0
+        {
+            execute_pending_scripts(tab_index);
+        }
+        return false;
+    }
 
     let css_text = resources::decode_http_body(&body, &headers);
     st.tabs[tab_index].webview.add_stylesheet(&css_text);
@@ -530,7 +712,11 @@ fn handle_css_done(
 
     // Process @import URLs from the newly added stylesheet.
     if let Ok(base_url) = crate::http::parse_url(&href) {
-        let imports: Vec<String> = st.tabs[tab_index].webview.last_stylesheet_imports().to_vec();
+        let imports: Vec<String> = st.tabs[tab_index]
+            .webview
+            .last_stylesheet_imports()
+            .to_vec();
+        st.tabs[tab_index].pending_stylesheet_count += imports.len();
         for import_url in imports {
             let resolved = crate::http::resolve_url(&base_url, &import_url);
             crate::net_worker::submit(crate::net_worker::FetchRequest::Css {
@@ -542,7 +728,8 @@ fn handle_css_done(
         }
 
         // Process @font-face rules — queue font downloads.
-        let font_faces: Vec<(String, String)> = st.tabs[tab_index].webview
+        let font_faces: Vec<(String, String)> = st.tabs[tab_index]
+            .webview
             .last_stylesheet_font_faces()
             .iter()
             .map(|ff| (ff.family.clone(), ff.src_url.clone()))
@@ -558,25 +745,32 @@ fn handle_css_done(
         }
     }
 
+    if st.tabs[tab_index].pending_script_count == 0
+        && st.tabs[tab_index].pending_stylesheet_count == 0
+    {
+        execute_pending_scripts(tab_index);
+    }
+
     true
 }
 
 /// Handle a completed web font fetch: load TTF data into libfont.
 ///
 /// Returns `true` if the font was loaded and a relayout is needed.
-fn handle_font_done(
-    tab_index: usize,
-    family: String,
-    body: Vec<u8>,
-    generation: u32,
-) -> bool {
+fn handle_font_done(tab_index: usize, family: String, body: Vec<u8>, generation: u32) -> bool {
     let st = state();
-    if tab_index >= st.tabs.len() { return false; }
-    if st.tabs[tab_index].nav_generation != generation { return false; }
+    if tab_index >= st.tabs.len() {
+        return false;
+    }
+    if st.tabs[tab_index].nav_generation != generation {
+        return false;
+    }
 
     // Try loading the font data (supports TTF/OTF and WOFF2 via Brotli decompression).
     if let Some(font_id) = libfont_client::load_data(&body) {
-        st.tabs[tab_index].webview.register_web_font(&family, font_id);
+        st.tabs[tab_index]
+            .webview
+            .register_web_font(&family, font_id);
         anyos_std::println!("[surf] loaded web font '{}' -> id {}", family, font_id);
         true
     } else {
@@ -597,8 +791,12 @@ fn handle_image_done(
     generation: u32,
 ) -> bool {
     let st = state();
-    if tab_index >= st.tabs.len() { return false; }
-    if st.tabs[tab_index].nav_generation != generation { return false; }
+    if tab_index >= st.tabs.len() {
+        return false;
+    }
+    if st.tabs[tab_index].nav_generation != generation {
+        return false;
+    }
 
     if resources::is_svg(&src, &headers) {
         resources::decode_svg_no_relayout(&body, &src, tab_index);
@@ -620,20 +818,57 @@ fn handle_script_done(
     generation: u32,
 ) {
     let st = state();
-    if tab_index >= st.tabs.len() { return; }
-    if st.tabs[tab_index].nav_generation != generation { return; }
-    if slot >= st.tabs[tab_index].pending_scripts.len() { return; }
+    if tab_index >= st.tabs.len() {
+        anyos_std::println!(
+            "[surf] dropping ScriptDone: tab {} out of range (tabs={})",
+            tab_index,
+            st.tabs.len()
+        );
+        return;
+    }
+    if st.tabs[tab_index].nav_generation != generation {
+        anyos_std::println!(
+            "[surf] dropping ScriptDone: stale generation tab={} slot={} got={} expected={}",
+            tab_index,
+            slot,
+            generation,
+            st.tabs[tab_index].nav_generation
+        );
+        return;
+    }
+    if slot >= st.tabs[tab_index].pending_scripts.len() {
+        anyos_std::println!(
+            "[surf] dropping ScriptDone: slot {} out of range (pending_len={})",
+            slot,
+            st.tabs[tab_index].pending_scripts.len()
+        );
+        return;
+    }
 
     let text = resources::decode_http_body(&body, &headers);
-    anyos_std::println!("[surf] script [{}] fetched: {} bytes", slot, text.len());
+    anyos_std::println!(
+        "[surf] script [{}] fetched: {} bytes (pending_before={})",
+        slot,
+        text.len(),
+        st.tabs[tab_index].pending_script_count
+    );
     st.tabs[tab_index].pending_scripts[slot] = Some(text);
 
     if st.tabs[tab_index].pending_script_count > 0 {
         st.tabs[tab_index].pending_script_count -= 1;
     }
 
+    anyos_std::println!(
+        "[surf] script [{}] stored: pending_after={} stylesheets_pending={}",
+        slot,
+        st.tabs[tab_index].pending_script_count,
+        st.tabs[tab_index].pending_stylesheet_count
+    );
+
     // All external scripts fetched — execute everything in document order.
-    if st.tabs[tab_index].pending_script_count == 0 {
+    if st.tabs[tab_index].pending_script_count == 0
+        && st.tabs[tab_index].pending_stylesheet_count == 0
+    {
         execute_pending_scripts(tab_index);
     }
 }
@@ -644,19 +879,37 @@ fn handle_script_done(
 /// if the page has only inline scripts).
 fn execute_pending_scripts(tab_index: usize) {
     let st = state();
-    if tab_index >= st.tabs.len() { return; }
+    if tab_index >= st.tabs.len() {
+        return;
+    }
 
-    let scripts: Vec<String> = st.tabs[tab_index].pending_scripts
+    // Match surf-host more closely: JS should observe the fully styled layout
+    // tree, not a still-dirty DOM waiting on the debounce timer.
+    st.tabs[tab_index].webview.relayout();
+
+    let scripts: Vec<String> = st.tabs[tab_index]
+        .pending_scripts
         .iter()
         .filter_map(|s| s.clone())
         .collect();
+    anyos_std::println!(
+        "[surf] execute_pending_scripts: tab={} collected={} pending_slots={}",
+        tab_index,
+        scripts.len(),
+        st.tabs[tab_index].pending_scripts.len()
+    );
     // Clear pending state.
     st.tabs[tab_index].pending_scripts.clear();
     st.tabs[tab_index].pending_script_count = 0;
 
-    if scripts.is_empty() { return; }
+    if scripts.is_empty() {
+        return;
+    }
 
-    anyos_std::println!("[surf] executing {} scripts in document order", scripts.len());
+    anyos_std::println!(
+        "[surf] executing {} scripts in document order",
+        scripts.len()
+    );
     st.tabs[tab_index].webview.execute_js(&scripts);
 
     // Flush JS console output.
@@ -679,9 +932,10 @@ fn merge_cookies(worker_jar: http::CookieJar) {
     let st = state();
     for cookie in worker_jar.cookies {
         // Replace existing cookie with same name+domain+path, or add new.
-        let existing = st.cookies.cookies.iter_mut().find(|c| {
-            c.name == cookie.name && c.domain == cookie.domain && c.path == cookie.path
-        });
+        let existing =
+            st.cookies.cookies.iter_mut().find(|c| {
+                c.name == cookie.name && c.domain == cookie.domain && c.path == cookie.path
+            });
         if let Some(existing) = existing {
             existing.value = cookie.value;
             existing.secure = cookie.secure;
@@ -713,7 +967,11 @@ fn main() {
     let mut args_buf = [0u8; 256];
     let raw_args = anyos_std::process::args(&mut args_buf);
     let arg_url = raw_args.trim();
-    let start_url = if arg_url.is_empty() { None } else { Some(String::from(arg_url)) };
+    let start_url = if arg_url.is_empty() {
+        None
+    } else {
+        Some(String::from(arg_url))
+    };
 
     // ── Window ──────────────────────────────────────────────────────────────
     let win = ui_lib::Window::new(i18n::t("Surf"), -1, -1, 900, 700);
@@ -768,7 +1026,7 @@ fn main() {
     let url_progress = ui_lib::ProgressBar::new(0);
     url_progress.set_dock(ui_lib::DOCK_TOP);
     url_progress.set_size(0, 3);
-    url_progress.set_color(0xFF0A84FF);  // blue accent
+    url_progress.set_color(0xFF0A84FF); // blue accent
     url_progress.set_visible(false);
     win.add(&url_progress);
 
@@ -805,7 +1063,7 @@ fn main() {
     let devtools_label = ui_lib::Label::new("");
     devtools_label.set_dock(ui_lib::DOCK_FILL);
     devtools_label.set_color(0xFF1C1C1E);
-    devtools_label.set_text_color(0xFF30D158);   // green console text
+    devtools_label.set_text_color(0xFF30D158); // green console text
     devtools_label.set_font_size(12);
     devtools_label.set_padding(8, 8, 8, 8);
     devtools_win.add(&devtools_label);
@@ -828,11 +1086,20 @@ fn main() {
 
     // ── Initial tab ──────────────────────────────────────────────────────────
     let mut initial_tab = tab::TabState::new();
-    initial_tab.webview.set_link_callback(callbacks::on_link_click, 0);
-    initial_tab.webview.set_submit_callback(callbacks::on_form_submit, 0);
+    initial_tab
+        .webview
+        .set_link_callback(callbacks::on_link_click, 0);
+    initial_tab
+        .webview
+        .set_submit_callback(callbacks::on_form_submit, 0);
     content_view.add(initial_tab.webview.scroll_view());
-    initial_tab.webview.scroll_view().set_dock(ui_lib::DOCK_FILL);
-    initial_tab.webview.scroll_view().on_scroll(|_| { ensure_anim_timer(); });
+    initial_tab
+        .webview
+        .scroll_view()
+        .set_dock(ui_lib::DOCK_FILL);
+    initial_tab.webview.scroll_view().on_scroll(|_| {
+        ensure_anim_timer();
+    });
 
     unsafe {
         STATE = Some(AppState {
@@ -852,7 +1119,9 @@ fn main() {
             devtools_open: false,
             tabs: vec![initial_tab],
             active_tab: 0,
-            cookies: http::CookieJar { cookies: Vec::new() },
+            cookies: http::CookieJar {
+                cookies: Vec::new(),
+            },
             css_queue: Vec::new(),
             css_timer: 0,
             image_queue: Vec::new(),
@@ -864,6 +1133,7 @@ fn main() {
             net_poll_timer: 0,
             relayout_dirty: [false; 16],
             relayout_timer: 0,
+            resize_timer: 0,
         });
     }
 
@@ -873,31 +1143,34 @@ fn main() {
     // ── Menu bar ──
     let mut mb = ui_lib::MenuBarBuilder::new()
         .menu(i18n::t("File"))
-            .item(1, i18n::t("New Tab"), 0)
-            .item(2, i18n::t("Close Tab"), 0)
-            .separator()
-            .item(3, i18n::t("Quit"), 0)
+        .item(1, i18n::t("New Tab"), 0)
+        .item(2, i18n::t("Close Tab"), 0)
+        .separator()
+        .item(3, i18n::t("Quit"), 0)
         .end_menu()
         .menu(i18n::t("Edit"))
-            .item(10, i18n::t("Cut"), 0)
-            .item(11, i18n::t("Copy"), 0)
-            .item(12, i18n::t("Paste"), 0)
+        .item(10, i18n::t("Cut"), 0)
+        .item(11, i18n::t("Copy"), 0)
+        .item(12, i18n::t("Paste"), 0)
         .end_menu()
         .menu(i18n::t("View"))
-            .item(20, i18n::t("Reload"), 0)
-            .separator()
-            .item(21, i18n::t("DevTools Console"), 0)
+        .item(20, i18n::t("Reload"), 0)
+        .separator()
+        .item(21, i18n::t("DevTools Console"), 0)
         .end_menu()
         .menu(i18n::t("Navigate"))
-            .item(30, i18n::t("Back"), 0)
-            .item(31, i18n::t("Forward"), 0)
+        .item(30, i18n::t("Back"), 0)
+        .item(31, i18n::t("Forward"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = ui_lib::MenuBar::set(win.id(), menu_data);
     menu.on_item(|e| {
         match e.item_id {
             1 => ui::add_tab(),
-            2 => { let st = state(); ui::close_tab(st.active_tab); }
+            2 => {
+                let st = state();
+                ui::close_tab(st.active_tab);
+            }
             3 => ui_lib::quit(),
             10 | 11 | 12 => {} // handled by focused control
             20 => tab::reload(),
@@ -910,9 +1183,15 @@ fn main() {
 
     // ── Button callbacks ─────────────────────────────────────────────────────
     let st = state();
-    st.btn_back.on_click(|_| { tab::go_back(); });
-    st.btn_forward.on_click(|_| { tab::go_forward(); });
-    st.btn_reload.on_click(|_| { tab::reload(); });
+    st.btn_back.on_click(|_| {
+        tab::go_back();
+    });
+    st.btn_forward.on_click(|_| {
+        tab::go_forward();
+    });
+    st.btn_reload.on_click(|_| {
+        tab::reload();
+    });
 
     // Hamburger menu button: open popup on left-click.
     st.btn_menu.on_click(|_| {
@@ -923,19 +1202,22 @@ fn main() {
     // Hamburger menu item handler.
     hamburger_menu.on_item_click(|e| {
         match e.index {
-            0 => ui::add_tab(),                                      // New Tab
-            1 => { let st = state(); ui::close_tab(st.active_tab); } // Close Tab
+            0 => ui::add_tab(), // New Tab
+            1 => {
+                let st = state();
+                ui::close_tab(st.active_tab);
+            } // Close Tab
             // 2 = separator
-            3 => {}  // History (TODO)
-            4 => {}  // Downloads (TODO)
-            5 => {}  // Bookmarks (TODO)
+            3 => {} // History (TODO)
+            4 => {} // Downloads (TODO)
+            5 => {} // Bookmarks (TODO)
             // 6 = separator
-            7 => {}  // Zoom In (TODO)
-            8 => {}  // Zoom Out (TODO)
-            9 => {}  // Reset Zoom (TODO)
+            7 => {} // Zoom In (TODO)
+            8 => {} // Zoom Out (TODO)
+            9 => {} // Reset Zoom (TODO)
             // 10 = separator
-            11 => {} // Settings (TODO)
-            12 => ui::toggle_devtools(),                              // Developer Tools
+            11 => {}                     // Settings (TODO)
+            12 => ui::toggle_devtools(), // Developer Tools
             // 13 = separator
             14 => {} // About Surf (TODO)
             _ => {}
@@ -961,7 +1243,9 @@ fn main() {
         ui::switch_tab(e.index as usize);
     });
 
-    win.on_close(|_| { ui_lib::quit(); });
+    win.on_close(|_| {
+        ui_lib::quit();
+    });
 
     // Keyboard shortcuts.
     win.on_key_down(|e| {
@@ -993,12 +1277,7 @@ fn main() {
 
     // Viewport resize: re-layout the active tab's webview.
     win.on_resize(|_| {
-        let st = state();
-        let (w, h) = st.content_view.get_size();
-        if w > 0 && h > 0 {
-            let t = &mut st.tabs[st.active_tab];
-            t.webview.resize(w, h);
-        }
+        schedule_active_webview_resize(50);
     });
 
     // Start the CSS animation tick timer.
@@ -1017,22 +1296,7 @@ fn main() {
 
     // One-shot timer: after the first layout pass, resize the WebView to the
     // actual content_view dimensions (dock sizes aren't computed until run()).
-    static mut RESIZE_TIMER: u32 = 0;
-    unsafe {
-        RESIZE_TIMER = ui_lib::set_timer(50, || {
-            let st = state();
-            let (w, h) = st.content_view.get_size();
-            if w > 0 && h > 0 {
-                let t = &mut st.tabs[st.active_tab];
-                t.webview.resize(w, h);
-            }
-            // Kill after first fire — this is a one-shot timer.
-            if unsafe { RESIZE_TIMER } != 0 {
-                ui_lib::kill_timer(unsafe { RESIZE_TIMER });
-                RESIZE_TIMER = 0;
-            }
-        });
-    }
+    schedule_active_webview_resize(50);
 
     anyos_std::println!("[surf] entering event loop");
     ui_lib::run();

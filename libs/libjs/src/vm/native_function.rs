@@ -1,13 +1,13 @@
 //! Function.prototype methods: call, apply, bind, toString.
 
+use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 use core::cell::RefCell;
 
-use crate::value::*;
 use super::Vm;
+use crate::value::*;
 
 // ═══════════════════════════════════════════════════════════
 // Function.prototype methods
@@ -69,7 +69,8 @@ pub fn function_bind(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 upvalues: original.upvalues.clone(),
                 prototype: original.prototype.clone(),
                 own_props: original.own_props.clone(),
-                arity: original.arity, super_class: original.super_class.clone(),
+                arity: original.arity,
+                super_class: original.super_class.clone(),
             };
             drop(original);
             JsValue::Function(Rc::new(RefCell::new(bound)))
@@ -101,17 +102,35 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
     match func {
         JsValue::Function(func_rc) => {
             let kind = func_rc.borrow().kind.clone();
-            vm.current_this = this_val.clone();
+            let this_bind = func_rc.borrow().this_binding.clone();
+            let captured_upvalues = func_rc.borrow().upvalues.clone();
+            let bound_args = func_rc.borrow().bound_args.clone();
+
+            let effective_this = this_bind.unwrap_or_else(|| this_val.clone());
+            vm.current_this = effective_this.clone();
+
+            let effective_args: Vec<JsValue>;
+            let args = if bound_args.is_empty() {
+                args
+            } else {
+                effective_args = bound_args.into_iter().chain(args.iter().cloned()).collect();
+                &effective_args
+            };
 
             match kind {
                 FnKind::Native(native) => native(vm, args),
                 FnKind::Bytecode(chunk) => {
-                    let captured_upvalues = func_rc.borrow().upvalues.clone();
                     let local_count = chunk.local_count as usize;
                     let mut locals: alloc::vec::Vec<alloc::rc::Rc<core::cell::RefCell<JsValue>>> =
-                        (0..local_count).map(|_| alloc::rc::Rc::new(core::cell::RefCell::new(JsValue::Undefined))).collect();
+                        (0..local_count)
+                            .map(|_| {
+                                alloc::rc::Rc::new(core::cell::RefCell::new(JsValue::Undefined))
+                            })
+                            .collect();
                     for (i, arg) in args.iter().enumerate() {
-                        if i < local_count { *locals[i].borrow_mut() = arg.clone(); }
+                        if i < local_count {
+                            *locals[i].borrow_mut() = arg.clone();
+                        }
                     }
                     let frame = super::CallFrame {
                         chunk,
@@ -119,7 +138,7 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
                         stack_base: vm.stack.len(),
                         locals,
                         upvalue_cells: captured_upvalues,
-                        this_val: this_val.clone(),
+                        this_val: effective_this,
                         is_constructor: false,
                         all_args: args.to_vec(),
                         self_ref: func.clone(),

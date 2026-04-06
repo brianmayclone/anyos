@@ -22,7 +22,15 @@ pub struct Surface {
 impl Surface {
     /// Create a surface with clip set to full bounds.
     pub fn new(pixels: *mut u32, width: u32, height: u32) -> Self {
-        Self { pixels, width, height, clip_x: 0, clip_y: 0, clip_w: width, clip_h: height }
+        Self {
+            pixels,
+            width,
+            height,
+            clip_x: 0,
+            clip_y: 0,
+            clip_w: width,
+            clip_h: height,
+        }
     }
 
     /// Return a copy with clip rect intersected with the given region.
@@ -60,8 +68,14 @@ pub struct ScaledBounds {
 /// `ctrl_x/y` and `ctrl_w/h` are the control's logical position/size.
 /// Returns physical pixel coordinates for drawing on the surface.
 #[inline(always)]
-pub fn scale_bounds(parent_abs_x: i32, parent_abs_y: i32,
-                    ctrl_x: i32, ctrl_y: i32, ctrl_w: u32, ctrl_h: u32) -> ScaledBounds {
+pub fn scale_bounds(
+    parent_abs_x: i32,
+    parent_abs_y: i32,
+    ctrl_x: i32,
+    ctrl_y: i32,
+    ctrl_w: u32,
+    ctrl_h: u32,
+) -> ScaledBounds {
     let s = crate::theme::scale_factor();
     ScaledBounds {
         x: ((parent_abs_x + ctrl_x) * s as i32 + 50) / 100,
@@ -108,7 +122,8 @@ struct LibrenderExportsPartial {
     _fill_gradient_h: usize,
     _fill_gradient_v: usize,
     _blend_color: usize,
-    fill_rounded_rect_aa_clipped: extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, i32, u32, i32, i32, i32, i32),
+    fill_rounded_rect_aa_clipped:
+        extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, i32, u32, i32, i32, i32, i32),
 }
 
 #[inline(always)]
@@ -120,7 +135,8 @@ fn librender() -> &'static LibrenderExportsPartial {
 
 type MeasureFn = extern "C" fn(u32, u16, *const u8, u32, *mut u32, *mut u32);
 type DrawFn = extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32);
-type DrawClipFn = extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32, i32, i32, i32, i32);
+type DrawClipFn =
+    extern "C" fn(*mut u32, u32, u32, i32, i32, u32, u32, u16, *const u8, u32, i32, i32, i32, i32);
 
 static mut FONT_MEASURE: Option<MeasureFn> = None;
 static mut FONT_DRAW: Option<DrawFn> = None;
@@ -129,9 +145,13 @@ static mut FONT_DRAW_CLIP: Option<DrawClipFn> = None;
 /// Ensure libfont.so is loaded and symbols are resolved.
 pub fn ensure_libfont() {
     unsafe {
-        if FONT_MEASURE.is_some() { return; }
+        if core::ptr::addr_of!(FONT_MEASURE).read().is_some() {
+            return;
+        }
         let base = crate::syscall::dll_load(b"/Libraries/libfont.so");
-        if base == 0 { return; }
+        if base == 0 {
+            return;
+        }
         FONT_MEASURE = resolve_sym(base, b"font_measure_string");
         FONT_DRAW = resolve_sym(base, b"font_draw_string_buf");
         FONT_DRAW_CLIP = resolve_sym(base, b"font_draw_string_buf_clipped");
@@ -154,16 +174,26 @@ unsafe fn resolve_sym<T: Copy>(base: u64, name: &[u8]) -> Option<T> {
     for i in 0..e_phnum as usize {
         let ph = (base + e_phoff + (i as u64) * 56) as *const u8;
         let p_type = *(ph as *const u32);
-        if p_type == 1 { // PT_LOAD
+        if p_type == 1 {
+            // PT_LOAD
             let p_vaddr = *(ph.add(16) as *const u64);
-            if p_vaddr < link_base { link_base = p_vaddr; }
+            if p_vaddr < link_base {
+                link_base = p_vaddr;
+            }
         }
-        if p_type == 2 { // PT_DYNAMIC
+        if p_type == 2 {
+            // PT_DYNAMIC
             dynamic_va = *(ph.add(16) as *const u64); // p_vaddr
         }
     }
-    if dynamic_va == 0 { return None; }
-    let load_bias = if link_base != u64::MAX { base - link_base } else { 0 };
+    if dynamic_va == 0 {
+        return None;
+    }
+    let load_bias = if link_base != u64::MAX {
+        base - link_base
+    } else {
+        0
+    };
     dynamic_va += load_bias;
 
     // Walk .dynamic for DT_SYMTAB(6), DT_STRTAB(5), DT_HASH(4)
@@ -183,7 +213,9 @@ unsafe fn resolve_sym<T: Copy>(base: u64, name: &[u8]) -> Option<T> {
             _ => {}
         }
     }
-    if symtab == 0 || strtab == 0 || hash == 0 { return None; }
+    if symtab == 0 || strtab == 0 || hash == 0 {
+        return None;
+    }
 
     // ELF hash lookup
     let nbuckets = *(hash as *const u32);
@@ -211,7 +243,9 @@ fn elf_hash(name: &[u8]) -> u32 {
     for &b in name {
         h = (h << 4).wrapping_add(b as u32);
         let g = h & 0xF000_0000;
-        if g != 0 { h ^= g >> 24; }
+        if g != 0 {
+            h ^= g >> 24;
+        }
         h &= !g;
     }
     h
@@ -221,7 +255,9 @@ fn elf_hash(name: &[u8]) -> u32 {
 unsafe fn cstr_eq(strtab: *const u8, offset: usize, name: &[u8]) -> bool {
     let s = strtab.add(offset);
     for (i, &b) in name.iter().enumerate() {
-        if *s.add(i) != b { return false; }
+        if *s.add(i) != b {
+            return false;
+        }
     }
     *s.add(name.len()) == 0
 }
@@ -241,8 +277,19 @@ pub fn fill_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, color: u32) {
     let y0 = y.max(s.clip_y);
     let x1 = (x + w as i32).min(s.clip_x + s.clip_w as i32);
     let y1 = (y + h as i32).min(s.clip_y + s.clip_h as i32);
-    if x0 >= x1 || y0 >= y1 { return; }
-    (librender().fill_rect)(s.pixels, s.width, s.height, x0, y0, (x1 - x0) as u32, (y1 - y0) as u32, color);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+    (librender().fill_rect)(
+        s.pixels,
+        s.width,
+        s.height,
+        x0,
+        y0,
+        (x1 - x0) as u32,
+        (y1 - y0) as u32,
+        color,
+    );
 }
 
 /// Fill a rounded rectangle with antialiasing, clipped to the surface's clip rect.
@@ -250,25 +297,38 @@ pub fn fill_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, color: u32) {
 /// Delegates to librender's `fill_rounded_rect_aa_clipped` which is identical to
 /// `fill_rounded_rect_aa` but respects a caller-supplied clip rect.
 pub fn fill_rounded_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
-    if w == 0 || h == 0
-        || x + w as i32 <= s.clip_x || y + h as i32 <= s.clip_y
-        || x >= s.clip_x + s.clip_w as i32 || y >= s.clip_y + s.clip_h as i32
+    if w == 0
+        || h == 0
+        || x + w as i32 <= s.clip_x
+        || y + h as i32 <= s.clip_y
+        || x >= s.clip_x + s.clip_w as i32
+        || y >= s.clip_y + s.clip_h as i32
     {
         return;
     }
     (librender().fill_rounded_rect_aa_clipped)(
-        s.pixels, s.width, s.height,
-        x, y, w, h, r as i32, color,
-        s.clip_x, s.clip_y, s.clip_w as i32, s.clip_h as i32,
+        s.pixels,
+        s.width,
+        s.height,
+        x,
+        y,
+        w,
+        h,
+        r as i32,
+        color,
+        s.clip_x,
+        s.clip_y,
+        s.clip_w as i32,
+        s.clip_h as i32,
     );
 }
 
 /// Draw a 1px border rectangle.
 pub fn draw_border(s: &Surface, x: i32, y: i32, w: u32, h: u32, color: u32) {
-    fill_rect(s, x, y, w, 1, color);                     // top
-    fill_rect(s, x, y + h as i32 - 1, w, 1, color);     // bottom
-    fill_rect(s, x, y, 1, h, color);                     // left
-    fill_rect(s, x + w as i32 - 1, y, 1, h, color);     // right
+    fill_rect(s, x, y, w, 1, color); // top
+    fill_rect(s, x, y + h as i32 - 1, w, 1, color); // bottom
+    fill_rect(s, x, y, 1, h, color); // left
+    fill_rect(s, x + w as i32 - 1, y, 1, h, color); // right
 }
 
 /// Draw a 1px rounded border following the same arc as fill_rounded_rect.
@@ -278,10 +338,7 @@ pub fn draw_rounded_border(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, 
         return;
     }
     // Use librender's anti-aliased rounded rect outline for smooth corners
-    (librender().draw_rounded_rect_aa)(
-        s.pixels, s.width, s.height,
-        x, y, w, h, r as i32, color,
-    );
+    (librender().draw_rounded_rect_aa)(s.pixels, s.width, s.height, x, y, w, h, r as i32, color);
 }
 
 // ── Text rendering ─────────────────────────────────────────────────
@@ -290,7 +347,9 @@ pub fn draw_rounded_border(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, 
 /// Skipped if the text line is fully outside the clip rect.
 #[inline(always)]
 fn render_ttf(s: &Surface, x: i32, y: i32, color: u32, text: &[u8], font_id: u16, size: u16) {
-    if text.is_empty() { return; }
+    if text.is_empty() {
+        return;
+    }
     let text_h = size as i32 + 4; // approximate line height
     let clip_r = s.clip_x + s.clip_w as i32;
     let clip_b = s.clip_y + s.clip_h as i32;
@@ -302,18 +361,33 @@ fn render_ttf(s: &Surface, x: i32, y: i32, color: u32, text: &[u8], font_id: u16
     // Use clipped version if available (passes clip rect to glyph renderer)
     if let Some(draw_clip) = unsafe { FONT_DRAW_CLIP } {
         draw_clip(
-            s.pixels, s.width, s.height,
-            x, y, color,
-            font_id as u32, size,
-            text.as_ptr(), text.len() as u32,
-            s.clip_x, s.clip_y, clip_r, clip_b,
+            s.pixels,
+            s.width,
+            s.height,
+            x,
+            y,
+            color,
+            font_id as u32,
+            size,
+            text.as_ptr(),
+            text.len() as u32,
+            s.clip_x,
+            s.clip_y,
+            clip_r,
+            clip_b,
         );
     } else if let Some(draw) = unsafe { FONT_DRAW } {
         draw(
-            s.pixels, s.width, s.height,
-            x, y, color,
-            font_id as u32, size,
-            text.as_ptr(), text.len() as u32,
+            s.pixels,
+            s.width,
+            s.height,
+            x,
+            y,
+            color,
+            font_id as u32,
+            size,
+            text.as_ptr(),
+            text.len() as u32,
         );
     }
 }
@@ -337,41 +411,66 @@ pub fn draw_text_ex(s: &Surface, x: i32, y: i32, color: u32, text: &[u8], font_i
 /// Draw monospace text using the embedded bitmap font.
 #[inline(always)]
 pub fn draw_text_mono(s: &Surface, x: i32, y: i32, color: u32, text: &[u8]) {
-    if y + 16 <= s.clip_y || y >= s.clip_y + s.clip_h as i32
-        || x >= s.clip_x + s.clip_w as i32 { return; }
+    if y + 16 <= s.clip_y || y >= s.clip_y + s.clip_h as i32 || x >= s.clip_x + s.clip_w as i32 {
+        return;
+    }
     font_bitmap::draw_text_mono(s.pixels, s.width, s.height, x, y, text, color);
 }
 
 /// Draw proportional text using the embedded bitmap font.
 #[inline(always)]
 pub fn draw_text_bitmap(s: &Surface, x: i32, y: i32, color: u32, text: &[u8]) {
-    if y + 16 <= s.clip_y || y >= s.clip_y + s.clip_h as i32
-        || x >= s.clip_x + s.clip_w as i32 { return; }
+    if y + 16 <= s.clip_y || y >= s.clip_y + s.clip_h as i32 || x >= s.clip_x + s.clip_w as i32 {
+        return;
+    }
     font_bitmap::draw_text(s.pixels, s.width, s.height, x, y, text, color);
 }
 
 /// Draw text directly into a raw pixel buffer via libfont.
 /// Caller must call `ensure_libfont()` first.
 pub fn draw_text_to_buf(
-    buf: *mut u32, buf_w: u32, buf_h: u32,
-    x: i32, y: i32, color: u32,
-    font_id: u32, size: u16, text: &[u8],
+    buf: *mut u32,
+    buf_w: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    color: u32,
+    font_id: u32,
+    size: u16,
+    text: &[u8],
 ) {
-    if text.is_empty() || buf.is_null() { return; }
+    if text.is_empty() || buf.is_null() {
+        return;
+    }
     if let Some(draw_clip) = unsafe { FONT_DRAW_CLIP } {
         draw_clip(
-            buf, buf_w, buf_h,
-            x, y, color,
-            font_id, size,
-            text.as_ptr(), text.len() as u32,
-            0, 0, buf_w as i32, buf_h as i32,
+            buf,
+            buf_w,
+            buf_h,
+            x,
+            y,
+            color,
+            font_id,
+            size,
+            text.as_ptr(),
+            text.len() as u32,
+            0,
+            0,
+            buf_w as i32,
+            buf_h as i32,
         );
     } else if let Some(draw) = unsafe { FONT_DRAW } {
         draw(
-            buf, buf_w, buf_h,
-            x, y, color,
-            font_id, size,
-            text.as_ptr(), text.len() as u32,
+            buf,
+            buf_w,
+            buf_h,
+            x,
+            y,
+            color,
+            font_id,
+            size,
+            text.as_ptr(),
+            text.len() as u32,
         );
     }
 }
@@ -393,7 +492,14 @@ pub fn measure_text_ex(text: &[u8], font_id: u16, size: u16) -> (u32, u32) {
     let mut w = 0u32;
     let mut h = 0u32;
     if let Some(measure) = unsafe { FONT_MEASURE } {
-        measure(font_id as u32, size, text.as_ptr(), len as u32, &mut w, &mut h);
+        measure(
+            font_id as u32,
+            size,
+            text.as_ptr(),
+            len as u32,
+            &mut w,
+            &mut h,
+        );
     }
     (w, h)
 }
@@ -415,16 +521,21 @@ pub fn text_width_n(text: &[u8], n: usize) -> u32 {
 
 /// Measure text width of the first `n` bytes at a specific font size.
 pub fn text_width_n_at(text: &[u8], n: usize, size: u16) -> u32 {
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     let len = n.min(text.len());
     ensure_libfont();
     let mut w = 0u32;
     let mut h = 0u32;
     if let Some(measure) = unsafe { FONT_MEASURE } {
         measure(
-            DEFAULT_FONT_ID as u32, size,
-            text.as_ptr(), len as u32,
-            &mut w, &mut h,
+            DEFAULT_FONT_ID as u32,
+            size,
+            text.as_ptr(),
+            len as u32,
+            &mut w,
+            &mut h,
         );
     }
     w
@@ -432,7 +543,9 @@ pub fn text_width_n_at(text: &[u8], n: usize, size: u16) -> u32 {
 
 /// Given a text and a pixel x-offset, find the byte position closest to that offset.
 pub fn text_hit_test(text: &[u8], x_offset: i32, font_size: u16) -> usize {
-    if text.is_empty() || x_offset <= 0 { return 0; }
+    if text.is_empty() || x_offset <= 0 {
+        return 0;
+    }
     let mut prev_w: i32 = 0;
     for i in 1..=text.len() {
         let w = text_width_n_at(text, i, font_size) as i32;
@@ -452,14 +565,18 @@ pub fn text_hit_test(text: &[u8], x_offset: i32, font_size: u16) -> usize {
 /// Draw a 1px highlight line inside the top of a rounded rect.
 /// Cost: 1 fill_rect call. Creates a subtle "raised" look.
 pub fn draw_top_highlight(s: &Surface, x: i32, y: i32, w: u32, r: u32, color: u32) {
-    if w <= r * 2 + 2 { return; }
+    if w <= r * 2 + 2 {
+        return;
+    }
     fill_rect(s, x + r as i32 + 1, y + 1, w - r * 2 - 2, 1, color);
 }
 
 /// Draw a 1px shadow line below a rounded rect (just outside its bottom edge).
 /// Cost: 1 fill_rect call. Creates a subtle "elevated" look.
 pub fn draw_bottom_shadow(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
-    if w <= r * 2 + 2 { return; }
+    if w <= r * 2 + 2 {
+        return;
+    }
     fill_rect(s, x + r as i32 + 1, y + h as i32, w - r * 2 - 2, 1, color);
 }
 
@@ -468,12 +585,26 @@ pub fn draw_bottom_shadow(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, c
 pub fn draw_focus_ring(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, color: u32) {
     if w > 2 && h > 2 {
         (librender().draw_rounded_rect_aa)(
-            s.pixels, s.width, s.height,
-            x - 1, y - 1, w + 2, h + 2, (r + 1) as i32, color,
+            s.pixels,
+            s.width,
+            s.height,
+            x - 1,
+            y - 1,
+            w + 2,
+            h + 2,
+            (r + 1) as i32,
+            color,
         );
         (librender().draw_rounded_rect_aa)(
-            s.pixels, s.width, s.height,
-            x - 2, y - 2, w + 4, h + 4, (r + 2) as i32, crate::theme::with_alpha(color, 100),
+            s.pixels,
+            s.width,
+            s.height,
+            x - 2,
+            y - 2,
+            w + 4,
+            h + 4,
+            (r + 2) as i32,
+            crate::theme::with_alpha(color, 100),
         );
     }
 }
@@ -483,11 +614,15 @@ pub fn draw_focus_ring(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: u32, colo
 /// Integer square root (Newton's method).
 #[inline]
 fn isqrt_u32(n: u32) -> u32 {
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     let mut x = 1u32 << ((32 - n.leading_zeros() + 1) / 2);
     loop {
         let nx = (x + n / x) / 2;
-        if nx >= x { return x; }
+        if nx >= x {
+            return x;
+        }
         x = nx;
     }
 }
@@ -495,11 +630,15 @@ fn isqrt_u32(n: u32) -> u32 {
 /// Integer square root for u64.
 #[inline]
 fn isqrt_u64(n: u64) -> u64 {
-    if n == 0 { return 0; }
+    if n == 0 {
+        return 0;
+    }
     let mut x = 1u64 << ((64 - n.leading_zeros() + 1) / 2);
     loop {
         let nx = (x + n / x) / 2;
-        if nx >= x { return x; }
+        if nx >= x {
+            return x;
+        }
         x = nx;
     }
 }
@@ -507,7 +646,9 @@ fn isqrt_u64(n: u64) -> u64 {
 /// Alpha-blend a shadow pixel (pure black with given alpha) onto a destination pixel.
 #[inline(always)]
 fn shadow_blend(alpha: u32, dst: u32) -> u32 {
-    if alpha == 0 { return dst; }
+    if alpha == 0 {
+        return dst;
+    }
     let da = (dst >> 24) & 0xFF;
     let dr = (dst >> 16) & 0xFF;
     let dg = (dst >> 8) & 0xFF;
@@ -523,8 +664,20 @@ fn shadow_blend(alpha: u32, dst: u32) -> u32 {
 /// Signed distance from point (px,py) to an axis-aligned rectangle.
 #[inline]
 fn rect_sdf(px: i32, py: i32, rx: i32, ry: i32, rw: i32, rh: i32) -> i32 {
-    let dx = if px < rx { rx - px } else if px >= rx + rw { px - (rx + rw - 1) } else { 0 };
-    let dy = if py < ry { ry - py } else if py >= ry + rh { py - (ry + rh - 1) } else { 0 };
+    let dx = if px < rx {
+        rx - px
+    } else if px >= rx + rw {
+        px - (rx + rw - 1)
+    } else {
+        0
+    };
+    let dy = if py < ry {
+        ry - py
+    } else if py >= ry + rh {
+        py - (ry + rh - 1)
+    } else {
+        0
+    };
     if dx == 0 && dy == 0 {
         let to_left = px - rx;
         let to_right = rx + rw - 1 - px;
@@ -546,8 +699,20 @@ fn rounded_rect_sdf(px: i32, py: i32, rx: i32, ry: i32, rw: i32, rh: i32, r: i32
     let inner_y0 = ry + r;
     let inner_x1 = rx + rw - r;
     let inner_y1 = ry + rh - r;
-    let dx = if px < inner_x0 { inner_x0 - px } else if px >= inner_x1 { px - inner_x1 + 1 } else { 0 };
-    let dy = if py < inner_y0 { inner_y0 - py } else if py >= inner_y1 { py - inner_y1 + 1 } else { 0 };
+    let dx = if px < inner_x0 {
+        inner_x0 - px
+    } else if px >= inner_x1 {
+        px - inner_x1 + 1
+    } else {
+        0
+    };
+    let dy = if py < inner_y0 {
+        inner_y0 - py
+    } else if py >= inner_y1 {
+        py - inner_y1 + 1
+    } else {
+        0
+    };
     if dx == 0 && dy == 0 {
         let to_left = px - rx;
         let to_right = rx + rw - 1 - px;
@@ -564,7 +729,9 @@ fn rounded_rect_sdf(px: i32, py: i32, rx: i32, ry: i32, rw: i32, rh: i32, r: i32
 /// Approximate signed distance from point to an axis-aligned ellipse.
 #[inline]
 fn oval_sdf(px: i32, py: i32, cx: i32, cy: i32, rx: i32, ry: i32) -> i32 {
-    if rx <= 0 || ry <= 0 { return i32::MAX; }
+    if rx <= 0 || ry <= 0 {
+        return i32::MAX;
+    }
     let dx = (px - cx).abs() as i64;
     let dy = (py - cy).abs() as i64;
     let arx = rx as i64;
@@ -580,12 +747,20 @@ fn oval_sdf(px: i32, py: i32, cx: i32, cy: i32, rx: i32, ry: i32) -> i32 {
 /// Core shadow drawing loop with quadratic alpha falloff.
 #[inline(always)]
 fn draw_shadow_core<F: Fn(i32, i32) -> i32>(
-    pixels: *mut u32, fb_w: u32, fb_h: u32,
-    box_x: i32, box_y: i32, box_w: i32, box_h: i32,
-    spread: i32, alpha: u32,
+    pixels: *mut u32,
+    fb_w: u32,
+    fb_h: u32,
+    box_x: i32,
+    box_y: i32,
+    box_w: i32,
+    box_h: i32,
+    spread: i32,
+    alpha: u32,
     sdf: F,
 ) {
-    if alpha == 0 || spread <= 0 { return; }
+    if alpha == 0 || spread <= 0 {
+        return;
+    }
     let s = spread as u32;
     let x0 = box_x.max(0);
     let y0 = box_y.max(0);
@@ -605,7 +780,9 @@ fn draw_shadow_core<F: Fn(i32, i32) -> i32>(
             } else {
                 continue;
             };
-            if a == 0 { continue; }
+            if a == 0 {
+                continue;
+            }
             let idx = row_off + px as usize;
             unsafe {
                 let dst = *pixels.add(idx);
@@ -616,9 +793,17 @@ fn draw_shadow_core<F: Fn(i32, i32) -> i32>(
 }
 
 /// Draw a soft shadow for a rectangle.
-pub fn draw_shadow_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32,
-    offset_x: i32, offset_y: i32, spread: i32, alpha: u32)
-{
+pub fn draw_shadow_rect(
+    s: &Surface,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    offset_x: i32,
+    offset_y: i32,
+    spread: i32,
+    alpha: u32,
+) {
     let sx = x + offset_x;
     let sy = y + offset_y;
     let sw = w as i32;
@@ -628,46 +813,82 @@ pub fn draw_shadow_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32,
     let bw = sw + spread * 2;
     let bh = sh + spread * 2;
     // Skip if fully outside clip rect
-    if bx + bw <= s.clip_x || by + bh <= s.clip_y
-        || bx >= s.clip_x + s.clip_w as i32 || by >= s.clip_y + s.clip_h as i32
+    if bx + bw <= s.clip_x
+        || by + bh <= s.clip_y
+        || bx >= s.clip_x + s.clip_w as i32
+        || by >= s.clip_y + s.clip_h as i32
     {
         return;
     }
     draw_shadow_core(
-        s.pixels, s.width, s.height,
-        bx, by, bw, bh,
-        spread, alpha,
+        s.pixels,
+        s.width,
+        s.height,
+        bx,
+        by,
+        bw,
+        bh,
+        spread,
+        alpha,
         |px, py| rect_sdf(px, py, sx, sy, sw, sh),
     );
 }
 
 /// Draw a soft shadow for a rounded rectangle.
-pub fn draw_shadow_rounded_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: i32,
-    offset_x: i32, offset_y: i32, spread: i32, alpha: u32)
-{
+pub fn draw_shadow_rounded_rect(
+    s: &Surface,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    r: i32,
+    offset_x: i32,
+    offset_y: i32,
+    spread: i32,
+    alpha: u32,
+) {
     let sx = x + offset_x;
     let sy = y + offset_y;
     let sw = w as i32;
     let sh = h as i32;
     draw_shadow_core(
-        s.pixels, s.width, s.height,
-        sx - spread, sy - spread, sw + spread * 2, sh + spread * 2,
-        spread, alpha,
+        s.pixels,
+        s.width,
+        s.height,
+        sx - spread,
+        sy - spread,
+        sw + spread * 2,
+        sh + spread * 2,
+        spread,
+        alpha,
         |px, py| rounded_rect_sdf(px, py, sx, sy, sw, sh, r),
     );
 }
 
 /// Draw a soft shadow for an oval/ellipse.
-pub fn draw_shadow_oval(s: &Surface, cx: i32, cy: i32, rx: i32, ry: i32,
-    offset_x: i32, offset_y: i32, spread: i32, alpha: u32)
-{
+pub fn draw_shadow_oval(
+    s: &Surface,
+    cx: i32,
+    cy: i32,
+    rx: i32,
+    ry: i32,
+    offset_x: i32,
+    offset_y: i32,
+    spread: i32,
+    alpha: u32,
+) {
     let scx = cx + offset_x;
     let scy = cy + offset_y;
     draw_shadow_core(
-        s.pixels, s.width, s.height,
-        scx - rx - spread, scy - ry - spread,
-        (rx + spread) * 2, (ry + spread) * 2,
-        spread, alpha,
+        s.pixels,
+        s.width,
+        s.height,
+        scx - rx - spread,
+        scy - ry - spread,
+        (rx + spread) * 2,
+        (ry + spread) * 2,
+        spread,
+        alpha,
         |px, py| oval_sdf(px, py, scx, scy, rx, ry),
     );
 }
@@ -677,20 +898,35 @@ pub fn draw_shadow_oval(s: &Surface, cx: i32, cy: i32, rx: i32, ry: i32,
 /// Fast box blur applied to a rectangular region of a surface.
 /// Uses two-pass (H + V) separable box blur for O(1) per pixel.
 pub fn blur_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, radius: u32, passes: u32) {
-    if w == 0 || h == 0 || radius == 0 || passes == 0 { return; }
+    if w == 0 || h == 0 || radius == 0 || passes == 0 {
+        return;
+    }
     blur_region(s.pixels, s.width, s.height, x, y, w, h, radius, passes);
 }
 
 /// Fast box blur on a rounded rect region. Pixels outside the rounded rect
 /// are not modified (preserves transparency for rounded corners).
-pub fn blur_rounded_rect(s: &Surface, x: i32, y: i32, w: u32, h: u32, r: i32, radius: u32, passes: u32) {
-    if w == 0 || h == 0 || radius == 0 || passes == 0 { return; }
+pub fn blur_rounded_rect(
+    s: &Surface,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    r: i32,
+    radius: u32,
+    passes: u32,
+) {
+    if w == 0 || h == 0 || radius == 0 || passes == 0 {
+        return;
+    }
     blur_region_rounded(s.pixels, s.width, s.height, x, y, w, h, r, radius, passes);
 }
 
 /// Blit an ARGB pixel buffer with alpha blending onto the surface at (x, y).
 pub fn blit_argb(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
-    if w == 0 || h == 0 || src.is_empty() { return; }
+    if w == 0 || h == 0 || src.is_empty() {
+        return;
+    }
     let sw = s.width as i32;
     let sh = s.height as i32;
     let clip_x0 = s.clip_x.max(0);
@@ -699,28 +935,41 @@ pub fn blit_argb(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
     let clip_y1 = (s.clip_y + s.clip_h as i32).min(sh);
     for row in 0..h as i32 {
         let dy = y + row;
-        if dy < clip_y0 || dy >= clip_y1 { continue; }
+        if dy < clip_y0 || dy >= clip_y1 {
+            continue;
+        }
         let src_off = row as usize * w as usize;
         let x0 = x.max(clip_x0);
         let x1 = (x + w as i32).min(clip_x1);
-        if x0 >= x1 { continue; }
+        if x0 >= x1 {
+            continue;
+        }
         let skip = (x0 - x) as usize;
         let count = (x1 - x0) as usize;
-        if src_off + skip + count > src.len() { continue; }
+        if src_off + skip + count > src.len() {
+            continue;
+        }
         for col in 0..count {
             let src_px = src[src_off + skip + col];
             let alpha = (src_px >> 24) & 0xFF;
-            if alpha == 0 { continue; }
+            if alpha == 0 {
+                continue;
+            }
             let dst_idx = dy as usize * s.width as usize + (x0 as usize + col);
             if alpha == 255 {
-                unsafe { *s.pixels.add(dst_idx) = src_px; }
+                unsafe {
+                    *s.pixels.add(dst_idx) = src_px;
+                }
             } else {
                 let dst_px = unsafe { *s.pixels.add(dst_idx) };
                 let inv = 255 - alpha;
                 let r = ((src_px >> 16) & 0xFF) * alpha + ((dst_px >> 16) & 0xFF) * inv;
                 let g = ((src_px >> 8) & 0xFF) * alpha + ((dst_px >> 8) & 0xFF) * inv;
                 let b = (src_px & 0xFF) * alpha + (dst_px & 0xFF) * inv;
-                unsafe { *s.pixels.add(dst_idx) = 0xFF000000 | ((r / 255) << 16) | ((g / 255) << 8) | (b / 255); }
+                unsafe {
+                    *s.pixels.add(dst_idx) =
+                        0xFF000000 | ((r / 255) << 16) | ((g / 255) << 8) | (b / 255);
+                }
             }
         }
     }
@@ -728,7 +977,9 @@ pub fn blit_argb(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
 
 /// Blit a pixel buffer onto the surface at (x, y), clipped to the surface's clip rect.
 pub fn blit_buffer(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
-    if w == 0 || h == 0 || src.is_empty() { return; }
+    if w == 0 || h == 0 || src.is_empty() {
+        return;
+    }
     let sw = s.width as i32;
     let sh = s.height as i32;
     // Compute effective clip bounds (intersection of surface bounds and clip rect)
@@ -738,14 +989,20 @@ pub fn blit_buffer(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
     let clip_y1 = (s.clip_y + s.clip_h as i32).min(sh);
     for row in 0..h as i32 {
         let dy = y + row;
-        if dy < clip_y0 || dy >= clip_y1 { continue; }
+        if dy < clip_y0 || dy >= clip_y1 {
+            continue;
+        }
         let src_off = row as usize * w as usize;
         let x0 = x.max(clip_x0);
         let x1 = (x + w as i32).min(clip_x1);
-        if x0 >= x1 { continue; }
+        if x0 >= x1 {
+            continue;
+        }
         let skip = (x0 - x) as usize;
         let count = (x1 - x0) as usize;
-        if src_off + skip + count > src.len() { continue; }
+        if src_off + skip + count > src.len() {
+            continue;
+        }
         unsafe {
             let dst = s.pixels.add(dy as usize * s.width as usize + x0 as usize);
             core::ptr::copy_nonoverlapping(src.as_ptr().add(src_off + skip), dst, count);
@@ -757,10 +1014,19 @@ pub fn blit_buffer(s: &Surface, x: i32, y: i32, w: u32, h: u32, src: &[u32]) {
 ///
 /// `src` has `src_w × src_h` pixels. The output is scaled to fill `dst_w × dst_h`
 /// pixels on the surface starting at `(x, y)`. Uses fixed-point stepping for speed.
-pub fn blit_buffer_scaled(s: &Surface, x: i32, y: i32,
-                          dst_w: u32, dst_h: u32,
-                          src_w: u32, src_h: u32, src: &[u32]) {
-    if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 || src.is_empty() { return; }
+pub fn blit_buffer_scaled(
+    s: &Surface,
+    x: i32,
+    y: i32,
+    dst_w: u32,
+    dst_h: u32,
+    src_w: u32,
+    src_h: u32,
+    src: &[u32],
+) {
+    if dst_w == 0 || dst_h == 0 || src_w == 0 || src_h == 0 || src.is_empty() {
+        return;
+    }
     let sw = s.width as i32;
     let sh = s.height as i32;
     let clip_x0 = s.clip_x.max(0);
@@ -774,14 +1040,20 @@ pub fn blit_buffer_scaled(s: &Surface, x: i32, y: i32,
 
     for dy_off in 0..dst_h as i32 {
         let dest_y = y + dy_off;
-        if dest_y < clip_y0 || dest_y >= clip_y1 { continue; }
+        if dest_y < clip_y0 || dest_y >= clip_y1 {
+            continue;
+        }
         let src_y = ((dy_off as u64 * step_y) >> 16) as u32;
-        if src_y >= src_h { break; }
+        if src_y >= src_h {
+            break;
+        }
         let src_row = src_y as usize * src_w as usize;
 
         let x0 = x.max(clip_x0);
         let x1 = (x + dst_w as i32).min(clip_x1);
-        if x0 >= x1 { continue; }
+        if x0 >= x1 {
+            continue;
+        }
 
         let dst_row_base = dest_y as usize * s.width as usize;
         let skip = (x0 - x) as u64;
@@ -802,14 +1074,24 @@ pub fn blit_buffer_scaled(s: &Surface, x: i32, y: i32,
 }
 
 /// Core separable box blur.
-fn blur_region(pixels: *mut u32, fb_w: u32, fb_h: u32,
-    rx: i32, ry: i32, rw: u32, rh: u32, radius: u32, passes: u32)
-{
+fn blur_region(
+    pixels: *mut u32,
+    fb_w: u32,
+    fb_h: u32,
+    rx: i32,
+    ry: i32,
+    rw: u32,
+    rh: u32,
+    radius: u32,
+    passes: u32,
+) {
     let x0 = rx.max(0) as usize;
     let y0 = ry.max(0) as usize;
     let x1 = ((rx + rw as i32) as usize).min(fb_w as usize);
     let y1 = ((ry + rh as i32) as usize).min(fb_h as usize);
-    if x0 >= x1 || y0 >= y1 { return; }
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
     let w = x1 - x0;
     let h = y1 - y0;
     let stride = fb_w as usize;
@@ -818,7 +1100,9 @@ fn blur_region(pixels: *mut u32, fb_w: u32, fb_h: u32,
 
     const MAX_BLUR_DIM: usize = 2048;
     let max_dim = w.max(h);
-    if max_dim > MAX_BLUR_DIM { return; }
+    if max_dim > MAX_BLUR_DIM {
+        return;
+    }
     let mut temp_buf = [0u32; MAX_BLUR_DIM];
     let temp = &mut temp_buf[..max_dim];
 
@@ -828,7 +1112,9 @@ fn blur_region(pixels: *mut u32, fb_w: u32, fb_h: u32,
             let row_off = row * stride;
             let (mut sr, mut sg, mut sb, mut sa) = (0u32, 0u32, 0u32, 0u32);
             for i in 0..=(2 * r) {
-                let sx = (x0 as i32 + i as i32 - r as i32).max(0).min(fb_w as i32 - 1) as usize;
+                let sx = (x0 as i32 + i as i32 - r as i32)
+                    .max(0)
+                    .min(fb_w as i32 - 1) as usize;
                 let px = unsafe { *pixels.add(row_off + sx) };
                 sa += (px >> 24) & 0xFF;
                 sr += (px >> 16) & 0xFF;
@@ -837,7 +1123,10 @@ fn blur_region(pixels: *mut u32, fb_w: u32, fb_h: u32,
             }
             for col in 0..w {
                 let cx = x0 + col;
-                temp[col] = ((sa / kernel) << 24) | ((sr / kernel) << 16) | ((sg / kernel) << 8) | (sb / kernel);
+                temp[col] = ((sa / kernel) << 24)
+                    | ((sr / kernel) << 16)
+                    | ((sg / kernel) << 8)
+                    | (sb / kernel);
                 let add_x = (cx as i32 + r as i32 + 1).min(fb_w as i32 - 1).max(0) as usize;
                 let rem_x = (cx as i32 - r as i32).max(0).min(fb_w as i32 - 1) as usize;
                 let add_px = unsafe { *pixels.add(row_off + add_x) };
@@ -848,7 +1137,9 @@ fn blur_region(pixels: *mut u32, fb_w: u32, fb_h: u32,
                 sb += (add_px & 0xFF) - (rem_px & 0xFF);
             }
             for col in 0..w {
-                unsafe { *pixels.add(row_off + x0 + col) = temp[col]; }
+                unsafe {
+                    *pixels.add(row_off + x0 + col) = temp[col];
+                }
             }
         }
 
@@ -856,7 +1147,9 @@ fn blur_region(pixels: *mut u32, fb_w: u32, fb_h: u32,
         for col in x0..x1 {
             let (mut sr, mut sg, mut sb, mut sa) = (0u32, 0u32, 0u32, 0u32);
             for i in 0..=(2 * r) {
-                let sy = (y0 as i32 + i as i32 - r as i32).max(0).min(fb_h as i32 - 1) as usize;
+                let sy = (y0 as i32 + i as i32 - r as i32)
+                    .max(0)
+                    .min(fb_h as i32 - 1) as usize;
                 let px = unsafe { *pixels.add(sy * stride + col) };
                 sa += (px >> 24) & 0xFF;
                 sr += (px >> 16) & 0xFF;
@@ -865,7 +1158,10 @@ fn blur_region(pixels: *mut u32, fb_w: u32, fb_h: u32,
             }
             for row in 0..h {
                 let cy = y0 + row;
-                temp[row] = ((sa / kernel) << 24) | ((sr / kernel) << 16) | ((sg / kernel) << 8) | (sb / kernel);
+                temp[row] = ((sa / kernel) << 24)
+                    | ((sr / kernel) << 16)
+                    | ((sg / kernel) << 8)
+                    | (sb / kernel);
                 let add_y = (cy as i32 + r as i32 + 1).min(fb_h as i32 - 1).max(0) as usize;
                 let rem_y = (cy as i32 - r as i32).max(0).min(fb_h as i32 - 1) as usize;
                 let add_px = unsafe { *pixels.add(add_y * stride + col) };
@@ -876,21 +1172,34 @@ fn blur_region(pixels: *mut u32, fb_w: u32, fb_h: u32,
                 sb += (add_px & 0xFF) - (rem_px & 0xFF);
             }
             for row in 0..h {
-                unsafe { *pixels.add((y0 + row) * stride + col) = temp[row]; }
+                unsafe {
+                    *pixels.add((y0 + row) * stride + col) = temp[row];
+                }
             }
         }
     }
 }
 
 /// Blur within a rounded rect region.
-fn blur_region_rounded(pixels: *mut u32, fb_w: u32, fb_h: u32,
-    rx: i32, ry: i32, rw: u32, rh: u32, corner_r: i32, radius: u32, passes: u32)
-{
+fn blur_region_rounded(
+    pixels: *mut u32,
+    fb_w: u32,
+    fb_h: u32,
+    rx: i32,
+    ry: i32,
+    rw: u32,
+    rh: u32,
+    corner_r: i32,
+    radius: u32,
+    passes: u32,
+) {
     let x0 = rx.max(0) as usize;
     let y0 = ry.max(0) as usize;
     let x1 = ((rx + rw as i32) as usize).min(fb_w as usize);
     let y1 = ((ry + rh as i32) as usize).min(fb_h as usize);
-    if x0 >= x1 || y0 >= y1 { return; }
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
     let w = x1 - x0;
     let h = y1 - y0;
     let stride = fb_w as usize;
@@ -902,7 +1211,9 @@ fn blur_region_rounded(pixels: *mut u32, fb_w: u32, fb_h: u32,
     }
 
     const MAX_CORNER_R: usize = 32;
-    if cr > MAX_CORNER_R { return; }
+    if cr > MAX_CORNER_R {
+        return;
+    }
 
     let mut saved_tl = [0u32; MAX_CORNER_R * MAX_CORNER_R];
     let mut saved_tr = [0u32; MAX_CORNER_R * MAX_CORNER_R];
@@ -954,17 +1265,25 @@ fn blur_region_rounded(pixels: *mut u32, fb_w: u32, fb_h: u32,
         for dx in 0..cr.min(w) {
             let cx = 2 * dx as i32 + 1 - 2 * corner_r;
             if cx * cx + cy2 > r2x4 {
-                unsafe { *pixels.add((y0 + dy) * stride + (x0 + dx)) = saved_tl[dy * cr + dx]; }
+                unsafe {
+                    *pixels.add((y0 + dy) * stride + (x0 + dx)) = saved_tl[dy * cr + dx];
+                }
                 let sx = x1 - 1 - dx;
                 if sx >= x0 {
-                    unsafe { *pixels.add((y0 + dy) * stride + sx) = saved_tr[dy * cr + dx]; }
+                    unsafe {
+                        *pixels.add((y0 + dy) * stride + sx) = saved_tr[dy * cr + dx];
+                    }
                 }
                 let sy = y1 - 1 - dy;
                 if sy >= y0 {
-                    unsafe { *pixels.add(sy * stride + (x0 + dx)) = saved_bl[dy * cr + dx]; }
+                    unsafe {
+                        *pixels.add(sy * stride + (x0 + dx)) = saved_bl[dy * cr + dx];
+                    }
                 }
                 if sy >= y0 && sx >= x0 {
-                    unsafe { *pixels.add(sy * stride + sx) = saved_br[dy * cr + dx]; }
+                    unsafe {
+                        *pixels.add(sy * stride + sx) = saved_br[dy * cr + dx];
+                    }
                 }
             }
         }

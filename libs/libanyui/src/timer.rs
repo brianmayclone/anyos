@@ -10,8 +10,8 @@
 //! ui::kill_timer(id);
 //! ```
 
-use alloc::vec::Vec;
 use crate::control::Callback;
+use alloc::vec::Vec;
 
 /// A single timer slot.
 pub struct TimerSlot {

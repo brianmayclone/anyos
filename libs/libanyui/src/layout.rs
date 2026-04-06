@@ -16,9 +16,9 @@
 //! 5. After recursion, auto-size controls compute their height from children,
 //!    then dock layout is re-run so subsequent siblings use the correct heights.
 
+use crate::control::{find_idx, Control, ControlId, ControlKind, DockStyle};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::control::{Control, ControlId, ControlKind, DockStyle, find_idx};
 
 /// Run standard dock layout on a parent's children, positioning them according
 /// to their dock style within the parent's client area.
@@ -110,7 +110,9 @@ fn auto_size_height(controls: &mut Vec<Box<dyn Control>>, idx: usize, children: 
             let b = controls[ci].base();
             if b.visible {
                 let bottom = b.y + b.h as i32 + b.margin.bottom;
-                if bottom > max_bottom { max_bottom = bottom; }
+                if bottom > max_bottom {
+                    max_bottom = bottom;
+                }
             }
         }
     }
@@ -177,12 +179,14 @@ pub fn perform_layout(controls: &mut Vec<Box<dyn Control>>, id: ControlId) {
         };
         // Check if any child needs auto-sizing (if not, skip expensive 2nd pass)
         let has_auto_size_child = children.iter().any(|&cid| {
-            find_idx(controls, cid).map(|ci| {
-                let kind = controls[ci].kind();
-                kind == ControlKind::StackPanel
-                    || kind == ControlKind::FlowPanel
-                    || controls[ci].base().auto_size
-            }).unwrap_or(false)
+            find_idx(controls, cid)
+                .map(|ci| {
+                    let kind = controls[ci].kind();
+                    kind == ControlKind::StackPanel
+                        || kind == ControlKind::FlowPanel
+                        || controls[ci].base().auto_size
+                })
+                .unwrap_or(false)
         });
         if has_auto_size_child {
             dock_layout(controls, idx, &children);

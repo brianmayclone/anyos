@@ -3,13 +3,13 @@
 //! The client-side library handles image file I/O and decoding via libimage.
 //! The server (this DLL) stores and blits the pre-decoded pixel buffer.
 
-use alloc::vec::Vec;
 use crate::control::{Control, ControlBase, ControlKind};
+use alloc::vec::Vec;
 
 /// Scale mode for ImageView.
-pub const SCALE_NONE: u32 = 0;    // original size, top-left aligned
-pub const SCALE_FIT: u32 = 1;     // scale to fit, preserve aspect (letterbox)
-pub const SCALE_FILL: u32 = 2;    // scale to fill, preserve aspect (crop)
+pub const SCALE_NONE: u32 = 0; // original size, top-left aligned
+pub const SCALE_FIT: u32 = 1; // scale to fit, preserve aspect (letterbox)
+pub const SCALE_FILL: u32 = 2; // scale to fill, preserve aspect (crop)
 pub const SCALE_STRETCH: u32 = 3; // stretch to fill control bounds
 
 pub struct ImageView {
@@ -57,9 +57,15 @@ impl ImageView {
 }
 
 impl Control for ImageView {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::ImageView }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::ImageView
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
@@ -84,12 +90,33 @@ impl Control for ImageView {
                 if dw < cw || dh < ch {
                     crate::draw::fill_rect(surface, x, y, cw, ch, 0x00000000);
                 }
-                blit_scaled(surface, x + dx, y + dy, dw, dh, &self.pixels, self.img_w, self.img_h);
+                blit_scaled(
+                    surface,
+                    x + dx,
+                    y + dy,
+                    dw,
+                    dh,
+                    &self.pixels,
+                    self.img_w,
+                    self.img_h,
+                );
             }
             SCALE_FILL => {
                 // Scale to fill, preserving aspect ratio (may crop)
                 let (sx, sy, sw, sh) = fill_crop(self.img_w, self.img_h, cw, ch);
-                blit_scaled_crop(surface, x, y, cw, ch, &self.pixels, self.img_w, sx, sy, sw, sh);
+                blit_scaled_crop(
+                    surface,
+                    x,
+                    y,
+                    cw,
+                    ch,
+                    &self.pixels,
+                    self.img_w,
+                    sx,
+                    sy,
+                    sw,
+                    sh,
+                );
             }
             SCALE_STRETCH | _ => {
                 // Stretch to fill physical control bounds
@@ -131,8 +158,19 @@ fn fill_crop(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (u32, u32, u32, 
 }
 
 /// Blit source pixels to destination with nearest-neighbor scaling.
-fn blit_scaled(surface: &crate::draw::Surface, x: i32, y: i32, dw: u32, dh: u32, src: &[u32], sw: u32, sh: u32) {
-    if dw == 0 || dh == 0 || sw == 0 || sh == 0 || src.is_empty() { return; }
+fn blit_scaled(
+    surface: &crate::draw::Surface,
+    x: i32,
+    y: i32,
+    dw: u32,
+    dh: u32,
+    src: &[u32],
+    sw: u32,
+    sh: u32,
+) {
+    if dw == 0 || dh == 0 || sw == 0 || sh == 0 || src.is_empty() {
+        return;
+    }
     let surf_w = surface.width as i32;
     let surf_h = surface.height as i32;
     let clip_x0 = surface.clip_x.max(0);
@@ -142,27 +180,39 @@ fn blit_scaled(surface: &crate::draw::Surface, x: i32, y: i32, dw: u32, dh: u32,
 
     for dy in 0..dh as i32 {
         let py = y + dy;
-        if py < clip_y0 || py >= clip_y1 { continue; }
+        if py < clip_y0 || py >= clip_y1 {
+            continue;
+        }
         let sy = (dy as u64 * sh as u64 / dh as u64) as usize;
-        if sy >= sh as usize { continue; }
+        if sy >= sh as usize {
+            continue;
+        }
         let src_row = sy * sw as usize;
 
         let x0 = x.max(clip_x0);
         let x1 = (x + dw as i32).min(clip_x1);
-        if x0 >= x1 { continue; }
+        if x0 >= x1 {
+            continue;
+        }
 
         let dst_row = py as usize * surf_w as usize;
         for px in x0..x1 {
             let dx = (px - x) as u64;
             let sx = (dx * sw as u64 / dw as u64) as usize;
-            if sx >= sw as usize { continue; }
+            if sx >= sw as usize {
+                continue;
+            }
             let pixel = src[src_row + sx];
             let a = pixel >> 24;
             if a >= 255 {
-                unsafe { *surface.pixels.add(dst_row + px as usize) = pixel; }
+                unsafe {
+                    *surface.pixels.add(dst_row + px as usize) = pixel;
+                }
             } else if a > 0 {
                 let dst = unsafe { *surface.pixels.add(dst_row + px as usize) };
-                unsafe { *surface.pixels.add(dst_row + px as usize) = alpha_blend(pixel, dst); }
+                unsafe {
+                    *surface.pixels.add(dst_row + px as usize) = alpha_blend(pixel, dst);
+                }
             }
         }
     }
@@ -171,11 +221,20 @@ fn blit_scaled(surface: &crate::draw::Surface, x: i32, y: i32, dw: u32, dh: u32,
 /// Blit a cropped+scaled region of source pixels.
 fn blit_scaled_crop(
     surface: &crate::draw::Surface,
-    x: i32, y: i32, dw: u32, dh: u32,
-    src: &[u32], src_stride: u32,
-    cx: u32, cy: u32, cw: u32, ch: u32,
+    x: i32,
+    y: i32,
+    dw: u32,
+    dh: u32,
+    src: &[u32],
+    src_stride: u32,
+    cx: u32,
+    cy: u32,
+    cw: u32,
+    ch: u32,
 ) {
-    if dw == 0 || dh == 0 || cw == 0 || ch == 0 { return; }
+    if dw == 0 || dh == 0 || cw == 0 || ch == 0 {
+        return;
+    }
     let surf_w = surface.width as i32;
     let surf_h = surface.height as i32;
     let clip_x0 = surface.clip_x.max(0);
@@ -185,27 +244,37 @@ fn blit_scaled_crop(
 
     for dy in 0..dh as i32 {
         let py = y + dy;
-        if py < clip_y0 || py >= clip_y1 { continue; }
+        if py < clip_y0 || py >= clip_y1 {
+            continue;
+        }
         let sy = cy as usize + (dy as u64 * ch as u64 / dh as u64) as usize;
         let src_row = sy * src_stride as usize;
 
         let x0 = x.max(clip_x0);
         let x1 = (x + dw as i32).min(clip_x1);
-        if x0 >= x1 { continue; }
+        if x0 >= x1 {
+            continue;
+        }
 
         let dst_row = py as usize * surf_w as usize;
         for px in x0..x1 {
             let dx_frac = (px - x) as u64;
             let sx = cx as usize + (dx_frac * cw as u64 / dw as u64) as usize;
             let idx = src_row + sx;
-            if idx >= src.len() { continue; }
+            if idx >= src.len() {
+                continue;
+            }
             let pixel = src[idx];
             let a = pixel >> 24;
             if a >= 255 {
-                unsafe { *surface.pixels.add(dst_row + px as usize) = pixel; }
+                unsafe {
+                    *surface.pixels.add(dst_row + px as usize) = pixel;
+                }
             } else if a > 0 {
                 let dst = unsafe { *surface.pixels.add(dst_row + px as usize) };
-                unsafe { *surface.pixels.add(dst_row + px as usize) = alpha_blend(pixel, dst); }
+                unsafe {
+                    *surface.pixels.add(dst_row + px as usize) = alpha_blend(pixel, dst);
+                }
             }
         }
     }

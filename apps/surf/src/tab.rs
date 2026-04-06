@@ -14,6 +14,65 @@ use alloc::vec::Vec;
 use libanyui_client as ui;
 use ui::Widget;
 
+const SYSTEM_FONT_REGULAR: u32 = 0;
+const SYSTEM_FONT_MONO: u32 = 4;
+
+fn register_builtin_web_fonts(wv: &mut libwebview::WebView) {
+    for family in [
+        "sans-serif",
+        "arial",
+        "helvetica",
+        "helvetica neue",
+        "verdana",
+        "tahoma",
+        "trebuchet ms",
+        "system-ui",
+        "-apple-system",
+        "blinkmacsystemfont",
+        "segoe ui",
+        "roboto",
+        "lato",
+        "open sans",
+        "source sans pro",
+        "noto sans",
+        "ubuntu",
+        "cantarell",
+        "fira sans",
+        "droid sans",
+        "liberation sans",
+        "serif",
+        "georgia",
+        "times new roman",
+        "times",
+        "palatino",
+        "palatino linotype",
+        "book antiqua",
+        "linux libertine o",
+        "linux libertine",
+        "charter",
+    ] {
+        wv.register_web_font(family, SYSTEM_FONT_REGULAR);
+    }
+
+    for family in [
+        "monospace",
+        "courier new",
+        "courier",
+        "consolas",
+        "monaco",
+        "lucida console",
+        "source code pro",
+        "fira mono",
+        "fira code",
+        "ubuntu mono",
+        "droid sans mono",
+        "anonymous pro",
+        "liberation mono",
+    ] {
+        wv.register_web_font(family, SYSTEM_FONT_MONO);
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // Per-tab state
 // ═══════════════════════════════════════════════════════════
@@ -44,13 +103,17 @@ pub(crate) struct TabState {
     pub(crate) pending_scripts: Vec<Option<String>>,
     /// Number of external script fetches still outstanding.
     pub(crate) pending_script_count: usize,
+    /// Number of external stylesheet fetches still outstanding.
+    pub(crate) pending_stylesheet_count: usize,
 }
 
 impl TabState {
     /// Create a new, blank tab.
     pub(crate) fn new() -> Self {
+        let mut webview = libwebview::WebView::new(900, 606);
+        register_builtin_web_fonts(&mut webview);
         Self {
-            webview: libwebview::WebView::new(900, 606),
+            webview,
             url_text: String::new(),
             current_url: None,
             page_title: String::new(),
@@ -61,6 +124,7 @@ impl TabState {
             is_loading: false,
             pending_scripts: Vec::new(),
             pending_script_count: 0,
+            pending_stylesheet_count: 0,
         }
     }
 
@@ -235,7 +299,9 @@ fn navigate_file(path: &str) {
     st.tabs[tab_idx].webview.set_html(&html);
 
     // Extract page title.
-    let title = st.tabs[tab_idx].webview.get_title()
+    let title = st.tabs[tab_idx]
+        .webview
+        .get_title()
         .unwrap_or_else(String::new);
 
     // Update history.

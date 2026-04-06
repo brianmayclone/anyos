@@ -115,8 +115,16 @@ pub(crate) fn url_encode_into(out: &mut String, s: &str) {
                 out.push('%');
                 let hi = b >> 4;
                 let lo = b & 0xF;
-                out.push(if hi < 10 { (b'0' + hi) as char } else { (b'A' + hi - 10) as char });
-                out.push(if lo < 10 { (b'0' + lo) as char } else { (b'A' + lo - 10) as char });
+                out.push(if hi < 10 {
+                    (b'0' + hi) as char
+                } else {
+                    (b'A' + hi - 10) as char
+                });
+                out.push(if lo < 10 {
+                    (b'0' + lo) as char
+                } else {
+                    (b'A' + lo - 10) as char
+                });
             }
         }
     }

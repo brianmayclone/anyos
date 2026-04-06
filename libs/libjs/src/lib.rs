@@ -27,22 +27,22 @@
 
 extern crate alloc;
 
-pub mod token;
-pub mod lexer;
 pub mod ast;
-pub mod parser;
 pub mod bytecode;
 pub mod compiler;
-pub mod vm;
-pub mod value;
+pub mod lexer;
+pub mod parser;
 pub mod regexp;
+pub mod token;
+pub mod value;
+pub mod vm;
 
 use alloc::string::String;
 use alloc::vec::Vec;
 
+pub use bytecode::Chunk;
 pub use value::JsValue;
 pub use vm::Vm;
-pub use bytecode::Chunk;
 
 /// High-level JavaScript engine interface.
 pub struct JsEngine {

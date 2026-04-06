@@ -17,16 +17,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use crate::style::{ComputedStyle, Display, TextAlignVal, PseudoStyles, VerticalAlign};
+use crate::style::{ComputedStyle, Display, PseudoStyles, TextAlignVal, VerticalAlign};
 use crate::ImageCache;
 
-use super::{
-    LayoutBox, BoxType, Edges,
-    layout_children,
-    font_size_px, is_bold, edges_from,
-};
 use super::block::build_block;
 use super::flex;
+use super::{edges_from, font_size_px, is_bold, layout_children, BoxType, Edges, LayoutBox};
 
 /// Build a table layout box for a `<table>` element.
 pub fn layout_table(
@@ -50,12 +46,16 @@ pub fn layout_table(
     bx.bold = is_bold(style);
     bx.text_align = style.text_align;
     bx.margin = edges_from(
-        style.margin_top, style.margin_right,
-        style.margin_bottom, style.margin_left,
+        style.margin_top,
+        style.margin_right,
+        style.margin_bottom,
+        style.margin_left,
     );
     bx.padding = edges_from(
-        style.padding_top, style.padding_right,
-        style.padding_bottom, style.padding_left,
+        style.padding_top,
+        style.padding_right,
+        style.padding_bottom,
+        style.padding_left,
     );
 
     // Parse table attributes, respecting CSS border-collapse / border-spacing.
@@ -126,7 +126,13 @@ pub fn layout_table(
     // index for each cell accordingly.
     //
     // grid_cells: Vec<(row, col, colspan, rowspan, node_id)>
-    struct CellPos { row: usize, col: usize, colspan: usize, rowspan: usize, node_id: NodeId }
+    struct CellPos {
+        row: usize,
+        col: usize,
+        colspan: usize,
+        rowspan: usize,
+        node_id: NodeId,
+    }
 
     // occupied[row][col] = true if that grid slot is taken
     let mut occupied: Vec<Vec<bool>> = Vec::new();
@@ -148,7 +154,9 @@ pub fn layout_table(
         let mut col_idx = 0usize;
         for &cell_id in &dom.get(row_id).children {
             let ct = dom.tag(cell_id);
-            if ct != Some(Tag::Td) && ct != Some(Tag::Th) { continue; }
+            if ct != Some(Tag::Td) && ct != Some(Tag::Th) {
+                continue;
+            }
 
             let colspan = parse_int_attr(dom, cell_id, "colspan").unwrap_or(1).max(1) as usize;
             let rowspan = parse_int_attr(dom, cell_id, "rowspan").unwrap_or(1).max(1) as usize;
@@ -170,9 +178,17 @@ pub fn layout_table(
             }
 
             let end_col = col_idx + colspan;
-            if end_col > max_cols { max_cols = end_col; }
+            if end_col > max_cols {
+                max_cols = end_col;
+            }
 
-            grid_cells.push(CellPos { row: row_num, col: col_idx, colspan, rowspan, node_id: cell_id });
+            grid_cells.push(CellPos {
+                row: row_num,
+                col: col_idx,
+                colspan,
+                rowspan,
+                node_id: cell_id,
+            });
             col_idx += colspan;
         }
     }
@@ -183,11 +199,18 @@ pub fn layout_table(
     }
 
     // Calculate content width available for cells.
-    let content_width = (table_width - bx.padding.left - bx.padding.right
-        - cellspacing * (max_cols as i32 + 1)).max(0);
+    let content_width =
+        (table_width - bx.padding.left - bx.padding.right - cellspacing * (max_cols as i32 + 1))
+            .max(0);
 
     let cell_pad = cellpadding * 2;
-    let cell_border_overhead = if is_collapsed { 1i32 } else if table_border > 0 { 2i32 } else { 0i32 };
+    let cell_border_overhead = if is_collapsed {
+        1i32
+    } else if table_border > 0 {
+        2i32
+    } else {
+        0i32
+    };
     let cell_overhead = cell_pad + cell_border_overhead;
 
     // Phase 1: Compute column widths.
@@ -201,10 +224,10 @@ pub fn layout_table(
     //   All cells are measured; columns sized to content.
     let table_layout_fixed = style.table_layout_fixed;
 
-    let mut col_min_widths  = vec![0i32;  max_cols];
-    let mut col_pref_widths = vec![0i32;  max_cols];
+    let mut col_min_widths = vec![0i32; max_cols];
+    let mut col_pref_widths = vec![0i32; max_cols];
     let mut col_fixed_widths = vec![0i32; max_cols];
-    let mut col_has_fixed   = vec![false; max_cols];
+    let mut col_has_fixed = vec![false; max_cols];
 
     // Determine which rows to scan for column sizing.
     // For `fixed`, only consider cells in the first row (row 0).
@@ -214,8 +237,12 @@ pub fn layout_table(
         let col_idx = cp.col;
         let colspan = cp.colspan;
         let cell_id = cp.node_id;
-        if col_idx >= max_cols { continue; }
-        if first_row_only && cp.row != 0 { continue; }
+        if col_idx >= max_cols {
+            continue;
+        }
+        if first_row_only && cp.row != 0 {
+            continue;
+        }
 
         let cell_style = &styles[cell_id];
 
@@ -248,8 +275,9 @@ pub fn layout_table(
         } else {
             // Auto layout: measure content for preferred/minimum widths.
             // Max-content width for this cell (natural width without line-breaking).
-            let pref_w = flex::measure_max_content(dom, styles, pseudo, cell_id, images, viewport_w)
-                + cell_overhead;
+            let pref_w =
+                flex::measure_max_content(dom, styles, pseudo, cell_id, images, viewport_w)
+                    + cell_overhead;
 
             if colspan == 1 {
                 if let Some(ew) = explicit_w {
@@ -257,10 +285,12 @@ pub fn layout_table(
                     col_fixed_widths[col_idx] = ew.max(col_fixed_widths[col_idx]);
                     col_has_fixed[col_idx] = true;
                 }
-                let min_w = super::intrinsic_min_width(dom, styles, pseudo, cell_id, images, viewport_w)
-                    + cell_overhead;
+                let min_w =
+                    super::intrinsic_min_width(dom, styles, pseudo, cell_id, images, viewport_w)
+                        + cell_overhead;
                 col_min_widths[col_idx] = col_min_widths[col_idx].max(min_w.max(10));
-                col_pref_widths[col_idx] = col_pref_widths[col_idx].max(pref_w.max(col_min_widths[col_idx]));
+                col_pref_widths[col_idx] =
+                    col_pref_widths[col_idx].max(pref_w.max(col_min_widths[col_idx]));
             } else {
                 // Distribute explicit width of multi-column cells across the spanned columns.
                 if let Some(ew) = explicit_w {
@@ -299,7 +329,8 @@ pub fn layout_table(
         let total_pref: i32 = (0..max_cols)
             .filter(|&i| !col_has_fixed[i])
             .map(|i| col_pref_widths[i].max(col_min_widths[i]).max(10))
-            .sum::<i32>().max(1);
+            .sum::<i32>()
+            .max(1);
 
         for i in 0..max_cols {
             if !col_has_fixed[i] {
@@ -316,7 +347,9 @@ pub fn layout_table(
 
     // Enforce minimum width per column.
     for i in 0..max_cols {
-        if col_widths[i] < 10 { col_widths[i] = 10; }
+        if col_widths[i] < 10 {
+            col_widths[i] = 10;
+        }
     }
 
     // Phase 3: Layout each row.
@@ -324,7 +357,16 @@ pub fn layout_table(
 
     // Layout caption if present.
     if let Some(cap_id) = caption_id {
-        let cap_box = build_block(dom, styles, pseudo, cap_id, table_width - bx.padding.left - bx.padding.right, images, viewport_w);
+        let cap_box = build_block(
+            dom,
+            styles,
+            pseudo,
+            cap_id,
+            table_width - bx.padding.left - bx.padding.right,
+            images,
+            viewport_w,
+            0,
+        );
         let mut placed = cap_box;
         placed.x = bx.padding.left;
         placed.y = cursor_y;
@@ -348,7 +390,9 @@ pub fn layout_table(
             let col_idx = cp.col;
             let colspan = cp.colspan;
             let cell_id = cp.node_id;
-            if col_idx >= max_cols { continue; }
+            if col_idx >= max_cols {
+                continue;
+            }
             let colspan = colspan.min(max_cols - col_idx);
             let is_last_col = col_idx + colspan >= max_cols;
 
@@ -362,10 +406,24 @@ pub fn layout_table(
             }
 
             // Layout cell content.
-            let cell_box = layout_cell(dom, styles, pseudo, cell_id, cell_w, cellpadding, table_border,
-                is_collapsed, is_last_col, is_last_row, images, viewport_w);
+            let cell_box = layout_cell(
+                dom,
+                styles,
+                pseudo,
+                cell_id,
+                cell_w,
+                cellpadding,
+                table_border,
+                is_collapsed,
+                is_last_col,
+                is_last_row,
+                images,
+                viewport_w,
+            );
             let ch = cell_box.height;
-            if ch > row_height { row_height = ch; }
+            if ch > row_height {
+                row_height = ch;
+            }
 
             cell_boxes.push((cell_box, col_idx, colspan, ch));
         }
@@ -390,11 +448,13 @@ pub fn layout_table(
             let html_valign = dom.attr(cell_id, "valign").unwrap_or("");
             let y_offset: i32 = match css_valign {
                 VerticalAlign::Middle => (row_height - content_h).max(0) / 2,
-                VerticalAlign::Bottom | VerticalAlign::TextBottom => (row_height - content_h).max(0),
+                VerticalAlign::Bottom | VerticalAlign::TextBottom => {
+                    (row_height - content_h).max(0)
+                }
                 VerticalAlign::Baseline | VerticalAlign::Top | VerticalAlign::TextTop => 0,
                 _ => match html_valign {
                     "middle" => (row_height - content_h).max(0) / 2,
-                    "bottom"  => (row_height - content_h).max(0),
+                    "bottom" => (row_height - content_h).max(0),
                     _ => 0,
                 },
             };
@@ -475,28 +535,40 @@ fn layout_cell(
         } else {
             0i32
         };
-        let bc = if border_color != 0 { border_color } else { 0xFFA2A9B1 };
+        let bc = if border_color != 0 {
+            border_color
+        } else {
+            0xFFA2A9B1
+        };
 
         bx.border_width = 0; // uniform border suppressed; use per-side
-        bx.border_top_width  = bw;
+        bx.border_top_width = bw;
         bx.border_left_width = bw;
-        bx.border_right_width  = if is_last_col  { bw } else { 0 };
-        bx.border_bottom_width = if is_last_row  { bw } else { 0 };
-        bx.border_top_color    = bc;
-        bx.border_left_color   = bc;
-        bx.border_right_color  = bc;
+        bx.border_right_width = if is_last_col { bw } else { 0 };
+        bx.border_bottom_width = if is_last_row { bw } else { 0 };
+        bx.border_top_color = bc;
+        bx.border_left_color = bc;
+        bx.border_right_color = bc;
         bx.border_bottom_color = bc;
         // Use CSS per-side styles if provided, otherwise solid.
-        bx.border_top_style    = if style.border_top.style != crate::style::BorderStyleVal::None { style.border_top.style } else { crate::style::BorderStyleVal::Solid };
-        bx.border_left_style   = bx.border_top_style;
-        bx.border_right_style  = bx.border_top_style;
+        bx.border_top_style = if style.border_top.style != crate::style::BorderStyleVal::None {
+            style.border_top.style
+        } else {
+            crate::style::BorderStyleVal::Solid
+        };
+        bx.border_left_style = bx.border_top_style;
+        bx.border_right_style = bx.border_top_style;
         bx.border_bottom_style = bx.border_top_style;
         // For size calculations: h_border = top + bottom, v_border = left + right.
         let right_b = if is_last_col { bw } else { 0 };
         let bottom_b = if is_last_row { bw } else { 0 };
         (bw + bottom_b, bw + right_b)
     } else {
-        let cell_border = if table_border > 0 { 1 } else { style.border_width };
+        let cell_border = if table_border > 0 {
+            1
+        } else {
+            style.border_width
+        };
         bx.border_width = cell_border;
         bx.border_color = border_color;
         (cell_border * 2, cell_border * 2)
@@ -505,7 +577,9 @@ fn layout_cell(
     let inner_w = (cell_width - bx.padding.left - bx.padding.right - v_border).max(0);
 
     let child_ids: Vec<NodeId> = dom.get(cell_id).children.iter().copied().collect();
-    let height = layout_children(dom, styles, pseudo, &child_ids, inner_w, &mut bx, cell_id, images, viewport_w);
+    let height = layout_children(
+        dom, styles, pseudo, &child_ids, inner_w, &mut bx, cell_id, images, viewport_w,
+    );
 
     bx.height = height + bx.padding.top + bx.padding.bottom + h_border;
     bx
@@ -534,7 +608,9 @@ fn intrinsic_content_width(bx: &LayoutBox) -> i32 {
         return bx.padding.left + bx.padding.right + bx.border_width * 2;
     }
     // Skip out-of-flow children; use x position for side-by-side layout.
-    let right_edge = bx.children.iter()
+    let right_edge = bx
+        .children
+        .iter()
         .filter(|c| !c.is_out_of_flow)
         .map(|c| {
             let cw = intrinsic_content_width(c);
@@ -556,17 +632,25 @@ fn parse_int_attr(dom: &Dom, node_id: NodeId, attr_name: &str) -> Option<i32> {
 
 fn parse_simple_int(s: &str) -> Option<i32> {
     let bytes = s.as_bytes();
-    if bytes.is_empty() { return None; }
+    if bytes.is_empty() {
+        return None;
+    }
     let mut i = 0;
     let negative = bytes[0] == b'-';
-    if negative { i = 1; }
+    if negative {
+        i = 1;
+    }
     let mut val: i32 = 0;
     while i < bytes.len() {
         let b = bytes[i];
-        if b < b'0' || b > b'9' { break; }
+        if b < b'0' || b > b'9' {
+            break;
+        }
         val = val * 10 + (b - b'0') as i32;
         i += 1;
     }
-    if i == 0 || (negative && i == 1) { return None; }
+    if i == 0 || (negative && i == 1) {
+        return None;
+    }
     Some(if negative { -val } else { val })
 }

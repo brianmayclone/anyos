@@ -150,7 +150,11 @@ pub fn card_palette(hovered: bool) -> Palette {
         tc.card_bg
     };
     Palette {
-        border: blend(tc.card_border, crate::theme::lighten(tc.card_border, 10), 48),
+        border: blend(
+            tc.card_border,
+            crate::theme::lighten(tc.card_border, 10),
+            48,
+        ),
         fill,
         top_gloss: 0x0CFFFFFF,
         inner_light: 0x08FFFFFF,
@@ -160,7 +164,15 @@ pub fn card_palette(hovered: bool) -> Palette {
     }
 }
 
-pub fn draw_focus(surface: &Surface, x: i32, y: i32, w: u32, h: u32, corner: u32, palette: Palette) {
+pub fn draw_focus(
+    surface: &Surface,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    corner: u32,
+    palette: Palette,
+) {
     if w <= 4 || h <= 4 {
         return;
     }
@@ -191,7 +203,15 @@ pub fn draw_focus(surface: &Surface, x: i32, y: i32, w: u32, h: u32, corner: u32
     }
 }
 
-pub fn draw_surface(surface: &Surface, x: i32, y: i32, w: u32, h: u32, corner: u32, palette: Palette) {
+pub fn draw_surface(
+    surface: &Surface,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    corner: u32,
+    palette: Palette,
+) {
     crate::draw::fill_rounded_rect(surface, x, y, w, h, corner, palette.border);
     if w < 2 || h < 2 {
         return;
@@ -207,15 +227,39 @@ pub fn draw_surface(surface: &Surface, x: i32, y: i32, w: u32, h: u32, corner: u
 
     let gloss_h = ((ih as f32) * 0.45) as u32;
     if gloss_h >= 2 && iw >= 4 {
-        crate::draw::fill_rounded_rect(surface, ix + 1, iy + 1, iw.saturating_sub(2), gloss_h, ic.saturating_sub(1), palette.top_gloss);
+        crate::draw::fill_rounded_rect(
+            surface,
+            ix + 1,
+            iy + 1,
+            iw.saturating_sub(2),
+            gloss_h,
+            ic.saturating_sub(1),
+            palette.top_gloss,
+        );
     }
 
     if iw >= 8 {
-        crate::draw::fill_rounded_rect(surface, ix + 3, iy + 1, iw.saturating_sub(6), 1, 0, palette.inner_light);
+        crate::draw::fill_rounded_rect(
+            surface,
+            ix + 3,
+            iy + 1,
+            iw.saturating_sub(6),
+            1,
+            0,
+            palette.inner_light,
+        );
     }
 
     if iw >= 8 && ih >= 6 {
-        crate::draw::fill_rounded_rect(surface, ix + 3, iy + ih as i32 - 2, iw.saturating_sub(6), 1, 0, palette.bottom_shadow);
+        crate::draw::fill_rounded_rect(
+            surface,
+            ix + 3,
+            iy + ih as i32 - 2,
+            iw.saturating_sub(6),
+            1,
+            0,
+            palette.bottom_shadow,
+        );
     }
 }
 

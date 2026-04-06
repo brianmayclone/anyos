@@ -8,8 +8,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use crate::value::*;
 use super::Vm;
+use crate::value::*;
 
 // ═══════════════════════════════════════════════════════════
 // Global functions
@@ -20,7 +20,9 @@ pub fn global_parse_int(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let radix = args.get(1).map(|v| v.to_number() as u32).unwrap_or(0);
     let s = s.trim();
 
-    if s.is_empty() { return JsValue::Number(f64::NAN); }
+    if s.is_empty() {
+        return JsValue::Number(f64::NAN);
+    }
 
     let (negative, s) = if s.starts_with('-') {
         (true, &s[1..])
@@ -31,7 +33,11 @@ pub fn global_parse_int(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
 
     let actual_radix = if radix == 0 {
-        if s.starts_with("0x") || s.starts_with("0X") { 16 } else { 10 }
+        if s.starts_with("0x") || s.starts_with("0X") {
+            16
+        } else {
+            10
+        }
     } else {
         radix
     };
@@ -55,12 +61,16 @@ pub fn global_parse_int(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             b'A'..=b'Z' => (b - b'A' + 10) as u32,
             _ => break,
         };
-        if digit >= actual_radix { break; }
+        if digit >= actual_radix {
+            break;
+        }
         result = result * actual_radix as f64 + digit as f64;
         found = true;
     }
 
-    if !found { return JsValue::Number(f64::NAN); }
+    if !found {
+        return JsValue::Number(f64::NAN);
+    }
     JsValue::Number(if negative { -result } else { result })
 }
 
@@ -84,8 +94,18 @@ pub fn global_encode_uri_component(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let mut result = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-            | b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')' => {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => {
                 result.push(b as char);
             }
             _ => {
@@ -231,7 +251,7 @@ pub fn boolean_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 /// Throws TypeError when called on a non-Boolean `this`.
 pub fn boolean_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     match extract_bool_this(vm) {
-        Some(JsValue::Bool(true))  => JsValue::String(String::from("true")),
+        Some(JsValue::Bool(true)) => JsValue::String(String::from("true")),
         Some(JsValue::Bool(false)) => JsValue::String(String::from("false")),
         Some(_) => JsValue::String(String::from("false")),
         None => {

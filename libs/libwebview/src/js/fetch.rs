@@ -4,10 +4,10 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::RefCell;
 
-use libjs::JsValue;
-use libjs::Vm;
 use libjs::value::JsObject;
 use libjs::vm::native_fn;
+use libjs::JsValue;
+use libjs::Vm;
 
 use super::arg_string;
 use super::http;
@@ -22,14 +22,22 @@ pub fn native_fetch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     let method = if let JsValue::Object(_) = &options {
         let m = options.get_property("method").to_js_string();
-        if m.is_empty() || m == "undefined" { String::from("GET") } else { m }
+        if m.is_empty() || m == "undefined" {
+            String::from("GET")
+        } else {
+            m
+        }
     } else {
         String::from("GET")
     };
 
     let body = if let JsValue::Object(_) = &options {
         let b = options.get_property("body").to_js_string();
-        if b == "undefined" { String::new() } else { b }
+        if b == "undefined" {
+            String::new()
+        } else {
+            b
+        }
     } else {
         String::new()
     };
@@ -37,12 +45,15 @@ pub fn native_fetch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let headers_str = String::from("{}");
 
     // Perform the request.
-    let result = http::http_request(vm, &[
-        JsValue::String(method),
-        JsValue::String(url.clone()),
-        JsValue::String(headers_str),
-        JsValue::String(body),
-    ]);
+    let result = http::http_request(
+        vm,
+        &[
+            JsValue::String(method),
+            JsValue::String(url.clone()),
+            JsValue::String(headers_str),
+            JsValue::String(body),
+        ],
+    );
 
     let status = result.get_property("status").to_number();
     let status_text = result.get_property("statusText").to_js_string();
@@ -85,9 +96,15 @@ pub fn native_fetch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 fn make_response(status: f64, status_text: &str, url: &str, body: &str) -> JsValue {
     let mut obj = JsObject::new();
-    obj.set(String::from("ok"), JsValue::Bool(status >= 200.0 && status < 300.0));
+    obj.set(
+        String::from("ok"),
+        JsValue::Bool(status >= 200.0 && status < 300.0),
+    );
     obj.set(String::from("status"), JsValue::Number(status));
-    obj.set(String::from("statusText"), JsValue::String(String::from(status_text)));
+    obj.set(
+        String::from("statusText"),
+        JsValue::String(String::from(status_text)),
+    );
     obj.set(String::from("url"), JsValue::String(String::from(url)));
     obj.set(String::from("redirected"), JsValue::Bool(false));
     obj.set(String::from("type"), JsValue::String(String::from("basic")));
@@ -96,16 +113,25 @@ fn make_response(status: f64, status_text: &str, url: &str, body: &str) -> JsVal
 
     // Headers sub-object.
     let headers = JsValue::new_object();
-    headers.set_property(String::from("get"), native_fn("get", |_,_| JsValue::Null));
-    headers.set_property(String::from("has"), native_fn("has", |_,_| JsValue::Bool(false)));
-    headers.set_property(String::from("forEach"), native_fn("forEach", |_,_| JsValue::Undefined));
+    headers.set_property(String::from("get"), native_fn("get", |_, _| JsValue::Null));
+    headers.set_property(
+        String::from("has"),
+        native_fn("has", |_, _| JsValue::Bool(false)),
+    );
+    headers.set_property(
+        String::from("forEach"),
+        native_fn("forEach", |_, _| JsValue::Undefined),
+    );
     obj.set(String::from("headers"), headers);
 
     // Body methods — return the stored __body wrapped in Promise.resolve.
     obj.set(String::from("text"), native_fn("text", resp_text));
     obj.set(String::from("json"), native_fn("json", resp_json));
     obj.set(String::from("blob"), native_fn("blob", resp_text));
-    obj.set(String::from("arrayBuffer"), native_fn("arrayBuffer", resp_text));
+    obj.set(
+        String::from("arrayBuffer"),
+        native_fn("arrayBuffer", resp_text),
+    );
     obj.set(String::from("clone"), native_fn("clone", resp_clone));
 
     JsValue::Object(Rc::new(RefCell::new(obj)))
@@ -188,7 +214,10 @@ pub fn native_headers_ctor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     obj.set(String::from("has"), native_fn("has", headers_has));
     obj.set(String::from("append"), native_fn("append", headers_set));
     obj.set(String::from("delete"), native_fn("delete", headers_delete));
-    obj.set(String::from("forEach"), native_fn("forEach", |_,_| JsValue::Undefined));
+    obj.set(
+        String::from("forEach"),
+        native_fn("forEach", |_, _| JsValue::Undefined),
+    );
 
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
@@ -204,7 +233,11 @@ fn headers_get(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let name = arg_string(args, 0).to_ascii_lowercase();
     let data = get_headers_data(vm);
     let val = data.get_property(&name);
-    if matches!(val, JsValue::Undefined) { JsValue::Null } else { val }
+    if matches!(val, JsValue::Undefined) {
+        JsValue::Null
+    } else {
+        val
+    }
 }
 
 fn headers_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {

@@ -3,11 +3,11 @@
 //! Each dialog is a standalone compositor window that is set modal to the
 //! calling window. Uses the same blocking mini event loop as MessageBox.
 
-use alloc::vec;
-use alloc::vec::Vec;
 use crate::control::{Control, ControlId, ControlKind, DockStyle, EVENT_CLICK, EVENT_DOUBLE_CLICK};
 use crate::controls;
-use crate::{state, event_loop, syscall};
+use crate::{event_loop, state, syscall};
+use alloc::vec;
+use alloc::vec::Vec;
 
 // ── Dialog state (module-level statics) ──────────────────────────────
 
@@ -21,6 +21,11 @@ static mut DIALOG_CURRENT_DIR_LEN: usize = 0;
 /// Index matches TreeView node index. true = directory, false = file.
 static mut DIALOG_ENTRY_IS_DIR: [bool; 256] = [false; 256];
 static mut DIALOG_ENTRY_COUNT: usize = 0;
+
+#[inline(always)]
+unsafe fn dialog_result_ptr() -> *const u8 {
+    core::ptr::addr_of!(DIALOG_RESULT).cast::<u8>()
+}
 
 /// IDs of controls used by the dialog (so callbacks can find them).
 static mut DIALOG_TREE_ID: ControlId = 0;
@@ -47,11 +52,10 @@ impl DirEntry {
 
 fn path_join(base: &[u8], name: &[u8], out: &mut [u8; 257]) -> usize {
     let base_len = base.len();
-    let mut pos = 0;
     // Copy base
     let copy_len = base_len.min(255);
     out[..copy_len].copy_from_slice(&base[..copy_len]);
-    pos = copy_len;
+    let mut pos = copy_len;
     // Add separator if needed
     if pos > 0 && pos < 256 && out[pos - 1] != b'/' {
         out[pos] = b'/';
@@ -62,7 +66,9 @@ fn path_join(base: &[u8], name: &[u8], out: &mut [u8; 257]) -> usize {
     out[pos..pos + name_copy].copy_from_slice(&name[..name_copy]);
     pos += name_copy;
     // Null-terminate
-    if pos < 257 { out[pos] = 0; }
+    if pos < 257 {
+        out[pos] = 0;
+    }
     pos
 }
 
@@ -112,15 +118,21 @@ fn list_directory(dir_path: &[u8]) -> Vec<DirEntry> {
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
         let base = i * 64;
-        if base + 64 > raw_buf.len() { break; }
+        if base + 64 > raw_buf.len() {
+            break;
+        }
         let entry_type = raw_buf[base];
         let name_len = (raw_buf[base + 1] as usize).min(56);
         let mut name = [0u8; 56];
         name[..name_len].copy_from_slice(&raw_buf[base + 8..base + 8 + name_len]);
 
         // Skip "." and ".."
-        if name_len == 1 && name[0] == b'.' { continue; }
-        if name_len == 2 && name[0] == b'.' && name[1] == b'.' { continue; }
+        if name_len == 1 && name[0] == b'.' {
+            continue;
+        }
+        if name_len == 2 && name[0] == b'.' && name[1] == b'.' {
+            continue;
+        }
 
         entries.push(DirEntry {
             name,
@@ -130,12 +142,10 @@ fn list_directory(dir_path: &[u8]) -> Vec<DirEntry> {
     }
 
     // Sort: directories first, then files, alphabetically within each group
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => core::cmp::Ordering::Less,
-            (false, true) => core::cmp::Ordering::Greater,
-            _ => a.name_slice().cmp(b.name_slice()),
-        }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => core::cmp::Ordering::Less,
+        (false, true) => core::cmp::Ordering::Greater,
+        _ => a.name_slice().cmp(b.name_slice()),
     });
 
     entries
@@ -156,7 +166,9 @@ fn populate_file_list(show_files: bool) {
 
     let dir_path = unsafe { &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN] };
 
-    unsafe { DIALOG_ENTRY_COUNT = 0; }
+    unsafe {
+        DIALOG_ENTRY_COUNT = 0;
+    }
 
     // Add ".." entry unless at root "/"
     if dir_path.len() > 1 || (dir_path.len() == 1 && dir_path[0] != b'/') {
@@ -183,7 +195,9 @@ fn populate_file_list(show_files: bool) {
             continue;
         }
         let idx_in_tracking = unsafe { DIALOG_ENTRY_COUNT };
-        if idx_in_tracking >= 256 { break; }
+        if idx_in_tracking >= 256 {
+            break;
+        }
 
         if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == tree_id) {
             if let Some(tv) = as_tree_view_mut(ctrl) {
@@ -216,19 +230,25 @@ fn populate_file_list(show_files: bool) {
     let path_label_id = unsafe { DIALOG_PATH_LABEL_ID };
     // Build label: "<path>  (Xd Xf)"
     let mut label_buf = [0u8; 300];
-    let mut pos = 0usize;
     let dp_len = dir_path.len().min(240);
     label_buf[..dp_len].copy_from_slice(&dir_path[..dp_len]);
-    pos = dp_len;
-    label_buf[pos] = b' '; pos += 1;
-    label_buf[pos] = b' '; pos += 1;
-    label_buf[pos] = b'('; pos += 1;
+    let mut pos = dp_len;
+    label_buf[pos] = b' ';
+    pos += 1;
+    label_buf[pos] = b' ';
+    pos += 1;
+    label_buf[pos] = b'(';
+    pos += 1;
     pos += write_usize(&mut label_buf[pos..], num_dirs);
-    label_buf[pos] = b'd'; pos += 1;
-    label_buf[pos] = b' '; pos += 1;
+    label_buf[pos] = b'd';
+    pos += 1;
+    label_buf[pos] = b' ';
+    pos += 1;
     pos += write_usize(&mut label_buf[pos..], num_files);
-    label_buf[pos] = b'f'; pos += 1;
-    label_buf[pos] = b')'; pos += 1;
+    label_buf[pos] = b'f';
+    pos += 1;
+    label_buf[pos] = b')';
+    pos += 1;
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == path_label_id) {
         ctrl.set_text(&label_buf[..pos]);
     }
@@ -253,7 +273,9 @@ fn write_usize(buf: &mut [u8], val: usize) -> usize {
     len
 }
 
-fn as_tree_view_mut(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::tree_view::TreeView> {
+fn as_tree_view_mut(
+    ctrl: &mut alloc::boxed::Box<dyn Control>,
+) -> Option<&mut controls::tree_view::TreeView> {
     if ctrl.kind() == ControlKind::TreeView {
         let raw: *mut dyn Control = &mut **ctrl;
         Some(unsafe { &mut *(raw as *mut controls::tree_view::TreeView) })
@@ -262,7 +284,9 @@ fn as_tree_view_mut(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut co
     }
 }
 
-fn as_tree_view_ref(ctrl: &alloc::boxed::Box<dyn Control>) -> Option<&controls::tree_view::TreeView> {
+fn as_tree_view_ref(
+    ctrl: &alloc::boxed::Box<dyn Control>,
+) -> Option<&controls::tree_view::TreeView> {
     if ctrl.kind() == ControlKind::TreeView {
         let raw: *const dyn Control = &**ctrl;
         Some(unsafe { &*(raw as *const controls::tree_view::TreeView) })
@@ -315,9 +339,8 @@ fn navigate_to(name: &[u8]) {
     if name == b".." {
         // Go to parent
         let mut parent = [0u8; 257];
-        let parent_len = unsafe {
-            path_parent(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], &mut parent)
-        };
+        let parent_len =
+            unsafe { path_parent(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], &mut parent) };
         unsafe {
             DIALOG_CURRENT_DIR[..parent_len].copy_from_slice(&parent[..parent_len]);
             DIALOG_CURRENT_DIR_LEN = parent_len;
@@ -326,7 +349,11 @@ fn navigate_to(name: &[u8]) {
         // Go into subdirectory
         let mut joined = [0u8; 257];
         let joined_len = unsafe {
-            path_join(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], name, &mut joined)
+            path_join(
+                &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN],
+                name,
+                &mut joined,
+            )
         };
         unsafe {
             DIALOG_CURRENT_DIR[..joined_len].copy_from_slice(&joined[..joined_len]);
@@ -376,7 +403,11 @@ fn confirm_open_folder() {
                 // Build full path of selected dir
                 let mut full = [0u8; 257];
                 let full_len = unsafe {
-                    path_join(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], name, &mut full)
+                    path_join(
+                        &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN],
+                        name,
+                        &mut full,
+                    )
                 };
                 unsafe {
                     DIALOG_RESULT[..full_len].copy_from_slice(&full[..full_len]);
@@ -412,7 +443,11 @@ fn confirm_open_file() {
             // It's a file — select it
             let mut full = [0u8; 257];
             let full_len = unsafe {
-                path_join(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], name, &mut full)
+                path_join(
+                    &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN],
+                    name,
+                    &mut full,
+                )
             };
             unsafe {
                 DIALOG_RESULT[..full_len].copy_from_slice(&full[..full_len]);
@@ -429,10 +464,16 @@ fn confirm_save_file() {
     let name_field_id = unsafe { DIALOG_NAME_FIELD_ID };
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == name_field_id) {
         let text = ctrl.text();
-        if text.is_empty() { return; }
+        if text.is_empty() {
+            return;
+        }
         let mut full = [0u8; 257];
         let full_len = unsafe {
-            path_join(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], text, &mut full)
+            path_join(
+                &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN],
+                text,
+                &mut full,
+            )
         };
         unsafe {
             DIALOG_RESULT[..full_len].copy_from_slice(&full[..full_len]);
@@ -448,13 +489,21 @@ fn confirm_create_folder() {
     let name_field_id = unsafe { DIALOG_NAME_FIELD_ID };
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == name_field_id) {
         let text = ctrl.text();
-        if text.is_empty() { return; }
+        if text.is_empty() {
+            return;
+        }
         let mut full = [0u8; 257];
         let full_len = unsafe {
-            path_join(&DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN], text, &mut full)
+            path_join(
+                &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN],
+                text,
+                &mut full,
+            )
         };
         // Null-terminate for mkdir syscall
-        if full_len < 257 { full[full_len] = 0; }
+        if full_len < 257 {
+            full[full_len] = 0;
+        }
         let result = syscall::mkdir(&full[..full_len + 1]);
         if result == 0 || (result as i32) >= 0 {
             unsafe {
@@ -502,30 +551,6 @@ fn add_child_to_parent(parent_id: ControlId, child_id: ControlId) {
     crate::mark_needs_layout();
 }
 
-// ── Helper: set dock on a control ────────────────────────────────────
-
-fn set_control_dock(id: ControlId, dock: DockStyle) {
-    let st = state();
-    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        ctrl.base_mut().dock = dock;
-        ctrl.base_mut().mark_dirty();
-    }
-    crate::mark_needs_layout();
-}
-
-fn set_control_margin(id: ControlId, left: i32, top: i32, right: i32, bottom: i32) {
-    let st = state();
-    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        let b = ctrl.base_mut();
-        b.margin.left = left;
-        b.margin.top = top;
-        b.margin.right = right;
-        b.margin.bottom = bottom;
-        b.mark_dirty();
-    }
-    crate::mark_needs_layout();
-}
-
 // ── Common dialog creation ───────────────────────────────────────────
 
 enum DialogType {
@@ -535,23 +560,61 @@ enum DialogType {
     CreateFolder,
 }
 
-fn run_file_dialog(
-    dialog_type: DialogType,
-    default_name: &[u8],
-) -> usize {
+fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
     let st = state();
-    if st.windows.is_empty() { return 0; }
+    if st.windows.is_empty() {
+        return 0;
+    }
     let owner_win_id = *st.windows.last().unwrap();
 
     let is_create_folder = matches!(dialog_type, DialogType::CreateFolder);
 
     // Dialog dimensions and metadata
-    let (dlg_w, dlg_h, title, confirm_label, show_files, has_name_field, confirm_userdata):
-        (u32, u32, &[u8], &[u8], bool, bool, u64) = match dialog_type {
-        DialogType::OpenFolder   => (650, 520, b"Open Folder" as &[u8], b"Open" as &[u8], false, false, 0),
-        DialogType::OpenFile     => (650, 520, b"Open File" as &[u8],   b"Open" as &[u8], true,  false, 1),
-        DialogType::SaveFile     => (650, 520, b"Save File" as &[u8],   b"Save" as &[u8], true,  true,  2),
-        DialogType::CreateFolder => (350, 200, b"New Folder" as &[u8],  b"Create" as &[u8], false, true, 3),
+    let (dlg_w, dlg_h, title, confirm_label, show_files, has_name_field, confirm_userdata): (
+        u32,
+        u32,
+        &[u8],
+        &[u8],
+        bool,
+        bool,
+        u64,
+    ) = match dialog_type {
+        DialogType::OpenFolder => (
+            650,
+            520,
+            b"Open Folder" as &[u8],
+            b"Open" as &[u8],
+            false,
+            false,
+            0,
+        ),
+        DialogType::OpenFile => (
+            650,
+            520,
+            b"Open File" as &[u8],
+            b"Open" as &[u8],
+            true,
+            false,
+            1,
+        ),
+        DialogType::SaveFile => (
+            650,
+            520,
+            b"Save File" as &[u8],
+            b"Save" as &[u8],
+            true,
+            true,
+            2,
+        ),
+        DialogType::CreateFolder => (
+            350,
+            200,
+            b"New Folder" as &[u8],
+            b"Create" as &[u8],
+            false,
+            true,
+            3,
+        ),
     };
 
     // Initialize current directory — start at root
@@ -571,28 +634,69 @@ fn run_file_dialog(
     // Flags: NOT_RESIZABLE(0x02) | NO_MINIMIZE(0x10) | NO_MAXIMIZE(0x20)
     let (dlg_x, dlg_y) = crate::center_on_owner(owner_win_id, dlg_w, dlg_h);
     let dialog_win_id = crate::anyui_create_window(
-        title.as_ptr(), title.len() as u32,
-        dlg_x, dlg_y, dlg_w, dlg_h,
+        title.as_ptr(),
+        title.len() as u32,
+        dlg_x,
+        dlg_y,
+        dlg_w,
+        dlg_h,
         0x02 | 0x10 | 0x20,
     );
-    if dialog_win_id == 0 { return 0; }
+    if dialog_win_id == 0 {
+        return 0;
+    }
 
     // Make it modal to the owner window
     crate::anyui_set_modal(dialog_win_id, owner_win_id);
 
     // ── Allocate control IDs ─────────────────────────────────────────
     let st = state();
-    let path_bar_id   = st.next_id; st.next_id += 1;
-    let path_label_id = st.next_id; st.next_id += 1;
-    let up_btn_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
-    let bottom_bar_id  = st.next_id; st.next_id += 1;
-    let cancel_btn_id  = st.next_id; st.next_id += 1;
-    let confirm_btn_id = st.next_id; st.next_id += 1;
-    let tree_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
-    let name_field_id = if has_name_field { let id = st.next_id; st.next_id += 1; id } else { 0 };
+    let path_bar_id = st.next_id;
+    st.next_id += 1;
+    let path_label_id = st.next_id;
+    st.next_id += 1;
+    let up_btn_id = if !is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let bottom_bar_id = st.next_id;
+    st.next_id += 1;
+    let cancel_btn_id = st.next_id;
+    st.next_id += 1;
+    let confirm_btn_id = st.next_id;
+    st.next_id += 1;
+    let tree_id = if !is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let name_field_id = if has_name_field {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
     // Separator line IDs (between path bar ↔ tree, tree ↔ bottom bar)
-    let sep_top_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
-    let sep_bot_id = if !is_create_folder { let id = st.next_id; st.next_id += 1; id } else { 0 };
+    let sep_top_id = if !is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let sep_bot_id = if !is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
 
     // Store IDs for callbacks
     unsafe {
@@ -604,7 +708,14 @@ fn run_file_dialog(
 
     // ── Path bar (top, subtle contrast background) ───────────────────
     let mut path_bar = controls::create_control(
-        ControlKind::View, path_bar_id, dialog_win_id, 0, 0, dlg_w, 36, &[],
+        ControlKind::View,
+        path_bar_id,
+        dialog_win_id,
+        0,
+        0,
+        dlg_w,
+        36,
+        &[],
     );
     path_bar.base_mut().dock = DockStyle::Top;
     path_bar.set_color(0xFF2D2D30);
@@ -614,8 +725,14 @@ fn run_file_dialog(
     // "^" button inside path bar (navigate to parent directory)
     if !is_create_folder {
         let mut up_btn = controls::create_control(
-            ControlKind::Button, up_btn_id, path_bar_id,
-            0, 4, 28, 28, b"^",
+            ControlKind::Button,
+            up_btn_id,
+            path_bar_id,
+            0,
+            4,
+            28,
+            28,
+            b"^",
         );
         up_btn.base_mut().dock = DockStyle::Right;
         up_btn.base_mut().margin.right = 6;
@@ -625,7 +742,13 @@ fn run_file_dialog(
 
     // Path label inside path bar
     let mut path_label = controls::create_control(
-        ControlKind::Label, path_label_id, path_bar_id, 0, 0, dlg_w - 44, 36,
+        ControlKind::Label,
+        path_label_id,
+        path_bar_id,
+        0,
+        0,
+        dlg_w - 44,
+        36,
         &cwd_buf[..cwd_len],
     );
     path_label.base_mut().dock = DockStyle::Fill;
@@ -639,7 +762,14 @@ fn run_file_dialog(
     // ── Separator line (path bar → tree) ─────────────────────────────
     if !is_create_folder {
         let mut sep_top = controls::create_control(
-            ControlKind::View, sep_top_id, dialog_win_id, 0, 0, dlg_w, 1, &[],
+            ControlKind::View,
+            sep_top_id,
+            dialog_win_id,
+            0,
+            0,
+            dlg_w,
+            1,
+            &[],
         );
         sep_top.base_mut().dock = DockStyle::Top;
         sep_top.set_color(0xFF3E3E42);
@@ -649,7 +779,14 @@ fn run_file_dialog(
 
     // ── Bottom bar (buttons + optional name field) ───────────────────
     let mut bottom_bar = controls::create_control(
-        ControlKind::View, bottom_bar_id, dialog_win_id, 0, 0, dlg_w, 48, &[],
+        ControlKind::View,
+        bottom_bar_id,
+        dialog_win_id,
+        0,
+        0,
+        dlg_w,
+        48,
+        &[],
     );
     bottom_bar.base_mut().dock = DockStyle::Bottom;
     bottom_bar.base_mut().margin.left = 12;
@@ -661,7 +798,14 @@ fn run_file_dialog(
     // Separator line (tree → bottom bar)
     if !is_create_folder {
         let mut sep_bot = controls::create_control(
-            ControlKind::View, sep_bot_id, dialog_win_id, 0, 0, dlg_w, 1, &[],
+            ControlKind::View,
+            sep_bot_id,
+            dialog_win_id,
+            0,
+            0,
+            dlg_w,
+            1,
+            &[],
         );
         sep_bot.base_mut().dock = DockStyle::Bottom;
         sep_bot.set_color(0xFF3E3E42);
@@ -671,10 +815,25 @@ fn run_file_dialog(
 
     // Name field (Save/CreateFolder only)
     if has_name_field {
-        let text_to_set = if !default_name.is_empty() { default_name } else { &[] };
-        let field_w = if is_create_folder { dlg_w - 44 } else { dlg_w - 200 };
+        let text_to_set = if !default_name.is_empty() {
+            default_name
+        } else {
+            &[]
+        };
+        let field_w = if is_create_folder {
+            dlg_w - 44
+        } else {
+            dlg_w - 200
+        };
         let mut name_field = controls::create_control(
-            ControlKind::TextField, name_field_id, bottom_bar_id, 0, 8, field_w, 30, text_to_set,
+            ControlKind::TextField,
+            name_field_id,
+            bottom_bar_id,
+            0,
+            8,
+            field_w,
+            30,
+            text_to_set,
         );
         name_field.base_mut().dock = DockStyle::Left;
         name_field.base_mut().margin.right = 10;
@@ -684,8 +843,14 @@ fn run_file_dialog(
 
     // Confirm button (right side)
     let mut confirm_btn = controls::create_control(
-        ControlKind::Button, confirm_btn_id, bottom_bar_id,
-        0, 8, 84, 32, confirm_label,
+        ControlKind::Button,
+        confirm_btn_id,
+        bottom_bar_id,
+        0,
+        8,
+        84,
+        32,
+        confirm_label,
     );
     confirm_btn.base_mut().dock = DockStyle::Right;
     confirm_btn.set_color(0xFF0E639C); // blue accent
@@ -694,8 +859,14 @@ fn run_file_dialog(
 
     // Cancel button
     let mut cancel_btn = controls::create_control(
-        ControlKind::Button, cancel_btn_id, bottom_bar_id,
-        0, 8, 84, 32, b"Cancel",
+        ControlKind::Button,
+        cancel_btn_id,
+        bottom_bar_id,
+        0,
+        8,
+        84,
+        32,
+        b"Cancel",
     );
     cancel_btn.base_mut().dock = DockStyle::Right;
     cancel_btn.base_mut().margin.right = 10;
@@ -705,7 +876,14 @@ fn run_file_dialog(
     // ── TreeView (file list, fills remaining space) ──────────────────
     if !is_create_folder {
         let mut tree = controls::create_control(
-            ControlKind::TreeView, tree_id, dialog_win_id, 0, 0, dlg_w, 400, &[],
+            ControlKind::TreeView,
+            tree_id,
+            dialog_win_id,
+            0,
+            0,
+            dlg_w,
+            400,
+            &[],
         );
         tree.base_mut().dock = DockStyle::Fill;
         tree.base_mut().margin.left = 0;
@@ -752,9 +930,13 @@ fn run_file_dialog(
     // ── Mini event loop ──────────────────────────────────────────────
     while !unsafe { DIALOG_DISMISSED } {
         let t0 = syscall::uptime_ms();
-        if event_loop::run_once() == 0 { break; }
+        if event_loop::run_once() == 0 {
+            break;
+        }
         let elapsed = syscall::uptime_ms().wrapping_sub(t0);
-        if elapsed < 16 { syscall::sleep(16 - elapsed); }
+        if elapsed < 16 {
+            syscall::sleep(16 - elapsed);
+        }
     }
 
     // Destroy dialog window — auto-clears modal + removes all child controls
@@ -767,11 +949,13 @@ fn run_file_dialog(
 
 pub fn open_folder(result_buf: *mut u8, buf_len: u32) -> u32 {
     let len = run_file_dialog(DialogType::OpenFolder, &[]);
-    if len == 0 { return 0; }
+    if len == 0 {
+        return 0;
+    }
     let copy_len = len.min(buf_len as usize);
     if !result_buf.is_null() && copy_len > 0 {
         unsafe {
-            core::ptr::copy_nonoverlapping(DIALOG_RESULT.as_ptr(), result_buf, copy_len);
+            core::ptr::copy_nonoverlapping(dialog_result_ptr(), result_buf, copy_len);
         }
     }
     copy_len as u32
@@ -779,11 +963,13 @@ pub fn open_folder(result_buf: *mut u8, buf_len: u32) -> u32 {
 
 pub fn open_file(result_buf: *mut u8, buf_len: u32) -> u32 {
     let len = run_file_dialog(DialogType::OpenFile, &[]);
-    if len == 0 { return 0; }
+    if len == 0 {
+        return 0;
+    }
     let copy_len = len.min(buf_len as usize);
     if !result_buf.is_null() && copy_len > 0 {
         unsafe {
-            core::ptr::copy_nonoverlapping(DIALOG_RESULT.as_ptr(), result_buf, copy_len);
+            core::ptr::copy_nonoverlapping(dialog_result_ptr(), result_buf, copy_len);
         }
     }
     copy_len as u32
@@ -791,11 +977,13 @@ pub fn open_file(result_buf: *mut u8, buf_len: u32) -> u32 {
 
 pub fn save_file(result_buf: *mut u8, buf_len: u32, default_name: &[u8]) -> u32 {
     let len = run_file_dialog(DialogType::SaveFile, default_name);
-    if len == 0 { return 0; }
+    if len == 0 {
+        return 0;
+    }
     let copy_len = len.min(buf_len as usize);
     if !result_buf.is_null() && copy_len > 0 {
         unsafe {
-            core::ptr::copy_nonoverlapping(DIALOG_RESULT.as_ptr(), result_buf, copy_len);
+            core::ptr::copy_nonoverlapping(dialog_result_ptr(), result_buf, copy_len);
         }
     }
     copy_len as u32
@@ -803,11 +991,13 @@ pub fn save_file(result_buf: *mut u8, buf_len: u32, default_name: &[u8]) -> u32 
 
 pub fn create_folder(result_buf: *mut u8, buf_len: u32) -> u32 {
     let len = run_file_dialog(DialogType::CreateFolder, &[]);
-    if len == 0 { return 0; }
+    if len == 0 {
+        return 0;
+    }
     let copy_len = len.min(buf_len as usize);
     if !result_buf.is_null() && copy_len > 0 {
         unsafe {
-            core::ptr::copy_nonoverlapping(DIALOG_RESULT.as_ptr(), result_buf, copy_len);
+            core::ptr::copy_nonoverlapping(dialog_result_ptr(), result_buf, copy_len);
         }
     }
     copy_len as u32

@@ -1,8 +1,8 @@
 //! Form field position collection for overlay rendering.
 
-use alloc::vec::Vec;
+use super::{FormFieldKind, LayoutBox};
 use crate::dom::NodeId;
-use super::{LayoutBox, FormFieldKind};
+use alloc::vec::Vec;
 
 /// Position of a form field in document coordinates.
 pub struct FormFieldPos {

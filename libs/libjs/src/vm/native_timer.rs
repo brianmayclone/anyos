@@ -7,8 +7,8 @@
 
 use alloc::string::String;
 
-use crate::value::*;
 use super::Vm;
+use crate::value::*;
 
 // Timer ID counter — simple global.
 static mut NEXT_TIMER_ID: f64 = 1.0;

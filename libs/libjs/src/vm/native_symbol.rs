@@ -5,17 +5,18 @@
 //! Well-known symbols (Symbol.iterator, Symbol.toPrimitive, etc.)
 //! are pre-defined with fixed names.
 
-use alloc::string::String;
 use alloc::format;
+use alloc::string::String;
 
+use super::{native_fn, Vm};
 use crate::value::*;
-use super::{Vm, native_fn};
 
 // Well-known symbol keys (use __symbol__0_ prefix so is_symbol_value() recognizes them)
 pub const WELL_KNOWN_ITERATOR: &str = "__symbol__0_Symbol.iterator";
 pub const WELL_KNOWN_TO_PRIMITIVE: &str = "__symbol__0_Symbol.toPrimitive";
 pub const WELL_KNOWN_TO_STRING_TAG: &str = "__symbol__0_Symbol.toStringTag";
 pub const WELL_KNOWN_HAS_INSTANCE: &str = "__symbol__0_Symbol.hasInstance";
+pub const WELL_KNOWN_MATCH: &str = "__symbol__0_Symbol.match";
 
 // Monotonically increasing symbol counter.
 static mut NEXT_SYMBOL_ID: u64 = 1;
@@ -60,18 +61,54 @@ pub fn symbol_key_for(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// Install well-known symbols on the Symbol constructor object.
 pub fn install_well_known_symbols(symbol_ctor: &JsValue) {
-    symbol_ctor.set_property(String::from("iterator"), JsValue::String(String::from(WELL_KNOWN_ITERATOR)));
-    symbol_ctor.set_property(String::from("toPrimitive"), JsValue::String(String::from(WELL_KNOWN_TO_PRIMITIVE)));
-    symbol_ctor.set_property(String::from("toStringTag"), JsValue::String(String::from(WELL_KNOWN_TO_STRING_TAG)));
-    symbol_ctor.set_property(String::from("hasInstance"), JsValue::String(String::from(WELL_KNOWN_HAS_INSTANCE)));
-    symbol_ctor.set_property(String::from("isConcatSpreadable"), JsValue::String(String::from("__symbol__0_Symbol.isConcatSpreadable")));
-    symbol_ctor.set_property(String::from("species"), JsValue::String(String::from("__symbol__0_Symbol.species")));
-    symbol_ctor.set_property(String::from("match"), JsValue::String(String::from("__symbol__0_Symbol.match")));
-    symbol_ctor.set_property(String::from("replace"), JsValue::String(String::from("__symbol__0_Symbol.replace")));
-    symbol_ctor.set_property(String::from("search"), JsValue::String(String::from("__symbol__0_Symbol.search")));
-    symbol_ctor.set_property(String::from("split"), JsValue::String(String::from("__symbol__0_Symbol.split")));
-    symbol_ctor.set_property(String::from("unscopables"), JsValue::String(String::from("__symbol__0_Symbol.unscopables")));
-    symbol_ctor.set_property(String::from("asyncIterator"), JsValue::String(String::from("__symbol__0_Symbol.asyncIterator")));
+    symbol_ctor.set_property(
+        String::from("iterator"),
+        JsValue::String(String::from(WELL_KNOWN_ITERATOR)),
+    );
+    symbol_ctor.set_property(
+        String::from("toPrimitive"),
+        JsValue::String(String::from(WELL_KNOWN_TO_PRIMITIVE)),
+    );
+    symbol_ctor.set_property(
+        String::from("toStringTag"),
+        JsValue::String(String::from(WELL_KNOWN_TO_STRING_TAG)),
+    );
+    symbol_ctor.set_property(
+        String::from("hasInstance"),
+        JsValue::String(String::from(WELL_KNOWN_HAS_INSTANCE)),
+    );
+    symbol_ctor.set_property(
+        String::from("isConcatSpreadable"),
+        JsValue::String(String::from("__symbol__0_Symbol.isConcatSpreadable")),
+    );
+    symbol_ctor.set_property(
+        String::from("species"),
+        JsValue::String(String::from("__symbol__0_Symbol.species")),
+    );
+    symbol_ctor.set_property(
+        String::from("match"),
+        JsValue::String(String::from(WELL_KNOWN_MATCH)),
+    );
+    symbol_ctor.set_property(
+        String::from("replace"),
+        JsValue::String(String::from("__symbol__0_Symbol.replace")),
+    );
+    symbol_ctor.set_property(
+        String::from("search"),
+        JsValue::String(String::from("__symbol__0_Symbol.search")),
+    );
+    symbol_ctor.set_property(
+        String::from("split"),
+        JsValue::String(String::from("__symbol__0_Symbol.split")),
+    );
+    symbol_ctor.set_property(
+        String::from("unscopables"),
+        JsValue::String(String::from("__symbol__0_Symbol.unscopables")),
+    );
+    symbol_ctor.set_property(
+        String::from("asyncIterator"),
+        JsValue::String(String::from("__symbol__0_Symbol.asyncIterator")),
+    );
 
     // Static methods
     symbol_ctor.set_property(String::from("for"), native_fn("for", symbol_for));

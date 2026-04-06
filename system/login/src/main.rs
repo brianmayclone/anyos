@@ -24,7 +24,7 @@ static mut LOGIN_UID: u32 = u32::MAX;
 
 fn main() -> u32 {
     if !ui::init() {
-        return 0;
+        return u32::MAX; // Signal failure/retry to compositor, NOT root-auth
     }
     i18n::init();
 

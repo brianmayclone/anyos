@@ -7,9 +7,9 @@
 //! When `interactive` is true, mouse move events are tracked and fire
 //! EVENT_CHANGE callbacks, enabling drag-to-draw behavior.
 
+use crate::control::{Control, ControlBase, ControlKind, EventResponse};
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, ControlKind, EventResponse};
 
 pub struct Canvas {
     pub(crate) base: ControlBase,
@@ -25,7 +25,9 @@ pub struct Canvas {
 
 impl Canvas {
     pub fn new(base: ControlBase) -> Self {
-        let size = (base.w as usize).saturating_mul(base.h as usize).min(16384 * 16384);
+        let size = (base.w as usize)
+            .saturating_mul(base.h as usize)
+            .min(16384 * 16384);
         Self {
             pixels: vec![0xFF000000; size], // opaque black
             base,
@@ -39,10 +41,14 @@ impl Canvas {
     // ── Drawing primitives ───────────────────────────────────────────
 
     #[inline]
-    fn stride(&self) -> u32 { self.base.w }
+    fn stride(&self) -> u32 {
+        self.base.w
+    }
 
     #[inline]
-    fn height(&self) -> u32 { self.base.h }
+    fn height(&self) -> u32 {
+        self.base.h
+    }
 
     pub fn set_pixel(&mut self, x: i32, y: i32, color: u32) {
         let w = self.stride();
@@ -96,7 +102,9 @@ impl Canvas {
 
         loop {
             self.set_pixel(cx, cy, color);
-            if cx == x1 && cy == y1 { break; }
+            if cx == x1 && cy == y1 {
+                break;
+            }
             let e2 = 2 * err;
             if e2 >= dy {
                 err += dy;
@@ -110,7 +118,15 @@ impl Canvas {
     }
 
     /// Draw a line with configurable thickness using filled circles at each point.
-    pub fn draw_thick_line(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, color: u32, thickness: u32) {
+    pub fn draw_thick_line(
+        &mut self,
+        x0: i32,
+        y0: i32,
+        x1: i32,
+        y1: i32,
+        color: u32,
+        thickness: u32,
+    ) {
         if thickness <= 1 {
             self.draw_line(x0, y0, x1, y1, color);
             return;
@@ -126,7 +142,9 @@ impl Canvas {
 
         loop {
             self.fill_circle(cx, cy, radius, color);
-            if cx == x1 && cy == y1 { break; }
+            if cx == x1 && cy == y1 {
+                break;
+            }
             let e2 = 2 * err;
             if e2 >= dy {
                 err += dy;
@@ -148,7 +166,13 @@ impl Canvas {
         // Left edge
         self.fill_rect(x, y + t, thickness, h.saturating_sub(2 * thickness), color);
         // Right edge
-        self.fill_rect(x + w as i32 - t, y + t, thickness, h.saturating_sub(2 * thickness), color);
+        self.fill_rect(
+            x + w as i32 - t,
+            y + t,
+            thickness,
+            h.saturating_sub(2 * thickness),
+            color,
+        );
     }
 
     pub fn draw_circle(&mut self, cx: i32, cy: i32, radius: i32, color: u32) {
@@ -201,7 +225,9 @@ impl Canvas {
 
     /// Draw an ellipse outline using midpoint ellipse algorithm.
     pub fn draw_ellipse(&mut self, cx: i32, cy: i32, rx: i32, ry: i32, color: u32) {
-        if rx <= 0 || ry <= 0 { return; }
+        if rx <= 0 || ry <= 0 {
+            return;
+        }
         let rx2 = (rx as i64) * (rx as i64);
         let ry2 = (ry as i64) * (ry as i64);
         let mut x = 0i32;
@@ -228,8 +254,8 @@ impl Canvas {
         }
 
         // Region 2
-        p = ry2 * ((x as i64) * (x as i64) + (x as i64))
-            + rx2 * ((y as i64 - 1) * (y as i64 - 1)) - rx2 * ry2;
+        p = ry2 * ((x as i64) * (x as i64) + (x as i64)) + rx2 * ((y as i64 - 1) * (y as i64 - 1))
+            - rx2 * ry2;
         while y >= 0 {
             self.set_pixel(cx + x, cy + y, color);
             self.set_pixel(cx - x, cy + y, color);
@@ -249,7 +275,9 @@ impl Canvas {
 
     /// Draw a filled ellipse using horizontal scanlines.
     pub fn fill_ellipse(&mut self, cx: i32, cy: i32, rx: i32, ry: i32, color: u32) {
-        if rx <= 0 || ry <= 0 { return; }
+        if rx <= 0 || ry <= 0 {
+            return;
+        }
         let rx2 = (rx as i64) * (rx as i64);
         let ry2 = (ry as i64) * (ry as i64);
         let mut x = 0i32;
@@ -281,8 +309,8 @@ impl Canvas {
         }
 
         // Region 2
-        p = ry2 * ((x as i64) * (x as i64) + (x as i64))
-            + rx2 * ((y as i64 - 1) * (y as i64 - 1)) - rx2 * ry2;
+        p = ry2 * ((x as i64) * (x as i64) + (x as i64)) + rx2 * ((y as i64 - 1) * (y as i64 - 1))
+            - rx2 * ry2;
         while y >= 0 {
             self.draw_hline(cx - x, cx + x, cy + y, color);
             self.draw_hline(cx - x, cx + x, cy - y, color);
@@ -302,10 +330,14 @@ impl Canvas {
     pub fn flood_fill(&mut self, x: i32, y: i32, fill_color: u32) {
         let w = self.stride() as i32;
         let h = self.height() as i32;
-        if x < 0 || y < 0 || x >= w || y >= h { return; }
+        if x < 0 || y < 0 || x >= w || y >= h {
+            return;
+        }
 
         let target_color = self.get_pixel(x, y);
-        if target_color == fill_color { return; }
+        if target_color == fill_color {
+            return;
+        }
 
         let mut stack: Vec<(i32, i32)> = Vec::new();
         stack.push((x, y));
@@ -322,12 +354,16 @@ impl Canvas {
                 self.set_pixel(cx, sy, fill_color);
                 if sy > 0 {
                     let c = self.get_pixel(cx, sy - 1) == target_color;
-                    if c && !above { stack.push((cx, sy - 1)); }
+                    if c && !above {
+                        stack.push((cx, sy - 1));
+                    }
                     above = c;
                 }
                 if sy < h - 1 {
                     let c = self.get_pixel(cx, sy + 1) == target_color;
-                    if c && !below { stack.push((cx, sy + 1)); }
+                    if c && !below {
+                        stack.push((cx, sy + 1));
+                    }
                     below = c;
                 }
                 cx += 1;
@@ -353,7 +389,9 @@ impl Canvas {
     fn draw_hline(&mut self, x0: i32, x1: i32, y: i32, color: u32) {
         let stride = self.stride() as i32;
         let buf_h = self.height() as i32;
-        if y < 0 || y >= buf_h { return; }
+        if y < 0 || y >= buf_h {
+            return;
+        }
         let lx = x0.max(0);
         let rx = x1.min(stride - 1);
         for x in lx..=rx {
@@ -363,9 +401,15 @@ impl Canvas {
 }
 
 impl Control for Canvas {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::Canvas }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::Canvas
+    }
 
     fn set_size(&mut self, w: u32, h: u32) {
         let b = self.base_mut();
@@ -382,7 +426,9 @@ impl Control for Canvas {
     }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
-        if self.pixels.is_empty() { return; }
+        if self.pixels.is_empty() {
+            return;
+        }
         let b = self.base();
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
         // Canvas pixel buffer is in logical resolution. At 1x the sizes
@@ -395,7 +441,9 @@ impl Control for Canvas {
         }
     }
 
-    fn is_interactive(&self) -> bool { true }
+    fn is_interactive(&self) -> bool {
+        true
+    }
 
     fn handle_mouse_down(&mut self, lx: i32, ly: i32, button: u32) -> EventResponse {
         self.last_mouse_x = lx;

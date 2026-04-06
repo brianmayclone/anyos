@@ -48,9 +48,9 @@ pub enum Op {
     Mul,
     Div,
     Mod,
-    Exp,   // **
-    Neg,   // unary -
-    Pos,   // unary +
+    Exp, // **
+    Neg, // unary -
+    Pos, // unary +
 
     // ── Bitwise ──
     BitAnd,
@@ -62,17 +62,17 @@ pub enum Op {
     UShr,
 
     // ── Comparison ──
-    Eq,        // ==
-    Ne,        // !=
-    StrictEq,  // ===
-    StrictNe,  // !==
-    Lt,        // <
-    Le,        // <=
-    Gt,        // >
-    Ge,        // >=
+    Eq,       // ==
+    Ne,       // !=
+    StrictEq, // ===
+    StrictNe, // !==
+    Lt,       // <
+    Le,       // <=
+    Gt,       // >
+    Ge,       // >=
 
     // ── Logical ──
-    Not,   // !
+    Not, // !
 
     // ── Control Flow ──
     /// Unconditional jump (relative offset).
@@ -217,7 +217,7 @@ pub enum Op {
     /// Define a getter on an object.
     /// Stack before: [..., object, getter_fn]
     /// Stack after:  [..., object]
-    DefineGetter(u16),  // name constant index
+    DefineGetter(u16), // name constant index
 
     /// Define a getter on an object with a computed key.
     /// Stack before: [..., object, key, getter_fn]
@@ -227,7 +227,7 @@ pub enum Op {
     /// Define a setter on an object.
     /// Stack before: [..., object, setter_fn]
     /// Stack after:  [..., object]
-    DefineSetter(u16),  // name constant index
+    DefineSetter(u16), // name constant index
 
     /// Define a setter on an object with a computed key.
     /// Stack before: [..., object, key, setter_fn]
@@ -238,7 +238,7 @@ pub enum Op {
     /// Like SetPropNamed but creates a non-enumerable property (ES2023 §14.5.14).
     /// Stack before: [..., object, method_fn]
     /// Stack after:  [..., method_fn]
-    DefineMethod(u16),  // name constant index
+    DefineMethod(u16), // name constant index
 
     /// Replace local slot `slot` with a fresh `Rc<RefCell<JsValue>>` cell containing
     /// the same value.  Used for per-iteration `let` binding in `for` loops so that

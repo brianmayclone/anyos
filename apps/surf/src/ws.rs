@@ -3,16 +3,15 @@
 //! Handles the TCP connection, HTTP Upgrade handshake, frame polling, and
 //! callback delivery back into the libwebview JS runtime.
 
-use anyos_std::net;
 use alloc::string::String;
 use alloc::vec::Vec;
+use anyos_std::net;
 
 use libwebview::js::websocket::{
-    self, build_upgrade_request, parse_upgrade_response,
-    encode_text_frame, encode_binary_frame, encode_close_frame, encode_ping_frame,
-    encode_pong_frame, decode_frames, WsFrame,
+    self, build_upgrade_request, decode_frames, encode_binary_frame, encode_close_frame,
+    encode_ping_frame, encode_pong_frame, encode_text_frame, parse_upgrade_response, WsFrame,
 };
-use libwebview::js::{JsRuntime, PendingWsConnect, PendingWsSend, PendingWsClose};
+use libwebview::js::{JsRuntime, PendingWsClose, PendingWsConnect, PendingWsSend};
 
 // ═══════════════════════════════════════════════════════════
 // Active connection state
@@ -97,10 +96,14 @@ pub fn handle_connect(
     for _ in 0..50 {
         let mut tmp = [0u8; 2048];
         let n = tcp_recv(sock, is_tls, &mut tmp);
-        if n == 0 { break; }
+        if n == 0 {
+            break;
+        }
         resp_buf.extend_from_slice(&tmp[..n]);
         // The HTTP headers end with \r\n\r\n.
-        if resp_buf.windows(4).any(|w| w == b"\r\n\r\n") { break; }
+        if resp_buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
     }
 
     match parse_upgrade_response(&resp_buf) {
@@ -143,7 +146,9 @@ pub fn poll_connections(conns: &mut Vec<WsConn>, runtime: &mut JsRuntime) -> Vec
             conn.recv_buf.extend_from_slice(&tmp[..n]);
         }
 
-        if conn.recv_buf.is_empty() { continue; }
+        if conn.recv_buf.is_empty() {
+            continue;
+        }
 
         let (frames, consumed) = decode_frames(&conn.recv_buf);
         if consumed > 0 {
@@ -251,10 +256,18 @@ fn tcp_send_all(sock: u32, is_tls: bool, data: &[u8]) -> bool {
 fn tcp_recv(sock: u32, is_tls: bool, buf: &mut [u8]) -> usize {
     if is_tls {
         let n = crate::tls::recv(buf);
-        if n <= 0 { 0 } else { n as usize }
+        if n <= 0 {
+            0
+        } else {
+            n as usize
+        }
     } else {
         let n = net::tcp_recv(sock, buf);
-        if n == u32::MAX { 0 } else { n as usize }
+        if n == u32::MAX {
+            0
+        } else {
+            n as usize
+        }
     }
 }
 
@@ -262,6 +275,8 @@ fn tcp_recv(sock: u32, is_tls: bool, buf: &mut [u8]) -> usize {
 fn tcp_recv_nonblock(sock: u32, is_tls: bool, buf: &mut [u8]) -> usize {
     // Use tcp_status to check if data is available before blocking.
     let status = net::tcp_status(sock);
-    if status == 0 || status == u32::MAX { return 0; }
+    if status == 0 || status == u32::MAX {
+        return 0;
+    }
     tcp_recv(sock, is_tls, buf)
 }

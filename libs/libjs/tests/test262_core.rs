@@ -52,11 +52,16 @@ fn const_declaration() {
 
 #[test]
 fn let_block_scoping() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let x = 1;
         { let x = 2; console.log(x); }
         console.log(x);
-    "#), "2\n1");
+    "#
+        ),
+        "2\n1"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -103,19 +108,26 @@ fn arrow_function_body() {
 
 #[test]
 fn class_basic() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         class Point {
             constructor(x, y) { this.x = x; this.y = y; }
             sum() { return this.x + this.y; }
         }
         let p = new Point(3, 4);
         p.sum()
-    "#), "7");
+    "#
+        ),
+        "7"
+    );
 }
 
 #[test]
 fn class_inheritance() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         class Animal {
             constructor(name) { this.name = name; }
             speak() { return this.name + ' makes a noise.'; }
@@ -126,12 +138,17 @@ fn class_inheritance() {
         }
         let d = new Dog('Rex');
         d.speak()
-    "#), "Rex barks.");
+    "#
+        ),
+        "Rex barks."
+    );
 }
 
 #[test]
 fn class_instance_properties() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         class Counter {
             count = 0;
             increment() { this.count++; return this.count; }
@@ -140,12 +157,17 @@ fn class_instance_properties() {
         c.increment();
         c.increment();
         c.count
-    "#), "2");
+    "#
+        ),
+        "2"
+    );
 }
 
 #[test]
 fn class_private_fields() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         class Secret {
             #value = 42;
             getValue() { return this.#value; }
@@ -154,44 +176,64 @@ fn class_private_fields() {
         let s = new Secret();
         s.setValue(100);
         s.getValue()
-    "#), "100");
+    "#
+        ),
+        "100"
+    );
 }
 
 #[test]
 fn class_private_field_default() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         class Foo {
             #x = 10;
             getX() { return this.#x; }
         }
         new Foo().getX()
-    "#), "10");
+    "#
+        ),
+        "10"
+    );
 }
 
 #[test]
 fn class_static_method() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         class MathHelper {
             static add(a, b) { return a + b; }
         }
         MathHelper.add(3, 7)
-    "#), "10");
+    "#
+        ),
+        "10"
+    );
 }
 
 #[test]
 fn class_static_property() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         class Config {
             static version = '1.0';
         }
         Config.version
-    "#), "1.0");
+    "#
+        ),
+        "1.0"
+    );
 }
 
 #[test]
 fn class_private_per_instance() {
     // Private fields must be per-instance, not shared on prototype
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         class Box {
             #items = [];
             add(item) { this.#items.push(item); }
@@ -204,7 +246,10 @@ fn class_private_per_instance() {
         b.add('z');
         console.log(a.count());
         console.log(b.count());
-    "#), "2\n1");
+    "#
+        ),
+        "2\n1"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -213,7 +258,9 @@ fn class_private_per_instance() {
 
 #[test]
 fn generator_basic() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         function* gen() {
             yield 1;
             yield 2;
@@ -224,7 +271,10 @@ fn generator_basic() {
         console.log(g.next().value);
         console.log(g.next().value);
         console.log(g.next().done);
-    "#), "1\n2\n3\ntrue");
+    "#
+        ),
+        "1\n2\n3\ntrue"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -233,34 +283,54 @@ fn generator_basic() {
 
 #[test]
 fn promise_resolve() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let p = Promise.resolve(42);
         p.then(v => console.log(v));
-    "#), "42");
+    "#
+        ),
+        "42"
+    );
 }
 
 #[test]
 fn promise_basic() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let p = new Promise((resolve) => { resolve(42); });
         p.then(v => console.log(v));
-    "#), "42");
+    "#
+        ),
+        "42"
+    );
 }
 
 #[test]
 fn promise_reject_catch() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let p = Promise.reject('err');
         p.catch(e => console.log(e));
-    "#), "err");
+    "#
+        ),
+        "err"
+    );
 }
 
 #[test]
 fn promise_all() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let p = Promise.all([Promise.resolve(1), Promise.resolve(2), Promise.resolve(3)]);
         p.then(arr => console.log(arr.join(',')));
-    "#), "1,2,3");
+    "#
+        ),
+        "1,2,3"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -269,7 +339,10 @@ fn promise_all() {
 
 #[test]
 fn array_from() {
-    assert_eq!(eval_str("Array.from([1,2,3], x => x * 2).join(',')"), "2,4,6");
+    assert_eq!(
+        eval_str("Array.from([1,2,3], x => x * 2).join(',')"),
+        "2,4,6"
+    );
 }
 
 #[test]
@@ -306,7 +379,10 @@ fn array_flat() {
 
 #[test]
 fn array_flat_map() {
-    assert_eq!(eval_str("[1,2,3].flatMap(x => [x, x*2]).join(',')"), "1,2,2,4,3,6");
+    assert_eq!(
+        eval_str("[1,2,3].flatMap(x => [x, x*2]).join(',')"),
+        "1,2,2,4,3,6"
+    );
 }
 
 #[test]
@@ -316,14 +392,19 @@ fn array_at() {
 
 #[test]
 fn array_entries() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let arr = [10,20,30];
         let result = [];
         for (let [i, v] of arr.entries()) {
             result.push(i + ':' + v);
         }
         console.log(result.join(','));
-    "#), "0:10,1:20,2:30");
+    "#
+        ),
+        "0:10,1:20,2:30"
+    );
 }
 
 // ES2023
@@ -339,10 +420,15 @@ fn array_to_sorted() {
 
 #[test]
 fn array_find_last() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let result = [1,2,3,4].findLast(x => x < 4);
         console.log(result);
-    "#), "3");
+    "#
+        ),
+        "3"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -401,7 +487,10 @@ fn string_at() {
 
 #[test]
 fn string_from_char_code() {
-    assert_eq!(eval_str("String.fromCharCode(72, 101, 108, 108, 111)"), "Hello");
+    assert_eq!(
+        eval_str("String.fromCharCode(72, 101, 108, 108, 111)"),
+        "Hello"
+    );
 }
 
 #[test]
@@ -435,7 +524,10 @@ fn number_is_integer() {
 #[test]
 fn number_is_safe_integer() {
     assert_eq!(eval_str("Number.isSafeInteger(42)"), "true");
-    assert_eq!(eval_str("Number.isSafeInteger(Number.MAX_SAFE_INTEGER)"), "true");
+    assert_eq!(
+        eval_str("Number.isSafeInteger(Number.MAX_SAFE_INTEGER)"),
+        "true"
+    );
 }
 
 #[test]
@@ -492,7 +584,10 @@ fn json_parse_basic() {
 
 #[test]
 fn json_stringify_basic() {
-    assert_eq!(eval_str(r#"JSON.stringify({a: 1, b: 'hello'})"#), r#"{"a":1,"b":"hello"}"#);
+    assert_eq!(
+        eval_str(r#"JSON.stringify({a: 1, b: 'hello'})"#),
+        r#"{"a":1,"b":"hello"}"#
+    );
 }
 
 #[test]
@@ -531,11 +626,16 @@ fn object_freeze() {
 
 #[test]
 fn object_create() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let proto = { greet() { return 'hi'; } };
         let obj = Object.create(proto);
         obj.greet()
-    "#), "hi");
+    "#
+        ),
+        "hi"
+    );
 }
 
 #[test]
@@ -558,26 +658,39 @@ fn object_has_own() {
 
 #[test]
 fn object_get_own_property_names() {
-    assert_eq!(eval_str("Object.getOwnPropertyNames({a:1,b:2}).length"), "2");
+    assert_eq!(
+        eval_str("Object.getOwnPropertyNames({a:1,b:2}).length"),
+        "2"
+    );
 }
 
 #[test]
 fn object_set_prototype_of() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let proto = { greet() { return 'hello'; } };
         let obj = {};
         Object.setPrototypeOf(obj, proto);
         obj.greet()
-    "#), "hello");
+    "#
+        ),
+        "hello"
+    );
 }
 
 #[test]
 fn object_define_property() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let obj = {};
         Object.defineProperty(obj, 'x', { value: 42, writable: false });
         obj.x
-    "#), "42");
+    "#
+        ),
+        "42"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -632,7 +745,10 @@ fn spread_object() {
 
 #[test]
 fn rest_params() {
-    assert_eq!(eval_str("function f(a, ...rest) { return rest.length; } f(1,2,3)"), "2");
+    assert_eq!(
+        eval_str("function f(a, ...rest) { return rest.length; } f(1,2,3)"),
+        "2"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -641,20 +757,136 @@ fn rest_params() {
 
 #[test]
 fn for_of_array() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let sum = 0;
         for (let x of [1,2,3,4]) { sum += x; }
         console.log(sum);
-    "#), "10");
+    "#
+        ),
+        "10"
+    );
+}
+
+#[test]
+fn webpack_style_export_getter_returns_constructor() {
+    assert_eq!(
+        eval_str(
+            r#"
+        let exports = {};
+        class Logger {
+            constructor(name) { this.name = name; }
+            value() { return this.name; }
+        }
+        Object.defineProperty(exports, "V", {
+            enumerable: true,
+            get: () => Logger
+        });
+        let instance = new exports.V("ok");
+        instance.value()
+    "#
+        ),
+        "ok"
+    );
+}
+
+#[test]
+fn webpack_style_nested_export_getter_returns_constructor() {
+    assert_eq!(
+        eval_str(
+            r#"
+        let definition = {};
+        class ConfigService {
+            constructor() { this.kind = "config"; }
+        }
+        Object.defineProperty(definition, "w", {
+            enumerable: true,
+            get: () => ConfigService
+        });
+        let namespace = { definition };
+        let instance = new namespace.definition.w();
+        instance.kind
+    "#
+        ),
+        "config"
+    );
+}
+
+#[test]
+fn new_member_expression_binds_before_constructor_call() {
+    assert_eq!(
+        eval_str(
+            r#"
+        let exports = {};
+        class Logger {
+            constructor(name) { this.name = name; }
+            value() { return this.name; }
+        }
+        exports.V = Logger;
+        let instance = new exports.V("ok");
+        instance.value()
+    "#
+        ),
+        "ok"
+    );
+}
+
+#[test]
+fn new_nested_member_expression_binds_before_constructor_call() {
+    assert_eq!(
+        eval_str(
+            r#"
+        let root = {
+            services: {
+                Logger: class {
+                    constructor(name) { this.name = name; }
+                    value() { return this.name; }
+                }
+            }
+        };
+        let instance = new root.services.Logger("nested");
+        instance.value()
+    "#
+        ),
+        "nested"
+    );
+}
+
+#[test]
+fn closure_can_capture_later_class_declaration_binding() {
+    assert_eq!(
+        eval_str(
+            r#"
+        let exports = {};
+        Object.defineProperty(exports, "V", {
+            enumerable: true,
+            get: () => Logger
+        });
+        class Logger {
+            constructor(name) { this.name = name; }
+            value() { return this.name; }
+        }
+        let instance = new exports.V("late");
+        instance.value()
+    "#
+        ),
+        "late"
+    );
 }
 
 #[test]
 fn for_in_object() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let keys = [];
         for (let k in {a:1, b:2}) { keys.push(k); }
         console.log(keys.join(','));
-    "#), "a,b");
+    "#
+        ),
+        "a,b"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -663,22 +895,32 @@ fn for_in_object() {
 
 #[test]
 fn try_catch() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let result;
         try { throw new Error('oops'); } catch(e) { result = e.message; }
         result
-    "#), "oops");
+    "#
+        ),
+        "oops"
+    );
 }
 
 #[test]
 fn try_finally() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         try {
             console.log('try');
         } finally {
             console.log('finally');
         }
-    "#), "try\nfinally");
+    "#
+        ),
+        "try\nfinally"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -692,7 +934,10 @@ fn symbol_basic() {
 
 #[test]
 fn symbol_for() {
-    assert_eq!(eval_str("Symbol.for('test') === Symbol.for('test')"), "true");
+    assert_eq!(
+        eval_str("Symbol.for('test') === Symbol.for('test')"),
+        "true"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -701,22 +946,32 @@ fn symbol_for() {
 
 #[test]
 fn map_basic() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let m = new Map();
         m.set('a', 1);
         m.set('b', 2);
         m.get('b')
-    "#), "2");
+    "#
+        ),
+        "2"
+    );
 }
 
 #[test]
 fn map_size() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let m = new Map();
         m.set('a', 1);
         m.set('b', 2);
         console.log(m.size);
-    "#), "2");
+    "#
+        ),
+        "2"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -725,10 +980,15 @@ fn map_size() {
 
 #[test]
 fn set_basic() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let s = new Set([1, 2, 3, 2, 1]);
         s.size
-    "#), "3");
+    "#
+        ),
+        "3"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -737,14 +997,19 @@ fn set_basic() {
 
 #[test]
 fn proxy_get_trap() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let target = { a: 1, b: 2 };
         let handler = {
             get(obj, prop) { return prop in obj ? obj[prop] * 10 : -1; }
         };
         let p = new Proxy(target, handler);
         console.log(p.a);
-    "#), "10");
+    "#
+        ),
+        "10"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -762,13 +1027,22 @@ fn reflect_get() {
 
 #[test]
 fn regexp_test() {
-    assert_eq!(eval_console("let re = /hello/; console.log(re.test('hello world'));"), "true");
-    assert_eq!(eval_console("let re = /xyz/; console.log(re.test('hello world'));"), "false");
+    assert_eq!(
+        eval_console("let re = /hello/; console.log(re.test('hello world'));"),
+        "true"
+    );
+    assert_eq!(
+        eval_console("let re = /xyz/; console.log(re.test('hello world'));"),
+        "false"
+    );
 }
 
 #[test]
 fn regexp_exec() {
-    assert_eq!(eval_console("let re = /([0-9]+)/; let m = re.exec('abc123'); console.log(m[1]);"), "123");
+    assert_eq!(
+        eval_console("let re = /([0-9]+)/; let m = re.exec('abc123'); console.log(m[1]);"),
+        "123"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -786,12 +1060,17 @@ fn date_now() {
 
 #[test]
 fn typed_array_basic() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let buf = new ArrayBuffer(8);
         let view = new Int32Array(buf);
         view[0] = 42;
         view[0]
-    "#), "42");
+    "#
+        ),
+        "42"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -800,11 +1079,16 @@ fn typed_array_basic() {
 
 #[test]
 fn weakref_basic() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let obj = {value: 42};
         let ref1 = new WeakRef(obj);
         console.log(ref1.deref().value);
-    "#), "42");
+    "#
+        ),
+        "42"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -843,15 +1127,23 @@ fn error_types() {
     assert_eq!(eval_str("new TypeError('bad').name"), "TypeError");
     assert_eq!(eval_str("new RangeError('out').name"), "RangeError");
     assert_eq!(eval_str("new SyntaxError('parse').name"), "SyntaxError");
-    assert_eq!(eval_str("new ReferenceError('undef').name"), "ReferenceError");
+    assert_eq!(
+        eval_str("new ReferenceError('undef').name"),
+        "ReferenceError"
+    );
 }
 
 #[test]
 fn aggregate_error() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let e = new AggregateError([new Error('a'), new Error('b')], 'all failed');
         e.errors.length
-    "#), "2");
+    "#
+        ),
+        "2"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -860,19 +1152,26 @@ fn aggregate_error() {
 
 #[test]
 fn closure_basic() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         function counter() {
             let n = 0;
             return function() { n++; return n; };
         }
         let c = counter();
         c(); c(); c()
-    "#), "3");
+    "#
+        ),
+        "3"
+    );
 }
 
 #[test]
 fn closure_in_loop() {
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let fns = [];
         for (let i = 0; i < 3; i++) {
             fns.push(() => i);
@@ -880,7 +1179,10 @@ fn closure_in_loop() {
         console.log(fns[0]());
         console.log(fns[1]());
         console.log(fns[2]());
-    "#), "0\n1\n2");
+    "#
+        ),
+        "0\n1\n2"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -889,7 +1191,9 @@ fn closure_in_loop() {
 
 #[test]
 fn switch_basic() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let x = 2;
         let result;
         switch(x) {
@@ -898,7 +1202,10 @@ fn switch_basic() {
             default: result = 'other';
         }
         result
-    "#), "two");
+    "#
+        ),
+        "two"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -907,11 +1214,16 @@ fn switch_basic() {
 
 #[test]
 fn computed_property() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let key = 'x';
         let obj = { [key]: 42 };
         obj.x
-    "#), "42");
+    "#
+        ),
+        "42"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -948,11 +1260,16 @@ fn nullish_assign() {
 
 #[test]
 fn do_while_loop() {
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         let i = 0;
         do { i++; } while (i < 5);
         i
-    "#), "5");
+    "#
+        ),
+        "5"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -962,7 +1279,9 @@ fn do_while_loop() {
 #[test]
 fn labeled_break() {
     // Simple labeled break test
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         let found = false;
         outer: for (let i = 0; i < 3; i++) {
             for (let j = 0; j < 3; j++) {
@@ -970,7 +1289,10 @@ fn labeled_break() {
             }
         }
         console.log(found);
-    "#), "true");
+    "#
+        ),
+        "true"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -980,7 +1302,9 @@ fn labeled_break() {
 #[test]
 fn async_method_object_literal() {
     // async method shorthand in object literal must parse without error
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         const obj = {
             async init() { return 42; },
             async play(code) { return code + 1; },
@@ -989,13 +1313,18 @@ fn async_method_object_literal() {
         console.log(typeof obj.init);
         console.log(typeof obj.play);
         console.log(obj.normal());
-    "#), "function\nfunction\n10");
+    "#
+        ),
+        "function\nfunction\n10"
+    );
 }
 
 #[test]
 fn async_method_class() {
     // async method in class body
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         class MyClass {
             async fetchData() { return 99; }
             sync_method() { return 1; }
@@ -1003,22 +1332,32 @@ fn async_method_class() {
         var mc = new MyClass();
         console.log(typeof mc.fetchData);
         console.log(mc.sync_method());
-    "#), "function\n1");
+    "#
+        ),
+        "function\n1"
+    );
 }
 
 #[test]
 fn async_as_property_name() {
     // 'async' used as a normal property name (not a method modifier)
-    assert_eq!(eval_str(r#"
+    assert_eq!(
+        eval_str(
+            r#"
         const obj = { async: true };
         obj.async
-    "#), "true");
+    "#
+        ),
+        "true"
+    );
 }
 
 #[test]
 fn async_method_strudel_pattern() {
     // Real-world pattern from strudel.js
-    assert_eq!(eval_console(r#"
+    assert_eq!(
+        eval_console(
+            r#"
         const StrudelPlayer = {
             isPlaying: false,
             async init() {
@@ -1036,5 +1375,8 @@ fn async_method_strudel_pattern() {
         console.log(typeof StrudelPlayer.init);
         console.log(typeof StrudelPlayer.play);
         console.log(typeof StrudelPlayer.stop);
-    "#), "false\nfunction\nfunction\nfunction");
+    "#
+        ),
+        "false\nfunction\nfunction\nfunction"
+    );
 }

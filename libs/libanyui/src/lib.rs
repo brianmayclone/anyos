@@ -62,20 +62,20 @@ impl core::fmt::Write for LogBuf {
 mod compositor;
 mod control;
 mod controls;
+mod dialogs;
 pub mod draw;
 mod event_loop;
 pub mod font_bitmap;
+pub mod icons;
 mod layout;
 mod marshal;
 pub mod syscall;
-mod timer;
-mod dialogs;
-pub mod icons;
 pub mod theme;
+mod timer;
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use control::{Control, ControlId, ControlKind, Callback, DockStyle, Orientation};
+use control::{Callback, Control, ControlId, ControlKind, DockStyle, Orientation};
 
 // ── Compositor window handle ─────────────────────────────────────────
 
@@ -129,6 +129,7 @@ pub(crate) struct PopupInfo {
     /// The context menu control being displayed in the popup.
     pub menu_id: ControlId,
     /// Index into st.windows for the parent window that owns the menu.
+    #[allow(dead_code)]
     pub owner_win_idx: usize,
     /// Shadow margin (pixels of padding around the menu for shadow rendering).
     pub margin: i32,
@@ -280,17 +281,27 @@ pub(crate) fn mark_needs_layout() {
 static mut STATE: Option<AnyuiState> = None;
 
 pub(crate) fn state() -> &'static mut AnyuiState {
-    unsafe { STATE.as_mut().expect("anyui not initialized") }
+    unsafe {
+        (*core::ptr::addr_of_mut!(STATE))
+            .as_mut()
+            .expect("anyui not initialized")
+    }
 }
 
 /// Fullscreen info: low 32 bits = (width<<16)|height, high 32 bits = stride.
-pub(crate) static FULLSCREEN_INFO: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(crate) static FULLSCREEN_INFO: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 /// Fullscreen direct framebuffer pointer (0 if not in fullscreen or SHM mode).
-pub(crate) static FULLSCREEN_FB_PTR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+pub(crate) static FULLSCREEN_FB_PTR: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
 
 // ── Allocator ────────────────────────────────────────────────────────
 
-libheap::dll_allocator!(crate::syscall::sbrk, crate::syscall::mmap, crate::syscall::munmap);
+libheap::dll_allocator!(
+    crate::syscall::sbrk,
+    crate::syscall::mmap,
+    crate::syscall::munmap
+);
 
 // ── Panic handler ────────────────────────────────────────────────────
 
@@ -376,7 +387,9 @@ pub extern "C" fn anyui_shutdown() {
     for cw in &st.comp_windows {
         compositor::destroy_window(channel_id, cw.window_id, cw.shm_id);
     }
-    unsafe { STATE = None; }
+    unsafe {
+        STATE = None;
+    }
 }
 
 // ── Control creation ─────────────────────────────────────────────────
@@ -415,8 +428,16 @@ pub extern "C" fn anyui_create_window(
     // All coordinates from the app are LOGICAL pixels. Scale to physical.
     // x/y == -1 is the auto-placement sentinel (CW_USEDEFAULT = 0xFFFF) —
     // pass it through unscaled so the compositor detects it correctly.
-    let phys_x = if x == -1 { -1 } else { crate::theme::scale_i32(x) };
-    let phys_y = if y == -1 { -1 } else { crate::theme::scale_i32(y) };
+    let phys_x = if x == -1 {
+        -1
+    } else {
+        crate::theme::scale_i32(x)
+    };
+    let phys_y = if y == -1 {
+        -1
+    } else {
+        crate::theme::scale_i32(y)
+    };
     let phys_w = crate::theme::scale(w);
     let phys_h = crate::theme::scale(h);
 
@@ -424,11 +445,18 @@ pub extern "C" fn anyui_create_window(
     // Set WIN_FLAG_DPI_AWARE (0x200) so the compositor knows this window
     // renders at physical resolution and does not need content upscaling.
     let dpi_flags = flags | 0x200;
-    let (window_id, shm_id, surface) =
-        match compositor::create_window(st.channel_id, st.sub_id, phys_x, phys_y, phys_w, phys_h, dpi_flags) {
-            Some(result) => result,
-            None => return 0,
-        };
+    let (window_id, shm_id, surface) = match compositor::create_window(
+        st.channel_id,
+        st.sub_id,
+        phys_x,
+        phys_y,
+        phys_w,
+        phys_h,
+        dpi_flags,
+    ) {
+        Some(result) => result,
+        None => return 0,
+    };
 
     // Set title
     compositor::set_title(st.channel_id, window_id, &title_buf[..len]);
@@ -438,7 +466,9 @@ pub extern "C" fn anyui_create_window(
     let ctrl = controls::create_control(ControlKind::Window, id, 0, 0, 0, w, h, &title_buf[..len]);
     st.controls.push(ctrl);
     st.windows.push(id);
-    let pixel_count = (phys_w as usize).saturating_mul(phys_h as usize).min(16384 * 16384);
+    let pixel_count = (phys_w as usize)
+        .saturating_mul(phys_h as usize)
+        .min(16384 * 16384);
     st.comp_windows.push(CompWindow {
         window_id,
         shm_id,
@@ -501,11 +531,7 @@ pub extern "C" fn anyui_add_control(
 /// Use `anyui_set_position()`, `anyui_set_size()` to configure, then
 /// `anyui_add_child()` to attach it to a parent container.
 #[no_mangle]
-pub extern "C" fn anyui_create_control(
-    kind: u32,
-    text: *const u8,
-    text_len: u32,
-) -> ControlId {
+pub extern "C" fn anyui_create_control(kind: u32, text: *const u8, text_len: u32) -> ControlId {
     let st = state();
     let id = st.next_id;
     st.next_id += 1;
@@ -535,7 +561,9 @@ pub extern "C" fn anyui_add_child(parent: ControlId, child: ControlId) {
         c.set_parent(parent);
     }
     // Add to parent's children list
-    let parent_is_radio_group = st.controls.iter()
+    let parent_is_radio_group = st
+        .controls
+        .iter()
         .find(|c| c.id() == parent)
         .map(|c| c.kind() == control::ControlKind::RadioGroup)
         .unwrap_or(false);
@@ -627,7 +655,10 @@ pub extern "C" fn anyui_set_state(id: ControlId, value: u32) {
 #[no_mangle]
 pub extern "C" fn anyui_get_state(id: ControlId) -> u32 {
     let st = state();
-    st.controls.iter().find(|c| c.id() == id).map_or(0, |c| c.state_val())
+    st.controls
+        .iter()
+        .find(|c| c.id() == id)
+        .map_or(0, |c| c.state_val())
 }
 
 // ── Layout properties ────────────────────────────────────────────────
@@ -636,7 +667,12 @@ pub extern "C" fn anyui_get_state(id: ControlId) -> u32 {
 pub extern "C" fn anyui_set_padding(id: ControlId, left: i32, top: i32, right: i32, bottom: i32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        ctrl.base_mut().padding = control::Padding { left, top, right, bottom };
+        ctrl.base_mut().padding = control::Padding {
+            left,
+            top,
+            right,
+            bottom,
+        };
         ctrl.base_mut().mark_dirty();
     }
     mark_needs_layout();
@@ -646,7 +682,12 @@ pub extern "C" fn anyui_set_padding(id: ControlId, left: i32, top: i32, right: i
 pub extern "C" fn anyui_set_margin(id: ControlId, left: i32, top: i32, right: i32, bottom: i32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        ctrl.base_mut().margin = control::Margin { left, top, right, bottom };
+        ctrl.base_mut().margin = control::Margin {
+            left,
+            top,
+            right,
+            bottom,
+        };
         ctrl.base_mut().mark_dirty();
     }
     mark_needs_layout();
@@ -717,7 +758,9 @@ pub extern "C" fn anyui_set_font_size(id: ControlId, size: u32) {
 #[no_mangle]
 pub extern "C" fn anyui_get_font_size(id: ControlId) -> u32 {
     let st = state();
-    st.controls.iter().find(|c| c.id() == id)
+    st.controls
+        .iter()
+        .find(|c| c.id() == id)
         .map_or(14, |c| c.get_font_size() as u32)
 }
 
@@ -895,7 +938,9 @@ fn as_textarea(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::textarea::T
     }
 }
 
-fn as_autocomplete_textfield(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::autocomplete_textfield::AutoCompleteTextField> {
+fn as_autocomplete_textfield(
+    ctrl: &mut Box<dyn Control>,
+) -> Option<&mut controls::autocomplete_textfield::AutoCompleteTextField> {
     if ctrl.kind() == ControlKind::AutoCompleteTextField {
         let raw: *mut dyn Control = &mut **ctrl;
         Some(unsafe { &mut *(raw as *mut controls::autocomplete_textfield::AutoCompleteTextField) })
@@ -909,7 +954,11 @@ pub extern "C" fn anyui_textfield_set_prefix(id: ControlId, icon_code: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tf) = as_textfield(ctrl) {
-            let new_val = if icon_code == 0 { None } else { Some(icon_code) };
+            let new_val = if icon_code == 0 {
+                None
+            } else {
+                Some(icon_code)
+            };
             if tf.prefix_icon != new_val {
                 tf.prefix_icon = new_val;
                 tf.text_base.base.mark_dirty();
@@ -923,7 +972,11 @@ pub extern "C" fn anyui_textfield_set_postfix(id: ControlId, icon_code: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tf) = as_textfield(ctrl) {
-            let new_val = if icon_code == 0 { None } else { Some(icon_code) };
+            let new_val = if icon_code == 0 {
+                None
+            } else {
+                Some(icon_code)
+            };
             if tf.postfix_icon != new_val {
                 tf.postfix_icon = new_val;
                 tf.text_base.base.mark_dirty();
@@ -1042,7 +1095,14 @@ pub extern "C" fn anyui_canvas_clear(id: ControlId, color: u32) {
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_canvas_fill_rect(id: ControlId, x: i32, y: i32, w: u32, h: u32, color: u32) {
+pub extern "C" fn anyui_canvas_fill_rect(
+    id: ControlId,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    color: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if ctrl.kind() == ControlKind::Canvas {
@@ -1054,7 +1114,14 @@ pub extern "C" fn anyui_canvas_fill_rect(id: ControlId, x: i32, y: i32, w: u32, 
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_canvas_draw_line(id: ControlId, x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+pub extern "C" fn anyui_canvas_draw_line(
+    id: ControlId,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if ctrl.kind() == ControlKind::Canvas {
@@ -1066,7 +1133,15 @@ pub extern "C" fn anyui_canvas_draw_line(id: ControlId, x0: i32, y0: i32, x1: i3
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_canvas_draw_rect(id: ControlId, x: i32, y: i32, w: u32, h: u32, color: u32, thickness: u32) {
+pub extern "C" fn anyui_canvas_draw_rect(
+    id: ControlId,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    color: u32,
+    thickness: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if ctrl.kind() == ControlKind::Canvas {
@@ -1078,7 +1153,13 @@ pub extern "C" fn anyui_canvas_draw_rect(id: ControlId, x: i32, y: i32, w: u32, 
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_canvas_draw_circle(id: ControlId, cx: i32, cy: i32, radius: i32, color: u32) {
+pub extern "C" fn anyui_canvas_draw_circle(
+    id: ControlId,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    color: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if ctrl.kind() == ControlKind::Canvas {
@@ -1090,7 +1171,13 @@ pub extern "C" fn anyui_canvas_draw_circle(id: ControlId, cx: i32, cy: i32, radi
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_canvas_fill_circle(id: ControlId, cx: i32, cy: i32, radius: i32, color: u32) {
+pub extern "C" fn anyui_canvas_fill_circle(
+    id: ControlId,
+    cx: i32,
+    cy: i32,
+    radius: i32,
+    color: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if ctrl.kind() == ControlKind::Canvas {
@@ -1170,20 +1257,44 @@ pub extern "C" fn anyui_canvas_set_interactive(id: ControlId, enabled: u32) {
 
 /// Get last mouse position and button state. Returns via out pointers.
 #[no_mangle]
-pub extern "C" fn anyui_canvas_get_mouse(id: ControlId, out_x: *mut i32, out_y: *mut i32, out_button: *mut u32) {
+pub extern "C" fn anyui_canvas_get_mouse(
+    id: ControlId,
+    out_x: *mut i32,
+    out_y: *mut i32,
+    out_button: *mut u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
         if let Some(cv) = as_canvas_ref(ctrl) {
-            if !out_x.is_null() { unsafe { *out_x = cv.last_mouse_x; } }
-            if !out_y.is_null() { unsafe { *out_y = cv.last_mouse_y; } }
-            if !out_button.is_null() { unsafe { *out_button = cv.mouse_button; } }
+            if !out_x.is_null() {
+                unsafe {
+                    *out_x = cv.last_mouse_x;
+                }
+            }
+            if !out_y.is_null() {
+                unsafe {
+                    *out_y = cv.last_mouse_y;
+                }
+            }
+            if !out_button.is_null() {
+                unsafe {
+                    *out_button = cv.mouse_button;
+                }
+            }
         }
     }
 }
 
 /// Draw a filled ellipse.
 #[no_mangle]
-pub extern "C" fn anyui_canvas_fill_ellipse(id: ControlId, cx: i32, cy: i32, rx: i32, ry: i32, color: u32) {
+pub extern "C" fn anyui_canvas_fill_ellipse(
+    id: ControlId,
+    cx: i32,
+    cy: i32,
+    rx: i32,
+    ry: i32,
+    color: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(cv) = as_canvas(ctrl) {
@@ -1194,7 +1305,14 @@ pub extern "C" fn anyui_canvas_fill_ellipse(id: ControlId, cx: i32, cy: i32, rx:
 
 /// Draw an ellipse outline.
 #[no_mangle]
-pub extern "C" fn anyui_canvas_draw_ellipse(id: ControlId, cx: i32, cy: i32, rx: i32, ry: i32, color: u32) {
+pub extern "C" fn anyui_canvas_draw_ellipse(
+    id: ControlId,
+    cx: i32,
+    cy: i32,
+    rx: i32,
+    ry: i32,
+    color: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(cv) = as_canvas(ctrl) {
@@ -1216,7 +1334,15 @@ pub extern "C" fn anyui_canvas_flood_fill(id: ControlId, x: i32, y: i32, color: 
 
 /// Draw a thick line (filled circles at each Bresenham step).
 #[no_mangle]
-pub extern "C" fn anyui_canvas_draw_thick_line(id: ControlId, x0: i32, y0: i32, x1: i32, y1: i32, color: u32, thickness: u32) {
+pub extern "C" fn anyui_canvas_draw_thick_line(
+    id: ControlId,
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+    color: u32,
+    thickness: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(cv) = as_canvas(ctrl) {
@@ -1272,10 +1398,18 @@ pub extern "C" fn anyui_canvas_copy_to(id: ControlId, dst: *mut u32, len: u32) -
 /// - `size`: font size in pixels
 #[no_mangle]
 pub extern "C" fn anyui_canvas_draw_text(
-    id: ControlId, x: i32, y: i32, color: u32,
-    font_id: u32, size: u16, text_ptr: *const u8, text_len: u32,
+    id: ControlId,
+    x: i32,
+    y: i32,
+    color: u32,
+    font_id: u32,
+    size: u16,
+    text_ptr: *const u8,
+    text_len: u32,
 ) {
-    if text_ptr.is_null() || text_len == 0 { return; }
+    if text_ptr.is_null() || text_len == 0 {
+        return;
+    }
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(cv) = as_canvas(ctrl) {
@@ -1327,14 +1461,26 @@ pub extern "C" fn anyui_imageview_set_scale_mode(id: ControlId, mode: u32) {
 
 /// Get the original image dimensions. Returns via out pointers. Returns 1 on success.
 #[no_mangle]
-pub extern "C" fn anyui_imageview_get_image_size(id: ControlId, out_w: *mut u32, out_h: *mut u32) -> u32 {
+pub extern "C" fn anyui_imageview_get_image_size(
+    id: ControlId,
+    out_w: *mut u32,
+    out_h: *mut u32,
+) -> u32 {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
         if ctrl.kind() == ControlKind::ImageView {
             let raw: *const dyn Control = &**ctrl;
             let iv = unsafe { &*(raw as *const controls::image_view::ImageView) };
-            if !out_w.is_null() { unsafe { *out_w = iv.img_w; } }
-            if !out_h.is_null() { unsafe { *out_h = iv.img_h; } }
+            if !out_w.is_null() {
+                unsafe {
+                    *out_w = iv.img_w;
+                }
+            }
+            if !out_h.is_null() {
+                unsafe {
+                    *out_h = iv.img_h;
+                }
+            }
             return 1;
         }
     }
@@ -1375,7 +1521,9 @@ pub extern "C" fn anyui_iconbutton_set_pixels(id: ControlId, data: *const u32, w
 
 // ── DataGrid ─────────────────────────────────────────────────────────
 
-fn as_data_grid(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::data_grid::DataGrid> {
+fn as_data_grid(
+    ctrl: &mut alloc::boxed::Box<dyn Control>,
+) -> Option<&mut controls::data_grid::DataGrid> {
     if ctrl.kind() == ControlKind::DataGrid {
         let raw: *mut dyn Control = &mut **ctrl;
         Some(unsafe { &mut *(raw as *mut controls::data_grid::DataGrid) })
@@ -1384,7 +1532,9 @@ fn as_data_grid(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut contro
     }
 }
 
-fn as_data_grid_ref(ctrl: &alloc::boxed::Box<dyn Control>) -> Option<&controls::data_grid::DataGrid> {
+fn as_data_grid_ref(
+    ctrl: &alloc::boxed::Box<dyn Control>,
+) -> Option<&controls::data_grid::DataGrid> {
     if ctrl.kind() == ControlKind::DataGrid {
         let raw: *const dyn Control = &**ctrl;
         Some(unsafe { &*(raw as *const controls::data_grid::DataGrid) })
@@ -1429,7 +1579,11 @@ pub extern "C" fn anyui_datagrid_set_column_width(id: ControlId, col_index: u32,
 
 /// Set the sort comparison type for a column (0 = string, 1 = numeric).
 #[no_mangle]
-pub extern "C" fn anyui_datagrid_set_column_sort_type(id: ControlId, col_index: u32, sort_type: u32) {
+pub extern "C" fn anyui_datagrid_set_column_sort_type(
+    id: ControlId,
+    col_index: u32,
+    sort_type: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(dg) = as_data_grid(ctrl) {
@@ -1455,7 +1609,13 @@ pub extern "C" fn anyui_datagrid_set_data(id: ControlId, data: *const u8, len: u
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_datagrid_set_cell(id: ControlId, row: u32, col: u32, text: *const u8, text_len: u32) {
+pub extern "C" fn anyui_datagrid_set_cell(
+    id: ControlId,
+    row: u32,
+    col: u32,
+    text: *const u8,
+    text_len: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(dg) = as_data_grid(ctrl) {
@@ -1470,14 +1630,22 @@ pub extern "C" fn anyui_datagrid_set_cell(id: ControlId, row: u32, col: u32, tex
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_datagrid_get_cell(id: ControlId, row: u32, col: u32, buf: *mut u8, max_len: u32) -> u32 {
+pub extern "C" fn anyui_datagrid_get_cell(
+    id: ControlId,
+    row: u32,
+    col: u32,
+    buf: *mut u8,
+    max_len: u32,
+) -> u32 {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
         if let Some(dg) = as_data_grid_ref(ctrl) {
             let text = dg.get_cell(row as usize, col as usize);
             let copy_len = text.len().min(max_len as usize);
             if !buf.is_null() && copy_len > 0 {
-                unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), buf, copy_len); }
+                unsafe {
+                    core::ptr::copy_nonoverlapping(text.as_ptr(), buf, copy_len);
+                }
             }
             return copy_len as u32;
         }
@@ -1745,15 +1913,38 @@ pub extern "C" fn anyui_datagrid_set_connectors(id: ControlId, data: *const u8, 
             let mut lines = alloc::vec::Vec::new();
             if !data.is_null() && count > 0 {
                 let entry_size = 16usize;
-                let bytes = unsafe { core::slice::from_raw_parts(data, count as usize * entry_size) };
+                let bytes =
+                    unsafe { core::slice::from_raw_parts(data, count as usize * entry_size) };
                 for i in 0..count as usize {
                     let off = i * entry_size;
-                    if off + entry_size > bytes.len() { break; }
-                    let start = u32::from_le_bytes([bytes[off], bytes[off+1], bytes[off+2], bytes[off+3]]) as usize;
-                    let end = u32::from_le_bytes([bytes[off+4], bytes[off+5], bytes[off+6], bytes[off+7]]) as usize;
-                    let color = u32::from_le_bytes([bytes[off+8], bytes[off+9], bytes[off+10], bytes[off+11]]);
-                    let filled = bytes[off+12] != 0;
-                    lines.push(controls::data_grid::ConnectorLine { start_row: start, end_row: end, color, filled });
+                    if off + entry_size > bytes.len() {
+                        break;
+                    }
+                    let start = u32::from_le_bytes([
+                        bytes[off],
+                        bytes[off + 1],
+                        bytes[off + 2],
+                        bytes[off + 3],
+                    ]) as usize;
+                    let end = u32::from_le_bytes([
+                        bytes[off + 4],
+                        bytes[off + 5],
+                        bytes[off + 6],
+                        bytes[off + 7],
+                    ]) as usize;
+                    let color = u32::from_le_bytes([
+                        bytes[off + 8],
+                        bytes[off + 9],
+                        bytes[off + 10],
+                        bytes[off + 11],
+                    ]);
+                    let filled = bytes[off + 12] != 0;
+                    lines.push(controls::data_grid::ConnectorLine {
+                        start_row: start,
+                        end_row: end,
+                        color,
+                        filled,
+                    });
                 }
             }
             dg.set_connector_lines(lines);
@@ -1774,7 +1965,9 @@ pub extern "C" fn anyui_datagrid_set_connector_column(id: ControlId, col: u32) {
 
 // ── TextEditor ────────────────────────────────────────────────────────
 
-fn as_text_editor(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::text_editor::TextEditor> {
+fn as_text_editor(
+    ctrl: &mut alloc::boxed::Box<dyn Control>,
+) -> Option<&mut controls::text_editor::TextEditor> {
     if ctrl.kind() == ControlKind::TextEditor {
         let raw: *mut dyn Control = &mut **ctrl;
         Some(unsafe { &mut *(raw as *mut controls::text_editor::TextEditor) })
@@ -1783,7 +1976,9 @@ fn as_text_editor(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut cont
     }
 }
 
-fn as_text_editor_ref(ctrl: &alloc::boxed::Box<dyn Control>) -> Option<&controls::text_editor::TextEditor> {
+fn as_text_editor_ref(
+    ctrl: &alloc::boxed::Box<dyn Control>,
+) -> Option<&controls::text_editor::TextEditor> {
     if ctrl.kind() == ControlKind::TextEditor {
         let raw: *const dyn Control = &**ctrl;
         Some(unsafe { &*(raw as *const controls::text_editor::TextEditor) })
@@ -1815,7 +2010,9 @@ pub extern "C" fn anyui_texteditor_get_text(id: ControlId, buf: *mut u8, max_len
             let text = te.get_text();
             let copy_len = text.len().min(max_len as usize);
             if !buf.is_null() && copy_len > 0 {
-                unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), buf, copy_len); }
+                unsafe {
+                    core::ptr::copy_nonoverlapping(text.as_ptr(), buf, copy_len);
+                }
             }
             return copy_len as u32;
         }
@@ -1852,8 +2049,16 @@ pub extern "C" fn anyui_texteditor_get_cursor(id: ControlId, out_row: *mut u32, 
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
         if let Some(te) = as_text_editor_ref(ctrl) {
             let (r, c) = te.cursor();
-            if !out_row.is_null() { unsafe { *out_row = r as u32; } }
-            if !out_col.is_null() { unsafe { *out_col = c as u32; } }
+            if !out_row.is_null() {
+                unsafe {
+                    *out_row = r as u32;
+                }
+            }
+            if !out_col.is_null() {
+                unsafe {
+                    *out_col = c as u32;
+                }
+            }
         }
     }
 }
@@ -2047,7 +2252,9 @@ pub extern "C" fn anyui_texteditor_ensure_line_visible(id: ControlId, line: u32)
 
 // ── TreeView ──────────────────────────────────────────────────────────
 
-fn as_tree_view(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut controls::tree_view::TreeView> {
+fn as_tree_view(
+    ctrl: &mut alloc::boxed::Box<dyn Control>,
+) -> Option<&mut controls::tree_view::TreeView> {
     if ctrl.kind() == ControlKind::TreeView {
         let raw: *mut dyn Control = &mut **ctrl;
         Some(unsafe { &mut *(raw as *mut controls::tree_view::TreeView) })
@@ -2056,7 +2263,9 @@ fn as_tree_view(ctrl: &mut alloc::boxed::Box<dyn Control>) -> Option<&mut contro
     }
 }
 
-fn as_tree_view_ref(ctrl: &alloc::boxed::Box<dyn Control>) -> Option<&controls::tree_view::TreeView> {
+fn as_tree_view_ref(
+    ctrl: &alloc::boxed::Box<dyn Control>,
+) -> Option<&controls::tree_view::TreeView> {
     if ctrl.kind() == ControlKind::TreeView {
         let raw: *const dyn Control = &**ctrl;
         Some(unsafe { &*(raw as *const controls::tree_view::TreeView) })
@@ -2066,11 +2275,20 @@ fn as_tree_view_ref(ctrl: &alloc::boxed::Box<dyn Control>) -> Option<&controls::
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_treeview_add_node(id: ControlId, parent_index: u32, text: *const u8, text_len: u32) -> u32 {
+pub extern "C" fn anyui_treeview_add_node(
+    id: ControlId,
+    parent_index: u32,
+    text: *const u8,
+    text_len: u32,
+) -> u32 {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tv) = as_tree_view(ctrl) {
-            let parent = if parent_index == u32::MAX { None } else { Some(parent_index as usize) };
+            let parent = if parent_index == u32::MAX {
+                None
+            } else {
+                Some(parent_index as usize)
+            };
             let slice = if !text.is_null() && text_len > 0 {
                 unsafe { core::slice::from_raw_parts(text, text_len as usize) }
             } else {
@@ -2093,7 +2311,12 @@ pub extern "C" fn anyui_treeview_remove_node(id: ControlId, index: u32) {
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_treeview_set_node_text(id: ControlId, index: u32, text: *const u8, text_len: u32) {
+pub extern "C" fn anyui_treeview_set_node_text(
+    id: ControlId,
+    index: u32,
+    text: *const u8,
+    text_len: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tv) = as_tree_view(ctrl) {
@@ -2108,7 +2331,13 @@ pub extern "C" fn anyui_treeview_set_node_text(id: ControlId, index: u32, text: 
 }
 
 #[no_mangle]
-pub extern "C" fn anyui_treeview_set_node_icon(id: ControlId, index: u32, pixels: *const u32, w: u32, h: u32) {
+pub extern "C" fn anyui_treeview_set_node_icon(
+    id: ControlId,
+    index: u32,
+    pixels: *const u32,
+    w: u32,
+    h: u32,
+) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(tv) = as_tree_view(ctrl) {
@@ -2310,7 +2539,9 @@ pub extern "C" fn anyui_open_popup(id: ControlId) {
         abs_x += b.x;
         abs_y += b.y;
         let pid = b.parent;
-        if pid == 0 { break; }
+        if pid == 0 {
+            break;
+        }
         match st.controls.iter().position(|c| c.id() == pid) {
             Some(pi) => cur = pi,
             None => break,
@@ -2330,7 +2561,7 @@ pub extern "C" fn anyui_open_popup(id: ControlId) {
     let phys_popup_h = crate::theme::scale(popup_h);
 
     // Find the owning window for this control.
-    let mut win_ctrl_id: ControlId = 0;
+    let win_ctrl_id: ControlId;
     let mut walk = ctrl_idx;
     loop {
         let b = st.controls[walk].base();
@@ -2340,7 +2571,10 @@ pub extern "C" fn anyui_open_popup(id: ControlId) {
         }
         match st.controls.iter().position(|c| c.id() == b.parent) {
             Some(pi) => walk = pi,
-            None => { win_ctrl_id = st.controls[walk].id(); break; }
+            None => {
+                win_ctrl_id = st.controls[walk].id();
+                break;
+            }
         }
     }
     let wi = match st.windows.iter().position(|&w| w == win_ctrl_id) {
@@ -2354,9 +2588,8 @@ pub extern "C" fn anyui_open_popup(id: ControlId) {
     };
 
     // Get parent window's screen position (physical).
-    let (content_x, content_y) = compositor::get_window_position(
-        st.channel_id, st.sub_id, comp_window_id,
-    );
+    let (content_x, content_y) =
+        compositor::get_window_position(st.channel_id, st.sub_id, comp_window_id);
 
     // Calculate popup screen position.
     let phys_margin = crate::theme::scale_i32(margin);
@@ -2371,15 +2604,22 @@ pub extern "C" fn anyui_open_popup(id: ControlId) {
     if popup_y + phys_popup_h as i32 > scr_h as i32 {
         popup_y = scr_h as i32 - phys_popup_h as i32;
     }
-    if popup_x < 0 { popup_x = 0; }
-    if popup_y < 0 { popup_y = 0; }
+    if popup_x < 0 {
+        popup_x = 0;
+    }
+    if popup_y < 0 {
+        popup_y = 0;
+    }
 
     // Create popup compositor window.
     let popup_flags: u32 = 0x01 | 0x02 | 0x04 | 0x100;
     if let Some((popup_win_id, shm_id, surface)) = compositor::create_window(
-        st.channel_id, st.sub_id,
-        popup_x, popup_y,
-        phys_popup_w, phys_popup_h,
+        st.channel_id,
+        st.sub_id,
+        popup_x,
+        popup_y,
+        phys_popup_w,
+        phys_popup_h,
         popup_flags,
     ) {
         st.controls[mi].set_position(0, 0);
@@ -2422,7 +2662,9 @@ pub extern "C" fn anyui_set_tooltip(id: ControlId, text: *const u8, len: u32) {
 static mut MSGBOX_DISMISSED: bool = false;
 
 extern "C" fn msgbox_ok_clicked(_id: u32, _event_type: u32, _userdata: u64) {
-    unsafe { MSGBOX_DISMISSED = true; }
+    unsafe {
+        MSGBOX_DISMISSED = true;
+    }
 }
 
 /// Compute logical (x, y) that centers a dialog of size (dlg_w, dlg_h)
@@ -2431,9 +2673,8 @@ pub(crate) fn center_on_owner(owner_win_id: ControlId, dlg_w: u32, dlg_h: u32) -
     let st = state();
     if let Some(idx) = st.windows.iter().position(|&w| w == owner_win_id) {
         let cw = &st.comp_windows[idx];
-        let (owner_px, owner_py) = compositor::get_window_position(
-            st.channel_id, st.sub_id, cw.window_id,
-        );
+        let (owner_px, owner_py) =
+            compositor::get_window_position(st.channel_id, st.sub_id, cw.window_id);
         let owner_pw = cw.width as i32;
         let owner_ph = cw.height as i32;
         let phys_dlg_w = theme::scale(dlg_w) as i32;
@@ -2461,7 +2702,9 @@ pub extern "C" fn anyui_message_box(
     btn_text_len: u32,
 ) {
     let st = state();
-    if st.windows.is_empty() { return; }
+    if st.windows.is_empty() {
+        return;
+    }
 
     let owner_win_id = *st.windows.last().unwrap();
 
@@ -2493,7 +2736,11 @@ pub extern "C" fn anyui_message_box(
     // For single-line messages, expand the dialog so the text fits.
     let (msg_tw, _) = draw::text_size_at(text_slice, scaled_fs);
     let text_area_w = msg_tw + 20; // some breathing room
-    let min_content = if text_area_w > btn_w { text_area_w } else { btn_w };
+    let min_content = if text_area_w > btn_w {
+        text_area_w
+    } else {
+        btn_w
+    };
     // 72 = icon area (52) + right margin (20), scale limits for HiDPI
     let min_dlg = theme::scale(320);
     let max_dlg = theme::scale(520);
@@ -2508,7 +2755,8 @@ pub extern "C" fn anyui_message_box(
         let mut start = 0;
         while start < text_slice.len() {
             // Find explicit newline
-            let chunk_end = text_slice[start..].iter()
+            let chunk_end = text_slice[start..]
+                .iter()
                 .position(|&b| b == b'\n')
                 .map(|p| start + p)
                 .unwrap_or(text_slice.len());
@@ -2518,7 +2766,9 @@ pub extern "C" fn anyui_message_box(
             let (cw, _) = draw::text_size_at(chunk, scaled_fs);
             if cw <= max_w || chunk.len() <= 1 {
                 // Fits — append as-is
-                if !wrapped.is_empty() { wrapped.push(b'\n'); }
+                if !wrapped.is_empty() {
+                    wrapped.push(b'\n');
+                }
                 wrapped.extend_from_slice(chunk);
             } else {
                 // Too wide — break at word boundaries
@@ -2528,16 +2778,24 @@ pub extern "C" fn anyui_message_box(
                     let mut best_end = chunk.len().min(line_start + 1); // at least 1 char
                     for i in (line_start + 1)..=chunk.len() {
                         let (pw, _) = draw::text_size_at(&chunk[line_start..i], scaled_fs);
-                        if pw > max_w { break; }
+                        if pw > max_w {
+                            break;
+                        }
                         best_end = i;
                     }
                     // Try to break at a space
                     if best_end < chunk.len() {
-                        if let Some(sp) = chunk[line_start..best_end].iter().rposition(|&b| b == b' ') {
-                            if sp > 0 { best_end = line_start + sp + 1; }
+                        if let Some(sp) =
+                            chunk[line_start..best_end].iter().rposition(|&b| b == b' ')
+                        {
+                            if sp > 0 {
+                                best_end = line_start + sp + 1;
+                            }
                         }
                     }
-                    if !wrapped.is_empty() { wrapped.push(b'\n'); }
+                    if !wrapped.is_empty() {
+                        wrapped.push(b'\n');
+                    }
                     wrapped.extend_from_slice(&chunk[line_start..best_end]);
                     line_start = best_end;
                     // Skip leading space on next line
@@ -2547,7 +2805,9 @@ pub extern "C" fn anyui_message_box(
                 }
             }
 
-            if chunk_end >= text_slice.len() { break; }
+            if chunk_end >= text_slice.len() {
+                break;
+            }
             start = chunk_end + 1; // skip '\n'
         }
     }
@@ -2567,11 +2827,17 @@ pub extern "C" fn anyui_message_box(
     // Create standalone MessageBox window
     // Flags: NOT_RESIZABLE(0x02) | NO_MINIMIZE(0x10) | NO_MAXIMIZE(0x20)
     let dlg_win_id = anyui_create_window(
-        title.as_ptr(), title.len() as u32,
-        dlg_x, dlg_y, dlg_w, dlg_h,
+        title.as_ptr(),
+        title.len() as u32,
+        dlg_x,
+        dlg_y,
+        dlg_w,
+        dlg_h,
         0x02 | 0x10 | 0x20,
     );
-    if dlg_win_id == 0 { return; }
+    if dlg_win_id == 0 {
+        return;
+    }
 
     // Make it modal to the owner window
     anyui_set_modal(dlg_win_id, owner_win_id);
@@ -2584,13 +2850,23 @@ pub extern "C" fn anyui_message_box(
 
     // Allocate child IDs
     let st = state();
-    let icon_id = st.next_id; st.next_id += 1;
-    let msg_id = st.next_id; st.next_id += 1;
-    let btn_id = st.next_id; st.next_id += 1;
+    let icon_id = st.next_id;
+    st.next_id += 1;
+    let msg_id = st.next_id;
+    st.next_id += 1;
+    let btn_id = st.next_id;
+    st.next_id += 1;
 
     // Icon label (round colored circle with centered letter)
     let mut icon = controls::create_control(
-        ControlKind::Label, icon_id, dlg_win_id, icon_x, icon_y, icon_sz, icon_sz, icon_char,
+        ControlKind::Label,
+        icon_id,
+        dlg_win_id,
+        icon_x,
+        icon_y,
+        icon_sz,
+        icon_sz,
+        icon_char,
     );
     icon.set_color(icon_color);
     icon.base_mut().state = 1; // center text
@@ -2605,7 +2881,14 @@ pub extern "C" fn anyui_message_box(
 
     // Message label (word-wrapped text)
     let msg = controls::create_control(
-        ControlKind::Label, msg_id, dlg_win_id, msg_x, icon_y, msg_label_w, msg_h, wrapped_slice,
+        ControlKind::Label,
+        msg_id,
+        dlg_win_id,
+        msg_x,
+        icon_y,
+        msg_label_w,
+        msg_h,
+        wrapped_slice,
     );
     st.controls.push(msg);
     if let Some(w) = st.controls.iter_mut().find(|c| c.id() == dlg_win_id) {
@@ -2614,8 +2897,13 @@ pub extern "C" fn anyui_message_box(
 
     // OK button (auto-sized)
     let btn = controls::create_control(
-        ControlKind::Button, btn_id, dlg_win_id,
-        ((dlg_w as i32) - btn_w as i32) / 2, (dlg_h as i32) - btn_margin as i32, btn_w, btn_h,
+        ControlKind::Button,
+        btn_id,
+        dlg_win_id,
+        ((dlg_w as i32) - btn_w as i32) / 2,
+        (dlg_h as i32) - btn_margin as i32,
+        btn_w,
+        btn_h,
         btn_slice,
     );
     st.controls.push(btn);
@@ -2633,12 +2921,18 @@ pub extern "C" fn anyui_message_box(
     }
 
     // Mini event loop — block until dismissed
-    unsafe { MSGBOX_DISMISSED = false; }
+    unsafe {
+        MSGBOX_DISMISSED = false;
+    }
     while !unsafe { MSGBOX_DISMISSED } {
         let t0 = syscall::uptime_ms();
-        if event_loop::run_once() == 0 { break; }
+        if event_loop::run_once() == 0 {
+            break;
+        }
         let elapsed = syscall::uptime_ms().wrapping_sub(t0);
-        if elapsed < 16 { syscall::sleep(16 - elapsed); }
+        if elapsed < 16 {
+            syscall::sleep(16 - elapsed);
+        }
     }
 
     // Destroy dialog window — auto-clears modal + removes all children
@@ -2700,11 +2994,7 @@ pub extern "C" fn anyui_quit() {
 /// The callback fires on the UI thread during run_once(), at approximately
 /// the given interval. Receives (timer_id, 0, userdata).
 #[no_mangle]
-pub extern "C" fn anyui_set_timer(
-    interval_ms: u32,
-    cb: control::Callback,
-    userdata: u64,
-) -> u32 {
+pub extern "C" fn anyui_set_timer(interval_ms: u32, cb: control::Callback, userdata: u64) -> u32 {
     state().timers.set_timer(interval_ms, cb, userdata)
 }
 
@@ -2744,9 +3034,15 @@ pub extern "C" fn anyui_remove(id: ControlId) {
 
     // Clear tracking for removed controls
     for &rid in &to_remove {
-        if st.focused == Some(rid) { st.focused = None; }
-        if st.pressed == Some(rid) { st.pressed = None; }
-        if st.hovered == Some(rid) { st.hovered = None; }
+        if st.focused == Some(rid) {
+            st.focused = None;
+        }
+        if st.pressed == Some(rid) {
+            st.pressed = None;
+        }
+        if st.hovered == Some(rid) {
+            st.hovered = None;
+        }
     }
 
     // Remove from parent's children
@@ -2767,7 +3063,9 @@ pub extern "C" fn anyui_remove(id: ControlId) {
 pub extern "C" fn anyui_remove_child(parent: ControlId, child: ControlId) {
     // Verify the child actually belongs to this parent
     let st = state();
-    let is_child = st.controls.iter()
+    let is_child = st
+        .controls
+        .iter()
         .find(|c| c.id() == child)
         .map(|c| c.parent_id() == parent)
         .unwrap_or(false);
@@ -2799,9 +3097,15 @@ pub extern "C" fn anyui_clear_children(parent: ControlId) {
 
     // Clear tracking for removed controls
     for &rid in &to_remove {
-        if st.focused == Some(rid) { st.focused = None; }
-        if st.pressed == Some(rid) { st.pressed = None; }
-        if st.hovered == Some(rid) { st.hovered = None; }
+        if st.focused == Some(rid) {
+            st.focused = None;
+        }
+        if st.pressed == Some(rid) {
+            st.pressed = None;
+        }
+        if st.hovered == Some(rid) {
+            st.hovered = None;
+        }
     }
 
     // Clear parent's children list
@@ -2829,9 +3133,9 @@ pub extern "C" fn anyui_resize_window(win_id: ControlId, new_w: u32, new_h: u32)
         if cw.logical_width == new_w && cw.logical_height == new_h {
             return;
         }
-        if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
-            st.channel_id, cw.window_id, cw.shm_id, phys_w, phys_h,
-        ) {
+        if let Some((new_shm_id, new_surface)) =
+            compositor::resize_shm(st.channel_id, cw.window_id, cw.shm_id, phys_w, phys_h)
+        {
             cw.shm_id = new_shm_id;
             cw.surface = new_surface;
         }
@@ -2876,7 +3180,7 @@ pub extern "C" fn anyui_get_fullscreen_info(out: *mut u32) -> u32 {
     let fb_ptr = FULLSCREEN_FB_PTR.load(core::sync::atomic::Ordering::Relaxed);
     if !out.is_null() {
         unsafe {
-            *out = packed_size >> 16;           // width
+            *out = packed_size >> 16; // width
             *out.add(1) = packed_size & 0xFFFF; // height
             *out.add(2) = stride;
             *out.add(3) = fb_ptr;
@@ -2996,7 +3300,11 @@ pub extern "C" fn anyui_clear_modal(modal_id: ControlId) {
     let st = state();
 
     // Find and remove from modal stack
-    if let Some(pos) = st.modal_stack.iter().position(|e| e.modal_win_id == modal_id) {
+    if let Some(pos) = st
+        .modal_stack
+        .iter()
+        .position(|e| e.modal_win_id == modal_id)
+    {
         st.modal_stack.remove(pos);
 
         // Tell compositor to clear the relationship
@@ -3025,11 +3333,7 @@ fn collect_descendants(st: &AnyuiState, id: ControlId, out: &mut Vec<ControlId>)
 pub extern "C" fn anyui_set_blur_behind(id: ControlId, radius: u32) {
     let st = state();
     if let Some(idx) = st.windows.iter().position(|&w| w == id) {
-        compositor::set_blur_behind(
-            st.channel_id,
-            st.comp_windows[idx].window_id,
-            radius,
-        );
+        compositor::set_blur_behind(st.channel_id, st.comp_windows[idx].window_id, radius);
     }
 }
 
@@ -3075,8 +3379,16 @@ pub extern "C" fn anyui_screen_size(out_w: *mut u32, out_h: *mut u32) {
     // Return logical screen dimensions so apps work entirely in logical space.
     let lw = crate::theme::unscale_u32(w);
     let lh = crate::theme::unscale_u32(h);
-    if !out_w.is_null() { unsafe { *out_w = lw; } }
-    if !out_h.is_null() { unsafe { *out_h = lh; } }
+    if !out_w.is_null() {
+        unsafe {
+            *out_w = lw;
+        }
+    }
+    if !out_h.is_null() {
+        unsafe {
+            *out_h = lh;
+        }
+    }
 }
 
 // ── Notifications ───────────────────────────────────────────────────
@@ -3089,8 +3401,10 @@ pub extern "C" fn anyui_screen_size(out_w: *mut u32, out_h: *mut u32) {
 /// `timeout_ms`: auto-dismiss timeout (0 = default 5s).
 #[no_mangle]
 pub extern "C" fn anyui_show_notification(
-    title_ptr: *const u8, title_len: u32,
-    msg_ptr: *const u8, msg_len: u32,
+    title_ptr: *const u8,
+    title_len: u32,
+    msg_ptr: *const u8,
+    msg_len: u32,
     icon_ptr: *const u32,
     timeout_ms: u32,
 ) {
@@ -3198,7 +3512,11 @@ pub extern "C" fn anyui_set_scale_factor(percent: u32) {
 #[no_mangle]
 pub extern "C" fn anyui_get_scale_factor() -> u32 {
     let v = unsafe { core::ptr::read_volatile(0x0400_0014 as *const u32) };
-    if v >= 100 && v <= 300 { v } else { 100 }
+    if v >= 100 && v <= 300 {
+        v
+    } else {
+        100
+    }
 }
 
 // ── Window title (post-creation) ─────────────────────────────────
@@ -3232,9 +3550,21 @@ pub extern "C" fn anyui_get_key_info(
     out_modifiers: *mut u32,
 ) {
     let st = state();
-    if !out_keycode.is_null() { unsafe { *out_keycode = st.last_keycode; } }
-    if !out_char_code.is_null() { unsafe { *out_char_code = st.last_char_code; } }
-    if !out_modifiers.is_null() { unsafe { *out_modifiers = st.last_modifiers; } }
+    if !out_keycode.is_null() {
+        unsafe {
+            *out_keycode = st.last_keycode;
+        }
+    }
+    if !out_char_code.is_null() {
+        unsafe {
+            *out_char_code = st.last_char_code;
+        }
+    }
+    if !out_modifiers.is_null() {
+        unsafe {
+            *out_modifiers = st.last_modifiers;
+        }
+    }
 }
 
 // ── Clipboard ───────────────────────────────────────────────────
@@ -3261,7 +3591,11 @@ pub extern "C" fn anyui_clipboard_get(out: *mut u8, capacity: u32) -> u32 {
         }
         let preview_len = copy_len.min(30);
         let preview = core::str::from_utf8(&data[..preview_len]).unwrap_or("?");
-        crate::log!("[anyui_clipboard_get] got {} bytes: '{}'", copy_len, preview);
+        crate::log!(
+            "[anyui_clipboard_get] got {} bytes: '{}'",
+            copy_len,
+            preview
+        );
         copy_len as u32
     } else {
         crate::log!("[anyui_clipboard_get] empty");
@@ -3276,8 +3610,16 @@ pub extern "C" fn anyui_clipboard_get(out: *mut u8, capacity: u32) -> u32 {
 pub extern "C" fn anyui_get_size(id: ControlId, out_w: *mut u32, out_h: *mut u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
-        if !out_w.is_null() { unsafe { *out_w = ctrl.base().w; } }
-        if !out_h.is_null() { unsafe { *out_h = ctrl.base().h; } }
+        if !out_w.is_null() {
+            unsafe {
+                *out_w = ctrl.base().w;
+            }
+        }
+        if !out_h.is_null() {
+            unsafe {
+                *out_h = ctrl.base().h;
+            }
+        }
     }
 }
 
@@ -3286,8 +3628,16 @@ pub extern "C" fn anyui_get_size(id: ControlId, out_w: *mut u32, out_h: *mut u32
 pub extern "C" fn anyui_get_position(id: ControlId, out_x: *mut i32, out_y: *mut i32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
-        if !out_x.is_null() { unsafe { *out_x = ctrl.base().x; } }
-        if !out_y.is_null() { unsafe { *out_y = ctrl.base().y; } }
+        if !out_x.is_null() {
+            unsafe {
+                *out_x = ctrl.base().x;
+            }
+        }
+        if !out_y.is_null() {
+            unsafe {
+                *out_y = ctrl.base().y;
+            }
+        }
     }
 }
 
@@ -3355,7 +3705,9 @@ pub extern "C" fn anyui_on_window_list(cb: Callback, userdata: u64) {
 pub extern "C" fn anyui_request_window_list() {
     let st = state();
     let channel_id = st.channel_id;
-    if channel_id == 0 { return; }
+    if channel_id == 0 {
+        return;
+    }
     st.window_list_buffer.clear();
     let my_tid = syscall::get_tid();
     let cmd: [u32; 5] = [0x1034, my_tid, 0, 0, 0]; // CMD_LIST_WINDOW_TIDS
@@ -3368,7 +3720,9 @@ pub extern "C" fn anyui_request_window_list() {
 pub extern "C" fn anyui_get_window_list_buffer(out_count: *mut u32) -> *const u32 {
     let st = state();
     if !out_count.is_null() {
-        unsafe { *out_count = st.window_list_buffer.len() as u32; }
+        unsafe {
+            *out_count = st.window_list_buffer.len() as u32;
+        }
     }
     st.window_list_buffer.as_ptr()
 }
@@ -3379,7 +3733,9 @@ pub extern "C" fn anyui_get_window_list_buffer(out_count: *mut u32) -> *const u3
 #[no_mangle]
 pub extern "C" fn anyui_focus_by_tid(tid: u32) {
     let channel_id = state().channel_id;
-    if channel_id == 0 { return; }
+    if channel_id == 0 {
+        return;
+    }
     let cmd: [u32; 5] = [0x100A, tid, 0, 0, 0]; // CMD_FOCUS_BY_TID
     syscall::evt_chan_emit(channel_id, &cmd);
 }
@@ -3418,7 +3774,9 @@ pub extern "C" fn anyui_on_tray_click(icon_id: u32, cb: Callback, userdata: u64)
 
 /// Helper: find compositor window_id for a given control window_id.
 fn comp_window_id_for(st: &AnyuiState, win_ctrl_id: u32) -> Option<u32> {
-    st.windows.iter().position(|&w| w == win_ctrl_id)
+    st.windows
+        .iter()
+        .position(|&w| w == win_ctrl_id)
         .map(|i| st.comp_windows[i].window_id)
 }
 

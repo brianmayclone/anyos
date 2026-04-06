@@ -1,8 +1,8 @@
 //! FlowPanel — layout container that arranges children horizontally with line wrapping.
 
+use crate::control::{find_idx, ChildLayout, Control, ControlBase, ControlKind};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, ControlKind, ChildLayout, find_idx};
 
 pub struct FlowPanel {
     pub(crate) base: ControlBase,
@@ -15,9 +15,15 @@ impl FlowPanel {
 }
 
 impl Control for FlowPanel {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::FlowPanel }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::FlowPanel
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         if self.base.color != 0 {
@@ -56,7 +62,13 @@ impl Control for FlowPanel {
                 row_height = 0;
             }
 
-            result.push(ChildLayout { id: child_id, x: cursor_x + m.left, y: cursor_y + m.top, w: None, h: None });
+            result.push(ChildLayout {
+                id: child_id,
+                x: cursor_x + m.left,
+                y: cursor_y + m.top,
+                w: None,
+                h: None,
+            });
             cursor_x += cw;
             if ch > row_height {
                 row_height = ch;

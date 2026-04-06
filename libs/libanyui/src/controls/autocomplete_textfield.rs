@@ -4,9 +4,12 @@
 //! When the user types text with 2+ characters, a popup appears with matching suggestions.
 //! Selecting a suggestion replaces the last token (after the last comma for multi-value).
 
+use crate::control::{Control, ControlBase, ControlKind, EventResponse, TextControlBase};
+use crate::control::{
+    KEY_BACKSPACE, KEY_DOWN, KEY_END, KEY_ENTER, KEY_ESCAPE, KEY_HOME, KEY_LEFT, KEY_RIGHT,
+    KEY_TAB, KEY_UP, MOD_CTRL, MOD_SHIFT,
+};
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, TextControlBase, ControlKind, EventResponse};
-use crate::control::{KEY_UP, KEY_DOWN, KEY_ENTER, KEY_ESCAPE, KEY_BACKSPACE, KEY_LEFT, KEY_RIGHT, KEY_HOME, KEY_END, KEY_TAB, MOD_SHIFT, MOD_CTRL};
 
 pub struct AutoCompleteTextField {
     pub(crate) text_base: TextControlBase,
@@ -18,8 +21,6 @@ pub struct AutoCompleteTextField {
     scroll_x: i32,
     /// Selection anchor (byte offset)
     pub(crate) sel_anchor: usize,
-    /// Whether a mouse drag selection is in progress
-    dragging: bool,
     /// Placeholder text shown when empty
     pub(crate) placeholder: Vec<u8>,
     /// Set to true when text.len() >= 2; event loop opens popup and clears flag
@@ -39,7 +40,6 @@ impl AutoCompleteTextField {
             cursor_pos: 0,
             scroll_x: 0,
             sel_anchor: 0,
-            dragging: false,
             placeholder: Vec::new(),
             suggest: false,
             popup_nav: 0,
@@ -144,8 +144,10 @@ impl AutoCompleteTextField {
             13
         });
         let pos = self.cursor_pos.min(self.text_base.text.len());
-        let (cursor_px, _) = crate::draw::measure_text_ex(&self.text_base.text[..pos], 0, font_size);
-        let field_w = crate::theme::scale(self.text_base.base.w).saturating_sub(crate::theme::scale(24));
+        let (cursor_px, _) =
+            crate::draw::measure_text_ex(&self.text_base.text[..pos], 0, font_size);
+        let field_w =
+            crate::theme::scale(self.text_base.base.w).saturating_sub(crate::theme::scale(24));
         let cursor_x = cursor_px as i32 - self.scroll_x;
         if cursor_x < 0 {
             self.scroll_x = cursor_px as i32;
@@ -184,17 +186,15 @@ impl Control for AutoCompleteTextField {
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let ctx = crate::control::prepare_render(b, ax, ay);
+        let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
-        let disabled = b.disabled;
-        let focused = b.focused;
-        let hovered = b.hovered;
         let corner = crate::theme::scale(6);
 
         // ── Background ──────────────────────────────────────────────
-        let palette = crate::controls::chrome::flat_field_palette(0, hovered, focused, disabled);
-        if focused && !disabled {
+        let palette =
+            crate::controls::chrome::flat_field_palette(0, ctx.hovered, ctx.focused, ctx.disabled);
+        if ctx.focused && !ctx.disabled {
             crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
         }
         crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
@@ -206,21 +206,40 @@ impl Control for AutoCompleteTextField {
             13
         };
         let font_size = crate::draw::scale_font(logical_fs);
-        let text_color = if disabled { tc.text_disabled } else { tc.text };
+        let text_color = if ctx.disabled {
+            tc.text_disabled
+        } else {
+            tc.text
+        };
         let text_x = x + crate::theme::scale_i32(10);
         let ty = y + (h as i32 - font_size as i32) / 2;
 
         let display = &self.text_base.text;
         if display.is_empty() && !self.placeholder.is_empty() {
-            crate::draw::draw_text_sized(surface, text_x, ty, tc.text_secondary, &self.placeholder, font_size);
+            crate::draw::draw_text_sized(
+                surface,
+                text_x,
+                ty,
+                tc.text_secondary,
+                &self.placeholder,
+                font_size,
+            );
         } else {
-            crate::draw::draw_text_sized(surface, text_x - crate::theme::scale_i32(self.scroll_x), ty, text_color, display, font_size);
+            crate::draw::draw_text_sized(
+                surface,
+                text_x - crate::theme::scale_i32(self.scroll_x),
+                ty,
+                text_color,
+                display,
+                font_size,
+            );
         }
 
         // ── Cursor (when focused) ────────────────────────────────────
-        if focused && !disabled {
+        if ctx.focused && !ctx.disabled {
             let cursor_px = if self.cursor_pos > 0 && self.cursor_pos <= display.len() {
-                let (tw, _) = crate::draw::measure_text_ex(&display[..self.cursor_pos], 0, font_size);
+                let (tw, _) =
+                    crate::draw::measure_text_ex(&display[..self.cursor_pos], 0, font_size);
                 tw as i32
             } else {
                 0
@@ -228,7 +247,6 @@ impl Control for AutoCompleteTextField {
             let cursor_x = text_x + cursor_px - crate::theme::scale_i32(self.scroll_x);
             crate::draw::fill_rect(surface, cursor_x, ty, 2, font_size as u32, text_color);
         }
-
     }
 
     fn is_interactive(&self) -> bool {
@@ -273,7 +291,10 @@ impl Control for AutoCompleteTextField {
         // Ctrl+V: paste
         if ctrl && (char_code == b'v' as u32 || char_code == b'V' as u32) {
             if let Some(clip) = crate::compositor::clipboard_get() {
-                let filtered: Vec<u8> = clip.into_iter().filter(|&b| b >= 0x20 && b < 0x7F).collect();
+                let filtered: Vec<u8> = clip
+                    .into_iter()
+                    .filter(|&b| b >= 0x20 && b < 0x7F)
+                    .collect();
                 if !filtered.is_empty() {
                     self.delete_selection();
                     let pos = self.cursor_pos.min(self.text_base.text.len());
@@ -388,7 +409,10 @@ impl Control for AutoCompleteTextField {
                 let matches = self.filtered_items();
                 if !matches.is_empty() {
                     // Extract first suggestion (up to first pipe)
-                    let end = matches.iter().position(|&b| b == b'|').unwrap_or(matches.len());
+                    let end = matches
+                        .iter()
+                        .position(|&b| b == b'|')
+                        .unwrap_or(matches.len());
                     let first = &matches[..end];
                     // Extract label part (after \x1F if present)
                     let label = if let Some(sep) = first.iter().position(|&b| b == 0x1F) {
@@ -408,9 +432,6 @@ impl Control for AutoCompleteTextField {
                 } else {
                     EventResponse::CONSUMED
                 }
-            }
-            KEY_ENTER => {
-                EventResponse::SUBMIT
             }
             _ => EventResponse::IGNORED,
         }

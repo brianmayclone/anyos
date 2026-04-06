@@ -2,10 +2,10 @@
 //!
 //! Converts JavaScript source text into a sequence of tokens.
 
+use crate::token::{Span, Token, TokenKind};
+use crate::value::parse_js_float;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::token::{Token, TokenKind, Span};
-use crate::value::parse_js_float;
 
 pub struct Lexer<'a> {
     src: &'a [u8],
@@ -47,9 +47,21 @@ impl<'a> Lexer<'a> {
                     Some(TokenKind::Ident(name)) => {
                         // Most identifiers end an expression → / is division.
                         // Only certain keywords introduce an expression → / is regex.
-                        matches!(name.as_str(),
-                            "return" | "case" | "typeof" | "void" | "delete" |
-                            "throw" | "new" | "in" | "instanceof" | "of" | "yield" | "await")
+                        matches!(
+                            name.as_str(),
+                            "return"
+                                | "case"
+                                | "typeof"
+                                | "void"
+                                | "delete"
+                                | "throw"
+                                | "new"
+                                | "in"
+                                | "instanceof"
+                                | "of"
+                                | "yield"
+                                | "await"
+                        )
                     }
                     // After any operator, `(`, `[`, `{`, `,`, `;`, etc. → regex
                     _ => true,
@@ -101,13 +113,17 @@ impl<'a> Lexer<'a> {
             while self.pos < self.src.len() {
                 let ch = self.src[self.pos];
                 if ch == b' ' || ch == b'\t' || ch == b'\r' || ch == b'\n'
-                    || ch == 0x0B /* VT */ || ch == 0x0C /* FF */
+                    || ch == 0x0B /* VT */ || ch == 0x0C
+                /* FF */
                 {
                     if ch == b'\n' {
                         self.line += 1;
                     }
                     self.pos += 1;
-                } else if ch == 0xC2 && self.pos + 1 < self.src.len() && self.src[self.pos + 1] == 0xA0 {
+                } else if ch == 0xC2
+                    && self.pos + 1 < self.src.len()
+                    && self.src[self.pos + 1] == 0xA0
+                {
                     // U+00A0 NBSP (UTF-8: C2 A0)
                     self.pos += 2;
                 } else if ch == 0xE2 && self.pos + 2 < self.src.len() {
@@ -169,7 +185,11 @@ impl<'a> Lexer<'a> {
         if self.pos >= self.src.len() {
             return Token {
                 kind: TokenKind::Eof,
-                span: Span { start, end: start, line },
+                span: Span {
+                    start,
+                    end: start,
+                    line,
+                },
             };
         }
 
@@ -217,18 +237,54 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 match self.src[self.pos] {
-                    b'n' => { s.push('\n'); self.pos += 1; }
-                    b'r' => { s.push('\r'); self.pos += 1; }
-                    b't' => { s.push('\t'); self.pos += 1; }
-                    b'\\' => { s.push('\\'); self.pos += 1; }
-                    b'\'' => { s.push('\''); self.pos += 1; }
-                    b'"' => { s.push('"'); self.pos += 1; }
-                    b'`' => { s.push('`'); self.pos += 1; }
-                    b'0' => { s.push('\0'); self.pos += 1; }
-                    b'b' => { s.push('\u{0008}'); self.pos += 1; }
-                    b'f' => { s.push('\u{000C}'); self.pos += 1; }
-                    b'v' => { s.push('\u{000B}'); self.pos += 1; }
-                    b'\n' => { self.line += 1; self.pos += 1; }
+                    b'n' => {
+                        s.push('\n');
+                        self.pos += 1;
+                    }
+                    b'r' => {
+                        s.push('\r');
+                        self.pos += 1;
+                    }
+                    b't' => {
+                        s.push('\t');
+                        self.pos += 1;
+                    }
+                    b'\\' => {
+                        s.push('\\');
+                        self.pos += 1;
+                    }
+                    b'\'' => {
+                        s.push('\'');
+                        self.pos += 1;
+                    }
+                    b'"' => {
+                        s.push('"');
+                        self.pos += 1;
+                    }
+                    b'`' => {
+                        s.push('`');
+                        self.pos += 1;
+                    }
+                    b'0' => {
+                        s.push('\0');
+                        self.pos += 1;
+                    }
+                    b'b' => {
+                        s.push('\u{0008}');
+                        self.pos += 1;
+                    }
+                    b'f' => {
+                        s.push('\u{000C}');
+                        self.pos += 1;
+                    }
+                    b'v' => {
+                        s.push('\u{000B}');
+                        self.pos += 1;
+                    }
+                    b'\n' => {
+                        self.line += 1;
+                        self.pos += 1;
+                    }
                     b'u' => {
                         self.pos += 1;
                         let ch = self.read_unicode_escape();
@@ -260,7 +316,11 @@ impl<'a> Lexer<'a> {
 
         Token {
             kind: TokenKind::String(s),
-            span: Span { start, end: self.pos as u32, line },
+            span: Span {
+                start,
+                end: self.pos as u32,
+                line,
+            },
         }
     }
 
@@ -275,13 +335,34 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 if self.pos < self.src.len() {
                     match self.src[self.pos] {
-                        b'n' => { s.push('\n'); self.pos += 1; }
-                        b'r' => { s.push('\r'); self.pos += 1; }
-                        b't' => { s.push('\t'); self.pos += 1; }
-                        b'\\' => { s.push('\\'); self.pos += 1; }
-                        b'`' => { s.push('`'); self.pos += 1; }
-                        b'$' => { s.push('$'); self.pos += 1; }
-                        other => { s.push(other as char); self.pos += 1; }
+                        b'n' => {
+                            s.push('\n');
+                            self.pos += 1;
+                        }
+                        b'r' => {
+                            s.push('\r');
+                            self.pos += 1;
+                        }
+                        b't' => {
+                            s.push('\t');
+                            self.pos += 1;
+                        }
+                        b'\\' => {
+                            s.push('\\');
+                            self.pos += 1;
+                        }
+                        b'`' => {
+                            s.push('`');
+                            self.pos += 1;
+                        }
+                        b'$' => {
+                            s.push('$');
+                            self.pos += 1;
+                        }
+                        other => {
+                            s.push(other as char);
+                            self.pos += 1;
+                        }
                     }
                 }
             } else if self.src[self.pos] == b'$'
@@ -312,7 +393,9 @@ impl<'a> Lexer<'a> {
                                     s.push(self.src[self.pos] as char);
                                     self.pos += 1;
                                 } else {
-                                    if self.src[self.pos] == b'\n' { self.line += 1; }
+                                    if self.src[self.pos] == b'\n' {
+                                        self.line += 1;
+                                    }
                                     s.push(self.src[self.pos] as char);
                                     self.pos += 1;
                                 }
@@ -358,7 +441,9 @@ impl<'a> Lexer<'a> {
                                         }
                                     }
                                 } else {
-                                    if self.src[self.pos] == b'\n' { self.line += 1; }
+                                    if self.src[self.pos] == b'\n' {
+                                        self.line += 1;
+                                    }
                                     s.push(self.src[self.pos] as char);
                                     self.pos += 1;
                                 }
@@ -394,7 +479,11 @@ impl<'a> Lexer<'a> {
 
         Token {
             kind: TokenKind::Template(s),
-            span: Span { start, end: self.pos as u32, line },
+            span: Span {
+                start,
+                end: self.pos as u32,
+                line,
+            },
         }
     }
 
@@ -416,8 +505,12 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 continue;
             }
-            if ch == b'[' { in_class = true; }
-            if ch == b']' { in_class = false; }
+            if ch == b'[' {
+                in_class = true;
+            }
+            if ch == b']' {
+                in_class = false;
+            }
             if ch == b'/' && !in_class {
                 self.pos += 1; // skip closing /
                 break;
@@ -439,7 +532,11 @@ impl<'a> Lexer<'a> {
 
         Token {
             kind: TokenKind::RegExp(pattern, flags),
-            span: Span { start, end: self.pos as u32, line },
+            span: Span {
+                start,
+                end: self.pos as u32,
+                line,
+            },
         }
     }
 
@@ -466,7 +563,11 @@ impl<'a> Lexer<'a> {
                 let val = parse_js_float(&s);
                 return Token {
                     kind: TokenKind::Number(val),
-                    span: Span { start, end: self.pos as u32, line },
+                    span: Span {
+                        start,
+                        end: self.pos as u32,
+                        line,
+                    },
                 };
             }
             if next == b'o' || next == b'O' {
@@ -483,14 +584,19 @@ impl<'a> Lexer<'a> {
                 }
                 return Token {
                     kind: TokenKind::Number(val),
-                    span: Span { start, end: self.pos as u32, line },
+                    span: Span {
+                        start,
+                        end: self.pos as u32,
+                        line,
+                    },
                 };
             }
             if next == b'b' || next == b'B' {
                 self.pos += 2;
                 let mut val: f64 = 0.0;
                 while self.pos < self.src.len()
-                    && (self.src[self.pos] == b'0' || self.src[self.pos] == b'1'
+                    && (self.src[self.pos] == b'0'
+                        || self.src[self.pos] == b'1'
                         || self.src[self.pos] == b'_')
                 {
                     if self.src[self.pos] != b'_' {
@@ -500,7 +606,11 @@ impl<'a> Lexer<'a> {
                 }
                 return Token {
                     kind: TokenKind::Number(val),
-                    span: Span { start, end: self.pos as u32, line },
+                    span: Span {
+                        start,
+                        end: self.pos as u32,
+                        line,
+                    },
                 };
             }
         }
@@ -530,8 +640,7 @@ impl<'a> Lexer<'a> {
         }
 
         // Exponent
-        if self.pos < self.src.len() && (self.src[self.pos] == b'e' || self.src[self.pos] == b'E')
-        {
+        if self.pos < self.src.len() && (self.src[self.pos] == b'e' || self.src[self.pos] == b'E') {
             s.push('e');
             self.pos += 1;
             if self.pos < self.src.len()
@@ -549,7 +658,11 @@ impl<'a> Lexer<'a> {
         let val = parse_js_float(&s);
         Token {
             kind: TokenKind::Number(val),
-            span: Span { start, end: self.pos as u32, line },
+            span: Span {
+                start,
+                end: self.pos as u32,
+                line,
+            },
         }
     }
 
@@ -612,7 +725,11 @@ impl<'a> Lexer<'a> {
 
         Token {
             kind,
-            span: Span { start, end: self.pos as u32, line },
+            span: Span {
+                start,
+                end: self.pos as u32,
+                line,
+            },
         }
     }
 
@@ -829,7 +946,11 @@ impl<'a> Lexer<'a> {
 
         Token {
             kind,
-            span: Span { start, end: self.pos as u32, line },
+            span: Span {
+                start,
+                end: self.pos as u32,
+                line,
+            },
         }
     }
 
@@ -901,7 +1022,11 @@ impl<'a> Lexer<'a> {
         }
         Token {
             kind: TokenKind::PrivateIdent(name),
-            span: Span { start, end: self.pos as u32, line },
+            span: Span {
+                start,
+                end: self.pos as u32,
+                line,
+            },
         }
     }
 }

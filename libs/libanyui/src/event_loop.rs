@@ -17,10 +17,10 @@
 //! 6. **WINDOW_CLOSE**: Fire close callback, queue window for removal.
 //! 7. **WINDOW_RESIZE**: Update window size, fire resize callback.
 
+use crate::compositor;
+use crate::control::{self, Callback, Control, ControlId, ControlKind};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::compositor;
-use crate::control::{self, ControlId, ControlKind, Control, Callback};
 
 /// Double-click threshold in milliseconds (standard: 400ms).
 const DOUBLE_CLICK_MS: u32 = 400;
@@ -149,7 +149,6 @@ pub fn run_once() -> u32 {
     for ev in all_events.iter_mut() {
         if ev[0] == compositor::EVT_STATUS_ICON_CLICK {
             let icon_id = ev[1];
-            let mouse_x = ev[2];
             if let Some(&(_, cb, ud)) = st.tray_callbacks.iter().find(|e| e.0 == icon_id) {
                 pending_cbs.push(PendingCallback {
                     id: icon_id,
@@ -183,8 +182,10 @@ pub fn run_once() -> u32 {
                                 if let Some(idx) = control::find_idx(&st.controls, menu_id) {
                                     let mw = st.controls[idx].base().w;
                                     let mh = st.controls[idx].base().h;
-                                    if mx >= margin && my >= margin
-                                        && mx < margin + mw as i32 && my < margin + mh as i32
+                                    if mx >= margin
+                                        && my >= margin
+                                        && mx < margin + mw as i32
+                                        && my < margin + mh as i32
                                     {
                                         // Inside menu bounds → dispatch move
                                         let local_x = mx - margin;
@@ -209,8 +210,10 @@ pub fn run_once() -> u32 {
                                 if let Some(idx) = control::find_idx(&st.controls, menu_id) {
                                     let mw = st.controls[idx].base().w;
                                     let mh = st.controls[idx].base().h;
-                                    if mx >= margin && my >= margin
-                                        && mx < margin + mw as i32 && my < margin + mh as i32
+                                    if mx >= margin
+                                        && my >= margin
+                                        && mx < margin + mw as i32
+                                        && my < margin + mh as i32
                                     {
                                         st.pressed = Some(menu_id);
                                         st.pressed_button = ev[4] & 0xFF;
@@ -229,55 +232,85 @@ pub fn run_once() -> u32 {
                                 let margin = st.popup.as_ref().map(|p| p.margin).unwrap_or(0);
                                 let owner_dd = st.popup.as_ref().and_then(|p| p.owner_dropdown);
                                 if let Some(idx) = control::find_idx(&st.controls, menu_id) {
-                                    let (ax, ay) = (st.controls[idx].base().x, st.controls[idx].base().y);
+                                    let (ax, ay) =
+                                        (st.controls[idx].base().x, st.controls[idx].base().y);
                                     let local_x = mx - margin - ax;
                                     let local_y = my - margin - ay;
-                                    let click_resp = st.controls[idx].handle_click(local_x, local_y, 0x01);
+                                    let click_resp =
+                                        st.controls[idx].handle_click(local_x, local_y, 0x01);
 
                                     if click_resp.fire_click {
-                                        let owner_ac = st.popup.as_ref().and_then(|p| p.owner_autocomplete);
+                                        let owner_ac =
+                                            st.popup.as_ref().and_then(|p| p.owner_autocomplete);
                                         if let Some(ac_id) = owner_ac {
                                             // AutoComplete popup: transfer selected text
-                                            let selected_idx = st.controls[idx].base().state as usize;
+                                            let selected_idx =
+                                                st.controls[idx].base().state as usize;
                                             // Extract the Nth pipe-separated item from menu text
-                                            let menu_text = st.controls[idx].text_base()
+                                            let menu_text = st.controls[idx]
+                                                .text_base()
                                                 .map(|tb| tb.text.clone())
                                                 .unwrap_or_default();
-                                            let full_item: alloc::vec::Vec<u8> = menu_text.split(|&b| b == b'|')
+                                            let full_item: alloc::vec::Vec<u8> = menu_text
+                                                .split(|&b| b == b'|')
                                                 .nth(selected_idx)
                                                 .unwrap_or(&[])
                                                 .to_vec();
                                             // Extract label (after \x1F if present)
-                                            let selected_text = if let Some(sep) = full_item.iter().position(|&b| b == 0x1F) {
+                                            let selected_text = if let Some(sep) =
+                                                full_item.iter().position(|&b| b == 0x1F)
+                                            {
                                                 full_item[sep + 1..].to_vec()
                                             } else {
                                                 full_item
                                             };
                                             dismiss_popup(st);
                                             if !selected_text.is_empty() {
-                                                if let Some(ac_idx) = control::find_idx(&st.controls, ac_id) {
-                                                    let raw: *mut dyn Control = &mut *st.controls[ac_idx];
-                                                    let ac = unsafe { &mut *(raw as *mut crate::controls::autocomplete_textfield::AutoCompleteTextField) };
+                                                if let Some(ac_idx) =
+                                                    control::find_idx(&st.controls, ac_id)
+                                                {
+                                                    let raw: *mut dyn Control =
+                                                        &mut *st.controls[ac_idx];
+                                                    let ac = unsafe {
+                                                        &mut *(raw as *mut crate::controls::autocomplete_textfield::AutoCompleteTextField)
+                                                    };
                                                     ac.text_base.text = selected_text;
                                                     ac.cursor_pos = ac.text_base.text.len();
                                                     ac.sel_anchor = ac.cursor_pos;
                                                     ac.text_base.base.mark_dirty();
                                                 }
-                                                fire_event_callback(&st.controls, ac_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                                fire_event_callback(
+                                                    &st.controls,
+                                                    ac_id,
+                                                    control::EVENT_CHANGE,
+                                                    &mut pending_cbs,
+                                                );
                                             }
                                         } else if let Some(dd_id) = owner_dd {
                                             // DropDown popup: transfer selected index to the DropDown
                                             let selected_idx = st.controls[idx].base().state;
                                             dismiss_popup(st);
-                                            if let Some(dd_idx) = control::find_idx(&st.controls, dd_id) {
+                                            if let Some(dd_idx) =
+                                                control::find_idx(&st.controls, dd_id)
+                                            {
                                                 st.controls[dd_idx].base_mut().state = selected_idx;
                                                 st.controls[dd_idx].base_mut().mark_dirty();
                                             }
-                                            fire_event_callback(&st.controls, dd_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                            fire_event_callback(
+                                                &st.controls,
+                                                dd_id,
+                                                control::EVENT_CHANGE,
+                                                &mut pending_cbs,
+                                            );
                                         } else {
                                             // Normal context menu
                                             dismiss_popup(st);
-                                            fire_event_callback(&st.controls, menu_id, control::EVENT_CLICK, &mut pending_cbs);
+                                            fire_event_callback(
+                                                &st.controls,
+                                                menu_id,
+                                                control::EVENT_CLICK,
+                                                &mut pending_cbs,
+                                            );
                                         }
                                     } else {
                                         // Clicked on divider or empty area — keep popup open
@@ -289,7 +322,9 @@ pub fn run_once() -> u32 {
                             // Another window gained focus → dismiss popup
                             // But NOT for AutoComplete popups — they intentionally
                             // keep focus on the main window's text field.
-                            let is_ac = st.popup.as_ref()
+                            let is_ac = st
+                                .popup
+                                .as_ref()
                                 .map(|p| p.owner_autocomplete.is_some())
                                 .unwrap_or(false);
                             if !is_ac {
@@ -323,7 +358,9 @@ pub fn run_once() -> u32 {
 
     // ── Phase 1.2: Process broadcasts (theme change, window lifecycle) ──
     for ev in all_events.iter() {
-        if ev[0] == 0 { continue; }
+        if ev[0] == 0 {
+            continue;
+        }
         match ev[0] {
             // EVT_THEME_CHANGED (0x0050): mark all windows dirty so every
             // control re-renders with the new theme palette.
@@ -438,7 +475,9 @@ pub fn run_once() -> u32 {
 
     let win_count = st.windows.len();
     for wi in 0..win_count {
-        if wi >= st.windows.len() { break; }
+        if wi >= st.windows.len() {
+            break;
+        }
         let win_id = st.windows[wi];
         let comp_window_id = st.comp_windows[wi].window_id;
 
@@ -449,8 +488,12 @@ pub fn run_once() -> u32 {
             if wi != allowed_wi {
                 // Still process non-input events for this window
                 for ev in all_events.iter() {
-                    if ev[0] == 0 { continue; }
-                    if ev[0] >= 0x3000 && ev[1] != comp_window_id { continue; }
+                    if ev[0] == 0 {
+                        continue;
+                    }
+                    if ev[0] >= 0x3000 && ev[1] != comp_window_id {
+                        continue;
+                    }
                     match ev[0] {
                         compositor::EVT_FRAME_ACK => {
                             if let Some(cw) = st.comp_windows.get_mut(wi) {
@@ -468,17 +511,30 @@ pub fn run_once() -> u32 {
         // Buffer layout: [event_type, window_id, arg1, arg2, arg3]
         for ev in all_events.iter() {
             // Skip consumed popup events
-            if ev[0] == 0 { continue; }
+            if ev[0] == 0 {
+                continue;
+            }
             // Window-specific events (0x3000+): filter by window_id
-            if ev[0] >= 0x3000 && ev[1] != comp_window_id { continue; }
+            if ev[0] >= 0x3000 && ev[1] != comp_window_id {
+                continue;
+            }
             // Broadcast events (<0x1000): only process on first window
-            if ev[0] < 0x1000 && wi > 0 { continue; }
+            if ev[0] < 0x1000 && wi > 0 {
+                continue;
+            }
             // Skip unknown range
-            if ev[0] >= 0x1000 && ev[0] < 0x3000 { continue; }
+            if ev[0] >= 0x1000 && ev[0] < 0x3000 {
+                continue;
+            }
 
             match ev[0] {
                 compositor::EVT_WINDOW_CLOSE => {
-                    fire_event_callback(&st.controls, win_id, control::EVENT_CLOSE, &mut pending_cbs);
+                    fire_event_callback(
+                        &st.controls,
+                        win_id,
+                        control::EVENT_CLOSE,
+                        &mut pending_cbs,
+                    );
                     windows_to_close.push(win_id);
                 }
 
@@ -499,14 +555,24 @@ pub fn run_once() -> u32 {
                             if let Some(idx) = control::find_idx(&st.controls, old_id) {
                                 st.controls[idx].handle_mouse_leave();
                                 st.controls[idx].base_mut().mark_dirty();
-                                fire_event_callback(&st.controls, old_id, control::EVENT_MOUSE_LEAVE, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    old_id,
+                                    control::EVENT_MOUSE_LEAVE,
+                                    &mut pending_cbs,
+                                );
                             }
                         }
                         if let Some(new_id) = new_hover {
                             if let Some(idx) = control::find_idx(&st.controls, new_id) {
                                 st.controls[idx].handle_mouse_enter();
                                 st.controls[idx].base_mut().mark_dirty();
-                                fire_event_callback(&st.controls, new_id, control::EVENT_MOUSE_ENTER, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    new_id,
+                                    control::EVENT_MOUSE_ENTER,
+                                    &mut pending_cbs,
+                                );
                             }
                         }
                         st.hovered = new_hover;
@@ -538,7 +604,8 @@ pub fn run_once() -> u32 {
                     }
 
                     // Update cursor shape (check SplitView dividers etc.)
-                    let desired_cursor = control::cursor_at_point(&st.controls, win_id, mx, my, 0, 0);
+                    let desired_cursor =
+                        control::cursor_at_point(&st.controls, win_id, mx, my, 0, 0);
                     if desired_cursor != st.current_cursor {
                         st.current_cursor = desired_cursor;
                         // CMD_SET_CURSOR = 0x1018
@@ -559,7 +626,12 @@ pub fn run_once() -> u32 {
                                 }
                             }
                             // Fire EVENT_MOUSE_MOVE callback so apps can react to hover movement
-                            fire_event_callback(&st.controls, hover_id, control::EVENT_MOUSE_MOVE, &mut pending_cbs);
+                            fire_event_callback(
+                                &st.controls,
+                                hover_id,
+                                control::EVENT_MOUSE_MOVE,
+                                &mut pending_cbs,
+                            );
                         }
                     }
 
@@ -572,12 +644,27 @@ pub fn run_once() -> u32 {
                             let resp = st.controls[idx].handle_mouse_move(local_x, local_y);
                             if resp.consumed {
                                 st.controls[idx].base_mut().mark_dirty();
-                                fire_event_callback(&st.controls, pressed_id, control::EVENT_MOUSE_MOVE, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    pressed_id,
+                                    control::EVENT_MOUSE_MOVE,
+                                    &mut pending_cbs,
+                                );
                                 if resp.fire_change {
-                                    fire_event_callback(&st.controls, pressed_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                    fire_event_callback(
+                                        &st.controls,
+                                        pressed_id,
+                                        control::EVENT_CHANGE,
+                                        &mut pending_cbs,
+                                    );
                                 }
                                 if resp.fire_click {
-                                    fire_event_callback(&st.controls, pressed_id, control::EVENT_CLICK, &mut pending_cbs);
+                                    fire_event_callback(
+                                        &st.controls,
+                                        pressed_id,
+                                        control::EVENT_CLICK,
+                                        &mut pending_cbs,
+                                    );
                                 }
                             }
                         }
@@ -601,14 +688,24 @@ pub fn run_once() -> u32 {
                             if let Some(old_id) = old_focus {
                                 if let Some(idx) = control::find_idx(&st.controls, old_id) {
                                     st.controls[idx].handle_blur();
-                                    fire_event_callback(&st.controls, old_id, control::EVENT_BLUR, &mut pending_cbs);
+                                    fire_event_callback(
+                                        &st.controls,
+                                        old_id,
+                                        control::EVENT_BLUR,
+                                        &mut pending_cbs,
+                                    );
                                 }
                             }
                             if let Some(idx) = control::find_idx(&st.controls, new_focus) {
                                 if st.controls[idx].accepts_focus() {
                                     st.controls[idx].handle_focus();
                                     st.focused = Some(new_focus);
-                                    fire_event_callback(&st.controls, new_focus, control::EVENT_FOCUS, &mut pending_cbs);
+                                    fire_event_callback(
+                                        &st.controls,
+                                        new_focus,
+                                        control::EVENT_FOCUS,
+                                        &mut pending_cbs,
+                                    );
                                 } else {
                                     st.focused = None;
                                 }
@@ -618,7 +715,12 @@ pub fn run_once() -> u32 {
                         if let Some(old_id) = st.focused {
                             if let Some(idx) = control::find_idx(&st.controls, old_id) {
                                 st.controls[idx].handle_blur();
-                                fire_event_callback(&st.controls, old_id, control::EVENT_BLUR, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    old_id,
+                                    control::EVENT_BLUR,
+                                    &mut pending_cbs,
+                                );
                             }
                         }
                         st.focused = None;
@@ -635,13 +737,28 @@ pub fn run_once() -> u32 {
                             let resp = st.controls[idx].handle_mouse_down(local_x, local_y, button);
                             st.controls[idx].base_mut().mark_dirty();
 
-                            fire_event_callback(&st.controls, target_id, control::EVENT_MOUSE_DOWN, &mut pending_cbs);
+                            fire_event_callback(
+                                &st.controls,
+                                target_id,
+                                control::EVENT_MOUSE_DOWN,
+                                &mut pending_cbs,
+                            );
 
                             if resp.fire_change {
-                                fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    target_id,
+                                    control::EVENT_CHANGE,
+                                    &mut pending_cbs,
+                                );
                             }
                             if resp.fire_click {
-                                fire_event_callback(&st.controls, target_id, control::EVENT_CLICK, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    target_id,
+                                    control::EVENT_CLICK,
+                                    &mut pending_cbs,
+                                );
                             }
                         }
                     }
@@ -665,10 +782,20 @@ pub fn run_once() -> u32 {
 
                             let resp = st.controls[idx].handle_mouse_up(local_x, local_y, button);
                             st.controls[idx].base_mut().mark_dirty();
-                            fire_event_callback(&st.controls, target_id, control::EVENT_MOUSE_UP, &mut pending_cbs);
+                            fire_event_callback(
+                                &st.controls,
+                                target_id,
+                                control::EVENT_MOUSE_UP,
+                                &mut pending_cbs,
+                            );
 
                             if resp.fire_change {
-                                fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    target_id,
+                                    control::EVENT_CHANGE,
+                                    &mut pending_cbs,
+                                );
                             }
 
                             // Check if mouse is still over the pressed control → Click
@@ -677,12 +804,20 @@ pub fn run_once() -> u32 {
                             if still_over {
                                 if st.pressed_button & 0x02 != 0 {
                                     // Right-click → fire EVENT_CONTEXT_MENU
-                                    fire_event_callback(&st.controls, target_id, control::EVENT_CONTEXT_MENU, &mut pending_cbs);
+                                    fire_event_callback(
+                                        &st.controls,
+                                        target_id,
+                                        control::EVENT_CONTEXT_MENU,
+                                        &mut pending_cbs,
+                                    );
 
                                     // If control has a context menu, show it as a popup window
                                     if let Some(idx2) = control::find_idx(&st.controls, target_id) {
-                                        if let Some(menu_id) = st.controls[idx2].base().context_menu {
-                                            if let Some(mi) = control::find_idx(&st.controls, menu_id) {
+                                        if let Some(menu_id) = st.controls[idx2].base().context_menu
+                                        {
+                                            if let Some(mi) =
+                                                control::find_idx(&st.controls, menu_id)
+                                            {
                                                 // Dismiss any existing popup first
                                                 dismiss_popup(st);
 
@@ -700,9 +835,12 @@ pub fn run_once() -> u32 {
                                                 let phys_popup_h = crate::theme::scale(popup_h);
 
                                                 // Get parent window's content-area screen position (physical)
-                                                let (content_x, content_y) = compositor::get_window_position(
-                                                    st.channel_id, st.sub_id, comp_window_id,
-                                                );
+                                                let (content_x, content_y) =
+                                                    compositor::get_window_position(
+                                                        st.channel_id,
+                                                        st.sub_id,
+                                                        comp_window_id,
+                                                    );
 
                                                 // Calculate popup screen position (physical coords).
                                                 // mx/my are logical — scale to physical for screen placement.
@@ -720,18 +858,27 @@ pub fn run_once() -> u32 {
                                                 if popup_y + phys_popup_h as i32 > scr_h as i32 {
                                                     popup_y = scr_h as i32 - phys_popup_h as i32;
                                                 }
-                                                if popup_x < 0 { popup_x = 0; }
-                                                if popup_y < 0 { popup_y = 0; }
+                                                if popup_x < 0 {
+                                                    popup_x = 0;
+                                                }
+                                                if popup_y < 0 {
+                                                    popup_y = 0;
+                                                }
 
                                                 // Create popup compositor window (borderless, always-on-top, immovable)
                                                 // Flags: BORDERLESS=0x01 | NOT_RESIZABLE=0x02 | ALWAYS_ON_TOP=0x04 | NO_MOVE=0x100
                                                 let popup_flags: u32 = 0x01 | 0x02 | 0x04 | 0x100;
-                                                if let Some((popup_win_id, shm_id, surface)) = compositor::create_window(
-                                                    st.channel_id, st.sub_id,
-                                                    popup_x, popup_y,
-                                                    phys_popup_w, phys_popup_h,
-                                                    popup_flags,
-                                                ) {
+                                                if let Some((popup_win_id, shm_id, surface)) =
+                                                    compositor::create_window(
+                                                        st.channel_id,
+                                                        st.sub_id,
+                                                        popup_x,
+                                                        popup_y,
+                                                        phys_popup_w,
+                                                        phys_popup_h,
+                                                        popup_flags,
+                                                    )
+                                                {
                                                     // Position menu at origin for clean popup rendering
                                                     st.controls[mi].set_position(0, 0);
                                                     // Menu stays invisible in parent (rendered directly in popup)
@@ -748,7 +895,7 @@ pub fn run_once() -> u32 {
                                                         back_buffer,
                                                         menu_id,
                                                         owner_win_idx: wi,
-                                                        margin,  // logical — used for hit-testing and render offset
+                                                        margin, // logical — used for hit-testing and render offset
                                                         dirty: true,
                                                         owner_dropdown: None,
                                                         owner_autocomplete: None,
@@ -760,22 +907,28 @@ pub fn run_once() -> u32 {
                                 } else {
                                     // Left-click → normal click + double-click handling
                                     if let Some(idx2) = control::find_idx(&st.controls, target_id) {
-                                        let click_resp = st.controls[idx2].handle_click(local_x, local_y, button);
+                                        let click_resp = st.controls[idx2]
+                                            .handle_click(local_x, local_y, button);
 
                                         // ── DropDown popup ────────────────────────────────
                                         // If the clicked control is a DropDown with open==true,
                                         // create a popup compositor window with a ContextMenu.
                                         if st.controls[idx2].kind() == ControlKind::DropDown {
                                             let raw: *mut dyn Control = &mut *st.controls[idx2];
-                                            let dd = unsafe { &mut *(raw as *mut crate::controls::dropdown::DropDown) };
+                                            let dd = unsafe {
+                                                &mut *(raw
+                                                    as *mut crate::controls::dropdown::DropDown)
+                                            };
                                             if dd.open {
                                                 dd.open = false; // clear immediately; popup takes over
 
                                                 // Gather items text and DropDown dimensions
-                                                let items_text: alloc::vec::Vec<u8> = dd.text_base.text.clone();
+                                                let items_text: alloc::vec::Vec<u8> =
+                                                    dd.text_base.text.clone();
                                                 let dd_w = dd.text_base.base.w;
                                                 let dd_h = dd.text_base.base.h;
-                                                let dd_abs = control::abs_position(&st.controls, target_id);
+                                                let dd_abs =
+                                                    control::abs_position(&st.controls, target_id);
 
                                                 // Dismiss any existing popup
                                                 dismiss_popup(st);
@@ -784,12 +937,21 @@ pub fn run_once() -> u32 {
                                                 let menu_id = st.next_id;
                                                 st.next_id += 1;
                                                 let menu_ctrl = crate::controls::create_control(
-                                                    ControlKind::ContextMenu, menu_id, 0, 0, 0, 0, 0, &items_text,
+                                                    ControlKind::ContextMenu,
+                                                    menu_id,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    0,
+                                                    &items_text,
                                                 );
                                                 st.controls.push(menu_ctrl);
 
                                                 // Force menu width to match DropDown width (min)
-                                                if let Some(mi) = control::find_idx(&st.controls, menu_id) {
+                                                if let Some(mi) =
+                                                    control::find_idx(&st.controls, menu_id)
+                                                {
                                                     let menu_w = st.controls[mi].base().w.max(dd_w);
                                                     st.controls[mi].base_mut().w = menu_w;
                                                     let menu_h = st.controls[mi].base().h;
@@ -805,37 +967,61 @@ pub fn run_once() -> u32 {
 
                                                     // Position popup below the DropDown (physical coords).
                                                     // dd_abs is logical — scale for compositor screen placement.
-                                                    let (content_x, content_y) = compositor::get_window_position(
-                                                        st.channel_id, st.sub_id, comp_window_id,
-                                                    );
-                                                    let phys_dd_x = crate::theme::scale_i32(dd_abs.0);
-                                                    let phys_dd_y = crate::theme::scale_i32(dd_abs.1);
+                                                    let (content_x, content_y) =
+                                                        compositor::get_window_position(
+                                                            st.channel_id,
+                                                            st.sub_id,
+                                                            comp_window_id,
+                                                        );
+                                                    let phys_dd_x =
+                                                        crate::theme::scale_i32(dd_abs.0);
+                                                    let phys_dd_y =
+                                                        crate::theme::scale_i32(dd_abs.1);
                                                     let phys_dd_h = crate::theme::scale(dd_h);
-                                                    let phys_margin = crate::theme::scale_i32(margin);
+                                                    let phys_margin =
+                                                        crate::theme::scale_i32(margin);
                                                     let phys_menu_h = crate::theme::scale(menu_h);
-                                                    let mut popup_x = content_x + phys_dd_x - phys_margin;
-                                                    let mut popup_y = content_y + phys_dd_y + phys_dd_h as i32 - phys_margin;
+                                                    let mut popup_x =
+                                                        content_x + phys_dd_x - phys_margin;
+                                                    let mut popup_y =
+                                                        content_y + phys_dd_y + phys_dd_h as i32
+                                                            - phys_margin;
 
                                                     // Clamp to screen bounds (physical)
                                                     let (scr_w, scr_h) = compositor::screen_size();
-                                                    if popup_x + phys_popup_w as i32 > scr_w as i32 {
-                                                        popup_x = scr_w as i32 - phys_popup_w as i32;
+                                                    if popup_x + phys_popup_w as i32 > scr_w as i32
+                                                    {
+                                                        popup_x =
+                                                            scr_w as i32 - phys_popup_w as i32;
                                                     }
-                                                    if popup_y + phys_popup_h as i32 > scr_h as i32 {
+                                                    if popup_y + phys_popup_h as i32 > scr_h as i32
+                                                    {
                                                         // Open upward if no room below
-                                                        popup_y = content_y + phys_dd_y - phys_menu_h as i32 - phys_margin;
+                                                        popup_y = content_y + phys_dd_y
+                                                            - phys_menu_h as i32
+                                                            - phys_margin;
                                                     }
-                                                    if popup_x < 0 { popup_x = 0; }
-                                                    if popup_y < 0 { popup_y = 0; }
+                                                    if popup_x < 0 {
+                                                        popup_x = 0;
+                                                    }
+                                                    if popup_y < 0 {
+                                                        popup_y = 0;
+                                                    }
 
                                                     // Create popup compositor window (physical dimensions)
-                                                    let popup_flags: u32 = 0x01 | 0x02 | 0x04 | 0x100;
-                                                    if let Some((popup_win_id, shm_id, surface)) = compositor::create_window(
-                                                        st.channel_id, st.sub_id,
-                                                        popup_x, popup_y,
-                                                        phys_popup_w, phys_popup_h,
-                                                        popup_flags,
-                                                    ) {
+                                                    let popup_flags: u32 =
+                                                        0x01 | 0x02 | 0x04 | 0x100;
+                                                    if let Some((popup_win_id, shm_id, surface)) =
+                                                        compositor::create_window(
+                                                            st.channel_id,
+                                                            st.sub_id,
+                                                            popup_x,
+                                                            popup_y,
+                                                            phys_popup_w,
+                                                            phys_popup_h,
+                                                            popup_flags,
+                                                        )
+                                                    {
                                                         st.controls[mi].set_position(0, 0);
                                                         st.controls[mi].base_mut().visible = false;
 
@@ -850,7 +1036,7 @@ pub fn run_once() -> u32 {
                                                             back_buffer,
                                                             menu_id,
                                                             owner_win_idx: wi,
-                                                            margin,  // logical — used for hit-testing and render offset
+                                                            margin, // logical — used for hit-testing and render offset
                                                             dirty: true,
                                                             owner_dropdown: Some(target_id),
                                                             owner_autocomplete: None,
@@ -861,51 +1047,105 @@ pub fn run_once() -> u32 {
                                         }
 
                                         // RadioGroup: drain deferred deselection requests
-                                        let radio_groups = crate::controls::radio_group::drain_deselects(&mut st.controls);
+                                        let radio_groups =
+                                            crate::controls::radio_group::drain_deselects(
+                                                &mut st.controls,
+                                            );
 
-                                        fire_event_callback(&st.controls, target_id, control::EVENT_CLICK, &mut pending_cbs);
+                                        fire_event_callback(
+                                            &st.controls,
+                                            target_id,
+                                            control::EVENT_CLICK,
+                                            &mut pending_cbs,
+                                        );
 
                                         if click_resp.fire_change {
-                                            fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                            fire_event_callback(
+                                                &st.controls,
+                                                target_id,
+                                                control::EVENT_CHANGE,
+                                                &mut pending_cbs,
+                                            );
                                         }
 
                                         // Fire EVENT_CHANGE on RadioGroup parents so on_selection_changed works
                                         for group_id in radio_groups {
-                                            fire_event_callback(&st.controls, group_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                            fire_event_callback(
+                                                &st.controls,
+                                                group_id,
+                                                control::EVENT_CHANGE,
+                                                &mut pending_cbs,
+                                            );
                                         }
 
                                         if click_resp.fire_submit {
-                                            fire_event_callback(&st.controls, target_id, control::EVENT_SUBMIT, &mut pending_cbs);
+                                            fire_event_callback(
+                                                &st.controls,
+                                                target_id,
+                                                control::EVENT_SUBMIT,
+                                                &mut pending_cbs,
+                                            );
                                         }
 
                                         // Multi-click detection (double & triple click)
                                         let now_ms = crate::syscall::uptime_ms();
                                         if st.last_click_id == Some(target_id)
-                                            && now_ms.wrapping_sub(st.last_click_tick) <= DOUBLE_CLICK_MS
+                                            && now_ms.wrapping_sub(st.last_click_tick)
+                                                <= DOUBLE_CLICK_MS
                                         {
                                             st.click_count += 1;
                                             st.last_click_tick = now_ms;
 
                                             if st.click_count == 2 {
-                                                if let Some(idx3) = control::find_idx(&st.controls, target_id) {
-                                                    let dc_resp = st.controls[idx3].handle_double_click(local_x, local_y, button);
+                                                if let Some(idx3) =
+                                                    control::find_idx(&st.controls, target_id)
+                                                {
+                                                    let dc_resp = st.controls[idx3]
+                                                        .handle_double_click(
+                                                            local_x, local_y, button,
+                                                        );
                                                     // Only fire the double-click callback if the control
                                                     // didn't consume it internally (e.g. TabBar overflow buttons).
                                                     if !dc_resp.consumed {
-                                                        fire_event_callback(&st.controls, target_id, control::EVENT_DOUBLE_CLICK, &mut pending_cbs);
+                                                        fire_event_callback(
+                                                            &st.controls,
+                                                            target_id,
+                                                            control::EVENT_DOUBLE_CLICK,
+                                                            &mut pending_cbs,
+                                                        );
                                                     }
                                                     if dc_resp.fire_change {
-                                                        fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                                        fire_event_callback(
+                                                            &st.controls,
+                                                            target_id,
+                                                            control::EVENT_CHANGE,
+                                                            &mut pending_cbs,
+                                                        );
                                                     }
                                                     if dc_resp.fire_submit {
-                                                        fire_event_callback(&st.controls, target_id, control::EVENT_SUBMIT, &mut pending_cbs);
+                                                        fire_event_callback(
+                                                            &st.controls,
+                                                            target_id,
+                                                            control::EVENT_SUBMIT,
+                                                            &mut pending_cbs,
+                                                        );
                                                     }
                                                 }
                                             } else if st.click_count >= 3 {
-                                                if let Some(idx3) = control::find_idx(&st.controls, target_id) {
-                                                    let tc_resp = st.controls[idx3].handle_triple_click(local_x, local_y, button);
+                                                if let Some(idx3) =
+                                                    control::find_idx(&st.controls, target_id)
+                                                {
+                                                    let tc_resp = st.controls[idx3]
+                                                        .handle_triple_click(
+                                                            local_x, local_y, button,
+                                                        );
                                                     if tc_resp.fire_change {
-                                                        fire_event_callback(&st.controls, target_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                                        fire_event_callback(
+                                                            &st.controls,
+                                                            target_id,
+                                                            control::EVENT_CHANGE,
+                                                            &mut pending_cbs,
+                                                        );
                                                     }
                                                 }
                                                 // Reset after triple click.
@@ -939,10 +1179,12 @@ pub fn run_once() -> u32 {
                     //   non-zero for letters, so we only set tracked_ctrl
                     //   when char_code == 0 (modifier-only key event).
                     if char_code == 0 {
-                        if keycode == 0x1D { // Left/Right Ctrl scancode
+                        if keycode == 0x1D {
+                            // Left/Right Ctrl scancode
                             st.tracked_modifiers |= control::MOD_CTRL;
                         }
-                        if keycode == 0x2A || keycode == 0x36 { // Shift scancodes
+                        if keycode == 0x2A || keycode == 0x36 {
+                            // Shift scancodes
                             st.tracked_modifiers |= control::MOD_SHIFT;
                         }
                     }
@@ -959,25 +1201,51 @@ pub fn run_once() -> u32 {
 
                     if let Some(focus_id) = st.focused {
                         if let Some(idx) = control::find_idx(&st.controls, focus_id) {
-                            let resp = st.controls[idx].handle_key_down(keycode, char_code, modifiers);
+                            let resp =
+                                st.controls[idx].handle_key_down(keycode, char_code, modifiers);
                             st.controls[idx].base_mut().mark_dirty();
 
                             if resp.consumed {
                                 handled = true;
-                                fire_event_callback(&st.controls, focus_id, control::EVENT_KEY, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    focus_id,
+                                    control::EVENT_KEY,
+                                    &mut pending_cbs,
+                                );
                             }
                             if resp.fire_change {
-                                fire_event_callback(&st.controls, focus_id, control::EVENT_CHANGE, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    focus_id,
+                                    control::EVENT_CHANGE,
+                                    &mut pending_cbs,
+                                );
                             }
                             if resp.fire_click {
-                                fire_event_callback(&st.controls, focus_id, control::EVENT_CLICK, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    focus_id,
+                                    control::EVENT_CLICK,
+                                    &mut pending_cbs,
+                                );
                             }
                             if resp.fire_submit {
                                 // Don't fire submit if AutoComplete popup will handle Enter
-                                let ac_popup_open = st.controls[idx].kind() == ControlKind::AutoCompleteTextField
-                                    && st.popup.as_ref().map(|p| p.owner_autocomplete == Some(focus_id)).unwrap_or(false);
+                                let ac_popup_open = st.controls[idx].kind()
+                                    == ControlKind::AutoCompleteTextField
+                                    && st
+                                        .popup
+                                        .as_ref()
+                                        .map(|p| p.owner_autocomplete == Some(focus_id))
+                                        .unwrap_or(false);
                                 if !ac_popup_open {
-                                    fire_event_callback(&st.controls, focus_id, control::EVENT_SUBMIT, &mut pending_cbs);
+                                    fire_event_callback(
+                                        &st.controls,
+                                        focus_id,
+                                        control::EVENT_SUBMIT,
+                                        &mut pending_cbs,
+                                    );
                                 }
                             }
                         }
@@ -990,7 +1258,9 @@ pub fn run_once() -> u32 {
                         if let Some(idx) = control::find_idx(&st.controls, focus_id) {
                             if st.controls[idx].kind() == ControlKind::AutoCompleteTextField {
                                 let raw: *mut dyn Control = &mut *st.controls[idx];
-                                let ac = unsafe { &mut *(raw as *mut crate::controls::autocomplete_textfield::AutoCompleteTextField) };
+                                let ac = unsafe {
+                                    &mut *(raw as *mut crate::controls::autocomplete_textfield::AutoCompleteTextField)
+                                };
                                 if ac.suggest {
                                     ac.suggest = false;
                                     let matches = ac.filtered_items();
@@ -1004,7 +1274,14 @@ pub fn run_once() -> u32 {
                                         let menu_id = st.next_id;
                                         st.next_id += 1;
                                         let menu_ctrl = crate::controls::create_control(
-                                            ControlKind::ContextMenu, menu_id, 0, 0, 0, 0, 0, &matches,
+                                            ControlKind::ContextMenu,
+                                            menu_id,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            0,
+                                            &matches,
                                         );
                                         st.controls.push(menu_ctrl);
 
@@ -1019,15 +1296,20 @@ pub fn run_once() -> u32 {
                                             let phys_popup_w = crate::theme::scale(popup_w);
                                             let phys_popup_h = crate::theme::scale(popup_h);
 
-                                            let (content_x, content_y) = compositor::get_window_position(
-                                                st.channel_id, st.sub_id, comp_window_id,
-                                            );
+                                            let (content_x, content_y) =
+                                                compositor::get_window_position(
+                                                    st.channel_id,
+                                                    st.sub_id,
+                                                    comp_window_id,
+                                                );
                                             let phys_ac_x = crate::theme::scale_i32(ac_abs.0);
                                             let phys_ac_y = crate::theme::scale_i32(ac_abs.1);
                                             let phys_ac_h = crate::theme::scale(ac_h);
                                             let phys_margin = crate::theme::scale_i32(margin);
                                             let mut popup_x = content_x + phys_ac_x - phys_margin;
-                                            let mut popup_y = content_y + phys_ac_y + phys_ac_h as i32 - phys_margin;
+                                            let mut popup_y =
+                                                content_y + phys_ac_y + phys_ac_h as i32
+                                                    - phys_margin;
 
                                             let (scr_w, scr_h) = compositor::screen_size();
                                             if popup_x + phys_popup_w as i32 > scr_w as i32 {
@@ -1035,18 +1317,29 @@ pub fn run_once() -> u32 {
                                             }
                                             if popup_y + phys_popup_h as i32 > scr_h as i32 {
                                                 let phys_menu_h = crate::theme::scale(menu_h);
-                                                popup_y = content_y + phys_ac_y - phys_menu_h as i32 - phys_margin;
+                                                popup_y = content_y + phys_ac_y
+                                                    - phys_menu_h as i32
+                                                    - phys_margin;
                                             }
-                                            if popup_x < 0 { popup_x = 0; }
-                                            if popup_y < 0 { popup_y = 0; }
+                                            if popup_x < 0 {
+                                                popup_x = 0;
+                                            }
+                                            if popup_y < 0 {
+                                                popup_y = 0;
+                                            }
 
                                             let popup_flags: u32 = 0x01 | 0x02 | 0x04 | 0x100;
-                                            if let Some((popup_win_id, shm_id, surface)) = compositor::create_window(
-                                                st.channel_id, st.sub_id,
-                                                popup_x, popup_y,
-                                                phys_popup_w, phys_popup_h,
-                                                popup_flags,
-                                            ) {
+                                            if let Some((popup_win_id, shm_id, surface)) =
+                                                compositor::create_window(
+                                                    st.channel_id,
+                                                    st.sub_id,
+                                                    popup_x,
+                                                    popup_y,
+                                                    phys_popup_w,
+                                                    phys_popup_h,
+                                                    popup_flags,
+                                                )
+                                            {
                                                 st.controls[mi].set_position(0, 0);
                                                 st.controls[mi].base_mut().visible = false;
                                                 let back_buffer = alloc::vec![0u32; (phys_popup_w * phys_popup_h) as usize];
@@ -1071,7 +1364,12 @@ pub fn run_once() -> u32 {
                                         }
                                     } else {
                                         // No matches — dismiss popup if open
-                                        if st.popup.as_ref().map(|p| p.owner_autocomplete == Some(focus_id)).unwrap_or(false) {
+                                        if st
+                                            .popup
+                                            .as_ref()
+                                            .map(|p| p.owner_autocomplete == Some(focus_id))
+                                            .unwrap_or(false)
+                                        {
                                             dismiss_popup(st);
                                         }
                                     }
@@ -1084,11 +1382,15 @@ pub fn run_once() -> u32 {
                                     if let Some(ref popup) = st.popup {
                                         if popup.owner_autocomplete == Some(focus_id) {
                                             let menu_id = popup.menu_id;
-                                            if let Some(mi) = control::find_idx(&st.controls, menu_id) {
+                                            if let Some(mi) =
+                                                control::find_idx(&st.controls, menu_id)
+                                            {
                                                 // Count items
-                                                let item_count = st.controls[mi].text_base()
+                                                let item_count = st.controls[mi]
+                                                    .text_base()
                                                     .map(|tb| tb.text.split(|&b| b == b'|').count())
-                                                    .unwrap_or(0) as i32;
+                                                    .unwrap_or(0)
+                                                    as i32;
                                                 let cur = st.controls[mi].base().state as i32;
                                                 let next = if nav > 0 {
                                                     (cur + 1).min(item_count - 1)
@@ -1109,38 +1411,55 @@ pub fn run_once() -> u32 {
                                 let accept = ac.popup_accept;
                                 ac.popup_accept = false;
                                 if accept {
-                                    let has_ac_popup = st.popup.as_ref()
+                                    let has_ac_popup = st
+                                        .popup
+                                        .as_ref()
                                         .map(|p| p.owner_autocomplete == Some(focus_id))
                                         .unwrap_or(false);
                                     if has_ac_popup {
                                         // Transfer hovered item text to the text field
                                         let menu_id = st.popup.as_ref().unwrap().menu_id;
                                         if let Some(mi) = control::find_idx(&st.controls, menu_id) {
-                                            let selected_idx = st.controls[mi].base().state as usize;
-                                            let menu_text = st.controls[mi].text_base()
+                                            let selected_idx =
+                                                st.controls[mi].base().state as usize;
+                                            let menu_text = st.controls[mi]
+                                                .text_base()
                                                 .map(|tb| tb.text.clone())
                                                 .unwrap_or_default();
-                                            let full_item: alloc::vec::Vec<u8> = menu_text.split(|&b| b == b'|')
+                                            let full_item: alloc::vec::Vec<u8> = menu_text
+                                                .split(|&b| b == b'|')
                                                 .nth(selected_idx)
                                                 .unwrap_or(&[])
                                                 .to_vec();
-                                            let label = if let Some(sep) = full_item.iter().position(|&b| b == 0x1F) {
+                                            let label = if let Some(sep) =
+                                                full_item.iter().position(|&b| b == 0x1F)
+                                            {
                                                 full_item[sep + 1..].to_vec()
                                             } else {
                                                 full_item
                                             };
                                             dismiss_popup(st);
                                             if !label.is_empty() {
-                                                if let Some(idx2) = control::find_idx(&st.controls, focus_id) {
-                                                    let raw2: *mut dyn Control = &mut *st.controls[idx2];
-                                                    let ac2 = unsafe { &mut *(raw2 as *mut crate::controls::autocomplete_textfield::AutoCompleteTextField) };
+                                                if let Some(idx2) =
+                                                    control::find_idx(&st.controls, focus_id)
+                                                {
+                                                    let raw2: *mut dyn Control =
+                                                        &mut *st.controls[idx2];
+                                                    let ac2 = unsafe {
+                                                        &mut *(raw2 as *mut crate::controls::autocomplete_textfield::AutoCompleteTextField)
+                                                    };
                                                     ac2.text_base.text = label;
                                                     ac2.cursor_pos = ac2.text_base.text.len();
                                                     ac2.sel_anchor = ac2.cursor_pos;
                                                     ac2.suggest = false;
                                                     ac2.text_base.base.mark_dirty();
                                                 }
-                                                fire_event_callback(&st.controls, focus_id, control::EVENT_SUBMIT, &mut pending_cbs);
+                                                fire_event_callback(
+                                                    &st.controls,
+                                                    focus_id,
+                                                    control::EVENT_SUBMIT,
+                                                    &mut pending_cbs,
+                                                );
                                             }
                                         }
                                     }
@@ -1156,7 +1475,12 @@ pub fn run_once() -> u32 {
                             cycle_focus(st, win_id, &mut pending_cbs, reverse);
                         }
                         // Always bubble unhandled key events to the window
-                        fire_event_callback(&st.controls, win_id, control::EVENT_KEY, &mut pending_cbs);
+                        fire_event_callback(
+                            &st.controls,
+                            win_id,
+                            control::EVENT_KEY,
+                            &mut pending_cbs,
+                        );
                     }
                 }
 
@@ -1179,7 +1503,12 @@ pub fn run_once() -> u32 {
                     st.last_modifiers = ev[4] | st.tracked_modifiers;
 
                     // Dispatch KEY_UP to the window
-                    fire_event_callback(&st.controls, win_id, control::EVENT_KEY_UP, &mut pending_cbs);
+                    fire_event_callback(
+                        &st.controls,
+                        win_id,
+                        control::EVENT_KEY_UP,
+                        &mut pending_cbs,
+                    );
                 }
 
                 compositor::EVT_MOUSE_SCROLL => {
@@ -1197,16 +1526,28 @@ pub fn run_once() -> u32 {
                                 let resp = st.controls[idx].handle_scroll(dz);
                                 if resp.consumed {
                                     st.controls[idx].base_mut().mark_dirty();
-                                    fire_event_callback(&st.controls, cur, control::EVENT_SCROLL, &mut pending_cbs);
+                                    fire_event_callback(
+                                        &st.controls,
+                                        cur,
+                                        control::EVENT_SCROLL,
+                                        &mut pending_cbs,
+                                    );
                                     if resp.fire_change {
-                                        fire_event_callback(&st.controls, cur, control::EVENT_CHANGE, &mut pending_cbs);
+                                        fire_event_callback(
+                                            &st.controls,
+                                            cur,
+                                            control::EVENT_CHANGE,
+                                            &mut pending_cbs,
+                                        );
                                     }
                                     consumed = true;
                                     break;
                                 }
                                 // Bubble up to parent
                                 let parent = st.controls[idx].parent_id();
-                                if parent == 0 || parent == cur { break; }
+                                if parent == 0 || parent == cur {
+                                    break;
+                                }
                                 cur = parent;
                             } else {
                                 break;
@@ -1225,7 +1566,12 @@ pub fn run_once() -> u32 {
                                 let local_y = st.last_mouse_y - ay;
                                 st.controls[idx].handle_mouse_down(local_x, local_y, button);
                                 st.controls[idx].base_mut().mark_dirty();
-                                fire_event_callback(&st.controls, target_id, control::EVENT_MOUSE_DOWN, &mut pending_cbs);
+                                fire_event_callback(
+                                    &st.controls,
+                                    target_id,
+                                    control::EVENT_MOUSE_DOWN,
+                                    &mut pending_cbs,
+                                );
                             }
                         }
                     }
@@ -1258,7 +1604,6 @@ pub fn run_once() -> u32 {
                         // Resize back buffer at physical dimensions.
                         let new_count = (phys_w as usize) * (phys_h as usize);
                         cw.back_buffer.resize(new_count, 0);
-
                     }
                     if let Some(idx) = control::find_idx(&st.controls, win_id) {
                         // Control tree uses logical dimensions.
@@ -1267,14 +1612,22 @@ pub fn run_once() -> u32 {
                         // children (e.g. DOCK_FILL canvas) already have
                         // their updated sizes when app code queries them.
                         crate::layout::perform_layout(&mut st.controls, win_id);
-                        fire_event_callback(&st.controls, win_id, control::EVENT_RESIZE, &mut pending_cbs);
+                        fire_event_callback(
+                            &st.controls,
+                            win_id,
+                            control::EVENT_RESIZE,
+                            &mut pending_cbs,
+                        );
                     }
                     st.needs_layout = true;
                 }
 
                 compositor::EVT_FULLSCREEN_ENTER => {
                     // Fullscreen entered: ev[2] = (width<<16)|height, ev[3] = stride, ev[4] = fb_ptr
-                    crate::FULLSCREEN_INFO.store(ev[2] as u64 | ((ev[3] as u64) << 32), core::sync::atomic::Ordering::Relaxed);
+                    crate::FULLSCREEN_INFO.store(
+                        ev[2] as u64 | ((ev[3] as u64) << 32),
+                        core::sync::atomic::Ordering::Relaxed,
+                    );
                     crate::FULLSCREEN_FB_PTR.store(ev[4], core::sync::atomic::Ordering::Relaxed);
 
                     // Resize window SHM to fullscreen dimensions
@@ -1287,7 +1640,11 @@ pub fn run_once() -> u32 {
                         let logical_w = crate::theme::unscale_u32(fs_w);
                         let logical_h = crate::theme::unscale_u32(fs_h);
                         if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
-                            st.channel_id, cw.window_id, cw.shm_id, fs_w, fs_h,
+                            st.channel_id,
+                            cw.window_id,
+                            cw.shm_id,
+                            fs_w,
+                            fs_h,
                         ) {
                             cw.shm_id = new_shm_id;
                             cw.surface = new_surface;
@@ -1307,7 +1664,12 @@ pub fn run_once() -> u32 {
                         crate::layout::perform_layout(&mut st.controls, win_id);
                     }
 
-                    fire_event_callback(&st.controls, win_id, control::EVENT_FULLSCREEN_ENTER, &mut pending_cbs);
+                    fire_event_callback(
+                        &st.controls,
+                        win_id,
+                        control::EVENT_FULLSCREEN_ENTER,
+                        &mut pending_cbs,
+                    );
                 }
 
                 compositor::EVT_FULLSCREEN_EXIT => {
@@ -1321,7 +1683,11 @@ pub fn run_once() -> u32 {
                             let phys_w = crate::theme::scale(orig_lw);
                             let phys_h = crate::theme::scale(orig_lh);
                             if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
-                                st.channel_id, cw.window_id, cw.shm_id, phys_w, phys_h,
+                                st.channel_id,
+                                cw.window_id,
+                                cw.shm_id,
+                                phys_w,
+                                phys_h,
                             ) {
                                 cw.shm_id = new_shm_id;
                                 cw.surface = new_surface;
@@ -1342,7 +1708,12 @@ pub fn run_once() -> u32 {
                         }
                     }
 
-                    fire_event_callback(&st.controls, win_id, control::EVENT_FULLSCREEN_EXIT, &mut pending_cbs);
+                    fire_event_callback(
+                        &st.controls,
+                        win_id,
+                        control::EVENT_FULLSCREEN_EXIT,
+                        &mut pending_cbs,
+                    );
                 }
 
                 compositor::EVT_FRAME_ACK => {
@@ -1461,27 +1832,36 @@ pub fn run_once() -> u32 {
         let logical_h = st.comp_windows[wi].logical_height;
 
         // Clamp dirty rect in logical space (for render_tree intersection tests)
-        let logical_dr = dirty_rect.map(|(dx, dy, dw, dh)| {
-            let x0 = dx.max(0) as u32;
-            let y0 = dy.max(0) as u32;
-            let x1 = ((dx + dw as i32).max(0) as u32).min(logical_w);
-            let y1 = ((dy + dh as i32).max(0) as u32).min(logical_h);
-            (x0 as i32, y0 as i32, x1.saturating_sub(x0), y1.saturating_sub(y0))
-        }).filter(|&(_, _, w, h)| w > 0 && h > 0);
+        let logical_dr = dirty_rect
+            .map(|(dx, dy, dw, dh)| {
+                let x0 = dx.max(0) as u32;
+                let y0 = dy.max(0) as u32;
+                let x1 = ((dx + dw as i32).max(0) as u32).min(logical_w);
+                let y1 = ((dy + dh as i32).max(0) as u32).min(logical_h);
+                (
+                    x0 as i32,
+                    y0 as i32,
+                    x1.saturating_sub(x0),
+                    y1.saturating_sub(y0),
+                )
+            })
+            .filter(|&(_, _, w, h)| w > 0 && h > 0);
 
         // Scale dirty rect to physical space (for Surface clip, SHM copy, present_rect)
-        let physical_dr = logical_dr.map(|(dx, dy, dw, dh)| {
-            let px = crate::theme::scale_i32(dx);
-            let py = crate::theme::scale_i32(dy);
-            let pw = crate::theme::scale(dw as u32);
-            let ph = crate::theme::scale(dh as u32);
-            // Clamp to physical surface bounds
-            let px = px.max(0);
-            let py = py.max(0);
-            let pw = pw.min(sw.saturating_sub(px as u32));
-            let ph = ph.min(sh.saturating_sub(py as u32));
-            (px, py, pw, ph)
-        }).filter(|&(_, _, w, h)| w > 0 && h > 0);
+        let physical_dr = logical_dr
+            .map(|(dx, dy, dw, dh)| {
+                let px = crate::theme::scale_i32(dx);
+                let py = crate::theme::scale_i32(dy);
+                let pw = crate::theme::scale(dw as u32);
+                let ph = crate::theme::scale(dh as u32);
+                // Clamp to physical surface bounds
+                let px = px.max(0);
+                let py = py.max(0);
+                let pw = pw.min(sw.saturating_sub(px as u32));
+                let ph = ph.min(sh.saturating_sub(py as u32));
+                (px, py, pw, ph)
+            })
+            .filter(|&(_, _, w, h)| w > 0 && h > 0);
 
         // Double-buffered rendering: draw to a local back buffer first, then
         // copy the changed region to SHM in one shot.
@@ -1513,11 +1893,7 @@ pub fn run_once() -> u32 {
                 let stride = sw as usize;
                 for row in 0..dh as usize {
                     let off = (dy + row) * stride + dx;
-                    core::ptr::copy_nonoverlapping(
-                        back_buf.add(off),
-                        surface_ptr.add(off),
-                        dw,
-                    );
+                    core::ptr::copy_nonoverlapping(back_buf.add(off), surface_ptr.add(off), dw);
                 }
             } else {
                 // Full copy (fallback for first frame, resize, etc.)
@@ -1540,8 +1916,13 @@ pub fn run_once() -> u32 {
         // the compositor only copies and recomposites the changed region.
         if let Some((dx, dy, dw, dh)) = physical_dr {
             compositor::present_rect(
-                channel_id, comp_window_id, shm_id,
-                dx as u32, dy as u32, dw, dh,
+                channel_id,
+                comp_window_id,
+                shm_id,
+                dx as u32,
+                dy as u32,
+                dw,
+                dh,
             );
         } else {
             compositor::present(channel_id, comp_window_id, shm_id);
@@ -1558,10 +1939,21 @@ pub fn run_once() -> u32 {
     let popup_render_info: Option<(control::ControlId, i32, u32, u32, *mut u32, u32, u32)> = {
         if let Some(ref popup) = st.popup {
             if popup.dirty {
-                Some((popup.menu_id, popup.margin, popup.width, popup.height,
-                       popup.surface, popup.window_id, popup.shm_id))
-            } else { None }
-        } else { None }
+                Some((
+                    popup.menu_id,
+                    popup.margin,
+                    popup.width,
+                    popup.height,
+                    popup.surface,
+                    popup.window_id,
+                    popup.shm_id,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
     };
 
     if let Some((menu_id, margin, pw, ph, surface, popup_win_id, shm_id)) = popup_render_info {
@@ -1613,7 +2005,11 @@ fn fire_event_callback(
 
 /// Build a cascaded tab sort key for a control: (parent_tab_index, own_tab_index, insertion_order).
 /// This ensures controls are grouped by parent tab_index first, then sorted within the group.
-fn tab_sort_key(controls: &[Box<dyn control::Control>], id: ControlId, insertion_idx: usize) -> (u32, u32, usize) {
+fn tab_sort_key(
+    controls: &[Box<dyn control::Control>],
+    id: ControlId,
+    insertion_idx: usize,
+) -> (u32, u32, usize) {
     let own = control::find_idx(controls, id)
         .map(|i| controls[i].base().tab_index)
         .unwrap_or(0);
@@ -1637,25 +2033,37 @@ fn cycle_focus(
     // Collect all focusable controls that belong to this window (with insertion index for stable sort)
     let mut focusable: Vec<(ControlId, usize)> = Vec::new();
     for (ins_idx, c) in st.controls.iter().enumerate() {
-        if !c.accepts_focus() || c.id() == win_id || !c.base().visible { continue; }
+        if !c.accepts_focus() || c.id() == win_id || !c.base().visible {
+            continue;
+        }
         // Check that this control belongs to the window
         let mut cur = c.parent_id();
         let belongs = loop {
-            if cur == win_id { break true; }
-            if cur == 0 { break false; }
+            if cur == win_id {
+                break true;
+            }
+            if cur == 0 {
+                break false;
+            }
             match control::find_idx(&st.controls, cur) {
                 Some(idx) => {
                     // Skip controls whose parent is invisible
-                    if !st.controls[idx].base().visible { break false; }
+                    if !st.controls[idx].base().visible {
+                        break false;
+                    }
                     cur = st.controls[idx].parent_id();
                 }
                 None => break false,
             }
         };
-        if belongs { focusable.push((c.id(), ins_idx)); }
+        if belongs {
+            focusable.push((c.id(), ins_idx));
+        }
     }
 
-    if focusable.is_empty() { return; }
+    if focusable.is_empty() {
+        return;
+    }
 
     // Sort by cascaded tab_index
     focusable.sort_by(|a, b| {
@@ -1667,12 +2075,17 @@ fn cycle_focus(
     let ids: Vec<ControlId> = focusable.iter().map(|f| f.0).collect();
 
     // Find current focused index
-    let cur_idx = st.focused
+    let cur_idx = st
+        .focused
         .and_then(|fid| ids.iter().position(|&id| id == fid))
         .unwrap_or(0);
 
     let next_idx = if reverse {
-        if cur_idx == 0 { ids.len() - 1 } else { cur_idx - 1 }
+        if cur_idx == 0 {
+            ids.len() - 1
+        } else {
+            cur_idx - 1
+        }
     } else {
         (cur_idx + 1) % ids.len()
     };
@@ -1696,12 +2109,7 @@ fn cycle_focus(
     }
 }
 
-fn is_point_in_control(
-    controls: &[Box<dyn Control>],
-    id: ControlId,
-    px: i32,
-    py: i32,
-) -> bool {
+fn is_point_in_control(controls: &[Box<dyn Control>], id: ControlId, px: i32, py: i32) -> bool {
     let (ax, ay) = control::abs_position(controls, id);
     if let Some(idx) = control::find_idx(controls, id) {
         let (w, h) = controls[idx].size();
@@ -1711,14 +2119,15 @@ fn is_point_in_control(
     }
 }
 
-
 /// Show the tooltip for the given control (called after hover delay).
 fn show_tooltip(st: &mut crate::AnyuiState, ctrl_id: ControlId) {
     let idx2 = match control::find_idx(&st.controls, ctrl_id) {
         Some(i) => i,
         None => return,
     };
-    if st.controls[idx2].base().tooltip_text.is_empty() { return; }
+    if st.controls[idx2].base().tooltip_text.is_empty() {
+        return;
+    }
     let text = st.controls[idx2].base().tooltip_text.clone();
     let win_id = st.controls[idx2].base().parent;
     let (ax, ay) = control::abs_position(&st.controls, ctrl_id);
@@ -1733,8 +2142,14 @@ fn show_tooltip(st: &mut crate::AnyuiState, ctrl_id: ControlId) {
         let tid = st.next_id;
         st.next_id += 1;
         let ctrl = crate::controls::create_control(
-            control::ControlKind::Tooltip, tid, win_id,
-            0, 0, 200, 28, &text,
+            control::ControlKind::Tooltip,
+            tid,
+            win_id,
+            0,
+            0,
+            200,
+            28,
+            &text,
         );
         st.controls.push(ctrl);
         // Add tooltip as child of the top-level window
@@ -1764,17 +2179,24 @@ fn show_tooltip(st: &mut crate::AnyuiState, ctrl_id: ControlId) {
 fn find_top_window(controls: &[Box<dyn control::Control>], id: ControlId) -> Option<ControlId> {
     let mut cur = id;
     loop {
-        let parent = control::find_idx(controls, cur)
-            .map(|i| controls[i].base().parent)?;
-        if parent == 0 || parent == cur { return Some(cur); }
+        let parent = control::find_idx(controls, cur).map(|i| controls[i].base().parent)?;
+        if parent == 0 || parent == cur {
+            return Some(cur);
+        }
         cur = parent;
     }
 }
 
 fn clear_tracking_for(st: &mut crate::AnyuiState, id: ControlId) {
-    if st.focused == Some(id) { st.focused = None; }
-    if st.pressed == Some(id) { st.pressed = None; }
-    if st.hovered == Some(id) { st.hovered = None; }
+    if st.focused == Some(id) {
+        st.focused = None;
+    }
+    if st.pressed == Some(id) {
+        st.pressed = None;
+    }
+    if st.hovered == Some(id) {
+        st.hovered = None;
+    }
 
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
         let children: Vec<ControlId> = ctrl.children().to_vec();
@@ -1834,8 +2256,16 @@ fn clear_dirty(controls: &mut [Box<dyn Control>], id: ControlId) {
 // ── Dirty rect collection ───────────────────────────────────────────
 
 /// Union two rects: expand `existing` to also cover `(x, y, w, h)`.
-fn union_rect(existing: Option<(i32, i32, u32, u32)>, x: i32, y: i32, w: u32, h: u32) -> (i32, i32, u32, u32) {
-    if w == 0 || h == 0 { return existing.unwrap_or((x, y, w, h)); }
+fn union_rect(
+    existing: Option<(i32, i32, u32, u32)>,
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+) -> (i32, i32, u32, u32) {
+    if w == 0 || h == 0 {
+        return existing.unwrap_or((x, y, w, h));
+    }
     match existing {
         None => (x, y, w, h),
         Some((ex, ey, ew, eh)) => {
@@ -1902,7 +2332,13 @@ fn collect_dirty_rects(
         if b.prev_x != b.x || b.prev_y != b.y || b.prev_w != b.w || b.prev_h != b.h {
             let prev_abs_x = parent_abs_x + b.prev_x;
             let prev_abs_y = parent_abs_y + b.prev_y;
-            cw.dirty_rect = Some(union_rect(cw.dirty_rect, prev_abs_x, prev_abs_y, b.prev_w, b.prev_h));
+            cw.dirty_rect = Some(union_rect(
+                cw.dirty_rect,
+                prev_abs_x,
+                prev_abs_y,
+                b.prev_w,
+                b.prev_h,
+            ));
         }
     }
 
@@ -1973,7 +2409,6 @@ fn render_tree(
     }
     // ScrollView: offset children by -scroll_y and clip to viewport
     // Expander: offset children by +HEADER_HEIGHT (below header)
-    let is_scroll_view = controls[idx].kind() == ControlKind::ScrollView;
     let (child_abs_y, child_surface, sv_cull) = match controls[idx].kind() {
         ControlKind::ScrollView => {
             // Logical coords for the ScrollView viewport
@@ -2010,7 +2445,14 @@ fn render_tree(
                 }
             }
         }
-        render_tree(controls, cid, &child_surface, child_abs_x, child_abs_y, dirty_rect);
+        render_tree(
+            controls,
+            cid,
+            &child_surface,
+            child_abs_x,
+            child_abs_y,
+            dirty_rect,
+        );
     }
 
     // ScrollView: render scrollbar AFTER children so it isn't painted over.
@@ -2055,11 +2497,7 @@ fn remove_subtree(controls: &mut Vec<Box<dyn Control>>, id: ControlId) {
     controls.retain(|c| !to_remove.contains(&c.id()));
 }
 
-fn collect_descendants(
-    controls: &[Box<dyn Control>],
-    id: ControlId,
-    out: &mut Vec<ControlId>,
-) {
+fn collect_descendants(controls: &[Box<dyn Control>], id: ControlId, out: &mut Vec<ControlId>) {
     if let Some(idx) = control::find_idx(controls, id) {
         let children: Vec<ControlId> = controls[idx].children().to_vec();
         for &child in &children {

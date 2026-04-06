@@ -62,16 +62,22 @@ pub struct CookieJar {
 
 impl CookieJar {
     pub fn new() -> Self {
-        CookieJar { cookies: Vec::new() }
+        CookieJar {
+            cookies: Vec::new(),
+        }
     }
 
     /// Parse and store cookies from Set-Cookie headers.
     pub fn store_from_headers(&mut self, headers: &str, request_host: &str, request_path: &str) {
         for line in headers.split('\n') {
             let line = line.trim_end_matches('\r');
-            if !starts_with_ignore_case(line, "set-cookie") { continue; }
+            if !starts_with_ignore_case(line, "set-cookie") {
+                continue;
+            }
             let rest = &line["set-cookie".len()..];
-            if !rest.starts_with(':') { continue; }
+            if !rest.starts_with(':') {
+                continue;
+            }
             let val = rest[1..].trim_start();
             self.parse_set_cookie(val, request_host, request_path);
         }
@@ -88,7 +94,9 @@ impl CookieJar {
             Some(eq) => (name_value[..eq].trim(), name_value[eq + 1..].trim()),
             None => return,
         };
-        if name.is_empty() { return; }
+        if name.is_empty() {
+            return;
+        }
 
         let mut domain = String::from(request_host);
         let mut path = String::from(request_path);
@@ -123,9 +131,8 @@ impl CookieJar {
         }
 
         // Remove existing cookie with same name+domain+path
-        self.cookies.retain(|c| {
-            !(c.name == name && c.domain == domain && c.path == path)
-        });
+        self.cookies
+            .retain(|c| !(c.name == name && c.domain == domain && c.path == path));
 
         self.cookies.push(Cookie {
             domain: domain.to_ascii_lowercase(),
@@ -144,19 +151,29 @@ impl CookieJar {
 
         for c in &self.cookies {
             // Domain match: host ends with cookie domain
-            if !domain_matches(&host_lower, &c.domain) { continue; }
+            if !domain_matches(&host_lower, &c.domain) {
+                continue;
+            }
             // Path match: request path starts with cookie path
-            if !path.starts_with(c.path.as_str()) { continue; }
+            if !path.starts_with(c.path.as_str()) {
+                continue;
+            }
             // Secure check
-            if c.secure && !is_secure { continue; }
+            if c.secure && !is_secure {
+                continue;
+            }
             pairs.push((&c.name, &c.value));
         }
 
-        if pairs.is_empty() { return None; }
+        if pairs.is_empty() {
+            return None;
+        }
 
         let mut s = String::new();
         for (i, (name, value)) in pairs.iter().enumerate() {
-            if i > 0 { s.push_str("; "); }
+            if i > 0 {
+                s.push_str("; ");
+            }
             s.push_str(name);
             s.push('=');
             s.push_str(value);
@@ -166,7 +183,9 @@ impl CookieJar {
 }
 
 fn domain_matches(host: &str, domain: &str) -> bool {
-    if host == domain { return true; }
+    if host == domain {
+        return true;
+    }
     if host.ends_with(domain) {
         let prefix_len = host.len() - domain.len();
         if prefix_len > 0 && host.as_bytes()[prefix_len - 1] == b'.' {
@@ -177,7 +196,9 @@ fn domain_matches(host: &str, domain: &str) -> bool {
 }
 
 fn eq_ignore_case(a: &str, b: &str) -> bool {
-    if a.len() != b.len() { return false; }
+    if a.len() != b.len() {
+        return false;
+    }
     starts_with_ignore_case(a, b)
 }
 
@@ -204,6 +225,13 @@ const MAX_REDIRECTS: usize = 20;
 const CONNECT_TIMEOUT_MS: u32 = 10_000;
 const MAX_HEADER_SIZE: usize = 16384;
 const RECV_BUF_SIZE: usize = 32768;
+
+fn should_log_body_details(url: &Url) -> bool {
+    url.path.ends_with(".js")
+        || url.path.contains(".js?")
+        || url.path.ends_with(".mjs")
+        || url.path.contains(".mjs?")
+}
 
 // ---------------------------------------------------------------------------
 // Connection pool — reuses TCP (and TLS) connections across requests
@@ -263,9 +291,10 @@ impl ConnPool {
 
     /// Take a reusable connection for the given host/port/scheme.
     fn take(&mut self, host: &str, port: u16, is_https: bool) -> Option<u32> {
-        let pos = self.entries.iter().position(|e|
-            e.host == host && e.port == port && e.is_https == is_https
-        )?;
+        let pos = self
+            .entries
+            .iter()
+            .position(|e| e.host == host && e.port == port && e.is_https == is_https)?;
         let entry = self.entries.remove(pos);
         Some(entry.sock)
     }
@@ -286,10 +315,17 @@ impl ConnPool {
         }
         while self.entries.len() >= MAX_POOL_SIZE {
             let old = self.entries.remove(0);
-            if old.is_https { crate::tls::close(); }
+            if old.is_https {
+                crate::tls::close();
+            }
             net::tcp_close(old.sock);
         }
-        self.entries.push(PoolEntry { host, port, sock, is_https });
+        self.entries.push(PoolEntry {
+            host,
+            port,
+            sock,
+            is_https,
+        });
     }
 
     /// Evict any pooled HTTPS connections (needed before new TLS handshake).
@@ -309,7 +345,12 @@ impl ConnPool {
 /// Open a fresh TCP connection (+ TLS handshake for HTTPS).
 ///
 /// Uses the pool's DNS cache to avoid redundant DNS syscalls.
-fn connect_fresh(pool: &mut ConnPool, host: &str, port: u16, is_https: bool) -> Result<u32, FetchError> {
+fn connect_fresh(
+    pool: &mut ConnPool,
+    host: &str,
+    port: u16,
+    is_https: bool,
+) -> Result<u32, FetchError> {
     let ip = match pool.resolve_cached(host) {
         Some(ip) => ip,
         None => {
@@ -317,25 +358,83 @@ fn connect_fresh(pool: &mut ConnPool, host: &str, port: u16, is_https: bool) -> 
             return Err(FetchError::DnsFailure);
         }
     };
-    let sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT_MS);
-    if sock == u32::MAX {
-        anyos_std::println!("[http] TCP connect failed");
-        return Err(FetchError::ConnectFailure);
-    }
-    if is_https {
+    let attempts = if is_https { 2 } else { 1 };
+    for attempt in 0..attempts {
+        anyos_std::println!(
+            "[http] connect attempt {}/{} to {}:{} ({})",
+            attempt + 1,
+            attempts,
+            host,
+            port,
+            if is_https { "https" } else { "http" }
+        );
+        let sock = net::tcp_connect(&ip, port, CONNECT_TIMEOUT_MS);
+        if sock == u32::MAX {
+            anyos_std::println!("[http] TCP connect failed");
+            return Err(FetchError::ConnectFailure);
+        }
+        if !is_https {
+            if attempt > 0 {
+                anyos_std::println!(
+                    "[http] retry succeeded for {}:{} on attempt {}",
+                    host,
+                    port,
+                    attempt + 1
+                );
+            }
+            return Ok(sock);
+        }
+
         pool.evict_https();
         let ret = crate::tls::connect(sock, host);
-        if ret != 0 {
-            anyos_std::println!("[http] TLS handshake FAILED (err={})", ret);
-            net::tcp_close(sock);
-            return Err(FetchError::TlsHandshakeFailed);
+        if ret == 0 {
+            if attempt > 0 {
+                anyos_std::println!(
+                    "[http] TLS retry succeeded for {}:{} on attempt {}",
+                    host,
+                    port,
+                    attempt + 1
+                );
+            } else {
+                anyos_std::println!("[http] TLS handshake OK for {}:{}", host, port);
+            }
+            return Ok(sock);
+        }
+
+        anyos_std::println!(
+            "[http] TLS handshake FAILED (err={}, attempt {}/{})",
+            ret,
+            attempt + 1,
+            attempts
+        );
+        // Reset the global BearSSL wrapper state even on failed handshakes
+        // before trying the next connection.
+        crate::tls::close();
+        net::tcp_close(sock);
+
+        if attempt + 1 < attempts {
+            anyos_std::println!(
+                "[http] retrying TLS connection to {}:{} after handshake failure",
+                host,
+                port
+            );
+            anyos_std::process::sleep(20);
         }
     }
-    Ok(sock)
+
+    anyos_std::println!(
+        "[http] giving up TLS connection to {}:{} after {} attempt(s)",
+        host,
+        port,
+        attempts
+    );
+    Err(FetchError::TlsHandshakeFailed)
 }
 
 fn close_conn(sock: u32, is_https: bool) {
-    if is_https { crate::tls::close(); }
+    if is_https {
+        crate::tls::close();
+    }
     net::tcp_close(sock);
 }
 
@@ -350,10 +449,18 @@ fn send_data(sock: u32, data: &[u8], is_https: bool) -> bool {
 fn recv_some(sock: u32, buf: &mut [u8], is_https: bool) -> usize {
     if is_https {
         let n = crate::tls::recv(buf);
-        if n <= 0 { 0 } else { n as usize }
+        if n <= 0 {
+            0
+        } else {
+            n as usize
+        }
     } else {
         let n = net::tcp_recv(sock, buf);
-        if n == u32::MAX { 0 } else { n as usize }
+        if n == u32::MAX {
+            0
+        } else {
+            n as usize
+        }
     }
 }
 
@@ -388,8 +495,8 @@ fn decompress_body(raw: Vec<u8>, content_encoding: &Option<String>) -> Vec<u8> {
                 }
             }
         } else if enc_lower.contains("deflate") {
-            if let Some(decoded) = deflate::decompress_zlib(&raw)
-                .or_else(|| deflate::decompress_deflate(&raw))
+            if let Some(decoded) =
+                deflate::decompress_zlib(&raw).or_else(|| deflate::decompress_deflate(&raw))
             {
                 return decoded;
             }
@@ -406,7 +513,9 @@ fn decompress_body(raw: Vec<u8>, content_encoding: &Option<String>) -> Vec<u8> {
 /// Heuristic: check if the first bytes look like valid text (ASCII/UTF-8)
 /// rather than compressed binary data.
 fn looks_like_text(data: &[u8]) -> bool {
-    if data.is_empty() { return true; }
+    if data.is_empty() {
+        return true;
+    }
     let check_len = data.len().min(256);
     let mut non_text_count = 0u32;
     for &b in &data[..check_len] {
@@ -461,8 +570,7 @@ pub fn parse_url(s: &str) -> Result<Url, FetchError> {
 }
 
 pub fn resolve_url(base: &Url, relative: &str) -> Url {
-    if starts_with_ignore_case(relative, "http://")
-        || starts_with_ignore_case(relative, "https://")
+    if starts_with_ignore_case(relative, "http://") || starts_with_ignore_case(relative, "https://")
     {
         match parse_url(relative) {
             Ok(u) => return u,
@@ -555,21 +663,37 @@ pub fn resolve_url(base: &Url, relative: &str) -> Url {
 // HTTP fetch
 // ---------------------------------------------------------------------------
 
-pub fn fetch(url: &Url, cookies: &mut CookieJar, pool: &mut ConnPool) -> Result<Response, FetchError> {
+pub fn fetch(
+    url: &Url,
+    cookies: &mut CookieJar,
+    pool: &mut ConnPool,
+) -> Result<Response, FetchError> {
     let mut current = clone_url(url);
 
     for _redirect_n in 0..MAX_REDIRECTS {
         let is_https = current.scheme == "https";
-        anyos_std::println!("[http] {} GET {}:{}{}", if is_https { "HTTPS" } else { "HTTP" },
-            current.host, current.port, current.path);
+        anyos_std::println!(
+            "[http] {} GET {}:{}{}",
+            if is_https { "HTTPS" } else { "HTTP" },
+            current.host,
+            current.port,
+            current.path
+        );
 
         // 1. Get connection from pool or create fresh.
         let (mut sock, from_pool) = match pool.take(&current.host, current.port, is_https) {
             Some(s) => {
-                anyos_std::println!("[http] reusing connection to {}:{}", current.host, current.port);
+                anyos_std::println!(
+                    "[http] reusing connection to {}:{}",
+                    current.host,
+                    current.port
+                );
                 (s, true)
             }
-            None => (connect_fresh(pool, &current.host, current.port, is_https)?, false),
+            None => (
+                connect_fresh(pool, &current.host, current.port, is_https)?,
+                false,
+            ),
         };
 
         // 2. Build and send GET request.
@@ -629,20 +753,46 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar, pool: &mut ConnPool) -> Result<
                 current = resolve_url(&current, location);
                 continue;
             }
-            return Ok(Response { status, headers, body: Vec::new(), final_url: Some(clone_url(&current)) });
+            return Ok(Response {
+                status,
+                headers,
+                body: Vec::new(),
+                final_url: Some(clone_url(&current)),
+            });
         }
 
         // 6. Read body (chunked or content-length or until close).
-        let is_chunked = find_header_value(header_str, "transfer-encoding")
+        let transfer_encoding =
+            find_header_value(header_str, "transfer-encoding").map(|v| String::from(v));
+        let is_chunked = transfer_encoding
+            .as_deref()
             .map(|v| v.contains("chunked"))
             .unwrap_or(false);
         let content_length = parse_content_length(header_str);
-        let content_encoding = find_header_value(header_str, "content-encoding")
-            .map(|v| String::from(v));
+        let content_encoding =
+            find_header_value(header_str, "content-encoding").map(|v| String::from(v));
 
         let mut trailing = Vec::new();
         if header_end < response_buf.len() {
             trailing.extend_from_slice(&response_buf[header_end..]);
+        }
+
+        if should_log_body_details(&current) {
+            anyos_std::println!(
+                "[http] body read start: path={} mode={} content-length={} transfer-encoding={} content-encoding={} trailing={}B",
+                current.path,
+                if is_chunked {
+                    "chunked"
+                } else if let Some(cl) = content_length {
+                    if cl > 0 { "content-length" } else { "empty" }
+                } else {
+                    "until-close"
+                },
+                content_length.unwrap_or(0),
+                transfer_encoding.as_deref().unwrap_or(""),
+                content_encoding.as_deref().unwrap_or(""),
+                trailing.len()
+            );
         }
 
         let raw_body = if is_chunked {
@@ -657,9 +807,16 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar, pool: &mut ConnPool) -> Result<
             read_body(sock, &trailing, content_length)
         };
 
+        if should_log_body_details(&current) {
+            anyos_std::println!(
+                "[http] body read done: path={} raw={}B",
+                current.path,
+                raw_body.len()
+            );
+        }
+
         // 7. Pool connection if reusable, otherwise close.
-        let reusable = (content_length.is_some() || is_chunked)
-            && !response_says_close(header_str);
+        let reusable = (content_length.is_some() || is_chunked) && !response_says_close(header_str);
         if reusable {
             pool.put(current.host.clone(), current.port, sock, is_https);
         } else {
@@ -669,7 +826,12 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar, pool: &mut ConnPool) -> Result<
         // 8. Decompress if content-encoded.
         let body = decompress_body(raw_body, &content_encoding);
 
-        return Ok(Response { status, headers, body, final_url: Some(clone_url(&current)) });
+        return Ok(Response {
+            status,
+            headers,
+            body,
+            final_url: Some(clone_url(&current)),
+        });
     }
 
     anyos_std::println!("[http] too many redirects");
@@ -677,21 +839,38 @@ pub fn fetch(url: &Url, cookies: &mut CookieJar, pool: &mut ConnPool) -> Result<
 }
 
 /// Fetch a URL using POST with a form-urlencoded body.
-pub fn fetch_post(url: &Url, body: &str, cookies: &mut CookieJar, pool: &mut ConnPool) -> Result<Response, FetchError> {
+pub fn fetch_post(
+    url: &Url,
+    body: &str,
+    cookies: &mut CookieJar,
+    pool: &mut ConnPool,
+) -> Result<Response, FetchError> {
     let mut current = clone_url(url);
 
     for redirect_n in 0..MAX_REDIRECTS {
         let is_https = current.scheme == "https";
-        anyos_std::println!("[http] {} POST {}:{}{}", if is_https { "HTTPS" } else { "HTTP" },
-            current.host, current.port, current.path);
+        anyos_std::println!(
+            "[http] {} POST {}:{}{}",
+            if is_https { "HTTPS" } else { "HTTP" },
+            current.host,
+            current.port,
+            current.path
+        );
 
         // 1. Get connection from pool or create fresh.
         let (mut sock, from_pool) = match pool.take(&current.host, current.port, is_https) {
             Some(s) => {
-                anyos_std::println!("[http] reusing connection to {}:{}", current.host, current.port);
+                anyos_std::println!(
+                    "[http] reusing connection to {}:{}",
+                    current.host,
+                    current.port
+                );
                 (s, true)
             }
-            None => (connect_fresh(pool, &current.host, current.port, is_https)?, false),
+            None => (
+                connect_fresh(pool, &current.host, current.port, is_https)?,
+                false,
+            ),
         };
 
         // Use POST on first request, but follow redirects as GET.
@@ -748,32 +927,69 @@ pub fn fetch_post(url: &Url, body: &str, cookies: &mut CookieJar, pool: &mut Con
                 current = resolve_url(&current, location);
                 continue;
             }
-            return Ok(Response { status, headers, body: Vec::new(), final_url: Some(clone_url(&current)) });
+            return Ok(Response {
+                status,
+                headers,
+                body: Vec::new(),
+                final_url: Some(clone_url(&current)),
+            });
         }
 
-        let is_chunked = find_header_value(header_str, "transfer-encoding")
+        let transfer_encoding =
+            find_header_value(header_str, "transfer-encoding").map(|v| String::from(v));
+        let is_chunked = transfer_encoding
+            .as_deref()
             .map(|v| v.contains("chunked"))
             .unwrap_or(false);
         let content_length = parse_content_length(header_str);
-        let content_encoding = find_header_value(header_str, "content-encoding")
-            .map(|v| String::from(v));
+        let content_encoding =
+            find_header_value(header_str, "content-encoding").map(|v| String::from(v));
 
         let mut trailing = Vec::new();
         if header_end < response_buf.len() {
             trailing.extend_from_slice(&response_buf[header_end..]);
         }
 
+        if should_log_body_details(&current) {
+            anyos_std::println!(
+                "[http] body read start: path={} mode={} content-length={} transfer-encoding={} content-encoding={} trailing={}B",
+                current.path,
+                if is_chunked {
+                    "chunked"
+                } else if let Some(cl) = content_length {
+                    if cl > 0 { "content-length" } else { "empty" }
+                } else {
+                    "until-close"
+                },
+                content_length.unwrap_or(0),
+                transfer_encoding.as_deref().unwrap_or(""),
+                content_encoding.as_deref().unwrap_or(""),
+                trailing.len()
+            );
+        }
+
         let raw_body = if is_chunked {
-            if is_https { read_chunked_body_tls(&trailing) } else { read_chunked_body(sock, &trailing) }
+            if is_https {
+                read_chunked_body_tls(&trailing)
+            } else {
+                read_chunked_body(sock, &trailing)
+            }
         } else if is_https {
             read_body_tls(&trailing, content_length)
         } else {
             read_body(sock, &trailing, content_length)
         };
 
+        if should_log_body_details(&current) {
+            anyos_std::println!(
+                "[http] body read done: path={} raw={}B",
+                current.path,
+                raw_body.len()
+            );
+        }
+
         // Pool connection if reusable, otherwise close.
-        let reusable = (content_length.is_some() || is_chunked)
-            && !response_says_close(header_str);
+        let reusable = (content_length.is_some() || is_chunked) && !response_says_close(header_str);
         if reusable {
             pool.put(current.host.clone(), current.port, sock, is_https);
         } else {
@@ -781,7 +997,12 @@ pub fn fetch_post(url: &Url, body: &str, cookies: &mut CookieJar, pool: &mut Con
         }
 
         let resp_body = decompress_body(raw_body, &content_encoding);
-        return Ok(Response { status, headers, body: resp_body, final_url: Some(clone_url(&current)) });
+        return Ok(Response {
+            status,
+            headers,
+            body: resp_body,
+            final_url: Some(clone_url(&current)),
+        });
     }
 
     Err(FetchError::TooManyRedirects)
@@ -802,10 +1023,14 @@ fn read_body(sock: u32, initial: &[u8], content_length: Option<u32>) -> Vec<u8> 
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
     loop {
         if let Some(cl) = content_length {
-            if body.len() >= cl as usize { break; }
+            if body.len() >= cl as usize {
+                break;
+            }
         }
         let n = net::tcp_recv(sock, &mut recv_buf);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         body.extend_from_slice(&recv_buf[..n as usize]);
     }
     body
@@ -836,16 +1061,22 @@ fn read_chunked_body(sock: u32, initial: &[u8]) -> Vec<u8> {
             }
             // Need more data
             let n = net::tcp_recv(sock, &mut recv_buf);
-            if n == 0 || n == u32::MAX { return body; }
+            if n == 0 || n == u32::MAX {
+                return body;
+            }
             buf.extend_from_slice(&recv_buf[..n as usize]);
         }
 
-        if chunk_size == 0 { break; } // final chunk
+        if chunk_size == 0 {
+            break;
+        } // final chunk
 
         // Read chunk_size bytes of data
         while buf.len() - cursor < chunk_size {
             let n = net::tcp_recv(sock, &mut recv_buf);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             buf.extend_from_slice(&recv_buf[..n as usize]);
         }
 
@@ -856,7 +1087,9 @@ fn read_chunked_body(sock: u32, initial: &[u8]) -> Vec<u8> {
         // Skip trailing CRLF after chunk data
         while buf.len() - cursor < 2 {
             let n = net::tcp_recv(sock, &mut recv_buf);
-            if n == 0 || n == u32::MAX { return body; }
+            if n == 0 || n == u32::MAX {
+                return body;
+            }
             buf.extend_from_slice(&recv_buf[..n as usize]);
         }
         if buf[cursor] == b'\r' && buf[cursor + 1] == b'\n' {
@@ -887,10 +1120,14 @@ fn read_body_tls(initial: &[u8], content_length: Option<u32>) -> Vec<u8> {
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
     loop {
         if let Some(cl) = content_length {
-            if body.len() >= cl as usize { break; }
+            if body.len() >= cl as usize {
+                break;
+            }
         }
         let n = crate::tls::recv(&mut recv_buf);
-        if n <= 0 { break; }
+        if n <= 0 {
+            break;
+        }
         body.extend_from_slice(&recv_buf[..n as usize]);
     }
     body
@@ -917,15 +1154,21 @@ fn read_chunked_body_tls(initial: &[u8]) -> Vec<u8> {
                 break;
             }
             let n = crate::tls::recv(&mut recv_buf);
-            if n <= 0 { return body; }
+            if n <= 0 {
+                return body;
+            }
             buf.extend_from_slice(&recv_buf[..n as usize]);
         }
 
-        if chunk_size == 0 { break; }
+        if chunk_size == 0 {
+            break;
+        }
 
         while buf.len() - cursor < chunk_size {
             let n = crate::tls::recv(&mut recv_buf);
-            if n <= 0 { break; }
+            if n <= 0 {
+                break;
+            }
             buf.extend_from_slice(&recv_buf[..n as usize]);
         }
 
@@ -936,7 +1179,9 @@ fn read_chunked_body_tls(initial: &[u8]) -> Vec<u8> {
         // Skip trailing CRLF
         while buf.len() - cursor < 2 {
             let n = crate::tls::recv(&mut recv_buf);
-            if n <= 0 { return body; }
+            if n <= 0 {
+                return body;
+            }
             buf.extend_from_slice(&recv_buf[..n as usize]);
         }
         if buf[cursor] == b'\r' && buf[cursor + 1] == b'\n' {
@@ -953,7 +1198,9 @@ fn read_chunked_body_tls(initial: &[u8]) -> Vec<u8> {
 }
 
 fn find_crlf(data: &[u8]) -> Option<usize> {
-    if data.len() < 2 { return None; }
+    if data.len() < 2 {
+        return None;
+    }
     for i in 0..data.len() - 1 {
         if data[i] == b'\r' && data[i + 1] == b'\n' {
             return Some(i);
@@ -993,10 +1240,11 @@ fn resolve_host(host: &str) -> Option<[u8; 4]> {
 }
 
 fn find_header_end(data: &[u8]) -> Option<usize> {
-    if data.len() < 4 { return None; }
+    if data.len() < 4 {
+        return None;
+    }
     for i in 0..data.len() - 3 {
-        if data[i] == b'\r' && data[i + 1] == b'\n'
-            && data[i + 2] == b'\r' && data[i + 3] == b'\n'
+        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n'
         {
             return Some(i + 4);
         }
@@ -1047,7 +1295,12 @@ fn build_post_request(url: &Url, body: &str, cookies: &CookieJar) -> String {
     build_request_with_method(url, "POST", Some(body), cookies)
 }
 
-fn build_request_with_method(url: &Url, method: &str, body: Option<&str>, cookies: &CookieJar) -> String {
+fn build_request_with_method(
+    url: &Url,
+    method: &str,
+    body: Option<&str>,
+    cookies: &CookieJar,
+) -> String {
     let mut req = String::new();
     req.push_str(method);
     req.push(' ');
@@ -1104,12 +1357,16 @@ pub fn clone_url(url: &Url) -> Url {
 
 fn parse_u16(s: &str) -> Option<u16> {
     let mut val: u32 = 0;
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     for b in s.bytes() {
         match b {
             b'0'..=b'9' => {
                 val = val * 10 + (b - b'0') as u32;
-                if val > 65535 { return None; }
+                if val > 65535 {
+                    return None;
+                }
             }
             _ => return None,
         }
@@ -1119,7 +1376,9 @@ fn parse_u16(s: &str) -> Option<u16> {
 
 fn parse_u32(s: &str) -> Option<u32> {
     let mut val: u32 = 0;
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     for b in s.bytes() {
         match b {
             b'0'..=b'9' => {
@@ -1141,11 +1400,15 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
         match b {
             b'0'..=b'9' => {
                 num = num * 10 + (b - b'0') as u32;
-                if num > 255 { return None; }
+                if num > 255 {
+                    return None;
+                }
                 has_digit = true;
             }
             b'.' => {
-                if !has_digit || idx >= 3 { return None; }
+                if !has_digit || idx >= 3 {
+                    return None;
+                }
                 parts[idx] = num as u8;
                 idx += 1;
                 num = 0;
@@ -1154,26 +1417,38 @@ fn parse_ip(s: &str) -> Option<[u8; 4]> {
             _ => return None,
         }
     }
-    if !has_digit || idx != 3 { return None; }
+    if !has_digit || idx != 3 {
+        return None;
+    }
     parts[3] = num as u8;
     Some(parts)
 }
 
 fn ascii_lower(b: u8) -> u8 {
-    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
+    if b >= b'A' && b <= b'Z' {
+        b + 32
+    } else {
+        b
+    }
 }
 
 fn starts_with_ignore_case(s: &str, prefix: &str) -> bool {
-    if s.len() < prefix.len() { return false; }
+    if s.len() < prefix.len() {
+        return false;
+    }
     let sb = s.as_bytes();
     let pb = prefix.as_bytes();
     for i in 0..pb.len() {
-        if ascii_lower(sb[i]) != ascii_lower(pb[i]) { return false; }
+        if ascii_lower(sb[i]) != ascii_lower(pb[i]) {
+            return false;
+        }
     }
     true
 }
 
 pub fn push_u32(s: &mut String, val: u32) {
-    if val >= 10 { push_u32(s, val / 10); }
+    if val >= 10 {
+        push_u32(s, val / 10);
+    }
     s.push((b'0' + (val % 10) as u8) as char);
 }

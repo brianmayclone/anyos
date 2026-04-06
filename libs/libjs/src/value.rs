@@ -5,10 +5,10 @@
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
 use core::cell::RefCell;
 use core::fmt;
@@ -323,7 +323,10 @@ impl JsArray {
 
     /// Get element at `index`.  Returns `Undefined` for unset indices.
     pub fn get(&self, index: usize) -> JsValue {
-        self.elements.get(&index).cloned().unwrap_or(JsValue::Undefined)
+        self.elements
+            .get(&index)
+            .cloned()
+            .unwrap_or(JsValue::Undefined)
     }
 
     /// Set element at `index`.  Updates `length` if needed.
@@ -360,7 +363,9 @@ impl JsArray {
             return JsValue::Undefined;
         }
         self.length -= 1;
-        self.elements.remove(&self.length).unwrap_or(JsValue::Undefined)
+        self.elements
+            .remove(&self.length)
+            .unwrap_or(JsValue::Undefined)
     }
 
     /// Logical length.
@@ -415,8 +420,11 @@ impl JsArray {
     pub fn remove_and_shift(&mut self, index: usize) -> JsValue {
         let removed = self.elements.remove(&index).unwrap_or(JsValue::Undefined);
         // Collect keys > index and shift them down.
-        let to_shift: Vec<(usize, JsValue)> = self.elements.range((index + 1)..)
-            .map(|(&k, v)| (k, v.clone())).collect();
+        let to_shift: Vec<(usize, JsValue)> = self
+            .elements
+            .range((index + 1)..)
+            .map(|(&k, v)| (k, v.clone()))
+            .collect();
         for (k, v) in to_shift {
             self.elements.remove(&k);
             self.elements.insert(k - 1, v);
@@ -431,8 +439,12 @@ impl JsArray {
     /// (used by `unshift`, `splice`).
     pub fn insert_and_shift(&mut self, index: usize, value: JsValue) {
         // Shift existing entries at index..length up by 1.
-        let to_shift: Vec<(usize, JsValue)> = self.elements.range(index..)
-            .map(|(&k, v)| (k, v.clone())).rev().collect();
+        let to_shift: Vec<(usize, JsValue)> = self
+            .elements
+            .range(index..)
+            .map(|(&k, v)| (k, v.clone()))
+            .rev()
+            .collect();
         for (k, v) in to_shift {
             self.elements.remove(&k);
             self.elements.insert(k + 1, v);
@@ -449,8 +461,8 @@ impl JsArray {
 
     /// Reverse elements in place.
     pub fn reverse(&mut self) {
-        let entries: Vec<(usize, JsValue)> = self.elements.iter()
-            .map(|(&k, v)| (k, v.clone())).collect();
+        let entries: Vec<(usize, JsValue)> =
+            self.elements.iter().map(|(&k, v)| (k, v.clone())).collect();
         self.elements.clear();
         for (k, v) in entries {
             self.elements.insert(self.length - 1 - k, v);
@@ -608,7 +620,9 @@ impl JsValue {
                 let arr = a.borrow();
                 let mut out = String::new();
                 for i in 0..arr.length {
-                    if i > 0 { out.push(','); }
+                    if i > 0 {
+                        out.push(',');
+                    }
                     if let Some(v) = arr.elements.get(&i) {
                         match v {
                             JsValue::Undefined | JsValue::Null => {}
@@ -639,7 +653,11 @@ impl JsValue {
             JsValue::String(s) => {
                 // Symbols are represented as strings with "__symbol__" or
                 // "__symbol_global__" prefix (for Symbol.for() values).
-                if s.starts_with("__symbol_") { "symbol" } else { "string" }
+                if s.starts_with("__symbol_") {
+                    "symbol"
+                } else {
+                    "string"
+                }
             }
             JsValue::Object(obj) => {
                 let o = obj.borrow();
@@ -662,12 +680,8 @@ impl JsValue {
             (JsValue::Number(a), JsValue::Number(b)) => *a == *b,
             (JsValue::String(a), JsValue::String(b)) => *a == *b,
             (JsValue::Bool(a), JsValue::Bool(b)) => *a == *b,
-            (JsValue::Number(_), JsValue::String(_)) => {
-                self.to_number() == other.to_number()
-            }
-            (JsValue::String(_), JsValue::Number(_)) => {
-                self.to_number() == other.to_number()
-            }
+            (JsValue::Number(_), JsValue::String(_)) => self.to_number() == other.to_number(),
+            (JsValue::String(_), JsValue::Number(_)) => self.to_number() == other.to_number(),
             (JsValue::Bool(_), _) => JsValue::Number(self.to_number()).abstract_eq(other),
             (_, JsValue::Bool(_)) => self.abstract_eq(&JsValue::Number(other.to_number())),
             // Object identity via Rc pointer equality (same-type)
@@ -1045,10 +1059,14 @@ fn format_float_exponential(n: f64, exp: i32) -> String {
     };
 
     let mut out = String::new();
-    if negative { out.push('-'); }
+    if negative {
+        out.push('-');
+    }
     out.push_str(&coeff_str);
     out.push('e');
-    if exp >= 0 { out.push('+'); }
+    if exp >= 0 {
+        out.push('+');
+    }
     out.push_str(&format_i64(exp as i64));
     out
 }

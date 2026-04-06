@@ -1,8 +1,7 @@
 //! DataGrid — full-featured data grid with sorting, resizing, reordering.
 
-use alloc::vec;
-use alloc::vec::Vec;
 use crate::control::{Control, ControlBase, ControlKind, EventResponse};
+use alloc::vec::Vec;
 
 /// Scrollbar track width in logical pixels.
 const SCROLLBAR_W: u32 = 10;
@@ -24,7 +23,11 @@ pub enum CellAlign {
 
 impl CellAlign {
     pub fn from_u8(v: u8) -> Self {
-        match v { 1 => Self::Center, 2 => Self::Right, _ => Self::Left }
+        match v {
+            1 => Self::Center,
+            2 => Self::Right,
+            _ => Self::Left,
+        }
     }
 }
 
@@ -55,7 +58,10 @@ pub enum SortType {
 
 impl SortType {
     pub fn from_u8(v: u8) -> Self {
-        match v { 1 => Self::Numeric, _ => Self::String }
+        match v {
+            1 => Self::Numeric,
+            _ => Self::String,
+        }
     }
 }
 
@@ -80,8 +86,16 @@ pub enum SelectionMode {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DragMode {
     None,
-    Resizing { col_index: usize, drag_start_x: i32, original_width: u32 },
-    Reordering { col_index: usize, drag_start_x: i32, current_x: i32 },
+    Resizing {
+        col_index: usize,
+        drag_start_x: i32,
+        original_width: u32,
+    },
+    Reordering {
+        col_index: usize,
+        drag_start_x: i32,
+        current_x: i32,
+    },
 }
 
 /// Connector line between rows (drawn in a specific column).
@@ -185,8 +199,14 @@ impl DataGrid {
             let parts: Vec<&[u8]> = col_data.split(|&b| b == 0x1F).collect();
             let header = parts.first().copied().unwrap_or(&[]);
             let width = parts.get(1).and_then(|s| parse_u32(s)).unwrap_or(100);
-            let align = parts.get(2).and_then(|s| s.first().map(|&b| CellAlign::from_u8(b.wrapping_sub(b'0')))).unwrap_or(CellAlign::Left);
-            let sort_type = parts.get(3).and_then(|s| s.first().map(|&b| SortType::from_u8(b.wrapping_sub(b'0')))).unwrap_or(SortType::String);
+            let align = parts
+                .get(2)
+                .and_then(|s| s.first().map(|&b| CellAlign::from_u8(b.wrapping_sub(b'0'))))
+                .unwrap_or(CellAlign::Left);
+            let sort_type = parts
+                .get(3)
+                .and_then(|s| s.first().map(|&b| SortType::from_u8(b.wrapping_sub(b'0'))))
+                .unwrap_or(SortType::String);
             self.columns.push(Column {
                 header: header.to_vec(),
                 width,
@@ -199,7 +219,9 @@ impl DataGrid {
         self.base.mark_dirty();
     }
 
-    pub fn column_count(&self) -> usize { self.columns.len() }
+    pub fn column_count(&self) -> usize {
+        self.columns.len()
+    }
 
     pub fn set_column_width(&mut self, col_index: usize, width: u32) {
         if col_index < self.columns.len() {
@@ -224,7 +246,9 @@ impl DataGrid {
         for row_data in data.split(|&b| b == 0x1E) {
             let cells: Vec<&[u8]> = row_data.split(|&b| b == 0x1F).collect();
             for (ci, cell) in cells.iter().enumerate() {
-                if ci >= col_count { break; }
+                if ci >= col_count {
+                    break;
+                }
                 self.cell_data.push(cell.to_vec());
             }
             // Pad with empty cells if row has fewer columns
@@ -334,7 +358,9 @@ impl DataGrid {
     }
 
     /// Get the display column index of the last click (-1 if none).
-    pub fn last_click_col(&self) -> i32 { self.last_click_col }
+    pub fn last_click_col(&self) -> i32 {
+        self.last_click_col
+    }
 
     /// Set connector lines (drawn over a column, typically the separator).
     pub fn set_connector_lines(&mut self, lines: Vec<ConnectorLine>) {
@@ -351,7 +377,9 @@ impl DataGrid {
     /// Get the first selected row index, or None.
     pub fn selected_row(&self) -> Option<usize> {
         for r in 0..self.row_count {
-            if self.is_row_selected(r) { return Some(r); }
+            if self.is_row_selected(r) {
+                return Some(r);
+            }
         }
         None
     }
@@ -377,8 +405,8 @@ impl DataGrid {
             return None;
         }
         let track_h = (view_h - 4) as i32;
-        let thumb_h = ((view_h as u64 * track_h as u64) / content_h as u64)
-            .max(MIN_THUMB as u64) as i32;
+        let thumb_h =
+            ((view_h as u64 * track_h as u64) / content_h as u64).max(MIN_THUMB as u64) as i32;
         let max_scroll = (content_h - view_h) as i32;
         Some((track_h, thumb_h, max_scroll))
     }
@@ -394,7 +422,13 @@ impl DataGrid {
     }
 
     /// Set scroll_y from a thumb-top position.
-    fn set_scroll_from_thumb(&mut self, thumb_top: i32, track_h: i32, thumb_h: i32, max_scroll: i32) {
+    fn set_scroll_from_thumb(
+        &mut self,
+        thumb_top: i32,
+        track_h: i32,
+        thumb_h: i32,
+        max_scroll: i32,
+    ) {
         let clamped = thumb_top.max(0).min(track_h - thumb_h);
         let new_scroll = if track_h > thumb_h {
             (clamped as i64 * max_scroll as i64 / (track_h - thumb_h) as i64) as i32
@@ -416,14 +450,18 @@ impl DataGrid {
     }
 
     pub fn is_row_selected(&self, row: usize) -> bool {
-        if row >= self.row_count { return false; }
+        if row >= self.row_count {
+            return false;
+        }
         let byte = row / 8;
         let bit = row % 8;
         byte < self.selected_rows.len() && (self.selected_rows[byte] & (1 << bit)) != 0
     }
 
     pub(crate) fn set_row_selected(&mut self, row: usize, selected: bool) {
-        if row >= self.row_count { return; }
+        if row >= self.row_count {
+            return;
+        }
         self.ensure_selection_bits();
         let byte = row / 8;
         let bit = row % 8;
@@ -441,7 +479,11 @@ impl DataGrid {
     // ── Sort ───────────────────────────────────────────────────────
 
     pub fn sort_by(&mut self, column: usize, direction: SortDirection) {
-        self.sort_column = if direction == SortDirection::None { None } else { Some(column) };
+        self.sort_column = if direction == SortDirection::None {
+            None
+        } else {
+            Some(column)
+        };
         self.sort_direction = direction;
         self.rebuild_sort();
         self.base.mark_dirty();
@@ -455,7 +497,10 @@ impl DataGrid {
         let col_count = self.columns.len().max(1);
         let logical_col = match self.sort_column {
             Some(dc) if dc < self.display_order.len() => self.display_order[dc],
-            _ => { self.sorted_rows.clear(); return; }
+            _ => {
+                self.sorted_rows.clear();
+                return;
+            }
         };
         let numeric = logical_col < self.columns.len()
             && self.columns[logical_col].sort_type == SortType::Numeric;
@@ -472,7 +517,11 @@ impl DataGrid {
             } else {
                 a_text.cmp(b_text)
             };
-            if ascending { ord } else { ord.reverse() }
+            if ascending {
+                ord
+            } else {
+                ord.reverse()
+            }
         });
     }
 
@@ -502,7 +551,9 @@ impl DataGrid {
     }
 
     fn row_at_y(&self, ly: i32) -> Option<usize> {
-        if ly < self.header_height as i32 { return None; }
+        if ly < self.header_height as i32 {
+            return None;
+        }
         let data_y = ly - self.header_height as i32 + self.scroll_y;
         let row = data_y / self.row_height as i32;
         if row >= 0 && (row as usize) < self.row_count {
@@ -513,11 +564,11 @@ impl DataGrid {
     }
 
     fn data_row(&self, vis_row: usize) -> usize {
-        if self.sorted_rows.is_empty() { vis_row } else { self.sorted_rows[vis_row] }
-    }
-
-    fn total_columns_width(&self) -> u32 {
-        self.display_order.iter().map(|&i| self.columns[i].width).sum()
+        if self.sorted_rows.is_empty() {
+            vis_row
+        } else {
+            self.sorted_rows[vis_row]
+        }
     }
 
     /// Find the visual row index of the currently selected data row.
@@ -555,12 +606,26 @@ impl DataGrid {
 }
 
 impl Control for DataGrid {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::DataGrid }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::DataGrid
+    }
 
-    fn set_font_size(&mut self, size: u16) { self.font_size = size; }
-    fn get_font_size(&self) -> u16 { if self.font_size > 0 { self.font_size } else { 13 } }
+    fn set_font_size(&mut self, size: u16) {
+        self.font_size = size;
+    }
+    fn get_font_size(&self) -> u16 {
+        if self.font_size > 0 {
+            self.font_size
+        } else {
+            13
+        }
+    }
 
     fn scrollbar_hit_x(&self) -> Option<i32> {
         if self.scrollbar_metrics().is_some() {
@@ -572,8 +637,8 @@ impl Control for DataGrid {
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let ctx = crate::control::prepare_render(b, ax, ay);
+        let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
 
         // Scaled dimensions
@@ -583,7 +648,11 @@ impl Control for DataGrid {
         let scroll_y_s = crate::theme::scale_i32(self.scroll_y);
         let cell_pad = crate::theme::scale_i32(8);
         let icon_pad = crate::theme::scale_i32(4);
-        let logical_fs = if self.font_size > 0 { self.font_size } else { 13 };
+        let logical_fs = if self.font_size > 0 {
+            self.font_size
+        } else {
+            13
+        };
         let fs = crate::draw::scale_font(logical_fs);
 
         // Clip to control bounds (physical)
@@ -592,7 +661,9 @@ impl Control for DataGrid {
         // Background
         crate::draw::fill_rect(&clipped, x, y, w, h, tc.card_bg);
 
-        if self.columns.is_empty() { return; }
+        if self.columns.is_empty() {
+            return;
+        }
 
         let col_count = self.columns.len();
 
@@ -600,7 +671,8 @@ impl Control for DataGrid {
         let viewport_h = h.saturating_sub(hdr_h) as i32;
         if viewport_h > 0 && self.row_count > 0 {
             let vis_start = (scroll_y_s / rh_s).max(0) as usize;
-            let vis_end = ((scroll_y_s + viewport_h) / rh_s + 2).min(self.row_count as i32) as usize;
+            let vis_end =
+                ((scroll_y_s + viewport_h) / rh_s + 2).min(self.row_count as i32) as usize;
 
             for vis_row in vis_start..vis_end {
                 let data_row = self.data_row(vis_row);
@@ -629,15 +701,23 @@ impl Control for DataGrid {
 
                     // Draw per-cell background color (if set)
                     if cell_idx < self.cell_bg_colors.len() && self.cell_bg_colors[cell_idx] != 0 {
-                        crate::draw::fill_rect(&cell_clip, col_x, row_y, col_w_s, rh_u, self.cell_bg_colors[cell_idx]);
+                        crate::draw::fill_rect(
+                            &cell_clip,
+                            col_x,
+                            row_y,
+                            col_w_s,
+                            rh_u,
+                            self.cell_bg_colors[cell_idx],
+                        );
                     }
 
                     // Per-row indent (applied to the configured indent column)
-                    let row_indent: i32 = if logical_col == self.indent_column && data_row < self.row_indents.len() {
-                        crate::theme::scale_i32(self.row_indents[data_row] as i32)
-                    } else {
-                        0
-                    };
+                    let row_indent: i32 =
+                        if logical_col == self.indent_column && data_row < self.row_indents.len() {
+                            crate::theme::scale_i32(self.row_indents[data_row] as i32)
+                        } else {
+                            0
+                        };
 
                     // Draw cell icon (if any)
                     let mut icon_offset: i32 = row_indent;
@@ -647,14 +727,23 @@ impl Control for DataGrid {
                             let ih = icon.height as i32;
                             let ix = col_x + icon_pad + row_indent;
                             let iy = row_y + (rh_s - ih) / 2;
-                            crate::draw::blit_argb(&cell_clip, ix, iy, icon.width as u32, icon.height as u32, &icon.pixels);
+                            crate::draw::blit_argb(
+                                &cell_clip,
+                                ix,
+                                iy,
+                                icon.width as u32,
+                                icon.height as u32,
+                                &icon.pixels,
+                            );
                             icon_offset = row_indent + iw + icon_pad;
                         }
                     }
 
                     if cell_idx < self.cell_data.len() && !self.cell_data[cell_idx].is_empty() {
                         let text = &self.cell_data[cell_idx];
-                        let default_color = if cell_idx < self.cell_colors.len() && self.cell_colors[cell_idx] != 0 {
+                        let default_color = if cell_idx < self.cell_colors.len()
+                            && self.cell_colors[cell_idx] != 0
+                        {
                             self.cell_colors[cell_idx]
                         } else if selected {
                             0xFFFFFFFF
@@ -686,7 +775,9 @@ impl Control for DataGrid {
                             let mut span_start = 0usize;
                             while span_start < text_len {
                                 let cc_idx = base_off + span_start;
-                                let span_color = if cc_idx < self.char_colors.len() && self.char_colors[cc_idx] != 0 {
+                                let span_color = if cc_idx < self.char_colors.len()
+                                    && self.char_colors[cc_idx] != 0
+                                {
                                     self.char_colors[cc_idx]
                                 } else {
                                     default_color
@@ -694,22 +785,35 @@ impl Control for DataGrid {
                                 let mut span_end = span_start + 1;
                                 while span_end < text_len {
                                     let next_idx = base_off + span_end;
-                                    let next_color = if next_idx < self.char_colors.len() && self.char_colors[next_idx] != 0 {
+                                    let next_color = if next_idx < self.char_colors.len()
+                                        && self.char_colors[next_idx] != 0
+                                    {
                                         self.char_colors[next_idx]
                                     } else {
                                         default_color
                                     };
-                                    if next_color != span_color { break; }
+                                    if next_color != span_color {
+                                        break;
+                                    }
                                     span_end += 1;
                                 }
                                 let span = &text[span_start..span_end];
-                                crate::draw::draw_text_sized(&cell_clip, cx, text_y, span_color, span, fs);
+                                crate::draw::draw_text_sized(
+                                    &cell_clip, cx, text_y, span_color, span, fs,
+                                );
                                 let (sw, _) = crate::draw::text_size_at(span, fs);
                                 cx += sw as i32;
                                 span_start = span_end;
                             }
                         } else {
-                            crate::draw::draw_text_sized(&cell_clip, text_x, text_y, default_color, text, fs);
+                            crate::draw::draw_text_sized(
+                                &cell_clip,
+                                text_x,
+                                text_y,
+                                default_color,
+                                text,
+                                fs,
+                            );
                         }
                     }
 
@@ -734,7 +838,14 @@ impl Control for DataGrid {
             // Header text (clipped to column bounds)
             let text_y = y + (hdr_h as i32 - hdr_fs as i32) / 2;
             let hdr_clip = clipped.with_clip(col_x, y, col_w_s, hdr_h);
-            crate::draw::draw_text_sized(&hdr_clip, col_x + cell_pad, text_y, tc.text, &col.header, hdr_fs);
+            crate::draw::draw_text_sized(
+                &hdr_clip,
+                col_x + cell_pad,
+                text_y,
+                tc.text,
+                &col.header,
+                hdr_fs,
+            );
 
             // Sort indicator
             if self.sort_column == Some(disp_col) && self.sort_direction != SortDirection::None {
@@ -749,7 +860,8 @@ impl Control for DataGrid {
 
             col_x += col_w_s as i32;
             // Column separator line
-            let sep_h = (hdr_h + self.row_count as u32 * crate::theme::scale(self.row_height)).min(h);
+            let sep_h =
+                (hdr_h + self.row_count as u32 * crate::theme::scale(self.row_height)).min(h);
             crate::draw::fill_rect(&clipped, col_x - 1, y, 1, sep_h, tc.separator);
         }
 
@@ -757,7 +869,12 @@ impl Control for DataGrid {
         crate::draw::fill_rect(&clipped, x, y + hdr_h as i32 - 1, w, 1, tc.separator);
 
         // ── Reorder visual feedback ──
-        if let DragMode::Reordering { col_index, current_x, drag_start_x } = self.drag_mode {
+        if let DragMode::Reordering {
+            col_index,
+            current_x,
+            drag_start_x,
+        } = self.drag_mode
+        {
             if (current_x - drag_start_x).abs() > 5 && col_index < self.display_order.len() {
                 let logical = self.display_order[col_index];
                 let cw = crate::theme::scale(self.columns[logical].width);
@@ -775,30 +892,52 @@ impl Control for DataGrid {
             let bar_x = x + w as i32 - bar_w as i32 - crate::theme::scale_i32(SCROLLBAR_PAD);
             let track_y = y + hdr_h as i32 + crate::theme::scale_i32(SCROLLBAR_PAD);
             let track_h = (view_h_s as i32 - crate::theme::scale_i32(SCROLLBAR_PAD * 2)).max(1);
-            crate::draw::fill_rect(&clipped, bar_x, track_y, bar_w, track_h as u32, tc.scrollbar_track);
+            crate::draw::fill_rect(
+                &clipped,
+                bar_x,
+                track_y,
+                bar_w,
+                track_h as u32,
+                tc.scrollbar_track,
+            );
 
             let has_minimap = !self.minimap_colors.is_empty();
             if has_minimap && self.row_count > 0 && track_h > 0 {
                 let total = self.row_count as i32;
                 for (row, &color) in self.minimap_colors.iter().enumerate() {
-                    if color == 0 || row >= self.row_count { continue; }
+                    if color == 0 || row >= self.row_count {
+                        continue;
+                    }
                     let py = track_y + (row as i64 * track_h as i64 / total as i64) as i32;
                     let ph = ((track_h as i64 / total as i64).max(1)).min(3) as u32;
                     crate::draw::fill_rect(&clipped, bar_x, py, bar_w, ph, color);
                 }
-                let vp_y = track_y + (scroll_y_s as i64 * track_h as i64 / (self.row_count as i64 * rh_s as i64)).max(0) as i32;
+                let vp_y = track_y
+                    + (scroll_y_s as i64 * track_h as i64 / (self.row_count as i64 * rh_s as i64))
+                        .max(0) as i32;
                 let vp_h = (view_h_s as i64 * track_h as i64 / content_h_s as i64).max(4) as u32;
                 crate::draw::fill_rect(&clipped, bar_x, vp_y, bar_w, vp_h, 0x30FFFFFF);
             }
 
-            let thumb_h = ((view_h_s as u64 * track_h as u64) / content_h_s as u64).max(MIN_THUMB as u64) as i32;
+            let thumb_h = ((view_h_s as u64 * track_h as u64) / content_h_s as u64)
+                .max(MIN_THUMB as u64) as i32;
             let max_scroll_s = (content_h_s as i32 - view_h_s as i32).max(0);
             let scroll_frac = if max_scroll_s > 0 {
                 (scroll_y_s as i64 * (track_h - thumb_h) as i64 / max_scroll_s as i64) as i32
-            } else { 0 };
+            } else {
+                0
+            };
             let thumb_y = track_y + scroll_frac.max(0).min(track_h - thumb_h);
             let thumb_r = crate::theme::scale(THUMB_RADIUS);
-            crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, thumb_r, tc.scrollbar);
+            crate::draw::fill_rounded_rect(
+                &clipped,
+                bar_x,
+                thumb_y,
+                bar_w,
+                thumb_h as u32,
+                thumb_r,
+                tc.scrollbar,
+            );
         }
 
         // ── Connector lines (drawn over a column) ──
@@ -822,7 +961,14 @@ impl Control for DataGrid {
                     let fy1 = y1.min(y + h as i32);
                     if fy1 > fy {
                         let fill_color = (cl.color & 0x00FFFFFF) | 0x20000000;
-                        crate::draw::fill_rect(&conn_clip, conn_col_x, fy, col_w, (fy1 - fy) as u32, fill_color);
+                        crate::draw::fill_rect(
+                            &conn_clip,
+                            conn_col_x,
+                            fy,
+                            col_w,
+                            (fy1 - fy) as u32,
+                            fill_color,
+                        );
                     }
                 }
                 let lx0 = conn_col_x + conn_pad;
@@ -836,7 +982,9 @@ impl Control for DataGrid {
         }
     }
 
-    fn is_interactive(&self) -> bool { true }
+    fn is_interactive(&self) -> bool {
+        true
+    }
 
     fn handle_mouse_down(&mut self, lx: i32, ly: i32, button: u32) -> EventResponse {
         // Check scrollbar area (hit_test already routed scrollbar clicks to us)
@@ -914,7 +1062,11 @@ impl Control for DataGrid {
             }
         }
         match self.drag_mode {
-            DragMode::Resizing { col_index, drag_start_x, original_width } => {
+            DragMode::Resizing {
+                col_index,
+                drag_start_x,
+                original_width,
+            } => {
                 let delta = lx - drag_start_x;
                 let logical_col = self.display_order[col_index];
                 let min_w = self.columns[logical_col].min_width.max(30);
@@ -923,7 +1075,11 @@ impl Control for DataGrid {
                 self.base.mark_dirty();
                 EventResponse::CHANGED
             }
-            DragMode::Reordering { drag_start_x, ref mut current_x, .. } => {
+            DragMode::Reordering {
+                drag_start_x,
+                ref mut current_x,
+                ..
+            } => {
                 if (lx - drag_start_x).abs() > 5 {
                     *current_x = lx;
                     self.base.mark_dirty();
@@ -946,14 +1102,18 @@ impl Control for DataGrid {
         }
     }
 
-    fn handle_mouse_up(&mut self, lx: i32, _ly: i32, _button: u32) -> EventResponse {
+    fn handle_mouse_up(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
         if self.dragging_scrollbar {
             self.dragging_scrollbar = false;
             return EventResponse::CONSUMED;
         }
         let mode = core::mem::replace(&mut self.drag_mode, DragMode::None);
         match mode {
-            DragMode::Reordering { col_index, drag_start_x, current_x } => {
+            DragMode::Reordering {
+                col_index,
+                drag_start_x,
+                current_x,
+            } => {
                 if (current_x - drag_start_x).abs() > 5 {
                     if let Some(target_col) = self.column_at_x(current_x) {
                         if target_col != col_index {
@@ -1067,26 +1227,38 @@ impl Control for DataGrid {
                 EventResponse::CONSUMED
             }
             KEY_UP => {
-                if self.row_count == 0 { return EventResponse::CONSUMED; }
+                if self.row_count == 0 {
+                    return EventResponse::CONSUMED;
+                }
                 let vis = self.selected_visual_row().unwrap_or(0);
                 let new_vis = if vis > 0 { vis - 1 } else { 0 };
                 self.select_visual_row(new_vis);
                 EventResponse::CHANGED
             }
             KEY_DOWN => {
-                if self.row_count == 0 { return EventResponse::CONSUMED; }
+                if self.row_count == 0 {
+                    return EventResponse::CONSUMED;
+                }
                 let vis = self.selected_visual_row().unwrap_or(0);
-                let new_vis = if vis + 1 < self.row_count { vis + 1 } else { self.row_count - 1 };
+                let new_vis = if vis + 1 < self.row_count {
+                    vis + 1
+                } else {
+                    self.row_count - 1
+                };
                 self.select_visual_row(new_vis);
                 EventResponse::CHANGED
             }
             KEY_HOME => {
-                if self.row_count == 0 { return EventResponse::CONSUMED; }
+                if self.row_count == 0 {
+                    return EventResponse::CONSUMED;
+                }
                 self.select_visual_row(0);
                 EventResponse::CHANGED
             }
             KEY_END => {
-                if self.row_count == 0 { return EventResponse::CONSUMED; }
+                if self.row_count == 0 {
+                    return EventResponse::CONSUMED;
+                }
                 self.select_visual_row(self.row_count - 1);
                 EventResponse::CHANGED
             }
@@ -1104,7 +1276,9 @@ impl Control for DataGrid {
         EventResponse::CONSUMED
     }
 
-    fn accepts_focus(&self) -> bool { true }
+    fn accepts_focus(&self) -> bool {
+        true
+    }
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -1123,9 +1297,13 @@ fn draw_sort_arrow_down(s: &crate::draw::Surface, x: i32, y: i32, color: u32) {
 
 fn parse_u32(s: &[u8]) -> Option<u32> {
     let mut val = 0u32;
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     for &b in s {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         val = val * 10 + (b - b'0') as u32;
     }
     Some(val)
@@ -1140,13 +1318,17 @@ fn parse_u32(s: &[u8]) -> Option<u32> {
 fn parse_sort_key(s: &[u8]) -> (bool, i64, i64) {
     let mut i = 0;
     // Skip leading whitespace
-    while i < s.len() && s[i] == b' ' { i += 1; }
+    while i < s.len() && s[i] == b' ' {
+        i += 1;
+    }
     if i >= s.len() {
         return (false, 0, 0);
     }
 
     let negative = s[i] == b'-';
-    if negative { i += 1; }
+    if negative {
+        i += 1;
+    }
 
     if i >= s.len() || s[i] < b'0' || s[i] > b'9' {
         return (false, 0, 0);

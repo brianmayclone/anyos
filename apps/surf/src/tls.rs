@@ -19,7 +19,11 @@ extern "C" fn anyos_tcp_send(fd: i32, data: *const u8, len: i32) -> i32 {
     }
     let buf = unsafe { core::slice::from_raw_parts(data, len as usize) };
     let n = net::tcp_send(fd as u32, buf);
-    if n == u32::MAX { -1 } else { n as i32 }
+    if n == u32::MAX {
+        -1
+    } else {
+        n as i32
+    }
 }
 
 #[no_mangle]
@@ -29,7 +33,11 @@ extern "C" fn anyos_tcp_recv(fd: i32, data: *mut u8, len: i32) -> i32 {
     }
     let buf = unsafe { core::slice::from_raw_parts_mut(data, len as usize) };
     let n = net::tcp_recv(fd as u32, buf);
-    if n == u32::MAX { -1 } else { n as i32 }
+    if n == u32::MAX {
+        -1
+    } else {
+        n as i32
+    }
 }
 
 #[no_mangle]
@@ -88,7 +96,9 @@ pub fn recv(buf: &mut [u8]) -> i32 {
 
 /// Close the TLS connection (sends close_notify).
 pub fn close() {
-    unsafe { tls_close(); }
+    unsafe {
+        tls_close();
+    }
 }
 
 /// Get the last BearSSL error code.

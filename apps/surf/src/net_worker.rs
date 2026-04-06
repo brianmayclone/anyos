@@ -12,7 +12,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use crate::http::{self, CookieJar, ConnPool, FetchError, Url};
+use crate::http::{self, ConnPool, CookieJar, FetchError, Url};
 
 // ═══════════════════════════════════════════════════════════
 // Request / result types
@@ -134,7 +134,10 @@ static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 /// Acquire a spinlock. Spins with hint to avoid wasting CPU.
 fn acquire(lock: &AtomicBool) {
     loop {
-        if lock.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        if lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             return;
         }
         core::hint::spin_loop();
@@ -199,16 +202,7 @@ pub(crate) fn submit(req: FetchRequest) {
 
 /// Drain all completed results from the result queue.
 /// Returns an empty Vec if nothing is ready yet.
-/// Optimized: skips lock acquisition and allocation when queue is empty.
 pub(crate) fn drain_results() -> Vec<FetchResult> {
-    // Fast path: peek without locking — if the queue looks empty, skip entirely.
-    let maybe_empty = unsafe {
-        RESULT_QUEUE.as_ref().map_or(true, |q| q.is_empty())
-    };
-    if maybe_empty {
-        return Vec::new();
-    }
-
     acquire(&RESULT_LOCK);
     let results = unsafe {
         if let Some(q) = RESULT_QUEUE.as_mut() {
@@ -265,6 +259,26 @@ pub(crate) fn current_generation() -> u32 {
     GENERATION.load(Ordering::Relaxed)
 }
 
+/// Best-effort signal for the UI thread that the network worker may still
+/// produce results soon.
+pub(crate) fn has_pending_activity() -> bool {
+    if WORKER_STARTED.load(Ordering::Relaxed) {
+        return true;
+    }
+
+    acquire(&REQUEST_LOCK);
+    let request_non_empty = unsafe { REQUEST_QUEUE.as_ref().is_some_and(|q| !q.is_empty()) };
+    release(&REQUEST_LOCK);
+    if request_non_empty {
+        return true;
+    }
+
+    acquire(&RESULT_LOCK);
+    let result_non_empty = unsafe { RESULT_QUEUE.as_ref().is_some_and(|q| !q.is_empty()) };
+    release(&RESULT_LOCK);
+    result_non_empty
+}
+
 // ═══════════════════════════════════════════════════════════
 // Sub-resource cache
 // ═══════════════════════════════════════════════════════════
@@ -292,12 +306,15 @@ struct SubResourceCache {
 
 impl SubResourceCache {
     fn new() -> Self {
-        SubResourceCache { entries: Vec::new() }
+        SubResourceCache {
+            entries: Vec::new(),
+        }
     }
 
     /// Look up a cached response by URL.
     fn get(&self, url_key: &str) -> Option<(&[u8], &str)> {
-        self.entries.iter()
+        self.entries
+            .iter()
             .find(|e| e.url_key == url_key)
             .map(|e| (e.body.as_slice(), e.headers.as_str()))
     }
@@ -307,7 +324,11 @@ impl SubResourceCache {
         if self.entries.len() >= MAX_CACHE_ENTRIES {
             self.entries.remove(0);
         }
-        self.entries.push(CacheEntry { url_key, body, headers });
+        self.entries.push(CacheEntry {
+            url_key,
+            body,
+            headers,
+        });
     }
 
     /// Clear all entries (called on navigation to a new page).
@@ -359,7 +380,11 @@ fn dequeue_request() -> Option<FetchRequest> {
     acquire(&REQUEST_LOCK);
     let req = unsafe {
         if let Some(q) = REQUEST_QUEUE.as_mut() {
-            if q.is_empty() { None } else { Some(q.remove(0)) }
+            if q.is_empty() {
+                None
+            } else {
+                Some(q.remove(0))
+            }
         } else {
             None
         }
@@ -373,6 +398,25 @@ fn enqueue_result(result: FetchResult) {
     acquire(&RESULT_LOCK);
     unsafe {
         if let Some(q) = RESULT_QUEUE.as_mut() {
+            match &result {
+                FetchResult::ScriptDone {
+                    tab_index,
+                    slot,
+                    body,
+                    generation,
+                    ..
+                } => {
+                    anyos_std::println!(
+                        "[surf-net] enqueue ScriptDone: tab={} slot={} bytes={} gen={} queue_before={}",
+                        tab_index,
+                        slot,
+                        body.len(),
+                        generation,
+                        q.len()
+                    );
+                }
+                _ => {}
+            }
             q.push(result);
         }
     }
@@ -387,10 +431,18 @@ fn cache_key(url: &http::Url) -> String {
     key.push_str(&url.host);
     key.push(':');
     let port = url.port;
-    if port >= 10000 { key.push((b'0' + (port / 10000 % 10) as u8) as char); }
-    if port >= 1000 { key.push((b'0' + (port / 1000 % 10) as u8) as char); }
-    if port >= 100 { key.push((b'0' + (port / 100 % 10) as u8) as char); }
-    if port >= 10 { key.push((b'0' + (port / 10 % 10) as u8) as char); }
+    if port >= 10000 {
+        key.push((b'0' + (port / 10000 % 10) as u8) as char);
+    }
+    if port >= 1000 {
+        key.push((b'0' + (port / 1000 % 10) as u8) as char);
+    }
+    if port >= 100 {
+        key.push((b'0' + (port / 100 % 10) as u8) as char);
+    }
+    if port >= 10 {
+        key.push((b'0' + (port / 10 % 10) as u8) as char);
+    }
     key.push((b'0' + (port % 10) as u8) as char);
     key.push_str(&url.path);
     key
@@ -401,9 +453,17 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
     let current_gen = GENERATION.load(Ordering::Relaxed);
 
     match req {
-        FetchRequest::Navigate { url, mut cookies, generation } => {
-            anyos_std::println!("[surf-net] navigate: {}://{}{}",
-                url.scheme, url.host, url.path);
+        FetchRequest::Navigate {
+            url,
+            mut cookies,
+            generation,
+        } => {
+            anyos_std::println!(
+                "[surf-net] navigate: {}://{}{}",
+                url.scheme,
+                url.host,
+                url.path
+            );
 
             match http::fetch(&url, &mut cookies, pool) {
                 Ok(response) => {
@@ -423,9 +483,18 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             }
         }
 
-        FetchRequest::NavigatePost { url, body, mut cookies, generation } => {
-            anyos_std::println!("[surf-net] navigate POST: {}://{}{}",
-                url.scheme, url.host, url.path);
+        FetchRequest::NavigatePost {
+            url,
+            body,
+            mut cookies,
+            generation,
+        } => {
+            anyos_std::println!(
+                "[surf-net] navigate POST: {}://{}{}",
+                url.scheme,
+                url.host,
+                url.path
+            );
 
             match http::fetch_post(&url, &body, &mut cookies, pool) {
                 Ok(response) => {
@@ -445,7 +514,12 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             }
         }
 
-        FetchRequest::Css { tab_index, href, url, generation } => {
+        FetchRequest::Css {
+            tab_index,
+            href,
+            url,
+            generation,
+        } => {
             if generation != current_gen {
                 return;
             }
@@ -480,12 +554,27 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     });
                 }
                 _ => {
-                    anyos_std::println!("[surf-net] CSS fetch failed: {}", href);
+                    anyos_std::println!("[surf-net] CSS fetch failed: {} ({})", href, key);
+                    // Do not leave the page stuck waiting forever on a failed
+                    // stylesheet; the UI thread still needs a completion signal
+                    // so it can decrement `pending_stylesheet_count`.
+                    enqueue_result(FetchResult::CssDone {
+                        tab_index,
+                        href,
+                        body: Vec::new(),
+                        headers: String::new(),
+                        generation,
+                    });
                 }
             }
         }
 
-        FetchRequest::Image { tab_index, src, url, generation } => {
+        FetchRequest::Image {
+            tab_index,
+            src,
+            url,
+            generation,
+        } => {
             if generation != current_gen {
                 return;
             }
@@ -520,7 +609,12 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             }
         }
 
-        FetchRequest::Font { tab_index, family, url, generation } => {
+        FetchRequest::Font {
+            tab_index,
+            family,
+            url,
+            generation,
+        } => {
             if generation != current_gen {
                 return;
             }
@@ -538,7 +632,13 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             }
         }
 
-        FetchRequest::Script { tab_index, slot, src, url, generation } => {
+        FetchRequest::Script {
+            tab_index,
+            slot,
+            src,
+            url,
+            generation,
+        } => {
             if generation != current_gen {
                 return;
             }
@@ -560,6 +660,13 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             anyos_std::println!("[surf-net] fetching script: {}", src);
             match http::fetch(&url, &mut CookieJar::new(), pool) {
                 Ok(resp) if resp.status >= 200 && resp.status < 400 => {
+                    anyos_std::println!(
+                        "[surf-net] script fetch OK: slot={} status={} bytes={} src={}",
+                        slot,
+                        resp.status,
+                        resp.body.len(),
+                        src
+                    );
                     cache.put(key, resp.body.clone(), resp.headers.clone());
                     enqueue_result(FetchResult::ScriptDone {
                         tab_index,
@@ -569,8 +676,24 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                         generation,
                     });
                 }
+                Ok(resp) => {
+                    anyos_std::println!(
+                        "[surf-net] script fetch HTTP failure: slot={} status={} bytes={} src={}",
+                        slot,
+                        resp.status,
+                        resp.body.len(),
+                        src
+                    );
+                    enqueue_result(FetchResult::ScriptDone {
+                        tab_index,
+                        slot,
+                        body: Vec::new(),
+                        headers: resp.headers,
+                        generation,
+                    });
+                }
                 _ => {
-                    anyos_std::println!("[surf-net] script fetch failed: {}", src);
+                    anyos_std::println!("[surf-net] script fetch failed: {} ({})", src, key);
                     // Send an empty body so the slot is filled and JS execution
                     // is not blocked forever waiting for this slot.
                     enqueue_result(FetchResult::ScriptDone {

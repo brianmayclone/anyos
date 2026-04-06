@@ -1,21 +1,21 @@
 //! TreeView — hierarchical tree control with expand/collapse, icons, and selection.
 
+use crate::control::{Control, ControlBase, ControlKind, EventResponse};
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, ControlKind, EventResponse};
 
 /// A single node in the tree.
 pub(crate) struct TreeNode {
     pub text: Vec<u8>,
-    pub parent: Option<usize>,       // None = root-level node
-    pub depth: u16,                   // cached indentation depth
-    pub expanded: bool,               // expanded/collapsed state
-    pub has_children: bool,           // cached: true if any node has this as parent
-    pub icon_pixels: Vec<u32>,        // optional ARGB icon pixels
+    pub parent: Option<usize>, // None = root-level node
+    pub depth: u16,            // cached indentation depth
+    pub expanded: bool,        // expanded/collapsed state
+    pub has_children: bool,    // cached: true if any node has this as parent
+    pub icon_pixels: Vec<u32>, // optional ARGB icon pixels
     pub icon_w: u16,
     pub icon_h: u16,
-    pub style: u32,                   // bit0=bold
-    pub text_color: u32,              // 0 = use default theme color
+    pub style: u32,      // bit0=bold
+    pub text_color: u32, // 0 = use default theme color
 }
 
 pub struct TreeView {
@@ -25,9 +25,9 @@ pub struct TreeView {
     hovered_node: Option<usize>,
     scroll_y: i32,
     focused: bool,
-    pub(crate) indent_width: u32,   // pixels per depth level, default 20
-    pub(crate) row_height: u32,     // default 24
-    pub(crate) icon_size: u32,      // default 16
+    pub(crate) indent_width: u32, // pixels per depth level, default 20
+    pub(crate) row_height: u32,   // default 24
+    pub(crate) icon_size: u32,    // default 16
 }
 
 impl TreeView {
@@ -79,7 +79,9 @@ impl TreeView {
 
     /// Remove a node and all its descendants. Fixes parent indices and selection.
     pub fn remove_node(&mut self, index: usize) {
-        if index >= self.nodes.len() { return; }
+        if index >= self.nodes.len() {
+            return;
+        }
 
         let old_len = self.nodes.len();
         let mut to_remove = vec![false; old_len];
@@ -89,7 +91,9 @@ impl TreeView {
         loop {
             let mut changed = false;
             for i in 0..old_len {
-                if to_remove[i] { continue; }
+                if to_remove[i] {
+                    continue;
+                }
                 if let Some(p) = self.nodes[i].parent {
                     if p < old_len && to_remove[p] {
                         to_remove[i] = true;
@@ -97,7 +101,9 @@ impl TreeView {
                     }
                 }
             }
-            if !changed { break; }
+            if !changed {
+                break;
+            }
         }
 
         // Build old-to-new index mapping
@@ -244,8 +250,12 @@ impl TreeView {
     fn is_ancestor_chain_expanded(&self, index: usize) -> bool {
         let mut current = self.nodes[index].parent;
         while let Some(parent_idx) = current {
-            if parent_idx >= self.nodes.len() { return false; }
-            if !self.nodes[parent_idx].expanded { return false; }
+            if parent_idx >= self.nodes.len() {
+                return false;
+            }
+            if !self.nodes[parent_idx].expanded {
+                return false;
+            }
             current = self.nodes[parent_idx].parent;
         }
         true
@@ -294,14 +304,20 @@ impl TreeView {
 }
 
 impl Control for TreeView {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::TreeView }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::TreeView
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let ctx = crate::control::prepare_render(b, ax, ay);
+        let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
 
         // Scaled metrics
@@ -320,13 +336,19 @@ impl Control for TreeView {
         // Border
         crate::draw::draw_border(&clipped, x, y, w, h, tc.card_border);
 
-        if self.nodes.is_empty() { return; }
+        if self.nodes.is_empty() {
+            return;
+        }
 
         let vis = self.visible_nodes();
         let rh = s_row_h as i32;
         let inner_y = y + 1; // inside border
         let inner_h = h.saturating_sub(2) as i32;
-        let s_scrollbar_w = if self.content_height() > self.base.h.saturating_sub(2) { crate::theme::scale_i32(8) } else { 0 };
+        let s_scrollbar_w = if self.content_height() > self.base.h.saturating_sub(2) {
+            crate::theme::scale_i32(8)
+        } else {
+            0
+        };
 
         for (vis_idx, &node_idx) in vis.iter().enumerate() {
             let row_y = inner_y + (vis_idx as i32) * rh - s_scroll_y;
@@ -342,12 +364,27 @@ impl Control for TreeView {
 
             // Row highlight
             if is_selected {
-                crate::draw::fill_rect(&clipped, x + 1, row_y, (w - 2).saturating_sub(s_scrollbar_w as u32), s_row_h, tc.selection);
+                crate::draw::fill_rect(
+                    &clipped,
+                    x + 1,
+                    row_y,
+                    (w - 2).saturating_sub(s_scrollbar_w as u32),
+                    s_row_h,
+                    tc.selection,
+                );
             } else if is_hovered {
-                crate::draw::fill_rect(&clipped, x + 1, row_y, (w - 2).saturating_sub(s_scrollbar_w as u32), s_row_h, tc.control_hover);
+                crate::draw::fill_rect(
+                    &clipped,
+                    x + 1,
+                    row_y,
+                    (w - 2).saturating_sub(s_scrollbar_w as u32),
+                    s_row_h,
+                    tc.control_hover,
+                );
             }
 
-            let mut x_offset = x + crate::theme::scale_i32(4) + (node.depth as i32) * s_indent as i32;
+            let mut x_offset =
+                x + crate::theme::scale_i32(4) + (node.depth as i32) * s_indent as i32;
 
             // Disclosure triangle (if node has children)
             if node.has_children {
@@ -371,7 +408,11 @@ impl Control for TreeView {
                     // Right-pointing triangle
                     let half_max = tri_rows / 2;
                     for row in 0..tri_rows {
-                        let half = if row < half_max { row } else { tri_rows - 1 - row };
+                        let half = if row < half_max {
+                            row
+                        } else {
+                            tri_rows - 1 - row
+                        };
                         crate::draw::fill_rect(
                             &clipped,
                             tri_x,
@@ -412,7 +453,9 @@ impl Control for TreeView {
 
                 let text_y = row_y + (rh - fs as i32) / 2;
                 let font_id: u16 = if node.style & 1 != 0 { 1 } else { 0 };
-                crate::draw::draw_text_ex(&clipped, x_offset, text_y, text_color, &node.text, font_id, fs);
+                crate::draw::draw_text_ex(
+                    &clipped, x_offset, text_y, text_color, &node.text, font_id, fs,
+                );
             }
         }
 
@@ -427,11 +470,19 @@ impl Control for TreeView {
             let track_h = (view_h as i32 - bar_pad * 2).max(1);
 
             // Track
-            crate::draw::fill_rect(&clipped, bar_x, track_y, bar_w, track_h as u32, tc.scrollbar_track);
+            crate::draw::fill_rect(
+                &clipped,
+                bar_x,
+                track_y,
+                bar_w,
+                track_h as u32,
+                tc.scrollbar_track,
+            );
 
             // Thumb
             let min_thumb = crate::theme::scale(20);
-            let thumb_h = ((view_h as u64 * track_h as u64) / content_h as u64).max(min_thumb as u64) as i32;
+            let thumb_h =
+                ((view_h as u64 * track_h as u64) / content_h as u64).max(min_thumb as u64) as i32;
             let max_scroll = (content_h - view_h) as i32;
             let scroll_frac = if max_scroll > 0 {
                 (s_scroll_y as i64 * (track_h - thumb_h) as i64 / max_scroll as i64) as i32
@@ -440,7 +491,15 @@ impl Control for TreeView {
             };
             let thumb_y = track_y + scroll_frac.max(0).min(track_h - thumb_h);
             let thumb_r = crate::theme::scale(3);
-            crate::draw::fill_rounded_rect(&clipped, bar_x, thumb_y, bar_w, thumb_h as u32, thumb_r, tc.scrollbar);
+            crate::draw::fill_rounded_rect(
+                &clipped,
+                bar_x,
+                thumb_y,
+                bar_w,
+                thumb_h as u32,
+                thumb_r,
+                tc.scrollbar,
+            );
         }
 
         // Focus ring
@@ -449,8 +508,12 @@ impl Control for TreeView {
         }
     }
 
-    fn is_interactive(&self) -> bool { true }
-    fn accepts_focus(&self) -> bool { true }
+    fn is_interactive(&self) -> bool {
+        true
+    }
+    fn accepts_focus(&self) -> bool {
+        true
+    }
 
     fn handle_click(&mut self, lx: i32, ly: i32, _button: u32) -> EventResponse {
         let vis = self.visible_nodes();
@@ -482,9 +545,11 @@ impl Control for TreeView {
         EventResponse::CHANGED
     }
 
-    fn handle_key_down(&mut self, keycode: u32, char_code: u32, _modifiers: u32) -> EventResponse {
+    fn handle_key_down(&mut self, keycode: u32, _char_code: u32, _modifiers: u32) -> EventResponse {
         let vis = self.visible_nodes();
-        if vis.is_empty() { return EventResponse::IGNORED; }
+        if vis.is_empty() {
+            return EventResponse::IGNORED;
+        }
 
         use crate::control::*;
         match keycode {
@@ -573,12 +638,8 @@ impl Control for TreeView {
                 }
                 EventResponse::CONSUMED
             }
-            KEY_ENTER => {
-                EventResponse::SUBMIT
-            }
-            _ => {
-                EventResponse::IGNORED
-            }
+            KEY_ENTER => EventResponse::SUBMIT,
+            _ => EventResponse::IGNORED,
         }
     }
 

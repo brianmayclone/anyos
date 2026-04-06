@@ -1,9 +1,9 @@
 //! TextEditor — code editor control with syntax highlighting, line numbers,
 //! auto-indent, and smooth scrolling.
 
+use crate::control::{Control, ControlBase, ControlKind, EventResponse};
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, ControlKind, EventResponse};
 
 // ── Selection ────────────────────────────────────────────────────────
 
@@ -114,19 +114,33 @@ impl SyntaxDef {
                         syn.char_delimiter = val[0];
                     }
                 } else if key == b"keyword_color" {
-                    if let Some(c) = parse_hex_color(val) { syn.keyword_color = c; }
+                    if let Some(c) = parse_hex_color(val) {
+                        syn.keyword_color = c;
+                    }
                 } else if key == b"type_color" {
-                    if let Some(c) = parse_hex_color(val) { syn.type_color = c; }
+                    if let Some(c) = parse_hex_color(val) {
+                        syn.type_color = c;
+                    }
                 } else if key == b"builtin_color" {
-                    if let Some(c) = parse_hex_color(val) { syn.builtin_color = c; }
+                    if let Some(c) = parse_hex_color(val) {
+                        syn.builtin_color = c;
+                    }
                 } else if key == b"string_color" {
-                    if let Some(c) = parse_hex_color(val) { syn.string_color = c; }
+                    if let Some(c) = parse_hex_color(val) {
+                        syn.string_color = c;
+                    }
                 } else if key == b"comment_color" {
-                    if let Some(c) = parse_hex_color(val) { syn.comment_color = c; }
+                    if let Some(c) = parse_hex_color(val) {
+                        syn.comment_color = c;
+                    }
                 } else if key == b"number_color" {
-                    if let Some(c) = parse_hex_color(val) { syn.number_color = c; }
+                    if let Some(c) = parse_hex_color(val) {
+                        syn.number_color = c;
+                    }
                 } else if key == b"operator_color" {
-                    if let Some(c) = parse_hex_color(val) { syn.operator_color = c; }
+                    if let Some(c) = parse_hex_color(val) {
+                        syn.operator_color = c;
+                    }
                 }
             }
             start = end + 1;
@@ -289,7 +303,10 @@ impl TextEditor {
     /// Multiple lines can be highlighted. Call `clear_highlights()` first
     /// to reset, then add highlights.
     pub fn highlight_line(&mut self, line: u32, color: u32) {
-        self.highlighted_lines.push(LineHighlight { line: line as usize, color });
+        self.highlighted_lines.push(LineHighlight {
+            line: line as usize,
+            color,
+        });
         self.base.mark_dirty();
     }
 
@@ -304,7 +321,9 @@ impl TextEditor {
     /// Scroll the view so that the given line is visible (centered if possible).
     pub fn ensure_line_visible(&mut self, line: u32) {
         let row = line as usize;
-        if row >= self.lines.len() { return; }
+        if row >= self.lines.len() {
+            return;
+        }
         let line_h = self.line_height as i32;
         let visible_h = self.base.h as i32 - 2;
         let row_top = row as i32 * line_h;
@@ -328,11 +347,18 @@ impl TextEditor {
     }
 
     pub fn set_syntax(&mut self, data: &[u8]) {
-        crate::log!("[SYNTAX-SERVER] set_syntax called with {} bytes", data.len());
+        crate::log!(
+            "[SYNTAX-SERVER] set_syntax called with {} bytes",
+            data.len()
+        );
         self.syntax = SyntaxDef::parse(data);
         if let Some(ref syn) = self.syntax {
-            crate::log!("[SYNTAX-SERVER] parsed OK: {} keywords, {} types, {} builtins",
-                syn.keywords.len(), syn.types.len(), syn.builtins.len());
+            crate::log!(
+                "[SYNTAX-SERVER] parsed OK: {} keywords, {} types, {} builtins",
+                syn.keywords.len(),
+                syn.types.len(),
+                syn.builtins.len()
+            );
         } else {
             crate::log!("[SYNTAX-SERVER] parse returned None");
         }
@@ -448,7 +474,11 @@ impl TextEditor {
             }
             let line = &self.lines[row];
             let c0 = if row == sr { sc.min(line.len()) } else { 0 };
-            let c1 = if row == er { ec.min(line.len()) } else { line.len() };
+            let c1 = if row == er {
+                ec.min(line.len())
+            } else {
+                line.len()
+            };
             if c0 <= c1 {
                 out.extend_from_slice(&line[c0..c1]);
             }
@@ -456,7 +486,11 @@ impl TextEditor {
                 out.push(b'\n');
             }
         }
-        if out.is_empty() { None } else { Some(out) }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
+        }
     }
 
     /// Select all text.
@@ -542,15 +576,19 @@ impl Control for TextEditor {
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = self.base();
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let ctx = crate::control::prepare_render(b, ax, ay);
+        let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
 
         // Scaled metrics for the monospace editor
         let s_font_size = crate::draw::scale_font(self.font_size);
         let s_line_h = crate::theme::scale(self.line_height);
         let (s_char_w, _) = crate::draw::measure_text_ex(b"M", self.font_id, s_font_size);
-        let s_char_w = if s_char_w > 0 { s_char_w } else { crate::theme::scale(8) };
+        let s_char_w = if s_char_w > 0 {
+            s_char_w
+        } else {
+            crate::theme::scale(8)
+        };
         let s_gutter_w = crate::theme::scale(self.gutter_width);
         let s_scroll_y = crate::theme::scale_i32(self.scroll_y);
         let s_scroll_x = crate::theme::scale_i32(self.scroll_x);
@@ -563,8 +601,8 @@ impl Control for TextEditor {
         let clipped = surface.with_clip(x + 1, y + 1, w.saturating_sub(2), h.saturating_sub(2));
 
         let visible_start = (s_scroll_y / s_line_h as i32).max(0) as usize;
-        let visible_end = ((s_scroll_y + h as i32) / s_line_h as i32 + 1)
-            .min(self.lines.len() as i32) as usize;
+        let visible_end =
+            ((s_scroll_y + h as i32) / s_line_h as i32 + 1).min(self.lines.len() as i32) as usize;
 
         let text_x_base = x + 1 + s_gutter_w as i32;
 
@@ -615,10 +653,19 @@ impl Control for TextEditor {
                     if row >= sr && row <= er {
                         let line_len = self.lines[row].len();
                         let sel_start = if row == sr { sc.min(line_len) } else { 0 };
-                        let sel_end = if row == er { ec.min(line_len) } else { line_len };
+                        let sel_end = if row == er {
+                            ec.min(line_len)
+                        } else {
+                            line_len
+                        };
                         if sel_start < sel_end || (row > sr && row < er) {
-                            let sx = text_x_base + (sel_start as i32) * s_char_w as i32 - s_scroll_x;
-                            let sel_chars = if sel_end > sel_start { sel_end - sel_start } else { 0 };
+                            let sx =
+                                text_x_base + (sel_start as i32) * s_char_w as i32 - s_scroll_x;
+                            let sel_chars = if sel_end > sel_start {
+                                sel_end - sel_start
+                            } else {
+                                0
+                            };
                             // For middle lines of multiline selection, extend to edge
                             let sw = if row > sr && row < er && sel_chars == 0 {
                                 w.saturating_sub(s_gutter_w).saturating_sub(2)
@@ -672,8 +719,8 @@ impl Control for TextEditor {
                     in_block_comment = still_in;
                     for span in &spans {
                         let text_slice = &line[span.start..span.end];
-                        let span_x = text_x_base + (span.start as i32) * s_char_w as i32
-                            - s_scroll_x;
+                        let span_x =
+                            text_x_base + (span.start as i32) * s_char_w as i32 - s_scroll_x;
                         crate::draw::draw_text_ex(
                             &clipped,
                             span_x,
@@ -703,8 +750,8 @@ impl Control for TextEditor {
 
             // Cursor
             if row == self.cursor_row && self.focused {
-                let cursor_x = text_x_base + (self.cursor_col as i32) * s_char_w as i32
-                    - s_scroll_x;
+                let cursor_x =
+                    text_x_base + (self.cursor_col as i32) * s_char_w as i32 - s_scroll_x;
                 let cursor_w = crate::theme::scale(2);
                 crate::draw::fill_rect(
                     &clipped,
@@ -730,7 +777,11 @@ impl Control for TextEditor {
         }
 
         // Border
-        let border_color = if self.focused { tc.input_focus } else { tc.input_border };
+        let border_color = if self.focused {
+            tc.input_focus
+        } else {
+            tc.input_border
+        };
         crate::draw::draw_border(surface, x, y, w, h, border_color);
 
         // Vertical scrollbar
@@ -744,10 +795,17 @@ impl Control for TextEditor {
             let max_scroll = (s_content_h - visible_h).max(1) as u32;
             let min_thumb = crate::theme::scale(20);
             let thumb_h = ((visible_h as u32 * track_h) / s_content_h as u32).max(min_thumb);
-            let thumb_y = y + 1
-                + (s_scroll_y as u32 * (track_h.saturating_sub(thumb_h)) / max_scroll) as i32;
+            let thumb_y =
+                y + 1 + (s_scroll_y as u32 * (track_h.saturating_sub(thumb_h)) / max_scroll) as i32;
             let inner_bar = if bar_w > 2 { bar_w - 2 } else { bar_w };
-            crate::draw::fill_rect(surface, track_x + 1, thumb_y, inner_bar, thumb_h, tc.scrollbar);
+            crate::draw::fill_rect(
+                surface,
+                track_x + 1,
+                thumb_y,
+                inner_bar,
+                thumb_h,
+                tc.scrollbar,
+            );
         }
     }
 
@@ -832,7 +890,9 @@ impl Control for TextEditor {
             }
             // Ctrl+X: cut (blocked in read-only)
             if char_code == b'x' as u32 || char_code == b'X' as u32 {
-                if self.read_only { return EventResponse::CONSUMED; }
+                if self.read_only {
+                    return EventResponse::CONSUMED;
+                }
                 if let Some(text) = self.extract_selected_text() {
                     self.push_undo();
                     crate::compositor::clipboard_set(&text);
@@ -842,7 +902,9 @@ impl Control for TextEditor {
             }
             // Ctrl+V: paste (blocked in read-only)
             if char_code == b'v' as u32 || char_code == b'V' as u32 {
-                if self.read_only { return EventResponse::CONSUMED; }
+                if self.read_only {
+                    return EventResponse::CONSUMED;
+                }
                 if let Some(data) = crate::compositor::clipboard_get() {
                     self.push_undo();
                     self.delete_selection();
@@ -853,7 +915,9 @@ impl Control for TextEditor {
             }
             // Ctrl+Z: undo (blocked in read-only)
             if char_code == b'z' as u32 || char_code == b'Z' as u32 {
-                if self.read_only { return EventResponse::CONSUMED; }
+                if self.read_only {
+                    return EventResponse::CONSUMED;
+                }
                 if self.undo() {
                     return EventResponse::CHANGED;
                 }
@@ -861,7 +925,9 @@ impl Control for TextEditor {
             }
             // Ctrl+Y: redo (blocked in read-only)
             if char_code == b'y' as u32 || char_code == b'Y' as u32 {
-                if self.read_only { return EventResponse::CONSUMED; }
+                if self.read_only {
+                    return EventResponse::CONSUMED;
+                }
                 if self.redo() {
                     return EventResponse::CHANGED;
                 }
@@ -887,7 +953,12 @@ impl Control for TextEditor {
         }
 
         // ── Arrow keys with Shift: extend selection ──
-        if has_shift && matches!(keycode, KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN | KEY_HOME | KEY_END) {
+        if has_shift
+            && matches!(
+                keycode,
+                KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN | KEY_HOME | KEY_END
+            )
+        {
             // Start selection at current cursor if none exists
             if self.selection.is_none() {
                 self.selection = Some(Selection {
@@ -927,8 +998,12 @@ impl Control for TextEditor {
                         self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
                     }
                 }
-                KEY_HOME => { self.cursor_col = 0; }
-                KEY_END => { self.cursor_col = self.lines[self.cursor_row].len(); }
+                KEY_HOME => {
+                    self.cursor_col = 0;
+                }
+                KEY_END => {
+                    self.cursor_col = self.lines[self.cursor_row].len();
+                }
                 _ => {}
             }
             // Update selection endpoint
@@ -963,15 +1038,26 @@ impl Control for TextEditor {
         }
 
         // ── Clear selection on arrow keys without Shift ──
-        if matches!(keycode, KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN | KEY_HOME | KEY_END
-                    | KEY_PAGE_UP | KEY_PAGE_DOWN) {
+        if matches!(
+            keycode,
+            KEY_LEFT
+                | KEY_RIGHT
+                | KEY_UP
+                | KEY_DOWN
+                | KEY_HOME
+                | KEY_END
+                | KEY_PAGE_UP
+                | KEY_PAGE_DOWN
+        ) {
             self.selection = None;
         }
 
         // ── Push undo before any text mutation ──
         if (char_code >= 0x20 && char_code < 0x7F)
-            || keycode == KEY_ENTER || keycode == KEY_TAB
-            || keycode == KEY_BACKSPACE || keycode == KEY_DELETE
+            || keycode == KEY_ENTER
+            || keycode == KEY_TAB
+            || keycode == KEY_BACKSPACE
+            || keycode == KEY_DELETE
         {
             self.push_undo();
         }
@@ -1138,8 +1224,7 @@ impl Control for TextEditor {
 
     fn handle_scroll(&mut self, delta: i32) -> EventResponse {
         let max_scroll = (self.content_height() - (self.base.h as i32 - 2)).max(0);
-        self.scroll_y =
-            (self.scroll_y - delta * self.line_height as i32).clamp(0, max_scroll);
+        self.scroll_y = (self.scroll_y - delta * self.line_height as i32).clamp(0, max_scroll);
         self.base.mark_dirty();
         EventResponse::CONSUMED
     }
@@ -1169,10 +1254,18 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
             let start = i;
             if let Some(pos) = find_subsequence(&line[i..], &syn.block_comment_end) {
                 i += pos + syn.block_comment_end.len();
-                spans.push(ColorSpan { start, end: i, color: syn.comment_color });
+                spans.push(ColorSpan {
+                    start,
+                    end: i,
+                    color: syn.comment_color,
+                });
                 in_comment = false;
             } else {
-                spans.push(ColorSpan { start, end: line.len(), color: syn.comment_color });
+                spans.push(ColorSpan {
+                    start,
+                    end: line.len(),
+                    color: syn.comment_color,
+                });
                 i = line.len();
             }
             continue;
@@ -1185,9 +1278,17 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
             i += syn.block_comment_start.len();
             if let Some(pos) = find_subsequence(&line[i..], &syn.block_comment_end) {
                 i += pos + syn.block_comment_end.len();
-                spans.push(ColorSpan { start, end: i, color: syn.comment_color });
+                spans.push(ColorSpan {
+                    start,
+                    end: i,
+                    color: syn.comment_color,
+                });
             } else {
-                spans.push(ColorSpan { start, end: line.len(), color: syn.comment_color });
+                spans.push(ColorSpan {
+                    start,
+                    end: line.len(),
+                    color: syn.comment_color,
+                });
                 i = line.len();
                 in_comment = true;
             }
@@ -1196,7 +1297,11 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
 
         // Line comment
         if !syn.line_comment.is_empty() && starts_with_at(line, i, &syn.line_comment) {
-            spans.push(ColorSpan { start: i, end: line.len(), color: syn.comment_color });
+            spans.push(ColorSpan {
+                start: i,
+                end: line.len(),
+                color: syn.comment_color,
+            });
             i = line.len();
             continue;
         }
@@ -1216,7 +1321,11 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
                     i += 1;
                 }
             }
-            spans.push(ColorSpan { start, end: i, color: syn.string_color });
+            spans.push(ColorSpan {
+                start,
+                end: i,
+                color: syn.string_color,
+            });
             continue;
         }
 
@@ -1234,7 +1343,11 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
                     i += 1;
                 }
             }
-            spans.push(ColorSpan { start, end: i, color: syn.string_color });
+            spans.push(ColorSpan {
+                start,
+                end: i,
+                color: syn.string_color,
+            });
             continue;
         }
 
@@ -1243,9 +1356,7 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
             || (line[i] == b'.' && i + 1 < line.len() && line[i + 1].is_ascii_digit())
         {
             let start = i;
-            if line[i] == b'0'
-                && i + 1 < line.len()
-                && (line[i + 1] == b'x' || line[i + 1] == b'X')
+            if line[i] == b'0' && i + 1 < line.len() && (line[i + 1] == b'x' || line[i + 1] == b'X')
             {
                 i += 2;
                 while i < line.len() && (line[i].is_ascii_hexdigit() || line[i] == b'_') {
@@ -1265,7 +1376,11 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
                     i += 1;
                 }
             }
-            spans.push(ColorSpan { start, end: i, color: syn.number_color });
+            spans.push(ColorSpan {
+                start,
+                end: i,
+                color: syn.number_color,
+            });
             continue;
         }
 
@@ -1285,13 +1400,21 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
             } else {
                 default_color
             };
-            spans.push(ColorSpan { start, end: i, color });
+            spans.push(ColorSpan {
+                start,
+                end: i,
+                color,
+            });
             continue;
         }
 
         // Operator
         if is_operator(line[i]) {
-            spans.push(ColorSpan { start: i, end: i + 1, color: syn.operator_color });
+            spans.push(ColorSpan {
+                start: i,
+                end: i + 1,
+                color: syn.operator_color,
+            });
             i += 1;
             continue;
         }
@@ -1308,7 +1431,11 @@ fn tokenize_line(line: &[u8], in_block_comment: bool, syn: &SyntaxDef) -> (Vec<C
             i += 1;
         }
         if start < i {
-            spans.push(ColorSpan { start, end: i, color: default_color });
+            spans.push(ColorSpan {
+                start,
+                end: i,
+                color: default_color,
+            });
         }
     }
 

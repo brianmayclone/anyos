@@ -5,8 +5,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use crate::value::*;
 use super::Vm;
+use crate::value::*;
 
 // ═══════════════════════════════════════════════════════════
 // Object.prototype methods
@@ -27,7 +27,12 @@ pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         // Function values: check own_props AND built-in properties (name, length, prototype).
         JsValue::Function(f) => {
             let func = f.borrow();
-            JsValue::Bool(func.own_props.contains_key(&key) || key == "name" || key == "length" || (key == "prototype" && !func.kind.is_arrow()))
+            JsValue::Bool(
+                func.own_props.contains_key(&key)
+                    || key == "name"
+                    || key == "length"
+                    || (key == "prototype" && !func.kind.is_arrow()),
+            )
         }
         _ => JsValue::Bool(false),
     }
@@ -71,14 +76,14 @@ pub fn object_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
             let tag = obj.borrow().internal_tag.clone();
             let kind = match tag.as_deref() {
                 Some("__boolean__") => "Boolean",
-                Some("__number__")  => "Number",
-                Some("__string__")  => "String",
-                Some("__regexp__")  => "RegExp",
-                Some("__date__")    => "Date",
-                Some("__math__")    => "Math",
-                Some("__json__")    => "JSON",
-                Some("__error__")   => "Error",
-                _                   => "Object",
+                Some("__number__") => "Number",
+                Some("__string__") => "String",
+                Some("__regexp__") => "RegExp",
+                Some("__date__") => "Date",
+                Some("__math__") => "Math",
+                Some("__json__") => "JSON",
+                Some("__error__") => "Error",
+                _ => "Object",
             };
             JsValue::String(alloc::format!("[object {}]", kind))
         }
@@ -121,8 +126,12 @@ pub fn object_property_is_enumerable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn object_keys_method(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     match &vm.current_this {
         JsValue::Object(obj) => {
-            let keys: Vec<JsValue> = obj.borrow().keys().into_iter()
-                .map(JsValue::String).collect();
+            let keys: Vec<JsValue> = obj
+                .borrow()
+                .keys()
+                .into_iter()
+                .map(JsValue::String)
+                .collect();
             JsValue::new_array(keys)
         }
         _ => JsValue::new_array(Vec::new()),
@@ -136,13 +145,19 @@ pub fn object_keys_method(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 pub fn object_keys(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(JsValue::Object(obj)) => {
-            let keys: Vec<JsValue> = obj.borrow().keys().into_iter()
-                .map(JsValue::String).collect();
+            let keys: Vec<JsValue> = obj
+                .borrow()
+                .keys()
+                .into_iter()
+                .map(JsValue::String)
+                .collect();
             JsValue::new_array(keys)
         }
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
-            let keys: Vec<JsValue> = a.elements.keys()
+            let keys: Vec<JsValue> = a
+                .elements
+                .keys()
                 .map(|&i| JsValue::String(format_usize(i)))
                 .collect();
             JsValue::new_array(keys)
@@ -155,8 +170,15 @@ pub fn object_values(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
-            let vals: Vec<JsValue> = o.keys().into_iter()
-                .map(|k| o.properties.get(&k).map(|p| p.value.clone()).unwrap_or(JsValue::Undefined))
+            let vals: Vec<JsValue> = o
+                .keys()
+                .into_iter()
+                .map(|k| {
+                    o.properties
+                        .get(&k)
+                        .map(|p| p.value.clone())
+                        .unwrap_or(JsValue::Undefined)
+                })
                 .collect();
             JsValue::new_array(vals)
         }
@@ -172,9 +194,15 @@ pub fn object_entries(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
-            let entries: Vec<JsValue> = o.keys().into_iter()
+            let entries: Vec<JsValue> = o
+                .keys()
+                .into_iter()
                 .map(|k| {
-                    let v = o.properties.get(&k).map(|p| p.value.clone()).unwrap_or(JsValue::Undefined);
+                    let v = o
+                        .properties
+                        .get(&k)
+                        .map(|p| p.value.clone())
+                        .unwrap_or(JsValue::Undefined);
                     JsValue::new_array(alloc::vec![JsValue::String(k), v])
                 })
                 .collect();
@@ -214,10 +242,17 @@ pub fn object_freeze(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             }
         }
         // Mark as non-extensible (frozen implies sealed implies non-extensible).
-        o.properties.insert(String::from("__non_extensible__"), crate::value::Property {
-            value: JsValue::Bool(true), writable: false, enumerable: false, configurable: false,
-            getter: None, setter: None,
-        });
+        o.properties.insert(
+            String::from("__non_extensible__"),
+            crate::value::Property {
+                value: JsValue::Bool(true),
+                writable: false,
+                enumerable: false,
+                configurable: false,
+                getter: None,
+                setter: None,
+            },
+        );
     }
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }
@@ -249,20 +284,61 @@ pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let has_get = desc.has_own("get");
         let has_set = desc.has_own("set");
         let prop = if has_get || has_set {
-            let getter = { let v = desc.get("get"); if v.is_function() { Some(v) } else { None } };
-            let setter = { let v = desc.get("set"); if v.is_function() { Some(v) } else { None } };
-            let enumerable = if desc.has_own("enumerable") { desc.get("enumerable").to_boolean() } else { false };
-            let configurable = if desc.has_own("configurable") { desc.get("configurable").to_boolean() } else { false };
+            let getter = {
+                let v = desc.get("get");
+                if v.is_function() {
+                    Some(v)
+                } else {
+                    None
+                }
+            };
+            let setter = {
+                let v = desc.get("set");
+                if v.is_function() {
+                    Some(v)
+                } else {
+                    None
+                }
+            };
+            let enumerable = if desc.has_own("enumerable") {
+                desc.get("enumerable").to_boolean()
+            } else {
+                false
+            };
+            let configurable = if desc.has_own("configurable") {
+                desc.get("configurable").to_boolean()
+            } else {
+                false
+            };
             let mut p = Property::accessor(getter, setter);
             p.enumerable = enumerable;
             p.configurable = configurable;
             p
         } else {
             let value = desc.get("value");
-            let writable = if desc.has_own("writable") { desc.get("writable").to_boolean() } else { false };
-            let enumerable = if desc.has_own("enumerable") { desc.get("enumerable").to_boolean() } else { false };
-            let configurable = if desc.has_own("configurable") { desc.get("configurable").to_boolean() } else { false };
-            Property { value, writable, enumerable, configurable, getter: None, setter: None }
+            let writable = if desc.has_own("writable") {
+                desc.get("writable").to_boolean()
+            } else {
+                false
+            };
+            let enumerable = if desc.has_own("enumerable") {
+                desc.get("enumerable").to_boolean()
+            } else {
+                false
+            };
+            let configurable = if desc.has_own("configurable") {
+                desc.get("configurable").to_boolean()
+            } else {
+                false
+            };
+            Property {
+                value,
+                writable,
+                enumerable,
+                configurable,
+                getter: None,
+                setter: None,
+            }
         };
         drop(desc);
 
@@ -280,7 +356,9 @@ pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     // so that getOwnPropertyDescriptor works correctly
                     let mut a = arr.borrow_mut();
                     a.elements.insert(idx, prop.value.clone());
-                    if idx >= a.length { a.length = idx + 1; }
+                    if idx >= a.length {
+                        a.length = idx + 1;
+                    }
                     a.properties.insert(key, prop);
                 } else if key == "length" {
                     // length is handled specially
@@ -296,10 +374,12 @@ pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     // Store getter/setter as __get_key / __set_key pattern
                     let mut func = f.borrow_mut();
                     if let Some(ref g) = prop.getter {
-                        func.own_props.insert(alloc::format!("__get_{}", key), g.clone());
+                        func.own_props
+                            .insert(alloc::format!("__get_{}", key), g.clone());
                     }
                     if let Some(ref s) = prop.setter {
-                        func.own_props.insert(alloc::format!("__set_{}", key), s.clone());
+                        func.own_props
+                            .insert(alloc::format!("__set_{}", key), s.clone());
                     }
                 } else {
                     f.borrow_mut().own_props.insert(key, prop.value);
@@ -362,8 +442,12 @@ fn same_value(a: &JsValue, b: &JsValue) -> bool {
         (JsValue::Null, JsValue::Null) => true,
         (JsValue::Bool(x), JsValue::Bool(y)) => x == y,
         (JsValue::Number(x), JsValue::Number(y)) => {
-            if x.is_nan() && y.is_nan() { return true; }
-            if *x == 0.0 && *y == 0.0 { return x.is_sign_positive() == y.is_sign_positive(); }
+            if x.is_nan() && y.is_nan() {
+                return true;
+            }
+            if *x == 0.0 && *y == 0.0 {
+                return x.is_sign_positive() == y.is_sign_positive();
+            }
             x.to_bits() == y.to_bits()
         }
         (JsValue::String(x), JsValue::String(y)) => x == y,
@@ -394,7 +478,8 @@ pub fn object_get_own_property_names(_vm: &mut Vm, args: &[JsValue]) -> JsValue 
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
-            let keys: Vec<JsValue> = o.own_property_names()
+            let keys: Vec<JsValue> = o
+                .own_property_names()
                 .into_iter()
                 .map(JsValue::String)
                 .collect();
@@ -402,7 +487,9 @@ pub fn object_get_own_property_names(_vm: &mut Vm, args: &[JsValue]) -> JsValue 
         }
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
-            let mut keys: Vec<JsValue> = a.elements.keys()
+            let mut keys: Vec<JsValue> = a
+                .elements
+                .keys()
                 .map(|&i| JsValue::String(format_usize(i)))
                 .collect();
             // Also include non-numeric property names
@@ -470,9 +557,7 @@ pub fn object_get_own_property_descriptor(_vm: &mut Vm, args: &[JsValue]) -> JsV
             }
             JsValue::Undefined
         }
-        Some(JsValue::Function(fn_rc)) => {
-            fn_get_own_property_descriptor(fn_rc, &key)
-        }
+        Some(JsValue::Function(fn_rc)) => fn_get_own_property_descriptor(fn_rc, &key),
         _ => JsValue::Undefined,
     }
 }
@@ -499,7 +584,9 @@ fn fn_get_own_property_descriptor(fn_rc: &Rc<RefCell<JsFunction>>, key: &str) ->
     // Built-in function properties (ES2023 §10.2.4, §20.2.4)
     match key {
         "name" => {
-            let name_val = func.name.as_ref()
+            let name_val = func
+                .name
+                .as_ref()
                 .map(|n| JsValue::String(n.clone()))
                 .unwrap_or(JsValue::String(String::new()));
             prop_to_descriptor(&Property {
@@ -561,14 +648,21 @@ pub fn object_get_own_property_descriptors(_vm: &mut Vm, args: &[JsValue]) -> Js
 fn prop_to_descriptor(prop: &Property) -> JsValue {
     let desc = JsValue::new_object();
     if prop.is_accessor() {
-        if let Some(ref g) = prop.getter { desc.set_property(String::from("get"), g.clone()); }
-        if let Some(ref s) = prop.setter { desc.set_property(String::from("set"), s.clone()); }
+        if let Some(ref g) = prop.getter {
+            desc.set_property(String::from("get"), g.clone());
+        }
+        if let Some(ref s) = prop.setter {
+            desc.set_property(String::from("set"), s.clone());
+        }
     } else {
         desc.set_property(String::from("value"), prop.value.clone());
         desc.set_property(String::from("writable"), JsValue::Bool(prop.writable));
     }
     desc.set_property(String::from("enumerable"), JsValue::Bool(prop.enumerable));
-    desc.set_property(String::from("configurable"), JsValue::Bool(prop.configurable));
+    desc.set_property(
+        String::from("configurable"),
+        JsValue::Bool(prop.configurable),
+    );
     desc
 }
 
@@ -577,10 +671,17 @@ pub fn object_prevent_extensions(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let Some(JsValue::Object(obj)) = args.first() {
         let mut o = obj.borrow_mut();
         // Use a hidden property to mark non-extensibility without overwriting internal_tag.
-        o.properties.insert(String::from("__non_extensible__"), crate::value::Property {
-            value: JsValue::Bool(true), writable: false, enumerable: false, configurable: false,
-            getter: None, setter: None,
-        });
+        o.properties.insert(
+            String::from("__non_extensible__"),
+            crate::value::Property {
+                value: JsValue::Bool(true),
+                writable: false,
+                enumerable: false,
+                configurable: false,
+                getter: None,
+                setter: None,
+            },
+        );
     }
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }
@@ -592,9 +693,7 @@ pub fn object_is_extensible(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             let o = obj.borrow();
             JsValue::Bool(!o.properties.contains_key("__non_extensible__"))
         }
-        Some(JsValue::Function(_)) => {
-            JsValue::Bool(true)
-        }
+        Some(JsValue::Function(_)) => JsValue::Bool(true),
         _ => JsValue::Bool(false),
     }
 }
@@ -609,10 +708,17 @@ pub fn object_seal(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 prop.configurable = false;
             }
         }
-        o.properties.insert(String::from("__non_extensible__"), crate::value::Property {
-            value: JsValue::Bool(true), writable: false, enumerable: false, configurable: false,
-            getter: None, setter: None,
-        });
+        o.properties.insert(
+            String::from("__non_extensible__"),
+            crate::value::Property {
+                value: JsValue::Bool(true),
+                writable: false,
+                enumerable: false,
+                configurable: false,
+                getter: None,
+                setter: None,
+            },
+        );
     }
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }
@@ -634,7 +740,10 @@ pub fn object_is_frozen(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
-            let all_frozen = o.properties.values().all(|p| !p.writable && !p.configurable);
+            let all_frozen = o
+                .properties
+                .values()
+                .all(|p| !p.writable && !p.configurable);
             JsValue::Bool(all_frozen)
         }
         _ => JsValue::Bool(true),
@@ -656,7 +765,12 @@ pub fn object_has_own(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         Some(JsValue::Function(f)) => {
             let func = f.borrow();
-            JsValue::Bool(func.own_props.contains_key(&key) || key == "name" || key == "length" || (key == "prototype" && !func.kind.is_arrow()))
+            JsValue::Bool(
+                func.own_props.contains_key(&key)
+                    || key == "name"
+                    || key == "length"
+                    || (key == "prototype" && !func.kind.is_arrow()),
+            )
         }
         _ => JsValue::Bool(false),
     }
@@ -682,7 +796,8 @@ pub fn object_get_own_property_symbols(_vm: &mut Vm, args: &[JsValue]) -> JsValu
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
-            let syms: Vec<JsValue> = o.own_symbol_keys()
+            let syms: Vec<JsValue> = o
+                .own_symbol_keys()
                 .into_iter()
                 .map(JsValue::String)
                 .collect();

@@ -1519,15 +1519,18 @@ impl Desktop {
         );
 
         let force_shadow = flags & WIN_FLAG_SHADOW != 0;
-        if !borderless || force_shadow {
-            if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+        if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+            // Hide the layer until the first CMD_PRESENT arrives with real pixels.
+            // This prevents a transparent / garbage frame from being composited
+            // before the app has rendered anything (fixes intermittent missing dock).
+            layer.visible = false;
+
+            if !borderless || force_shadow {
                 layer.has_shadow = true;
             }
-        }
 
-        // DPI-aware windows render at physical resolution — no compositor upscaling.
-        if flags & WIN_FLAG_DPI_AWARE != 0 {
-            if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+            // DPI-aware windows render at physical resolution — no compositor upscaling.
+            if flags & WIN_FLAG_DPI_AWARE != 0 {
                 layer.dpi_aware = true;
             }
         }
@@ -1580,8 +1583,22 @@ impl Desktop {
 
         let layer_id = self.windows[win_idx].layer_id;
 
+        // Make the layer visible on its first CMD_PRESENT regardless of path.
+        // The layer starts hidden (visible=false) to avoid compositing transparent
+        // pixels before the app renders its first frame.  Any CMD_PRESENT call is
+        // the app saying "I have real pixels" — honour that immediately so the
+        // window is never stuck invisible (e.g. in verbose mode where the first
+        // present_rect might be clipped to zero by a race in the dirty-rect path).
+        let was_hidden = if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+            let hidden = !layer.visible;
+            layer.visible = true;
+            hidden
+        } else {
+            false
+        };
+
         // VRAM-direct windows: no pixel copy needed, just mark dirty + damage
-        if let Some(layer) = self.compositor.get_layer(layer_id) {
+        if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
             if layer.is_vram {
                 let bounds = layer.damage_bounds();
                 self.compositor.mark_layer_dirty(layer_id);
@@ -1592,6 +1609,13 @@ impl Desktop {
 
         let shm_ptr = self.windows[win_idx].shm_ptr;
         if shm_ptr.is_null() {
+            // Window not ready for pixel copy, but if it just became visible
+            // we still need damage so the render thread composites it.
+            if was_hidden {
+                if let Some(layer) = self.compositor.get_layer(layer_id) {
+                    self.compositor.add_damage(layer.damage_bounds());
+                }
+            }
             return;
         }
 
@@ -1622,6 +1646,13 @@ impl Desktop {
         } else {
             (0, 0, shm_w.min(cw), shm_h.min(ch))
         };
+
+        // Make the layer visible on its first CMD_PRESENT.
+        // It starts hidden (visible=false) to avoid compositing transparent pixels
+        // before the app has rendered its first frame.
+        if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
+            layer.visible = true;
+        }
 
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {
             let stride = cw;

@@ -1,5 +1,5 @@
+use crate::control::{Control, ControlBase, ControlKind, EventResponse, TextControlBase};
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, TextControlBase, ControlKind, EventResponse};
 
 const TAB_PAD_X: i32 = 14;
 const CLOSE_BTN_SIZE: i32 = 16;
@@ -65,48 +65,6 @@ impl TabBar {
         }
     }
 
-    /// Width reserved for right-side navigation buttons (scroll arrows + plus).
-    fn nav_area_width(&self) -> i32 {
-        let (has_overflow, _, _) = self.overflow_state();
-        let mut w = 0;
-        if has_overflow {
-            w += (NAV_BTN_SIZE + TAB_GAP) * 2; // left + right arrows
-        }
-        if self.show_plus {
-            w += NAV_BTN_SIZE + TAB_GAP;
-        }
-        w
-    }
-
-    /// Compute raw overflow state without layout details.
-    /// Returns (has_overflow, show_left, show_right).
-    fn overflow_state(&self) -> (bool, bool, bool) {
-        let n = self.labels.len();
-        if n == 0 {
-            return (false, false, false);
-        }
-        let total_w = self.text_base.base.w as i32;
-        // Reserve space for plus button if shown
-        let plus_reserve = if self.show_plus { NAV_BTN_SIZE + TAB_GAP } else { 0 };
-        let tab_area = total_w - plus_reserve;
-        let total_gaps = TAB_GAP * (n as i32 + 1);
-        let avail = tab_area - total_gaps;
-        let natural_w = (avail / n as i32).min(MAX_TAB_WIDTH);
-
-        if natural_w >= MIN_TAB_WIDTH {
-            return (false, false, false);
-        }
-
-        let show_left = self.scroll_offset > 0;
-        // Rough check for show_right
-        let arrow_reserve = (NAV_BTN_SIZE + TAB_GAP) * 2;
-        let tab_space = total_w - plus_reserve - arrow_reserve;
-        let visible = ((tab_space - TAB_GAP) / (MIN_TAB_WIDTH + TAB_GAP)).max(1) as usize;
-        let visible = visible.min(n - self.scroll_offset);
-        let show_right = self.scroll_offset + visible < n;
-        (true, show_left, show_right)
-    }
-
     /// Compute overflow layout info (unscaled logical coords).
     /// Returns (has_overflow, show_left, show_right, visible_count, tab_width, nav_start_x).
     fn overflow_info(&self) -> (bool, bool, bool, usize, i32, i32) {
@@ -115,7 +73,11 @@ impl TabBar {
             return (false, false, false, 0, 0, 0);
         }
         let total_w = self.text_base.base.w as i32;
-        let plus_reserve = if self.show_plus { NAV_BTN_SIZE + TAB_GAP } else { 0 };
+        let plus_reserve = if self.show_plus {
+            NAV_BTN_SIZE + TAB_GAP
+        } else {
+            0
+        };
         let tab_area_full = total_w - plus_reserve;
         let total_gaps = TAB_GAP * (n as i32 + 1);
         let avail = tab_area_full - total_gaps;
@@ -154,7 +116,11 @@ impl TabBar {
 
         if !has_overflow {
             let total_w = self.text_base.base.w as i32;
-            let plus_reserve = if self.show_plus { NAV_BTN_SIZE + TAB_GAP } else { 0 };
+            let plus_reserve = if self.show_plus {
+                NAV_BTN_SIZE + TAB_GAP
+            } else {
+                0
+            };
             let tab_area = total_w - plus_reserve;
             let total_gaps = TAB_GAP * (n as i32 + 1);
             let avail = tab_area - total_gaps;
@@ -192,8 +158,10 @@ impl TabBar {
             if lx >= tx && lx < tx + tw {
                 let close_x = tx + tw - TAB_PAD_X - CLOSE_BTN_SIZE;
                 let close_y = (TAB_HEIGHT - CLOSE_BTN_SIZE) / 2;
-                if lx >= close_x && lx < close_x + CLOSE_BTN_SIZE
-                    && ly >= close_y && ly < close_y + CLOSE_BTN_SIZE
+                if lx >= close_x
+                    && lx < close_x + CLOSE_BTN_SIZE
+                    && ly >= close_y
+                    && ly < close_y + CLOSE_BTN_SIZE
                 {
                     return ((base + i) as i32, true);
                 }
@@ -243,9 +211,13 @@ impl TabBar {
     fn ensure_active_visible(&mut self) {
         let active = self.text_base.base.state as usize;
         let n = self.labels.len();
-        if n == 0 { return; }
+        if n == 0 {
+            return;
+        }
         let (has_overflow, _, _, visible, _, _) = self.overflow_info();
-        if !has_overflow { return; }
+        if !has_overflow {
+            return;
+        }
 
         if active < self.scroll_offset {
             self.scroll_offset = active;
@@ -256,11 +228,21 @@ impl TabBar {
 }
 
 impl Control for TabBar {
-    fn base(&self) -> &ControlBase { &self.text_base.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.text_base.base }
-    fn text_base(&self) -> Option<&crate::control::TextControlBase> { Some(&self.text_base) }
-    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> { Some(&mut self.text_base) }
-    fn kind(&self) -> ControlKind { ControlKind::TabBar }
+    fn base(&self) -> &ControlBase {
+        &self.text_base.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.text_base.base
+    }
+    fn text_base(&self) -> Option<&crate::control::TextControlBase> {
+        Some(&self.text_base)
+    }
+    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> {
+        Some(&mut self.text_base)
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::TabBar
+    }
 
     fn set_text(&mut self, t: &[u8]) {
         self.text_base.set_text(t);
@@ -270,12 +252,19 @@ impl Control for TabBar {
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let ctx = crate::control::prepare_render(b, ax, ay);
+        let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let active = b.state as usize;
         let tc = crate::theme::colors();
 
-        crate::draw::fill_rect(surface, x, y, w, h, crate::controls::chrome::blend(tc.window_bg, tc.tab_inactive_bg, 140));
+        crate::draw::fill_rect(
+            surface,
+            x,
+            y,
+            w,
+            h,
+            crate::controls::chrome::blend(tc.window_bg, tc.tab_inactive_bg, 140),
+        );
 
         // Scaled constants
         let tab_pad_x = crate::theme::scale_i32(TAB_PAD_X);
@@ -297,8 +286,16 @@ impl Control for TabBar {
         let tab_h = (h as i32 - top_margin) as u32;
 
         // Right-side nav area (both arrows + plus button)
-        let plus_reserve_s = if self.show_plus { nav_btn_size + tab_gap } else { 0 };
-        let arrow_reserve_s = if has_overflow { (nav_btn_size + tab_gap) * 2 } else { 0 };
+        let plus_reserve_s = if self.show_plus {
+            nav_btn_size + tab_gap
+        } else {
+            0
+        };
+        let arrow_reserve_s = if has_overflow {
+            (nav_btn_size + tab_gap) * 2
+        } else {
+            0
+        };
         let nav_area_s = arrow_reserve_s + plus_reserve_s;
 
         let (per_tab_w, vis_start, vis_count) = if has_overflow {
@@ -320,7 +317,9 @@ impl Control for TabBar {
         let mut cx = tab_gap;
         for vi in 0..vis_count {
             let i = vis_start + vi;
-            if i >= self.labels.len() { break; }
+            if i >= self.labels.len() {
+                break;
+            }
             let label = &self.labels[i];
 
             let tab_x = x + cx;
@@ -332,11 +331,24 @@ impl Control for TabBar {
             // Tab background — active tab uses accent color, fully rounded
             let pill_r = tab_h / 2; // Pill shape
             let palette = if is_active {
-                crate::controls::chrome::accent_palette(tc.tab_border_active, is_hovered, false, false)
+                crate::controls::chrome::accent_palette(
+                    tc.tab_border_active,
+                    is_hovered,
+                    false,
+                    false,
+                )
             } else {
                 crate::controls::chrome::neutral_palette(is_hovered, false, false)
             };
-            crate::controls::chrome::draw_surface(surface, tab_x, tab_y, tab_w as u32, tab_h, pill_r, palette);
+            crate::controls::chrome::draw_surface(
+                surface,
+                tab_x,
+                tab_y,
+                tab_w as u32,
+                tab_h,
+                pill_r,
+                palette,
+            );
 
             // Close button
             let close_x = tab_x + tab_w - tab_pad_x - close_btn_size;
@@ -353,7 +365,11 @@ impl Control for TabBar {
             let text_area_w = (text_area_right - text_area_left).max(0);
 
             let (full_tw, _) = crate::draw::text_size_at(label, tab_font);
-            let text_color = if is_active { 0xFFFFFFFF } else { tc.text_secondary };
+            let text_color = if is_active {
+                0xFFFFFFFF
+            } else {
+                tc.text_secondary
+            };
             let text_y = tab_y + (tab_h as i32 - tab_font as i32) / 2;
 
             if (full_tw as i32) <= text_area_w {
@@ -365,9 +381,13 @@ impl Control for TabBar {
                 let max_text_w = (text_area_w - dots_w as i32).max(0) as u32;
                 let mut fit_len = 0usize;
                 for (idx, &byte) in label.iter().enumerate() {
-                    if byte & 0xC0 == 0x80 { continue; }
+                    if byte & 0xC0 == 0x80 {
+                        continue;
+                    }
                     let (cw, _) = crate::draw::text_size_at(&label[..idx + 1], tab_font);
-                    if cw > max_text_w { break; }
+                    if cw > max_text_w {
+                        break;
+                    }
                     fit_len = idx + 1;
                 }
                 while fit_len < label.len() && label[fit_len] & 0xC0 == 0x80 {
@@ -381,9 +401,23 @@ impl Control for TabBar {
                 let total_trunc_w = trunc_w + dots_w;
                 let text_x = text_area_left + (text_area_w - total_trunc_w as i32).max(0) / 2;
                 if fit_len > 0 {
-                    crate::draw::draw_text_sized(surface, text_x, text_y, text_color, &label[..fit_len], tab_font);
+                    crate::draw::draw_text_sized(
+                        surface,
+                        text_x,
+                        text_y,
+                        text_color,
+                        &label[..fit_len],
+                        tab_font,
+                    );
                 }
-                crate::draw::draw_text_sized(surface, text_x + trunc_w as i32, text_y, text_color, b"...", tab_font);
+                crate::draw::draw_text_sized(
+                    surface,
+                    text_x + trunc_w as i32,
+                    text_y,
+                    text_color,
+                    b"...",
+                    tab_font,
+                );
             }
 
             // Draw close button
@@ -400,7 +434,11 @@ impl Control for TabBar {
                         crate::controls::chrome::neutral_palette(true, false, false),
                     );
                 }
-                let fg = if close_hover { tc.text } else { tc.text_secondary };
+                let fg = if close_hover {
+                    tc.text
+                } else {
+                    tc.text_secondary
+                };
                 let cx_text = close_x + (close_btn_size - crate::theme::scale_i32(6)) / 2;
                 let cy_text = close_y + (close_btn_size - close_font as i32) / 2;
                 crate::draw::draw_text_sized(surface, cx_text, cy_text, fg, b"x", close_font);
@@ -446,10 +484,18 @@ impl Control for TabBar {
                 nav_btn_size as u32,
                 tab_h,
                 nav_pill,
-                crate::controls::chrome::neutral_palette(self.nav_hover == 1 && enabled, false, false),
+                crate::controls::chrome::neutral_palette(
+                    self.nav_hover == 1 && enabled,
+                    false,
+                    false,
+                ),
             );
             let arrow = b">";
-            let fg = if enabled { tc.text_secondary } else { crate::controls::chrome::blend(tc.tab_inactive_bg, tc.text_secondary, 80) };
+            let fg = if enabled {
+                tc.text_secondary
+            } else {
+                crate::controls::chrome::blend(tc.tab_inactive_bg, tc.text_secondary, 80)
+            };
             let (aw, _) = crate::draw::text_size_at(arrow, nav_font);
             let ax2 = btn_x + (nav_btn_size - aw as i32) / 2;
             let ay2 = btn_y + (tab_h as i32 - nav_font as i32) / 2;
@@ -466,10 +512,18 @@ impl Control for TabBar {
                 nav_btn_size as u32,
                 tab_h,
                 nav_pill,
-                crate::controls::chrome::neutral_palette(self.nav_hover == 0 && enabled, false, false),
+                crate::controls::chrome::neutral_palette(
+                    self.nav_hover == 0 && enabled,
+                    false,
+                    false,
+                ),
             );
             let arrow = b"<";
-            let fg = if enabled { tc.text_secondary } else { crate::controls::chrome::blend(tc.tab_inactive_bg, tc.text_secondary, 80) };
+            let fg = if enabled {
+                tc.text_secondary
+            } else {
+                crate::controls::chrome::blend(tc.tab_inactive_bg, tc.text_secondary, 80)
+            };
             let (aw, _) = crate::draw::text_size_at(arrow, nav_font);
             let ax2 = btn_x + (nav_btn_size - aw as i32) / 2;
             let ay2 = btn_y + (tab_h as i32 - nav_font as i32) / 2;
@@ -477,7 +531,9 @@ impl Control for TabBar {
         }
     }
 
-    fn is_interactive(&self) -> bool { true }
+    fn is_interactive(&self) -> bool {
+        true
+    }
 
     fn handle_click(&mut self, lx: i32, ly: i32, _button: u32) -> EventResponse {
         // Check right-side nav buttons first
@@ -532,7 +588,8 @@ impl Control for TabBar {
     fn handle_mouse_move(&mut self, lx: i32, ly: i32) -> EventResponse {
         let nav = self.hit_nav(lx, ly);
         let (tab, is_close) = self.hit_tab(lx, ly);
-        let changed = tab != self.hover_tab || is_close != self.close_hovered || nav != self.nav_hover;
+        let changed =
+            tab != self.hover_tab || is_close != self.close_hovered || nav != self.nav_hover;
         self.hover_tab = tab;
         self.close_hovered = is_close;
         self.nav_hover = nav;

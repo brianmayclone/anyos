@@ -1,5 +1,7 @@
+use crate::control::{
+    prepare_render, Control, ControlBase, ControlKind, EventResponse, TextControlBase,
+};
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, TextControlBase, ControlKind, EventResponse};
 
 pub struct TextField {
     pub(crate) text_base: TextControlBase,
@@ -55,13 +57,21 @@ impl TextField {
 
     /// Left edge of the text area (after prefix).
     fn text_area_left(&self) -> i32 {
-        if self.prefix_icon.is_some() { self.prefix_width as i32 } else { 8 }
+        if self.prefix_icon.is_some() {
+            self.prefix_width as i32
+        } else {
+            8
+        }
     }
 
     /// Right edge of the text area (before postfix), relative to control width.
     fn text_area_right(&self) -> i32 {
         let w = self.text_base.base.w as i32;
-        if self.postfix_icon.is_some() { w - self.postfix_width as i32 } else { w - 8 }
+        if self.postfix_icon.is_some() {
+            w - self.postfix_width as i32
+        } else {
+            w - 8
+        }
     }
 
     /// Visible text width in pixels.
@@ -74,7 +84,9 @@ impl TextField {
         if self.password_mode {
             let n = self.text_base.text.len();
             let mut dots = Vec::with_capacity(n);
-            for _ in 0..n { dots.push(b'*'); }
+            for _ in 0..n {
+                dots.push(b'*');
+            }
             dots
         } else {
             self.text_base.text.clone()
@@ -96,7 +108,9 @@ impl TextField {
 
     /// Delete selected text and collapse cursor.
     fn delete_selection(&mut self) {
-        if !self.has_selection() { return; }
+        if !self.has_selection() {
+            return;
+        }
         let (start, end) = self.selection_range();
         let end = end.min(self.text_base.text.len());
         let start = start.min(end);
@@ -107,7 +121,9 @@ impl TextField {
 
     /// Get selected text as bytes.
     fn selected_bytes(&self) -> &[u8] {
-        if !self.has_selection() { return &[]; }
+        if !self.has_selection() {
+            return &[];
+        }
         let (start, end) = self.selection_range();
         let end = end.min(self.text_base.text.len());
         let start = start.min(end);
@@ -131,7 +147,9 @@ impl TextField {
             self.scroll_x = cursor_px;
         }
         // Don't scroll past zero.
-        if self.scroll_x < 0 { self.scroll_x = 0; }
+        if self.scroll_x < 0 {
+            self.scroll_x = 0;
+        }
     }
 
     /// Convert a local x coordinate (relative to control) to a byte position.
@@ -144,13 +162,19 @@ impl TextField {
 
     /// Find the start of the previous word boundary.
     fn word_left(&self, pos: usize) -> usize {
-        if pos == 0 { return 0; }
+        if pos == 0 {
+            return 0;
+        }
         let text = &self.text_base.text;
         let mut i = pos - 1;
         // Skip whitespace/punctuation.
-        while i > 0 && !is_word_char(text[i]) { i -= 1; }
+        while i > 0 && !is_word_char(text[i]) {
+            i -= 1;
+        }
         // Skip word characters.
-        while i > 0 && is_word_char(text[i - 1]) { i -= 1; }
+        while i > 0 && is_word_char(text[i - 1]) {
+            i -= 1;
+        }
         i
     }
 
@@ -158,12 +182,18 @@ impl TextField {
     fn word_right(&self, pos: usize) -> usize {
         let text = &self.text_base.text;
         let len = text.len();
-        if pos >= len { return len; }
+        if pos >= len {
+            return len;
+        }
         let mut i = pos;
         // Skip word characters.
-        while i < len && is_word_char(text[i]) { i += 1; }
+        while i < len && is_word_char(text[i]) {
+            i += 1;
+        }
         // Skip whitespace/punctuation.
-        while i < len && !is_word_char(text[i]) { i += 1; }
+        while i < len && !is_word_char(text[i]) {
+            i += 1;
+        }
         i
     }
 }
@@ -173,24 +203,37 @@ fn is_word_char(b: u8) -> bool {
 }
 
 impl Control for TextField {
-    fn base(&self) -> &ControlBase { &self.text_base.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.text_base.base }
-    fn text_base(&self) -> Option<&crate::control::TextControlBase> { Some(&self.text_base) }
-    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> { Some(&mut self.text_base) }
-    fn kind(&self) -> ControlKind { ControlKind::TextField }
+    fn base(&self) -> &ControlBase {
+        &self.text_base.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.text_base.base
+    }
+    fn text_base(&self) -> Option<&crate::control::TextControlBase> {
+        Some(&self.text_base)
+    }
+    fn text_base_mut(&mut self) -> Option<&mut crate::control::TextControlBase> {
+        Some(&mut self.text_base)
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::TextField
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
-        let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+        let ctx = prepare_render(b, ax, ay);
+        let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
-        let disabled = b.disabled;
-        let hovered = b.hovered;
         let corner = crate::theme::input_corner();
 
         let custom = b.color;
-        let palette = crate::controls::chrome::flat_field_palette(custom, hovered, self.focused, disabled);
-        if self.focused && !disabled {
+        let palette = crate::controls::chrome::flat_field_palette(
+            custom,
+            ctx.hovered,
+            self.focused,
+            ctx.disabled,
+        );
+        if self.focused && !ctx.disabled {
             crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
         }
         crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
@@ -200,14 +243,30 @@ impl Control for TextField {
         let icon_r = crate::theme::scale(6);
         let icon_pad = crate::theme::scale_i32(8);
         if let Some(_icon) = self.prefix_icon {
-            crate::draw::fill_rounded_rect(surface, x + icon_pad, y + (h as i32 - icon_sz as i32) / 2, icon_sz, icon_sz, icon_r, tc.text_secondary);
+            crate::draw::fill_rounded_rect(
+                surface,
+                x + icon_pad,
+                y + (h as i32 - icon_sz as i32) / 2,
+                icon_sz,
+                icon_sz,
+                icon_r,
+                tc.text_secondary,
+            );
         }
 
         // Postfix icon placeholder (scaled)
         if let Some(_icon) = self.postfix_icon {
             let pw = crate::theme::scale_i32(self.postfix_width as i32);
             let px = x + w as i32 - pw + icon_pad;
-            crate::draw::fill_rounded_rect(surface, px, y + (h as i32 - icon_sz as i32) / 2, icon_sz, icon_sz, icon_r, tc.text_secondary);
+            crate::draw::fill_rounded_rect(
+                surface,
+                px,
+                y + (h as i32 - icon_sz as i32) / 2,
+                icon_sz,
+                icon_sz,
+                icon_r,
+                tc.text_secondary,
+            );
         }
 
         // Text area — clip to the text region to prevent overflow.
@@ -216,7 +275,7 @@ impl Control for TextField {
         let area_w = (text_right - text_left).max(0) as u32;
         let clipped = surface.with_clip(x + text_left, y, area_w, h);
 
-        let text_color = if disabled {
+        let text_color = if ctx.disabled {
             tc.text_disabled
         } else {
             self.text_base.effective_text_color()
@@ -227,20 +286,42 @@ impl Control for TextField {
         let text_x = x + text_left - scaled_scroll_x;
 
         if self.text_base.text.is_empty() && !self.placeholder.is_empty() {
-            crate::draw::draw_text_sized(&clipped, x + text_left, text_y, tc.text_secondary, &self.placeholder, font_size);
+            crate::draw::draw_text_sized(
+                &clipped,
+                x + text_left,
+                text_y,
+                tc.text_secondary,
+                &self.placeholder,
+                font_size,
+            );
         } else {
             let display = self.display_text();
 
             // Draw selection highlight.
             if self.has_selection() && self.focused {
                 let (sel_start, sel_end) = self.selection_range();
-                let start_px = crate::draw::text_width_n_at(&display, sel_start.min(display.len()), font_size) as i32;
-                let end_px = crate::draw::text_width_n_at(&display, sel_end.min(display.len()), font_size) as i32;
+                let start_px =
+                    crate::draw::text_width_n_at(&display, sel_start.min(display.len()), font_size)
+                        as i32;
+                let end_px =
+                    crate::draw::text_width_n_at(&display, sel_end.min(display.len()), font_size)
+                        as i32;
                 let sel_x = text_x + start_px;
                 let sel_w = (end_px - start_px).max(0) as u32;
                 let sel_pad = crate::theme::scale_i32(3);
-                let sel_h = if h > (sel_pad as u32 * 2) { h - sel_pad as u32 * 2 } else { 1 };
-                crate::draw::fill_rect(&clipped, sel_x, y + sel_pad, sel_w, sel_h, tc.accent & 0x60FFFFFF);
+                let sel_h = if h > (sel_pad as u32 * 2) {
+                    h - sel_pad as u32 * 2
+                } else {
+                    1
+                };
+                crate::draw::fill_rect(
+                    &clipped,
+                    sel_x,
+                    y + sel_pad,
+                    sel_w,
+                    sel_h,
+                    tc.accent & 0x60FFFFFF,
+                );
             }
 
             // Draw text.
@@ -253,14 +334,22 @@ impl Control for TextField {
                 let cx = text_x + cursor_px;
                 let cursor_pad = crate::theme::scale_i32(4);
                 let cursor_w = crate::theme::scale(2);
-                let cursor_h = if h > (cursor_pad as u32 * 2) { h - cursor_pad as u32 * 2 } else { 1 };
+                let cursor_h = if h > (cursor_pad as u32 * 2) {
+                    h - cursor_pad as u32 * 2
+                } else {
+                    1
+                };
                 crate::draw::fill_rect(&clipped, cx, y + cursor_pad, cursor_w, cursor_h, tc.accent);
             }
         }
     }
 
-    fn is_interactive(&self) -> bool { !self.text_base.base.disabled }
-    fn accepts_focus(&self) -> bool { !self.text_base.base.disabled }
+    fn is_interactive(&self) -> bool {
+        !self.text_base.base.disabled
+    }
+    fn accepts_focus(&self) -> bool {
+        !self.text_base.base.disabled
+    }
 
     fn handle_mouse_down(&mut self, lx: i32, _ly: i32, _button: u32) -> EventResponse {
         let pos = self.x_to_pos(lx);
@@ -272,7 +361,9 @@ impl Control for TextField {
     }
 
     fn handle_mouse_move(&mut self, lx: i32, _ly: i32) -> EventResponse {
-        if !self.dragging { return EventResponse::IGNORED; }
+        if !self.dragging {
+            return EventResponse::IGNORED;
+        }
         let pos = self.x_to_pos(lx);
         self.cursor_pos = pos;
         self.ensure_cursor_visible();
@@ -293,13 +384,19 @@ impl Control for TextField {
         // Select the word under cursor.
         let pos = self.x_to_pos(lx);
         let text = &self.text_base.text;
-        if text.is_empty() { return EventResponse::CONSUMED; }
+        if text.is_empty() {
+            return EventResponse::CONSUMED;
+        }
         let pos = pos.min(text.len().saturating_sub(1));
         // Find word boundaries.
         let mut start = pos;
-        while start > 0 && is_word_char(text[start - 1]) { start -= 1; }
+        while start > 0 && is_word_char(text[start - 1]) {
+            start -= 1;
+        }
         let mut end = pos;
-        while end < text.len() && is_word_char(text[end]) { end += 1; }
+        while end < text.len() && is_word_char(text[end]) {
+            end += 1;
+        }
         // If we clicked on a non-word char, select that single char.
         if start == end && pos < text.len() {
             end = pos + 1;
@@ -357,7 +454,10 @@ impl Control for TextField {
         if ctrl && (char_code == b'v' as u32 || char_code == b'V' as u32) {
             if let Some(clip) = crate::compositor::clipboard_get() {
                 // Filter to printable ASCII + valid UTF-8 continuation bytes.
-                let filtered: Vec<u8> = clip.into_iter().filter(|&b| b >= 0x20 || b >= 0x80).collect();
+                let filtered: Vec<u8> = clip
+                    .into_iter()
+                    .filter(|&b| b >= 0x20 || b >= 0x80)
+                    .collect();
                 if !filtered.is_empty() {
                     self.delete_selection();
                     let pos = self.cursor_pos.min(self.text_base.text.len());
@@ -385,7 +485,10 @@ impl Control for TextField {
         // Printable character input.
         if char_code >= 0x20 && char_code < 0x7F && !ctrl {
             // Enforce max_length.
-            if self.max_length > 0 && !self.has_selection() && self.text_base.text.len() >= self.max_length {
+            if self.max_length > 0
+                && !self.has_selection()
+                && self.text_base.text.len() >= self.max_length
+            {
                 return EventResponse::CONSUMED;
             }
             let ch = char_code as u8;
@@ -440,7 +543,9 @@ impl Control for TextField {
             } else if self.cursor_pos > 0 {
                 self.cursor_pos -= 1;
             }
-            if !shift { self.sel_anchor = self.cursor_pos; }
+            if !shift {
+                self.sel_anchor = self.cursor_pos;
+            }
             self.ensure_cursor_visible();
             return EventResponse::CONSUMED;
         }
@@ -456,21 +561,27 @@ impl Control for TextField {
             } else if self.cursor_pos < self.text_base.text.len() {
                 self.cursor_pos += 1;
             }
-            if !shift { self.sel_anchor = self.cursor_pos; }
+            if !shift {
+                self.sel_anchor = self.cursor_pos;
+            }
             self.ensure_cursor_visible();
             return EventResponse::CONSUMED;
         }
 
         if keycode == KEY_HOME {
             self.cursor_pos = 0;
-            if !shift { self.sel_anchor = 0; }
+            if !shift {
+                self.sel_anchor = 0;
+            }
             self.ensure_cursor_visible();
             return EventResponse::CONSUMED;
         }
 
         if keycode == KEY_END {
             self.cursor_pos = self.text_base.text.len();
-            if !shift { self.sel_anchor = self.cursor_pos; }
+            if !shift {
+                self.sel_anchor = self.cursor_pos;
+            }
             self.ensure_cursor_visible();
             return EventResponse::CONSUMED;
         }

@@ -1,8 +1,8 @@
 //! TableLayout — grid layout container with rows and columns.
 
+use crate::control::{find_idx, ChildLayout, Control, ControlBase, ControlKind};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use crate::control::{Control, ControlBase, ControlKind, ChildLayout, find_idx};
 
 pub struct TableLayout {
     pub(crate) base: ControlBase,
@@ -16,14 +16,25 @@ pub struct TableLayout {
 
 impl TableLayout {
     pub fn new(base: ControlBase) -> Self {
-        Self { base, columns: 2, row_height: 32, col_widths: Vec::new() }
+        Self {
+            base,
+            columns: 2,
+            row_height: 32,
+            col_widths: Vec::new(),
+        }
     }
 }
 
 impl Control for TableLayout {
-    fn base(&self) -> &ControlBase { &self.base }
-    fn base_mut(&mut self) -> &mut ControlBase { &mut self.base }
-    fn kind(&self) -> ControlKind { ControlKind::TableLayout }
+    fn base(&self) -> &ControlBase {
+        &self.base
+    }
+    fn base_mut(&mut self) -> &mut ControlBase {
+        &mut self.base
+    }
+    fn kind(&self) -> ControlKind {
+        ControlKind::TableLayout
+    }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         if self.base.color != 0 {
@@ -34,7 +45,9 @@ impl Control for TableLayout {
     }
 
     fn layout_children(&self, controls: &[Box<dyn Control>]) -> Option<Vec<ChildLayout>> {
-        if self.columns == 0 { return Some(Vec::new()); }
+        if self.columns == 0 {
+            return Some(Vec::new());
+        }
 
         let pad = &self.base.padding;
         let avail_w = self.base.w as i32 - pad.left - pad.right;
@@ -67,7 +80,9 @@ impl Control for TableLayout {
             col_ws = ws;
         } else {
             let cw = avail_w / self.columns as i32;
-            col_xs = (0..self.columns as i32).map(|c| pad.left + c * cw).collect();
+            col_xs = (0..self.columns as i32)
+                .map(|c| pad.left + c * cw)
+                .collect();
             col_ws = (0..self.columns as usize).map(|_| cw).collect();
         }
 
@@ -91,7 +106,13 @@ impl Control for TableLayout {
             let w = (col_ws[col] - m.left - m.right).max(0) as u32;
             let h = (self.row_height as i32 - m.top - m.bottom).max(0) as u32;
 
-            result.push(ChildLayout { id: child_id, x, y, w: Some(w), h: Some(h) });
+            result.push(ChildLayout {
+                id: child_id,
+                x,
+                y,
+                w: Some(w),
+                h: Some(h),
+            });
 
             col += 1;
             if col >= self.columns as usize {

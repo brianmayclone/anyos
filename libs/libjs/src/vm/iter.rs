@@ -9,9 +9,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use crate::value::*;
-use super::Vm;
 use super::native_symbol::WELL_KNOWN_ITERATOR;
+use super::Vm;
+use crate::value::*;
 
 impl Vm {
     /// ES2023 §7.4.1 GetIterator(obj).
@@ -47,7 +47,12 @@ impl Vm {
                         return iterator;
                     }
                     // Object without .next — not a spec-compliant iterator, wrap it
-                    let items = obj.borrow().keys().into_iter().map(JsValue::String).collect();
+                    let items = obj
+                        .borrow()
+                        .keys()
+                        .into_iter()
+                        .map(JsValue::String)
+                        .collect();
                     return self.make_internal_iterator(items);
                 }
                 JsValue::Array(arr) => {
@@ -61,19 +66,22 @@ impl Vm {
 
         // 2. Fallback: create internal iterator for built-in types
         let items: Vec<JsValue> = match val {
-            JsValue::Array(arr) => {
-                arr.borrow().to_dense_vec()
-            }
-            JsValue::String(s) => {
-                s.chars().map(|c| {
+            JsValue::Array(arr) => arr.borrow().to_dense_vec(),
+            JsValue::String(s) => s
+                .chars()
+                .map(|c| {
                     let mut cs = String::new();
                     cs.push(c);
                     JsValue::String(cs)
-                }).collect()
-            }
+                })
+                .collect(),
             JsValue::Object(obj) => {
                 // For-in semantics: iterate over keys
-                obj.borrow().keys().into_iter().map(JsValue::String).collect()
+                obj.borrow()
+                    .keys()
+                    .into_iter()
+                    .map(JsValue::String)
+                    .collect()
             }
             _ => {
                 // ES2023 §7.4.1: non-iterable values throw TypeError

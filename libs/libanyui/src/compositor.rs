@@ -32,15 +32,10 @@ struct LibcompositorExports {
 
     present: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32),
 
-    poll_event: extern "C" fn(
-        channel_id: u32,
-        sub_id: u32,
-        window_id: u32,
-        buf: *mut [u32; 5],
-    ) -> u32,
+    poll_event:
+        extern "C" fn(channel_id: u32, sub_id: u32, window_id: u32, buf: *mut [u32; 5]) -> u32,
 
-    set_title:
-        extern "C" fn(channel_id: u32, window_id: u32, title_ptr: *const u8, title_len: u32),
+    set_title: extern "C" fn(channel_id: u32, window_id: u32, title_ptr: *const u8, title_len: u32),
 
     screen_size: extern "C" fn(out_w: *mut u32, out_h: *mut u32),
 
@@ -48,15 +43,13 @@ struct LibcompositorExports {
 
     move_window: extern "C" fn(channel_id: u32, window_id: u32, x: i32, y: i32),
 
-    set_menu:
-        extern "C" fn(channel_id: u32, window_id: u32, menu_data: *const u8, menu_len: u32),
+    set_menu: extern "C" fn(channel_id: u32, window_id: u32, menu_data: *const u8, menu_len: u32),
 
     add_status_icon: extern "C" fn(channel_id: u32, icon_id: u32, pixels: *const u32),
 
     remove_status_icon: extern "C" fn(channel_id: u32, icon_id: u32),
 
-    update_menu_item:
-        extern "C" fn(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32),
+    update_menu_item: extern "C" fn(channel_id: u32, window_id: u32, item_id: u32, new_flags: u32),
 
     resize_shm: extern "C" fn(
         channel_id: u32,
@@ -67,11 +60,7 @@ struct LibcompositorExports {
         out_new_shm_id: *mut u32,
     ) -> *mut u32,
 
-    tray_poll_event: extern "C" fn(
-        channel_id: u32,
-        sub_id: u32,
-        buf: *mut [u32; 5],
-    ) -> u32,
+    tray_poll_event: extern "C" fn(channel_id: u32, sub_id: u32, buf: *mut [u32; 5]) -> u32,
 
     set_blur_behind: extern "C" fn(channel_id: u32, window_id: u32, radius: u32),
 
@@ -87,23 +76,39 @@ struct LibcompositorExports {
         out_surface: *mut *mut u32,
     ) -> u32,
 
-    present_rect: extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32),
+    present_rect:
+        extern "C" fn(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32, w: u32, h: u32),
 
     set_clipboard: extern "C" fn(channel_id: u32, data_ptr: *const u8, data_len: u32, format: u32),
 
-    get_clipboard: extern "C" fn(channel_id: u32, sub_id: u32, out_ptr: *mut u8, out_cap: u32, out_format: *mut u32) -> u32,
+    get_clipboard: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        out_ptr: *mut u8,
+        out_cap: u32,
+        out_format: *mut u32,
+    ) -> u32,
 
     show_notification: extern "C" fn(
         channel_id: u32,
-        title_ptr: *const u8, title_len: u32,
-        msg_ptr: *const u8, msg_len: u32,
+        title_ptr: *const u8,
+        title_len: u32,
+        msg_ptr: *const u8,
+        msg_len: u32,
         icon_ptr: *const u32,
-        timeout_ms: u32, flags: u32,
+        timeout_ms: u32,
+        flags: u32,
     ),
 
     dismiss_notification: extern "C" fn(channel_id: u32, notification_id: u32),
 
-    get_window_position: extern "C" fn(channel_id: u32, sub_id: u32, window_id: u32, out_x: *mut i32, out_y: *mut i32) -> u32,
+    get_window_position: extern "C" fn(
+        channel_id: u32,
+        sub_id: u32,
+        window_id: u32,
+        out_x: *mut i32,
+        out_y: *mut i32,
+    ) -> u32,
 
     minimize_window: extern "C" fn(channel_id: u32, window_id: u32),
 
@@ -203,12 +208,8 @@ pub fn present_rect(channel_id: u32, window_id: u32, shm_id: u32, x: u32, y: u32
 
 /// Poll for the next event. Returns true if an event was received.
 /// Buffer layout: [event_type, window_id, arg1, arg2, arg3]
-pub fn poll_event(
-    channel_id: u32,
-    sub_id: u32,
-    window_id: u32,
-    buf: &mut [u32; 5],
-) -> bool {
+#[allow(dead_code)]
+pub fn poll_event(channel_id: u32, sub_id: u32, window_id: u32, buf: &mut [u32; 5]) -> bool {
     (exports().poll_event)(channel_id, sub_id, window_id, buf) != 0
 }
 
@@ -282,10 +283,13 @@ pub fn show_notification(
 ) {
     (exports().show_notification)(
         channel_id,
-        title.as_ptr(), title.len() as u32,
-        message.as_ptr(), message.len() as u32,
+        title.as_ptr(),
+        title.len() as u32,
+        message.as_ptr(),
+        message.len() as u32,
         icon,
-        timeout_ms, flags,
+        timeout_ms,
+        flags,
     );
 }
 
@@ -338,6 +342,7 @@ pub fn clipboard_get() -> Option<alloc::vec::Vec<u8>> {
 // ── Surface helpers ──────────────────────────────────────────────────
 
 /// Fill a rectangle on a window's SHM surface.
+#[allow(dead_code)]
 pub fn fill_surface_rect(
     surface: *mut u32,
     sw: u32,
@@ -364,6 +369,7 @@ pub fn fill_surface_rect(
 }
 
 /// Blit ARGB pixel data to a window's SHM surface.
+#[allow(dead_code)]
 pub fn blit_to_surface(
     surface: *mut u32,
     sw: u32,

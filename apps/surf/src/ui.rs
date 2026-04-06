@@ -101,11 +101,15 @@ pub(crate) fn update_tab_labels() {
 pub(crate) fn add_tab() {
     let st = crate::state();
     let mut tab = crate::tab::TabState::new();
-    tab.webview.set_link_callback(crate::callbacks::on_link_click, 0);
-    tab.webview.set_submit_callback(crate::callbacks::on_form_submit, 0);
+    tab.webview
+        .set_link_callback(crate::callbacks::on_link_click, 0);
+    tab.webview
+        .set_submit_callback(crate::callbacks::on_form_submit, 0);
     st.content_view.add(tab.webview.scroll_view());
     tab.webview.scroll_view().set_dock(ui::DOCK_FILL);
-    tab.webview.scroll_view().on_scroll(|_| { crate::ensure_anim_timer(); });
+    tab.webview.scroll_view().on_scroll(|_| {
+        crate::ensure_anim_timer();
+    });
 
     // Hide all existing tabs while we add the new one.
     for t in &st.tabs {
@@ -161,14 +165,20 @@ pub(crate) fn clear_devtools() {
 /// Refresh the DevTools console panel with the active tab's JS console output.
 pub(crate) fn update_devtools() {
     let st = crate::state();
-    if !st.devtools_open { return; }
+    if !st.devtools_open {
+        return;
+    }
     let lines = st.tabs[st.active_tab].webview.js_console();
     let mut text = String::new();
     for (i, line) in lines.iter().enumerate() {
-        if i > 0 { text.push('\n'); }
+        if i > 0 {
+            text.push('\n');
+        }
         text.push_str(line);
         // Limit output to last 200 lines to avoid unbounded growth.
-        if i >= 199 { break; }
+        if i >= 199 {
+            break;
+        }
     }
     st.devtools_label.set_text(&text);
 }
@@ -179,9 +189,15 @@ pub(crate) fn switch_tab(idx: usize) {
     if idx >= st.tabs.len() {
         return;
     }
-    st.tabs[st.active_tab].webview.scroll_view().set_visible(false);
+    st.tabs[st.active_tab]
+        .webview
+        .scroll_view()
+        .set_visible(false);
     st.active_tab = idx;
-    st.tabs[st.active_tab].webview.scroll_view().set_visible(true);
+    st.tabs[st.active_tab]
+        .webview
+        .scroll_view()
+        .set_visible(true);
     let url_text = st.tabs[st.active_tab].url_text.clone();
     st.url_field.set_text(&url_text);
     update_title();

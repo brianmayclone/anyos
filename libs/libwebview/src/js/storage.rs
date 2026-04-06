@@ -17,10 +17,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use libjs::JsValue;
-use libjs::Vm;
 use libjs::value::JsObject;
 use libjs::vm::native_fn;
+use libjs::JsValue;
+use libjs::Vm;
 
 use super::arg_string;
 
@@ -36,22 +36,38 @@ use super::arg_string;
 ///   when `false` (sessionStorage) data lives only in memory.
 pub fn make_storage(origin: &str, persistent: bool) -> JsValue {
     let mut obj = JsObject::new();
-    obj.set(String::from("__data"), JsValue::Object(Rc::new(RefCell::new(JsObject::new()))));
+    obj.set_hidden(
+        String::from("__data"),
+        JsValue::Object(Rc::new(RefCell::new(JsObject::new()))),
+    );
 
     // For persistent (localStorage), derive the file path and pre-load data.
     if persistent && !origin.is_empty() {
         let path = storage_path(origin);
         if let Ok(contents) = anyos_std::fs::read_to_string(&path) {
-            load_entries_into(&obj, &contents);
+            load_entries_into(&mut obj, &contents);
         }
-        obj.set(String::from("__path"), JsValue::String(path));
+        obj.set_hidden(String::from("__path"), JsValue::String(path));
     }
 
-    obj.set(String::from("getItem"), native_fn("getItem", storage_get_item));
-    obj.set(String::from("setItem"), native_fn("setItem", storage_set_item));
-    obj.set(String::from("removeItem"), native_fn("removeItem", storage_remove_item));
-    obj.set(String::from("clear"), native_fn("clear", storage_clear));
-    obj.set(String::from("key"), native_fn("key", storage_key));
+    obj.set_hidden(
+        String::from("getItem"),
+        native_fn("getItem", storage_get_item),
+    );
+    obj.set_hidden(
+        String::from("setItem"),
+        native_fn("setItem", storage_set_item),
+    );
+    obj.set_hidden(
+        String::from("removeItem"),
+        native_fn("removeItem", storage_remove_item),
+    );
+    obj.set_hidden(String::from("clear"), native_fn("clear", storage_clear));
+    obj.set_hidden(String::from("key"), native_fn("key", storage_key));
+    obj.set_hidden(
+        String::from("length"),
+        JsValue::Number(storage_len(&obj) as f64),
+    );
 
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
@@ -102,10 +118,13 @@ fn unescape(s: &str) -> String {
         if c == '\\' {
             match chars.next() {
                 Some('\\') => out.push('\\'),
-                Some('t')  => out.push('\t'),
-                Some('n')  => out.push('\n'),
-                Some('r')  => out.push('\r'),
-                Some(other)=> { out.push('\\'); out.push(other); }
+                Some('t') => out.push('\t'),
+                Some('n') => out.push('\n'),
+                Some('r') => out.push('\r'),
+                Some(other) => {
+                    out.push('\\');
+                    out.push(other);
+                }
                 None => out.push('\\'),
             }
         } else {
@@ -116,7 +135,7 @@ fn unescape(s: &str) -> String {
 }
 
 /// Populate `obj.__data` from the contents of a storage file.
-fn load_entries_into(obj: &JsObject, contents: &str) {
+fn load_entries_into(obj: &mut JsObject, contents: &str) {
     let data = match obj.properties.get("__data") {
         Some(p) => p.value.clone(),
         None => return,
@@ -125,7 +144,17 @@ fn load_entries_into(obj: &JsObject, contents: &str) {
         if let Some(tab_pos) = line.find('\t') {
             let key = unescape(&line[..tab_pos]);
             let val = unescape(&line[tab_pos + 1..]);
-            data.set_property(key, JsValue::String(val));
+            let value = JsValue::String(val);
+            data.set_property(key.clone(), value.clone());
+            if !is_reserved_storage_key(&key) {
+                if let Some(existing) = obj.properties.get(&key) {
+                    if existing.writable || existing.is_accessor() {
+                        obj.set(key, value);
+                    }
+                } else {
+                    obj.set(key, value);
+                }
+            }
         }
     }
 }
@@ -152,7 +181,9 @@ fn serialize_data(data: &JsValue) -> String {
 /// Write current storage contents to disk if this is a persistent storage.
 fn persist(vm: &Vm) {
     let path = get_path(vm);
-    if path.is_empty() { return; }
+    if path.is_empty() {
+        return;
+    }
     if let Some(data) = get_data(vm) {
         let contents = serialize_data(&data);
         let _ = anyos_std::fs::write_bytes(&path, contents.as_bytes());
@@ -177,10 +208,40 @@ fn get_path(vm: &Vm) -> String {
     if let JsValue::Object(obj) = &vm.current_this {
         let o = obj.borrow();
         if let Some(p) = o.properties.get("__path") {
-            if let JsValue::String(s) = &p.value { return s.clone(); }
+            if let JsValue::String(s) = &p.value {
+                return s.clone();
+            }
         }
     }
     String::new()
+}
+
+fn storage_len(obj: &JsObject) -> usize {
+    match obj.properties.get("__data") {
+        Some(prop) => match &prop.value {
+            JsValue::Object(data) => data.borrow().properties.len(),
+            _ => 0,
+        },
+        None => 0,
+    }
+}
+
+fn is_reserved_storage_key(key: &str) -> bool {
+    matches!(
+        key,
+        "__data" | "__path" | "getItem" | "setItem" | "removeItem" | "clear" | "key" | "length"
+    )
+}
+
+fn sync_length(vm: &mut Vm) {
+    if let JsValue::Object(obj) = &vm.current_this {
+        let len = {
+            let o = obj.borrow();
+            storage_len(&o)
+        };
+        obj.borrow_mut()
+            .set_hidden(String::from("length"), JsValue::Number(len as f64));
+    }
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -191,7 +252,9 @@ fn storage_get_item(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let key = arg_string(args, 0);
     if let Some(data) = get_data(vm) {
         let val = data.get_property(&key);
-        if matches!(val, JsValue::Undefined) { return JsValue::Null; }
+        if matches!(val, JsValue::Undefined) {
+            return JsValue::Null;
+        }
         return val;
     }
     JsValue::Null
@@ -201,8 +264,13 @@ fn storage_set_item(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let key = arg_string(args, 0);
     let val = arg_string(args, 1);
     if let Some(data) = get_data(vm) {
-        data.set_property(key, JsValue::String(val));
+        let value = JsValue::String(val);
+        data.set_property(key.clone(), value.clone());
+        if !is_reserved_storage_key(&key) {
+            vm.current_this.set_property(key, value);
+        }
     }
+    sync_length(vm);
     persist(vm);
     JsValue::Undefined
 }
@@ -214,14 +282,28 @@ fn storage_remove_item(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             obj.borrow_mut().properties.remove(&key);
         }
     }
+    if !is_reserved_storage_key(&key) {
+        if let JsValue::Object(obj) = &vm.current_this {
+            obj.borrow_mut().properties.remove(&key);
+        }
+    }
+    sync_length(vm);
     persist(vm);
     JsValue::Undefined
 }
 
 fn storage_clear(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if let JsValue::Object(obj) = &vm.current_this {
-        obj.borrow_mut().set(String::from("__data"), JsValue::Object(Rc::new(RefCell::new(JsObject::new()))));
+        let mut storage = obj.borrow_mut();
+        storage.set(
+            String::from("__data"),
+            JsValue::Object(Rc::new(RefCell::new(JsObject::new()))),
+        );
+        storage
+            .properties
+            .retain(|key, _| is_reserved_storage_key(key));
     }
+    sync_length(vm);
     persist(vm);
     JsValue::Undefined
 }

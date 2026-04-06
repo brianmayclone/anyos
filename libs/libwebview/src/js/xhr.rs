@@ -7,10 +7,10 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::cell::RefCell;
 
+use libjs::value::{FnKind, JsObject};
+use libjs::vm::native_fn;
 use libjs::JsValue;
 use libjs::Vm;
-use libjs::value::{JsObject, FnKind};
-use libjs::vm::native_fn;
 
 use super::arg_string;
 use super::http;
@@ -37,7 +37,10 @@ fn xhr_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     obj.set(String::from("upload"), JsValue::new_object());
 
     // Internal state.
-    obj.set(String::from("_method"), JsValue::String(String::from("GET")));
+    obj.set(
+        String::from("_method"),
+        JsValue::String(String::from("GET")),
+    );
     obj.set(String::from("_url"), JsValue::String(String::new()));
     obj.set(String::from("_async"), JsValue::Bool(true));
     obj.set(String::from("_headers"), JsValue::new_object());
@@ -62,12 +65,24 @@ fn xhr_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
     // Methods.
     obj.set(String::from("open"), native_fn("open", xhr_open));
-    obj.set(String::from("setRequestHeader"), native_fn("setRequestHeader", xhr_set_request_header));
+    obj.set(
+        String::from("setRequestHeader"),
+        native_fn("setRequestHeader", xhr_set_request_header),
+    );
     obj.set(String::from("send"), native_fn("send", xhr_send));
     obj.set(String::from("abort"), native_fn("abort", xhr_abort));
-    obj.set(String::from("getResponseHeader"), native_fn("getResponseHeader", xhr_get_response_header));
-    obj.set(String::from("getAllResponseHeaders"), native_fn("getAllResponseHeaders", xhr_get_all_response_headers));
-    obj.set(String::from("overrideMimeType"), native_fn("overrideMimeType", xhr_noop));
+    obj.set(
+        String::from("getResponseHeader"),
+        native_fn("getResponseHeader", xhr_get_response_header),
+    );
+    obj.set(
+        String::from("getAllResponseHeaders"),
+        native_fn("getAllResponseHeaders", xhr_get_all_response_headers),
+    );
+    obj.set(
+        String::from("overrideMimeType"),
+        native_fn("overrideMimeType", xhr_noop),
+    );
 
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
@@ -81,7 +96,15 @@ fn xhr_open(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let url = arg_string(args, 1);
     let is_async = args.get(2).map(|v| v.to_boolean()).unwrap_or(true);
 
-    set_this_prop(vm, "_method", JsValue::String(if method.is_empty() { String::from("GET") } else { method }));
+    set_this_prop(
+        vm,
+        "_method",
+        JsValue::String(if method.is_empty() {
+            String::from("GET")
+        } else {
+            method
+        }),
+    );
     set_this_prop(vm, "_url", JsValue::String(url));
     set_this_prop(vm, "_async", JsValue::Bool(is_async));
     set_this_prop(vm, "_headers", JsValue::new_object());
@@ -107,7 +130,9 @@ fn xhr_set_request_header(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn xhr_send(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // Check if already sent.
     let sent = get_this_prop(vm, "_sent");
-    if sent.to_boolean() { return JsValue::Undefined; }
+    if sent.to_boolean() {
+        return JsValue::Undefined;
+    }
     set_this_prop(vm, "_sent", JsValue::Bool(true));
 
     let method = get_this_prop(vm, "_method").to_js_string();
@@ -123,12 +148,15 @@ fn xhr_send(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     fire_callback(vm, "onloadstart");
 
     // Perform the HTTP request via the bridge.
-    let result = http::http_request(vm, &[
-        JsValue::String(method),
-        JsValue::String(url),
-        JsValue::String(headers_str),
-        JsValue::String(body),
-    ]);
+    let result = http::http_request(
+        vm,
+        &[
+            JsValue::String(method),
+            JsValue::String(url),
+            JsValue::String(headers_str),
+            JsValue::String(body),
+        ],
+    );
 
     // readyState = 3 (LOADING).
     set_this_prop(vm, "readyState", JsValue::Number(3.0));
@@ -174,7 +202,9 @@ fn xhr_get_all_response_headers(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::String(String::new())
 }
 
-fn xhr_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue { JsValue::Undefined }
+fn xhr_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Undefined
+}
 
 // ═══════════════════════════════════════════════════════════
 // Helpers

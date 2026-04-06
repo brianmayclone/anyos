@@ -10,8 +10,8 @@
 //! - SVG rasterisation and raster image decoding (called from result handlers)
 
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 
 // ═══════════════════════════════════════════════════════════
 // HTTP body decoding
@@ -29,15 +29,13 @@ pub(crate) fn decode_http_body(body: &[u8], headers: &str) -> String {
     }
 
     // Body is not valid UTF-8; inspect charset declarations.
-    let charset = detect_charset_from_headers(headers)
-        .or_else(|| detect_charset_from_html_bytes(body));
+    let charset =
+        detect_charset_from_headers(headers).or_else(|| detect_charset_from_html_bytes(body));
 
     match charset.as_deref() {
-        Some("iso-8859-1")
-        | Some("latin1")
-        | Some("latin-1")
-        | Some("windows-1252")
-        | None => latin1_to_utf8(body),
+        Some("iso-8859-1") | Some("latin1") | Some("latin-1") | Some("windows-1252") | None => {
+            latin1_to_utf8(body)
+        }
         _ => String::from_utf8_lossy(body).into_owned(),
     }
 }
@@ -114,7 +112,7 @@ pub(crate) fn queue_stylesheets(
     dom: &libwebview::dom::Dom,
     base_url: &crate::http::Url,
     tab_index: usize,
-) {
+) -> usize {
     let generation = crate::net_worker::current_generation();
     let mut count = 0u32;
 
@@ -125,7 +123,10 @@ pub(crate) fn queue_stylesheets(
         } = &node.node_type
         {
             let rel = dom.attr(i, "rel").unwrap_or("");
-            if !rel.eq_ignore_ascii_case("stylesheet") {
+            if !rel
+                .split_ascii_whitespace()
+                .any(|tok| tok.eq_ignore_ascii_case("stylesheet"))
+            {
                 continue;
             }
             if let Some(href) = dom.attr(i, "href") {
@@ -133,7 +134,7 @@ pub(crate) fn queue_stylesheets(
                     let css_url = crate::http::resolve_url(base_url, href);
                     crate::net_worker::submit(crate::net_worker::FetchRequest::Css {
                         tab_index,
-                        href: String::from(href),
+                        href: crate::ui::format_url(&css_url),
                         url: css_url,
                         generation,
                     });
@@ -147,6 +148,8 @@ pub(crate) fn queue_stylesheets(
         anyos_std::println!("[surf] submitted {} stylesheet(s) to worker", count);
         crate::ensure_net_poll_timer();
     }
+
+    count as usize
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -164,7 +167,9 @@ pub(crate) fn queue_font_faces(
     let mut count = 0u32;
 
     for ff in font_faces {
-        if ff.src_url.is_empty() { continue; }
+        if ff.src_url.is_empty() {
+            continue;
+        }
         let resolved = crate::http::resolve_url(base_url, &ff.src_url);
         crate::net_worker::submit(crate::net_worker::FetchRequest::Font {
             tab_index,
@@ -193,22 +198,38 @@ fn base64_decode(input: &[u8]) -> Vec<u8> {
     static TABLE: [i8; 256] = {
         let mut t = [-1i8; 256];
         let mut i = 0usize;
-        while i < 26 { t[b'A' as usize + i] = i as i8; i += 1; }
+        while i < 26 {
+            t[b'A' as usize + i] = i as i8;
+            i += 1;
+        }
         let mut i = 0usize;
-        while i < 26 { t[b'a' as usize + i] = (26 + i) as i8; i += 1; }
+        while i < 26 {
+            t[b'a' as usize + i] = (26 + i) as i8;
+            i += 1;
+        }
         let mut i = 0usize;
-        while i < 10 { t[b'0' as usize + i] = (52 + i) as i8; i += 1; }
-        t[b'+' as usize] = 62; t[b'/' as usize] = 63;
+        while i < 10 {
+            t[b'0' as usize + i] = (52 + i) as i8;
+            i += 1;
+        }
+        t[b'+' as usize] = 62;
+        t[b'/' as usize] = 63;
         t
     };
     let mut out = Vec::new();
     let mut buf = 0u32;
     let mut bits = 0u32;
     for &b in input {
-        if b == b'=' { break; }
-        if b == b' ' || b == b'\n' || b == b'\r' || b == b'\t' { continue; }
+        if b == b'=' {
+            break;
+        }
+        if b == b' ' || b == b'\n' || b == b'\r' || b == b'\t' {
+            continue;
+        }
         let v = TABLE[b as usize];
-        if v < 0 { continue; }
+        if v < 0 {
+            continue;
+        }
         buf = (buf << 6) | v as u32;
         bits += 6;
         if bits >= 8 {
@@ -234,8 +255,8 @@ fn decode_data_uri(src: &str) -> Option<(Vec<u8>, bool)> {
     if !mime.starts_with("image/") && !mime.eq_ignore_ascii_case("image/svg+xml") {
         return None;
     }
-    let is_svg = mime.eq_ignore_ascii_case("image/svg+xml")
-        || mime.eq_ignore_ascii_case("image/svg");
+    let is_svg =
+        mime.eq_ignore_ascii_case("image/svg+xml") || mime.eq_ignore_ascii_case("image/svg");
 
     let is_base64 = meta.contains(";base64");
     let bytes = if is_base64 {
@@ -245,7 +266,9 @@ fn decode_data_uri(src: &str) -> Option<(Vec<u8>, bool)> {
         payload.as_bytes().to_vec()
     };
 
-    if bytes.is_empty() { return None; }
+    if bytes.is_empty() {
+        return None;
+    }
     Some((bytes, is_svg))
 }
 
@@ -271,7 +294,9 @@ pub(crate) fn queue_images(
         } = &node.node_type
         {
             if let Some(src) = dom.attr(i, "src") {
-                if src.is_empty() { continue; }
+                if src.is_empty() {
+                    continue;
+                }
 
                 if src.starts_with("data:") {
                     // Decode inline — no network fetch needed.
@@ -318,8 +343,14 @@ pub(crate) fn inline_svg_key(node_id: usize) -> String {
     } else {
         let mut buf = [0u8; 20];
         let mut pos = 20;
-        while n > 0 { pos -= 1; buf[pos] = b'0' + (n % 10) as u8; n /= 10; }
-        for &b in &buf[pos..] { s.push(b as char); }
+        while n > 0 {
+            pos -= 1;
+            buf[pos] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+        for &b in &buf[pos..] {
+            s.push(b as char);
+        }
     }
     s.push_str("__");
     s
@@ -344,7 +375,11 @@ pub(crate) fn queue_inline_svgs(dom: &libwebview::dom::Dom, tab_index: usize) {
             // The HTML parser stores the raw SVG inner-markup as a single Text child.
             let inner = node.children.iter().find_map(|&child| {
                 if let libwebview::dom::NodeType::Text(ref s) = dom.nodes[child].node_type {
-                    if !s.is_empty() { Some(s.as_str()) } else { None }
+                    if !s.is_empty() {
+                        Some(s.as_str())
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -360,8 +395,21 @@ pub(crate) fn queue_inline_svgs(dom: &libwebview::dom::Dom, tab_index: usize) {
             // Pass through known SVG attributes
             for attr in attrs {
                 let n = attr.name.as_str();
-                if matches!(n, "width"|"height"|"viewBox"|"viewbox"|"xmlns"|"version"
-                    |"fill"|"stroke"|"class"|"id"|"style"|"preserveAspectRatio") {
+                if matches!(
+                    n,
+                    "width"
+                        | "height"
+                        | "viewBox"
+                        | "viewbox"
+                        | "xmlns"
+                        | "version"
+                        | "fill"
+                        | "stroke"
+                        | "class"
+                        | "id"
+                        | "style"
+                        | "preserveAspectRatio"
+                ) {
                     svg.push(' ');
                     svg.push_str(n);
                     svg.push_str("=\"");
