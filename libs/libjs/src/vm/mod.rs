@@ -813,10 +813,16 @@ impl Vm {
                                             false
                                         }
                                     } else {
-                                        // Check prototype chain for accessor without setter
-                                        // or non-writable property
-                                        drop(o);
-                                        self.proto_has_readonly_or_setter_undef(&obj, &name)
+                                        // Property doesn't exist on own object.
+                                        // Check if object is non-extensible (preventExtensions/seal/freeze).
+                                        let non_extensible = o.properties.contains_key("__non_extensible__");
+                                        if non_extensible {
+                                            true
+                                        } else {
+                                            // Check prototype chain for accessor without setter
+                                            drop(o);
+                                            self.proto_has_readonly_or_setter_undef(&obj, &name)
+                                        }
                                     }
                                 } else {
                                     false

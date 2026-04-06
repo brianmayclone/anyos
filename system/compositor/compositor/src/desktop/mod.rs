@@ -275,11 +275,23 @@ impl Desktop {
             shortcut_overlay_selection: -1,
         };
 
+        // Force an immediate VRAM flush BEFORE any GPU accel setup.
+        // This ensures the desktop background is visible even if GMR
+        // registration or GPU accel init blocks or fails on slow hardware.
+        // The memcpy path (flush_region with gmr_active=false) always works.
+        anyos_std::println!("compositor: initial VRAM flush (pre-accel)");
+
         if desktop.has_gpu_accel {
             desktop.compositor.enable_gpu_accel();
             // Try to register back buffer as GPU GMR for DMA transfers.
             // If successful, flush_region() skips CPU memcpy to VRAM.
+            anyos_std::println!("compositor: trying GMR registration...");
             desktop.compositor.try_enable_gmr();
+            if desktop.compositor.gmr_active {
+                anyos_std::println!("compositor: GMR DMA mode active");
+            } else {
+                anyos_std::println!("compositor: GMR rejected, using CPU memcpy");
+            }
             // Initialize VRAM allocator if enough off-screen VRAM is available
             if !desktop.compositor.gmr_active {
                 let vram_total = anyos_std::ipc::gpu_vram_size();
@@ -354,6 +366,11 @@ impl Desktop {
 
     fn load_default_wallpaper(&mut self) {
         self.load_user_wallpaper();
+    }
+
+    /// Public wrapper for deferred wallpaper loading after first frame.
+    pub fn load_default_wallpaper_pub(&mut self) {
+        self.load_default_wallpaper();
     }
 
     /// Reload wallpaper (used after wallpaper changes or resolution change).

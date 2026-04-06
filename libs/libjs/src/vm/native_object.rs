@@ -207,10 +207,17 @@ pub fn object_freeze(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let keys: Vec<String> = o.properties.keys().cloned().collect();
         for key in keys {
             if let Some(prop) = o.properties.get_mut(&key) {
-                prop.writable = false;
+                if !prop.is_accessor() {
+                    prop.writable = false;
+                }
                 prop.configurable = false;
             }
         }
+        // Mark as non-extensible (frozen implies sealed implies non-extensible).
+        o.properties.insert(String::from("__non_extensible__"), crate::value::Property {
+            value: JsValue::Bool(true), writable: false, enumerable: false, configurable: false,
+            getter: None, setter: None,
+        });
     }
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }
@@ -567,12 +574,13 @@ fn prop_to_descriptor(prop: &Property) -> JsValue {
 
 /// `Object.preventExtensions(obj)`.
 pub fn object_prevent_extensions(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    // Mark object as non-extensible (simplified: we set an internal tag)
     if let Some(JsValue::Object(obj)) = args.first() {
         let mut o = obj.borrow_mut();
-        if o.internal_tag.is_none() {
-            o.internal_tag = Some(String::from("__sealed__"));
-        }
+        // Use a hidden property to mark non-extensibility without overwriting internal_tag.
+        o.properties.insert(String::from("__non_extensible__"), crate::value::Property {
+            value: JsValue::Bool(true), writable: false, enumerable: false, configurable: false,
+            getter: None, setter: None,
+        });
     }
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }
@@ -582,12 +590,9 @@ pub fn object_is_extensible(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
-            let sealed = o.internal_tag.as_deref() == Some("__sealed__") ||
-                         o.internal_tag.as_deref() == Some("__frozen__");
-            JsValue::Bool(!sealed)
+            JsValue::Bool(!o.properties.contains_key("__non_extensible__"))
         }
         Some(JsValue::Function(_)) => {
-            // Functions are extensible by default (ES2023 §10.2.4)
             JsValue::Bool(true)
         }
         _ => JsValue::Bool(false),
@@ -604,7 +609,10 @@ pub fn object_seal(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 prop.configurable = false;
             }
         }
-        o.internal_tag = Some(String::from("__sealed__"));
+        o.properties.insert(String::from("__non_extensible__"), crate::value::Property {
+            value: JsValue::Bool(true), writable: false, enumerable: false, configurable: false,
+            getter: None, setter: None,
+        });
     }
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }

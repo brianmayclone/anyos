@@ -83,11 +83,10 @@ fn main() {
     let mut desktop = alloc::boxed::Box::new(desktop::Desktop::new(
         fb_ptr, width, height, fb_info.pitch,
     ));
-    if setup_mode {
-        desktop.init_no_wallpaper();
-    } else {
-        desktop.init();
-    }
+    // Always start with a fast gradient background so the first frame appears
+    // immediately. The wallpaper (PNG decode + scale) is loaded AFTER the initial
+    // compose to avoid delaying the first visible frame on slow hardware.
+    desktop.init_no_wallpaper();
 
     // Step 4b: Restore saved resolution from compositor.conf (if different from current).
     // Done AFTER Desktop::new so the well-tested handle_resolution_change() path
@@ -155,11 +154,28 @@ fn main() {
         println!("compositor: SW cursor (pos={},{})", splash_x, splash_y);
     }
 
-    // Initial full-screen compose (management thread, before render thread exists)
-    desktop.compositor.damage_all();
-    desktop.compose();
-
-    println!("compositor: desktop drawn ({}x{})", desktop.screen_width, desktop.screen_height);
+    // Initial full-screen compose (management thread, before render thread exists).
+    // Retry up to 3 times with increasing delays to handle slow GPU initialization.
+    // On some systems the VirtIO GPU is still processing boot-time commands and
+    // the first TRANSFER_TO_HOST_2D may time out silently.
+    for attempt in 0..3u32 {
+        desktop.compositor.damage_all();
+        desktop.compose();
+        // Issue an explicit GPU SYNC to ensure the frame reached the display
+        // before we proceed. Without this, the TRANSFER may still be in-flight
+        // on slow hardware when the render thread starts and overwrites damage.
+        desktop.compositor.gpu_cmds.push([8 /* GPU_SYNC */, 0, 0, 0, 0, 0, 0, 0, 0]);
+        desktop.compositor.flush_gpu();
+        if attempt == 0 {
+            println!("compositor: desktop drawn ({}x{})", desktop.screen_width, desktop.screen_height);
+        } else {
+            println!("compositor: initial compose retry #{}", attempt);
+        }
+        // Brief yield to let the GPU process commands before next attempt
+        if attempt < 2 {
+            anyos_std::process::sleep(50);
+        }
+    }
 
     // Step 5: Create event channel for app IPC
     let compositor_channel = ipc::evt_chan_create("compositor");
@@ -188,6 +204,19 @@ fn main() {
     spawn_render_thread();
     // The render thread starts with RENDER_NEEDED=true and will immediately
     // pick up the damage_all() set above, ensuring a reliable initial render.
+
+    // Step 7b: Load wallpaper AFTER first frame is displayed.
+    // PNG decode + scale can take hundreds of ms on slow hardware. Loading it
+    // before the first compose() would leave the bootlogo visible for too long.
+    if !setup_mode {
+        acquire_lock();
+        let desktop = unsafe { desktop_ref() };
+        desktop.load_default_wallpaper_pub();
+        desktop.compositor.damage_all();
+        release_lock();
+        signal_render();
+        println!("compositor: wallpaper loaded (deferred)");
+    }
 
     // Step 8: Launch login-time services (e.g. inputmon for keyboard layout)
     if !setup_mode {
@@ -293,8 +322,9 @@ fn management_loop(
     // fail silently if the device is busy during early boot. To guarantee the
     // desktop is reliably visible, force full redraws for the first few seconds.
     let boot_start_ms: u32 = sys::uptime_ms();
-    // Timestamps at which we force a full redraw: 200ms, 500ms, 1000ms, 2000ms after boot.
-    let boot_redraw_schedule: [u32; 4] = [200, 500, 1000, 2000];
+    // Timestamps at which we force a full redraw after boot to recover from
+    // GPU command failures. More aggressive early redraws for slow hardware.
+    let boot_redraw_schedule: [u32; 6] = [100, 250, 500, 1000, 2000, 4000];
     let mut boot_redraw_idx: usize = 0;
 
     // ── Debug stats (reset every 5 seconds) ──
