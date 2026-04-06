@@ -135,3 +135,16 @@ pub fn get_last_syscall(cpu_id: usize) -> u32 {
         0
     }
 }
+
+/// Check if a thread has any of the given capability bits set.
+/// Uses SCHEDULER lock — call only from non-IRQ context.
+pub fn thread_has_cap(tid: u32, cap_mask: crate::task::capabilities::CapSet) -> bool {
+    let guard = SCHEDULER.lock();
+    let sched = match guard.as_ref() { Some(s) => s, None => return false };
+    for t in &sched.threads {
+        if t.tid == tid {
+            return (t.capabilities & cap_mask) != 0;
+        }
+    }
+    false
+}

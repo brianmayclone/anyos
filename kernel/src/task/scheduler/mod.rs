@@ -236,12 +236,18 @@ static DEFERRED_WAKE_TIDS: [AtomicU32; DEFERRED_WAKE_SLOTS] = {
 /// instead of always clobbering slot 0.
 static DEFERRED_WAKE_NEXT: AtomicU32 = AtomicU32::new(0);
 
+/// Number of pending deferred wakes. The timer drain loop skips the
+/// 256-slot scan entirely when this is zero, reducing SCHEDULER lock
+/// hold time from ~256 atomic ops to a single Relaxed load per tick.
+static DEFERRED_WAKE_PENDING: AtomicU32 = AtomicU32::new(0);
+
 /// Enqueue a TID for deferred wake (called from IRQ context, lock-free).
 /// Uses circular overwrite when all slots are occupied for fairer eviction.
 pub fn deferred_wake(tid: u32) {
     for slot in &DEFERRED_WAKE_TIDS {
         // Try to claim an empty slot (0 → tid).
         if slot.compare_exchange(0, tid, Ordering::Release, Ordering::Relaxed).is_ok() {
+            DEFERRED_WAKE_PENDING.fetch_add(1, Ordering::Relaxed);
             return;
         }
         // If this slot already holds our TID, no-op (avoid duplicate wakes).
@@ -249,7 +255,7 @@ pub fn deferred_wake(tid: u32) {
             return;
         }
     }
-    // All slots full — circular overwrite for fair eviction.
+    // All slots full — circular overwrite for fair eviction (count stays the same).
     let idx = DEFERRED_WAKE_NEXT.fetch_add(1, Ordering::Relaxed) as usize % DEFERRED_WAKE_SLOTS;
     DEFERRED_WAKE_TIDS[idx].store(tid, Ordering::Release);
 }
@@ -903,11 +909,14 @@ fn schedule_inner(from_timer: bool) {
         }
 
         // Drain deferred wakes (IRQ handlers store TIDs here lock-free).
-        // Process under the already-held lock to avoid extra lock/unlock.
-        for slot in &DEFERRED_WAKE_TIDS {
-            let tid = slot.swap(0, Ordering::Acquire);
-            if tid != 0 {
-                sched.wake_thread_inner(tid);
+        // Fast path: skip the 256-slot scan when no wakes are pending.
+        if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
+            for slot in &DEFERRED_WAKE_TIDS {
+                let tid = slot.swap(0, Ordering::Acquire);
+                if tid != 0 {
+                    DEFERRED_WAKE_PENDING.fetch_sub(1, Ordering::Relaxed);
+                    sched.wake_thread_inner(tid);
+                }
             }
         }
 

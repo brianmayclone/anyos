@@ -46,11 +46,16 @@ pub struct SharedRegion {
 static SHARED_REGIONS: Spinlock<Vec<SharedRegion>> = Spinlock::new(Vec::new());
 static NEXT_REGION_ID: Spinlock<u32> = Spinlock::new(1);
 
-/// Maximum total SHM bytes a single process may own (64 MiB).
-const MAX_SHM_PER_PROCESS: usize = 64 * 1024 * 1024;
+/// Maximum total SHM bytes for normal apps (256 MiB).
+const MAX_SHM_NORMAL: usize = 256 * 1024 * 1024;
+
+/// Maximum total SHM bytes for system services (compositor, etc.) (1 GiB).
+/// The compositor manages window surfaces for ALL apps — at 4K resolution
+/// a single surface is ~33 MiB (3840*2160*4), so this must be generous.
+const MAX_SHM_SYSTEM: usize = 1024 * 1024 * 1024;
 
 /// Maximum number of SHM regions a single process may own.
-const MAX_SHM_REGIONS_PER_PROCESS: usize = 256;
+const MAX_SHM_REGIONS_PER_PROCESS: usize = 1024;
 
 /// Create a new shared memory region of the given size (rounded up to page size).
 /// Returns the region ID (>0), or `None` on allocation failure or limit exceeded.
@@ -59,6 +64,15 @@ pub fn create(size: usize, owner_tid: u32) -> Option<u32> {
     if pages == 0 {
         return None;
     }
+
+    // Determine per-process SHM limit based on capabilities.
+    // System services (compositor, system apps) get a higher limit since
+    // the compositor manages window surfaces for all running applications.
+    let is_system = crate::task::scheduler::thread_has_cap(
+        owner_tid,
+        crate::task::capabilities::CAP_COMPOSITOR | crate::task::capabilities::CAP_SYSTEM,
+    );
+    let max_bytes = if is_system { MAX_SHM_SYSTEM } else { MAX_SHM_NORMAL };
 
     // Enforce per-process SHM limits to prevent memory exhaustion DoS
     {
@@ -74,7 +88,7 @@ pub fn create(size: usize, owner_tid: u32) -> Option<u32> {
         if owned_count >= MAX_SHM_REGIONS_PER_PROCESS {
             return None;
         }
-        if owned_bytes + (pages * FRAME_SIZE) > MAX_SHM_PER_PROCESS {
+        if owned_bytes + (pages * FRAME_SIZE) > max_bytes {
             return None;
         }
     }
