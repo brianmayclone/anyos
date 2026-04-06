@@ -1550,6 +1550,29 @@ impl Vm {
     }
 
     /// Check for a setter in an object's property chain.
+    /// Check if the prototype chain has a read-only data property or
+    /// an accessor property without a setter for the given key.
+    fn proto_has_readonly_or_setter_undef(&self, val: &JsValue, key: &str) -> bool {
+        if let JsValue::Object(obj) = val {
+            let o = obj.borrow();
+            if let Some(prop) = o.properties.get(key) {
+                if prop.is_accessor() && prop.setter.is_none() {
+                    return true;
+                }
+                if !prop.is_accessor() && !prop.writable {
+                    return true;
+                }
+                return false;
+            }
+            if let Some(ref proto) = o.prototype {
+                let proto_val = JsValue::Object(proto.clone());
+                drop(o);
+                return self.proto_has_readonly_or_setter_undef(&proto_val, key);
+            }
+        }
+        false
+    }
+
     pub fn find_setter(&self, val: &JsValue, key: &str) -> Option<JsValue> {
         if let JsValue::Object(obj) = val {
             let o = obj.borrow();
