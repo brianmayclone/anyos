@@ -451,14 +451,19 @@ endif()
 # --- libhttp (custom: links BearSSL for HTTPS support) ---
 # BearSSL is x86_64-only; skip libhttp entirely on ARM64.
 if(NOT ANYOS_ARCH STREQUAL "arm64")
-  # libbearssl_x64.a already contains anyos_tls.o (the BearSSL TLS wrapper).
-  # libhttp's Rust code (tls.rs) provides the callbacks (anyos_tcp_send, etc.)
-  # that anyos_tls.o calls, using raw syscalls instead of anyos_std.
   set(_LIBHTTP_SRC "${CMAKE_SOURCE_DIR}/libs/libhttp")
   set(_LIBHTTP_A "${SHLIB_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/liblibhttp.a")
   set(_LIBHTTP_SO "${CMAKE_BINARY_DIR}/shlib/libhttp.so")
   set(_BEARSSL_X64_A "${CMAKE_SOURCE_DIR}/third_party/bearssl/build_x64/libbearssl_x64.a")
+  set(_BEARSSL_X64_SCRIPT "${CMAKE_SOURCE_DIR}/scripts/build_bearssl_x64.sh")
   file(GLOB_RECURSE _LIBHTTP_RS CONFIGURE_DEPENDS "${_LIBHTTP_SRC}/src/*.rs")
+
+  add_custom_command(
+    OUTPUT ${_BEARSSL_X64_A}
+    COMMAND bash ${_BEARSSL_X64_SCRIPT}
+    DEPENDS ${_BEARSSL_X64_SCRIPT} ${_LIBHTTP_SRC}/anyos_tls.c
+    COMMENT "Building BearSSL for anyOS (x86_64)"
+  )
 
   # Step 1: Cargo → static archive (.a)
   add_custom_command(
@@ -471,13 +476,16 @@ if(NOT ANYOS_ARCH STREQUAL "arm64")
       -Z build-std=core,alloc
     DEPENDS
       ${_LIBHTTP_SRC}/Cargo.toml
+      ${_LIBHTTP_SRC}/build.rs
+      ${_LIBHTTP_SRC}/anyos_tls.c
       ${_LIBHTTP_RS}
       ${USER_TARGET_JSON}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Building shared library: libhttp (Cargo)"
   )
 
-  # Step 2: anyld → .so (Rust .a + BearSSL .a including anyos_tls.o)
+  # Step 2: anyld → .so (Rust .a + BearSSL .a, with the TLS wrapper coming
+  # from libbearssl_x64.a exactly once)
   add_custom_command(
     OUTPUT ${_LIBHTTP_SO}
     COMMAND ${ANYLD_EXECUTABLE} -q

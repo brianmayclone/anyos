@@ -327,8 +327,9 @@ extern "C" fn export_create_window(
 
     // Poll for RESP_WINDOW_CREATED — drain ALL queued events per iteration
     // to avoid stalling behind mouse/keyboard events for other windows.
+    // 400 × 5ms = 2 seconds timeout (verbose mode can delay compositor responses)
     let mut response = [0u32; 5];
-    for _ in 0..100 {
+    for _ in 0..400 {
         // Drain entire queue looking for our response
         while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
             if response[0] == RESP_WINDOW_CREATED && response[3] == tid {

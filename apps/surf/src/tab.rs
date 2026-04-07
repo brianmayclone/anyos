@@ -11,8 +11,6 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use libanyui_client as ui;
-use ui::Widget;
 
 const SYSTEM_FONT_REGULAR: u32 = 0;
 const SYSTEM_FONT_MONO: u32 = 4;
@@ -78,6 +76,105 @@ fn register_builtin_web_fonts(wv: &mut libwebview::WebView) {
 // ═══════════════════════════════════════════════════════════
 
 /// Everything associated with one browser tab.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PageLoadPhase {
+    Idle,
+    FetchingDocument,
+    ParsingDocument,
+    LoadingSubresources,
+    Interactive,
+    Failed,
+}
+
+pub(crate) struct PageLoadState {
+    /// Generation counter for the current navigation.
+    pub(crate) generation: u32,
+    /// Coarse-grained page lifecycle phase for the active document.
+    pub(crate) phase: PageLoadPhase,
+    /// Number of external script fetches still outstanding.
+    pub(crate) pending_script_count: usize,
+    /// Number of external stylesheet fetches still outstanding.
+    pub(crate) pending_stylesheet_count: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct DeferredImageRequest {
+    pub(crate) src: String,
+    pub(crate) url: crate::http::Url,
+    pub(crate) priority: crate::net_worker::ImagePriority,
+    pub(crate) generation: u32,
+}
+
+impl PageLoadState {
+    fn new() -> Self {
+        Self {
+            generation: 0,
+            phase: PageLoadPhase::Idle,
+            pending_script_count: 0,
+            pending_stylesheet_count: 0,
+        }
+    }
+
+    pub(crate) fn begin_navigation(&mut self, generation: u32) {
+        self.generation = generation;
+        self.phase = PageLoadPhase::FetchingDocument;
+        self.pending_script_count = 0;
+        self.pending_stylesheet_count = 0;
+    }
+
+    pub(crate) fn begin_parse(&mut self) {
+        self.phase = PageLoadPhase::ParsingDocument;
+    }
+
+    pub(crate) fn begin_subresource_load(&mut self, stylesheets: usize, scripts: usize) {
+        self.phase = if stylesheets == 0 && scripts == 0 {
+            PageLoadPhase::Interactive
+        } else {
+            PageLoadPhase::LoadingSubresources
+        };
+        self.pending_stylesheet_count = stylesheets;
+        self.pending_script_count = scripts;
+    }
+
+    pub(crate) fn on_stylesheets_added(&mut self, count: usize) {
+        self.pending_stylesheet_count += count;
+        if count > 0 {
+            self.phase = PageLoadPhase::LoadingSubresources;
+        }
+    }
+
+    pub(crate) fn on_stylesheet_finished(&mut self) {
+        if self.pending_stylesheet_count > 0 {
+            self.pending_stylesheet_count -= 1;
+        }
+    }
+
+    pub(crate) fn on_script_finished(&mut self) {
+        if self.pending_script_count > 0 {
+            self.pending_script_count -= 1;
+        }
+    }
+
+    pub(crate) fn mark_interactive(&mut self) {
+        self.phase = PageLoadPhase::Interactive;
+        self.pending_script_count = 0;
+    }
+
+    pub(crate) fn mark_failed(&mut self) {
+        self.phase = PageLoadPhase::Failed;
+        self.pending_script_count = 0;
+        self.pending_stylesheet_count = 0;
+    }
+
+    pub(crate) fn generation_matches(&self, generation: u32) -> bool {
+        self.generation == generation
+    }
+
+    pub(crate) fn ready_for_script_execution(&self) -> bool {
+        self.pending_script_count == 0 && self.pending_stylesheet_count == 0
+    }
+}
+
 pub(crate) struct TabState {
     /// HTML rendering widget for this tab.
     pub(crate) webview: libwebview::WebView,
@@ -93,18 +190,19 @@ pub(crate) struct TabState {
     pub(crate) history_pos: usize,
     /// Short status string shown in the status bar.
     pub(crate) status_text: String,
-    /// Generation counter for the current navigation.
-    /// Used to discard stale fetch results from the worker thread.
-    pub(crate) nav_generation: u32,
     /// Whether this tab is currently loading (navigation in progress).
     pub(crate) is_loading: bool,
+    /// Structured loader state for the current page.
+    pub(crate) load_state: PageLoadState,
     /// Pending script slots — one entry per `<script>` tag in document order.
     /// `Some(text)` = inline or already-fetched, `None` = external fetch pending.
     pub(crate) pending_scripts: Vec<Option<String>>,
-    /// Number of external script fetches still outstanding.
-    pub(crate) pending_script_count: usize,
-    /// Number of external stylesheet fetches still outstanding.
-    pub(crate) pending_stylesheet_count: usize,
+    /// Execution mode for each pending script slot.
+    pub(crate) pending_script_modes: Vec<libwebview::js::ScriptMode>,
+    /// Deferred image requests that are intentionally not submitted yet.
+    pub(crate) deferred_images: Vec<DeferredImageRequest>,
+    /// Number of deferred image requests currently in flight.
+    pub(crate) deferred_images_inflight: usize,
 }
 
 impl TabState {
@@ -120,11 +218,12 @@ impl TabState {
             history: Vec::new(),
             history_pos: 0,
             status_text: String::from("Ready"),
-            nav_generation: 0,
             is_loading: false,
+            load_state: PageLoadState::new(),
             pending_scripts: Vec::new(),
-            pending_script_count: 0,
-            pending_stylesheet_count: 0,
+            pending_script_modes: Vec::new(),
+            deferred_images: Vec::new(),
+            deferred_images_inflight: 0,
         }
     }
 
@@ -187,12 +286,11 @@ pub(crate) fn navigate(url_str: &str) {
         }
     };
 
-    // Cancel any in-flight CSS/image work from the previous page.
-    cancel_pending_resources();
-
     // Bump generation so stale resource results are discarded.
     let generation = crate::net_worker::new_generation();
-    st.tabs[st.active_tab].nav_generation = generation;
+    st.tabs[st.active_tab]
+        .load_state
+        .begin_navigation(generation);
 
     // Update UI to show loading state.
     st.tabs[st.active_tab].is_loading = true;
@@ -207,6 +305,7 @@ pub(crate) fn navigate(url_str: &str) {
 
     // Submit to worker — returns immediately.
     crate::net_worker::submit(crate::net_worker::FetchRequest::Navigate {
+        tab_index: st.active_tab,
         url,
         cookies,
         generation,
@@ -230,10 +329,10 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
         }
     };
 
-    cancel_pending_resources();
-
     let generation = crate::net_worker::new_generation();
-    st.tabs[st.active_tab].nav_generation = generation;
+    st.tabs[st.active_tab]
+        .load_state
+        .begin_navigation(generation);
 
     st.tabs[st.active_tab].is_loading = true;
     st.tabs[st.active_tab].status_text = String::from("Submitting...");
@@ -243,6 +342,7 @@ pub(crate) fn navigate_post(url_str: &str, body: &str) {
     let cookies = st.cookies.clone();
 
     crate::net_worker::submit(crate::net_worker::FetchRequest::NavigatePost {
+        tab_index: st.active_tab,
         url,
         body: String::from(body),
         cookies,
@@ -259,10 +359,13 @@ fn navigate_file(path: &str) {
     let st = crate::state();
     let tab_idx = st.active_tab;
 
-    cancel_pending_resources();
+    let generation = crate::net_worker::new_generation();
+    st.tabs[tab_idx].load_state.begin_navigation(generation);
+    st.tabs[tab_idx].is_loading = true;
 
     st.tabs[tab_idx].status_text = String::from("Loading file...");
     crate::ui::update_status();
+    crate::ui::update_tab_labels();
 
     // Read the file from disk.
     let body = match anyos_std::fs::read_to_vec(path) {
@@ -270,8 +373,11 @@ fn navigate_file(path: &str) {
         Err(_) => {
             let mut msg = String::from("File not found: ");
             msg.push_str(path);
+            st.tabs[tab_idx].load_state.mark_failed();
+            st.tabs[tab_idx].is_loading = false;
             st.tabs[tab_idx].status_text = msg;
             crate::ui::update_status();
+            crate::ui::update_tab_labels();
             return;
         }
     };
@@ -296,6 +402,7 @@ fn navigate_file(path: &str) {
     st.tabs[tab_idx].webview.set_url(&url_str);
 
     // Render the HTML.
+    st.tabs[tab_idx].load_state.begin_parse();
     st.tabs[tab_idx].webview.set_html(&html);
 
     // Extract page title.
@@ -325,6 +432,8 @@ fn navigate_file(path: &str) {
     st.tabs[tab_idx].url_text = url_str;
     st.tabs[tab_idx].current_url = Some(base_url);
     st.tabs[tab_idx].status_text = String::from("Done");
+    st.tabs[tab_idx].is_loading = false;
+    st.tabs[tab_idx].load_state.mark_interactive();
 
     // Update chrome UI.
     let url_for_field = st.tabs[tab_idx].url_text.clone();
@@ -334,22 +443,6 @@ fn navigate_file(path: &str) {
     crate::ui::update_tab_labels();
 
     anyos_std::println!("[surf] loaded local file: {}", path);
-}
-
-/// Cancel any stale CSS/image fetches from the old timer-based system
-/// and clear AppState queues.
-fn cancel_pending_resources() {
-    let st = crate::state();
-    if st.css_timer != 0 {
-        ui::kill_timer(st.css_timer);
-        st.css_timer = 0;
-    }
-    st.css_queue.clear();
-    if st.image_timer != 0 {
-        ui::kill_timer(st.image_timer);
-        st.image_timer = 0;
-    }
-    st.image_queue.clear();
 }
 
 /// Navigate the active tab one step back in its history.

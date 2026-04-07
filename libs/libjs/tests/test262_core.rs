@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! test262-style conformance tests for libjs.
 //!
 //! Each test evaluates JavaScript code and checks the result or console output.
@@ -988,6 +990,37 @@ fn set_basic() {
     "#
         ),
         "3"
+    );
+}
+
+#[test]
+fn set_methods_work_when_extracted() {
+    assert_eq!(
+        eval_str(
+            r#"
+        let s = new Set([1, 2]);
+        let add = s.add;
+        add.call(s, 3);
+        s.has(3)
+    "#
+        ),
+        "true"
+    );
+}
+
+#[test]
+fn set_subclass_keeps_receiver_compatibility() {
+    assert_eq!(
+        eval_str(
+            r#"
+        class MySet extends Set {}
+        let s = new MySet([1, 2]);
+        let add = Set.prototype.add;
+        add.call(s, 3);
+        s.has(3)
+    "#
+        ),
+        "true"
     );
 }
 

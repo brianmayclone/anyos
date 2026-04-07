@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! MIME parser for multipart email messages (RFC 2045, 2046).
 //!
 //! Handles:
@@ -6,18 +8,18 @@
 //! - Content-Type parameters (charset, boundary, name)
 //! - Inline and attachment dispositions
 
+use super::message::{self, Attachment, FullMessage, MessageSummary};
+use super::rfc2822::EmailAddress;
+use super::{base64, quoted_printable, rfc2047, rfc2822};
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::{base64, quoted_printable, rfc2047, rfc2822};
-use super::message::{self, FullMessage, MessageSummary, Attachment};
-use super::rfc2822::EmailAddress;
 
 /// Parsed Content-Type header.
 struct ContentType {
-    media_type: String,   // e.g., "text/plain", "multipart/mixed"
-    charset: String,      // e.g., "utf-8"
-    boundary: String,     // for multipart
-    name: String,         // attachment filename from Content-Type
+    media_type: String, // e.g., "text/plain", "multipart/mixed"
+    charset: String,    // e.g., "utf-8"
+    boundary: String,   // for multipart
+    name: String,       // attachment filename from Content-Type
 }
 
 impl ContentType {
@@ -49,7 +51,7 @@ impl ContentType {
 
 /// Parsed Content-Disposition header.
 struct ContentDisposition {
-    disposition: String,  // "inline" or "attachment"
+    disposition: String, // "inline" or "attachment"
     filename: String,
 }
 
@@ -232,8 +234,10 @@ fn split_headers_body(data: &[u8]) -> (&[u8], &[u8]) {
     // Find \r\n\r\n or \n\n
     for i in 0..data.len() {
         if i + 3 < data.len()
-            && data[i] == b'\r' && data[i + 1] == b'\n'
-            && data[i + 2] == b'\r' && data[i + 3] == b'\n'
+            && data[i] == b'\r'
+            && data[i + 1] == b'\n'
+            && data[i + 2] == b'\r'
+            && data[i + 3] == b'\n'
         {
             return (&data[..i], &data[i + 4..]);
         }
@@ -352,8 +356,12 @@ fn split_multipart<'a>(body: &'a [u8], boundary: &str) -> Vec<&'a [u8]> {
             if in_part && part_start < offset {
                 // Remove trailing \r\n before delimiter
                 let mut end = offset;
-                if end > 0 && body[end - 1] == b'\n' { end -= 1; }
-                if end > 0 && body[end - 1] == b'\r' { end -= 1; }
+                if end > 0 && body[end - 1] == b'\n' {
+                    end -= 1;
+                }
+                if end > 0 && body[end - 1] == b'\r' {
+                    end -= 1;
+                }
                 if part_start < end {
                     parts.push(&body[part_start..end]);
                 }
@@ -364,8 +372,12 @@ fn split_multipart<'a>(body: &'a [u8], boundary: &str) -> Vec<&'a [u8]> {
         if trimmed == delim.as_str() {
             if in_part && part_start < offset {
                 let mut end = offset;
-                if end > 0 && body[end - 1] == b'\n' { end -= 1; }
-                if end > 0 && body[end - 1] == b'\r' { end -= 1; }
+                if end > 0 && body[end - 1] == b'\n' {
+                    end -= 1;
+                }
+                if end > 0 && body[end - 1] == b'\r' {
+                    end -= 1;
+                }
                 if part_start < end {
                     parts.push(&body[part_start..end]);
                 }
@@ -504,9 +516,7 @@ fn decode_body(body: &[u8], encoding: &str) -> Vec<u8> {
 fn convert_to_utf8(data: &[u8], charset: &str) -> String {
     let cs = to_upper(charset);
     match cs.as_str() {
-        "UTF-8" | "UTF8" | "" => {
-            core::str::from_utf8(data).unwrap_or("").into()
-        }
+        "UTF-8" | "UTF8" | "" => core::str::from_utf8(data).unwrap_or("").into(),
         "ISO-8859-1" | "LATIN1" | "LATIN-1" | "ISO_8859-1" | "ISO-8859-15" => {
             let mut s = String::with_capacity(data.len() * 2);
             for &b in data {
@@ -547,14 +557,30 @@ fn convert_to_utf8(data: &[u8], charset: &str) -> String {
 
 fn guess_extension(media_type: &str) -> &'static str {
     let mt = to_lower(media_type);
-    if mt.contains("jpeg") || mt.contains("jpg") { return ".jpg"; }
-    if mt.contains("png") { return ".png"; }
-    if mt.contains("gif") { return ".gif"; }
-    if mt.contains("pdf") { return ".pdf"; }
-    if mt.contains("zip") { return ".zip"; }
-    if mt.contains("html") { return ".html"; }
-    if mt.contains("xml") { return ".xml"; }
-    if mt.contains("octet-stream") { return ".bin"; }
+    if mt.contains("jpeg") || mt.contains("jpg") {
+        return ".jpg";
+    }
+    if mt.contains("png") {
+        return ".png";
+    }
+    if mt.contains("gif") {
+        return ".gif";
+    }
+    if mt.contains("pdf") {
+        return ".pdf";
+    }
+    if mt.contains("zip") {
+        return ".zip";
+    }
+    if mt.contains("html") {
+        return ".html";
+    }
+    if mt.contains("xml") {
+        return ".xml";
+    }
+    if mt.contains("octet-stream") {
+        return ".bin";
+    }
     ""
 }
 
@@ -563,7 +589,9 @@ fn strip_html_tags(html: &str, max_len: usize) -> String {
     let mut in_tag = false;
 
     for ch in html.chars() {
-        if result.len() >= max_len { break; }
+        if result.len() >= max_len {
+            break;
+        }
         match ch {
             '<' => in_tag = true,
             '>' => in_tag = false,
@@ -591,7 +619,7 @@ fn lossy_utf8(data: &[u8]) -> String {
             // This properly maps bytes 0x00-0xFF to Unicode code points
             let mut s = String::with_capacity(data.len());
             for &b in data {
-                s.push(b as char);  // In Rust, byte b casts to Unicode code point U+00xx
+                s.push(b as char); // In Rust, byte b casts to Unicode code point U+00xx
             }
             s
         }
@@ -624,14 +652,18 @@ fn to_upper(s: &str) -> String {
 }
 
 fn starts_with_ci(s: &str, prefix: &str) -> bool {
-    if s.len() < prefix.len() { return false; }
+    if s.len() < prefix.len() {
+        return false;
+    }
     let a = to_lower(&s[..prefix.len()]);
     let b = to_lower(prefix);
     a == b
 }
 
 fn eq_ci(a: &str, b: &str) -> bool {
-    if a.len() != b.len() { return false; }
+    if a.len() != b.len() {
+        return false;
+    }
     to_lower(a) == to_lower(b)
 }
 

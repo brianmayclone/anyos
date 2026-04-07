@@ -472,11 +472,18 @@ pub struct PendingTimer {
 
 /// A script entry found in the DOM — either inline text or an external URL.
 #[derive(Clone)]
+pub enum ScriptMode {
+    Blocking,
+    Defer,
+    Async,
+}
+
+#[derive(Clone)]
 pub enum ScriptEntry {
     /// Inline `<script>` with text content.
-    Inline(String),
+    Inline { text: String, mode: ScriptMode },
     /// External `<script src="url">` — the host must fetch the URL and provide the text.
-    External(String),
+    External { src: String, mode: ScriptMode },
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -613,14 +620,26 @@ impl JsRuntime {
                     .iter()
                     .find(|a| a.name == "src")
                     .map(|a| a.value.as_str());
+                let has_async = attrs.iter().any(|a| a.name == "async");
+                let has_defer = attrs.iter().any(|a| a.name == "defer");
+                let mode = if has_async {
+                    ScriptMode::Async
+                } else if has_defer {
+                    ScriptMode::Defer
+                } else {
+                    ScriptMode::Blocking
+                };
                 if let Some(url) = src {
                     if !url.is_empty() {
-                        entries.push(ScriptEntry::External(String::from(url)));
+                        entries.push(ScriptEntry::External {
+                            src: String::from(url),
+                            mode,
+                        });
                     }
                 } else {
                     let text = dom.text_content(i);
                     if !text.is_empty() {
-                        entries.push(ScriptEntry::Inline(text));
+                        entries.push(ScriptEntry::Inline { text, mode });
                     }
                 }
             }
@@ -826,8 +845,8 @@ impl JsRuntime {
         let scripts: Vec<String> = entries
             .into_iter()
             .filter_map(|e| match e {
-                ScriptEntry::Inline(text) => Some(text),
-                ScriptEntry::External(_) => None,
+                ScriptEntry::Inline { text, .. } => Some(text),
+                ScriptEntry::External { .. } => None,
             })
             .collect();
         self.execute_script_sources(dom, url, &scripts);

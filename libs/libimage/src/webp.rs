@@ -1,4 +1,4 @@
-// Copyright (c) 2024-2026 Christian Moeller
+// Copyright (c) 2024-2026 Mike Strathmann
 // SPDX-License-Identifier: MIT
 
 //! WebP image decoder — VP8L (lossless) only.

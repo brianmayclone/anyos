@@ -16,12 +16,29 @@ fn require_receiver(
     expected_tag: &str,
     expected_name: &str,
     invocation_msg: &str,
+    slot_keys: &[&str],
 ) -> Option<Rc<RefCell<JsObject>>> {
     match &vm.current_this {
-        JsValue::Object(obj_rc)
-            if obj_rc.borrow().internal_tag.as_deref() == Some(expected_tag) =>
-        {
-            Some(obj_rc.clone())
+        JsValue::Object(obj_rc) => {
+            let (tagged, slot_backed) = {
+                let obj = obj_rc.borrow();
+                (
+                    obj.internal_tag.as_deref() == Some(expected_tag),
+                    slot_keys.iter().all(|key| obj.has(key)),
+                )
+            };
+            if tagged || slot_backed {
+                Some(obj_rc.clone())
+            } else {
+                let err = vm.make_type_error(invocation_msg);
+                vm.throw_native(err);
+                vm.log_engine(&alloc::format!(
+                    "[libjs] invalid {} receiver for {}",
+                    expected_name,
+                    invocation_msg
+                ));
+                None
+            }
         }
         _ => {
             let err = vm.make_type_error(invocation_msg);
@@ -51,11 +68,17 @@ fn require_construct_receiver(vm: &mut Vm, expected_name: &str) -> Option<Rc<Ref
 }
 
 fn require_map_receiver(vm: &mut Vm) -> Option<Rc<RefCell<JsObject>>> {
-    require_receiver(vm, MAP_TAG, "Map", "Incorrect Map invocation")
+    require_receiver(
+        vm,
+        MAP_TAG,
+        "Map",
+        "Incorrect Map invocation",
+        &["__keys", "__values"],
+    )
 }
 
 fn require_set_receiver(vm: &mut Vm) -> Option<Rc<RefCell<JsObject>>> {
-    require_receiver(vm, SET_TAG, "Set", "Incompatible receiver, Set required")
+    require_receiver(vm, SET_TAG, "Set", "Incorrect Set invocation", &["__items"])
 }
 
 fn make_iterator(items: Vec<JsValue>) -> JsValue {

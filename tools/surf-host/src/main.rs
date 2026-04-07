@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! surf-host — anyOS Surf browser rendering on native Linux.
 //!
 //! Fetches a webpage via ureq (HTTP/HTTPS with TLS), renders it through

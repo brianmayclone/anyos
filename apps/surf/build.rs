@@ -18,6 +18,13 @@ fn main() {
             .join("third_party")
             .join("bearssl")
             .join("build_x64");
+        let wrapper_src = project_root
+            .join("libs")
+            .join("libhttp")
+            .join("anyos_tls.c");
+        let bearssl_script = project_root.join("scripts").join("build_bearssl_x64.sh");
+        println!("cargo:rerun-if-changed={}", wrapper_src.display());
+        println!("cargo:rerun-if-changed={}", bearssl_script.display());
         println!("cargo:rustc-link-search=native={}", bearssl_dir.display());
         println!("cargo:rustc-link-lib=static=bearssl_x64");
     } else if target_arch == "aarch64" {

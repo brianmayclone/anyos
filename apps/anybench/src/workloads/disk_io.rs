@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Disk I/O Benchmarks — measures filesystem throughput.
 //!
 //! Four tests:

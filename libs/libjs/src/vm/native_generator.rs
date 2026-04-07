@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Generator object and protocol implementation.
 //!
 //! A generator function (`function*`) returns a GeneratorObject.

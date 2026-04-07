@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| { eprintln!("Usage: parse_test <js-file>"); std::process::exit(1); });
     let source = std::fs::read_to_string(&path).expect("read failed");

@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! AutoCompleteTextField — editable text field with autocomplete suggestions popup.
 //!
 //! Similar to TextField but with an additional suggestions list (pipe-separated).

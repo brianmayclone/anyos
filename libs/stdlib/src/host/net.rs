@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Host-mode networking — delegates to std::net.
 
 use std::io::{Read, Write};

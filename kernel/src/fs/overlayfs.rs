@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! OverlayFS — union mount with writable RAM layer over read-only ISO 9660.
 //!
 //! When anyOS boots from a CD-ROM (ISO 9660 as root), the OverlayFS provides

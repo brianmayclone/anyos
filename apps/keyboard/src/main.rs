@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! On-Screen Keyboard — visual keyboard viewer and input tool.
 //!
 //! Shows the current keyboard layout with labeled keys. Pressed keys

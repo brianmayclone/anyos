@@ -1,11 +1,13 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! RFC 2047 encoded-word decoding.
 //!
 //! Handles `=?charset?encoding?text?=` patterns in email headers.
 //! Supports B (base64) and Q (quoted-printable variant) encodings.
 
+use super::base64;
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::base64;
 
 /// Decode RFC 2047 encoded words in a header value from raw bytes.
 ///
@@ -88,8 +90,10 @@ pub fn decode_header(input: &str) -> String {
                 while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
                     j += 1;
                 }
-                if j < bytes.len() + 1 && j + 1 < bytes.len()
-                    && bytes[j] == b'=' && bytes[j + 1] == b'?'
+                if j < bytes.len() + 1
+                    && j + 1 < bytes.len()
+                    && bytes[j] == b'='
+                    && bytes[j + 1] == b'?'
                 {
                     i = j; // skip whitespace between encoded words
                 }
@@ -138,8 +142,7 @@ fn try_decode_word(data: &[u8]) -> Option<(String, usize)> {
     // Find ?= terminator
     let mut end_pos = None;
     for j in 0..encoded_start.len() {
-        if j + 1 < encoded_start.len() && encoded_start[j] == b'?' && encoded_start[j + 1] == b'='
-        {
+        if j + 1 < encoded_start.len() && encoded_start[j] == b'?' && encoded_start[j + 1] == b'=' {
             end_pos = Some(j);
             break;
         }
@@ -201,15 +204,9 @@ fn convert_charset(charset: &str, data: &[u8]) -> String {
     let cs = cs.as_str();
 
     match cs {
-        "UTF-8" | "UTF8" => {
-            String::from(core::str::from_utf8(data).unwrap_or(""))
-        }
-        "ISO-8859-1" | "LATIN1" | "LATIN-1" | "ISO_8859-1" | "ISO-8859-15" => {
-            latin1_to_utf8(data)
-        }
-        "WINDOWS-1252" | "CP1252" => {
-            windows1252_to_utf8(data)
-        }
+        "UTF-8" | "UTF8" => String::from(core::str::from_utf8(data).unwrap_or("")),
+        "ISO-8859-1" | "LATIN1" | "LATIN-1" | "ISO_8859-1" | "ISO-8859-15" => latin1_to_utf8(data),
+        "WINDOWS-1252" | "CP1252" => windows1252_to_utf8(data),
         "US-ASCII" | "ASCII" => {
             let mut s = String::new();
             for &b in data {

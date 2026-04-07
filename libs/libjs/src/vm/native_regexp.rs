@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! RegExp built-in object and prototype methods.
 
 use alloc::collections::BTreeMap;

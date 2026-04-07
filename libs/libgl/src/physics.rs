@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Simple rigid-body physics engine for libgl.
 //!
 //! Supports:

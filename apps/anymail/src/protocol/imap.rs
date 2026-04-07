@@ -1,11 +1,15 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! IMAP4rev1 client implementation (RFC 3501).
 
-use alloc::string::String;
-use alloc::vec::Vec;
-use super::tcp_stream::{TcpStream, ConnError};
-use crate::mail::message::{MessageSummary, FLAG_SEEN, FLAG_ANSWERED, FLAG_FLAGGED, FLAG_DELETED, FLAG_DRAFT};
+use super::tcp_stream::{ConnError, TcpStream};
+use crate::mail::message::{
+    MessageSummary, FLAG_ANSWERED, FLAG_DELETED, FLAG_DRAFT, FLAG_FLAGGED, FLAG_SEEN,
+};
 use crate::mail::rfc2047;
 use crate::mail::rfc2822;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,7 +25,9 @@ pub enum ImapError {
 }
 
 impl From<ConnError> for ImapError {
-    fn from(e: ConnError) -> Self { ImapError::Connection(e) }
+    fn from(e: ConnError) -> Self {
+        ImapError::Connection(e)
+    }
 }
 
 #[derive(Clone)]
@@ -129,8 +135,12 @@ impl ImapClient {
 
         // Sort: INBOX first, then alphabetically
         folders.sort_by(|a, b| {
-            if a.special_use == SpecialUse::Inbox { return core::cmp::Ordering::Less; }
-            if b.special_use == SpecialUse::Inbox { return core::cmp::Ordering::Greater; }
+            if a.special_use == SpecialUse::Inbox {
+                return core::cmp::Ordering::Less;
+            }
+            if b.special_use == SpecialUse::Inbox {
+                return core::cmp::Ordering::Greater;
+            }
             a.name.cmp(&b.name)
         });
 
@@ -371,7 +381,11 @@ impl ImapClient {
 
     /// Rename a folder.
     pub fn rename_folder(&mut self, old_name: &str, new_name: &str) -> Result<(), ImapError> {
-        let cmd = alloc::format!("RENAME \"{}\" \"{}\"", escape_imap(old_name), escape_imap(new_name));
+        let cmd = alloc::format!(
+            "RENAME \"{}\" \"{}\"",
+            escape_imap(old_name),
+            escape_imap(new_name)
+        );
         let resp = self.command(&cmd)?;
         if resp.contains("NO") || resp.contains("BAD") {
             return Err(ImapError::ServerError(resp));
@@ -382,7 +396,10 @@ impl ImapClient {
     /// Append a message to a folder (e.g., save to Sent or Drafts).
     pub fn append(&mut self, folder: &str, flags: &str, message: &[u8]) -> Result<(), ImapError> {
         let cmd = alloc::format!(
-            "APPEND \"{}\" ({}) {{{}}}", escape_imap(folder), flags, message.len()
+            "APPEND \"{}\" ({}) {{{}}}",
+            escape_imap(folder),
+            flags,
+            message.len()
         );
         let tag = self.next_tag();
         let tag_str = alloc::format!("A{:04}", tag);
@@ -512,7 +529,10 @@ fn parse_list_response(line: &str) -> Option<ImapFolder> {
     let paren_start = line.find('(')?;
     let paren_end = line.find(')')?;
     let flags_str = &line[paren_start + 1..paren_end];
-    let flags: Vec<String> = flags_str.split_whitespace().map(|s| String::from(s)).collect();
+    let flags: Vec<String> = flags_str
+        .split_whitespace()
+        .map(|s| String::from(s))
+        .collect();
 
     let has_children = flags.iter().any(|f| f == "\\HasChildren");
 
@@ -566,12 +586,28 @@ fn detect_special_use(name: &str, flags: &[String]) -> SpecialUse {
 
     // Fallback: detect by name
     let lower = to_lower(name);
-    if lower == "inbox" { return SpecialUse::Inbox; }
-    if lower == "sent" || lower.contains("sent") { return SpecialUse::Sent; }
-    if lower == "drafts" || lower.contains("draft") || lower.contains("entwurf") { return SpecialUse::Drafts; }
-    if lower == "trash" || lower.contains("trash") || lower.contains("papierkorb") || lower.contains("deleted") { return SpecialUse::Trash; }
-    if lower == "spam" || lower == "junk" || lower.contains("spam") || lower.contains("junk") { return SpecialUse::Spam; }
-    if lower == "archive" || lower.contains("archiv") { return SpecialUse::Archive; }
+    if lower == "inbox" {
+        return SpecialUse::Inbox;
+    }
+    if lower == "sent" || lower.contains("sent") {
+        return SpecialUse::Sent;
+    }
+    if lower == "drafts" || lower.contains("draft") || lower.contains("entwurf") {
+        return SpecialUse::Drafts;
+    }
+    if lower == "trash"
+        || lower.contains("trash")
+        || lower.contains("papierkorb")
+        || lower.contains("deleted")
+    {
+        return SpecialUse::Trash;
+    }
+    if lower == "spam" || lower == "junk" || lower.contains("spam") || lower.contains("junk") {
+        return SpecialUse::Spam;
+    }
+    if lower == "archive" || lower.contains("archiv") {
+        return SpecialUse::Archive;
+    }
 
     SpecialUse::None
 }
@@ -582,7 +618,9 @@ fn parse_header_fields(header_text: &str, msg: &mut MessageSummary) {
 
     for line in header_text.split('\n') {
         let line = line.trim_end_matches('\r');
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
 
         // Continuation line
         if line.starts_with(' ') || line.starts_with('\t') {
@@ -643,7 +681,9 @@ fn extract_fetch_field<'a>(line: &'a str, field: &str) -> Option<&'a str> {
         let start = pos + pattern.len();
         let rest = &line[start..];
         // Find end (space or parenthesis)
-        let end = rest.find(|c: char| c == ' ' || c == ')').unwrap_or(rest.len());
+        let end = rest
+            .find(|c: char| c == ' ' || c == ')')
+            .unwrap_or(rest.len());
         Some(&rest[..end])
     } else {
         None

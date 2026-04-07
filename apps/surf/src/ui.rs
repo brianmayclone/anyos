@@ -109,6 +109,7 @@ pub(crate) fn add_tab() {
     tab.webview.scroll_view().set_dock(ui::DOCK_FILL);
     tab.webview.scroll_view().on_scroll(|_| {
         crate::ensure_anim_timer();
+        crate::pump_deferred_images_for_active_tab();
     });
 
     // Hide all existing tabs while we add the new one.
@@ -132,6 +133,7 @@ pub(crate) fn close_tab(idx: usize) {
         ui::quit();
         return;
     }
+    crate::net_worker::handle_closed_tab(idx);
     st.tabs[idx].webview.scroll_view().remove();
     st.tabs.remove(idx);
     if st.active_tab >= st.tabs.len() {

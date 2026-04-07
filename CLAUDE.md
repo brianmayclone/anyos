@@ -131,6 +131,220 @@ Affected files:
 - `docs/vmctl.md` -- vmctl CLI tool reference (AI-friendly VM controller)
 - `docs/uisys-api.md` -- Legacy UI system (deprecated)
 
+## Surf Performance Roadmap
+
+This section tracks the long-running Surf performance work so it can be
+implemented step by step without losing context.
+
+### Current diagnosis
+
+- Surf is no longer blocked mainly by missing fetch priority; the current
+  bottlenecks are now deeper in the page pipeline.
+- The biggest architectural mismatch versus major browsers is still that
+  Surf/libwebview often falls back to coarse full-page relayouts and tightly
+  coupled DOM/CSS/JS/render scheduling.
+- The old global BearSSL singleton is no longer the main TLS path.
+- Shared per-connection TLS state now lives in:
+  - `libs/libhttp/anyos_tls.c`
+  - `libs/libhttp/src/tls.rs`
+- `apps/surf` and `apps/anymail` are wired to that shared handle-based wrapper.
+- `third_party/bearssl/build_x64/libbearssl_x64.a` is now expected to be rebuilt
+  from `scripts/build_bearssl_x64.sh`, which compiles `libs/libhttp/anyos_tls.c`
+  into the x64 BearSSL archive as the single TLS C wrapper source.
+- Remaining TLS work is now about broader adoption and cleanup, not basic
+  correctness of parallel HTTPS in Surf.
+
+### Implemented already
+
+1. Multi-class network workers in Surf
+- Implemented in `apps/surf/src/net_worker.rs`
+- Current worker classes:
+  - `critical`
+  - `tls`
+  - `script`
+  - `font`
+  - `visible`
+  - `background`
+- This is already better than the original simple `critical/visible/background`
+  split and is closer to how major browsers avoid scripts being stuck behind
+  images.
+
+2. Per-tab page lifecycle and ownership
+- Implemented in `apps/surf/src/tab.rs` and `apps/surf/src/main.rs`
+- `NavDone`/`NavError` and subresource handling are now tab-bound instead of
+  being implicitly tied to the active tab.
+- `PageLoadState` tracks:
+  - generation
+  - phase
+  - pending stylesheets
+  - pending scripts
+
+3. Result delivery via per-tab mailboxes
+- Implemented in `apps/surf/src/net_worker.rs` and `apps/surf/src/main.rs`
+- Replaced the earlier fragile global result queue path.
+- UI now drains results per tab and can prioritize important result types.
+
+4. UI-side result prioritization
+- Implemented in `apps/surf/src/main.rs`
+- Navigation, CSS, scripts, and fonts are handled before image floods.
+- Image results are processed in smaller batches so critical work is not hidden
+  behind a large media backlog.
+
+5. Deferred image pipeline
+- Implemented in `apps/surf/src/resources.rs`, `apps/surf/src/tab.rs`,
+  `apps/surf/src/main.rs`, and `apps/surf/src/ui.rs`
+- Only a first image budget is loaded immediately.
+- Remaining images are held per tab and pumped later, especially after the page
+  becomes interactive or during scrolling.
+
+6. Script modes partially separated
+- Implemented in `libs/libwebview/src/js/mod.rs` and `apps/surf/src/main.rs`
+- Currently recognized:
+  - blocking
+  - defer
+  - async
+- `async` scripts already avoid the fully blocking path.
+
+7. Timestamped Surf network logs
+- Implemented in `apps/surf/src/net_worker.rs`
+- `surf-net` logs now carry `uptime_ms()` timestamps, making critical-path
+  measurement possible from `anyos.log`.
+
+8. Resize freeze mitigation
+- Implemented in `apps/surf/src/main.rs`
+- Heavy pages such as Heise no longer freeze the whole browser as easily while
+  the user resizes the window.
+
+9. Shared per-connection TLS wrapper
+- Implemented in:
+  - `libs/libhttp/anyos_tls.c`
+  - `libs/libhttp/src/tls.rs`
+  - `scripts/build_bearssl_x64.sh`
+  - `apps/surf/build.rs`
+  - `apps/anymail/build.rs`
+  - `apps/anymail/src/protocol/tcp_stream.rs`
+- Surf and anyMail now link against the x64 BearSSL archive, and that archive
+  now embeds the shared handle-based TLS wrapper from `libs/libhttp/anyos_tls.c`
+  instead of carrying app-local singleton-style wrappers.
+- This is the prerequisite for real parallel HTTPS without global TLS races.
+
+### Partially implemented
+
+1. Stricter renderer prioritization
+- Fetching is now much more priority-aware than before.
+- Rendering itself still does not consistently do:
+  - header/navigation first
+  - visible content first
+  - deep/offscreen content later
+- Main gap is in `libs/libwebview/src/lib.rs` and the layout modules under
+  `libs/libwebview/src/layout/`.
+
+2. Better CSS/font critical path
+- CSS is already queued early.
+- Fonts no longer directly block scripts due to worker separation.
+- Remaining gaps:
+  - font swap style behavior
+  - visibility-aware font prioritization
+  - fewer layout stalls while web fonts arrive
+
+3. Image laziness
+- Surf now defers most images.
+- Remaining gaps:
+  - stronger scroll-near visibility heuristics
+  - decode throttling
+  - placeholders / low-quality preview strategy
+
+4. DOM/CSS/JS pipeline separation
+- Better than before, but still not browser-like.
+- Surf still has a lot of coupling between:
+  - HTML parse
+  - style application
+  - relayout
+  - script execution
+  - paint scheduling
+
+### Still open / major missing pieces
+
+1. Incremental layout and subtree invalidation
+- Not done yet.
+- Surf/libwebview still often uses broad `webview.relayout()` calls where
+  major browsers invalidate only affected subtrees.
+- This is likely the single biggest remaining engine performance gap.
+
+2. Visible-first render scheduling
+- Not done yet.
+- Need viewport-driven prioritization in layout/paint so the first screenful is
+  made fast before deep page sections.
+
+3. Full script model
+- `module` scripts are not implemented.
+- Parser-blocking behavior is still much coarser than in real browsers.
+- `defer` and `async` exist, but the scheduling model still needs refinement.
+
+4. TLS migration cleanup across the tree
+- Core per-connection TLS is now done.
+- Remaining work:
+  - migrate any remaining direct singleton-style TLS callers onto `libs/libhttp`
+  - consider sharing more of the Rust-side wrapper API too, not just the C layer
+
+5. Compositor/layer/tile evolution
+- Surf/libwebview already has some viewport/tile behavior, but not a modern
+  browser-style compositor pipeline with stronger layer reuse and cheaper large
+  scroll updates.
+
+### Comparison with major browsers
+
+Browsers like Chrome/Firefox/Safari are still ahead mainly because they have:
+
+- many parallel connections without a global TLS singleton bottleneck
+- aggressive `visible first` prioritization
+- incremental parsing, style, layout, and paint
+- subtree invalidation instead of frequent full relayouts
+- much more advanced image lazy loading and decode throttling
+- clearer scheduler separation between:
+  - networking
+  - main thread / DOM
+  - style/layout
+  - compositor
+  - raster
+
+### Step-by-step next implementation plan
+
+1. Use the shared per-connection TLS wrapper to relax remaining HTTPS
+   serialization
+- The correctness fix is done.
+- Next step is performance tuning:
+  - allow more safe parallel HTTPS lanes where the scheduler still serializes
+    too aggressively
+  - keep script/CSS priority higher than fonts/background work
+
+2. Remove blocking full-relayouts from the critical script start path
+- Do not force a heavy whole-page relayout right before deferred/blocking
+  scripts execute.
+- Scripts should start as soon as CSS blockers are done, with layout flushed
+  only when truly needed.
+
+3. Make renderer scheduling visible-first
+- Prioritize top-of-page layout and paint.
+- Delay deep/offscreen work until after the page is already usable.
+
+4. Add incremental/subtree relayout
+- Track dirty DOM/layout regions.
+- Re-layout only affected parts instead of large full-page relayouts.
+
+5. Improve script model further
+- Proper module script handling
+- Better parser-blocking and `defer` semantics
+- More browser-like execution ordering
+
+6. Improve font and image behavior after first paint
+- Better font swap behavior
+- Scroll-near image scheduling
+- Decode throttling / placeholders
+
+7. Revisit compositor strategy
+- Introduce stronger layer/tile reuse for large pages and scrolling.
+
 ## User Program Template (Rust CLI)
 
 ```rust

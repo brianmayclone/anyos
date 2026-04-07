@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! ES2022-2024 additions to built-in prototypes.
 //!
 //! - Array: findLast, findLastIndex, toReversed, toSorted, toSpliced, with, at (already done)

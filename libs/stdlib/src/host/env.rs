@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Host-mode environment variables — delegates to std::env.
 
 pub fn set(key: &str, value: &str) -> u32 {

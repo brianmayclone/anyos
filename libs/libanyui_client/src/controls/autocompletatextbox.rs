@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! AutoCompleteTextField — text input field with autocomplete suggestions.
 //!
 //! Extends TextField with a suggestions list that can be filtered and displayed

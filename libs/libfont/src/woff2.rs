@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! WOFF2 → TTF converter (W3C WOFF2 spec, 2022-03-01).
 //!
 //! Parses a WOFF2 font file, decompresses the Brotli-compressed table data,

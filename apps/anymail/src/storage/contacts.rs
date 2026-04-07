@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Address book / contacts (JSON persistence).
 
 use alloc::string::String;
@@ -31,7 +33,9 @@ pub struct AddressBook {
 
 impl AddressBook {
     pub fn new() -> Self {
-        Self { contacts: Vec::new() }
+        Self {
+            contacts: Vec::new(),
+        }
     }
 
     /// Load contacts from JSON file.
@@ -39,22 +43,30 @@ impl AddressBook {
         let mut book = Self::new();
 
         let fd = anyos_std::fs::open(path, 0);
-        if fd == u32::MAX { return book; }
+        if fd == u32::MAX {
+            return book;
+        }
 
         let mut buf = alloc::vec![0u8; 64 * 1024];
         let mut total = 0usize;
         loop {
             let mut chunk = [0u8; 4096];
             let n = anyos_std::fs::read(fd, &mut chunk);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             let n = n as usize;
-            if total + n > buf.len() { break; }
+            if total + n > buf.len() {
+                break;
+            }
             buf[total..total + n].copy_from_slice(&chunk[..n]);
             total += n;
         }
         anyos_std::fs::close(fd);
 
-        if total == 0 { return book; }
+        if total == 0 {
+            return book;
+        }
 
         let text = match core::str::from_utf8(&buf[..total]) {
             Ok(s) => s,
@@ -126,9 +138,10 @@ impl AddressBook {
         }
 
         let q = to_lower(query);
-        self.contacts.iter().filter(|c| {
-            to_lower(&c.name).contains(&q) || to_lower(&c.email).contains(&q)
-        }).collect()
+        self.contacts
+            .iter()
+            .filter(|c| to_lower(&c.name).contains(&q) || to_lower(&c.email).contains(&q))
+            .collect()
     }
 
     /// Auto-learn contacts from sent mail headers.

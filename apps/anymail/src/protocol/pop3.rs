@@ -1,8 +1,10 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! POP3 client implementation (RFC 1939).
 
+use super::tcp_stream::{ConnError, TcpStream};
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::tcp_stream::{TcpStream, ConnError};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -17,7 +19,9 @@ pub enum Pop3Error {
 }
 
 impl From<ConnError> for Pop3Error {
-    fn from(e: ConnError) -> Self { Pop3Error::Connection(e) }
+    fn from(e: ConnError) -> Self {
+        Pop3Error::Connection(e)
+    }
 }
 
 /// POP3 message listing entry.
@@ -105,7 +109,9 @@ impl Pop3Client {
         let mut messages = Vec::new();
         loop {
             let line = self.stream_mut()?.recv_line()?;
-            if line == "." { break; }
+            if line == "." {
+                break;
+            }
 
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
@@ -132,7 +138,9 @@ impl Pop3Client {
         let mut result = Vec::new();
         loop {
             let line = self.stream_mut()?.recv_line()?;
-            if line == "." { break; }
+            if line == "." {
+                break;
+            }
 
             let parts: Vec<&str> = line.splitn(2, ' ').collect();
             if parts.len() >= 2 {

@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Button Auto-Size Demo
 //!
 //! Demonstrates the new auto_size() method on Button and IconButton.

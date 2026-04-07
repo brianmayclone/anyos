@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! anyMail — Thunderbird-like email client for anyOS.
 //!
 //! Supports IMAP4rev1, POP3, and SMTP with TLS/STARTTLS.
@@ -12,9 +14,9 @@ mod storage;
 mod sync_worker;
 
 use anyos_std::format;
+use anyos_std::vec;
 use anyos_std::String;
 use anyos_std::Vec;
-use anyos_std::vec;
 
 use libanyui_client as anyui;
 use libanyui_client::IconType;
@@ -22,11 +24,11 @@ use libanyui_client::Widget;
 
 use crate::mail::message::*;
 use crate::mail::rfc2822::EmailAddress;
+use crate::protocol::imap::{ImapClient, ImapFolder, SpecialUse};
+use crate::protocol::smtp::SmtpClient;
 use crate::storage::account::*;
 use crate::storage::contacts::{AddressBook, Contact};
 use crate::storage::maildir;
-use crate::protocol::imap::{ImapClient, ImapFolder, SpecialUse};
-use crate::protocol::smtp::SmtpClient;
 use crate::sync_worker::SyncPhase;
 
 anyos_std::entry!(main);
@@ -39,19 +41,19 @@ const CHECK_INTERVAL_MS: u32 = 300_000; // 5 minutes
 const NUM_GRID_COLS: usize = 5;
 
 // Colors
-const COL_BG: u32         = 0xFF1E1E2E;
-const COL_TOOLBAR: u32    = 0xFF252536;
-const COL_STATUS: u32     = 0xFF007ACC;
-const COL_SIDEBAR: u32    = 0xFF252536;
-const COL_GRID_BG: u32    = 0xFF1E1E2E;
+const COL_BG: u32 = 0xFF1E1E2E;
+const COL_TOOLBAR: u32 = 0xFF252536;
+const COL_STATUS: u32 = 0xFF007ACC;
+const COL_SIDEBAR: u32 = 0xFF252536;
+const COL_GRID_BG: u32 = 0xFF1E1E2E;
 const COL_PREVIEW_BG: u32 = 0xFF1E1E2E;
-const COL_UNREAD: u32     = 0xFFFFFFFF;
-const COL_READ: u32       = 0xFF888888;
-const COL_FLAGGED: u32    = 0xFFFFD700;
-const COL_DELETED: u32    = 0xFF555555;
-const COL_JUNK: u32       = 0xFF996633;
-const COL_WHITE: u32      = 0xFFFFFFFF;
-const COL_DIM: u32        = 0xFFAAAAAA;
+const COL_UNREAD: u32 = 0xFFFFFFFF;
+const COL_READ: u32 = 0xFF888888;
+const COL_FLAGGED: u32 = 0xFFFFD700;
+const COL_DELETED: u32 = 0xFF555555;
+const COL_JUNK: u32 = 0xFF996633;
+const COL_WHITE: u32 = 0xFFFFFFFF;
+const COL_DIM: u32 = 0xFFAAAAAA;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Folder info stored per tree node
@@ -166,7 +168,9 @@ fn set_status(text: &str) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn main() {
-    if !anyui::init() { return; }
+    if !anyui::init() {
+        return;
+    }
     anyos_std::i18n::init();
 
     let home = home_dir();
@@ -317,11 +321,13 @@ fn main() {
     // Message grid (top of right)
     let msg_grid = anyui::DataGrid::new(800, 300);
     msg_grid.set_columns(&[
-        anyui::ColumnDef::new("").width(30),            // Flags (star/unread)
+        anyui::ColumnDef::new("").width(30), // Flags (star/unread)
         anyui::ColumnDef::new(t("From")).width(180),
         anyui::ColumnDef::new(t("Subject")).width(350),
         anyui::ColumnDef::new(t("Date")).width(130),
-        anyui::ColumnDef::new(t("Size")).width(70).align(anyui::ALIGN_RIGHT),
+        anyui::ColumnDef::new(t("Size"))
+            .width(70)
+            .align(anyui::ALIGN_RIGHT),
     ]);
     msg_grid.set_row_height(22);
     msg_grid.set_header_height(24);
@@ -358,8 +364,14 @@ fn main() {
     // ── Context menu for message grid ──────────────────────────────────
     let ctx_items = format!(
         "{}|{}|{}|{}|{}|{}|{}|{}",
-        t("Mark as Read"), t("Mark as Unread"), t("Toggle Star"), t("Mark as Junk"),
-        t("Move to Trash"), t("Move to Archive"), t("Copy to Folder..."), t("Delete Permanently")
+        t("Mark as Read"),
+        t("Mark as Unread"),
+        t("Toggle Star"),
+        t("Mark as Junk"),
+        t("Move to Trash"),
+        t("Move to Archive"),
+        t("Copy to Folder..."),
+        t("Delete Permanently")
     );
     let ctx_menu = anyui::ContextMenu::new(&ctx_items);
     msg_grid.set_context_menu(&ctx_menu);
@@ -416,51 +428,69 @@ fn main() {
     // ── Menu bar ─────────────────────────────────────────────────────────
     let mut mb = anyui::MenuBarBuilder::new()
         .menu("File")
-            .item(1, "Check Mail", 0)
-            .separator()
-            .item(2, "Quit", 0)
+        .item(1, "Check Mail", 0)
+        .separator()
+        .item(2, "Quit", 0)
         .end_menu()
         .menu("Message")
-            .item(10, "Compose", 0)
-            .item(11, "Reply", 0)
-            .item(12, "Forward", 0)
-            .separator()
-            .item(13, "Delete", 0)
+        .item(10, "Compose", 0)
+        .item(11, "Reply", 0)
+        .item(12, "Forward", 0)
+        .separator()
+        .item(13, "Delete", 0)
         .end_menu()
         .menu("Tools")
-            .item(20, "Account Settings", 0)
-            .item(21, "Address Book", 0)
+        .item(20, "Account Settings", 0)
+        .item(21, "Address Book", 0)
         .end_menu();
     let menu_data = mb.build();
     let menu_bar = anyui::MenuBar::set(win.id(), menu_data);
-    menu_bar.on_item(|e| {
-        match e.item_id {
-            1  => on_get_mail(),
-            2  => anyui::quit(),
-            10 => open_compose(ComposeMode::New),
-            11 => open_compose(ComposeMode::Reply),
-            12 => open_compose(ComposeMode::Forward),
-            13 => on_delete(),
-            20 => open_account_setup(),
-            21 => open_contacts(),
-            _  => {}
-        }
+    menu_bar.on_item(|e| match e.item_id {
+        1 => on_get_mail(),
+        2 => anyui::quit(),
+        10 => open_compose(ComposeMode::New),
+        11 => open_compose(ComposeMode::Reply),
+        12 => open_compose(ComposeMode::Forward),
+        13 => on_delete(),
+        20 => open_account_setup(),
+        21 => open_contacts(),
+        _ => {}
     });
 
     // ── Populate folder tree ───────────────────────────────────────────
     populate_folder_tree();
 
     // ── Wire up events ─────────────────────────────────────────────────
-    btn_new.on_click(|_| { open_compose(ComposeMode::New); });
-    btn_reply.on_click(|_| { open_compose(ComposeMode::Reply); });
-    btn_reply_all.on_click(|_| { open_compose(ComposeMode::ReplyAll); });
-    btn_forward.on_click(|_| { open_compose(ComposeMode::Forward); });
-    btn_delete.on_click(|_| { on_delete(); });
-    btn_junk.on_click(|_| { on_mark_junk(); });
-    btn_archive.on_click(|_| { on_archive(); });
-    btn_getmail.on_click(|_| { on_get_mail(); });
-    btn_accounts.on_click(|_| { open_account_setup(); });
-    btn_contacts.on_click(|_| { open_contacts(); });
+    btn_new.on_click(|_| {
+        open_compose(ComposeMode::New);
+    });
+    btn_reply.on_click(|_| {
+        open_compose(ComposeMode::Reply);
+    });
+    btn_reply_all.on_click(|_| {
+        open_compose(ComposeMode::ReplyAll);
+    });
+    btn_forward.on_click(|_| {
+        open_compose(ComposeMode::Forward);
+    });
+    btn_delete.on_click(|_| {
+        on_delete();
+    });
+    btn_junk.on_click(|_| {
+        on_mark_junk();
+    });
+    btn_archive.on_click(|_| {
+        on_archive();
+    });
+    btn_getmail.on_click(|_| {
+        on_get_mail();
+    });
+    btn_accounts.on_click(|_| {
+        open_account_setup();
+    });
+    btn_contacts.on_click(|_| {
+        open_contacts();
+    });
 
     search_field.on_text_changed(|e| {
         let mut buf = [0u8; 256];
@@ -534,7 +564,9 @@ fn main() {
         }
     });
 
-    win.on_close(|_| { anyui::quit(); });
+    win.on_close(|_| {
+        anyui::quit();
+    });
 
     // ── Start poll timer for async sync (500ms) ────────────────────────
     let sync_poll_timer = anyui::set_timer(500, || {
@@ -570,7 +602,9 @@ fn populate_folder_tree() {
     a.folders.clear();
 
     if a.config.accounts.is_empty() {
-        let root = a.folder_tree.add_root(anyos_std::i18n::t("No accounts configured"));
+        let root = a
+            .folder_tree
+            .add_root(anyos_std::i18n::t("No accounts configured"));
         a.folder_tree.set_node_style(root, 0);
         return;
     }
@@ -591,8 +625,11 @@ fn populate_folder_tree() {
         // Default folders
         let default_folders = ["INBOX", "Sent", "Drafts", "Trash", "Spam"];
         let special_uses = [
-            SpecialUse::Inbox, SpecialUse::Sent, SpecialUse::Drafts,
-            SpecialUse::Trash, SpecialUse::Spam,
+            SpecialUse::Inbox,
+            SpecialUse::Sent,
+            SpecialUse::Drafts,
+            SpecialUse::Trash,
+            SpecialUse::Spam,
         ];
 
         for (i, folder_name) in default_folders.iter().enumerate() {
@@ -629,7 +666,9 @@ fn on_folder_selected(node_idx: u32) {
 
 fn load_folder_messages() {
     let a = app();
-    if a.current_account >= a.config.accounts.len() { return; }
+    if a.current_account >= a.config.accounts.len() {
+        return;
+    }
 
     let account = &a.config.accounts[a.current_account];
     let idx_path = maildir::index_path(&a.base_dir, &account.id, &a.current_folder);
@@ -646,7 +685,14 @@ fn load_folder_messages() {
     let total = a.all_messages.len();
     let unread = a.all_messages.iter().filter(|m| !m.is_seen()).count();
     let t = anyos_std::i18n::t;
-    set_status(&format!("{} - {} {}, {} {}", a.current_folder, total, t("messages"), unread, t("unread")));
+    set_status(&format!(
+        "{} - {} {}, {} {}",
+        a.current_folder,
+        total,
+        t("messages"),
+        unread,
+        t("unread")
+    ));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -661,22 +707,33 @@ fn apply_filters() {
     let show_starred = a.filter_starred_on;
     let show_attach = a.filter_attach_on;
 
-    a.messages = a.all_messages.iter().filter(|m| {
-        // Text search
-        if !query_lower.is_empty() {
-            let from_match = to_lower(m.from.display_short()).contains(&query_lower);
-            let subj_match = to_lower(&m.subject).contains(&query_lower);
-            let prev_match = to_lower(&m.preview).contains(&query_lower);
-            if !from_match && !subj_match && !prev_match {
+    a.messages = a
+        .all_messages
+        .iter()
+        .filter(|m| {
+            // Text search
+            if !query_lower.is_empty() {
+                let from_match = to_lower(m.from.display_short()).contains(&query_lower);
+                let subj_match = to_lower(&m.subject).contains(&query_lower);
+                let prev_match = to_lower(&m.preview).contains(&query_lower);
+                if !from_match && !subj_match && !prev_match {
+                    return false;
+                }
+            }
+            // Filter toggles
+            if show_unread && m.is_seen() {
                 return false;
             }
-        }
-        // Filter toggles
-        if show_unread && m.is_seen() { return false; }
-        if show_starred && !m.is_flagged() { return false; }
-        if show_attach && !m.has_attachment() { return false; }
-        true
-    }).cloned().collect();
+            if show_starred && !m.is_flagged() {
+                return false;
+            }
+            if show_attach && !m.has_attachment() {
+                return false;
+            }
+            true
+        })
+        .cloned()
+        .collect();
 
     refresh_grid();
 }
@@ -698,9 +755,15 @@ fn refresh_grid() {
         // Flags column
         let flags_str = {
             let mut s = String::new();
-            if msg.is_flagged() { s.push('*'); }
-            if !msg.is_seen() { s.push('!'); }
-            if msg.has_attachment() { s.push('@'); }
+            if msg.is_flagged() {
+                s.push('*');
+            }
+            if !msg.is_seen() {
+                s.push('!');
+            }
+            if msg.has_attachment() {
+                s.push('@');
+            }
             s
         };
         a.msg_grid.set_cell(row as u32, 0, &flags_str);
@@ -762,10 +825,14 @@ fn on_message_selected(row: u32) {
     let t = anyos_std::i18n::t;
     let header = format!(
         "{}: {}\n{}: {}\n{}: {}\n{}: {}",
-        t("From"), msg.from.to_header_string(),
-        t("To"), format_to_list(&msg.to),
-        t("Subject"), msg.subject,
-        t("Date"), crate::mail::rfc2822::format_date_short(&msg.date)
+        t("From"),
+        msg.from.to_header_string(),
+        t("To"),
+        format_to_list(&msg.to),
+        t("Subject"),
+        msg.subject,
+        t("Date"),
+        crate::mail::rfc2822::format_date_short(&msg.date)
     );
     a.preview_header.set_text(&header);
 
@@ -782,7 +849,8 @@ fn on_message_selected(row: u32) {
                 // Strip HTML tags for text preview
                 a.preview_body.set_text(&strip_html(&full.html_body));
             } else {
-                a.preview_body.set_text(anyos_std::i18n::t("(No message body)"));
+                a.preview_body
+                    .set_text(anyos_std::i18n::t("(No message body)"));
             }
 
             // Show attachment count
@@ -807,7 +875,9 @@ fn on_message_selected(row: u32) {
 
 fn mark_message_seen(idx: usize) {
     let a = app();
-    if idx >= a.messages.len() { return; }
+    if idx >= a.messages.len() {
+        return;
+    }
 
     a.messages[idx].flags |= FLAG_SEEN;
 
@@ -827,7 +897,9 @@ fn mark_message_seen(idx: usize) {
 
 fn save_current_index() {
     let a = app();
-    if a.current_account >= a.config.accounts.len() { return; }
+    if a.current_account >= a.config.accounts.len() {
+        return;
+    }
     let account = &a.config.accounts[a.current_account];
     let idx_path = maildir::index_path(&a.base_dir, &account.id, &a.current_folder);
     maildir::save_index(&idx_path, &a.all_messages);
@@ -919,17 +991,20 @@ fn on_archive() {
 
 fn on_context_action(index: u32) {
     match index {
-        0 => { // Mark as Read
+        0 => {
+            // Mark as Read
             if let Some(idx) = app().selected_msg_idx {
                 mark_message_flag(idx, FLAG_SEEN, true);
             }
         }
-        1 => { // Mark as Unread
+        1 => {
+            // Mark as Unread
             if let Some(idx) = app().selected_msg_idx {
                 mark_message_flag(idx, FLAG_SEEN, false);
             }
         }
-        2 => { // Toggle Star
+        2 => {
+            // Toggle Star
             if let Some(idx) = app().selected_msg_idx {
                 let flagged = idx < app().messages.len() && app().messages[idx].is_flagged();
                 mark_message_flag(idx, FLAG_FLAGGED, !flagged);
@@ -945,7 +1020,9 @@ fn on_context_action(index: u32) {
 
 fn mark_message_flag(idx: usize, flag: u32, set: bool) {
     let a = app();
-    if idx >= a.messages.len() { return; }
+    if idx >= a.messages.len() {
+        return;
+    }
     let uid = a.messages[idx].uid;
 
     if set {
@@ -956,7 +1033,11 @@ fn mark_message_flag(idx: usize, flag: u32, set: bool) {
 
     for m in &mut a.all_messages {
         if m.uid == uid {
-            if set { m.flags |= flag; } else { m.flags &= !flag; }
+            if set {
+                m.flags |= flag;
+            } else {
+                m.flags &= !flag;
+            }
             break;
         }
     }
@@ -979,7 +1060,9 @@ fn spawn_detached(entry: fn(), stack_size: usize, name: &str) {
 fn on_get_mail() {
     let a = app();
     if a.config.accounts.is_empty() {
-        set_status(anyos_std::i18n::t("No accounts configured. Click 'Accounts' to add one."));
+        set_status(anyos_std::i18n::t(
+            "No accounts configured. Click 'Accounts' to add one.",
+        ));
         return;
     }
 
@@ -987,7 +1070,8 @@ fn on_get_mail() {
 
     // If already running, cancel instead
     if ss.worker_active.load(core::sync::atomic::Ordering::Relaxed) {
-        ss.cancel_requested.store(true, core::sync::atomic::Ordering::Release);
+        ss.cancel_requested
+            .store(true, core::sync::atomic::Ordering::Release);
         set_status(anyos_std::i18n::t("Cancelling sync..."));
         return;
     }
@@ -996,15 +1080,19 @@ fn on_get_mail() {
     ss.acquire();
     ss.accounts = a.config.accounts.clone();
     ss.base_dir = a.base_dir.clone();
-    ss.target_account_idx = None;    // sync all accounts
-    ss.target_folder = None;         // sync default folders
+    ss.target_account_idx = None; // sync all accounts
+    ss.target_folder = None; // sync default folders
     ss.uid_offset = 0;
     ss.fetch_limit = sync_worker::LAZY_BATCH_SIZE;
     ss.reset_output();
     ss.release();
 
-    ss.worker_active.store(true, core::sync::atomic::Ordering::Release);
-    ss.phase.store(SyncPhase::Connecting as u32, core::sync::atomic::Ordering::Release);
+    ss.worker_active
+        .store(true, core::sync::atomic::Ordering::Release);
+    ss.phase.store(
+        SyncPhase::Connecting as u32,
+        core::sync::atomic::Ordering::Release,
+    );
 
     // Spawn background thread (128KB stack for network buffers + TLS)
     spawn_detached(sync_worker::sync_worker_entry, 128 * 1024, "mail-sync");
@@ -1016,10 +1104,14 @@ fn on_get_mail() {
 /// Trigger background fetch for a specific folder (used on folder selection).
 fn trigger_folder_sync(acct_idx: usize, folder_name: &str) {
     let a = app();
-    if acct_idx >= a.config.accounts.len() { return; }
+    if acct_idx >= a.config.accounts.len() {
+        return;
+    }
 
     let ss = sync_worker::sync_state();
-    if ss.worker_active.load(core::sync::atomic::Ordering::Relaxed) { return; }
+    if ss.worker_active.load(core::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
 
     ss.acquire();
     ss.accounts = a.config.accounts.clone();
@@ -1031,8 +1123,12 @@ fn trigger_folder_sync(acct_idx: usize, folder_name: &str) {
     ss.reset_output();
     ss.release();
 
-    ss.worker_active.store(true, core::sync::atomic::Ordering::Release);
-    ss.phase.store(SyncPhase::Connecting as u32, core::sync::atomic::Ordering::Release);
+    ss.worker_active
+        .store(true, core::sync::atomic::Ordering::Release);
+    ss.phase.store(
+        SyncPhase::Connecting as u32,
+        core::sync::atomic::Ordering::Release,
+    );
 
     spawn_detached(sync_worker::sync_worker_entry, 128 * 1024, "mail-folder");
 }
@@ -1075,7 +1171,10 @@ fn poll_sync_state() {
         let a = app();
         for batch in &batches {
             // Check if this batch is for the currently viewed folder
-            let is_current = a.config.accounts.get(a.current_account)
+            let is_current = a
+                .config
+                .accounts
+                .get(a.current_account)
                 .map(|acc| acc.id == batch.account_id && a.current_folder == batch.folder_name)
                 .unwrap_or(false);
 
@@ -1100,13 +1199,25 @@ fn poll_sync_state() {
                 let unread = a.all_messages.iter().filter(|m| !m.is_seen()).count();
                 let t = anyos_std::i18n::t;
                 if a.has_more_messages {
-                    set_status(&format!("{} - {} {} ({} {}), {} {}",
-                        a.current_folder, total, t("messages"),
-                        a.folder_total_count, t("on server"),
-                        unread, t("unread")));
+                    set_status(&format!(
+                        "{} - {} {} ({} {}), {} {}",
+                        a.current_folder,
+                        total,
+                        t("messages"),
+                        a.folder_total_count,
+                        t("on server"),
+                        unread,
+                        t("unread")
+                    ));
                 } else {
-                    set_status(&format!("{} - {} {}, {} {}",
-                        a.current_folder, total, t("messages"), unread, t("unread")));
+                    set_status(&format!(
+                        "{} - {} {}, {} {}",
+                        a.current_folder,
+                        total,
+                        t("messages"),
+                        unread,
+                        t("unread")
+                    ));
                 }
             }
         }
@@ -1121,7 +1232,11 @@ fn poll_sync_state() {
         a.loading_more = false;
         // Reload current folder from disk (final authoritative state)
         load_folder_messages();
-        set_status(&format!("{} ({})", anyos_std::i18n::t("Mail check complete"), now_string()));
+        set_status(&format!(
+            "{} ({})",
+            anyos_std::i18n::t("Mail check complete"),
+            now_string()
+        ));
     } else if phase == SyncPhase::Error as u32 {
         ss.phase.store(SyncPhase::Idle as u32, Ordering::Release);
         ss.acquire();
@@ -1140,10 +1255,14 @@ fn poll_sync_state() {
 /// Check if user has scrolled near the bottom and trigger lazy loading.
 fn check_lazy_load_needed() {
     let a = app();
-    if !a.has_more_messages || a.loading_more { return; }
+    if !a.has_more_messages || a.loading_more {
+        return;
+    }
 
     let ss = sync_worker::sync_state();
-    if ss.worker_active.load(core::sync::atomic::Ordering::Relaxed) { return; }
+    if ss.worker_active.load(core::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
 
     let scroll_offset = a.msg_grid.scroll_offset();
     let visible_rows = 15u32; // approximate: grid_height / row_height
@@ -1165,8 +1284,12 @@ fn check_lazy_load_needed() {
         ss.reset_output();
         ss.release();
 
-        ss.worker_active.store(true, core::sync::atomic::Ordering::Release);
-        ss.phase.store(SyncPhase::Connecting as u32, core::sync::atomic::Ordering::Release);
+        ss.worker_active
+            .store(true, core::sync::atomic::Ordering::Release);
+        ss.phase.store(
+            SyncPhase::Connecting as u32,
+            core::sync::atomic::Ordering::Release,
+        );
 
         spawn_detached(sync_worker::sync_worker_entry, 128 * 1024, "mail-lazy");
         set_status(anyos_std::i18n::t("Loading more messages..."));
@@ -1227,8 +1350,11 @@ fn build_contact_suggestions(address_book: &AddressBook) -> String {
 fn open_compose(mode: ComposeMode) {
     let a = app();
     if a.config.accounts.is_empty() {
-        anyui::MessageBox::show(anyui::MessageBoxType::Warning,
-            anyos_std::i18n::t("No email account configured.\nPlease add an account first."), Some("OK"));
+        anyui::MessageBox::show(
+            anyui::MessageBoxType::Warning,
+            anyos_std::i18n::t("No email account configured.\nPlease add an account first."),
+            Some("OK"),
+        );
         return;
     }
 
@@ -1236,15 +1362,28 @@ fn open_compose(mode: ComposeMode) {
 
     // Prepare compose data based on mode
     let (to_str, cc_str, subject, body, in_reply_to, references) = match mode {
-        ComposeMode::New => {
-            (String::new(), String::new(), String::new(), String::new(), String::new(), String::new())
-        }
+        ComposeMode::New => (
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
         ComposeMode::Reply | ComposeMode::ReplyAll => {
             if let Some(ref full) = a.current_full_msg {
                 let (to, cc, subj, body, irt, refs) =
                     crate::mail::compose::prepare_reply(full, mode == ComposeMode::ReplyAll);
-                let to_str = to.iter().map(|addr: &EmailAddress| addr.to_header_string()).collect::<Vec<_>>().join(", ");
-                let cc_str = cc.iter().map(|addr: &EmailAddress| addr.to_header_string()).collect::<Vec<_>>().join(", ");
+                let to_str = to
+                    .iter()
+                    .map(|addr: &EmailAddress| addr.to_header_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let cc_str = cc
+                    .iter()
+                    .map(|addr: &EmailAddress| addr.to_header_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 (to_str, cc_str, subj, body, irt, refs)
             } else {
                 return;
@@ -1253,16 +1392,41 @@ fn open_compose(mode: ComposeMode) {
         ComposeMode::Forward => {
             if let Some(ref full) = a.current_full_msg {
                 let (subj, body) = crate::mail::compose::prepare_forward(full);
-                (String::new(), String::new(), subj, body, String::new(), String::new())
+                (
+                    String::new(),
+                    String::new(),
+                    subj,
+                    body,
+                    String::new(),
+                    String::new(),
+                )
             } else {
                 return;
             }
         }
         ComposeMode::Draft => {
             if let Some(ref full) = a.current_full_msg {
-                let to_str = full.summary.to.iter().map(|addr: &EmailAddress| addr.to_header_string()).collect::<Vec<_>>().join(", ");
-                let cc_str = full.cc.iter().map(|addr: &EmailAddress| addr.to_header_string()).collect::<Vec<_>>().join(", ");
-                (to_str, cc_str, full.summary.subject.clone(), full.text_body.clone(), String::new(), String::new())
+                let to_str = full
+                    .summary
+                    .to
+                    .iter()
+                    .map(|addr: &EmailAddress| addr.to_header_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let cc_str = full
+                    .cc
+                    .iter()
+                    .map(|addr: &EmailAddress| addr.to_header_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                (
+                    to_str,
+                    cc_str,
+                    full.summary.subject.clone(),
+                    full.text_body.clone(),
+                    String::new(),
+                    String::new(),
+                )
             } else {
                 return;
             }
@@ -1376,15 +1540,26 @@ fn open_compose(mode: ComposeMode) {
     let refs = String::from(references.as_str());
 
     btn_send.on_click(move |_| {
-        on_send(&to_field, &cc_field, &subj_field, &body_editor, acct_idx, &irt, &refs);
+        on_send(
+            &to_field,
+            &cc_field,
+            &subj_field,
+            &body_editor,
+            acct_idx,
+            &irt,
+            &refs,
+        );
     });
 
     btn_attach.on_click(|_| {
         if let Some(path) = anyui::FileDialog::open_file() {
             // Attachment handling - load file and add to message
             // For now just notify the user
-            anyui::MessageBox::show(anyui::MessageBoxType::Info,
-                &format!("{}: {}", anyos_std::i18n::t("Attachment added"), path), Some("OK"));
+            anyui::MessageBox::show(
+                anyui::MessageBoxType::Info,
+                &format!("{}: {}", anyos_std::i18n::t("Attachment added"), path),
+                Some("OK"),
+            );
         }
     });
 
@@ -1411,7 +1586,9 @@ fn on_send(
     references: &str,
 ) {
     let a = app();
-    if acct_idx >= a.config.accounts.len() { return; }
+    if acct_idx >= a.config.accounts.len() {
+        return;
+    }
     let account = a.config.accounts[acct_idx].clone();
 
     // Read fields
@@ -1424,7 +1601,11 @@ fn on_send(
     let body_str = String::from(core::str::from_utf8(&body_buf[..body_len as usize]).unwrap_or(""));
 
     if to_str.is_empty() {
-        anyui::MessageBox::show(anyui::MessageBoxType::Warning, anyos_std::i18n::t("Please enter a recipient."), Some("OK"));
+        anyui::MessageBox::show(
+            anyui::MessageBoxType::Warning,
+            anyos_std::i18n::t("Please enter a recipient."),
+            Some("OK"),
+        );
         return;
     }
 
@@ -1435,11 +1616,22 @@ fn on_send(
 
     // Build MIME message
     let message_data = crate::mail::compose::build_message(
-        &from, &to_addrs, &cc_addrs, &subj_str, &body_str, "", &[], in_reply_to, references,
+        &from,
+        &to_addrs,
+        &cc_addrs,
+        &subj_str,
+        &body_str,
+        "",
+        &[],
+        in_reply_to,
+        references,
     );
 
     // Connect to SMTP
-    set_status(&format!("Sending via {}:{}...", account.smtp_host, account.smtp_port));
+    set_status(&format!(
+        "Sending via {}:{}...",
+        account.smtp_host, account.smtp_port
+    ));
 
     let mut smtp = SmtpClient::new();
     let smtp_tls = account.smtp_use_tls();
@@ -1469,8 +1661,16 @@ fn on_send(
     }
 
     // AUTH
-    let user = if account.smtp_user.is_empty() { &account.incoming_user } else { &account.smtp_user };
-    let pass = if account.smtp_pass.is_empty() { &account.incoming_pass } else { &account.smtp_pass };
+    let user = if account.smtp_user.is_empty() {
+        &account.incoming_user
+    } else {
+        &account.smtp_user
+    };
+    let pass = if account.smtp_pass.is_empty() {
+        &account.incoming_pass
+    } else {
+        &account.smtp_pass
+    };
 
     if smtp.has_capability("AUTH PLAIN") {
         if let Err(e) = smtp.auth_plain(user, pass) {
@@ -1487,7 +1687,9 @@ fn on_send(
     }
 
     // Send
-    let recipients: Vec<&str> = to_addrs.iter().chain(cc_addrs.iter())
+    let recipients: Vec<&str> = to_addrs
+        .iter()
+        .chain(cc_addrs.iter())
         .map(|a| a.address.as_str())
         .collect();
 
@@ -1520,7 +1722,11 @@ fn on_send(
     maildir::save_index(&sent_idx_path, &sent_msgs);
 
     set_status(anyos_std::i18n::t("Message sent successfully"));
-    anyui::MessageBox::show(anyui::MessageBoxType::Info, anyos_std::i18n::t("Message sent."), Some("OK"));
+    anyui::MessageBox::show(
+        anyui::MessageBoxType::Info,
+        anyos_std::i18n::t("Message sent."),
+        Some("OK"),
+    );
 }
 
 fn save_draft(
@@ -1531,7 +1737,9 @@ fn save_draft(
     acct_idx: usize,
 ) {
     let a = app();
-    if acct_idx >= a.config.accounts.len() { return; }
+    if acct_idx >= a.config.accounts.len() {
+        return;
+    }
     let account = a.config.accounts[acct_idx].clone();
 
     let to_str = get_field_text(to_field);
@@ -1547,7 +1755,15 @@ fn save_draft(
     let cc_addrs = crate::mail::rfc2822::parse_address_list(&cc_str);
 
     let message_data = crate::mail::compose::build_message(
-        &from, &to_addrs, &cc_addrs, &subj_str, &body_str, "", &[], "", "",
+        &from,
+        &to_addrs,
+        &cc_addrs,
+        &subj_str,
+        &body_str,
+        "",
+        &[],
+        "",
+        "",
     );
 
     let base = a.base_dir.clone();
@@ -1592,126 +1808,160 @@ fn open_account_setup() {
 
     // Display name
     let lbl = anyui::Label::new(&format!("{}:", t("Display Name")));
-    lbl.set_position(8, y); lbl.set_size(label_w, 20); lbl.set_text_color(COL_DIM);
+    lbl.set_position(8, y);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(COL_DIM);
     panel.add(&lbl);
     let name_field = anyui::TextField::new();
-    name_field.set_position(130, y); name_field.set_size(field_w, 22);
+    name_field.set_position(130, y);
+    name_field.set_size(field_w, 22);
     name_field.set_placeholder(t("Your Name"));
     panel.add(&name_field);
     y += row_h;
 
     // Email
     let lbl = anyui::Label::new(&format!("{}:", t("Email Address")));
-    lbl.set_position(8, y); lbl.set_size(label_w, 20); lbl.set_text_color(COL_DIM);
+    lbl.set_position(8, y);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(COL_DIM);
     panel.add(&lbl);
     let email_field = anyui::TextField::new();
-    email_field.set_position(130, y); email_field.set_size(field_w, 22);
+    email_field.set_position(130, y);
+    email_field.set_size(field_w, 22);
     email_field.set_placeholder("user@example.com");
     panel.add(&email_field);
     y += row_h;
 
     // Protocol
     let lbl = anyui::Label::new(&format!("{}:", t("Protocol")));
-    lbl.set_position(8, y); lbl.set_size(label_w, 20); lbl.set_text_color(COL_DIM);
+    lbl.set_position(8, y);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(COL_DIM);
     panel.add(&lbl);
     let proto_seg = anyui::SegmentedControl::new("IMAP|POP3");
-    proto_seg.set_position(130, y); proto_seg.set_size(200, 24);
+    proto_seg.set_position(130, y);
+    proto_seg.set_size(200, 24);
     panel.add(&proto_seg);
     y += row_h + 8;
 
     // Incoming server
     let lbl = anyui::Label::new(&format!("{}:", t("Incoming Server")));
-    lbl.set_position(8, y); lbl.set_size(label_w, 20); lbl.set_text_color(COL_DIM);
+    lbl.set_position(8, y);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(COL_DIM);
     panel.add(&lbl);
     let in_host = anyui::TextField::new();
-    in_host.set_position(130, y); in_host.set_size(260, 22);
+    in_host.set_position(130, y);
+    in_host.set_size(260, 22);
     in_host.set_placeholder("imap.example.com");
     panel.add(&in_host);
     let in_port = anyui::TextField::new();
-    in_port.set_position(396, y); in_port.set_size(74, 22);
+    in_port.set_position(396, y);
+    in_port.set_size(74, 22);
     in_port.set_placeholder("993");
     panel.add(&in_port);
     y += row_h;
 
     // Incoming security
     let lbl = anyui::Label::new(&format!("{}:", t("Security")));
-    lbl.set_position(8, y); lbl.set_size(label_w, 20); lbl.set_text_color(COL_DIM);
+    lbl.set_position(8, y);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(COL_DIM);
     panel.add(&lbl);
     let sec_items = format!("TLS|STARTTLS|{}", t("None"));
     let in_sec = anyui::SegmentedControl::new(&sec_items);
-    in_sec.set_position(130, y); in_sec.set_size(240, 24);
+    in_sec.set_position(130, y);
+    in_sec.set_size(240, 24);
     panel.add(&in_sec);
     y += row_h;
 
     // Username
     let lbl = anyui::Label::new(&format!("{}:", t("Username")));
-    lbl.set_position(8, y); lbl.set_size(label_w, 20); lbl.set_text_color(COL_DIM);
+    lbl.set_position(8, y);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(COL_DIM);
     panel.add(&lbl);
     let user_field = anyui::TextField::new();
-    user_field.set_position(130, y); user_field.set_size(field_w, 22);
+    user_field.set_position(130, y);
+    user_field.set_size(field_w, 22);
     user_field.set_placeholder("user@example.com");
     panel.add(&user_field);
     y += row_h;
 
     // Password
     let lbl = anyui::Label::new(&format!("{}:", t("Password")));
-    lbl.set_position(8, y); lbl.set_size(label_w, 20); lbl.set_text_color(COL_DIM);
+    lbl.set_position(8, y);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(COL_DIM);
     panel.add(&lbl);
     let pass_field = anyui::TextField::new();
-    pass_field.set_position(130, y); pass_field.set_size(field_w, 22);
+    pass_field.set_position(130, y);
+    pass_field.set_size(field_w, 22);
     pass_field.set_password_mode(true);
     panel.add(&pass_field);
     y += row_h + 12;
 
     // SMTP section header
     let smtp_hdr = anyui::Label::new(&format!("{} (SMTP):", t("Outgoing Server")));
-    smtp_hdr.set_position(8, y); smtp_hdr.set_size(300, 20);
+    smtp_hdr.set_position(8, y);
+    smtp_hdr.set_size(300, 20);
     smtp_hdr.set_text_color(COL_WHITE);
     panel.add(&smtp_hdr);
     y += 24;
 
     // SMTP host
     let lbl = anyui::Label::new(&format!("{} SMTP:", t("Server")));
-    lbl.set_position(8, y); lbl.set_size(label_w, 20); lbl.set_text_color(COL_DIM);
+    lbl.set_position(8, y);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(COL_DIM);
     panel.add(&lbl);
     let smtp_host = anyui::TextField::new();
-    smtp_host.set_position(130, y); smtp_host.set_size(260, 22);
+    smtp_host.set_position(130, y);
+    smtp_host.set_size(260, 22);
     smtp_host.set_placeholder("smtp.example.com");
     panel.add(&smtp_host);
     let smtp_port = anyui::TextField::new();
-    smtp_port.set_position(396, y); smtp_port.set_size(74, 22);
+    smtp_port.set_position(396, y);
+    smtp_port.set_size(74, 22);
     smtp_port.set_placeholder("587");
     panel.add(&smtp_port);
     y += row_h;
 
     // SMTP security
     let lbl = anyui::Label::new(&format!("{} SMTP:", t("Security")));
-    lbl.set_position(8, y); lbl.set_size(label_w, 20); lbl.set_text_color(COL_DIM);
+    lbl.set_position(8, y);
+    lbl.set_size(label_w, 20);
+    lbl.set_text_color(COL_DIM);
     panel.add(&lbl);
     let smtp_sec_items = format!("TLS|STARTTLS|{}", t("None"));
     let smtp_sec = anyui::SegmentedControl::new(&smtp_sec_items);
-    smtp_sec.set_position(130, y); smtp_sec.set_size(240, 24);
+    smtp_sec.set_position(130, y);
+    smtp_sec.set_size(240, 24);
     panel.add(&smtp_sec);
     y += row_h + 16;
 
     // Buttons
     let btn_save = anyui::Button::new(t("Save Account"));
-    btn_save.set_position(130, y); btn_save.set_size(120, 30);
+    btn_save.set_position(130, y);
+    btn_save.set_size(120, 30);
     panel.add(&btn_save);
 
     let btn_test = anyui::Button::new(t("Test Connection"));
-    btn_test.set_position(260, y); btn_test.set_size(120, 30);
+    btn_test.set_position(260, y);
+    btn_test.set_size(120, 30);
     panel.add(&btn_test);
 
     y += 40;
 
     // Export / Import buttons
     let btn_export = anyui::Button::new(t("Export"));
-    btn_export.set_position(130, y); btn_export.set_size(100, 30);
+    btn_export.set_position(130, y);
+    btn_export.set_size(100, 30);
     panel.add(&btn_export);
 
     let btn_import = anyui::Button::new(t("Import"));
-    btn_import.set_position(240, y); btn_import.set_size(100, 30);
+    btn_import.set_position(240, y);
+    btn_import.set_size(100, 30);
     panel.add(&btn_import);
 
     // Pre-fill if editing existing account
@@ -1758,7 +2008,11 @@ fn open_account_setup() {
         maildir::ensure_dirs(&a.base_dir, &a.config.accounts.last().unwrap().id);
         populate_folder_tree();
         set_status(anyos_std::i18n::t("Account saved"));
-        anyui::MessageBox::show(anyui::MessageBoxType::Info, anyos_std::i18n::t("Account saved successfully."), Some("OK"));
+        anyui::MessageBox::show(
+            anyui::MessageBoxType::Info,
+            anyos_std::i18n::t("Account saved successfully."),
+            Some("OK"),
+        );
     });
 
     // Test connection callback
@@ -1773,26 +2027,33 @@ fn open_account_setup() {
         // Try IMAP connection as a test
         let mut client = ImapClient::new();
         match client.connect(&host, port, true) {
-            Ok(()) => {
-                match client.login(&user, &pass) {
-                    Ok(()) => {
-                        client.logout();
-                        set_status(anyos_std::i18n::t("Connection test successful!"));
-                        anyui::MessageBox::show(anyui::MessageBoxType::Info,
-                            anyos_std::i18n::t("Connection successful!\nLogin verified."), Some("OK"));
-                    }
-                    Err(e) => {
-                        client.logout();
-                        set_status(&format!("Login failed: {:?}", e));
-                        anyui::MessageBox::show(anyui::MessageBoxType::Alert,
-                            &format!("Login failed: {:?}", e), Some("OK"));
-                    }
+            Ok(()) => match client.login(&user, &pass) {
+                Ok(()) => {
+                    client.logout();
+                    set_status(anyos_std::i18n::t("Connection test successful!"));
+                    anyui::MessageBox::show(
+                        anyui::MessageBoxType::Info,
+                        anyos_std::i18n::t("Connection successful!\nLogin verified."),
+                        Some("OK"),
+                    );
                 }
-            }
+                Err(e) => {
+                    client.logout();
+                    set_status(&format!("Login failed: {:?}", e));
+                    anyui::MessageBox::show(
+                        anyui::MessageBoxType::Alert,
+                        &format!("Login failed: {:?}", e),
+                        Some("OK"),
+                    );
+                }
+            },
             Err(e) => {
                 set_status(&format!("Connection failed: {:?}", e));
-                anyui::MessageBox::show(anyui::MessageBoxType::Alert,
-                    &format!("Connection failed: {:?}", e), Some("OK"));
+                anyui::MessageBox::show(
+                    anyui::MessageBoxType::Alert,
+                    &format!("Connection failed: {:?}", e),
+                    Some("OK"),
+                );
             }
         }
     });
@@ -1818,9 +2079,16 @@ fn export_accounts() {
     if let Some(path) = anyui::FileDialog::save_file("anymail-accounts.json") {
         let a = app();
         a.config.save(&path);
-        set_status(&format!("{}: {}", anyos_std::i18n::t("Accounts exported to"), path));
-        anyui::MessageBox::show(anyui::MessageBoxType::Info,
-            anyos_std::i18n::t("Accounts exported successfully."), Some("OK"));
+        set_status(&format!(
+            "{}: {}",
+            anyos_std::i18n::t("Accounts exported to"),
+            path
+        ));
+        anyui::MessageBox::show(
+            anyui::MessageBoxType::Info,
+            anyos_std::i18n::t("Accounts exported successfully."),
+            Some("OK"),
+        );
     }
 }
 
@@ -1828,10 +2096,16 @@ fn import_accounts() {
     if let Some(path) = anyui::FileDialog::open_file() {
         let imported = MailConfig::load(&path);
         if imported.accounts.is_empty() {
-            anyui::MessageBox::show(anyui::MessageBoxType::Warning,
-                &format!("{}\n{}: {}",
+            anyui::MessageBox::show(
+                anyui::MessageBoxType::Warning,
+                &format!(
+                    "{}\n{}: {}",
                     anyos_std::i18n::t("No accounts found in the selected file."),
-                    anyos_std::i18n::t("Path"), path), Some("OK"));
+                    anyos_std::i18n::t("Path"),
+                    path
+                ),
+                Some("OK"),
+            );
             return;
         }
 
@@ -1844,8 +2118,12 @@ fn import_accounts() {
         panel.set_color(COL_BG);
         panel.set_padding(16, 16, 16, 16);
 
-        let info = anyui::Label::new(&format!("{}: {} {}",
-            t("Found"), imported.accounts.len(), t("accounts")));
+        let info = anyui::Label::new(&format!(
+            "{}: {} {}",
+            t("Found"),
+            imported.accounts.len(),
+            t("accounts")
+        ));
         info.set_position(16, 16);
         info.set_size(360, 24);
         info.set_text_color(COL_WHITE);
@@ -1878,7 +2156,12 @@ fn import_accounts() {
         btn_merge.on_click(move |_| {
             let a = app();
             for acc in &imported_accounts {
-                if !a.config.accounts.iter().any(|existing| existing.id == acc.id) {
+                if !a
+                    .config
+                    .accounts
+                    .iter()
+                    .any(|existing| existing.id == acc.id)
+                {
                     a.config.accounts.push(acc.clone());
                     maildir::ensure_dirs(&a.base_dir, &acc.id);
                 }
@@ -1886,10 +2169,15 @@ fn import_accounts() {
             a.config.save(&a.config_path);
             populate_folder_tree();
             set_status(anyos_std::i18n::t("Accounts imported (merged)"));
-            anyui::MessageBox::show(anyui::MessageBoxType::Info,
-                &format!("{}\n{}",
+            anyui::MessageBox::show(
+                anyui::MessageBoxType::Info,
+                &format!(
+                    "{}\n{}",
                     anyos_std::i18n::t("Accounts merged successfully."),
-                    anyos_std::i18n::t("Edit account settings to add missing passwords.")), Some("OK"));
+                    anyos_std::i18n::t("Edit account settings to add missing passwords.")
+                ),
+                Some("OK"),
+            );
         });
 
         btn_replace.on_click(move |_| {
@@ -1902,10 +2190,15 @@ fn import_accounts() {
             a.config.save(&a.config_path);
             populate_folder_tree();
             set_status(anyos_std::i18n::t("Accounts imported (replaced)"));
-            anyui::MessageBox::show(anyui::MessageBoxType::Info,
-                &format!("{}\n{}",
+            anyui::MessageBox::show(
+                anyui::MessageBoxType::Info,
+                &format!(
+                    "{}\n{}",
                     anyos_std::i18n::t("All accounts replaced successfully."),
-                    anyos_std::i18n::t("Edit account settings to add missing passwords.")), Some("OK"));
+                    anyos_std::i18n::t("Edit account settings to add missing passwords.")
+                ),
+                Some("OK"),
+            );
         });
 
         import_win.on_close(|_| {});
@@ -1969,21 +2262,28 @@ fn open_contacts() {
 
         let t = anyos_std::i18n::t;
         let name_lbl = anyui::Label::new(&format!("{}:", t("Name")));
-        name_lbl.set_position(8, 8); name_lbl.set_size(60, 20); name_lbl.set_text_color(COL_DIM);
+        name_lbl.set_position(8, 8);
+        name_lbl.set_size(60, 20);
+        name_lbl.set_text_color(COL_DIM);
         panel.add(&name_lbl);
         let name_f = anyui::TextField::new();
-        name_f.set_position(70, 8); name_f.set_size(260, 22);
+        name_f.set_position(70, 8);
+        name_f.set_size(260, 22);
         panel.add(&name_f);
 
         let email_lbl = anyui::Label::new(&format!("{}:", t("Email")));
-        email_lbl.set_position(8, 38); email_lbl.set_size(60, 20); email_lbl.set_text_color(COL_DIM);
+        email_lbl.set_position(8, 38);
+        email_lbl.set_size(60, 20);
+        email_lbl.set_text_color(COL_DIM);
         panel.add(&email_lbl);
         let email_f = anyui::TextField::new();
-        email_f.set_position(70, 38); email_f.set_size(260, 22);
+        email_f.set_position(70, 38);
+        email_f.set_size(260, 22);
         panel.add(&email_f);
 
         let save_btn = anyui::Button::new(t("Save"));
-        save_btn.set_position(70, 80); save_btn.set_size(100, 28);
+        save_btn.set_position(70, 80);
+        save_btn.set_size(100, 28);
         panel.add(&save_btn);
 
         add_win.add(&panel);
@@ -2047,10 +2347,14 @@ fn get_field_text(field: &anyui::Control) -> String {
 fn format_to_list(addrs: &[EmailAddress]) -> String {
     let mut s = String::new();
     for (i, a) in addrs.iter().enumerate() {
-        if i > 0 { s.push_str(", "); }
+        if i > 0 {
+            s.push_str(", ");
+        }
         s.push_str(a.display_short());
     }
-    if s.is_empty() { s.push_str(anyos_std::i18n::t("(none)")); }
+    if s.is_empty() {
+        s.push_str(anyos_std::i18n::t("(none)"));
+    }
     s
 }
 

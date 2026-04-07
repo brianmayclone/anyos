@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Background mail sync worker.
 //!
 //! Runs in a separate thread via `Thread::spawn_with_stack()`.
@@ -119,9 +121,11 @@ impl SyncState {
     }
 
     pub fn acquire(&self) {
-        while self.lock.compare_exchange_weak(
-            false, true, Ordering::Acquire, Ordering::Relaxed
-        ).is_err() {
+        while self
+            .lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             core::hint::spin_loop();
         }
     }
@@ -159,7 +163,8 @@ pub fn sync_state() -> &'static mut SyncState {
 /// Reads all input from SYNC_STATE, writes results back.
 pub fn sync_worker_entry() {
     let ss = sync_state();
-    ss.phase.store(SyncPhase::Connecting as u32, Ordering::Release);
+    ss.phase
+        .store(SyncPhase::Connecting as u32, Ordering::Release);
 
     // Clone inputs from shared state (under lock)
     ss.acquire();
@@ -178,12 +183,23 @@ pub fn sync_worker_entry() {
     };
 
     for acct_idx in start..end {
-        if ss.cancel_requested.load(Ordering::Relaxed) { break; }
-        if acct_idx >= accounts.len() { break; }
+        if ss.cancel_requested.load(Ordering::Relaxed) {
+            break;
+        }
+        if acct_idx >= accounts.len() {
+            break;
+        }
         let account = &accounts[acct_idx];
 
         if account.is_imap() {
-            sync_imap_async(account, acct_idx, &base_dir, &target_folder, uid_offset, fetch_limit);
+            sync_imap_async(
+                account,
+                acct_idx,
+                &base_dir,
+                &target_folder,
+                uid_offset,
+                fetch_limit,
+            );
         } else {
             sync_pop3_async(account, acct_idx, &base_dir, uid_offset, fetch_limit);
         }
@@ -215,7 +231,10 @@ fn sync_imap_async(
     let ss = sync_state();
 
     // ── Phase 1: Connect and Authenticate ────────────────────────
-    set_worker_status(&alloc::format!("Connecting to {}...", account.incoming_host));
+    set_worker_status(&alloc::format!(
+        "Connecting to {}...",
+        account.incoming_host
+    ));
 
     let mut client = ImapClient::new();
     let use_tls = account.incoming_use_tls();
@@ -241,14 +260,20 @@ fn sync_imap_async(
     }
 
     // ── Phase 2: Sync Folder Hierarchy ───────────────────────────
-    ss.phase.store(SyncPhase::SyncingFolders as u32, Ordering::Release);
+    ss.phase
+        .store(SyncPhase::SyncingFolders as u32, Ordering::Release);
     set_worker_status(&alloc::format!("Syncing folders for {}...", account.email));
 
     if let Ok(folders) = client.list_folders() {
         // Ensure local directories for each folder
         maildir::ensure_dirs(base_dir, &account.id);
         for f in &folders {
-            let folder_dir = alloc::format!("{}/accounts/{}/{}", base_dir, account.id, sanitize_folder(&f.name));
+            let folder_dir = alloc::format!(
+                "{}/accounts/{}/{}",
+                base_dir,
+                account.id,
+                sanitize_folder(&f.name)
+            );
             anyos_std::fs::mkdir(&folder_dir);
             let msg_dir = alloc::format!("{}/messages", folder_dir);
             anyos_std::fs::mkdir(&msg_dir);
@@ -274,10 +299,13 @@ fn sync_imap_async(
         None => alloc::vec!["INBOX", "Sent", "Drafts"],
     };
 
-    ss.phase.store(SyncPhase::FetchingHeaders as u32, Ordering::Release);
+    ss.phase
+        .store(SyncPhase::FetchingHeaders as u32, Ordering::Release);
 
     for folder_name in &folders_to_sync {
-        if ss.cancel_requested.load(Ordering::Relaxed) { break; }
+        if ss.cancel_requested.load(Ordering::Relaxed) {
+            break;
+        }
 
         let folder_status = match client.select(folder_name) {
             Ok(s) => s,
@@ -306,14 +334,21 @@ fn sync_imap_async(
         };
 
         // Filter out UIDs we already have
-        let new_uids: Vec<u32> = all_uids.iter()
+        let new_uids: Vec<u32> = all_uids
+            .iter()
             .filter(|&&uid| !existing.iter().any(|m| m.uid == uid))
             .copied()
             .collect();
 
         if new_uids.is_empty() {
             // No new messages — deliver a final empty batch with server total
-            deliver_message_batch(&account.id, folder_name, &mut Vec::new(), true, folder_status.exists);
+            deliver_message_batch(
+                &account.id,
+                folder_name,
+                &mut Vec::new(),
+                true,
+                folder_status.exists,
+            );
             continue;
         }
 
@@ -326,14 +361,21 @@ fn sync_imap_async(
         };
 
         let total = uids_to_fetch.len();
-        set_worker_status(&alloc::format!("Fetching {} messages from {}...", total, folder_name));
-        ss.phase.store(SyncPhase::FetchingBodies as u32, Ordering::Release);
+        set_worker_status(&alloc::format!(
+            "Fetching {} messages from {}...",
+            total,
+            folder_name
+        ));
+        ss.phase
+            .store(SyncPhase::FetchingBodies as u32, Ordering::Release);
 
         let mut new_messages = existing.clone();
         let mut batch = Vec::new();
 
         for (i, &uid) in uids_to_fetch.iter().enumerate() {
-            if ss.cancel_requested.load(Ordering::Relaxed) { break; }
+            if ss.cancel_requested.load(Ordering::Relaxed) {
+                break;
+            }
 
             // Update progress
             ss.acquire();
@@ -348,7 +390,8 @@ fn sync_imap_async(
                     for summary in summaries {
                         // Fetch body and save to disk
                         if let Ok(body_data) = client.fetch_body(uid) {
-                            let msg_path = maildir::message_path(base_dir, &account.id, folder_name, uid);
+                            let msg_path =
+                                maildir::message_path(base_dir, &account.id, folder_name, uid);
                             maildir::save_message(&msg_path, &body_data);
 
                             // Parse for preview
@@ -368,7 +411,13 @@ fn sync_imap_async(
 
                         // Deliver batch every DELIVERY_BATCH messages
                         if batch.len() >= DELIVERY_BATCH {
-                            deliver_message_batch(&account.id, folder_name, &mut batch, false, folder_status.exists);
+                            deliver_message_batch(
+                                &account.id,
+                                folder_name,
+                                &mut batch,
+                                false,
+                                folder_status.exists,
+                            );
                         }
                     }
                 }
@@ -377,7 +426,13 @@ fn sync_imap_async(
         }
 
         // Deliver remaining messages
-        deliver_message_batch(&account.id, folder_name, &mut batch, true, folder_status.exists);
+        deliver_message_batch(
+            &account.id,
+            folder_name,
+            &mut batch,
+            true,
+            folder_status.exists,
+        );
 
         // Save updated index
         maildir::save_index(&idx_path, &new_messages);
@@ -400,7 +455,10 @@ fn sync_pop3_async(
     let ss = sync_state();
 
     // ── Connect ──────────────────────────────────────────────────
-    set_worker_status(&alloc::format!("Connecting to {}...", account.incoming_host));
+    set_worker_status(&alloc::format!(
+        "Connecting to {}...",
+        account.incoming_host
+    ));
 
     let mut client = Pop3Client::new();
     let use_tls = account.incoming_use_tls();
@@ -428,12 +486,16 @@ fn sync_pop3_async(
         return;
     }
 
-    ss.phase.store(SyncPhase::FetchingHeaders as u32, Ordering::Release);
+    ss.phase
+        .store(SyncPhase::FetchingHeaders as u32, Ordering::Release);
 
     // Get UIDL list
     let uidls = match client.uidl() {
         Ok(u) => u,
-        Err(_) => { client.quit(); return; }
+        Err(_) => {
+            client.quit();
+            return;
+        }
     };
 
     // Load existing INBOX index
@@ -442,7 +504,8 @@ fn sync_pop3_async(
     let existing_ids: Vec<String> = existing.iter().map(|m| m.message_id.clone()).collect();
 
     // Filter new messages
-    let new_uidls: Vec<&(u32, String)> = uidls.iter()
+    let new_uidls: Vec<&(u32, String)> = uidls
+        .iter()
         .filter(|(_, uidl)| !existing_ids.iter().any(|id| id == uidl))
         .collect();
 
@@ -464,12 +527,15 @@ fn sync_pop3_async(
     }
 
     set_worker_status(&alloc::format!("Downloading {} messages...", total));
-    ss.phase.store(SyncPhase::FetchingBodies as u32, Ordering::Release);
+    ss.phase
+        .store(SyncPhase::FetchingBodies as u32, Ordering::Release);
 
     let mut batch = Vec::new();
 
     for (i, (msg_num, uidl)) in uidls_to_fetch.iter().enumerate() {
-        if ss.cancel_requested.load(Ordering::Relaxed) { break; }
+        if ss.cancel_requested.load(Ordering::Relaxed) {
+            break;
+        }
 
         // Update progress
         ss.acquire();
@@ -536,7 +602,9 @@ fn deliver_message_batch(
     is_final: bool,
     total_on_server: u32,
 ) {
-    if batch.is_empty() && !is_final { return; }
+    if batch.is_empty() && !is_final {
+        return;
+    }
     let ss = sync_state();
     ss.acquire();
     ss.message_batches.push(MessageBatch {

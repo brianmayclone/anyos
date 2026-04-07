@@ -25,6 +25,8 @@ pub struct WsConn {
     pub sock: u32,
     /// True if this socket is TLS-encrypted.
     pub is_tls: bool,
+    /// TLS session handle for `wss://` sockets.
+    pub tls_handle: Option<crate::tls::TlsHandle>,
     /// Receive buffer: accumulates partial frames across poll calls.
     pub recv_buf: Vec<u8>,
     /// Index into `AppState::tabs` that owns this connection.
@@ -74,18 +76,25 @@ pub fn handle_connect(
     }
 
     // TLS handshake if wss://.
-    if is_tls {
-        if crate::tls::connect(sock, &host) != 0 {
+    let tls_handle = if is_tls {
+        let ret = crate::tls::connect(sock, &host);
+        if ret <= 0 {
             anyos_std::println!("[ws] TLS handshake failed for {}", host);
             net::tcp_close(sock);
             runtime.ws_error(req.id);
             return;
         }
-    }
+        Some(ret as crate::tls::TlsHandle)
+    } else {
+        None
+    };
 
     // Send HTTP Upgrade request.
-    if !tcp_send_all(sock, is_tls, &upgrade_bytes) {
+    if !tcp_send_all(sock, tls_handle, &upgrade_bytes) {
         anyos_std::println!("[ws] send Upgrade failed");
+        if let Some(handle) = tls_handle {
+            crate::tls::close(handle);
+        }
         net::tcp_close(sock);
         runtime.ws_error(req.id);
         return;
@@ -95,7 +104,7 @@ pub fn handle_connect(
     let mut resp_buf = Vec::new();
     for _ in 0..50 {
         let mut tmp = [0u8; 2048];
-        let n = tcp_recv(sock, is_tls, &mut tmp);
+        let n = tcp_recv(sock, tls_handle, &mut tmp);
         if n == 0 {
             break;
         }
@@ -114,12 +123,16 @@ pub fn handle_connect(
                 id: req.id,
                 sock,
                 is_tls,
+                tls_handle,
                 recv_buf: Vec::new(),
                 tab_idx,
             });
         }
         None => {
             anyos_std::println!("[ws] Upgrade handshake rejected for {}", req.url);
+            if let Some(handle) = tls_handle {
+                crate::tls::close(handle);
+            }
             net::tcp_close(sock);
             runtime.ws_error(req.id);
         }
@@ -137,11 +150,10 @@ pub fn handle_connect(
 /// Returns a list of IDs that were cleanly closed and should be removed.
 pub fn poll_connections(conns: &mut Vec<WsConn>, runtime: &mut JsRuntime) -> Vec<u64> {
     let mut to_close = Vec::new();
-
     for conn in conns.iter_mut() {
         // Non-blocking read.
         let mut tmp = [0u8; 8192];
-        let n = tcp_recv_nonblock(conn.sock, conn.is_tls, &mut tmp);
+        let n = tcp_recv_nonblock(conn.sock, conn.tls_handle, &mut tmp);
         if n > 0 {
             conn.recv_buf.extend_from_slice(&tmp[..n]);
         }
@@ -170,7 +182,10 @@ pub fn poll_connections(conns: &mut Vec<WsConn>, runtime: &mut JsRuntime) -> Vec
                     // Close frame — send echo and clean up.
                     let (code, reason) = frame.close_info();
                     let close_frame = encode_close_frame(code, reason, conn.id);
-                    let _ = tcp_send_all(conn.sock, conn.is_tls, &close_frame);
+                    let _ = tcp_send_all(conn.sock, conn.tls_handle, &close_frame);
+                    if let Some(handle) = conn.tls_handle {
+                        crate::tls::close(handle);
+                    }
                     net::tcp_close(conn.sock);
                     runtime.ws_closed(conn.id, code, reason, true);
                     to_close.push(conn.id);
@@ -178,7 +193,7 @@ pub fn poll_connections(conns: &mut Vec<WsConn>, runtime: &mut JsRuntime) -> Vec
                 0x9 => {
                     // Ping — reply with Pong.
                     let pong = encode_pong_frame(&frame.payload, conn.id);
-                    let _ = tcp_send_all(conn.sock, conn.is_tls, &pong);
+                    let _ = tcp_send_all(conn.sock, conn.tls_handle, &pong);
                 }
                 0xA => { /* Pong — ignore */ }
                 _ => {}
@@ -202,7 +217,7 @@ pub fn handle_sends(sends: Vec<PendingWsSend>, conns: &mut Vec<WsConn>) {
             } else {
                 encode_text_frame(&send.data, send.id)
             };
-            tcp_send_all(conn.sock, conn.is_tls, &frame);
+            tcp_send_all(conn.sock, conn.tls_handle, &frame);
         }
     }
 }
@@ -218,7 +233,10 @@ pub fn handle_closes(
     for close in closes {
         if let Some(conn) = conns.iter().find(|c| c.id == close.id) {
             let frame = encode_close_frame(close.code, &close.reason, close.id);
-            let _ = tcp_send_all(conn.sock, conn.is_tls, &frame);
+            let _ = tcp_send_all(conn.sock, conn.tls_handle, &frame);
+            if let Some(handle) = conn.tls_handle {
+                crate::tls::close(handle);
+            }
             net::tcp_close(conn.sock);
             runtime.ws_closed(close.id, close.code, &close.reason, true);
             removed.push(close.id);
@@ -231,6 +249,9 @@ pub fn handle_closes(
 pub fn remove_connections(conns: &mut Vec<WsConn>, ids: &[u64]) {
     conns.retain(|c| {
         if ids.contains(&c.id) {
+            if let Some(handle) = c.tls_handle {
+                crate::tls::close(handle);
+            }
             net::tcp_close(c.sock);
             false
         } else {
@@ -244,18 +265,18 @@ pub fn remove_connections(conns: &mut Vec<WsConn>, ids: &[u64]) {
 // ═══════════════════════════════════════════════════════════
 
 /// Send all bytes, handling partial sends.  Returns `true` on success.
-fn tcp_send_all(sock: u32, is_tls: bool, data: &[u8]) -> bool {
-    if is_tls {
-        crate::tls::send(data) >= 0
+fn tcp_send_all(sock: u32, tls_handle: Option<crate::tls::TlsHandle>, data: &[u8]) -> bool {
+    if let Some(handle) = tls_handle {
+        crate::tls::send(handle, data) >= 0
     } else {
         net::tcp_send(sock, data) != u32::MAX
     }
 }
 
 /// Blocking receive — reads up to `buf.len()` bytes.
-fn tcp_recv(sock: u32, is_tls: bool, buf: &mut [u8]) -> usize {
-    if is_tls {
-        let n = crate::tls::recv(buf);
+fn tcp_recv(sock: u32, tls_handle: Option<crate::tls::TlsHandle>, buf: &mut [u8]) -> usize {
+    if let Some(handle) = tls_handle {
+        let n = crate::tls::recv(handle, buf);
         if n <= 0 {
             0
         } else {
@@ -272,11 +293,15 @@ fn tcp_recv(sock: u32, is_tls: bool, buf: &mut [u8]) -> usize {
 }
 
 /// Non-blocking receive — returns 0 if no data is available.
-fn tcp_recv_nonblock(sock: u32, is_tls: bool, buf: &mut [u8]) -> usize {
+fn tcp_recv_nonblock(
+    sock: u32,
+    tls_handle: Option<crate::tls::TlsHandle>,
+    buf: &mut [u8],
+) -> usize {
     // Use tcp_status to check if data is available before blocking.
     let status = net::tcp_status(sock);
     if status == 0 || status == u32::MAX {
         return 0;
     }
-    tcp_recv(sock, is_tls, buf)
+    tcp_recv(sock, tls_handle, buf)
 }

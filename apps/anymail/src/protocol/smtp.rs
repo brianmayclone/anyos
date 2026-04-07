@@ -1,9 +1,11 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! SMTP client implementation (RFC 5321, RFC 4954 AUTH).
 
+use super::tcp_stream::{ConnError, TcpStream};
+use crate::mail::base64;
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::tcp_stream::{TcpStream, ConnError};
-use crate::mail::base64;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -19,7 +21,9 @@ pub enum SmtpError {
 }
 
 impl From<ConnError> for SmtpError {
-    fn from(e: ConnError) -> Self { SmtpError::Connection(e) }
+    fn from(e: ConnError) -> Self {
+        SmtpError::Connection(e)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -211,7 +215,9 @@ impl SmtpClient {
     /// Check if a capability is available.
     pub fn has_capability(&self, cap: &str) -> bool {
         let cap_upper = to_upper(cap);
-        self.capabilities.iter().any(|c| to_upper(c).starts_with(&cap_upper))
+        self.capabilities
+            .iter()
+            .any(|c| to_upper(c).starts_with(&cap_upper))
     }
 
     /// Check if connected.

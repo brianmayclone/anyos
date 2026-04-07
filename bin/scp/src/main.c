@@ -1,5 +1,8 @@
 /*
- * scp — anyOS SCP client
+ * Copyright (c) 2024-2026 Mike Strathmann
+ * SPDX-License-Identifier: MIT
+ *
+ * scp - anyOS SCP client
  *
  * Usage:
  *   scp [-P port] [-r] [-p] [-q] source target
@@ -17,6 +20,7 @@
  * remote at a time (standard scp behaviour).
  */
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

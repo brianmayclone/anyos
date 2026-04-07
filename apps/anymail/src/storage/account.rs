@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Account configuration (JSON persistence in $HOME/.anymail/accounts.json).
 
 use alloc::string::String;
@@ -124,14 +126,18 @@ impl MailConfig {
             return config;
         }
 
-        let mut buf = alloc::vec![0u8; 64 * 1024];  // Increased buffer size
+        let mut buf = alloc::vec![0u8; 64 * 1024]; // Increased buffer size
         let mut total = 0usize;
         loop {
             let mut chunk = [0u8; 4096];
             let n = anyos_std::fs::read(fd, &mut chunk);
-            if n == 0 || n == u32::MAX { break; }
+            if n == 0 || n == u32::MAX {
+                break;
+            }
             let n = n as usize;
-            if total + n > buf.len() { break; }
+            if total + n > buf.len() {
+                break;
+            }
             buf[total..total + n].copy_from_slice(&chunk[..n]);
             total += n;
         }
@@ -169,29 +175,35 @@ impl MailConfig {
                 acc.email = String::from(item["email"].as_str().unwrap_or(""));
 
                 let proto = item["incoming_protocol"].as_str().unwrap_or("imap");
-                acc.incoming_protocol = if proto == "pop3" { IncomingProtocol::Pop3 } else { IncomingProtocol::Imap };
+                acc.incoming_protocol = if proto == "pop3" {
+                    IncomingProtocol::Pop3
+                } else {
+                    IncomingProtocol::Imap
+                };
                 acc.incoming_host = String::from(item["incoming_host"].as_str().unwrap_or(""));
                 acc.incoming_port = item["incoming_port"].as_i64().unwrap_or(993) as u16;
-                acc.incoming_security = parse_security(item["incoming_security"].as_str().unwrap_or("tls"));
+                acc.incoming_security =
+                    parse_security(item["incoming_security"].as_str().unwrap_or("tls"));
                 acc.incoming_user = String::from(item["incoming_user"].as_str().unwrap_or(""));
                 // Try obfuscated format first, fall back to plain text
                 let pass_str = item["incoming_pass"].as_str().unwrap_or("");
                 acc.incoming_pass = if pass_str.starts_with("$OBF$") {
-                    deobfuscate(&pass_str[5..])  // Skip $OBF$ prefix
+                    deobfuscate(&pass_str[5..]) // Skip $OBF$ prefix
                 } else {
-                    String::from(pass_str)  // Plain text fallback
+                    String::from(pass_str) // Plain text fallback
                 };
 
                 acc.smtp_host = String::from(item["smtp_host"].as_str().unwrap_or(""));
                 acc.smtp_port = item["smtp_port"].as_i64().unwrap_or(587) as u16;
-                acc.smtp_security = parse_security(item["smtp_security"].as_str().unwrap_or("starttls"));
+                acc.smtp_security =
+                    parse_security(item["smtp_security"].as_str().unwrap_or("starttls"));
                 acc.smtp_user = String::from(item["smtp_user"].as_str().unwrap_or(""));
                 // Try obfuscated format first, fall back to plain text
                 let pass_str = item["smtp_pass"].as_str().unwrap_or("");
                 acc.smtp_pass = if pass_str.starts_with("$OBF$") {
-                    deobfuscate(&pass_str[5..])  // Skip $OBF$ prefix
+                    deobfuscate(&pass_str[5..]) // Skip $OBF$ prefix
                 } else {
-                    String::from(pass_str)  // Plain text fallback
+                    String::from(pass_str) // Plain text fallback
                 };
 
                 acc.check_interval_secs = item["check_interval"].as_i64().unwrap_or(300) as u32;
@@ -224,10 +236,16 @@ impl MailConfig {
             obj.set("id", acc.id.as_str().into());
             obj.set("display_name", acc.display_name.as_str().into());
             obj.set("email", acc.email.as_str().into());
-            obj.set("incoming_protocol", (if acc.is_imap() { "imap" } else { "pop3" }).into());
+            obj.set(
+                "incoming_protocol",
+                (if acc.is_imap() { "imap" } else { "pop3" }).into(),
+            );
             obj.set("incoming_host", acc.incoming_host.as_str().into());
             obj.set("incoming_port", (acc.incoming_port as i64).into());
-            obj.set("incoming_security", security_str(acc.incoming_security).into());
+            obj.set(
+                "incoming_security",
+                security_str(acc.incoming_security).into(),
+            );
             obj.set("incoming_user", acc.incoming_user.as_str().into());
             // Store passwords in plain text for better compatibility and simpler import/export
             // (They're already protected by file permissions, not cryptographically)
@@ -276,9 +294,13 @@ fn obfuscate(password: &str) -> String {
 }
 
 fn deobfuscate(encoded: &str) -> String {
-    if encoded.is_empty() { return String::new(); }
+    if encoded.is_empty() {
+        return String::new();
+    }
     let data = crate::mail::base64::decode_str(encoded);
-    if data.is_empty() { return String::new(); }  // Fallback if base64 decode fails
+    if data.is_empty() {
+        return String::new();
+    } // Fallback if base64 decode fails
     let key = anyos_std::crypto::md5(b"anymail-key-seed");
     let mut out = Vec::new();
     for (i, &b) in data.iter().enumerate() {

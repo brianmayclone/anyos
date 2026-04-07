@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Brotli decompressor (RFC 7932) for WOFF2 font decoding.
 //!
 //! Implements the full Brotli decompression algorithm including:

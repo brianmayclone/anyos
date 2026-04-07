@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Event loop with microtask and macrotask queues.
 //!
 //! Implements the ECMAScript Job Queue semantics:

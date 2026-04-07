@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Host-mode filesystem — delegates to std::fs.
 
 use alloc::string::String;

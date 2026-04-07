@@ -29,8 +29,19 @@ use alloc::vec;
 use alloc::vec::Vec;
 use anyos_std::i18n;
 
+use crate::tab::PageLoadPhase;
 use libanyui_client as ui_lib;
 use ui_lib::Widget;
+
+#[derive(Clone, Copy)]
+enum RenderSchedule {
+    Immediate,
+    Debounced,
+}
+
+const IMAGE_RESULTS_PER_TAB_BATCH: usize = 24;
+const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 12;
+const DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
 
 // ═══════════════════════════════════════════════════════════
 // Debug helpers (feature-gated)
@@ -79,14 +90,6 @@ struct AppState {
     tabs: Vec<tab::TabState>,
     active_tab: usize,
     cookies: http::CookieJar,
-    /// Pending CSS fetch queue: (tab_index, href_attr, resolved_url).
-    css_queue: Vec<(usize, String, http::Url)>,
-    /// Timer ID for the async CSS fetch loop (0 = not running).
-    css_timer: u32,
-    /// Pending image fetch queue: (tab_index, img_src_attr, resolved_url).
-    image_queue: Vec<(usize, String, http::Url)>,
-    /// Timer ID for the async image fetch loop (0 = not running).
-    image_timer: u32,
     /// HTTP connection pool for reusing TCP/TLS connections.
     conn_pool: http::ConnPool,
     /// All live WebSocket connections across all tabs.
@@ -103,6 +106,8 @@ struct AppState {
     relayout_timer: u32,
     /// Timer ID for debounced viewport resize handling (0 = not running).
     resize_timer: u32,
+    /// A resize was requested while the active page was still in a heavy load phase.
+    deferred_resize_pending: bool,
 }
 
 static mut STATE: Option<AppState> = None;
@@ -222,7 +227,7 @@ pub(crate) fn start_anim_timer() {
     static mut IDLE_TICKS: u32 = 0;
     st.anim_timer = ui_lib::set_timer(16, || {
         let st = state();
-        let net_results = net_worker::drain_results();
+        let net_results = drain_results_from_mailboxes();
         if !net_results.is_empty() {
             anyos_std::println!(
                 "[surf] tick-drain: {} result(s) while anim timer active",
@@ -261,6 +266,30 @@ pub(crate) fn ensure_anim_timer() {
     start_anim_timer();
 }
 
+pub(crate) fn pump_deferred_images_for_tab(tab_index: usize) {
+    let allowance = {
+        let st = state();
+        if tab_index >= st.tabs.len() {
+            return;
+        }
+        let tab = &st.tabs[tab_index];
+        if !matches!(tab.load_state.phase, PageLoadPhase::Interactive) {
+            return;
+        }
+        MAX_DEFERRED_IMAGE_INFLIGHT.saturating_sub(tab.deferred_images_inflight)
+    };
+    if allowance == 0 {
+        return;
+    }
+    let batch = core::cmp::min(allowance, DEFERRED_IMAGE_BATCH_SIZE);
+    let _ = resources::submit_deferred_images(tab_index, batch);
+}
+
+pub(crate) fn pump_deferred_images_for_active_tab() {
+    let tab_index = state().active_tab;
+    pump_deferred_images_for_tab(tab_index);
+}
+
 /// Resize the active tab's webview to match the content area.
 fn resize_active_webview_now() {
     let st = state();
@@ -270,6 +299,30 @@ fn resize_active_webview_now() {
     }
     anyos_std::println!("[surf] apply resize: {}x{}", w, h);
     st.tabs[st.active_tab].webview.resize(w, h);
+}
+
+fn active_tab_allows_expensive_resize() -> bool {
+    let st = state();
+    if st.active_tab >= st.tabs.len() {
+        return false;
+    }
+    let tab = &st.tabs[st.active_tab];
+    !tab.is_loading && tab.load_state.phase != PageLoadPhase::LoadingSubresources
+}
+
+fn flush_deferred_resize_if_ready() {
+    let should_apply = {
+        let st = state();
+        st.deferred_resize_pending && active_tab_allows_expensive_resize()
+    };
+    if !should_apply {
+        return;
+    }
+    let st = state();
+    st.deferred_resize_pending = false;
+    anyos_std::println!("[surf] applying deferred resize after load phase");
+    resize_active_webview_now();
+    ensure_anim_timer();
 }
 
 /// Debounce expensive webview resize work during window drags.
@@ -285,6 +338,13 @@ fn schedule_active_webview_resize(delay_ms: u32) {
         st.resize_timer = 0;
         if timer_id != 0 {
             ui_lib::kill_timer(timer_id);
+        }
+        if !active_tab_allows_expensive_resize() {
+            anyos_std::println!("[surf] deferring resize until active load settles");
+            let st = state();
+            st.deferred_resize_pending = true;
+            schedule_active_webview_resize(250);
+            return;
         }
         resize_active_webview_now();
         ensure_anim_timer();
@@ -307,12 +367,21 @@ fn start_net_poll_timer() {
     }
     static mut EMPTY_POLLS: u32 = 0;
     st.net_poll_timer = ui_lib::set_timer(50, || {
-        let results = net_worker::drain_results();
+        let results = drain_results_from_mailboxes();
         if results.is_empty() {
             let st = state();
             let tab_waiting_on_network = st.tabs.iter().any(|tab| {
-                tab.is_loading || tab.pending_script_count > 0 || tab.pending_stylesheet_count > 0
+                tab.is_loading
+                    || !tab.load_state.ready_for_script_execution()
+                    || tab.load_state.phase == PageLoadPhase::LoadingSubresources
             });
+            #[cfg(feature = "debug_surf")]
+            anyos_std::println!(
+                "[surf] net-poll empty: waiting_on_network={} worker_pending={} timer={}",
+                tab_waiting_on_network,
+                net_worker::has_pending_activity(),
+                st.net_poll_timer
+            );
             if tab_waiting_on_network || net_worker::has_pending_activity() {
                 unsafe {
                     EMPTY_POLLS = 0;
@@ -342,6 +411,23 @@ fn start_net_poll_timer() {
     });
 }
 
+fn drain_results_from_mailboxes() -> Vec<net_worker::FetchResult> {
+    let st = state();
+    let mut all_results = Vec::new();
+    for tab_index in 0..st.tabs.len() {
+        let mut tab_results = net_worker::drain_results_for_tab(tab_index);
+        if !tab_results.is_empty() {
+            anyos_std::println!(
+                "[surf] drained {} result(s) from tab mailbox {}",
+                tab_results.len(),
+                tab_index
+            );
+            all_results.append(&mut tab_results);
+        }
+    }
+    all_results
+}
+
 /// Ensure the network poll timer is running. Called when new fetches are submitted.
 pub(crate) fn ensure_net_poll_timer() {
     start_net_poll_timer();
@@ -353,12 +439,13 @@ pub(crate) fn ensure_net_poll_timer() {
 /// immediate relayouts.  A separate debounce timer (`flush_relayout`)
 /// coalesces all pending relayouts into one pass every 300 ms.
 fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
+    let mut batches: Vec<(usize, Vec<net_worker::FetchResult>)> = Vec::new();
     let mut nav_count = 0usize;
     let mut css_count = 0usize;
     let mut image_count = 0usize;
     let mut font_count = 0usize;
     let mut script_count = 0usize;
-    for result in &results {
+    for result in results {
         match result {
             net_worker::FetchResult::NavDone { .. } | net_worker::FetchResult::NavError { .. } => {
                 nav_count += 1;
@@ -368,10 +455,16 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
             net_worker::FetchResult::FontDone { .. } => font_count += 1,
             net_worker::FetchResult::ScriptDone { .. } => script_count += 1,
         }
+        let tab_index = result.tab_index();
+        if let Some((_, batch)) = batches.iter_mut().find(|(idx, _)| *idx == tab_index) {
+            batch.push(result);
+        } else {
+            batches.push((tab_index, vec![result]));
+        }
     }
     anyos_std::println!(
         "[surf] drain_results: total={} nav={} css={} image={} font={} script={}",
-        results.len(),
+        nav_count + css_count + image_count + font_count + script_count,
         nav_count,
         css_count,
         image_count,
@@ -379,69 +472,111 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
         script_count
     );
 
-    for result in results {
-        match result {
-            net_worker::FetchResult::NavDone {
-                response,
-                url,
-                cookies,
-                generation,
-            } => {
-                handle_nav_done(response, url, cookies, generation);
+    for (tab_index, batch) in batches {
+        let mut nav_results = Vec::new();
+        let mut css_results = Vec::new();
+        let mut script_results = Vec::new();
+        let mut font_results = Vec::new();
+        let mut images = Vec::new();
+        for result in batch {
+            match result {
+                net_worker::FetchResult::NavDone { .. }
+                | net_worker::FetchResult::NavError { .. } => nav_results.push(result),
+                net_worker::FetchResult::CssDone { .. } => css_results.push(result),
+                net_worker::FetchResult::ScriptDone { .. } => script_results.push(result),
+                net_worker::FetchResult::FontDone { .. } => font_results.push(result),
+                net_worker::FetchResult::ImageDone { .. } => images.push(result),
             }
-            net_worker::FetchResult::NavError {
-                error_msg,
-                generation,
-            } => {
-                handle_nav_error(error_msg, generation);
-            }
-            net_worker::FetchResult::CssDone {
-                tab_index,
-                href,
-                body,
-                headers,
-                generation,
-            } => {
-                if handle_css_done(tab_index, href, body, headers, generation) {
-                    mark_relayout_dirty(tab_index);
+        }
+
+        let deferred_images = if images.len() > IMAGE_RESULTS_PER_TAB_BATCH {
+            images.split_off(IMAGE_RESULTS_PER_TAB_BATCH)
+        } else {
+            Vec::new()
+        };
+
+        if !deferred_images.is_empty() {
+            anyos_std::println!(
+                "[surf] deferring {} image result(s) for tab {} to keep UI responsive",
+                deferred_images.len(),
+                tab_index
+            );
+            net_worker::prepend_results_for_tab(tab_index, deferred_images);
+        }
+
+        let mut urgent = nav_results;
+        urgent.extend(css_results);
+        urgent.extend(script_results);
+        urgent.extend(font_results);
+        urgent.extend(images);
+
+        for result in urgent {
+            match result {
+                net_worker::FetchResult::NavDone {
+                    tab_index,
+                    response,
+                    url,
+                    cookies,
+                    generation,
+                } => {
+                    handle_nav_done(tab_index, response, url, cookies, generation);
                 }
-            }
-            net_worker::FetchResult::ImageDone {
-                tab_index,
-                src,
-                body,
-                headers,
-                generation,
-            } => {
-                if handle_image_done(tab_index, src, body, headers, generation) {
-                    mark_relayout_dirty(tab_index);
+                net_worker::FetchResult::NavError {
+                    tab_index,
+                    error_msg,
+                    generation,
+                } => {
+                    handle_nav_error(tab_index, error_msg, generation);
                 }
-            }
-            net_worker::FetchResult::FontDone {
-                tab_index,
-                family,
-                body,
-                generation,
-            } => {
-                if handle_font_done(tab_index, family, body, generation) {
-                    mark_relayout_dirty(tab_index);
+                net_worker::FetchResult::CssDone {
+                    tab_index,
+                    href,
+                    body,
+                    headers,
+                    generation,
+                } => {
+                    if handle_css_done(tab_index, href, body, headers, generation) {
+                        request_render(tab_index, RenderSchedule::Debounced);
+                    }
                 }
-            }
-            net_worker::FetchResult::ScriptDone {
-                tab_index,
-                slot,
-                body,
-                headers,
-                generation,
-            } => {
-                anyos_std::println!(
-                    "[surf] received ScriptDone: tab={} slot={} bytes={} gen={}",
+                net_worker::FetchResult::ImageDone {
+                    tab_index,
+                    src,
+                    body,
+                    headers,
+                    priority,
+                    generation,
+                } => {
+                    if handle_image_done(tab_index, src, body, headers, priority, generation) {
+                        request_render(tab_index, RenderSchedule::Debounced);
+                    }
+                }
+                net_worker::FetchResult::FontDone {
+                    tab_index,
+                    family,
+                    body,
+                    generation,
+                } => {
+                    if handle_font_done(tab_index, family, body, generation) {
+                        request_render(tab_index, RenderSchedule::Debounced);
+                    }
+                }
+                net_worker::FetchResult::ScriptDone {
                     tab_index,
                     slot,
-                    body.len(),
-                    generation
-                );
-                handle_script_done(tab_index, slot, body, headers, generation);
+                    body,
+                    headers,
+                    generation,
+                } => {
+                    anyos_std::println!(
+                        "[surf] received ScriptDone: tab={} slot={} bytes={} gen={}",
+                        tab_index,
+                        slot,
+                        body.len(),
+                        generation
+                    );
+                    handle_script_done(tab_index, slot, body, headers, generation);
+                }
             }
         }
     }
@@ -449,17 +584,34 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
 
 /// Mark a tab as needing a relayout and start the debounce timer if not
 /// already running.  The actual relayout happens in `flush_relayout()`.
-fn mark_relayout_dirty(tab_index: usize) {
+fn request_render(tab_index: usize, schedule: RenderSchedule) {
     let st = state();
     if tab_index < st.relayout_dirty.len() {
         st.relayout_dirty[tab_index] = true;
     }
-    // Start the debounce timer if not already running.
-    if st.relayout_timer == 0 {
-        st.relayout_timer = ui_lib::set_timer(300, flush_relayout);
+    match schedule {
+        RenderSchedule::Immediate => {
+            flush_relayout_for_tab(tab_index);
+        }
+        RenderSchedule::Debounced => {
+            if st.relayout_timer == 0 {
+                st.relayout_timer = ui_lib::set_timer(300, flush_relayout);
+            }
+        }
     }
-    // Ensure the anim timer is running so new tiles are created after relayout.
     ensure_anim_timer();
+}
+
+fn flush_relayout_for_tab(tab_idx: usize) {
+    let st = state();
+    if tab_idx >= st.tabs.len() || tab_idx >= st.relayout_dirty.len() {
+        return;
+    }
+    if !st.relayout_dirty[tab_idx] {
+        return;
+    }
+    st.relayout_dirty[tab_idx] = false;
+    st.tabs[tab_idx].webview.relayout();
 }
 
 /// Debounce callback: perform one relayout per dirty tab, then clear flags
@@ -470,10 +622,7 @@ fn flush_relayout() {
 
     for tab_idx in 0..st.relayout_dirty.len() {
         if st.relayout_dirty[tab_idx] {
-            st.relayout_dirty[tab_idx] = false;
-            if tab_idx < st.tabs.len() {
-                st.tabs[tab_idx].webview.relayout();
-            }
+            flush_relayout_for_tab(tab_idx);
         }
     }
 
@@ -498,16 +647,20 @@ fn flush_relayout() {
 /// Handle a completed navigation fetch: decode body, render HTML, update
 /// history, queue external resources.
 fn handle_nav_done(
+    tab_index: usize,
     response: http::Response,
     original_url: http::Url,
     worker_cookies: http::CookieJar,
     generation: u32,
 ) {
     let st = state();
-    let tab_idx = st.active_tab;
+    let tab_idx = tab_index;
+    if tab_idx >= st.tabs.len() {
+        return;
+    }
 
     // Discard stale result from a previous navigation.
-    if st.tabs[tab_idx].nav_generation != generation {
+    if !st.tabs[tab_idx].load_state.generation_matches(generation) {
         return;
     }
 
@@ -526,7 +679,9 @@ fn handle_nav_done(
     }
 
     st.tabs[tab_idx].status_text = String::from("Rendering...");
-    ui::update_status();
+    if st.active_tab == tab_idx {
+        ui::update_status();
+    }
 
     // Decode response body (charset detection + Latin-1 transcoding).
     let body_text = resources::decode_http_body(&response.body, &response.headers);
@@ -537,6 +692,9 @@ fn handle_nav_done(
 
     // Clear all state from the previous page (DOM, layout, images, JS, CSS).
     st.tabs[tab_idx].webview.navigate_clear();
+    st.tabs[tab_idx].pending_script_modes.clear();
+    st.tabs[tab_idx].deferred_images.clear();
+    st.tabs[tab_idx].deferred_images_inflight = 0;
 
     // Set URL and cookies on the JS runtime before rendering.
     st.tabs[tab_idx].webview.set_url(&url_str);
@@ -555,6 +713,7 @@ fn handle_nav_done(
 
     // Parse and render the HTML document (without JS — scripts are executed
     // after external scripts have been fetched, matching the surf-host flow).
+    st.tabs[tab_idx].load_state.begin_parse();
     st.tabs[tab_idx].webview.set_html_no_js(&body_text);
 
     // Extract page title.
@@ -589,17 +748,21 @@ fn handle_nav_done(
     st.tabs[tab_idx].is_loading = false;
 
     // Update chrome UI.
-    let url_for_field = st.tabs[tab_idx].url_text.clone();
-    st.url_field.set_text(&url_for_field);
-    ui::update_title();
-    ui::update_status();
+    if st.active_tab == tab_idx {
+        let url_for_field = st.tabs[tab_idx].url_text.clone();
+        st.url_field.set_text(&url_for_field);
+        ui::update_title();
+        ui::update_status();
+    }
     ui::update_tab_labels();
-    ui::update_devtools();
+    if st.active_tab == tab_idx {
+        ui::update_devtools();
+    }
 
     // Connect any WebSockets that JS requested during set_html().
     connect_pending_ws(tab_idx);
 
-    let generation = st.tabs[tab_idx].nav_generation;
+    let generation = st.tabs[tab_idx].load_state.generation;
 
     // Match surf-host more closely: queue stylesheets first, but do not let
     // hundreds of images block external scripts in the single network worker.
@@ -610,7 +773,6 @@ fn handle_nav_done(
     } else {
         0
     };
-    st.tabs[tab_idx].pending_stylesheet_count = pending_stylesheet_count;
     // Queue @font-face downloads from inline <style> blocks.
     resources::queue_font_faces(&st.tabs[tab_idx].webview, &base_url, tab_idx);
 
@@ -620,13 +782,15 @@ fn handle_nav_done(
     {
         let entries = st.tabs[tab_idx].webview.script_entries();
         let mut pending = Vec::with_capacity(entries.len());
+        let mut modes = Vec::with_capacity(entries.len());
         let mut ext_count = 0usize;
         for (slot, entry) in entries.iter().enumerate() {
             match entry {
-                libwebview::js::ScriptEntry::Inline(text) => {
+                libwebview::js::ScriptEntry::Inline { text, mode } => {
                     pending.push(Some(text.clone()));
+                    modes.push(mode.clone());
                 }
-                libwebview::js::ScriptEntry::External(src_url) => {
+                libwebview::js::ScriptEntry::External { src: src_url, mode } => {
                     let full_url = http::resolve_url(&base_url, src_url);
                     anyos_std::println!("[surf] queuing script fetch [{}]: {}", slot, src_url);
                     net_worker::submit(net_worker::FetchRequest::Script {
@@ -637,12 +801,18 @@ fn handle_nav_done(
                         generation,
                     });
                     pending.push(None);
-                    ext_count += 1;
+                    modes.push(mode.clone());
+                    if !matches!(mode, libwebview::js::ScriptMode::Async) {
+                        ext_count += 1;
+                    }
                 }
             }
         }
         st.tabs[tab_idx].pending_scripts = pending;
-        st.tabs[tab_idx].pending_script_count = ext_count;
+        st.tabs[tab_idx].pending_script_modes = modes;
+        st.tabs[tab_idx]
+            .load_state
+            .begin_subresource_load(pending_stylesheet_count, ext_count);
     }
 
     if let Some(dom) = st.tabs[tab_idx].webview.dom() {
@@ -651,9 +821,10 @@ fn handle_nav_done(
 
     // Match the surf-host order more closely: run scripts only after
     // the initial external stylesheet chain has finished loading.
-    if st.tabs[tab_idx].pending_script_count == 0 && st.tabs[tab_idx].pending_stylesheet_count == 0
-    {
+    if st.tabs[tab_idx].load_state.ready_for_script_execution() {
         execute_pending_scripts(tab_idx);
+    } else {
+        flush_deferred_resize_if_ready();
     }
 
     // Restart animation/scroll tick timer (may have been stopped while idle).
@@ -661,16 +832,20 @@ fn handle_nav_done(
 }
 
 /// Handle a navigation error: show the error message in the status bar.
-fn handle_nav_error(error_msg: &'static str, generation: u32) {
+fn handle_nav_error(tab_index: usize, error_msg: &'static str, generation: u32) {
     let st = state();
-    let tab_idx = st.active_tab;
-    if st.tabs[tab_idx].nav_generation != generation {
+    let tab_idx = tab_index;
+    if tab_idx >= st.tabs.len() || !st.tabs[tab_idx].load_state.generation_matches(generation) {
         return;
     }
+    st.tabs[tab_idx].load_state.mark_failed();
     st.tabs[tab_idx].is_loading = false;
     st.tabs[tab_idx].status_text = String::from(error_msg);
-    ui::update_status();
+    if st.active_tab == tab_idx {
+        ui::update_status();
+    }
     ui::update_tab_labels();
+    flush_deferred_resize_if_ready();
 }
 
 /// Handle a completed CSS stylesheet fetch: apply the stylesheet.
@@ -688,19 +863,15 @@ fn handle_css_done(
     if tab_index >= st.tabs.len() {
         return false;
     }
-    if st.tabs[tab_index].nav_generation != generation {
+    if !st.tabs[tab_index].load_state.generation_matches(generation) {
         return false;
     }
 
-    if st.tabs[tab_index].pending_stylesheet_count > 0 {
-        st.tabs[tab_index].pending_stylesheet_count -= 1;
-    }
+    st.tabs[tab_index].load_state.on_stylesheet_finished();
 
     if body.is_empty() {
         anyos_std::println!("[surf] skipped empty/failed CSS: {}", href);
-        if st.tabs[tab_index].pending_script_count == 0
-            && st.tabs[tab_index].pending_stylesheet_count == 0
-        {
+        if st.tabs[tab_index].load_state.ready_for_script_execution() {
             execute_pending_scripts(tab_index);
         }
         return false;
@@ -716,7 +887,9 @@ fn handle_css_done(
             .webview
             .last_stylesheet_imports()
             .to_vec();
-        st.tabs[tab_index].pending_stylesheet_count += imports.len();
+        st.tabs[tab_index]
+            .load_state
+            .on_stylesheets_added(imports.len());
         for import_url in imports {
             let resolved = crate::http::resolve_url(&base_url, &import_url);
             crate::net_worker::submit(crate::net_worker::FetchRequest::Css {
@@ -745,9 +918,7 @@ fn handle_css_done(
         }
     }
 
-    if st.tabs[tab_index].pending_script_count == 0
-        && st.tabs[tab_index].pending_stylesheet_count == 0
-    {
+    if st.tabs[tab_index].load_state.ready_for_script_execution() {
         execute_pending_scripts(tab_index);
     }
 
@@ -762,7 +933,7 @@ fn handle_font_done(tab_index: usize, family: String, body: Vec<u8>, generation:
     if tab_index >= st.tabs.len() {
         return false;
     }
-    if st.tabs[tab_index].nav_generation != generation {
+    if !st.tabs[tab_index].load_state.generation_matches(generation) {
         return false;
     }
 
@@ -788,13 +959,14 @@ fn handle_image_done(
     src: String,
     body: Vec<u8>,
     headers: String,
+    priority: net_worker::ImagePriority,
     generation: u32,
 ) -> bool {
     let st = state();
     if tab_index >= st.tabs.len() {
         return false;
     }
-    if st.tabs[tab_index].nav_generation != generation {
+    if !st.tabs[tab_index].load_state.generation_matches(generation) {
         return false;
     }
 
@@ -802,6 +974,17 @@ fn handle_image_done(
         resources::decode_svg_no_relayout(&body, &src, tab_index);
     } else {
         resources::decode_raster_no_relayout(&body, &src, tab_index);
+    }
+    if priority == net_worker::ImagePriority::Deferred
+        && st.tabs[tab_index].deferred_images_inflight > 0
+    {
+        st.tabs[tab_index].deferred_images_inflight -= 1;
+    }
+    if matches!(
+        st.tabs[tab_index].load_state.phase,
+        PageLoadPhase::Interactive
+    ) {
+        pump_deferred_images_for_tab(tab_index);
     }
     true
 }
@@ -826,13 +1009,13 @@ fn handle_script_done(
         );
         return;
     }
-    if st.tabs[tab_index].nav_generation != generation {
+    if !st.tabs[tab_index].load_state.generation_matches(generation) {
         anyos_std::println!(
             "[surf] dropping ScriptDone: stale generation tab={} slot={} got={} expected={}",
             tab_index,
             slot,
             generation,
-            st.tabs[tab_index].nav_generation
+            st.tabs[tab_index].load_state.generation
         );
         return;
     }
@@ -850,25 +1033,35 @@ fn handle_script_done(
         "[surf] script [{}] fetched: {} bytes (pending_before={})",
         slot,
         text.len(),
-        st.tabs[tab_index].pending_script_count
+        st.tabs[tab_index].load_state.pending_script_count
     );
     st.tabs[tab_index].pending_scripts[slot] = Some(text);
 
-    if st.tabs[tab_index].pending_script_count > 0 {
-        st.tabs[tab_index].pending_script_count -= 1;
+    let mode = st.tabs[tab_index]
+        .pending_script_modes
+        .get(slot)
+        .cloned()
+        .unwrap_or(libwebview::js::ScriptMode::Blocking);
+    if !matches!(mode, libwebview::js::ScriptMode::Async) {
+        st.tabs[tab_index].load_state.on_script_finished();
     }
 
     anyos_std::println!(
         "[surf] script [{}] stored: pending_after={} stylesheets_pending={}",
         slot,
-        st.tabs[tab_index].pending_script_count,
-        st.tabs[tab_index].pending_stylesheet_count
+        st.tabs[tab_index].load_state.pending_script_count,
+        st.tabs[tab_index].load_state.pending_stylesheet_count
     );
 
-    // All external scripts fetched — execute everything in document order.
-    if st.tabs[tab_index].pending_script_count == 0
-        && st.tabs[tab_index].pending_stylesheet_count == 0
-    {
+    if matches!(mode, libwebview::js::ScriptMode::Async) {
+        anyos_std::println!(
+            "[surf] async script [{}] queued for batched execution",
+            slot
+        );
+    }
+
+    // Execute when the blocking stylesheet/script gate is open.
+    if st.tabs[tab_index].load_state.ready_for_script_execution() {
         execute_pending_scripts(tab_index);
     }
 }
@@ -883,10 +1076,6 @@ fn execute_pending_scripts(tab_index: usize) {
         return;
     }
 
-    // Match surf-host more closely: JS should observe the fully styled layout
-    // tree, not a still-dirty DOM waiting on the debounce timer.
-    st.tabs[tab_index].webview.relayout();
-
     let scripts: Vec<String> = st.tabs[tab_index]
         .pending_scripts
         .iter()
@@ -898,11 +1087,19 @@ fn execute_pending_scripts(tab_index: usize) {
         scripts.len(),
         st.tabs[tab_index].pending_scripts.len()
     );
+    if tab_index < st.relayout_dirty.len() && st.relayout_dirty[tab_index] {
+        anyos_std::println!(
+            "[surf] execute_pending_scripts: tab={} skipping blocking pre-script relayout",
+            tab_index
+        );
+    }
     // Clear pending state.
     st.tabs[tab_index].pending_scripts.clear();
-    st.tabs[tab_index].pending_script_count = 0;
+    st.tabs[tab_index].pending_script_modes.clear();
+    st.tabs[tab_index].load_state.mark_interactive();
 
     if scripts.is_empty() {
+        pump_deferred_images_for_tab(tab_index);
         return;
     }
 
@@ -921,7 +1118,9 @@ fn execute_pending_scripts(tab_index: usize) {
     connect_pending_ws(tab_index);
 
     // Relayout to reflect DOM mutations from JS.
-    mark_relayout_dirty(tab_index);
+    request_render(tab_index, RenderSchedule::Debounced);
+    pump_deferred_images_for_tab(tab_index);
+    flush_deferred_resize_if_ready();
 }
 
 /// Merge cookies returned by the worker thread into the main cookie jar.
@@ -1099,6 +1298,7 @@ fn main() {
         .set_dock(ui_lib::DOCK_FILL);
     initial_tab.webview.scroll_view().on_scroll(|_| {
         ensure_anim_timer();
+        pump_deferred_images_for_active_tab();
     });
 
     unsafe {
@@ -1122,10 +1322,6 @@ fn main() {
             cookies: http::CookieJar {
                 cookies: Vec::new(),
             },
-            css_queue: Vec::new(),
-            css_timer: 0,
-            image_queue: Vec::new(),
-            image_timer: 0,
             conn_pool: http::ConnPool::new(),
             ws_connections: Vec::new(),
             ws_poll_timer: 0,
@@ -1134,6 +1330,7 @@ fn main() {
             relayout_dirty: [false; 16],
             relayout_timer: 0,
             resize_timer: 0,
+            deferred_resize_pending: false,
         });
     }
 
@@ -1282,9 +1479,6 @@ fn main() {
 
     // Start the CSS animation tick timer.
     start_anim_timer();
-
-    // Start the network worker poll timer (10 ms).
-    start_net_poll_timer();
 
     // Navigate to the initial URL if one was provided on the command line.
     if let Some(url) = start_url {

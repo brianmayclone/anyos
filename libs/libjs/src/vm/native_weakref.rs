@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! WeakMap, WeakSet, WeakRef implementations.
 //!
 //! In our `no_std` environment without GC, these are simplified:

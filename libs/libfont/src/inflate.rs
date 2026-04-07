@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Minimal DEFLATE (RFC 1951) decompressor for PNG bitmap decoding.
 //!
 //! Supports all three block types: uncompressed, fixed Huffman, dynamic Huffman.

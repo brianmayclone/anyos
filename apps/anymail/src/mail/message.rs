@@ -1,8 +1,10 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Email message data model.
 
+use super::rfc2822::EmailAddress;
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::rfc2822::EmailAddress;
 
 /// Flags on a message (bitfield).
 pub const FLAG_SEEN: u32 = 1;
@@ -21,12 +23,12 @@ pub struct MessageSummary {
     pub from: EmailAddress,
     pub to: Vec<EmailAddress>,
     pub subject: String,
-    pub date: String,       // Sortable: YYYY-MM-DD HH:MM:SS
+    pub date: String, // Sortable: YYYY-MM-DD HH:MM:SS
     pub size: u64,
     pub flags: u32,
     pub in_reply_to: String,
     pub references: String,
-    pub preview: String,    // First ~100 chars of plain text body
+    pub preview: String, // First ~100 chars of plain text body
 }
 
 impl MessageSummary {
@@ -46,13 +48,27 @@ impl MessageSummary {
         }
     }
 
-    pub fn is_seen(&self) -> bool { self.flags & FLAG_SEEN != 0 }
-    pub fn is_flagged(&self) -> bool { self.flags & FLAG_FLAGGED != 0 }
-    pub fn is_answered(&self) -> bool { self.flags & FLAG_ANSWERED != 0 }
-    pub fn is_deleted(&self) -> bool { self.flags & FLAG_DELETED != 0 }
-    pub fn is_draft(&self) -> bool { self.flags & FLAG_DRAFT != 0 }
-    pub fn is_junk(&self) -> bool { self.flags & FLAG_JUNK != 0 }
-    pub fn has_attachment(&self) -> bool { self.flags & FLAG_HAS_ATTACHMENT != 0 }
+    pub fn is_seen(&self) -> bool {
+        self.flags & FLAG_SEEN != 0
+    }
+    pub fn is_flagged(&self) -> bool {
+        self.flags & FLAG_FLAGGED != 0
+    }
+    pub fn is_answered(&self) -> bool {
+        self.flags & FLAG_ANSWERED != 0
+    }
+    pub fn is_deleted(&self) -> bool {
+        self.flags & FLAG_DELETED != 0
+    }
+    pub fn is_draft(&self) -> bool {
+        self.flags & FLAG_DRAFT != 0
+    }
+    pub fn is_junk(&self) -> bool {
+        self.flags & FLAG_JUNK != 0
+    }
+    pub fn has_attachment(&self) -> bool {
+        self.flags & FLAG_HAS_ATTACHMENT != 0
+    }
 }
 
 /// A parsed attachment.
@@ -71,10 +87,10 @@ pub struct FullMessage {
     pub cc: Vec<EmailAddress>,
     pub bcc: Vec<EmailAddress>,
     pub reply_to: Vec<EmailAddress>,
-    pub text_body: String,          // Plain text body
-    pub html_body: String,          // HTML body (may be empty)
+    pub text_body: String, // Plain text body
+    pub html_body: String, // HTML body (may be empty)
     pub attachments: Vec<Attachment>,
-    pub raw: Vec<u8>,               // Raw RFC 2822 source
+    pub raw: Vec<u8>, // Raw RFC 2822 source
 }
 
 impl FullMessage {

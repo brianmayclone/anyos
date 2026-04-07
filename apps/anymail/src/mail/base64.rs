@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Base64 encoding and decoding (RFC 4648).
 
 use alloc::vec::Vec;

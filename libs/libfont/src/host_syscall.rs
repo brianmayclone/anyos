@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Host-mode syscall shims for libfont — uses std::fs.
 
 pub fn sbrk(_increment: u32) -> u64 {

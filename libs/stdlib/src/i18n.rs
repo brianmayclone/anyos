@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Internationalization (i18n) support for anyOS.
 //!
 //! Provides a simple translation system based on JSON files stored in

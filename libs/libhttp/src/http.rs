@@ -36,6 +36,11 @@ const CONNECT_TIMEOUT_MS: u32 = 10_000;
 const MAX_HEADER_SIZE: usize = 16384;
 const RECV_BUF_SIZE: usize = 16384;
 
+struct Connection {
+    sock: u32,
+    tls_handle: Option<tls::TlsHandle>,
+}
+
 // ── Last request state ──────────────────────────────────────────────────────
 
 static mut LAST_STATUS: u32 = 0;
@@ -190,24 +195,24 @@ fn fetch_get(url: &Url, raw: bool) -> Result<(u16, Vec<u8>), u32> {
         let is_https = current.scheme == "https";
 
         // 1. Connect
-        let sock = connect_to(&current.host, current.port, is_https)?;
+        let conn = connect_to(&current.host, current.port, is_https)?;
 
         // 2. Build and send GET request
         let request = build_get_request(&current, raw);
-        if !send_data(sock, request.as_bytes(), is_https) {
-            close_conn(sock, is_https);
+        if !send_data(&conn, request.as_bytes(), is_https) {
+            close_conn(conn);
             return Err(ERR_SEND_FAILURE);
         }
 
         // 3. Receive and parse response
-        match receive_response(sock, is_https, raw)? {
+        match receive_response(&conn, is_https, raw)? {
             ResponseAction::Redirect(location) => {
-                close_conn(sock, is_https);
+                close_conn(conn);
                 current = resolve_url(&current, &location);
                 continue;
             }
             ResponseAction::Complete(status, body) => {
-                close_conn(sock, is_https);
+                close_conn(conn);
                 return Ok((status, body));
             }
         }
@@ -224,7 +229,7 @@ fn fetch_post_inner(url: &Url, body: &[u8], content_type: &str) -> Result<(u16, 
     for _redirect_n in 0..MAX_REDIRECTS {
         let is_https = current.scheme == "https";
 
-        let sock = connect_to(&current.host, current.port, is_https)?;
+        let conn = connect_to(&current.host, current.port, is_https)?;
 
         let request = if is_first {
             build_post_request(&current, body, content_type)
@@ -232,28 +237,28 @@ fn fetch_post_inner(url: &Url, body: &[u8], content_type: &str) -> Result<(u16, 
             build_get_request(&current, false)
         };
 
-        if !send_data(sock, request.as_bytes(), is_https) {
-            close_conn(sock, is_https);
+        if !send_data(&conn, request.as_bytes(), is_https) {
+            close_conn(conn);
             return Err(ERR_SEND_FAILURE);
         }
 
         // Send POST body after headers (only on first request, not redirects)
         if is_first && !body.is_empty() {
-            if !send_data(sock, body, is_https) {
-                close_conn(sock, is_https);
+            if !send_data(&conn, body, is_https) {
+                close_conn(conn);
                 return Err(ERR_SEND_FAILURE);
             }
         }
 
-        match receive_response(sock, is_https, false)? {
+        match receive_response(&conn, is_https, false)? {
             ResponseAction::Redirect(location) => {
-                close_conn(sock, is_https);
+                close_conn(conn);
                 current = resolve_url(&current, &location);
                 is_first = false;
                 continue;
             }
             ResponseAction::Complete(status, resp_body) => {
-                close_conn(sock, is_https);
+                close_conn(conn);
                 return Ok((status, resp_body));
             }
         }
@@ -265,26 +270,31 @@ fn fetch_post_inner(url: &Url, body: &[u8], content_type: &str) -> Result<(u16, 
 // ── Connection management ───────────────────────────────────────────────────
 
 /// Establish a TCP connection (+ TLS handshake for HTTPS).
-fn connect_to(host: &str, port: u16, is_https: bool) -> Result<u32, u32> {
+fn connect_to(host: &str, port: u16, is_https: bool) -> Result<Connection, u32> {
     let ip = resolve_host(host).ok_or(ERR_DNS_FAILURE)?;
     let sock = syscall::tcp_connect(&ip, port, CONNECT_TIMEOUT_MS);
     if sock == u32::MAX {
         return Err(ERR_CONNECT_FAILURE);
     }
-    if is_https {
+    let tls_handle = if is_https {
         let ret = tls::connect(sock, host);
-        if ret != 0 {
+        if ret <= 0 {
             syscall::tcp_close(sock);
             return Err(ERR_TLS_HANDSHAKE_FAILED);
         }
-    }
-    Ok(sock)
+        Some(ret as tls::TlsHandle)
+    } else {
+        None
+    };
+    Ok(Connection { sock, tls_handle })
 }
 
 /// Close a connection (TLS + TCP).
-fn close_conn(sock: u32, is_https: bool) {
-    if is_https { tls::close(); }
-    syscall::tcp_close(sock);
+fn close_conn(conn: Connection) {
+    if let Some(handle) = conn.tls_handle {
+        tls::close(handle);
+    }
+    syscall::tcp_close(conn.sock);
 }
 
 /// Resolve a hostname to an IPv4 address.
@@ -303,11 +313,12 @@ fn resolve_host(host: &str) -> Option<[u8; 4]> {
 // ── Data transport ──────────────────────────────────────────────────────────
 
 /// Send data over plain TCP or TLS.
-fn send_data(sock: u32, data: &[u8], is_https: bool) -> bool {
-    if is_https {
-        tls::send(data) >= 0
+fn send_data(conn: &Connection, data: &[u8], is_https: bool) -> bool {
+    if let Some(handle) = conn.tls_handle {
+        tls::send(handle, data) >= 0
     } else {
-        syscall::tcp_send(sock, data) != u32::MAX
+        debug_assert!(!is_https);
+        syscall::tcp_send(conn.sock, data) != u32::MAX
     }
 }
 
@@ -316,15 +327,16 @@ fn send_data(sock: u32, data: &[u8], is_https: bool) -> bool {
 ///
 /// For plain TCP, retries up to 3 times on timeout (u32::MAX) if the
 /// connection is still alive, to handle transient delays during large transfers.
-fn recv_some(sock: u32, buf: &mut [u8], is_https: bool) -> usize {
-    if is_https {
+fn recv_some(conn: &Connection, buf: &mut [u8], is_https: bool) -> usize {
+    if let Some(handle) = conn.tls_handle {
         // TLS path — retry logic is in anyos_tcp_recv callback
-        let n = tls::recv(buf);
+        let n = tls::recv(handle, buf);
         if n <= 0 { 0 } else { n as usize }
     } else {
+        debug_assert!(!is_https);
         // Plain TCP path — retry on transient timeouts
         for _ in 0..3 {
-            let n = syscall::tcp_recv(sock, buf);
+            let n = syscall::tcp_recv(conn.sock, buf);
             if n == 0 {
                 return 0; // EOF
             }
@@ -332,7 +344,7 @@ fn recv_some(sock: u32, buf: &mut [u8], is_https: bool) -> usize {
                 return n as usize; // Got data
             }
             // Timeout — check if connection is still alive
-            let avail = syscall::tcp_recv_available(sock);
+            let avail = syscall::tcp_recv_available(conn.sock);
             if avail == u32::MAX || avail == u32::MAX - 1 {
                 return 0; // Error or EOF
             }
@@ -352,14 +364,14 @@ enum ResponseAction {
 
 /// Receive and parse an HTTP response (headers + body).
 /// When `raw` is true, body decompression is skipped.
-fn receive_response(sock: u32, is_https: bool, raw: bool) -> Result<ResponseAction, u32> {
+fn receive_response(conn: &Connection, is_https: bool, raw: bool) -> Result<ResponseAction, u32> {
     // Receive headers
     let mut response_buf: Vec<u8> = Vec::new();
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
     let header_end;
 
     loop {
-        let n = recv_some(sock, &mut recv_buf, is_https);
+        let n = recv_some(conn, &mut recv_buf, is_https);
         if n == 0 {
             return Err(ERR_NO_RESPONSE);
         }
@@ -400,9 +412,9 @@ fn receive_response(sock: u32, is_https: bool, raw: bool) -> Result<ResponseActi
     }
 
     let raw_body = if is_chunked {
-        read_chunked_body(sock, &trailing, is_https)
+        read_chunked_body(conn, &trailing, is_https)
     } else {
-        read_body(sock, &trailing, content_length, is_https)
+        read_body(conn, &trailing, content_length, is_https)
     };
 
     // Decompress if content-encoded (skip in raw mode for file downloads)
@@ -466,7 +478,12 @@ fn build_post_request(url: &Url, body: &[u8], content_type: &str) -> String {
 /// When Content-Length is known, retries up to 5 times on recv_some()==0
 /// if the expected size hasn't been reached yet. This handles cases where
 /// TCP timeouts cause transient recv failures during large downloads.
-fn read_body(sock: u32, initial: &[u8], content_length: Option<u32>, is_https: bool) -> Vec<u8> {
+fn read_body(
+    conn: &Connection,
+    initial: &[u8],
+    content_length: Option<u32>,
+    is_https: bool,
+) -> Vec<u8> {
     let capacity = content_length
         .map(|cl| (cl as usize).min(32 * 1024 * 1024))
         .unwrap_or(65536);
@@ -490,7 +507,7 @@ fn read_body(sock: u32, initial: &[u8], content_length: Option<u32>, is_https: b
         if let Some(cl) = content_length {
             if body.len() >= cl as usize { break; }
         }
-        let n = recv_some(sock, &mut recv_buf, is_https);
+        let n = recv_some(conn, &mut recv_buf, is_https);
         if n == 0 {
             // recv_some returned 0 — could be EOF or transient failure.
             // If we know Content-Length and haven't received enough, retry.
@@ -519,7 +536,7 @@ fn read_body(sock: u32, initial: &[u8], content_length: Option<u32>, is_https: b
 ///
 /// Retries on transient recv failures (up to 5 consecutive) to handle
 /// TCP timeouts during large chunked transfers.
-fn read_chunked_body(sock: u32, initial: &[u8], is_https: bool) -> Vec<u8> {
+fn read_chunked_body(conn: &Connection, initial: &[u8], is_https: bool) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::with_capacity(RECV_BUF_SIZE * 4);
     buf.extend_from_slice(initial);
     let mut cursor: usize = 0;
@@ -543,7 +560,7 @@ fn read_chunked_body(sock: u32, initial: &[u8], is_https: bool) -> Vec<u8> {
                 cursor += crlf + 2;
                 break;
             }
-            let n = recv_some(sock, &mut recv_buf, is_https);
+            let n = recv_some(conn, &mut recv_buf, is_https);
             if n == 0 {
                 failures += 1;
                 if failures >= MAX_RETRIES { return body; }
@@ -559,7 +576,7 @@ fn read_chunked_body(sock: u32, initial: &[u8], is_https: bool) -> Vec<u8> {
         // Read chunk data
         failures = 0;
         while buf.len() - cursor < chunk_size {
-            let n = recv_some(sock, &mut recv_buf, is_https);
+            let n = recv_some(conn, &mut recv_buf, is_https);
             if n == 0 {
                 failures += 1;
                 if failures >= MAX_RETRIES { break; }
@@ -584,7 +601,7 @@ fn read_chunked_body(sock: u32, initial: &[u8], is_https: bool) -> Vec<u8> {
         // Skip trailing CRLF
         failures = 0;
         while buf.len() - cursor < 2 {
-            let n = recv_some(sock, &mut recv_buf, is_https);
+            let n = recv_some(conn, &mut recv_buf, is_https);
             if n == 0 {
                 failures += 1;
                 if failures >= MAX_RETRIES { return body; }

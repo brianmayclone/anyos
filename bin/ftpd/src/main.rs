@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! anyOS FTP daemon — RFC 959 compliant FTP server.
 //!
 //! # Architecture

@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! RamFS — in-memory filesystem with inode-based storage.
 //!
 //! Used as the writable upper layer for OverlayFS when booting from CD-ROM.

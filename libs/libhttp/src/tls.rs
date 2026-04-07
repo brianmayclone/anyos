@@ -86,19 +86,21 @@ extern "C" fn anyos_random(buf: *mut u8, len: i32) -> i32 {
 
 extern "C" {
     fn tls_connect(fd: i32, host: *const u8) -> i32;
-    fn tls_send(data: *const u8, len: i32) -> i32;
-    fn tls_recv(data: *mut u8, len: i32) -> i32;
-    fn tls_close();
-    fn tls_last_error() -> i32;
+    fn tls_send(handle: i32, data: *const u8, len: i32) -> i32;
+    fn tls_recv(handle: i32, data: *mut u8, len: i32) -> i32;
+    fn tls_close(handle: i32);
+    fn tls_last_error(handle: i32) -> i32;
 }
 
 // ---------------------------------------------------------------------------
 // Public Rust API
 // ---------------------------------------------------------------------------
 
+pub type TlsHandle = u32;
+
 /// Establish a TLS connection over an existing TCP socket.
 /// The socket must already be connected. `host` is used for SNI.
-/// Returns 0 on success, negative error code on failure.
+/// Returns a positive TLS handle on success, negative error code on failure.
 pub fn connect(fd: u32, host: &str) -> i32 {
     let mut host_buf = [0u8; 256];
     let len = host.len().min(host_buf.len() - 1);
@@ -107,24 +109,24 @@ pub fn connect(fd: u32, host: &str) -> i32 {
     unsafe { tls_connect(fd as i32, host_buf.as_ptr()) }
 }
 
-/// Send data over the TLS connection.
+/// Send data over the TLS connection identified by `handle`.
 /// Returns bytes sent on success, negative on error.
-pub fn send(data: &[u8]) -> i32 {
-    unsafe { tls_send(data.as_ptr(), data.len() as i32) }
+pub fn send(handle: TlsHandle, data: &[u8]) -> i32 {
+    unsafe { tls_send(handle as i32, data.as_ptr(), data.len() as i32) }
 }
 
-/// Receive data from the TLS connection.
+/// Receive data from the TLS connection identified by `handle`.
 /// Returns bytes read, 0 on EOF, negative on error.
-pub fn recv(buf: &mut [u8]) -> i32 {
-    unsafe { tls_recv(buf.as_mut_ptr(), buf.len() as i32) }
+pub fn recv(handle: TlsHandle, buf: &mut [u8]) -> i32 {
+    unsafe { tls_recv(handle as i32, buf.as_mut_ptr(), buf.len() as i32) }
 }
 
 /// Close the TLS connection (sends close_notify).
-pub fn close() {
-    unsafe { tls_close(); }
+pub fn close(handle: TlsHandle) {
+    unsafe { tls_close(handle as i32); }
 }
 
 /// Get the last BearSSL error code.
-pub fn last_error() -> i32 {
-    unsafe { tls_last_error() }
+pub fn last_error(handle: TlsHandle) -> i32 {
+    unsafe { tls_last_error(handle as i32) }
 }

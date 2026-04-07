@@ -286,6 +286,8 @@ pub(crate) fn queue_images(
 ) {
     let generation = crate::net_worker::current_generation();
     let mut count = 0u32;
+    let mut immediate_budget = 16usize;
+    let mut deferred = Vec::new();
 
     for (i, node) in dom.nodes.iter().enumerate() {
         if let libwebview::dom::NodeType::Element {
@@ -312,21 +314,75 @@ pub(crate) fn queue_images(
                 }
 
                 let img_url = crate::http::resolve_url(base_url, src);
-                crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
-                    tab_index,
-                    src: String::from(src),
-                    url: img_url,
-                    generation,
-                });
+                let src = String::from(src);
+                if immediate_budget > 0 {
+                    immediate_budget -= 1;
+                    crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
+                        tab_index,
+                        src,
+                        url: img_url,
+                        priority: crate::net_worker::ImagePriority::Viewport,
+                        generation,
+                    });
+                } else {
+                    deferred.push(crate::tab::DeferredImageRequest {
+                        src,
+                        url: img_url,
+                        priority: crate::net_worker::ImagePriority::Deferred,
+                        generation,
+                    });
+                }
                 count += 1;
             }
         }
+    }
+
+    let st = crate::state();
+    if tab_index < st.tabs.len() {
+        st.tabs[tab_index].deferred_images = deferred;
+        st.tabs[tab_index].deferred_images_inflight = 0;
     }
 
     if count > 0 {
         anyos_std::println!("[surf] submitted {} image(s) to worker", count);
         crate::ensure_net_poll_timer();
     }
+}
+
+pub(crate) fn submit_deferred_images(tab_index: usize, max_batch: usize) -> usize {
+    if max_batch == 0 {
+        return 0;
+    }
+    let st = crate::state();
+    if tab_index >= st.tabs.len() {
+        return 0;
+    }
+    let tab = &mut st.tabs[tab_index];
+    let count = core::cmp::min(max_batch, tab.deferred_images.len());
+    if count == 0 {
+        return 0;
+    }
+    let requests: Vec<crate::tab::DeferredImageRequest> =
+        tab.deferred_images.drain(0..count).collect();
+    tab.deferred_images_inflight += requests.len();
+    for req in requests {
+        crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
+            tab_index,
+            src: req.src,
+            url: req.url,
+            priority: req.priority,
+            generation: req.generation,
+        });
+    }
+    anyos_std::println!(
+        "[surf] submitted {} deferred image(s) for tab {} (remaining={} inflight={})",
+        count,
+        tab_index,
+        tab.deferred_images.len(),
+        tab.deferred_images_inflight
+    );
+    crate::ensure_net_poll_timer();
+    count
 }
 
 // ═══════════════════════════════════════════════════════════

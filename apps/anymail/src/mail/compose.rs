@@ -1,10 +1,12 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! MIME message composition for sending email.
 
+use super::message::{Attachment, ComposeMode, FullMessage};
+use super::rfc2822::EmailAddress;
+use super::{base64, rfc2822};
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::{base64, rfc2822};
-use super::message::{ComposeMode, FullMessage, Attachment};
-use super::rfc2822::EmailAddress;
 
 /// Build an RFC 2822 MIME message ready for SMTP DATA.
 pub fn build_message(
@@ -147,7 +149,17 @@ pub fn build_message(
 }
 
 /// Prepare reply headers and quoted body.
-pub fn prepare_reply(original: &FullMessage, reply_all: bool) -> (Vec<EmailAddress>, Vec<EmailAddress>, String, String, String, String) {
+pub fn prepare_reply(
+    original: &FullMessage,
+    reply_all: bool,
+) -> (
+    Vec<EmailAddress>,
+    Vec<EmailAddress>,
+    String,
+    String,
+    String,
+    String,
+) {
     // To
     let to = if !original.reply_to.is_empty() {
         original.reply_to.clone()
@@ -170,7 +182,9 @@ pub fn prepare_reply(original: &FullMessage, reply_all: bool) -> (Vec<EmailAddre
     };
 
     // Subject
-    let subject = if original.summary.subject.starts_with("Re:") || original.summary.subject.starts_with("RE:") {
+    let subject = if original.summary.subject.starts_with("Re:")
+        || original.summary.subject.starts_with("RE:")
+    {
         original.summary.subject.clone()
     } else {
         alloc::format!("Re: {}", original.summary.subject)
@@ -183,18 +197,28 @@ pub fn prepare_reply(original: &FullMessage, reply_all: bool) -> (Vec<EmailAddre
     let references = if original.summary.references.is_empty() {
         original.summary.message_id.clone()
     } else {
-        alloc::format!("{} {}", original.summary.references, original.summary.message_id)
+        alloc::format!(
+            "{} {}",
+            original.summary.references,
+            original.summary.message_id
+        )
     };
 
     // Quoted body
-    let body = format_quoted_body(&original.summary.from.display_short(), &original.summary.date, &original.text_body);
+    let body = format_quoted_body(
+        &original.summary.from.display_short(),
+        &original.summary.date,
+        &original.text_body,
+    );
 
     (to, cc, subject, body, in_reply_to, references)
 }
 
 /// Prepare forward message.
 pub fn prepare_forward(original: &FullMessage) -> (String, String) {
-    let subject = if original.summary.subject.starts_with("Fwd:") || original.summary.subject.starts_with("FWD:") {
+    let subject = if original.summary.subject.starts_with("Fwd:")
+        || original.summary.subject.starts_with("FWD:")
+    {
         original.summary.subject.clone()
     } else {
         alloc::format!("Fwd: {}", original.summary.subject)
@@ -209,7 +233,9 @@ pub fn prepare_forward(original: &FullMessage) -> (String, String) {
     body.push_str(&original.summary.subject);
     body.push_str("\r\nTo: ");
     for (i, to) in original.summary.to.iter().enumerate() {
-        if i > 0 { body.push_str(", "); }
+        if i > 0 {
+            body.push_str(", ");
+        }
         body.push_str(&to.to_header_string());
     }
     body.push_str("\r\n\r\n");
@@ -269,7 +295,9 @@ fn format_address_list(addrs: &[EmailAddress]) -> String {
     let mut s = String::new();
     let mut first = true;
     for addr in addrs {
-        if !first { s.push_str(", "); }
+        if !first {
+            s.push_str(", ");
+        }
         first = false;
         let h = addr.to_header_string();
         s.push_str(&h);
@@ -313,10 +341,27 @@ fn rfc2822_date() -> String {
     let min = buf[5];
     let sec = buf[6];
     let mon_name = match month {
-        1 => "Jan", 2 => "Feb", 3 => "Mar", 4 => "Apr",
-        5 => "May", 6 => "Jun", 7 => "Jul", 8 => "Aug",
-        9 => "Sep", 10 => "Oct", 11 => "Nov", 12 => "Dec",
+        1 => "Jan",
+        2 => "Feb",
+        3 => "Mar",
+        4 => "Apr",
+        5 => "May",
+        6 => "Jun",
+        7 => "Jul",
+        8 => "Aug",
+        9 => "Sep",
+        10 => "Oct",
+        11 => "Nov",
+        12 => "Dec",
         _ => "Jan",
     };
-    alloc::format!("{:02} {} {:04} {:02}:{:02}:{:02} +0000", day, mon_name, year, hour, min, sec)
+    alloc::format!(
+        "{:02} {} {:04} {:02}:{:02}:{:02} +0000",
+        day,
+        mon_name,
+        year,
+        hour,
+        min,
+        sec
+    )
 }

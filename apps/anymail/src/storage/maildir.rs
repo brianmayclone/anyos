@@ -1,14 +1,16 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Local mail storage (Maildir-inspired).
 //!
 //! Directory structure:
 //!   $HOME/.anymail/accounts/<id>/<folder>/index.json
 //!   $HOME/.anymail/accounts/<id>/<folder>/messages/<uid>.eml
 
+use crate::mail::message::MessageSummary;
+use crate::mail::rfc2822::EmailAddress;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::json::Value;
-use crate::mail::message::MessageSummary;
-use crate::mail::rfc2822::EmailAddress;
 
 /// Ensure the directory structure exists for an account.
 pub fn ensure_dirs(base: &str, account_id: &str) {
@@ -25,33 +27,52 @@ pub fn ensure_dirs(base: &str, account_id: &str) {
 
 /// Get the path for a folder's index file.
 pub fn index_path(base: &str, account_id: &str, folder: &str) -> String {
-    alloc::format!("{}/accounts/{}/{}/index.json", base, account_id, sanitize_folder(folder))
+    alloc::format!(
+        "{}/accounts/{}/{}/index.json",
+        base,
+        account_id,
+        sanitize_folder(folder)
+    )
 }
 
 /// Get the path for a message's .eml file.
 pub fn message_path(base: &str, account_id: &str, folder: &str, uid: u32) -> String {
-    alloc::format!("{}/accounts/{}/{}/messages/{}.eml", base, account_id, sanitize_folder(folder), uid)
+    alloc::format!(
+        "{}/accounts/{}/{}/messages/{}.eml",
+        base,
+        account_id,
+        sanitize_folder(folder),
+        uid
+    )
 }
 
 /// Load the message index for a folder.
 pub fn load_index(path: &str) -> Vec<MessageSummary> {
     let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX { return Vec::new(); }
+    if fd == u32::MAX {
+        return Vec::new();
+    }
 
     let mut buf = alloc::vec![0u8; 256 * 1024];
     let mut total = 0usize;
     loop {
         let mut chunk = [0u8; 4096];
         let n = anyos_std::fs::read(fd, &mut chunk);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         let n = n as usize;
-        if total + n > buf.len() { break; }
+        if total + n > buf.len() {
+            break;
+        }
         buf[total..total + n].copy_from_slice(&chunk[..n]);
         total += n;
     }
     anyos_std::fs::close(fd);
 
-    if total == 0 { return Vec::new(); }
+    if total == 0 {
+        return Vec::new();
+    }
 
     let text = match core::str::from_utf8(&buf[..total]) {
         Ok(s) => s,
@@ -121,13 +142,17 @@ pub fn save_message(path: &str, data: &[u8]) {
 /// Load a raw message from disk.
 pub fn load_message(path: &str) -> Option<Vec<u8>> {
     let fd = anyos_std::fs::open(path, 0);
-    if fd == u32::MAX { return None; }
+    if fd == u32::MAX {
+        return None;
+    }
 
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
     loop {
         let n = anyos_std::fs::read(fd, &mut chunk);
-        if n == 0 || n == u32::MAX { break; }
+        if n == 0 || n == u32::MAX {
+            break;
+        }
         buf.extend_from_slice(&chunk[..n as usize]);
     }
     anyos_std::fs::close(fd);

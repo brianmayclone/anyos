@@ -155,10 +155,10 @@ impl<T> Spinlock<T> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            // Exponential PAUSE backoff: 1, 2, 4, 8, 16, 32, 64 PAUSEs per check.
-            // Reduces cache-line bouncing under contention.
+            // Spin phase: 128 PAUSE iterations with backoff (~1-2 µs).
+            // Exponential backoff from 1 to 64 to reduce cache-line bouncing.
             let mut backoff: u32 = 1;
-            while self.lock.load(Ordering::Relaxed) {
+            for _ in 0..128u32 {
                 for _ in 0..backoff {
                     core::hint::spin_loop();
                 }
@@ -166,29 +166,52 @@ impl<T> Spinlock<T> {
                 if backoff < 64 {
                     backoff <<= 1;
                 }
-
-                if !reported && spin_count >= SPIN_TIMEOUT {
-                    reported = true;
-                    let lock_addr = self as *const _ as u64;
-                    let me = cpu_id();
-                    let owner = self.owner_cpu.load(Ordering::Relaxed);
-                    diag_puts(b"\n!!! SPIN TIMEOUT lock=");
-                    diag_hex(lock_addr);
-                    diag_puts(b" cpu=");
-                    diag_dec(me);
-                    diag_puts(b" owner=");
-                    if owner == NO_OWNER {
-                        diag_puts(b"NONE");
-                    } else {
-                        diag_dec(owner);
-                        // Print the SCHEDULER lock phase of the owner CPU so we
-                        // know which function is holding the lock for 100-400 ms.
-                        let phase = crate::sched_diag::get(owner as usize);
-                        diag_puts(b" phase=");
-                        diag_puts(crate::sched_diag::name(phase));
-                    }
-                    diag_putc(b'\n');
+                if !self.lock.load(Ordering::Relaxed) {
+                    break;
                 }
+            }
+
+            if !reported && spin_count >= SPIN_TIMEOUT {
+                reported = true;
+                let lock_addr = self as *const _ as u64;
+                let me = cpu_id();
+                let owner = self.owner_cpu.load(Ordering::Relaxed);
+                diag_puts(b"\n!!! SPIN TIMEOUT lock=");
+                diag_hex(lock_addr);
+                diag_puts(b" cpu=");
+                diag_dec(me);
+                diag_puts(b" owner=");
+                if owner == NO_OWNER {
+                    diag_puts(b"NONE");
+                } else {
+                    diag_dec(owner);
+                    // Print the SCHEDULER lock phase of the owner CPU so we
+                    // know which function is holding the lock for 100-400 ms.
+                    let phase = crate::sched_diag::get(owner as usize);
+                    diag_puts(b" phase=");
+                    diag_puts(crate::sched_diag::name(phase));
+                }
+                diag_putc(b'\n');
+            }
+
+            // Re-enable interrupts briefly after each spin batch (only when they
+            // were enabled on entry — never in IRQ handlers).
+            //
+            // Two reasons:
+            // 1. KVM PLE (Pause Loop Exit): KVM de-schedules a vCPU that executes
+            //    too many PAUSE instructions without making progress. Without this
+            //    STI/CLI window, the spinning vCPU stalls for 100-400 ms, causing
+            //    cascading delays on all spinlock waiters (manifests as multi-second
+            //    spawn delays and intermittent login failures at boot).
+            // 2. Single-CPU path: allows the timer IRQ to preempt the lock holder
+            //    (if it's running on this same CPU in normal thread context) so it
+            //    can release the lock.
+            if was_enabled {
+                sti();
+                // A few NOPs give the interrupt controller time to deliver a
+                // pending IRQ before we re-disable and retry.
+                for _ in 0..4u32 { core::hint::spin_loop(); }
+                cli();
             }
         }
 

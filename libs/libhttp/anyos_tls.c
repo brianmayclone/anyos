@@ -4,11 +4,13 @@
  *
  * anyos_tls.c -- TLS client wrapper for anyOS using BearSSL.
  *
- * Provides a simple high-level API: tls_connect / tls_send / tls_recv / tls_close.
+ * Provides a simple high-level API: tls_connect / tls_send / tls_recv /
+ * tls_close using per-connection handles instead of a single global context.
  * Uses a "trust-all" X.509 validator (no certificate chain verification).
  */
 
 #include "bearssl.h"
+#include <string.h>
 
 /* Forward declarations for Rust-side functions */
 extern int anyos_tcp_send(int fd, const void *data, int len);
@@ -20,16 +22,9 @@ extern int anyos_random(void *buf, int len);
 /* Trust-all X.509 validator                                                  */
 /* -------------------------------------------------------------------------- */
 
-/*
- * This validator extracts the server's public key from the first certificate
- * (end-entity) without performing any chain or signature validation.
- * For use in environments without a trust store (hobby OS, testing, etc.).
- */
-
 typedef struct {
     const br_x509_class *vtable;
     br_x509_decoder_context decoder;
-    /* Local storage for the public key data. */
     unsigned char key_data[1024];
     size_t key_data_len;
     br_x509_pkey pkey;
@@ -55,8 +50,7 @@ static void ta_start_cert(const br_x509_class **ctx, uint32_t length)
     }
 }
 
-static void ta_append(const br_x509_class **ctx,
-    const unsigned char *buf, size_t len)
+static void ta_append(const br_x509_class **ctx, const unsigned char *buf, size_t len)
 {
     trust_all_x509_ctx *tc = (trust_all_x509_ctx *)(void *)ctx;
     if (tc->first_cert) {
@@ -70,11 +64,9 @@ static void ta_end_cert(const br_x509_class **ctx)
     if (tc->first_cert && !tc->got_pkey) {
         const br_x509_pkey *pk = br_x509_decoder_get_pkey(&tc->decoder);
         if (pk != 0) {
-            /* Copy key type */
+            size_t off = 0;
             tc->pkey.key_type = pk->key_type;
 
-            /* Copy key data into our local buffer */
-            size_t off = 0;
             if (pk->key_type == BR_KEYTYPE_RSA) {
                 size_t nlen = pk->key.rsa.nlen;
                 size_t elen = pk->key.rsa.elen;
@@ -109,7 +101,7 @@ static void ta_end_cert(const br_x509_class **ctx)
 static unsigned ta_end_chain(const br_x509_class **ctx)
 {
     (void)ctx;
-    return 0; /* 0 = success: trust everything */
+    return 0;
 }
 
 static const br_x509_pkey *ta_get_pkey(
@@ -133,12 +125,74 @@ static const br_x509_class trust_all_vtable = {
 };
 
 /* -------------------------------------------------------------------------- */
+/* TLS state (multiple concurrent connections)                                */
+/* -------------------------------------------------------------------------- */
+
+#define MAX_TLS_CONTEXTS 16
+
+typedef struct {
+    int used;
+    int fd;
+    br_ssl_client_context sc;
+    br_x509_minimal_context xc;
+    trust_all_x509_ctx ta_ctx;
+    unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
+    br_sslio_context ioc;
+} tls_slot;
+
+static tls_slot TLS_SLOTS[MAX_TLS_CONTEXTS];
+
+static tls_slot *slot_from_ctx(void *ctx)
+{
+    return (tls_slot *)ctx;
+}
+
+static tls_slot *get_slot(int handle)
+{
+    int idx;
+    if (handle <= 0) {
+        return 0;
+    }
+    idx = handle - 1;
+    if (idx < 0 || idx >= MAX_TLS_CONTEXTS) {
+        return 0;
+    }
+    if (!TLS_SLOTS[idx].used) {
+        return 0;
+    }
+    return &TLS_SLOTS[idx];
+}
+
+static int alloc_slot(void)
+{
+    int i;
+    for (i = 0; i < MAX_TLS_CONTEXTS; i++) {
+        if (!TLS_SLOTS[i].used) {
+            memset(&TLS_SLOTS[i], 0, sizeof(TLS_SLOTS[i]));
+            TLS_SLOTS[i].used = 1;
+            return i + 1;
+        }
+    }
+    return 0;
+}
+
+static void free_slot(int handle)
+{
+    tls_slot *slot = get_slot(handle);
+    if (slot == 0) {
+        return;
+    }
+    memset(slot, 0, sizeof(*slot));
+}
+
+/* -------------------------------------------------------------------------- */
 /* Low-level I/O callbacks for BearSSL                                        */
 /* -------------------------------------------------------------------------- */
 
 static int low_read(void *ctx, unsigned char *buf, size_t len)
 {
-    int fd = *(int *)ctx;
+    tls_slot *slot = slot_from_ctx(ctx);
+    int fd = slot->fd;
     int total = 0;
     int retries = 0;
 
@@ -146,17 +200,17 @@ static int low_read(void *ctx, unsigned char *buf, size_t len)
         int n = anyos_tcp_recv(fd, buf, (int)len);
         if (n < 0) return -1;
         if (n > 0) return n;
-        /* n == 0: no data yet — retry with brief sleep */
         anyos_sleep(1);
         retries++;
-        if (retries > 10000) return -1; /* 10s timeout */
+        if (retries > 10000) return -1;
     }
     return total;
 }
 
 static int low_write(void *ctx, const unsigned char *buf, size_t len)
 {
-    int fd = *(int *)ctx;
+    tls_slot *slot = slot_from_ctx(ctx);
+    int fd = slot->fd;
     int total = 0;
 
     while ((size_t)total < len) {
@@ -172,106 +226,90 @@ static int low_write(void *ctx, const unsigned char *buf, size_t len)
 }
 
 /* -------------------------------------------------------------------------- */
-/* TLS state (single connection at a time)                                    */
-/* -------------------------------------------------------------------------- */
-
-static br_ssl_client_context sc;
-static br_x509_minimal_context xc; /* used internally by init_full */
-static trust_all_x509_ctx ta_ctx;
-static unsigned char iobuf[BR_SSL_BUFSIZE_BIDI];
-static br_sslio_context ioc;
-static int tls_fd_storage;
-
-/* -------------------------------------------------------------------------- */
 /* Public API                                                                 */
 /* -------------------------------------------------------------------------- */
 
-/*
- * Establish a TLS connection over an existing TCP socket.
- * Returns 0 on success, -1 on failure.
- * `host` must be a null-terminated hostname string (used for SNI).
- */
 int tls_connect(int fd, const char *host)
 {
-    tls_fd_storage = fd;
+    int handle = alloc_slot();
+    tls_slot *slot;
+    int err;
 
-    /* Initialize BearSSL client with full cipher suite support. */
-    br_ssl_client_init_full(&sc, &xc, 0, 0);
+    if (handle == 0) {
+        return -1;
+    }
+    slot = get_slot(handle);
+    if (slot == 0) {
+        return -1;
+    }
 
-    /* Seed the PRNG with entropy from the kernel RNG (RDRAND/TSC). */
+    slot->fd = fd;
+    br_ssl_client_init_full(&slot->sc, &slot->xc, 0, 0);
+
     {
         unsigned char entropy[32];
         anyos_random(entropy, 32);
-        br_ssl_engine_inject_entropy(&sc.eng, entropy, sizeof entropy);
+        br_ssl_engine_inject_entropy(&slot->sc.eng, entropy, sizeof entropy);
     }
 
-    /* Override X.509 engine with trust-all validator. */
-    ta_ctx.vtable = &trust_all_vtable;
-    br_ssl_engine_set_x509(&sc.eng, &ta_ctx.vtable);
+    slot->ta_ctx.vtable = &trust_all_vtable;
+    br_ssl_engine_set_x509(&slot->sc.eng, &slot->ta_ctx.vtable);
+    br_ssl_engine_set_buffer(&slot->sc.eng, slot->iobuf, sizeof slot->iobuf, 1);
+    br_ssl_client_reset(&slot->sc, host, 0);
+    br_sslio_init(&slot->ioc, &slot->sc.eng, low_read, slot, low_write, slot);
+    br_sslio_flush(&slot->ioc);
 
-    /* Set I/O buffer. */
-    br_ssl_engine_set_buffer(&sc.eng, iobuf, sizeof iobuf, 1);
-
-    /* Reset the client context for a new connection. */
-    br_ssl_client_reset(&sc, host, 0);
-
-    /* Initialize the sslio wrapper with our I/O callbacks. */
-    br_sslio_init(&ioc, &sc.eng,
-        low_read, &tls_fd_storage,
-        low_write, &tls_fd_storage);
-
-    /* The handshake happens lazily on first read/write. Force it. */
-    br_sslio_flush(&ioc);
-
-    /* Check for errors. */
-    int err = br_ssl_engine_last_error(&sc.eng);
+    err = br_ssl_engine_last_error(&slot->sc.eng);
     if (err != BR_ERR_OK) {
-        return -err; /* return negative BearSSL error code */
+        free_slot(handle);
+        return -err;
     }
 
-    return 0;
+    return handle;
 }
 
-/*
- * Send data over the TLS connection.
- * Returns number of bytes sent on success, -1 on failure.
- */
-int tls_send(const void *data, int len)
+int tls_send(int handle, const void *data, int len)
 {
-    int ret = br_sslio_write_all(&ioc, data, (size_t)len);
+    tls_slot *slot = get_slot(handle);
+    int ret;
+    if (slot == 0) return -1;
+    ret = br_sslio_write_all(&slot->ioc, data, (size_t)len);
     if (ret < 0) return -1;
-    ret = br_sslio_flush(&ioc);
+    ret = br_sslio_flush(&slot->ioc);
     if (ret < 0) return -1;
     return len;
 }
 
-/*
- * Receive data from the TLS connection.
- * Returns number of bytes read, 0 on EOF, -1 on error.
- */
-int tls_recv(void *data, int len)
+int tls_recv(int handle, void *data, int len)
 {
-    int ret = br_sslio_read(&ioc, data, (size_t)len);
+    tls_slot *slot = get_slot(handle);
+    int ret;
+    int err;
+    if (slot == 0) return -1;
+    ret = br_sslio_read(&slot->ioc, data, (size_t)len);
     if (ret < 0) {
-        int err = br_ssl_engine_last_error(&sc.eng);
-        if (err == BR_ERR_OK) return 0; /* clean close */
+        err = br_ssl_engine_last_error(&slot->sc.eng);
+        if (err == BR_ERR_OK) return 0;
         return -1;
     }
     return ret;
 }
 
-/*
- * Close the TLS connection (sends close_notify).
- */
-void tls_close(void)
+void tls_close(int handle)
 {
-    br_sslio_close(&ioc);
+    tls_slot *slot = get_slot(handle);
+    if (slot == 0) {
+        return;
+    }
+    br_sslio_close(&slot->ioc);
+    free_slot(handle);
 }
 
-/*
- * Get last BearSSL error code.
- */
-int tls_last_error(void)
+int tls_last_error(int handle)
 {
-    return br_ssl_engine_last_error(&sc.eng);
+    tls_slot *slot = get_slot(handle);
+    if (slot == 0) {
+        return -1;
+    }
+    return br_ssl_engine_last_error(&slot->sc.eng);
 }

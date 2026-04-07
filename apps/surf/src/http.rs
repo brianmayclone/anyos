@@ -244,6 +244,7 @@ struct PoolEntry {
     port: u16,
     sock: u32,
     is_https: bool,
+    tls_handle: Option<crate::tls::TlsHandle>,
 }
 
 /// Cached DNS resolution entry (hostname → IPv4 address).
@@ -290,34 +291,26 @@ impl ConnPool {
     }
 
     /// Take a reusable connection for the given host/port/scheme.
-    fn take(&mut self, host: &str, port: u16, is_https: bool) -> Option<u32> {
+    fn take(&mut self, host: &str, port: u16, is_https: bool) -> Option<PoolEntry> {
         let pos = self
             .entries
             .iter()
             .position(|e| e.host == host && e.port == port && e.is_https == is_https)?;
-        let entry = self.entries.remove(pos);
-        Some(entry.sock)
+        Some(self.entries.remove(pos))
     }
 
     /// Return a connection to the pool for reuse.
-    fn put(&mut self, host: String, port: u16, sock: u32, is_https: bool) {
-        // HTTPS: only one TLS session at a time (global BearSSL state).
-        if is_https {
-            self.entries.retain(|e| {
-                if e.is_https {
-                    crate::tls::close();
-                    net::tcp_close(e.sock);
-                    false
-                } else {
-                    true
-                }
-            });
-        }
+    fn put(
+        &mut self,
+        host: String,
+        port: u16,
+        sock: u32,
+        is_https: bool,
+        tls_handle: Option<crate::tls::TlsHandle>,
+    ) {
         while self.entries.len() >= MAX_POOL_SIZE {
             let old = self.entries.remove(0);
-            if old.is_https {
-                crate::tls::close();
-            }
+            close_tls_handle(old.tls_handle);
             net::tcp_close(old.sock);
         }
         self.entries.push(PoolEntry {
@@ -325,20 +318,15 @@ impl ConnPool {
             port,
             sock,
             is_https,
+            tls_handle,
         });
     }
 
-    /// Evict any pooled HTTPS connections (needed before new TLS handshake).
-    fn evict_https(&mut self) {
-        self.entries.retain(|e| {
-            if e.is_https {
-                crate::tls::close();
-                net::tcp_close(e.sock);
-                false
-            } else {
-                true
-            }
-        });
+    fn close_all(&mut self) {
+        while let Some(entry) = self.entries.pop() {
+            close_tls_handle(entry.tls_handle);
+            net::tcp_close(entry.sock);
+        }
     }
 }
 
@@ -350,7 +338,7 @@ fn connect_fresh(
     host: &str,
     port: u16,
     is_https: bool,
-) -> Result<u32, FetchError> {
+) -> Result<(u32, Option<crate::tls::TlsHandle>), FetchError> {
     let ip = match pool.resolve_cached(host) {
         Some(ip) => ip,
         None => {
@@ -382,12 +370,11 @@ fn connect_fresh(
                     attempt + 1
                 );
             }
-            return Ok(sock);
+            return Ok((sock, None));
         }
-
-        pool.evict_https();
         let ret = crate::tls::connect(sock, host);
-        if ret == 0 {
+        if ret > 0 {
+            let tls_handle = ret as crate::tls::TlsHandle;
             if attempt > 0 {
                 anyos_std::println!(
                     "[http] TLS retry succeeded for {}:{} on attempt {}",
@@ -398,7 +385,7 @@ fn connect_fresh(
             } else {
                 anyos_std::println!("[http] TLS handshake OK for {}:{}", host, port);
             }
-            return Ok(sock);
+            return Ok((sock, Some(tls_handle)));
         }
 
         anyos_std::println!(
@@ -409,7 +396,6 @@ fn connect_fresh(
         );
         // Reset the global BearSSL wrapper state even on failed handshakes
         // before trying the next connection.
-        crate::tls::close();
         net::tcp_close(sock);
 
         if attempt + 1 < attempts {
@@ -431,24 +417,28 @@ fn connect_fresh(
     Err(FetchError::TlsHandshakeFailed)
 }
 
-fn close_conn(sock: u32, is_https: bool) {
-    if is_https {
-        crate::tls::close();
+fn close_tls_handle(tls_handle: Option<crate::tls::TlsHandle>) {
+    if let Some(handle) = tls_handle {
+        crate::tls::close(handle);
     }
+}
+
+fn close_conn(sock: u32, tls_handle: Option<crate::tls::TlsHandle>) {
+    close_tls_handle(tls_handle);
     net::tcp_close(sock);
 }
 
-fn send_data(sock: u32, data: &[u8], is_https: bool) -> bool {
-    if is_https {
-        crate::tls::send(data) >= 0
+fn send_data(sock: u32, tls_handle: Option<crate::tls::TlsHandle>, data: &[u8]) -> bool {
+    if let Some(handle) = tls_handle {
+        crate::tls::send(handle, data) >= 0
     } else {
         net::tcp_send(sock, data) != u32::MAX
     }
 }
 
-fn recv_some(sock: u32, buf: &mut [u8], is_https: bool) -> usize {
-    if is_https {
-        let n = crate::tls::recv(buf);
+fn recv_some(sock: u32, tls_handle: Option<crate::tls::TlsHandle>, buf: &mut [u8]) -> usize {
+    if let Some(handle) = tls_handle {
+        let n = crate::tls::recv(handle, buf);
         if n <= 0 {
             0
         } else {
@@ -681,34 +671,39 @@ pub fn fetch(
         );
 
         // 1. Get connection from pool or create fresh.
-        let (mut sock, from_pool) = match pool.take(&current.host, current.port, is_https) {
-            Some(s) => {
-                anyos_std::println!(
-                    "[http] reusing connection to {}:{}",
-                    current.host,
-                    current.port
-                );
-                (s, true)
-            }
-            None => (
-                connect_fresh(pool, &current.host, current.port, is_https)?,
-                false,
-            ),
-        };
+        let (mut sock, mut tls_handle, from_pool) =
+            match pool.take(&current.host, current.port, is_https) {
+                Some(entry) => {
+                    anyos_std::println!(
+                        "[http] reusing connection to {}:{}",
+                        current.host,
+                        current.port
+                    );
+                    (entry.sock, entry.tls_handle, true)
+                }
+                None => {
+                    let (sock, tls_handle) =
+                        connect_fresh(pool, &current.host, current.port, is_https)?;
+                    (sock, tls_handle, false)
+                }
+            };
 
         // 2. Build and send GET request.
         let request = build_request(&current, cookies);
-        let mut send_ok = send_data(sock, request.as_bytes(), is_https);
+        let mut send_ok = send_data(sock, tls_handle, request.as_bytes());
 
         // Retry on stale pooled connection.
         if !send_ok && from_pool {
-            close_conn(sock, is_https);
-            sock = connect_fresh(pool, &current.host, current.port, is_https)?;
-            send_ok = send_data(sock, request.as_bytes(), is_https);
+            close_conn(sock, tls_handle);
+            let (new_sock, new_tls_handle) =
+                connect_fresh(pool, &current.host, current.port, is_https)?;
+            sock = new_sock;
+            tls_handle = new_tls_handle;
+            send_ok = send_data(sock, tls_handle, request.as_bytes());
         }
         if !send_ok {
             anyos_std::println!("[http] send failed");
-            close_conn(sock, is_https);
+            close_conn(sock, tls_handle);
             return Err(FetchError::SendFailure);
         }
 
@@ -718,10 +713,10 @@ pub fn fetch(
         let header_end;
 
         loop {
-            let n = recv_some(sock, &mut recv_buf, is_https);
+            let n = recv_some(sock, tls_handle, &mut recv_buf);
             if n == 0 {
                 anyos_std::println!("[http] recv failed (buf={}B)", response_buf.len());
-                close_conn(sock, is_https);
+                close_conn(sock, tls_handle);
                 return Err(FetchError::NoResponse);
             }
             response_buf.extend_from_slice(&recv_buf[..n]);
@@ -732,7 +727,7 @@ pub fn fetch(
             }
             if response_buf.len() > MAX_HEADER_SIZE {
                 anyos_std::println!("[http] headers too large ({}B)", response_buf.len());
-                close_conn(sock, is_https);
+                close_conn(sock, tls_handle);
                 return Err(FetchError::NoResponse);
             }
         }
@@ -748,7 +743,7 @@ pub fn fetch(
 
         // 5. Handle redirects — close connection, don't pool.
         if is_redirect(status) {
-            close_conn(sock, is_https);
+            close_conn(sock, tls_handle);
             if let Some(location) = find_header_value(header_str, "location") {
                 current = resolve_url(&current, location);
                 continue;
@@ -796,13 +791,13 @@ pub fn fetch(
         }
 
         let raw_body = if is_chunked {
-            if is_https {
-                read_chunked_body_tls(&trailing)
+            if let Some(handle) = tls_handle {
+                read_chunked_body_tls(handle, &trailing)
             } else {
                 read_chunked_body(sock, &trailing)
             }
-        } else if is_https {
-            read_body_tls(&trailing, content_length)
+        } else if let Some(handle) = tls_handle {
+            read_body_tls(handle, &trailing, content_length)
         } else {
             read_body(sock, &trailing, content_length)
         };
@@ -818,9 +813,15 @@ pub fn fetch(
         // 7. Pool connection if reusable, otherwise close.
         let reusable = (content_length.is_some() || is_chunked) && !response_says_close(header_str);
         if reusable {
-            pool.put(current.host.clone(), current.port, sock, is_https);
+            pool.put(
+                current.host.clone(),
+                current.port,
+                sock,
+                is_https,
+                tls_handle,
+            );
         } else {
-            close_conn(sock, is_https);
+            close_conn(sock, tls_handle);
         }
 
         // 8. Decompress if content-encoded.
@@ -858,20 +859,22 @@ pub fn fetch_post(
         );
 
         // 1. Get connection from pool or create fresh.
-        let (mut sock, from_pool) = match pool.take(&current.host, current.port, is_https) {
-            Some(s) => {
-                anyos_std::println!(
-                    "[http] reusing connection to {}:{}",
-                    current.host,
-                    current.port
-                );
-                (s, true)
-            }
-            None => (
-                connect_fresh(pool, &current.host, current.port, is_https)?,
-                false,
-            ),
-        };
+        let (mut sock, mut tls_handle, from_pool) =
+            match pool.take(&current.host, current.port, is_https) {
+                Some(entry) => {
+                    anyos_std::println!(
+                        "[http] reusing connection to {}:{}",
+                        current.host,
+                        current.port
+                    );
+                    (entry.sock, entry.tls_handle, true)
+                }
+                None => {
+                    let (sock, tls_handle) =
+                        connect_fresh(pool, &current.host, current.port, is_https)?;
+                    (sock, tls_handle, false)
+                }
+            };
 
         // Use POST on first request, but follow redirects as GET.
         let request = if redirect_n == 0 {
@@ -880,16 +883,19 @@ pub fn fetch_post(
             build_request(&current, cookies)
         };
 
-        let mut send_ok = send_data(sock, request.as_bytes(), is_https);
+        let mut send_ok = send_data(sock, tls_handle, request.as_bytes());
 
         // Retry on stale pooled connection.
         if !send_ok && from_pool {
-            close_conn(sock, is_https);
-            sock = connect_fresh(pool, &current.host, current.port, is_https)?;
-            send_ok = send_data(sock, request.as_bytes(), is_https);
+            close_conn(sock, tls_handle);
+            let (new_sock, new_tls_handle) =
+                connect_fresh(pool, &current.host, current.port, is_https)?;
+            sock = new_sock;
+            tls_handle = new_tls_handle;
+            send_ok = send_data(sock, tls_handle, request.as_bytes());
         }
         if !send_ok {
-            close_conn(sock, is_https);
+            close_conn(sock, tls_handle);
             return Err(FetchError::SendFailure);
         }
 
@@ -898,9 +904,9 @@ pub fn fetch_post(
         let header_end;
 
         loop {
-            let n = recv_some(sock, &mut recv_buf, is_https);
+            let n = recv_some(sock, tls_handle, &mut recv_buf);
             if n == 0 {
-                close_conn(sock, is_https);
+                close_conn(sock, tls_handle);
                 return Err(FetchError::NoResponse);
             }
             response_buf.extend_from_slice(&recv_buf[..n]);
@@ -909,7 +915,7 @@ pub fn fetch_post(
                 break;
             }
             if response_buf.len() > MAX_HEADER_SIZE {
-                close_conn(sock, is_https);
+                close_conn(sock, tls_handle);
                 return Err(FetchError::NoResponse);
             }
         }
@@ -922,7 +928,7 @@ pub fn fetch_post(
         cookies.store_from_headers(header_str, &current.host, &current.path);
 
         if is_redirect(status) {
-            close_conn(sock, is_https);
+            close_conn(sock, tls_handle);
             if let Some(location) = find_header_value(header_str, "location") {
                 current = resolve_url(&current, location);
                 continue;
@@ -969,13 +975,13 @@ pub fn fetch_post(
         }
 
         let raw_body = if is_chunked {
-            if is_https {
-                read_chunked_body_tls(&trailing)
+            if let Some(handle) = tls_handle {
+                read_chunked_body_tls(handle, &trailing)
             } else {
                 read_chunked_body(sock, &trailing)
             }
-        } else if is_https {
-            read_body_tls(&trailing, content_length)
+        } else if let Some(handle) = tls_handle {
+            read_body_tls(handle, &trailing, content_length)
         } else {
             read_body(sock, &trailing, content_length)
         };
@@ -991,9 +997,15 @@ pub fn fetch_post(
         // Pool connection if reusable, otherwise close.
         let reusable = (content_length.is_some() || is_chunked) && !response_says_close(header_str);
         if reusable {
-            pool.put(current.host.clone(), current.port, sock, is_https);
+            pool.put(
+                current.host.clone(),
+                current.port,
+                sock,
+                is_https,
+                tls_handle,
+            );
         } else {
-            close_conn(sock, is_https);
+            close_conn(sock, tls_handle);
         }
 
         let resp_body = decompress_body(raw_body, &content_encoding);
@@ -1110,7 +1122,11 @@ fn read_chunked_body(sock: u32, initial: &[u8]) -> Vec<u8> {
 // TLS body reading (uses crate::tls::recv instead of tcp_recv)
 // ---------------------------------------------------------------------------
 
-fn read_body_tls(initial: &[u8], content_length: Option<u32>) -> Vec<u8> {
+fn read_body_tls(
+    tls_handle: crate::tls::TlsHandle,
+    initial: &[u8],
+    content_length: Option<u32>,
+) -> Vec<u8> {
     let capacity = content_length
         .map(|cl| (cl as usize).min(32 * 1024 * 1024))
         .unwrap_or(65536);
@@ -1124,7 +1140,7 @@ fn read_body_tls(initial: &[u8], content_length: Option<u32>) -> Vec<u8> {
                 break;
             }
         }
-        let n = crate::tls::recv(&mut recv_buf);
+        let n = crate::tls::recv(tls_handle, &mut recv_buf);
         if n <= 0 {
             break;
         }
@@ -1133,7 +1149,7 @@ fn read_body_tls(initial: &[u8], content_length: Option<u32>) -> Vec<u8> {
     body
 }
 
-fn read_chunked_body_tls(initial: &[u8]) -> Vec<u8> {
+fn read_chunked_body_tls(tls_handle: crate::tls::TlsHandle, initial: &[u8]) -> Vec<u8> {
     let mut buf: Vec<u8> = Vec::with_capacity(RECV_BUF_SIZE * 4);
     buf.extend_from_slice(initial);
     let mut cursor: usize = 0;
@@ -1153,7 +1169,7 @@ fn read_chunked_body_tls(initial: &[u8]) -> Vec<u8> {
                 cursor += crlf + 2;
                 break;
             }
-            let n = crate::tls::recv(&mut recv_buf);
+            let n = crate::tls::recv(tls_handle, &mut recv_buf);
             if n <= 0 {
                 return body;
             }
@@ -1165,7 +1181,7 @@ fn read_chunked_body_tls(initial: &[u8]) -> Vec<u8> {
         }
 
         while buf.len() - cursor < chunk_size {
-            let n = crate::tls::recv(&mut recv_buf);
+            let n = crate::tls::recv(tls_handle, &mut recv_buf);
             if n <= 0 {
                 break;
             }
@@ -1178,7 +1194,7 @@ fn read_chunked_body_tls(initial: &[u8]) -> Vec<u8> {
 
         // Skip trailing CRLF
         while buf.len() - cursor < 2 {
-            let n = crate::tls::recv(&mut recv_buf);
+            let n = crate::tls::recv(tls_handle, &mut recv_buf);
             if n <= 0 {
                 return body;
             }

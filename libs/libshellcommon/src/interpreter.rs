@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Shell interpreter — shared command execution engine for Terminal and Shell apps.
 
 use anyos_std::{String, Vec, format};

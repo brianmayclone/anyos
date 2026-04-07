@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Minimal zlib/DEFLATE compressor for VNC Zlib encoding (type 6).
 //!
 //! Implements fixed-Huffman DEFLATE with LZ77 matching and a persistent

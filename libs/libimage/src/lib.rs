@@ -1,4 +1,4 @@
-// Copyright (c) 2024-2026 Christian Moeller
+// Copyright (c) 2024-2026 Mike Strathmann
 // SPDX-License-Identifier: MIT
 
 #![cfg_attr(not(feature = "host"), no_std)]

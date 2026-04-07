@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Settings page: Keyboard Shortcuts — configure global keyboard shortcuts.
 //!
 //! Reads/writes the `[shortcuts]` section of `/System/compositor/compositor.conf`.

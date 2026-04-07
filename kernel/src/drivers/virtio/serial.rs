@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! VirtIO Serial (Console) PCI driver.
 //!
 //! Provides a character device (`/dev/vport0`) for data exchange with the host

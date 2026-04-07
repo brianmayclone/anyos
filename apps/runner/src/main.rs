@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Runner — quick application launcher (Alt+R).
 //!
 //! Scans /Applications/ for .app bundles and presents an autocomplete

@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! RFC 2822 email address and date parsing.
 
 use alloc::string::String;
@@ -130,11 +132,11 @@ pub fn format_date_short(date_str: &str) -> String {
     // If already in YYYY-MM-DD HH:MM:SS format, show DD.MM.YYYY HH:MM
     if date_str.len() >= 16 && date_str.as_bytes()[4] == b'-' {
         let mut s = String::new();
-        s.push_str(&date_str[8..10]);  // DD
+        s.push_str(&date_str[8..10]); // DD
         s.push('.');
-        s.push_str(&date_str[5..7]);   // MM
+        s.push_str(&date_str[5..7]); // MM
         s.push('.');
-        s.push_str(&date_str[0..4]);   // YYYY
+        s.push_str(&date_str[0..4]); // YYYY
         s.push(' ');
         s.push_str(&date_str[11..16]); // HH:MM
         return s;

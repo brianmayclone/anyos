@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! vmctl — AI-friendly CoreVM command-line controller for anyOS.
 //!
 //! Allows headless VM management from the command line. Designed for

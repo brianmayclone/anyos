@@ -254,6 +254,44 @@ impl Vm {
         s
     }
 
+    fn frame_stack_summary(&self, max_frames: usize) -> String {
+        let mut stack_info = String::new();
+        for (fi, frame) in self.frames.iter().rev().take(max_frames).enumerate() {
+            let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
+            if fi > 0 {
+                stack_info.push_str(" <- ");
+            }
+            stack_info.push_str(fname);
+        }
+        stack_info
+    }
+
+    fn describe_exception(&self, val: &JsValue) -> String {
+        match val {
+            JsValue::Object(obj) => {
+                let o = obj.borrow();
+                let name = match o.get("name") {
+                    JsValue::String(s) => s,
+                    _ => String::from("Error"),
+                };
+                let msg = match o.get("message") {
+                    JsValue::String(s) => s,
+                    _ => String::from("(no message)"),
+                };
+                if let JsValue::String(stack) = o.get("stack") {
+                    let first_stack_line = stack.lines().nth(1).unwrap_or("");
+                    if !first_stack_line.is_empty() {
+                        return format!("{}: {} [{}]", name, msg, first_stack_line.trim());
+                    }
+                }
+                format!("{}: {}", name, msg)
+            }
+            JsValue::String(s) => format!("String throw: {}", s),
+            JsValue::Bool(_) | JsValue::Number(_) | JsValue::Null => format!("{:?}", val),
+            _ => val.to_js_string(),
+        }
+    }
+
     pub fn execute(&mut self, chunk: Chunk) -> JsValue {
         self.steps = 0;
         self.last_exception = None;
@@ -1132,32 +1170,8 @@ impl Vm {
                 }
                 Op::Throw => {
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    // Extract message from Error objects for better diagnostics
-                    let detail = match &val {
-                        JsValue::Object(obj) => {
-                            let o = obj.borrow();
-                            let name = match o.get("name") {
-                                JsValue::String(s) => s,
-                                _ => String::from("Error"),
-                            };
-                            let msg = match o.get("message") {
-                                JsValue::String(s) => s,
-                                _ => String::from("(no message)"),
-                            };
-                            format!("{}: {}", name, msg)
-                        }
-                        JsValue::String(s) => s.clone(),
-                        other => format!("{:?}", other),
-                    };
-                    // Include call stack depth and function names for debugging
-                    let mut stack_info = String::new();
-                    for (fi, frame) in self.frames.iter().rev().take(6).enumerate() {
-                        let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
-                        if fi > 0 {
-                            stack_info.push_str(" <- ");
-                        }
-                        stack_info.push_str(fname);
-                    }
+                    let detail = self.describe_exception(&val);
+                    let stack_info = self.frame_stack_summary(6);
                     // Log with extra detail for non-Error thrown values (like `false`)
                     if matches!(&val, JsValue::Bool(_) | JsValue::Number(_) | JsValue::Null) {
                         self.log_engine(&format!(
@@ -2069,14 +2083,7 @@ impl Vm {
     fn handle_exception(&mut self, val: JsValue) -> bool {
         // Log boolean/null/number exceptions — unusual and likely a bug indicator
         if matches!(&val, JsValue::Bool(_) | JsValue::Null) {
-            let mut stack_info = String::new();
-            for (fi, frame) in self.frames.iter().rev().take(8).enumerate() {
-                let fname = frame.chunk.name.as_deref().unwrap_or("(anon)");
-                if fi > 0 {
-                    stack_info.push_str(" <- ");
-                }
-                stack_info.push_str(fname);
-            }
+            let stack_info = self.frame_stack_summary(8);
             self.log_engine(&format!(
                 "[libjs] UNUSUAL exception: {:?} [{}]",
                 val, stack_info
@@ -2101,7 +2108,12 @@ impl Vm {
                 return true;
             }
         }
-        self.log_engine("[libjs] WARN: unhandled exception");
+        let detail = self.describe_exception(&val);
+        let stack_info = self.frame_stack_summary(8);
+        self.log_engine(&format!(
+            "[libjs] WARN: unhandled exception: {} [{}]",
+            detail, stack_info
+        ));
         self.last_exception = Some(val);
         false
     }

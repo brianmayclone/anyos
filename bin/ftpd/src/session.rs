@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! FTP session handler — RFC 959 server-side protocol.
 //!
 //! Each session runs in a forked child process. It handles one client

@@ -9,8 +9,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BEARSSL_DIR="$ROOT/third_party/bearssl"
 LIBC64_INC="$ROOT/libs/libc64/include"
+TLS_WRAPPER_SRC="$ROOT/libs/libhttp/anyos_tls.c"
 CC="clang"
-AR="/opt/homebrew/Cellar/llvm@20/20.1.8/bin/llvm-ar"
+AR="${AR:-}"
+if [ -z "$AR" ]; then
+    if command -v llvm-ar >/dev/null 2>&1; then
+        AR="$(command -v llvm-ar)"
+    else
+        AR="$(command -v ar)"
+    fi
+fi
 OBJDIR="$BEARSSL_DIR/build_x64/obj"
 OUTPUT="$BEARSSL_DIR/build_x64/libbearssl_x64.a"
 
@@ -23,21 +31,15 @@ CFLAGS="--target=x86_64-unknown-none-elf -ffreestanding -nostdlib -fno-builtin -
   -DBR_64=1 -DBR_LE_UNALIGNED=1 \
   -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 -DBR_USE_GETENTROPY=0"
 
-if [ -f "$OUTPUT" ]; then
+if [ -f "$OUTPUT" ] && [ "$OUTPUT" -nt "$TLS_WRAPPER_SRC" ] && [ "$OUTPUT" -nt "$0" ]; then
     echo "=== BearSSL x64 already built: $OUTPUT ==="
     exit 0
 fi
 
+rm -rf "$OBJDIR"
 mkdir -p "$OBJDIR"
 
 echo "=== Building BearSSL for anyOS (x86_64) ==="
-
-# Also compile libc64 stubs
-for src in "$ROOT"/libs/libc64/src/*.c; do
-    name=$(basename "$src" .c)
-    obj="$OBJDIR/libc64_${name}.o"
-    $CC $CFLAGS -c "$src" -o "$obj"
-done
 
 # Compile all BearSSL .c files
 find "$BEARSSL_DIR/src" -name '*.c' | while read src; do
@@ -46,7 +48,11 @@ find "$BEARSSL_DIR/src" -name '*.c' | while read src; do
     $CC $CFLAGS -c "$src" -o "$obj"
 done
 
+# Compile the shared anyOS TLS wrapper once for all BearSSL users.
+$CC $CFLAGS -fno-stack-protector -c "$TLS_WRAPPER_SRC" -o "$OBJDIR/anyos_tls.o"
+
 echo "  AR  libbearssl_x64.a"
+rm -f "$OUTPUT"
 $AR rcs "$OUTPUT" "$OBJDIR"/*.o
 
 echo "=== Done: $OUTPUT ($(du -h "$OUTPUT" | cut -f1)) ==="

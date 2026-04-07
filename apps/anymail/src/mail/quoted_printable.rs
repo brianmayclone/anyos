@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Quoted-Printable encoding and decoding (RFC 2045).
 
 use alloc::vec::Vec;

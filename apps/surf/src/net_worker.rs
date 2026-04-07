@@ -14,6 +14,16 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::http::{self, ConnPool, CookieJar, FetchError, Url};
 
+macro_rules! surf_net_log {
+    ($($arg:tt)*) => {
+        anyos_std::println!(
+            "[surf-net {:>8}ms] {}",
+            anyos_std::sys::uptime_ms(),
+            alloc::format!($($arg)*)
+        )
+    };
+}
+
 // ═══════════════════════════════════════════════════════════
 // Request / result types
 // ═══════════════════════════════════════════════════════════
@@ -22,12 +32,14 @@ use crate::http::{self, ConnPool, CookieJar, FetchError, Url};
 pub(crate) enum FetchRequest {
     /// Full page navigation (GET): fetch HTML, return body + headers + cookies.
     Navigate {
+        tab_index: usize,
         url: Url,
         cookies: CookieJar,
         generation: u32,
     },
     /// Full page navigation (POST): fetch HTML with form body.
     NavigatePost {
+        tab_index: usize,
         url: Url,
         body: String,
         cookies: CookieJar,
@@ -45,6 +57,7 @@ pub(crate) enum FetchRequest {
         tab_index: usize,
         src: String,
         url: Url,
+        priority: ImagePriority,
         generation: u32,
     },
     /// Web font fetch (@font-face src).
@@ -65,10 +78,17 @@ pub(crate) enum FetchRequest {
     },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImagePriority {
+    Viewport,
+    Deferred,
+}
+
 /// A completed fetch result returned by the worker thread.
 pub(crate) enum FetchResult {
     /// Navigation completed successfully.
     NavDone {
+        tab_index: usize,
         response: http::Response,
         url: Url,
         cookies: CookieJar,
@@ -76,6 +96,7 @@ pub(crate) enum FetchResult {
     },
     /// Navigation failed.
     NavError {
+        tab_index: usize,
         error_msg: &'static str,
         generation: u32,
     },
@@ -93,6 +114,7 @@ pub(crate) enum FetchResult {
         src: String,
         body: Vec<u8>,
         headers: String,
+        priority: ImagePriority,
         generation: u32,
     },
     /// Web font fetch completed successfully.
@@ -114,22 +136,61 @@ pub(crate) enum FetchResult {
     },
 }
 
+impl FetchResult {
+    pub(crate) fn tab_index(&self) -> usize {
+        match self {
+            FetchResult::NavDone { tab_index, .. }
+            | FetchResult::NavError { tab_index, .. }
+            | FetchResult::CssDone { tab_index, .. }
+            | FetchResult::ImageDone { tab_index, .. }
+            | FetchResult::FontDone { tab_index, .. }
+            | FetchResult::ScriptDone { tab_index, .. } => *tab_index,
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // Shared state + spinlock
 // ═══════════════════════════════════════════════════════════
 
-static REQUEST_LOCK: AtomicBool = AtomicBool::new(false);
+static REQUEST_LOCK_CRITICAL: AtomicBool = AtomicBool::new(false);
+static REQUEST_LOCK_TLS: AtomicBool = AtomicBool::new(false);
+static REQUEST_LOCK_SCRIPT: AtomicBool = AtomicBool::new(false);
+static REQUEST_LOCK_FONT: AtomicBool = AtomicBool::new(false);
+static REQUEST_LOCK_VISIBLE: AtomicBool = AtomicBool::new(false);
+static REQUEST_LOCK_BACKGROUND: AtomicBool = AtomicBool::new(false);
 static RESULT_LOCK: AtomicBool = AtomicBool::new(false);
+const RESULT_MAILBOX_COUNT: usize = 16;
 
-static mut REQUEST_QUEUE: Option<Vec<FetchRequest>> = None;
-static mut RESULT_QUEUE: Option<Vec<FetchResult>> = None;
+static mut REQUEST_QUEUE_CRITICAL: Option<Vec<FetchRequest>> = None;
+static mut REQUEST_QUEUE_TLS: Option<Vec<FetchRequest>> = None;
+static mut REQUEST_QUEUE_SCRIPT: Option<Vec<FetchRequest>> = None;
+static mut REQUEST_QUEUE_FONT: Option<Vec<FetchRequest>> = None;
+static mut REQUEST_QUEUE_VISIBLE: Option<Vec<FetchRequest>> = None;
+static mut REQUEST_QUEUE_BACKGROUND: Option<Vec<FetchRequest>> = None;
+static mut RESULT_MAILBOXES: Option<Vec<Vec<FetchResult>>> = None;
 
 /// Generation counter — incremented on each Navigate request.
 /// Worker skips CSS/Image requests with a stale generation.
 static GENERATION: AtomicU32 = AtomicU32::new(0);
 
 /// Whether the worker thread has been started.
-static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
+static WORKER_STARTED_CRITICAL: AtomicBool = AtomicBool::new(false);
+static WORKER_STARTED_TLS: AtomicBool = AtomicBool::new(false);
+static WORKER_STARTED_SCRIPT: AtomicBool = AtomicBool::new(false);
+static WORKER_STARTED_FONT: AtomicBool = AtomicBool::new(false);
+static WORKER_STARTED_VISIBLE: AtomicBool = AtomicBool::new(false);
+static WORKER_STARTED_BACKGROUND: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WorkerClass {
+    Critical,
+    Tls,
+    Script,
+    Font,
+    Visible,
+    Background,
+}
 
 /// Acquire a spinlock. Spins with hint to avoid wasting CPU.
 fn acquire(lock: &AtomicBool) {
@@ -149,6 +210,122 @@ fn release(lock: &AtomicBool) {
     lock.store(false, Ordering::Release);
 }
 
+fn worker_label(class: WorkerClass) -> &'static str {
+    match class {
+        WorkerClass::Critical => "critical",
+        WorkerClass::Tls => "tls",
+        WorkerClass::Script => "script",
+        WorkerClass::Font => "font",
+        WorkerClass::Visible => "visible",
+        WorkerClass::Background => "background",
+    }
+}
+
+fn request_lock(class: WorkerClass) -> &'static AtomicBool {
+    match class {
+        WorkerClass::Critical => &REQUEST_LOCK_CRITICAL,
+        WorkerClass::Tls => &REQUEST_LOCK_TLS,
+        WorkerClass::Script => &REQUEST_LOCK_SCRIPT,
+        WorkerClass::Font => &REQUEST_LOCK_FONT,
+        WorkerClass::Visible => &REQUEST_LOCK_VISIBLE,
+        WorkerClass::Background => &REQUEST_LOCK_BACKGROUND,
+    }
+}
+
+fn worker_started_flag(class: WorkerClass) -> &'static AtomicBool {
+    match class {
+        WorkerClass::Critical => &WORKER_STARTED_CRITICAL,
+        WorkerClass::Tls => &WORKER_STARTED_TLS,
+        WorkerClass::Script => &WORKER_STARTED_SCRIPT,
+        WorkerClass::Font => &WORKER_STARTED_FONT,
+        WorkerClass::Visible => &WORKER_STARTED_VISIBLE,
+        WorkerClass::Background => &WORKER_STARTED_BACKGROUND,
+    }
+}
+
+unsafe fn request_queue_mut(class: WorkerClass) -> Option<&'static mut Vec<FetchRequest>> {
+    match class {
+        WorkerClass::Critical => REQUEST_QUEUE_CRITICAL.as_mut(),
+        WorkerClass::Tls => REQUEST_QUEUE_TLS.as_mut(),
+        WorkerClass::Script => REQUEST_QUEUE_SCRIPT.as_mut(),
+        WorkerClass::Font => REQUEST_QUEUE_FONT.as_mut(),
+        WorkerClass::Visible => REQUEST_QUEUE_VISIBLE.as_mut(),
+        WorkerClass::Background => REQUEST_QUEUE_BACKGROUND.as_mut(),
+    }
+}
+
+unsafe fn request_queue_ref(class: WorkerClass) -> Option<&'static Vec<FetchRequest>> {
+    match class {
+        WorkerClass::Critical => REQUEST_QUEUE_CRITICAL.as_ref(),
+        WorkerClass::Tls => REQUEST_QUEUE_TLS.as_ref(),
+        WorkerClass::Script => REQUEST_QUEUE_SCRIPT.as_ref(),
+        WorkerClass::Font => REQUEST_QUEUE_FONT.as_ref(),
+        WorkerClass::Visible => REQUEST_QUEUE_VISIBLE.as_ref(),
+        WorkerClass::Background => REQUEST_QUEUE_BACKGROUND.as_ref(),
+    }
+}
+
+fn request_worker_class(req: &FetchRequest) -> WorkerClass {
+    if request_is_https(req) {
+        return WorkerClass::Tls;
+    }
+    match req {
+        FetchRequest::Navigate { .. }
+        | FetchRequest::NavigatePost { .. }
+        | FetchRequest::Css { .. } => WorkerClass::Critical,
+        FetchRequest::Script { .. } => WorkerClass::Script,
+        FetchRequest::Font { .. } => WorkerClass::Font,
+        FetchRequest::Image { priority, .. } => match priority {
+            ImagePriority::Viewport => WorkerClass::Visible,
+            ImagePriority::Deferred => WorkerClass::Background,
+        },
+    }
+}
+
+fn request_is_https(req: &FetchRequest) -> bool {
+    match req {
+        FetchRequest::Navigate { url, .. }
+        | FetchRequest::NavigatePost { url, .. }
+        | FetchRequest::Css { url, .. }
+        | FetchRequest::Image { url, .. }
+        | FetchRequest::Font { url, .. }
+        | FetchRequest::Script { url, .. } => url.scheme == "https",
+    }
+}
+
+fn ensure_worker(class: WorkerClass) {
+    let started = worker_started_flag(class);
+    if started.load(Ordering::Relaxed) {
+        return;
+    }
+    if started
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
+        .is_ok()
+    {
+        let (entry, thread_name): (fn(), &str) = match class {
+            WorkerClass::Critical => (worker_entry_critical, "surf-net-crit"),
+            WorkerClass::Tls => (worker_entry_tls, "surf-net-tls"),
+            WorkerClass::Script => (worker_entry_script, "surf-net-script"),
+            WorkerClass::Font => (worker_entry_font, "surf-net-font"),
+            WorkerClass::Visible => (worker_entry_visible, "surf-net-vis"),
+            WorkerClass::Background => (worker_entry_background, "surf-net-bg"),
+        };
+        match anyos_std::process::Thread::spawn_with_stack(entry, 256 * 1024, thread_name) {
+            Ok(handle) => {
+                core::mem::forget(handle);
+                surf_net_log!("{} worker thread started", worker_label(class));
+            }
+            Err(_) => {
+                surf_net_log!(
+                    "ERROR: failed to spawn {} worker thread",
+                    worker_label(class)
+                );
+                started.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // Public API (called from UI thread)
 // ═══════════════════════════════════════════════════════════
@@ -157,59 +334,44 @@ fn release(lock: &AtomicBool) {
 /// before any requests are submitted.
 pub(crate) fn init() {
     unsafe {
-        REQUEST_QUEUE = Some(Vec::new());
-        RESULT_QUEUE = Some(Vec::new());
-    }
-}
-
-/// Ensure the worker thread is running. Spawns it on first call.
-pub(crate) fn ensure_worker() {
-    if WORKER_STARTED.load(Ordering::Relaxed) {
-        return;
-    }
-    if WORKER_STARTED
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
-        .is_ok()
-    {
-        // 256 KiB stack — HTTP recv uses 32 KiB buffers on stack, plus
-        // BearSSL TLS state; the default 64 KiB overflows.
-        match anyos_std::process::Thread::spawn_with_stack(worker_entry, 256 * 1024, "surf-net") {
-            Ok(handle) => {
-                // Detach: the worker runs for the lifetime of the process.
-                // We intentionally leak the handle to avoid joining on drop.
-                core::mem::forget(handle);
-                anyos_std::println!("[surf-net] worker thread started");
-            }
-            Err(_) => {
-                anyos_std::println!("[surf-net] ERROR: failed to spawn worker thread");
-                WORKER_STARTED.store(false, Ordering::SeqCst);
-            }
-        }
+        REQUEST_QUEUE_CRITICAL = Some(Vec::new());
+        REQUEST_QUEUE_TLS = Some(Vec::new());
+        REQUEST_QUEUE_SCRIPT = Some(Vec::new());
+        REQUEST_QUEUE_FONT = Some(Vec::new());
+        REQUEST_QUEUE_VISIBLE = Some(Vec::new());
+        REQUEST_QUEUE_BACKGROUND = Some(Vec::new());
+        RESULT_MAILBOXES = Some((0..RESULT_MAILBOX_COUNT).map(|_| Vec::new()).collect());
     }
 }
 
 /// Submit a request to the worker queue.
 pub(crate) fn submit(req: FetchRequest) {
-    ensure_worker();
-    acquire(&REQUEST_LOCK);
+    let class = request_worker_class(&req);
+    ensure_worker(class);
+    let lock = request_lock(class);
+    acquire(lock);
     unsafe {
-        if let Some(q) = REQUEST_QUEUE.as_mut() {
+        if let Some(q) = request_queue_mut(class) {
             q.push(req);
         }
     }
-    release(&REQUEST_LOCK);
+    release(lock);
 }
 
-/// Drain all completed results from the result queue.
-/// Returns an empty Vec if nothing is ready yet.
-pub(crate) fn drain_results() -> Vec<FetchResult> {
+/// Drain completed results for one tab from its mailbox.
+pub(crate) fn drain_results_for_tab(tab_index: usize) -> Vec<FetchResult> {
     acquire(&RESULT_LOCK);
     let results = unsafe {
-        if let Some(q) = RESULT_QUEUE.as_mut() {
-            if q.is_empty() {
-                Vec::new()
+        if let Some(mailboxes) = RESULT_MAILBOXES.as_mut() {
+            if let Some(mailbox) = mailboxes.get_mut(tab_index) {
+                surf_net_log!("mailbox poll: tab={} pending={}", tab_index, mailbox.len());
+                if mailbox.is_empty() {
+                    Vec::new()
+                } else {
+                    core::mem::replace(mailbox, Vec::new())
+                }
             } else {
-                core::mem::replace(q, Vec::new())
+                Vec::new()
             }
         } else {
             Vec::new()
@@ -219,35 +381,72 @@ pub(crate) fn drain_results() -> Vec<FetchResult> {
     results
 }
 
+/// Requeue results to the front of a tab mailbox so they are seen on the next UI poll.
+pub(crate) fn prepend_results_for_tab(tab_index: usize, mut results: Vec<FetchResult>) {
+    let requeued = results.len();
+    if requeued == 0 {
+        return;
+    }
+    acquire(&RESULT_LOCK);
+    unsafe {
+        if let Some(mailboxes) = RESULT_MAILBOXES.as_mut() {
+            if let Some(mailbox) = mailboxes.get_mut(tab_index) {
+                let pending = core::mem::replace(mailbox, Vec::new());
+                results.extend(pending);
+                *mailbox = results;
+                surf_net_log!(
+                    "mailbox requeue: tab={} requeued={} pending_now={}",
+                    tab_index,
+                    requeued,
+                    mailbox.len()
+                );
+            }
+        }
+    }
+    release(&RESULT_LOCK);
+}
+
 /// Bump the generation counter and clear any pending CSS/Image requests
 /// from previous pages. Called when a new Navigate begins.
 pub(crate) fn new_generation() -> u32 {
     let gen = GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
     // Clear pending resource requests for old generations.
-    acquire(&REQUEST_LOCK);
-    unsafe {
-        if let Some(q) = REQUEST_QUEUE.as_mut() {
-            q.retain(|r| match r {
-                FetchRequest::Navigate { .. } | FetchRequest::NavigatePost { .. } => true,
-                FetchRequest::Css { generation, .. }
-                | FetchRequest::Image { generation, .. }
-                | FetchRequest::Font { generation, .. }
-                | FetchRequest::Script { generation, .. } => *generation == gen,
-            });
+    for class in [
+        WorkerClass::Critical,
+        WorkerClass::Tls,
+        WorkerClass::Script,
+        WorkerClass::Font,
+        WorkerClass::Visible,
+        WorkerClass::Background,
+    ] {
+        let lock = request_lock(class);
+        acquire(lock);
+        unsafe {
+            if let Some(q) = request_queue_mut(class) {
+                q.retain(|r| match r {
+                    FetchRequest::Navigate { .. } | FetchRequest::NavigatePost { .. } => true,
+                    FetchRequest::Css { generation, .. }
+                    | FetchRequest::Image { generation, .. }
+                    | FetchRequest::Font { generation, .. }
+                    | FetchRequest::Script { generation, .. } => *generation == gen,
+                });
+            }
         }
+        release(lock);
     }
-    release(&REQUEST_LOCK);
     // Also clear stale results.
     acquire(&RESULT_LOCK);
     unsafe {
-        if let Some(q) = RESULT_QUEUE.as_mut() {
-            q.retain(|r| match r {
-                FetchResult::NavDone { .. } | FetchResult::NavError { .. } => true,
-                FetchResult::CssDone { generation, .. }
-                | FetchResult::ImageDone { generation, .. }
-                | FetchResult::FontDone { generation, .. }
-                | FetchResult::ScriptDone { generation, .. } => *generation == gen,
-            });
+        if let Some(mailboxes) = RESULT_MAILBOXES.as_mut() {
+            for mailbox in mailboxes.iter_mut() {
+                mailbox.retain(|r| match r {
+                    FetchResult::NavDone { .. } | FetchResult::NavError { .. } => true,
+                    FetchResult::CssDone { generation, .. }
+                    | FetchResult::ImageDone { generation, .. }
+                    | FetchResult::FontDone { generation, .. }
+                    | FetchResult::ScriptDone { generation, .. } => *generation == gen,
+                });
+            }
         }
     }
     release(&RESULT_LOCK);
@@ -259,22 +458,83 @@ pub(crate) fn current_generation() -> u32 {
     GENERATION.load(Ordering::Relaxed)
 }
 
-/// Best-effort signal for the UI thread that the network worker may still
-/// produce results soon.
-pub(crate) fn has_pending_activity() -> bool {
-    if WORKER_STARTED.load(Ordering::Relaxed) {
-        return true;
-    }
-
-    acquire(&REQUEST_LOCK);
-    let request_non_empty = unsafe { REQUEST_QUEUE.as_ref().is_some_and(|q| !q.is_empty()) };
-    release(&REQUEST_LOCK);
-    if request_non_empty {
-        return true;
+pub(crate) fn handle_closed_tab(closed_idx: usize) {
+    for class in [
+        WorkerClass::Critical,
+        WorkerClass::Tls,
+        WorkerClass::Script,
+        WorkerClass::Font,
+        WorkerClass::Visible,
+        WorkerClass::Background,
+    ] {
+        let lock = request_lock(class);
+        acquire(lock);
+        unsafe {
+            if let Some(q) = request_queue_mut(class) {
+                let mut old = core::mem::replace(q, Vec::new());
+                for mut req in old.drain(..) {
+                    let tab_index = request_tab_index_mut(&mut req);
+                    if *tab_index == closed_idx {
+                        continue;
+                    }
+                    if *tab_index > closed_idx {
+                        *tab_index -= 1;
+                    }
+                    q.push(req);
+                }
+            }
+        }
+        release(lock);
     }
 
     acquire(&RESULT_LOCK);
-    let result_non_empty = unsafe { RESULT_QUEUE.as_ref().is_some_and(|q| !q.is_empty()) };
+    unsafe {
+        if let Some(mailboxes) = RESULT_MAILBOXES.as_mut() {
+            if closed_idx < mailboxes.len() {
+                mailboxes.remove(closed_idx);
+                mailboxes.push(Vec::new());
+            }
+        }
+    }
+    release(&RESULT_LOCK);
+}
+
+/// Best-effort signal for the UI thread that the network worker may still
+/// produce results soon.
+pub(crate) fn has_pending_activity() -> bool {
+    if WORKER_STARTED_CRITICAL.load(Ordering::Relaxed)
+        || WORKER_STARTED_TLS.load(Ordering::Relaxed)
+        || WORKER_STARTED_SCRIPT.load(Ordering::Relaxed)
+        || WORKER_STARTED_FONT.load(Ordering::Relaxed)
+        || WORKER_STARTED_VISIBLE.load(Ordering::Relaxed)
+        || WORKER_STARTED_BACKGROUND.load(Ordering::Relaxed)
+    {
+        return true;
+    }
+
+    for class in [
+        WorkerClass::Critical,
+        WorkerClass::Tls,
+        WorkerClass::Script,
+        WorkerClass::Font,
+        WorkerClass::Visible,
+        WorkerClass::Background,
+    ] {
+        let lock = request_lock(class);
+        acquire(lock);
+        let request_non_empty = unsafe { request_queue_ref(class).is_some_and(|q| !q.is_empty()) };
+        release(lock);
+        if request_non_empty {
+            return true;
+        }
+    }
+
+    acquire(&RESULT_LOCK);
+    let result_non_empty = unsafe {
+        RESULT_MAILBOXES
+            .as_ref()
+            .is_some_and(|mailboxes| mailboxes.iter().any(|mailbox| !mailbox.is_empty()))
+    };
     release(&RESULT_LOCK);
     result_non_empty
 }
@@ -345,13 +605,37 @@ impl SubResourceCache {
 ///
 /// Exits after ~5 seconds of no work (1000 × 5ms sleep).  The next
 /// `submit()` call will respawn the thread via `ensure_worker()`.
-fn worker_entry() {
+fn worker_entry_critical() {
+    worker_entry(WorkerClass::Critical);
+}
+
+fn worker_entry_tls() {
+    worker_entry(WorkerClass::Tls);
+}
+
+fn worker_entry_script() {
+    worker_entry(WorkerClass::Script);
+}
+
+fn worker_entry_font() {
+    worker_entry(WorkerClass::Font);
+}
+
+fn worker_entry_visible() {
+    worker_entry(WorkerClass::Visible);
+}
+
+fn worker_entry_background() {
+    worker_entry(WorkerClass::Background);
+}
+
+fn worker_entry(class: WorkerClass) {
     let mut pool = ConnPool::new();
     let mut cache = SubResourceCache::new();
     let mut idle_count: u32 = 0;
 
     loop {
-        let req = dequeue_request();
+        let req = dequeue_request(class);
 
         match req {
             Some(request) => {
@@ -365,8 +649,8 @@ fn worker_entry() {
                     // Must store false BEFORE exiting so ensure_worker() can
                     // respawn.  Cannot `return` — the stack has no valid
                     // return address (mmap zeroes it), so RIP would become 0.
-                    WORKER_STARTED.store(false, Ordering::SeqCst);
-                    anyos_std::println!("[surf-net] worker idle, exiting");
+                    worker_started_flag(class).store(false, Ordering::SeqCst);
+                    surf_net_log!("{} worker idle, exiting", worker_label(class));
                     anyos_std::process::exit(0);
                 }
                 anyos_std::process::sleep(5);
@@ -376,28 +660,68 @@ fn worker_entry() {
 }
 
 /// Dequeue the next request from the queue (FIFO).
-fn dequeue_request() -> Option<FetchRequest> {
-    acquire(&REQUEST_LOCK);
+fn dequeue_request(class: WorkerClass) -> Option<FetchRequest> {
+    let lock = request_lock(class);
+    acquire(lock);
     let req = unsafe {
-        if let Some(q) = REQUEST_QUEUE.as_mut() {
+        if let Some(q) = request_queue_mut(class) {
             if q.is_empty() {
                 None
             } else {
-                Some(q.remove(0))
+                let mut best_idx = 0usize;
+                let mut best_priority = request_priority(&q[0]);
+                for (idx, item) in q.iter().enumerate().skip(1) {
+                    let priority = request_priority(item);
+                    if priority > best_priority {
+                        best_priority = priority;
+                        best_idx = idx;
+                    }
+                }
+                Some(q.remove(best_idx))
             }
         } else {
             None
         }
     };
-    release(&REQUEST_LOCK);
+    release(lock);
     req
+}
+
+fn request_priority(req: &FetchRequest) -> u8 {
+    match req {
+        FetchRequest::Navigate { .. } | FetchRequest::NavigatePost { .. } => 5,
+        FetchRequest::Css { .. } => 4,
+        FetchRequest::Script { .. } => 3,
+        FetchRequest::Font { .. } => 2,
+        FetchRequest::Image { priority, .. } => match priority {
+            ImagePriority::Viewport => 1,
+            ImagePriority::Deferred => 0,
+        },
+    }
+}
+
+fn request_tab_index_mut(req: &mut FetchRequest) -> &mut usize {
+    match req {
+        FetchRequest::Navigate { tab_index, .. }
+        | FetchRequest::NavigatePost { tab_index, .. }
+        | FetchRequest::Css { tab_index, .. }
+        | FetchRequest::Image { tab_index, .. }
+        | FetchRequest::Font { tab_index, .. }
+        | FetchRequest::Script { tab_index, .. } => tab_index,
+    }
 }
 
 /// Enqueue a result for the UI thread to pick up.
 fn enqueue_result(result: FetchResult) {
     acquire(&RESULT_LOCK);
     unsafe {
-        if let Some(q) = RESULT_QUEUE.as_mut() {
+        if let Some(mailboxes) = RESULT_MAILBOXES.as_mut() {
+            let tab_index = result.tab_index();
+            let Some(mailbox) = mailboxes.get_mut(tab_index) else {
+                surf_net_log!("dropping result for out-of-range tab {}", tab_index);
+                release(&RESULT_LOCK);
+                return;
+            };
             match &result {
                 FetchResult::ScriptDone {
                     tab_index,
@@ -406,18 +730,18 @@ fn enqueue_result(result: FetchResult) {
                     generation,
                     ..
                 } => {
-                    anyos_std::println!(
-                        "[surf-net] enqueue ScriptDone: tab={} slot={} bytes={} gen={} queue_before={}",
+                    surf_net_log!(
+                        "enqueue ScriptDone: tab={} slot={} bytes={} gen={} queue_before={}",
                         tab_index,
                         slot,
                         body.len(),
                         generation,
-                        q.len()
+                        mailbox.len()
                     );
                 }
                 _ => {}
             }
-            q.push(result);
+            mailbox.push(result);
         }
     }
     release(&RESULT_LOCK);
@@ -454,20 +778,17 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
 
     match req {
         FetchRequest::Navigate {
+            tab_index,
             url,
             mut cookies,
             generation,
         } => {
-            anyos_std::println!(
-                "[surf-net] navigate: {}://{}{}",
-                url.scheme,
-                url.host,
-                url.path
-            );
+            surf_net_log!("navigate: {}://{}{}", url.scheme, url.host, url.path);
 
             match http::fetch(&url, &mut cookies, pool) {
                 Ok(response) => {
                     enqueue_result(FetchResult::NavDone {
+                        tab_index,
                         response,
                         url,
                         cookies,
@@ -476,6 +797,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                 }
                 Err(e) => {
                     enqueue_result(FetchResult::NavError {
+                        tab_index,
                         error_msg: fetch_error_msg(e),
                         generation,
                     });
@@ -484,21 +806,18 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
         }
 
         FetchRequest::NavigatePost {
+            tab_index,
             url,
             body,
             mut cookies,
             generation,
         } => {
-            anyos_std::println!(
-                "[surf-net] navigate POST: {}://{}{}",
-                url.scheme,
-                url.host,
-                url.path
-            );
+            surf_net_log!("navigate POST: {}://{}{}", url.scheme, url.host, url.path);
 
             match http::fetch_post(&url, &body, &mut cookies, pool) {
                 Ok(response) => {
                     enqueue_result(FetchResult::NavDone {
+                        tab_index,
                         response,
                         url,
                         cookies,
@@ -507,6 +826,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                 }
                 Err(e) => {
                     enqueue_result(FetchResult::NavError {
+                        tab_index,
                         error_msg: fetch_error_msg(e),
                         generation,
                     });
@@ -528,7 +848,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
 
             // Check sub-resource cache first.
             if let Some((body, headers)) = cache.get(&key) {
-                anyos_std::println!("[surf-net] CSS cache hit: {}", href);
+                surf_net_log!("CSS cache hit: {}", href);
                 enqueue_result(FetchResult::CssDone {
                     tab_index,
                     href,
@@ -539,7 +859,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                 return;
             }
 
-            anyos_std::println!("[surf-net] fetching CSS: {}", href);
+            surf_net_log!("fetching CSS: {}", href);
             let mut css_cookies = CookieJar::new();
             match http::fetch(&url, &mut css_cookies, pool) {
                 Ok(resp) if resp.status >= 200 && resp.status < 400 => {
@@ -554,7 +874,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     });
                 }
                 _ => {
-                    anyos_std::println!("[surf-net] CSS fetch failed: {} ({})", href, key);
+                    surf_net_log!("CSS fetch failed: {} ({})", href, key);
                     // Do not leave the page stuck waiting forever on a failed
                     // stylesheet; the UI thread still needs a completion signal
                     // so it can decrement `pending_stylesheet_count`.
@@ -573,6 +893,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             tab_index,
             src,
             url,
+            priority,
             generation,
         } => {
             if generation != current_gen {
@@ -583,12 +904,13 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
 
             // Check sub-resource cache first.
             if let Some((body, headers)) = cache.get(&key) {
-                anyos_std::println!("[surf-net] image cache hit: {}", src);
+                surf_net_log!("image cache hit: {}", src);
                 enqueue_result(FetchResult::ImageDone {
                     tab_index,
                     src,
                     body: body.to_vec(),
                     headers: String::from(headers),
+                    priority,
                     generation,
                 });
                 return;
@@ -602,6 +924,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                         src,
                         body: resp.body,
                         headers: resp.headers,
+                        priority,
                         generation,
                     });
                 }
@@ -646,7 +969,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             let key = cache_key(&url);
 
             if let Some((body, headers)) = cache.get(&key) {
-                anyos_std::println!("[surf-net] script cache hit: {}", src);
+                surf_net_log!("script cache hit: {}", src);
                 enqueue_result(FetchResult::ScriptDone {
                     tab_index,
                     slot,
@@ -657,11 +980,11 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                 return;
             }
 
-            anyos_std::println!("[surf-net] fetching script: {}", src);
+            surf_net_log!("fetching script: {}", src);
             match http::fetch(&url, &mut CookieJar::new(), pool) {
                 Ok(resp) if resp.status >= 200 && resp.status < 400 => {
-                    anyos_std::println!(
-                        "[surf-net] script fetch OK: slot={} status={} bytes={} src={}",
+                    surf_net_log!(
+                        "script fetch OK: slot={} status={} bytes={} src={}",
                         slot,
                         resp.status,
                         resp.body.len(),
@@ -677,8 +1000,8 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     });
                 }
                 Ok(resp) => {
-                    anyos_std::println!(
-                        "[surf-net] script fetch HTTP failure: slot={} status={} bytes={} src={}",
+                    surf_net_log!(
+                        "script fetch HTTP failure: slot={} status={} bytes={} src={}",
                         slot,
                         resp.status,
                         resp.body.len(),
@@ -693,7 +1016,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     });
                 }
                 _ => {
-                    anyos_std::println!("[surf-net] script fetch failed: {} ({})", src, key);
+                    surf_net_log!("script fetch failed: {} ({})", src, key);
                     // Send an empty body so the slot is filled and JS execution
                     // is not blocked forever waiting for this slot.
                     enqueue_result(FetchResult::ScriptDone {

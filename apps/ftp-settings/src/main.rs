@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! FTP Settings — anyOS GUI for configuring the ftpd daemon.
 //!
 //! Reads/writes `/System/etc/ftpd/ftpd.conf` and `/System/etc/ftpd/shares.conf`,

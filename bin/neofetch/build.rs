@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 fn main() {
     println!("cargo:rerun-if-env-changed=ANYOS_VERSION");
     if let Ok(ver) = std::env::var("ANYOS_VERSION") {

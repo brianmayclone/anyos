@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! SPICE vdagent daemon for anyOS.
 //!
 //! Bridges the SPICE vdagent clipboard protocol between the QEMU host and the

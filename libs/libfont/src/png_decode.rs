@@ -1,3 +1,5 @@
+// Copyright (c) 2024-2026 Mike Strathmann
+// SPDX-License-Identifier: MIT
 //! Minimal PNG decoder for CBDT bitmap font glyphs.
 //!
 //! Supports 8-bit RGBA (color type 6), 8-bit RGB (color type 2), and
