@@ -5,24 +5,23 @@
 use libanyui_client as ui;
 use ui::Widget;
 use crate::{apps, render, search, state};
+use crate::search::SearchResult;
 
 const BLUR_RADIUS: u32 = 12;
 const TEXT_COLOR: u32 = 0xFF_F0_F0_F0;
 const FONT_SIZE: u32 = 20;
-
-/// Maximum expanded height (search bar + results).
 const MAX_HEIGHT: u32 = 500;
 
-/// Creates the Runner window and wires all events. Call `ui::run()` after.
+/// Minimum interval between searchd queries (ms).
+const SEARCHD_INTERVAL_MS: u32 = 300;
+
 pub fn build() {
     let apps_list = apps::scan_apps();
 
-    // Center horizontally, place in upper quarter of screen
     let (sw, sh) = ui::screen_size();
     let x = (sw.saturating_sub(render::WIN_WIDTH) / 2) as i32;
     let y = (sh / 4).saturating_sub(render::SEARCH_HEIGHT / 2) as i32;
 
-    // Start with just the search bar height — will resize when results appear
     let win = ui::Window::new_with_flags(
         "",
         x, y,
@@ -37,18 +36,14 @@ pub fn build() {
     win.set_color(0x00_000000);
     ui::set_blur_behind(&win, BLUR_RADIUS);
 
-    // Canvas fills entire window
-    let canvas = ui::Canvas::new(render::WIN_WIDTH, render::SEARCH_HEIGHT);
-    canvas.set_dock(ui::DOCK_FILL);
+    let canvas = ui::Canvas::new(render::WIN_WIDTH, MAX_HEIGHT);
+    canvas.set_position(0, 0);
     win.add(&canvas);
 
-    // Initial draw: just the search bar, no results
     render::draw(&canvas, render::WIN_WIDTH, render::SEARCH_HEIGHT, &[], &apps_list, 0);
 
-    // Click on canvas → launch clicked result
     canvas.on_click(|_| on_canvas_click());
 
-    // Text field overlaid on the search bar area
     let field = ui::TextField::new();
     field.set_size(render::WIN_WIDTH - 36, 36);
     field.set_position(18, 14);
@@ -61,19 +56,14 @@ pub fn build() {
     let field_id = field.id();
     state::init(apps_list, field_id, canvas, win);
 
-    // Live filter as user types
     field.on_text_changed(|_| on_query_changed());
-
-    // Enter launches selected result
     field.on_submit(|_| on_submit());
 
-    // ESC + Arrow keys on the text field (window key events don't fire
-    // when a child control has focus)
     field.on_key_down(|e| {
         match e.keycode {
-            0x103 => ui::quit(),             // ESC
-            0x106 => move_selection(-1),      // Arrow Up
-            0x107 => move_selection(1),       // Arrow Down
+            0x103 => ui::quit(),
+            0x106 => move_selection(-1),
+            0x107 => move_selection(1),
             _ => {}
         }
     });
@@ -89,9 +79,22 @@ fn on_query_changed() {
     let len = ctrl.get_text(&mut buf) as usize;
     let query = core::str::from_utf8(&buf[..len.min(256)]).unwrap_or("");
 
-    s.results = search::filter(&s.apps, query);
-    s.selected = 0;
+    let now = anyos_std::sys::uptime_ms();
+    let searchd_ready = now.wrapping_sub(s.last_searchd_time) >= SEARCHD_INTERVAL_MS;
 
+    if query.len() >= 2 && searchd_ready {
+        // Full search: apps + searchd
+        s.results = search::filter_all(&s.apps, query);
+        s.last_searchd_time = now;
+    } else {
+        // Fast path: apps only
+        s.results = search::filter_apps(&s.apps, query);
+        // Schedule a deferred searchd query if we skipped it
+        if query.len() >= 2 && !searchd_ready {
+            s.pending_query = true;
+        }
+    }
+    s.selected = 0;
     redraw();
 }
 
@@ -109,9 +112,7 @@ fn move_selection(delta: i32) {
 fn on_submit() {
     let s = state::get();
     if let Some(result) = s.results.get(s.selected) {
-        let path = s.apps[result.app_idx].path.clone();
-        ui::quit();
-        anyos_std::process::launch_app(&path, "");
+        launch_result(result, &s.apps);
     }
 }
 
@@ -120,12 +121,24 @@ fn on_canvas_click() {
     let (_mx, my, _btn) = s.canvas.get_mouse();
 
     if let Some(idx) = render::hit_test(&s.results, my) {
-        // Select and launch
         s.selected = idx;
         if let Some(result) = s.results.get(idx) {
-            let path = s.apps[result.app_idx].path.clone();
+            launch_result(result, &s.apps);
+        }
+    }
+}
+
+fn launch_result(result: &SearchResult, apps: &[crate::apps::AppEntry]) {
+    match result {
+        SearchResult::App { app_idx } => {
+            let path = apps[*app_idx].path.clone();
             ui::quit();
             anyos_std::process::launch_app(&path, "");
+        }
+        SearchResult::File { path, .. } => {
+            let p = path.clone();
+            ui::quit();
+            anyos_std::process::spawn("/System/bin/open", &p);
         }
     }
 }
@@ -134,7 +147,6 @@ fn redraw() {
     let s = state::get();
     let new_h = render::calc_height(&s.results).min(MAX_HEIGHT);
 
-    // Resize window if height changed
     if new_h != s.current_height {
         s.win.resize(render::WIN_WIDTH, new_h);
         s.current_height = new_h;

@@ -88,26 +88,28 @@ fn read_app_name(bundle_path: &str, folder_name: &str) -> String {
     String::from(base)
 }
 
-/// Load and decode the Icon.ico from an app bundle.
+/// Load and decode the Icon.ico from an app bundle at ICON_SIZE.
 fn load_icon(bundle_path: &str) -> Vec<u32> {
     let mut ico_path = String::from(bundle_path);
     ico_path.push_str("/Icon.ico");
 
-    let fd = anyos_std::fs::open(&ico_path, 0);
-    if fd == u32::MAX {
+    let data = match anyos_std::fs::read_to_vec(&ico_path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    if data.is_empty() {
         return Vec::new();
     }
-    let mut file_buf = [0u8; 32 * 1024]; // 32KB max for ico
-    let n = anyos_std::fs::read(fd, &mut file_buf);
-    anyos_std::fs::close(fd);
-    if n == 0 || n == u32::MAX {
-        return Vec::new();
-    }
-    let data = &file_buf[..n as usize];
 
-    let info = match libimage_client::probe_ico_size(data, ICON_SIZE) {
+    let info = match libimage_client::probe_ico_size(&data, ICON_SIZE) {
         Some(i) => i,
-        None => return Vec::new(),
+        None => {
+            // Fallback: try generic probe (might be PNG or BMP, not ICO)
+            match libimage_client::probe(&data) {
+                Some(i) => i,
+                None => return Vec::new(),
+            }
+        }
     };
 
     let pixel_count = (info.width * info.height) as usize;
@@ -116,7 +118,33 @@ fn load_icon(bundle_path: &str) -> Vec<u32> {
     let mut scratch = Vec::new();
     scratch.resize(info.scratch_needed as usize, 0u8);
 
-    if libimage_client::decode_ico_size(data, ICON_SIZE, &mut pixels, &mut scratch).is_ok() {
+    // Try ICO decode first, then generic
+    if libimage_client::decode_ico_size(&data, ICON_SIZE, &mut pixels, &mut scratch).is_ok() {
+        // Scale down if decoded size > ICON_SIZE
+        if info.width != ICON_SIZE || info.height != ICON_SIZE {
+            let mut scaled = Vec::new();
+            scaled.resize((ICON_SIZE * ICON_SIZE) as usize, 0u32);
+            if libimage_client::scale_image(
+                &pixels, info.width, info.height,
+                &mut scaled, ICON_SIZE, ICON_SIZE,
+                libimage_client::MODE_CONTAIN,
+            ){
+                return scaled;
+            }
+        }
+        pixels
+    } else if libimage_client::decode(&data, &mut pixels, &mut scratch).is_ok() {
+        if info.width != ICON_SIZE || info.height != ICON_SIZE {
+            let mut scaled = Vec::new();
+            scaled.resize((ICON_SIZE * ICON_SIZE) as usize, 0u32);
+            if libimage_client::scale_image(
+                &pixels, info.width, info.height,
+                &mut scaled, ICON_SIZE, ICON_SIZE,
+                libimage_client::MODE_CONTAIN,
+            ){
+                return scaled;
+            }
+        }
         pixels
     } else {
         Vec::new()

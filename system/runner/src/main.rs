@@ -12,6 +12,7 @@
 mod apps;
 mod render;
 mod search;
+mod searchd;
 mod state;
 mod ui;
 

@@ -73,7 +73,11 @@ fn handle_single_request(db: &Database, line: &[u8], reindex_flag: &mut bool) {
     };
     if cmd.is_empty() { return; }
 
+    anyos_std::println!("searchd: [query] tid={} cmd='{}'", tid, cmd);
     let response = dispatch(db, cmd, reindex_flag);
+    // Log first line only (OK/ERR + count)
+    let first_line = response.split('\n').next().unwrap_or("");
+    anyos_std::println!("searchd: [result] {}", first_line);
 
     let reply_pipe_name = format!("searchd-{}", tid);
     let reply_pipe = anyos_std::ipc::pipe_open(&reply_pipe_name);
@@ -116,7 +120,12 @@ fn cmd_search(db: &Database, query: &str) -> String {
         "SELECT path, name, kind, size FROM files WHERE name LIKE '%{}%' LIMIT 100",
         q_escaped
     );
-    if let Ok(result) = db.query(&sql) {
+    anyos_std::println!("searchd: [sql] {}", sql);
+    let query_result = db.query(&sql);
+    if let Err(ref e) = query_result {
+        anyos_std::println!("searchd: [sql-error] {}", e);
+    }
+    if let Ok(result) = query_result {
         for row in 0..result.row_count() {
             let path = result.get_text(row, 0).unwrap_or_default();
             let name = result.get_text(row, 1).unwrap_or_default();

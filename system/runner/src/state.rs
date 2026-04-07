@@ -15,6 +15,10 @@ pub struct RunnerState {
     pub canvas: ui::Canvas,
     pub win: ui::Window,
     pub current_height: u32,
+    /// True when a searchd query is pending (debounced).
+    pub pending_query: bool,
+    /// Timestamp of last text change (for debounce).
+    pub last_query_time: u32,
 }
 
 static mut STATE: Option<RunnerState> = None;
@@ -29,6 +33,8 @@ pub fn init(apps: Vec<AppEntry>, field_id: u32, canvas: ui::Canvas, win: ui::Win
             canvas,
             win,
             current_height: crate::render::SEARCH_HEIGHT,
+            pending_query: false,
+            last_query_time: 0,
         });
     }
 }
