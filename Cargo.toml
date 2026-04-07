@@ -13,6 +13,7 @@ exclude = [
   # Dock uses kernel target (x86_64-anyos.json), built separately
   "system/compositor/dock",
   # Standalone system programs (own workspace, kernel target, built separately)
+  "system/fontd",
   "system/sessionhost",
   "system/desktopd",
   "system/crashdialog",

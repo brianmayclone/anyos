@@ -68,6 +68,16 @@ fn div255(x: u32) -> u32 {
     (x + 1 + (x >> 8)) >> 8
 }
 
+/// A font slot: either a path waiting to be loaded, or an already-loaded font.
+enum FontSlot {
+    /// Not yet loaded — will be loaded from disk on first access.
+    Pending { path: &'static [u8] },
+    /// Loaded and ready to use.
+    Loaded(LoadedFont),
+    /// Failed to load (don't retry).
+    Failed,
+}
+
 struct LoadedFont {
     ttf: TtfFont,
     /// char→glyph cache for ASCII codepoints (avoids cmap4 binary search).
@@ -116,7 +126,7 @@ struct CachedGlyph {
 }
 
 pub struct FontManager {
-    fonts: Vec<Option<LoadedFont>>,
+    fonts: Vec<FontSlot>,
     cache: Vec<CachedGlyph>,
     /// Direct-mapped hash table for O(1) glyph cache lookup.
     /// Value = index into `cache` Vec, GLYPH_HASH_EMPTY = empty slot.
@@ -144,40 +154,109 @@ impl FontManager {
         }
     }
 
+    /// Register a font path for lazy loading. Returns the assigned font ID.
+    fn register_lazy(&mut self, path: &'static [u8]) -> u16 {
+        let id = self.fonts.len() as u16;
+        self.fonts.push(FontSlot::Pending { path });
+        id
+    }
+
     fn add_font(&mut self, ttf: TtfFont) -> u16 {
         let font = LoadedFont::new(ttf);
         for (i, slot) in self.fonts.iter_mut().enumerate() {
-            if slot.is_none() {
-                *slot = Some(font);
+            if matches!(slot, FontSlot::Failed) {
+                *slot = FontSlot::Loaded(font);
                 return i as u16;
             }
         }
         let id = self.fonts.len() as u16;
-        self.fonts.push(Some(font));
+        self.fonts.push(FontSlot::Loaded(font));
         id
     }
 
-    fn get_font(&self, font_id: u16) -> Option<&TtfFont> {
-        self.fonts
-            .get(font_id as usize)
-            .and_then(|slot| slot.as_ref())
-            .map(|f| &f.ttf)
+    /// Ensure a font slot is loaded. If Pending, load via fontd or disk fallback.
+    fn ensure_loaded(&mut self, font_id: u16) {
+        let slot = match self.fonts.get_mut(font_id as usize) {
+            Some(s) => s,
+            None => return,
+        };
+        if let FontSlot::Pending { path } = slot {
+            let p = *path;
+            // Extract just the filename from the full path for fontd
+            let filename = extract_filename(p);
+
+            // Try fontd first
+            #[cfg(not(feature = "host"))]
+            {
+                if let Some(data) = crate::fontd_client::request_font(filename) {
+                    if let Some(ttf) = TtfFont::parse_static(data) {
+                        *slot = FontSlot::Loaded(LoadedFont::new(ttf));
+                        return;
+                    }
+                }
+            }
+
+            // Disk fallback
+            let path_str = core::str::from_utf8(p).unwrap_or("?");
+            syscall::log(b"[libfont] lazy-load (disk): ");
+            syscall::log(path_str.as_bytes());
+            if let Some(data) = syscall::read_file(p) {
+                let size_kb = data.len() / 1024;
+                if let Some(ttf) = TtfFont::parse(data) {
+                    *slot = FontSlot::Loaded(LoadedFont::new(ttf));
+                    let mut num_buf = [0u8; 16];
+                    let num_str = format_u32(size_kb as u32, &mut num_buf);
+                    syscall::log(b" (");
+                    syscall::log(num_str.as_bytes());
+                    syscall::log(b" KB) OK\n");
+                    return;
+                }
+                syscall::log_str(" PARSE FAILED");
+            } else {
+                syscall::log_str(" NOT FOUND");
+            }
+            *slot = FontSlot::Failed;
+        }
+    }
+
+    fn get_font(&mut self, font_id: u16) -> Option<&TtfFont> {
+        self.ensure_loaded(font_id);
+        match self.fonts.get(font_id as usize) {
+            Some(FontSlot::Loaded(f)) => Some(&f.ttf),
+            _ => None,
+        }
     }
 
     fn get_font_mut(&mut self, font_id: u16) -> Option<&mut LoadedFont> {
-        self.fonts
-            .get_mut(font_id as usize)
-            .and_then(|slot| slot.as_mut())
+        self.ensure_loaded(font_id);
+        match self.fonts.get_mut(font_id as usize) {
+            Some(FontSlot::Loaded(f)) => Some(f),
+            _ => None,
+        }
     }
 
-    fn get_font_or_fallback(&self, font_id: u16) -> Option<&TtfFont> {
-        self.get_font(font_id)
-            .or_else(|| if font_id != SYSTEM_FONT_ID { self.get_font(SYSTEM_FONT_ID) } else { None })
+    fn get_font_or_fallback(&mut self, font_id: u16) -> Option<&TtfFont> {
+        self.ensure_loaded(font_id);
+        if matches!(self.fonts.get(font_id as usize), Some(FontSlot::Loaded(_))) {
+            return match &self.fonts[font_id as usize] {
+                FontSlot::Loaded(f) => Some(&f.ttf),
+                _ => None,
+            };
+        }
+        if font_id != SYSTEM_FONT_ID {
+            self.ensure_loaded(SYSTEM_FONT_ID);
+            match self.fonts.get(SYSTEM_FONT_ID as usize) {
+                Some(FontSlot::Loaded(f)) => Some(&f.ttf),
+                _ => None,
+            }
+        } else {
+            None
+        }
     }
 
     fn remove_font(&mut self, font_id: u16) {
         if let Some(slot) = self.fonts.get_mut(font_id as usize) {
-            *slot = None;
+            *slot = FontSlot::Failed;
         }
         // Invalidate all hash entries for this font, then remove from cache
         for i in (0..self.cache.len()).rev() {
@@ -430,8 +509,23 @@ fn set_mgr_ptr(mgr: *mut FontManager) {
 
 // ─── Public API (called from extern "C" exports) ────────────────────────
 
-/// Initialize the font manager and load system fonts from embedded .rodata.
-/// No disk I/O — fonts are compiled into the .so binary.
+/// System font filenames (indexed by font ID 0-5).
+const FONT_FILENAMES: [&[u8]; 6] = [
+    b"sfpro.ttf",           // ID 0 — primary UI font
+    b"sfpro-bold.ttf",      // ID 1
+    b"sfpro-thin.ttf",      // ID 2
+    b"sfpro-italic.ttf",    // ID 3
+    b"andale-mono.ttf",     // ID 4 — monospace
+    b"NotoColorEmoji.ttf",  // ID 5 — emoji
+];
+
+/// Initialize the font manager.
+///
+/// Fonts are loaded from fontd (shared memory, zero-copy) if available.
+/// Falls back to direct disk loading if fontd is not running.
+///
+/// The primary UI font (sfpro, ID 0) and monospace font (andale-mono, ID 4)
+/// are loaded immediately. All others are lazy (loaded on first use).
 pub fn init() {
     if get_mgr().is_some() {
         return;
@@ -443,27 +537,15 @@ pub fn init() {
 
     let mgr = unsafe { &mut *mgr_ptr };
 
-    let embedded: [&'static [u8]; 5] = [
-        crate::FONT_SFPRO,
-        crate::FONT_SFPRO_BOLD,
-        crate::FONT_SFPRO_THIN,
-        crate::FONT_SFPRO_ITALIC,
-        crate::FONT_ANDALE_MONO,
-    ];
-
-    for data in &embedded {
-        if let Some(ttf) = TtfFont::parse_static(data) {
-            mgr.add_font(ttf);
+    // Register all 6 system fonts. IDs 0 and 4 are loaded immediately,
+    // the rest are lazy (loaded on first access).
+    for (id, filename) in FONT_FILENAMES.iter().enumerate() {
+        let eager = id == 0 || id == 4; // sfpro + mono
+        if eager {
+            load_font_slot(mgr, filename);
         } else {
-            mgr.fonts.push(None);
+            mgr.fonts.push(FontSlot::Pending { path: crate::font_paths_by_id(id) });
         }
-    }
-
-    // Load emoji font (ID 5 = SYSTEM_FONT_EMOJI)
-    if let Some(ttf) = TtfFont::parse_static(crate::FONT_EMOJI) {
-        mgr.add_font(ttf);
-    } else {
-        mgr.fonts.push(None);
     }
 
     if syscall::gpu_has_accel() != 0 {
@@ -471,6 +553,68 @@ pub fn init() {
     }
 
     init_gamma_lut();
+}
+
+/// Load a font by filename — tries fontd first, falls back to disk.
+fn load_font_slot(mgr: &mut FontManager, filename: &[u8]) {
+    let fname_str = core::str::from_utf8(filename).unwrap_or("?");
+
+    // Try fontd (SHM, shared across processes)
+    #[cfg(not(feature = "host"))]
+    {
+        if let Some(data) = crate::fontd_client::request_font(filename) {
+            if let Some(ttf) = TtfFont::parse_static(data) {
+                mgr.fonts.push(FontSlot::Loaded(LoadedFont::new(ttf)));
+                return;
+            }
+            syscall::log(b"[libfont] parse failed for fontd data: ");
+            syscall::log_str(fname_str);
+        }
+    }
+
+    // Fallback: load from disk directly
+    let path = alloc::format!("/System/fonts/{}", fname_str);
+    syscall::log(b"[libfont] disk fallback: ");
+    syscall::log(path.as_bytes());
+    if let Some(data) = syscall::read_file(path.as_bytes()) {
+        let size_kb = data.len() / 1024;
+        if let Some(ttf) = TtfFont::parse(data) {
+            mgr.fonts.push(FontSlot::Loaded(LoadedFont::new(ttf)));
+            let mut num_buf = [0u8; 16];
+            let num_str = format_u32(size_kb as u32, &mut num_buf);
+            syscall::log(b" (");
+            syscall::log(num_str.as_bytes());
+            syscall::log(b" KB) OK\n");
+            return;
+        }
+        syscall::log_str(" PARSE FAILED");
+    } else {
+        syscall::log_str(" NOT FOUND");
+    }
+    mgr.fonts.push(FontSlot::Failed);
+}
+
+/// Extract filename from a path like b"/System/fonts/sfpro.ttf" → b"sfpro.ttf".
+fn extract_filename(path: &[u8]) -> &[u8] {
+    match path.iter().rposition(|&b| b == b'/') {
+        Some(pos) => &path[pos + 1..],
+        None => path,
+    }
+}
+
+/// Simple u32-to-string for debug output (no alloc needed).
+pub fn format_u32(mut val: u32, buf: &mut [u8; 16]) -> &str {
+    if val == 0 {
+        buf[0] = b'0';
+        return core::str::from_utf8(&buf[..1]).unwrap();
+    }
+    let mut pos = 16;
+    while val > 0 && pos > 0 {
+        pos -= 1;
+        buf[pos] = b'0' + (val % 10) as u8;
+        val /= 10;
+    }
+    core::str::from_utf8(&buf[pos..]).unwrap()
 }
 
 fn ensure_init() -> Option<&'static mut FontManager> {

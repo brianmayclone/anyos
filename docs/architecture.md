@@ -79,7 +79,7 @@ PML4[510] recursive self-mapping              Page table access
                              0x04300000 = librender.dlib
                              0x04380000 = libcompositor.dlib
                              0x04400000 = libanyui.so
-                             0x05000000 = libfont.so (~17 MiB, embedded fonts)
+                             0x05000000 = libfont.so (~517 KiB, fonts via fontd SHM)
 0x08000000 - 0x080XXXXX    Program text + data + BSS (ELF64/ELF32)
 0x080XXXXX - 0x0BFEFFFF    Heap (grows via sbrk)
 0x20000000+                mmap region (base randomized ±16 MiB by ASLR)
@@ -672,6 +672,19 @@ Page-granular shared memory regions for zero-copy data transfer.
 - `shm_map(id)` maps into the calling process's address space
 - Multiple processes can map the same SHM region
 - Used by libcompositor for window pixel buffers
+- Used by **fontd** for shared font data (all processes map the same font SHM)
+
+### fontd — Font Server (SHM-based)
+
+The **fontd** daemon (`system/fontd/`) loads TTF font files from `/System/fonts/` into SHM regions on demand. All processes that need font data request it from fontd and map the returned SHM — the font bytes exist exactly once in physical RAM.
+
+**Startup:** Compositor spawns fontd before `libfont_client::init()`, subscribes to the `"fontd"` event channel before the spawn to avoid a race, then waits for `EVT_FONTD_READY` (0x6000).
+
+**Protocol:** Event channel `"fontd"` with `CMD_LOAD_BY_NAME` (filename in SHM) → `EVT_FONT_READY` (data SHM ID + size). See `docs/libfont-api.md` for full protocol.
+
+**Caching:** fontd maintains a 64-slot path→SHM cache. Once loaded, a font's SHM persists for the lifetime of fontd. Repeated requests return the cached SHM ID instantly.
+
+**Lazy loading:** Only sfpro.ttf (5.9 MB) and andale-mono.ttf (108 KB) are loaded at boot. Bold, thin, italic, and emoji (total ~21 MB) are loaded on first use.
 
 ---
 
@@ -797,7 +810,8 @@ anyOS uses two shared library formats at fixed virtual addresses (0x04000000+):
 | **librender** | DLIB | `0x04300000` | 18 | 2D rendering primitives (shapes, gradients, anti-aliasing) |
 | **libcompositor** | DLIB | `0x04380000` | 16 | Window management IPC (SHM surfaces, event channels) |
 | **libanyui** | .so | `0x04400000` | 178 | anyui UI framework (44 controls, Windows Forms-style, clipboard, theming, tooltips, dialogs, icons) |
-| **libfont** | .so | `0x05000000` | 7 | TrueType font rendering (gamma-corrected greyscale + LCD subpixel AA), system fonts embedded in .rodata |
+| **libfont** | .so | `0x05000000` | 9 | TrueType font rendering (gamma-corrected greyscale + LCD subpixel AA); font data served from fontd via SHM |
+| **libini** | .so | -- | 13 | INI/conf file parser (sections, typed values, iteration) |
 | **libgl** | .so | -- | -- | OpenGL ES 2.0 3D engine (software rasterizer + userspace GPU driver loading via .drv) |
 | **libhttp** | .so | -- | -- | HTTP client/server library |
 | **libm** | .so | -- | -- | Hardware-accelerated math (SSE2 + x87 FPU: sin, cos, sqrt, matrix ops) |
@@ -1004,7 +1018,7 @@ capabilities=filesystem,dll # Comma-separated capability list
 | **vnc-settings** | VNC server settings |
 | **webmanager** | Web management tool |
 
-### System Services (`system/`) -- 23 daemons
+### System Services (`system/`) -- 24 daemons
 
 | Service | Description |
 |---------|-------------|
@@ -1018,6 +1032,7 @@ capabilities=filesystem,dll # Comma-separated capability list
 | **diskutil** | Disk utility GUI |
 | **eventviewer** | Event/log viewer GUI |
 | **finder** | File manager/browser |
+| **fontd** | Font server (loads TTF into SHM, shared across all processes) |
 | **init** | Boot initialization |
 | **inputmon** | Input device monitoring |
 | **login** | Login manager |

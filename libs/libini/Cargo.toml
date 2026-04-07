@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "libini"
+version = "0.1.0"
+edition = "2021"
+description = "INI/conf file parser for anyOS — shared library (.dlib)"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+libheap = { path = "../libheap" }
+libsyscall = { path = "../libsyscall" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

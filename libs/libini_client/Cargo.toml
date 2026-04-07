@@ -1,0 +1,11 @@
+[package]
+name = "libini_client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dynlink = { path = "../dynlink" }
+anyos_std = { path = "../stdlib" }
+
+[lib]
+name = "libini_client"

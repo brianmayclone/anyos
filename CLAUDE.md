@@ -48,7 +48,8 @@ Affected files:
 - `libs/libanyui/` -- Server-side GUI framework (44 controls, 178 exports, runs in compositor process)
 - `libs/libanyui_client/` -- Client-side GUI wrapper (user apps link against this)
 - `libs/libcompositor/` / `libs/libcompositor_client/` -- Low-level compositor protocol
-- `libs/libfont/` / `libs/libfont_client/` -- Font rendering
+- `libs/libfont/` / `libs/libfont_client/` -- Font rendering (TTF parsing, glyph rasterization; fonts served via fontd SHM)
+- `libs/libini/` / `libs/libini_client/` -- INI/conf file parser
 - `libs/libimage/` / `libs/libimage_client/` -- Image decoding (BMP, PNG, JPEG, GIF, ICO)
 - `libs/librender/` / `libs/librender_client/` -- 2D rendering primitives
 - `libs/libdb/` / `libs/libdb_client/` -- Key-value database
@@ -117,7 +118,8 @@ Affected files:
 - `docs/libc-api.md` -- C library reference (32-bit)
 - `docs/libcxx-api.md` -- 64-bit C (libc64) and C++20 (libcxx) standard library reference
 - `docs/libcompositor-api.md` -- Compositor protocol reference
-- `docs/libfont-api.md` -- Font rendering API
+- `docs/libfont-api.md` -- Font rendering API (includes fontd architecture)
+- `docs/libini-api.md` -- INI/conf file parser API
 - `docs/libimage-api.md` -- Image decoding API
 - `docs/librender-api.md` -- 2D rendering API
 - `docs/libdb-api.md` -- Key-value database API

@@ -1476,8 +1476,8 @@ pub fn read_cd_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
     let mut remaining = count;
     let mut cur_lba = lba;
 
-    // Max 32 CD sectors per batch (64 KiB, fits in bounce buffer)
-    const MAX_CD_BATCH: u32 = 32;
+    // Max 256 CD sectors per batch (512 KiB, fits in bounce buffer)
+    const MAX_CD_BATCH: u32 = BOUNCE_BUF_SIZE as u32 / 2048;
 
     while remaining > 0 {
         let batch = remaining.min(MAX_CD_BATCH);

@@ -51,59 +51,101 @@ pub fn run() {
     let height = fb_info.height;
     let fb_ptr = fb_info.fb_addr as *mut u32;
 
-    libfont_client::init();
+    // Start fontd (font server) — must be running before libfont_client::init()
+    // so that font data is served from shared memory instead of each process
+    // loading fonts from disk independently.
+    //
+    // Subscribe to the channel BEFORE spawning fontd to avoid a race condition
+    // where fontd emits EVT_FONTD_READY before we're listening.
+    let fontd_chan = ipc::evt_chan_create("fontd");
+    let fontd_sub = ipc::evt_chan_subscribe(fontd_chan, 0);
 
+    let fontd_tid = process::spawn("/System/fontd", "");
+    if fontd_tid != u32::MAX {
+        println!("compositor: fontd spawned (TID={}), waiting for ready...", fontd_tid);
+        let mut ready = false;
+        for _ in 0..100 {
+            ipc::evt_chan_wait(fontd_chan, fontd_sub, 50);
+            let mut evt = [0u32; 5];
+            if ipc::evt_chan_poll(fontd_chan, fontd_sub, &mut evt) && evt[0] == 0x6000 {
+                ready = true;
+                break;
+            }
+        }
+        if ready {
+            println!("compositor: fontd ready");
+        } else {
+            println!("compositor: WARNING — fontd did not signal ready, proceeding anyway");
+        }
+    } else {
+        println!("compositor: WARNING — fontd not found, fonts will load from disk");
+    }
+    ipc::evt_chan_unsubscribe(fontd_chan, fontd_sub);
+
+    println!("compositor: loading libfont...");
+    libfont_client::init();
+    println!("compositor: libfont loaded");
+
+    println!("compositor: creating desktop...");
     let mut desktop = alloc::boxed::Box::new(desktop::Desktop::new(
         fb_ptr, width, height, fb_info.pitch,
     ));
+    println!("compositor: desktop created, initializing...");
     desktop.init_no_wallpaper();
+    println!("compositor: desktop initialized");
 
-    if let Some(saved) = config::read_resolution() {
-        if saved.width != width || saved.height != height {
-            println!(
-                "compositor: restoring saved resolution {}x{} (current: {}x{})",
-                saved.width, saved.height, width, height
-            );
-            if anyos_std::ui::window::set_resolution(saved.width, saved.height) {
-                desktop.handle_resolution_change(saved.width, saved.height);
+    // Skip config restore in setup mode — no saved config on install media
+    if !setup_mode {
+        if let Some(saved) = config::read_resolution() {
+            if saved.width != width || saved.height != height {
                 println!(
-                    "compositor: resolution restored to {}x{}",
-                    saved.width, saved.height
+                    "compositor: restoring saved resolution {}x{} (current: {}x{})",
+                    saved.width, saved.height, width, height
                 );
-            } else {
-                println!("compositor: failed to restore saved resolution, keeping {}x{}", width, height);
+                if anyos_std::ui::window::set_resolution(saved.width, saved.height) {
+                    desktop.handle_resolution_change(saved.width, saved.height);
+                    println!(
+                        "compositor: resolution restored to {}x{}",
+                        saved.width, saved.height
+                    );
+                } else {
+                    println!("compositor: failed to restore saved resolution, keeping {}x{}", width, height);
+                }
             }
         }
-    }
 
-    if let Some(saved_theme) = config::read_theme() {
-        let is_light = saved_theme.mode == "light";
-        if is_light {
-            desktop::set_theme(1);
-            println!("compositor: restored theme: light");
+        if let Some(saved_theme) = config::read_theme() {
+            let is_light = saved_theme.mode == "light";
+            if is_light {
+                desktop::set_theme(1);
+                println!("compositor: restored theme: light");
+            } else {
+                println!("compositor: restored theme: dark");
+            }
+        }
+
+        if let Some(mode) = config::read_font_smoothing() {
+            desktop::set_font_smoothing(mode);
+            let mode_name = match mode {
+                0 => "none",
+                1 => "greyscale",
+                _ => "subpixel",
+            };
+            println!("compositor: restored font smoothing: {}", mode_name);
+        }
+
+        if let Some(scale) = config::read_scale_factor() {
+            desktop::theme::set_scale_factor(scale);
+            if scale != 100 {
+                desktop.handle_scale_change();
+            }
+            println!("compositor: restored DPI scale: {}%", scale);
         } else {
-            println!("compositor: restored theme: dark");
+            desktop::theme::set_scale_factor(100);
         }
-    }
-
-    if let Some(mode) = config::read_font_smoothing() {
-        desktop::set_font_smoothing(mode);
-        let mode_name = match mode {
-            0 => "none",
-            1 => "greyscale",
-            _ => "subpixel",
-        };
-        println!("compositor: restored font smoothing: {}", mode_name);
-    }
-
-    if let Some(scale) = config::read_scale_factor() {
-        desktop::theme::set_scale_factor(scale);
-        if scale != 100 {
-            desktop.handle_scale_change();
-        }
-        println!("compositor: restored DPI scale: {}%", scale);
     } else {
         desktop::theme::set_scale_factor(100);
+        println!("compositor: setup mode — skipping config restore");
     }
 
     let (splash_x, splash_y) = ipc::cursor_takeover();
@@ -162,12 +204,14 @@ pub fn run() {
     let mut login_pending = login_tid != u32::MAX;
     let mut dock_spawned = setup_mode;
     if setup_mode {
-        println!("compositor: setup mode — loading setup wallpaper, launching installer");
+        println!("compositor: setup mode — loading wallpaper, launching installer");
         acquire_lock();
         let desktop = unsafe { desktop_ref() };
         desktop.set_menubar_visible(true);
         desktop.load_wallpaper("/media/wallpapers/setup.png");
+        desktop.compositor.damage_all();
         release_lock();
+        signal_render();
         process::spawn("/Applications/Installer.app/Installer", "");
     } else if login_pending {
         println!("compositor: login window spawned, waiting for authentication...");

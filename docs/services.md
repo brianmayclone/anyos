@@ -11,6 +11,7 @@ The anyOS service system provides a unified mechanism for managing background da
 | **ftpd** | System daemon | `bin/ftpd/` | `/System/bin/ftpd` |
 | **vncd** | System daemon | `bin/vncd/` | `/System/bin/vncd` |
 | **amid** | System daemon | `system/amid/` | `/System/bin/amid` |
+| **fontd** | System daemon | `system/fontd/` | `/System/fontd` |
 | **Event Viewer** | GUI application | `system/eventviewer/` | `/Applications/Event Viewer.app` |
 
 ### Managed Services
@@ -31,6 +32,12 @@ The following services are configured in `/System/etc/svc/` and started at boot 
 ### System Daemons (non-svc)
 
 These daemons are started directly by the compositor, sessionhost, or init — not managed by `svc`.
+
+**Compositor core services** — launched by the compositor at startup (before login):
+
+| Daemon | Binary | Description |
+|--------|--------|-------------|
+| **fontd** | `/System/fontd` | Font server — loads TTF fonts into SHM on demand, shared across all processes. Compositor waits for `EVT_FONTD_READY` (0x6000) before initializing libfont. See `docs/libfont-api.md` for protocol details. |
 
 **Compositor login services** — launched before the login screen via `compositor.conf [login]`:
 

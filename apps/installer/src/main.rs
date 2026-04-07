@@ -3,6 +3,7 @@
 
 mod state;
 mod helpers;
+mod script;
 mod worker;
 
 use anyos_std::{format, String, Vec};
@@ -19,18 +20,14 @@ anyos_std::entry!(main);
 
 // ── Disk card UI ───────────────────────────────────────────────────────────
 
-/// Build the list of installable targets from raw disk entries.
-/// Returns only whole disks (if unpartitioned) or individual partitions
-/// that are large enough.
 fn build_target_list(all: &[DiskEntry]) -> Vec<usize> {
     const MIN_SECTORS: u64 = 256 * 1024 * 1024 / 512;
     let mut targets = Vec::new();
     for (i, d) in all.iter().enumerate() {
         if d.size_sectors < MIN_SECTORS { continue; }
-        // Show whole disk only if it has no partitions
         if d.partition_index.is_none() {
             let has_parts = all.iter().any(|e| e.disk_id == d.disk_id && e.partition_index.is_some());
-            if has_parts { continue; } // skip whole-disk entry, show partitions instead
+            if has_parts { continue; }
         }
         targets.push(i);
     }
@@ -49,7 +46,6 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
     let targets = build_target_list(disks);
     let any_suitable = !targets.is_empty();
 
-    // Auto-select largest target
     let mut best_idx: Option<usize> = None;
     let mut best_size: u64 = 0;
     for &ti in &targets {
@@ -64,7 +60,6 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
     let card_h: u32 = 200;
     let gap: i32 = 16;
     let max_per_row = 3;
-
     let total_cards = targets.len().min(max_per_row);
     let total_w = total_cards as i32 * card_w as i32 + (total_cards as i32 - 1).max(0) * gap;
     let container_w = 560i32;
@@ -91,7 +86,6 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
             card.add(&iv);
         }
 
-        // Title: "Disk 0" or "Disk 0, Part 1"
         let name = if let Some(pi) = disk.partition_index {
             format!("Disk {} Part {}", disk.disk_id, pi + 1)
         } else {
@@ -106,13 +100,10 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
         name_label.set_text_align(ui::TEXT_ALIGN_CENTER);
         card.add(&name_label);
 
-        // Label (model string) — truncate to fit card width
         if !disk.label.is_empty() {
             let display_label = if disk.label.len() > 20 {
                 format!("{}...", &disk.label[..18])
-            } else {
-                disk.label.clone()
-            };
+            } else { disk.label.clone() };
             let model_label = ui::Label::new(&display_label);
             model_label.set_position(0, 90);
             model_label.set_size(card_w, 16);
@@ -123,7 +114,6 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
             card.add(&model_label);
         }
 
-        // Size
         let size_str = format_size(disk.size_sectors);
         let size_label = ui::Label::new(&size_str);
         size_label.set_position(0, 108);
@@ -134,17 +124,11 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
         size_label.set_text_align(ui::TEXT_ALIGN_CENTER);
         card.add(&size_label);
 
-        // Status line
         let status_str = if disk.partition_index.is_none() {
-            if disk.partition_count == 0 {
-                String::from("Unpartitioned")
-            } else {
-                format!("{} partition{}", disk.partition_count,
-                    if disk.partition_count == 1 { "" } else { "s" })
-            }
-        } else {
-            String::from("Partition")
-        };
+            if disk.partition_count == 0 { String::from("Unpartitioned") }
+            else { format!("{} partition{}", disk.partition_count,
+                if disk.partition_count == 1 { "" } else { "s" }) }
+        } else { String::from("Partition") };
         let status_label = ui::Label::new(&status_str);
         status_label.set_position(0, 128);
         status_label.set_size(card_w, 16);
@@ -154,7 +138,6 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
         status_label.set_text_align(ui::TEXT_ALIGN_CENTER);
         card.add(&status_label);
 
-        // Selection indicator
         if is_selected {
             let dot = ui::View::new();
             dot.set_position((card_w as i32 - 8) / 2, card_h as i32 - 16);
@@ -163,7 +146,6 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
             card.add(&dot);
         }
 
-        // Click area
         let click_area = ui::Label::new("");
         click_area.set_position(0, 0);
         click_area.set_size(card_w, card_h);
@@ -176,11 +158,8 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
     }
 
     if disks.is_empty() || !any_suitable {
-        let msg = if disks.is_empty() {
-            "No disks detected."
-        } else {
-            "No suitable disk found. anyOS requires at least 256 MB."
-        };
+        let msg = if disks.is_empty() { "No disks detected." }
+            else { "No suitable disk found. anyOS requires at least 256 MB." };
         let warn_label = ui::Label::new(msg);
         warn_label.set_position(0, 80);
         warn_label.set_size(560, 20);
@@ -194,11 +173,9 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
 
     let btn = ui::Control::from_id(a.btn_next_id);
     if any_suitable && a.selected_disk.is_some() {
-        btn.set_enabled(true);
-        btn.set_color(ACCENT);
+        btn.set_enabled(true); btn.set_color(ACCENT);
     } else {
-        btn.set_enabled(false);
-        btn.set_color(0xFF555555);
+        btn.set_enabled(false); btn.set_color(0xFF555555);
     }
 }
 
@@ -230,37 +207,22 @@ fn show_page(step: u32) {
 
     let next_ctrl = ui::Control::from_id(a.btn_next_id);
     match step {
-        0 => {
-            next_ctrl.set_text("Continue");
-            next_ctrl.set_enabled(true);
-            next_ctrl.set_color(ACCENT);
-        }
-        1 => {
-            next_ctrl.set_text("Agree");
-            next_ctrl.set_enabled(true);
-            next_ctrl.set_color(ACCENT);
-        }
+        0 => { next_ctrl.set_text("Continue"); next_ctrl.set_enabled(true); next_ctrl.set_color(ACCENT); }
+        1 => { next_ctrl.set_text("Agree"); next_ctrl.set_enabled(true); next_ctrl.set_color(ACCENT); }
         2 => {
             next_ctrl.set_text("Continue");
-            let has_selection = a.selected_disk.is_some();
-            next_ctrl.set_enabled(has_selection);
-            next_ctrl.set_color(if has_selection { ACCENT } else { 0xFF555555 });
+            let has = a.selected_disk.is_some();
+            next_ctrl.set_enabled(has); next_ctrl.set_color(if has { ACCENT } else { 0xFF555555 });
         }
         3 => {
             next_ctrl.set_text("Install");
-            // Disable until password is validated
-            next_ctrl.set_enabled(false);
-            next_ctrl.set_color(0xFF555555);
-            // Clear fields when entering
-            a.pw_field1.set_text("");
-            a.pw_field2.set_text("");
-            a.pw_error_label.set_text("");
+            next_ctrl.set_enabled(false); next_ctrl.set_color(0xFF555555);
+            a.pw_field1.set_text(""); a.pw_field2.set_text(""); a.pw_error_label.set_text("");
         }
         _ => {}
     }
 }
 
-/// Validate the password fields and update the Install button + error label.
 fn validate_password() {
     let a = app();
     let mut buf1 = [0u8; 128];
@@ -269,50 +231,35 @@ fn validate_password() {
     let len2 = a.pw_field2.get_text(&mut buf2) as usize;
     let pw1 = core::str::from_utf8(&buf1[..len1]).unwrap_or("");
     let pw2 = core::str::from_utf8(&buf2[..len2]).unwrap_or("");
-
     let next_ctrl = ui::Control::from_id(a.btn_next_id);
 
     if pw1.is_empty() {
         a.pw_error_label.set_text("");
-        next_ctrl.set_enabled(false);
-        next_ctrl.set_color(0xFF555555);
-        return;
+        next_ctrl.set_enabled(false); next_ctrl.set_color(0xFF555555); return;
     }
-
     if pw1.len() < 4 {
         a.pw_error_label.set_text("Password must be at least 4 characters.");
         a.pw_error_label.set_text_color(0xFFFF6B6B);
-        next_ctrl.set_enabled(false);
-        next_ctrl.set_color(0xFF555555);
-        return;
+        next_ctrl.set_enabled(false); next_ctrl.set_color(0xFF555555); return;
     }
-
     if pw2.is_empty() {
         a.pw_error_label.set_text("");
-        next_ctrl.set_enabled(false);
-        next_ctrl.set_color(0xFF555555);
-        return;
+        next_ctrl.set_enabled(false); next_ctrl.set_color(0xFF555555); return;
     }
-
     if pw1 != pw2 {
         a.pw_error_label.set_text("Passwords do not match.");
         a.pw_error_label.set_text_color(0xFFFF6B6B);
-        next_ctrl.set_enabled(false);
-        next_ctrl.set_color(0xFF555555);
-        return;
+        next_ctrl.set_enabled(false); next_ctrl.set_color(0xFF555555); return;
     }
-
     a.pw_error_label.set_text("Passwords match.");
     a.pw_error_label.set_text_color(0xFF34C759);
-    next_ctrl.set_enabled(true);
-    next_ctrl.set_color(ACCENT);
+    next_ctrl.set_enabled(true); next_ctrl.set_color(ACCENT);
 }
 
 // ── Install flow ───────────────────────────────────────────────────────────
 
 fn start_install() {
     show_page(4);
-
     WORKER_ACTIVE.store(true, Ordering::Release);
     WORKER_DONE.store(false, Ordering::Release);
     WORKER_ERROR.store(false, Ordering::Release);
@@ -321,24 +268,25 @@ fn start_install() {
     if let Ok(h) = process::Thread::spawn_with_stack(worker::install_worker, 256 * 1024, "installer") {
         core::mem::forget(h);
     }
-    app().timer_id = ui::set_timer(200, || { poll_worker(); });
+    app().timer_id = ui::set_timer(500, || { poll_worker(); });
 }
 
 fn poll_worker() {
     let a = app();
 
-    let seq = COPY_FILE_SEQ.load(Ordering::Acquire);
-    if seq != a.last_copy_seq {
-        a.last_copy_seq = seq;
-        let len = COPY_FILE_LEN.load(Ordering::Acquire) as usize;
+    // Check for new log lines from worker
+    let seq = LOG_SEQ.load(Ordering::Acquire);
+    if seq != a.last_log_seq {
+        a.last_log_seq = seq;
+        let len = LOG_LINE_LEN.load(Ordering::Acquire) as usize;
         if len > 0 {
-            let path = unsafe {
-                core::str::from_utf8(&COPY_FILE_BUF[..len]).unwrap_or("")
-            };
-            let display = path.strip_prefix("/mnt/target").unwrap_or(path);
-            a.details_text.push_str(display);
-            a.details_text.push('\n');
-            a.details_log.set_text(&a.details_text);
+            let line = unsafe { core::str::from_utf8(&LOG_LINE_BUF[..len]).unwrap_or("") };
+            a.log_text.push_str(line);
+            a.log_text.push('\n');
+            // Update log window if open
+            if let Some(ref ta) = a.log_textarea {
+                ta.set_text(&a.log_text);
+            }
         }
     }
 
@@ -350,8 +298,6 @@ fn poll_worker() {
         a.progress_bar.set_visible(false);
         a.phase_label.set_visible(false);
         a.status_label.set_visible(false);
-        a.btn_details.set_visible(false);
-        a.details_card.set_visible(false);
 
         if is_error {
             a.btn_reboot.set_text("Close");
@@ -370,6 +316,27 @@ fn poll_worker() {
     }
 }
 
+/// Open a separate window showing the installation log.
+fn show_log_window() {
+    let a = app();
+    if a.log_win.is_some() { return; } // already open
+
+    let log_win = ui::Window::new("Installation Log", -1, -1, 600, 400);
+    let ta = ui::TextArea::new();
+    ta.set_dock(DOCK_FILL);
+    ta.set_font_size(11);
+    ta.set_text(&a.log_text);
+    log_win.add(&ta);
+
+    log_win.on_close(|_| {
+        app().log_win = None;
+        app().log_textarea = None;
+    });
+
+    a.log_textarea = Some(ta);
+    a.log_win = Some(log_win);
+}
+
 // ── UI construction ────────────────────────────────────────────────────────
 
 fn main() {
@@ -378,6 +345,23 @@ fn main() {
     let tc = ui::theme::colors();
     let win = ui::Window::new("Install anyOS", -1, -1, WIN_W, WIN_H);
     let cx = (WIN_W / 2) as i32;
+
+    // ── Menu bar ───────────────────────────────────────────────────────────
+    let mut mb = ui::MenuBarBuilder::new()
+        .menu("Installation")
+            .item(1, "View Log", 0)
+            .separator()
+            .item(2, "Quit", 0)
+        .end_menu();
+    let menu_data = mb.build();
+    let menu = ui::MenuBar::set(win.id(), menu_data);
+    menu.on_item(|e| {
+        match e.item_id {
+            1 => show_log_window(),
+            2 => ui::quit(),
+            _ => {}
+        }
+    });
 
     // ── Bottom bar ─────────────────────────────────────────────────────────
     let bottom = ui::View::new();
@@ -409,90 +393,51 @@ fn main() {
     // ═══════════════════════════════════════════════════════════════════════
     // Page 0: Welcome
     // ═══════════════════════════════════════════════════════════════════════
-
-    let page0 = ui::View::new();
-    page0.set_dock(DOCK_FILL);
-    page0.set_color(tc.window_bg);
-    win.add(&page0);
+    let page0 = ui::View::new(); page0.set_dock(DOCK_FILL); page0.set_color(tc.window_bg); win.add(&page0);
 
     let welcome_title = ui::Label::new("Welcome to anyOS");
-    welcome_title.set_position(0, 100);
-    welcome_title.set_size(WIN_W, 44);
-    welcome_title.set_font_size(30);
-    welcome_title.set_color(tc.window_bg);
-    welcome_title.set_text_color(0xFFFFFFFF);
-    welcome_title.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page0.add(&welcome_title);
+    welcome_title.set_position(0, 100); welcome_title.set_size(WIN_W, 44); welcome_title.set_font_size(30);
+    welcome_title.set_color(tc.window_bg); welcome_title.set_text_color(0xFFFFFFFF);
+    welcome_title.set_text_align(ui::TEXT_ALIGN_CENTER); page0.add(&welcome_title);
 
-    let welcome_sub = ui::Label::new(
-        "This assistant will guide you through the steps needed to install anyOS on your computer."
-    );
-    welcome_sub.set_position(0, 160);
-    welcome_sub.set_size(WIN_W, 40);
-    welcome_sub.set_font_size(14);
-    welcome_sub.set_color(tc.window_bg);
-    welcome_sub.set_text_color(0xFFAAAAAA);
-    welcome_sub.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page0.add(&welcome_sub);
+    let welcome_sub = ui::Label::new("This assistant will guide you through the steps needed to install anyOS on your computer.");
+    welcome_sub.set_position(0, 160); welcome_sub.set_size(WIN_W, 40); welcome_sub.set_font_size(14);
+    welcome_sub.set_color(tc.window_bg); welcome_sub.set_text_color(0xFFAAAAAA);
+    welcome_sub.set_text_align(ui::TEXT_ALIGN_CENTER); page0.add(&welcome_sub);
 
     let welcome_hint = ui::Label::new("Click Continue to get started.");
-    welcome_hint.set_position(0, 216);
-    welcome_hint.set_size(WIN_W, 20);
-    welcome_hint.set_font_size(13);
-    welcome_hint.set_color(tc.window_bg);
-    welcome_hint.set_text_color(0xFF888888);
-    welcome_hint.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page0.add(&welcome_hint);
+    welcome_hint.set_position(0, 216); welcome_hint.set_size(WIN_W, 20); welcome_hint.set_font_size(13);
+    welcome_hint.set_color(tc.window_bg); welcome_hint.set_text_color(0xFF888888);
+    welcome_hint.set_text_align(ui::TEXT_ALIGN_CENTER); page0.add(&welcome_hint);
 
     let ver_label = ui::Label::new("anyOS version 0.4");
-    ver_label.set_position(0, 380);
-    ver_label.set_size(WIN_W, 18);
-    ver_label.set_font_size(11);
-    ver_label.set_color(tc.window_bg);
-    ver_label.set_text_color(0xFF555555);
-    ver_label.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page0.add(&ver_label);
+    ver_label.set_position(0, 380); ver_label.set_size(WIN_W, 18); ver_label.set_font_size(11);
+    ver_label.set_color(tc.window_bg); ver_label.set_text_color(0xFF555555);
+    ver_label.set_text_align(ui::TEXT_ALIGN_CENTER); page0.add(&ver_label);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Page 1: License Agreement
     // ═══════════════════════════════════════════════════════════════════════
-
-    let page1 = ui::View::new();
-    page1.set_dock(DOCK_FILL);
-    page1.set_color(tc.window_bg);
-    page1.set_visible(false);
-    win.add(&page1);
+    let page1 = ui::View::new(); page1.set_dock(DOCK_FILL); page1.set_color(tc.window_bg);
+    page1.set_visible(false); win.add(&page1);
 
     let lic_title = ui::Label::new("Software License Agreement");
-    lic_title.set_position(0, 30);
-    lic_title.set_size(WIN_W, 34);
-    lic_title.set_font_size(24);
-    lic_title.set_color(tc.window_bg);
-    lic_title.set_text_color(0xFFFFFFFF);
-    lic_title.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page1.add(&lic_title);
+    lic_title.set_position(0, 30); lic_title.set_size(WIN_W, 34); lic_title.set_font_size(24);
+    lic_title.set_color(tc.window_bg); lic_title.set_text_color(0xFFFFFFFF);
+    lic_title.set_text_align(ui::TEXT_ALIGN_CENTER); page1.add(&lic_title);
 
     let lic_desc = ui::Label::new("Please read and agree to the terms before continuing.");
-    lic_desc.set_position(0, 68);
-    lic_desc.set_size(WIN_W, 20);
-    lic_desc.set_font_size(13);
-    lic_desc.set_color(tc.window_bg);
-    lic_desc.set_text_color(0xFF999999);
-    lic_desc.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page1.add(&lic_desc);
+    lic_desc.set_position(0, 68); lic_desc.set_size(WIN_W, 20); lic_desc.set_font_size(13);
+    lic_desc.set_color(tc.window_bg); lic_desc.set_text_color(0xFF999999);
+    lic_desc.set_text_align(ui::TEXT_ALIGN_CENTER); page1.add(&lic_desc);
 
-    let lic_card = ui::Card::new();
-    lic_card.set_position(cx - 290, 106);
-    lic_card.set_size(580, 230);
+    let lic_card = ui::Card::new(); lic_card.set_position(cx - 290, 106); lic_card.set_size(580, 230);
     page1.add(&lic_card);
 
     let lic_text = ui::TextArea::new();
-    lic_text.set_position(8, 8);
-    lic_text.set_size(564, 214);
-    lic_text.set_font_size(12);
+    lic_text.set_position(8, 8); lic_text.set_size(564, 214); lic_text.set_font_size(12);
     lic_text.set_text(concat!(
-        "anyOS Software License Agreement\n",
-        "MIT License\n\n",
+        "anyOS Software License Agreement\nMIT License\n\n",
         "Copyright (c) 2024-2026 Christian Moeller, Mike Stratmann\n\n",
         "Permission is hereby granted, free of charge, to any person \n",
         "obtaining a copy of this software and associated documentation \n",
@@ -516,246 +461,131 @@ fn main() {
     ));
     lic_card.add(&lic_text);
 
-    let lic_agree_hint = ui::Label::new(
-        "Click \"Agree\" to accept and continue with the installation."
-    );
-    lic_agree_hint.set_position(0, 350);
-    lic_agree_hint.set_size(WIN_W, 18);
-    lic_agree_hint.set_font_size(12);
-    lic_agree_hint.set_color(tc.window_bg);
-    lic_agree_hint.set_text_color(0xFF888888);
-    lic_agree_hint.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page1.add(&lic_agree_hint);
+    let lic_hint = ui::Label::new("Click \"Agree\" to accept and continue with the installation.");
+    lic_hint.set_position(0, 350); lic_hint.set_size(WIN_W, 18); lic_hint.set_font_size(12);
+    lic_hint.set_color(tc.window_bg); lic_hint.set_text_color(0xFF888888);
+    lic_hint.set_text_align(ui::TEXT_ALIGN_CENTER); page1.add(&lic_hint);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Page 2: Select Disk
     // ═══════════════════════════════════════════════════════════════════════
-
-    let page2 = ui::View::new();
-    page2.set_dock(DOCK_FILL);
-    page2.set_color(tc.window_bg);
-    page2.set_visible(false);
-    win.add(&page2);
+    let page2 = ui::View::new(); page2.set_dock(DOCK_FILL); page2.set_color(tc.window_bg);
+    page2.set_visible(false); win.add(&page2);
 
     let p2_title = ui::Label::new("Select a Destination");
-    p2_title.set_position(0, 30);
-    p2_title.set_size(WIN_W, 34);
-    p2_title.set_font_size(24);
-    p2_title.set_color(tc.window_bg);
-    p2_title.set_text_color(0xFFFFFFFF);
-    p2_title.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page2.add(&p2_title);
+    p2_title.set_position(0, 30); p2_title.set_size(WIN_W, 34); p2_title.set_font_size(24);
+    p2_title.set_color(tc.window_bg); p2_title.set_text_color(0xFFFFFFFF);
+    p2_title.set_text_align(ui::TEXT_ALIGN_CENTER); page2.add(&p2_title);
 
     let p2_desc = ui::Label::new("Select the disk where you would like to install anyOS.");
-    p2_desc.set_position(0, 68);
-    p2_desc.set_size(WIN_W, 20);
-    p2_desc.set_font_size(13);
-    p2_desc.set_color(tc.window_bg);
-    p2_desc.set_text_color(0xFF999999);
-    p2_desc.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page2.add(&p2_desc);
+    p2_desc.set_position(0, 68); p2_desc.set_size(WIN_W, 20); p2_desc.set_font_size(13);
+    p2_desc.set_color(tc.window_bg); p2_desc.set_text_color(0xFF999999);
+    p2_desc.set_text_align(ui::TEXT_ALIGN_CENTER); page2.add(&p2_desc);
 
     let disk_container = ui::View::new();
-    disk_container.set_position(cx - 280, 110);
-    disk_container.set_size(560, 260);
-    disk_container.set_color(tc.window_bg);
-    page2.add(&disk_container);
+    disk_container.set_position(cx - 280, 110); disk_container.set_size(560, 260);
+    disk_container.set_color(tc.window_bg); page2.add(&disk_container);
 
-    let disk_grid = ui::DataGrid::new(1, 1);
-    disk_grid.set_visible(false);
-    page2.add(&disk_grid);
+    let disk_grid = ui::DataGrid::new(1, 1); disk_grid.set_visible(false); page2.add(&disk_grid);
 
-    let p2_warn = ui::Label::new(
-        "The selected disk will be erased and anyOS will be installed."
-    );
-    p2_warn.set_position(0, 390);
-    p2_warn.set_size(WIN_W, 16);
-    p2_warn.set_font_size(11);
-    p2_warn.set_color(tc.window_bg);
-    p2_warn.set_text_color(0xFF777777);
-    p2_warn.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page2.add(&p2_warn);
+    let p2_warn = ui::Label::new("The selected disk will be erased and anyOS will be installed.");
+    p2_warn.set_position(0, 390); p2_warn.set_size(WIN_W, 16); p2_warn.set_font_size(11);
+    p2_warn.set_color(tc.window_bg); p2_warn.set_text_color(0xFF777777);
+    p2_warn.set_text_align(ui::TEXT_ALIGN_CENTER); page2.add(&p2_warn);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Page 3: Set Root Password
     // ═══════════════════════════════════════════════════════════════════════
-
-    let page3 = ui::View::new();
-    page3.set_dock(DOCK_FILL);
-    page3.set_color(tc.window_bg);
-    page3.set_visible(false);
-    win.add(&page3);
+    let page3 = ui::View::new(); page3.set_dock(DOCK_FILL); page3.set_color(tc.window_bg);
+    page3.set_visible(false); win.add(&page3);
 
     let pw_title = ui::Label::new("Create a Root Password");
-    pw_title.set_position(0, 30);
-    pw_title.set_size(WIN_W, 34);
-    pw_title.set_font_size(24);
-    pw_title.set_color(tc.window_bg);
-    pw_title.set_text_color(0xFFFFFFFF);
-    pw_title.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page3.add(&pw_title);
+    pw_title.set_position(0, 30); pw_title.set_size(WIN_W, 34); pw_title.set_font_size(24);
+    pw_title.set_color(tc.window_bg); pw_title.set_text_color(0xFFFFFFFF);
+    pw_title.set_text_align(ui::TEXT_ALIGN_CENTER); page3.add(&pw_title);
 
-    let pw_desc = ui::Label::new(
-        "You will need this password to log in after the installation."
-    );
-    pw_desc.set_position(0, 68);
-    pw_desc.set_size(WIN_W, 20);
-    pw_desc.set_font_size(13);
-    pw_desc.set_color(tc.window_bg);
-    pw_desc.set_text_color(0xFF999999);
-    pw_desc.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page3.add(&pw_desc);
+    let pw_desc = ui::Label::new("You will need this password to log in after the installation.");
+    pw_desc.set_position(0, 68); pw_desc.set_size(WIN_W, 20); pw_desc.set_font_size(13);
+    pw_desc.set_color(tc.window_bg); pw_desc.set_text_color(0xFF999999);
+    pw_desc.set_text_align(ui::TEXT_ALIGN_CENTER); page3.add(&pw_desc);
 
     let field_w: u32 = 360;
     let field_x = cx - (field_w as i32 / 2);
 
     let pw_label1 = ui::Label::new("Password");
-    pw_label1.set_position(field_x, 130);
-    pw_label1.set_size(field_w, 18);
-    pw_label1.set_font_size(13);
-    pw_label1.set_color(tc.window_bg);
-    pw_label1.set_text_color(0xFFCCCCCC);
-    page3.add(&pw_label1);
+    pw_label1.set_position(field_x, 130); pw_label1.set_size(field_w, 18); pw_label1.set_font_size(13);
+    pw_label1.set_color(tc.window_bg); pw_label1.set_text_color(0xFFCCCCCC); page3.add(&pw_label1);
 
     let pw_field1 = ui::TextField::new();
-    pw_field1.set_position(field_x, 152);
-    pw_field1.set_size(field_w, 32);
-    pw_field1.set_font_size(14);
-    pw_field1.set_password_mode(true);
-    pw_field1.set_placeholder("Enter password");
-    pw_field1.set_max_length(64);
-    page3.add(&pw_field1);
+    pw_field1.set_position(field_x, 152); pw_field1.set_size(field_w, 32); pw_field1.set_font_size(14);
+    pw_field1.set_password_mode(true); pw_field1.set_placeholder("Enter password");
+    pw_field1.set_max_length(64); page3.add(&pw_field1);
 
     let pw_label2 = ui::Label::new("Confirm Password");
-    pw_label2.set_position(field_x, 204);
-    pw_label2.set_size(field_w, 18);
-    pw_label2.set_font_size(13);
-    pw_label2.set_color(tc.window_bg);
-    pw_label2.set_text_color(0xFFCCCCCC);
-    page3.add(&pw_label2);
+    pw_label2.set_position(field_x, 204); pw_label2.set_size(field_w, 18); pw_label2.set_font_size(13);
+    pw_label2.set_color(tc.window_bg); pw_label2.set_text_color(0xFFCCCCCC); page3.add(&pw_label2);
 
     let pw_field2 = ui::TextField::new();
-    pw_field2.set_position(field_x, 226);
-    pw_field2.set_size(field_w, 32);
-    pw_field2.set_font_size(14);
-    pw_field2.set_password_mode(true);
-    pw_field2.set_placeholder("Confirm password");
-    pw_field2.set_max_length(64);
-    page3.add(&pw_field2);
+    pw_field2.set_position(field_x, 226); pw_field2.set_size(field_w, 32); pw_field2.set_font_size(14);
+    pw_field2.set_password_mode(true); pw_field2.set_placeholder("Confirm password");
+    pw_field2.set_max_length(64); page3.add(&pw_field2);
 
     let pw_error_label = ui::Label::new("");
-    pw_error_label.set_position(0, 274);
-    pw_error_label.set_size(WIN_W, 18);
-    pw_error_label.set_font_size(12);
-    pw_error_label.set_color(tc.window_bg);
-    pw_error_label.set_text_color(0xFFFF6B6B);
-    pw_error_label.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page3.add(&pw_error_label);
+    pw_error_label.set_position(0, 274); pw_error_label.set_size(WIN_W, 18); pw_error_label.set_font_size(12);
+    pw_error_label.set_color(tc.window_bg); pw_error_label.set_text_color(0xFFFF6B6B);
+    pw_error_label.set_text_align(ui::TEXT_ALIGN_CENTER); page3.add(&pw_error_label);
 
     let pw_hint = ui::Label::new("The root account has full system access. Choose a strong password.");
-    pw_hint.set_position(0, 320);
-    pw_hint.set_size(WIN_W, 16);
-    pw_hint.set_font_size(11);
-    pw_hint.set_color(tc.window_bg);
-    pw_hint.set_text_color(0xFF777777);
-    pw_hint.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page3.add(&pw_hint);
+    pw_hint.set_position(0, 320); pw_hint.set_size(WIN_W, 16); pw_hint.set_font_size(11);
+    pw_hint.set_color(tc.window_bg); pw_hint.set_text_color(0xFF777777);
+    pw_hint.set_text_align(ui::TEXT_ALIGN_CENTER); page3.add(&pw_hint);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Page 4: Installation Progress + Completion
     // ═══════════════════════════════════════════════════════════════════════
-
-    let page4 = ui::View::new();
-    page4.set_dock(DOCK_FILL);
-    page4.set_color(tc.window_bg);
-    page4.set_visible(false);
-    win.add(&page4);
+    let page4 = ui::View::new(); page4.set_dock(DOCK_FILL); page4.set_color(tc.window_bg);
+    page4.set_visible(false); win.add(&page4);
 
     let p4_title = ui::Label::new("Installing anyOS...");
-    p4_title.set_position(0, 30);
-    p4_title.set_size(WIN_W, 34);
-    p4_title.set_font_size(24);
-    p4_title.set_color(tc.window_bg);
-    p4_title.set_text_color(0xFFFFFFFF);
-    p4_title.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page4.add(&p4_title);
+    p4_title.set_position(0, 30); p4_title.set_size(WIN_W, 34); p4_title.set_font_size(24);
+    p4_title.set_color(tc.window_bg); p4_title.set_text_color(0xFFFFFFFF);
+    p4_title.set_text_align(ui::TEXT_ALIGN_CENTER); page4.add(&p4_title);
 
     let phase_label = ui::Label::new("Preparing...");
-    phase_label.set_position(0, 78);
-    phase_label.set_size(WIN_W, 22);
-    phase_label.set_font_size(14);
-    phase_label.set_color(tc.window_bg);
-    phase_label.set_text_color(0xFFCCCCCC);
-    phase_label.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page4.add(&phase_label);
+    phase_label.set_position(0, 78); phase_label.set_size(WIN_W, 22); phase_label.set_font_size(14);
+    phase_label.set_color(tc.window_bg); phase_label.set_text_color(0xFFCCCCCC);
+    phase_label.set_text_align(ui::TEXT_ALIGN_CENTER); page4.add(&phase_label);
 
     let bar_w = 560u32;
     let progress_card = ui::Card::new();
-    progress_card.set_position(cx - (bar_w as i32 / 2) - 10, 116);
-    progress_card.set_size(bar_w + 20, 44);
+    progress_card.set_position(cx - (bar_w as i32 / 2) - 10, 116); progress_card.set_size(bar_w + 20, 44);
     page4.add(&progress_card);
 
     let progress_bar = ui::ProgressBar::new(0);
-    progress_bar.set_position(10, 12);
-    progress_bar.set_size(bar_w, 20);
+    progress_bar.set_position(10, 12); progress_bar.set_size(bar_w, 20);
     progress_card.add(&progress_bar);
 
     let status_label = ui::Label::new("");
-    status_label.set_position(0, 175);
-    status_label.set_size(WIN_W, 18);
-    status_label.set_font_size(12);
-    status_label.set_color(tc.window_bg);
-    status_label.set_text_color(0xFF888888);
-    status_label.set_text_align(ui::TEXT_ALIGN_CENTER);
-    page4.add(&status_label);
-
-    let btn_details = ui::Button::new("Show Details");
-    btn_details.set_position(cx - 60, 204);
-    btn_details.set_size(120, 26);
-    page4.add(&btn_details);
-
-    let content_w = bar_w + 20;
-    let details_card = ui::Card::new();
-    details_card.set_position(cx - (content_w as i32 / 2), 240);
-    details_card.set_size(content_w, 130);
-    details_card.set_visible(false);
-    page4.add(&details_card);
-
-    let details_log = ui::TextArea::new();
-    details_log.set_position(4, 4);
-    details_log.set_size(content_w - 8, 122);
-    details_log.set_font_size(11);
-    details_card.add(&details_log);
+    status_label.set_position(0, 175); status_label.set_size(WIN_W, 18); status_label.set_font_size(12);
+    status_label.set_color(tc.window_bg); status_label.set_text_color(0xFF888888);
+    status_label.set_text_align(ui::TEXT_ALIGN_CENTER); page4.add(&status_label);
 
     let complete_label = ui::Label::new("Installation Complete");
-    complete_label.set_position(0, 200);
-    complete_label.set_size(WIN_W, 36);
-    complete_label.set_font_size(22);
-    complete_label.set_color(tc.window_bg);
-    complete_label.set_text_color(0xFF34C759);
-    complete_label.set_text_align(ui::TEXT_ALIGN_CENTER);
-    complete_label.set_visible(false);
+    complete_label.set_position(0, 200); complete_label.set_size(WIN_W, 36); complete_label.set_font_size(22);
+    complete_label.set_color(tc.window_bg); complete_label.set_text_color(0xFF34C759);
+    complete_label.set_text_align(ui::TEXT_ALIGN_CENTER); complete_label.set_visible(false);
     page4.add(&complete_label);
 
-    let complete_sub = ui::Label::new(
-        "anyOS has been installed successfully. Please restart your computer to complete the setup."
-    );
-    complete_sub.set_position(0, 244);
-    complete_sub.set_size(WIN_W, 44);
-    complete_sub.set_font_size(14);
-    complete_sub.set_color(tc.window_bg);
-    complete_sub.set_text_color(0xFFAAAAAA);
-    complete_sub.set_text_align(ui::TEXT_ALIGN_CENTER);
-    complete_sub.set_visible(false);
+    let complete_sub = ui::Label::new("anyOS has been installed successfully. Please restart your computer to complete the setup.");
+    complete_sub.set_position(0, 244); complete_sub.set_size(WIN_W, 44); complete_sub.set_font_size(14);
+    complete_sub.set_color(tc.window_bg); complete_sub.set_text_color(0xFFAAAAAA);
+    complete_sub.set_text_align(ui::TEXT_ALIGN_CENTER); complete_sub.set_visible(false);
     page4.add(&complete_sub);
 
     let btn_reboot = ui::Button::new("Restart");
-    btn_reboot.set_position(cx - 65, 310);
-    btn_reboot.set_size(130, 36);
-    btn_reboot.set_color(ACCENT);
-    btn_reboot.set_text_color(0xFFFFFFFF);
-    btn_reboot.set_visible(false);
-    page4.add(&btn_reboot);
+    btn_reboot.set_position(cx - 65, 310); btn_reboot.set_size(130, 36);
+    btn_reboot.set_color(ACCENT); btn_reboot.set_text_color(0xFFFFFFFF);
+    btn_reboot.set_visible(false); page4.add(&btn_reboot);
 
     let progress_card_id = Widget::id(&progress_card);
     let complete_label_id = Widget::id(&complete_label);
@@ -773,41 +603,18 @@ fn main() {
     let _ = &disk_grid;
 
     set_app(InstallerApp {
-        win,
-        page0, page1, page2, page3, page4,
-        progress_card_id,
-        complete_label_id,
-        complete_sub_id,
-        disk_grid,
-        disk_container_id: disk_container.id(),
-        disk_card_ids: Vec::new(),
-        pw_field1,
-        pw_field2,
-        pw_error_label,
-        progress_bar,
-        phase_label,
-        status_label,
-        btn_reboot,
-        btn_details,
-        details_card,
-        details_log,
-        details_text: String::new(),
-        btn_back_id,
-        btn_next_id,
-        disks,
-        selected_disk: None,
-        current_step: 0,
-        timer_id: 0,
-        details_visible: false,
-        last_copy_seq: 0,
-        license_accepted: false,
+        win, page0, page1, page2, page3, page4,
+        progress_card_id, complete_label_id, complete_sub_id,
+        disk_grid, disk_container_id: disk_container.id(), disk_card_ids: Vec::new(),
+        pw_field1, pw_field2, pw_error_label,
+        progress_bar, phase_label, status_label, btn_reboot,
+        btn_back_id, btn_next_id,
+        disks, selected_disk: None, current_step: 0, timer_id: 0,
+        last_log_seq: 0, license_accepted: false,
+        log_text: String::new(), log_win: None, log_textarea: None,
     });
 
-    {
-        let disks_copy = detect_disks();
-        populate_disk_cards(&disks_copy);
-        app().disks = disks_copy;
-    }
+    { let d = detect_disks(); populate_disk_cards(&d); app().disks = d; }
 
     show_page(0);
 
@@ -816,102 +623,54 @@ fn main() {
         ui::MessageBox::show(ui::MessageBoxType::Warning,
             "This system was booted in UEFI mode.\n\n\
              anyOS currently only supports BIOS/MBR installation.\n\
-             Please reboot in Legacy/CSM mode to install anyOS.",
-            None);
+             Please reboot in Legacy/CSM mode to install anyOS.", None);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Event Handlers
     // ═══════════════════════════════════════════════════════════════════════
-
-    app().disk_grid.on_selection_changed(|e| {
-        app().selected_disk = Some(e.index as usize);
-    });
-
-    // Password field validation on every keystroke
+    app().disk_grid.on_selection_changed(|e| { app().selected_disk = Some(e.index as usize); });
     app().pw_field1.on_text_changed(|_| { validate_password(); });
     app().pw_field2.on_text_changed(|_| { validate_password(); });
 
     btn_next.on_click(move |_| {
         let a = app();
         match a.current_step {
-            0 => {
-                // Welcome → License
-                show_page(1);
-            }
-            1 => {
-                // License → Disk Selection
-                a.license_accepted = true;
-                show_page(2);
-            }
+            0 => show_page(1),
+            1 => { a.license_accepted = true; show_page(2); }
             2 => {
-                // Disk Selection → Password Setup
                 let idx = match a.selected_disk {
                     Some(i) if i < a.disks.len() => i,
-                    _ => {
-                        ui::MessageBox::show(ui::MessageBoxType::Warning,
-                            "Please select a target.", None);
-                        return;
-                    }
+                    _ => { ui::MessageBox::show(ui::MessageBoxType::Warning, "Please select a target.", None); return; }
                 };
-
-                let disk = &a.disks[idx];
-
-                // Check for existing OS on the target disk
-                if let Some(os_name) = detect_existing_os(disk.device_id) {
-                    let warn_msg = format!(
+                if let Some(os_name) = detect_existing_os(a.disks[idx].device_id) {
+                    let msg = format!(
                         "The selected disk appears to contain {}.\n\
-                         Installing anyOS will erase all data on this disk.\n\n\
-                         Do you want to continue?",
-                        os_name
-                    );
-                    ui::MessageBox::show(ui::MessageBoxType::Warning, &warn_msg, Some("Continue"));
+                         Installing anyOS will erase all data.\n\nDo you want to continue?", os_name);
+                    ui::MessageBox::show(ui::MessageBoxType::Warning, &msg, Some("Continue"));
                 }
-
                 show_page(3);
             }
             3 => {
-                // Password Setup → Confirm + Install
                 let mut buf1 = [0u8; 128];
                 let len1 = a.pw_field1.get_text(&mut buf1) as usize;
                 let pw = core::str::from_utf8(&buf1[..len1]).unwrap_or("");
-
                 if pw.is_empty() || pw.len() < 4 {
                     a.pw_error_label.set_text("Password must be at least 4 characters.");
-                    a.pw_error_label.set_text_color(0xFFFF6B6B);
-                    return;
+                    a.pw_error_label.set_text_color(0xFFFF6B6B); return;
                 }
-
-                // Store password for worker thread
                 store_root_password(pw);
 
                 let idx = a.selected_disk.unwrap();
                 let disk = &a.disks[idx];
-                let is_partition = disk.partition_index.is_some();
-
-                // Build confirmation message
                 let target_name = if let Some(pi) = disk.partition_index {
-                    format!("Disk {} Partition {} ({})",
-                        disk.disk_id, pi + 1, format_size(disk.size_sectors))
-                } else {
-                    format!("Disk {} ({})",
-                        disk.disk_id, format_size(disk.size_sectors))
-                };
-                let msg = format!(
-                    "All data on {} will be permanently erased \
-                     and anyOS will be installed.",
-                    target_name
-                );
+                    format!("Disk {} Partition {} ({})", disk.disk_id, pi + 1, format_size(disk.size_sectors))
+                } else { format!("Disk {} ({})", disk.disk_id, format_size(disk.size_sectors)) };
+                let msg = format!("All data on {} will be permanently erased and anyOS will be installed.", target_name);
                 ui::MessageBox::show(ui::MessageBoxType::Warning, &msg, Some("Install"));
 
                 INSTALL_DISK_ID.store(disk.device_id as u32, Ordering::Release);
-                if is_partition {
-                    // Install to existing partition (format only, no partitioning)
-                    INSTALL_MODE.store(1, Ordering::Release);
-                } else {
-                    // Whole disk — create partition table + format
-                    INSTALL_MODE.store(0, Ordering::Release);
-                }
+                INSTALL_MODE.store(if disk.partition_index.is_some() { 1 } else { 0 }, Ordering::Release);
                 start_install();
             }
             _ => {}
@@ -919,20 +678,7 @@ fn main() {
     });
 
     btn_back.on_click(move |_| {
-        let a = app();
-        match a.current_step {
-            1 => show_page(0),
-            2 => show_page(1),
-            3 => show_page(2),
-            _ => {}
-        }
-    });
-
-    app().btn_details.on_click(|_| {
-        let a = app();
-        a.details_visible = !a.details_visible;
-        a.details_card.set_visible(a.details_visible);
-        a.btn_details.set_text(if a.details_visible { "Hide Details" } else { "Show Details" });
+        match app().current_step { 1 => show_page(0), 2 => show_page(1), 3 => show_page(2), _ => {} }
     });
 
     app().btn_reboot.on_click(|_| { process::reboot(); });

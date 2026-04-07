@@ -627,6 +627,8 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libini_client",
+ "libzip_client",
 ]
 
 [[package]]
@@ -729,6 +731,14 @@ dependencies = [
 [[package]]
 name = "libimage_client"
 version = "0.1.0"
+
+[[package]]
+name = "libini_client"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+]
 
 [[package]]
 name = "libjs"

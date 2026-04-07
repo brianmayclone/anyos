@@ -46,7 +46,7 @@ impl Iso9660Fs {
         let mut buf = vec![0u8; ISO_BLOCK_SIZE];
 
         for lba in 16u32..32 {
-            if !read_cd_block(lba, &mut buf) {
+            if !read_cd_blocks(lba, 1, &mut buf) {
                 return Err(FsError::IoError);
             }
 
@@ -104,10 +104,8 @@ impl Iso9660Fs {
         let blocks_needed = (extent_size as usize + ISO_BLOCK_SIZE - 1) / ISO_BLOCK_SIZE;
         let mut data = vec![0u8; blocks_needed * ISO_BLOCK_SIZE];
 
-        for i in 0..blocks_needed {
-            if !read_cd_block(extent_lba + i as u32, &mut data[i * ISO_BLOCK_SIZE..]) {
-                return Err(FsError::IoError);
-            }
+        if !read_cd_blocks(extent_lba, blocks_needed as u32, &mut data) {
+            return Err(FsError::IoError);
         }
 
         let mut records = Vec::new();
@@ -226,26 +224,49 @@ impl Iso9660Fs {
         let block_start = offset as usize / ISO_BLOCK_SIZE;
         let offset_in_block = offset as usize % ISO_BLOCK_SIZE;
 
-        let mut block_buf = vec![0u8; ISO_BLOCK_SIZE];
         let mut bytes_read = 0usize;
         let mut cur_block = block_start;
-        let mut cur_offset = offset_in_block;
 
-        while bytes_read < to_read {
-            if !read_cd_block(extent_lba + cur_block as u32, &mut block_buf) {
+        // Handle first partial block (if offset is not block-aligned)
+        if offset_in_block != 0 {
+            let mut block_buf = [0u8; ISO_BLOCK_SIZE];
+            if !read_cd_blocks(extent_lba + cur_block as u32, 1, &mut block_buf) {
+                return Err(FsError::IoError);
+            }
+            let available = ISO_BLOCK_SIZE - offset_in_block;
+            let to_copy = available.min(to_read);
+            buf[..to_copy].copy_from_slice(&block_buf[offset_in_block..offset_in_block + to_copy]);
+            bytes_read += to_copy;
+            cur_block += 1;
+        }
+
+        // Read remaining full blocks directly into destination buffer (up to 32 at a time)
+        while bytes_read + ISO_BLOCK_SIZE <= to_read {
+            let blocks_left = (to_read - bytes_read) / ISO_BLOCK_SIZE;
+            let batch = blocks_left.min(32); // AHCI ATAPI supports up to 32 CD blocks per transfer
+            let batch_bytes = batch * ISO_BLOCK_SIZE;
+            if !read_cd_blocks(extent_lba + cur_block as u32, batch as u32, &mut buf[bytes_read..bytes_read + batch_bytes]) {
                 if bytes_read > 0 {
                     return Ok(bytes_read);
                 }
                 return Err(FsError::IoError);
             }
+            bytes_read += batch_bytes;
+            cur_block += batch;
+        }
 
-            let available = ISO_BLOCK_SIZE - cur_offset;
-            let to_copy = available.min(to_read - bytes_read);
-            buf[bytes_read..bytes_read + to_copy]
-                .copy_from_slice(&block_buf[cur_offset..cur_offset + to_copy]);
-            bytes_read += to_copy;
-            cur_block += 1;
-            cur_offset = 0;
+        // Handle last partial block
+        if bytes_read < to_read {
+            let mut block_buf = [0u8; ISO_BLOCK_SIZE];
+            if !read_cd_blocks(extent_lba + cur_block as u32, 1, &mut block_buf) {
+                if bytes_read > 0 {
+                    return Ok(bytes_read);
+                }
+                return Err(FsError::IoError);
+            }
+            let remainder = to_read - bytes_read;
+            buf[bytes_read..bytes_read + remainder].copy_from_slice(&block_buf[..remainder]);
+            bytes_read += remainder;
         }
 
         Ok(bytes_read)
@@ -311,23 +332,24 @@ fn iso_name_to_string(bytes: &[u8]) -> String {
     result
 }
 
-/// Read a single 2048-byte CD block from USB CDROM, AHCI ATAPI, or IDE ATAPI.
+/// Read `count` 2048-byte CD blocks starting at `lba` into `buf`.
+/// Uses USB CDROM, AHCI ATAPI, or IDE ATAPI (whichever is available).
 #[cfg(target_arch = "x86_64")]
-fn read_cd_block(lba: u32, buf: &mut [u8]) -> bool {
+fn read_cd_blocks(lba: u32, count: u32, buf: &mut [u8]) -> bool {
     // Try USB CDROM first (via storage I/O override)
     if let Some(disk_id) = crate::drivers::usb::storage::first_cdrom_disk_id() {
-        return crate::drivers::storage::read_via_override(disk_id, lba, 1, buf);
+        return crate::drivers::storage::read_via_override(disk_id, lba, count, buf);
     }
     // Try AHCI ATAPI CD-ROM (e.g. CoreVM, modern QEMU)
     if crate::drivers::storage::ahci::atapi_is_present() {
-        return crate::drivers::storage::ahci::read_cd_sectors(lba, 1, buf);
+        return crate::drivers::storage::ahci::read_cd_sectors(lba, count, buf);
     }
     // Fall back to IDE ATAPI CD-ROM
-    crate::drivers::storage::atapi::read_sectors(lba, 1, buf)
+    crate::drivers::storage::atapi::read_sectors(lba, count, buf)
 }
 
 /// ARM64 stub: no CD-ROM support yet.
 #[cfg(target_arch = "aarch64")]
-fn read_cd_block(_lba: u32, _buf: &mut [u8]) -> bool {
+fn read_cd_blocks(_lba: u32, _count: u32, _buf: &mut [u8]) -> bool {
     false
 }

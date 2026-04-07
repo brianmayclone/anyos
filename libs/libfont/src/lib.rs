@@ -6,7 +6,7 @@
 //! Provides font loading, glyph rasterization (greyscale + subpixel LCD),
 //! text measurement, and rendering into ARGB pixel buffers.
 //!
-//! System fonts are embedded in .rodata via include_bytes!().
+//! System fonts are loaded from /System/fonts/ at runtime.
 
 #![cfg_attr(not(feature = "host"), no_std)]
 #![cfg_attr(not(feature = "host"), no_main)]
@@ -29,15 +29,24 @@ pub(crate) mod png_decode;
 pub(crate) mod font_manager;
 pub(crate) mod brotli;
 pub(crate) mod woff2;
+#[cfg(not(feature = "host"))]
+pub(crate) mod fontd_client;
 
-// ── Embedded system fonts (.rodata — shared across all processes) ────
+// ── System font paths (loaded at runtime via fontd or disk fallback) ────
 
-pub(crate) static FONT_SFPRO: &[u8] = include_bytes!("../../../sysroot/System/fonts/sfpro.ttf");
-pub(crate) static FONT_SFPRO_BOLD: &[u8] = include_bytes!("../../../sysroot/System/fonts/sfpro-bold.ttf");
-pub(crate) static FONT_SFPRO_THIN: &[u8] = include_bytes!("../../../sysroot/System/fonts/sfpro-thin.ttf");
-pub(crate) static FONT_SFPRO_ITALIC: &[u8] = include_bytes!("../../../sysroot/System/fonts/sfpro-italic.ttf");
-pub(crate) static FONT_ANDALE_MONO: &[u8] = include_bytes!("../../../sysroot/System/fonts/andale-mono.ttf");
-pub(crate) static FONT_EMOJI: &[u8] = include_bytes!("../../../sysroot/System/fonts/NotoColorEmoji.ttf");
+const FONT_PATHS: [&[u8]; 6] = [
+    b"/System/fonts/sfpro.ttf",
+    b"/System/fonts/sfpro-bold.ttf",
+    b"/System/fonts/sfpro-thin.ttf",
+    b"/System/fonts/sfpro-italic.ttf",
+    b"/System/fonts/andale-mono.ttf",
+    b"/System/fonts/NotoColorEmoji.ttf",
+];
+
+/// Get the full disk path for a system font by ID.
+pub(crate) fn font_paths_by_id(id: usize) -> &'static [u8] {
+    if id < FONT_PATHS.len() { FONT_PATHS[id] } else { b"" }
+}
 
 // ── Public API (used directly on host, or via dl_sym on anyOS) ────────
 

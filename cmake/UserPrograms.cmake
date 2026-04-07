@@ -402,6 +402,7 @@ add_shared_lib(libanyui ${CMAKE_SOURCE_DIR}/libs/libanyui)
 add_shared_lib(libfont ${CMAKE_SOURCE_DIR}/libs/libfont)
 add_shared_lib(libdb ${CMAKE_SOURCE_DIR}/libs/libdb)
 add_shared_lib(libzip ${CMAKE_SOURCE_DIR}/libs/libzip)
+add_shared_lib(libini ${CMAKE_SOURCE_DIR}/libs/libini)
 add_shared_lib(libsvg ${CMAKE_SOURCE_DIR}/libs/libsvg)
 add_shared_lib(libgl ${CMAKE_SOURCE_DIR}/libs/libgl)
 add_shared_lib(libm ${CMAKE_SOURCE_DIR}/libs/libm)
@@ -728,6 +729,37 @@ add_app(runner       ${CMAKE_SOURCE_DIR}/apps/runner        "Runner")
 # ============================================================
 # Session host, Desktop shell, Crash dialog
 # ============================================================
+
+# fontd — Font server daemon (standalone workspace, kernel target)
+set(FONTD_SRC_DIR ${CMAKE_SOURCE_DIR}/system/fontd)
+set(FONTD_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/fontd.elf")
+add_custom_command(
+  OUTPUT ${FONTD_ELF}
+  COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
+    ${CARGO_EXECUTABLE} build --release --quiet
+    --manifest-path ${FONTD_SRC_DIR}/Cargo.toml
+    --target ${KERNEL_TARGET_JSON}
+    --target-dir ${CMAKE_BINARY_DIR}/kernel
+  DEPENDS
+    ${FONTD_SRC_DIR}/Cargo.toml
+    ${FONTD_SRC_DIR}/build.rs
+    ${FONTD_SRC_DIR}/src/main.rs
+    ${FONTD_SRC_DIR}/src/cache.rs
+    ${FONTD_SRC_DIR}/src/loader.rs
+    ${FONTD_SRC_DIR}/src/protocol.rs
+    ${STDLIB_DEPS}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  COMMENT "Building system program: fontd"
+)
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/fontd
+  COMMAND ${ANYELF_EXECUTABLE} bin
+    ${FONTD_ELF}
+    ${SYSROOT_DIR}/System/fontd
+  DEPENDS ${FONTD_ELF} ${ANYELF_EXECUTABLE}
+  COMMENT "Converting fontd ELF to flat binary"
+)
+list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/fontd)
 
 # Sessionhost (standalone workspace, kernel target)
 set(SESSIONHOST_SRC_DIR ${CMAKE_SOURCE_DIR}/system/sessionhost)

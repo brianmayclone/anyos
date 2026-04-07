@@ -7,7 +7,94 @@ The **libfont** shared library provides TrueType font loading and text rendering
 **Exports:** 9
 **Client crate:** `libfont_client` (uses `dynlink::dl_open` / `dl_sym`)
 
-System fonts (SF Pro family + Andale Mono, ~17 MiB) are embedded in `.rodata` via `include_bytes!()`. Since `.rodata` pages are shared read-only across all processes, the font data exists once in physical RAM — zero disk I/O at init, zero per-process memory duplication.
+## fontd — Font Server Architecture
+
+System fonts are managed by the **fontd** daemon (`system/fontd/`). fontd loads TTF files from `/System/fonts/` into shared memory (SHM) on demand. All processes share the same physical font data pages — fonts are loaded exactly **once** from disk regardless of how many processes use them.
+
+### Boot sequence
+
+1. **Compositor spawns fontd** before calling `libfont_client::init()`
+2. **Compositor subscribes** to the `"fontd"` event channel before spawning fontd (avoids race)
+3. **fontd creates** the `"fontd"` channel and emits `EVT_FONTD_READY` (0x6000)
+4. **Compositor receives** the ready signal, then calls `font_init()`
+5. **`font_init()`** requests sfpro.ttf and andale-mono.ttf from fontd (immediate load)
+6. **Bold, thin, italic, emoji** are registered as lazy — loaded on first use
+
+### Font loading flow
+
+```
+Client process                    fontd
+     |                              |
+     |--- CMD_LOAD_BY_NAME -------->|   (filename in SHM, e.g. "sfpro.ttf")
+     |                              |
+     |                         [check cache]
+     |                              |--- cache hit: return existing SHM ID
+     |                              |--- cache miss: read from /System/fonts/,
+     |                              |    create SHM, copy data, cache it
+     |                              |
+     |<-- EVT_FONT_READY ----------|   (shm_id, data_size)
+     |                              |
+     |--- shm_map(shm_id) -------> kernel
+     |<-- virtual address ---------|
+     |                              |
+     | TtfFont::parse_static(data)  |   (zero-copy, data lives in SHM)
+```
+
+### fontd IPC Protocol (event channel: `"fontd"`)
+
+#### CMD_LOAD_BY_NAME (0x6001)
+Load a system font by filename from `/System/fonts/`.
+
+| Field | Description |
+|-------|-------------|
+| evt[0] | `0x6001` |
+| evt[1] | requester sub_id (for directed response) |
+| evt[2] | shm_id containing filename (null-terminated, e.g. `"sfpro.ttf\0"`) |
+
+#### CMD_LOAD_BY_PATH (0x6003)
+Load a font by absolute path (for user-installed fonts).
+
+| Field | Description |
+|-------|-------------|
+| evt[0] | `0x6003` |
+| evt[1] | requester sub_id |
+| evt[2] | shm_id containing full path (null-terminated) |
+
+#### EVT_FONT_READY (0x6002) — Response
+Sent back to the requester after loading.
+
+| Field | Description |
+|-------|-------------|
+| evt[0] | `0x6002` |
+| evt[1] | shm_id with font data (0 = failed) |
+| evt[2] | data size in bytes |
+
+#### CMD_LIST_FONTS (0x6005)
+List all available system fonts.
+
+| Field | Description |
+|-------|-------------|
+| evt[0] | `0x6005` |
+| evt[1] | requester sub_id |
+
+Response: `EVT_FONT_LIST` (0x6006) with shm_id containing newline-separated filenames.
+
+### fontd source structure
+
+```
+system/fontd/
+├── src/
+│   ├── main.rs       — Event loop, spawns cache, emits EVT_FONTD_READY
+│   ├── protocol.rs   — IPC command dispatch, SHM string I/O
+│   ├── cache.rs      — Path → SHM-ID cache (64 slots, lifetime of fontd)
+│   └── loader.rs     — Read font file from disk into SHM region
+├── build.rs
+└── Cargo.toml
+```
+
+### Fallback behavior
+
+If fontd is not running (e.g. early boot, host build), libfont falls back to loading fonts directly from disk via `read_file("/System/fonts/...")`. This means the system is always functional, just slower without fontd because each process loads its own copy.
 
 ---
 
@@ -26,7 +113,7 @@ libfont_client = { path = "../../libs/libfont_client" }
 ```rust
 use libfont_client as font;
 
-// Initialize (loads embedded system fonts, detects subpixel capability)
+// Initialize (connects to fontd, loads system fonts via SHM)
 font::init();
 
 // Measure text
@@ -43,7 +130,12 @@ font::draw_string_buf(&mut pixels, 200, 30, 0, 0, 0xFFFFFFFF, 0, 13, "Hello, Wor
 
 ### `init()`
 
-Initialize the font subsystem. Loads the `.so` via `dl_open("/Libraries/libfont.so")`, resolves all exported symbols, and calls `font_init()` which registers the embedded system fonts, initializes the gamma correction LUTs, and auto-detects LCD subpixel rendering capability based on GPU driver (enabled for VMware SVGA II).
+Initialize the font subsystem. Loads `libfont.so` via `dl_open`, resolves symbols, and calls `font_init()` which:
+1. Connects to the `"fontd"` event channel
+2. Requests sfpro.ttf (ID 0) and andale-mono.ttf (ID 4) immediately via SHM
+3. Registers bold, thin, italic, and emoji as lazy (loaded on first use)
+4. Falls back to direct disk loading if fontd is not available
+5. Initializes gamma correction LUTs and auto-detects subpixel capability
 
 Must be called once before any other font operations. Returns `true` on success.
 
@@ -53,11 +145,9 @@ During init, two 256-byte lookup tables are computed for size-adaptive gamma cor
 
 | Font Size | LUT | Effect |
 |-----------|-----|--------|
-| ≤ 14 px | Strong (`GAMMA_LUT_S`) | ~50% coverage boost for thin strokes — small text is clearly visible on dark backgrounds |
-| 15–24 px | Moderate (`GAMMA_LUT_M`) | ~33% boost — balanced readability without over-thickening |
-| > 24 px | Identity (no LUT) | Large text has sufficient stroke width, no correction needed |
-
-The gamma curve blends linear and square-root components using integer math (no floating point). The 256-byte LUT lives permanently in L1 cache — zero measurable performance overhead (one byte lookup per coverage sample).
+| ≤ 14 px | Strong (`GAMMA_LUT_S`) | ~50% coverage boost for thin strokes |
+| 15–24 px | Moderate (`GAMMA_LUT_M`) | ~33% boost — balanced readability |
+| > 24 px | Identity (no LUT) | Large text has sufficient stroke width |
 
 ---
 
@@ -70,7 +160,7 @@ Load a custom TTF font from a filesystem path (reads from disk).
 | path | `&str` | Filesystem path to `.ttf` file |
 | **Returns** | `Option<u32>` | Font ID on success, `None` on failure |
 
-Font IDs 0–5 are the embedded system fonts (see table below).
+Font IDs 0–5 are the system fonts (see table below).
 
 ---
 
@@ -83,7 +173,7 @@ Load a custom TTF font from raw byte data in memory (no disk I/O).
 | data | `&[u8]` | Raw TTF font file data |
 | **Returns** | `Option<u32>` | Font ID on success, `None` on failure |
 
-Useful for loading fonts from archives, network responses, or embedded resources without writing to disk first.
+Useful for loading fonts from archives, network responses, or embedded resources.
 
 ---
 
@@ -125,34 +215,17 @@ Render text into an ARGB8888 pixel buffer with alpha-blended anti-aliasing.
 | size | `u16` | Font size in pixels |
 | text | `&str` | Text string to render |
 
-When subpixel rendering is enabled, each glyph pixel is rendered with separate R/G/B coverage values for LCD-quality anti-aliasing.
-
 ---
 
-### `draw_string_buf_clipped(buf, buf_w, buf_h, x, y, color, font_id, size, text, clip_x, clip_y, clip_r, clip_b)`
+### `draw_string_buf_clipped(...)`
 
-Render text with clip rectangle. Same as `draw_string_buf` but only draws pixels within the specified clip region.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| buf | `*mut u32` | Target pixel buffer (ARGB8888) |
-| buf_w | `u32` | Buffer width in pixels |
-| buf_h | `u32` | Buffer height in pixels |
-| x, y | `i32` | Top-left position to start rendering |
-| color | `u32` | Text color (ARGB8888) |
-| font_id | `u32` | Font ID (0 = system font) |
-| size | `u16` | Font size in pixels |
-| text | `&str` | Text string to render |
-| clip_x, clip_y | `i32` | Clip rectangle left, top (pixels) |
-| clip_r, clip_b | `i32` | Clip rectangle right, bottom (pixels) |
-
-**Note:** This function is exported from `libfont.so` but has no wrapper in `libfont_client` — use the raw FFI export directly if clipped rendering is needed.
+Same as `draw_string_buf` but with clip rectangle (clip_x, clip_y, clip_r, clip_b).
 
 ---
 
 ### `line_height(font_id, size) -> u32`
 
-Get the line height for a font at a given size. Useful for multi-line text layout.
+Get the line height for a font at a given size.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -168,30 +241,50 @@ Override the auto-detected subpixel rendering setting.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| enabled | `bool` | `true` = enable LCD subpixel, `false` = greyscale only |
-
-Auto-detection on `init()`: enabled when VMware SVGA II is present (LCD monitors assumed), greyscale for Bochs VGA.
+| enabled | `bool` | `true` = LCD subpixel, `false` = greyscale only |
 
 ---
 
 ## System Fonts
 
-| ID | Font | File (embedded) | Usage |
-|----|------|-----------------|-------|
-| 0 | SF Pro | sfpro.ttf | Default UI text |
-| 1 | SF Pro Bold | sfpro-bold.ttf | Bold text, headers |
-| 2 | SF Pro Thin | sfpro-thin.ttf | Thin/light text |
-| 3 | SF Pro Italic | sfpro-italic.ttf | Italic text |
-| 4 | Andale Mono | andale-mono.ttf | Monospace (terminal, code editor) |
-| 5 | Noto Color Emoji | NotoColorEmoji.ttf | Emoji rendering |
+| ID | Font | File | Size | Loading |
+|----|------|------|------|---------|
+| 0 | SF Pro | sfpro.ttf | 5.9 MB | Immediate (via fontd SHM) |
+| 1 | SF Pro Bold | sfpro-bold.ttf | 3.4 MB | Lazy (on first use) |
+| 2 | SF Pro Thin | sfpro-thin.ttf | 3.4 MB | Lazy |
+| 3 | SF Pro Italic | sfpro-italic.ttf | 3.3 MB | Lazy |
+| 4 | Andale Mono | andale-mono.ttf | 108 KB | Immediate (via fontd SHM) |
+| 5 | Noto Color Emoji | NotoColorEmoji.ttf | 11 MB | Lazy |
 
-These fonts are compiled into `libfont.so`'s `.rodata` section and shared across all processes. No disk files are needed at runtime for system fonts.
+**Immediate fonts** (sfpro + mono) are loaded at startup so text rendering works without delay.
+**Lazy fonts** are loaded on first access — bold when bold text is first rendered, emoji when an emoji glyph is first encountered.
+
+All fonts are served from fontd via shared memory. Each font file is read from disk exactly once, regardless of how many processes use it.
 
 ## Architecture
 
-libfont uses two library formats:
+```
+                  ┌──────────┐
+                  │  fontd   │  (system daemon, started by compositor)
+                  │          │
+                  │ SHM pool │  sfpro.ttf → SHM #2
+                  │          │  andale-mono.ttf → SHM #4
+                  │          │  sfpro-bold.ttf → SHM #27 (lazy)
+                  └────┬─────┘
+                       │ IPC (event channel "fontd")
+          ┌────────────┼────────────┐
+          │            │            │
+    ┌─────┴─────┐ ┌───┴───┐ ┌─────┴─────┐
+    │Compositor │ │ Dock  │ │  Finder   │  ...
+    │           │ │       │ │           │
+    │ libfont.so│ │libfont│ │ libfont   │
+    │ (per-proc)│ │(.so)  │ │ (.so)     │
+    │           │ │       │ │           │
+    │ shm_map(2)│ │shm(2) │ │ shm(2)   │  ← same physical pages
+    └───────────┘ └───────┘ └───────────┘
+```
 
-- **libfont** (`libs/libfont/`) — the shared library itself, built as a `staticlib` and linked by `anyld` into an ELF64 `.so`. Exports 9 `#[no_mangle] pub extern "C"` symbols (the client wraps 8 of them; `draw_string_buf_clipped` is server-only).
-- **libfont_client** (`libs/libfont_client/`) — client wrapper that resolves symbols via `dynlink::dl_open("/Libraries/libfont.so")` + `dl_sym()`. Caches function pointers in a static `FontLib` struct.
-
-Other libraries (libanyui, uisys, stdlib) that need font rendering resolve libfont symbols directly via inline ELF parsing of the mapped `.so` at runtime.
+- **fontd**: Daemon that owns font SHM regions. Loads fonts from disk on first request, caches them for the lifetime of the process. Supports up to 64 cached fonts.
+- **libfont.so**: Per-process DLL. Each process has its own FontManager, glyph cache, and gamma LUTs, but font **data** is shared via SHM.
+- **libfont_client**: Thin wrapper crate that loads libfont.so and provides safe Rust types.
+- **libanyui.so**: Loads libfont.so internally for text rendering in controls. Triggers `ensure_init()` → `font_init()` on first text draw.

@@ -1,0 +1,15 @@
+LIBRARY libini
+EXPORTS
+    libini_parse
+    libini_close
+    libini_get
+    libini_get_u32
+    libini_get_i32
+    libini_get_bool
+    libini_get_hex
+    libini_has_section
+    libini_section_count
+    libini_section_name
+    libini_entry_count
+    libini_entry_key
+    libini_entry_value
