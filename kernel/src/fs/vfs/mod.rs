@@ -366,7 +366,6 @@ pub fn has_overlay() -> bool {
 
 /// Open a file by path with the given flags. Returns a file descriptor on success.
 pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
-    crate::debug_println!("  [VFS] open: path='{}' create={} write={} read={}", path, flags.create, flags.write, flags.read);
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -1177,7 +1176,6 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
 
 /// Read directory entries at a given path.
 pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
-    crate::debug_println!("  [VFS] read_dir: path='{}'", path);
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
@@ -1268,10 +1266,8 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
             return Err(FsError::NotADirectory);
         }
         let (cluster, _contiguous) = crate::fs::exfat::decode_inode(r.inode);
-        crate::serial_println!("[VFS] read_dir '{}': cluster={} contiguous={}", path, cluster, _contiguous);
         let mut entries = exfat.read_dir(cluster)?;
-        crate::serial_println!("[VFS] read_dir '{}': got {} entries", path, entries.len());
-
+        
         // Resolve symlink target types so file_type is transparent
         let dir_path = if path.ends_with('/') || path == "/" {
             String::from(path)
@@ -1386,8 +1382,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     use crate::fs::exfat::ExFatReadPlan;
     use crate::fs::fat::FileReadPlan;
     use crate::fs::ntfs::NtfsReadPlan;
-    crate::debug_println!("  [VFS] read_file_to_vec: path='{}'", path);
-
+   
     enum ReadPlan {
         Fat(FileReadPlan),
         ExFat(ExFatReadPlan),
@@ -1447,7 +1442,6 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     }
 
     // Phase 1: Under VFS lock — lookup + build read plan (no disk I/O)
-    crate::debug_println!("  [VFS] read_file_to_vec: phase1 lookup '{}'", path);
     let plan = {
         let vfs = VFS.lock();
         let state = vfs.as_ref().ok_or(FsError::IoError)?;
@@ -1456,7 +1450,6 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
             if r.file_type == FileType::Directory {
                 return Err(FsError::IsADirectory);
             }
-            crate::debug_println!("  [VFS] read_file_to_vec: inode={:#x} size={} building read plan", r.inode, r.size);
             ReadPlan::ExFat(exfat.get_file_read_plan(r.inode, r.size))
         } else if let Some(ref ntfs) = state.ntfs_fs {
             let (mft_rec, file_type, size) = ntfs.lookup(path)?;
@@ -1478,13 +1471,11 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     }; // VFS lock dropped — interrupts re-enabled
 
     // Phase 2: Without lock — perform disk I/O with interrupts enabled
-    crate::debug_println!("  [VFS] read_file_to_vec: phase2 disk I/O '{}'", path);
     let result = match plan {
         ReadPlan::Fat(p) => p.execute(),
         ReadPlan::ExFat(p) => p.execute(),
         ReadPlan::Ntfs(p) => p.execute(),
     };
-    crate::debug_println!("  [VFS] read_file_to_vec: done '{}' ok={}", path, result.is_ok());
     result
 }
 

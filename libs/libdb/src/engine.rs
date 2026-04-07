@@ -25,10 +25,10 @@ struct CachedPage {
 }
 
 /// Simple page cache with LRU eviction.
-/// Pages are stored in a Vec; most-recently-used page is moved to the front.
-/// Dirty pages are written to disk on eviction via the stored fd.
+/// Pages are heap-allocated (Box) so Vec operations only move 8-byte pointers,
+/// not 4 KiB page buffers — prevents stack overflow during cache reshuffling.
 struct PageCache {
-    pages: Vec<CachedPage>,
+    pages: Vec<alloc::boxed::Box<CachedPage>>,
     fd: u32,
 }
 
@@ -42,18 +42,45 @@ impl PageCache {
     fn get(&mut self, page_num: u32) -> Option<&[u8; PAGE_SIZE]> {
         let pos = self.pages.iter().position(|p| p.page_num == page_num)?;
         if pos > 0 {
-            let entry = self.pages.remove(pos);
+            let entry = self.pages.remove(pos); // moves Box (8 bytes), not 4 KiB
             self.pages.insert(0, entry);
         }
         Some(&self.pages[0].data)
     }
 
+    /// Allocate a CachedPage on the heap without going through the stack.
+    /// Uses alloc + ptr::write to avoid placing 4 KiB on the stack.
+    fn alloc_page_box(page_num: u32, data: &[u8; PAGE_SIZE], dirty: bool) -> alloc::boxed::Box<CachedPage> {
+        use alloc::alloc::{alloc, Layout};
+        use core::ptr;
+        unsafe {
+            let layout = Layout::new::<CachedPage>();
+            let raw = alloc(layout) as *mut CachedPage;
+            if raw.is_null() {
+                // OOM — shouldn't happen with reasonable cache sizes
+                panic!("PageCache: alloc failed");
+            }
+            // Write fields directly into heap memory (no stack copy)
+            ptr::write(&mut (*raw).page_num, page_num);
+            ptr::write(&mut (*raw).dirty, dirty);
+            ptr::copy_nonoverlapping(data.as_ptr(), (*raw).data.as_mut_ptr(), PAGE_SIZE);
+            alloc::boxed::Box::from_raw(raw)
+        }
+    }
+
     /// Insert or update a page in the cache.
     /// If the cache is full, the LRU entry is evicted (dirty pages are written to disk).
     fn put(&mut self, page_num: u32, data: &[u8; PAGE_SIZE], dirty: bool) {
-        // Check if already cached — update in place
+        // Check if already cached — update in place (copy into existing heap allocation)
         if let Some(pos) = self.pages.iter().position(|p| p.page_num == page_num) {
-            self.pages[pos].data = *data;
+            // Copy directly into heap — no stack temp
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    self.pages[pos].data.as_mut_ptr(),
+                    PAGE_SIZE,
+                );
+            }
             self.pages[pos].dirty = dirty || self.pages[pos].dirty;
             if pos > 0 {
                 let entry = self.pages.remove(pos);
@@ -70,7 +97,9 @@ impl PageCache {
             }
         }
 
-        self.pages.insert(0, CachedPage { page_num, data: *data, dirty });
+        // Allocate on heap directly — never touches the stack with 4 KiB
+        let boxed = Self::alloc_page_box(page_num, data, dirty);
+        self.pages.insert(0, boxed);
     }
 
     /// Flush all dirty pages to disk.
@@ -171,7 +200,7 @@ impl Database {
             };
             schema::init_header(&mut db.page0);
             // Write page 0 directly to disk so the file has content
-            db.write_page_raw(0, &db.page0.clone())?;
+            db.write_page_raw(0, &db.page0)?;
             // Also put in cache for subsequent reads
             db.cache.put(0, &db.page0, false);
             Ok(db)
@@ -272,7 +301,12 @@ impl Database {
         for (i, table) in self.tables.iter().enumerate() {
             schema::write_table_entry(&mut self.page0, i, table);
         }
-        self.write_page(0, &self.page0.clone())
+        // Update page0 in cache without stack-copying 4 KiB.
+        // We write directly: the cache stores a pointer to heap, the copy
+        // happens inside Box::new inside put() which is unavoidable but
+        // only 1 level deep (no nesting).
+        self.cache.put(0, &self.page0, true);
+        Ok(())
     }
 
     // ── Page allocation ──────────────────────────────────────────────────

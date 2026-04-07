@@ -63,7 +63,7 @@ pub fn index_all(db: &Database, cfg: &Config) {
         if is_excluded(dir, cfg) {
             continue;
         }
-        index_directory(db, dir, 0, cfg);
+        index_tree(db, dir, cfg);
     }
     let count = unsafe { ENTRY_COUNT };
     anyos_std::println!("searchd: indexed {} entries", count);
@@ -83,7 +83,7 @@ pub fn index_incremental(db: &Database, max_age_ms: u32, cfg: &Config) {
         }
         if should_rescan(db, dir, now, max_age_ms) {
             delete_subtree(db, dir);
-            index_directory(db, dir, 0, cfg);
+            index_tree(db, dir, cfg);
         }
     }
 }
@@ -98,66 +98,63 @@ fn is_excluded(path: &str, cfg: &Config) -> bool {
     false
 }
 
-// ── Crawler ─────────────────────────────────────────────────────────────────
+// ── Crawler (iterative BFS) ─────────────────────────────────────────────────
 
-fn index_directory(db: &Database, path: &str, depth: u32, cfg: &Config) {
-    if depth > MAX_DEPTH {
-        return;
-    }
-    if unsafe { ENTRY_COUNT } >= unsafe { MAX_ENTRIES } {
-        return;
-    }
+fn index_tree(db: &Database, root: &str, cfg: &Config) {
+    let mut queue: Vec<String> = Vec::new();
+    queue.push(String::from(root));
 
-    let entries = match anyos_std::fs::read_dir(path) {
-        Ok(rd) => {
-            let mut v = Vec::new();
-            for e in rd {
-                v.push(e);
-            }
-            v
-        }
-        Err(_) => return,
-    };
-
-    // Brief sleep between directories to reduce I/O pressure
-    if depth > 0 {
-        anyos_std::process::sleep(10);
-    }
-
-    // Index the directory itself
-    insert_file(db, path, dir_name(path), schema::KIND_DIR, 0, path);
-
-    // Update scan timestamp
-    update_scan_time(db, path);
-
-    for entry in &entries {
-        if entry.name == "." || entry.name == ".." {
-            continue;
-        }
+    while let Some(path) = queue.pop() {
         if unsafe { ENTRY_COUNT } >= unsafe { MAX_ENTRIES } {
             return;
         }
 
-        let full_path = if path.ends_with('/') {
-            format!("{}{}", path, entry.name)
-        } else {
-            format!("{}/{}", path, entry.name)
+        let entries = match anyos_std::fs::read_dir(&path) {
+            Ok(rd) => {
+                let mut v = Vec::new();
+                for e in rd {
+                    v.push(e);
+                }
+                v
+            }
+            Err(_) => continue,
         };
 
-        if is_excluded(&full_path, cfg) {
-            continue;
-        }
+        // Brief sleep between directories to reduce I/O pressure
+        anyos_std::process::sleep(10);
 
-        if entry.is_dir() {
-            insert_file(db, &full_path, &entry.name, schema::KIND_DIR, 0, path);
-            index_directory(db, &full_path, depth + 1, cfg);
-        } else {
-            let kind = classify(&entry.name, entry.size);
-            insert_file(db, &full_path, &entry.name, kind, entry.size, path);
+        // Index the directory itself
+        insert_file(db, &path, dir_name(&path), schema::KIND_DIR, 0, &path);
+        update_scan_time(db, &path);
 
-            // Index content for text-like files
-            if should_index_content(kind) && entry.size > 0 && entry.size <= MAX_CONTENT_SIZE {
-                index_file_content(db, &full_path, entry.size);
+        for entry in &entries {
+            if entry.name == "." || entry.name == ".." {
+                continue;
+            }
+            if unsafe { ENTRY_COUNT } >= unsafe { MAX_ENTRIES } {
+                return;
+            }
+
+            let full_path = if path.ends_with('/') {
+                format!("{}{}", path, entry.name)
+            } else {
+                format!("{}/{}", path, entry.name)
+            };
+
+            if is_excluded(&full_path, cfg) {
+                continue;
+            }
+
+            if entry.is_dir() {
+                insert_file(db, &full_path, &entry.name, schema::KIND_DIR, 0, &path);
+                queue.push(full_path);
+            } else {
+                let kind = classify(&entry.name, entry.size);
+                insert_file(db, &full_path, &entry.name, kind, entry.size, &path);
+
+                if should_index_content(kind) && entry.size > 0 && entry.size <= MAX_CONTENT_SIZE {
+                    index_file_content(db, &full_path, entry.size);
+                }
             }
         }
     }
