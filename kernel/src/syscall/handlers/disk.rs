@@ -7,15 +7,19 @@
 use super::helpers::is_valid_user_ptr;
 
 /// SYS_DISK_LIST - List block devices.
-/// Each entry is 32 bytes:
+/// Each entry is 64 bytes:
 ///   [0]     id (u8)
 ///   [1]     disk_id (u8)
 ///   [2]     partition index (0xFF = whole disk, else 0-based)
 ///   [3]     reserved
 ///   [4..12] start_lba (LE u64)
 ///   [12..20] size_sectors (LE u64)
-///   [20..32] reserved (zeroed)
+///   [20..60] label (40 bytes, NUL-padded, from ATA IDENTIFY / USB / SD)
+///   [60..64] reserved (zeroed)
 /// Returns total device count.
+///
+/// Backwards-compatible: if the buffer is too small for 64-byte entries but
+/// fits 32-byte entries, the old 32-byte format is used (no label).
 #[cfg(target_arch = "x86_64")]
 pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
     use crate::drivers::storage::blockdev;
@@ -23,7 +27,8 @@ pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
     let count = devices.len();
     if buf_ptr != 0 && buf_size > 0 && is_valid_user_ptr(buf_ptr as u64, buf_size as u64) {
         let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize) };
-        let entry_size = 32usize;
+        // Use 64-byte entries if buffer is large enough, else fall back to 32
+        let entry_size = if buf_size as usize / count.max(1) >= 64 { 64usize } else { 32usize };
         let max_entries = buf_size as usize / entry_size;
         for (i, dev) in devices.iter().enumerate().take(max_entries.min(count)) {
             let off = i * entry_size;
@@ -33,6 +38,10 @@ pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
             buf[off + 2] = dev.partition.unwrap_or(0xFF);
             buf[off + 4..off + 12].copy_from_slice(&dev.start_lba.to_le_bytes());
             buf[off + 12..off + 20].copy_from_slice(&dev.size_sectors.to_le_bytes());
+            if entry_size >= 64 {
+                let label_len = dev.label.len().min(40);
+                buf[off + 20..off + 20 + label_len].copy_from_slice(&dev.label[..label_len]);
+            }
         }
     }
     count as u32

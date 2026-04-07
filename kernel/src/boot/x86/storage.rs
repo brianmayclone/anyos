@@ -51,12 +51,12 @@ fn detect_and_register_root_partition() {
     use drivers::storage::blockdev;
     use fs::partition::PartitionType;
 
-    let disk_sectors = {
+    let (disk_sectors, disk_label) = {
         let ahci_sectors = drivers::storage::ahci::disk_total_sectors();
         if ahci_sectors > 0 {
-            ahci_sectors
+            (ahci_sectors, drivers::storage::ahci::disk_model())
         } else {
-            drivers::storage::ata::disk_total_sectors()
+            (drivers::storage::ata::disk_total_sectors(), drivers::storage::ata::disk_model())
         }
     };
 
@@ -67,6 +67,7 @@ fn detect_and_register_root_partition() {
         part_type: PartitionType::Empty,
         start_lba: 0,
         size_sectors: disk_sectors,
+        label: disk_label,
     });
     blockdev::scan_and_register_partitions(0);
 

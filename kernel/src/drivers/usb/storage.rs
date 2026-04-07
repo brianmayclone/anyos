@@ -620,6 +620,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
     }
 
     // INQUIRY — detect device type (disk vs CDROM)
+    let mut usb_label = [0u8; 40];
     match scsi_inquiry(&mut stor_dev) {
         Ok(inquiry) => {
             let vendor = core::str::from_utf8(&inquiry[8..16]).unwrap_or("?").trim();
@@ -630,6 +631,10 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
             }
             let type_str = if stor_dev.is_cdrom { "CD/DVD-ROM" } else { "Disk" };
             crate::serial_verbose_println!("  USB Storage: {} {} [{}]", vendor, product, type_str);
+            // Store vendor+product as label (trimmed INQUIRY fields)
+            let label_str = alloc::format!("{} {}", vendor, product);
+            let copy_len = label_str.len().min(40);
+            usb_label[..copy_len].copy_from_slice(&label_str.as_bytes()[..copy_len]);
         }
         Err(e) => {
             crate::serial_verbose_println!("  USB Storage: INQUIRY failed: {}", e);
@@ -665,6 +670,7 @@ pub fn probe(dev: &UsbDevice, iface: &UsbInterface) {
         part_type: crate::fs::partition::PartitionType::Empty,
         start_lba: 0,
         size_sectors: stor_dev.block_count as u64,
+        label: usb_label,
     });
 
     if stor_dev.is_cdrom {

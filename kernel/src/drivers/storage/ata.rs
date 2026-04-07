@@ -102,6 +102,11 @@ pub fn disk_total_sectors() -> u64 {
     unsafe { if PRIMARY_DRIVE.present { PRIMARY_DRIVE.sectors as u64 } else { 0 } }
 }
 
+/// Return the model string of the primary master drive.
+pub fn disk_model() -> [u8; 40] {
+    unsafe { PRIMARY_DRIVE.model }
+}
+
 /// Detect and identify the primary master ATA drive.
 pub fn init() {
     // Try to identify the primary master drive

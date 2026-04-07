@@ -137,6 +137,8 @@ struct AhciController {
     bounce_virt: u64,   // = bounce_phys (identity-mapped)
     total_sectors: u64,
     irq: u8,
+    /// ATA IDENTIFY model string (byte-swapped, trimmed).
+    model: [u8; 40],
     // Additional ATA disks (ports beyond the primary)
     extra_disks: [Option<PortDma>; MAX_EXTRA_DISKS],
     extra_disk_count: usize,
@@ -374,6 +376,7 @@ pub fn process_hotplug() {
                         part_type: crate::fs::partition::PartitionType::Empty,
                         start_lba: 0,
                         size_sectors: sectors,
+                        label: [0u8; 40],
                     });
                     super::blockdev::scan_and_register_partitions(disk_id);
                     super::blockdev::auto_mount_removable(disk_id);
@@ -1134,6 +1137,7 @@ pub fn init_and_register(pci: &PciDevice) {
             bounce_virt: bounce_phys, // identity-mapped
             total_sectors: 0,
             irq,
+            model: [0u8; 40],
             extra_disks: [None, None, None, None, None, None, None],
             extra_disk_count: 0,
             atapi_port: if atapi_clb_phys != 0 { found_atapi } else { None },
@@ -1178,6 +1182,7 @@ pub fn init_and_register(pci: &PciDevice) {
 
             if let Some(ahci) = AHCI.as_mut() {
                 ahci.total_sectors = total_sectors;
+                ahci.model = model;
             }
 
             let model_str = core::str::from_utf8(&model).unwrap_or("???").trim();
@@ -1332,6 +1337,7 @@ pub fn init_and_register(pci: &PciDevice) {
                 id: disk_id, disk_id, partition: None,
                 part_type: crate::fs::partition::PartitionType::Empty,
                 start_lba: 0, size_sectors: extra_total_sectors,
+                label: [0u8; 40],
             });
             blockdev::scan_and_register_partitions(disk_id);
 
@@ -1447,6 +1453,11 @@ pub fn atapi_is_present() -> bool {
 /// Return the total number of 512-byte sectors on the SATA disk (0 if not initialized).
 pub fn disk_total_sectors() -> u64 {
     unsafe { AHCI.as_ref().map_or(0, |a| a.total_sectors) }
+}
+
+/// Return the model string of the primary SATA disk.
+pub fn disk_model() -> [u8; 40] {
+    unsafe { AHCI.as_ref().map_or([0u8; 40], |a| a.model) }
 }
 
 /// Read `count` 2048-byte CD blocks starting at `lba` into `buf` via AHCI ATAPI.

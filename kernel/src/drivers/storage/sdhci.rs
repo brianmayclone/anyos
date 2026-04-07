@@ -425,6 +425,12 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
             let total_sectors = if sectors > 0 { sectors } else { 16 * 1024 * 1024 / 512 }; // Default 16 MiB
 
             // Register block device
+            let mut sd_label = [0u8; 40];
+            if is_sdhc {
+                sd_label[..12].copy_from_slice(b"SD/SDHC Card");
+            } else {
+                sd_label[..7].copy_from_slice(b"SD Card");
+            }
             super::blockdev::register_device(super::blockdev::BlockDevice {
                 id: 0,
                 disk_id,
@@ -432,6 +438,7 @@ pub fn init_and_register(pci: &PciDevice) -> bool {
                 part_type: crate::fs::partition::PartitionType::Empty,
                 start_lba: 0,
                 size_sectors: total_sectors,
+                label: sd_label,
             });
 
             // Register I/O handler

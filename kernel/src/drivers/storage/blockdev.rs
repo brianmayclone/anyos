@@ -24,6 +24,8 @@ pub struct BlockDevice {
     pub start_lba: u64,
     /// Total number of 512-byte sectors in this device/partition.
     pub size_sectors: u64,
+    /// Disk model/label from ATA IDENTIFY or USB descriptor (trimmed, NUL-padded).
+    pub label: [u8; 40],
 }
 
 impl BlockDevice {
@@ -202,6 +204,9 @@ pub fn scan_and_register_partitions(disk_id: u8) {
         disk_id, table.scheme, table.partitions.len()
     );
 
+    // Inherit label from the whole-disk device
+    let parent_label = whole_disk.label;
+
     for part in &table.partitions {
         if part.part_type == partition::PartitionType::Empty {
             continue;
@@ -213,6 +218,7 @@ pub fn scan_and_register_partitions(disk_id: u8) {
             part_type: part.part_type,
             start_lba: part.start_lba,
             size_sectors: part.size_sectors,
+            label: parent_label,
         });
     }
 }
