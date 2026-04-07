@@ -6,7 +6,6 @@ use anyos_std::{String, Vec};
 use crate::apps::AppEntry;
 use crate::searchd;
 
-/// A search result — either an app (by index) or a file from searchd.
 pub enum SearchResult {
     App { app_idx: usize },
     File { name: String, path: String, kind: String, size: u32 },
@@ -28,7 +27,6 @@ impl SearchResult {
     }
 }
 
-/// Result categories (ordered by display priority).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Category {
     Apps,
@@ -72,33 +70,27 @@ impl Category {
 const MAX_APPS: usize = 5;
 const MAX_PER_FILE_CAT: usize = 4;
 
-/// Fast local-only filter: apps only (called immediately on keystroke).
+/// Fast local-only filter (never blocks).
 pub fn filter_apps(apps: &[AppEntry], query: &str) -> Vec<SearchResult> {
     let qb = query.as_bytes();
     let mut results = Vec::new();
     let mut count = 0;
-
     for (i, app) in apps.iter().enumerate() {
-        if count >= MAX_APPS {
-            break;
-        }
+        if count >= MAX_APPS { break; }
         if query.is_empty() || contains_ci(app.name.as_bytes(), qb) {
             results.push(SearchResult::App { app_idx: i });
             count += 1;
         }
     }
-
     results
 }
 
-/// Full filter: apps + searchd file results (called after debounce).
+/// Full filter: apps + blocking searchd query.
 pub fn filter_all(apps: &[AppEntry], query: &str) -> Vec<SearchResult> {
     let mut results = filter_apps(apps, query);
 
-    // Query searchd for file results (only with 2+ chars)
     if query.len() >= 2 {
         let file_results = searchd::search(query);
-
         let mut doc_count = 0usize;
         let mut img_count = 0usize;
         let mut dir_count = 0usize;
@@ -110,11 +102,9 @@ pub fn filter_all(apps: &[AppEntry], query: &str) -> Vec<SearchResult> {
                 Category::Documents => &mut doc_count,
                 Category::Images => &mut img_count,
                 Category::Folders => &mut dir_count,
-                Category::Other | Category::Apps => &mut other_count,
+                _ => &mut other_count,
             };
-            if *count >= MAX_PER_FILE_CAT {
-                continue;
-            }
+            if *count >= MAX_PER_FILE_CAT { continue; }
             *count += 1;
             results.push(SearchResult::File {
                 name: fr.name,
@@ -125,19 +115,13 @@ pub fn filter_all(apps: &[AppEntry], query: &str) -> Vec<SearchResult> {
         }
     }
 
-    // Sort by category
     results.sort_by(|a, b| a.category().order().cmp(&b.category().order()));
-
     results
 }
 
 fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
-    if needle.is_empty() {
-        return true;
-    }
-    if needle.len() > haystack.len() {
-        return false;
-    }
+    if needle.is_empty() { return true; }
+    if needle.len() > haystack.len() { return false; }
     for i in 0..=(haystack.len() - needle.len()) {
         let mut ok = true;
         for j in 0..needle.len() {
@@ -146,9 +130,7 @@ fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
                 break;
             }
         }
-        if ok {
-            return true;
-        }
+        if ok { return true; }
     }
     false
 }

@@ -95,11 +95,17 @@ fn main() {
 
     anyos_std::println!("searchd: ready (pipe='{}', db='{}')", PIPE_NAME, DB_PATH);
 
-    // Wait for idle timeout before first indexing
-    anyos_std::println!("searchd: waiting {}ms before initial index", cfg.idle_timeout_ms);
+    // Check if we already have an index from a previous run
+    let has_index = indexer::has_existing_index(&db);
+    if has_index {
+        anyos_std::println!("searchd: existing index found, skipping initial full index");
+    } else {
+        anyos_std::println!("searchd: no existing index, waiting {}ms before initial index", cfg.idle_timeout_ms);
+    }
+
     let boot_time = anyos_std::sys::uptime_ms();
-    let mut initial_index_done = false;
-    let mut last_reindex = 0u32;
+    let mut initial_index_done = has_index;
+    let mut last_reindex = if has_index { boot_time } else { 0u32 };
     let mut reindex_flag = false;
     let mut last_status_print = boot_time;
 
@@ -138,26 +144,29 @@ fn main() {
         if !initial_index_done && now.wrapping_sub(boot_time) >= cfg.idle_timeout_ms {
             anyos_std::println!("searchd: starting initial index");
             indexer::index_all(&db, &cfg);
+            let _ = db.flush();
             initial_index_done = true;
             last_reindex = now;
-            anyos_std::println!("searchd: initial index complete");
+            anyos_std::println!("searchd: initial index complete (flushed to disk)");
         }
 
         // Manual reindex request
         if reindex_flag {
             anyos_std::println!("searchd: reindex requested");
             indexer::index_all(&db, &cfg);
+            let _ = db.flush();
             last_reindex = now;
             reindex_flag = false;
-            anyos_std::println!("searchd: reindex complete");
+            anyos_std::println!("searchd: reindex complete (flushed to disk)");
         }
 
         // Periodic incremental re-index
         if initial_index_done && now.wrapping_sub(last_reindex) >= REINDEX_INTERVAL_MS {
             anyos_std::println!("searchd: incremental re-index starting");
             indexer::index_incremental(&db, REINDEX_INTERVAL_MS, &cfg);
+            let _ = db.flush();
             last_reindex = now;
-            anyos_std::println!("searchd: incremental re-index complete");
+            anyos_std::println!("searchd: incremental re-index complete (flushed to disk)");
         }
 
         if active {

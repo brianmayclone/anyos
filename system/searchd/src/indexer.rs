@@ -44,6 +44,14 @@ static mut MAX_ENTRIES: u32 = 1000000;
 
 // ── Public API ──────────────────────────────────────────────────────────────
 
+/// Check if the index already has data (from a previous run).
+pub fn has_existing_index(db: &Database) -> bool {
+    if let Ok(result) = db.query("SELECT path FROM files LIMIT 1") {
+        return result.row_count() > 0;
+    }
+    false
+}
+
 /// Run a full index pass over all configured directories.
 pub fn index_all(db: &Database, cfg: &Config) {
     schema::clear_index(db);
@@ -110,6 +118,11 @@ fn index_directory(db: &Database, path: &str, depth: u32, cfg: &Config) {
         }
         Err(_) => return,
     };
+
+    // Brief sleep between directories to reduce I/O pressure
+    if depth > 0 {
+        anyos_std::process::sleep(10);
+    }
 
     // Index the directory itself
     insert_file(db, path, dir_name(path), schema::KIND_DIR, 0, path);

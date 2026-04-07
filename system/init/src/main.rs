@@ -172,7 +172,7 @@ fn run_init_conf(total_steps: &mut u32, current_step: &mut u32) {
 
                 // Extract a readable service name from the path
                 let svc_name = path.rsplit('/').next().unwrap_or(path);
-                set_status(svc_name);
+                set_status("Starting Services ...");
                 *current_step += 1;
                 let pct = (*current_step * 100 / *total_steps).min(100);
                 PROGRESS.store(pct, Ordering::Release);
@@ -224,7 +224,6 @@ fn worker_entry() {
 
     // Phase 2: Memory benchmark
     set_status("Initializing Hardware (2/2)...");
-
     PROGRESS.store(15, Ordering::Release);
     let mem_score = benchmark_memory(hz);
 

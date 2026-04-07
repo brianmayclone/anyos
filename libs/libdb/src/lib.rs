@@ -159,6 +159,22 @@ pub extern "C" fn libdb_close(handle: u32) {
     }
 }
 
+/// Flush all dirty cached pages to disk. Returns 0 on success, u32::MAX on error.
+#[no_mangle]
+pub extern "C" fn libdb_flush(handle: u32) -> u32 {
+    if let Some(db) = get_db(handle) {
+        match db.flush() {
+            Ok(()) => 0,
+            Err(e) => {
+                db.last_error = e.message();
+                u32::MAX
+            }
+        }
+    } else {
+        u32::MAX
+    }
+}
+
 /// Get the last error message for a handle.
 /// Returns number of bytes written to buf, or 0 if no error.
 #[no_mangle]

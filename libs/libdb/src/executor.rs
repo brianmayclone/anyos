@@ -59,8 +59,7 @@ fn exec_insert(
     let table_idx = schema::find_table(&db.tables, table_name)
         .ok_or_else(|| DbError::TableNotFound(String::from(table_name)))?;
 
-    let table = &db.tables[table_idx];
-    let schema_cols = &table.columns;
+    let schema_cols = db.tables[table_idx].columns.clone();
 
     // Build the row values in schema column order
     let row_values = if col_names.is_empty() {
@@ -117,8 +116,7 @@ fn exec_select(
     let table_idx = schema::find_table(&db.tables, table_name)
         .ok_or_else(|| DbError::TableNotFound(String::from(table_name)))?;
 
-    let table = &db.tables[table_idx];
-    let schema_cols = &table.columns;
+    let schema_cols = db.tables[table_idx].columns.clone();
 
     // Determine which columns to output
     let (col_indices, col_names, col_types) = match columns {
@@ -133,7 +131,7 @@ fn exec_select(
             let mut out_names = Vec::with_capacity(names.len());
             let mut out_types = Vec::with_capacity(names.len());
             for name in names {
-                let idx = table.find_column(name)
+                let idx = schema_cols.iter().position(|c| c.name.eq_ignore_ascii_case(name))
                     .ok_or_else(|| DbError::ColumnNotFound(name.clone()))?;
                 indices.push(idx);
                 out_names.push(schema_cols[idx].name.clone());
@@ -149,7 +147,7 @@ fn exec_select(
 
     for (_page, _offset, row) in &all_rows {
         if let Some(expr) = where_clause {
-            if !eval_where(expr, &row.values, schema_cols)? {
+            if !eval_where(expr, &row.values, &schema_cols)? {
                 continue;
             }
         }

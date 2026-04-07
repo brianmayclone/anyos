@@ -805,12 +805,21 @@ pub fn load_binary_into_pd(
     }
     total_user_pages += tramp_mapped;
 
+    // Guard page: leave the bottom-most page of the stack region UNMAPPED.
+    // If user code overflows the stack, it touches this unmapped page and
+    // triggers a page fault → the kernel kills the thread with SIGSEGV
+    // instead of corrupting memory or crashing the kernel.
+    let guard_pages: u64 = 1;
+    let stack_guard_bottom = stack_bottom; // unmapped guard page
+    let stack_usable_bottom = stack_bottom + guard_pages * PAGE_SIZE;
+    let stack_usable_pages = USER_STACK_PAGES - guard_pages;
+
     let class = elf_class(data);
     if class == ELFCLASS64 {
         let stack_mapped = virtual_mem::map_pages_range_in_pd(
             pd_phys,
-            VirtAddr::new(stack_bottom),
-            USER_STACK_PAGES,
+            VirtAddr::new(stack_usable_bottom),
+            stack_usable_pages,
             stack_flags,
             true,
         )?;
@@ -827,8 +836,8 @@ pub fn load_binary_into_pd(
     } else if class == ELFCLASS32 {
         let stack_mapped = virtual_mem::map_pages_range_in_pd(
             pd_phys,
-            VirtAddr::new(stack_bottom),
-            USER_STACK_PAGES,
+            VirtAddr::new(stack_usable_bottom),
+            stack_usable_pages,
             stack_flags,
             true,
         )?;

@@ -37,6 +37,7 @@ dynlink::dll_exports! {
         libdb_result_get_text(id: u32, row: u32, col: u32, buf: *mut u8, buf_len: u32) -> u32,
         libdb_result_is_null(id: u32, row: u32, col: u32) -> u32,
         libdb_result_free(id: u32) -> (),
+        libdb_flush(handle: u32) -> u32,
     }
 }
 
@@ -84,6 +85,16 @@ impl Database {
         } else {
             let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("?");
             String::from(s)
+        }
+    }
+
+    /// Flush all dirty cached pages to disk.
+    pub fn flush(&self) -> Result<(), String> {
+        let result = (lib().libdb_flush)(self.handle);
+        if result == u32::MAX {
+            Err(self.last_error())
+        } else {
+            Ok(())
         }
     }
 

@@ -258,6 +258,32 @@ The ARM64 port boots to kernel_main with working MMU, GICv3 interrupts, Generic 
 4. Thread starts at entry point in Ring 3 via `iret` (ASLR-randomised stack)
 5. `sys_exit(code)` -- Thread terminates, pages freed
 
+### Process Detach
+
+By default, when a parent process terminates, all its children are cascade-killed. The `sys_detach(child_tid)` syscall (314) allows a parent to release ownership of a child — the child's `parent_tid` is set to 0 and it becomes a root process that survives the parent's exit. Used by `svc start-all` to spawn long-lived daemons that outlive the `svc` tool.
+
+### Stack Guard Pages
+
+Each user process has an 8 MiB stack (2048 pages) with the bottom page left **unmapped** as a guard page. If user code overflows the stack and touches the guard page, the CPU triggers a page fault:
+
+- **User-mode fault**: Kernel detects the unmapped access, prints `USER STACK OVERFLOW!`, and kills the thread with SIGSEGV (exit code 139).
+- **Kernel-mode fault during syscall**: If the kernel accesses the user stack during a syscall (e.g. `read`/`write` on user buffers) and hits the guard page, the fault handler still identifies the thread as a user thread and kills it cleanly via `try_exit_current`.
+
+```
+Stack layout (8 MiB, grows downward):
+  ┌─────────────────────┐  ← aslr_stack_top (randomised)
+  │  Usable stack       │  2047 pages (8 MiB − 4 KiB)
+  │  (grows downward)   │
+  ├─────────────────────┤  ← stack_usable_bottom
+  │  GUARD PAGE         │  1 page (4 KiB, UNMAPPED)
+  │  (triggers #PF)     │
+  └─────────────────────┘  ← stack_bottom
+```
+
+Kernel stacks have a similar mechanism with a dedicated guard page at the bottom of each 512 KiB kernel stack, plus a canary word above the guard for early detection.
+
+**Source:** `kernel/src/task/loader.rs` (guard page allocation), `kernel/src/arch/x86/idt.rs` (fault handler)
+
 ---
 
 ## Security

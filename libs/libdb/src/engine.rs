@@ -12,6 +12,92 @@ use crate::types::*;
 use crate::schema;
 use crate::syscall;
 
+// ── Page cache ──────────────────────────────────────────────────────────────
+
+/// Maximum number of pages held in the cache.
+const CACHE_CAPACITY: usize = 64;
+
+/// A single cached page.
+struct CachedPage {
+    page_num: u32,
+    data: [u8; PAGE_SIZE],
+    dirty: bool,
+}
+
+/// Simple page cache with LRU eviction.
+/// Pages are stored in a Vec; most-recently-used page is moved to the front.
+/// Dirty pages are written to disk on eviction via the stored fd.
+struct PageCache {
+    pages: Vec<CachedPage>,
+    fd: u32,
+}
+
+impl PageCache {
+    fn new(fd: u32) -> Self {
+        PageCache { pages: Vec::with_capacity(CACHE_CAPACITY), fd }
+    }
+
+    /// Look up a page in the cache. Returns a reference to the data if found.
+    /// Moves the page to the front (MRU position).
+    fn get(&mut self, page_num: u32) -> Option<&[u8; PAGE_SIZE]> {
+        let pos = self.pages.iter().position(|p| p.page_num == page_num)?;
+        if pos > 0 {
+            let entry = self.pages.remove(pos);
+            self.pages.insert(0, entry);
+        }
+        Some(&self.pages[0].data)
+    }
+
+    /// Insert or update a page in the cache.
+    /// If the cache is full, the LRU entry is evicted (dirty pages are written to disk).
+    fn put(&mut self, page_num: u32, data: &[u8; PAGE_SIZE], dirty: bool) {
+        // Check if already cached — update in place
+        if let Some(pos) = self.pages.iter().position(|p| p.page_num == page_num) {
+            self.pages[pos].data = *data;
+            self.pages[pos].dirty = dirty || self.pages[pos].dirty;
+            if pos > 0 {
+                let entry = self.pages.remove(pos);
+                self.pages.insert(0, entry);
+            }
+            return;
+        }
+
+        // Evict LRU if full
+        if self.pages.len() >= CACHE_CAPACITY {
+            let victim = self.pages.pop().unwrap();
+            if victim.dirty {
+                Self::write_to_disk(self.fd, victim.page_num, &victim.data);
+            }
+        }
+
+        self.pages.insert(0, CachedPage { page_num, data: *data, dirty });
+    }
+
+    /// Flush all dirty pages to disk.
+    fn flush(&mut self) {
+        for entry in &mut self.pages {
+            if entry.dirty {
+                Self::write_to_disk(self.fd, entry.page_num, &entry.data);
+                entry.dirty = false;
+            }
+        }
+    }
+
+    /// Invalidate a specific page (e.g. after free_page).
+    fn invalidate(&mut self, page_num: u32) {
+        if let Some(pos) = self.pages.iter().position(|p| p.page_num == page_num) {
+            self.pages.remove(pos);
+        }
+    }
+
+    /// Write a single page to disk (used internally for eviction and flush).
+    fn write_to_disk(fd: u32, page_num: u32, data: &[u8; PAGE_SIZE]) {
+        let offset = page_num as i32 * PAGE_SIZE as i32;
+        syscall::lseek(fd, offset, syscall::SEEK_SET);
+        syscall::write(fd, data);
+    }
+}
+
 // ── Database handle ──────────────────────────────────────────────────────────
 
 /// An open database file.
@@ -29,6 +115,8 @@ pub struct Database {
     total_pages: u32,
     /// Last error message.
     pub last_error: String,
+    /// Page cache — avoids repeated disk reads.
+    cache: PageCache,
 }
 
 impl Database {
@@ -56,6 +144,7 @@ impl Database {
                 first_free_page: 0,
                 total_pages: 0,
                 last_error: String::new(),
+                cache: PageCache::new(fd),
             };
             db.load_page0()?;
             Ok(db)
@@ -78,16 +167,21 @@ impl Database {
                 first_free_page: 0,
                 total_pages: 1,
                 last_error: String::new(),
+                cache: PageCache::new(fd),
             };
             schema::init_header(&mut db.page0);
-            db.write_page(0, &db.page0.clone())?;
+            // Write page 0 directly to disk so the file has content
+            db.write_page_raw(0, &db.page0.clone())?;
+            // Also put in cache for subsequent reads
+            db.cache.put(0, &db.page0, false);
             Ok(db)
         }
     }
 
-    /// Close the database (flush and release fd).
+    /// Close the database (flush dirty pages and release fd).
     pub fn close(&mut self) {
         if self.fd != u32::MAX {
+            let _ = self.flush();
             syscall::close(self.fd);
             self.fd = u32::MAX;
         }
@@ -95,8 +189,15 @@ impl Database {
 
     // ── Page I/O ─────────────────────────────────────────────────────────
 
-    /// Read a page from disk into buffer.
-    fn read_page(&self, page_num: u32, buf: &mut [u8; PAGE_SIZE]) -> DbResult<()> {
+    /// Read a page — returns cached copy if available, otherwise reads from disk.
+    fn read_page(&mut self, page_num: u32, buf: &mut [u8; PAGE_SIZE]) -> DbResult<()> {
+        // Check cache first
+        if let Some(cached) = self.cache.get(page_num) {
+            *buf = *cached;
+            return Ok(());
+        }
+
+        // Cache miss — read from disk
         let offset = page_num as i32 * PAGE_SIZE as i32;
         if syscall::lseek(self.fd, offset, syscall::SEEK_SET) == u32::MAX {
             return Err(DbError::Io(String::from("Seek failed")));
@@ -105,15 +206,23 @@ impl Database {
         if n == u32::MAX {
             return Err(DbError::Io(String::from("Read failed")));
         }
-        // Zero-fill if we read less than a full page (new pages)
         if (n as usize) < PAGE_SIZE {
             buf[n as usize..].fill(0);
         }
+
+        // Store in cache (eviction writes to disk automatically)
+        self.cache.put(page_num, buf, false);
         Ok(())
     }
 
-    /// Write a page to disk.
-    fn write_page(&self, page_num: u32, buf: &[u8; PAGE_SIZE]) -> DbResult<()> {
+    /// Write a page — updates cache (dirty) and defers disk write until flush.
+    fn write_page(&mut self, page_num: u32, buf: &[u8; PAGE_SIZE]) -> DbResult<()> {
+        self.cache.put(page_num, buf, true);
+        Ok(())
+    }
+
+    /// Write a page directly to disk (bypasses cache).
+    fn write_page_raw(&self, page_num: u32, buf: &[u8; PAGE_SIZE]) -> DbResult<()> {
         let offset = page_num as i32 * PAGE_SIZE as i32;
         if syscall::lseek(self.fd, offset, syscall::SEEK_SET) == u32::MAX {
             return Err(DbError::Io(String::from("Seek failed")));
@@ -122,6 +231,12 @@ impl Database {
         if n == u32::MAX || n as usize != PAGE_SIZE {
             return Err(DbError::Io(String::from("Write failed")));
         }
+        Ok(())
+    }
+
+    /// Flush all dirty cached pages to disk.
+    pub fn flush(&mut self) -> DbResult<()> {
+        self.cache.flush();
         Ok(())
     }
 
@@ -175,17 +290,19 @@ impl Database {
             self.write_page(page_num, &page)?;
             Ok(page_num)
         } else {
-            // Allocate at end of file
+            // Allocate at end of file — must write to disk to extend the file
             let page_num = self.total_pages;
             self.total_pages += 1;
             let page = [0u8; PAGE_SIZE];
-            self.write_page(page_num, &page)?;
+            self.write_page_raw(page_num, &page)?;
+            self.cache.put(page_num, &page, false);
             Ok(page_num)
         }
     }
 
     /// Free a data page (add to free list).
     fn free_page(&mut self, page_num: u32) -> DbResult<()> {
+        self.cache.invalidate(page_num);
         let mut page = [0u8; PAGE_SIZE];
         // Write next-free pointer as first 4 bytes
         page[0..4].copy_from_slice(&self.first_free_page.to_le_bytes());
@@ -344,7 +461,7 @@ impl Database {
     // ── Table scan ───────────────────────────────────────────────────────
 
     /// Scan all active rows of a table. Returns a Vec of (page_num, offset_in_page, Row).
-    pub fn scan_table(&self, table_idx: usize) -> DbResult<Vec<(u32, usize, Row)>> {
+    pub fn scan_table(&mut self, table_idx: usize) -> DbResult<Vec<(u32, usize, Row)>> {
         let table = &self.tables[table_idx];
         let col_count = table.columns.len();
         let mut results = Vec::new();

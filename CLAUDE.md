@@ -16,6 +16,8 @@
 - **GUI apps** (`apps/`): `#![no_std]` Rust, use `libanyui_client` for GUI, built with `add_rust_app()` in CMakeLists.txt, installed to `/Applications/`
 - **GDT layout**: Null(0x00), KernelCode64(0x08), KernelData(0x10), UserCode32(0x18), UserData(0x20), UserCode64(0x28), TSS(0x30+)
 - **Segment selectors with RPL**: Kernel CS=0x08, Kernel DS=0x10, User CS32=0x1B, User DS=0x23, User CS64=0x2B
+- **User stack**: 8 MiB (2048 pages) with ASLR, bottom page is unmapped guard page → stack overflow triggers #PF → thread killed with SIGSEGV
+- **Process detach**: `SYS_DETACH(child_tid)` (314) sets child's parent_tid to 0 so it survives parent exit cascade-kill. Used by `svc start-all`.
 
 ## Critical: DS/ES Restoration on Ring Transitions
 

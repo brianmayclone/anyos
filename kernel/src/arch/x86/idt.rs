@@ -1053,10 +1053,19 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
             // User-mode page fault: print diagnostics and kill the thread
             if is_user_mode {
                 let tid = crate::task::scheduler::current_tid();
-                crate::serial_println!(
-                    "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x} TID={}",
-                    cr2, frame.rip, frame.err_code, tid
-                );
+                // Detect stack guard page hit (stack overflow)
+                let is_stack_area = cr2 >= 0xB000_0000 && cr2 < 0xC000_0000;
+                if is_stack_area && err_not_present {
+                    crate::serial_println!(
+                        "USER STACK OVERFLOW! TID={} addr={:#018x} RIP={:#018x} — killing thread",
+                        tid, cr2, frame.rip
+                    );
+                } else {
+                    crate::serial_println!(
+                        "EXCEPTION: Page Fault addr={:#018x} RIP={:#018x} err={:#x} TID={}",
+                        cr2, frame.rip, frame.err_code, tid
+                    );
+                }
                 crate::serial_println!(
                     "  CS={:#x} RAX={:#018x} RBX={:#018x} RCX={:#018x} RDX={:#018x}",
                     frame.cs, frame.rax, frame.rbx, frame.rcx, frame.rdx

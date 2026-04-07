@@ -13,3 +13,4 @@ EXPORTS
     libdb_result_get_text
     libdb_result_is_null
     libdb_result_free
+    libdb_flush
