@@ -128,18 +128,10 @@ pub fn sys_adduser(data_ptr: u32) -> u32 {
         _ => &homedir_default,
     };
 
-    // Hash password
-    let hash = if password.is_empty() {
-        [0u8; 32] // empty hash = no password
-    } else {
-        crate::crypto::md5::md5_hex(password.as_bytes())
-    };
-    let hash_str = core::str::from_utf8(&hash).unwrap_or("");
-
     let uid = crate::task::users::next_uid();
     let gid = uid; // Default: same as uid
 
-    if crate::task::users::add_user(username, hash_str, uid, gid, fullname, homedir) {
+    if crate::task::users::add_user(username, password, uid, gid, fullname, homedir) {
         // Create home directory
         let _ = crate::fs::vfs::mkdir(homedir);
         let docs = alloc::format!("{}/Documents", homedir);
@@ -206,17 +198,7 @@ pub fn sys_chpasswd(data_ptr: u32) -> u32 {
         }
     }
 
-    // Hash new password
-    let hash = if new_password.is_empty() {
-        [0u8; 32]
-    } else {
-        crate::crypto::md5::md5_hex(new_password.as_bytes())
-    };
-    let hash_str = core::str::from_utf8(&hash).unwrap_or("");
-
-    crate::serial_verbose_println!("  CHPASSWD: user='{}' new_pass='{}' hash='{}'", username, new_password, hash_str);
-
-    if crate::task::users::change_password(username, hash_str) {
+    if crate::task::users::change_password(username, new_password) {
         crate::serial_verbose_println!("  CHPASSWD: Password changed for '{}'", username);
         0
     } else {

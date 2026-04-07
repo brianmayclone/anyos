@@ -1,9 +1,10 @@
 //! User and group database for the kernel.
 //!
 //! Stores user/group entries parsed from `/System/users/passwd` and `/System/users/group`.
-//! Provides authentication via MD5 password hashing.
+//! Provides authentication via salted PBKDF2-HMAC-SHA256 password hashing.
 
 use crate::sync::spinlock::Spinlock;
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Maximum number of users supported.
@@ -17,7 +18,7 @@ const MAX_GROUP_MEMBERS: usize = 8;
 #[derive(Clone)]
 pub struct UserEntry {
     pub username: [u8; 32],
-    pub password_hash: [u8; 33], // MD5 hex string (32 ASCII chars) + null terminator
+    pub password_hash: [u8; 160], // Encoded password record + null terminator
     pub uid: u16,
     pub gid: u16,
     pub fullname: [u8; 64],
@@ -29,7 +30,7 @@ impl UserEntry {
     const fn empty() -> Self {
         UserEntry {
             username: [0u8; 32],
-            password_hash: [0u8; 33],
+            password_hash: [0u8; 160],
             uid: 0,
             gid: 0,
             fullname: [0u8; 64],
@@ -54,7 +55,7 @@ impl UserEntry {
     }
 
     fn hash_str(&self) -> &str {
-        let len = self.password_hash.iter().position(|&b| b == 0).unwrap_or(33);
+        let len = self.password_hash.iter().position(|&b| b == 0).unwrap_or(160);
         core::str::from_utf8(&self.password_hash[..len]).unwrap_or("")
     }
 }
@@ -175,7 +176,7 @@ pub fn init() {
     }
 }
 
-/// Parse a passwd line: `username:md5hash:uid:gid:fullname:homedir`
+/// Parse a passwd line: `username:password_record:uid:gid:fullname:homedir`
 fn parse_passwd_line(line: &str) -> Option<UserEntry> {
     let parts: Vec<&str> = line.splitn(6, ':').collect();
     if parts.len() < 6 {
@@ -225,33 +226,38 @@ fn parse_group_line(line: &str) -> Option<GroupEntry> {
 /// Authenticate a user by username and password.
 /// Returns `Some((uid, gid))` on success, `None` on failure.
 pub fn authenticate(username: &str, password: &str) -> Option<(u16, u16)> {
-    let users = USERS.lock();
-    for user in users.iter() {
-        if !user.used {
-            continue;
-        }
-        if user.username_str() != username {
-            continue;
-        }
-        // Check password
-        let stored_hash = user.hash_str();
-        if stored_hash.is_empty() {
-            // Empty hash = no password set — only accept empty password
-            if password.is_empty() {
-                return Some((user.uid, user.gid));
+    let mut result = None;
+    let mut upgrade = None;
+
+    {
+        let users = USERS.lock();
+        for user in users.iter() {
+            if !user.used {
+                continue;
             }
-            return None;
+            if user.username_str() != username {
+                continue;
+            }
+
+            let stored_hash = user.hash_str();
+            if crate::crypto::password::verify_password(password, stored_hash) {
+                if crate::crypto::password::needs_rehash(stored_hash) && !password.is_empty() {
+                    upgrade = Some(String::from(username));
+                }
+                result = Some((user.uid, user.gid));
+            }
+            break;
         }
-        // Compute MD5 of the provided password
-        let computed = crate::crypto::md5::md5_hex(password.as_bytes());
-        let computed_str = core::str::from_utf8(&computed).unwrap_or("");
-        crate::serial_verbose_println!("  AUTH: user='{}' pass='{}' computed='{}' stored='{}'", username, password, computed_str, stored_hash);
-        if stored_hash == computed_str {
-            return Some((user.uid, user.gid));
-        }
-        return None; // Found user but wrong password
     }
-    None // User not found
+
+    if let Some(ref username) = upgrade {
+        let upgraded = crate::crypto::password::hash_password(password);
+        if update_password_hash(username, &upgraded) {
+            crate::serial_verbose_println!("  AUTH: upgraded legacy password hash for '{}'", username);
+        }
+    }
+
+    result
 }
 
 /// Look up a user by UID.
@@ -285,7 +291,7 @@ pub fn lookup_username(name: &str) -> Option<UserEntry> {
 }
 
 /// Add a new user to the database. Returns true on success.
-pub fn add_user(username: &str, password_hash: &str, uid: u16, gid: u16, fullname: &str, homedir: &str) -> bool {
+pub fn add_user(username: &str, password: &str, uid: u16, gid: u16, fullname: &str, homedir: &str) -> bool {
     let mut users = USERS.lock();
 
     // Check for duplicate username or uid
@@ -301,8 +307,9 @@ pub fn add_user(username: &str, password_hash: &str, uid: u16, gid: u16, fullnam
         None => return false,
     };
 
+    let password_hash = crate::crypto::password::hash_password(password);
     copy_str_to_buf(username, &mut slot.username);
-    copy_str_to_buf(password_hash, &mut slot.password_hash);
+    copy_str_to_buf(&password_hash, &mut slot.password_hash);
     slot.uid = uid;
     slot.gid = gid;
     copy_str_to_buf(fullname, &mut slot.fullname);
@@ -333,8 +340,12 @@ pub fn remove_user(uid: u16) -> bool {
 }
 
 /// Change a user's password. Returns true on success.
-/// `new_hash` should be the MD5 hex string of the new password (or empty for no password).
-pub fn change_password(username: &str, new_hash: &str) -> bool {
+pub fn change_password(username: &str, new_password: &str) -> bool {
+    let new_hash = crate::crypto::password::hash_password(new_password);
+    update_password_hash(username, &new_hash)
+}
+
+fn update_password_hash(username: &str, new_hash: &str) -> bool {
     let mut users = USERS.lock();
     for user in users.iter_mut() {
         if user.used && user.username_str() == username {

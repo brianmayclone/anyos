@@ -805,6 +805,8 @@ fn main() {
 |----------|-----------|-------------|
 | `md5` | `fn md5(input: &[u8]) -> [u8; 16]` | Compute MD5 hash (16 raw bytes). |
 | `md5_hex` | `fn md5_hex(input: &[u8]) -> [u8; 32]` | Compute MD5 hash as hex string bytes. |
+| `sha256` | `fn sha256(input: &[u8]) -> [u8; 32]` | Compute SHA-256 hash (32 raw bytes). |
+| `sha256_hex` | `fn sha256_hex(input: &[u8]) -> [u8; 64]` | Compute SHA-256 hash as hex string bytes. |
 
 ### Example
 

@@ -679,7 +679,7 @@ Page-granular shared memory regions for zero-copy data transfer.
 
 anyOS supports multi-user identity with per-process UID/GID.
 
-- **User accounts**: username, password (MD5 hashed), full name, home directory
+- **User accounts**: username, password (PBKDF2-HMAC-SHA256 hashed), full name, home directory
 - **Groups**: name + GID
 - **Authentication**: `sys_authenticate(user, pass)` verifies credentials
 - **Identity switching**: `sys_set_identity(uid)` changes the process UID

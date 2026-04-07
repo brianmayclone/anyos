@@ -381,7 +381,7 @@ pub fn sys_kbd_set_layout(layout_id: u32) -> u32 {
 
 /// SYS_RANDOM (210): Fill a user buffer with random bytes.
 /// arg1 = buf_ptr, arg2 = len (max 256 bytes per call).
-/// Uses RDRAND if available, falls back to TSC-based PRNG.
+/// Uses the kernel crypto entropy pipeline.
 /// Returns number of bytes written.
 pub fn sys_random(buf_ptr: u32, len: u32) -> u32 {
     let len = (len as usize).min(256);
@@ -390,118 +390,8 @@ pub fn sys_random(buf_ptr: u32, len: u32) -> u32 {
     }
 
     let dst = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len) };
-
-    // Try VirtIO RNG first (best entropy source from hypervisor).
-    #[cfg(target_arch = "x86_64")]
-    let mut filled = crate::drivers::virtio::rng::fill_random(dst);
-    #[cfg(target_arch = "aarch64")]
-    let mut filled = 0usize;
-
-    if filled >= len {
-        return filled as u32;
-    }
-
-    #[cfg(target_arch = "x86_64")]
-    let has_rdrand = crate::arch::x86::cpuid::features().rdrand;
-    #[cfg(target_arch = "aarch64")]
-    let has_rdrand = true; // ARM64: try RNDR (falls back to counter if fails)
-
-    if has_rdrand {
-        // Use RDRAND: generates 64 bits of hardware random per call
-        while filled + 8 <= len {
-            if let Some(val) = rdrand64() {
-                dst[filled..filled + 8].copy_from_slice(&val.to_ne_bytes());
-                filled += 8;
-            } else {
-                break; // RDRAND failed, fall through to TSC
-            }
-        }
-        // Handle remaining bytes
-        if filled < len {
-            if let Some(val) = rdrand64() {
-                let bytes = val.to_ne_bytes();
-                let remaining = len - filled;
-                dst[filled..filled + remaining].copy_from_slice(&bytes[..remaining]);
-                filled = len;
-            }
-        }
-    }
-
-    // Fallback: TSC-based xorshift64 for any unfilled bytes
-    if filled < len {
-        let mut state = rdtsc();
-        // Mix in some additional entropy
-        state ^= buf_ptr as u64;
-        state ^= len as u64;
-        while filled < len {
-            state = xorshift64(state);
-            let bytes = state.to_ne_bytes();
-            let chunk = (len - filled).min(8);
-            dst[filled..filled + chunk].copy_from_slice(&bytes[..chunk]);
-            filled += chunk;
-        }
-    }
-
-    filled as u32
-}
-
-/// Try to read 64 bits from hardware RNG.
-#[inline]
-fn rdrand64() -> Option<u64> {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let val: u64;
-        let ok: u8;
-        unsafe {
-            core::arch::asm!(
-                "rdrand {val}",
-                "setc {ok}",
-                val = out(reg) val,
-                ok = out(reg_byte) ok,
-            );
-        }
-        if ok != 0 { Some(val) } else { None }
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        let val: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, s3_3_c2_c4_0", out(reg) val, options(nomem, nostack));
-        }
-        if val != 0 { Some(val) } else { None }
-    }
-}
-
-/// Read a hardware monotonic counter.
-#[inline]
-fn rdtsc() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        let lo: u32;
-        let hi: u32;
-        unsafe {
-            core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi);
-        }
-        ((hi as u64) << 32) | lo as u64
-    }
-    #[cfg(target_arch = "aarch64")]
-    {
-        let cnt: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, cntpct_el0", out(reg) cnt, options(nomem, nostack));
-        }
-        cnt
-    }
-}
-
-/// xorshift64 PRNG step.
-#[inline]
-fn xorshift64(mut x: u64) -> u64 {
-    if x == 0 { x = 0x123456789ABCDEF0; }
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    x
+    crate::crypto::random::fill_random(dst);
+    len as u32
 }
 
 /// SYS_KBD_LIST_LAYOUTS (202): Write layout info entries to a user buffer.
