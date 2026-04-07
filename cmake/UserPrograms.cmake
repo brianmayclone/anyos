@@ -232,6 +232,44 @@ function(add_app NAME SRC_DIR DISPLAY_NAME)
   set(APP_BINS ${APP_BINS} "${APP_DIR}/${DISPLAY_NAME}" PARENT_SCOPE)
 endfunction()
 
+# System .app bundles (placed in /System/{DISPLAY_NAME}.app/ — no capability prompts)
+function(add_system_app NAME SRC_DIR DISPLAY_NAME)
+  set(APP_DIR "${SYSROOT_DIR}/System/${DISPLAY_NAME}.app")
+  set(ELF "${USER_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/${NAME}.elf")
+  set(_BUNDLE_ARGS
+    -i "${SRC_DIR}/Info.conf"
+    -e ${ELF}
+    --anyelf-path ${ANYELF_EXECUTABLE}
+    --version ${ANYOS_VERSION}
+    -o "${APP_DIR}"
+    --force
+  )
+  set(_BUNDLE_DEPS ${WORKSPACE_STAMP} "${SRC_DIR}/Info.conf" ${ANYELF_EXECUTABLE} ${MKAPPBUNDLE_EXECUTABLE})
+  if(EXISTS "${SRC_DIR}/Icon.ico")
+    list(APPEND _BUNDLE_ARGS -c "${SRC_DIR}/Icon.ico")
+    list(APPEND _BUNDLE_DEPS "${SRC_DIR}/Icon.ico")
+  endif()
+  foreach(_RESDIR syntax resources)
+    if(IS_DIRECTORY "${SRC_DIR}/${_RESDIR}")
+      list(APPEND _BUNDLE_ARGS -r "${SRC_DIR}/${_RESDIR}")
+      file(GLOB_RECURSE _RES_FILES "${SRC_DIR}/${_RESDIR}/*")
+      list(APPEND _BUNDLE_DEPS ${_RES_FILES})
+    endif()
+  endforeach()
+  if(EXISTS "${SRC_DIR}/build.conf")
+    list(APPEND _BUNDLE_ARGS -r "${SRC_DIR}/build.conf")
+    list(APPEND _BUNDLE_DEPS "${SRC_DIR}/build.conf")
+  endif()
+  add_custom_command(
+    OUTPUT "${APP_DIR}/${DISPLAY_NAME}"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "${APP_DIR}"
+    COMMAND ${MKAPPBUNDLE_EXECUTABLE} ${_BUNDLE_ARGS}
+    DEPENDS ${_BUNDLE_DEPS}
+    COMMENT "Packaging ${DISPLAY_NAME}.app → /System/ (mkappbundle)"
+  )
+  set(SYSTEM_BINS ${SYSTEM_BINS} "${APP_DIR}/${DISPLAY_NAME}" PARENT_SCOPE)
+endfunction()
+
 # Variant for DLLs (placed in /Libraries/)
 # DLLs use custom link.ld scripts, so they share their own target dir
 # (separate from user programs to avoid linker script conflicts).
@@ -673,6 +711,7 @@ add_rust_system_program(login)
 add_rust_system_program(permdialog)
 add_rust_system_program(notifyd)
 add_rust_user_program(amid)
+add_rust_user_program(searchd)
 add_rust_user_program(textmode_console)
 
 # ============================================================
@@ -724,7 +763,7 @@ add_app(notifications ${CMAKE_SOURCE_DIR}/apps/notifications "Notifications")
 add_app(installer    ${CMAKE_SOURCE_DIR}/apps/installer     "Installer")
 add_app(keyboard     ${CMAKE_SOURCE_DIR}/apps/keyboard      "Keyboard")
 add_app(updater      ${CMAKE_SOURCE_DIR}/apps/updater       "Software Update")
-add_app(runner       ${CMAKE_SOURCE_DIR}/apps/runner        "Runner")
+add_system_app(runner       ${CMAKE_SOURCE_DIR}/system/runner     "Runner")
 
 # ============================================================
 # Session host, Desktop shell, Crash dialog
@@ -938,6 +977,10 @@ add_custom_target(bootloader_sysroot DEPENDS
 # Install service config files only if they don't already exist in the build
 # sysroot. This preserves user-edited settings across rebuilds.
 # The defaults live in defaults/ (not sysroot/) so copy_directory doesn't touch them.
+if(NOT EXISTS "${SYSROOT_DIR}/System/etc/searchd.conf")
+  file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/searchd.conf"
+       DESTINATION "${SYSROOT_DIR}/System/etc")
+endif()
 if(NOT EXISTS "${SYSROOT_DIR}/System/etc/vncd.conf")
   file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/vncd.conf"
        DESTINATION "${SYSROOT_DIR}/System/etc")

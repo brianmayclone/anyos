@@ -19,7 +19,7 @@ use crate::types::*;
 // Bytes 20..32   reserved (zeroed)
 // Bytes 32..4096 table directory entries (128 bytes each, max 31)
 //
-// ── Table entry layout (128 bytes) ──────────────────────────────────────────
+// ── Table entry layout (256 bytes) ──────────────────────────────────────────
 //
 // Bytes  0..32   name (null-terminated ASCII)
 // Bytes 32..34   col_count (u16 LE)
@@ -27,8 +27,8 @@ use crate::types::*;
 // Bytes 36..40   row_count (u32 LE)
 // Bytes 40..44   first_data_page (u32 LE, page number, 0 = none)
 // Bytes 44..48   reserved
-// Bytes 48..128  columns: up to 8 entries of 10 bytes each = 80 bytes
-//                column entry: name[8] (null-terminated) + col_type (u16 LE)
+// Bytes 48..256  columns: up to 8 entries of 26 bytes each = 208 bytes
+//                column entry: name[24] (null-terminated) + col_type (u16 LE)
 
 /// Read the database file header and validate magic.
 pub fn read_header(page: &[u8; PAGE_SIZE]) -> DbResult<(u32, u32)> {
@@ -84,13 +84,16 @@ fn read_table_entry(entry: &[u8]) -> DbResult<TableSchema> {
         return Err(DbError::Corrupt(String::from("Column count exceeds maximum")));
     }
 
+    const COL_ENTRY_SIZE: usize = 26; // 24 name + 2 type
+    const COL_NAME_BYTES: usize = 24;
+
     let mut columns = Vec::with_capacity(col_count);
     for c in 0..col_count {
-        let coff = 48 + c * 10;
-        let cname_end = entry[coff..coff + 8].iter().position(|&b| b == 0).unwrap_or(8);
+        let coff = 48 + c * COL_ENTRY_SIZE;
+        let cname_end = entry[coff..coff + COL_NAME_BYTES].iter().position(|&b| b == 0).unwrap_or(COL_NAME_BYTES);
         let cname = core::str::from_utf8(&entry[coff..coff + cname_end])
             .map_err(|_| DbError::Corrupt(String::from("Invalid column name encoding")))?;
-        let ctype_raw = u16::from_le_bytes([entry[coff + 8], entry[coff + 9]]);
+        let ctype_raw = u16::from_le_bytes([entry[coff + COL_NAME_BYTES], entry[coff + COL_NAME_BYTES + 1]]);
         let col_type = ColumnType::from_u16(ctype_raw)
             .ok_or_else(|| DbError::Corrupt(String::from("Invalid column type")))?;
         columns.push(ColumnDef {
@@ -129,14 +132,17 @@ pub fn write_table_entry(page: &mut [u8; PAGE_SIZE], index: usize, schema: &Tabl
     entry[40..44].copy_from_slice(&schema.first_data_page.to_le_bytes());
 
     // Columns
+    const COL_ENTRY_SIZE: usize = 26; // 24 name + 2 type
+    const COL_NAME_BYTES: usize = 24;
+
     for (c, col) in schema.columns.iter().enumerate() {
         if c >= MAX_COLUMNS { break; }
-        let coff = 48 + c * 10;
+        let coff = 48 + c * COL_ENTRY_SIZE;
         let cb = col.name.as_bytes();
         let clen = cb.len().min(MAX_COL_NAME);
         entry[coff..coff + clen].copy_from_slice(&cb[..clen]);
         let ct = (col.col_type as u16).to_le_bytes();
-        entry[coff + 8..coff + 10].copy_from_slice(&ct);
+        entry[coff + COL_NAME_BYTES..coff + COL_NAME_BYTES + 2].copy_from_slice(&ct);
     }
 }
 

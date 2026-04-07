@@ -41,8 +41,8 @@ pub fn exec(db: &mut Database, stmt: Statement) -> DbResult<u32> {
 /// Execute a SELECT query and return a result set.
 pub fn query(db: &mut Database, stmt: Statement) -> DbResult<ResultSet> {
     match stmt {
-        Statement::Select { table, columns, where_clause } => {
-            exec_select(db, &table, &columns, where_clause.as_ref())
+        Statement::Select { table, columns, distinct, where_clause, order_by, limit, offset } => {
+            exec_select(db, &table, &columns, distinct, where_clause.as_ref(), &order_by, limit, offset)
         }
         _ => Err(DbError::Parse(String::from("Expected SELECT statement"))),
     }
@@ -108,7 +108,11 @@ fn exec_select(
     db: &mut Database,
     table_name: &str,
     columns: &SelectColumns,
+    distinct: bool,
     where_clause: Option<&Expr>,
+    order_by: &[OrderBy],
+    limit: Option<u64>,
+    offset: Option<u64>,
 ) -> DbResult<ResultSet> {
     let table_idx = schema::find_table(&db.tables, table_name)
         .ok_or_else(|| DbError::TableNotFound(String::from(table_name)))?;
@@ -160,11 +164,76 @@ fn exec_select(
         result_rows.push(Row { values: projected });
     }
 
+    // ORDER BY
+    if !order_by.is_empty() {
+        // Resolve order-by column indices in the projected result
+        let mut sort_specs: Vec<(usize, bool)> = Vec::new();
+        for ob in order_by {
+            let idx = col_names.iter().position(|n| n.eq_ignore_ascii_case(&ob.column))
+                .ok_or_else(|| DbError::ColumnNotFound(ob.column.clone()))?;
+            sort_specs.push((idx, ob.ascending));
+        }
+        result_rows.sort_by(|a, b| {
+            for &(idx, asc) in &sort_specs {
+                let va = a.values.get(idx).unwrap_or(&Value::Null);
+                let vb = b.values.get(idx).unwrap_or(&Value::Null);
+                let cmp = cmp_values(va, vb);
+                if cmp != core::cmp::Ordering::Equal {
+                    return if asc { cmp } else { cmp.reverse() };
+                }
+            }
+            core::cmp::Ordering::Equal
+        });
+    }
+
+    // DISTINCT
+    if distinct {
+        let mut unique: Vec<Row> = Vec::new();
+        for row in result_rows {
+            let is_dup = unique.iter().any(|u| u.values == row.values);
+            if !is_dup {
+                unique.push(row);
+            }
+        }
+        result_rows = unique;
+    }
+
+    // OFFSET
+    if let Some(off) = offset {
+        let off = off as usize;
+        if off >= result_rows.len() {
+            result_rows.clear();
+        } else {
+            result_rows = result_rows.split_off(off);
+        }
+    }
+
+    // LIMIT
+    if let Some(lim) = limit {
+        result_rows.truncate(lim as usize);
+    }
+
     Ok(ResultSet {
         col_names,
         col_types,
         rows: result_rows,
     })
+}
+
+/// Compare two Values for ordering (NULL is smallest).
+fn cmp_values(a: &Value, b: &Value) -> core::cmp::Ordering {
+    match (a, b) {
+        (Value::Null, Value::Null) => core::cmp::Ordering::Equal,
+        (Value::Null, _) => core::cmp::Ordering::Less,
+        (_, Value::Null) => core::cmp::Ordering::Greater,
+        (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
+        (Value::Text(x), Value::Text(y)) => x.cmp(y),
+        (Value::Integer(x), Value::Text(_)) => {
+            // Integer before text
+            core::cmp::Ordering::Less
+        }
+        (Value::Text(_), Value::Integer(_)) => core::cmp::Ordering::Greater,
+    }
 }
 
 // ── UPDATE ───────────────────────────────────────────────────────────────────
@@ -267,6 +336,41 @@ fn eval_where(expr: &Expr, values: &[Value], schema: &[ColumnDef]) -> DbResult<b
         Expr::Or(l, r) => {
             Ok(eval_where(l, values, schema)? || eval_where(r, values, schema)?)
         }
+        Expr::Not(inner) => {
+            Ok(!eval_where(inner, values, schema)?)
+        }
+        Expr::IsNull(inner) => {
+            let val = eval_value(inner, values, schema)?;
+            Ok(matches!(val, Value::Null))
+        }
+        Expr::IsNotNull(inner) => {
+            let val = eval_value(inner, values, schema)?;
+            Ok(!matches!(val, Value::Null))
+        }
+        Expr::Like { expr, pattern } => {
+            let val = eval_value(expr, values, schema)?;
+            match val {
+                Value::Text(ref s) => Ok(like_match(s, pattern)),
+                Value::Null => Ok(false),
+                Value::Integer(v) => {
+                    let mut s = String::new();
+                    fmt_i64_val(&mut s, v);
+                    Ok(like_match(&s, pattern))
+                }
+            }
+        }
+        Expr::NotLike { expr, pattern } => {
+            let val = eval_value(expr, values, schema)?;
+            match val {
+                Value::Text(ref s) => Ok(!like_match(s, pattern)),
+                Value::Null => Ok(false),
+                Value::Integer(v) => {
+                    let mut s = String::new();
+                    fmt_i64_val(&mut s, v);
+                    Ok(!like_match(&s, pattern))
+                }
+            }
+        }
         Expr::Literal(Value::Integer(0)) => Ok(false),
         Expr::Literal(_) => Ok(true),
         Expr::Column(name) => {
@@ -284,6 +388,59 @@ fn eval_where(expr: &Expr, values: &[Value], schema: &[ColumnDef]) -> DbResult<b
             }
         }
     }
+}
+
+/// SQL LIKE pattern matching (case-insensitive).
+/// `%` matches any sequence of characters, `_` matches any single character.
+fn like_match(text: &str, pattern: &str) -> bool {
+    let t = text.as_bytes();
+    let p = pattern.as_bytes();
+    like_match_impl(t, p, 0, 0)
+}
+
+fn like_match_impl(t: &[u8], p: &[u8], ti: usize, pi: usize) -> bool {
+    let mut ti = ti;
+    let mut pi = pi;
+
+    loop {
+        if pi >= p.len() {
+            return ti >= t.len();
+        }
+        if p[pi] == b'%' {
+            pi += 1;
+            // Skip consecutive %
+            while pi < p.len() && p[pi] == b'%' { pi += 1; }
+            if pi >= p.len() { return true; }
+            // Try matching rest from every position
+            while ti <= t.len() {
+                if like_match_impl(t, p, ti, pi) { return true; }
+                ti += 1;
+            }
+            return false;
+        }
+        if ti >= t.len() { return false; }
+        if p[pi] == b'_' || to_lower_byte(t[ti]) == to_lower_byte(p[pi]) {
+            ti += 1;
+            pi += 1;
+        } else {
+            return false;
+        }
+    }
+}
+
+fn to_lower_byte(b: u8) -> u8 {
+    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
+}
+
+fn fmt_i64_val(out: &mut String, v: i64) {
+    if v == 0 { out.push('0'); return; }
+    let (neg, abs) = if v < 0 { (true, (-(v + 1)) as u64 + 1) } else { (false, v as u64) };
+    if neg { out.push('-'); }
+    let mut buf = [0u8; 20];
+    let mut n = 0;
+    let mut val = abs;
+    while val > 0 { buf[n] = b'0' + (val % 10) as u8; val /= 10; n += 1; }
+    for i in (0..n).rev() { out.push(buf[i] as char); }
 }
 
 /// Resolve an expression to a concrete value.

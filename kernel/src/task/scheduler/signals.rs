@@ -163,6 +163,22 @@ pub fn set_thread_parent_tid(tid: u32, parent: u32) {
     }
 }
 
+/// Detach a child from its parent. Only succeeds if `parent_tid` matches.
+/// Sets the child's parent_tid to 0 so it won't be cascade-killed.
+/// Returns 0 on success, u32::MAX on error.
+pub fn detach_child(parent_tid: u32, child_tid: u32) -> u32 {
+    let mut guard = SCHEDULER.lock();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == child_tid) {
+            if thread.parent_tid == parent_tid {
+                thread.parent_tid = 0;
+                return 0;
+            }
+        }
+    }
+    u32::MAX
+}
+
 /// Get the current thread's parent TID.
 pub fn current_parent_tid() -> u32 {
     let guard = SCHEDULER.lock();

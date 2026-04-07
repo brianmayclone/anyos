@@ -1,6 +1,6 @@
 # anyOS Syscall Reference
 
-Complete reference for all 236 system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
+Complete reference for all 237 system calls in anyOS. Syscalls are the interface between user-space programs and the kernel.
 
 ## Calling Conventions
 
@@ -64,6 +64,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 |---|------|------|--------|-------------|
 | 27 | `spawn` | path_ptr, stdout_pipe, args_ptr, stdin_pipe | tid or 0xFFFFFFFF | Spawn process from filesystem path with optional pipe I/O redirection |
 | 28 | `getargs` | buf_ptr, buf_size | bytes_written | Get command-line arguments string for current process |
+| 314 | `detach` | child_tid | 0 or 0xFFFFFFFF | Detach a child process so it survives parent exit. Only the direct parent may detach. Sets the child's parent_tid to 0, exempting it from cascade-kill on parent termination. Returns 0 on success, 0xFFFFFFFF if child not found or not owned by caller |
 
 ## Threading
 

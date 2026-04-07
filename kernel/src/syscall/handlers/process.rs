@@ -120,6 +120,15 @@ pub fn sys_getppid() -> u32 {
     crate::task::scheduler::current_parent_tid()
 }
 
+/// sys_detach - Detach a child process so it is not cascade-killed on parent exit.
+/// arg1 = child TID. Only the direct parent may detach a child.
+/// Sets the child's parent_tid to 0 so it becomes a root process.
+/// Returns 0 on success, u32::MAX if child not found or not owned.
+pub fn sys_detach(child_tid: u32) -> u32 {
+    let my_tid = crate::task::scheduler::current_tid();
+    crate::task::scheduler::detach_child(my_tid, child_tid)
+}
+
 /// sys_yield - Yield the CPU to another thread
 pub fn sys_yield() -> u32 {
     crate::task::scheduler::schedule();

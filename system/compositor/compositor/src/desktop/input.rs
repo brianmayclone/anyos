@@ -864,7 +864,7 @@ impl Desktop {
 
             // Alt+R: Launch app runner
             if alt && !ctrl && key_code == 0x13 {
-                anyos_std::process::spawn("/Applications/Runner.app", "");
+                anyos_std::process::spawn("/System/Runner.app", "");
                 return;
             }
 

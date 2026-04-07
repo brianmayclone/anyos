@@ -1,6 +1,6 @@
 # anyOS Database Library (libdb) API Reference
 
-The **libdb** shared library provides a file-based SQL database engine with page-based storage. It supports a subset of SQL (CREATE TABLE, DROP TABLE, INSERT, SELECT, UPDATE, DELETE) with INTEGER and TEXT column types, WHERE clauses with AND/OR logic, and case-insensitive identifiers.
+The **libdb** shared library provides a file-based SQL database engine with page-based storage. It supports a subset of SQL (CREATE TABLE, DROP TABLE, INSERT, SELECT, UPDATE, DELETE) with INTEGER and TEXT column types, WHERE clauses with AND/OR/NOT/IS NULL/LIKE logic, ORDER BY, LIMIT/OFFSET, DISTINCT, and case-insensitive identifiers.
 
 **Format:** ELF64 shared object (.so), loaded via `dl_open("/Libraries/libdb.so")`
 **Exports:** 13
@@ -374,7 +374,7 @@ CREATE TABLE name (col1 TYPE, col2 TYPE, ...)
 
 Create a new table. Types are `INTEGER` (aliases: `INT`) and `TEXT` (aliases: `VARCHAR`). Returns 0 rows affected.
 
-**Errors:** Table already exists, too many tables (max 31), too many columns (max 8), table name too long (max 31 chars), column name too long (max 7 chars).
+**Errors:** Table already exists, too many tables (max 15), too many columns (max 8), table name too long (max 31 chars), column name too long (max 23 chars).
 
 ### DROP TABLE
 
@@ -404,9 +404,20 @@ Insert a row. With explicit column names, unmentioned columns default to NULL. W
 ```sql
 SELECT * FROM name
 SELECT col1, col2 FROM name WHERE condition
+SELECT DISTINCT col1 FROM name
+SELECT * FROM name ORDER BY col1 DESC, col2 ASC
+SELECT * FROM name WHERE condition LIMIT 10 OFFSET 20
+SELECT * FROM name WHERE name LIKE '%test%' ORDER BY name LIMIT 50
 ```
 
 Query rows from a table. Supports `*` (all columns) or a named column list. Returns a result set accessible via `QueryResult`.
+
+**Clauses** (parsed in this order):
+- `DISTINCT` — eliminate duplicate rows from the result
+- `WHERE` — filter rows (see WHERE Clauses below)
+- `ORDER BY col [ASC|DESC] [, ...]` — sort results (NULL sorts first, ASC is default)
+- `LIMIT n` — return at most n rows
+- `OFFSET n` — skip the first n rows
 
 **Errors:** Table not found, column not found.
 
@@ -435,7 +446,7 @@ Delete matching rows. Without a WHERE clause, all rows are deleted (but the tabl
 
 ### WHERE Clauses
 
-WHERE clauses support comparison operators and boolean logic:
+WHERE clauses support comparison operators, boolean logic, NULL tests, and pattern matching:
 
 | Operator | Description |
 |----------|-------------|
@@ -447,9 +458,14 @@ WHERE clauses support comparison operators and boolean logic:
 | `>=` | Greater than or equal |
 | `AND` | Logical AND |
 | `OR` | Logical OR (lower precedence than AND) |
+| `NOT` | Logical negation (prefix) |
+| `IS NULL` | True if value is NULL |
+| `IS NOT NULL` | True if value is not NULL |
+| `LIKE 'pattern'` | Pattern match (`%` = any chars, `_` = one char, case-insensitive) |
+| `NOT LIKE 'pattern'` | Negated pattern match |
 | `(...)` | Parenthesized subexpressions |
 
-**Operator precedence** (lowest to highest): OR, AND, comparison.
+**Operator precedence** (lowest to highest): OR, AND, NOT, comparison/IS/LIKE.
 
 **NULL comparison:** `NULL = NULL` is true (unlike standard SQL). Any other comparison involving NULL returns false except `!=` which returns true.
 
@@ -475,11 +491,11 @@ The database file uses a page-based layout with 4096-byte pages. Page 0 contains
 | 12 | 4 | Table count (u32 LE) |
 | 16 | 4 | First free page (u32 LE, 0 = none) |
 | 20 | 12 | Reserved (zeroed) |
-| 32 | 4064 | Table directory: up to 31 entries of 128 bytes each |
+| 32 | 4064 | Table directory: up to 15 entries of 256 bytes each |
 
 ### Table Directory Entry
 
-Each table entry is 128 bytes:
+Each table entry is 256 bytes:
 
 | Offset | Size | Field |
 |--------|------|-------|
@@ -489,14 +505,14 @@ Each table entry is 128 bytes:
 | 36 | 4 | Row count (u32 LE) |
 | 40 | 4 | First data page number (u32 LE, 0 = no data) |
 | 44 | 4 | Reserved |
-| 48 | 80 | Column definitions: up to 8 entries of 10 bytes each |
+| 48 | 208 | Column definitions: up to 8 entries of 26 bytes each |
 
-Each column definition (10 bytes):
+Each column definition (26 bytes):
 
 | Offset | Size | Field |
 |--------|------|-------|
-| 0 | 8 | Column name (null-terminated ASCII, max 7 chars) |
-| 8 | 2 | Column type (u16 LE): 1 = INTEGER, 2 = TEXT |
+| 0 | 24 | Column name (null-terminated ASCII, max 23 chars) |
+| 24 | 2 | Column type (u16 LE): 1 = INTEGER, 2 = TEXT |
 
 ### Data Pages
 
@@ -543,10 +559,10 @@ Freed pages (from DROP TABLE or future compaction) form a singly-linked list. Ea
 |----------|-------|-------|
 | Concurrent open databases | 8 | Per-process, across all `Database::open()` calls |
 | Concurrent result sets | 16 | Per-process, across all `Database::query()` calls |
-| Tables per database | 31 | `(4096 - 32) / 128` entries fit in page 0 |
-| Columns per table | 8 | 80 bytes available in table entry (8 x 10 bytes) |
+| Tables per database | 15 | `(4096 - 32) / 256` entries fit in page 0 |
+| Columns per table | 8 | 208 bytes available in table entry (8 x 26 bytes) |
 | Table name length | 31 chars | Null-terminated in 32-byte field |
-| Column name length | 7 chars | Null-terminated in 8-byte field |
+| Column name length | 23 chars | Null-terminated in 24-byte field |
 | Text value size | 255 bytes | Length stored as u16 but limited to 255 |
 | Column types | 2 | INTEGER (i64) and TEXT only |
 | Page size | 4096 bytes | Fixed, not configurable |

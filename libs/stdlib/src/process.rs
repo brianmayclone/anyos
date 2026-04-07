@@ -166,6 +166,15 @@ pub fn spawn(path: &str, args: &str) -> u32 {
     spawn_piped(path, args, 0)
 }
 
+/// Detach a child process so it survives parent exit.
+///
+/// After detach, the child is no longer cascade-killed when the calling
+/// process terminates. Only the direct parent may detach a child.
+/// Returns true on success, false if the TID is invalid or not a child.
+pub fn detach(child_tid: u32) -> bool {
+    syscall1(SYS_DETACH, child_tid as u64) == 0
+}
+
 /// Launch a `.app` bundle via the Sessionhost process.
 ///
 /// The Sessionhost handles permission checks and shows the PermissionDialog

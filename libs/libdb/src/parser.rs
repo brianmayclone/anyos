@@ -30,7 +30,17 @@ enum Token {
     Delete,
     And,
     Or,
+    Not,
     Null,
+    Is,
+    Like,
+    Order,
+    By,
+    Asc,
+    Desc,
+    Limit,
+    Offset,
+    Distinct,
     Integer,  // type keyword
     Text,     // type keyword
 
@@ -246,7 +256,17 @@ impl<'a> Tokenizer<'a> {
             "DELETE" => Token::Delete,
             "AND" => Token::And,
             "OR" => Token::Or,
+            "NOT" => Token::Not,
             "NULL" => Token::Null,
+            "IS" => Token::Is,
+            "LIKE" => Token::Like,
+            "ORDER" => Token::Order,
+            "BY" => Token::By,
+            "ASC" => Token::Asc,
+            "DESC" => Token::Desc,
+            "LIMIT" => Token::Limit,
+            "OFFSET" => Token::Offset,
+            "DISTINCT" => Token::Distinct,
             "INTEGER" | "INT" => Token::Integer,
             "TEXT" | "VARCHAR" => Token::Text,
             _ => Token::Ident(String::from(word)),
@@ -440,6 +460,14 @@ impl Parser {
     fn parse_select(&mut self) -> DbResult<Statement> {
         self.advance(); // SELECT
 
+        // DISTINCT
+        let distinct = if self.peek() == &Token::Distinct {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         let columns = if self.peek() == &Token::Star {
             self.advance();
             SelectColumns::All
@@ -459,15 +487,70 @@ impl Parser {
         self.expect(&Token::From)?;
         let table = self.expect_ident()?;
 
+        // WHERE
         let where_clause = if self.peek() == &Token::Where {
             self.advance();
             Some(self.parse_expr()?)
         } else {
             None
         };
+
+        // ORDER BY col [ASC|DESC] [, col [ASC|DESC]]
+        let mut order_by = Vec::new();
+        if self.peek() == &Token::Order {
+            self.advance();
+            self.expect(&Token::By)?;
+            loop {
+                let col = self.expect_ident()?;
+                let ascending = if self.peek() == &Token::Desc {
+                    self.advance();
+                    false
+                } else {
+                    if self.peek() == &Token::Asc { self.advance(); }
+                    true
+                };
+                order_by.push(OrderBy { column: col, ascending });
+                if self.peek() == &Token::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // LIMIT
+        let limit = if self.peek() == &Token::Limit {
+            self.advance();
+            match self.advance() {
+                Token::IntLit(v) if v >= 0 => Some(v as u64),
+                other => {
+                    let mut msg = String::from("Expected integer after LIMIT, got ");
+                    msg.push_str(&format_token(&other));
+                    return Err(DbError::Parse(msg));
+                }
+            }
+        } else {
+            None
+        };
+
+        // OFFSET
+        let offset = if self.peek() == &Token::Offset {
+            self.advance();
+            match self.advance() {
+                Token::IntLit(v) if v >= 0 => Some(v as u64),
+                other => {
+                    let mut msg = String::from("Expected integer after OFFSET, got ");
+                    msg.push_str(&format_token(&other));
+                    return Err(DbError::Parse(msg));
+                }
+            }
+        } else {
+            None
+        };
+
         if self.peek() == &Token::Semi { self.advance(); }
 
-        Ok(Statement::Select { table, columns, where_clause })
+        Ok(Statement::Select { table, columns, distinct, where_clause, order_by, limit, offset })
     }
 
     // ── UPDATE name SET col=val [, col=val] [WHERE ...] ─────────────────
@@ -534,18 +617,71 @@ impl Parser {
 
     /// Parse AND expressions (higher precedence than OR).
     fn parse_and_expr(&mut self) -> DbResult<Expr> {
-        let mut left = self.parse_comparison()?;
+        let mut left = self.parse_not_expr()?;
         while self.peek() == &Token::And {
             self.advance();
-            let right = self.parse_comparison()?;
+            let right = self.parse_not_expr()?;
             left = Expr::And(Box::new(left), Box::new(right));
         }
         Ok(left)
     }
 
-    /// Parse a comparison: term op term.
+    /// Parse NOT prefix (higher precedence than AND).
+    fn parse_not_expr(&mut self) -> DbResult<Expr> {
+        if self.peek() == &Token::Not {
+            self.advance();
+            let expr = self.parse_comparison()?;
+            Ok(Expr::Not(Box::new(expr)))
+        } else {
+            self.parse_comparison()
+        }
+    }
+
+    /// Parse a comparison: term op term, or term IS [NOT] NULL, or term [NOT] LIKE pattern.
     fn parse_comparison(&mut self) -> DbResult<Expr> {
         let left = self.parse_term()?;
+
+        // IS [NOT] NULL
+        if self.peek() == &Token::Is {
+            self.advance();
+            if self.peek() == &Token::Not {
+                self.advance();
+                self.expect(&Token::Null)?;
+                return Ok(Expr::IsNotNull(Box::new(left)));
+            }
+            self.expect(&Token::Null)?;
+            return Ok(Expr::IsNull(Box::new(left)));
+        }
+
+        // [NOT] LIKE 'pattern'
+        if self.peek() == &Token::Like {
+            self.advance();
+            let pattern = match self.advance() {
+                Token::StrLit(s) => s,
+                other => {
+                    let mut msg = String::from("Expected string after LIKE, got ");
+                    msg.push_str(&format_token(&other));
+                    return Err(DbError::Parse(msg));
+                }
+            };
+            return Ok(Expr::Like { expr: Box::new(left), pattern });
+        }
+        if self.peek() == &Token::Not {
+            // Peek ahead for NOT LIKE
+            if self.tokens.get(self.pos + 1) == Some(&Token::Like) {
+                self.advance(); // NOT
+                self.advance(); // LIKE
+                let pattern = match self.advance() {
+                    Token::StrLit(s) => s,
+                    other => {
+                        let mut msg = String::from("Expected string after NOT LIKE, got ");
+                        msg.push_str(&format_token(&other));
+                        return Err(DbError::Parse(msg));
+                    }
+                };
+                return Ok(Expr::NotLike { expr: Box::new(left), pattern });
+            }
+        }
 
         let op = match self.peek() {
             Token::Eq => CmpOp::Eq,
@@ -619,7 +755,17 @@ fn format_token(tok: &Token) -> String {
         Token::Delete => String::from("DELETE"),
         Token::And => String::from("AND"),
         Token::Or => String::from("OR"),
+        Token::Not => String::from("NOT"),
         Token::Null => String::from("NULL"),
+        Token::Is => String::from("IS"),
+        Token::Like => String::from("LIKE"),
+        Token::Order => String::from("ORDER"),
+        Token::By => String::from("BY"),
+        Token::Asc => String::from("ASC"),
+        Token::Desc => String::from("DESC"),
+        Token::Limit => String::from("LIMIT"),
+        Token::Offset => String::from("OFFSET"),
+        Token::Distinct => String::from("DISTINCT"),
         Token::Integer => String::from("INTEGER"),
         Token::Text => String::from("TEXT"),
         Token::Ident(s) => {

@@ -21,10 +21,10 @@ pub const MAGIC: &[u8; 8] = b"ANYDB100";
 pub const HEADER_SIZE: usize = 32;
 
 /// Size of a table directory entry in bytes.
-pub const TABLE_ENTRY_SIZE: usize = 128;
+pub const TABLE_ENTRY_SIZE: usize = 256;
 
 /// Maximum number of tables per database (limited by page 0 capacity).
-pub const MAX_TABLES: usize = (PAGE_SIZE - HEADER_SIZE) / TABLE_ENTRY_SIZE; // 31
+pub const MAX_TABLES: usize = (PAGE_SIZE - HEADER_SIZE) / TABLE_ENTRY_SIZE; // 15
 
 /// Maximum columns per table.
 pub const MAX_COLUMNS: usize = 8;
@@ -32,8 +32,8 @@ pub const MAX_COLUMNS: usize = 8;
 /// Maximum table name length (null-terminated in 32 bytes).
 pub const MAX_TABLE_NAME: usize = 31;
 
-/// Maximum column name length (null-terminated in 8 bytes).
-pub const MAX_COL_NAME: usize = 7;
+/// Maximum column name length (null-terminated in 24 bytes).
+pub const MAX_COL_NAME: usize = 23;
 
 /// Data page header size in bytes.
 pub const DATA_PAGE_HEADER: usize = 8;
@@ -210,7 +210,7 @@ impl DbError {
                 m.push_str(s);
                 m
             }
-            DbError::TooManyTables => String::from("Too many tables (max 31)"),
+            DbError::TooManyTables => String::from("Too many tables (max 15)"),
             DbError::TooManyColumns => String::from("Too many columns (max 8)"),
             DbError::ValueTooLarge => String::from("Value too large (text max 255 bytes)"),
             DbError::Corrupt(s) => {
@@ -246,7 +246,11 @@ pub enum Statement {
     Select {
         table: String,
         columns: SelectColumns,
+        distinct: bool,
         where_clause: Option<Expr>,
+        order_by: Vec<OrderBy>,
+        limit: Option<u64>,
+        offset: Option<u64>,
     },
     Update {
         table: String,
@@ -285,6 +289,29 @@ pub enum Expr {
     And(Box<Expr>, Box<Expr>),
     /// Logical OR.
     Or(Box<Expr>, Box<Expr>),
+    /// Logical NOT.
+    Not(Box<Expr>),
+    /// IS NULL check.
+    IsNull(Box<Expr>),
+    /// IS NOT NULL check.
+    IsNotNull(Box<Expr>),
+    /// LIKE pattern match.
+    Like {
+        expr: Box<Expr>,
+        pattern: String,
+    },
+    /// NOT LIKE pattern match.
+    NotLike {
+        expr: Box<Expr>,
+        pattern: String,
+    },
+}
+
+/// ORDER BY specification.
+#[derive(Debug)]
+pub struct OrderBy {
+    pub column: String,
+    pub ascending: bool,
 }
 
 /// Comparison operators for WHERE clauses.

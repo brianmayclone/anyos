@@ -270,6 +270,9 @@ pub const SYS_DEBUG_SINGLE_STEP: u32 = 310;
 pub const SYS_DEBUG_GET_MEM_MAP: u32 = 311;
 pub const SYS_DEBUG_WAIT_EVENT: u32 = 312;
 pub const SYS_THREAD_INFO_EX: u32 = 313;
+/// Detach a child process so it survives parent exit (no cascade kill).
+/// Sets child's parent_tid to 0. Only the direct parent may detach.
+pub const SYS_DETACH: u32 = 314;
 
 // Platform / thermal / ACPI / I2C
 pub const SYS_THERMAL_READ: u32 = 320;

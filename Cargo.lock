@@ -1075,6 +1075,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libimage_client",
 ]
 
 [[package]]
@@ -1093,6 +1094,14 @@ name = "sdel"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+]
+
+[[package]]
+name = "searchd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libdb_client",
 ]
 
 [[package]]

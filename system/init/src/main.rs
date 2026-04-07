@@ -218,12 +218,13 @@ fn worker_entry() {
     let hz = sys::tick_hz();
 
     // Phase 1: CPU benchmark
-    set_status("CPU benchmark...");
+    set_status("Initializing Hardware (1/2)...");
     PROGRESS.store(5, Ordering::Release);
     let cpu_score = benchmark_cpu(hz * 2);
 
     // Phase 2: Memory benchmark
-    set_status("Memory benchmark...");
+    set_status("Initializing Hardware (2/2)...");
+
     PROGRESS.store(15, Ordering::Release);
     let mem_score = benchmark_memory(hz);
 

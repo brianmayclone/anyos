@@ -115,6 +115,8 @@ These daemons are started directly by the compositor, sessionhost, or init — n
 
 The `svc` command manages system services defined by configuration files in `/System/etc/svc/`. It detects running services by querying the kernel thread list (not PID files), making it robust against crashes and restarts.
 
+**Note —** `svc` calls `detach()` (syscall 314) on every spawned service. This ensures services survive `svc`'s own exit. Without detach, the kernel's cascade-kill mechanism would terminate all services when `svc start-all` returns. The `detach()` syscall sets the child's `parent_tid` to 0, making it a root process exempt from cascade-kill.
+
 **Source:** `bin/svc/src/main.rs`
 
 ### Commands

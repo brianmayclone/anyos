@@ -38,6 +38,7 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_GETCWD, "getcwd"),
     (SYS_CHDIR, "chdir"),
     (SYS_SPAWN, "spawn"),
+    (SYS_DETACH, "detach"),
     (SYS_GETARGS, "getargs"),
     (SYS_TRY_WAITPID, "try_waitpid"),
     (SYS_TIME, "time"),

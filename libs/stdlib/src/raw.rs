@@ -37,6 +37,7 @@ pub(crate) const SYS_MMAP: u32 = 14;
 pub(crate) const SYS_MUNMAP: u32 = 15;
 pub(crate) const SYS_KILL: u32 = 13;
 pub(crate) const SYS_SPAWN: u32 = 27;
+pub(crate) const SYS_DETACH: u32 = 314;
 pub(crate) const SYS_GETARGS: u32 = 28;
 pub(crate) const SYS_TRY_WAITPID: u32 = 29;
 

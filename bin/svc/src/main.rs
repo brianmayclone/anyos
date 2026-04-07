@@ -111,6 +111,8 @@ fn start_service(name: &str, extra_args: &str) {
         return;
     }
 
+    // Detach the service so it survives when svc exits
+    anyos_std::process::detach(tid);
     anyos_std::println!("{}: started (TID {})", name, tid);
 }
 

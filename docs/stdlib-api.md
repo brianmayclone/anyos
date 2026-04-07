@@ -147,6 +147,7 @@ Output goes to file descriptor 1 (stdout) via the `fs::write()` syscall.
 | `spawn` | `fn spawn(path: &str, args: &str) -> u32` | Spawn new process. Automatically shows permission dialog for `.app` bundles on first launch. Returns TID or `u32::MAX` on error. |
 | `spawn_piped` | `fn spawn_piped(path: &str, args: &str, pipe_id: u32) -> u32` | Spawn with stdout redirected to a pipe. |
 | `spawn_piped_full` | `fn spawn_piped_full(path: &str, args: &str, stdout_pipe: u32, stdin_pipe: u32) -> u32` | Spawn with both stdin and stdout pipes. |
+| `detach` | `fn detach(child_tid: u32) -> bool` | Detach a child process so it survives parent exit (not cascade-killed). Only the direct parent may detach. Returns `true` on success. |
 | `waitpid` | `fn waitpid(tid: u32) -> u32` | Block until thread terminates. Returns exit code. |
 | `try_waitpid` | `fn try_waitpid(tid: u32) -> u32` | Non-blocking wait. Returns exit code, `STOPPED`, `STILL_RUNNING`, or `u32::MAX`. |
 | `kill` | `fn kill(tid: u32) -> u32` | Kill a thread (SIGKILL). Returns 0 on success. |
