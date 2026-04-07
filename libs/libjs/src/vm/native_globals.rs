@@ -9,6 +9,9 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use super::Vm;
+use crate::compiler::Compiler;
+use crate::lexer::Lexer;
+use crate::parser::Parser;
 use crate::value::*;
 
 // ═══════════════════════════════════════════════════════════
@@ -196,16 +199,48 @@ pub fn ctor_number(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(n)
 }
 
-/// `Function([...bodyArgs])` — stub constructor.
+/// `Function([arg1[, arg2[, ...argN]],] body)` — dynamically compiles a function.
 ///
-/// A full implementation would compile the body source string.  This stub
-/// creates a no-op function, which is enough to make `new Function()` return
-/// a truthy callable value and `Function.prototype.isPrototypeOf(Boolean)` work.
-pub fn ctor_function(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    // Return undefined so that `new_object()` uses the pre-allocated new_obj
-    // (which has Function.prototype in its chain).  The new_obj is an Object,
-    // not a real function; a proper implementation would return a JsValue::Function.
-    JsValue::Undefined
+/// This is a deliberately small but real implementation because many modern
+/// sites use `new Function(code)()` for deferred actions or configuration hooks.
+pub fn ctor_function(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let body = args
+        .last()
+        .map(|v| v.to_js_string())
+        .unwrap_or_else(String::new);
+    let params = if args.len() > 1 {
+        args[..args.len() - 1]
+            .iter()
+            .map(|v| v.to_js_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    } else {
+        String::new()
+    };
+
+    let source = if params.is_empty() {
+        alloc::format!("(function anonymous() {{\n{}\n}})", body)
+    } else {
+        alloc::format!("(function anonymous({}) {{\n{}\n}})", params, body)
+    };
+
+    let tokens = Lexer::tokenize(&source);
+    let mut parser = Parser::new(tokens);
+    let program = parser.parse_program();
+    if !parser.errors.is_empty() {
+        let err = vm.make_syntax_error(&parser.errors[0]);
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+
+    let mut compiler = Compiler::new();
+    let chunk = compiler.compile_eval(&program);
+
+    let prev_this = vm.current_this.clone();
+    vm.current_this = JsValue::Undefined;
+    let result = vm.execute(chunk);
+    vm.current_this = prev_this;
+    result
 }
 
 /// `Boolean(value)` — converts to boolean, or creates a wrapper object when called as `new`.

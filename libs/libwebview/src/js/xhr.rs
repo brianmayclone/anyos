@@ -5,9 +5,11 @@
 
 use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use libjs::value::{FnKind, JsObject};
+use libjs::value::JsObject;
 use libjs::vm::native_fn;
 use libjs::JsValue;
 use libjs::Vm;
@@ -83,6 +85,14 @@ fn xhr_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         String::from("overrideMimeType"),
         native_fn("overrideMimeType", xhr_noop),
     );
+    obj.set(
+        String::from("addEventListener"),
+        native_fn("addEventListener", xhr_add_event_listener),
+    );
+    obj.set(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", xhr_remove_event_listener),
+    );
 
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
@@ -115,7 +125,7 @@ fn xhr_open(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     set_this_prop(vm, "responseText", JsValue::String(String::new()));
     set_this_prop(vm, "response", JsValue::String(String::new()));
 
-    fire_callback(vm, "onreadystatechange");
+    fire_event(vm, "readystatechange");
     JsValue::Undefined
 }
 
@@ -144,8 +154,8 @@ fn xhr_send(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     // readyState = 2 (HEADERS_RECEIVED).
     set_this_prop(vm, "readyState", JsValue::Number(2.0));
-    fire_callback(vm, "onreadystatechange");
-    fire_callback(vm, "onloadstart");
+    fire_event(vm, "readystatechange");
+    fire_event(vm, "loadstart");
 
     // Perform the HTTP request via the bridge.
     let result = http::http_request(
@@ -160,8 +170,8 @@ fn xhr_send(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     // readyState = 3 (LOADING).
     set_this_prop(vm, "readyState", JsValue::Number(3.0));
-    fire_callback(vm, "onreadystatechange");
-    fire_callback(vm, "onprogress");
+    fire_event(vm, "readystatechange");
+    fire_event(vm, "progress");
 
     // Process result.
     let status = result.get_property("status").to_number();
@@ -175,14 +185,14 @@ fn xhr_send(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     // readyState = 4 (DONE).
     set_this_prop(vm, "readyState", JsValue::Number(4.0));
-    fire_callback(vm, "onreadystatechange");
+    fire_event(vm, "readystatechange");
 
     if status >= 200.0 && status < 400.0 {
-        fire_callback(vm, "onload");
+        fire_event(vm, "load");
     } else {
-        fire_callback(vm, "onerror");
+        fire_event(vm, "error");
     }
-    fire_callback(vm, "onloadend");
+    fire_event(vm, "loadend");
 
     JsValue::Undefined
 }
@@ -190,7 +200,7 @@ fn xhr_send(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn xhr_abort(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     set_this_prop(vm, "readyState", JsValue::Number(0.0));
     set_this_prop(vm, "_sent", JsValue::Bool(false));
-    fire_callback(vm, "onabort");
+    fire_event(vm, "abort");
     JsValue::Undefined
 }
 
@@ -203,6 +213,44 @@ fn xhr_get_all_response_headers(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn xhr_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    JsValue::Undefined
+}
+
+fn xhr_add_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let event = arg_string(args, 0);
+    let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    if event.is_empty() || !callback.is_function() {
+        return JsValue::Undefined;
+    }
+
+    let key = alloc::format!("__listeners_{}", event);
+    let listeners = get_this_prop(vm, &key);
+    match listeners {
+        JsValue::Array(arr) => arr.borrow_mut().push(callback),
+        _ => {
+            let arr = JsValue::new_array(vec![callback]);
+            set_this_prop(vm, &key, arr);
+        }
+    }
+    JsValue::Undefined
+}
+
+fn xhr_remove_event_listener(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let event = arg_string(args, 0);
+    let callback = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    if event.is_empty() || !callback.is_function() {
+        return JsValue::Undefined;
+    }
+
+    let key = alloc::format!("__listeners_{}", event);
+    if let JsValue::Array(arr) = get_this_prop(vm, &key) {
+        let dense = arr.borrow().to_dense_vec();
+        let kept: Vec<JsValue> = dense
+            .into_iter()
+            .filter(|entry| !entry.strict_eq(&callback))
+            .collect();
+        *arr.borrow_mut() = libjs::value::JsArray::from_vec(kept);
+    }
     JsValue::Undefined
 }
 
@@ -223,15 +271,27 @@ fn set_this_prop(vm: &Vm, name: &str, val: JsValue) {
     }
 }
 
-/// Fire a callback stored as a property on `this`.
-fn fire_callback(vm: &mut Vm, name: &str) {
-    let cb = get_this_prop(vm, name);
-    if let JsValue::Function(f) = cb {
-        let kind = f.borrow().kind.clone();
-        if let FnKind::Native(native) = kind {
-            native(vm, &[]);
+fn fire_event(vm: &mut Vm, event: &str) {
+    let this = vm.current_this.clone();
+    let mut evt = JsObject::new();
+    evt.set(String::from("type"), JsValue::String(String::from(event)));
+    evt.set(String::from("target"), this.clone());
+    let evt = JsValue::Object(Rc::new(RefCell::new(evt)));
+
+    let prop_name = alloc::format!("on{}", event);
+    let cb = get_this_prop(vm, &prop_name);
+    if cb.is_function() {
+        let _ = vm.call_value(&cb, &[evt.clone()], this.clone());
+        vm.last_exception.take();
+    }
+
+    let key = alloc::format!("__listeners_{}", event);
+    if let JsValue::Array(arr) = get_this_prop(vm, &key) {
+        for listener in arr.borrow().to_dense_vec() {
+            if listener.is_function() {
+                let _ = vm.call_value(&listener, &[evt.clone()], this.clone());
+                vm.last_exception.take();
+            }
         }
-        // For bytecode functions we'd need to call through the VM.
-        // Simplified: only native callbacks work for now.
     }
 }

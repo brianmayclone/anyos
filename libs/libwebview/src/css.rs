@@ -25,6 +25,15 @@ pub struct Stylesheet {
 }
 
 /// A parsed `@font-face` rule.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FontDisplay {
+    Auto,
+    Block,
+    Swap,
+    Fallback,
+    Optional,
+}
+
 #[derive(Clone)]
 pub struct FontFaceRule {
     pub family: String,
@@ -33,6 +42,8 @@ pub struct FontFaceRule {
     pub weight: u32,
     /// CSS font-style: "normal" or "italic".
     pub italic: bool,
+    /// CSS font-display behavior for scheduling/fallback decisions.
+    pub display: FontDisplay,
 }
 
 /// A complete `@keyframes name { … }` block.
@@ -719,6 +730,7 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
                     let mut src_url = String::new();
                     let mut weight = 400u32;
                     let mut italic = false;
+                    let mut display = FontDisplay::Auto;
                     // Parse declarations until '}'
                     while !p.eof() && p.peek() != b'}' {
                         p.skip_whitespace();
@@ -802,6 +814,15 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
                             "font-style" => {
                                 italic = val.trim() == "italic";
                             }
+                            "font-display" => {
+                                display = match val.trim() {
+                                    "block" => FontDisplay::Block,
+                                    "swap" => FontDisplay::Swap,
+                                    "fallback" => FontDisplay::Fallback,
+                                    "optional" => FontDisplay::Optional,
+                                    _ => FontDisplay::Auto,
+                                };
+                            }
                             _ => {}
                         }
                     }
@@ -814,6 +835,7 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
                             src_url,
                             weight,
                             italic,
+                            display,
                         });
                     }
                 }

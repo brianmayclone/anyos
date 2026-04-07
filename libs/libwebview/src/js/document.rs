@@ -155,6 +155,9 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
         parse_location_fields(url);
 
     let mut obj = JsObject::new();
+    if let JsValue::Function(func) = vm.get_global("Document") {
+        obj.prototype = func.borrow().prototype.clone();
+    }
 
     // Properties.
     obj.set(String::from("title"), JsValue::String(title));
@@ -268,6 +271,10 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     obj.set(
         String::from("addEventListener"),
         native_fn("addEventListener", doc_add_event_listener),
+    );
+    obj.set(
+        String::from("installListener"),
+        native_fn("installListener", doc_add_event_listener),
     );
     obj.set(
         String::from("removeEventListener"),
@@ -470,6 +477,9 @@ fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         -9999
     };
     let mut obj = JsObject::new();
+    if let JsValue::Function(func) = vm.get_global("Text") {
+        obj.prototype = func.borrow().prototype.clone();
+    }
     obj.set(String::from("__nodeId"), JsValue::Number(virtual_id as f64));
     obj.set(String::from("nodeType"), JsValue::Number(3.0));
     obj.set(
@@ -488,8 +498,11 @@ fn doc_create_text_node(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
-fn doc_create_document_fragment(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+fn doc_create_document_fragment(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let mut obj = JsObject::new();
+    if let JsValue::Function(func) = vm.get_global("DocumentFragment") {
+        obj.prototype = func.borrow().prototype.clone();
+    }
     obj.set(String::from("nodeType"), JsValue::Number(11.0));
     obj.set(
         String::from("nodeName"),
@@ -561,6 +574,9 @@ fn doc_create_comment(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         -9999
     };
     let mut obj = JsObject::new();
+    if let JsValue::Function(func) = vm.get_global("Comment") {
+        obj.prototype = func.borrow().prototype.clone();
+    }
     obj.set(String::from("__nodeId"), JsValue::Number(virtual_id as f64));
     obj.set(String::from("nodeType"), JsValue::Number(8.0));
     obj.set(

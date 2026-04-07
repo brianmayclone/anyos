@@ -391,10 +391,10 @@ impl FontManager {
         &mut self, font_id: u16, glyph_id: u16, size: u16, subpixel: bool,
     ) -> Option<usize> {
         let ttf = self.get_font(font_id)?;
-        let units_per_em = ttf.units_per_em;
+        let units_per_em = ttf.units_per_em.max(1);
+        let units_per_em_u32 = units_per_em as u32;
         let advance_fu = ttf.advance_width(glyph_id);
-        let advance_px = (advance_fu as u32 * size as u32 + units_per_em as u32 / 2)
-            / units_per_em as u32;
+        let advance_px = (advance_fu as u32 * size as u32 + units_per_em_u32 / 2) / units_per_em_u32;
 
         // Try outline rasterization first
         if ttf.has_outlines {
@@ -442,10 +442,11 @@ impl FontManager {
 }
 
 fn line_height_internal(ttf: &TtfFont, size: u16) -> u32 {
+    let upm = (ttf.units_per_em as u32).max(1);
     let ascent = ttf.ascent.unsigned_abs() as u32;
     let descent = ttf.descent.unsigned_abs() as u32;
     let line_gap = ttf.line_gap.max(0) as u32;
-    (ascent + descent + line_gap) * size as u32 / ttf.units_per_em as u32
+    (ascent + descent + line_gap) * size as u32 / upm
 }
 
 // ─── Gamma correction ────────────────────────────────────────────────────
@@ -714,7 +715,7 @@ pub fn measure_string(text: &str, font_id: u16, size: u16) -> (u32, u32) {
 
     // Get UPM from font (immutable borrow)
     let upm = match mgr.get_font(actual_font_id) {
-        Some(ttf) => ttf.units_per_em as u32,
+        Some(ttf) => (ttf.units_per_em as u32).max(1),
         None => {
             let char_w = (size as u32 * 6) / 10;
             let w = text.chars().filter(|c| *c != '\n').count() as u32 * char_w;
@@ -755,7 +756,7 @@ pub fn measure_string(text: &str, font_id: u16, size: u16) -> (u32, u32) {
                 let emoji_gid = emoji_font.char_to_glyph_cached(ch as u32);
                 if emoji_gid != 0 {
                     let adv = emoji_font.ttf.advance_width(emoji_gid) as u32;
-                    let emoji_upm = emoji_font.ttf.units_per_em as u32;
+                    let emoji_upm = (emoji_font.ttf.units_per_em as u32).max(1);
                     width += (adv * size as u32 + emoji_upm / 2) / emoji_upm;
                     continue;
                 }
@@ -816,7 +817,7 @@ pub fn draw_string_buf_clipped(
             Some(t) => t,
             None => return,
         };
-        let upm = ttf.units_per_em as u32;
+        let upm = (ttf.units_per_em as u32).max(1);
         let ascent_px = (ttf.ascent.unsigned_abs() as u32 * size as u32) / upm;
         let lh = line_height_internal(ttf, size) as i32;
         let space_gid = ttf.char_to_glyph(b' ' as u32);
@@ -870,7 +871,7 @@ pub fn draw_string_buf_clipped(
         let advance_px = match mgr.get_font(render_font_id) {
             Some(ttf) => {
                 let adv_fu = ttf.advance_width(gid);
-                let font_upm = ttf.units_per_em as u32;
+                let font_upm = (ttf.units_per_em as u32).max(1);
                 (adv_fu as u32 * size as u32 + font_upm / 2) / font_upm
             }
             None => continue,

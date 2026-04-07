@@ -1019,6 +1019,21 @@ impl Vm {
                 Op::SuperCall(argc) => {
                     self.super_call(argc as usize);
                 }
+                Op::SuperCallSpread => {
+                    // Stack: [..., SuperClass, args_array]
+                    let args_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let args: Vec<JsValue> = match &args_val {
+                        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
+                        _ => Vec::new(),
+                    };
+                    // Push super class + expanded args back, then call super_call.
+                    // super_call expects: [..., SuperClass, arg1, ..., argN]
+                    // SuperClass is already on the stack.
+                    for arg in &args {
+                        self.stack.push(arg.clone());
+                    }
+                    self.super_call(args.len());
+                }
 
                 Op::SetSuperClass => {
                     // Stack: [..., Constructor, SuperClass]

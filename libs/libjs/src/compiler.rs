@@ -1936,15 +1936,29 @@ impl Compiler {
                 ref body,
             } = ctor_member.kind
             {
-                let mut full_body = instance_inits;
-                full_body.extend(body.iter().cloned());
+                let mut full_body = if super_class.is_some() {
+                    Self::insert_instance_initializers_after_super(body, &instance_inits)
+                } else {
+                    let mut body_with_inits = instance_inits.clone();
+                    body_with_inits.extend(body.iter().cloned());
+                    body_with_inits
+                };
                 self.compile_function(name, params, &full_body, false);
             }
         } else {
-            // Default constructor — for derived classes ideally calls super(), but
-            // the derived-class tests all provide explicit constructors, so an empty
-            // body is sufficient here.
-            if instance_inits.is_empty() {
+            if super_class.is_some() {
+                let mut default_body = vec![Stmt::Expr(Expr::Call {
+                    callee: Box::new(Expr::Ident(String::from("super"))),
+                    arguments: vec![Expr::Spread(Box::new(Expr::Ident(String::from("args"))))],
+                })];
+                default_body.extend(instance_inits.iter().cloned());
+                let params = vec![Param {
+                    pattern: Pattern::Ident(String::from("args")),
+                    default: None,
+                    is_rest: true,
+                }];
+                self.compile_function(name, &params, &default_body, false);
+            } else if instance_inits.is_empty() {
                 self.compile_function(name, &[], &[], false);
             } else {
                 self.compile_function(name, &[], &instance_inits, false);
@@ -2202,6 +2216,119 @@ impl Compiler {
         // Stack: [..., Constructor]
     }
 
+    /// Check if an expression is a direct super() call.
+    fn expr_is_super_call(expr: &Expr) -> bool {
+        matches!(expr, Expr::Call { callee, .. } if matches!(callee.as_ref(), Expr::Ident(name) if name == "super"))
+    }
+
+    /// Check if an expression contains a super() call (at any nesting depth).
+    fn expr_contains_super_call(expr: &Expr) -> bool {
+        match expr {
+            Expr::Call { callee, .. } => {
+                matches!(callee.as_ref(), Expr::Ident(name) if name == "super")
+            }
+            // Comma expression / sequence: super(), this.init()
+            Expr::Sequence(exprs) => exprs.iter().any(Self::expr_contains_super_call),
+            // Assignment: const x = super()  or  this.x = super()
+            Expr::Assign { right, .. } => Self::expr_contains_super_call(right),
+            // Binary op with comma: (super(), expr)
+            Expr::Binary { left, right, .. } => {
+                Self::expr_contains_super_call(left) || Self::expr_contains_super_call(right)
+            }
+            _ => false,
+        }
+    }
+
+    fn is_top_level_super_call(stmt: &Stmt) -> bool {
+        match stmt {
+            // Direct: super(args);
+            Stmt::Expr(expr) => Self::expr_contains_super_call(expr),
+            // return super(...arguments);
+            Stmt::Return(Some(expr)) => Self::expr_contains_super_call(expr),
+            // const x = super();  /  let x = super();
+            Stmt::VarDecl { decls, .. } => {
+                decls.iter().any(|d| d.init.as_ref().map_or(false, Self::expr_contains_super_call))
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if an expression is a sequence (comma expr) with super() as first element.
+    fn expr_is_sequence_with_super(expr: &Expr) -> bool {
+        match expr {
+            Expr::Sequence(exprs) => exprs.first().map_or(false, Self::expr_is_super_call),
+            _ => false,
+        }
+    }
+
+    /// Split a sequence expression at the super() call:
+    /// `super(), a, b` → (super(), Sequence([a, b]))
+    fn split_sequence_at_super(expr: &Expr) -> (Expr, Option<Expr>) {
+        if let Expr::Sequence(exprs) = expr {
+            let super_expr = exprs[0].clone();
+            let rest: Vec<Expr> = exprs[1..].to_vec();
+            let rest_expr = if rest.is_empty() {
+                None
+            } else if rest.len() == 1 {
+                Some(rest.into_iter().next().unwrap())
+            } else {
+                Some(Expr::Sequence(rest))
+            };
+            (super_expr, rest_expr)
+        } else {
+            (expr.clone(), None)
+        }
+    }
+
+    fn insert_instance_initializers_after_super(
+        body: &[Stmt],
+        instance_inits: &[Stmt],
+    ) -> Vec<Stmt> {
+        if instance_inits.is_empty() {
+            return body.to_vec();
+        }
+
+        let mut full_body = Vec::with_capacity(body.len() + instance_inits.len());
+        let mut inserted = false;
+        for stmt in body.iter().cloned() {
+            if !inserted && Self::is_top_level_super_call(&stmt) {
+                match &stmt {
+                    // `return super(...args);` → `super(...args); <inits>; return this;`
+                    Stmt::Return(Some(expr)) if Self::expr_contains_super_call(expr) => {
+                        full_body.push(Stmt::Expr(expr.clone()));
+                        full_body.extend(instance_inits.iter().cloned());
+                        full_body.push(Stmt::Return(Some(Expr::This)));
+                    }
+                    // `super(), rest;` — split sequence: `super(); <inits>; rest;`
+                    Stmt::Expr(expr) if Self::expr_is_sequence_with_super(expr) => {
+                        let (super_part, rest) = Self::split_sequence_at_super(expr);
+                        full_body.push(Stmt::Expr(super_part));
+                        full_body.extend(instance_inits.iter().cloned());
+                        if let Some(rest_expr) = rest {
+                            full_body.push(Stmt::Expr(rest_expr));
+                        }
+                    }
+                    // Simple: `super(args);` → `super(args); <inits>;`
+                    _ => {
+                        full_body.push(stmt);
+                        full_body.extend(instance_inits.iter().cloned());
+                    }
+                }
+                inserted = true;
+            } else {
+                full_body.push(stmt);
+            }
+        }
+
+        if !inserted {
+            let mut fallback = instance_inits.to_vec();
+            fallback.extend(body.iter().cloned());
+            return fallback;
+        }
+
+        full_body
+    }
+
     // ── Template literal interpolation ──
 
     /// Compile a template literal string that may contain `${...}` expressions.
@@ -2442,12 +2569,19 @@ impl Compiler {
                 match callee.as_ref() {
                     Expr::Ident(name) if name == "super" => {
                         // super(args) — call parent constructor with current `this`.
-                        // Stack layout: [..., SuperClass, arg1..argN]
                         self.emit_load_name("$$super$$");
-                        for arg in arguments {
-                            self.compile_expr(arg);
+                        if Self::args_have_spread(arguments) {
+                            // super(...args) — spread arguments into array, then SuperCallSpread.
+                            // Stack layout: [..., SuperClass, args_array]
+                            self.compile_args_as_array(arguments);
+                            self.emit(Op::SuperCallSpread);
+                        } else {
+                            // Stack layout: [..., SuperClass, arg1..argN]
+                            for arg in arguments {
+                                self.compile_expr(arg);
+                            }
+                            self.emit(Op::SuperCall(arguments.len() as u8));
                         }
-                        self.emit(Op::SuperCall(arguments.len() as u8));
                     }
                     Expr::Member {
                         object, property, ..

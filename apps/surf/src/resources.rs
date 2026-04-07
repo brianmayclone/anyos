@@ -52,6 +52,48 @@ fn deferred_image_rank(
     score
 }
 
+fn deferred_image_runtime_rank(
+    webview: &libwebview::WebView,
+    req: &crate::tab::DeferredImageRequest,
+    scroll_y: i32,
+    viewport_h: i32,
+) -> i32 {
+    let mut score = deferred_image_rank(
+        req.dom_index,
+        req.width,
+        req.height,
+        req.lazy_requested,
+        req.high_priority,
+    );
+    if let Some((_, y, _, h)) = webview.node_bounds(req.node_id) {
+        let top = scroll_y;
+        let bottom = scroll_y + viewport_h.max(1);
+        let visible = y < bottom && y + h > top;
+        if visible {
+            score += 10_000;
+        } else if y >= bottom {
+            let distance = y - bottom;
+            score += (4_000 - distance.saturating_mul(4)).clamp(-2_500, 4_000);
+        } else {
+            let distance = top - (y + h);
+            score += (2_500 - distance.saturating_mul(3)).clamp(-2_000, 2_500);
+        }
+        if y <= bottom + viewport_h {
+            score += 1_500;
+        }
+    }
+    score
+}
+
+fn should_defer_font_face(display: libwebview::css::FontDisplay) -> bool {
+    matches!(
+        display,
+        libwebview::css::FontDisplay::Swap
+            | libwebview::css::FontDisplay::Fallback
+            | libwebview::css::FontDisplay::Optional
+    )
+}
+
 // ═══════════════════════════════════════════════════════════
 // HTTP body decoding
 // ═══════════════════════════════════════════════════════════
@@ -184,7 +226,7 @@ pub(crate) fn queue_stylesheets(
     }
 
     if count > 0 {
-        anyos_std::println!("[surf] submitted {} stylesheet(s) to worker", count);
+        crate::surf_log!("[surf] submitted {} stylesheet(s) to worker", count);
         crate::ensure_net_poll_timer();
     }
 
@@ -202,25 +244,77 @@ pub(crate) fn queue_font_faces(
     tab_index: usize,
 ) {
     let generation = crate::net_worker::current_generation();
-    let font_faces = webview.all_font_faces();
-    let mut count = 0u32;
+    let font_faces: Vec<(String, String, libwebview::css::FontDisplay)> = webview
+        .all_font_faces()
+        .iter()
+        .map(|ff| (ff.family.clone(), ff.src_url.clone(), ff.display))
+        .collect();
+    queue_font_face_batch(tab_index, generation, base_url, &font_faces);
+}
 
-    for ff in font_faces {
-        if ff.src_url.is_empty() {
-            continue;
-        }
-        let resolved = crate::http::resolve_url(base_url, &ff.src_url);
-        crate::net_worker::submit(crate::net_worker::FetchRequest::Font {
-            tab_index,
-            family: ff.family.clone(),
-            url: resolved,
-            generation,
-        });
-        count += 1;
+pub(crate) fn queue_font_face_batch(
+    tab_index: usize,
+    generation: u32,
+    base_url: &crate::http::Url,
+    font_faces: &[(String, String, libwebview::css::FontDisplay)],
+) {
+    let st = crate::state();
+    if tab_index >= st.tabs.len() {
+        return;
     }
 
-    if count > 0 {
-        anyos_std::println!("[surf] submitted {} web font(s) to worker", count);
+    let mut immediate = 0u32;
+    let mut deferred = 0u32;
+    let mut queued_keys: Vec<(String, String)> = Vec::new();
+
+    for (family, src_url, display) in font_faces {
+        if src_url.is_empty() {
+            continue;
+        }
+        if st.tabs[tab_index].webview.web_font_id(family).is_some() {
+            continue;
+        }
+        if queued_keys.iter().any(|(f, s)| f == family && s == src_url) {
+            continue;
+        }
+        queued_keys.push((family.clone(), src_url.clone()));
+        if st.tabs[tab_index]
+            .deferred_fonts
+            .iter()
+            .any(|req| req.family == *family)
+        {
+            continue;
+        }
+
+        let resolved = crate::http::resolve_url(base_url, src_url);
+        if should_defer_font_face(*display) {
+            st.tabs[tab_index]
+                .deferred_fonts
+                .push(crate::tab::DeferredFontRequest {
+                    family: family.clone(),
+                    url: resolved,
+                    display: *display,
+                    generation,
+                });
+            deferred += 1;
+        } else {
+            crate::net_worker::submit(crate::net_worker::FetchRequest::Font {
+                tab_index,
+                family: family.clone(),
+                url: resolved,
+                display: *display,
+                generation,
+            });
+            immediate += 1;
+        }
+    }
+
+    if immediate > 0 || deferred > 0 {
+        crate::surf_log!(
+            "[surf] queued web fonts: immediate={} deferred={}",
+            immediate,
+            deferred
+        );
         crate::ensure_net_poll_timer();
     }
 }
@@ -325,6 +419,7 @@ pub(crate) fn queue_images(
 ) {
     let generation = crate::net_worker::current_generation();
     let mut count = 0u32;
+    let mut immediate_count = 0u32;
     // Keep the truly critical image path small so text/CSS/JS become usable earlier.
     // `loading=lazy` stays out of the startup path entirely, while explicit
     // eager/high-priority images get a small bonus budget similar to browsers'
@@ -366,8 +461,23 @@ pub(crate) fn queue_images(
                     || fetchpriority.eq_ignore_ascii_case("high");
                 let width = dom.attr(i, "width").and_then(parse_dimension_attr);
                 let height = dom.attr(i, "height").and_then(parse_dimension_attr);
-                let should_start_immediately = if lazy_requested {
+                let initial_viewport_hit = {
+                    let st = crate::state();
+                    if tab_index >= st.tabs.len() {
+                        false
+                    } else {
+                        let webview = &st.tabs[tab_index].webview;
+                        let viewport_h = webview.viewport_height() as i32;
+                        webview
+                            .node_bounds(i)
+                            .is_some_and(|(_, y, _, h)| y < viewport_h + 640 && y + h > -192)
+                    }
+                };
+                let should_start_immediately = if lazy_requested && !initial_viewport_hit {
                     false
+                } else if initial_viewport_hit && immediate_budget > 0 {
+                    immediate_budget -= 1;
+                    true
                 } else if high_priority && high_priority_budget > 0 {
                     high_priority_budget -= 1;
                     true
@@ -386,6 +496,7 @@ pub(crate) fn queue_images(
                         priority: crate::net_worker::ImagePriority::Viewport,
                         generation,
                     });
+                    immediate_count += 1;
                 } else {
                     let priority = if high_priority || (!lazy_requested && i < 24) {
                         crate::net_worker::ImagePriority::Viewport
@@ -396,9 +507,15 @@ pub(crate) fn queue_images(
                     deferred.push((
                         rank,
                         crate::tab::DeferredImageRequest {
+                            node_id: i,
+                            dom_index: i,
                             src,
                             url: img_url,
                             priority,
+                            width,
+                            height,
+                            lazy_requested,
+                            high_priority,
                             generation,
                         },
                     ));
@@ -417,7 +534,14 @@ pub(crate) fn queue_images(
     }
 
     if count > 0 {
-        anyos_std::println!("[surf] submitted {} image(s) to worker", count);
+        let deferred_count = count.saturating_sub(immediate_count);
+        crate::surf_log!(
+            "[surf] image queue summary: total={} immediate={} deferred={} tab={}",
+            count,
+            immediate_count,
+            deferred_count,
+            tab_index
+        );
         crate::ensure_net_poll_timer();
     }
 }
@@ -431,6 +555,13 @@ pub(crate) fn submit_deferred_images(tab_index: usize, max_batch: usize) -> usiz
         return 0;
     }
     let tab = &mut st.tabs[tab_index];
+    let scroll_y = tab.webview.scroll_view().get_state() as i32;
+    let viewport_h = tab.webview.viewport_height() as i32;
+    let webview = &tab.webview;
+    tab.deferred_images.sort_by(|a, b| {
+        deferred_image_runtime_rank(webview, b, scroll_y, viewport_h)
+            .cmp(&deferred_image_runtime_rank(webview, a, scroll_y, viewport_h))
+    });
     let count = core::cmp::min(max_batch, tab.deferred_images.len());
     if count == 0 {
         return 0;
@@ -447,12 +578,48 @@ pub(crate) fn submit_deferred_images(tab_index: usize, max_batch: usize) -> usiz
             generation: req.generation,
         });
     }
-    anyos_std::println!(
+    crate::surf_log!(
         "[surf] submitted {} deferred image(s) for tab {} (remaining={} inflight={})",
         count,
         tab_index,
         tab.deferred_images.len(),
         tab.deferred_images_inflight
+    );
+    crate::ensure_net_poll_timer();
+    count
+}
+
+pub(crate) fn submit_deferred_fonts(tab_index: usize, max_batch: usize) -> usize {
+    if max_batch == 0 {
+        return 0;
+    }
+    let st = crate::state();
+    if tab_index >= st.tabs.len() {
+        return 0;
+    }
+    let tab = &mut st.tabs[tab_index];
+    let count = core::cmp::min(max_batch, tab.deferred_fonts.len());
+    if count == 0 {
+        return 0;
+    }
+    let requests: Vec<crate::tab::DeferredFontRequest> =
+        tab.deferred_fonts.drain(0..count).collect();
+    tab.deferred_fonts_inflight += requests.len();
+    for req in requests {
+        crate::net_worker::submit(crate::net_worker::FetchRequest::Font {
+            tab_index,
+            family: req.family,
+            url: req.url,
+            display: req.display,
+            generation: req.generation,
+        });
+    }
+    crate::surf_log!(
+        "[surf] submitted {} deferred font(s) for tab {} (remaining={} inflight={})",
+        count,
+        tab_index,
+        tab.deferred_fonts.len(),
+        tab.deferred_fonts_inflight
     );
     crate::ensure_net_poll_timer();
     count
@@ -491,7 +658,7 @@ pub(crate) fn inline_svg_key(node_id: usize) -> String {
 /// result in the image cache under the synthetic key `__svg_<node_id>__`.
 ///
 /// Called once per page load, immediately after `queue_images()`.
-pub(crate) fn queue_inline_svgs(dom: &libwebview::dom::Dom, tab_index: usize) {
+pub(crate) fn queue_inline_svgs(dom: &libwebview::dom::Dom, tab_index: usize) -> bool {
     let mut count = 0u32;
 
     for (node_id, node) in dom.nodes.iter().enumerate() {
@@ -570,11 +737,10 @@ pub(crate) fn queue_inline_svgs(dom: &libwebview::dom::Dom, tab_index: usize) {
     }
 
     if count > 0 {
-        anyos_std::println!("[surf] rasterised {} inline SVG(s)", count);
-        let st = crate::state();
-        if tab_index < st.tabs.len() {
-            st.tabs[tab_index].webview.relayout();
-        }
+        crate::surf_log!("[surf] rasterised {} inline SVG(s)", count);
+        true
+    } else {
+        false
     }
 }
 
@@ -605,10 +771,7 @@ pub(crate) fn is_svg(src: &str, headers: &str) -> bool {
 /// image cache of `tab_idx`, then relayout.
 pub(crate) fn decode_raster(data: &[u8], src: &str, tab_idx: usize) {
     decode_raster_no_relayout(data, src, tab_idx);
-    let st = crate::state();
-    if tab_idx < st.tabs.len() {
-        st.tabs[tab_idx].webview.relayout();
-    }
+    crate::request_image_refresh(tab_idx);
 }
 
 /// Decode a raster image without triggering a relayout.
@@ -638,10 +801,7 @@ pub(crate) fn decode_raster_no_relayout(data: &[u8], src: &str, tab_idx: usize) 
 /// `tab_idx`, then relayout.
 pub(crate) fn decode_svg(data: &[u8], src: &str, tab_idx: usize) {
     decode_svg_no_relayout(data, src, tab_idx);
-    let st = crate::state();
-    if tab_idx < st.tabs.len() {
-        st.tabs[tab_idx].webview.relayout();
-    }
+    crate::request_image_refresh(tab_idx);
 }
 
 /// Rasterise an SVG document without triggering a relayout.

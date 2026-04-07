@@ -164,6 +164,10 @@ pub fn populate_element_prototype(proto: &JsValue) {
         native_fn("addEventListener", el_add_event_listener),
     );
     proto.set_property(
+        String::from("installListener"),
+        native_fn("installListener", el_add_event_listener),
+    );
+    proto.set_property(
         String::from("dispatchEvent"),
         native_fn("dispatchEvent", el_dispatch_event),
     );

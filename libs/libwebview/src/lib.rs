@@ -567,6 +567,14 @@ impl WebView {
         self.viewport_width.max(0) as u32
     }
 
+    /// Return the approximate document-space bounds for a DOM node from the
+    /// cached layout tree.
+    pub fn node_bounds(&self, node_id: usize) -> Option<(i32, i32, i32, i32)> {
+        self.layout_root
+            .as_ref()
+            .and_then(|root| find_node_bounds(root, 0, 0, node_id))
+    }
+
     /// Render tiles for the given scroll position (public wrapper).
     /// Returns `true` if there are pending tiles not yet rasterized.
     pub fn render_viewport_at(&mut self, scroll_y: i32) -> bool {
@@ -2363,6 +2371,25 @@ fn count_layout_boxes(root: &LayoutBox) -> usize {
         count += count_layout_boxes(child);
     }
     count
+}
+
+fn find_node_bounds(
+    bx: &LayoutBox,
+    offset_x: i32,
+    offset_y: i32,
+    target: usize,
+) -> Option<(i32, i32, i32, i32)> {
+    let abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
+    let abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
+    if bx.node_id == Some(target) {
+        return Some((abs_x, abs_y, bx.width.max(0), bx.height.max(0)));
+    }
+    for child in &bx.children {
+        if let Some(bounds) = find_node_bounds(child, abs_x, abs_y, target) {
+            return Some(bounds);
+        }
+    }
+    None
 }
 
 /// Calculate total document height from the root layout box.

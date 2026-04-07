@@ -56,6 +56,78 @@ pub fn ctor_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Undefined // Return undefined → new_object uses this
 }
 
+fn promise_proto(vm: &Vm) -> Option<Rc<RefCell<JsObject>>> {
+    match vm.globals.get("Promise") {
+        JsValue::Function(func) => func.borrow().prototype.clone(),
+        _ => None,
+    }
+}
+
+fn attach_promise_shape(
+    obj: &mut JsObject,
+    proto: Option<Rc<RefCell<JsObject>>>,
+    state: &str,
+    value: JsValue,
+) {
+    obj.internal_tag = Some(String::from("__promise__"));
+    obj.prototype = proto;
+    obj.set(String::from("__state"), JsValue::String(String::from(state)));
+    obj.set(String::from("__value"), value);
+    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("then"), native_fn("then", promise_then));
+    obj.set(String::from("catch"), native_fn("catch", promise_catch));
+    obj.set(String::from("finally"), native_fn("finally", promise_finally));
+}
+
+fn make_promise(vm: &Vm, state: &str, value: JsValue) -> JsValue {
+    let mut obj = JsObject::new();
+    attach_promise_shape(&mut obj, promise_proto(vm), state, value);
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+fn is_internal_promise(value: &JsValue) -> bool {
+    matches!(
+        value,
+        JsValue::Object(obj) if obj.borrow().internal_tag.as_deref() == Some("__promise__")
+    )
+}
+
+fn chain_internal_promise(vm: &mut Vm, source: &JsValue, target: &JsValue) {
+    if let JsValue::Object(source_obj) = source {
+        let state = source_obj.borrow().get("__state").to_js_string();
+        if state == "fulfilled" || state == "rejected" {
+            let value = source_obj.borrow().get("__value");
+            settle_promise(vm, target, &state, &value);
+            return;
+        }
+
+        let source_ref = source_obj.borrow();
+        if let JsValue::Array(arr) = source_ref.get("__then_cbs") {
+            let mut entry = JsObject::new();
+            entry.set(String::from("cb"), JsValue::Undefined);
+            entry.set(String::from("promise"), target.clone());
+            arr.borrow_mut()
+                .push(JsValue::Object(Rc::new(RefCell::new(entry))));
+        }
+        if let JsValue::Array(arr) = source_ref.get("__catch_cbs") {
+            let mut entry = JsObject::new();
+            entry.set(String::from("cb"), JsValue::Undefined);
+            entry.set(String::from("promise"), target.clone());
+            arr.borrow_mut()
+                .push(JsValue::Object(Rc::new(RefCell::new(entry))));
+        }
+    }
+}
+
+fn settle_chained_result(vm: &mut Vm, target: &JsValue, result: JsValue) {
+    if is_internal_promise(&result) {
+        chain_internal_promise(vm, &result, target);
+    } else {
+        settle_promise(vm, target, "fulfilled", &result);
+    }
+}
+
 fn promise_resolve_native(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.first().cloned().unwrap_or(JsValue::Undefined);
     let promise = vm.get_global("__promise_pending");
@@ -142,7 +214,7 @@ pub fn promise_then(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         };
 
         // Create a new promise for chaining
-        let new_promise = make_pending_promise();
+        let new_promise = make_pending_promise(vm);
 
         if state == "fulfilled" {
             if on_fulfilled.is_function() {
@@ -152,7 +224,7 @@ pub fn promise_then(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 if let Some(exc) = vm.last_exception.take() {
                     settle_promise(vm, &new_promise, "rejected", &exc);
                 } else {
-                    settle_promise(vm, &new_promise, "fulfilled", &result);
+                    settle_chained_result(vm, &new_promise, result);
                 }
             } else {
                 settle_promise(vm, &new_promise, "fulfilled", &value);
@@ -163,7 +235,7 @@ pub fn promise_then(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 if let Some(exc) = vm.last_exception.take() {
                     settle_promise(vm, &new_promise, "rejected", &exc);
                 } else {
-                    settle_promise(vm, &new_promise, "fulfilled", &result);
+                    settle_chained_result(vm, &new_promise, result);
                 }
             } else {
                 settle_promise(vm, &new_promise, "rejected", &value);
@@ -195,22 +267,9 @@ pub fn promise_then(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 /// Create a pending promise with all required methods.
-fn make_pending_promise() -> JsValue {
+fn make_pending_promise(vm: &Vm) -> JsValue {
     let mut obj = JsObject::new();
-    obj.internal_tag = Some(String::from("__promise__"));
-    obj.set(
-        String::from("__state"),
-        JsValue::String(String::from("pending")),
-    );
-    obj.set(String::from("__value"), JsValue::Undefined);
-    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("then"), native_fn("then", promise_then));
-    obj.set(String::from("catch"), native_fn("catch", promise_catch));
-    obj.set(
-        String::from("finally"),
-        native_fn("finally", promise_finally),
-    );
+    attach_promise_shape(&mut obj, promise_proto(vm), "pending", JsValue::Undefined);
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
@@ -246,54 +305,28 @@ fn promise_reaction_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
     let new_promise = args.get(2).cloned().unwrap_or(JsValue::Undefined);
-    let _is_fulfill = args
+    let is_fulfill = args
         .get(3)
         .map(|v| matches!(v, JsValue::Bool(true)))
         .unwrap_or(true);
 
     if callback.is_function() {
         let result = call_callback(vm, &callback, &[value]);
-        // Check if result is a promise (thenable)
-        if is_promise(&result) {
-            // Chain: result.then(v => settle(new_promise, "fulfilled", v))
-            settle_promise(
-                vm,
-                &new_promise,
-                "fulfilled",
-                &unwrap_promise_value(&result),
-            );
+        if let Some(exc) = vm.last_exception.take() {
+            settle_promise(vm, &new_promise, "rejected", &exc);
         } else {
-            settle_promise(vm, &new_promise, "fulfilled", &result);
+            settle_chained_result(vm, &new_promise, result);
         }
     } else {
-        settle_promise(vm, &new_promise, "fulfilled", &value);
+        let state = if is_fulfill { "fulfilled" } else { "rejected" };
+        settle_promise(vm, &new_promise, state, &value);
     }
     JsValue::Undefined
-}
-
-fn is_promise(val: &JsValue) -> bool {
-    if let JsValue::Object(obj) = val {
-        obj.borrow().internal_tag.as_deref() == Some("__promise__")
-    } else {
-        false
-    }
-}
-
-fn unwrap_promise_value(val: &JsValue) -> JsValue {
-    if let JsValue::Object(obj) = val {
-        let o = obj.borrow();
-        if o.internal_tag.as_deref() == Some("__promise__") {
-            return o.get("__value");
-        }
-    }
-    val.clone()
 }
 
 pub fn promise_catch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let on_rejected = args.first().cloned().unwrap_or(JsValue::Undefined);
     // .catch(fn) is sugar for .then(undefined, fn)
-    let saved_this = vm.current_this.clone();
-    vm.current_this = saved_this;
     promise_then(vm, &[JsValue::Undefined, on_rejected])
 }
 
@@ -308,7 +341,7 @@ pub fn promise_finally(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         };
 
         // Create a new chained promise that preserves the original state/value
-        let new_promise = make_pending_promise();
+        let new_promise = make_pending_promise(vm);
 
         if state != "pending" {
             if on_finally.is_function() {
@@ -346,93 +379,32 @@ pub fn promise_finally(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// Create a resolved Promise wrapping the given value. No VM needed.
 pub fn make_resolved_promise(value: JsValue) -> JsValue {
-    if let JsValue::Object(obj) = &value {
-        if obj.borrow().internal_tag.as_deref() == Some("__promise__") {
-            return value;
-        }
+    if is_internal_promise(&value) {
+        return value;
     }
     let mut obj = JsObject::new();
-    obj.internal_tag = Some(String::from("__promise__"));
-    obj.set(
-        String::from("__state"),
-        JsValue::String(String::from("fulfilled")),
-    );
-    obj.set(String::from("__value"), value);
-    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("then"), native_fn("then", promise_then));
-    obj.set(String::from("catch"), native_fn("catch", promise_catch));
-    obj.set(
-        String::from("finally"),
-        native_fn("finally", promise_finally),
-    );
+    attach_promise_shape(&mut obj, None, "fulfilled", value);
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
 /// Create a rejected Promise with the given reason.
 pub fn make_rejected_promise(reason: JsValue) -> JsValue {
     let mut obj = JsObject::new();
-    obj.internal_tag = Some(String::from("__promise__"));
-    obj.set(
-        String::from("__state"),
-        JsValue::String(String::from("rejected")),
-    );
-    obj.set(String::from("__value"), reason);
-    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("then"), native_fn("then", promise_then));
-    obj.set(String::from("catch"), native_fn("catch", promise_catch));
-    obj.set(
-        String::from("finally"),
-        native_fn("finally", promise_finally),
-    );
+    attach_promise_shape(&mut obj, None, "rejected", reason);
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
-pub fn promise_resolve(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn promise_resolve(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.first().cloned().unwrap_or(JsValue::Undefined);
-    // If already a promise, return it
-    if let JsValue::Object(obj) = &value {
-        if obj.borrow().internal_tag.as_deref() == Some("__promise__") {
-            return value;
-        }
+    if is_internal_promise(&value) {
+        return value;
     }
-    let mut obj = JsObject::new();
-    obj.internal_tag = Some(String::from("__promise__"));
-    obj.set(
-        String::from("__state"),
-        JsValue::String(String::from("fulfilled")),
-    );
-    obj.set(String::from("__value"), value);
-    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("then"), native_fn("then", promise_then));
-    obj.set(String::from("catch"), native_fn("catch", promise_catch));
-    obj.set(
-        String::from("finally"),
-        native_fn("finally", promise_finally),
-    );
-    JsValue::Object(Rc::new(RefCell::new(obj)))
+    make_promise(vm, "fulfilled", value)
 }
 
-pub fn promise_reject(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn promise_reject(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let mut obj = JsObject::new();
-    obj.internal_tag = Some(String::from("__promise__"));
-    obj.set(
-        String::from("__state"),
-        JsValue::String(String::from("rejected")),
-    );
-    obj.set(String::from("__value"), value);
-    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("then"), native_fn("then", promise_then));
-    obj.set(String::from("catch"), native_fn("catch", promise_catch));
-    obj.set(
-        String::from("finally"),
-        native_fn("finally", promise_finally),
-    );
-    JsValue::Object(Rc::new(RefCell::new(obj)))
+    make_promise(vm, "rejected", value)
 }
 
 pub fn promise_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {

@@ -99,9 +99,23 @@ pub(crate) struct PageLoadState {
 
 #[derive(Clone)]
 pub(crate) struct DeferredImageRequest {
+    pub(crate) node_id: usize,
+    pub(crate) dom_index: usize,
     pub(crate) src: String,
     pub(crate) url: crate::http::Url,
     pub(crate) priority: crate::net_worker::ImagePriority,
+    pub(crate) width: Option<i32>,
+    pub(crate) height: Option<i32>,
+    pub(crate) lazy_requested: bool,
+    pub(crate) high_priority: bool,
+    pub(crate) generation: u32,
+}
+
+#[derive(Clone)]
+pub(crate) struct DeferredFontRequest {
+    pub(crate) family: String,
+    pub(crate) url: crate::http::Url,
+    pub(crate) display: libwebview::css::FontDisplay,
     pub(crate) generation: u32,
 }
 
@@ -195,10 +209,17 @@ pub(crate) struct TabState {
     /// Structured loader state for the current page.
     pub(crate) load_state: PageLoadState,
     /// Pending script slots — one entry per `<script>` tag in document order.
-    /// `Some(text)` = inline or already-fetched, `None` = external fetch pending.
+    /// `Some(text)` = fetched but not executed yet, `None` = either still
+    /// pending externally or already executed.
     pub(crate) pending_scripts: Vec<Option<String>>,
     /// Execution mode for each pending script slot.
     pub(crate) pending_script_modes: Vec<libwebview::js::ScriptMode>,
+    /// Human-readable script label per slot for logging/debugging.
+    pub(crate) pending_script_labels: Vec<String>,
+    /// Web fonts intentionally deferred until after first paint / interactive.
+    pub(crate) deferred_fonts: Vec<DeferredFontRequest>,
+    /// Number of deferred font fetches currently in flight.
+    pub(crate) deferred_fonts_inflight: usize,
     /// Deferred image requests that are intentionally not submitted yet.
     pub(crate) deferred_images: Vec<DeferredImageRequest>,
     /// Number of deferred image requests currently in flight.
@@ -222,6 +243,9 @@ impl TabState {
             load_state: PageLoadState::new(),
             pending_scripts: Vec::new(),
             pending_script_modes: Vec::new(),
+            pending_script_labels: Vec::new(),
+            deferred_fonts: Vec::new(),
+            deferred_fonts_inflight: 0,
             deferred_images: Vec::new(),
             deferred_images_inflight: 0,
         }
@@ -269,7 +293,7 @@ impl TabState {
 /// background network worker and returns immediately.
 pub(crate) fn navigate(url_str: &str) {
     let st = crate::state();
-    anyos_std::println!("[surf] navigating to: {}", url_str);
+    crate::surf_log!("[surf] navigating to: {}", url_str);
 
     // Handle file:// URLs locally — no network needed.
     if url_str.starts_with("file://") {
@@ -442,7 +466,7 @@ fn navigate_file(path: &str) {
     crate::ui::update_status();
     crate::ui::update_tab_labels();
 
-    anyos_std::println!("[surf] loaded local file: {}", path);
+    crate::surf_log!("[surf] loaded local file: {}", path);
 }
 
 /// Navigate the active tab one step back in its history.

@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 //! Host-mode syscall shims for libfont — uses std::fs.
 
+use std::io::Write;
+
 pub fn sbrk(_increment: u32) -> u64 {
     u64::MAX // Not used on host (system allocator)
 }
@@ -34,6 +36,15 @@ pub fn read(_fd: u32, _buf: *mut u8, _count: u32) -> u32 {
 
 pub fn fstat(_fd: u32, _stat_buf: *mut u8) -> u32 {
     u32::MAX
+}
+
+pub fn log(msg: &[u8]) {
+    let _ = std::io::stderr().write_all(msg);
+}
+
+pub fn log_str(msg: &str) {
+    log(msg.as_bytes());
+    log(b"\n");
 }
 
 /// Read an entire file into a Vec<u8>. Uses std::fs on host.

@@ -8,6 +8,9 @@ use core::cell::RefCell;
 use super::{native_fn, Vm};
 use crate::value::*;
 
+const MAP_TAG: &str = "Map";
+const SET_TAG: &str = "Set";
+
 fn make_iterator(items: Vec<JsValue>) -> JsValue {
     let items_arr = JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(items))));
     let iter_obj = JsValue::new_object();
@@ -61,7 +64,7 @@ pub fn ctor_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // Tag `this` (created by `new_object` with the correct prototype chain).
     if let JsValue::Object(obj_rc) = &vm.current_this {
         let mut o = obj_rc.borrow_mut();
-        o.internal_tag = Some(String::from("__map__"));
+        o.internal_tag = Some(String::from(MAP_TAG));
         o.set(String::from("__keys"), JsValue::new_array(Vec::new()));
         o.set(String::from("__values"), JsValue::new_array(Vec::new()));
         o.set(String::from("size"), JsValue::Number(0.0));
@@ -131,6 +134,19 @@ fn extract_pair(entry: &JsValue) -> (JsValue, JsValue) {
     }
 }
 
+fn expect_map_this(vm: &mut Vm) -> Option<Rc<RefCell<JsObject>>> {
+    let this = vm.current_this.clone();
+    if let JsValue::Object(obj_rc) = this {
+        let tag = obj_rc.borrow().internal_tag.clone();
+        if matches!(tag.as_deref(), Some(MAP_TAG) | Some("__map__")) {
+            return Some(obj_rc);
+        }
+    }
+    let exc = vm.make_type_error("Incorrect Map invocation");
+    vm.throw_native(exc);
+    None
+}
+
 fn map_find_index(obj: &JsObject, key: &JsValue) -> Option<usize> {
     if let JsValue::Array(keys) = obj.get("__keys") {
         let k = keys.borrow();
@@ -162,7 +178,7 @@ pub fn map_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
     let this = vm.current_this.clone();
 
-    if let JsValue::Object(obj_rc) = &this {
+    if let Some(obj_rc) = expect_map_this(vm) {
         let (keys_arr, vals_arr, existing_idx) = {
             let o = obj_rc.borrow();
             let idx = map_find_index(&o, &key);
@@ -176,14 +192,14 @@ pub fn map_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 vals.borrow_mut().push(value);
             }
         }
-        update_size(obj_rc);
+        update_size(&obj_rc);
     }
     this
 }
 
 pub fn map_get(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let key = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_map_this(vm) {
         let o = obj_rc.borrow();
         if let Some(idx) = map_find_index(&o, &key) {
             if let JsValue::Array(vals) = o.get("__values") {
@@ -196,7 +212,7 @@ pub fn map_get(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn map_has(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let key = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_map_this(vm) {
         let o = obj_rc.borrow();
         return JsValue::Bool(map_find_index(&o, &key).is_some());
     }
@@ -205,7 +221,7 @@ pub fn map_has(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn map_delete(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let key = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_map_this(vm) {
         let idx = {
             let o = obj_rc.borrow();
             map_find_index(&o, &key)
@@ -219,7 +235,7 @@ pub fn map_delete(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 vals.borrow_mut().remove_and_shift(idx);
             }
             drop(o);
-            update_size(obj_rc);
+            update_size(&obj_rc);
             return JsValue::Bool(true);
         }
     }
@@ -227,7 +243,7 @@ pub fn map_delete(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn map_clear(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_map_this(vm) {
         let o = obj_rc.borrow();
         if let JsValue::Array(keys) = o.get("__keys") {
             keys.borrow_mut().clear();
@@ -236,13 +252,13 @@ pub fn map_clear(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
             vals.borrow_mut().clear();
         }
         drop(o);
-        update_size(obj_rc);
+        update_size(&obj_rc);
     }
     JsValue::Undefined
 }
 
 pub fn map_keys(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_map_this(vm) {
         let o = obj_rc.borrow();
         if let JsValue::Array(keys) = o.get("__keys") {
             return make_iterator(keys.borrow().values_vec());
@@ -252,7 +268,7 @@ pub fn map_keys(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn map_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_map_this(vm) {
         let o = obj_rc.borrow();
         if let JsValue::Array(vals) = o.get("__values") {
             return make_iterator(vals.borrow().values_vec());
@@ -262,7 +278,7 @@ pub fn map_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn map_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_map_this(vm) {
         let o = obj_rc.borrow();
         if let (JsValue::Array(keys), JsValue::Array(vals)) = (o.get("__keys"), o.get("__values")) {
             let k = keys.borrow();
@@ -282,7 +298,7 @@ pub fn map_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 pub fn map_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_map_this(vm) {
         let (keys, vals) = {
             let o = obj_rc.borrow();
             let k = if let JsValue::Array(arr) = o.get("__keys") {
@@ -312,7 +328,7 @@ pub fn map_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn ctor_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if let JsValue::Object(obj_rc) = &vm.current_this {
         let mut o = obj_rc.borrow_mut();
-        o.internal_tag = Some(String::from("__set__"));
+        o.internal_tag = Some(String::from(SET_TAG));
         o.set(String::from("__items"), JsValue::new_array(Vec::new()));
         o.set(String::from("size"), JsValue::Number(0.0));
     }
@@ -329,12 +345,11 @@ pub fn ctor_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                             items_mut.push(v.clone());
                         }
                     }
-                    let size =
-                        if let JsValue::Array(items) = obj_rc.borrow().get("__items") {
-                            items.borrow().count() as f64
-                        } else {
-                            0.0
-                        };
+                    let size = if let JsValue::Array(items) = obj_rc.borrow().get("__items") {
+                        items.borrow().count() as f64
+                    } else {
+                        0.0
+                    };
                     obj_rc
                         .borrow_mut()
                         .set(String::from("size"), JsValue::Number(size));
@@ -357,6 +372,19 @@ fn set_find_index(obj: &JsObject, value: &JsValue) -> Option<usize> {
     None
 }
 
+fn expect_set_this(vm: &mut Vm) -> Option<Rc<RefCell<JsObject>>> {
+    let this = vm.current_this.clone();
+    if let JsValue::Object(obj_rc) = this {
+        let tag = obj_rc.borrow().internal_tag.clone();
+        if matches!(tag.as_deref(), Some(SET_TAG) | Some("__set__")) {
+            return Some(obj_rc);
+        }
+    }
+    let exc = vm.make_type_error("Incorrect Set invocation");
+    vm.throw_native(exc);
+    None
+}
+
 fn update_set_size(obj_rc: &Rc<RefCell<JsObject>>) {
     let size = {
         let o = obj_rc.borrow();
@@ -374,7 +402,7 @@ fn update_set_size(obj_rc: &Rc<RefCell<JsObject>>) {
 pub fn set_add(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.first().cloned().unwrap_or(JsValue::Undefined);
     let this = vm.current_this.clone();
-    if let JsValue::Object(obj_rc) = &this {
+    if let Some(obj_rc) = expect_set_this(vm) {
         let already = { obj_rc.borrow() }.get("__items");
         if let JsValue::Array(items) = already {
             let has = items
@@ -386,14 +414,14 @@ pub fn set_add(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 items.borrow_mut().push(value);
             }
         }
-        update_set_size(obj_rc);
+        update_set_size(&obj_rc);
     }
     this
 }
 
 pub fn set_has(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_set_this(vm) {
         let o = obj_rc.borrow();
         return JsValue::Bool(set_find_index(&o, &value).is_some());
     }
@@ -402,7 +430,7 @@ pub fn set_has(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn set_delete(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_set_this(vm) {
         let idx = { set_find_index(&obj_rc.borrow(), &value) };
         if let Some(idx) = idx {
             let o = obj_rc.borrow();
@@ -410,7 +438,7 @@ pub fn set_delete(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 items.borrow_mut().remove_and_shift(idx);
             }
             drop(o);
-            update_set_size(obj_rc);
+            update_set_size(&obj_rc);
             return JsValue::Bool(true);
         }
     }
@@ -418,19 +446,19 @@ pub fn set_delete(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn set_clear(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_set_this(vm) {
         let o = obj_rc.borrow();
         if let JsValue::Array(items) = o.get("__items") {
             items.borrow_mut().clear();
         }
         drop(o);
-        update_set_size(obj_rc);
+        update_set_size(&obj_rc);
     }
     JsValue::Undefined
 }
 
 pub fn set_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_set_this(vm) {
         let o = obj_rc.borrow();
         if let JsValue::Array(items) = o.get("__items") {
             return make_iterator(items.borrow().values_vec());
@@ -440,7 +468,7 @@ pub fn set_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn set_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_set_this(vm) {
         let o = obj_rc.borrow();
         if let JsValue::Array(items) = o.get("__items") {
             let entries: Vec<JsValue> = items
@@ -457,7 +485,7 @@ pub fn set_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 pub fn set_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    if let Some(obj_rc) = expect_set_this(vm) {
         let items = {
             let o = obj_rc.borrow();
             if let JsValue::Array(arr) = o.get("__items") {

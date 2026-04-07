@@ -1230,14 +1230,14 @@ pub fn array_from(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         JsValue::Object(obj) => {
             let tag = obj.borrow().internal_tag.clone();
             match tag.as_deref() {
-                Some("__set__") => {
+                Some("__set__") | Some("Set") => {
                     if let JsValue::Array(items) = obj.borrow().get("__items") {
                         items.borrow().values_vec()
                     } else {
                         Vec::new()
                     }
                 }
-                Some("__map__") => {
+                Some("__map__") | Some("Map") => {
                     if let (JsValue::Array(keys), JsValue::Array(vals)) =
                         (obj.borrow().get("__keys"), obj.borrow().get("__values"))
                     {

@@ -248,6 +248,10 @@ pub fn make_window(
         native_fn("addEventListener", win_add_event_listener),
     );
     obj.set(
+        String::from("installListener"),
+        native_fn("installListener", win_add_event_listener),
+    );
+    obj.set(
         String::from("removeEventListener"),
         native_fn("removeEventListener", super::native_remove_event_listener),
     );
@@ -432,6 +436,24 @@ pub fn make_window(
         JsValue::Function(func) => func.borrow().prototype.clone(),
         _ => None,
     };
+    let document_ctor = make_native_constructor(vm, "Document", win_dom_ctor, node_proto.clone());
+    let document_proto = match &document_ctor {
+        JsValue::Function(func) => func.borrow().prototype.clone(),
+        _ => None,
+    };
+    let document_fragment_ctor =
+        make_native_constructor(vm, "DocumentFragment", win_dom_ctor, node_proto.clone());
+    let character_data_ctor =
+        make_native_constructor(vm, "CharacterData", win_dom_ctor, node_proto.clone());
+    let character_data_proto = match &character_data_ctor {
+        JsValue::Function(func) => func.borrow().prototype.clone(),
+        _ => None,
+    };
+    let document_type_ctor =
+        make_native_constructor(vm, "DocumentType", win_dom_ctor, node_proto.clone());
+    let text_ctor = make_native_constructor(vm, "Text", win_dom_ctor, character_data_proto.clone());
+    let comment_ctor =
+        make_native_constructor(vm, "Comment", win_dom_ctor, character_data_proto.clone());
     let element_ctor = make_native_constructor(vm, "Element", win_dom_ctor, node_proto.clone());
     let element_proto = match &element_ctor {
         JsValue::Function(func) => func.borrow().prototype.clone(),
@@ -455,6 +477,12 @@ pub fn make_window(
     let custom_elements = win_custom_element_registry_ctor(vm, &[]);
 
     obj.set(String::from("Node"), node_ctor);
+    obj.set(String::from("Document"), document_ctor);
+    obj.set(String::from("DocumentFragment"), document_fragment_ctor);
+    obj.set(String::from("CharacterData"), character_data_ctor);
+    obj.set(String::from("DocumentType"), document_type_ctor);
+    obj.set(String::from("Text"), text_ctor);
+    obj.set(String::from("Comment"), comment_ctor);
     obj.set(String::from("Element"), element_ctor);
     obj.set(String::from("HTMLElement"), html_element_ctor);
     obj.set(
@@ -492,6 +520,9 @@ pub fn make_window(
         native_fn("__uspapi", win_cmp_stub),
     );
     win.set_property(String::from("__tcfapiLocator"), JsValue::new_object());
+    if let (JsValue::Object(doc_obj), Some(doc_proto)) = (&document, document_proto) {
+        doc_obj.borrow_mut().prototype = Some(doc_proto);
+    }
     document.set_property(String::from("defaultView"), win.clone());
     win
 }

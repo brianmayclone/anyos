@@ -884,6 +884,12 @@ impl JsRuntime {
         // modern bundlers (Vite/React) that reference them without the `window.` prefix work.
         for key in &[
             "Node",
+            "Document",
+            "DocumentFragment",
+            "CharacterData",
+            "DocumentType",
+            "Text",
+            "Comment",
             "Element",
             "HTMLElement",
             "CustomElementRegistry",

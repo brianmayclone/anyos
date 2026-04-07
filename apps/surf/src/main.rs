@@ -10,11 +10,45 @@
 #![no_std]
 #![no_main]
 
+use core::fmt;
+use core::sync::atomic::{AtomicU32, Ordering};
+
+static SURF_LOG_START_MS: AtomicU32 = AtomicU32::new(u32::MAX);
+
+pub(crate) fn surf_log_times() -> (u32, u32) {
+    let now = anyos_std::sys::uptime_ms();
+    if SURF_LOG_START_MS.load(Ordering::Relaxed) == u32::MAX {
+        let _ = SURF_LOG_START_MS.compare_exchange(
+            u32::MAX,
+            now,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+    let start = SURF_LOG_START_MS.load(Ordering::Relaxed);
+    (now, now.wrapping_sub(start))
+}
+
+pub(crate) fn surf_log_print(args: fmt::Arguments<'_>) {
+    let (now_ms, elapsed_ms) = surf_log_times();
+    anyos_std::println!("[surf +{}ms @{}ms] {}", elapsed_ms, now_ms, args);
+}
+
+#[macro_export]
+macro_rules! surf_log {
+    ($($arg:tt)*) => {{
+        $crate::surf_log_print(core::format_args!($($arg)*));
+    }};
+}
+
+mod bookmarks;
 mod callbacks;
+mod config;
 mod deflate;
 mod http;
 mod net_worker;
 mod resources;
+mod settings;
 mod tab;
 mod tls;
 mod ui;
@@ -49,7 +83,74 @@ enum RenderWork {
 const IMAGE_RESULTS_PER_TAB_BATCH: usize = 24;
 const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 12;
 const DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
+const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
+const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
+const DEBUG_SKIP_BLOCKING_SLOT0: bool = true;
+
+fn phase_name(phase: PageLoadPhase) -> &'static str {
+    match phase {
+        PageLoadPhase::Idle => "idle",
+        PageLoadPhase::FetchingDocument => "fetching_document",
+        PageLoadPhase::ParsingDocument => "parsing_document",
+        PageLoadPhase::LoadingSubresources => "loading_subresources",
+        PageLoadPhase::Interactive => "interactive",
+        PageLoadPhase::Failed => "failed",
+    }
+}
+
+fn log_tab_load_state(tab_index: usize, reason: &str) {
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        crate::surf_log!(
+            "[surf] state: tab={} reason={} <out-of-range tabs={}>",
+            tab_index,
+            reason,
+            st.tabs.len()
+        );
+        return;
+    }
+    let tab = &st.tabs[tab_index];
+    crate::surf_log!(
+        "[surf] state: tab={} reason={} phase={} loading={} pending_css={} pending_script={} deferred_fonts={} inflight_fonts={} deferred_images={} inflight_images={} ready_for_scripts={}",
+        tab_index,
+        reason,
+        phase_name(tab.load_state.phase),
+        tab.is_loading,
+        tab.load_state.pending_stylesheet_count,
+        tab.load_state.pending_script_count,
+        tab.deferred_fonts.len(),
+        tab.deferred_fonts_inflight,
+        tab.deferred_images.len(),
+        tab.deferred_images_inflight,
+        tab.load_state.ready_for_script_execution()
+    );
+}
+
+fn font_display_name(display: libwebview::css::FontDisplay) -> &'static str {
+    match display {
+        libwebview::css::FontDisplay::Auto => "auto",
+        libwebview::css::FontDisplay::Block => "block",
+        libwebview::css::FontDisplay::Swap => "swap",
+        libwebview::css::FontDisplay::Fallback => "fallback",
+        libwebview::css::FontDisplay::Optional => "optional",
+    }
+}
+
+fn image_priority_name(priority: net_worker::ImagePriority) -> &'static str {
+    match priority {
+        net_worker::ImagePriority::Viewport => "viewport",
+        net_worker::ImagePriority::Deferred => "deferred",
+    }
+}
+
+fn script_mode_name(mode: libwebview::js::ScriptMode) -> &'static str {
+    match mode {
+        libwebview::js::ScriptMode::Blocking => "blocking",
+        libwebview::js::ScriptMode::Defer => "defer",
+        libwebview::js::ScriptMode::Async => "async",
+    }
+}
 
 // ═══════════════════════════════════════════════════════════
 // Debug helpers (feature-gated)
@@ -117,6 +218,10 @@ struct AppState {
     resize_timer: u32,
     /// A resize was requested while the active page was still in a heavy load phase.
     deferred_resize_pending: bool,
+    /// User settings (homepage, etc.).
+    config: config::SurfConfig,
+    /// Bookmark store (hierarchical folders and bookmarks).
+    bookmarks: config::BookmarkStore,
 }
 
 static mut STATE: Option<AppState> = None;
@@ -238,7 +343,7 @@ pub(crate) fn start_anim_timer() {
         let st = state();
         let net_results = drain_results_from_mailboxes();
         if !net_results.is_empty() {
-            anyos_std::println!(
+            crate::surf_log!(
                 "[surf] tick-drain: {} result(s) while anim timer active",
                 net_results.len()
             );
@@ -294,9 +399,138 @@ pub(crate) fn pump_deferred_images_for_tab(tab_index: usize) {
     let _ = resources::submit_deferred_images(tab_index, batch);
 }
 
+pub(crate) fn pump_deferred_fonts_for_tab(tab_index: usize) {
+    let allowance = {
+        let st = state();
+        if tab_index >= st.tabs.len() {
+            return;
+        }
+        let tab = &st.tabs[tab_index];
+        if !matches!(tab.load_state.phase, PageLoadPhase::Interactive) {
+            return;
+        }
+        MAX_DEFERRED_FONT_INFLIGHT.saturating_sub(tab.deferred_fonts_inflight)
+    };
+    if allowance == 0 {
+        return;
+    }
+    let batch = core::cmp::min(allowance, DEFERRED_FONT_BATCH_SIZE);
+    let _ = resources::submit_deferred_fonts(tab_index, batch);
+}
+
 pub(crate) fn pump_deferred_images_for_active_tab() {
     let tab_index = state().active_tab;
     pump_deferred_images_for_tab(tab_index);
+}
+
+fn execute_script_batch(tab_index: usize, scripts: Vec<String>, label: &str) {
+    if scripts.is_empty() {
+        return;
+    }
+    let st = state();
+    crate::surf_log!(
+        "[surf] executing {} {} script(s)",
+        scripts.len(),
+        label
+    );
+    st.tabs[tab_index].webview.execute_js(&scripts);
+    for line in st.tabs[tab_index].webview.js_console() {
+        crate::surf_log!("[surf-js] {}", line);
+    }
+    connect_pending_ws(tab_index);
+    request_layout_refresh(tab_index);
+}
+
+fn script_preview(script: &str) -> String {
+    let mut preview = String::new();
+    let mut truncated = false;
+    for (idx, ch) in script.chars().enumerate() {
+        if idx >= 96 {
+            truncated = true;
+            break;
+        }
+        let normalized = match ch {
+            '\n' | '\r' | '\t' => ' ',
+            _ => ch,
+        };
+        preview.push(normalized);
+    }
+    if truncated {
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &str) {
+    let script_label = {
+        let st = state();
+        if tab_index >= st.tabs.len() {
+            return;
+        }
+        st.tabs[tab_index]
+            .pending_script_labels
+            .get(slot)
+            .cloned()
+            .unwrap_or_else(|| String::from("<unknown>"))
+    };
+    let preview = script_preview(&script);
+    if DEBUG_SKIP_BLOCKING_SLOT0 && label == "blocking/defer" && slot == 0 {
+        crate::surf_log!(
+            "[surf] DEBUG skipping {} script [{}]: {} preview=\"{}\"",
+            label,
+            slot,
+            script_label,
+            preview
+        );
+        request_layout_refresh(tab_index);
+        return;
+    }
+    let st = state();
+    crate::surf_log!(
+        "[surf] executing {} script [{}]: {} preview=\"{}\"",
+        label,
+        slot,
+        script_label,
+        preview
+    );
+    let (exec_start_ms, _) = surf_log_times();
+    st.tabs[tab_index].webview.execute_js(&[script]);
+    let exec_elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(exec_start_ms);
+    crate::surf_log!(
+        "[surf] finished {} script [{}]: {} exec_ms={}",
+        label,
+        slot,
+        script_label,
+        exec_elapsed_ms
+    );
+    for line in st.tabs[tab_index].webview.js_console() {
+        crate::surf_log!("[surf-js] {}", line);
+    }
+    connect_pending_ws(tab_index);
+    request_layout_refresh(tab_index);
+}
+
+fn execute_buffered_async_scripts(tab_index: usize) {
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        return;
+    }
+    let mut scripts = Vec::new();
+    for slot in 0..st.tabs[tab_index].pending_scripts.len() {
+        if !matches!(
+            st.tabs[tab_index].pending_script_modes.get(slot),
+            Some(libwebview::js::ScriptMode::Async)
+        ) {
+            continue;
+        }
+        if let Some(text) = st.tabs[tab_index].pending_scripts[slot].take() {
+            crate::surf_log!("[surf] async script [{}] released after script gate", slot);
+            scripts.push((slot, text));
+        }
+    }
+    for (slot, text) in scripts {
+        execute_script_slot(tab_index, slot, text, "async");
+    }
 }
 
 /// Resize the active tab's webview to match the content area.
@@ -306,7 +540,7 @@ fn resize_active_webview_now() {
     if w <= 0 || h <= 0 || st.active_tab >= st.tabs.len() {
         return;
     }
-    anyos_std::println!("[surf] apply resize: {}x{}", w, h);
+    crate::surf_log!("[surf] apply resize: {}x{}", w, h);
     st.tabs[st.active_tab].webview.resize(w, h);
 }
 
@@ -329,7 +563,7 @@ fn flush_deferred_resize_if_ready() {
     }
     let st = state();
     st.deferred_resize_pending = false;
-    anyos_std::println!("[surf] applying deferred resize after load phase");
+    crate::surf_log!("[surf] applying deferred resize after load phase");
     resize_active_webview_now();
     ensure_anim_timer();
 }
@@ -349,7 +583,7 @@ fn schedule_active_webview_resize(delay_ms: u32) {
             ui_lib::kill_timer(timer_id);
         }
         if !active_tab_allows_expensive_resize() {
-            anyos_std::println!("[surf] deferring resize until active load settles");
+            crate::surf_log!("[surf] deferring resize until active load settles");
             let st = state();
             st.deferred_resize_pending = true;
             schedule_active_webview_resize(250);
@@ -375,6 +609,11 @@ fn start_net_poll_timer() {
         return;
     }
     static mut EMPTY_POLLS: u32 = 0;
+    crate::surf_log!(
+        "[surf] net-poll timer start: worker_pending={} tabs_waiting={}",
+        net_worker::has_pending_activity(),
+        st.tabs.iter().any(tab_waiting_on_network)
+    );
     st.net_poll_timer = ui_lib::set_timer(50, || {
         let results = drain_results_from_mailboxes();
         if results.is_empty() {
@@ -385,7 +624,7 @@ fn start_net_poll_timer() {
                     || tab.load_state.phase == PageLoadPhase::LoadingSubresources
             });
             #[cfg(feature = "debug_surf")]
-            anyos_std::println!(
+            crate::surf_log!(
                 "[surf] net-poll empty: waiting_on_network={} worker_pending={} timer={}",
                 tab_waiting_on_network,
                 net_worker::has_pending_activity(),
@@ -407,6 +646,7 @@ fn start_net_poll_timer() {
                 }
                 let st = state();
                 if st.net_poll_timer != 0 {
+                    crate::surf_log!("[surf] net-poll timer stop after idle");
                     ui_lib::kill_timer(st.net_poll_timer);
                     st.net_poll_timer = 0;
                 }
@@ -437,8 +677,7 @@ fn drain_results_from_mailboxes() -> Vec<net_worker::FetchResult> {
     for tab_index in 0..st.tabs.len() {
         let mut tab_results = net_worker::drain_results_for_tab(tab_index);
         if !tab_results.is_empty() {
-            #[cfg(feature = "debug_surf")]
-            anyos_std::println!(
+            crate::surf_log!(
                 "[surf] drained {} result(s) from tab mailbox {}",
                 tab_results.len(),
                 tab_index
@@ -486,7 +725,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
             batches.push((tab_index, vec![result]));
         }
     }
-    anyos_std::println!(
+    crate::surf_log!(
         "[surf] drain_results: total={} nav={} css={} image={} font={} script={}",
         nav_count + css_count + image_count + font_count + script_count,
         nav_count,
@@ -512,6 +751,15 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                 net_worker::FetchResult::ImageDone { .. } => images.push(result),
             }
         }
+        crate::surf_log!(
+            "[surf] tab {} result batch: nav={} css={} script={} font={} image={}",
+            tab_index,
+            nav_results.len(),
+            css_results.len(),
+            script_results.len(),
+            font_results.len(),
+            images.len()
+        );
         images.sort_by_key(|result| match result {
             net_worker::FetchResult::ImageDone { priority, .. } => match priority {
                 net_worker::ImagePriority::Viewport => 0usize,
@@ -527,7 +775,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
         };
 
         if !deferred_images.is_empty() {
-            anyos_std::println!(
+            crate::surf_log!(
                 "[surf] deferring {} image result(s) for tab {} to keep UI responsive",
                 deferred_images.len(),
                 tab_index
@@ -579,26 +827,17 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     generation,
                 } => {
                     if handle_image_done(tab_index, src, body, headers, priority, generation) {
-                        let schedule = {
-                            let st = state();
-                            let layout_pending = tab_index < st.render_dirty.len()
-                                && st.render_dirty[tab_index] == RenderWork::Layout;
-                            if tab_index == st.active_tab && !layout_pending {
-                                RenderSchedule::Immediate
-                            } else {
-                                RenderSchedule::Debounced
-                            }
-                        };
-                        request_render(tab_index, RenderWork::Paint, schedule);
+                        request_image_refresh(tab_index);
                     }
                 }
                 net_worker::FetchResult::FontDone {
                     tab_index,
                     family,
                     body,
+                    display,
                     generation,
                 } => {
-                    if handle_font_done(tab_index, family, body, generation) {
+                    if handle_font_done(tab_index, family, body, display, generation) {
                         request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
                     }
                 }
@@ -609,7 +848,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     headers,
                     generation,
                 } => {
-                    anyos_std::println!(
+                    crate::surf_log!(
                         "[surf] received ScriptDone: tab={} slot={} bytes={} gen={}",
                         tab_index,
                         slot,
@@ -671,6 +910,24 @@ fn request_render(tab_index: usize, work: RenderWork, schedule: RenderSchedule) 
         }
     }
     ensure_anim_timer();
+}
+
+pub(crate) fn request_layout_refresh(tab_index: usize) {
+    request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
+}
+
+pub(crate) fn request_image_refresh(tab_index: usize) {
+    let schedule = {
+        let st = state();
+        let layout_pending =
+            tab_index < st.render_dirty.len() && st.render_dirty[tab_index] == RenderWork::Layout;
+        if tab_index == st.active_tab && !layout_pending {
+            RenderSchedule::Immediate
+        } else {
+            RenderSchedule::Debounced
+        }
+    };
+    request_render(tab_index, RenderWork::Paint, schedule);
 }
 
 fn flush_relayout_for_tab(tab_idx: usize) {
@@ -756,6 +1013,13 @@ fn handle_nav_done(
 
     // Merge cookies that the worker collected during the fetch.
     merge_cookies(worker_cookies);
+    crate::surf_log!(
+        "[surf] nav done: tab={} status={} bytes={} gen={}",
+        tab_idx,
+        response.status,
+        response.body.len(),
+        generation
+    );
 
     // HTTP error check.
     if response.status < 200 || response.status >= 400 {
@@ -779,10 +1043,20 @@ fn handle_nav_done(
     // Determine base URL (post-redirect URL takes precedence).
     let base_url = response.final_url.unwrap_or(original_url);
     let url_str = ui::format_url(&base_url);
+    crate::surf_log!(
+        "[surf] nav render start: tab={} url={} html_chars={}",
+        tab_idx,
+        url_str,
+        body_text.len()
+    );
 
     // Clear all state from the previous page (DOM, layout, images, JS, CSS).
     st.tabs[tab_idx].webview.navigate_clear();
+    st.tabs[tab_idx].pending_scripts.clear();
     st.tabs[tab_idx].pending_script_modes.clear();
+    st.tabs[tab_idx].pending_script_labels.clear();
+    st.tabs[tab_idx].deferred_fonts.clear();
+    st.tabs[tab_idx].deferred_fonts_inflight = 0;
     st.tabs[tab_idx].deferred_images.clear();
     st.tabs[tab_idx].deferred_images_inflight = 0;
 
@@ -804,7 +1078,14 @@ fn handle_nav_done(
     // Parse and render the HTML document (without JS — scripts are executed
     // after external scripts have been fetched, matching the surf-host flow).
     st.tabs[tab_idx].load_state.begin_parse();
+    log_tab_load_state(tab_idx, "begin_parse");
     st.tabs[tab_idx].webview.set_html_no_js(&body_text);
+    crate::surf_log!(
+        "[surf] html parsed: tab={} title_present={} dom_present={}",
+        tab_idx,
+        st.tabs[tab_idx].webview.get_title().is_some(),
+        st.tabs[tab_idx].webview.dom().is_some()
+    );
 
     // Extract page title.
     let title = st.tabs[tab_idx]
@@ -858,7 +1139,9 @@ fn handle_nav_done(
     // hundreds of images block external scripts in the single network worker.
     let pending_stylesheet_count = if let Some(dom) = st.tabs[tab_idx].webview.dom() {
         let css_count = resources::queue_stylesheets(dom, &base_url, tab_idx);
-        resources::queue_inline_svgs(dom, tab_idx);
+        if resources::queue_inline_svgs(dom, tab_idx) {
+            request_layout_refresh(tab_idx);
+        }
         css_count
     } else {
         0
@@ -873,16 +1156,24 @@ fn handle_nav_done(
         let entries = st.tabs[tab_idx].webview.script_entries();
         let mut pending = Vec::with_capacity(entries.len());
         let mut modes = Vec::with_capacity(entries.len());
+        let mut labels = Vec::with_capacity(entries.len());
         let mut ext_count = 0usize;
+        let mut inline_count = 0usize;
+        let mut async_count = 0usize;
         for (slot, entry) in entries.iter().enumerate() {
             match entry {
                 libwebview::js::ScriptEntry::Inline { text, mode } => {
                     pending.push(Some(text.clone()));
                     modes.push(mode.clone());
+                    labels.push(String::from("<inline>"));
+                    inline_count += 1;
+                    if matches!(mode, libwebview::js::ScriptMode::Async) {
+                        async_count += 1;
+                    }
                 }
                 libwebview::js::ScriptEntry::External { src: src_url, mode } => {
                     let full_url = http::resolve_url(&base_url, src_url);
-                    anyos_std::println!("[surf] queuing script fetch [{}]: {}", slot, src_url);
+                    crate::surf_log!("[surf] queuing script fetch [{}]: {}", slot, src_url);
                     net_worker::submit(net_worker::FetchRequest::Script {
                         tab_index: tab_idx,
                         slot,
@@ -892,6 +1183,10 @@ fn handle_nav_done(
                     });
                     pending.push(None);
                     modes.push(mode.clone());
+                    labels.push(src_url.clone());
+                    if matches!(mode, libwebview::js::ScriptMode::Async) {
+                        async_count += 1;
+                    }
                     if !matches!(mode, libwebview::js::ScriptMode::Async) {
                         ext_count += 1;
                     }
@@ -900,14 +1195,29 @@ fn handle_nav_done(
         }
         st.tabs[tab_idx].pending_scripts = pending;
         st.tabs[tab_idx].pending_script_modes = modes;
+        st.tabs[tab_idx].pending_script_labels = labels;
         st.tabs[tab_idx]
             .load_state
             .begin_subresource_load(pending_stylesheet_count, ext_count);
+        crate::surf_log!(
+            "[surf] subresources queued: tab={} stylesheets={} scripts_total={} inline_scripts={} external_blocking_or_defer={} async_scripts={}",
+            tab_idx,
+            pending_stylesheet_count,
+            entries.len(),
+            inline_count,
+            ext_count,
+            async_count
+        );
+        log_tab_load_state(tab_idx, "after_begin_subresource_load");
+        if entries.iter().any(|entry| matches!(entry, libwebview::js::ScriptEntry::External { .. })) {
+            ensure_net_poll_timer();
+        }
     }
 
     if let Some(dom) = st.tabs[tab_idx].webview.dom() {
         resources::queue_images(dom, &base_url, tab_idx);
     }
+    log_tab_load_state(tab_idx, "after_queue_images");
 
     // Match the surf-host order more closely: run scripts only after
     // the initial external stylesheet chain has finished loading.
@@ -957,10 +1267,20 @@ fn handle_css_done(
         return false;
     }
 
+    crate::surf_log!(
+        "[surf] css done: tab={} href={} bytes={} gen={} pending_css_before={}",
+        tab_index,
+        href,
+        body.len(),
+        generation,
+        st.tabs[tab_index].load_state.pending_stylesheet_count
+    );
+
     st.tabs[tab_index].load_state.on_stylesheet_finished();
+    log_tab_load_state(tab_index, "after_css_finished");
 
     if body.is_empty() {
-        anyos_std::println!("[surf] skipped empty/failed CSS: {}", href);
+        crate::surf_log!("[surf] skipped empty/failed CSS: {}", href);
         if st.tabs[tab_index].load_state.ready_for_script_execution() {
             execute_pending_scripts(tab_index);
         }
@@ -969,7 +1289,7 @@ fn handle_css_done(
 
     let css_text = resources::decode_http_body(&body, &headers);
     st.tabs[tab_index].webview.add_stylesheet(&css_text);
-    anyos_std::println!("[surf] applied CSS: {}", href);
+    crate::surf_log!("[surf] applied CSS: {}", href);
 
     // Process @import URLs from the newly added stylesheet.
     if let Ok(base_url) = crate::http::parse_url(&href) {
@@ -977,6 +1297,15 @@ fn handle_css_done(
             .webview
             .last_stylesheet_imports()
             .to_vec();
+        let had_imports = !imports.is_empty();
+        if had_imports {
+            crate::surf_log!(
+                "[surf] css imports discovered: tab={} href={} count={}",
+                tab_index,
+                href,
+                imports.len()
+            );
+        }
         st.tabs[tab_index]
             .load_state
             .on_stylesheets_added(imports.len());
@@ -989,23 +1318,19 @@ fn handle_css_done(
                 generation,
             });
         }
+        if had_imports {
+            ensure_net_poll_timer();
+            log_tab_load_state(tab_index, "after_css_imports_added");
+        }
 
         // Process @font-face rules — queue font downloads.
-        let font_faces: Vec<(String, String)> = st.tabs[tab_index]
+        let font_faces: Vec<(String, String, libwebview::css::FontDisplay)> = st.tabs[tab_index]
             .webview
             .last_stylesheet_font_faces()
             .iter()
-            .map(|ff| (ff.family.clone(), ff.src_url.clone()))
+            .map(|ff| (ff.family.clone(), ff.src_url.clone(), ff.display))
             .collect();
-        for (family, src_url) in font_faces {
-            let resolved = crate::http::resolve_url(&base_url, &src_url);
-            crate::net_worker::submit(crate::net_worker::FetchRequest::Font {
-                tab_index,
-                family,
-                url: resolved,
-                generation,
-            });
-        }
+        resources::queue_font_face_batch(tab_index, generation, &base_url, &font_faces);
     }
 
     if st.tabs[tab_index].load_state.ready_for_script_execution() {
@@ -1018,7 +1343,13 @@ fn handle_css_done(
 /// Handle a completed web font fetch: load TTF data into libfont.
 ///
 /// Returns `true` if the font was loaded and a relayout is needed.
-fn handle_font_done(tab_index: usize, family: String, body: Vec<u8>, generation: u32) -> bool {
+fn handle_font_done(
+    tab_index: usize,
+    family: String,
+    body: Vec<u8>,
+    display: libwebview::css::FontDisplay,
+    generation: u32,
+) -> bool {
     let st = state();
     if tab_index >= st.tabs.len() {
         return false;
@@ -1026,16 +1357,56 @@ fn handle_font_done(tab_index: usize, family: String, body: Vec<u8>, generation:
     if !st.tabs[tab_index].load_state.generation_matches(generation) {
         return false;
     }
+    crate::surf_log!(
+        "[surf] font done: tab={} family='{}' bytes={} display={} gen={}",
+        tab_index,
+        family,
+        body.len(),
+        font_display_name(display),
+        generation
+    );
 
     // Try loading the font data (supports TTF/OTF and WOFF2 via Brotli decompression).
     if let Some(font_id) = libfont_client::load_data(&body) {
         st.tabs[tab_index]
             .webview
             .register_web_font(&family, font_id);
-        anyos_std::println!("[surf] loaded web font '{}' -> id {}", family, font_id);
+        if matches!(
+            display,
+            libwebview::css::FontDisplay::Swap
+                | libwebview::css::FontDisplay::Fallback
+                | libwebview::css::FontDisplay::Optional
+        ) && st.tabs[tab_index].deferred_fonts_inflight > 0
+        {
+            st.tabs[tab_index].deferred_fonts_inflight -= 1;
+        }
+        crate::surf_log!("[surf] loaded web font '{}' -> id {}", family, font_id);
+        log_tab_load_state(tab_index, "after_font_loaded");
+        if matches!(
+            st.tabs[tab_index].load_state.phase,
+            PageLoadPhase::Interactive
+        ) {
+            pump_deferred_fonts_for_tab(tab_index);
+        }
         true
     } else {
-        anyos_std::println!("[surf] failed to load web font '{}'", family);
+        if matches!(
+            display,
+            libwebview::css::FontDisplay::Swap
+                | libwebview::css::FontDisplay::Fallback
+                | libwebview::css::FontDisplay::Optional
+        ) && st.tabs[tab_index].deferred_fonts_inflight > 0
+        {
+            st.tabs[tab_index].deferred_fonts_inflight -= 1;
+        }
+        crate::surf_log!("[surf] failed to load web font '{}'", family);
+        log_tab_load_state(tab_index, "after_font_failed");
+        if matches!(
+            st.tabs[tab_index].load_state.phase,
+            PageLoadPhase::Interactive
+        ) {
+            pump_deferred_fonts_for_tab(tab_index);
+        }
         false
     }
 }
@@ -1059,6 +1430,14 @@ fn handle_image_done(
     if !st.tabs[tab_index].load_state.generation_matches(generation) {
         return false;
     }
+    crate::surf_log!(
+        "[surf] image done: tab={} src={} bytes={} priority={} gen={}",
+        tab_index,
+        src,
+        body.len(),
+        image_priority_name(priority),
+        generation
+    );
 
     if resources::is_svg(&src, &headers) {
         resources::decode_svg_no_relayout(&body, &src, tab_index);
@@ -1076,6 +1455,7 @@ fn handle_image_done(
     ) {
         pump_deferred_images_for_tab(tab_index);
     }
+    log_tab_load_state(tab_index, "after_image_done");
     true
 }
 
@@ -1092,7 +1472,7 @@ fn handle_script_done(
 ) {
     let st = state();
     if tab_index >= st.tabs.len() {
-        anyos_std::println!(
+        crate::surf_log!(
             "[surf] dropping ScriptDone: tab {} out of range (tabs={})",
             tab_index,
             st.tabs.len()
@@ -1100,7 +1480,7 @@ fn handle_script_done(
         return;
     }
     if !st.tabs[tab_index].load_state.generation_matches(generation) {
-        anyos_std::println!(
+        crate::surf_log!(
             "[surf] dropping ScriptDone: stale generation tab={} slot={} got={} expected={}",
             tab_index,
             slot,
@@ -1110,7 +1490,7 @@ fn handle_script_done(
         return;
     }
     if slot >= st.tabs[tab_index].pending_scripts.len() {
-        anyos_std::println!(
+        crate::surf_log!(
             "[surf] dropping ScriptDone: slot {} out of range (pending_len={})",
             slot,
             st.tabs[tab_index].pending_scripts.len()
@@ -1119,10 +1499,16 @@ fn handle_script_done(
     }
 
     let text = resources::decode_http_body(&body, &headers);
-    anyos_std::println!(
-        "[surf] script [{}] fetched: {} bytes (pending_before={})",
+    let label = st.tabs[tab_index]
+        .pending_script_labels
+        .get(slot)
+        .cloned()
+        .unwrap_or_else(|| String::from("<unknown>"));
+    crate::surf_log!(
+        "[surf] script [{}] fetched: {} bytes label={} pending_before={}",
         slot,
         text.len(),
+        label,
         st.tabs[tab_index].load_state.pending_script_count
     );
     st.tabs[tab_index].pending_scripts[slot] = Some(text);
@@ -1136,16 +1522,18 @@ fn handle_script_done(
         st.tabs[tab_index].load_state.on_script_finished();
     }
 
-    anyos_std::println!(
-        "[surf] script [{}] stored: pending_after={} stylesheets_pending={}",
+    crate::surf_log!(
+        "[surf] script [{}] stored: pending_after={} stylesheets_pending={} mode={}",
         slot,
         st.tabs[tab_index].load_state.pending_script_count,
-        st.tabs[tab_index].load_state.pending_stylesheet_count
+        st.tabs[tab_index].load_state.pending_stylesheet_count,
+        script_mode_name(mode.clone())
     );
+    log_tab_load_state(tab_index, "after_script_done");
 
     if matches!(mode, libwebview::js::ScriptMode::Async) {
-        anyos_std::println!(
-            "[surf] async script [{}] queued for batched execution",
+        crate::surf_log!(
+            "[surf] async script [{}] buffered until blocking/defer gate opens",
             slot
         );
     }
@@ -1165,50 +1553,52 @@ fn execute_pending_scripts(tab_index: usize) {
     if tab_index >= st.tabs.len() {
         return;
     }
+    if !st.tabs[tab_index].load_state.ready_for_script_execution() {
+        log_tab_load_state(tab_index, "execute_pending_scripts_blocked");
+        return;
+    }
 
-    let scripts: Vec<String> = st.tabs[tab_index]
-        .pending_scripts
-        .iter()
-        .filter_map(|s| s.clone())
-        .collect();
-    anyos_std::println!(
+    let mut scripts = Vec::new();
+    for slot in 0..st.tabs[tab_index].pending_scripts.len() {
+        if matches!(
+            st.tabs[tab_index].pending_script_modes.get(slot),
+            Some(libwebview::js::ScriptMode::Async)
+        ) {
+            continue;
+        }
+        if let Some(text) = st.tabs[tab_index].pending_scripts[slot].take() {
+            scripts.push((slot, text));
+        }
+    }
+    crate::surf_log!(
         "[surf] execute_pending_scripts: tab={} collected={} pending_slots={}",
         tab_index,
         scripts.len(),
         st.tabs[tab_index].pending_scripts.len()
     );
     if tab_index < st.render_dirty.len() && st.render_dirty[tab_index] != RenderWork::None {
-        anyos_std::println!(
+        crate::surf_log!(
             "[surf] execute_pending_scripts: tab={} skipping blocking pre-script relayout",
             tab_index
         );
     }
-    // Clear pending state.
-    st.tabs[tab_index].pending_scripts.clear();
-    st.tabs[tab_index].pending_script_modes.clear();
-    st.tabs[tab_index].load_state.mark_interactive();
 
     if scripts.is_empty() {
+        st.tabs[tab_index].load_state.mark_interactive();
+        log_tab_load_state(tab_index, "mark_interactive_no_blocking_scripts");
+        execute_buffered_async_scripts(tab_index);
+        pump_deferred_fonts_for_tab(tab_index);
         pump_deferred_images_for_tab(tab_index);
         return;
     }
 
-    anyos_std::println!(
-        "[surf] executing {} scripts in document order",
-        scripts.len()
-    );
-    st.tabs[tab_index].webview.execute_js(&scripts);
-
-    // Flush JS console output.
-    for line in st.tabs[tab_index].webview.js_console() {
-        anyos_std::println!("[surf-js] {}", line);
+    for (slot, script) in scripts {
+        execute_script_slot(tab_index, slot, script, "blocking/defer");
     }
-
-    // JS may have requested WebSocket connections.
-    connect_pending_ws(tab_index);
-
-    // Relayout to reflect DOM mutations from JS.
-    request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
+    st.tabs[tab_index].load_state.mark_interactive();
+    log_tab_load_state(tab_index, "mark_interactive_after_blocking_scripts");
+    execute_buffered_async_scripts(tab_index);
+    pump_deferred_fonts_for_tab(tab_index);
     pump_deferred_images_for_tab(tab_index);
     flush_deferred_resize_if_ready();
 }
@@ -1240,17 +1630,20 @@ fn merge_cookies(worker_jar: http::CookieJar) {
 // ═══════════════════════════════════════════════════════════
 
 fn main() {
-    anyos_std::println!("[surf] starting...");
+    crate::surf_log!("[surf] starting...");
 
     if !ui_lib::init() {
-        anyos_std::println!("[surf] ERROR: failed to init libanyui");
+        crate::surf_log!("[surf] ERROR: failed to init libanyui");
         return;
     }
     i18n::init();
 
     if !libsvg_client::init() {
-        anyos_std::println!("[surf] WARN: libsvg.so not available — SVG images disabled");
+        crate::surf_log!("[surf] WARN: libsvg.so not available — SVG images disabled");
     }
+
+    // Load user settings and bookmarks from disk.
+    let (surf_config, surf_bookmarks) = config::load();
 
     // Optional startup URL from the process argument string.
     let mut args_buf = [0u8; 256];
@@ -1308,7 +1701,11 @@ fn main() {
     // URL field (DOCK_FILL — takes all remaining width).
     let url_field = ui_lib::TextField::new();
     url_field.set_dock(ui_lib::DOCK_FILL);
-    url_field.set_placeholder(i18n::t("Enter URL..."));
+    if surf_config.homepage.is_empty() {
+        url_field.set_placeholder(i18n::t("Enter URL..."));
+    } else {
+        url_field.set_placeholder(&surf_config.homepage);
+    }
     toolbar.add(&url_field);
 
     // Loading progress bar (DOCK_TOP, 3px, below toolbar).
@@ -1421,6 +1818,8 @@ fn main() {
             relayout_timer: 0,
             resize_timer: 0,
             deferred_resize_pending: false,
+            config: surf_config,
+            bookmarks: surf_bookmarks,
         });
     }
 
@@ -1497,13 +1896,13 @@ fn main() {
             // 2 = separator
             3 => {} // History (TODO)
             4 => {} // Downloads (TODO)
-            5 => {} // Bookmarks (TODO)
+            5 => bookmarks::open_bookmark_manager(),
             // 6 = separator
             7 => {} // Zoom In (TODO)
             8 => {} // Zoom Out (TODO)
             9 => {} // Reset Zoom (TODO)
             // 10 = separator
-            11 => {}                     // Settings (TODO)
+            11 => settings::open_settings(),
             12 => ui::toggle_devtools(), // Developer Tools
             // 13 = separator
             14 => {} // About Surf (TODO)
@@ -1557,6 +1956,12 @@ fn main() {
         } else if ctrl && shift && key == b'I' as u32 {
             // Ctrl+Shift+I — also toggle DevTools (Chrome/Firefox shortcut).
             ui::toggle_devtools();
+        } else if ctrl && key == b'D' as u32 {
+            // Ctrl+D — quick-add current page to bookmarks.
+            bookmarks::add_current_page();
+        } else if ctrl && key == b'B' as u32 {
+            // Ctrl+B — open bookmark manager.
+            bookmarks::open_bookmark_manager();
         }
     });
 
@@ -1570,19 +1975,27 @@ fn main() {
     // Start the CSS animation tick timer.
     start_anim_timer();
 
-    // Navigate to the initial URL if one was provided on the command line.
+    // Navigate to the initial URL (command line argument or configured homepage).
     if let Some(url) = start_url {
         let st = state();
         st.tabs[st.active_tab].url_text = url.clone();
         st.url_field.set_text(&url);
         tab::navigate(&url);
+    } else {
+        let st = state();
+        if !st.config.homepage.is_empty() {
+            let url = st.config.homepage.clone();
+            st.tabs[st.active_tab].url_text = url.clone();
+            st.url_field.set_text(&url);
+            tab::navigate(&url);
+        }
     }
 
     // One-shot timer: after the first layout pass, resize the WebView to the
     // actual content_view dimensions (dock sizes aren't computed until run()).
     schedule_active_webview_resize(50);
 
-    anyos_std::println!("[surf] entering event loop");
+    crate::surf_log!("[surf] entering event loop");
     ui_lib::run();
     anyos_std::process::exit(0);
 }

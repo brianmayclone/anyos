@@ -254,6 +254,56 @@ fn class_private_per_instance() {
     );
 }
 
+#[test]
+fn derived_class_instance_fields_run_after_super() {
+    assert_eq!(
+        eval_str(
+            r#"
+        class Base {
+            constructor() { this.ready = true; }
+        }
+        class Derived extends Base {
+            registry = new Map();
+            items = [];
+            constructor() {
+                super();
+                this.items.push("ok");
+                this.registry.set("x", 1);
+            }
+            value() { return this.registry.get("x") + ":" + this.items.length + ":" + this.ready; }
+        }
+        new Derived().value()
+    "#
+        ),
+        "1:1:true"
+    );
+}
+
+#[test]
+fn derived_class_field_methods_see_initialized_collections() {
+    assert_eq!(
+        eval_str(
+            r#"
+        class Base {}
+        class Container extends Base {
+            providers = [];
+            singletons = new Map();
+            constructor() {
+                super();
+            }
+            registerSingleton(name, value) {
+                this.providers.push(name);
+                this.singletons.set(name, value);
+                return this.singletons.get(name) + ":" + this.providers.length;
+            }
+        }
+        new Container().registerSingleton("svc", 7)
+    "#
+        ),
+        "7:1"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════
 // §15.3 — Generators
 // ═══════════════════════════════════════════════════════════
@@ -332,6 +382,34 @@ fn promise_all() {
     "#
         ),
         "1,2,3"
+    );
+}
+
+#[test]
+fn promise_chain_then_then_catch() {
+    assert_eq!(
+        eval_console(
+            r#"
+        Promise.resolve(40)
+            .then(v => v + 1)
+            .then(v => console.log(v))
+            .catch(e => console.log("err:" + e));
+    "#
+        ),
+        "41"
+    );
+}
+
+#[test]
+fn function_constructor_can_return_promise_chain() {
+    assert_eq!(
+        eval_console(
+            r#"
+        let run = new Function("return Promise.resolve(5).then(v => v + 2).catch(e => 0);");
+        run().then(v => console.log(v));
+    "#
+        ),
+        "7"
     );
 }
 
@@ -1411,5 +1489,188 @@ fn async_method_strudel_pattern() {
     "#
         ),
         "false\nfunction\nfunction\nfunction"
+    );
+}
+
+#[test]
+fn derived_class_instance_fields_run_after_super_with_args() {
+    assert_eq!(
+        eval_str(
+            r#"
+        class Base {
+            constructor(name) { this.name = name; }
+        }
+        class Child extends Base {
+            registry = new Map();
+            items = [];
+            hasName() { return this.name; }
+        }
+        let c = new Child("ok");
+        c.registry.set("x", 1);
+        c.items.push(2);
+        c.hasName() + "," + c.registry.get("x") + "," + c.items.length
+    "#
+        ),
+        "ok,1,1"
+    );
+}
+
+#[test]
+fn derived_default_constructor_forwards_super_and_runs_instance_fields() {
+    assert_eq!(
+        eval_str(
+            r#"
+        class Base {
+            constructor(name) { this.baseName = name; }
+        }
+        class Derived extends Base {
+            registry = new Map();
+            items = [];
+        }
+        let d = new Derived("ok");
+        d.registry.set("x", 1);
+        d.items.push(2);
+        d.baseName + "," + d.registry.get("x") + "," + d.items.length
+    "#
+        ),
+        "ok,1,1"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// Minified patterns: super() in non-trivial positions
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn class_field_with_return_super() {
+    // Minifiers often emit: constructor() { return super(...arguments) }
+    assert_eq!(
+        eval_str(
+            r#"
+        class Base {
+            constructor(n) { this.n = n; }
+        }
+        class Derived extends Base {
+            _entries = new Map();
+            items = [];
+            constructor() { return super(...arguments); }
+        }
+        let d = new Derived("ok");
+        d._entries.set("x", 1);
+        d.items.push(2);
+        d.n + "," + d._entries.get("x") + "," + d.items.length
+    "#
+        ),
+        "ok,1,1"
+    );
+}
+
+#[test]
+fn class_field_with_comma_super() {
+    // Minifiers emit: constructor() { super(), this.init() }
+    assert_eq!(
+        eval_str(
+            r#"
+        class Base {
+            constructor() { this.ready = true; }
+        }
+        class Derived extends Base {
+            _map = new Map();
+            constructor() { super(), this._map.set("a", 1); }
+            val() { return this._map.get("a") + ":" + this.ready; }
+        }
+        new Derived().val()
+    "#
+        ),
+        "1:true"
+    );
+}
+
+#[test]
+fn class_field_with_super_in_assignment() {
+    // Pattern: constructor() { const x = super(); }
+    assert_eq!(
+        eval_str(
+            r#"
+        class Base {}
+        class Derived extends Base {
+            _m = new Map();
+            constructor() { const x = super(); this._m.set("k", 42); }
+            val() { return this._m.get("k"); }
+        }
+        new Derived().val()
+    "#
+        ),
+        "42"
+    );
+}
+
+#[test]
+fn di_container_pattern() {
+    // Exact pattern from the error: DI container with registerSingleton
+    assert_eq!(
+        eval_str(
+            r#"
+        class Base {}
+        class ServiceCollection extends Base {
+            _entries = new Map();
+            _providers = [];
+            constructor() { super(); }
+            ensure(id) {
+                if (!this._entries.has(id)) {
+                    this._entries.set(id, []);
+                }
+                return this._entries.get(id);
+            }
+            set(id, entry) {
+                const arr = this.ensure(id);
+                arr.push(entry);
+            }
+            register(id, value) {
+                this.set(id, { id: id, value: value });
+            }
+            registerSingleton(id, value) {
+                this.register(id, value);
+                this._providers.push(id);
+            }
+            isProviderFor(id) {
+                return this._providers.filter(p => p === id).length > 0;
+            }
+        }
+        const sc = new ServiceCollection();
+        sc.registerSingleton("svc1", 10);
+        sc.registerSingleton("svc2", 20);
+        sc.isProviderFor("svc1") + ":" + sc._entries.get("svc1")[0].value + ":" + sc._providers.length
+    "#
+        ),
+        "true:10:2"
+    );
+}
+
+#[test]
+fn di_container_minified_return_super() {
+    // Same DI pattern but with minified constructor: return super(...arguments)
+    assert_eq!(
+        eval_str(
+            r#"
+        class Base {}
+        class SC extends Base {
+            _e = new Map();
+            _p = [];
+            constructor() { return super(...arguments); }
+            ensure(id) {
+                if (!this._e.has(id)) { this._e.set(id, []); }
+                return this._e.get(id);
+            }
+            set(id, v) { this.ensure(id).push(v); }
+            register(id, v) { this.set(id, v); this._p.push(id); }
+        }
+        const s = new SC();
+        s.register("a", 1);
+        s.register("b", 2);
+        s._e.get("a")[0] + ":" + s._p.length
+    "#
+        ),
+        "1:2"
     );
 }

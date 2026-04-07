@@ -65,6 +65,7 @@ pub(crate) enum FetchRequest {
         tab_index: usize,
         family: String,
         url: Url,
+        display: libwebview::css::FontDisplay,
         generation: u32,
     },
     /// External `<script src="...">` fetch.
@@ -122,6 +123,7 @@ pub(crate) enum FetchResult {
         tab_index: usize,
         family: String,
         body: Vec<u8>,
+        display: libwebview::css::FontDisplay,
         generation: u32,
     },
     /// External script fetch completed successfully.
@@ -161,6 +163,7 @@ static REQUEST_LOCK_VISIBLE: AtomicBool = AtomicBool::new(false);
 static REQUEST_LOCK_BACKGROUND: AtomicBool = AtomicBool::new(false);
 static RESULT_LOCK: AtomicBool = AtomicBool::new(false);
 const RESULT_MAILBOX_COUNT: usize = 16;
+const TLS_WORKER_LANES: u32 = 3;
 
 static mut REQUEST_QUEUE_CRITICAL: Option<Vec<FetchRequest>> = None;
 static mut REQUEST_QUEUE_TLS: Option<Vec<FetchRequest>> = None;
@@ -176,11 +179,13 @@ static GENERATION: AtomicU32 = AtomicU32::new(0);
 
 /// Whether the worker thread has been started.
 static WORKER_STARTED_CRITICAL: AtomicBool = AtomicBool::new(false);
-static WORKER_STARTED_TLS: AtomicBool = AtomicBool::new(false);
+static WORKER_ACTIVE_TLS: AtomicU32 = AtomicU32::new(0);
 static WORKER_STARTED_SCRIPT: AtomicBool = AtomicBool::new(false);
 static WORKER_STARTED_FONT: AtomicBool = AtomicBool::new(false);
 static WORKER_STARTED_VISIBLE: AtomicBool = AtomicBool::new(false);
 static WORKER_STARTED_BACKGROUND: AtomicBool = AtomicBool::new(false);
+/// Requests currently being processed after they have been dequeued.
+static REQUESTS_IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WorkerClass {
@@ -235,11 +240,11 @@ fn request_lock(class: WorkerClass) -> &'static AtomicBool {
 fn worker_started_flag(class: WorkerClass) -> &'static AtomicBool {
     match class {
         WorkerClass::Critical => &WORKER_STARTED_CRITICAL,
-        WorkerClass::Tls => &WORKER_STARTED_TLS,
         WorkerClass::Script => &WORKER_STARTED_SCRIPT,
         WorkerClass::Font => &WORKER_STARTED_FONT,
         WorkerClass::Visible => &WORKER_STARTED_VISIBLE,
         WorkerClass::Background => &WORKER_STARTED_BACKGROUND,
+        WorkerClass::Tls => unreachable!("TLS workers use an active-count tracker"),
     }
 }
 
@@ -294,6 +299,10 @@ fn request_is_https(req: &FetchRequest) -> bool {
 }
 
 fn ensure_worker(class: WorkerClass) {
+    if class == WorkerClass::Tls {
+        ensure_tls_workers();
+        return;
+    }
     let started = worker_started_flag(class);
     if started.load(Ordering::Relaxed) {
         return;
@@ -326,6 +335,45 @@ fn ensure_worker(class: WorkerClass) {
     }
 }
 
+fn ensure_tls_workers() {
+    loop {
+        let reserved = WORKER_ACTIVE_TLS.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |active| {
+                if active < TLS_WORKER_LANES {
+                    Some(active + 1)
+                } else {
+                    None
+                }
+            },
+        );
+        if reserved.is_err() {
+            return;
+        }
+
+        match anyos_std::process::Thread::spawn_with_stack(
+            worker_entry_tls,
+            256 * 1024,
+            "surf-net-tls",
+        ) {
+            Ok(handle) => {
+                core::mem::forget(handle);
+                surf_net_log!(
+                    "tls worker thread started ({}/{})",
+                    WORKER_ACTIVE_TLS.load(Ordering::Relaxed),
+                    TLS_WORKER_LANES
+                );
+            }
+            Err(_) => {
+                WORKER_ACTIVE_TLS.fetch_sub(1, Ordering::SeqCst);
+                surf_net_log!("ERROR: failed to spawn tls worker thread");
+                return;
+            }
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // Public API (called from UI thread)
 // ═══════════════════════════════════════════════════════════
@@ -347,7 +395,6 @@ pub(crate) fn init() {
 /// Submit a request to the worker queue.
 pub(crate) fn submit(req: FetchRequest) {
     let class = request_worker_class(&req);
-    ensure_worker(class);
     let lock = request_lock(class);
     acquire(lock);
     unsafe {
@@ -356,6 +403,7 @@ pub(crate) fn submit(req: FetchRequest) {
         }
     }
     release(lock);
+    ensure_worker(class);
 }
 
 /// Drain completed results for one tab from its mailbox.
@@ -367,7 +415,6 @@ pub(crate) fn drain_results_for_tab(tab_index: usize) -> Vec<FetchResult> {
                 if mailbox.is_empty() {
                     Vec::new()
                 } else {
-                    #[cfg(feature = "debug_surf")]
                     surf_net_log!("mailbox poll: tab={} pending={}", tab_index, mailbox.len());
                     core::mem::replace(mailbox, Vec::new())
                 }
@@ -503,8 +550,12 @@ pub(crate) fn handle_closed_tab(closed_idx: usize) {
 /// Best-effort signal for the UI thread that the network worker may still
 /// produce results soon.
 pub(crate) fn has_pending_activity() -> bool {
+    if REQUESTS_IN_FLIGHT.load(Ordering::Relaxed) > 0 {
+        return true;
+    }
+
     if WORKER_STARTED_CRITICAL.load(Ordering::Relaxed)
-        || WORKER_STARTED_TLS.load(Ordering::Relaxed)
+        || WORKER_ACTIVE_TLS.load(Ordering::Relaxed) > 0
         || WORKER_STARTED_SCRIPT.load(Ordering::Relaxed)
         || WORKER_STARTED_FONT.load(Ordering::Relaxed)
         || WORKER_STARTED_VISIBLE.load(Ordering::Relaxed)
@@ -641,7 +692,9 @@ fn worker_entry(class: WorkerClass) {
         match req {
             Some(request) => {
                 idle_count = 0;
+                REQUESTS_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
                 process_request(request, &mut pool, &mut cache);
+                REQUESTS_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
             }
             None => {
                 idle_count += 1;
@@ -650,8 +703,19 @@ fn worker_entry(class: WorkerClass) {
                     // Must store false BEFORE exiting so ensure_worker() can
                     // respawn.  Cannot `return` — the stack has no valid
                     // return address (mmap zeroes it), so RIP would become 0.
-                    worker_started_flag(class).store(false, Ordering::SeqCst);
-                    surf_net_log!("{} worker idle, exiting", worker_label(class));
+                    if class == WorkerClass::Tls {
+                        let remaining = WORKER_ACTIVE_TLS
+                            .fetch_sub(1, Ordering::SeqCst)
+                            .saturating_sub(1);
+                        surf_net_log!(
+                            "{} worker idle, exiting (remaining={})",
+                            worker_label(class),
+                            remaining
+                        );
+                    } else {
+                        worker_started_flag(class).store(false, Ordering::SeqCst);
+                        surf_net_log!("{} worker idle, exiting", worker_label(class));
+                    }
                     anyos_std::process::exit(0);
                 }
                 anyos_std::process::sleep(5);
@@ -937,6 +1001,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             tab_index,
             family,
             url,
+            display,
             generation,
         } => {
             if generation != current_gen {
@@ -949,6 +1014,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                         tab_index,
                         family,
                         body: resp.body,
+                        display,
                         generation,
                     });
                 }

@@ -254,6 +254,10 @@ pub enum Op {
     /// Stack before: [..., SuperClass, arg1, ..., argN]
     /// Sets `is_constructor = true` and forwards `new.target` from the current frame.
     SuperCall(u8),
+    /// Call super constructor with spread arguments: `super(...args)`.
+    /// Stack before: [..., SuperClass, args_array]
+    /// Unpacks the array and calls the super constructor.
+    SuperCallSpread,
     /// Set the super_class field on the top-of-stack Function.
     /// Stack: [..., Constructor, SuperClass] → [..., Constructor]
     SetSuperClass,

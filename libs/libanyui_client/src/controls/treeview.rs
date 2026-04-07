@@ -16,6 +16,11 @@ impl TreeView {
         Self { ctrl: Control { id } }
     }
 
+    /// Wrap an existing control ID as a TreeView.
+    pub fn from_id(id: u32) -> Self {
+        Self { ctrl: Control { id } }
+    }
+
     /// Add a root-level node. Returns the node index.
     pub fn add_root(&self, text: &str) -> u32 {
         (lib().treeview_add_node)(self.ctrl.id, u32::MAX, text.as_ptr(), text.len() as u32)
