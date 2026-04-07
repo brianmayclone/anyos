@@ -32,6 +32,7 @@ pub mod fxaa;
 pub mod svga3d;
 pub mod drv_loader;
 pub mod physics;
+pub mod shadow;
 mod syscall;
 
 use types::*;
@@ -1262,100 +1263,6 @@ pub extern "C" fn gl_has_hw_backend() -> u32 {
     if drv_loader::is_loaded() { 1 } else { 0 }
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-//  Shadow Mapping (automatic, HW-only)
-// ══════════════════════════════════════════════════════════════════════════════
-
-/// Internal: build an orthographic projection matrix for directional light.
-fn ortho_matrix(l: f32, r: f32, b: f32, t: f32, n: f32, f: f32) -> [f32; 16] {
-    let mut m = [0.0f32; 16];
-    m[0]  = 2.0 / (r - l);
-    m[5]  = 2.0 / (t - b);
-    m[10] = -2.0 / (f - n);
-    m[12] = -(r + l) / (r - l);
-    m[13] = -(t + b) / (t - b);
-    m[14] = -(f + n) / (f - n);
-    m[15] = 1.0;
-    m
-}
-
-/// Internal: build a look-at view matrix.
-fn look_at_matrix(eye: &[f32; 3], target: &[f32; 3], up: &[f32; 3]) -> [f32; 16] {
-    let fx = target[0] - eye[0];
-    let fy = target[1] - eye[1];
-    let fz = target[2] - eye[2];
-    let flen = rasterizer::math::sqrt(fx*fx + fy*fy + fz*fz).max(0.0001);
-    let fx = fx / flen; let fy = fy / flen; let fz = fz / flen;
-
-    // right = normalize(f × up)
-    let rx = fy * up[2] - fz * up[1];
-    let ry = fz * up[0] - fx * up[2];
-    let rz = fx * up[1] - fy * up[0];
-    let rlen = rasterizer::math::sqrt(rx*rx + ry*ry + rz*rz).max(0.0001);
-    let rx = rx / rlen; let ry = ry / rlen; let rz = rz / rlen;
-
-    // u = r × f
-    let ux = ry * fz - rz * fy;
-    let uy = rz * fx - rx * fz;
-    let uz = rx * fy - ry * fx;
-
-    [
-        rx,  ux,  -fx, 0.0,
-        ry,  uy,  -fy, 0.0,
-        rz,  uz,  -fz, 0.0,
-        -(rx*eye[0] + ry*eye[1] + rz*eye[2]),
-        -(ux*eye[0] + uy*eye[1] + uz*eye[2]),
-        (fx*eye[0] + fy*eye[1] + fz*eye[2]),
-        1.0,
-    ]
-}
-
-/// Internal: multiply two column-major 4x4 matrices.
-fn mat4_mul_shadow(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
-    let mut out = [0.0f32; 16];
-    for col in 0..4 {
-        for row in 0..4 {
-            let mut s = 0.0f32;
-            for k in 0..4 {
-                s += a[k * 4 + row] * b[col * 4 + k];
-            }
-            out[col * 4 + row] = s;
-        }
-    }
-    out
-}
-
-/// Internal: ensure the shadow FBO + depth texture are created.
-fn ensure_shadow_resources() {
-    let c = ctx();
-    if c.shadow_fbo_id != 0 { return; }
-
-    let size = c.shadow_map_size;
-
-    // Create depth texture
-    let mut tex = [0u32; 1];
-    glGenTextures(1, tex.as_mut_ptr());
-    c.shadow_depth_tex_id = tex[0];
-    glBindTexture(GL_TEXTURE_2D, tex[0]);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as i32);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as i32);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE as i32);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE as i32);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT as i32,
-        size as i32, size as i32, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_BYTE, core::ptr::null());
-
-    // Create FBO
-    let mut fbo = [0u32; 1];
-    glGenFramebuffers(1, fbo.as_mut_ptr());
-    c.shadow_fbo_id = fbo[0];
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo[0]);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex[0], 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    serial_println!("[libgl] shadow resources created: fbo={} tex={} size={}",
-        c.shadow_fbo_id, c.shadow_depth_tex_id, size);
-}
-
 /// Begin shadow pass. Call this before drawing the scene.
 /// The light looks from `(lx,ly,lz)` toward `(tx,ty,tz)`.
 /// `radius` controls the shadow volume extent (how far the light "sees").
@@ -1367,55 +1274,14 @@ pub extern "C" fn gl_shadow_pass_begin(
     tx: f32, ty: f32, tz: f32,
     radius: f32,
 ) -> u32 {
-    ensure_shadow_resources();
-    let c = ctx();
-    if c.shadow_fbo_id == 0 { return 0; }
-
-    // Compute light view-projection matrix (orthographic for directional light)
-    let eye = [lx, ly, lz];
-    let target = [tx, ty, tz];
-    let up = [0.0f32, 1.0, 0.0];
-    let view = look_at_matrix(&eye, &target, &up);
-    let proj = ortho_matrix(-radius, radius, -radius, radius, 0.1, radius * 4.0);
-    c.shadow_light_mvp = mat4_mul_shadow(&proj, &view);
-
-    c.shadow_prev_viewport = [c.viewport_x, c.viewport_y, c.viewport_w, c.viewport_h];
-    glBindFramebuffer(GL_FRAMEBUFFER, c.shadow_fbo_id);
-    glViewport(0, 0, c.shadow_map_size as i32, c.shadow_map_size as i32);
-
-    if unsafe { USE_HW_BACKEND } {
-        if let Some(drv) = drv_loader::drv() {
-            if let Some(begin_fn) = drv.drv_shadow_begin {
-                begin_fn(c.shadow_map_size, c.shadow_map_size);
-            }
-        }
-    }
-
-    c.shadow_pass_active = true;
-    c.shadow_map_ready = false;
-    1
+    shadow::begin_pass(lx, ly, lz, tx, ty, tz, radius)
 }
 
 /// End shadow pass. Restores normal rendering.
 /// After this, shadow map is automatically available for the main pass.
 #[no_mangle]
 pub extern "C" fn gl_shadow_pass_end() {
-    let c = ctx();
-    if !c.shadow_pass_active { return; }
-
-    if unsafe { USE_HW_BACKEND } {
-        if let Some(drv) = drv_loader::drv() {
-            if let Some(end_fn) = drv.drv_shadow_end {
-                end_fn();
-            }
-        }
-    }
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    let prev = c.shadow_prev_viewport;
-    glViewport(prev[0], prev[1], prev[2], prev[3]);
-    c.shadow_pass_active = false;
-    c.shadow_map_ready = true;
+    shadow::end_pass();
 }
 
 /// Query the light MVP matrix (16 floats, column-major).
@@ -1449,6 +1315,12 @@ pub extern "C" fn gl_shadow_get_unit() -> u32 {
 #[no_mangle]
 pub extern "C" fn gl_shadow_get_texture() -> u32 {
     ctx().shadow_depth_tex_id
+}
+
+/// Get the configured shadow map size in pixels.
+#[no_mangle]
+pub extern "C" fn gl_shadow_get_map_size() -> u32 {
+    ctx().shadow_map_size
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

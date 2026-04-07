@@ -186,6 +186,7 @@ struct LibGl {
     shadow_available: extern "C" fn() -> u32,
     shadow_get_unit: extern "C" fn() -> u32,
     shadow_get_texture: extern "C" fn() -> u32,
+    shadow_get_map_size: extern "C" fn() -> u32,
     // Math
     math_sin: extern "C" fn(f32) -> f32,
     math_cos: extern "C" fn(f32) -> f32,
@@ -334,6 +335,7 @@ pub fn init() -> bool {
             shadow_available: resolve(&handle, "gl_shadow_available"),
             shadow_get_unit: resolve(&handle, "gl_shadow_get_unit"),
             shadow_get_texture: resolve(&handle, "gl_shadow_get_texture"),
+            shadow_get_map_size: resolve(&handle, "gl_shadow_get_map_size"),
             math_sin: resolve(&handle, "gl_math_sin"),
             math_cos: resolve(&handle, "gl_math_cos"),
             math_tan: resolve(&handle, "gl_math_tan"),
@@ -581,6 +583,9 @@ pub fn uniform1i(location: i32, v: i32) { (lib().uniform1i)(location, v); }
 /// Set 1-float uniform.
 pub fn uniform1f(location: i32, v: f32) { (lib().uniform1f)(location, v); }
 
+/// Set 2-float uniform.
+pub fn uniform2f(location: i32, x: f32, y: f32) { (lib().uniform2f)(location, x, y); }
+
 /// Set 3-float uniform.
 pub fn uniform3f(location: i32, x: f32, y: f32, z: f32) { (lib().uniform3f)(location, x, y, z); }
 
@@ -649,11 +654,11 @@ pub fn get_hw_backend() -> bool { (lib().get_hw_backend)() != 0 }
 pub fn has_hw_backend() -> bool { (lib().has_hw_backend)() != 0 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-//  Shadow Mapping (automatic, HW-only — no-op on SW)
+//  Shadow Mapping
 // ══════════════════════════════════════════════════════════════════════════════
 
 /// Begin shadow pass. Light at `(lx,ly,lz)` looking at `(tx,ty,tz)`.
-/// `radius` = shadow volume extent. Returns true if HW shadow is active.
+/// `radius` = shadow volume extent. Returns true if the pass was started.
 pub fn shadow_pass_begin(lx: f32, ly: f32, lz: f32, tx: f32, ty: f32, tz: f32, radius: f32) -> bool {
     (lib().shadow_pass_begin)(lx, ly, lz, tx, ty, tz, radius) != 0
 }
@@ -672,6 +677,9 @@ pub fn shadow_get_unit() -> u32 { (lib().shadow_get_unit)() }
 
 /// Texture id of the internally managed shadow map depth texture.
 pub fn shadow_get_texture() -> u32 { (lib().shadow_get_texture)() }
+
+/// Resolution of the internally managed shadow map.
+pub fn shadow_get_map_size() -> u32 { (lib().shadow_get_map_size)() }
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Framebuffer Objects (ES 2.0 FBO + GL_OES_depth_texture)

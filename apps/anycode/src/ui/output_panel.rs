@@ -1,12 +1,14 @@
 use libanyui_client as ui;
 
-/// The bottom panel with Output and Terminal tabs.
+/// The bottom panel with Output, Problems, and Terminal tabs.
 pub struct OutputPanel {
     pub panel: ui::View,
     pub tab_bar: ui::TabBar,
     // Output sub-panel
     output_panel: ui::View,
     output_area: ui::TextArea,
+    // Problems sub-panel
+    pub problems_panel_view: ui::View,
     // Terminal sub-panel
     terminal_panel: ui::View,
     terminal_area: ui::TextArea,
@@ -18,15 +20,15 @@ pub struct OutputPanel {
 }
 
 impl OutputPanel {
-    /// Create the bottom panel with Output + Terminal tabs.
+    /// Create the bottom panel with Output + Problems + Terminal tabs.
     pub fn new() -> Self {
         let tc = ui::theme::colors();
         let panel = ui::View::new();
         panel.set_color(tc.editor_bg);
 
-        // Tab bar for switching Output / Terminal
+        // Tab bar for switching Output / Problems / Terminal
         let t = anyos_std::i18n::t;
-        let tabs = alloc::format!("{}|{}", t("Output"), t("Terminal"));
+        let tabs = alloc::format!("{}|{}|{}", t("Output"), t("Problems"), t("Terminal"));
         let tab_bar = ui::TabBar::new(&tabs);
         tab_bar.set_dock(ui::DOCK_TOP);
         tab_bar.set_size(400, 24);
@@ -34,10 +36,10 @@ impl OutputPanel {
         panel.add(&tab_bar);
 
         // ── Output sub-panel ──
-        let output_panel = ui::View::new();
-        output_panel.set_dock(ui::DOCK_FILL);
-        output_panel.set_color(tc.editor_bg);
-        panel.add(&output_panel);
+        let output_panel_view = ui::View::new();
+        output_panel_view.set_dock(ui::DOCK_FILL);
+        output_panel_view.set_color(tc.editor_bg);
+        panel.add(&output_panel_view);
 
         let output_area = ui::TextArea::new();
         output_area.set_dock(ui::DOCK_FILL);
@@ -45,7 +47,14 @@ impl OutputPanel {
         output_area.set_font_size(12);
         output_area.set_color(tc.editor_bg);
         output_area.set_text_color(tc.text);
-        output_panel.add(&output_area);
+        output_panel_view.add(&output_area);
+
+        // ── Problems sub-panel (placeholder — actual content managed by ProblemsPanel) ──
+        let problems_panel_view = ui::View::new();
+        problems_panel_view.set_dock(ui::DOCK_FILL);
+        problems_panel_view.set_color(tc.editor_bg);
+        problems_panel_view.set_visible(false);
+        panel.add(&problems_panel_view);
 
         // ── Terminal sub-panel ──
         let terminal_panel = ui::View::new();
@@ -72,14 +81,15 @@ impl OutputPanel {
         terminal_input.set_placeholder("$ ");
         terminal_panel.add(&terminal_input);
 
-        // Wire tab switching
-        tab_bar.connect_panels(&[&output_panel, &terminal_panel]);
+        // Wire tab switching (Output, Problems, Terminal)
+        tab_bar.connect_panels(&[&output_panel_view, &problems_panel_view, &terminal_panel]);
 
         Self {
             panel,
             tab_bar,
-            output_panel,
+            output_panel: output_panel_view,
             output_area,
+            problems_panel_view,
             terminal_panel,
             terminal_area,
             terminal_input,
@@ -122,6 +132,21 @@ impl OutputPanel {
         if let Ok(full) = core::str::from_utf8(&buf[..total]) {
             self.output_area.set_text(full);
         }
+    }
+
+    /// Switch to the output tab.
+    pub fn show_output(&self) {
+        self.tab_bar.set_state(0);
+    }
+
+    /// Switch to the problems tab.
+    pub fn show_problems(&self) {
+        self.tab_bar.set_state(1);
+    }
+
+    /// Switch to the terminal tab.
+    pub fn show_terminal(&self) {
+        self.tab_bar.set_state(2);
     }
 
     // ── Terminal methods ──

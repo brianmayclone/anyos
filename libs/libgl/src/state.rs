@@ -133,7 +133,7 @@ pub struct GlContext {
     /// Next FBO ID counter.
     pub next_fbo_id: u32,
 
-    // ── Shadow Mapping (HW-only, automatic) ─────────────────────────
+    // ── Shadow Mapping ───────────────────────────────────────────────
     /// Shadow pass is currently active (depth-only rendering).
     pub shadow_pass_active: bool,
     /// Shadow map FBO id (0 = not created yet).
@@ -142,6 +142,10 @@ pub struct GlContext {
     pub shadow_depth_tex_id: u32,
     /// Shadow map resolution.
     pub shadow_map_size: u32,
+    /// Latest fitted light view matrix.
+    pub shadow_light_view: [f32; 16],
+    /// Latest fitted light projection matrix.
+    pub shadow_light_proj: [f32; 16],
     /// Light MVP matrix (column-major, computed by gl_shadow_pass_begin).
     pub shadow_light_mvp: [f32; 16],
     /// Whether a valid shadow map exists for the current frame.
@@ -223,6 +227,8 @@ impl GlContext {
             shadow_fbo_id: 0,
             shadow_depth_tex_id: 0,
             shadow_map_size: 1024,
+            shadow_light_view: [0.0; 16],
+            shadow_light_proj: [0.0; 16],
             shadow_light_mvp: [0.0; 16],
             shadow_map_ready: false,
             shadow_depth_program: 0,

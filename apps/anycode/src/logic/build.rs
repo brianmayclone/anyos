@@ -3,6 +3,7 @@ use alloc::vec::Vec;
 use alloc::format;
 use crate::logic::config::Config;
 use crate::logic::project::BuildType;
+use crate::logic::tasks::Task;
 use crate::util::path;
 
 /// A running build/run process with pipe output capture.
@@ -29,6 +30,14 @@ impl BuildProcess {
             pipe_id,
             finished: false,
         })
+    }
+
+    /// Spawn a task from the task manager.
+    pub fn spawn_task(task: &Task) -> Option<Self> {
+        if !task.working_dir.is_empty() {
+            anyos_std::fs::chdir(&task.working_dir);
+        }
+        Self::spawn(&task.command, &task.args)
     }
 
     /// Poll for new output from the pipe. Returns any available data.
@@ -81,15 +90,6 @@ struct BuildRule {
 }
 
 /// Build rule set loaded from build.conf.
-///
-/// File format (one rule per line):
-///   pattern:build_command:run_command
-///
-/// Examples:
-///   Makefile**:make:make run
-///   *.c:cc $FILE -o $OUT:$OUT
-///   *.rs:rustc $FILE -o $OUT:$OUT
-///   *.py::python $FILE
 pub struct BuildRules {
     rules: Vec<BuildRule>,
 }
@@ -104,7 +104,6 @@ impl BuildRules {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
-                // Format: pattern:build_cmd:run_cmd
                 let parts: Vec<&str> = line.splitn(3, ':').collect();
                 if parts.len() >= 2 {
                     rules.push(BuildRule {
@@ -119,37 +118,30 @@ impl BuildRules {
     }
 
     /// Find a matching build rule for the given active file.
-    /// `project_root` is used for Makefile** patterns.
     fn find_match(&self, active_file: &str, project_root: &str) -> Option<&BuildRule> {
         let filename = path::basename(active_file);
         let ext = path::extension(active_file).unwrap_or("");
 
         for rule in &self.rules {
             if rule.pattern.ends_with("**") {
-                // Glob pattern: check if file exists in project root
                 let name = &rule.pattern[..rule.pattern.len() - 2];
                 let check_path = path::join(project_root, name);
                 if path::exists(&check_path) {
                     return Some(rule);
                 }
             } else if rule.pattern.starts_with("*.") {
-                // Extension match
                 let pat_ext = &rule.pattern[2..];
                 if ext == pat_ext {
                     return Some(rule);
                 }
-            } else {
-                // Exact filename match
-                if filename == rule.pattern {
-                    return Some(rule);
-                }
+            } else if filename == rule.pattern {
+                return Some(rule);
             }
         }
         None
     }
 
     /// Expand variables in a command template.
-    /// $FILE → active file path, $OUT → output name (filename without ext)
     fn expand_cmd(template: &str, active_file: &str) -> String {
         let filename = path::basename(active_file);
         let out_name = match filename.rfind('.') {
@@ -157,7 +149,6 @@ impl BuildRules {
             _ => filename,
         };
         let mut result = String::from(template);
-        // Simple string replacement
         if result.contains("$FILE") {
             result = String::from(result.replace("$FILE", active_file).as_str());
         }
@@ -168,19 +159,16 @@ impl BuildRules {
     }
 
     /// Get the build command based on rules and active file.
-    /// Returns (command, args) or None if no rule matches.
     pub fn build_command(&self, active_file: &str, project_root: &str, config: &Config) -> Option<(String, String)> {
         let rule = self.find_match(active_file, project_root)?;
         if rule.build_cmd.is_empty() {
             return None;
         }
         let expanded = Self::expand_cmd(&rule.build_cmd, active_file);
-        // Split into command + args at first space
         let (cmd, args) = match expanded.find(' ') {
             Some(i) => (&expanded[..i], &expanded[i + 1..]),
             None => (expanded.as_str(), ""),
         };
-        // Resolve command path — return None if tool not found
         let cmd_path = resolve_tool(cmd, config);
         if cmd_path.is_empty() {
             return None;
@@ -214,11 +202,9 @@ fn resolve_tool(name: &str, config: &Config) -> String {
         "cc" | "gcc" => config.cc_path.clone(),
         "git" => config.git_path.clone(),
         _ => {
-            // If it starts with / or ./, it's already a path
             if name.starts_with('/') || name.starts_with("./") {
                 String::from(name)
             } else {
-                // Try to find in PATH
                 crate::logic::config::find_tool(name)
             }
         }
@@ -239,4 +225,49 @@ pub fn run_command(bt: BuildType, config: &Config) -> (String, String) {
         BuildType::Make => (config.make_path.clone(), String::from("run")),
         BuildType::SingleFile => (String::from("./main"), String::new()),
     }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Prerequisite check — verify required tools are available
+// ════════════════════════════════════════════════════════════════
+
+/// Tool availability info for the splash screen check.
+pub struct ToolStatus {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub path: String,
+    pub available: bool,
+}
+
+/// Check which development tools are installed.
+pub fn check_prerequisites() -> Vec<ToolStatus> {
+    let tools = [
+        ("anyrc", "Rust Compiler"),
+        ("acargo", "Cargo Build System"),
+        ("cc", "C Compiler"),
+        ("make", "Make Build Tool"),
+        ("git", "Git Version Control"),
+        ("nasm", "NASM Assembler"),
+    ];
+
+    let mut results = Vec::new();
+    for (name, desc) in tools {
+        let path = crate::logic::config::find_tool(name);
+        let available = !path.is_empty();
+        results.push(ToolStatus {
+            name,
+            description: desc,
+            path,
+            available,
+        });
+    }
+    results
+}
+
+/// Check if the essential tools (anyrc, acargo, cc, make) are all available.
+pub fn has_essential_tools(statuses: &[ToolStatus]) -> bool {
+    let essential = ["anyrc", "acargo", "cc", "make"];
+    essential.iter().all(|name| {
+        statuses.iter().any(|s| s.name == *name && s.available)
+    })
 }

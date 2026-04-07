@@ -5,3 +5,8 @@ pub mod build;
 pub mod search;
 pub mod plugin;
 pub mod git;
+pub mod language;
+pub mod tasks;
+pub mod symbols;
+pub mod diagnostics;
+pub mod commands;

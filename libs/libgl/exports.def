@@ -120,3 +120,4 @@ EXPORTS
     gl_shadow_available
     gl_shadow_get_unit
     gl_shadow_get_texture
+    gl_shadow_get_map_size

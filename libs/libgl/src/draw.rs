@@ -58,30 +58,94 @@ fn bind_textures_hw(ctx: &GlContext, drv: &drv_loader::GpuDrv) {
         Some(ir) => ir,
         None => return,
     };
-    let has_tex = fs_ir.instructions.iter().any(|i| {
-        matches!(i, crate::compiler::ir::Inst::TexSample(_, _, _))
-    });
-    if !has_tex { return; }
-
-    // Bind each active texture unit that has a texture bound
-    for unit in 0..crate::state::MAX_TEXTURE_UNITS {
-        let tex_id = ctx.bound_textures[unit];
-        if tex_id == 0 { continue; }
-        if tex_id == ctx.shadow_depth_tex_id {
-            if let Some(bind_shadow) = drv.drv_shadow_bind {
-                bind_shadow(unit as u32);
-            }
-            continue;
-        }
-        let tex = match ctx.textures.get(tex_id) {
-            Some(t) if !t.data.is_empty() && t.width > 0 => t,
-            _ => continue,
+    let mut slot_offsets: alloc::vec::Vec<u32> = alloc::vec::Vec::with_capacity(prog.uniforms.len());
+    let mut total_slots = 0u32;
+    for u in &prog.uniforms {
+        slot_offsets.push(total_slots);
+        total_slots += match u.size {
+            16 => 4,
+            9 => 3,
+            _ => 1,
         };
-        let data_ptr = tex.data.as_ptr() as *const u8;
-        let data_len = (tex.data.len() * 4) as u32;
-        let res_id = (upload_fn)(tex_id, data_ptr, data_len, tex.width, tex.height);
-        if res_id != 0 {
-            (bind_fn)(unit as u32, res_id);
+    }
+
+    let mut slot_to_sampler_unit: alloc::vec::Vec<Option<u32>> =
+        alloc::vec![None; total_slots as usize];
+    for (i, u) in prog.uniforms.iter().enumerate() {
+        let base = slot_offsets[i] as usize;
+        let slots = match u.size {
+            16 => 4,
+            9 => 3,
+            _ => 1,
+        };
+        if u.name.contains("Texture") || u.name.contains("ShadowMap") || u.name.contains("Sampler") {
+            for j in 0..slots {
+                if base + j < slot_to_sampler_unit.len() {
+                    slot_to_sampler_unit[base + j] = Some(u.sampler_unit.max(0) as u32);
+                }
+            }
+        }
+    }
+
+    let mut reg_to_sampler_unit: alloc::vec::Vec<Option<u32>> =
+        alloc::vec![None; fs_ir.num_regs as usize];
+    let mut seen_sampler_regs: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+
+    for inst in &fs_ir.instructions {
+        match inst {
+            crate::compiler::ir::Inst::LoadUniform(dst, idx) => {
+                if let Some(unit) = slot_to_sampler_unit.get(*idx as usize).and_then(|u| *u) {
+                    if (*dst as usize) < reg_to_sampler_unit.len() {
+                        reg_to_sampler_unit[*dst as usize] = Some(unit);
+                    }
+                }
+            }
+            crate::compiler::ir::Inst::Mov(dst, src)
+            | crate::compiler::ir::Inst::Swizzle(dst, src, _, _)
+            | crate::compiler::ir::Inst::WriteMask(dst, src, _) => {
+                if (*dst as usize) < reg_to_sampler_unit.len() && (*src as usize) < reg_to_sampler_unit.len() {
+                    reg_to_sampler_unit[*dst as usize] = reg_to_sampler_unit[*src as usize];
+                }
+            }
+            crate::compiler::ir::Inst::TexSample(_, sampler_reg, _) => {
+                if seen_sampler_regs.iter().any(|r| r == sampler_reg) {
+                    continue;
+                }
+                let tgsi_slot = seen_sampler_regs.len() as u32;
+                seen_sampler_regs.push(*sampler_reg);
+
+                let gl_unit = reg_to_sampler_unit
+                    .get(*sampler_reg as usize)
+                    .and_then(|u| *u)
+                    .unwrap_or(tgsi_slot);
+                let tex_unit = gl_unit as usize;
+                if tex_unit >= crate::state::MAX_TEXTURE_UNITS {
+                    continue;
+                }
+
+                let tex_id = ctx.bound_textures[tex_unit];
+                if tex_id == 0 {
+                    continue;
+                }
+                if tex_id == ctx.shadow_depth_tex_id {
+                    if let Some(bind_shadow) = drv.drv_shadow_bind {
+                        bind_shadow(tgsi_slot);
+                    }
+                    continue;
+                }
+
+                let tex = match ctx.textures.get(tex_id) {
+                    Some(t) if !t.data.is_empty() && t.width > 0 => t,
+                    _ => continue,
+                };
+                let data_ptr = tex.data.as_ptr() as *const u8;
+                let data_len = (tex.data.len() * 4) as u32;
+                let res_id = (upload_fn)(tex_id, data_ptr, data_len, tex.width, tex.height);
+                if res_id != 0 {
+                    (bind_fn)(tgsi_slot, res_id);
+                }
+            }
+            _ => {}
         }
     }
 }
