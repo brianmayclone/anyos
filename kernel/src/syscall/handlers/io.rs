@@ -232,16 +232,10 @@ pub fn sys_close(fd: u32) -> u32 {
             0 // Tty slot cleared, no resource to decref
         }
         Some(FdKind::None) | None => {
-            // FD was not open — for backward compat, still try VFS close
-            // (kernel-internal callers like users.rs use global slot IDs directly)
-            if fd >= 3 {
-                match crate::fs::vfs::close(fd) {
-                    Ok(()) => 0,
-                    Err(_) => u32::MAX,
-                }
-            } else {
-                0
-            }
+            // FD was not in per-process table → EBADF.
+            // Kernel-internal callers (users.rs, interfaces.rs) call vfs::close()
+            // directly with global slot IDs — they don't go through this syscall.
+            u32::MAX
         }
     }
 }
@@ -262,15 +256,8 @@ pub fn sys_lseek(fd: u32, offset: u32, whence: u32) -> u32 {
             _ => 0,
         },
         None => {
-            // Backward compat for kernel callers using global slot IDs
-            if fd >= 3 {
-                match crate::fs::vfs::lseek(fd, offset as i32, whence) {
-                    Ok(pos) => pos,
-                    Err(e) => fs_err(e),
-                }
-            } else {
-                0
-            }
+            // FD not in per-process table → EBADF
+            u32::MAX
         }
     }
 }
@@ -317,8 +304,8 @@ pub fn sys_fstat(fd: u32, buf_ptr: u32) -> u32 {
                 }
                 return 0;
             }
-            // Try global slot ID directly (kernel callers)
-            fd
+            // FD not in per-process table → EBADF
+            return u32::MAX;
         }
     };
 
@@ -369,9 +356,8 @@ pub fn sys_ftruncate(fd: u32, _length: u32) -> u32 {
             _ => return u32::MAX,
         },
         None => {
-            // Backward compat: try fd as global slot
-            if fd < 3 { return u32::MAX; }
-            fd
+            // FD not in per-process table → EBADF
+            return u32::MAX;
         }
     };
     let path = match crate::fs::vfs::get_fd_path(global_id) {

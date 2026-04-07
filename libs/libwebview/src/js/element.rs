@@ -107,6 +107,142 @@ fn compute_sibling_ids(
 /// `querySelectorAll` / `getElementById`, which create elements on demand.
 ///
 /// Sibling properties (`nextSibling`, `previousSibling`, `nextElementSibling`,
+/// Populate an Element/Node prototype object with the standard DOM methods.
+///
+/// Called once during window initialisation so that `Element.prototype.replaceWith`
+/// etc. are visible to polyfill / framework code that feature-detects via the
+/// prototype rather than per-instance.  The methods read `vm.current_this`
+/// at call time, so they work identically whether found on instance or prototype.
+pub fn populate_element_prototype(proto: &JsValue) {
+    use libjs::vm::native_fn;
+    // Node interface
+    proto.set_property(
+        String::from("appendChild"),
+        native_fn("appendChild", el_append_child),
+    );
+    proto.set_property(
+        String::from("removeChild"),
+        native_fn("removeChild", el_remove_child),
+    );
+    proto.set_property(
+        String::from("insertBefore"),
+        native_fn("insertBefore", el_insert_before),
+    );
+    proto.set_property(
+        String::from("replaceChild"),
+        native_fn("replaceChild", el_replace_child),
+    );
+    proto.set_property(
+        String::from("cloneNode"),
+        native_fn("cloneNode", el_clone_node),
+    );
+    proto.set_property(String::from("contains"), native_fn("contains", el_contains));
+    proto.set_property(String::from("remove"), native_fn("remove", el_remove));
+    proto.set_property(
+        String::from("getRootNode"),
+        native_fn("getRootNode", el_get_root_node),
+    );
+    // Element interface
+    proto.set_property(
+        String::from("getAttribute"),
+        native_fn("getAttribute", el_get_attribute),
+    );
+    proto.set_property(
+        String::from("setAttribute"),
+        native_fn("setAttribute", el_set_attribute),
+    );
+    proto.set_property(
+        String::from("removeAttribute"),
+        native_fn("removeAttribute", el_remove_attribute),
+    );
+    proto.set_property(
+        String::from("hasAttribute"),
+        native_fn("hasAttribute", el_has_attribute),
+    );
+    proto.set_property(
+        String::from("addEventListener"),
+        native_fn("addEventListener", el_add_event_listener),
+    );
+    proto.set_property(
+        String::from("dispatchEvent"),
+        native_fn("dispatchEvent", el_dispatch_event),
+    );
+    proto.set_property(
+        String::from("querySelector"),
+        native_fn("querySelector", el_query_selector),
+    );
+    proto.set_property(
+        String::from("querySelectorAll"),
+        native_fn("querySelectorAll", el_query_selector_all),
+    );
+    proto.set_property(
+        String::from("getElementsByTagName"),
+        native_fn("getElementsByTagName", el_get_elements_by_tag_name),
+    );
+    proto.set_property(
+        String::from("getElementsByClassName"),
+        native_fn("getElementsByClassName", el_get_elements_by_class_name),
+    );
+    proto.set_property(
+        String::from("getBoundingClientRect"),
+        native_fn("getBoundingClientRect", el_get_bounding_rect),
+    );
+    proto.set_property(
+        String::from("getClientRects"),
+        native_fn("getClientRects", el_get_client_rects),
+    );
+    proto.set_property(String::from("matches"), native_fn("matches", el_matches));
+    proto.set_property(String::from("closest"), native_fn("closest", el_closest));
+    // ParentNode interface
+    proto.set_property(String::from("prepend"), native_fn("prepend", el_prepend));
+    proto.set_property(String::from("append"), native_fn("append", el_append));
+    proto.set_property(
+        String::from("replaceChildren"),
+        native_fn("replaceChildren", el_replace_children),
+    );
+    // ChildNode interface
+    proto.set_property(String::from("before"), native_fn("before", el_before));
+    proto.set_property(String::from("after"), native_fn("after", el_after));
+    proto.set_property(
+        String::from("replaceWith"),
+        native_fn("replaceWith", el_replace_with),
+    );
+    // insertAdjacent family
+    proto.set_property(
+        String::from("insertAdjacentHTML"),
+        native_fn("insertAdjacentHTML", el_insert_adjacent_html),
+    );
+    proto.set_property(
+        String::from("insertAdjacentElement"),
+        native_fn("insertAdjacentElement", el_insert_adjacent_element),
+    );
+    proto.set_property(
+        String::from("insertAdjacentText"),
+        native_fn("insertAdjacentText", el_insert_adjacent_text),
+    );
+    // Scrolling
+    proto.set_property(
+        String::from("scrollTo"),
+        native_fn("scrollTo", el_scroll_to),
+    );
+    proto.set_property(
+        String::from("scrollBy"),
+        native_fn("scrollBy", el_scroll_by),
+    );
+    proto.set_property(String::from("scroll"), native_fn("scroll", el_scroll_to));
+    // Misc stubs
+    proto.set_property(String::from("focus"), native_fn("focus", el_noop));
+    proto.set_property(String::from("blur"), native_fn("blur", el_noop));
+    proto.set_property(
+        String::from("removeEventListener"),
+        native_fn("removeEventListener", el_noop),
+    );
+    proto.set_property(
+        String::from("toString"),
+        native_fn("toString", el_to_string),
+    );
+}
+
 /// `previousElementSibling`) are computed one level deep: the returned sibling
 /// objects themselves have `Null` for their own siblings, preventing O(N²)
 /// allocation chains for large flat lists. Full sibling traversal loops should

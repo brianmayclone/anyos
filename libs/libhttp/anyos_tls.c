@@ -193,18 +193,26 @@ static int low_read(void *ctx, unsigned char *buf, size_t len)
 {
     tls_slot *slot = slot_from_ctx(ctx);
     int fd = slot->fd;
-    int total = 0;
     int retries = 0;
+    int err_retries = 0;
 
-    while (total == 0) {
+    for (;;) {
         int n = anyos_tcp_recv(fd, buf, (int)len);
-        if (n < 0) return -1;
         if (n > 0) return n;
-        anyos_sleep(1);
-        retries++;
-        if (retries > 10000) return -1;
+        if (n == 0) {
+            /* No data yet — sleep briefly and retry. */
+            anyos_sleep(1);
+            retries++;
+            if (retries > 15000) return -1; /* 15 s total timeout */
+            continue;
+        }
+        /* n < 0 — this may be a transient TCP timeout (the kernel
+           returns error after its own 3 s timeout) rather than a real
+           connection failure.  Retry a few times before giving up. */
+        err_retries++;
+        if (err_retries > 4) return -1; /* ~12 s of TCP timeouts */
+        anyos_sleep(10);
     }
-    return total;
 }
 
 static int low_write(void *ctx, const unsigned char *buf, size_t len)

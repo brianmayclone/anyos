@@ -13,6 +13,45 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+fn parse_dimension_attr(value: &str) -> Option<i32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let digits = trimmed
+        .trim_end_matches(|c: char| c.is_ascii_whitespace())
+        .trim_end_matches("px")
+        .trim();
+    digits.parse::<i32>().ok().filter(|v| *v > 0)
+}
+
+fn deferred_image_rank(
+    dom_index: usize,
+    width: Option<i32>,
+    height: Option<i32>,
+    lazy_requested: bool,
+    high_priority: bool,
+) -> i32 {
+    let mut score = 0i32;
+    if high_priority {
+        score += 5000;
+    }
+    if lazy_requested {
+        score -= 5000;
+    }
+    if let (Some(w), Some(h)) = (width, height) {
+        let area = w.saturating_mul(h);
+        score += (area / 1500).clamp(0, 1800);
+        if w >= 600 || h >= 300 {
+            score += 400;
+        }
+    } else if width.is_some() || height.is_some() {
+        score += 120;
+    }
+    score += 512i32.saturating_sub(dom_index as i32);
+    score
+}
+
 // ═══════════════════════════════════════════════════════════
 // HTTP body decoding
 // ═══════════════════════════════════════════════════════════
@@ -286,8 +325,13 @@ pub(crate) fn queue_images(
 ) {
     let generation = crate::net_worker::current_generation();
     let mut count = 0u32;
-    let mut immediate_budget = 16usize;
-    let mut deferred = Vec::new();
+    // Keep the truly critical image path small so text/CSS/JS become usable earlier.
+    // `loading=lazy` stays out of the startup path entirely, while explicit
+    // eager/high-priority images get a small bonus budget similar to browsers'
+    // visible-first behaviour.
+    let mut immediate_budget = 8usize;
+    let mut high_priority_budget = 4usize;
+    let mut deferred: Vec<(i32, crate::tab::DeferredImageRequest)> = Vec::new();
 
     for (i, node) in dom.nodes.iter().enumerate() {
         if let libwebview::dom::NodeType::Element {
@@ -315,8 +359,26 @@ pub(crate) fn queue_images(
 
                 let img_url = crate::http::resolve_url(base_url, src);
                 let src = String::from(src);
-                if immediate_budget > 0 {
+                let loading = dom.attr(i, "loading").unwrap_or("");
+                let fetchpriority = dom.attr(i, "fetchpriority").unwrap_or("");
+                let lazy_requested = loading.eq_ignore_ascii_case("lazy");
+                let high_priority = loading.eq_ignore_ascii_case("eager")
+                    || fetchpriority.eq_ignore_ascii_case("high");
+                let width = dom.attr(i, "width").and_then(parse_dimension_attr);
+                let height = dom.attr(i, "height").and_then(parse_dimension_attr);
+                let should_start_immediately = if lazy_requested {
+                    false
+                } else if high_priority && high_priority_budget > 0 {
+                    high_priority_budget -= 1;
+                    true
+                } else if immediate_budget > 0 {
                     immediate_budget -= 1;
+                    true
+                } else {
+                    false
+                };
+
+                if should_start_immediately {
                     crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
                         tab_index,
                         src,
@@ -325,21 +387,32 @@ pub(crate) fn queue_images(
                         generation,
                     });
                 } else {
-                    deferred.push(crate::tab::DeferredImageRequest {
-                        src,
-                        url: img_url,
-                        priority: crate::net_worker::ImagePriority::Deferred,
-                        generation,
-                    });
+                    let priority = if high_priority || (!lazy_requested && i < 24) {
+                        crate::net_worker::ImagePriority::Viewport
+                    } else {
+                        crate::net_worker::ImagePriority::Deferred
+                    };
+                    let rank = deferred_image_rank(i, width, height, lazy_requested, high_priority);
+                    deferred.push((
+                        rank,
+                        crate::tab::DeferredImageRequest {
+                            src,
+                            url: img_url,
+                            priority,
+                            generation,
+                        },
+                    ));
                 }
                 count += 1;
             }
         }
     }
 
+    deferred.sort_by(|a, b| b.0.cmp(&a.0));
+
     let st = crate::state();
     if tab_index < st.tabs.len() {
-        st.tabs[tab_index].deferred_images = deferred;
+        st.tabs[tab_index].deferred_images = deferred.into_iter().map(|(_, req)| req).collect();
         st.tabs[tab_index].deferred_images_inflight = 0;
     }
 

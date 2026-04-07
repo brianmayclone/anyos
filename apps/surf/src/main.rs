@@ -39,9 +39,17 @@ enum RenderSchedule {
     Debounced,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RenderWork {
+    None,
+    Paint,
+    Layout,
+}
+
 const IMAGE_RESULTS_PER_TAB_BATCH: usize = 24;
 const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 12;
 const DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
+const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
 
 // ═══════════════════════════════════════════════════════════
 // Debug helpers (feature-gated)
@@ -100,8 +108,9 @@ struct AppState {
     anim_timer: u32,
     /// Timer ID for the network poll loop (0 = not running).
     net_poll_timer: u32,
-    /// Per-tab dirty flags: set when CSS/images arrive, cleared after relayout.
-    relayout_dirty: [bool; 16],
+    /// Per-tab render work. Paint-only updates can reuse the cached layout tree,
+    /// while layout updates require a full relayout before painting.
+    render_dirty: [RenderWork; 16],
     /// Timer ID for the relayout debounce timer (0 = not running).
     relayout_timer: u32,
     /// Timer ID for debounced viewport resize handling (0 = not running).
@@ -411,12 +420,24 @@ fn start_net_poll_timer() {
     });
 }
 
+fn tab_waiting_on_network(tab: &tab::TabState) -> bool {
+    tab.is_loading
+        || !tab.load_state.ready_for_script_execution()
+        || tab.load_state.phase == PageLoadPhase::LoadingSubresources
+}
+
+fn network_work_pending() -> bool {
+    let st = state();
+    st.tabs.iter().any(tab_waiting_on_network) || net_worker::has_pending_activity()
+}
+
 fn drain_results_from_mailboxes() -> Vec<net_worker::FetchResult> {
     let st = state();
     let mut all_results = Vec::new();
     for tab_index in 0..st.tabs.len() {
         let mut tab_results = net_worker::drain_results_for_tab(tab_index);
         if !tab_results.is_empty() {
+            #[cfg(feature = "debug_surf")]
             anyos_std::println!(
                 "[surf] drained {} result(s) from tab mailbox {}",
                 tab_results.len(),
@@ -430,6 +451,9 @@ fn drain_results_from_mailboxes() -> Vec<net_worker::FetchResult> {
 
 /// Ensure the network poll timer is running. Called when new fetches are submitted.
 pub(crate) fn ensure_net_poll_timer() {
+    if !network_work_pending() {
+        return;
+    }
     start_net_poll_timer();
 }
 
@@ -488,6 +512,13 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                 net_worker::FetchResult::ImageDone { .. } => images.push(result),
             }
         }
+        images.sort_by_key(|result| match result {
+            net_worker::FetchResult::ImageDone { priority, .. } => match priority {
+                net_worker::ImagePriority::Viewport => 0usize,
+                net_worker::ImagePriority::Deferred => 1usize,
+            },
+            _ => 0usize,
+        });
 
         let deferred_images = if images.len() > IMAGE_RESULTS_PER_TAB_BATCH {
             images.split_off(IMAGE_RESULTS_PER_TAB_BATCH)
@@ -536,7 +567,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     generation,
                 } => {
                     if handle_css_done(tab_index, href, body, headers, generation) {
-                        request_render(tab_index, RenderSchedule::Debounced);
+                        request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
                     }
                 }
                 net_worker::FetchResult::ImageDone {
@@ -548,7 +579,17 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     generation,
                 } => {
                     if handle_image_done(tab_index, src, body, headers, priority, generation) {
-                        request_render(tab_index, RenderSchedule::Debounced);
+                        let schedule = {
+                            let st = state();
+                            let layout_pending = tab_index < st.render_dirty.len()
+                                && st.render_dirty[tab_index] == RenderWork::Layout;
+                            if tab_index == st.active_tab && !layout_pending {
+                                RenderSchedule::Immediate
+                            } else {
+                                RenderSchedule::Debounced
+                            }
+                        };
+                        request_render(tab_index, RenderWork::Paint, schedule);
                     }
                 }
                 net_worker::FetchResult::FontDone {
@@ -558,7 +599,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     generation,
                 } => {
                     if handle_font_done(tab_index, family, body, generation) {
-                        request_render(tab_index, RenderSchedule::Debounced);
+                        request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
                     }
                 }
                 net_worker::FetchResult::ScriptDone {
@@ -582,21 +623,51 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
     }
 }
 
+fn render_delay_ms_for(tab_index: usize, work: RenderWork) -> u32 {
+    let st = state();
+    if tab_index >= st.tabs.len() {
+        return 300;
+    }
+    let active = tab_index == st.active_tab;
+    let phase = st.tabs[tab_index].load_state.phase;
+    match (active, work, phase) {
+        (true, RenderWork::Paint, _) => 40,
+        (true, RenderWork::Layout, PageLoadPhase::FetchingDocument)
+        | (true, RenderWork::Layout, PageLoadPhase::ParsingDocument)
+        | (true, RenderWork::Layout, PageLoadPhase::LoadingSubresources) => 80,
+        (true, RenderWork::Layout, _) => 140,
+        _ => 300,
+    }
+}
+
+fn schedule_render_flush(delay_ms: u32) {
+    let st = state();
+    if st.relayout_timer != 0 {
+        ui_lib::kill_timer(st.relayout_timer);
+        st.relayout_timer = 0;
+    }
+    st.relayout_timer = ui_lib::set_timer(delay_ms, flush_relayout);
+}
+
 /// Mark a tab as needing a relayout and start the debounce timer if not
 /// already running.  The actual relayout happens in `flush_relayout()`.
-fn request_render(tab_index: usize, schedule: RenderSchedule) {
+fn request_render(tab_index: usize, work: RenderWork, schedule: RenderSchedule) {
     let st = state();
-    if tab_index < st.relayout_dirty.len() {
-        st.relayout_dirty[tab_index] = true;
+    if tab_index < st.render_dirty.len() {
+        let current = st.render_dirty[tab_index];
+        st.render_dirty[tab_index] = match (current, work) {
+            (RenderWork::Layout, _) | (_, RenderWork::Layout) => RenderWork::Layout,
+            (RenderWork::Paint, _) | (_, RenderWork::Paint) => RenderWork::Paint,
+            _ => RenderWork::None,
+        };
     }
     match schedule {
         RenderSchedule::Immediate => {
             flush_relayout_for_tab(tab_index);
         }
         RenderSchedule::Debounced => {
-            if st.relayout_timer == 0 {
-                st.relayout_timer = ui_lib::set_timer(300, flush_relayout);
-            }
+            let delay_ms = render_delay_ms_for(tab_index, work);
+            schedule_render_flush(delay_ms);
         }
     }
     ensure_anim_timer();
@@ -604,14 +675,19 @@ fn request_render(tab_index: usize, schedule: RenderSchedule) {
 
 fn flush_relayout_for_tab(tab_idx: usize) {
     let st = state();
-    if tab_idx >= st.tabs.len() || tab_idx >= st.relayout_dirty.len() {
+    if tab_idx >= st.tabs.len() || tab_idx >= st.render_dirty.len() {
         return;
     }
-    if !st.relayout_dirty[tab_idx] {
+    let work = st.render_dirty[tab_idx];
+    if work == RenderWork::None {
         return;
     }
-    st.relayout_dirty[tab_idx] = false;
-    st.tabs[tab_idx].webview.relayout();
+    st.render_dirty[tab_idx] = RenderWork::None;
+    match work {
+        RenderWork::Layout => st.tabs[tab_idx].webview.relayout(),
+        RenderWork::Paint => st.tabs[tab_idx].webview.repaint_from_cached_layout(),
+        RenderWork::None => {}
+    }
 }
 
 /// Debounce callback: perform one relayout per dirty tab, then clear flags
@@ -619,17 +695,31 @@ fn flush_relayout_for_tab(tab_idx: usize) {
 fn flush_relayout() {
     let st = state();
     let mut any_dirty = false;
+    let active_tab = st.active_tab;
+    let mut background_renders = 0usize;
 
-    for tab_idx in 0..st.relayout_dirty.len() {
-        if st.relayout_dirty[tab_idx] {
+    if active_tab < st.render_dirty.len() && st.render_dirty[active_tab] != RenderWork::None {
+        flush_relayout_for_tab(active_tab);
+    }
+
+    for tab_idx in 0..st.render_dirty.len() {
+        if tab_idx == active_tab {
+            continue;
+        }
+        if st.render_dirty[tab_idx] != RenderWork::None {
+            if background_renders >= MAX_BACKGROUND_RENDERS_PER_FLUSH {
+                any_dirty = true;
+                continue;
+            }
             flush_relayout_for_tab(tab_idx);
+            background_renders += 1;
         }
     }
 
     // Check if new dirty flags were set during the relayouts above
     // (unlikely but possible if relayout triggers further resource loads).
-    for &d in &st.relayout_dirty {
-        if d {
+    for &d in &st.render_dirty {
+        if d != RenderWork::None {
             any_dirty = true;
             break;
         }
@@ -1087,7 +1177,7 @@ fn execute_pending_scripts(tab_index: usize) {
         scripts.len(),
         st.tabs[tab_index].pending_scripts.len()
     );
-    if tab_index < st.relayout_dirty.len() && st.relayout_dirty[tab_index] {
+    if tab_index < st.render_dirty.len() && st.render_dirty[tab_index] != RenderWork::None {
         anyos_std::println!(
             "[surf] execute_pending_scripts: tab={} skipping blocking pre-script relayout",
             tab_index
@@ -1118,7 +1208,7 @@ fn execute_pending_scripts(tab_index: usize) {
     connect_pending_ws(tab_index);
 
     // Relayout to reflect DOM mutations from JS.
-    request_render(tab_index, RenderSchedule::Debounced);
+    request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
     pump_deferred_images_for_tab(tab_index);
     flush_deferred_resize_if_ready();
 }
@@ -1327,7 +1417,7 @@ fn main() {
             ws_poll_timer: 0,
             anim_timer: 0,
             net_poll_timer: 0,
-            relayout_dirty: [false; 16],
+            render_dirty: [RenderWork::None; 16],
             relayout_timer: 0,
             resize_timer: 0,
             deferred_resize_pending: false,

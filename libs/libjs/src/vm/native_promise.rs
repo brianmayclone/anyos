@@ -23,25 +23,20 @@ use crate::value::*;
 pub fn ctor_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let executor = args.first().cloned().unwrap_or(JsValue::Undefined);
 
-    let mut obj = JsObject::new();
-    obj.internal_tag = Some(String::from("__promise__"));
-    obj.set(
-        String::from("__state"),
-        JsValue::String(String::from("pending")),
-    );
-    obj.set(String::from("__value"), JsValue::Undefined);
-    obj.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
-    obj.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
+    // Tag `this` (created by `new_object` with the correct prototype chain).
+    if let JsValue::Object(obj_rc) = &vm.current_this {
+        let mut o = obj_rc.borrow_mut();
+        o.internal_tag = Some(String::from("__promise__"));
+        o.set(
+            String::from("__state"),
+            JsValue::String(String::from("pending")),
+        );
+        o.set(String::from("__value"), JsValue::Undefined);
+        o.set(String::from("__then_cbs"), JsValue::new_array(Vec::new()));
+        o.set(String::from("__catch_cbs"), JsValue::new_array(Vec::new()));
+    }
 
-    // Install .then, .catch, .finally methods
-    obj.set(String::from("then"), native_fn("then", promise_then));
-    obj.set(String::from("catch"), native_fn("catch", promise_catch));
-    obj.set(
-        String::from("finally"),
-        native_fn("finally", promise_finally),
-    );
-
-    let promise = JsValue::Object(Rc::new(RefCell::new(obj)));
+    let promise = vm.current_this.clone();
 
     // Execute the executor(resolve, reject) synchronously
     if executor.is_function() {
@@ -58,7 +53,7 @@ pub fn ctor_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         vm.call_value(&executor, &[resolve_fn, reject_fn], JsValue::Undefined);
     }
 
-    promise
+    JsValue::Undefined // Return undefined → new_object uses this
 }
 
 fn promise_resolve_native(vm: &mut Vm, args: &[JsValue]) -> JsValue {

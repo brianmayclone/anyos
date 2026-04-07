@@ -437,6 +437,13 @@ pub fn make_window(
         JsValue::Function(func) => func.borrow().prototype.clone(),
         _ => None,
     };
+    // Populate Element.prototype with standard DOM methods so that
+    // polyfill / framework code that feature-detects via
+    // `Element.prototype.replaceWith` etc. finds them.
+    if let Some(ref proto_rc) = element_proto {
+        let proto_val = JsValue::Object(proto_rc.clone());
+        super::element::populate_element_prototype(&proto_val);
+    }
     let html_element_ctor =
         make_native_constructor(vm, "HTMLElement", win_dom_ctor, element_proto.clone());
     let custom_element_registry_ctor = make_native_constructor(

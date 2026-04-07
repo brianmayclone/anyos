@@ -1234,11 +1234,11 @@ fn run_javascript(wv: &mut libwebview::WebView, base_url: &str) {
 
     for entry in &entries {
         match entry {
-            libwebview::js::ScriptEntry::Inline(text) => {
+            libwebview::js::ScriptEntry::Inline { text, mode: _ } => {
                 scripts.push(text.clone());
                 inline_count += 1;
             }
-            libwebview::js::ScriptEntry::External(src_url) => {
+            libwebview::js::ScriptEntry::External { src: src_url, mode: _ } => {
                 let full_url = resolve_url(base_url, src_url);
                 eprintln!("[js] fetching script: {}", full_url);
                 if let Some(data) = fetch_resource(&full_url) {

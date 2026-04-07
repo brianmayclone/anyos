@@ -934,7 +934,7 @@ pub fn layout(
 /// `subtree_bottom` is the maximum Y extent (relative to parent, same space
 /// as `y`) of the node and all its descendants.  The tile rasterizer uses
 /// this to skip entire subtrees that are above or below the tile strip.
-fn compute_subtree_bottom(bx: &mut LayoutBox) {
+pub(crate) fn compute_subtree_bottom(bx: &mut LayoutBox) {
     // subtree_bottom = max extent from the node's OWN top (y=0 local).
     // In walk_pixels: absolute subtree bottom = abs_y + subtree_bottom.
     let mut max_b = bx.height;

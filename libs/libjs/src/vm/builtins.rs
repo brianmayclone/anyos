@@ -682,10 +682,24 @@ impl Vm {
         self.init_function_statics();
 
         // ── Promise ──
-        self.set_global(
-            "Promise",
-            native_fn("Promise", native_promise::ctor_promise),
-        );
+        {
+            let ctor = native_fn("Promise", native_promise::ctor_promise);
+            let proto = JsValue::new_object();
+            proto.set_property(
+                String::from("then"),
+                native_fn("then", native_promise::promise_then),
+            );
+            proto.set_property(
+                String::from("catch"),
+                native_fn("catch", native_promise::promise_catch),
+            );
+            proto.set_property(
+                String::from("finally"),
+                native_fn("finally", native_promise::promise_finally),
+            );
+            ctor.set_property(String::from("prototype"), proto);
+            self.set_global("Promise", ctor);
+        }
         self.init_promise_statics();
 
         // ── Map ──

@@ -723,6 +723,7 @@ pub struct ComputedStyle {
 
 /// Stores resolved ::before and ::after styles for each DOM node.
 /// Indexed by node ID (same length as the main styles Vec).
+#[derive(Clone)]
 pub struct PseudoStyles {
     /// ::before style + content per node. None if no ::before rule matched.
     pub before: Vec<Option<ComputedStyle>>,

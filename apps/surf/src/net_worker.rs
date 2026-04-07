@@ -364,10 +364,11 @@ pub(crate) fn drain_results_for_tab(tab_index: usize) -> Vec<FetchResult> {
     let results = unsafe {
         if let Some(mailboxes) = RESULT_MAILBOXES.as_mut() {
             if let Some(mailbox) = mailboxes.get_mut(tab_index) {
-                surf_net_log!("mailbox poll: tab={} pending={}", tab_index, mailbox.len());
                 if mailbox.is_empty() {
                     Vec::new()
                 } else {
+                    #[cfg(feature = "debug_surf")]
+                    surf_net_log!("mailbox poll: tab={} pending={}", tab_index, mailbox.len());
                     core::mem::replace(mailbox, Vec::new())
                 }
             } else {

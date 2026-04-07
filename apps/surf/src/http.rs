@@ -231,6 +231,8 @@ fn should_log_body_details(url: &Url) -> bool {
         || url.path.contains(".js?")
         || url.path.ends_with(".mjs")
         || url.path.contains(".mjs?")
+        || url.path.ends_with(".css")
+        || url.path.contains(".css?")
 }
 
 // ---------------------------------------------------------------------------
@@ -477,7 +479,11 @@ fn decompress_body(raw: Vec<u8>, content_encoding: &Option<String>) -> Vec<u8> {
             match deflate::decompress_gzip(&raw) {
                 Some(decoded) => return decoded,
                 None => {
-                    anyos_std::println!("[http] gzip decompression FAILED ({}B)", raw.len());
+                    anyos_std::println!(
+                        "[http] gzip decompression FAILED ({}B, header: {:02X?})",
+                        raw.len(),
+                        &raw[..raw.len().min(10)]
+                    );
                     if !looks_like_text(&raw) {
                         anyos_std::println!("[http] raw data is binary, returning empty body");
                         return Vec::new();
@@ -1134,6 +1140,7 @@ fn read_body_tls(
     body.extend_from_slice(initial);
 
     let mut recv_buf = [0u8; RECV_BUF_SIZE];
+    let mut zero_count: u32 = 0;
     loop {
         if let Some(cl) = content_length {
             if body.len() >= cl as usize {
@@ -1141,10 +1148,23 @@ fn read_body_tls(
             }
         }
         let n = crate::tls::recv(tls_handle, &mut recv_buf);
-        if n <= 0 {
+        if n > 0 {
+            body.extend_from_slice(&recv_buf[..n as usize]);
+            zero_count = 0;
+        } else {
+            // n <= 0: TLS layer returned error or EOF.  If we know the
+            // expected Content-Length and haven't reached it yet, retry
+            // briefly — the BearSSL low_read may have given up on a
+            // transient TCP timeout.
+            if let Some(cl) = content_length {
+                if body.len() < cl as usize && zero_count < 3 {
+                    zero_count += 1;
+                    anyos_std::process::sleep(50);
+                    continue;
+                }
+            }
             break;
         }
-        body.extend_from_slice(&recv_buf[..n as usize]);
     }
     body
 }

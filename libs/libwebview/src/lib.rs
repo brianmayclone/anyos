@@ -71,6 +71,21 @@ use libanyui_client::{self as ui};
 
 pub use layout::{FormFieldKind, LayoutBox};
 pub use renderer::{FormControl, HitKind, ImageCache, ImageEntry};
+use style::{Display, FloatVal, Position, TextAlignVal};
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MutationImpact {
+    None,
+    Paint,
+    LayoutReuseStyles,
+    LayoutRestyle,
+}
+
+struct IncrementalRelayoutPlan {
+    parent_node: usize,
+    target_nodes: Vec<usize>,
+    rebuild_parent_children: bool,
+}
 
 /// A WebView renders HTML content inside a ScrollView using libanyui controls.
 ///
@@ -160,10 +175,17 @@ pub struct WebView {
     last_render_scroll_y: i32,
     /// Cached body background color for scroll re-renders.
     bg_color_cached: u32,
+    /// True while the renderer still has buffered/offscreen tiles to fill in.
+    pending_tiles: bool,
     /// Web font mapping: (family_name_lowercase, font_id from libfont).
     web_fonts: Vec<(String, u32)>,
     /// Previous resolved styles — kept for CSS transition change detection.
     prev_styles: Vec<style::ComputedStyle>,
+    /// Last fully resolved styles used for layout. Reused for safe local DOM
+    /// mutations that do not require a global restyle pass.
+    resolved_styles_cache: Vec<style::ComputedStyle>,
+    /// Pseudo styles that match `resolved_styles_cache`.
+    resolved_pseudo_styles: style::PseudoStyles,
     /// Pending animation/transition overrides to apply during the next relayout.
     /// Each entry is (node_id, declarations_to_overlay).
     anim_overrides: Vec<(usize, Vec<css::Declaration>)>,
@@ -212,8 +234,11 @@ impl WebView {
             layout_root: None,
             last_render_scroll_y: 0,
             bg_color_cached: 0xFFFFFFFF,
+            pending_tiles: false,
             web_fonts: Vec::new(),
             prev_styles: Vec::new(),
+            resolved_styles_cache: Vec::new(),
+            resolved_pseudo_styles: style::PseudoStyles::empty(0),
             anim_overrides: Vec::new(),
             scroll_offsets: Vec::new(),
         };
@@ -340,6 +365,7 @@ impl WebView {
         self.layout_root = None;
         self.total_height_val = 0;
         self.last_render_scroll_y = 0;
+        self.pending_tiles = false;
         self.content_view.set_size(self.viewport_width as u32, 1);
         // Clear all stylesheets (external + inline).
         self.external_sheets.clear();
@@ -347,6 +373,8 @@ impl WebView {
         self.inline_sheets_dirty = true;
         self.keyframes_dirty = true;
         self.inline_style_cache.clear();
+        self.resolved_styles_cache.clear();
+        self.resolved_pseudo_styles = style::PseudoStyles::empty(0);
         // Clear web fonts from the previous page.
         self.web_fonts.clear();
         // Reset JS runtime (fresh engine, no timers/listeners/websockets).
@@ -396,7 +424,7 @@ impl WebView {
         self.inline_style_cache.clear();
 
         // Collect stylesheets and resolve + layout + render.
-        self.do_layout_and_render(&parsed_dom);
+        self.do_layout_and_render(&parsed_dom, None);
 
         // Execute JavaScript <script> tags after initial render so that DOM
         // elements already exist for querySelector / getElementById calls.
@@ -413,14 +441,10 @@ impl WebView {
         // and re-layout so the mutated content becomes visible.
         if !self.js_runtime.mutations.is_empty() {
             debug_surf!(
-                "[webview] applying {} JS mutations + relayout",
+                "[webview] applying {} JS mutations after initial script run",
                 self.js_runtime.mutations.len()
             );
-            self.extract_scroll_offsets();
-            self.js_runtime.apply_mutations(&mut parsed_dom);
-            self.inline_sheets_dirty = true; // JS may have altered <style> tags
-            self.inline_style_cache.clear(); // JS may have altered style="..." attrs
-            self.do_layout_and_render(&parsed_dom);
+            self.flush_pending_mutations(&mut parsed_dom);
         }
 
         // Store DOM for title queries etc.
@@ -448,7 +472,7 @@ impl WebView {
         self.inline_style_cache.clear();
 
         // Layout and render (no JS).
-        self.do_layout_and_render(&parsed_dom);
+        self.do_layout_and_render(&parsed_dom, None);
 
         // Store DOM.
         self.dom_val = Some(parsed_dom);
@@ -482,13 +506,7 @@ impl WebView {
 
         // Apply DOM mutations and re-layout.
         if !self.js_runtime.mutations.is_empty() {
-            let n = self.js_runtime.mutations.len();
-            debug_surf!("[webview] applying {} JS mutations + relayout", n);
-            self.extract_scroll_offsets();
-            self.js_runtime.apply_mutations(&mut dom);
-            self.inline_sheets_dirty = true;
-            self.inline_style_cache.clear();
-            self.do_layout_and_render(&dom);
+            self.flush_pending_mutations(&mut dom);
         }
 
         self.dom_val = Some(dom);
@@ -507,11 +525,7 @@ impl WebView {
         // Apply mutations if timers fired.
         let mut dom = dom;
         if !self.js_runtime.mutations.is_empty() {
-            self.extract_scroll_offsets();
-            self.js_runtime.apply_mutations(&mut dom);
-            self.inline_sheets_dirty = true;
-            self.inline_style_cache.clear();
-            self.do_layout_and_render(&dom);
+            self.flush_pending_mutations(&mut dom);
         }
 
         self.dom_val = Some(dom);
@@ -582,15 +596,56 @@ impl WebView {
         if let Some(mut d) = self.dom_val.take() {
             // Apply any pending JS mutations before re-rendering.
             if !self.js_runtime.mutations.is_empty() {
-                self.extract_scroll_offsets();
-                self.js_runtime.apply_mutations(&mut d);
-                // JS may have modified <style> tags or style="..." attributes.
-                self.inline_sheets_dirty = true;
-                self.inline_style_cache.clear();
+                match self.flush_pending_mutations(&mut d) {
+                    MutationImpact::LayoutReuseStyles | MutationImpact::LayoutRestyle => {}
+                    MutationImpact::Paint | MutationImpact::None => {
+                        self.dom_val = Some(d);
+                        return;
+                    }
+                }
+            } else {
+                self.do_layout_and_render(&d, None);
             }
-            self.do_layout_and_render(&d);
             self.dom_val = Some(d);
         }
+    }
+
+    /// Repaint the current document from the cached layout tree without
+    /// recomputing style or layout.
+    ///
+    /// This is the fast path for late image arrivals where geometry is already
+    /// stable and only the visible tiles need fresh pixels.
+    pub fn repaint_from_cached_layout(&mut self) {
+        let root = match self.layout_root.as_ref() {
+            Some(root) => root,
+            None => return,
+        };
+
+        let doc_w = self.viewport_width.max(1) as u32;
+        let doc_h = (self.total_height_val as u32).max(1);
+        let scroll_y = self.scroll_view.get_state() as i32;
+        let bg_color = if self.bg_color_cached != 0 {
+            self.bg_color_cached
+        } else {
+            0xFFFFFFFF
+        };
+
+        self.renderer.clear();
+        self.pending_tiles = self.renderer.render(
+            root,
+            &self.content_view,
+            &self.images,
+            doc_w,
+            doc_h,
+            self.viewport_height,
+            scroll_y,
+            bg_color,
+            self.link_cb,
+            self.link_cb_ud,
+            self.submit_cb,
+            self.submit_cb_ud,
+        );
+        self.last_render_scroll_y = scroll_y;
     }
 
     /// Advance CSS animations/transitions, JS timers, and scroll-based tile
@@ -644,9 +699,11 @@ impl WebView {
         if self.layout_root.is_some() {
             let scroll_y = self.scroll_view.get_state() as i32;
             let delta = (scroll_y - self.last_render_scroll_y).abs();
-            if delta > 4 {
+            if delta > 4 || self.pending_tiles {
                 let pending = self.render_viewport(scroll_y);
                 self.last_render_scroll_y = scroll_y;
+                self.pending_tiles = pending;
+                changed = true;
                 if pending {
                     changed = true;
                 }
@@ -698,6 +755,7 @@ impl WebView {
         self.layout_root = None;
         self.total_height_val = 0;
         self.last_render_scroll_y = 0;
+        self.pending_tiles = false;
         self.content_view.set_size(self.viewport_width as u32, 1);
     }
 
@@ -935,8 +993,1030 @@ impl WebView {
         }
     }
 
+    fn classify_pending_mutations(&self) -> MutationImpact {
+        let mut impact = MutationImpact::None;
+        for m in &self.js_runtime.mutations {
+            match m {
+                js::DomMutation::SetCookie { .. } => {}
+                js::DomMutation::SetScrollTop { .. } | js::DomMutation::SetScrollLeft { .. } => {
+                    if impact == MutationImpact::None {
+                        impact = MutationImpact::Paint;
+                    }
+                }
+                js::DomMutation::SetStyleProperty { property, .. } => {
+                    if Self::style_property_is_paint_only(property) {
+                        if impact == MutationImpact::None {
+                            impact = MutationImpact::Paint;
+                        }
+                    } else if Self::style_property_can_reuse_cached_styles(property) {
+                        impact = MutationImpact::LayoutReuseStyles;
+                    } else {
+                        return MutationImpact::LayoutRestyle;
+                    }
+                }
+                js::DomMutation::SetAttribute { name, .. }
+                | js::DomMutation::RemoveAttribute { name, .. } => {
+                    impact = if Self::attribute_change_requires_style_recalc(name) {
+                        MutationImpact::LayoutRestyle
+                    } else {
+                        MutationImpact::LayoutReuseStyles
+                    };
+                    if impact == MutationImpact::LayoutRestyle {
+                        return impact;
+                    }
+                }
+                js::DomMutation::RemoveNode { .. } => impact = MutationImpact::LayoutReuseStyles,
+                _ => return MutationImpact::LayoutRestyle,
+            }
+        }
+        impact
+    }
+
+    fn attribute_change_requires_style_recalc(name: &str) -> bool {
+        matches!(
+            name.trim().to_ascii_lowercase().as_str(),
+            "class" | "id" | "style" | "hidden" | "align" | "type"
+        )
+    }
+
+    fn mutations_dirty_inline_style_cache(mutations: &[js::DomMutation]) -> bool {
+        mutations.iter().any(|m| match m {
+            js::DomMutation::SetStyleProperty { .. } => true,
+            js::DomMutation::SetAttribute { name, .. }
+            | js::DomMutation::RemoveAttribute { name, .. } => {
+                name.trim().eq_ignore_ascii_case("style")
+            }
+            _ => false,
+        })
+    }
+
+    fn can_reuse_cached_styles_for_mutations(
+        &self,
+        dom: &dom::Dom,
+        mutations: &[js::DomMutation],
+    ) -> bool {
+        if self.resolved_styles_cache.len() != dom.nodes.len()
+            || self.resolved_pseudo_styles.before.len() != dom.nodes.len()
+            || self.resolved_pseudo_styles.after.len() != dom.nodes.len()
+        {
+            return false;
+        }
+        mutations.iter().all(|m| match m {
+            js::DomMutation::RemoveNode { .. } => true,
+            js::DomMutation::SetStyleProperty { property, .. } => {
+                Self::style_property_can_reuse_cached_styles(property)
+            }
+            js::DomMutation::SetAttribute { name, .. }
+            | js::DomMutation::RemoveAttribute { name, .. } => {
+                !Self::attribute_change_requires_style_recalc(name)
+            }
+            _ => false,
+        })
+    }
+
+    fn style_property_can_reuse_cached_styles(property: &str) -> bool {
+        matches!(
+            property.trim().to_ascii_lowercase().as_str(),
+            "display"
+                | "width"
+                | "height"
+                | "min-width"
+                | "max-width"
+                | "min-height"
+                | "max-height"
+                | "margin"
+                | "margin-top"
+                | "margin-right"
+                | "margin-bottom"
+                | "margin-left"
+                | "padding"
+                | "padding-top"
+                | "padding-right"
+                | "padding-bottom"
+                | "padding-left"
+                | "border"
+                | "border-top"
+                | "border-right"
+                | "border-bottom"
+                | "border-left"
+                | "border-width"
+                | "border-style"
+                | "border-radius"
+                | "border-top-width"
+                | "border-right-width"
+                | "border-bottom-width"
+                | "border-left-width"
+                | "border-top-style"
+                | "border-right-style"
+                | "border-bottom-style"
+                | "border-left-style"
+                | "box-sizing"
+                | "overflow"
+                | "overflow-x"
+                | "overflow-y"
+                | "position"
+                | "top"
+                | "right"
+                | "bottom"
+                | "left"
+                | "z-index"
+                | "float"
+                | "clear"
+                | "flex"
+                | "flex-grow"
+                | "flex-shrink"
+                | "flex-basis"
+                | "flex-direction"
+                | "flex-wrap"
+                | "justify-content"
+                | "align-items"
+                | "align-self"
+                | "align-content"
+                | "order"
+                | "gap"
+                | "row-gap"
+                | "column-gap"
+                | "grid-template"
+                | "grid-template-rows"
+                | "grid-template-columns"
+                | "grid-template-areas"
+        )
+    }
+
+    fn style_property_is_paint_only(property: &str) -> bool {
+        matches!(
+            property.trim().to_ascii_lowercase().as_str(),
+            "color"
+                | "background"
+                | "background-color"
+                | "opacity"
+                | "visibility"
+                | "border-color"
+                | "border-top-color"
+                | "border-right-color"
+                | "border-bottom-color"
+                | "border-left-color"
+                | "outline-color"
+                | "text-decoration-color"
+        )
+    }
+
+    fn parse_opacity_value(value: &str) -> Option<i32> {
+        let s = value.trim();
+        if s.is_empty() {
+            return None;
+        }
+        if let Some(percent) = s.strip_suffix('%') {
+            let p = percent.trim().parse::<i32>().ok()?;
+            return Some(((p * 255) / 100).clamp(0, 255));
+        }
+        let f = s.parse::<f32>().ok()?;
+        Some((f.clamp(0.0, 1.0) * 255.0) as i32)
+    }
+
+    fn apply_paint_only_mutation_to_layout(mutation: &js::DomMutation, bx: &mut LayoutBox) {
+        let js::DomMutation::SetStyleProperty {
+            node_id,
+            property,
+            value,
+        } = mutation
+        else {
+            return;
+        };
+
+        let property = property.trim().to_ascii_lowercase();
+        if bx.node_id == Some(*node_id as usize) {
+            match property.as_str() {
+                "color" => {
+                    if let Some(c) = crate::css::try_parse_color_pub(value) {
+                        bx.color = c;
+                    }
+                }
+                "background" | "background-color" => {
+                    if value.trim().eq_ignore_ascii_case("transparent") {
+                        bx.bg_color = 0;
+                    } else if let Some(c) = crate::css::try_parse_color_pub(value) {
+                        bx.bg_color = c;
+                    }
+                }
+                "opacity" => {
+                    if let Some(opacity) = Self::parse_opacity_value(value) {
+                        bx.opacity = opacity;
+                    }
+                }
+                "visibility" => {
+                    bx.visibility_hidden = matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "hidden" | "collapse"
+                    );
+                }
+                "border-color" => {
+                    if let Some(c) = crate::css::try_parse_color_pub(value) {
+                        bx.border_color = c;
+                        bx.border_top_color = c;
+                        bx.border_right_color = c;
+                        bx.border_bottom_color = c;
+                        bx.border_left_color = c;
+                    }
+                }
+                "border-top-color" => {
+                    if let Some(c) = crate::css::try_parse_color_pub(value) {
+                        bx.border_top_color = c;
+                    }
+                }
+                "border-right-color" => {
+                    if let Some(c) = crate::css::try_parse_color_pub(value) {
+                        bx.border_right_color = c;
+                    }
+                }
+                "border-bottom-color" => {
+                    if let Some(c) = crate::css::try_parse_color_pub(value) {
+                        bx.border_bottom_color = c;
+                    }
+                }
+                "border-left-color" => {
+                    if let Some(c) = crate::css::try_parse_color_pub(value) {
+                        bx.border_left_color = c;
+                    }
+                }
+                "outline-color" => {
+                    if let Some(c) = crate::css::try_parse_color_pub(value) {
+                        bx.outline_color = c;
+                    }
+                }
+                "text-decoration-color" => {
+                    if let Some(c) = crate::css::try_parse_color_pub(value) {
+                        bx.text_decoration_color = c;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for child in &mut bx.children {
+            Self::apply_paint_only_mutation_to_layout(mutation, child);
+        }
+    }
+
+    fn apply_paint_only_mutations_to_layout(mutations: &[js::DomMutation], root: &mut LayoutBox) {
+        for mutation in mutations {
+            Self::apply_paint_only_mutation_to_layout(mutation, root);
+        }
+    }
+
+    fn mutation_target_node_id(mutation: &js::DomMutation) -> Option<usize> {
+        match mutation {
+            js::DomMutation::SetAttribute { node_id, .. }
+            | js::DomMutation::RemoveAttribute { node_id, .. }
+            | js::DomMutation::SetTextContent { node_id, .. }
+            | js::DomMutation::SetInnerHTML { node_id, .. }
+            | js::DomMutation::SetStyleProperty { node_id, .. }
+            | js::DomMutation::RemoveNode { node_id } => usize::try_from(*node_id).ok(),
+            js::DomMutation::SetScrollTop { node_id, .. }
+            | js::DomMutation::SetScrollLeft { node_id, .. } => Some(*node_id),
+            _ => None,
+        }
+    }
+
+    fn mutation_allows_incremental_layout(mutation: &js::DomMutation) -> bool {
+        matches!(
+            mutation,
+            js::DomMutation::SetAttribute { .. }
+                | js::DomMutation::RemoveAttribute { .. }
+                | js::DomMutation::SetTextContent { .. }
+                | js::DomMutation::SetStyleProperty { .. }
+                | js::DomMutation::SetInnerHTML { .. }
+                | js::DomMutation::RemoveNode { .. }
+        )
+    }
+
+    fn mutation_requires_parent_rebuild(mutation: &js::DomMutation) -> bool {
+        matches!(
+            mutation,
+            js::DomMutation::SetInnerHTML { .. } | js::DomMutation::RemoveNode { .. }
+        )
+    }
+
+    fn node_supports_incremental_layout(style: &style::ComputedStyle) -> bool {
+        style.float == FloatVal::None
+            && !matches!(style.position, Position::Absolute | Position::Fixed)
+            && matches!(
+                style.display,
+                Display::Block
+                    | Display::FlowRoot
+                    | Display::Flex
+                    | Display::InlineFlex
+                    | Display::Grid
+                    | Display::InlineGrid
+                    | Display::ListItem
+                    | Display::TableRow
+                    | Display::TableCell
+            )
+    }
+
+    fn nearest_incremental_reflow_candidate(
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        node_id: usize,
+    ) -> Option<(usize, usize)> {
+        if node_id >= dom.nodes.len() {
+            return None;
+        }
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            if id < styles.len() && Self::node_supports_incremental_layout(&styles[id]) {
+                let parent = dom.nodes.get(id).and_then(|n| n.parent)?;
+                if Self::parent_supports_incremental_child_reflow(dom, styles, parent) {
+                    return Some((id, parent));
+                }
+            }
+            cur = dom.nodes.get(id).and_then(|n| n.parent);
+        }
+        None
+    }
+
+    fn build_incremental_relayout_plan(
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        mutations: &[js::DomMutation],
+    ) -> Option<IncrementalRelayoutPlan> {
+        let mut single_target = None;
+        let mut single_parent = None;
+        let mut target_nodes = Vec::new();
+        let mut rebuild_parent_children = false;
+
+        for mutation in mutations {
+            if !Self::mutation_allows_incremental_layout(mutation) {
+                return None;
+            }
+            let node_id = Self::mutation_target_node_id(mutation)?;
+            let (candidate, parent) =
+                Self::nearest_incremental_reflow_candidate(dom, styles, node_id)?;
+            match (single_target, single_parent) {
+                (Some(existing_target), Some(existing_parent))
+                    if existing_target != candidate || existing_parent != parent =>
+                {
+                    if existing_parent != parent {
+                        return None;
+                    }
+                }
+                (None, None) => {
+                    single_target = Some(candidate);
+                    single_parent = Some(parent);
+                }
+                _ => {}
+            }
+            if !target_nodes.contains(&candidate) {
+                target_nodes.push(candidate);
+            }
+            if Self::mutation_requires_parent_rebuild(mutation) {
+                rebuild_parent_children = true;
+            }
+        }
+
+        Some(IncrementalRelayoutPlan {
+            parent_node: single_parent?,
+            target_nodes,
+            rebuild_parent_children,
+        })
+    }
+
+    fn parent_supports_incremental_child_reflow(
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        parent_node: usize,
+    ) -> bool {
+        if parent_node >= styles.len() {
+            return false;
+        }
+        let parent_style = &styles[parent_node];
+        if !matches!(
+            parent_style.display,
+            Display::Block | Display::FlowRoot | Display::ListItem
+        ) {
+            return false;
+        }
+        dom.get(parent_node).children.iter().all(|&child| {
+            if child >= styles.len() {
+                return false;
+            }
+            let st = &styles[child];
+            st.display == Display::None
+                || (Self::node_supports_incremental_layout(st) && st.display != Display::Contents)
+        })
+    }
+
+    fn reflow_target_child_in_parent(
+        &mut self,
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        pseudo_styles: &style::PseudoStyles,
+        parent_box: &mut LayoutBox,
+        parent_node: usize,
+        target_node: usize,
+    ) -> bool {
+        if !Self::parent_supports_incremental_child_reflow(dom, styles, parent_node) {
+            return false;
+        }
+
+        let Some(target_index) = parent_box
+            .children
+            .iter()
+            .position(|child| child.node_id == Some(target_node))
+        else {
+            return false;
+        };
+
+        let content_width = parent_box.width
+            - parent_box.padding.left
+            - parent_box.padding.right
+            - parent_box.border_left_width
+            - parent_box.border_right_width;
+        if content_width <= 0 {
+            return false;
+        }
+
+        let old_child = &parent_box.children[target_index];
+        let old_flow_extent = old_child.y + old_child.height + old_child.margin.bottom;
+        let mut new_child = layout::block::build_block(
+            dom,
+            styles,
+            pseudo_styles,
+            target_node,
+            content_width,
+            &self.images,
+            self.viewport_width,
+            parent_box.height,
+        );
+        if !self.scroll_offsets.is_empty() {
+            Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut new_child);
+        }
+
+        let parent_style = &styles[parent_node];
+        let base_x = parent_box.border_left_width + parent_box.padding.left;
+        new_child.x = base_x + new_child.margin.left;
+        let total_child_w = new_child.width + new_child.margin.left + new_child.margin.right;
+        if parent_style.text_align == TextAlignVal::Center {
+            if total_child_w < content_width {
+                new_child.x = base_x + (content_width - total_child_w) / 2;
+            }
+        } else if parent_style.text_align == TextAlignVal::Right {
+            if total_child_w < content_width {
+                new_child.x = base_x + content_width - total_child_w;
+            }
+        }
+
+        new_child.y = if target_index == 0 {
+            parent_box.border_top_width + parent_box.padding.top + new_child.margin.top
+        } else {
+            let prev = &parent_box.children[target_index - 1];
+            let collapsed = core::cmp::max(prev.margin.bottom, new_child.margin.top);
+            prev.y + prev.height + collapsed
+        };
+
+        let new_flow_extent = new_child.y + new_child.height + new_child.margin.bottom;
+        let delta = new_flow_extent - old_flow_extent;
+        parent_box.children[target_index] = new_child;
+
+        if delta != 0 {
+            for sibling in parent_box.children.iter_mut().skip(target_index + 1) {
+                if sibling.is_fixed || sibling.is_out_of_flow {
+                    continue;
+                }
+                sibling.y += delta;
+            }
+            parent_box.height = (parent_box.height + delta).max(1);
+        }
+
+        true
+    }
+
+    fn reflow_target_children_in_parent(
+        &mut self,
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        pseudo_styles: &style::PseudoStyles,
+        parent_box: &mut LayoutBox,
+        parent_node: usize,
+        target_nodes: &[usize],
+    ) -> bool {
+        if target_nodes.is_empty()
+            || !Self::parent_supports_incremental_child_reflow(dom, styles, parent_node)
+        {
+            return false;
+        }
+
+        let mut targets: Vec<(usize, usize)> = Vec::new();
+        for &target_node in target_nodes {
+            let Some(index) = parent_box
+                .children
+                .iter()
+                .position(|child| child.node_id == Some(target_node))
+            else {
+                return false;
+            };
+            targets.push((index, target_node));
+        }
+        targets.sort_by_key(|(index, _)| *index);
+
+        let mut changed = false;
+        for (_, target_node) in targets {
+            if self.reflow_target_child_in_parent(
+                dom,
+                styles,
+                pseudo_styles,
+                parent_box,
+                parent_node,
+                target_node,
+            ) {
+                changed = true;
+            } else {
+                return false;
+            }
+        }
+        changed
+    }
+
+    fn relayout_child_box_in_parent(
+        &mut self,
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        pseudo_styles: &style::PseudoStyles,
+        parent_box: &LayoutBox,
+        parent_node: usize,
+        child_node: usize,
+        prev_sibling: Option<&LayoutBox>,
+    ) -> Option<LayoutBox> {
+        if child_node >= styles.len() {
+            return None;
+        }
+        let child_style = &styles[child_node];
+        if matches!(child_style.display, Display::None | Display::Contents) {
+            return None;
+        }
+
+        let content_width = parent_box.width
+            - parent_box.padding.left
+            - parent_box.padding.right
+            - parent_box.border_left_width
+            - parent_box.border_right_width;
+        if content_width <= 0 {
+            return None;
+        }
+
+        let mut child = layout::block::build_block(
+            dom,
+            styles,
+            pseudo_styles,
+            child_node,
+            content_width,
+            &self.images,
+            self.viewport_width,
+            parent_box.height,
+        );
+        if !self.scroll_offsets.is_empty() {
+            Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut child);
+        }
+
+        let parent_style = &styles[parent_node];
+        let base_x = parent_box.border_left_width + parent_box.padding.left;
+        child.x = base_x + child.margin.left;
+        let total_child_w = child.width + child.margin.left + child.margin.right;
+        if parent_style.text_align == TextAlignVal::Center {
+            if total_child_w < content_width {
+                child.x = base_x + (content_width - total_child_w) / 2;
+            }
+        } else if parent_style.text_align == TextAlignVal::Right {
+            if total_child_w < content_width {
+                child.x = base_x + content_width - total_child_w;
+            }
+        }
+
+        child.y = if let Some(prev) = prev_sibling {
+            let collapsed = core::cmp::max(prev.margin.bottom, child.margin.top);
+            prev.y + prev.height + collapsed
+        } else {
+            parent_box.border_top_width + parent_box.padding.top + child.margin.top
+        };
+
+        Some(child)
+    }
+
+    fn rebuild_parent_children_in_place(
+        &mut self,
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        pseudo_styles: &style::PseudoStyles,
+        parent_box: &mut LayoutBox,
+        parent_node: usize,
+    ) -> bool {
+        if !Self::parent_supports_incremental_child_reflow(dom, styles, parent_node) {
+            return false;
+        }
+
+        let old_children_bottom = parent_box
+            .children
+            .last()
+            .map(|child| child.y + child.height + child.margin.bottom)
+            .unwrap_or(parent_box.border_top_width + parent_box.padding.top);
+        let min_tail = parent_box.border_bottom_width + parent_box.padding.bottom;
+        let noncontent_tail = (parent_box.height - old_children_bottom).max(min_tail);
+
+        let mut new_children = Vec::new();
+        for &child_node in &dom.get(parent_node).children {
+            let prev = new_children.last();
+            if let Some(child) = self.relayout_child_box_in_parent(
+                dom,
+                styles,
+                pseudo_styles,
+                parent_box,
+                parent_node,
+                child_node,
+                prev,
+            ) {
+                new_children.push(child);
+            }
+        }
+
+        let new_children_bottom = new_children
+            .last()
+            .map(|child| child.y + child.height + child.margin.bottom)
+            .unwrap_or(parent_box.border_top_width + parent_box.padding.top);
+        parent_box.children = new_children;
+        parent_box.height = (new_children_bottom + noncontent_tail).max(1);
+        true
+    }
+
+    fn apply_incremental_layout_for_node_in_box(
+        &mut self,
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        pseudo_styles: &style::PseudoStyles,
+        bx: &mut LayoutBox,
+        target_node: usize,
+    ) -> bool {
+        let target_parent = dom.nodes.get(target_node).and_then(|n| n.parent);
+        if let Some(parent_node) = target_parent {
+            if bx.node_id == Some(parent_node)
+                && self.reflow_target_child_in_parent(
+                    dom,
+                    styles,
+                    pseudo_styles,
+                    bx,
+                    parent_node,
+                    target_node,
+                )
+            {
+                return true;
+            }
+        }
+
+        for child in &mut bx.children {
+            if self.apply_incremental_layout_for_node_in_box(
+                dom,
+                styles,
+                pseudo_styles,
+                child,
+                target_node,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn apply_incremental_layout_for_targets_in_box(
+        &mut self,
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        pseudo_styles: &style::PseudoStyles,
+        bx: &mut LayoutBox,
+        parent_node: usize,
+        target_nodes: &[usize],
+        rebuild_parent_children: bool,
+    ) -> bool {
+        if bx.node_id == Some(parent_node) {
+            if rebuild_parent_children
+                && self.rebuild_parent_children_in_place(
+                    dom,
+                    styles,
+                    pseudo_styles,
+                    bx,
+                    parent_node,
+                )
+            {
+                return true;
+            }
+            if self.reflow_target_children_in_parent(
+                dom,
+                styles,
+                pseudo_styles,
+                bx,
+                parent_node,
+                target_nodes,
+            ) {
+                return true;
+            }
+        }
+
+        for child in &mut bx.children {
+            if self.apply_incremental_layout_for_targets_in_box(
+                dom,
+                styles,
+                pseudo_styles,
+                child,
+                parent_node,
+                target_nodes,
+                rebuild_parent_children,
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn apply_incremental_layout_for_node(
+        &mut self,
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        pseudo_styles: &style::PseudoStyles,
+        target_node: usize,
+    ) -> bool {
+        let Some(mut root) = self.layout_root.take() else {
+            return false;
+        };
+
+        if !self.apply_incremental_layout_for_node_in_box(
+            dom,
+            styles,
+            pseudo_styles,
+            &mut root,
+            target_node,
+        ) {
+            self.layout_root = Some(root);
+            return false;
+        }
+
+        layout::compute_subtree_bottom(&mut root);
+        self.total_height_val = calc_total_height(&root);
+        self.layout_root = Some(root);
+        self.refresh_render_surface_for_layout(dom, styles);
+        true
+    }
+
+    fn apply_incremental_relayout_plan(
+        &mut self,
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+        pseudo_styles: &style::PseudoStyles,
+        plan: &IncrementalRelayoutPlan,
+    ) -> bool {
+        let Some(mut root) = self.layout_root.take() else {
+            return false;
+        };
+
+        if !self.apply_incremental_layout_for_targets_in_box(
+            dom,
+            styles,
+            pseudo_styles,
+            &mut root,
+            plan.parent_node,
+            &plan.target_nodes,
+            plan.rebuild_parent_children,
+        ) {
+            self.layout_root = Some(root);
+            return false;
+        }
+
+        layout::compute_subtree_bottom(&mut root);
+        self.total_height_val = calc_total_height(&root);
+        self.layout_root = Some(root);
+        self.refresh_render_surface_for_layout(dom, styles);
+        true
+    }
+
+    fn refresh_render_surface_for_layout(
+        &mut self,
+        dom: &dom::Dom,
+        styles: &[style::ComputedStyle],
+    ) {
+        let body_id = dom.find_body().unwrap_or(0);
+        let body_bg = styles.get(body_id).map(|s| s.background_color).unwrap_or(0);
+        let bg_color = if body_bg != 0 { body_bg } else { 0xFFFFFFFF };
+        self.content_view.set_color(bg_color);
+        self.bg_color_cached = bg_color;
+        self.content_view.set_size(
+            self.viewport_width.max(1) as u32,
+            (self.total_height_val as u32).max(1),
+        );
+        self.repaint_from_cached_layout();
+    }
+
+    fn do_layout_and_render_with_cached_styles(
+        &mut self,
+        d: &dom::Dom,
+        incremental_mutations: Option<&[js::DomMutation]>,
+    ) {
+        if self.resolved_styles_cache.len() != d.nodes.len()
+            || self.resolved_pseudo_styles.before.len() != d.nodes.len()
+            || self.resolved_pseudo_styles.after.len() != d.nodes.len()
+        {
+            self.do_layout_and_render(d, incremental_mutations);
+            return;
+        }
+
+        if let Some(mutations) = incremental_mutations {
+            let has_style_mutations = mutations
+                .iter()
+                .any(|m| matches!(m, js::DomMutation::SetStyleProperty { .. }));
+
+            if !has_style_mutations {
+                if let Some(plan) =
+                    Self::build_incremental_relayout_plan(d, &self.resolved_styles_cache, mutations)
+                {
+                    let styles = self.resolved_styles_cache.clone();
+                    let pseudo_styles = self.resolved_pseudo_styles.clone();
+                    if plan.target_nodes.len() == 1 {
+                        let target_node = plan.target_nodes[0];
+                        if self.apply_incremental_layout_for_node(
+                            d,
+                            &styles,
+                            &pseudo_styles,
+                            target_node,
+                        ) {
+                            debug_surf!(
+                                "[webview] incremental relayout reused cached styles for subtree {}",
+                                target_node
+                            );
+                            return;
+                        }
+                    } else if self.apply_incremental_relayout_plan(
+                        d,
+                        &styles,
+                        &pseudo_styles,
+                        &plan,
+                    ) {
+                        debug_surf!(
+                            "[webview] incremental relayout reused cached styles for parent {} ({} children, rebuild={})",
+                            plan.parent_node,
+                            plan.target_nodes.len(),
+                            plan.rebuild_parent_children
+                        );
+                        return;
+                    }
+                }
+            } else {
+                let mut styles = self.resolved_styles_cache.clone();
+                let pseudo_styles = self.resolved_pseudo_styles.clone();
+                Self::apply_style_mutations_to_cached_styles(d, &mut styles, mutations);
+                if let Some(plan) = Self::build_incremental_relayout_plan(d, &styles, mutations) {
+                    if plan.target_nodes.len() == 1 {
+                        let target_node = plan.target_nodes[0];
+                        if self.apply_incremental_layout_for_node(
+                            d,
+                            &styles,
+                            &pseudo_styles,
+                            target_node,
+                        ) {
+                            self.resolved_styles_cache = styles;
+                            debug_surf!(
+                                "[webview] incremental relayout reused cached styles for subtree {} after local style update",
+                                target_node
+                            );
+                            return;
+                        }
+                    } else if self.apply_incremental_relayout_plan(
+                        d,
+                        &styles,
+                        &pseudo_styles,
+                        &plan,
+                    ) {
+                        self.resolved_styles_cache = styles;
+                        debug_surf!(
+                            "[webview] incremental relayout reused cached styles for parent {} after local style update ({} children, rebuild={})",
+                            plan.parent_node,
+                            plan.target_nodes.len(),
+                            plan.rebuild_parent_children
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+
+        let mut styles = self.resolved_styles_cache.clone();
+        if let Some(mutations) = incremental_mutations {
+            Self::apply_style_mutations_to_cached_styles(d, &mut styles, mutations);
+        }
+        let mut pseudo_styles = self.resolved_pseudo_styles.clone();
+
+        self.layout_root = None;
+        unsafe {
+            WEB_FONT_MAP = &self.web_fonts as *const _;
+        }
+        let mut root = layout::layout(
+            d,
+            &styles,
+            &mut pseudo_styles,
+            self.viewport_width,
+            self.viewport_height as i32,
+            &self.images,
+        );
+        if !self.scroll_offsets.is_empty() {
+            Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
+        }
+        self.total_height_val = calc_total_height(&root);
+        self.layout_root = Some(root);
+        self.resolved_styles_cache.clone_from(&styles);
+        self.resolved_pseudo_styles.clone_from(&pseudo_styles);
+        self.refresh_render_surface_for_layout(d, &styles);
+    }
+
+    fn apply_style_mutations_to_cached_styles(
+        dom: &dom::Dom,
+        styles: &mut [style::ComputedStyle],
+        mutations: &[js::DomMutation],
+    ) {
+        let root_fs = styles.first().map(|s| s.font_size).unwrap_or(16);
+        for mutation in mutations {
+            let js::DomMutation::SetStyleProperty {
+                node_id,
+                property,
+                value,
+            } = mutation
+            else {
+                continue;
+            };
+            if !Self::style_property_can_reuse_cached_styles(property) {
+                continue;
+            }
+            let Ok(node_id) = usize::try_from(*node_id) else {
+                continue;
+            };
+            if node_id >= styles.len() {
+                continue;
+            }
+            let parent_fs = dom.nodes[node_id]
+                .parent
+                .and_then(|pid| styles.get(pid))
+                .map(|s| s.font_size)
+                .unwrap_or(root_fs);
+            let decls = crate::css::parse_inline_style(&alloc::format!("{}: {}", property, value));
+            for decl in &decls {
+                style::apply_declaration(&mut styles[node_id], decl, parent_fs, root_fs);
+            }
+        }
+    }
+
+    fn flush_pending_mutations(&mut self, dom: &mut dom::Dom) -> MutationImpact {
+        let impact = self.classify_pending_mutations();
+        let pending_mutations = if impact != MutationImpact::None {
+            self.js_runtime.mutations.clone()
+        } else {
+            Vec::new()
+        };
+        if impact == MutationImpact::None {
+            self.js_runtime.apply_mutations(dom);
+            return MutationImpact::None;
+        }
+
+        self.extract_scroll_offsets();
+        self.js_runtime.apply_mutations(dom);
+
+        match impact {
+            MutationImpact::LayoutReuseStyles => {
+                if self.can_reuse_cached_styles_for_mutations(dom, &pending_mutations) {
+                    self.do_layout_and_render_with_cached_styles(dom, Some(&pending_mutations));
+                } else {
+                    self.do_layout_and_render(dom, Some(&pending_mutations));
+                }
+            }
+            MutationImpact::LayoutRestyle => {
+                self.inline_sheets_dirty = true;
+                if Self::mutations_dirty_inline_style_cache(&pending_mutations) {
+                    self.inline_style_cache.clear();
+                }
+                self.do_layout_and_render(dom, Some(&pending_mutations));
+            }
+            MutationImpact::Paint => {
+                if let Some(root) = self.layout_root.as_mut() {
+                    Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, root);
+                    Self::apply_paint_only_mutations_to_layout(&pending_mutations, root);
+                }
+                self.repaint_from_cached_layout();
+            }
+            MutationImpact::None => {}
+        }
+
+        impact
+    }
+
     /// Internal: collect stylesheets, resolve styles, layout, and render controls.
-    fn do_layout_and_render(&mut self, d: &dom::Dom) {
+    fn do_layout_and_render(
+        &mut self,
+        d: &dom::Dom,
+        incremental_mutations: Option<&[js::DomMutation]>,
+    ) {
         debug_surf!(
             "[webview] do_layout_and_render: {} DOM nodes",
             d.nodes.len()
@@ -1039,7 +2119,7 @@ impl WebView {
         }
         // Save a snapshot of resolved styles *before* animation overrides
         // so transition detection compares the base styles next time.
-        self.prev_styles = styles.clone();
+        self.prev_styles.clone_from(&styles);
 
         // Apply pending animation/transition overrides on top of the
         // resolved styles so layout uses the interpolated values.
@@ -1066,12 +2146,44 @@ impl WebView {
             }
         }
 
+        self.resolved_styles_cache.clone_from(&styles);
+        self.resolved_pseudo_styles.clone_from(&pseudo_styles);
+
         #[cfg(feature = "debug_surf")]
         debug_surf!(
             "[webview]   RSP=0x{:X} heap=0x{:X}",
             debug_rsp(),
             debug_heap_pos()
         );
+
+        let body_id = d.find_body().unwrap_or(0);
+        if let Some(mutations) = incremental_mutations {
+            if let Some(plan) = Self::build_incremental_relayout_plan(d, &styles, mutations) {
+                if plan.target_nodes.len() == 1 {
+                    let target_node = plan.target_nodes[0];
+                    if self.apply_incremental_layout_for_node(
+                        d,
+                        &styles,
+                        &pseudo_styles,
+                        target_node,
+                    ) {
+                        debug_surf!(
+                            "[webview] incremental relayout reused subtree {}",
+                            target_node
+                        );
+                        return;
+                    }
+                } else if self.apply_incremental_relayout_plan(d, &styles, &pseudo_styles, &plan) {
+                    debug_surf!(
+                        "[webview] incremental relayout reused parent {} for {} children (rebuild={})",
+                        plan.parent_node,
+                        plan.target_nodes.len(),
+                        plan.rebuild_parent_children
+                    );
+                    return;
+                }
+            }
+        }
 
         // Drop old layout tree before allocating the new one — avoids holding
         // two full trees in memory simultaneously (can save several MB on complex pages).
@@ -1119,7 +2231,6 @@ impl WebView {
         self.renderer.clear();
 
         // Sync content view background to the body element's CSS background-color.
-        let body_id = d.find_body().unwrap_or(0);
         let body_bg = styles.get(body_id).map(|s| s.background_color).unwrap_or(0);
         let bg_color = if body_bg != 0 { body_bg } else { 0xFFFFFFFF };
         self.content_view.set_color(bg_color);
@@ -1135,7 +2246,7 @@ impl WebView {
         // Render into canvas + update form controls.
         // Initial render starts at scroll_y=0.
         debug_surf!("[webview] renderer start");
-        self.renderer.render(
+        self.pending_tiles = self.renderer.render(
             &root,
             &self.content_view,
             &self.images,

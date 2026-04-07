@@ -1728,6 +1728,7 @@ const MAX_CACHED_TILES: usize = 40;
 const BUFFER_ZONE: i32 = 768;
 const MAX_TILE_CANVASES: usize = 30;
 const MAX_TILES_PER_TICK: usize = 8;
+const INITIAL_VISIBLE_EXTRA_ROWS: u32 = 1;
 
 struct CachedTile {
     row: u32,
@@ -1847,6 +1848,27 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
+    fn prioritized_tile_rows(
+        first_row: u32,
+        last_row: u32,
+        scroll_y: i32,
+        viewport_h: u32,
+    ) -> Vec<u32> {
+        if last_row < first_row {
+            return Vec::new();
+        }
+        let mut rows: Vec<u32> = (first_row..=last_row).collect();
+        let vp_center_row = ((scroll_y + viewport_h as i32 / 2).max(0) as u32) / TILE_HEIGHT;
+        rows.sort_by_key(|row| {
+            if *row > vp_center_row {
+                *row - vp_center_row
+            } else {
+                vp_center_row - *row
+            }
+        });
+        rows
+    }
+
     pub fn new() -> Self {
         Self {
             tile_canvases: Vec::new(),
@@ -1861,6 +1883,25 @@ impl Renderer {
             last_scroll_y: 0,
             display_list: DisplayList::new(),
         }
+    }
+
+    fn visible_tile_row_range(scroll_y: i32, viewport_h: u32, doc_h: u32) -> (u32, u32) {
+        let visible_y_start = scroll_y.max(0);
+        let visible_y_end = (scroll_y + viewport_h as i32).min(doc_h as i32);
+        let first_row = visible_y_start as u32 / TILE_HEIGHT;
+        let last_visible_row = if visible_y_end > 0 {
+            ((visible_y_end - 1) as u32) / TILE_HEIGHT
+        } else {
+            first_row
+        };
+        let start = first_row.saturating_sub(INITIAL_VISIBLE_EXTRA_ROWS);
+        let max_row = if doc_h > 0 {
+            (doc_h - 1) / TILE_HEIGHT
+        } else {
+            0
+        };
+        let end = (last_visible_row + INITIAL_VISIBLE_EXTRA_ROWS).min(max_row);
+        (start, end)
     }
 
     pub fn tile_hit_coords(&self, ctrl_id: u32) -> Option<(i32, i32)> {
@@ -1962,7 +2003,7 @@ impl Renderer {
         link_cb_ud: u64,
         submit_cb: Option<ui::Callback>,
         submit_cb_ud: u64,
-    ) {
+    ) -> bool {
         crate::debug_surf!(
             "[render] full render start ({}x{}, vp_h={}, scroll_y={})",
             doc_w,
@@ -2003,9 +2044,15 @@ impl Renderer {
         } else {
             0
         };
+        let prioritized_rows =
+            Self::prioritized_tile_rows(first_row, last_row, scroll_y, viewport_h);
+        let (visible_first_row, visible_last_row) =
+            Self::visible_tile_row_range(scroll_y, viewport_h, doc_h);
+        let immediate_rows =
+            Self::prioritized_tile_rows(visible_first_row, visible_last_row, scroll_y, viewport_h);
 
         // 5. Rasterize visible tiles using the display list.
-        for row in first_row..=last_row {
+        for row in immediate_rows.iter().copied() {
             let tile_buf = self.rasterize_tile_dl(images, w, row, doc_h, clear_color);
             self.tile_cache.insert(row, tile_buf);
             self.create_tile_canvas(row, w, doc_h, parent);
@@ -2035,6 +2082,7 @@ impl Renderer {
             self.hit_regions.len(),
             self.form_controls.len()
         );
+        immediate_rows.len() < prioritized_rows.len()
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -2069,10 +2117,12 @@ impl Renderer {
         } else {
             0
         };
+        let prioritized_rows =
+            Self::prioritized_tile_rows(first_row, last_row, scroll_y, viewport_h);
 
         let mut rasterized = 0usize;
         let mut pending = false;
-        for row in first_row..=last_row {
+        for row in prioritized_rows {
             if self.tile_canvases.iter().any(|tc| tc.row == row) {
                 continue;
             }
