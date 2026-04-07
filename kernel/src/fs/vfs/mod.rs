@@ -1,6 +1,10 @@
 //! Virtual File System (VFS) -- unified interface for file descriptors, open/read/write/close.
 //! Delegates to the mounted filesystem (exFAT or FAT16) and manages the global open file table.
 
+mod cache;
+mod path;
+mod types;
+
 use crate::fs::devfs::DevFs;
 use crate::fs::exfat::ExFatFs;
 use crate::fs::fat::FatFs;
@@ -13,6 +17,8 @@ use crate::sync::mutex::Mutex;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
+use self::path::{dev_name, find_mnt_mount, is_dev_path, resolve_exfat_path, split_parent_name};
+pub use self::types::{Filesystem, FsError, FsType, StatFs, StatResult};
 
 /// Maximum number of simultaneously open file descriptors (system-wide).
 const MAX_OPEN_FILES: usize = 1024;
@@ -54,8 +60,10 @@ pub fn root_partition_lba() -> u32 {
     ROOT_PARTITION_LBA.load(core::sync::atomic::Ordering::Relaxed)
 }
 
-/// Maximum depth for symlink resolution (prevents infinite loops).
-const MAX_SYMLINK_DEPTH: u32 = 20;
+/// Invalidate all directory cache entries after path topology changes.
+pub fn dir_cache_invalidate() {
+    cache::dir_cache_invalidate();
+}
 
 static VFS: Mutex<Option<VfsState>> = Mutex::new(None);
 
@@ -107,338 +115,24 @@ impl VfsState {
     }
 }
 
-struct MountPoint {
-    path: String,
-    fs_type: FsType,
-    device_id: u32,
-}
-
-/// Supported filesystem types for mount points.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FsType {
-    /// exFAT filesystem on disk (default for OS image).
-    ExFat,
-    /// FAT12/16/32 filesystem on disk (secondary mounts).
-    Fat,
-    /// ISO 9660 filesystem (CD-ROM/DVD-ROM, read-only).
-    Iso9660,
-    /// NTFS filesystem (read-only).
-    Ntfs,
-    /// In-memory device filesystem (/dev).
-    DevFs,
-    /// SMB/CIFS network filesystem.
-    Smb,
-    /// Overlay filesystem (RamFS over ISO 9660).
-    Overlay,
-}
-
-/// Trait that all filesystem drivers must implement for the VFS.
-pub trait Filesystem {
-    /// Read bytes from a file identified by inode at the given offset.
-    fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError>;
-    /// Write bytes to a file identified by inode at the given offset.
-    fn write(&self, inode: u32, offset: u32, buf: &[u8]) -> Result<usize, FsError>;
-    /// Look up a path and return `(inode, file_type, size)`.
-    fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError>;
-    /// List entries in a directory identified by inode.
-    fn readdir(&self, inode: u32) -> Result<Vec<DirEntry>, FsError>;
-    /// Create a new file or directory under the given parent inode.
-    fn create(&self, parent_inode: u32, name: &str, file_type: FileType) -> Result<u32, FsError>;
-    /// Delete a file or directory by name under the given parent inode.
-    fn delete(&self, parent_inode: u32, name: &str) -> Result<(), FsError>;
-}
-
-/// Filesystem operation error codes.
-#[derive(Debug)]
-pub enum FsError {
-    /// File or directory not found.
-    NotFound,
-    /// Insufficient permissions for the operation.
-    PermissionDenied,
-    /// A file or directory with that name already exists.
-    AlreadyExists,
-    /// Expected a directory but found a file.
-    NotADirectory,
-    /// Expected a file but found a directory.
-    IsADirectory,
-    /// No free clusters or directory entry slots remaining.
-    NoSpace,
-    /// Low-level disk I/O failure.
-    IoError,
-    /// Malformed or empty path.
-    InvalidPath,
-    /// Open file table is full.
-    TooManyOpenFiles,
-    /// File descriptor is not valid or not open.
-    BadFd,
-}
-
-/// Split a path into (parent_dir, filename).
-/// "/System/hello.txt" → ("/System", "hello.txt")
-/// "/hello.txt" → ("/", "hello.txt")
-fn split_parent_name(path: &str) -> Result<(&str, &str), FsError> {
-    let path = path.trim_end_matches('/');
-    if path.is_empty() || path == "/" {
-        return Err(FsError::InvalidPath);
-    }
-    match path.rfind('/') {
-        Some(0) => Ok(("/", &path[1..])),
-        Some(pos) => Ok((&path[..pos], &path[pos + 1..])),
-        None => Err(FsError::InvalidPath),
-    }
-}
-
-/// Check if a path targets the /dev filesystem.
-fn is_dev_path(path: &str) -> bool {
-    path == "/dev" || path.starts_with("/dev/")
-}
-
-/// Extract the device name from a /dev path (strips "/dev/" prefix).
-fn dev_name(path: &str) -> &str {
-    if path.len() > 5 { &path[5..] } else { "" }
-}
-
-/// Check if a path targets a /mnt/ mount point.
-/// Returns (mount_path, relative_path, fs_type) if matched.
-/// The relative_path always starts with "/" (e.g. "/" for the mount root, "/file.txt" for a file).
-fn find_mnt_mount<'a>(path: &'a str, mount_points: &[MountPoint]) -> Option<(&'a str, &'a str, FsType)> {
-    // Find longest matching mount point under /mnt/
-    let mut best_len: usize = 0;
-    let mut best_type = FsType::Fat;
-    let mut found = false;
-    for mp in mount_points {
-        if !mp.path.starts_with("/mnt/") {
-            continue;
-        }
-        let mp_path = mp.path.as_str();
-        // Match exact path or path with trailing /
-        if path == mp_path {
-            if mp_path.len() > best_len {
-                best_len = mp_path.len();
-                best_type = mp.fs_type;
-                found = true;
-            }
-        } else if path.len() > mp_path.len()
-            && path.as_bytes()[mp_path.len()] == b'/'
-            && path.starts_with(mp_path)
-        {
-            if mp_path.len() > best_len {
-                best_len = mp_path.len();
-                best_type = mp.fs_type;
-                found = true;
-            }
-        }
-    }
-    if found {
-        let relative = if path.len() > best_len {
-            &path[best_len..]  // starts with "/"
-        } else {
-            "/"
-        };
-        Some((&path[..best_len], relative, best_type))
-    } else {
-        None
-    }
-}
-
-/// Normalize a path by resolving `.` and `..` components.
-fn normalize_path(path: &str) -> String {
-    let mut parts: Vec<&str> = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => { if !parts.is_empty() { parts.pop(); } }
-            _ => parts.push(part),
-        }
-    }
-    if parts.is_empty() {
-        String::from("/")
-    } else {
-        let mut result = String::new();
-        for p in &parts {
-            result.push('/');
-            result.push_str(p);
-        }
-        result
-    }
-}
-
-// ── VFS directory inode cache ────────────────────────────────────────
-// Caches (path_hash → parent_cluster) for directory lookups to avoid
-// re-walking the exFAT directory tree from root for every open().
-// Only caches directory inodes (not files, as files can change size).
-
-const DIR_CACHE_SIZE: usize = 64;
-struct DirCacheEntry {
-    path_hash: u32,
-    cluster: u32,
-    tick: u32,
-}
-static mut DIR_CACHE: [DirCacheEntry; DIR_CACHE_SIZE] = {
-    const EMPTY: DirCacheEntry = DirCacheEntry { path_hash: 0, cluster: 0, tick: 0 };
-    [EMPTY; DIR_CACHE_SIZE]
-};
-static mut DIR_CACHE_TICK: u32 = 0;
-
-/// Simple DJB2 hash for path strings.
-fn path_hash(path: &str) -> u32 {
-    let mut h: u32 = 5381;
-    for &b in path.as_bytes() {
-        h = h.wrapping_mul(33).wrapping_add(b as u32);
-    }
-    h
-}
-
-/// Look up a cached directory cluster for a path.
-fn dir_cache_lookup(hash: u32) -> Option<u32> {
-    let idx = (hash as usize) & (DIR_CACHE_SIZE - 1);
-    let entry = unsafe { &DIR_CACHE[idx] };
-    if entry.path_hash == hash && entry.cluster != 0 {
-        Some(entry.cluster)
-    } else {
-        None
-    }
-}
-
-/// Cache a directory cluster for a path.
-fn dir_cache_insert(hash: u32, cluster: u32) {
-    let idx = (hash as usize) & (DIR_CACHE_SIZE - 1);
-    unsafe {
-        DIR_CACHE_TICK += 1;
-        DIR_CACHE[idx] = DirCacheEntry { path_hash: hash, cluster, tick: DIR_CACHE_TICK };
-    }
-}
-
-/// Invalidate all directory cache entries (called on mkdir/rmdir/rename).
-pub fn dir_cache_invalidate() {
-    unsafe {
-        for entry in DIR_CACHE.iter_mut() {
-            entry.path_hash = 0;
-            entry.cluster = 0;
-        }
-    }
+pub(crate) struct MountPoint {
+    pub(crate) path: String,
+    pub(crate) fs_type: FsType,
+    pub(crate) device_id: u32,
 }
 
 /// Result of resolving an exFAT path with symlink handling.
-struct ResolvedEntry {
-    inode: u32,
-    file_type: FileType,
-    size: u32,
-    is_symlink: bool,
-    uid: u16,
-    gid: u16,
-    mode: u16,
-    mtime: u32,
+pub(crate) struct ResolvedEntry {
+    pub(crate) inode: u32,
+    pub(crate) file_type: FileType,
+    pub(crate) size: u32,
+    pub(crate) is_symlink: bool,
+    pub(crate) uid: u16,
+    pub(crate) gid: u16,
+    pub(crate) mode: u16,
+    pub(crate) mtime: u32,
 }
 
-/// Resolve a path on exFAT, following symlinks at intermediate components.
-/// If `follow_last` is true, also follow a symlink at the final component.
-fn resolve_exfat_path(
-    exfat: &ExFatFs,
-    path: &str,
-    follow_last: bool,
-) -> Result<ResolvedEntry, FsError> {
-    resolve_exfat_inner(exfat, path, follow_last, 0)
-}
-
-fn resolve_exfat_inner(
-    exfat: &ExFatFs,
-    path: &str,
-    follow_last: bool,
-    depth: u32,
-) -> Result<ResolvedEntry, FsError> {
-    if depth > MAX_SYMLINK_DEPTH {
-        return Err(FsError::IoError); // symlink loop
-    }
-
-    let path = path.trim_start_matches('/');
-    if path.is_empty() {
-        return Ok(ResolvedEntry {
-            inode: exfat.root_cluster(),
-            file_type: FileType::Directory,
-            size: 0,
-            is_symlink: false,
-            uid: 0,
-            gid: 0,
-            mode: 0xFFF,
-            mtime: 0,
-        });
-    }
-
-    let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-    let mut current_cluster = exfat.root_cluster();
-
-    for (idx, component) in components.iter().enumerate() {
-        let is_last = idx == components.len() - 1;
-        let (inode, file_type, size, is_symlink, entry_uid, entry_gid, entry_mode, entry_mtime) =
-            exfat.lookup_in_dir(current_cluster, component)?;
-
-        if is_symlink && (!is_last || follow_last) {
-            // Read symlink target path
-            let target = exfat.readlink(inode, size)?;
-
-            // Build remaining path after this component
-            let remaining: String = if is_last {
-                String::new()
-            } else {
-                let rest: Vec<&str> = components[idx + 1..].iter().copied().collect();
-                rest.join("/")
-            };
-
-            let resolved = if target.starts_with('/') {
-                // Absolute symlink target
-                if remaining.is_empty() {
-                    target
-                } else {
-                    let mut s = String::from(target.trim_end_matches('/'));
-                    s.push('/');
-                    s.push_str(&remaining);
-                    s
-                }
-            } else {
-                // Relative symlink target — relative to parent of the symlink
-                let mut parent = String::from("/");
-                for &p in &components[..idx] {
-                    parent.push_str(p);
-                    parent.push('/');
-                }
-                let mut base = String::from(parent.trim_end_matches('/'));
-                base.push('/');
-                base.push_str(&target);
-                if !remaining.is_empty() {
-                    base.push('/');
-                    base.push_str(&remaining);
-                }
-                base
-            };
-
-            let normalized = normalize_path(&resolved);
-            return resolve_exfat_inner(exfat, &normalized, follow_last, depth + 1);
-        }
-
-        if is_last {
-            return Ok(ResolvedEntry {
-                inode,
-                file_type,
-                size,
-                is_symlink,
-                uid: entry_uid,
-                gid: entry_gid,
-                mode: entry_mode,
-                mtime: entry_mtime,
-            });
-        }
-
-        if file_type != FileType::Directory {
-            return Err(FsError::NotADirectory);
-        }
-
-        let (cluster, _) = crate::fs::exfat::decode_inode(inode);
-        current_cluster = cluster;
-    }
-
-    Err(FsError::NotFound)
-}
 
 /// Initialize the VFS, reserving file descriptors 0-2 for stdin/stdout/stderr.
 pub fn init() {
@@ -1886,18 +1580,6 @@ pub fn lseek(slot_id: FileDescriptor, offset: i32, whence: u32) -> Result<u32, F
     Ok(new_pos)
 }
 
-/// Stat result with permission info.
-pub struct StatResult {
-    pub file_type: FileType,
-    pub size: u32,
-    pub is_symlink: bool,
-    pub uid: u16,
-    pub gid: u16,
-    pub mode: u16,
-    /// Modification time as Unix timestamp (seconds since 1970-01-01).
-    pub mtime: u32,
-}
-
 /// Get file type and size by path, following symlinks.
 pub fn stat(path: &str) -> Result<StatResult, FsError> {
     stat_inner(path, true)
@@ -2411,16 +2093,6 @@ pub fn root_is_iso9660() -> bool {
     } else {
         false
     }
-}
-
-/// Filesystem statistics for a mount point.
-pub struct StatFs {
-    /// Total size in bytes.
-    pub total_bytes: u64,
-    /// Used bytes.
-    pub used_bytes: u64,
-    /// Free bytes.
-    pub free_bytes: u64,
 }
 
 /// Get filesystem statistics for a mount point path.

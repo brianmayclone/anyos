@@ -1,3 +1,5 @@
+//! Shared filesystem data structures used by the VFS and concrete filesystems.
+
 use alloc::string::String;
 
 pub type FileDescriptor = u32;

@@ -107,7 +107,7 @@ anyOS uses a **hybrid kernel** architecture. Filesystems, the TCP/IP network sta
 
 ```
                       +-----------+
-                      |  main.rs  |  Kernel entry, init sequence
+                      |  boot/    |  Kernel entry, staged boot flow
                       +-----+-----+
                             |
     +--------+---------+----+----+--------+--------+--------+
@@ -140,7 +140,7 @@ anyOS uses a **hybrid kernel** architecture. Filesystems, the TCP/IP network sta
                                       +----------+
 ```
 
-### Init Sequence (main.rs)
+### Init Sequence (`boot/mod.rs`, `boot/x86.rs`)
 
 The kernel initializes subsystems in phases:
 
@@ -160,6 +160,8 @@ The kernel initializes subsystems in phases:
 14. **Keyboard/Mouse** -- PS/2 driver with IntelliMouse scroll wheel; VMware vmmouse / VMMDev absolute mouse
 15. **DLL Loading** -- Map boot-time DLIBs into kernel PD (uisys, libimage, librender, libcompositor); .so libraries (libanyui, libfont) loaded on demand via SYS_DLL_LOAD
 16. **Userspace** -- Load `/System/init` as first Ring 3 process, which starts the compositor
+
+The crate root `main.rs` now acts only as the ABI entry wrapper; the actual boot orchestration lives in `kernel/src/boot/` so platform bring-up, storage discovery, and userspace launch remain structurally separated.
 
 ### nogui Boot Mode
 
