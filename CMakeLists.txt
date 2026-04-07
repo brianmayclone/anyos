@@ -37,7 +37,7 @@ if(NOT ANYOS_VERSION)
 endif()
 message(STATUS "anyOS version: ${ANYOS_VERSION}")
 
-# Auto-detect i686-elf cross-compiler (needed for libc, TCC, Doom, Quake)
+# Auto-detect i686-elf cross-compiler (needed for libc, TCC)
 if(ANYOS_NO_CROSS)
   set(HAS_CROSS_COMPILER FALSE)
   message(STATUS "Cross-compilation disabled (ANYOS_NO_CROSS=ON) — skipping C library, TCC, and games")

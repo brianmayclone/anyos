@@ -269,8 +269,6 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 
 **System Services (22):** Init, Login, Compositor, Terminal, Finder, Settings, Activity Monitor, Permission Dialog, Shell (dash), Audio Monitor, Network Monitor, Input Monitor, Event Viewer, Disk Utility, amid (statistics daemon), notifyd (notifications), anybout (about), anytrace (tracing), crashdialog, desktopd, sessionhost, textmode_console
 
-**Games (2):** DOOM (doomgeneric port), Quake (WinQuake software renderer port)
-
 **CLI Utilities (122):**
 
 | Category | Programs |
@@ -559,8 +557,6 @@ anyos/
     tcc-0.9.27/            Tiny C Compiler
     nasm/                  NASM assembler
     dash-0.5.12/           POSIX shell (Debian Almquist Shell)
-    doom/                  doomgeneric port
-    quake/                 WinQuake port
     curl/                  curl HTTP client
     bearssl/               BearSSL TLS library
     libgit2/               Git library

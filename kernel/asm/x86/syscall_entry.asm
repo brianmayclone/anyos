@@ -2,7 +2,7 @@
 ; syscall_entry.asm - System call entry point (int 0x80) for x86-64
 ; =============================================================================
 ; INT 0x80 convention — used by 32-bit compatibility mode processes
-; (libc, TCC, Doom, etc.):
+; (libc etc.):
 ;   EAX = syscall number
 ;   EBX = arg1, ECX = arg2, EDX = arg3, ESI = arg4, EDI = arg5
 ;   Return value in EAX

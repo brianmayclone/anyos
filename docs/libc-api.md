@@ -1,6 +1,6 @@
 # anyOS C Library (libc) Reference
 
-The anyOS **libc** is a minimal POSIX-compatible C standard library for 32-bit `i686-elf` user programs. It provides the standard headers and runtime needed by the on-disk **TCC** compiler and cross-compiled C programs (curl, git, NASM, DOOM, Quake).
+The anyOS **libc** is a minimal POSIX-compatible C standard library for 32-bit `i686-elf` user programs. It provides the standard headers and runtime needed by the on-disk **TCC** compiler and cross-compiled C programs (curl, git, NASM).
 
 **Location:** `libs/libc/`
 **Compiler:** `i686-elf-gcc -m32`

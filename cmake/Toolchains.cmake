@@ -245,71 +245,6 @@ add_custom_command(
   COMMENT "Installing make as /System/bin/make"
 )
 
-# ============================================================
-# DOOM (doomgeneric, cross-compiled C program) → DOOM.app
-# ============================================================
-set(DOOM_DIR "${CMAKE_SOURCE_DIR}/third_party/doom")
-set(DOOM_ELF "${DOOM_DIR}/doom.elf")
-set(DOOM_APP "${SYSROOT_DIR}/Applications/DOOM.app")
-
-file(GLOB DOOM_SOURCES "${DOOM_DIR}/src/*.c" "${DOOM_DIR}/src/*.h" "${DOOM_DIR}/Makefile")
-add_custom_command(
-  OUTPUT ${DOOM_ELF}
-  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -s -C ${DOOM_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
-  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -s -j${NPROC} -C ${DOOM_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
-  DEPENDS ${LIBC_A} ${LIBC_CRT0} ${DOOM_SOURCES}
-  COMMENT "Building DOOM for anyOS"
-)
-
-set(DOOM_WAD "${CMAKE_SOURCE_DIR}/sysroot/apps/doom/doom.wad")
-
-add_custom_command(
-  OUTPUT ${DOOM_APP}/DOOM
-  COMMAND ${CMAKE_COMMAND} -E rm -rf "${DOOM_APP}"
-  COMMAND ${MKAPPBUNDLE_EXECUTABLE}
-    -i "${DOOM_DIR}/Info.conf"
-    -e ${DOOM_ELF}
-    -c "${DOOM_DIR}/Icon.ico"
-    -r ${DOOM_WAD}
-    --keep-elf
-    --force
-    -o "${DOOM_APP}"
-  DEPENDS ${DOOM_ELF} ${DOOM_WAD} "${DOOM_DIR}/Info.conf" "${DOOM_DIR}/Icon.ico" ${MKAPPBUNDLE_EXECUTABLE}
-  COMMENT "Packaging DOOM.app (mkappbundle)"
-)
-
-# Quake (WinQuake software renderer, cross-compiled C program) → Quake.app
-# ============================================================
-set(QUAKE_DIR "${CMAKE_SOURCE_DIR}/third_party/quake")
-set(QUAKE_ELF "${QUAKE_DIR}/quake.elf")
-set(QUAKE_APP "${SYSROOT_DIR}/Applications/Quake.app")
-
-file(GLOB QUAKE_SOURCES "${QUAKE_DIR}/WinQuake/*.c" "${QUAKE_DIR}/WinQuake/*.h" "${QUAKE_DIR}/Makefile")
-add_custom_command(
-  OUTPUT ${QUAKE_ELF}
-  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -s -C ${QUAKE_DIR} clean CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC}
-  COMMAND ${CROSS_ENV} ${MAKE_EXECUTABLE} -s -j${NPROC} -C ${QUAKE_DIR} CC=${I686_ELF_GCC} AR=${I686_ELF_AR} AS=${I686_ELF_GCC} LIBC_DIR=${LIBC_DIR}
-  DEPENDS ${LIBC_A} ${LIBC_CRT0} ${QUAKE_SOURCES}
-  COMMENT "Building Quake for anyOS"
-)
-
-set(QUAKE_PAK "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1/pak0.pak")
-set(QUAKE_CFG "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1/config.cfg")
-
-set(QUAKE_ID1_DIR "${CMAKE_SOURCE_DIR}/sysroot/apps/quake/id1")
-add_custom_command(
-  OUTPUT ${QUAKE_APP}/Quake
-  COMMAND ${CMAKE_COMMAND} -E rm -rf "${QUAKE_APP}"
-  COMMAND ${MKAPPBUNDLE_EXECUTABLE}
-    -i "${QUAKE_DIR}/Info.conf"
-    -e ${QUAKE_ELF}
-    -r "${QUAKE_ID1_DIR}"
-    --keep-elf
-    --force
-    -o "${QUAKE_APP}"
-  DEPENDS ${QUAKE_ELF} ${QUAKE_PAK} ${QUAKE_CFG} "${QUAKE_DIR}/Info.conf" ${MKAPPBUNDLE_EXECUTABLE}
-  COMMENT "Packaging Quake.app (mkappbundle)"
-)
 
 # ============================================================
 # ClassiCube (Minecraft Classic, software renderer) → ClassiCube.app
@@ -352,10 +287,6 @@ else()
 endif()
 
 # Clean targets for third-party builds (outside build dir)
-set(THIRD_PARTY_CLEAN_FILES
-  ${DOOM_ELF} "${DOOM_DIR}/obj"
-  ${QUAKE_ELF} "${QUAKE_DIR}/obj"
-)
 if(HAS_CLASSICUBE)
   list(APPEND THIRD_PARTY_CLEAN_FILES ${CLASSICUBE_ELF} "${CLASSICUBE_DIR}/build/anyos")
 endif()
@@ -648,8 +579,6 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/System/bin/nasm
   ${SYSROOT_DIR}/System/bin/make
   ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
-  ${DOOM_APP}/DOOM
-  ${QUAKE_APP}/Quake
   ${SYSROOT_DIR}/System/bin/curl
   ${SYSROOT_DIR}/System/bin/git
   ${SYSROOT_DIR}/System/bin/sh

@@ -1,7 +1,7 @@
 //! System call interface — dual-path dispatch for 32-bit and 64-bit user processes.
 //!
 //! **INT 0x80 path** (`syscall_dispatch_32`):
-//!   Used by 32-bit compatibility mode processes (libc, TCC, Doom, etc.).
+//!   Used by 32-bit compatibility mode processes (libc, TCC).
 //!   Convention: EAX=num, EBX=arg1, ECX=arg2, EDX=arg3, ESI=arg4, EDI=arg5.
 //!   CPU zero-extends 32-bit registers to 64-bit on ring transition.
 //!   All arguments are explicitly treated as u32.

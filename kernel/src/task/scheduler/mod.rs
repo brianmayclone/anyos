@@ -648,7 +648,7 @@ impl Scheduler {
         // 2. Work stealing: find the busiest CPU and steal only when the
         //    imbalance is large enough to justify cache-line invalidation.
         //    With few threads and many CPUs, overeager stealing causes
-        //    constant migration of heavy threads (DOOM, compositor).
+        //    constant migration of heavy threads (compositor).
         let n = self.num_cpus();
         let mut max_count = 0;
         let mut victim = cpu_id;
