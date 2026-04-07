@@ -532,6 +532,7 @@ fn persist_passwd() {
     // Write to VFS
     if let Ok(fd) = crate::fs::vfs::open("/System/users/passwd", crate::fs::file::FileFlags {
         read: false, write: true, append: false, create: true, truncate: true,
+        sync: false,
     }) {
         let _ = crate::fs::vfs::write(fd, content.as_bytes());
         let _ = crate::fs::vfs::close(fd);
@@ -567,6 +568,7 @@ fn persist_group() {
 
     if let Ok(fd) = crate::fs::vfs::open("/System/users/group", crate::fs::file::FileFlags {
         read: false, write: true, append: false, create: true, truncate: true,
+        sync: false,
     }) {
         let _ = crate::fs::vfs::write(fd, content.as_bytes());
         let _ = crate::fs::vfs::close(fd);

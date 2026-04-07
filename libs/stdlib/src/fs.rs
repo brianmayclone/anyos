@@ -10,6 +10,7 @@ pub const O_WRITE: u32 = 1;
 pub const O_APPEND: u32 = 2;
 pub const O_CREATE: u32 = 4;
 pub const O_TRUNC: u32 = 8;
+pub const O_SYNC: u32 = 0x20;
 
 /// Translate kernel error codes to u32::MAX for backward compatibility.
 /// Kernel returns (-errno) as u32 on error (top bit set). Convert to u32::MAX

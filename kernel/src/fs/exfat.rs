@@ -1580,9 +1580,31 @@ impl ExFatFs {
         data: &[u8],
         old_size: u32,
     ) -> Result<(u32, u32), FsError> {
+        let (new_inode, new_size, _, _) =
+            self.write_file_with_hint(inode, offset, data, old_size, None)?;
+        Ok((new_inode, new_size))
+    }
+
+    /// Write data to a file with an optional cluster-position hint.
+    ///
+    /// The hint is `(cluster_start_offset, cluster_number)` and is expected to
+    /// identify the cluster containing `offset` or an earlier cluster in the
+    /// same file. Sequential append workloads can keep this hot to avoid
+    /// walking the FAT chain from the beginning on every 4 KiB write.
+    ///
+    /// Returns `(new_inode, new_size, last_cluster_start_offset, last_cluster)`.
+    pub fn write_file_with_hint(
+        &mut self,
+        inode: u32,
+        offset: u32,
+        data: &[u8],
+        old_size: u32,
+        hint: Option<(u32, u32)>,
+    ) -> Result<(u32, u32, u32, u32), FsError> {
         let (start_cluster, _) = decode_inode(inode);
         if data.is_empty() {
-            return Ok((start_cluster, old_size));
+            let hint_cluster = if start_cluster >= 2 { start_cluster } else { 0 };
+            return Ok((start_cluster, old_size, 0, hint_cluster));
         }
 
         let cs = self.cluster_size();
@@ -1594,6 +1616,13 @@ impl ExFatFs {
 
         let mut cluster = first;
         let mut cluster_offset = 0u32;
+
+        if let Some((hint_offset, hint_cluster)) = hint {
+            if hint_cluster >= 2 && hint_offset <= offset {
+                cluster = hint_cluster;
+                cluster_offset = hint_offset;
+            }
+        }
 
         // Skip to the cluster containing `offset`
         while cluster_offset + cs <= offset {
@@ -1611,8 +1640,12 @@ impl ExFatFs {
         let mut written = 0usize;
         let mut cur = cluster;
         let spc = self.sectors_per_cluster();
+        let mut last_cluster = cur;
+        let mut last_cluster_offset = cluster_offset;
 
         loop {
+            last_cluster = cur;
+            last_cluster_offset = cluster_offset;
             let start_in = if cluster_offset < offset {
                 (offset - cluster_offset) as usize
             } else {
@@ -1699,7 +1732,7 @@ impl ExFatFs {
         self.metadata_dirty = true;
 
         let new_size = (offset + data.len() as u32).max(old_size);
-        Ok((first, new_size))
+        Ok((first, new_size, last_cluster_offset, last_cluster))
     }
 
     // =================================================================

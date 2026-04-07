@@ -49,6 +49,67 @@ fn flush_blockcache_for_disks(disks: &[u8]) {
     }
 }
 
+fn commit_open_exfat_entry(
+    state: &mut VfsState,
+    slot_id: usize,
+    durable: bool,
+) -> Result<Option<u8>, FsError> {
+    let (fs_id, file_path, parent_cluster, inode, size, entry_dirty) = {
+        let file = state.open_files.get(slot_id)
+            .and_then(|e| e.as_ref())
+            .ok_or(FsError::BadFd)?;
+        (
+            file.fs_id,
+            file.path.clone(),
+            file.parent_cluster,
+            file.inode,
+            file.size,
+            file.entry_dirty,
+        )
+    };
+
+    let is_exfat = fs_id == 3 || fs_id == 6;
+    if !is_exfat {
+        return Ok(None);
+    }
+
+    let filename = file_path.rsplit('/').next().unwrap_or("");
+    if filename.is_empty() {
+        return Ok(None);
+    }
+
+    let disk_id = if fs_id == 3 {
+        let exfat = state.exfat_fs.as_mut().ok_or(FsError::IoError)?;
+        if entry_dirty {
+            exfat.update_entry(parent_cluster, filename, size, inode)?;
+        }
+        if durable && exfat.metadata_dirty {
+            exfat.flush_metadata()?;
+        }
+        exfat.device_id as u8
+    } else {
+        let exfat = state.mounted_exfat.iter_mut()
+            .find(|(p, _)| file_path.starts_with(p.as_str()))
+            .map(|(_, fs)| fs)
+            .ok_or(FsError::IoError)?;
+        if entry_dirty {
+            exfat.update_entry(parent_cluster, filename, size, inode)?;
+        }
+        if durable && exfat.metadata_dirty {
+            exfat.flush_metadata()?;
+        }
+        exfat.device_id as u8
+    };
+
+    if entry_dirty {
+        if let Some(Some(file)) = state.open_files.get_mut(slot_id) {
+            file.entry_dirty = false;
+        }
+    }
+
+    Ok(Some(disk_id))
+}
+
 /// Set the root partition LBA (called from main.rs after partition scanning).
 pub fn set_root_partition_lba(lba: u32) {
     ROOT_PARTITION_LBA.store(lba, core::sync::atomic::Ordering::Relaxed);
@@ -339,6 +400,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             refcount: 1,
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
+            entry_dirty: false,
         };
 
         state.open_files[slot_id as usize] = Some(file);
@@ -365,6 +427,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         refcount: 1,
                         seek_cache_offset: 0,
                         seek_cache_cluster: 0,
+                        entry_dirty: false,
                     };
                     state.open_files[slot_id as usize] = Some(file);
                     return Ok(slot_id);
@@ -391,6 +454,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                         refcount: 1,
                         seek_cache_offset: 0,
                         seek_cache_cluster: 0,
+                        entry_dirty: false,
                     };
                     state.open_files[slot_id as usize] = Some(file);
                     return Ok(slot_id);
@@ -449,6 +513,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     refcount: 1,
                     seek_cache_offset: 0,
                     seek_cache_cluster: 0,
+                    entry_dirty: false,
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -491,6 +556,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                     refcount: 1,
                     seek_cache_offset: 0,
                     seek_cache_cluster: 0,
+                    entry_dirty: false,
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
@@ -554,6 +620,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             refcount: 1,
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
+            entry_dirty: false,
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -610,6 +677,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             refcount: 1,
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
+            entry_dirty: false,
         };
 
         state.open_files[slot_id as usize] = Some(file);
@@ -636,6 +704,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             refcount: 1,
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
+            entry_dirty: false,
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -679,6 +748,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             refcount: 1,
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
+            entry_dirty: false,
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -704,6 +774,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
             refcount: 1,
             seek_cache_offset: 0,
             seek_cache_cluster: 0,
+            entry_dirty: false,
         };
         state.open_files[slot_id as usize] = Some(file);
         return Ok(slot_id);
@@ -720,38 +791,26 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
         let mut vfs = VFS.lock();
         let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-        let entry = state.open_files.get_mut(slot_id as usize).ok_or(FsError::BadFd)?;
-        if let Some(file) = entry {
-            if file.refcount > 1 {
-                file.refcount -= 1;
-            } else {
-                let fs_id = file.fs_id;
-                let was_writable = file.flags.write;
-                *entry = None;
-                state.free_slots.push(slot_id as u32);
+        let (refcount, fs_id, was_writable) = {
+            let file = state.open_files.get(slot_id as usize)
+                .and_then(|e| e.as_ref())
+                .ok_or(FsError::BadFd)?;
+            (file.refcount, file.fs_id, file.flags.write)
+        };
 
-                // Flush deferred metadata on last close of a writable file
-                if was_writable {
-                    if fs_id == 3 {
-                        if let Some(ref mut exfat) = state.exfat_fs {
-                            if exfat.metadata_dirty {
-                                let _ = exfat.flush_metadata();
-                            }
-                            queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
-                        }
-                    } else if fs_id == 6 {
-                        for (_path, exfat) in &mut state.mounted_exfat {
-                            if exfat.metadata_dirty {
-                                let _ = exfat.flush_metadata();
-                            }
-                            queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
-                        }
-                    }
-                    do_writeback = true;
-                }
-            }
+        if refcount > 1 {
+            let file = state.open_files.get_mut(slot_id as usize)
+                .and_then(|e| e.as_mut())
+                .ok_or(FsError::BadFd)?;
+            file.refcount -= 1;
         } else {
-            return Err(FsError::BadFd);
+            if was_writable && (fs_id == 3 || fs_id == 6) {
+                if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
+                    queue_disk_flush(&mut disks_to_flush, disk_id);
+                }
+                do_writeback = true;
+            }
+            state.free_slot(slot_id);
         }
     } // VFS lock released
 
@@ -780,36 +839,22 @@ pub fn decref(slot_id: u32) {
     let mut disks_to_flush: Vec<u8> = Vec::new();
     let mut vfs = VFS.lock();
     if let Some(state) = vfs.as_mut() {
-        if let Some(entry) = state.open_files.get_mut(slot_id as usize) {
-            if let Some(file) = entry {
-                if file.refcount > 1 {
+        let snapshot = state.open_files.get(slot_id as usize)
+            .and_then(|e| e.as_ref())
+            .map(|file| (file.refcount, file.fs_id, file.flags.write));
+        if let Some((refcount, fs_id, was_writable)) = snapshot {
+            if refcount > 1 {
+                if let Some(Some(file)) = state.open_files.get_mut(slot_id as usize) {
                     file.refcount -= 1;
-                } else {
-                    let fs_id = file.fs_id;
-                    let was_writable = file.flags.write;
-                    *entry = None;
-                    state.free_slots.push(slot_id);
-
-                    // Flush deferred metadata on last close of a writable file
-                    if was_writable {
-                        if fs_id == 3 {
-                            if let Some(ref mut exfat) = state.exfat_fs {
-                                if exfat.metadata_dirty {
-                                    let _ = exfat.flush_metadata();
-                                }
-                                queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
-                            }
-                        } else if fs_id == 6 {
-                            for (_path, exfat) in &mut state.mounted_exfat {
-                                if exfat.metadata_dirty {
-                                    let _ = exfat.flush_metadata();
-                                }
-                                queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
-                            }
-                        }
-                        do_writeback = true;
-                    }
                 }
+            } else {
+                if was_writable && (fs_id == 3 || fs_id == 6) {
+                    if let Ok(Some(disk_id)) = commit_open_exfat_entry(state, slot_id as usize, true) {
+                        queue_disk_flush(&mut disks_to_flush, disk_id);
+                    }
+                    do_writeback = true;
+                }
+                state.free_slot(slot_id);
             }
         }
     }
@@ -997,23 +1042,40 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         let old_inode = file.inode;
         let old_size = file.size;
         let position = file.position;
-        let parent_cluster = file.parent_cluster;
         let file_path = file.path.clone();
-        let filename = file_path.rsplit('/').next().unwrap_or("");
+        let hint = if file.seek_cache_cluster >= 2 && file.seek_cache_offset <= position {
+            Some((file.seek_cache_offset, file.seek_cache_cluster))
+        } else {
+            None
+        };
+        let sync_write = file.flags.sync;
         let exfat = state.mounted_exfat.iter_mut()
             .find(|(p, _)| file_path.starts_with(p.as_str()))
             .map(|(_, fs)| fs)
             .ok_or(FsError::IoError)?;
-        let (new_cluster, new_size) = exfat.write_file(old_inode, position, buf, old_size)?;
-        if new_cluster != old_inode || new_size != old_size {
-            exfat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
-        }
+        let (new_cluster, new_size, hint_offset, hint_cluster) =
+            exfat.write_file_with_hint(old_inode, position, buf, old_size, hint)?;
         let file = state.open_files.get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
         file.inode = new_cluster;
         file.size = new_size;
         file.position = position + buf.len() as u32;
+        file.seek_cache_offset = hint_offset;
+        file.seek_cache_cluster = hint_cluster;
+        if new_cluster != old_inode || new_size != old_size {
+            file.entry_dirty = true;
+        }
+        if sync_write {
+            let mut disks_to_flush = Vec::new();
+            if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
+                queue_disk_flush(&mut disks_to_flush, disk_id);
+            }
+            drop(vfs);
+            flush_blockcache_for_disks(&disks_to_flush);
+            crate::drivers::storage::flush();
+            return Ok(buf.len());
+        }
         return Ok(buf.len());
     }
 
@@ -1049,18 +1111,38 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
     let path_clone = file.path.clone();
     let filename = path_clone.rsplit('/').next().unwrap_or("");
 
+    let hint = if file.seek_cache_cluster >= 2 && file.seek_cache_offset <= position {
+            Some((file.seek_cache_offset, file.seek_cache_cluster))
+        } else {
+            None
+        };
+    let sync_write = file.flags.sync;
+
     if fs_id == 3 {
         let exfat = state.exfat_fs.as_mut().ok_or(FsError::IoError)?;
-        let (new_cluster, new_size) = exfat.write_file(old_inode, position, buf, old_size)?;
-        if new_cluster != old_inode || new_size != old_size {
-            exfat.update_entry(parent_cluster, filename, new_size, new_cluster)?;
-        }
+        let (new_cluster, new_size, hint_offset, hint_cluster) =
+            exfat.write_file_with_hint(old_inode, position, buf, old_size, hint)?;
         let file = state.open_files.get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
             .ok_or(FsError::BadFd)?;
         file.inode = new_cluster;
         file.size = new_size;
         file.position = position + buf.len() as u32;
+        file.seek_cache_offset = hint_offset;
+        file.seek_cache_cluster = hint_cluster;
+        if new_cluster != old_inode || new_size != old_size {
+            file.entry_dirty = true;
+        }
+        if sync_write {
+            let mut disks_to_flush = Vec::new();
+            if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
+                queue_disk_flush(&mut disks_to_flush, disk_id);
+            }
+            drop(vfs);
+            flush_blockcache_for_disks(&disks_to_flush);
+            crate::drivers::storage::flush();
+            return Ok(buf.len());
+        }
     } else {
         let fat = state.fat_fs.as_mut().ok_or(FsError::IoError)?;
         let (new_cluster, new_size) = fat.write_file(old_inode, position, buf, old_size)?;
@@ -1907,19 +1989,13 @@ pub fn fsync(slot_id: FileDescriptor) -> Result<(), FsError> {
     let mut disks_to_flush: Vec<u8> = Vec::new();
     match fs_id {
         3 => {
-            if let Some(ref mut exfat) = state.exfat_fs {
-                if exfat.metadata_dirty {
-                    exfat.flush_metadata()?;
-                }
-                queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
+            if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
+                queue_disk_flush(&mut disks_to_flush, disk_id);
             }
         }
         6 => {
-            for (_path, exfat) in &mut state.mounted_exfat {
-                if exfat.metadata_dirty {
-                    let _ = exfat.flush_metadata();
-                }
-                queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
+            if let Some(disk_id) = commit_open_exfat_entry(state, slot_id as usize, true)? {
+                queue_disk_flush(&mut disks_to_flush, disk_id);
             }
         }
         _ => {} // Other filesystems flush synchronously already
@@ -1937,6 +2013,17 @@ pub fn sync_all() {
     let mut disks_to_flush: Vec<u8> = Vec::new();
     let mut vfs = VFS.lock();
     if let Some(state) = vfs.as_mut() {
+        for idx in 0..state.open_files.len() {
+            let needs_commit = state.open_files.get(idx)
+                .and_then(|e| e.as_ref())
+                .map(|file| (file.fs_id == 3 || file.fs_id == 6) && file.entry_dirty)
+                .unwrap_or(false);
+            if needs_commit {
+                if let Ok(Some(disk_id)) = commit_open_exfat_entry(state, idx, false) {
+                    queue_disk_flush(&mut disks_to_flush, disk_id);
+                }
+            }
+        }
         // Flush root exFAT metadata
         if let Some(ref mut exfat) = state.exfat_fs {
             let _ = exfat.flush_metadata();

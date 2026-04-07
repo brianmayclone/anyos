@@ -56,6 +56,7 @@ pub fn write_stored_perms(uid: u16, app_id: &str, granted: CapSet) -> bool {
         append: false,
         create: true,
         truncate: true,
+        sync: false,
     };
     match vfs::open(&path, flags) {
         Ok(fd) => {

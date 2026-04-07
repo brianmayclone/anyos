@@ -25,6 +25,8 @@ pub struct FileFlags {
     pub append: bool,
     pub create: bool,
     pub truncate: bool,
+    /// Request durable writes: commit file metadata and flush caches eagerly.
+    pub sync: bool,
 }
 
 impl FileFlags {
@@ -34,6 +36,7 @@ impl FileFlags {
         append: false,
         create: false,
         truncate: false,
+        sync: false,
     };
 
     pub const READ_WRITE: FileFlags = FileFlags {
@@ -42,6 +45,7 @@ impl FileFlags {
         append: false,
         create: false,
         truncate: false,
+        sync: false,
     };
 
     pub const CREATE_WRITE: FileFlags = FileFlags {
@@ -50,6 +54,7 @@ impl FileFlags {
         append: false,
         create: true,
         truncate: true,
+        sync: false,
     };
 }
 
@@ -72,6 +77,8 @@ pub struct OpenFile {
     /// the FAT chain from the start on sequential reads. Updated on every read.
     pub seek_cache_offset: u32,
     pub seek_cache_cluster: u32,
+    /// exFAT: directory entry needs a deferred size/cluster commit.
+    pub entry_dirty: bool,
 }
 
 #[derive(Debug, Clone)]

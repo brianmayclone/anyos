@@ -489,8 +489,10 @@ pub fn screen_size(out_w: *mut u32, out_h: *mut u32) {
 // ── Open flags ───────────────────────────────────────────────────────
 
 pub const O_WRITE: u32 = 1;
+pub const O_APPEND: u32 = 2;
 pub const O_CREATE: u32 = 4;
 pub const O_TRUNC: u32 = 8;
+pub const O_SYNC: u32 = 0x20;
 pub const SEEK_SET: u32 = 0;
 
 // ── Shared Memory ────────────────────────────────────────────────────

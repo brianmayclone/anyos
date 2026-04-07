@@ -163,6 +163,7 @@ pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
         append: (flags & 2) != 0,
         create: (flags & 4) != 0,
         truncate: (flags & 8) != 0,
+        sync: (flags & 0x20) != 0, // O_SYNC
     };
     let resolved = resolve_path(path);
 

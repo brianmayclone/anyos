@@ -10,6 +10,7 @@ pub const O_WRITE: u32 = 1;
 pub const O_APPEND: u32 = 2;
 pub const O_CREATE: u32 = 4;
 pub const O_TRUNC: u32 = 8;
+pub const O_SYNC: u32 = 0x20;
 
 pub fn open(_path: &str, _flags: u32) -> u32 {
     u32::MAX // Not implemented for host — use high-level functions
