@@ -27,6 +27,8 @@
 //! 48-bit PN (packet number) replay counter.
 
 use alloc::vec::Vec;
+use crate::crypto::pbkdf2::pbkdf2_sha1;
+use crate::crypto::wpa2::{compute_mic, derive_ptk, Ptk};
 use crate::sync::spinlock::Spinlock;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -97,18 +99,6 @@ pub struct EapolKey {
     pub key_data_len: u16,
 }
 
-/// Pairwise Transient Key derived from PMK + nonces + MACs.
-/// Layout: KCK(16) | KEK(16) | TK(16) = 48 bytes from PRF-384.
-#[derive(Debug, Clone)]
-pub struct Ptk {
-    /// Key Confirmation Key (used to compute/verify MIC).
-    pub kck: [u8; 16],
-    /// Key Encryption Key (used to decrypt GTK in message 3).
-    pub kek: [u8; 16],
-    /// Temporal Key (used for CCMP data encryption/decryption).
-    pub tk: [u8; 16],
-}
-
 // ── Global state ──────────────────────────────────────────────────────────────
 
 static WIFI_STATE: Spinlock<WifiState> = Spinlock::new(WifiState::Disconnected);
@@ -146,180 +136,6 @@ fn generate_nonce() -> [u8; 32] {
     nonce
 }
 
-// ── SHA-1 implementation ──────────────────────────────────────────────────────
-//
-// Full SHA-1 (FIPS 180-4) with 512-bit block compression.
-// Used internally by HMAC-SHA1, PBKDF2, and PRF-384.
-
-/// SHA-1 initial hash values (H0..H4).
-const SHA1_H0: [u32; 5] = [
-    0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0,
-];
-
-/// SHA-1 constants Kt.
-const SHA1_K: [u32; 4] = [0x5A827999, 0x6ED9EBA1, 0x8F1BBCDC, 0xCA62C1D6];
-
-/// Process one 64-byte (512-bit) SHA-1 block into the running state.
-fn sha1_compress(state: &mut [u32; 5], block: &[u8; 64]) {
-    // Expand message schedule W[0..80]
-    let mut w = [0u32; 80];
-    for i in 0..16 {
-        w[i] = u32::from_be_bytes([
-            block[i * 4],
-            block[i * 4 + 1],
-            block[i * 4 + 2],
-            block[i * 4 + 3],
-        ]);
-    }
-    for i in 16..80 {
-        w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
-    }
-
-    let [mut a, mut b, mut c, mut d, mut e] = [state[0], state[1], state[2], state[3], state[4]];
-
-    for i in 0..80 {
-        let (f, k) = match i {
-            0..=19  => ((b & c) | ((!b) & d),          SHA1_K[0]),
-            20..=39 => (b ^ c ^ d,                      SHA1_K[1]),
-            40..=59 => ((b & c) | (b & d) | (c & d),   SHA1_K[2]),
-            _       => (b ^ c ^ d,                      SHA1_K[3]),
-        };
-        let temp = a.rotate_left(5)
-            .wrapping_add(f)
-            .wrapping_add(e)
-            .wrapping_add(k)
-            .wrapping_add(w[i]);
-        e = d;
-        d = c;
-        c = b.rotate_left(30);
-        b = a;
-        a = temp;
-    }
-
-    state[0] = state[0].wrapping_add(a);
-    state[1] = state[1].wrapping_add(b);
-    state[2] = state[2].wrapping_add(c);
-    state[3] = state[3].wrapping_add(d);
-    state[4] = state[4].wrapping_add(e);
-}
-
-/// Compute SHA-1 hash of `data`. Returns 20-byte digest.
-fn sha1(data: &[u8]) -> [u8; 20] {
-    let mut state = SHA1_H0;
-    let len_bits = (data.len() as u64).wrapping_mul(8);
-
-    // Process full 64-byte blocks
-    let full_blocks = data.len() / 64;
-    for i in 0..full_blocks {
-        let mut block = [0u8; 64];
-        block.copy_from_slice(&data[i * 64..(i + 1) * 64]);
-        sha1_compress(&mut state, &block);
-    }
-
-    // Final block(s) with padding
-    let remainder = &data[full_blocks * 64..];
-    let mut pad_block = [0u8; 64];
-    pad_block[..remainder.len()].copy_from_slice(remainder);
-    pad_block[remainder.len()] = 0x80;
-
-    if remainder.len() + 1 > 55 {
-        // Need an extra block for the length
-        sha1_compress(&mut state, &pad_block);
-        pad_block = [0u8; 64];
-    }
-
-    // Append bit-length as big-endian u64 in last 8 bytes
-    let len_bytes = len_bits.to_be_bytes();
-    pad_block[56..64].copy_from_slice(&len_bytes);
-    sha1_compress(&mut state, &pad_block);
-
-    // Produce big-endian digest
-    let mut digest = [0u8; 20];
-    for (i, &word) in state.iter().enumerate() {
-        let bytes = word.to_be_bytes();
-        digest[i * 4..(i + 1) * 4].copy_from_slice(&bytes);
-    }
-    digest
-}
-
-// ── HMAC-SHA1 ─────────────────────────────────────────────────────────────────
-
-/// SHA-1 block size in bytes.
-const SHA1_BLOCK_SIZE: usize = 64;
-/// SHA-1 output size in bytes.
-const SHA1_DIGEST_SIZE: usize = 20;
-
-/// Compute HMAC-SHA1(key, data). Returns 20-byte MAC.
-pub fn hmac_sha1(key: &[u8], data: &[u8]) -> [u8; 20] {
-    // If key is longer than block size, hash it first
-    let key_buf;
-    let key_normalized: &[u8] = if key.len() > SHA1_BLOCK_SIZE {
-        key_buf = sha1(key);
-        &key_buf
-    } else {
-        key
-    };
-
-    // Build ipad and opad key blocks
-    let mut k_ipad = [0x36u8; SHA1_BLOCK_SIZE];
-    let mut k_opad = [0x5Cu8; SHA1_BLOCK_SIZE];
-    for i in 0..key_normalized.len() {
-        k_ipad[i] ^= key_normalized[i];
-        k_opad[i] ^= key_normalized[i];
-    }
-
-    // inner = SHA1(k_ipad || data)
-    let mut inner_input = Vec::with_capacity(SHA1_BLOCK_SIZE + data.len());
-    inner_input.extend_from_slice(&k_ipad);
-    inner_input.extend_from_slice(data);
-    let inner = sha1(&inner_input);
-
-    // outer = SHA1(k_opad || inner)
-    let mut outer_input = [0u8; SHA1_BLOCK_SIZE + SHA1_DIGEST_SIZE];
-    outer_input[..SHA1_BLOCK_SIZE].copy_from_slice(&k_opad);
-    outer_input[SHA1_BLOCK_SIZE..].copy_from_slice(&inner);
-    sha1(&outer_input)
-}
-
-// ── PBKDF2-SHA1 ───────────────────────────────────────────────────────────────
-//
-// PBKDF2(PRF=HMAC-SHA1, password, salt, iterations=4096, dkLen=32)
-// Used to derive PMK from WPA2 passphrase + SSID.
-
-/// Derive a 32-byte PMK from WPA2 passphrase and SSID using PBKDF2-HMAC-SHA1.
-/// Performs 4096 iterations over 2 blocks to produce 32 bytes.
-pub fn pbkdf2_sha1(passphrase: &[u8], ssid: &[u8], ssid_len: usize) -> [u8; 32] {
-    let ssid = &ssid[..ssid_len];
-    let mut dk = [0u8; 32];
-
-    // Compute blocks 1 and 2 (each produces 20 bytes; we take 32 total)
-    for block_idx in 1u32..=2u32 {
-        // Salt for this block = ssid || block_idx_BE
-        let mut salt_block = Vec::with_capacity(ssid.len() + 4);
-        salt_block.extend_from_slice(ssid);
-        salt_block.extend_from_slice(&block_idx.to_be_bytes());
-
-        // U1 = HMAC-SHA1(passphrase, salt || INT(i))
-        let mut u = hmac_sha1(passphrase, &salt_block);
-        let mut xor_acc = u;
-
-        // U2..U4096 = HMAC-SHA1(passphrase, U_prev), XOR each into accumulator
-        for _ in 1..4096 {
-            u = hmac_sha1(passphrase, &u);
-            for j in 0..SHA1_DIGEST_SIZE {
-                xor_acc[j] ^= u[j];
-            }
-        }
-
-        // Copy into output: block 1 → bytes 0..20, block 2 → bytes 20..32
-        let start = (block_idx as usize - 1) * SHA1_DIGEST_SIZE;
-        let end = (start + SHA1_DIGEST_SIZE).min(32);
-        dk[start..end].copy_from_slice(&xor_acc[..end - start]);
-    }
-
-    dk
-}
-
 // ── PRF-384 / PTK derivation ──────────────────────────────────────────────────
 //
 // IEEE 802.11-2012 Section 11.6.1.2 — PRF-384
@@ -333,82 +149,6 @@ pub fn pbkdf2_sha1(passphrase: &[u8], ssid: &[u8], ssid_len: usize) -> [u8; 32] 
 //               min(ANonce,SNonce) || max(ANonce,SNonce))
 //
 // KCK = PTK[0..16], KEK = PTK[16..32], TK = PTK[32..48]
-
-/// Compare two byte slices lexicographically; returns true if a < b.
-fn bytes_lt(a: &[u8], b: &[u8]) -> bool {
-    for i in 0..a.len().min(b.len()) {
-        if a[i] < b[i] { return true; }
-        if a[i] > b[i] { return false; }
-    }
-    a.len() < b.len()
-}
-
-/// Derive the PTK from PMK, nonces, and MAC addresses.
-pub fn derive_ptk(
-    pmk: &[u8; 32],
-    anonce: &[u8; 32],
-    snonce: &[u8; 32],
-    ap_mac: &[u8; 6],
-    sta_mac: &[u8; 6],
-) -> Ptk {
-    // A = "Pairwise key expansion" (22 bytes, NUL-terminated in the input)
-    let label = b"Pairwise key expansion";
-
-    // B = min(AP_MAC, STA_MAC) || max(AP_MAC, STA_MAC)
-    //   || min(ANonce, SNonce)  || max(ANonce, SNonce)
-    let mut b_data = [0u8; 6 + 6 + 32 + 32];
-    if bytes_lt(ap_mac, sta_mac) {
-        b_data[0..6].copy_from_slice(ap_mac);
-        b_data[6..12].copy_from_slice(sta_mac);
-    } else {
-        b_data[0..6].copy_from_slice(sta_mac);
-        b_data[6..12].copy_from_slice(ap_mac);
-    }
-    if bytes_lt(anonce, snonce) {
-        b_data[12..44].copy_from_slice(anonce);
-        b_data[44..76].copy_from_slice(snonce);
-    } else {
-        b_data[12..44].copy_from_slice(snonce);
-        b_data[44..76].copy_from_slice(anonce);
-    }
-
-    // PRF-384: 3 iterations with counter = 0x00, 0x01, 0x02
-    // Each produces 20 bytes; concatenated = 60 bytes; take first 48.
-    let mut prf_out = [0u8; 60];
-    for counter in 0u8..3u8 {
-        // input = A || 0x00 || B || counter
-        let mut prf_input = Vec::with_capacity(label.len() + 1 + b_data.len() + 1);
-        prf_input.extend_from_slice(label);
-        prf_input.push(0x00);
-        prf_input.extend_from_slice(&b_data);
-        prf_input.push(counter);
-
-        let mac = hmac_sha1(pmk, &prf_input);
-        let start = counter as usize * SHA1_DIGEST_SIZE;
-        prf_out[start..start + SHA1_DIGEST_SIZE].copy_from_slice(&mac);
-    }
-
-    let mut kck = [0u8; 16];
-    let mut kek = [0u8; 16];
-    let mut tk = [0u8; 16];
-    kck.copy_from_slice(&prf_out[0..16]);
-    kek.copy_from_slice(&prf_out[16..32]);
-    tk.copy_from_slice(&prf_out[32..48]);
-
-    Ptk { kck, kek, tk }
-}
-
-// ── MIC computation ───────────────────────────────────────────────────────────
-
-/// Compute WPA2 MIC over an EAPOL frame using HMAC-SHA1(KCK, frame).
-/// The 16-byte MIC field in the frame must be zeroed before calling.
-/// Returns the first 16 bytes of HMAC-SHA1(KCK, frame).
-pub fn compute_mic(kck: &[u8; 16], frame: &[u8]) -> [u8; 16] {
-    let full_mac = hmac_sha1(kck, frame);
-    let mut mic = [0u8; 16];
-    mic.copy_from_slice(&full_mac[..16]);
-    mic
-}
 
 // ── EAPOL frame parsing ───────────────────────────────────────────────────────
 //
@@ -1143,8 +883,7 @@ pub fn handle_eapol(frame: &[u8], tx_fn: &mut dyn FnMut(&[u8])) {
 
         let pmk = pbkdf2_sha1(
             &passphrase[..passphrase_len],
-            &ssid,
-            ssid_len,
+            &ssid[..ssid_len],
         );
 
         // Derive PTK
