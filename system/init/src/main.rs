@@ -7,21 +7,56 @@ use anyos_std::fs;
 use anyos_std::ipc;
 use anyos_std::println;
 
+use libanyui_client as ui;
+use ui::Widget;
+
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
 anyos_std::entry!(main);
 
-// ─── CPU Benchmark ──────────────────────────────────────────────────────────
+mod assets;
 
-/// Simple integer benchmark: counts how many iterations of a mixed
-/// arithmetic workload complete in the given number of PIT ticks.
-/// Each iteration = 1000 integer ops. Time is checked every 64 iterations
-/// to minimize syscall overhead (important in VMs where syscalls are expensive).
+const DIALOG_W: u32 = 340;
+const DIALOG_H: u32 = 280;
+const FIELD_W: u32 = 280;
+const PAD: i32 = 30;
+
+// ── Shared state between worker thread and UI ───────────────────────────────
+
+/// Current status message (fixed buffer, length in STATUS_LEN).
+static mut STATUS_BUF: [u8; 128] = [0u8; 128];
+static STATUS_LEN: AtomicU32 = AtomicU32::new(0);
+
+/// Progress: 0..100
+static PROGRESS: AtomicU32 = AtomicU32::new(0);
+
+/// Worker thread done flag.
+static WORKER_DONE: AtomicBool = AtomicBool::new(false);
+
+fn set_status(msg: &str) {
+    let len = msg.len().min(128);
+    unsafe {
+        STATUS_BUF[..len].copy_from_slice(&msg.as_bytes()[..len]);
+    }
+    STATUS_LEN.store(len as u32, Ordering::Release);
+}
+
+fn get_status(buf: &mut [u8; 128]) -> usize {
+    let len = STATUS_LEN.load(Ordering::Acquire) as usize;
+    unsafe {
+        buf[..len].copy_from_slice(&STATUS_BUF[..len]);
+    }
+    len
+}
+
+// ── CPU Benchmark ───────────────────────────────────────────────────────────
+
 fn benchmark_cpu(duration_ticks: u32) -> u32 {
     let start = sys::uptime();
     let mut iterations: u32 = 0;
     let mut acc: u32 = 0x12345678;
 
     loop {
-        // Do 64 batches of 1000 ops before checking time (reduces syscall overhead)
         for _ in 0..64 {
             for _ in 0..1000 {
                 acc = acc.wrapping_mul(1103515245).wrapping_add(12345);
@@ -35,13 +70,10 @@ fn benchmark_cpu(duration_ticks: u32) -> u32 {
         }
     }
 
-    // Prevent optimizer from eliminating the loop
     if acc == 0 { iterations += 1; }
     iterations
 }
 
-/// Memory bandwidth benchmark: read/write 16 KiB buffer repeatedly.
-/// Time is checked every 32 iterations to minimize syscall overhead.
 fn benchmark_memory(duration_ticks: u32) -> u32 {
     let start = sys::uptime();
     let mut iterations: u32 = 0;
@@ -49,16 +81,14 @@ fn benchmark_memory(duration_ticks: u32) -> u32 {
 
     loop {
         for _ in 0..32 {
-            // Write pass
             for i in 0..buf.len() {
                 buf[i] = (i as u32).wrapping_mul(0xDEADBEEF);
             }
-            // Read + accumulate pass
             let mut sum: u32 = 0;
             for i in 0..buf.len() {
                 sum = sum.wrapping_add(buf[i]);
             }
-            if sum == 0 { buf[0] = 1; } // prevent optimization
+            if sum == 0 { buf[0] = 1; }
             iterations += 1;
         }
         if sys::uptime().wrapping_sub(start) >= duration_ticks {
@@ -69,13 +99,10 @@ fn benchmark_memory(duration_ticks: u32) -> u32 {
     iterations
 }
 
-// ─── Init Config Parser ─────────────────────────────────────────────────────
+// ── Init Config Parser ──────────────────────────────────────────────────────
 
-/// Read /System/etc/init/init.conf and spawn each program listed (one path per line).
-/// Lines starting with '#' are comments. Empty lines are skipped.
-fn run_init_conf() {
-    // Read config file
-    let fd = fs::open("/System/etc/init/init.conf", 0); // read-only
+fn run_init_conf(total_steps: &mut u32, current_step: &mut u32) {
+    let fd = fs::open("/System/etc/init/init.conf", 0);
     if fd == u32::MAX {
         println!("init: /System/etc/init/init.conf not found, skipping");
         return;
@@ -86,12 +113,33 @@ fn run_init_conf() {
     fs::close(fd);
 
     if n == 0 {
-        println!("init: /System/etc/init/init.conf is empty");
         return;
     }
 
-    // Parse line by line
+    // First pass: count non-comment, non-empty lines for progress
     let data = &buf[..n];
+    let mut line_count: u32 = 0;
+    {
+        let mut ls = 0;
+        for i in 0..=n {
+            let at_end = i == n;
+            let is_nl = !at_end && data[i] == b'\n';
+            if is_nl || at_end {
+                let le = if !at_end && i > 0 && data[i.saturating_sub(1)] == b'\r' { i - 1 } else { i };
+                let line = &data[ls..le];
+                ls = i + 1;
+                let trimmed = trim_bytes(line);
+                if !trimmed.is_empty() && trimmed[0] != b'#' {
+                    line_count += 1;
+                }
+            }
+        }
+    }
+
+    // Benchmarks are 2 steps, services are line_count steps
+    *total_steps = 2 + line_count;
+
+    // Second pass: execute
     let mut line_start = 0;
     for i in 0..=n {
         let at_end = i == n;
@@ -106,31 +154,29 @@ fn run_init_conf() {
             let line = &data[line_start..line_end];
             line_start = i + 1;
 
-            // Skip empty lines and comments
-            if line.is_empty() || line[0] == b'#' {
-                continue;
-            }
-
-            // Trim leading whitespace
             let trimmed = trim_bytes(line);
-            if trimmed.is_empty() {
+            if trimmed.is_empty() || trimmed[0] == b'#' {
                 continue;
             }
 
             if let Ok(entry) = core::str::from_utf8(trimmed) {
-                // Suffix '&' means background (don't wait)
                 let (cmd, background) = if entry.ends_with('&') {
                     (entry[..entry.len() - 1].trim_end(), true)
                 } else {
                     (entry, false)
                 };
-                // Split path from arguments at first space
                 let path = match cmd.find(' ') {
                     Some(idx) => &cmd[..idx],
                     None => cmd,
                 };
-                // Pass the full command line as args (argv[0] = program name)
-                // process::args() strips argv[0] on the receiving side
+
+                // Extract a readable service name from the path
+                let svc_name = path.rsplit('/').next().unwrap_or(path);
+                set_status(svc_name);
+                *current_step += 1;
+                let pct = (*current_step * 100 / *total_steps).min(100);
+                PROGRESS.store(pct, Ordering::Release);
+
                 println!("init: spawning '{}'{}", cmd, if background { " [bg]" } else { "" });
                 let tid = process::spawn(path, cmd);
                 if tid == u32::MAX {
@@ -156,7 +202,7 @@ fn trim_bytes(b: &[u8]) -> &[u8] {
     &b[start..end]
 }
 
-// ─── Formatting ─────────────────────────────────────────────────────────────
+// ── Formatting ──────────────────────────────────────────────────────────────
 
 fn fmt_u32(buf: &mut [u8], val: u32) -> usize {
     let mut tmp = [0u8; 12];
@@ -166,26 +212,25 @@ fn fmt_u32(buf: &mut [u8], val: u32) -> usize {
     n
 }
 
-// ─── Main ────────────────────────────────────────────────────────────────────
+// ── Worker thread ───────────────────────────────────────────────────────────
 
-fn main() {
-
+fn worker_entry() {
     let hz = sys::tick_hz();
 
-    // ── Phase 1: CPU Benchmark (2 seconds) ──
-    println!("Running CPU benchmark (2s)...");
+    // Phase 1: CPU benchmark
+    set_status("CPU benchmark...");
+    PROGRESS.store(5, Ordering::Release);
     let cpu_score = benchmark_cpu(hz * 2);
 
-    // ── Phase 2: Memory Benchmark (1 second) ──
-    println!("Running memory benchmark (1s)...");
+    // Phase 2: Memory benchmark
+    set_status("Memory benchmark...");
+    PROGRESS.store(15, Ordering::Release);
     let mem_score = benchmark_memory(hz);
 
-    // ── Report results ──
-
+    // Report results
     let mut line = [0u8; 80];
     let mut p: usize;
 
-    // CPU score
     p = 0;
     let s = b"  CPU score : ";
     line[p..p + s.len()].copy_from_slice(s); p += s.len();
@@ -194,7 +239,6 @@ fn main() {
     line[p..p + s.len()].copy_from_slice(s); p += s.len();
     if let Ok(s) = core::str::from_utf8(&line[..p]) { println!("{}", s); }
 
-    // Memory score
     p = 0;
     let s = b"  Mem score : ";
     line[p..p + s.len()].copy_from_slice(s); p += s.len();
@@ -203,7 +247,6 @@ fn main() {
     line[p..p + s.len()].copy_from_slice(s); p += s.len();
     if let Ok(s) = core::str::from_utf8(&line[..p]) { println!("{}", s); }
 
-    // Store results in a named pipe for other programs to read
     let pipe_id = ipc::pipe_create("sys:startup_info");
     if pipe_id > 0 {
         let mut info = [0u8; 128];
@@ -219,11 +262,107 @@ fn main() {
         ipc::pipe_write(pipe_id, &info[..ip]);
     }
 
-    // ── Signal boot ready ──
     sys::boot_ready();
 
-    // ── Phase 3: Run init config ──
-    run_init_conf();
+    // Phase 3: Run init.conf
+    set_status("Starting services...");
+    PROGRESS.store(25, Ordering::Release);
+
+    let mut total_steps: u32 = 5;
+    let mut current_step: u32 = 2; // benchmarks already done
+    run_init_conf(&mut total_steps, &mut current_step);
+
+    // Done
+    set_status("Ready");
+    PROGRESS.store(100, Ordering::Release);
+    WORKER_DONE.store(true, Ordering::Release);
 }
 
+// ── Main (GUI) ──────────────────────────────────────────────────────────────
 
+fn main() {
+    // Try GUI mode; fall back to headless if anyui is unavailable
+    if !ui::init() {
+        println!("init: no GUI available, running headless");
+        worker_entry();
+        return;
+    }
+
+    let (sw, sh) = ui::screen_size();
+    let wx = ((sw as i32 - DIALOG_W as i32) / 2).max(0);
+    let wy = ((sh as i32 - DIALOG_H as i32) / 2).max(0);
+
+    let flags = ui::WIN_FLAG_BORDERLESS
+        | ui::WIN_FLAG_SHADOW
+        | ui::WIN_FLAG_NOT_RESIZABLE
+        | ui::WIN_FLAG_NO_CLOSE
+        | ui::WIN_FLAG_NO_MINIMIZE
+        | ui::WIN_FLAG_NO_MAXIMIZE;
+    let win = ui::Window::new_with_flags("System", wx, wy, DIALOG_W, DIALOG_H, flags);
+    win.set_color(0xFFF0F0F0);
+
+    // ── Logo ──
+    let mut y_cursor: i32 = 30;
+    if let Some((pixels, dw, dh)) = assets::load_and_scale_logo(48) {
+        let logo = ui::ImageView::new(dw, dh);
+        logo.set_pixels(&pixels, dw, dh);
+        logo.set_position(((DIALOG_W as i32 - dw as i32) / 2).max(0), y_cursor);
+        win.add(&logo);
+        y_cursor += dh as i32 + 40;
+    }
+
+    // ── Welcome label ──
+    let welcome = ui::Label::new("Welcome to anyOS");
+    welcome.set_font_size(20);
+    welcome.set_position(PAD, y_cursor);
+    welcome.set_size(FIELD_W, 30);
+    welcome.set_text_align(ui::TEXT_ALIGN_CENTER);
+    win.add(&welcome);
+    y_cursor += 46;
+
+    // ── Spinner ──
+    let spinner_size: u32 = 28;
+    let spinner = ui::Spinner::new();
+    spinner.set_size(spinner_size, spinner_size);
+    spinner.set_position(((DIALOG_W as i32 - spinner_size as i32) / 2).max(0), y_cursor);
+    win.add(&spinner);
+    let _spinner_timer = spinner.start();
+    y_cursor += spinner_size as i32 + 14;
+
+    // ── Status label (shows current service) ──
+    let status_label = ui::Label::new("Initializing...");
+    status_label.set_font_size(11);
+    status_label.set_position(PAD, y_cursor);
+    status_label.set_size(FIELD_W, 18);
+    status_label.set_text_align(ui::TEXT_ALIGN_CENTER);
+    status_label.set_text_color(0xFF888888);
+    win.add(&status_label);
+
+    // ── Spawn worker thread ──
+    let stack_size: usize = 128 * 1024;
+    let stack_vec = alloc::vec![0u8; stack_size];
+    let stack_base = stack_vec.as_ptr() as usize;
+    core::mem::forget(stack_vec);
+    let stack_top = ((stack_base + stack_size) & !0xF) - 8;
+    // Write thread_exit_stub as return address so the thread doesn't
+    // jump to RIP=0 when worker_entry() returns.
+    unsafe { *(stack_top as *mut usize) = process::thread_exit_stub_addr(); }
+    process::thread_create_with_priority(worker_entry, stack_top, "init/worker", 100);
+
+    // ── Timer: update status label from worker state ──
+    let status_id = status_label.id();
+
+    ui::set_timer(150, move || {
+        let mut buf = [0u8; 128];
+        let len = get_status(&mut buf);
+        if let Ok(msg) = core::str::from_utf8(&buf[..len]) {
+            ui::Control::from_id(status_id).set_text(msg);
+        }
+
+        if WORKER_DONE.load(Ordering::Acquire) {
+            ui::quit();
+        }
+    });
+
+    ui::run();
+}

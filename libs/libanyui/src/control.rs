@@ -248,6 +248,7 @@ pub enum ControlKind {
     RadioGroup = 41,
     DropDown = 42,
     AutoCompleteTextField = 43,
+    Spinner = 44,
 }
 
 impl ControlKind {
@@ -297,6 +298,7 @@ impl ControlKind {
             41 => Self::RadioGroup,
             42 => Self::DropDown,
             43 => Self::AutoCompleteTextField,
+            44 => Self::Spinner,
             _ => Self::View,
         }
     }
@@ -315,6 +317,7 @@ impl ControlKind {
             Self::SegmentedControl => (200, 28),
             Self::Divider => (200, 1),
             Self::Badge | Self::StatusIndicator => (20, 20),
+            Self::Spinner => (32, 32),
             Self::Tag => (80, 24),
             Self::TextArea => (300, 150),
             Self::IconButton | Self::ColorWell => (32, 32),

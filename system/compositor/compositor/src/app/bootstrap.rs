@@ -1,5 +1,7 @@
 //! Compositor startup and bootstrapping.
 
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
 use anyos_std::ipc;
 use anyos_std::println;
 use anyos_std::process;
@@ -11,6 +13,49 @@ use crate::desktop;
 use crate::render::{self, acquire_lock, desktop_ref, release_lock, signal_render};
 
 use super::management::management_loop;
+
+// ── Init waiter thread ──────────────────────────────────────────────────────
+// A small thread that blocks on waitpid(init) and sets an atomic flag when
+// init has exited.  The management loop checks the flag — no polling needed.
+
+static INIT_WAIT_TID: AtomicU32 = AtomicU32::new(u32::MAX);
+static INIT_DONE: AtomicBool = AtomicBool::new(false);
+static INIT_EXIT_CODE: AtomicU32 = AtomicU32::new(0);
+
+fn init_waiter_entry() {
+    let tid = INIT_WAIT_TID.load(Ordering::Acquire);
+    let code = process::waitpid(tid);
+    INIT_EXIT_CODE.store(code, Ordering::Release);
+    INIT_DONE.store(true, Ordering::Release);
+}
+
+fn spawn_init_waiter(init_tid: u32) {
+    INIT_WAIT_TID.store(init_tid, Ordering::Release);
+    INIT_DONE.store(false, Ordering::Release);
+
+    let stack_size: usize = 16 * 1024;
+    let stack_vec = alloc::vec![0u8; stack_size];
+    let stack_base = stack_vec.as_ptr() as usize;
+    core::mem::forget(stack_vec);
+    let stack_top = ((stack_base + stack_size) & !0xF) - 8;
+    // Write thread_exit_stub as return address so the thread doesn't
+    // jump to RIP=0 when init_waiter_entry() returns.
+    unsafe { *(stack_top as *mut usize) = process::thread_exit_stub_addr(); }
+    process::thread_create_with_priority(
+        init_waiter_entry,
+        stack_top,
+        "compositor/init-wait",
+        50,
+    );
+}
+
+pub fn is_init_done() -> bool {
+    INIT_DONE.load(Ordering::Acquire)
+}
+
+pub fn init_exit_code() -> u32 {
+    INIT_EXIT_CODE.load(Ordering::Acquire)
+}
 
 pub fn run() {
     println!("compositor: starting userspace compositor...");
@@ -187,20 +232,43 @@ pub fn run() {
     spawn_render_thread();
 
     if !setup_mode {
+        // Step 3: Load wallpaper (synchronous — must complete before init)
         acquire_lock();
         let desktop = unsafe { desktop_ref() };
         desktop.load_default_wallpaper_pub();
         desktop.compositor.damage_all();
         release_lock();
         signal_render();
-        println!("compositor: wallpaper loaded (deferred)");
-    }
+        println!("compositor: wallpaper loaded");
 
-    if !setup_mode {
+        // Process deferred wallpaper immediately so it's visible before init
+        acquire_lock();
+        let desktop = unsafe { desktop_ref() };
+        if desktop.wallpaper_pending {
+            desktop.process_deferred_wallpaper();
+        }
+        desktop.compositor.damage_all();
+        release_lock();
+        signal_render();
+
+        // Step 4: Start init process (login will be deferred until init completes)
         config::launch_login_services();
     }
 
-    let mut login_tid = if setup_mode { u32::MAX } else { process::spawn("/System/login", "") };
+    let mut init_pending = false;
+    if !setup_mode {
+        let init_tid = process::spawn("/System/init", "");
+        if init_tid != u32::MAX {
+            spawn_init_waiter(init_tid);
+            init_pending = true;
+            println!("compositor: init spawned (TID={}), login deferred until init completes", init_tid);
+        } else {
+            println!("compositor: WARNING — /System/init could not be spawned");
+        }
+    }
+
+    // Login is NOT spawned yet — will be spawned after init completes (in management_loop)
+    let mut login_tid = if setup_mode || init_pending { u32::MAX } else { process::spawn("/System/login", "") };
     let mut login_pending = login_tid != u32::MAX;
     let mut dock_spawned = setup_mode;
     if setup_mode {
@@ -213,14 +281,19 @@ pub fn run() {
         release_lock();
         signal_render();
         process::spawn("/Applications/Installer.app/Installer", "");
-    } else if login_pending {
-        println!("compositor: login window spawned, waiting for authentication...");
+    } else {
+        // Hide menubar until login completes (init must finish first, then login)
         acquire_lock();
         let desktop = unsafe { desktop_ref() };
         desktop.set_menubar_visible(false);
         release_lock();
-    } else {
-        println!("compositor: WARNING — /System/login could not be spawned; waiting for login before activating desktop");
+        if init_pending {
+            println!("compositor: waiting for init to complete before showing login...");
+        } else if login_pending {
+            println!("compositor: login window spawned, waiting for authentication...");
+        } else {
+            println!("compositor: WARNING — neither init nor login could be spawned");
+        }
     }
 
     let mut service_tids: Vec<u32> = Vec::new();
@@ -230,6 +303,7 @@ pub fn run() {
         compositor_channel,
         compositor_sub,
         sys_sub,
+        &mut init_pending,
         &mut login_tid,
         &mut login_pending,
         &mut dock_spawned,

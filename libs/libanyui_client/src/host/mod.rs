@@ -471,6 +471,16 @@ impl core::ops::Deref for ProgressBar { type Target = Control; fn deref(&self) -
 impl Widget for ProgressBar { fn id(&self) -> u32 { self.ctrl.id } }
 impl ProgressBar { pub fn new(_val: u32) -> Self { ProgressBar { ctrl: Control { id: next_id() } } } }
 
+pub struct Spinner { ctrl: Control }
+impl core::ops::Deref for Spinner { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for Spinner { fn id(&self) -> u32 { self.ctrl.id } }
+impl Spinner {
+    pub fn new() -> Self { Spinner { ctrl: Control { id: next_id() } } }
+    pub fn start(&self) -> u32 { 0 }
+    pub fn stop(_timer_id: u32) {}
+    pub fn set_spinner_color(&self, _color: u32) {}
+}
+
 pub struct TabBar { container: Container }
 impl core::ops::Deref for TabBar { type Target = Container; fn deref(&self) -> &Container { &self.container } }
 impl Widget for TabBar { fn id(&self) -> u32 { self.container.ctrl.id } }

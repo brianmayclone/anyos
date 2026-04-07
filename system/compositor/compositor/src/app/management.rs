@@ -18,6 +18,7 @@ pub(crate) fn management_loop(
     compositor_channel: u32,
     compositor_sub: u32,
     sys_sub: u32,
+    init_pending: &mut bool,
     login_tid: &mut u32,
     login_pending: &mut bool,
     dock_spawned: &mut bool,
@@ -69,8 +70,25 @@ pub(crate) fn management_loop(
             }
         }
 
-        let timeout = if *login_pending { 100 } else { 5000 };
+        let timeout = if *init_pending || *login_pending { 100 } else { 5000 };
         ipc::evt_chan_wait(compositor_channel, compositor_sub, timeout);
+
+        // Check if init waiter thread signaled completion
+        if *init_pending && super::bootstrap::is_init_done() {
+            let code = super::bootstrap::init_exit_code();
+            println!("compositor: init completed (exit={})", code);
+            *init_pending = false;
+
+            // Now spawn the login screen
+            let new_login = process::spawn("/System/login", "");
+            if new_login != u32::MAX {
+                *login_tid = new_login;
+                *login_pending = true;
+                println!("compositor: login spawned (TID={}), waiting for authentication...", new_login);
+            } else {
+                println!("compositor: WARNING — /System/login could not be spawned");
+            }
+        }
 
         if *login_pending {
             let status = process::try_waitpid(*login_tid);
@@ -125,7 +143,7 @@ pub(crate) fn management_loop(
             }
         }
 
-        if !*login_pending && !*dock_spawned && !login_failed {
+        if !*init_pending && !*login_pending && !*dock_spawned && !login_failed {
             acquire_lock();
             let desktop = unsafe { desktop_ref() };
             desktop.on_process_exit(*login_tid);

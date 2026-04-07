@@ -159,10 +159,7 @@ fn start_graphical_userspace(fallback_width: u32, fallback_height: u32) {
     if setup_mode {
         serial_println!("[SETUP] Setup mode - compositor will launch installer");
     } else {
-        match task::loader::load_and_run("/System/init", "init") {
-            Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
-            Err(err) => serial_println!("  WARN: Failed to load /System/init: {}", err),
-        }
+        serial_println!("[OK] Init will be started by compositor after wallpaper");
     }
 
     serial_println!("Userspace started, entering scheduler...");

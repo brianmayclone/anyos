@@ -63,21 +63,29 @@ varying vec2 vTexCoord;
 varying vec4 vShadowCoord;
 uniform sampler2D uTexture;
 uniform sampler2D uShadowMap;
+uniform vec4 uMatColor;
 void main() {
     vec4 texColor = texture2D(uTexture, vTexCoord);
     vec3 shadowNdc = vShadowCoord.xyz / max(vShadowCoord.w, 0.0001);
-    vec2 shadowUv = shadowNdc.xy * 0.5 + vec2(0.5, 0.5);
+    // anyOS/libgl uses a top-left framebuffer/texture convention for both the
+    // software rasterizer and the HW shadow FBO path, so the projected shadow
+    // lookup must mirror Y when converting NDC to texture UVs.
+    vec2 shadowUv = vec2(
+        shadowNdc.x * 0.5 + 0.5,
+        0.5 - shadowNdc.y * 0.5
+    );
     float shadowDepth = shadowNdc.z * 0.5 + 0.5;
     float visibility = 1.0;
     if (shadowUv.x >= 0.0 && shadowUv.x <= 1.0 &&
         shadowUv.y >= 0.0 && shadowUv.y <= 1.0 &&
         shadowDepth >= 0.0 && shadowDepth <= 1.0) {
         float mapDepth = texture2D(uShadowMap, shadowUv).r;
-        if (shadowDepth > mapDepth + 0.0035) {
+        if (shadowDepth > mapDepth + 0.0045) {
             visibility = 0.45;
         }
     }
-    gl_FragColor = vec4(vLighting * texColor.rgb * visibility, 1.0);
+    gl_FragColor = vec4(vLighting * texColor.rgb * uMatColor.rgb * visibility,
+                        texColor.a * uMatColor.a);
 }
 ";
 
@@ -220,6 +228,26 @@ fn mat4_perspective(fov_rad: f32, aspect: f32, near: f32, far: f32) -> Mat4 {
               0.0,    f,            0.0, 0.0,
               0.0,  0.0, (far + near) * nf, -1.0,
               0.0,  0.0, 2.0 * far * near * nf, 0.0,
+    ]
+}
+
+/// Project geometry from a point light onto the floor plane `y = plane_y`.
+fn mat4_shadow_project_y(plane_y: f32, light: &[f32; 3]) -> Mat4 {
+    let a = 0.0f32;
+    let b = 1.0f32;
+    let c = 0.0f32;
+    let d = -plane_y;
+    let lx = light[0];
+    let ly = light[1];
+    let lz = light[2];
+    let lw = 1.0f32;
+    let dot = a * lx + b * ly + c * lz + d * lw;
+
+    [
+        dot - lx * a,    -lx * b,         -lx * c,         -lx * d,
+        -ly * a,         dot - ly * b,    -ly * c,         -ly * d,
+        -lz * a,         -lz * b,         dot - lz * c,    -lz * d,
+        -lw * a,         -lw * b,         -lw * c,         dot - lw * d,
     ]
 }
 
@@ -711,6 +739,12 @@ fn render_frame() {
 
 fn draw_scene_geometry_main(s: &mut RenderState, vp: &Mat4) {
     let d = s.camera_dist;
+    let t = anyos_std::sys::uptime_ms() as f32 * 0.001;
+    let light = [
+        gl::sin(t * 0.7) * 3.0,
+        2.0f32,
+        gl::cos(t * 0.7) * 3.0,
+    ];
 
     // ── Draw sphere (physics-driven with quaternion) ────────────────────
     {
@@ -812,6 +846,82 @@ fn draw_scene_geometry_main(s: &mut RenderState, vp: &Mat4) {
 
         gl::enable(gl::GL_CULL_FACE);
     }
+
+    draw_projected_floor_shadows(s, vp, &light);
+}
+
+fn draw_projected_floor_shadows(s: &mut RenderState, vp: &Mat4, light: &[f32; 3]) {
+    let shadow_proj = mat4_shadow_project_y(-0.495, light);
+
+    gl::enable(gl::GL_BLEND);
+    gl::blend_func(gl::GL_SRC_ALPHA, gl::GL_ONE_MINUS_SRC_ALPHA);
+    gl::depth_mask(false);
+    gl::depth_func(gl::GL_LEQUAL);
+    gl::disable(gl::GL_CULL_FACE);
+    gl::active_texture(gl::GL_TEXTURE0);
+    gl::bind_texture(gl::GL_TEXTURE_2D, s.floor_tex);
+    gl::uniform1i(s.loc_main_texture, 0);
+    gl::uniform4f(s.loc_main_mat_color, 0.0, 0.0, 0.0, 0.35);
+
+    {
+        let (px, py, pz) = gl::physics_get_position(s.phys_sphere);
+        let (qw, qx, qy, qz) = gl::physics_get_orientation(s.phys_sphere);
+        let rot_mat = quat_to_mat4(qw, qx, qy, qz);
+        let model = mat4_mul(
+            &mat4_translate(px, py, pz),
+            &mat4_mul(&rot_mat, &mat4_scale(0.8, 0.8, 0.8)),
+        );
+        let shadow_model = mat4_mul(&shadow_proj, &model);
+        let mvp = mat4_mul(vp, &shadow_model);
+        gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
+        gl::uniform_matrix4fv(s.loc_main_model, false, &shadow_model);
+        gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.sphere_vbo);
+        gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.sphere_ebo);
+        setup_vertex_attribs(s.main_program);
+        gl::draw_elements(gl::GL_TRIANGLES, s.sphere_num_indices, gl::GL_UNSIGNED_SHORT, 0);
+    }
+
+    {
+        let (px, py, pz) = gl::physics_get_position(s.phys_cube);
+        let (qw, qx, qy, qz) = gl::physics_get_orientation(s.phys_cube);
+        let rot_mat = quat_to_mat4(qw, qx, qy, qz);
+        let model = mat4_mul(
+            &mat4_translate(px, py, pz),
+            &mat4_mul(&rot_mat, &mat4_scale(0.9, 0.9, 0.9)),
+        );
+        let shadow_model = mat4_mul(&shadow_proj, &model);
+        let mvp = mat4_mul(vp, &shadow_model);
+        gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
+        gl::uniform_matrix4fv(s.loc_main_model, false, &shadow_model);
+        gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.cube_vbo);
+        gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.cube_ebo);
+        setup_vertex_attribs(s.main_program);
+        gl::draw_elements(gl::GL_TRIANGLES, s.cube_num_indices, gl::GL_UNSIGNED_SHORT, 0);
+    }
+
+    if s.boing_active {
+        let (px, py, pz) = gl::physics_get_position(s.phys_boing);
+        let (qw, qx, qy, qz) = gl::physics_get_orientation(s.phys_boing);
+        let rot_mat = quat_to_mat4(qw, qx, qy, qz);
+        let model = mat4_mul(
+            &mat4_translate(px, py, pz),
+            &mat4_mul(&rot_mat, &mat4_scale(0.6, 0.6, 0.6)),
+        );
+        let shadow_model = mat4_mul(&shadow_proj, &model);
+        let mvp = mat4_mul(vp, &shadow_model);
+        gl::uniform_matrix4fv(s.loc_main_mvp, false, &mvp);
+        gl::uniform_matrix4fv(s.loc_main_model, false, &shadow_model);
+        gl::bind_buffer(gl::GL_ARRAY_BUFFER, s.sphere_vbo);
+        gl::bind_buffer(gl::GL_ELEMENT_ARRAY_BUFFER, s.sphere_ebo);
+        setup_vertex_attribs(s.main_program);
+        gl::draw_elements(gl::GL_TRIANGLES, s.sphere_num_indices, gl::GL_UNSIGNED_SHORT, 0);
+    }
+
+    gl::uniform4f(s.loc_main_mat_color, 1.0, 1.0, 1.0, 1.0);
+    gl::depth_func(gl::GL_LESS);
+    gl::depth_mask(true);
+    gl::disable(gl::GL_BLEND);
+    gl::enable(gl::GL_CULL_FACE);
 }
 
 fn draw_scene_geometry_shadow(s: &mut RenderState, light_vp: &Mat4) {

@@ -36,6 +36,12 @@ fn thread_exit_stub() {
     loop { yield_cpu(); }
 }
 
+/// Return the address of the thread exit stub, for use as a return address
+/// when spawning threads with `thread_create_with_priority` + manual stacks.
+pub fn thread_exit_stub_addr() -> usize {
+    thread_exit_stub as usize
+}
+
 pub fn yield_cpu() {
     syscall0(SYS_YIELD);
 }

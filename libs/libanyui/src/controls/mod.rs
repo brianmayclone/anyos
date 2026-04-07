@@ -34,6 +34,7 @@ pub mod searchfield;
 pub mod segmented;
 pub mod sidebar;
 pub mod slider;
+pub mod spinner;
 pub mod split_view;
 pub mod stack_panel;
 pub mod status_indicator;
@@ -97,6 +98,7 @@ pub fn create_control(
         ControlKind::TextEditor => Box::new(text_editor::TextEditor::new(base)),
         ControlKind::TreeView => Box::new(tree_view::TreeView::new(base)),
         ControlKind::RadioGroup => Box::new(radio_group::RadioGroup::new(base)),
+        ControlKind::Spinner => Box::new(spinner::Spinner::new(base)),
 
         // DropDown (text-based, pipe-separated items)
         ControlKind::DropDown => Box::new(dropdown::DropDown::new(
