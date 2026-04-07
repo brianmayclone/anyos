@@ -7,6 +7,8 @@ use super::types::MacAddr;
 pub const ETHERTYPE_ARP: u16  = 0x0806;
 /// EtherType value for IPv4 frames.
 pub const ETHERTYPE_IPV4: u16 = 0x0800;
+/// EtherType value for IPv6 frames.
+pub const ETHERTYPE_IPV6: u16 = 0x86DD;
 
 const ETH_HEADER_LEN: usize = 14;
 
@@ -57,6 +59,7 @@ pub fn handle_frame(data: &[u8]) {
     match frame.ethertype {
         ETHERTYPE_ARP => super::arp::handle_arp(frame.payload),
         ETHERTYPE_IPV4 => super::ipv4::handle_ipv4(frame.payload),
+        ETHERTYPE_IPV6 => super::ipv6::handle_ipv6(frame.payload),
         _ => {}
     }
 }

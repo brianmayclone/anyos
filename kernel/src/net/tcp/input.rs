@@ -6,10 +6,11 @@
 
 use core::sync::atomic::Ordering;
 use super::tcb::*;
-use super::send::{send_segment, send_syn_segment};
+use super::send::{send_segment, send_syn_segment, send_segment_v6, send_syn_segment_v6};
 use super::recv::accept_data_deferred;
 use super::util::{is_seq_gt, is_seq_gte, is_seq_lte, send_rst};
 use super::{TCP_CONNECTIONS, TCP_SEGMENTS_RECV, TCP_RETRANSMITS};
+use crate::net::types::Ipv6Addr;
 
 /// Handle an incoming TCP segment. Called from ipv4::handle_ipv4().
 pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
@@ -443,15 +444,14 @@ fn fast_retransmit(tcb: &mut Tcb) {
 
     let win = tcb.advertised_window();
 
-    // We cannot call send_segment here (would need to drop the lock first).
-    // Instead, we use the deferred retransmit path: set a flag so the
-    // next check_retransmissions() call sends immediately.
-    // Actually — handle_tcp's caller sends the deferred segment, but that's
-    // only for ACKs. For fast retransmit data, we need to send now.
-    // Since the lock is held by our caller, and send_segment doesn't need
-    // TCP_CONNECTIONS, we can call it directly here.
-    send_segment(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
-                 tcb.snd_una, tcb.rcv_nxt, PSH | ACK, win, &data[..len]);
+    // Send directly — send_segment doesn't need TCP_CONNECTIONS lock.
+    if tcb.is_ipv6 {
+        send_segment_v6(tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port,
+                        tcb.snd_una, tcb.rcv_nxt, PSH | ACK, win, &data[..len]);
+    } else {
+        send_segment(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
+                     tcb.snd_una, tcb.rcv_nxt, PSH | ACK, win, &data[..len]);
+    }
 
     crate::serial_verbose_println!("TCP: fast retransmit seq={} len={}", tcb.snd_una, len);
 }
@@ -505,5 +505,249 @@ fn handle_syn_received(
         })
     } else {
         None
+    }
+}
+
+// ── IPv6 TCP input ──────────────────────────────────────────────────
+
+/// Handle an incoming TCP segment over IPv6.
+pub fn handle_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) {
+    let seg = match parse_tcp_v6(pkt) {
+        Some(s) => s,
+        None => return,
+    };
+    TCP_SEGMENTS_RECV.fetch_add(1, Ordering::Relaxed);
+
+    let src_ip6 = pkt.src;
+    let dst_ip6 = pkt.dst;
+
+    let mut wake_tid: u32 = 0;
+    let mut wake_listener_tid: u32 = 0;
+    let deferred_v6: Option<(Ipv6Addr, u16, Ipv6Addr, u16, u32, u32, u8, u16)> = {
+        let mut conns = TCP_CONNECTIONS.lock();
+        let table = match conns.as_mut() {
+            Some(t) => t,
+            None => return,
+        };
+
+        // Find matching IPv6 connection
+        let slot_idx = table.iter().position(|slot| {
+            if let Some(tcb) = slot {
+                tcb.is_ipv6
+                    && tcb.local_port == seg.dst_port
+                    && tcb.remote_port == seg.src_port
+                    && tcb.remote_ip6 == src_ip6
+                    && tcb.state != TcpState::Listen
+            } else {
+                false
+            }
+        });
+
+        let idx = match slot_idx {
+            Some(i) => i,
+            None => {
+                // Check for a listener (listeners work for both IPv4 and IPv6)
+                if seg.flags & SYN != 0 && seg.flags & ACK == 0 {
+                    let listener_idx = table.iter().position(|slot| {
+                        if let Some(tcb) = slot {
+                            tcb.state == TcpState::Listen && tcb.local_port == seg.dst_port
+                        } else {
+                            false
+                        }
+                    });
+
+                    if let Some(lid) = listener_idx {
+                        let cfg = crate::net::config();
+                        let local_ip6 = if dst_ip6.is_link_local() { cfg.ipv6_link_local } else { cfg.ipv6_addr };
+
+                        let mut new_slot = None;
+                        for (i, slot) in table.iter_mut().enumerate() {
+                            if slot.is_none() {
+                                let mut tcb = Tcb::new_v6(local_ip6, seg.dst_port, src_ip6, seg.src_port);
+                                tcb.state = TcpState::SynReceived;
+                                tcb.rcv_irs = seg.seq;
+                                tcb.rcv_nxt = seg.seq.wrapping_add(1);
+                                tcb.snd_nxt = tcb.snd_iss.wrapping_add(1);
+                                tcb.parent_listener = Some(lid as u16);
+                                tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
+                                if let Some(shift) = seg.wscale {
+                                    tcb.snd_wnd_shift = shift;
+                                    tcb.rcv_wnd_shift = OUR_WINDOW_SHIFT;
+                                }
+                                *slot = Some(tcb);
+                                new_slot = Some(i);
+                                break;
+                            }
+                        }
+
+                        if let Some(ns) = new_slot {
+                            if let Some(tcb) = table[ns].as_ref() {
+                                let iss = tcb.snd_iss;
+                                let rcv_nxt = tcb.rcv_nxt;
+                                let use_wscale = tcb.rcv_wnd_shift > 0;
+                                let lip6 = tcb.local_ip6;
+                                let rip6 = tcb.remote_ip6;
+                                let lp = tcb.local_port;
+                                let rp = tcb.remote_port;
+                                drop(conns);
+                                if use_wscale {
+                                    send_syn_segment_v6(lip6, lp, rip6, rp, iss, rcv_nxt, SYN | ACK);
+                                } else {
+                                    send_segment_v6(lip6, lp, rip6, rp, iss, rcv_nxt, SYN | ACK, 65535, &[]);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+                return;
+            }
+        };
+
+        // RST handling
+        if seg.flags & RST != 0 {
+            if let Some(tcb) = table[idx].as_mut() {
+                tcb.reset_received = true;
+                tcb.state = TcpState::Closed;
+                wake_tid = tcb.waiting_tid;
+                tcb.waiting_tid = 0;
+            }
+            drop(conns);
+            if wake_tid != 0 {
+                crate::task::scheduler::try_wake_thread(wake_tid);
+            }
+            return;
+        }
+
+        let state = match table[idx].as_ref() {
+            Some(tcb) => tcb.state,
+            None => { drop(conns); return; }
+        };
+
+        let match_result = if state == TcpState::SynReceived {
+            handle_syn_received(idx, &seg, table, &mut wake_listener_tid)
+        } else {
+            let tcb = match table[idx].as_mut() {
+                Some(t) => t,
+                None => { drop(conns); return; }
+            };
+            match tcb.state {
+                TcpState::SynSent => handle_syn_sent(tcb, &seg),
+                TcpState::Established => handle_established(tcb, &seg),
+                TcpState::FinWait1 | TcpState::FinWait2 | TcpState::CloseWait
+                | TcpState::LastAck | TcpState::TimeWait => {
+                    // Reuse the same state-machine logic — the DeferredSend will use
+                    // IPv4 zero addresses, but we intercept below
+                    handle_fin_states(tcb, &seg)
+                }
+                _ => None,
+            }
+        };
+
+        // Collect wake TID
+        if let Some(tcb) = table[idx].as_mut() {
+            if tcb.waiting_tid != 0 {
+                wake_tid = tcb.waiting_tid;
+                tcb.waiting_tid = 0;
+            }
+        }
+
+        // Convert DeferredSend to IPv6 tuple
+        match match_result {
+            Some(ds) => {
+                // For IPv6 connections, use IPv6 addresses from the TCB
+                if let Some(tcb) = table[idx].as_ref() {
+                    if tcb.is_ipv6 {
+                        Some((tcb.local_ip6, ds.local_port, tcb.remote_ip6, ds.remote_port,
+                              ds.seq, ds.ack_num, ds.flags, ds.window))
+                    } else {
+                        // Shouldn't happen for IPv6 input path
+                        None
+                    }
+                } else { None }
+            }
+            None => None,
+        }
+    };
+
+    if wake_tid != 0 {
+        crate::task::scheduler::try_wake_thread(wake_tid);
+    }
+    if wake_listener_tid != 0 {
+        crate::task::scheduler::try_wake_thread(wake_listener_tid);
+    }
+
+    if let Some((lip6, lp, rip6, rp, seq, ack, flags, window)) = deferred_v6 {
+        send_segment_v6(lip6, lp, rip6, rp, seq, ack, flags, window, &[]);
+    }
+}
+
+/// Handle FIN-related states (FinWait1, FinWait2, CloseWait, LastAck, TimeWait).
+/// Extracted to share between IPv4 and IPv6 input paths.
+fn handle_fin_states(tcb: &mut Tcb, seg: &TcpSegment) -> Option<DeferredSend> {
+    let now = crate::arch::hal::timer_current_ticks();
+    match tcb.state {
+        TcpState::FinWait1 => {
+            if seg.flags & ACK != 0 {
+                if is_seq_gte(seg.ack, tcb.snd_nxt) {
+                    tcb.snd_una = seg.ack;
+                    tcb.state = TcpState::FinWait2;
+                }
+            }
+            let data_ack = accept_data_deferred(tcb, seg);
+            if seg.flags & FIN != 0 {
+                tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+                tcb.fin_received = true;
+                tcb.state = TcpState::TimeWait;
+                tcb.time_wait_start = now;
+                Some(DeferredSend {
+                    local_ip: tcb.local_ip, local_port: tcb.local_port,
+                    remote_ip: tcb.remote_ip, remote_port: tcb.remote_port,
+                    seq: tcb.snd_nxt, ack_num: tcb.rcv_nxt, flags: ACK,
+                    window: tcb.advertised_window(),
+                })
+            } else { data_ack }
+        }
+        TcpState::FinWait2 => {
+            let data_ack = accept_data_deferred(tcb, seg);
+            if seg.flags & FIN != 0 {
+                tcb.rcv_nxt = tcb.rcv_nxt.wrapping_add(1);
+                tcb.fin_received = true;
+                tcb.state = TcpState::TimeWait;
+                tcb.time_wait_start = now;
+                Some(DeferredSend {
+                    local_ip: tcb.local_ip, local_port: tcb.local_port,
+                    remote_ip: tcb.remote_ip, remote_port: tcb.remote_port,
+                    seq: tcb.snd_nxt, ack_num: tcb.rcv_nxt, flags: ACK,
+                    window: tcb.advertised_window(),
+                })
+            } else { data_ack }
+        }
+        TcpState::CloseWait => {
+            if seg.flags & ACK != 0 {
+                tcb.snd_una = seg.ack;
+            }
+            None
+        }
+        TcpState::LastAck => {
+            if seg.flags & ACK != 0 {
+                if is_seq_gte(seg.ack, tcb.snd_nxt) {
+                    tcb.state = TcpState::Closed;
+                }
+            }
+            None
+        }
+        TcpState::TimeWait => {
+            if seg.flags & FIN != 0 {
+                tcb.time_wait_start = now;
+                Some(DeferredSend {
+                    local_ip: tcb.local_ip, local_port: tcb.local_port,
+                    remote_ip: tcb.remote_ip, remote_port: tcb.remote_port,
+                    seq: tcb.snd_nxt, ack_num: tcb.rcv_nxt, flags: ACK,
+                    window: tcb.advertised_window(),
+                })
+            } else { None }
+        }
+        _ => None,
     }
 }

@@ -172,6 +172,11 @@ pub const SYS_PIPE_BYTES_AVAILABLE: u32 = 157;
 // WiFi management
 pub const SYS_WIFI: u32 = 158;
 
+// IPv6 networking
+pub const SYS_NET_PING6: u32 = 159;
+pub const SYS_NET_DNS6: u32 = 160;
+pub const SYS_TCP_CONNECT_V6: u32 = 163;
+
 // Compositor-privileged syscalls
 pub const SYS_MAP_FRAMEBUFFER: u32 = 144;
 pub const SYS_GPU_COMMAND: u32 = 145;
@@ -548,6 +553,11 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_NET_STATS => handlers::sys_net_stats(arg1, arg2),
         SYS_PIPE_BYTES_AVAILABLE => handlers::sys_pipe_bytes_available(arg1),
         SYS_WIFI => handlers::sys_wifi(arg1, arg2, arg3),
+
+        // IPv6
+        SYS_NET_PING6 => handlers::sys_net_ping6(arg1, arg2, arg3),
+        SYS_NET_DNS6 => handlers::sys_net_dns6(arg1, arg2),
+        SYS_TCP_CONNECT_V6 => handlers::sys_tcp_connect_v6(arg1),
 
         // Pipes
         SYS_PIPE_CREATE => handlers::sys_pipe_create(arg1),

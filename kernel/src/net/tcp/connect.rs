@@ -5,10 +5,10 @@
 
 use core::sync::atomic::Ordering;
 use super::tcb::*;
-use super::send::{send_segment, send_syn_segment};
+use super::send::{send_segment, send_syn_segment, send_segment_v6, send_syn_segment_v6, send_segment_auto};
 use super::util::alloc_ephemeral_port;
 use super::{TCP_CONNECTIONS, TCP_ACTIVE_OPENS, TCP_PASSIVE_OPENS};
-use crate::net::types::Ipv4Addr;
+use crate::net::types::{Ipv4Addr, Ipv6Addr};
 
 /// Active open: connect to a remote host. Returns socket ID or u32::MAX on error.
 pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
@@ -107,6 +107,79 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
         let wake_at = crate::arch::hal::timer_current_ticks() + 1;
         crate::task::scheduler::sleep_until(wake_at);
         crate::net::poll_rx();
+    }
+}
+
+/// Active open over IPv6: connect to a remote host.
+pub fn connect_v6(remote_ip: Ipv6Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
+    let cfg = crate::net::config();
+    let local_ip6 = if remote_ip.is_link_local() {
+        cfg.ipv6_link_local
+    } else if !cfg.ipv6_addr.is_unspecified() {
+        cfg.ipv6_addr
+    } else {
+        cfg.ipv6_link_local
+    };
+    if local_ip6.is_unspecified() { return u32::MAX; }
+
+    let local_port = alloc_ephemeral_port();
+    let tid = crate::task::scheduler::current_tid();
+
+    let (slot_id, iss) = {
+        let mut conns = TCP_CONNECTIONS.lock();
+        let table = match conns.as_mut() {
+            Some(t) => t,
+            None => return u32::MAX,
+        };
+        let mut found = None;
+        for (i, slot) in table.iter_mut().enumerate() {
+            if slot.is_none() {
+                let mut tcb = Tcb::new_v6(local_ip6, local_port, remote_ip, remote_port);
+                tcb.state = TcpState::SynSent;
+                tcb.snd_nxt = tcb.snd_iss.wrapping_add(1);
+                tcb.owner_tid = tid;
+                tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
+                let iss = tcb.snd_iss;
+                *slot = Some(tcb);
+                found = Some((i as u32, iss));
+                break;
+            }
+        }
+        match found {
+            Some(v) => v,
+            None => return u32::MAX,
+        }
+    };
+
+    TCP_ACTIVE_OPENS.fetch_add(1, Ordering::Relaxed);
+    send_syn_segment_v6(local_ip6, local_port, remote_ip, remote_port, iss, 0, SYN);
+
+    let start = crate::arch::hal::timer_current_ticks();
+    loop {
+        crate::net::poll();
+        {
+            let conns = TCP_CONNECTIONS.lock();
+            if let Some(table) = conns.as_ref() {
+                if let Some(tcb) = &table[slot_id as usize] {
+                    if tcb.state == TcpState::Established {
+                        return slot_id;
+                    }
+                    if tcb.reset_received {
+                        return u32::MAX;
+                    }
+                }
+            }
+        }
+        let now = crate::arch::hal::timer_current_ticks();
+        if now.wrapping_sub(start) >= timeout_ticks {
+            let mut conns = TCP_CONNECTIONS.lock();
+            if let Some(table) = conns.as_mut() {
+                table[slot_id as usize] = None;
+            }
+            return u32::MAX;
+        }
+        let wake_at = crate::arch::hal::timer_current_ticks() + 1;
+        crate::task::scheduler::sleep_until(wake_at);
     }
 }
 
@@ -293,7 +366,11 @@ pub fn close(socket_id: u32) -> u32 {
     }
 
     // Get info and update state
-    let send_info = {
+    enum CloseInfo {
+        V4(Ipv4Addr, u16, Ipv4Addr, u16, u32, u32, u16),
+        V6(Ipv6Addr, u16, Ipv6Addr, u16, u32, u32, u16),
+    }
+    let send_info: Option<CloseInfo> = {
         let mut conns = TCP_CONNECTIONS.lock();
         let table = match conns.as_mut() {
             Some(t) => t,
@@ -305,23 +382,19 @@ pub fn close(socket_id: u32) -> u32 {
         };
 
         match tcb.state {
-            TcpState::Established => {
-                tcb.state = TcpState::FinWait1;
-                let info = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
-                           tcb.snd_nxt, tcb.rcv_nxt, tcb.advertised_window());
+            TcpState::Established | TcpState::CloseWait => {
+                tcb.state = if tcb.state == TcpState::Established { TcpState::FinWait1 } else { TcpState::LastAck };
+                let seq = tcb.snd_nxt;
+                let ack_num = tcb.rcv_nxt;
+                let win = tcb.advertised_window();
                 tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
                 tcb.retransmit_count = 0;
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-                Some(info)
-            }
-            TcpState::CloseWait => {
-                tcb.state = TcpState::LastAck;
-                let info = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
-                           tcb.snd_nxt, tcb.rcv_nxt, tcb.advertised_window());
-                tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
-                tcb.retransmit_count = 0;
-                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-                Some(info)
+                if tcb.is_ipv6 {
+                    Some(CloseInfo::V6(tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port, seq, ack_num, win))
+                } else {
+                    Some(CloseInfo::V4(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port, seq, ack_num, win))
+                }
             }
             TcpState::Closed => {
                 table[id] = None;
@@ -334,8 +407,12 @@ pub fn close(socket_id: u32) -> u32 {
         }
     };
 
-    if let Some((local_ip, local_port, remote_ip, remote_port, seq, ack_num, win)) = send_info {
-        send_segment(local_ip, local_port, remote_ip, remote_port, seq, ack_num, FIN | ACK, win, &[]);
+    match send_info {
+        Some(CloseInfo::V4(lip, lp, rip, rp, seq, ack_num, win)) =>
+            { send_segment(lip, lp, rip, rp, seq, ack_num, FIN | ACK, win, &[]); }
+        Some(CloseInfo::V6(lip6, lp, rip6, rp, seq, ack_num, win)) =>
+            { send_segment_v6(lip6, lp, rip6, rp, seq, ack_num, FIN | ACK, win, &[]); }
+        None => {}
     }
 
     // Wait for close to complete (with timeout)
@@ -372,6 +449,10 @@ pub fn close(socket_id: u32) -> u32 {
         let now = crate::arch::hal::timer_current_ticks();
         if now.wrapping_sub(start) >= timeout {
             // Force close with RST
+            enum RstInfo {
+                V4(Ipv4Addr, u16, Ipv4Addr, u16, u32, u32),
+                V6(Ipv6Addr, u16, Ipv6Addr, u16, u32, u32),
+            }
             let rst_info = {
                 let mut conns = TCP_CONNECTIONS.lock();
                 let table = match conns.as_mut() {
@@ -379,14 +460,23 @@ pub fn close(socket_id: u32) -> u32 {
                     None => return 0,
                 };
                 let info = table[id].as_ref().map(|tcb| {
-                    (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
-                     tcb.snd_nxt, tcb.rcv_nxt)
+                    if tcb.is_ipv6 {
+                        RstInfo::V6(tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port,
+                                    tcb.snd_nxt, tcb.rcv_nxt)
+                    } else {
+                        RstInfo::V4(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
+                                    tcb.snd_nxt, tcb.rcv_nxt)
+                    }
                 });
                 table[id] = None;
                 info
             };
-            if let Some((lip, lp, rip, rp, sn, rn)) = rst_info {
-                send_segment(lip, lp, rip, rp, sn, rn, RST, 0, &[]);
+            match rst_info {
+                Some(RstInfo::V4(lip, lp, rip, rp, sn, rn)) =>
+                    { send_segment(lip, lp, rip, rp, sn, rn, RST, 0, &[]); }
+                Some(RstInfo::V6(lip6, lp, rip6, rp, sn, rn)) =>
+                    { send_segment_v6(lip6, lp, rip6, rp, sn, rn, RST, 0, &[]); }
+                None => {}
             }
             return 0;
         }
@@ -420,7 +510,11 @@ pub fn shutdown_write(socket_id: u32) -> u32 {
         return u32::MAX;
     }
 
-    let send_info = {
+    enum ShutInfo {
+        V4(Ipv4Addr, u16, Ipv4Addr, u16, u32, u32, u16),
+        V6(Ipv6Addr, u16, Ipv6Addr, u16, u32, u32, u16),
+    }
+    let send_info: Option<ShutInfo> = {
         let mut conns = TCP_CONNECTIONS.lock();
         let table = match conns.as_mut() {
             Some(t) => t,
@@ -434,19 +528,28 @@ pub fn shutdown_write(socket_id: u32) -> u32 {
         match tcb.state {
             TcpState::Established => {
                 tcb.state = TcpState::FinWait1;
-                let info = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
-                           tcb.snd_nxt, tcb.rcv_nxt, tcb.advertised_window());
+                let seq = tcb.snd_nxt;
+                let ack_num = tcb.rcv_nxt;
+                let win = tcb.advertised_window();
                 tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
                 tcb.retransmit_count = 0;
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
-                Some(info)
+                if tcb.is_ipv6 {
+                    Some(ShutInfo::V6(tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port, seq, ack_num, win))
+                } else {
+                    Some(ShutInfo::V4(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port, seq, ack_num, win))
+                }
             }
             _ => None,
         }
     };
 
-    if let Some((local_ip, local_port, remote_ip, remote_port, seq, ack_num, win)) = send_info {
-        send_segment(local_ip, local_port, remote_ip, remote_port, seq, ack_num, FIN | ACK, win, &[]);
+    match send_info {
+        Some(ShutInfo::V4(lip, lp, rip, rp, seq, ack_num, win)) =>
+            { send_segment(lip, lp, rip, rp, seq, ack_num, FIN | ACK, win, &[]); }
+        Some(ShutInfo::V6(lip6, lp, rip6, rp, seq, ack_num, win)) =>
+            { send_segment_v6(lip6, lp, rip6, rp, seq, ack_num, FIN | ACK, win, &[]); }
+        None => {}
     }
 
     0

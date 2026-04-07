@@ -42,7 +42,7 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
     !(sum as u16)
 }
 
-/// Compute the pseudo-header partial sum for TCP/UDP checksum calculation.
+/// Compute the pseudo-header partial sum for TCP/UDP checksum calculation (IPv4).
 ///
 /// The caller must add the segment data to this sum and fold to 16 bits.
 pub fn pseudo_header_checksum(src: &[u8; 4], dst: &[u8; 4], protocol: u8, length: u16) -> u32 {
@@ -53,5 +53,30 @@ pub fn pseudo_header_checksum(src: &[u8; 4], dst: &[u8; 4], protocol: u8, length
     sum += ((dst[2] as u32) << 8) | (dst[3] as u32);
     sum += protocol as u32;
     sum += length as u32;
+    sum
+}
+
+/// Compute the pseudo-header partial sum for IPv6 TCP/UDP/ICMPv6 checksum (RFC 8200 §8.1).
+///
+/// IPv6 pseudo-header:
+///   Source Address (16 bytes)
+///   Destination Address (16 bytes)
+///   Upper-Layer Packet Length (4 bytes, u32)
+///   zero (3 bytes) + Next Header (1 byte)
+pub fn pseudo_header_checksum_v6(src: &[u8; 16], dst: &[u8; 16], next_header: u8, length: u32) -> u32 {
+    let mut sum: u32 = 0;
+    // Source address (8 x u16 words)
+    for i in (0..16).step_by(2) {
+        sum += ((src[i] as u32) << 8) | (src[i + 1] as u32);
+    }
+    // Destination address (8 x u16 words)
+    for i in (0..16).step_by(2) {
+        sum += ((dst[i] as u32) << 8) | (dst[i + 1] as u32);
+    }
+    // Upper-layer packet length (32-bit, 2 x u16 words)
+    sum += (length >> 16) & 0xFFFF;
+    sum += length & 0xFFFF;
+    // Next header (zero-padded to 16-bit word)
+    sum += next_header as u32;
     sum
 }

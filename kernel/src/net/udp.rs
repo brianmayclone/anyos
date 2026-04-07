@@ -5,7 +5,7 @@
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use super::types::Ipv4Addr;
+use super::types::{Ipv4Addr, Ipv6Addr, IpAddr};
 use super::ipv4::Ipv4Packet;
 use crate::sync::spinlock::Spinlock;
 
@@ -222,6 +222,89 @@ pub fn handle_udp(pkt: &Ipv4Packet<'_>) {
             if cfg.queue.len() < MAX_QUEUE_LEN {
                 cfg.queue.push_back(UdpDatagram {
                     src_ip: pkt.src,
+                    src_port,
+                    data: Vec::from(payload),
+                });
+            }
+        }
+    }
+}
+
+// ── IPv6 support ────────────────────────────────────────────────────
+
+/// Send a UDP datagram over IPv6.
+pub fn send_v6(dst_ip: Ipv6Addr, src_port: u16, dst_port: u16, data: &[u8]) -> bool {
+    let total_len = UDP_HEADER_LEN + data.len();
+    let mut udp = Vec::with_capacity(total_len);
+
+    udp.push((src_port >> 8) as u8);
+    udp.push((src_port & 0xFF) as u8);
+    udp.push((dst_port >> 8) as u8);
+    udp.push((dst_port & 0xFF) as u8);
+    udp.push((total_len >> 8) as u8);
+    udp.push((total_len & 0xFF) as u8);
+    // Checksum placeholder — mandatory for IPv6
+    udp.push(0); udp.push(0);
+    udp.extend_from_slice(data);
+
+    // Compute UDP checksum with IPv6 pseudo-header (mandatory per RFC 8200)
+    let cfg = super::config();
+    let src_ip = if dst_ip.is_link_local() || dst_ip.is_multicast() {
+        cfg.ipv6_link_local
+    } else if !cfg.ipv6_addr.is_unspecified() {
+        cfg.ipv6_addr
+    } else {
+        cfg.ipv6_link_local
+    };
+
+    let pseudo_sum = super::checksum::pseudo_header_checksum_v6(
+        src_ip.as_bytes(), dst_ip.as_bytes(),
+        super::ipv6::PROTO_UDP, total_len as u32,
+    );
+    let mut sum = pseudo_sum;
+    let mut i = 0;
+    while i + 1 < udp.len() {
+        sum += ((udp[i] as u32) << 8) | (udp[i + 1] as u32);
+        i += 2;
+    }
+    if i < udp.len() {
+        sum += (udp[i] as u32) << 8;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    let cksum = !(sum as u16);
+    // Per RFC 8200: if computed checksum is 0, set to 0xFFFF
+    let cksum = if cksum == 0 { 0xFFFF } else { cksum };
+    udp[6] = (cksum >> 8) as u8;
+    udp[7] = (cksum & 0xFF) as u8;
+
+    super::ipv6::send_ipv6(dst_ip, super::ipv6::PROTO_UDP, &udp)
+}
+
+/// Handle an incoming UDP packet from IPv6.
+pub fn handle_udp_v6(pkt: &super::ipv6::Ipv6Packet<'_>) {
+    let data = pkt.payload;
+    if data.len() < UDP_HEADER_LEN { return; }
+
+    let src_port = ((data[0] as u16) << 8) | data[1] as u16;
+    let dst_port = ((data[2] as u16) << 8) | data[3] as u16;
+    let length = ((data[4] as u16) << 8) | data[5] as u16;
+
+    if (length as usize) > data.len() { return; }
+
+    let payload = &data[UDP_HEADER_LEN..(length as usize)];
+
+    // Map IPv6 source to IPv4-mapped for storage in existing queue
+    // For now, store as 0.0.0.0 source (IPv6 datagrams are delivered but
+    // source IP is not preserved in the IPv4-only UdpDatagram struct).
+    // A proper solution would use IpAddr in UdpDatagram.
+    let mut ports = UDP_PORTS.lock();
+    if let Some(map) = ports.as_mut() {
+        if let Some(cfg) = map.get_mut(&dst_port) {
+            if cfg.queue.len() < MAX_QUEUE_LEN {
+                cfg.queue.push_back(UdpDatagram {
+                    src_ip: Ipv4Addr::ZERO, // IPv6 source not representable in v4
                     src_port,
                     data: Vec::from(payload),
                 });

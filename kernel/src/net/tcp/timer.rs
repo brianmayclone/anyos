@@ -7,9 +7,9 @@
 
 use core::sync::atomic::Ordering;
 use super::tcb::*;
-use super::send::{send_segment, send_syn_segment};
+use super::send::{send_segment, send_syn_segment, send_segment_v6, send_syn_segment_v6};
 use super::{TCP_CONNECTIONS, TCP_RETRANSMITS};
-use crate::net::types::Ipv4Addr;
+use crate::net::types::{Ipv4Addr, Ipv6Addr};
 
 /// Check retransmissions, flush delayed ACKs, and perform TIME_WAIT cleanup.
 /// Called from net::poll().
@@ -21,6 +21,11 @@ pub fn check_retransmissions() {
         [(Ipv4Addr([0; 4]), 0, Ipv4Addr([0; 4]), 0, 0, 0, 0); 8];
     let mut delayed_ack_count = 0usize;
 
+    // IPv6 delayed ACKs
+    let mut delayed_acks_v6: [(Ipv6Addr, u16, Ipv6Addr, u16, u32, u32, u16); 4] =
+        [(Ipv6Addr::UNSPECIFIED, 0, Ipv6Addr::UNSPECIFIED, 0, 0, 0, 0); 4];
+    let mut delayed_ack_count_v6 = 0usize;
+
     {
         let mut conns = TCP_CONNECTIONS.lock();
         let table = match conns.as_mut() {
@@ -28,17 +33,27 @@ pub fn check_retransmissions() {
             None => return,
         };
         for i in 0..table.len() {
-            if delayed_ack_count >= delayed_acks.len() { break; }
             if let Some(tcb) = table[i].as_mut() {
                 if tcb.pending_ack && now.wrapping_sub(tcb.last_ack_tick) >= DELAYED_ACK_TICKS {
                     tcb.pending_ack = false;
                     tcb.ack_seg_count = 0;
                     tcb.last_ack_tick = now;
                     let win = tcb.advertised_window();
-                    delayed_acks[delayed_ack_count] =
-                        (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
-                         tcb.snd_nxt, tcb.rcv_nxt, win);
-                    delayed_ack_count += 1;
+                    if tcb.is_ipv6 {
+                        if delayed_ack_count_v6 < delayed_acks_v6.len() {
+                            delayed_acks_v6[delayed_ack_count_v6] =
+                                (tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port,
+                                 tcb.snd_nxt, tcb.rcv_nxt, win);
+                            delayed_ack_count_v6 += 1;
+                        }
+                    } else {
+                        if delayed_ack_count < delayed_acks.len() {
+                            delayed_acks[delayed_ack_count] =
+                                (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
+                                 tcb.snd_nxt, tcb.rcv_nxt, win);
+                            delayed_ack_count += 1;
+                        }
+                    }
                 }
             }
         }
@@ -48,6 +63,10 @@ pub fn check_retransmissions() {
     for i in 0..delayed_ack_count {
         let (lip, lp, rip, rp, seq, ack_num, win) = delayed_acks[i];
         send_segment(lip, lp, rip, rp, seq, ack_num, ACK, win, &[]);
+    }
+    for i in 0..delayed_ack_count_v6 {
+        let (lip, lp, rip, rp, seq, ack_num, win) = delayed_acks_v6[i];
+        send_segment_v6(lip, lp, rip, rp, seq, ack_num, ACK, win, &[]);
     }
 
     // ── Pass 2: retransmissions and cleanup ──
@@ -111,25 +130,44 @@ pub fn check_retransmissions() {
             tcb.retransmit_count += 1;
             TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
             tcb.last_send_tick = now;
-            let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port);
+            let is_v6 = tcb.is_ipv6;
 
-            if tcb.state == TcpState::SynReceived {
-                let iss = tcb.snd_iss;
-                let rcv_nxt = tcb.rcv_nxt;
-                let use_wscale = tcb.rcv_wnd_shift > 0;
-                drop(conns);
-                if use_wscale {
-                    send_syn_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK);
+            if is_v6 {
+                let (lip6, lp, rip6, rp) = (tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port);
+                if tcb.state == TcpState::SynReceived {
+                    let iss = tcb.snd_iss;
+                    let rcv_nxt = tcb.rcv_nxt;
+                    let use_wscale = tcb.rcv_wnd_shift > 0;
+                    drop(conns);
+                    if use_wscale {
+                        send_syn_segment_v6(lip6, lp, rip6, rp, iss, rcv_nxt, SYN | ACK);
+                    } else {
+                        send_segment_v6(lip6, lp, rip6, rp, iss, rcv_nxt, SYN | ACK, 65535, &[]);
+                    }
                 } else {
-                    send_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK, 65535, &[]);
+                    let iss = tcb.snd_iss;
+                    drop(conns);
+                    send_syn_segment_v6(lip6, lp, rip6, rp, iss, 0, SYN);
                 }
             } else {
-                // SynSent — retransmit SYN
-                let iss = tcb.snd_iss;
-                drop(conns);
-                send_syn_segment(lip, lp, rip, rp, iss, 0, SYN);
+                let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port);
+                if tcb.state == TcpState::SynReceived {
+                    let iss = tcb.snd_iss;
+                    let rcv_nxt = tcb.rcv_nxt;
+                    let use_wscale = tcb.rcv_wnd_shift > 0;
+                    drop(conns);
+                    if use_wscale {
+                        send_syn_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK);
+                    } else {
+                        send_segment(lip, lp, rip, rp, iss, rcv_nxt, SYN | ACK, 65535, &[]);
+                    }
+                } else {
+                    let iss = tcb.snd_iss;
+                    drop(conns);
+                    send_syn_segment(lip, lp, rip, rp, iss, 0, SYN);
+                }
             }
-            return; // Can't continue after dropping lock
+            return;
         }
 
         if should_retransmit {
@@ -141,7 +179,6 @@ pub fn check_retransmissions() {
             TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
             tcb.last_send_tick = now;
 
-            // Retransmit from send_buf starting at snd_una
             let len = tcb.send_buf.len().min(MSS);
             if len == 0 {
                 continue;
@@ -158,13 +195,20 @@ pub fn check_retransmissions() {
             let seq = tcb.snd_una;
             let ack_num = tcb.rcv_nxt;
             let win = tcb.advertised_window();
-            let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port);
+            let is_v6 = tcb.is_ipv6;
 
             crate::serial_verbose_println!("TCP: retransmit #{} socket {} seq={} len={}", tcb.retransmit_count, i, seq, len);
 
-            drop(conns);
-            send_segment(lip, lp, rip, rp, seq, ack_num, PSH | ACK, win, &data[..len]);
-            return; // Can't continue after dropping lock
+            if is_v6 {
+                let (lip6, lp, rip6, rp) = (tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port);
+                drop(conns);
+                send_segment_v6(lip6, lp, rip6, rp, seq, ack_num, PSH | ACK, win, &data[..len]);
+            } else {
+                let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port);
+                drop(conns);
+                send_segment(lip, lp, rip, rp, seq, ack_num, PSH | ACK, win, &data[..len]);
+            }
+            return;
         }
     }
 }
@@ -199,13 +243,20 @@ pub fn check_fin_retransmissions() {
             TCP_RETRANSMITS.fetch_add(1, Ordering::Relaxed);
             tcb.last_send_tick = now;
 
-            let seq = tcb.snd_nxt.wrapping_sub(1); // FIN consumes one seq
+            let seq = tcb.snd_nxt.wrapping_sub(1);
             let ack_num = tcb.rcv_nxt;
             let win = tcb.advertised_window();
-            let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port);
+            let is_v6 = tcb.is_ipv6;
 
-            drop(conns);
-            send_segment(lip, lp, rip, rp, seq, ack_num, FIN | ACK, win, &[]);
+            if is_v6 {
+                let (lip6, lp, rip6, rp) = (tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port);
+                drop(conns);
+                send_segment_v6(lip6, lp, rip6, rp, seq, ack_num, FIN | ACK, win, &[]);
+            } else {
+                let (lip, lp, rip, rp) = (tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port);
+                drop(conns);
+                send_segment(lip, lp, rip, rp, seq, ack_num, FIN | ACK, win, &[]);
+            }
             return;
         }
     }

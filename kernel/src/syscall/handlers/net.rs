@@ -123,6 +123,68 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
             #[cfg(target_arch = "aarch64")]
             { 0 }
         }
+        10 => {
+            // Get IPv6 config. buf_ptr = output buffer (80 bytes):
+            //   [0..16]:  link-local address
+            //   [16..32]: global address
+            //   [32]:     prefix length
+            //   [33..35]: reserved
+            //   [35..51]: gateway
+            //   [51..67]: dns
+            //   [67..80]: reserved
+            if buf_ptr == 0 { return u32::MAX; }
+            let cfg = crate::net::config();
+            unsafe {
+                let buf = buf_ptr as *mut u8;
+                core::ptr::copy_nonoverlapping(cfg.ipv6_link_local.0.as_ptr(), buf, 16);
+                core::ptr::copy_nonoverlapping(cfg.ipv6_addr.0.as_ptr(), buf.add(16), 16);
+                *buf.add(32) = cfg.ipv6_prefix_len;
+                *buf.add(33) = 0; *buf.add(34) = 0;
+                core::ptr::copy_nonoverlapping(cfg.ipv6_gateway.0.as_ptr(), buf.add(35), 16);
+                core::ptr::copy_nonoverlapping(cfg.ipv6_dns.0.as_ptr(), buf.add(51), 16);
+            }
+            0
+        }
+        11 => {
+            // Set IPv6 config. buf_ptr = input buffer (49 bytes):
+            //   [0..16]:  global address
+            //   [16]:     prefix length
+            //   [17..33]: gateway
+            //   [33..49]: dns
+            if buf_ptr == 0 { return u32::MAX; }
+            unsafe {
+                let buf = buf_ptr as *const u8;
+                let mut addr = [0u8; 16];
+                let mut gw = [0u8; 16];
+                let mut dns = [0u8; 16];
+                core::ptr::copy_nonoverlapping(buf, addr.as_mut_ptr(), 16);
+                let prefix_len = *buf.add(16);
+                core::ptr::copy_nonoverlapping(buf.add(17), gw.as_mut_ptr(), 16);
+                core::ptr::copy_nonoverlapping(buf.add(33), dns.as_mut_ptr(), 16);
+                crate::net::set_config_v6(
+                    crate::net::types::Ipv6Addr(addr), prefix_len,
+                    crate::net::types::Ipv6Addr(gw), crate::net::types::Ipv6Addr(dns),
+                );
+            }
+            0
+        }
+        12 => {
+            // Get NDP neighbor table. Same format as ARP (but 28 bytes per entry: ip6[16]+mac[6]+pad[6]).
+            if buf_ptr == 0 { return u32::MAX; }
+            let entries = crate::net::ndp::entries();
+            let count = entries.len().min(32);
+            unsafe {
+                let buf = buf_ptr as *mut u8;
+                for (i, (ip, mac)) in entries.iter().enumerate().take(count) {
+                    let off = i * 28;
+                    core::ptr::copy_nonoverlapping(ip.0.as_ptr(), buf.add(off), 16);
+                    core::ptr::copy_nonoverlapping(mac.0.as_ptr(), buf.add(off + 16), 6);
+                    // padding
+                    for j in 0..6 { *buf.add(off + 22 + j) = 0; }
+                }
+            }
+            count as u32
+        }
         _ => u32::MAX,
     }
 }
@@ -682,4 +744,57 @@ pub fn sys_wifi(cmd: u32, buf_ptr: u32, _buf_len: u32) -> u32 {
 
         _ => u32::MAX,
     }
+}
+
+// =========================================================================
+// IPv6 Networking
+// =========================================================================
+
+/// sys_net_ping6 - ICMPv6 ping. arg1=ip6_ptr(16 bytes), arg2=seq, arg3=timeout_ticks
+/// Returns RTT in ticks, or u32::MAX on timeout.
+pub fn sys_net_ping6(ip_ptr: u32, seq: u32, timeout: u32) -> u32 {
+    if ip_ptr == 0 { return u32::MAX; }
+    let mut ip_bytes = [0u8; 16];
+    unsafe { core::ptr::copy_nonoverlapping(ip_ptr as *const u8, ip_bytes.as_mut_ptr(), 16); }
+    let ip = crate::net::types::Ipv6Addr(ip_bytes);
+    match crate::net::icmpv6::ping6(ip, seq as u16, timeout) {
+        Some((rtt, _hop_limit)) => rtt,
+        None => u32::MAX,
+    }
+}
+
+/// sys_net_dns6 - DNS AAAA record resolution.
+/// arg1=hostname_ptr, arg2=result_ptr (16 bytes for IPv6 address)
+/// Returns 0 on success, u32::MAX on error.
+pub fn sys_net_dns6(hostname_ptr: u32, result_ptr: u32) -> u32 {
+    if hostname_ptr == 0 || result_ptr == 0 { return u32::MAX; }
+    let hostname = unsafe { read_user_str(hostname_ptr) };
+    if hostname.is_empty() { return u32::MAX; }
+    match crate::net::dns::resolve_v6(hostname) {
+        Ok(addr) => {
+            unsafe {
+                core::ptr::copy_nonoverlapping(addr.0.as_ptr(), result_ptr as *mut u8, 16);
+            }
+            0
+        }
+        Err(_) => u32::MAX,
+    }
+}
+
+/// sys_tcp_connect_v6 - TCP connect over IPv6.
+/// arg1=params_ptr: [ip6:16, port:u16, pad:u16, timeout:u32] = 24 bytes
+/// Returns socket ID or u32::MAX on error.
+pub fn sys_tcp_connect_v6(params_ptr: u32) -> u32 {
+    if params_ptr == 0 { return u32::MAX; }
+    let params = unsafe { core::slice::from_raw_parts(params_ptr as *const u8, 24) };
+    let mut ip6 = [0u8; 16];
+    ip6.copy_from_slice(&params[0..16]);
+    let port = u16::from_le_bytes([params[16], params[17]]);
+    let timeout = u32::from_le_bytes([params[20], params[21], params[22], params[23]]);
+    let timeout_ticks = if timeout > 0 {
+        timeout * crate::arch::hal::timer_frequency_hz() as u32 / 1000
+    } else {
+        1000 // Default 10 seconds at 100Hz
+    };
+    crate::net::tcp::connect_v6(crate::net::types::Ipv6Addr(ip6), port, timeout_ticks)
 }

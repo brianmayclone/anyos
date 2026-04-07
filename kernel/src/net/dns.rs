@@ -5,7 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::types::Ipv4Addr;
+use super::types::{Ipv4Addr, Ipv6Addr, IpAddr};
 use crate::sync::spinlock::Spinlock;
 
 const DNS_PORT: u16 = 53;
@@ -188,6 +188,128 @@ pub fn resolve(hostname: &str) -> Result<Ipv4Addr, &'static str> {
     }
 
     result
+}
+
+/// Resolve a hostname to an IPv6 address via AAAA record lookup.
+///
+/// Resolution order: DNS cache (v6) → DNS query (AAAA).
+/// Falls back to None if no AAAA record is found.
+pub fn resolve_v6(hostname: &str) -> Result<Ipv6Addr, &'static str> {
+    let cfg = super::config();
+    // Prefer IPv6 DNS server, fall back to IPv4 DNS
+    let dns_server = if !cfg.ipv6_dns.is_unspecified() {
+        // TODO: Use IPv6 DNS when UDP over IPv6 is fully integrated
+        // For now, fall back to IPv4 DNS server for AAAA queries
+        if cfg.dns == Ipv4Addr::ZERO {
+            return Err("No DNS server configured");
+        }
+        cfg.dns
+    } else if cfg.dns == Ipv4Addr::ZERO {
+        return Err("No DNS server configured");
+    } else {
+        cfg.dns
+    };
+
+    // Build DNS query for AAAA record
+    let query = build_query_aaaa(hostname);
+
+    let src_port: u16 = 49153;
+    super::udp::bind(src_port);
+
+    super::udp::send(dns_server, src_port, DNS_PORT, &query);
+
+    let result = match super::udp::recv_timeout(src_port, 500) {
+        Some(dgram) => parse_response_v6(&dgram.data),
+        None => Err("DNS timeout"),
+    };
+
+    super::udp::unbind(src_port);
+    result
+}
+
+/// Build a DNS query for AAAA record (IPv6).
+fn build_query_aaaa(hostname: &str) -> Vec<u8> {
+    let mut pkt = Vec::with_capacity(64);
+
+    // Transaction ID
+    pkt.push(0xAA); pkt.push(0xCC);
+    // Flags: standard query, recursion desired
+    pkt.push(0x01); pkt.push(0x00);
+    // Questions: 1
+    pkt.push(0x00); pkt.push(0x01);
+    // Answers: 0
+    pkt.push(0x00); pkt.push(0x00);
+    // Authority: 0
+    pkt.push(0x00); pkt.push(0x00);
+    // Additional: 0
+    pkt.push(0x00); pkt.push(0x00);
+
+    for label in hostname.split('.') {
+        let bytes = label.as_bytes();
+        if bytes.len() > 63 { continue; }
+        pkt.push(bytes.len() as u8);
+        pkt.extend_from_slice(bytes);
+    }
+    pkt.push(0);
+
+    // Type: AAAA (28)
+    pkt.push(0x00); pkt.push(0x1C);
+    // Class: IN
+    pkt.push(0x00); pkt.push(0x01);
+
+    pkt
+}
+
+/// Parse a DNS response for AAAA records.
+fn parse_response_v6(data: &[u8]) -> Result<Ipv6Addr, &'static str> {
+    if data.len() < 12 {
+        return Err("DNS response too short");
+    }
+
+    if data[0] != 0xAA || data[1] != 0xCC {
+        return Err("DNS transaction ID mismatch");
+    }
+
+    if data[2] & 0x80 == 0 {
+        return Err("DNS: not a response");
+    }
+
+    let rcode = data[3] & 0x0F;
+    if rcode != 0 {
+        return Err("DNS query failed");
+    }
+
+    let answer_count = ((data[6] as u16) << 8) | data[7] as u16;
+    if answer_count == 0 {
+        return Err("DNS: no answers");
+    }
+
+    let mut off = 12;
+    off = skip_name(data, off)?;
+    off += 4;
+    if off > data.len() { return Err("DNS: truncated"); }
+
+    for _ in 0..answer_count {
+        if off >= data.len() { break; }
+        off = skip_name(data, off)?;
+        if off + 10 > data.len() { return Err("DNS: truncated answer"); }
+
+        let rtype = ((data[off] as u16) << 8) | data[off + 1] as u16;
+        let rdlength = ((data[off + 8] as u16) << 8) | data[off + 9] as u16;
+        off += 10;
+
+        if rtype == 28 && rdlength == 16 {
+            // AAAA record
+            if off + 16 > data.len() { return Err("DNS: truncated AAAA record"); }
+            let mut addr = [0u8; 16];
+            addr.copy_from_slice(&data[off..off + 16]);
+            return Ok(Ipv6Addr(addr));
+        }
+
+        off += rdlength as usize;
+    }
+
+    Err("DNS: no AAAA record found")
 }
 
 fn build_query(hostname: &str) -> Vec<u8> {

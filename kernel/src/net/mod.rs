@@ -6,7 +6,10 @@ pub mod checksum;
 pub mod ethernet;
 pub mod arp;
 pub mod ipv4;
+pub mod ipv6;
 pub mod icmp;
+pub mod icmpv6;
+pub mod ndp;
 pub mod udp;
 pub mod dhcp;
 pub mod dns;
@@ -16,7 +19,7 @@ pub mod wifi;
 
 #[allow(unused_imports)]
 use alloc::vec::Vec;
-use types::{Ipv4Addr, MacAddr, NetConfig};
+use types::{Ipv4Addr, Ipv6Addr, MacAddr, NetConfig};
 use crate::sync::spinlock::Spinlock;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -32,9 +35,13 @@ pub fn init() {
     let mac_bytes = [0u8; 6];
     let mac = MacAddr(mac_bytes);
 
+    // Generate IPv6 link-local address from MAC (EUI-64)
+    let link_local = Ipv6Addr::from_mac_link_local(&mac);
+
     {
         let mut cfg = NET_CONFIG.lock();
         cfg.mac = mac;
+        cfg.ipv6_link_local = link_local;
     }
 
     arp::init();
@@ -42,7 +49,7 @@ pub fn init() {
     udp::init();
     tcp::init();
 
-    crate::serial_verbose_println!("[OK] Network stack initialized (MAC={})", mac);
+    crate::serial_verbose_println!("[OK] Network stack initialized (MAC={}, IPv6 LL={})", mac, link_local);
 }
 
 /// Get a snapshot of the current network config.
@@ -54,6 +61,11 @@ pub fn config() -> NetConfig {
         gateway: cfg.gateway,
         dns: cfg.dns,
         mac: cfg.mac,
+        ipv6_link_local: cfg.ipv6_link_local,
+        ipv6_addr: cfg.ipv6_addr,
+        ipv6_prefix_len: cfg.ipv6_prefix_len,
+        ipv6_gateway: cfg.ipv6_gateway,
+        ipv6_dns: cfg.ipv6_dns,
     }
 }
 
@@ -66,11 +78,23 @@ pub fn set_config(ip: Ipv4Addr, mask: Ipv4Addr, gateway: Ipv4Addr, dns: Ipv4Addr
     cfg.dns = dns;
 }
 
+/// Update IPv6 network configuration (e.g. after SLAAC or DHCPv6).
+pub fn set_config_v6(addr: Ipv6Addr, prefix_len: u8, gateway: Ipv6Addr, dns: Ipv6Addr) {
+    let mut cfg = NET_CONFIG.lock();
+    cfg.ipv6_addr = addr;
+    cfg.ipv6_prefix_len = prefix_len;
+    cfg.ipv6_gateway = gateway;
+    cfg.ipv6_dns = dns;
+}
+
 /// Load network configuration files from disk (hosts + interfaces).
 /// Call after VFS is initialized and the root filesystem is mounted.
 pub fn load_config_files() {
     dns::load_hosts();
     interfaces::load_interfaces();
+
+    // Send Router Solicitation to discover IPv6 routers and trigger SLAAC
+    ndp::send_router_solicitation();
 }
 
 /// Tick counter for rate-limiting retransmission checks.

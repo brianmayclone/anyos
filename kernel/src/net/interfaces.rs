@@ -5,7 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::types::Ipv4Addr;
+use super::types::{Ipv4Addr, Ipv6Addr};
 use crate::sync::spinlock::Spinlock;
 
 const INTERFACES_PATH: &str = "/System/etc/network/interfaces";
@@ -26,14 +26,22 @@ pub struct IfaceConfig {
     pub name: String,
     /// Configuration method.
     pub method: IfaceMethod,
-    /// Static IP address (only meaningful when method == Static).
+    /// Static IPv4 address (only meaningful when method == Static).
     pub address: Ipv4Addr,
-    /// Subnet mask (only meaningful when method == Static).
+    /// IPv4 subnet mask (only meaningful when method == Static).
     pub netmask: Ipv4Addr,
-    /// Default gateway (only meaningful when method == Static).
+    /// IPv4 default gateway (only meaningful when method == Static).
     pub gateway: Ipv4Addr,
-    /// DNS server (only meaningful when method == Static).
+    /// IPv4 DNS server (only meaningful when method == Static).
     pub dns: Ipv4Addr,
+    /// Static IPv6 address (optional, ::0 if not configured).
+    pub ipv6_address: Ipv6Addr,
+    /// IPv6 prefix length (typically 64).
+    pub ipv6_prefix_len: u8,
+    /// IPv6 default gateway.
+    pub ipv6_gateway: Ipv6Addr,
+    /// IPv6 DNS server.
+    pub ipv6_dns: Ipv6Addr,
 }
 
 impl IfaceConfig {
@@ -46,6 +54,10 @@ impl IfaceConfig {
             netmask: Ipv4Addr::ZERO,
             gateway: Ipv4Addr::ZERO,
             dns: Ipv4Addr::ZERO,
+            ipv6_address: Ipv6Addr::UNSPECIFIED,
+            ipv6_prefix_len: 64,
+            ipv6_gateway: Ipv6Addr::UNSPECIFIED,
+            ipv6_dns: Ipv6Addr::UNSPECIFIED,
         }
     }
 }
@@ -84,6 +96,10 @@ pub fn load_interfaces() {
             netmask: Ipv4Addr([255, 0, 0, 0]),
             gateway: Ipv4Addr::ZERO,
             dns: Ipv4Addr::ZERO,
+            ipv6_address: Ipv6Addr::LOOPBACK,
+            ipv6_prefix_len: 128,
+            ipv6_gateway: Ipv6Addr::UNSPECIFIED,
+            ipv6_dns: Ipv6Addr::UNSPECIFIED,
         });
     }
 
@@ -137,6 +153,10 @@ fn parse_interfaces(text: &str) -> Vec<IfaceConfig> {
                     netmask: Ipv4Addr::ZERO,
                     gateway: Ipv4Addr::ZERO,
                     dns: Ipv4Addr::ZERO,
+                    ipv6_address: Ipv6Addr::UNSPECIFIED,
+                    ipv6_prefix_len: 64,
+                    ipv6_gateway: Ipv6Addr::UNSPECIFIED,
+                    ipv6_dns: Ipv6Addr::UNSPECIFIED,
                 });
             }
             "address" | "netmask" | "gateway" | "dns" => {
@@ -149,6 +169,33 @@ fn parse_interfaces(text: &str) -> Vec<IfaceConfig> {
                                 "netmask" => cfg.netmask = addr,
                                 "gateway" => cfg.gateway = addr,
                                 "dns" => cfg.dns = addr,
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            "ipv6_address" | "ipv6_gateway" | "ipv6_dns" => {
+                if let Some(cfg) = configs.last_mut() {
+                    if let Some(val_str) = parts.next() {
+                        // Handle "addr/prefix" notation for ipv6_address
+                        if keyword == "ipv6_address" {
+                            if let Some(slash) = val_str.find('/') {
+                                let addr_str = &val_str[..slash];
+                                let prefix_str = &val_str[slash + 1..];
+                                if let Some(addr) = Ipv6Addr::parse(addr_str) {
+                                    cfg.ipv6_address = addr;
+                                    if let Ok(pl) = prefix_str.parse::<u8>() {
+                                        cfg.ipv6_prefix_len = pl;
+                                    }
+                                }
+                            } else if let Some(addr) = Ipv6Addr::parse(val_str) {
+                                cfg.ipv6_address = addr;
+                            }
+                        } else if let Some(addr) = Ipv6Addr::parse(val_str) {
+                            match keyword {
+                                "ipv6_gateway" => cfg.ipv6_gateway = addr,
+                                "ipv6_dns" => cfg.ipv6_dns = addr,
                                 _ => {}
                             }
                         }
@@ -169,30 +216,36 @@ pub fn get_configs() -> Vec<IfaceConfig> {
 
 /// Serialize interface configs into a byte buffer for userspace consumption.
 ///
-/// Format per entry (64 bytes):
-///   - `[0]`:    method (0=dhcp, 1=static)
-///   - `[1]`:    name length
-///   - `[2..18]`: name bytes (max 16 chars, null-padded)
-///   - `[18..22]`: address
-///   - `[22..26]`: netmask
-///   - `[26..30]`: gateway
-///   - `[30..34]`: dns
-///   - `[34..64]`: reserved (zeroed)
+/// Format per entry (128 bytes):
+///   - `[0]`:      method (0=dhcp, 1=static, 2=loopback)
+///   - `[1]`:      name length
+///   - `[2..18]`:  name bytes (max 16 chars, null-padded)
+///   - `[18..22]`: IPv4 address
+///   - `[22..26]`: IPv4 netmask
+///   - `[26..30]`: IPv4 gateway
+///   - `[30..34]`: IPv4 dns
+///   - `[34]`:     IPv6 prefix length
+///   - `[35..37]`: reserved
+///   - `[37..53]`: IPv6 address (16 bytes)
+///   - `[53..69]`: IPv6 gateway (16 bytes)
+///   - `[69..85]`: IPv6 dns (16 bytes)
+///   - `[85..128]`: reserved (zeroed)
 ///
 /// Returns the number of entries written.
 pub fn serialize_configs(buf: &mut [u8]) -> u32 {
     let configs = IFACE_CONFIGS.lock();
-    let max_entries = buf.len() / 64;
+    let entry_size = 128;
+    let max_entries = buf.len() / entry_size;
     let count = configs.len().min(max_entries);
 
     for (i, cfg) in configs.iter().enumerate() {
         if i >= count {
             break;
         }
-        let off = i * 64;
+        let off = i * entry_size;
 
         // Zero out the entry
-        for b in &mut buf[off..off + 64] {
+        for b in &mut buf[off..off + entry_size] {
             *b = 0;
         }
 
@@ -211,6 +264,12 @@ pub fn serialize_configs(buf: &mut [u8]) -> u32 {
         buf[off + 22..off + 26].copy_from_slice(&cfg.netmask.0);
         buf[off + 26..off + 30].copy_from_slice(&cfg.gateway.0);
         buf[off + 30..off + 34].copy_from_slice(&cfg.dns.0);
+
+        // IPv6 fields
+        buf[off + 34] = cfg.ipv6_prefix_len;
+        buf[off + 37..off + 53].copy_from_slice(&cfg.ipv6_address.0);
+        buf[off + 53..off + 69].copy_from_slice(&cfg.ipv6_gateway.0);
+        buf[off + 69..off + 85].copy_from_slice(&cfg.ipv6_dns.0);
     }
 
     count as u32
@@ -218,19 +277,20 @@ pub fn serialize_configs(buf: &mut [u8]) -> u32 {
 
 /// Deserialize interface configs from a userspace buffer and save to disk.
 ///
-/// Uses the same 64-byte-per-entry format as `serialize_configs`.
+/// Uses the same 128-byte-per-entry format as `serialize_configs`.
 /// After parsing, writes the new config to `/System/etc/network/interfaces`
 /// and updates the in-memory cache.
 pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
     let count = count as usize;
-    if count == 0 || buf.len() < count * 64 {
+    let entry_size = 128;
+    if count == 0 || buf.len() < count * entry_size {
         return u32::MAX;
     }
 
     let mut configs: Vec<IfaceConfig> = Vec::new();
 
     for i in 0..count {
-        let off = i * 64;
+        let off = i * entry_size;
         let method = match buf[off] {
             0 => IfaceMethod::Dhcp,
             1 => IfaceMethod::Static,
@@ -249,6 +309,15 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
         let gateway = Ipv4Addr([buf[off + 26], buf[off + 27], buf[off + 28], buf[off + 29]]);
         let dns = Ipv4Addr([buf[off + 30], buf[off + 31], buf[off + 32], buf[off + 33]]);
 
+        // IPv6 fields
+        let ipv6_prefix_len = buf[off + 34];
+        let mut ipv6_addr_bytes = [0u8; 16];
+        let mut ipv6_gw_bytes = [0u8; 16];
+        let mut ipv6_dns_bytes = [0u8; 16];
+        ipv6_addr_bytes.copy_from_slice(&buf[off + 37..off + 53]);
+        ipv6_gw_bytes.copy_from_slice(&buf[off + 53..off + 69]);
+        ipv6_dns_bytes.copy_from_slice(&buf[off + 69..off + 85]);
+
         configs.push(IfaceConfig {
             name,
             method,
@@ -256,6 +325,10 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
             netmask,
             gateway,
             dns,
+            ipv6_address: Ipv6Addr(ipv6_addr_bytes),
+            ipv6_prefix_len: if ipv6_prefix_len > 0 { ipv6_prefix_len } else { 64 },
+            ipv6_gateway: Ipv6Addr(ipv6_gw_bytes),
+            ipv6_dns: Ipv6Addr(ipv6_dns_bytes),
         });
     }
 
@@ -287,6 +360,15 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
                 push_ip_line(&mut text, "  netmask ", cfg.netmask);
                 push_ip_line(&mut text, "  gateway ", cfg.gateway);
                 push_ip_line(&mut text, "  dns ", cfg.dns);
+                if !cfg.ipv6_address.is_unspecified() {
+                    push_ipv6_addr_line(&mut text, "  ipv6_address ", cfg.ipv6_address, cfg.ipv6_prefix_len);
+                    if !cfg.ipv6_gateway.is_unspecified() {
+                        push_ipv6_line(&mut text, "  ipv6_gateway ", cfg.ipv6_gateway);
+                    }
+                    if !cfg.ipv6_dns.is_unspecified() {
+                        push_ipv6_line(&mut text, "  ipv6_dns ", cfg.ipv6_dns);
+                    }
+                }
             }
             IfaceMethod::Loopback => {
                 text.push_str("iface ");
@@ -315,6 +397,12 @@ pub fn apply_and_save(buf: &[u8], count: u32) -> u32 {
         if cfg.method == IfaceMethod::Static {
             super::set_config(cfg.address, cfg.netmask, cfg.gateway, cfg.dns);
             crate::serial_verbose_println!("[NET] Applied static config for {}: {}", cfg.name, cfg.address);
+            // Apply IPv6 static config if present
+            if !cfg.ipv6_address.is_unspecified() {
+                super::set_config_v6(cfg.ipv6_address, cfg.ipv6_prefix_len,
+                                     cfg.ipv6_gateway, cfg.ipv6_dns);
+                crate::serial_verbose_println!("[NET] Applied IPv6 static config for {}: {}", cfg.name, cfg.ipv6_address);
+            }
         }
         // DHCP is handled by the dhcp binary at boot; no immediate action here
         break;
@@ -328,6 +416,22 @@ fn push_ip_line(text: &mut String, prefix: &str, ip: Ipv4Addr) {
     use core::fmt::Write;
     text.push_str(prefix);
     let _ = write!(text, "{}", ip);
+    text.push('\n');
+}
+
+/// Helper: append "  <prefix><ipv6>\n" to a string.
+fn push_ipv6_line(text: &mut String, prefix: &str, ip: Ipv6Addr) {
+    use core::fmt::Write;
+    text.push_str(prefix);
+    let _ = write!(text, "{}", ip);
+    text.push('\n');
+}
+
+/// Helper: append "  <prefix><ipv6>/<prefix_len>\n" to a string.
+fn push_ipv6_addr_line(text: &mut String, prefix: &str, ip: Ipv6Addr, prefix_len: u8) {
+    use core::fmt::Write;
+    text.push_str(prefix);
+    let _ = write!(text, "{}/{}", ip, prefix_len);
     text.push('\n');
 }
 

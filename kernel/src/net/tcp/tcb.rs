@@ -5,7 +5,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
-use crate::net::types::Ipv4Addr;
+use crate::net::types::{Ipv4Addr, Ipv6Addr, IpAddr};
 
 // ── TCP header flags ─────────────────────────────────────────────────
 pub(crate) const FIN: u8 = 0x01;
@@ -126,6 +126,14 @@ pub(crate) struct Tcb {
     pub remote_ip: Ipv4Addr,
     pub remote_port: u16,
 
+    // ── IPv6 dual-stack support ──
+    /// True if this is an IPv6 connection.
+    pub is_ipv6: bool,
+    /// IPv6 local address (only valid when is_ipv6 == true).
+    pub local_ip6: Ipv6Addr,
+    /// IPv6 remote address (only valid when is_ipv6 == true).
+    pub remote_ip6: Ipv6Addr,
+
     // ── Send sequence variables ──
     pub snd_iss: u32,     // initial send sequence number
     pub snd_una: u32,     // oldest unacknowledged
@@ -189,6 +197,9 @@ impl Tcb {
             local_port,
             remote_ip,
             remote_port,
+            is_ipv6: false,
+            local_ip6: Ipv6Addr::UNSPECIFIED,
+            remote_ip6: Ipv6Addr::UNSPECIFIED,
             snd_iss: iss,
             snd_una: iss,
             snd_nxt: iss,
@@ -214,6 +225,15 @@ impl Tcb {
             owner_tid: 0,
             waiting_tid: 0,
         }
+    }
+
+    /// Create a new IPv6 TCB.
+    pub fn new_v6(local_ip6: Ipv6Addr, local_port: u16, remote_ip6: Ipv6Addr, remote_port: u16) -> Self {
+        let mut tcb = Self::new(Ipv4Addr::ZERO, local_port, Ipv4Addr::ZERO, remote_port);
+        tcb.is_ipv6 = true;
+        tcb.local_ip6 = local_ip6;
+        tcb.remote_ip6 = remote_ip6;
+        tcb
     }
 
     /// Compute the receive window value to advertise (scaled down by rcv_wnd_shift).
@@ -298,6 +318,84 @@ pub(crate) fn parse_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) -> Option<TcpSeg
         payload,
         src_ip: pkt.src,
         dst_ip: pkt.dst,
+        wscale,
+        peer_mss,
+    })
+}
+
+/// Parse a TCP segment from an IPv6 packet payload.
+pub(crate) fn parse_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) -> Option<TcpSegment> {
+    let data = pkt.payload;
+    if data.len() < TCP_HEADER_LEN {
+        return None;
+    }
+
+    let src_port = ((data[0] as u16) << 8) | data[1] as u16;
+    let dst_port = ((data[2] as u16) << 8) | data[3] as u16;
+    let seq = ((data[4] as u32) << 24) | ((data[5] as u32) << 16)
+        | ((data[6] as u32) << 8) | data[7] as u32;
+    let ack = ((data[8] as u32) << 24) | ((data[9] as u32) << 16)
+        | ((data[10] as u32) << 8) | data[11] as u32;
+    let data_offset = ((data[12] >> 4) as usize) * 4;
+    let flags = data[13] & 0x3F;
+    let window = ((data[14] as u16) << 8) | data[15] as u16;
+
+    if data_offset < TCP_HEADER_LEN || data_offset > data.len() {
+        return None;
+    }
+
+    // Parse TCP options
+    let mut wscale = None;
+    let mut peer_mss = None;
+    if data_offset > TCP_HEADER_LEN {
+        let opts = &data[TCP_HEADER_LEN..data_offset];
+        let mut i = 0;
+        while i < opts.len() {
+            match opts[i] {
+                0 => break,
+                1 => { i += 1; }
+                2 => {
+                    if i + 4 <= opts.len() && opts[i + 1] == 4 {
+                        peer_mss = Some(((opts[i + 2] as u16) << 8) | opts[i + 3] as u16);
+                    }
+                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 { opts[i + 1] as usize } else { break };
+                    i += skip;
+                }
+                3 => {
+                    if i + 3 <= opts.len() && opts[i + 1] == 3 {
+                        wscale = Some(opts[i + 2].min(14));
+                    }
+                    let skip = if i + 1 < opts.len() && opts[i + 1] >= 2 { opts[i + 1] as usize } else { break };
+                    i += skip;
+                }
+                _ => {
+                    if i + 1 < opts.len() && opts[i + 1] >= 2 {
+                        i += opts[i + 1] as usize;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let payload = if data_offset < data.len() {
+        Vec::from(&data[data_offset..])
+    } else {
+        Vec::new()
+    };
+
+    // Use IPv4 zero addresses as placeholders — IPv6 addresses are matched separately
+    Some(TcpSegment {
+        src_port,
+        dst_port,
+        seq,
+        ack,
+        flags,
+        window,
+        payload,
+        src_ip: Ipv4Addr::ZERO,
+        dst_ip: Ipv4Addr::ZERO,
         wscale,
         peer_mss,
     })

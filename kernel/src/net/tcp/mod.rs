@@ -129,9 +129,14 @@ pub fn get_stats() -> TcpStats {
 // These maintain the same function signatures as the old tcp.rs so that
 // all callers (syscall handlers, net::poll, etc.) work unchanged.
 
-/// Active open: connect to a remote host.
+/// Active open: connect to a remote host (IPv4).
 pub fn connect(remote_ip: crate::net::types::Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
     connect::connect(remote_ip, remote_port, timeout_ticks)
+}
+
+/// Active open: connect to a remote host (IPv6).
+pub fn connect_v6(remote_ip: crate::net::types::Ipv6Addr, remote_port: u16, timeout_ticks: u32) -> u32 {
+    connect::connect_v6(remote_ip, remote_port, timeout_ticks)
 }
 
 /// Passive open: listen on a local port.
@@ -179,9 +184,14 @@ pub fn shutdown_write(socket_id: u32) -> u32 {
     connect::shutdown_write(socket_id)
 }
 
-/// Handle an incoming TCP segment.
+/// Handle an incoming TCP segment (IPv4).
 pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
     input::handle_tcp(pkt)
+}
+
+/// Handle an incoming TCP segment (IPv6).
+pub fn handle_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) {
+    input::handle_tcp_v6(pkt)
 }
 
 /// Check retransmissions, flush delayed ACKs, TIME_WAIT cleanup.

@@ -7,7 +7,7 @@
 use core::sync::atomic::Ordering;
 use super::tcb::*;
 use super::{TCP_CONNECTIONS, TCP_SEGMENTS_SENT, TCP_RESETS_SENT};
-use crate::net::types::Ipv4Addr;
+use crate::net::types::{Ipv4Addr, Ipv6Addr};
 
 // ── Low-level segment construction ──────────────────────────────────
 
@@ -162,6 +162,136 @@ fn tcp_checksum_and_send(local_ip: Ipv4Addr, remote_ip: Ipv4Addr, segment: &mut 
         TCP_RESETS_SENT.fetch_add(1, Ordering::Relaxed);
     }
     crate::net::ipv4::send_ipv4(remote_ip, crate::net::ipv4::PROTO_TCP, segment)
+}
+
+// ── IPv6 segment construction ──────────────────────────────────────
+
+/// Build and send a TCP segment over IPv6 with dynamic window advertisement.
+pub(crate) fn send_segment_v6(
+    local_ip: Ipv6Addr,
+    local_port: u16,
+    remote_ip: Ipv6Addr,
+    remote_port: u16,
+    seq: u32,
+    ack_num: u32,
+    flags: u8,
+    window: u16,
+    payload: &[u8],
+) -> bool {
+    let tcp_len = TCP_HEADER_LEN + payload.len();
+    let mut segment = [0u8; 1536];
+    if tcp_len > segment.len() { return false; }
+
+    segment[0] = (local_port >> 8) as u8;
+    segment[1] = (local_port & 0xFF) as u8;
+    segment[2] = (remote_port >> 8) as u8;
+    segment[3] = (remote_port & 0xFF) as u8;
+    segment[4] = (seq >> 24) as u8;
+    segment[5] = (seq >> 16) as u8;
+    segment[6] = (seq >> 8) as u8;
+    segment[7] = seq as u8;
+    segment[8] = (ack_num >> 24) as u8;
+    segment[9] = (ack_num >> 16) as u8;
+    segment[10] = (ack_num >> 8) as u8;
+    segment[11] = ack_num as u8;
+    segment[12] = 0x50;
+    segment[13] = flags;
+    segment[14] = (window >> 8) as u8;
+    segment[15] = (window & 0xFF) as u8;
+
+    if !payload.is_empty() {
+        segment[TCP_HEADER_LEN..tcp_len].copy_from_slice(payload);
+    }
+
+    tcp_checksum_and_send_v6(local_ip, remote_ip, &mut segment[..tcp_len], flags)
+}
+
+/// Build and send a SYN or SYN-ACK segment over IPv6 with TCP options.
+pub(crate) fn send_syn_segment_v6(
+    local_ip: Ipv6Addr,
+    local_port: u16,
+    remote_ip: Ipv6Addr,
+    remote_port: u16,
+    seq: u32,
+    ack_num: u32,
+    flags: u8,
+) -> bool {
+    const OPT_LEN: usize = 8;
+    let tcp_len = TCP_HEADER_LEN + OPT_LEN;
+    let mut segment = [0u8; 28];
+
+    segment[0] = (local_port >> 8) as u8;
+    segment[1] = (local_port & 0xFF) as u8;
+    segment[2] = (remote_port >> 8) as u8;
+    segment[3] = (remote_port & 0xFF) as u8;
+    segment[4] = (seq >> 24) as u8;
+    segment[5] = (seq >> 16) as u8;
+    segment[6] = (seq >> 8) as u8;
+    segment[7] = seq as u8;
+    segment[8] = (ack_num >> 24) as u8;
+    segment[9] = (ack_num >> 16) as u8;
+    segment[10] = (ack_num >> 8) as u8;
+    segment[11] = ack_num as u8;
+    segment[12] = 0x70;
+    segment[13] = flags;
+    let window: u16 = 65535;
+    segment[14] = (window >> 8) as u8;
+    segment[15] = (window & 0xFF) as u8;
+    segment[20] = 2; segment[21] = 4;
+    segment[22] = (MSS >> 8) as u8;
+    segment[23] = (MSS & 0xFF) as u8;
+    segment[24] = 1;
+    segment[25] = 3; segment[26] = 3; segment[27] = OUR_WINDOW_SHIFT;
+
+    tcp_checksum_and_send_v6(local_ip, remote_ip, &mut segment[..tcp_len], flags)
+}
+
+/// Compute TCP checksum with IPv6 pseudo-header and send.
+fn tcp_checksum_and_send_v6(local_ip: Ipv6Addr, remote_ip: Ipv6Addr, segment: &mut [u8], flags: u8) -> bool {
+    let tcp_len = segment.len();
+
+    let pseudo_sum = crate::net::checksum::pseudo_header_checksum_v6(
+        local_ip.as_bytes(),
+        remote_ip.as_bytes(),
+        crate::net::ipv6::PROTO_TCP,
+        tcp_len as u32,
+    );
+
+    segment[16] = 0;
+    segment[17] = 0;
+
+    let mut sum = pseudo_sum;
+    let mut i = 0;
+    while i + 1 < tcp_len {
+        sum += ((segment[i] as u32) << 8) | (segment[i + 1] as u32);
+        i += 2;
+    }
+    if i < tcp_len {
+        sum += (segment[i] as u32) << 8;
+    }
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    let cksum = !(sum as u16);
+    segment[16] = (cksum >> 8) as u8;
+    segment[17] = (cksum & 0xFF) as u8;
+
+    TCP_SEGMENTS_SENT.fetch_add(1, Ordering::Relaxed);
+    if flags & RST != 0 {
+        TCP_RESETS_SENT.fetch_add(1, Ordering::Relaxed);
+    }
+    crate::net::ipv6::send_ipv6(remote_ip, crate::net::ipv6::PROTO_TCP, segment)
+}
+
+/// Send a TCP segment using the appropriate IP version based on TCB state.
+pub(crate) fn send_segment_auto(tcb: &Tcb, seq: u32, ack_num: u32, flags: u8, window: u16, payload: &[u8]) -> bool {
+    if tcb.is_ipv6 {
+        send_segment_v6(tcb.local_ip6, tcb.local_port, tcb.remote_ip6, tcb.remote_port,
+                        seq, ack_num, flags, window, payload)
+    } else {
+        send_segment(tcb.local_ip, tcb.local_port, tcb.remote_ip, tcb.remote_port,
+                     seq, ack_num, flags, window, payload)
+    }
 }
 
 // ── High-level send ─────────────────────────────────────────────────
