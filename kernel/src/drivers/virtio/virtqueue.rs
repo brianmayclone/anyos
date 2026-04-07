@@ -3,6 +3,8 @@
 //! Implements the split ring layout: descriptor table, available ring, used ring.
 //! Supports synchronous polled I/O with descriptor chaining for request/response pairs.
 
+use alloc::vec;
+use alloc::vec::Vec;
 use crate::memory::physical;
 
 // ──────────────────────────────────────────────
@@ -52,6 +54,10 @@ pub struct VirtQueue {
     last_used_idx: u16,
     /// Number of free descriptors available.
     num_free: u16,
+    /// Per-descriptor allocation state for stale used-ring / double-free detection.
+    in_use: Vec<bool>,
+    /// Sticky fault flag. Once set, the queue rejects further operations.
+    broken: bool,
 }
 
 // VirtQueue contains raw pointers but is only accessed under a Spinlock
@@ -127,6 +133,8 @@ impl VirtQueue {
             free_head: 0,
             last_used_idx: 0,
             num_free: queue_size,
+            in_use: vec![false; qs],
+            broken: false,
         })
     }
 
@@ -181,25 +189,89 @@ impl VirtQueue {
 
     /// Allocate a free descriptor. Returns its index.
     fn alloc_desc(&mut self) -> Option<u16> {
+        if self.broken {
+            return None;
+        }
         if self.num_free == 0 {
             return None;
         }
         let idx = self.free_head;
+        if idx >= self.queue_size {
+            crate::serial_println!(
+                "[VirtQueue] corrupt free_head={} queue_size={}",
+                idx,
+                self.queue_size
+            );
+            self.broken = true;
+            return None;
+        }
         let desc = unsafe { &*self.desc.add(idx as usize) };
         self.free_head = desc.next;
         self.num_free -= 1;
+        self.in_use[idx as usize] = true;
         Some(idx)
     }
 
     /// Free a descriptor chain starting at `head`.
-    fn free_chain(&mut self, head: u16) {
+    fn free_chain(&mut self, head: u16) -> bool {
+        if self.broken {
+            return false;
+        }
+        if head >= self.queue_size {
+            crate::serial_println!(
+                "[VirtQueue] invalid used-ring descriptor id={} queue_size={}",
+                head,
+                self.queue_size
+            );
+            self.broken = true;
+            return false;
+        }
         let mut idx = head;
+        let mut steps = 0u16;
         loop {
+            if idx >= self.queue_size {
+                crate::serial_println!(
+                    "[VirtQueue] descriptor chain escaped queue: idx={} queue_size={}",
+                    idx,
+                    self.queue_size
+                );
+                self.broken = true;
+                return false;
+            }
+            if steps >= self.queue_size {
+                crate::serial_println!(
+                    "[VirtQueue] descriptor chain loop detected at idx={} queue_size={}",
+                    idx,
+                    self.queue_size
+                );
+                self.broken = true;
+                return false;
+            }
+            steps = steps.saturating_add(1);
+            if !self.in_use[idx as usize] {
+                crate::serial_println!(
+                    "[VirtQueue] stale or double-completed descriptor id={} idx={}",
+                    head,
+                    idx
+                );
+                self.broken = true;
+                return false;
+            }
             let desc = unsafe { &mut *self.desc.add(idx as usize) };
             let has_next = desc.flags & VIRTQ_DESC_F_NEXT != 0;
             let next = desc.next;
+            self.in_use[idx as usize] = false;
 
             // Push back to free list
+            if self.num_free >= self.queue_size {
+                crate::serial_println!(
+                    "[VirtQueue] free list overflow while freeing id={} steps={}",
+                    head,
+                    steps
+                );
+                self.broken = true;
+                return false;
+            }
             desc.flags = if self.num_free > 0 { VIRTQ_DESC_F_NEXT } else { 0 };
             desc.next = self.free_head;
             self.free_head = idx;
@@ -211,6 +283,7 @@ impl VirtQueue {
                 break;
             }
         }
+        true
     }
 
     // ── Public API ──
@@ -223,6 +296,9 @@ impl VirtQueue {
     ///
     /// Returns the head descriptor index, or None if not enough descriptors.
     pub fn push(&mut self, readable: &[(u64, u32)], writable: &[(u64, u32)]) -> Option<u16> {
+        if self.broken {
+            return None;
+        }
         let total = readable.len() + writable.len();
         if total == 0 || self.num_free < total as u16 {
             return None;
@@ -230,11 +306,28 @@ impl VirtQueue {
 
         let mut head: u16 = 0;
         let mut prev: Option<u16> = None;
+        let mut allocated: Vec<u16> = Vec::with_capacity(total);
 
         // Chain readable (device-read) descriptors
         for (i, &(addr, len)) in readable.iter().enumerate() {
-            let idx = self.alloc_desc()?;
+            let idx = match self.alloc_desc() {
+                Some(idx) => idx,
+                None => {
+                    for &d in allocated.iter().rev() {
+                        if d < self.queue_size as u16 && self.in_use[d as usize] {
+                            self.in_use[d as usize] = false;
+                            let desc = unsafe { &mut *self.desc.add(d as usize) };
+                            desc.flags = if self.num_free > 0 { VIRTQ_DESC_F_NEXT } else { 0 };
+                            desc.next = self.free_head;
+                            self.free_head = d;
+                            self.num_free += 1;
+                        }
+                    }
+                    return None;
+                }
+            };
             if i == 0 { head = idx; }
+            allocated.push(idx);
 
             let desc = unsafe { &mut *self.desc.add(idx as usize) };
             desc.addr = addr;
@@ -251,8 +344,24 @@ impl VirtQueue {
 
         // Chain writable (device-write) descriptors
         for &(addr, len) in writable {
-            let idx = self.alloc_desc()?;
+            let idx = match self.alloc_desc() {
+                Some(idx) => idx,
+                None => {
+                    for &d in allocated.iter().rev() {
+                        if d < self.queue_size as u16 && self.in_use[d as usize] {
+                            self.in_use[d as usize] = false;
+                            let desc = unsafe { &mut *self.desc.add(d as usize) };
+                            desc.flags = if self.num_free > 0 { VIRTQ_DESC_F_NEXT } else { 0 };
+                            desc.next = self.free_head;
+                            self.free_head = d;
+                            self.num_free += 1;
+                        }
+                    }
+                    return None;
+                }
+            };
             if readable.is_empty() && prev.is_none() { head = idx; }
+            allocated.push(idx);
 
             let desc = unsafe { &mut *self.desc.add(idx as usize) };
             desc.addr = addr;
@@ -291,6 +400,9 @@ impl VirtQueue {
     /// Check the used ring for completed requests.
     /// Returns (head_descriptor_index, bytes_written) if a request completed.
     pub fn poll_used(&mut self) -> Option<(u16, u32)> {
+        if self.broken {
+            return None;
+        }
         // Memory fence to see device's used ring writes
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
 
@@ -303,7 +415,18 @@ impl VirtQueue {
         self.last_used_idx = self.last_used_idx.wrapping_add(1);
 
         // Free the descriptor chain
-        self.free_chain(id as u16);
+        if id >= self.queue_size as u32 {
+            crate::serial_println!(
+                "[VirtQueue] used ring returned out-of-range id={} queue_size={}",
+                id,
+                self.queue_size
+            );
+            self.broken = true;
+            return None;
+        }
+        if !self.free_chain(id as u16) {
+            return None;
+        }
 
         Some((id as u16, len))
     }
@@ -317,46 +440,57 @@ impl VirtQueue {
         writable: &[(u64, u32)],
         notify_fn: F,
     ) -> Option<u32> {
+        if self.broken {
+            return None;
+        }
         self.push(readable, writable)?;
 
         // Notify device
         notify_fn();
 
-        // Busy-wait for completion with periodic yields (cond_resched pattern).
+        // Busy-wait for completion with bounded backoff.
+        //
+        // Important: do NOT call schedule() from this path. VirtIO GPU control
+        // commands run inside SYS_GPU_COMMAND while the current thread still owns
+        // deep kernel/syscall state. Voluntary rescheduling from here can resume
+        // on a damaged or stale kernel context and has been observed to crash the
+        // compositor/GPU thread with #UD in the middle of RESOURCE_FLUSH.
+        //
+        // We therefore stay on-CPU and only use PAUSE-based backoff. Timer-driven
+        // preemption can still happen naturally; we simply avoid forcing a manual
+        // context switch from inside the virtqueue polling loop.
         //
         // Timeout: 200 million PAUSE iterations (~333 ms on a 3 GHz KVM guest at
         // ~5 cycles/PAUSE). The previous 10 M limit was too tight: QEMU's virtio-gpu
         // iothread can be busy during early boot and miss the first GPU kick for up
         // to ~50 ms, causing ring desync if the caller retries with the same DMA buf.
-        //
-        // Every 1 M iterations we call schedule() (Linux's cond_resched pattern):
-        // this lets other ready threads run while we wait for QEMU to process the
-        // virtqueue entry. Without this yield the polling CPU starves lower-priority
-        // threads (compositor, shell) for the entire ~333 ms worst case.
-        //
-        // Safe to yield here because:
-        //  - The GPU Mutex is held by our thread (not a Spinlock), so IRQs are enabled.
-        //  - schedule() re-queues us as Ready; the next tick will return us here.
-        //  - The VirtQueue ring state is stable between yields (no re-entrancy).
         let mut timeout = 0u32;
         loop {
+            if self.broken {
+                crate::serial_println!("[VirtQueue] aborting execute_sync on broken queue");
+                return None;
+            }
             if let Some((_id, len)) = self.poll_used() {
                 return Some(len);
             }
             core::hint::spin_loop();
             timeout += 1;
 
-            // Yield every 1 M iterations so other threads keep running.
-            // Only yield after the scheduler is initialised (before that,
-            // schedule() is a no-op but we avoid the call overhead).
-            if timeout % 1_000_000 == 0 {
-                crate::task::scheduler::schedule();
-            }
-
             if timeout > 200_000_000 {
                 crate::serial_println!("[VirtQueue] timeout waiting for device response (device hung?)");
                 return None;
             }
         }
+    }
+
+    /// Expose queue state for crash diagnostics.
+    pub fn debug_state(&self) -> (u16, u16, u16, u16, bool) {
+        (
+            self.queue_size,
+            self.avail_idx(),
+            self.used_idx(),
+            self.num_free,
+            self.broken,
+        )
     }
 }

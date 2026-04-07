@@ -366,6 +366,7 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
     let cmds = unsafe {
         core::slice::from_raw_parts(cmd_buf_ptr as *const [u32; 9], count)
     };
+    let mut last_cmd_type = 0u32;
 
     // Process all commands in a single GPU lock acquisition.
     // UPDATE commands use transfer_rect (no flush) and accumulate a
@@ -380,6 +381,7 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
 
         for cmd in cmds {
             let cmd_type = cmd[0];
+            last_cmd_type = cmd_type;
             let ok = match cmd_type {
                 1 => { // UPDATE(x, y, w, h) — accumulate bbox, defer transfer+flush
                     let (x, y, w, h) = (cmd[1], cmd[2], cmd[3], cmd[4]);
@@ -459,7 +461,15 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
         executed
     });
 
-    result.unwrap_or(0)
+    let executed = result.unwrap_or(0);
+    if executed == 0 && last_cmd_type != 0 {
+        crate::serial_println!(
+            "[gpu] SYS_GPU_COMMAND returned 0 after last_cmd={} count={}",
+            last_cmd_type,
+            count
+        );
+    }
+    executed
 }
 
 #[cfg(target_arch = "aarch64")]

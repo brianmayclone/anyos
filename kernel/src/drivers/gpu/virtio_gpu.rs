@@ -10,6 +10,7 @@
 use super::GpuDriver;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 use crate::drivers::pci::PciDevice;
 use crate::drivers::virtio::{self, VirtioDevice, VIRTIO_F_VERSION_1};
 use crate::drivers::virtio::virtqueue::VirtQueue;
@@ -54,6 +55,26 @@ const VIRTIO_GPU_F_VIRGL: u64 = 1 << 1;
 const VIRTIO_GPU_RESP_OK_NODATA: u32           = 0x1100;
 const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32     = 0x1101;
 const VIRTIO_GPU_RESP_OK_EDID: u32             = 0x1104;
+
+static LAST_CTRL_CMD_TYPE: AtomicU32 = AtomicU32::new(0);
+static LAST_CURSOR_CMD_TYPE: AtomicU32 = AtomicU32::new(0);
+static LAST_TRANSFER_RESOURCE_ID: AtomicU32 = AtomicU32::new(0);
+static LAST_TRANSFER_X: AtomicU32 = AtomicU32::new(0);
+static LAST_TRANSFER_Y: AtomicU32 = AtomicU32::new(0);
+static LAST_TRANSFER_W: AtomicU32 = AtomicU32::new(0);
+static LAST_TRANSFER_H: AtomicU32 = AtomicU32::new(0);
+static LAST_TRANSFER_OFFSET_LO: AtomicU32 = AtomicU32::new(0);
+static LAST_TRANSFER_OFFSET_HI: AtomicU32 = AtomicU32::new(0);
+static LAST_CONTROL_Q_QSIZE: AtomicU32 = AtomicU32::new(0);
+static LAST_CONTROL_Q_AVAIL: AtomicU32 = AtomicU32::new(0);
+static LAST_CONTROL_Q_USED: AtomicU32 = AtomicU32::new(0);
+static LAST_CONTROL_Q_FREE: AtomicU32 = AtomicU32::new(0);
+static LAST_CONTROL_Q_BROKEN: AtomicU32 = AtomicU32::new(0);
+static LAST_CURSOR_Q_QSIZE: AtomicU32 = AtomicU32::new(0);
+static LAST_CURSOR_Q_AVAIL: AtomicU32 = AtomicU32::new(0);
+static LAST_CURSOR_Q_USED: AtomicU32 = AtomicU32::new(0);
+static LAST_CURSOR_Q_FREE: AtomicU32 = AtomicU32::new(0);
+static LAST_CURSOR_Q_BROKEN: AtomicU32 = AtomicU32::new(0);
 
 // ──────────────────────────────────────────────
 // VirtIO GPU Pixel Formats
@@ -391,6 +412,63 @@ pub struct VirtioGpu {
 unsafe impl Send for VirtioGpu {}
 
 impl VirtioGpu {
+    pub fn last_command_types() -> (u32, u32) {
+        (
+            LAST_CTRL_CMD_TYPE.load(Ordering::Relaxed),
+            LAST_CURSOR_CMD_TYPE.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn last_transfer_info() -> (u32, u32, u32, u32, u32, u64) {
+        let off_lo = LAST_TRANSFER_OFFSET_LO.load(Ordering::Relaxed) as u64;
+        let off_hi = LAST_TRANSFER_OFFSET_HI.load(Ordering::Relaxed) as u64;
+        (
+            LAST_TRANSFER_RESOURCE_ID.load(Ordering::Relaxed),
+            LAST_TRANSFER_X.load(Ordering::Relaxed),
+            LAST_TRANSFER_Y.load(Ordering::Relaxed),
+            LAST_TRANSFER_W.load(Ordering::Relaxed),
+            LAST_TRANSFER_H.load(Ordering::Relaxed),
+            off_lo | (off_hi << 32),
+        )
+    }
+
+    pub fn queue_debug_info() -> ((u16, u16, u16, u16, bool), (u16, u16, u16, u16, bool)) {
+        (
+            (
+                LAST_CONTROL_Q_QSIZE.load(Ordering::Relaxed) as u16,
+                LAST_CONTROL_Q_AVAIL.load(Ordering::Relaxed) as u16,
+                LAST_CONTROL_Q_USED.load(Ordering::Relaxed) as u16,
+                LAST_CONTROL_Q_FREE.load(Ordering::Relaxed) as u16,
+                LAST_CONTROL_Q_BROKEN.load(Ordering::Relaxed) != 0,
+            ),
+            (
+                LAST_CURSOR_Q_QSIZE.load(Ordering::Relaxed) as u16,
+                LAST_CURSOR_Q_AVAIL.load(Ordering::Relaxed) as u16,
+                LAST_CURSOR_Q_USED.load(Ordering::Relaxed) as u16,
+                LAST_CURSOR_Q_FREE.load(Ordering::Relaxed) as u16,
+                LAST_CURSOR_Q_BROKEN.load(Ordering::Relaxed) != 0,
+            ),
+        )
+    }
+
+    fn snapshot_controlq(&self) {
+        let (qs, avail, used, free, broken) = self.controlq.debug_state();
+        LAST_CONTROL_Q_QSIZE.store(qs as u32, Ordering::Relaxed);
+        LAST_CONTROL_Q_AVAIL.store(avail as u32, Ordering::Relaxed);
+        LAST_CONTROL_Q_USED.store(used as u32, Ordering::Relaxed);
+        LAST_CONTROL_Q_FREE.store(free as u32, Ordering::Relaxed);
+        LAST_CONTROL_Q_BROKEN.store(broken as u32, Ordering::Relaxed);
+    }
+
+    fn snapshot_cursorq(&self) {
+        let (qs, avail, used, free, broken) = self.cursorq.debug_state();
+        LAST_CURSOR_Q_QSIZE.store(qs as u32, Ordering::Relaxed);
+        LAST_CURSOR_Q_AVAIL.store(avail as u32, Ordering::Relaxed);
+        LAST_CURSOR_Q_USED.store(used as u32, Ordering::Relaxed);
+        LAST_CURSOR_Q_FREE.store(free as u32, Ordering::Relaxed);
+        LAST_CURSOR_Q_BROKEN.store(broken as u32, Ordering::Relaxed);
+    }
+
     // ── Command execution helpers ──
 
     /// Send a control command and wait for response.
@@ -400,6 +478,10 @@ impl VirtioGpu {
         if cmd_len > 4096 {
             crate::serial_verbose_println!("  VirtIO GPU: command too large ({} bytes)", cmd_len);
             return 0;
+        }
+        if cmd_len >= core::mem::size_of::<GpuCtrlHdr>() {
+            let hdr = unsafe { &*(cmd.as_ptr() as *const GpuCtrlHdr) };
+            LAST_CTRL_CMD_TYPE.store(hdr.type_, Ordering::Relaxed);
         }
 
         // Copy command to DMA buffer
@@ -428,9 +510,10 @@ impl VirtioGpu {
             &[(self.resp_buf, resp_len)],
             || { virtio::mmio_write16(notify_virt, 0); },
         );
+        self.snapshot_controlq();
 
         if result.is_none() {
-            crate::serial_println!("[gpu] VirtIO GPU: command timeout (type={:#x})", {
+            crate::serial_println!("[gpu] VirtIO GPU: control queue failed (type={:#x})", {
                 let hdr = unsafe { &*(cmd.as_ptr() as *const GpuCtrlHdr) };
                 hdr.type_
             });
@@ -448,6 +531,10 @@ impl VirtioGpu {
     /// Send a cursor command via the cursor queue.
     fn send_cursor_cmd(&mut self, cmd: &[u8]) {
         let cmd_len = cmd.len();
+        if cmd_len >= core::mem::size_of::<GpuCtrlHdr>() {
+            let hdr = unsafe { &*(cmd.as_ptr() as *const GpuCtrlHdr) };
+            LAST_CURSOR_CMD_TYPE.store(hdr.type_, Ordering::Relaxed);
+        }
         // Use second half of cmd_buf for cursor commands to avoid overlap
         let cursor_buf = self.cmd_buf + 2048;
 
@@ -470,11 +557,17 @@ impl VirtioGpu {
         let notify_off = virtio::mmio_read16(common_cfg + 0x1E);
         let notify_virt = notify_addr + (notify_off as u64) * (notify_off_mul as u64);
 
-        self.cursorq.execute_sync(
+        let result = self.cursorq.execute_sync(
             &[(cursor_buf, cmd_len as u32)],
             &[(cursor_resp, 24)],
             || { virtio::mmio_write16(notify_virt, 1); },
         );
+        self.snapshot_cursorq();
+
+        if result.is_none() {
+            crate::serial_println!("[gpu] VirtIO GPU: cursor queue failed");
+            return;
+        }
 
         // Read ISR status to deassert any pending level-triggered PCI interrupt
         let _ = virtio::mmio_read8(self.device.isr_addr);
@@ -713,6 +806,13 @@ impl VirtioGpu {
         } else {
             (x, y, w, 0u64)
         };
+        LAST_TRANSFER_RESOURCE_ID.store(resource_id, Ordering::Relaxed);
+        LAST_TRANSFER_X.store(r_x, Ordering::Relaxed);
+        LAST_TRANSFER_Y.store(r_y, Ordering::Relaxed);
+        LAST_TRANSFER_W.store(r_width, Ordering::Relaxed);
+        LAST_TRANSFER_H.store(h, Ordering::Relaxed);
+        LAST_TRANSFER_OFFSET_LO.store(offset as u32, Ordering::Relaxed);
+        LAST_TRANSFER_OFFSET_HI.store((offset >> 32) as u32, Ordering::Relaxed);
         let cmd = TransferToHost2d {
             hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
             r_x,
@@ -1326,25 +1426,15 @@ impl GpuDriver for VirtioGpu {
             return;
         }
         // Only transfer — no flush.
-        // Retry once on failure.  The execute_sync timeout was raised to 200 M
-        // iterations (~333 ms), so reaching here implies the device truly could
-        // not respond.  Before retrying we spin for ~1 M iterations (~1.7 ms) to
-        // give QEMU time to process the in-flight command and write its completion
-        // to the used ring; then we drain any pending used-ring entries so the
-        // virtqueue is in a clean, synchronised state before the retry command is
-        // pushed.  Without the drain, the retry would re-use the same shared DMA
-        // buffers (cmd_buf / resp_buf) while the old descriptors still reference
-        // them, causing silent response aliasing and permanent ring de-sync.
+        // Keep this path single-shot and side-effect minimal: if the control queue
+        // is already unhealthy, retry/drain logic tends to touch more queue state
+        // and makes post-mortem diagnosis harder. One failed transfer is safer
+        // than compounding corruption with a second in-flight command.
         if !self.cmd_transfer_to_host_2d(self.scanout_resource_id, x, y, w, h) {
-            for _ in 0..1_000_000u32 { core::hint::spin_loop(); }
-            // Drain stale completions so the queue is in sync before retry.
-            while self.controlq.poll_used().is_some() {}
-            if !self.cmd_transfer_to_host_2d(self.scanout_resource_id, x, y, w, h) {
-                crate::serial_println!(
-                    "[gpu] VirtIO TRANSFER_TO_HOST_2D failed: ({},{} {}x{}) res={}",
-                    x, y, w, h, self.scanout_resource_id
-                );
-            }
+            crate::serial_println!(
+                "[gpu] VirtIO TRANSFER_TO_HOST_2D failed: ({},{} {}x{}) res={}",
+                x, y, w, h, self.scanout_resource_id
+            );
         }
     }
 

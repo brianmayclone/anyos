@@ -419,6 +419,44 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
             let crash_cpu = crate::arch::x86::smp::current_cpu_id() as usize;
             let last_sc = crate::task::scheduler::get_last_syscall(crash_cpu);
             crate::serial_println!("  LastSC: {} ({})", last_sc, crate::syscall::table::syscall_name(last_sc));
+            if last_sc == crate::syscall::SYS_GPU_COMMAND {
+                let (driver_data, driver_vtable) = crate::drivers::gpu::last_driver_ptrs();
+                let (virtio_ctrl, virtio_cursor) =
+                    crate::drivers::gpu::virtio_gpu::VirtioGpu::last_command_types();
+                crate::serial_println!(
+                    "  GPU:    driver_data={:#010x}  driver_vtable={:#018x}",
+                    driver_data,
+                    driver_vtable
+                );
+                crate::serial_println!(
+                    "  GPU:    virtio_last_ctrl={:#x}  virtio_last_cursor={:#x}",
+                    virtio_ctrl,
+                    virtio_cursor
+                );
+                let (controlq, cursorq) =
+                    crate::drivers::gpu::virtio_gpu::VirtioGpu::queue_debug_info();
+                crate::serial_println!(
+                    "  GPU:    ctrlq qsz={} avail={} used={} free={} broken={}",
+                    controlq.0, controlq.1, controlq.2, controlq.3, controlq.4 as u8
+                );
+                crate::serial_println!(
+                    "  GPU:    cursq qsz={} avail={} used={} free={} broken={}",
+                    cursorq.0, cursorq.1, cursorq.2, cursorq.3, cursorq.4 as u8
+                );
+                if virtio_ctrl == 0x105 {
+                    let (res, x, y, w, h, offset) =
+                        crate::drivers::gpu::virtio_gpu::VirtioGpu::last_transfer_info();
+                    crate::serial_println!(
+                        "  GPU:    transfer res={} x={} y={} w={} h={} off={:#x}",
+                        res,
+                        x,
+                        y,
+                        w,
+                        h,
+                        offset
+                    );
+                }
+            }
         }
         if signal == 139 && frame.int_no == 14 {
             // Page fault — show CR2 (faulting address)

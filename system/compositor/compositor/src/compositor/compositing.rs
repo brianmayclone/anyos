@@ -103,23 +103,16 @@ impl Compositor {
         // self.damage keeps its capacity for next frame's pushes.
         core::mem::swap(&mut self.damage, &mut self.compositing_damage);
 
-        // Try GPU RECT_COPY fast path for window drags (requires gpu_accel + valid hint).
-        // Works for both opaque and non-opaque layers (decorated windows with rounded corners).
-        // For non-opaque layers, corner strips are flushed from back buffer after RECT_COPY.
-        // Disabled in GMR mode: RECT_COPY operates on the back buffer (registered as GPU
-        // framebuffer), which corrupts freshly composited content. Since flush_region is
-        // already a no-op in GMR mode, there's no VRAM memcpy cost to optimize away.
-        if self.gpu_accel && !self.hw_double_buffer && !self.gmr_active {
-            if let Some(ref h) = hint {
-                if let Some(moved_idx) = self.layer_index(h.layer_id) {
-                    let layer = &self.layers[moved_idx];
-                    if layer.opaque || (layer.width > 16 && layer.height > 16) {
-                        self.compose_with_rect_copy(h);
-                        return true;
-                    }
-                }
-            }
-        }
+        // NOTE: The GPU RECT_COPY drag fast path is intentionally disabled for now.
+        //
+        // On VirtIO GPU this path has proven unstable under rapid window movement:
+        // the compositor emits a tight sequence of RECT_COPY/SYNC/UPDATE/FLUSH
+        // commands, and the kernel-side GPU path has been observed to crash in
+        // SYS_GPU_COMMAND during or immediately after fast drags.
+        //
+        // Until the lower-level VirtIO GPU instability is fully resolved, prefer
+        // the standard software compositing path for correctness and stability.
+        let _ = hint;
 
         // Standard SW compositing path
         let damage_len = self.compositing_damage.len();

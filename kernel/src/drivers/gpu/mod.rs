@@ -19,6 +19,9 @@ use crate::sync::mutex::Mutex;
 /// Poisoned flag: set after force_unlock_gpu() to prevent use of potentially
 /// corrupted GPU driver state. Cleared only by a full GPU re-init.
 static GPU_POISONED: AtomicBool = AtomicBool::new(false);
+static LAST_GPU_DRIVER_DATA: AtomicU32 = AtomicU32::new(0);
+static LAST_GPU_DRIVER_VTABLE_LO: AtomicU32 = AtomicU32::new(0);
+static LAST_GPU_DRIVER_VTABLE_HI: AtomicU32 = AtomicU32::new(0);
 
 /// Validate a `&dyn GpuDriver` trait object's vtable pointer.
 /// Returns false if data or vtable pointer is outside kernel higher-half,
@@ -273,10 +276,22 @@ where
     let mut gpu = GPU.lock();
     let boxed = gpu.as_mut()?;
     let driver: &mut dyn GpuDriver = boxed.as_mut();
+    let fat: [usize; 2] = unsafe { core::mem::transmute_copy(&(driver as *const dyn GpuDriver)) };
+    LAST_GPU_DRIVER_DATA.store(fat[0] as u32, Ordering::Relaxed);
+    LAST_GPU_DRIVER_VTABLE_LO.store(fat[1] as u32, Ordering::Relaxed);
+    LAST_GPU_DRIVER_VTABLE_HI.store((fat[1] >> 32) as u32, Ordering::Relaxed);
     if !validate_gpu_vtable(driver) {
         return None;
     }
     Some(f(driver))
+}
+
+/// Last observed GPU trait-object raw pointers for crash diagnostics.
+pub fn last_driver_ptrs() -> (u32, u64) {
+    let data = LAST_GPU_DRIVER_DATA.load(Ordering::Relaxed);
+    let vtable_lo = LAST_GPU_DRIVER_VTABLE_LO.load(Ordering::Relaxed) as u64;
+    let vtable_hi = LAST_GPU_DRIVER_VTABLE_HI.load(Ordering::Relaxed) as u64;
+    (data, vtable_lo | (vtable_hi << 32))
 }
 
 /// Check if a GPU driver is registered and not poisoned.
