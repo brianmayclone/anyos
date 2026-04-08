@@ -919,12 +919,20 @@ pub(crate) fn request_layout_refresh(tab_index: usize) {
 pub(crate) fn request_image_refresh(tab_index: usize) {
     let schedule = {
         let st = state();
-        let layout_pending =
-            tab_index < st.render_dirty.len() && st.render_dirty[tab_index] == RenderWork::Layout;
-        if tab_index == st.active_tab && !layout_pending {
-            RenderSchedule::Immediate
-        } else {
+        if tab_index >= st.tabs.len() {
             RenderSchedule::Debounced
+        } else {
+            let layout_pending = tab_index < st.render_dirty.len()
+                && st.render_dirty[tab_index] == RenderWork::Layout;
+            let phase = st.tabs[tab_index].load_state.phase;
+            if tab_index == st.active_tab
+                && !layout_pending
+                && matches!(phase, PageLoadPhase::Interactive)
+            {
+                RenderSchedule::Immediate
+            } else {
+                RenderSchedule::Debounced
+            }
         }
     };
     request_render(tab_index, RenderWork::Paint, schedule);

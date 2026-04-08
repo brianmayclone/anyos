@@ -88,8 +88,8 @@ pub(super) fn measure_max_content(
 
     // Image → use image dimensions or CSS width.
     if dom.tag(node_id) == Some(Tag::Img) {
-        if let Some(src) = dom.attr(node_id, "src") {
-            if let Some(info) = images.get_ref(src) {
+        if let Some(src) = dom.image_url(node_id) {
+            if let Some(info) = images.get_ref(&src) {
                 let w = dom
                     .attr(node_id, "width")
                     .and_then(|s| s.parse::<i32>().ok())

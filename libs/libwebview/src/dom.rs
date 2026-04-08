@@ -624,6 +624,65 @@ impl Dom {
         }
     }
 
+    /// Resolve the best available image URL for an `<img>` element.
+    ///
+    /// Prefers modern sources such as `<picture><source srcset>`, `srcset`,
+    /// and common lazy-loading attributes before falling back to `src`.
+    pub fn image_url(&self, id: NodeId) -> Option<String> {
+        if self.tag(id) != Some(Tag::Img) {
+            return None;
+        }
+
+        if let Some(parent_id) = self.nodes[id].parent {
+            if self.tag(parent_id) == Some(Tag::Picture) {
+                for &child_id in &self.nodes[parent_id].children {
+                    if child_id == id {
+                        break;
+                    }
+                    if self.tag(child_id) != Some(Tag::Source) {
+                        continue;
+                    }
+                    if let Some(srcset) = self.attr(child_id, "srcset") {
+                        if let Some(candidate) = pick_srcset_candidate(srcset) {
+                            return Some(candidate);
+                        }
+                    }
+                    if let Some(src) = first_non_empty_attr(
+                        self,
+                        child_id,
+                        &["src", "data-src", "data-lazy-src", "data-original"],
+                    ) {
+                        return Some(String::from(src));
+                    }
+                }
+            }
+        }
+
+        if let Some(srcset) = first_non_empty_attr(
+            self,
+            id,
+            &["srcset", "data-srcset", "data-lazy-srcset"],
+        ) {
+            if let Some(candidate) = pick_srcset_candidate(srcset) {
+                return Some(candidate);
+            }
+        }
+
+        first_non_empty_attr(
+            self,
+            id,
+            &[
+                "src",
+                "data-src",
+                "data-lazy-src",
+                "data-original",
+                "data-url",
+                "data-image",
+            ],
+        )
+        .map(String::from)
+    }
+
     /// Recursively collect all descendant text into a single `String`.
     pub fn text_content(&self, id: NodeId) -> String {
         let mut out = String::new();
@@ -805,6 +864,92 @@ impl Dom {
             }
         }
     }
+}
+
+fn first_non_empty_attr<'a>(dom: &'a Dom, id: NodeId, names: &[&str]) -> Option<&'a str> {
+    for &name in names {
+        if let Some(value) = dom.attr(id, name) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    None
+}
+
+fn pick_srcset_candidate(srcset: &str) -> Option<String> {
+    let mut best_url: Option<&str> = None;
+    let mut best_score: i32 = -1;
+
+    for candidate in srcset.split(',') {
+        let candidate = candidate.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        let mut parts = candidate.split_ascii_whitespace();
+        let url = match parts.next() {
+            Some(url) if !url.is_empty() => url,
+            _ => continue,
+        };
+        let descriptor = parts.next().unwrap_or("");
+        let score = if let Some(width) = descriptor.strip_suffix('w') {
+            parse_positive_int(width).unwrap_or(1)
+        } else if let Some(scale) = descriptor.strip_suffix('x') {
+            parse_density_score(scale).unwrap_or(1)
+        } else {
+            1
+        };
+        if score >= best_score {
+            best_score = score;
+            best_url = Some(url);
+        }
+    }
+
+    best_url.map(String::from)
+}
+
+fn parse_positive_int(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let mut value = 0i32;
+    for b in s.bytes() {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        value = value.saturating_mul(10).saturating_add((b - b'0') as i32);
+    }
+    if value > 0 { Some(value) } else { None }
+}
+
+fn parse_density_score(s: &str) -> Option<i32> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let mut whole = 0i32;
+    let mut frac = 0i32;
+    let mut frac_div = 1i32;
+    let mut seen_dot = false;
+    for b in s.bytes() {
+        match b {
+            b'0'..=b'9' => {
+                if seen_dot {
+                    if frac_div < 1000 {
+                        frac = frac * 10 + (b - b'0') as i32;
+                        frac_div *= 10;
+                    }
+                } else {
+                    whole = whole.saturating_mul(10).saturating_add((b - b'0') as i32);
+                }
+            }
+            b'.' if !seen_dot => seen_dot = true,
+            _ => return None,
+        }
+    }
+    Some(whole.saturating_mul(1000) + frac.saturating_mul(1000 / frac_div.max(1)))
 }
 
 // ---------------------------------------------------------------------------

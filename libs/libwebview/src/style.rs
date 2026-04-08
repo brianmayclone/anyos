@@ -5,10 +5,10 @@
 //! specificity) -> inline styles.  Inheritable properties that are not
 //! explicitly set by any declaration are inherited from the parent node.
 
+use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-
-use alloc::string::String;
 
 use crate::css::{
     AttrOp, CssValue, Declaration, Property, PseudoClass, PseudoElement, Rule, Selector,
@@ -1243,9 +1243,9 @@ struct RuleIndex {
     /// `by_tag[tag_discriminant]` = rule indices whose leaf selector requires that tag.
     by_tag: [Vec<usize>; TAG_COUNT],
     /// Rules whose leaf selector requires a specific ID.  Key = id string.
-    by_id: Vec<(String, Vec<usize>)>,
+    by_id: BTreeMap<String, Vec<usize>>,
     /// Rules whose leaf selector requires a specific class.  Key = class string.
-    by_class: Vec<(String, Vec<usize>)>,
+    by_class: BTreeMap<String, Vec<usize>>,
     /// Rules with no tag/id/class restriction (universal, attribute-only, pseudo-only).
     wildcard: Vec<usize>,
     /// Total number of rules (for bitset sizing).
@@ -1258,8 +1258,8 @@ impl RuleIndex {
         const EMPTY_VEC: Vec<usize> = Vec::new();
         let mut idx = RuleIndex {
             by_tag: [EMPTY_VEC; TAG_COUNT],
-            by_id: Vec::new(),
-            by_class: Vec::new(),
+            by_id: BTreeMap::new(),
+            by_class: BTreeMap::new(),
             wildcard: Vec::new(),
             rule_count: all_rules.len(),
         };
@@ -1350,8 +1350,7 @@ impl RuleIndex {
 
         // ID bucket.
         if let Some(id) = id_attr {
-            if let Some((_, indices)) = self.by_id.iter().find(|(k, _)| eq_ignore_ascii_case(k, id))
-            {
+            if let Some(indices) = keyed_bucket(&self.by_id, id) {
                 for &ri in indices {
                     let word = ri / 64;
                     let bit = 1u64 << (ri % 64);
@@ -1363,10 +1362,11 @@ impl RuleIndex {
             }
         }
 
-        // Class buckets.
+        // Class buckets. Match only the classes present on the node instead of
+        // scanning every known class bucket.
         if let Some(classes) = class_attr {
-            for (cls_key, indices) in &self.by_class {
-                if has_class(classes, cls_key) {
+            for cls in classes.split_ascii_whitespace() {
+                if let Some(indices) = keyed_bucket(&self.by_class, cls) {
                     for &ri in indices {
                         let word = ri / 64;
                         let bit = 1u64 << (ri % 64);
@@ -1405,17 +1405,17 @@ fn leaf_simple(sel: &Selector) -> Option<&SimpleSelector> {
 }
 
 /// Push `value` into the keyed bucket list.
-fn push_keyed(buckets: &mut Vec<(String, Vec<usize>)>, key: &str, value: usize) {
-    if let Some((_, vec)) = buckets
-        .iter_mut()
-        .find(|(k, _)| eq_ignore_ascii_case(k, key))
-    {
-        vec.push(value);
-    } else {
-        let mut v = Vec::new();
-        v.push(value);
-        buckets.push((String::from(key), v));
-    }
+fn push_keyed(buckets: &mut BTreeMap<String, Vec<usize>>, key: &str, value: usize) {
+    buckets
+        .entry(key.to_ascii_lowercase())
+        .or_default()
+        .push(value);
+}
+
+#[inline]
+fn keyed_bucket<'a>(buckets: &'a BTreeMap<String, Vec<usize>>, key: &str) -> Option<&'a Vec<usize>> {
+    let lower = key.to_ascii_lowercase();
+    buckets.get(lower.as_str())
 }
 
 // ---------------------------------------------------------------------------
@@ -1893,7 +1893,7 @@ pub fn resolve_styles(
     stylesheets: &[&Stylesheet],
     viewport_width: i32,
     viewport_height: i32,
-    inline_style_cache: &mut Vec<(usize, Vec<Declaration>)>,
+    inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
 ) -> (Vec<ComputedStyle>, PseudoStyles) {
     // Store viewport dimensions for resolve_length() to resolve vh/vw units.
     unsafe {
@@ -1902,6 +1902,9 @@ pub fn resolve_styles(
     }
 
     let count = dom.nodes.len();
+    if inline_style_cache.len() < count {
+        inline_style_cache.resize_with(count, || None);
+    }
     crate::debug_surf!(
         "[style] resolve_styles: {} nodes, {} stylesheets",
         count,
@@ -2089,14 +2092,11 @@ pub fn resolve_styles(
                 for a in attrs {
                     if eq_ignore_ascii_case(&a.name, "style") {
                         // Look up cached declarations for this node, or parse and cache.
-                        let cached_idx = inline_style_cache.iter().position(|(nid, _)| *nid == id);
-                        let inline_decls: &[Declaration] = if let Some(ci) = cached_idx {
-                            &inline_style_cache[ci].1
-                        } else {
-                            let parsed = crate::css::parse_inline_style(&a.value);
-                            inline_style_cache.push((id, parsed));
-                            &inline_style_cache.last().unwrap().1
-                        };
+                        if inline_style_cache[id].is_none() {
+                            inline_style_cache[id] =
+                                Some(crate::css::parse_inline_style(&a.value));
+                        }
+                        let inline_decls = inline_style_cache[id].as_ref().unwrap();
 
                         for decl in inline_decls {
                             if let Property::CustomProperty(ref name) = decl.property {
@@ -2164,13 +2164,31 @@ pub fn resolve_styles(
 
     // ── Phase 7: Resolve ::before/::after pseudo-element styles ──
     let mut pseudo = PseudoStyles::empty(count);
+    let mut pseudo_candidates: Vec<usize> = Vec::with_capacity(128);
+    let mut pseudo_seen_bitset: Vec<u64> = Vec::with_capacity((all_rules.len() + 63) / 64);
     for id in 0..count {
         let node = &dom.nodes[id];
-        if !matches!(node.node_type, NodeType::Element { .. }) {
-            continue;
-        }
-        // Check all rules for pseudo-element selectors targeting this node.
-        for &(rule, _order) in &all_rules {
+        let (tag, attrs) = match &node.node_type {
+            NodeType::Element { tag, attrs } => (*tag, attrs),
+            _ => continue,
+        };
+        let id_attr = attrs
+            .iter()
+            .find(|a| eq_ignore_ascii_case(&a.name, "id"))
+            .map(|a| a.value.as_str());
+        let class_attr = attrs
+            .iter()
+            .find(|a| eq_ignore_ascii_case(&a.name, "class"))
+            .map(|a| a.value.as_str());
+        rule_index.candidates(
+            tag,
+            id_attr,
+            class_attr,
+            &mut pseudo_candidates,
+            &mut pseudo_seen_bitset,
+        );
+        for &rule_idx in pseudo_candidates.iter() {
+            let (rule, _order) = all_rules[rule_idx];
             for sel in &rule.selectors {
                 let pe = sel.pseudo_element();
                 if pe.is_none() {

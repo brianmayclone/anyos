@@ -416,7 +416,7 @@ fn collect_inline_fragments(
             if *tag == Tag::Img {
                 let (iw, ih) = image_dimensions(dom, node_id, available_width, images);
                 let mut img = LayoutBox::new(Some(node_id), BoxType::Inline);
-                img.image_src = dom.attr(node_id, "src").map(|s| String::from(s));
+                img.image_src = dom.image_url(node_id);
                 img.image_width = Some(iw);
                 img.image_height = Some(ih);
                 img.object_fit = style.object_fit;

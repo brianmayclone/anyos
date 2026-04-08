@@ -152,7 +152,7 @@ pub struct WebView {
     keyframes_dirty: bool,
     /// Cached parsed inline `style="..."` declarations per node_id.
     /// Avoids re-parsing the same style attribute on every relayout.
-    inline_style_cache: Vec<(usize, Vec<css::Declaration>)>,
+    inline_style_cache: Vec<Option<Vec<css::Declaration>>>,
     pub images: ImageCache,
     viewport_width: i32,
     /// Viewport height in pixels (visible ScrollView area).

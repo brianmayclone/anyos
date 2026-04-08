@@ -536,8 +536,9 @@ pub(super) fn image_dimensions(
     images: &ImageCache,
 ) -> (i32, i32) {
     // Get natural dimensions from image cache (actual decoded image size).
-    let src = dom.attr(node_id, "src");
+    let src = dom.image_url(node_id);
     let natural = src
+        .as_deref()
         .and_then(|s| images.get_ref(s))
         .map(|e| (e.width.min(65535) as i32, e.height.min(65535) as i32));
 

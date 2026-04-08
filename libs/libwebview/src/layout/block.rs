@@ -289,7 +289,7 @@ pub fn build_block(
     // Handle <img> as block/inline-block replaced element.
     if tag == Some(Tag::Img) {
         let (iw, ih) = image_dimensions(dom, node_id, bx.width, images);
-        bx.image_src = dom.attr(node_id, "src").map(|s| String::from(s));
+        bx.image_src = dom.image_url(node_id);
         bx.image_width = Some(iw);
         bx.image_height = Some(ih);
         bx.object_fit = style.object_fit;

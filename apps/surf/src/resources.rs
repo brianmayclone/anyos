@@ -434,15 +434,15 @@ pub(crate) fn queue_images(
             ..
         } = &node.node_type
         {
-            if let Some(src) = dom.attr(i, "src") {
+            if let Some(src) = dom.image_url(i) {
                 if src.is_empty() {
                     continue;
                 }
 
                 if src.starts_with("data:") {
                     // Decode inline — no network fetch needed.
-                    if let Some((bytes, is_svg)) = decode_data_uri(src) {
-                        let key = String::from(src);
+                    if let Some((bytes, is_svg)) = decode_data_uri(&src) {
+                        let key = src.clone();
                         if is_svg {
                             decode_svg_no_relayout(&bytes, &key, tab_index);
                         } else {
@@ -452,8 +452,7 @@ pub(crate) fn queue_images(
                     continue;
                 }
 
-                let img_url = crate::http::resolve_url(base_url, src);
-                let src = String::from(src);
+                let img_url = crate::http::resolve_url(base_url, &src);
                 let loading = dom.attr(i, "loading").unwrap_or("");
                 let fetchpriority = dom.attr(i, "fetchpriority").unwrap_or("");
                 let lazy_requested = loading.eq_ignore_ascii_case("lazy");
@@ -780,19 +779,61 @@ pub(crate) fn decode_raster(data: &[u8], src: &str, tab_idx: usize) {
 pub(crate) fn decode_raster_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
     let info = match libimage_client::probe(data) {
         Some(i) => i,
-        None => return,
+        None => {
+            crate::surf_log!(
+                "[surf] image probe failed: src={} bytes={} tab={}",
+                src,
+                data.len(),
+                tab_idx
+            );
+            return;
+        }
     };
     let w = info.width;
     let h = info.height;
     if w == 0 || h == 0 || w > 4096 || h > 4096 {
+        crate::surf_log!(
+            "[surf] image rejected by dimensions: src={} format={} {}x{} tab={}",
+            src,
+            libimage_client::format_name(info.format),
+            w,
+            h,
+            tab_idx
+        );
         return;
     }
     let mut pixels = vec![0u32; (w * h) as usize];
     let mut scratch = vec![0u8; info.scratch_needed as usize];
-    if libimage_client::decode(data, &mut pixels, &mut scratch).is_ok() {
-        let st = crate::state();
-        if tab_idx < st.tabs.len() {
-            st.tabs[tab_idx].webview.add_image(src, pixels, w, h);
+    match libimage_client::decode(data, &mut pixels, &mut scratch) {
+        Ok(()) => {
+            let suspicious_black = decoded_image_looks_suspiciously_black(&pixels);
+            if let Some(black_ratio_ppm) = suspicious_black {
+                crate::surf_log!(
+                    "[surf] WARN suspicious image decode: src={} format={} {}x{} black_ratio_ppm={} tab={}",
+                    src,
+                    libimage_client::format_name(info.format),
+                    w,
+                    h,
+                    black_ratio_ppm,
+                    tab_idx
+                );
+            }
+            let st = crate::state();
+            if tab_idx < st.tabs.len() {
+                st.tabs[tab_idx].webview.add_image(src, pixels, w, h);
+            }
+        }
+        Err(err) => {
+            crate::surf_log!(
+                "[surf] image decode failed: src={} format={} {}x{} scratch={} err={:?} tab={}",
+                src,
+                libimage_client::format_name(info.format),
+                w,
+                h,
+                info.scratch_needed,
+                err,
+                tab_idx
+            );
         }
     }
 }
@@ -823,5 +864,34 @@ pub(crate) fn decode_svg_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
         if tab_idx < st.tabs.len() {
             st.tabs[tab_idx].webview.add_image(src, pixels, rw, rh);
         }
+    }
+}
+
+fn decoded_image_looks_suspiciously_black(pixels: &[u32]) -> Option<u32> {
+    if pixels.len() < 4096 {
+        return None;
+    }
+    let mut opaque_black = 0u32;
+    let mut opaque_non_black = 0u32;
+    for &px in pixels {
+        let alpha = (px >> 24) & 0xFF;
+        if alpha < 240 {
+            continue;
+        }
+        if px & 0x00FF_FFFF == 0 {
+            opaque_black = opaque_black.saturating_add(1);
+        } else {
+            opaque_non_black = opaque_non_black.saturating_add(1);
+        }
+    }
+    let opaque_total = opaque_black.saturating_add(opaque_non_black);
+    if opaque_total < 2048 {
+        return None;
+    }
+    let black_ratio_ppm = opaque_black.saturating_mul(1_000_000) / opaque_total.max(1);
+    if black_ratio_ppm >= 985_000 {
+        Some(black_ratio_ppm)
+    } else {
+        None
     }
 }
