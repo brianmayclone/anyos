@@ -208,36 +208,62 @@ fn update_mining(s: &mut crate::state::GameState, ray_hit: Option<&player::RayHi
         return;
     }
 
-    let Some(hit) = ray_hit else {
-        reset_mining(s);
-        return;
-    };
-    let block_id = s.world.get_block(hit.x, hit.y, hit.z);
-    let Some(break_time) = block::break_time_seconds(block_id, block::ToolKind::Hand) else {
-        reset_mining(s);
-        return;
-    };
+    let (ex, ey, ez) = s.player.eye_position();
 
-    let same_target = matches!(
-        s.mining_target,
-        Some(target) if target.x == hit.x && target.y == hit.y && target.z == hit.z && target.block_id == block_id
-    );
+    let locked_target = s.mining_target.and_then(|target| {
+        let current_id = s.world.get_block(target.x, target.y, target.z);
+        if current_id != target.block_id || !block::is_breakable(current_id) {
+            return None;
+        }
 
-    if !same_target {
-        s.mining_target = Some(MiningTarget {
+        let cx = target.x as f32 + 0.5;
+        let cy = target.y as f32 + 0.5;
+        let cz = target.z as f32 + 0.5;
+        let dx = cx - ex;
+        let dy = cy - ey;
+        let dz = cz - ez;
+        let reach = player::REACH + 0.75;
+        if dx * dx + dy * dy + dz * dz > reach * reach {
+            return None;
+        }
+
+        Some(target)
+    });
+
+    let target = if let Some(target) = locked_target {
+        target
+    } else {
+        let Some(hit) = ray_hit else {
+            reset_mining(s);
+            return;
+        };
+        let block_id = s.world.get_block(hit.x, hit.y, hit.z);
+        let Some(_) = block::break_time_seconds(block_id, block::ToolKind::Hand) else {
+            reset_mining(s);
+            return;
+        };
+
+        let target = MiningTarget {
             x: hit.x,
             y: hit.y,
             z: hit.z,
             block_id,
-        });
+        };
+        s.mining_target = Some(target);
         s.mining_progress = 0.0;
-    }
+        target
+    };
+
+    let Some(break_time) = block::break_time_seconds(target.block_id, block::ToolKind::Hand) else {
+        reset_mining(s);
+        return;
+    };
 
     s.mining_progress = (s.mining_progress + FIXED_DT / break_time).min(1.0);
     if s.mining_progress >= 1.0 {
-        s.inventory.add_block(block_id);
+        s.inventory.add_block(target.block_id);
         sync_selected_block(&s.inventory, &mut s.player);
-        s.world.set_block(hit.x, hit.y, hit.z, block::AIR);
+        s.world.set_block(target.x, target.y, target.z, block::AIR);
         reset_mining(s);
     }
 }

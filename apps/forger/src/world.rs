@@ -8,6 +8,40 @@ const CHUNK_Z: usize = 16;
 const CHUNK_SIZE: usize = CHUNK_X * CHUNK_Y * CHUNK_Z;
 const SEA_LEVEL: i32 = 64;
 
+fn terrain_height(wx: i32, wz: i32, seed: u32) -> i32 {
+    let seed_f = seed as f32;
+    let world_x = wx as f32;
+    let world_z = wz as f32;
+
+    let base_x = world_x * 0.0045 + seed_f * 0.013;
+    let base_z = world_z * 0.0045 - seed_f * 0.011;
+    let detail_x = world_x * 0.011 + seed_f * 0.031;
+    let detail_z = world_z * 0.011 - seed_f * 0.027;
+    let ridge_x = world_x * 0.007 + seed_f * 0.019;
+    let ridge_z = world_z * 0.007 + seed_f * 0.017;
+    let mask_x = world_x * 0.0026 - seed_f * 0.007;
+    let mask_z = world_z * 0.0026 + seed_f * 0.009;
+
+    let base = 60.0 + fbm2d(base_x, base_z, 5, 0.52) * 10.0;
+    let rolling = fbm2d(detail_x, detail_z, 4, 0.55).max(-0.15) * 16.0;
+    let ridge_base = (1.0 - noise2d(ridge_x, ridge_z).abs()).max(0.0);
+    let ridge = ridge_base * ridge_base * ridge_base * 42.0;
+    let mask_base = ((fbm2d(mask_x, mask_z, 3, 0.58) + 1.0) * 0.5).max(0.0);
+    let mountain_mask = mask_base * mask_base;
+    let plateau_base =
+        noise2d(world_x * 0.0018 + seed_f * 0.021, world_z * 0.0018 - seed_f * 0.025).max(0.0);
+    let plateau = plateau_base * plateau_base * 18.0;
+
+    let mut height = base + rolling + ridge * mountain_mask + plateau;
+    if height < 34.0 {
+        height = 34.0;
+    }
+    if height > 148.0 {
+        height = 148.0;
+    }
+    (height + 0.5) as i32
+}
+
 fn hash(mut x: u32) -> u32 {
     x = x.wrapping_mul(0x45d9f3b).wrapping_add(0x12345);
     x = ((x >> 16) ^ x).wrapping_mul(0x45d9f3b);
@@ -134,16 +168,13 @@ impl World {
         }
 
         let mut chunk = Chunk::new();
-        let seed_f = self.seed as f32;
 
         for lz in 0..CHUNK_Z {
             for lx in 0..CHUNK_X {
                 let wx = cx * 16 + lx as i32;
                 let wz = cz * 16 + lz as i32;
 
-                let nx = wx as f32 * 0.01 + seed_f * 0.1;
-                let nz = wz as f32 * 0.01 + seed_f * 0.1;
-                let height = (68.0 + fbm2d(nx, nz, 2, 0.5) * 20.0) as i32;
+                let height = terrain_height(wx, wz, self.seed);
 
                 // Bedrock
                 chunk.set(lx, 0, lz, block::BEDROCK);
