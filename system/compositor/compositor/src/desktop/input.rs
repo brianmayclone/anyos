@@ -29,6 +29,16 @@ const INPUT_MOUSE_MOVE_ABSOLUTE: u32 = 6;
 // ── Desktop Input Methods ──────────────────────────────────────────────────
 
 impl Desktop {
+    fn pointer_locked_window(&self) -> Option<u32> {
+        if self.current_cursor != CursorShape::Hidden {
+            return None;
+        }
+        if let Some(fs_win_id) = self.fullscreen_window {
+            return Some(fs_win_id);
+        }
+        self.focused_window
+    }
+
     fn topmost_hit_in_group<F>(&self, mx: i32, my: i32, ipc_only: bool, predicate: F) -> Option<(u32, HitTest)>
     where
         F: Fn(&WindowInfo) -> bool,
@@ -146,19 +156,16 @@ impl Desktop {
     }
 
     pub(crate) fn apply_mouse_move(&mut self, dx: i32, dy: i32) {
-        // Pointer lock: when a fullscreen window has hidden the cursor,
-        // skip clamping, HW cursor movement, drag/resize/hover logic —
-        // just forward raw deltas to the fullscreen app.
-        if self.fullscreen_window.is_some() && self.current_cursor == CursorShape::Hidden {
+        // Pointer lock: when the focused app hides the cursor, skip clamping,
+        // HW cursor movement, drag/resize/hover logic and forward raw deltas.
+        if let Some(lock_win_id) = self.pointer_locked_window() {
             // Accumulate unclamped so the app can compute deltas normally
             self.mouse_x += dx;
             self.mouse_y += dy;
-            if let Some(fs_win_id) = self.fullscreen_window {
-                self.push_event(
-                    fs_win_id,
-                    [EVENT_MOUSE_MOVE, self.mouse_x as u32, self.mouse_y as u32, 0, 0],
-                );
-            }
+            self.push_event(
+                lock_win_id,
+                [EVENT_MOUSE_MOVE, self.mouse_x as u32, self.mouse_y as u32, 0, 0],
+            );
             return;
         }
 
@@ -324,6 +331,23 @@ impl Desktop {
     fn apply_mouse_move_absolute(&mut self, x: i32, y: i32) {
         let target_x = x.clamp(0, self.screen_width as i32 - 1);
         let target_y = y.clamp(0, self.screen_height as i32 - 1);
+
+        if self.pointer_locked_window().is_some() {
+            let prev_x = self.last_absolute_mouse_x.replace(target_x);
+            let prev_y = self.last_absolute_mouse_y.replace(target_y);
+            if let (Some(px), Some(py)) = (prev_x, prev_y) {
+                let dx = target_x - px;
+                let dy = target_y - py;
+                if dx != 0 || dy != 0 {
+                    self.apply_mouse_move(dx, dy);
+                }
+            }
+            return;
+        }
+
+        self.last_absolute_mouse_x = Some(target_x);
+        self.last_absolute_mouse_y = Some(target_y);
+
         let dx = target_x - self.mouse_x;
         let dy = target_y - self.mouse_y;
         if dx == 0 && dy == 0 {

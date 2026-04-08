@@ -837,7 +837,15 @@ pub fn map_all_dlls_into(pd_phys: PhysAddr) {
 
     // Phase 2: Map RO pages without holding the lock
     for &(virt, phys) in &page_maps {
-        virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_USER);
+        if !virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_USER) {
+            crate::serial_println!(
+                "map_all_dlls_into: failed to map RO page virt={:#x} phys={:#x} pd={:#x}",
+                virt.as_u64(),
+                phys.as_u64(),
+                pd_phys.as_u64()
+            );
+            return;
+        }
     }
 }
 

@@ -320,12 +320,34 @@ pub fn sys_mmap(size: u32) -> u32 {
     let mut addr = base;
     for _ in 0..num_pages {
         if let Some(phys) = physical::alloc_frame() {
-            virtual_mem::map_page(
+            if virtual_mem::map_page(
                 VirtAddr::new(addr as u64),
                 phys,
                 0x02 | 0x04, // PAGE_WRITABLE | PAGE_USER
-            );
-            unsafe { core::ptr::write_bytes(addr as *mut u8, 0, PAGE_SIZE as usize); }
+            ) {
+                unsafe { core::ptr::write_bytes(addr as *mut u8, 0, PAGE_SIZE as usize); }
+            } else {
+                physical::free_frame(phys);
+                let mut cleanup = base;
+                while cleanup < addr {
+                    let pte = virtual_mem::read_pte(VirtAddr::new(cleanup as u64));
+                    if pte & 1 != 0 {
+                        let phys_addr = crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
+                        virtual_mem::unmap_page(VirtAddr::new(cleanup as u64));
+                        physical::free_frame(phys_addr);
+                    }
+                    cleanup += PAGE_SIZE;
+                }
+                crate::memory::vma::free_region(pd, base, aligned_size);
+                crate::serial_println!(
+                    "sys_mmap: map_page failed base={:#x} addr={:#x} size={:#x} pd={:#x}",
+                    base,
+                    addr,
+                    aligned_size,
+                    pd.as_u64()
+                );
+                return u32::MAX;
+            }
         } else {
             // Out of physical memory — unmap what we already mapped and free VMA.
             let mut cleanup = base;

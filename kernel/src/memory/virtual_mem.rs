@@ -20,6 +20,14 @@ use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 /// and zeroing data the first CPU already wrote).
 static DEMAND_PAGE_LOCK: AtomicBool = AtomicBool::new(false);
 
+/// Spinlock for serializing recursive page-table mutations.
+///
+/// `map_page()` and `unmap_page()` walk and modify the live recursive page table
+/// hierarchy. Without a global writer lock, concurrent threads in the same
+/// address space can race while creating intermediate tables and briefly expose
+/// partially initialized paging structures to other CPUs.
+static PAGE_TABLE_LOCK: AtomicBool = AtomicBool::new(false);
+
 // =============================================================================
 // PCID (Process Context Identifier) support
 // =============================================================================
@@ -404,11 +412,30 @@ fn ensure_table_entry(table: *mut u64, index: usize, flags: u64) -> Option<u64> 
     }
 }
 
+#[inline]
+fn lock_page_table_mutation() -> u64 {
+    let saved = crate::arch::hal::save_and_disable_interrupts();
+    while PAGE_TABLE_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    saved
+}
+
+#[inline]
+fn unlock_page_table_mutation(saved_flags: u64) {
+    PAGE_TABLE_LOCK.store(false, Ordering::Release);
+    crate::arch::hal::restore_interrupt_state(saved_flags);
+}
+
 /// Map a single 4K page: virtual -> physical.
 ///
 /// Uses recursive mapping via PML4[510] to access page table structures.
 /// Returns false if a page table frame could not be allocated (OOM).
 pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
+    let saved_flags = lock_page_table_mutation();
     let pml4_ptr = RECURSIVE_PML4_BASE as *mut u64;
     let pml4i = virt.pml4_index();
     let pdpti = virt.pdpt_index();
@@ -421,12 +448,13 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
         if pml4e & PAGE_PRESENT == 0 {
             let new_frame = match physical::alloc_frame() {
                 Some(f) => f,
-                None => return false,
+                None => {
+                    unlock_page_table_mutation(saved_flags);
+                    return false;
+                }
             };
             pml4_ptr.add(pml4i).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
-            // Zero the new PDPT via recursive mapping
             let pdpt_base = recursive_pdpt_base(virt) as *mut u8;
-            // Flush TLB for the recursive address so we can access the new table
             asm!("invlpg [{}]", in(reg) pdpt_base, options(nostack, preserves_flags));
             core::ptr::write_bytes(pdpt_base, 0, FRAME_SIZE);
         } else if flags & PAGE_USER != 0 && pml4e & PAGE_USER == 0 {
@@ -440,7 +468,10 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
         if pdpte & PAGE_PRESENT == 0 {
             let new_frame = match physical::alloc_frame() {
                 Some(f) => f,
-                None => return false,
+                None => {
+                    unlock_page_table_mutation(saved_flags);
+                    return false;
+                }
             };
             pdpt_ptr.add(pdpti).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
             let pd_base = recursive_pd_base(virt) as *mut u8;
@@ -457,7 +488,10 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
         if pde & PAGE_PRESENT == 0 {
             let new_frame = match physical::alloc_frame() {
                 Some(f) => f,
-                None => return false,
+                None => {
+                    unlock_page_table_mutation(saved_flags);
+                    return false;
+                }
             };
             pd_ptr.add(pdi).write_volatile(new_frame.as_u64() | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER));
             let pt_base = recursive_pt_base(virt) as *mut u8;
@@ -475,11 +509,13 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
         // Invalidate TLB for the mapped page
         asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
     }
+    unlock_page_table_mutation(saved_flags);
     true
 }
 
 /// Unmap a single 4K page.
 pub fn unmap_page(virt: VirtAddr) {
+    let saved_flags = lock_page_table_mutation();
     let pml4i = virt.pml4_index();
     let pdpti = virt.pdpt_index();
     let pdi = virt.pd_index();
@@ -490,6 +526,7 @@ pub fn unmap_page(virt: VirtAddr) {
         let pml4_ptr = RECURSIVE_PML4_BASE as *mut u64;
         let pml4e = pml4_ptr.add(pml4i).read_volatile();
         if pml4e & PAGE_PRESENT == 0 {
+            unlock_page_table_mutation(saved_flags);
             return;
         }
 
@@ -497,6 +534,7 @@ pub fn unmap_page(virt: VirtAddr) {
         let pdpt_ptr = recursive_pdpt_base(virt) as *mut u64;
         let pdpte = pdpt_ptr.add(pdpti).read_volatile();
         if pdpte & PAGE_PRESENT == 0 {
+            unlock_page_table_mutation(saved_flags);
             return;
         }
 
@@ -504,6 +542,7 @@ pub fn unmap_page(virt: VirtAddr) {
         let pd_ptr = recursive_pd_base(virt) as *mut u64;
         let pde = pd_ptr.add(pdi).read_volatile();
         if pde & PAGE_PRESENT == 0 {
+            unlock_page_table_mutation(saved_flags);
             return;
         }
 
@@ -513,6 +552,7 @@ pub fn unmap_page(virt: VirtAddr) {
 
         asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
     }
+    unlock_page_table_mutation(saved_flags);
 }
 
 /// Check if a virtual address is mapped in the current page directory.
@@ -946,8 +986,19 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
 
             // Copy page contents via temp mappings (kernel CR3 is fine)
             unsafe {
-                map_page(temp_src, PhysAddr::new(parent_phys), PAGE_WRITABLE);
-                map_page(temp_dst, child_phys, PAGE_WRITABLE);
+                if !map_page(temp_src, PhysAddr::new(parent_phys), PAGE_WRITABLE) {
+                    CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
+                    physical::free_frame(child_phys);
+                    destroy_user_page_directory(child_pd);
+                    return None;
+                }
+                if !map_page(temp_dst, child_phys, PAGE_WRITABLE) {
+                    unmap_page(temp_src);
+                    CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
+                    physical::free_frame(child_phys);
+                    destroy_user_page_directory(child_pd);
+                    return None;
+                }
                 core::ptr::copy_nonoverlapping(
                     temp_src.as_u64() as *const u8,
                     temp_dst.as_u64() as *mut u8,
@@ -958,7 +1009,12 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
             }
 
             // Map new frame in child's PD
-            map_page_in_pd(child_pd, VirtAddr::new(vaddr), child_phys, pte_flags);
+            if !map_page_in_pd(child_pd, VirtAddr::new(vaddr), child_phys, pte_flags) {
+                CLONE_TEMP_LOCKS[cpu].store(false, Ordering::Release);
+                physical::free_frame(child_phys);
+                destroy_user_page_directory(child_pd);
+                return None;
+            }
         }
     }
 
@@ -972,16 +1028,17 @@ pub fn clone_user_page_directory(parent_pd: PhysAddr) -> Option<PhysAddr> {
 /// Interrupts are disabled for the duration: a context switch while CR3 is
 /// temporarily switched would cause the scheduler to restore a different CR3,
 /// making `map_page` silently modify the wrong process's page tables.
-pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: u64) {
+pub fn map_page_in_pd(pd_phys: PhysAddr, virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
     unsafe {
         let rflags: u64;
         asm!("pushfq; pop {}", out(reg) rflags, options(nomem));
         asm!("cli", options(nomem, nostack));
         let old_cr3 = current_cr3();
         asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
-        map_page(virt, phys, flags);
+        let ok = map_page(virt, phys, flags);
         asm!("mov cr3, {}", in(reg) old_cr3);
         asm!("push {}; popfq", in(reg) rflags, options(nomem));
+        ok
     }
 }
 
@@ -1037,7 +1094,11 @@ pub fn map_pages_range_in_pd(
                 let virt = VirtAddr::new(start_virt.as_u64() + j * FRAME_SIZE as u64);
                 match physical::alloc_frame() {
                     Some(phys) => {
-                        map_page(virt, phys, flags);
+                        if !map_page(virt, phys, flags) {
+                            physical::free_frame(phys);
+                            err = true;
+                            break;
+                        }
                         if zero {
                             core::ptr::write_bytes(virt.as_u64() as *mut u8, 0, FRAME_SIZE);
                         }
@@ -1298,7 +1359,11 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
     };
 
     // Map the page (Present + Writable, kernel-only)
-    map_page(page_addr, phys, 0x03);
+    if !map_page(page_addr, phys, 0x03) {
+        physical::free_frame(phys);
+        DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+        return false;
+    }
 
     // Release lock BEFORE zeroing — the page is mapped and won't be faulted again
     // by another CPU (is_page_mapped check at top catches this). Zeroing under the

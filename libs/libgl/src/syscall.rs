@@ -6,9 +6,11 @@ pub use libsyscall::{
     gpu_3d_surface_dma, gpu_3d_surface_dma_read,
     gpu_query_type, dll_load,
     serial_print, uptime_ms,
-    syscall1, syscall3, syscall5,
+    syscall0, syscall1, syscall2, syscall3, syscall5,
 };
 
+const SYS_GETPID: u32 = 6;
+const SYS_KILL: u32 = 13;
 const SYS_SYSINFO: u32 = 32;
 const SYS_SLEEP_US: u32 = 36;
 const SYS_THREAD_CREATE: u32 = 170;
@@ -27,6 +29,19 @@ pub fn cpu_count() -> u32 {
 /// Sleep for `us` microseconds (non-busy for >= 1ms).
 pub fn sleep_us(us: u32) {
     syscall1(SYS_SLEEP_US, us as u64);
+}
+
+pub fn getpid() -> u32 {
+    syscall0(SYS_GETPID) as u32
+}
+
+pub fn kill(tid: u32, sig: u32) -> u32 {
+    let ret = syscall2(SYS_KILL, tid as u64, sig as u64);
+    if (ret as i64) < 0 || ret == u64::MAX || ret == u32::MAX as u64 {
+        u32::MAX
+    } else {
+        ret as u32
+    }
 }
 
 /// Create a new thread in the current process.

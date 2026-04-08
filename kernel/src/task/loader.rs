@@ -465,7 +465,10 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
             if !virtual_mem::is_mapped_in_pd(pd_phys, page_virt) {
                 let phys = physical::alloc_frame()
                     .ok_or("Failed to allocate frame for ELF64 segment")?;
-                virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, pte_flags);
+                if !virtual_mem::map_page_in_pd(pd_phys, page_virt, phys, pte_flags) {
+                    physical::free_frame(phys);
+                    return Err("Failed to map frame for ELF64 segment");
+                }
                 total_pages += 1;
             }
         }

@@ -28,6 +28,20 @@ use player::Player;
 use inventory::Inventory;
 use state::{GameState, STATE, world_query, find_spawn_height};
 
+fn capture_mouse(s: &mut GameState, x: i32, y: i32) {
+    s.mouse_captured = true;
+    s.last_mouse_x = x;
+    s.last_mouse_y = y;
+    s.window.set_cursor_visible(false);
+    gl::set_cursor_captured(true);
+}
+
+fn release_mouse(s: &mut GameState) {
+    s.mouse_captured = false;
+    s.window.set_cursor_visible(true);
+    gl::set_cursor_captured(false);
+}
+
 fn main() {
     if !libanyui_client::init() {
         anyos_std::println!("forger: FATAL - failed to load libanyui.so");
@@ -195,11 +209,7 @@ fn main() {
             _ => {
                 // Check scancode for special keys (char_code=0 for non-printable)
                 if ke.keycode == libanyui_client::KEY_ESCAPE {
-                    s.mouse_captured = false;
-                    if s.fullscreen {
-                        s.window.set_cursor_visible(true);
-                        gl::set_cursor_captured(false);
-                    }
+                    release_mouse(s);
                 }
             }
         }
@@ -225,13 +235,7 @@ fn main() {
     canvas_ref.on_mouse_down(|x, y, button| {
         let s = unsafe { STATE.as_mut().unwrap() };
         if !s.mouse_captured {
-            s.mouse_captured = true;
-            s.last_mouse_x = x;
-            s.last_mouse_y = y;
-            if s.fullscreen {
-                s.window.set_cursor_visible(false);
-                gl::set_cursor_captured(true);
-            }
+            capture_mouse(s, x, y);
             return;
         }
         let (ex, ey, ez) = s.player.eye_position();
@@ -288,9 +292,7 @@ fn main() {
             gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
         }
         // Hide cursor and capture mouse in fullscreen
-        s.window.set_cursor_visible(false);
-        gl::set_cursor_captured(true);
-        s.mouse_captured = true;
+        capture_mouse(s, s.canvas_w as i32 / 2, s.canvas_h as i32 / 2);
         anyos_std::println!("forger: fullscreen ENTER canvas={}x{} render={}x{}", s.canvas_w, s.canvas_h, s.fb_w, s.fb_h);
     });
 
@@ -299,8 +301,7 @@ fn main() {
         s.fullscreen = false;
         gl::gl_exit_fullscreen();
         // Show cursor and release capture when leaving fullscreen
-        s.window.set_cursor_visible(true);
-        gl::set_cursor_captured(false);
+        release_mouse(s);
         // Restore canvas size from actual widget
         let w = s.canvas.get_stride();
         let h = s.canvas.get_height();

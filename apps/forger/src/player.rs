@@ -14,7 +14,7 @@ pub const PLAYER_HEIGHT: f32 = 1.8;
 pub const WALK_SPEED: f32 = 4.317;
 pub const FLY_SPEED: f32 = 10.0;
 pub const JUMP_VEL: f32 = 8.5;
-pub const MOUSE_SENS: f32 = 0.003;
+pub const MOUSE_SENS: f32 = 0.006;
 pub const REACH: f32 = 5.0;
 
 pub struct Player {

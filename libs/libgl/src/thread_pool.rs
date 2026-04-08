@@ -23,8 +23,23 @@ const MAX_TRIS: usize = 16384;
 /// Maximum sub-batches per frame (one per draw call).
 const MAX_SUB_BATCHES: usize = 64;
 
-/// Stack size per worker thread (64 KiB — needs room for ShaderExec).
-const WORKER_STACK_SIZE: usize = 64 * 1024;
+/// Usable stack size per worker thread.
+///
+/// The parallel raster worker path keeps several fairly large fixed-size local
+/// arrays plus a `ShaderExec` on the stack while walking triangles. 64 KiB was
+/// too optimistic and produced reliable user-mode page faults in larger scenes
+/// (Forger fullscreen / first heavy frame).
+const WORKER_STACK_SIZE: usize = 512 * 1024;
+
+/// Extra mapped slack above the initial worker `RSP`.
+///
+/// Some Rust-generated entry/prologue paths touch a small amount of stack
+/// memory above the initial `RSP`. Give them a whole page instead of relying on
+/// a tiny byte cushion.
+const WORKER_STACK_TOP_SLACK: usize = 4096;
+
+/// Total anonymous mapping size for each worker stack.
+const WORKER_STACK_MAPPING_SIZE: usize = WORKER_STACK_SIZE + WORKER_STACK_TOP_SLACK;
 
 // ── Shared work data ─────────────────────────────────────────────────────
 
@@ -127,6 +142,14 @@ static CURRENT_SUB_BATCH: [AtomicU32; MAX_WORKERS] = [
     AtomicU32::new(u32::MAX),
 ];
 
+fn worker_exit_stub() {
+    let tid = syscall::getpid();
+    let _ = syscall::kill(tid, 9);
+    loop {
+        syscall::sleep_us(1000);
+    }
+}
+
 /// Initialize the thread pool with `n` workers.
 fn init_pool(n: usize, fb_h: u32) {
     let n = n.min(MAX_WORKERS);
@@ -168,18 +191,22 @@ fn init_pool(n: usize, fb_h: u32) {
         ];
 
         for i in 0..n {
-            let stack_addr = syscall::mmap(WORKER_STACK_SIZE as u32);
+            let stack_addr = syscall::mmap(WORKER_STACK_MAPPING_SIZE as u32);
             if stack_addr == u64::MAX || stack_addr == 0 {
                 crate::serial_println!("[libgl] thread_pool: mmap failed for worker {}", i);
                 pool.num_workers = i;
                 return;
             }
             WORKER_STACKS[i] = stack_addr;
-            let stack_top = (stack_addr as usize) + WORKER_STACK_SIZE - 8;
+            let stack_end = (stack_addr as usize) + WORKER_STACK_MAPPING_SIZE;
+            let stack_top = stack_end - WORKER_STACK_TOP_SLACK - 8;
+            unsafe {
+                *(stack_top as *mut usize) = worker_exit_stub as usize;
+            }
             let tid = syscall::thread_create(WORKER_ENTRIES[i], stack_top, "gl_worker");
             if tid == 0 {
                 crate::serial_println!("[libgl] thread_pool: thread_create failed for worker {}", i);
-                syscall::munmap(stack_addr, WORKER_STACK_SIZE as u32);
+                syscall::munmap(stack_addr, WORKER_STACK_MAPPING_SIZE as u32);
                 WORKER_STACKS[i] = 0;
                 pool.num_workers = i;
                 return;
@@ -297,7 +324,7 @@ pub fn shutdown_pool() {
             syscall::sleep_us(2000);
             for i in 0..n {
                 if WORKER_STACKS[i] != 0 {
-                    syscall::munmap(WORKER_STACKS[i], WORKER_STACK_SIZE as u32);
+                    syscall::munmap(WORKER_STACKS[i], WORKER_STACK_MAPPING_SIZE as u32);
                     WORKER_STACKS[i] = 0;
                 }
                 WORKER_TIDS[i] = 0;
