@@ -265,6 +265,11 @@ pub const CMD_FLUSH_DISPLAY: u32 = 0x1033;
 /// subscription ID.
 pub const CMD_LIST_WINDOW_TIDS: u32 = 0x1034;
 
+/// Request the current global mouse cursor position.
+/// [CMD, target_sub_id, 0, 0, 0]
+/// Compositor responds with EVT_CURSOR_POS targeted to `target_sub_id`.
+pub const CMD_GET_CURSOR_POS: u32 = 0x1035;
+
 // ── Compositor → App: Notification Events ────────────────────────────────
 
 /// Notification clicked by user: [EVT, notification_id, sender_tid, 0, 0]
@@ -342,6 +347,11 @@ pub const EVT_WINDOW_LIST_ENTRY: u32 = 0x0064;
 /// Window list end marker (targeted response): [EVT, total_count, 0, 0, 0]
 /// Marks the end of the window list. Receiver should process the collected TIDs.
 pub const EVT_WINDOW_LIST_END: u32 = 0x0065;
+
+/// Current global mouse cursor position.
+/// [EVT, x, y, 0, 0]
+/// Sent in response to CMD_GET_CURSOR_POS, targeted to the requested subscription.
+pub const EVT_CURSOR_POS: u32 = 0x0066;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

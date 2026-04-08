@@ -26,11 +26,18 @@ struct DockSettings {
     magnification: bool,
     mag_size: u32,
     position: u32,
+    auto_hide: bool,
 }
 
 impl DockSettings {
     fn default() -> Self {
-        Self { icon_size: 48, magnification: true, mag_size: 80, position: POS_BOTTOM }
+        Self {
+            icon_size: 48,
+            magnification: true,
+            mag_size: 80,
+            position: POS_BOTTOM,
+            auto_hide: false,
+        }
     }
 
     fn validate(&mut self) {
@@ -125,6 +132,7 @@ fn load_settings() -> DockSettings {
                 "magnification" => { s.magnification = val == "1" || val == "true"; }
                 "mag_size" => { if let Some(v) = parse_u32(val) { s.mag_size = v; } }
                 "position" => { if let Some(v) = parse_u32(val) { s.position = v; } }
+                "auto_hide" => { s.auto_hide = val == "1" || val == "true"; }
                 _ => {}
             }
         }
@@ -136,11 +144,12 @@ fn load_settings() -> DockSettings {
 fn save_settings(s: &DockSettings) {
     let path = settings_path();
     let content = format!(
-        "icon_size={}\nmagnification={}\nmag_size={}\nposition={}\n",
+        "icon_size={}\nmagnification={}\nmag_size={}\nposition={}\nauto_hide={}\n",
         s.icon_size,
         if s.magnification { 1 } else { 0 },
         s.mag_size,
         s.position,
+        if s.auto_hide { 1 } else { 0 },
     );
     let _ = anyos_std::fs::write_bytes(&path, content.as_bytes());
 }
@@ -197,6 +206,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
     let settings = load_settings();
     build_size_card(&panel, &settings);
     build_position_card(&panel, &settings);
+    build_behavior_card(&panel, &settings);
 
     parent.add(&panel);
     panel.id()
@@ -331,4 +341,27 @@ fn build_position_card(panel: &ui::View, settings: &DockSettings) {
     });
 
     card.add(&row);
+}
+
+// ── Behavior card ──────────────────────────────────────────────────────────
+
+fn build_behavior_card(panel: &ui::View, settings: &DockSettings) {
+    let card = layout::build_auto_card(panel);
+
+    let row = layout::build_setting_row(&card, "Auto-hide", true);
+
+    let hint = ui::Label::new("Blendet das Dock aus und zeigt es am Bildschirmrand wieder an.");
+    hint.set_position(200, 12);
+    hint.set_size(250, 20);
+    hint.set_text_color(layout::text_dim());
+    hint.set_font_size(12);
+    row.add(&hint);
+
+    let toggle = layout::add_toggle_to_row(&row, settings.auto_hide);
+    toggle.on_checked_changed(move |e| {
+        let mut s = load_settings();
+        s.auto_hide = e.checked;
+        save_settings(&s);
+        notify_dock();
+    });
 }

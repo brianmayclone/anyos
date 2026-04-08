@@ -598,6 +598,19 @@ impl Desktop {
                     None
                 }
             }
+            proto::CMD_GET_CURSOR_POS => {
+                let target_sub = cmd[1];
+                Some((
+                    Some(target_sub),
+                    [
+                        proto::EVT_CURSOR_POS,
+                        self.mouse_x as u32,
+                        self.mouse_y as u32,
+                        0,
+                        0,
+                    ],
+                ))
+            }
             proto::CMD_FLUSH_DISPLAY => {
                 // App has direct FB access and wants the GPU to refresh a region.
                 // queue_gpu_update() enqueues a GPU_UPDATE command.

@@ -24,6 +24,8 @@ pub struct DockSettings {
     pub mag_size: u32,
     /// Dock position: 0=bottom, 1=left, 2=right.
     pub position: u32,
+    /// Whether the dock should slide out of view until the mouse reaches the edge zone.
+    pub auto_hide: bool,
 }
 
 impl DockSettings {
@@ -34,6 +36,7 @@ impl DockSettings {
             magnification: true,
             mag_size: 80,
             position: POS_BOTTOM,
+            auto_hide: false,
         }
     }
 
@@ -138,6 +141,9 @@ pub fn load_dock_settings() -> DockSettings {
                 "position" => {
                     if let Some(v) = parse_u32(val) { s.position = v; }
                 }
+                "auto_hide" => {
+                    s.auto_hide = val == "1" || val == "true";
+                }
                 _ => {}
             }
         }
@@ -152,11 +158,12 @@ pub fn save_dock_settings(s: &DockSettings) {
     let path = settings_path();
 
     let content = format!(
-        "icon_size={}\nmagnification={}\nmag_size={}\nposition={}\n",
+        "icon_size={}\nmagnification={}\nmag_size={}\nposition={}\nauto_hide={}\n",
         s.icon_size,
         if s.magnification { 1 } else { 0 },
         s.mag_size,
         s.position,
+        if s.auto_hide { 1 } else { 0 },
     );
 
     let _ = fs::write_bytes(&path, content.as_bytes());

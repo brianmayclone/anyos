@@ -42,6 +42,10 @@ const MENU_EMPTY: &str = " ";
 
 /// IPC channel name for dock reload notifications.
 const DOCK_CHANNEL_NAME: &str = "dock";
+/// Compositor event code: current global cursor position.
+const EVT_CURSOR_POS: u32 = 0x0066;
+/// Compositor command: request current global cursor position.
+const CMD_GET_CURSOR_POS: u32 = 0x1035;
 
 /// Timer intervals for adaptive tick rate.
 const TIMER_FAST_MS: u32 = 16;  // ~60 Hz for animations / drag
@@ -49,6 +53,14 @@ const TIMER_IDLE_MS: u32 = 200; // 5 Hz for idle polling
 
 /// Duration of magnification enter/exit animation (milliseconds).
 const MAG_ANIM_MS: u32 = 150;
+/// Duration of dock slide animation for auto-hide.
+const AUTO_HIDE_ANIM_MS: u32 = 180;
+/// Edge trigger band kept active when auto-hide is enabled.
+const AUTO_HIDE_TRIGGER_PX: u32 = 18;
+/// Total size of the invisible edge trigger window.
+const AUTO_HIDE_TRIGGER_BAND_PX: u32 = 28;
+/// How long the dock stays visible after the mouse leaves it.
+const AUTO_HIDE_HIDE_DELAY_MS: u32 = 2500;
 
 /// Extra width for vertical dock windows (tooltip display area).
 const TOOLTIP_EXTRA_W: u32 = 200;
@@ -56,6 +68,8 @@ const TOOLTIP_EXTRA_W: u32 = 200;
 struct DockApp {
     win: anyui::Window,
     canvas: anyui::Canvas,
+    trigger_win: anyui::Window,
+    trigger_canvas: anyui::Canvas,
     items: Vec<DockItem>,
     hovered_idx: Option<usize>,
     bounce_items: Vec<(usize, u32)>,
@@ -80,6 +94,8 @@ struct DockApp {
     // IPC channel for reload notifications
     dock_chan: u32,
     dock_sub: u32,
+    compositor_chan: u32,
+    compositor_sub: u32,
     // Adaptive timer: 16ms when active, 200ms when idle
     timer_id: u32,
     fast_timer: bool,
@@ -96,6 +112,19 @@ struct DockApp {
     kb_selected: usize,
     // Window list poll — reconciliation safety net
     last_window_poll: u32,
+    // Auto-hide slide animation state
+    auto_hide_hot: bool,
+    slide_progress: i32,
+    slide_start_val: i32,
+    slide_target: i32,
+    slide_start_time: u32,
+    win_x: i32,
+    win_y: i32,
+    trigger_hot: bool,
+    hold_open_until: u32,
+    trigger_visible: bool,
+    screen_mouse_x: i32,
+    screen_mouse_y: i32,
 }
 
 anyos_std::global_app_state!(DockApp);
@@ -109,6 +138,169 @@ fn dock_window_rect(geom: &DockGeometry, screen_w: u32, screen_h: u32) -> (i32, 
             // POS_RIGHT
             let w = geom.total_h + TOOLTIP_EXTRA_W;
             ((screen_w - w) as i32, 0, w, screen_h)
+        }
+    }
+}
+
+fn dock_hidden_pos(geom: &DockGeometry, screen_w: u32, screen_h: u32, ww: u32, wh: u32) -> (i32, i32) {
+    match geom.position {
+        POS_LEFT => (-(ww as i32) + AUTO_HIDE_TRIGGER_PX as i32, 0),
+        POS_BOTTOM => (0, screen_h as i32 - AUTO_HIDE_TRIGGER_PX as i32),
+        _ => (screen_w as i32 - AUTO_HIDE_TRIGGER_PX as i32, 0),
+    }
+}
+
+fn dock_window_rect_for_progress(
+    geom: &DockGeometry,
+    screen_w: u32,
+    screen_h: u32,
+    progress: i32,
+) -> (i32, i32, u32, u32) {
+    let (shown_x, shown_y, ww, wh) = dock_window_rect(geom, screen_w, screen_h);
+    let (hidden_x, hidden_y) = dock_hidden_pos(geom, screen_w, screen_h, ww, wh);
+    let p = progress.clamp(0, 1000);
+    let x = hidden_x + (shown_x - hidden_x) * p / 1000;
+    let y = hidden_y + (shown_y - hidden_y) * p / 1000;
+    (x, y, ww, wh)
+}
+
+fn trigger_window_rect(geom: &DockGeometry, screen_w: u32, screen_h: u32) -> (i32, i32, u32, u32) {
+    match geom.position {
+        POS_LEFT => (0, 0, AUTO_HIDE_TRIGGER_BAND_PX, screen_h),
+        POS_BOTTOM => (
+            0,
+            screen_h.saturating_sub(AUTO_HIDE_TRIGGER_BAND_PX) as i32,
+            screen_w,
+            AUTO_HIDE_TRIGGER_BAND_PX,
+        ),
+        _ => (
+            screen_w.saturating_sub(AUTO_HIDE_TRIGGER_BAND_PX) as i32,
+            0,
+            AUTO_HIDE_TRIGGER_BAND_PX,
+            screen_h,
+        ),
+    }
+}
+
+fn desired_slide_target() -> i32 {
+    let a = app();
+    let now = anyos_std::sys::uptime();
+    let hold_open = a.hold_open_until != 0 && now <= a.hold_open_until;
+    if !a.settings.auto_hide
+        || a.drag_active
+        || a.drag_mouse_down
+        || a.kb_focus
+        || a.auto_hide_hot
+        || a.trigger_hot
+        || hold_open
+    {
+        1000
+    } else {
+        0
+    }
+}
+
+fn start_hide_delay() {
+    let a = app();
+    let delay_ticks = anyos_std::sys::tick_hz()
+        .max(1)
+        .saturating_mul(AUTO_HIDE_HIDE_DELAY_MS)
+        / 1000;
+    a.hold_open_until = anyos_std::sys::uptime().wrapping_add(delay_ticks.max(1));
+}
+
+fn ensure_slide_target(show: bool) {
+    let a = app();
+    let target = if show { 1000 } else { 0 };
+    if a.slide_target == target && a.slide_progress == target {
+        return;
+    }
+    if a.slide_target != target {
+        a.slide_start_val = a.slide_progress;
+        a.slide_target = target;
+        a.slide_start_time = anyos_std::sys::uptime();
+    }
+}
+
+fn apply_window_position(progress: i32) {
+    let a = app();
+    let (wx, wy, _, _) =
+        dock_window_rect_for_progress(geometry(), a.screen_width, a.screen_height, progress);
+    if wx != a.win_x || wy != a.win_y {
+        a.win.move_to(wx, wy);
+        a.win_x = wx;
+        a.win_y = wy;
+    }
+}
+
+fn update_trigger_window() {
+    let a = app();
+    let should_show = a.settings.auto_hide && a.slide_progress <= 120 && !a.auto_hide_hot;
+    if should_show {
+        let (tx, ty, tw, th) = trigger_window_rect(geometry(), a.screen_width, a.screen_height);
+        if !a.trigger_visible {
+            a.trigger_win.resize(tw, th);
+            a.trigger_canvas.set_size(tw, th);
+            a.trigger_win.move_to(tx, ty);
+            a.trigger_visible = true;
+        } else {
+            a.trigger_win.move_to(tx, ty);
+        }
+    } else if a.trigger_visible {
+        a.trigger_win.move_to(-10000, -10000);
+        a.trigger_visible = false;
+    }
+}
+
+fn point_in_rect(px: i32, py: i32, rx: i32, ry: i32, rw: u32, rh: u32) -> bool {
+    px >= rx && py >= ry && px < rx + rw as i32 && py < ry + rh as i32
+}
+
+fn update_auto_hide_hot_from_cursor() {
+    let a = app();
+    let (dx, dy, dw, dh) = dock_window_rect_for_progress(
+        geometry(),
+        a.screen_width,
+        a.screen_height,
+        a.slide_progress,
+    );
+    let dock_hot = point_in_rect(a.screen_mouse_x, a.screen_mouse_y, dx, dy, dw, dh);
+    let trigger_hot = if a.trigger_visible {
+        let (tx, ty, tw, th) = trigger_window_rect(geometry(), a.screen_width, a.screen_height);
+        point_in_rect(a.screen_mouse_x, a.screen_mouse_y, tx, ty, tw, th)
+    } else {
+        false
+    };
+
+    if dock_hot != a.auto_hide_hot {
+        a.auto_hide_hot = dock_hot;
+        if dock_hot {
+            a.hold_open_until = 0;
+        } else {
+            start_hide_delay();
+        }
+    }
+    if trigger_hot != a.trigger_hot {
+        a.trigger_hot = trigger_hot;
+        if trigger_hot {
+            a.hold_open_until = 0;
+        } else if !dock_hot {
+            start_hide_delay();
+        }
+    }
+}
+
+fn poll_compositor_cursor() {
+    let a = app();
+    let request = [CMD_GET_CURSOR_POS, a.compositor_sub, 0, 0, 0];
+    anyos_std::ipc::evt_chan_emit(a.compositor_chan, &request);
+
+    let mut buf = [0u32; 5];
+    while anyos_std::ipc::evt_chan_poll(a.compositor_chan, a.compositor_sub, &mut buf) {
+        if buf[0] == EVT_CURSOR_POS {
+            let a = app();
+            a.screen_mouse_x = buf[1] as i32;
+            a.screen_mouse_y = buf[2] as i32;
         }
     }
 }
@@ -132,6 +324,7 @@ fn needs_fast_timer() -> bool {
         || a.drag_mouse_down
         || !a.bounce_items.is_empty()
         || a.mag_progress != a.mag_target
+        || a.slide_progress != a.slide_target
 }
 
 /// Switch to fast (16ms) timer. No-op if already fast.
@@ -171,7 +364,10 @@ fn main() {
     let dock_settings = settings::load_dock_settings();
     set_geometry(DockGeometry::from_settings(&dock_settings));
 
-    let (wx, wy, ww, wh) = dock_window_rect(geometry(), screen_width, screen_height);
+    let initial_slide = if dock_settings.auto_hide { 0 } else { 1000 };
+    let initial_trigger_visible = dock_settings.auto_hide && initial_slide <= 120;
+    let (wx, wy, ww, wh) =
+        dock_window_rect_for_progress(geometry(), screen_width, screen_height, initial_slide);
 
     let flags = anyui::WIN_FLAG_BORDERLESS
         | anyui::WIN_FLAG_NOT_RESIZABLE
@@ -183,6 +379,17 @@ fn main() {
     canvas.set_dock(anyui::DOCK_FILL);
     canvas.set_interactive(true);
     win.add(&canvas);
+
+    let (tx, ty, tw, th) = trigger_window_rect(geometry(), screen_width, screen_height);
+    let trigger_win = anyui::Window::new_with_flags("DockTrigger", tx, ty, tw, th, flags);
+    let trigger_canvas = anyui::Canvas::new(tw, th);
+    trigger_canvas.set_dock(anyui::DOCK_FILL);
+    trigger_canvas.set_interactive(true);
+    trigger_canvas.clear(0);
+    trigger_win.add(&trigger_canvas);
+    if !initial_trigger_visible {
+        trigger_win.move_to(-10000, -10000);
+    }
 
     // Context menu (attached to canvas, text updated dynamically in tick)
     let ctx_menu = anyui::ContextMenu::new(MENU_EMPTY);
@@ -200,6 +407,8 @@ fn main() {
     // Create IPC channel for dock reload notifications (from Finder etc.)
     let dock_chan = anyos_std::ipc::evt_chan_create(DOCK_CHANNEL_NAME);
     let dock_sub = anyos_std::ipc::evt_chan_subscribe(dock_chan, 0);
+    let compositor_chan = anyui::get_compositor_channel();
+    let compositor_sub = anyos_std::ipc::evt_chan_subscribe(compositor_chan, EVT_CURSOR_POS);
 
     // Load dock items from config + icons (Finder is always present)
     let mut items = load_dock_config();
@@ -216,6 +425,8 @@ fn main() {
         APP = Some(DockApp {
             win,
             canvas,
+            trigger_win,
+            trigger_canvas,
             items,
             hovered_idx: None,
             bounce_items: Vec::new(),
@@ -237,6 +448,8 @@ fn main() {
             drag_active: false,
             dock_chan,
             dock_sub,
+            compositor_chan,
+            compositor_sub,
             timer_id: 0,
             fast_timer: false,
             settings: dock_settings,
@@ -248,6 +461,18 @@ fn main() {
             kb_focus: false,
             kb_selected: 0,
             last_window_poll: 0,
+            auto_hide_hot: false,
+            slide_progress: initial_slide,
+            slide_start_val: initial_slide,
+            slide_target: initial_slide,
+            slide_start_time: anyos_std::sys::uptime(),
+            win_x: wx,
+            win_y: wy,
+            trigger_hot: false,
+            hold_open_until: 0,
+            trigger_visible: initial_trigger_visible,
+            screen_mouse_x: 0,
+            screen_mouse_y: 0,
         });
     }
 
@@ -311,6 +536,37 @@ fn main() {
         render_dock(&mut a.fb, &a.items, a.screen_width, a.screen_height, &rs);
         a.canvas.copy_pixels_from(&a.fb.pixels);
         a.needs_redraw = false;
+    });
+
+    app().canvas.on_mouse_enter(|_| {
+        let a = app();
+        a.auto_hide_hot = true;
+        a.trigger_hot = false;
+        a.hold_open_until = 0;
+        ensure_slide_target(true);
+        ensure_fast_timer();
+    });
+
+    app().canvas.on_mouse_leave(|_| {
+        let a = app();
+        a.auto_hide_hot = false;
+        start_hide_delay();
+        ensure_slide_target(desired_slide_target() != 0);
+        a.needs_redraw = true;
+    });
+
+    app().trigger_canvas.on_mouse_enter(|_| {
+        let a = app();
+        a.trigger_hot = true;
+        a.hold_open_until = 0;
+        ensure_fast_timer();
+    });
+
+    app().trigger_canvas.on_mouse_leave(|_| {
+        let a = app();
+        a.trigger_hot = false;
+        start_hide_delay();
+        ensure_fast_timer();
     });
 
     // Mouse down — start potential drag (left button) or context menu prep (right button)
@@ -388,6 +644,9 @@ fn tick() {
     let now = anyos_std::sys::uptime();
     let hz = anyos_std::sys::tick_hz().max(1);
 
+    poll_compositor_cursor();
+    update_auto_hide_hot_from_cursor();
+
     // Check hover via mouse position
     let (mx, my, _) = a.canvas.get_mouse();
     let mouse_along = match geometry().position {
@@ -427,6 +686,28 @@ fn tick() {
         }
     }
 
+    // Auto-hide slide animation
+    let desired_target = desired_slide_target();
+    if desired_target != a.slide_target {
+        a.slide_start_val = a.slide_progress;
+        a.slide_target = desired_target;
+        a.slide_start_time = now;
+        ensure_fast_timer();
+    }
+    if a.slide_progress != a.slide_target {
+        let elapsed_ms = now.wrapping_sub(a.slide_start_time) * 1000 / hz;
+        if elapsed_ms >= AUTO_HIDE_ANIM_MS {
+            a.slide_progress = a.slide_target;
+        } else {
+            let t = (elapsed_ms * 1000 / AUTO_HIDE_ANIM_MS) as i32;
+            let eased = t * (2000 - t) / 1000;
+            let diff = a.slide_target - a.slide_start_val;
+            a.slide_progress = a.slide_start_val + diff * eased / 1000;
+        }
+        apply_window_position(a.slide_progress);
+    }
+    update_trigger_window();
+
     // Animate magnification progress
     if a.mag_progress != a.mag_target {
         let elapsed_ms = now.wrapping_sub(a.mag_start_time) * 1000 / hz;
@@ -443,7 +724,7 @@ fn tick() {
     }
 
     // Magnification needs redraw each frame when active (mouse moves change icon sizes)
-    if a.mouse_in_dock && a.settings.magnification && a.mag_progress > 0 {
+    if a.mouse_in_dock && a.settings.magnification && a.mag_progress > 0 && a.slide_progress > 0 {
         a.needs_redraw = true;
     }
 
@@ -1022,13 +1303,23 @@ fn reload_settings() {
         // Move off-screen first so the compositor marks the OLD area as dirty
         a.win.move_to(-10000, -10000);
 
-        let (wx, wy, ww, wh) = dock_window_rect(geometry(), a.screen_width, a.screen_height);
+        let (_, _, ww, wh) = dock_window_rect(geometry(), a.screen_width, a.screen_height);
         a.fb = Framebuffer::new(ww, wh);
         a.win.resize(ww, wh);
         a.canvas.set_size(ww, wh);
-        a.win.move_to(wx, wy);
         a.bounce_items.clear();
     }
+
+    let desired_target = if a.settings.auto_hide { 0 } else { 1000 };
+    a.auto_hide_hot = false;
+    a.trigger_hot = false;
+    a.hold_open_until = 0;
+    a.slide_start_val = a.slide_progress;
+    a.slide_target = desired_target;
+    a.slide_progress = desired_target;
+    a.slide_start_time = anyos_std::sys::uptime();
+    apply_window_position(a.slide_progress);
+    update_trigger_window();
 
     a.needs_redraw = true;
 }
@@ -1111,13 +1402,14 @@ fn process_system_events() {
                 if new_w != a.screen_width || new_h != a.screen_height {
                     a.screen_width = new_w;
                     a.screen_height = new_h;
-                    let (wx, wy, ww, wh) = dock_window_rect(geometry(), new_w, new_h);
+                    let (_, _, ww, wh) = dock_window_rect(geometry(), new_w, new_h);
                     a.fb = Framebuffer::new(ww, wh);
                     a.bounce_items.clear();
                     a.needs_redraw = true;
                     a.win.resize(ww, wh);
-                    a.win.move_to(wx, wy);
                     a.canvas.set_size(ww, wh);
+                    apply_window_position(a.slide_progress);
+                    update_trigger_window();
                 }
             }
             _ => {}
