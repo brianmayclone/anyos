@@ -18,45 +18,15 @@ mod mesh;
 mod render;
 mod player;
 mod ui;
+mod state;
+mod game;
+mod inventory;
 
 use world::World;
 use render::Renderer;
 use player::Player;
-
-struct GameState {
-    canvas: libanyui_client::Canvas,
-    window: libanyui_client::Window,
-    canvas_w: u32,
-    canvas_h: u32,
-    fb_w: u32,
-    fb_h: u32,
-    world: World,
-    renderer: Renderer,
-    player: Player,
-    fps_frame_count: u32,
-    fps_last_ms: u32,
-    fps_display: u32,
-    fps_label: libanyui_client::Label,
-    last_mouse_x: i32,
-    last_mouse_y: i32,
-    mouse_captured: bool,
-    fullscreen: bool,
-}
-
-static mut STATE: Option<GameState> = None;
-
-extern "C" fn world_query(x: i32, y: i32, z: i32) -> bool {
-    unsafe { STATE.as_ref().map_or(false, |s| s.world.is_solid(x, y, z)) }
-}
-
-fn find_spawn_height(world: &World) -> f32 {
-    for y in (1..200).rev() {
-        if world.is_solid(0, y, 0) {
-            return y as f32 + 2.0;
-        }
-    }
-    80.0
-}
+use inventory::Inventory;
+use state::{GameState, STATE, world_query, find_spawn_height};
 
 fn main() {
     if !libanyui_client::init() {
@@ -75,8 +45,9 @@ fn main() {
 
     let canvas_w = canvas.get_stride();
     let canvas_h = canvas.get_height();
-    let fb_w = canvas_w / 2;
-    let fb_h = canvas_h / 2;
+    let render_divisor = 2;
+    let fb_w = (canvas_w / render_divisor).max(1);
+    let fb_h = (canvas_h / render_divisor).max(1);
 
     if !gl::init() {
         anyos_std::println!("forger: FATAL - failed to load libgl.so");
@@ -121,8 +92,36 @@ fn main() {
     let spawn_y = find_spawn_height(&world);
     anyos_std::println!("forger: {} chunks, {} VBOs, {} total verts, spawn_y={}", world.chunks.len(), renderer.chunk_vbos.len(), total_verts, spawn_y as i32);
 
+    let mode_label = libanyui_client::Label::new("Fly");
+    mode_label.set_position(6, 6);
+    mode_label.set_text_color(0xFFFFFFFF);
+    mode_label.set_font_size(13);
+    window.add(&mode_label);
+
+    let mode_toggle = libanyui_client::Toggle::new(false);
+    mode_toggle.set_position(30, 4);
+    mode_toggle.on_checked_changed(|e| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.player.set_flying(e.checked);
+    });
+    window.add(&mode_toggle);
+
+    let shadow_label = libanyui_client::Label::new("Shadow");
+    shadow_label.set_position(62, 6);
+    shadow_label.set_text_color(0xFFFFFFFF);
+    shadow_label.set_font_size(13);
+    window.add(&shadow_label);
+
+    let shadow_toggle = libanyui_client::Toggle::new(false);
+    shadow_toggle.set_position(114, 4);
+    shadow_toggle.on_checked_changed(|e| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.shadows_enabled = e.checked;
+    });
+    window.add(&shadow_toggle);
+
     let fps_label = libanyui_client::Label::new("FPS: --");
-    fps_label.set_position(4, 4);
+    fps_label.set_position(150, 4);
     fps_label.set_text_color(0xFFFFFFFF);
     fps_label.set_font_size(14);
     window.add(&fps_label);
@@ -132,21 +131,30 @@ fn main() {
         STATE = Some(GameState {
             canvas,
             window,
+            mode_toggle,
+            shadow_toggle,
             canvas_w,
             canvas_h,
             fb_w,
             fb_h,
+            render_divisor,
             world,
             renderer,
             player: Player::new_uninit(),
+            inventory: Inventory::new(),
             fps_frame_count: 0,
             fps_last_ms: anyos_std::sys::uptime_ms(),
             fps_display: 0,
             fps_label,
+            upscale_buffer: vec![0u32; (canvas_w * canvas_h) as usize],
             last_mouse_x: 400,
             last_mouse_y: 300,
             mouse_captured: false,
             fullscreen: false,
+            shadows_enabled: false,
+            mining_active: false,
+            mining_target: None,
+            mining_progress: 0.0,
         });
     }
 
@@ -157,8 +165,9 @@ fn main() {
     unsafe {
         let s = STATE.as_mut().unwrap();
         s.player = Player::new(0.0, spawn_y, 0.0);
-        // Start in fly mode so player doesn't fall while chunks load
-        physics::set_flying(s.player.body_id, true);
+        physics::set_flying(s.player.body_id, false);
+        s.mode_toggle.set_state(0);
+        game::sync_selected_block(&s.inventory, &mut s.player);
     }
 
     // Keyboard handlers
@@ -175,9 +184,14 @@ fn main() {
             c if c == b' ' as u32 => s.player.jump = true,
             c if c == b'f' as u32 || c == b'F' as u32 => s.player.ascend = true,
             c if c == b'c' as u32 || c == b'C' as u32 => s.player.descend = true,
-            c if c == b'g' as u32 || c == b'G' as u32 => s.player.toggle_fly(),
-            c if c == b'1' as u32 => s.player.scroll_block(-1),
-            c if c == b'2' as u32 => s.player.scroll_block(1),
+            c if c == b'g' as u32 || c == b'G' as u32 => {
+                s.player.toggle_fly();
+                s.mode_toggle.set_state(if s.player.is_flying() { 1 } else { 0 });
+            }
+            c if (b'1' as u32..=b'9' as u32).contains(&c) => {
+                s.inventory.set_selected_slot((c - b'1' as u32) as usize);
+                game::sync_selected_block(&s.inventory, &mut s.player);
+            }
             _ => {
                 // Check scancode for special keys (char_code=0 for non-printable)
                 if ke.keycode == libanyui_client::KEY_ESCAPE {
@@ -223,16 +237,28 @@ fn main() {
         let (ex, ey, ez) = s.player.eye_position();
         if let Some(hit) = player::raycast(&s.world, ex, ey, ez, s.player.yaw, s.player.pitch) {
             if button == 0 {
-                // Left click: break block
-                s.world.set_block(hit.x, hit.y, hit.z, block::AIR);
+                s.mining_active = true;
+                game::reset_mining(s);
             } else if button == 2 {
-                // Right click: place block
-                s.world.set_block(hit.prev_x, hit.prev_y, hit.prev_z, s.player.selected_block);
+                if let Some(block_id) = s.inventory.selected_block() {
+                    if s.world.get_block(hit.prev_x, hit.prev_y, hit.prev_z) == block::AIR
+                        && s.inventory.consume_selected()
+                    {
+                        s.world.set_block(hit.prev_x, hit.prev_y, hit.prev_z, block_id);
+                        game::sync_selected_block(&s.inventory, &mut s.player);
+                    }
+                }
             }
         }
     });
 
-    canvas_ref.on_mouse_up(|_x, _y, _button| {});
+    canvas_ref.on_mouse_up(|_x, _y, button| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        if button == 0 {
+            s.mining_active = false;
+            game::reset_mining(s);
+        }
+    });
 
     canvas_ref.on_mouse_move(|x, y| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -247,7 +273,7 @@ fn main() {
     });
 
     // ── Fullscreen support ────────────────────────────────────────────────
-    window_ref.set_fullscreen_capable(true);
+    window_ref.set_fullscreen_capable(false);
 
     window_ref.on_fullscreen_enter(|_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -255,8 +281,9 @@ fn main() {
         if let Some(info) = libanyui_client::get_fullscreen_info() {
             s.canvas_w = info.width;
             s.canvas_h = info.height;
-            s.fb_w = info.width / 2;
-            s.fb_h = info.height / 2;
+            s.upscale_buffer.resize((info.width * info.height) as usize, 0);
+            s.fb_w = (info.width / s.render_divisor).max(1);
+            s.fb_h = (info.height / s.render_divisor).max(1);
             gl::gl_resize(s.fb_w, s.fb_h);
             gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
         }
@@ -280,8 +307,9 @@ fn main() {
         if w > 0 && h > 0 {
             s.canvas_w = w;
             s.canvas_h = h;
-            s.fb_w = w / 2;
-            s.fb_h = h / 2;
+            s.upscale_buffer.resize((w * h) as usize, 0);
+            s.fb_w = (w / s.render_divisor).max(1);
+            s.fb_h = (h / s.render_divisor).max(1);
             gl::gl_resize(s.fb_w, s.fb_h);
             gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
         }
@@ -297,126 +325,8 @@ fn main() {
 
     // Game loop timer
     libanyui_client::set_timer(33, || {
-        game_tick();
+        game::game_tick();
     });
 
     libanyui_client::run();
-}
-
-fn game_tick() {
-    let s = unsafe { STATE.as_mut().unwrap() };
-
-    // Handle resize (render at half resolution).
-    // In fullscreen mode, dimensions are managed by the fullscreen callback — skip widget query
-    // to avoid stale logical sizes overriding the physical fullscreen dimensions.
-    if !s.fullscreen {
-        let cur_w = s.canvas.get_stride();
-        let cur_h = s.canvas.get_height();
-        if cur_w > 0 && cur_h > 0 && (cur_w != s.canvas_w || cur_h != s.canvas_h) {
-            s.canvas_w = cur_w;
-            s.canvas_h = cur_h;
-            s.fb_w = cur_w / 2;
-            s.fb_h = cur_h / 2;
-            gl::gl_resize(s.fb_w, s.fb_h);
-            gl::viewport(0, 0, s.fb_w as i32, s.fb_h as i32);
-        }
-    }
-
-    // Physics/player update
-    s.player.update(1.0 / 60.0);
-
-    // Ensure chunks around player (limit to 3 to keep SW rasterizer manageable)
-    let (px, _, pz) = s.player.position();
-    let view_chunks = (s.renderer.fog_distance / 16.0) as i32 + 1;
-    s.world.ensure_chunks_around(px as i32, pz as i32, view_chunks.min(3));
-
-    // Rebuild dirty chunk meshes (max 2 per frame)
-    let mut rebuilt = 0;
-    let keys: Vec<(i32, i32)> = s.world.chunks.keys().copied().collect();
-    for (cx, cz) in keys {
-        if rebuilt >= 2 {
-            break;
-        }
-        let is_dirty = s.world.chunks.get(&(cx, cz)).map_or(false, |c| c.dirty);
-        if is_dirty {
-            let m = mesh::build_chunk_mesh(&s.world, cx, cz);
-            s.renderer.upload_chunk(cx, cz, &m);
-            if let Some(chunk) = s.world.chunks.get_mut(&(cx, cz)) {
-                chunk.dirty = false;
-            }
-            rebuilt += 1;
-        }
-    }
-
-    // Sync camera
-    let (ex, ey, ez) = s.player.eye_position();
-    s.renderer.yaw = s.player.yaw;
-    s.renderer.pitch = s.player.pitch;
-
-    // Render
-    s.renderer.render(ex, ey, ez, s.fb_w, s.fb_h);
-
-    // Swap: upscale from half-res render buffer to display
-    let fb_ptr = gl::swap_buffers();
-    if !fb_ptr.is_null() {
-        let src = unsafe { core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize) };
-        let cw = s.canvas_w as usize;
-        let ch = s.canvas_h as usize;
-        let rw = s.fb_w as usize;
-        let rh = s.fb_h as usize;
-        // Upscale from render buffer to canvas (works for both windowed and fullscreen)
-        let mut upscaled = vec![0u32; cw * ch];
-        for cy in 0..ch {
-            let sy = (cy * rh / ch).min(rh - 1);
-            let src_row = sy * rw;
-            let dst_row = cy * cw;
-            for cx in 0..cw {
-                let sx = (cx * rw / cw).min(rw - 1);
-                upscaled[dst_row + cx] = src[src_row + sx];
-            }
-        }
-        s.canvas.copy_pixels_from(&upscaled);
-    }
-
-    // Debug: print camera and pixel samples once per second
-    if s.fps_frame_count == 0 {
-        anyos_std::println!("forger: cam=({},{},{}) vbos={} fb_null={}", ex as i32, ey as i32, ez as i32, s.renderer.chunk_vbos.len(), fb_ptr.is_null());
-        if !fb_ptr.is_null() {
-            let src = unsafe { core::slice::from_raw_parts(fb_ptr, (s.fb_w * s.fb_h) as usize) };
-            let mid = (s.fb_w * s.fb_h / 2) as usize;
-            let top = (s.fb_w * 10 + s.fb_w / 2) as usize; // sky area
-            anyos_std::println!("forger: px[0]=0x{:08X} px[mid]=0x{:08X} px[sky]=0x{:08X} fb={}x{}",
-                src[0], src[mid.min(src.len()-1)], src[top.min(src.len()-1)], s.fb_w, s.fb_h);
-        }
-    }
-
-    // FPS counter
-    s.fps_frame_count += 1;
-    let now = anyos_std::sys::uptime_ms();
-    let elapsed = now.wrapping_sub(s.fps_last_ms);
-    if elapsed >= 1000 {
-        s.fps_display = s.fps_frame_count * 1000 / elapsed;
-        s.fps_frame_count = 0;
-        s.fps_last_ms = now;
-        s.renderer.adapt_view_distance(s.fps_display as f32);
-
-        let title = ui::format_title(
-            s.fps_display,
-            ex,
-            ey,
-            ez,
-            block::BLOCK_NAMES[s.player.selected_block as usize],
-            s.renderer.fog_distance / 16.0,
-        );
-        s.window.set_title(&title);
-    }
-
-    // Debug overlay (update every frame for smooth coordinate display)
-    let flying = libphysics_client::is_flying(s.player.body_id);
-    let mode = if flying { "FLY" } else { "WALK" };
-    let debug_text = alloc::format!(
-        "FPS: {} | X: {:.1} Y: {:.1} Z: {:.1} | {}",
-        s.fps_display, ex, ey, ez, mode
-    );
-    s.fps_label.set_text(&debug_text);
 }

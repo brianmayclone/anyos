@@ -89,6 +89,35 @@ impl World {
             chunk.set(local_coord(x), y as usize, local_coord(z), id);
             chunk.dirty = true;
         }
+        self.mark_neighbor_chunks_dirty(x, z);
+    }
+
+    fn mark_neighbor_chunks_dirty(&mut self, x: i32, z: i32) {
+        let lx = local_coord(x);
+        let lz = local_coord(z);
+        let cx = chunk_coord(x);
+        let cz = chunk_coord(z);
+
+        if lx == 0 {
+            if let Some(chunk) = self.chunks.get_mut(&(cx - 1, cz)) {
+                chunk.dirty = true;
+            }
+        }
+        if lx == CHUNK_X - 1 {
+            if let Some(chunk) = self.chunks.get_mut(&(cx + 1, cz)) {
+                chunk.dirty = true;
+            }
+        }
+        if lz == 0 {
+            if let Some(chunk) = self.chunks.get_mut(&(cx, cz - 1)) {
+                chunk.dirty = true;
+            }
+        }
+        if lz == CHUNK_Z - 1 {
+            if let Some(chunk) = self.chunks.get_mut(&(cx, cz + 1)) {
+                chunk.dirty = true;
+            }
+        }
     }
 
     pub fn is_solid(&self, x: i32, y: i32, z: i32) -> bool {

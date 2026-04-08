@@ -69,6 +69,9 @@ static mut CURSOR_CAPTURED: bool = false;
 /// Frame counter for diagnostic output (first N frames only).
 pub(crate) static mut DIAG_FRAME: u32 = 0;
 
+/// Global engine-managed texture LOD bias used by the software rasterizer.
+pub(crate) static mut GLOBAL_LOD_BIAS: f32 = 0.0;
+
 /// Raw pointers to texture state — avoids `&CTX` / `&mut CTX` aliasing UB
 /// during rasterization when `real_tex_sample` needs read access while
 /// `rasterize_triangle` holds `&mut GlContext`.
@@ -176,6 +179,7 @@ pub extern "C" fn gl_resize(width: u32, height: u32) {
 #[no_mangle]
 pub extern "C" fn gl_swap_buffers() -> *const u32 {
     flush_pending_sw_draws();
+    update_adaptive_lod();
     if unsafe { USE_HW_BACKEND } {
         if let Some(drv) = drv_loader::drv() {
             (drv.drv_flush)();
@@ -302,6 +306,7 @@ pub extern "C" fn gl_get_cursor_captured() -> u32 {
 #[no_mangle]
 pub extern "C" fn gl_swap_buffers_fullscreen() -> u32 {
     flush_pending_sw_draws();
+    update_adaptive_lod();
     let fb_ptr = unsafe { FULLSCREEN_FB_PTR };
     if fb_ptr.is_null() {
         return 0;
@@ -337,6 +342,36 @@ pub extern "C" fn gl_swap_buffers_fullscreen() -> u32 {
     }
 
     1
+}
+
+fn update_adaptive_lod() {
+    let now = syscall::uptime_ms();
+    let c = ctx();
+    if c.last_swap_ms == 0 {
+        c.last_swap_ms = now;
+        unsafe { GLOBAL_LOD_BIAS = c.lod_bias; }
+        return;
+    }
+
+    let delta_ms = now.wrapping_sub(c.last_swap_ms).max(1);
+    c.last_swap_ms = now;
+
+    let dt_ms = delta_ms as f32;
+    c.frame_time_ema_ms = c.frame_time_ema_ms * 0.88 + dt_ms * 0.12;
+
+    let target_refresh = c.target_refresh_hz.clamp(30, 240);
+    let target_frame_ms = 1000.0 / target_refresh as f32;
+    let pressure = (c.frame_time_ema_ms / target_frame_ms).clamp(0.5, 2.6);
+    let desired_bias = if pressure <= 1.0 {
+        0.0
+    } else {
+        ((pressure - 1.0) * 2.2).min(2.5)
+    };
+
+    c.lod_bias = c.lod_bias * 0.82 + desired_bias * 0.18;
+    unsafe {
+        GLOBAL_LOD_BIAS = c.lod_bias;
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -731,10 +766,22 @@ pub extern "C" fn glActiveTexture(texture: GLenum) {
     }
 }
 
-/// Generate mipmaps (no-op in Phase 1).
+/// Generate mipmaps for the currently bound texture.
 #[no_mangle]
-pub extern "C" fn glGenerateMipmap(_target: GLenum) {
-    // Mipmap generation not implemented in Phase 1
+pub extern "C" fn glGenerateMipmap(target: GLenum) {
+    let c = ctx();
+    if target != GL_TEXTURE_2D {
+        c.set_error(GL_INVALID_ENUM);
+        return;
+    }
+    let unit = c.active_texture_unit as usize;
+    if unit >= state::MAX_TEXTURE_UNITS {
+        return;
+    }
+    let tex_id = c.bound_textures[unit];
+    if tex_id != 0 {
+        c.textures.generate_mipmaps(tex_id);
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1256,6 +1303,12 @@ pub extern "C" fn glFinish() {
 #[no_mangle]
 pub extern "C" fn gl_set_fxaa(enabled: u32) {
     ctx().fxaa_enabled = enabled != 0;
+}
+
+/// Set the desired display refresh rate used for adaptive mip bias.
+#[no_mangle]
+pub extern "C" fn gl_set_target_refresh_hz(refresh_hz: u32) {
+    ctx().target_refresh_hz = refresh_hz.clamp(30, 240);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

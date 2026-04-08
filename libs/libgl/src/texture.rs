@@ -7,6 +7,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use crate::types::*;
 
+pub const MAX_MIP_LEVELS: usize = 12;
+
 /// A 2D texture object.
 pub struct GlTexture {
     /// RGBA8 pixel data (row-major).
@@ -20,6 +22,11 @@ pub struct GlTexture {
     pub wrap_s: GLenum,
     pub wrap_t: GLenum,
     pub internal_format: GLenum,
+    pub mip_data: [Vec<u32>; MAX_MIP_LEVELS - 1],
+    pub mip_depth: [Vec<f32>; MAX_MIP_LEVELS - 1],
+    pub mip_widths: [u32; MAX_MIP_LEVELS - 1],
+    pub mip_heights: [u32; MAX_MIP_LEVELS - 1],
+    pub mip_count: usize,
 }
 
 impl GlTexture {
@@ -34,56 +41,81 @@ impl GlTexture {
             wrap_s: GL_REPEAT,
             wrap_t: GL_REPEAT,
             internal_format: GL_RGBA,
+            mip_data: core::array::from_fn(|_| Vec::new()),
+            mip_depth: core::array::from_fn(|_| Vec::new()),
+            mip_widths: [0; MAX_MIP_LEVELS - 1],
+            mip_heights: [0; MAX_MIP_LEVELS - 1],
+            mip_count: 0,
         }
     }
 
     /// Sample a texel at (u, v) with nearest-neighbor filtering.
     pub fn sample_nearest(&self, u: f32, v: f32) -> [f32; 4] {
+        self.sample_nearest_level(0, u, v)
+    }
+
+    pub fn sample_nearest_level(&self, level: usize, u: f32, v: f32) -> [f32; 4] {
+        let Some((w, h)) = self.level_dims(level) else {
+            return [0.0, 0.0, 0.0, 1.0];
+        };
+        if w == 0 || h == 0 {
+            return [0.0, 0.0, 0.0, 1.0];
+        }
         if self.width == 0 || self.height == 0 {
             return [0.0, 0.0, 0.0, 1.0];
         }
         let u = wrap_coord(u, self.wrap_s);
         let v = wrap_coord(v, self.wrap_t);
-        let x = ((u * self.width as f32) as i32).clamp(0, self.width as i32 - 1) as u32;
-        let y = ((v * self.height as f32) as i32).clamp(0, self.height as i32 - 1) as u32;
+        let x = ((u * w as f32) as i32).clamp(0, w as i32 - 1) as u32;
+        let y = ((v * h as f32) as i32).clamp(0, h as i32 - 1) as u32;
         if self.internal_format == GL_DEPTH_COMPONENT {
-            let d = self.depth[(y * self.width + x) as usize];
+            let d = self.fetch_depth_level(level, x, y);
             return [d, d, d, 1.0];
         }
-        let px = self.data[(y * self.width + x) as usize];
+        let px = self.fetch_packed_level(level, x, y);
         unpack_rgba(px)
     }
 
     /// Sample a texel at (u, v) with bilinear filtering.
     pub fn sample_linear(&self, u: f32, v: f32) -> [f32; 4] {
+        self.sample_linear_level(0, u, v)
+    }
+
+    pub fn sample_linear_level(&self, level: usize, u: f32, v: f32) -> [f32; 4] {
+        let Some((w_u32, h_u32)) = self.level_dims(level) else {
+            return [0.0, 0.0, 0.0, 1.0];
+        };
+        if w_u32 == 0 || h_u32 == 0 {
+            return [0.0, 0.0, 0.0, 1.0];
+        }
         if self.width == 0 || self.height == 0 {
             return [0.0, 0.0, 0.0, 1.0];
         }
         let u = wrap_coord(u, self.wrap_s);
         let v = wrap_coord(v, self.wrap_t);
-        let fx = u * self.width as f32 - 0.5;
-        let fy = v * self.height as f32 - 0.5;
+        let fx = u * w_u32 as f32 - 0.5;
+        let fy = v * h_u32 as f32 - 0.5;
         let x0 = floor_f32(fx) as i32;
         let y0 = floor_f32(fy) as i32;
         let frac_x = fx - x0 as f32;
         let frac_y = fy - y0 as f32;
 
-        let w = self.width as i32;
-        let h = self.height as i32;
+        let w = w_u32 as i32;
+        let h = h_u32 as i32;
         if self.internal_format == GL_DEPTH_COMPONENT {
-            let s00 = self.fetch_depth(x0.clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
-            let s10 = self.fetch_depth((x0 + 1).clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
-            let s01 = self.fetch_depth(x0.clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
-            let s11 = self.fetch_depth((x0 + 1).clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
+            let s00 = self.fetch_depth_level(level, x0.clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
+            let s10 = self.fetch_depth_level(level, (x0 + 1).clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
+            let s01 = self.fetch_depth_level(level, x0.clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
+            let s11 = self.fetch_depth_level(level, (x0 + 1).clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
             let top = s00 + (s10 - s00) * frac_x;
             let bot = s01 + (s11 - s01) * frac_x;
             let depth = top + (bot - top) * frac_y;
             return [depth, depth, depth, 1.0];
         }
-        let s00 = self.fetch(x0.clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
-        let s10 = self.fetch((x0 + 1).clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
-        let s01 = self.fetch(x0.clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
-        let s11 = self.fetch((x0 + 1).clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
+        let s00 = self.fetch_level(level, x0.clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
+        let s10 = self.fetch_level(level, (x0 + 1).clamp(0, w - 1) as u32, y0.clamp(0, h - 1) as u32);
+        let s01 = self.fetch_level(level, x0.clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
+        let s11 = self.fetch_level(level, (x0 + 1).clamp(0, w - 1) as u32, (y0 + 1).clamp(0, h - 1) as u32);
 
         let mut result = [0.0f32; 4];
         for i in 0..4 {
@@ -96,9 +128,14 @@ impl GlTexture {
 
     /// Sample using the configured mag filter.
     pub fn sample(&self, u: f32, v: f32) -> [f32; 4] {
-        match self.mag_filter {
-            GL_LINEAR => self.sample_linear(u, v),
-            _ => self.sample_nearest(u, v),
+        self.sample_lod(u, v, 0.0)
+    }
+
+    pub fn sample_lod(&self, u: f32, v: f32, lod: f32) -> [f32; 4] {
+        let level = self.pick_mip_level(lod);
+        match self.active_level_filter() {
+            GL_LINEAR => self.sample_linear_level(level, u, v),
+            _ => self.sample_nearest_level(level, u, v),
         }
     }
 
@@ -109,6 +146,129 @@ impl GlTexture {
 
     fn fetch_depth(&self, x: u32, y: u32) -> f32 {
         self.depth[(y * self.width + x) as usize]
+    }
+
+    fn fetch_level(&self, level: usize, x: u32, y: u32) -> [f32; 4] {
+        unpack_rgba(self.fetch_packed_level(level, x, y))
+    }
+
+    fn fetch_packed_level(&self, level: usize, x: u32, y: u32) -> u32 {
+        if level == 0 {
+            self.data[(y * self.width + x) as usize]
+        } else {
+            let idx = level - 1;
+            let w = self.mip_widths[idx];
+            self.mip_data[idx][(y * w + x) as usize]
+        }
+    }
+
+    fn fetch_depth_level(&self, level: usize, x: u32, y: u32) -> f32 {
+        if level == 0 {
+            self.depth[(y * self.width + x) as usize]
+        } else {
+            let idx = level - 1;
+            let w = self.mip_widths[idx];
+            self.mip_depth[idx][(y * w + x) as usize]
+        }
+    }
+
+    fn level_dims(&self, level: usize) -> Option<(u32, u32)> {
+        if self.mip_count == 0 || level >= self.mip_count {
+            None
+        } else if level == 0 {
+            Some((self.width, self.height))
+        } else {
+            Some((self.mip_widths[level - 1], self.mip_heights[level - 1]))
+        }
+    }
+
+    fn active_level_filter(&self) -> GLenum {
+        match self.min_filter {
+            GL_LINEAR | GL_LINEAR_MIPMAP_NEAREST | GL_LINEAR_MIPMAP_LINEAR => GL_LINEAR,
+            _ => GL_NEAREST,
+        }
+    }
+
+    fn pick_mip_level(&self, lod: f32) -> usize {
+        if self.mip_count <= 1 {
+            return 0;
+        }
+        let wants_mips = matches!(
+            self.min_filter,
+            GL_NEAREST_MIPMAP_NEAREST
+                | GL_LINEAR_MIPMAP_NEAREST
+                | GL_NEAREST_MIPMAP_LINEAR
+                | GL_LINEAR_MIPMAP_LINEAR
+        );
+        if !wants_mips {
+            return 0;
+        }
+        lod.clamp(0.0, (self.mip_count - 1) as f32) as usize
+    }
+
+    pub fn generate_mipmaps(&mut self) {
+        self.mip_count = if self.width > 0 && self.height > 0 { 1 } else { 0 };
+        for level in 0..(MAX_MIP_LEVELS - 1) {
+            self.mip_data[level].clear();
+            self.mip_depth[level].clear();
+            self.mip_widths[level] = 0;
+            self.mip_heights[level] = 0;
+        }
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        let mut src_w = self.width;
+        let mut src_h = self.height;
+        let mut src_rgba = self.data.clone();
+        let mut src_depth = self.depth.clone();
+
+        for level in 1..MAX_MIP_LEVELS {
+            if src_w == 1 && src_h == 1 {
+                break;
+            }
+            let dst_w = (src_w / 2).max(1);
+            let dst_h = (src_h / 2).max(1);
+            let mut dst_rgba = vec![0u32; (dst_w * dst_h) as usize];
+            let mut dst_depth = vec![1.0f32; (dst_w * dst_h) as usize];
+
+            for y in 0..dst_h {
+                for x in 0..dst_w {
+                    let sx0 = (x * 2).min(src_w - 1);
+                    let sy0 = (y * 2).min(src_h - 1);
+                    let sx1 = (sx0 + 1).min(src_w - 1);
+                    let sy1 = (sy0 + 1).min(src_h - 1);
+                    let samples = [
+                        src_rgba[(sy0 * src_w + sx0) as usize],
+                        src_rgba[(sy0 * src_w + sx1) as usize],
+                        src_rgba[(sy1 * src_w + sx0) as usize],
+                        src_rgba[(sy1 * src_w + sx1) as usize],
+                    ];
+                    dst_rgba[(y * dst_w + x) as usize] = average_rgba(samples);
+
+                    let depths = [
+                        src_depth[(sy0 * src_w + sx0) as usize],
+                        src_depth[(sy0 * src_w + sx1) as usize],
+                        src_depth[(sy1 * src_w + sx0) as usize],
+                        src_depth[(sy1 * src_w + sx1) as usize],
+                    ];
+                    dst_depth[(y * dst_w + x) as usize] =
+                        0.25 * (depths[0] + depths[1] + depths[2] + depths[3]);
+                }
+            }
+
+            let idx = level - 1;
+            self.mip_widths[idx] = dst_w;
+            self.mip_heights[idx] = dst_h;
+            self.mip_data[idx] = dst_rgba.clone();
+            self.mip_depth[idx] = dst_depth.clone();
+            self.mip_count = level + 1;
+
+            src_w = dst_w;
+            src_h = dst_h;
+            src_rgba = dst_rgba;
+            src_depth = dst_depth;
+        }
     }
 }
 
@@ -175,9 +335,16 @@ impl TextureStore {
             tex.width = width;
             tex.height = height;
             tex.internal_format = format;
+            tex.mip_count = if width > 0 && height > 0 { 1 } else { 0 };
             let npixels = (width * height) as usize;
             tex.data = vec![0u32; npixels];
             tex.depth = vec![1.0f32; npixels];
+            for level in 0..(MAX_MIP_LEVELS - 1) {
+                tex.mip_data[level].clear();
+                tex.mip_depth[level].clear();
+                tex.mip_widths[level] = 0;
+                tex.mip_heights[level] = 0;
+            }
 
             if let Some(src) = data {
                 match format {
@@ -225,6 +392,12 @@ impl TextureStore {
             }
         }
     }
+
+    pub fn generate_mipmaps(&mut self, id: u32) {
+        if let Some(tex) = self.get_mut(id) {
+            tex.generate_mipmaps();
+        }
+    }
 }
 
 /// Unpack an ARGB u32 into [r, g, b, a] floats in 0..1.
@@ -234,6 +407,20 @@ fn unpack_rgba(px: u32) -> [f32; 4] {
     let g = ((px >> 8) & 0xFF) as f32 / 255.0;
     let b = (px & 0xFF) as f32 / 255.0;
     [r, g, b, a]
+}
+
+fn average_rgba(samples: [u32; 4]) -> u32 {
+    let mut a = 0u32;
+    let mut r = 0u32;
+    let mut g = 0u32;
+    let mut b = 0u32;
+    for px in samples {
+        a += (px >> 24) & 0xFF;
+        r += (px >> 16) & 0xFF;
+        g += (px >> 8) & 0xFF;
+        b += px & 0xFF;
+    }
+    ((a / 4) << 24) | ((r / 4) << 16) | ((g / 4) << 8) | (b / 4)
 }
 
 /// Floor for f32 (no libm).

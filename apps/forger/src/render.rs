@@ -10,12 +10,23 @@ use crate::mesh::{ChunkMesh, FLOATS_PER_VERTEX};
 // ---------------------------------------------------------------------------
 type Mat4 = [f32; 16];
 
+fn mat4_identity() -> Mat4 {
+    [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+        0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // Day/Night cycle constants
 // ---------------------------------------------------------------------------
 
 /// Full day cycle duration in milliseconds (10 minutes).
 const DAY_CYCLE_MS: u32 = 10 * 60 * 1000;
+const SUN_VISIBLE_SIZE: f32 = 0.9985;
+const SUN_HIDDEN_SIZE: f32 = 2.0;
 
 // ---------------------------------------------------------------------------
 // Shaders
@@ -26,15 +37,19 @@ const VS_BLOCK: &str =
 attribute vec2 aTexCoord;
 attribute float aLight;
 uniform mat4 uMVP;
+uniform mat4 uLightMVP;
 uniform float uSunBrightness;
 varying vec2 vTexCoord;
 varying float vLighting;
 varying float vDist;
+varying vec4 vShadowCoord;
 void main() {
-    gl_Position = uMVP * vec4(aPosition, 1.0);
+    vec4 worldPos = vec4(aPosition, 1.0);
+    gl_Position = uMVP * worldPos;
     vTexCoord = aTexCoord;
     vLighting = aLight * uSunBrightness;
     vDist = gl_Position.w;
+    vShadowCoord = uLightMVP * worldPos;
 }
 ";
 
@@ -42,16 +57,57 @@ const FS_BLOCK: &str =
 "varying vec2 vTexCoord;
 varying float vLighting;
 varying float vDist;
+varying vec4 vShadowCoord;
 uniform sampler2D uTexture;
+uniform sampler2D uShadowMap;
 uniform vec3 uFogColor;
 uniform float uFogStart;
 uniform float uFogEnd;
+uniform vec2 uShadowTexelSize;
+uniform float uShadowStrength;
 void main() {
     vec4 tex = texture2D(uTexture, vTexCoord);
-    vec3 color = tex.rgb * vLighting;
+    float visibility = 1.0;
+    if (uShadowStrength > 0.001) {
+        vec3 shadowNdc = vShadowCoord.xyz / max(vShadowCoord.w, 0.0001);
+        vec2 shadowUv = vec2(
+            shadowNdc.x * 0.5 + 0.5,
+            0.5 - shadowNdc.y * 0.5
+        );
+        float shadowDepth = shadowNdc.z * 0.5 + 0.5;
+        if (shadowUv.x >= 0.0 && shadowUv.x <= 1.0 &&
+            shadowUv.y >= 0.0 && shadowUv.y <= 1.0 &&
+            shadowDepth >= 0.0 && shadowDepth <= 1.0) {
+            float cmpDepth = shadowDepth - 0.0014;
+            vec2 sx = vec2(uShadowTexelSize.x * 1.5, 0.0);
+            vec2 sy = vec2(0.0, uShadowTexelSize.y * 1.5);
+            float lit = 0.0;
+            lit += (cmpDepth <= texture2D(uShadowMap, shadowUv).r ? 1.0 : 0.0) * 0.36;
+            lit += (cmpDepth <= texture2D(uShadowMap, shadowUv - sx).r ? 1.0 : 0.0) * 0.16;
+            lit += (cmpDepth <= texture2D(uShadowMap, shadowUv + sx).r ? 1.0 : 0.0) * 0.16;
+            lit += (cmpDepth <= texture2D(uShadowMap, shadowUv - sy).r ? 1.0 : 0.0) * 0.16;
+            lit += (cmpDepth <= texture2D(uShadowMap, shadowUv + sy).r ? 1.0 : 0.0) * 0.16;
+            visibility = 1.0 - uShadowStrength * (1.0 - lit);
+        }
+    }
+    vec3 color = tex.rgb * vLighting * visibility;
     float t = clamp((vDist - uFogStart) / (uFogEnd - uFogStart), 0.0, 1.0);
     color = mix(color, uFogColor, t);
     gl_FragColor = vec4(color, 1.0);
+}
+";
+
+const VS_SHADOW: &str =
+"attribute vec3 aPosition;
+uniform mat4 uLightMVP;
+void main() {
+    gl_Position = uLightMVP * vec4(aPosition, 1.0);
+}
+";
+
+const FS_SHADOW: &str =
+"void main() {
+    gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
 }
 ";
 
@@ -113,6 +169,7 @@ void main() {
 pub struct Renderer {
     pub block_program: u32,
     pub sky_program: u32,
+    pub shadow_program: u32,
     pub atlas_tex: u32,
     pub sky_vbo: u32,
     // Block shader uniform/attrib locations
@@ -122,9 +179,15 @@ pub struct Renderer {
     pub u_fog_end: i32,
     pub u_texture: i32,
     pub u_sun_brightness: i32,
+    pub u_light_mvp: i32,
+    pub u_shadow_map: i32,
+    pub u_shadow_texel_size: i32,
+    pub u_shadow_strength: i32,
     pub a_position: i32,
     pub a_texcoord: i32,
     pub a_light: i32,
+    pub u_shadow_pass_light_mvp: i32,
+    pub a_shadow_position: i32,
     // Sky shader locations
     pub u_sky_top: i32,
     pub u_sky_horizon: i32,
@@ -148,6 +211,17 @@ pub struct Renderer {
     pub target_fog_distance: f32,
 }
 
+struct SunState {
+    dir: [f32; 3],
+    elevation: f32,
+    color: [f32; 3],
+    brightness: f32,
+    sky_top: [f32; 3],
+    sky_horizon: [f32; 3],
+    sky_bottom: [f32; 3],
+    visible_size: f32,
+}
+
 impl Renderer {
     pub fn init(atlas_data: &[u8], atlas_w: u32, atlas_h: u32) -> Self {
         // -- Block shader program --
@@ -155,6 +229,7 @@ impl Renderer {
 
         // -- Sky shader program --
         let sky_program = compile_program(VS_SKY, FS_SKY);
+        let shadow_program = compile_program(VS_SHADOW, FS_SHADOW);
 
         // -- Atlas texture --
         let mut tex_ids = [0u32; 1];
@@ -174,6 +249,7 @@ impl Renderer {
             gl::GL_UNSIGNED_BYTE,
             atlas_data,
         );
+        gl::generate_mipmap(gl::GL_TEXTURE_2D);
 
         // -- Sky quad VBO --
         let sky_verts: [f32; 12] = [
@@ -197,10 +273,16 @@ impl Renderer {
         let u_fog_end = gl::get_uniform_location(block_program, "uFogEnd");
         let u_texture = gl::get_uniform_location(block_program, "uTexture");
         let u_sun_brightness = gl::get_uniform_location(block_program, "uSunBrightness");
+        let u_light_mvp = gl::get_uniform_location(block_program, "uLightMVP");
+        let u_shadow_map = gl::get_uniform_location(block_program, "uShadowMap");
+        let u_shadow_texel_size = gl::get_uniform_location(block_program, "uShadowTexelSize");
+        let u_shadow_strength = gl::get_uniform_location(block_program, "uShadowStrength");
 
         let a_position = gl::get_attrib_location(block_program, "aPosition");
         let a_texcoord = gl::get_attrib_location(block_program, "aTexCoord");
         let a_light = gl::get_attrib_location(block_program, "aLight");
+        let u_shadow_pass_light_mvp = gl::get_uniform_location(shadow_program, "uLightMVP");
+        let a_shadow_position = gl::get_attrib_location(shadow_program, "aPosition");
 
         let u_sky_top = gl::get_uniform_location(sky_program, "uSkyTop");
         let u_sky_horizon = gl::get_uniform_location(sky_program, "uSkyHorizon");
@@ -222,6 +304,7 @@ impl Renderer {
         Renderer {
             block_program,
             sky_program,
+            shadow_program,
             atlas_tex,
             sky_vbo,
             u_mvp,
@@ -230,9 +313,15 @@ impl Renderer {
             u_fog_end,
             u_texture,
             u_sun_brightness,
+            u_light_mvp,
+            u_shadow_map,
+            u_shadow_texel_size,
+            u_shadow_strength,
             a_position,
             a_texcoord,
             a_light,
+            u_shadow_pass_light_mvp,
+            a_shadow_position,
             u_sky_top,
             u_sky_horizon,
             u_sky_bottom,
@@ -280,24 +369,11 @@ impl Renderer {
         self.chunk_vbos.insert(key, (vbo, vertex_count));
     }
 
-    pub fn render(&mut self, cam_x: f32, cam_y: f32, cam_z: f32, width: u32, height: u32) {
+    pub fn render(&mut self, cam_x: f32, cam_y: f32, cam_z: f32, width: u32, height: u32, shadows_enabled: bool) {
         // ── Day/Night cycle ──────────────────────────────────────────
         let now = anyos_std::sys::uptime_ms();
         let day_progress = (now % DAY_CYCLE_MS) as f32 / DAY_CYCLE_MS as f32;
-
-        // Sun angle: 0.0 = sunrise (east), 0.25 = noon (top), 0.5 = sunset (west), 0.75 = midnight
-        let sun_angle = day_progress * 2.0 * gl::PI;
-        let sun_elevation = gl::sin(sun_angle);  // -1 to 1, positive = above horizon
-        let sun_x = gl::cos(sun_angle);           // East-west component
-        let sun_y = sun_elevation;
-        let sun_z = 0.3 * gl::sin(sun_angle);     // Slight Z drift for realism
-        // Normalize sun direction
-        let sun_len = gl::sqrt(sun_x * sun_x + sun_y * sun_y + sun_z * sun_z);
-        let sun_dir = [sun_x / sun_len, sun_y / sun_len, sun_z / sun_len];
-
-        // Compute sky colors and lighting based on sun elevation
-        let (sky_top, sky_horizon, sky_bottom, sun_color, sun_brightness) =
-            compute_sky_colors(sun_elevation);
+        let sun = compute_sun_state(day_progress);
 
         // Smooth fog distance
         let fog_speed = 0.02;
@@ -305,10 +381,46 @@ impl Renderer {
 
         let fog_start = self.fog_distance * 0.6;
         let fog_end = self.fog_distance;
+        let shadow_radius = (self.fog_distance * 0.9).max(18.0).min(42.0);
+        let shadow_target = [cam_x, cam_y, cam_z];
+        let shadow_distance = shadow_radius + 18.0;
+        let shadow_light_x = shadow_target[0] + sun.dir[0] * shadow_distance;
+        let shadow_light_y = shadow_target[1] + sun.dir[1] * shadow_distance;
+        let shadow_light_z = shadow_target[2] + sun.dir[2] * shadow_distance;
+
+        let mut shadows_ready = false;
+        let mut light_mvp = mat4_identity();
+        if shadows_enabled
+            && sun.elevation > 0.02
+            && gl::shadow_pass_begin(
+                shadow_light_x,
+                shadow_light_y,
+                shadow_light_z,
+                shadow_target[0],
+                shadow_target[1],
+                shadow_target[2],
+                shadow_radius,
+            )
+        {
+            let light_mvp_ptr = gl::shadow_get_light_mvp();
+            if !light_mvp_ptr.is_null() {
+                light_mvp = unsafe { *(light_mvp_ptr as *const [f32; 16]) };
+                self.render_shadow_chunks(cam_x, cam_z, &light_mvp);
+                shadows_ready = true;
+            }
+            gl::shadow_pass_end();
+            if shadows_ready {
+                let ptr = gl::shadow_get_light_mvp();
+                if !ptr.is_null() {
+                    light_mvp = unsafe { *(ptr as *const [f32; 16]) };
+                }
+                shadows_ready = gl::shadow_available();
+            }
+        }
 
         // -- Clear --
         gl::viewport(0, 0, width as i32, height as i32);
-        gl::clear_color(sky_horizon[0], sky_horizon[1], sky_horizon[2], 1.0);
+        gl::clear_color(sun.sky_horizon[0], sun.sky_horizon[1], sun.sky_horizon[2], 1.0);
         gl::clear(gl::GL_COLOR_BUFFER_BIT | gl::GL_DEPTH_BUFFER_BIT);
 
         // -- Sky pass (depth test OFF so sky doesn't write to depth buffer) --
@@ -317,13 +429,12 @@ impl Renderer {
 
         gl::use_program(self.sky_program);
 
-        gl::uniform3f(self.u_sky_top, sky_top[0], sky_top[1], sky_top[2]);
-        gl::uniform3f(self.u_sky_horizon, sky_horizon[0], sky_horizon[1], sky_horizon[2]);
-        gl::uniform3f(self.u_sky_bottom, sky_bottom[0], sky_bottom[1], sky_bottom[2]);
-        gl::uniform3f(self.u_sun_dir, sun_dir[0], sun_dir[1], sun_dir[2]);
-        gl::uniform3f(self.u_sun_color, sun_color[0], sun_color[1], sun_color[2]);
-        let sun_size = if sun_elevation > -0.1 { 0.9985 } else { 2.0 };
-        gl::uniform1f(self.u_sun_size, sun_size);
+        gl::uniform3f(self.u_sky_top, sun.sky_top[0], sun.sky_top[1], sun.sky_top[2]);
+        gl::uniform3f(self.u_sky_horizon, sun.sky_horizon[0], sun.sky_horizon[1], sun.sky_horizon[2]);
+        gl::uniform3f(self.u_sky_bottom, sun.sky_bottom[0], sun.sky_bottom[1], sun.sky_bottom[2]);
+        gl::uniform3f(self.u_sun_dir, sun.dir[0], sun.dir[1], sun.dir[2]);
+        gl::uniform3f(self.u_sun_color, sun.color[0], sun.color[1], sun.color[2]);
+        gl::uniform1f(self.u_sun_size, sun.visible_size);
 
         let fov_rad = 70.0 * gl::PI / 180.0;
         let tan_half_fov = gl::tan(fov_rad * 0.5);
@@ -388,14 +499,24 @@ impl Renderer {
             }
         }
         gl::uniform_matrix4fv(self.u_mvp, false, &mvp);
-        gl::uniform3f(self.u_fog_color, sky_horizon[0], sky_horizon[1], sky_horizon[2]);
+        gl::uniform3f(self.u_fog_color, sun.sky_horizon[0], sun.sky_horizon[1], sun.sky_horizon[2]);
         gl::uniform1f(self.u_fog_start, fog_start);
         gl::uniform1f(self.u_fog_end, fog_end);
-        gl::uniform1f(self.u_sun_brightness, sun_brightness);
+        gl::uniform1f(self.u_sun_brightness, sun.brightness);
+        gl::uniform_matrix4fv(self.u_light_mvp, false, &light_mvp);
+        let shadow_map_size = gl::shadow_get_map_size().max(1) as f32;
+        gl::uniform2f(self.u_shadow_texel_size, 1.0 / shadow_map_size, 1.0 / shadow_map_size);
+        gl::uniform1f(self.u_shadow_strength, if shadows_ready { 0.72 } else { 0.0 });
 
         gl::active_texture(gl::GL_TEXTURE0);
-        gl::bind_texture(gl::GL_TEXTURE_2D, self.atlas_tex);
         gl::uniform1i(self.u_texture, 0);
+        gl::active_texture(gl::GL_TEXTURE0 + gl::shadow_get_unit());
+        gl::bind_texture(
+            gl::GL_TEXTURE_2D,
+            if shadows_ready { gl::shadow_get_texture() } else { 0 },
+        );
+        gl::uniform1i(self.u_shadow_map, gl::shadow_get_unit() as i32);
+        gl::active_texture(gl::GL_TEXTURE0);
 
         // Stride: FLOATS_PER_VERTEX * 4 bytes = 24 bytes (6 floats)
         let stride = (FLOATS_PER_VERTEX * 4) as i32;
@@ -404,18 +525,67 @@ impl Renderer {
         let fwd_x = gl::sin(self.yaw);
         let fwd_z = -gl::cos(self.yaw);
 
+        gl::enable_vertex_attrib_array(self.a_position as u32);
+        gl::enable_vertex_attrib_array(self.a_texcoord as u32);
+        gl::enable_vertex_attrib_array(self.a_light as u32);
+
+        gl::bind_texture(gl::GL_TEXTURE_2D, self.atlas_tex);
+        self.draw_chunk_group(cam_x, cam_z, stride, fwd_x, fwd_z, 0.0, f32::MAX);
+        gl::disable_vertex_attrib_array(self.a_position as u32);
+        gl::disable_vertex_attrib_array(self.a_texcoord as u32);
+        gl::disable_vertex_attrib_array(self.a_light as u32);
+    }
+
+    fn visible_chunk_delta(&self, cx: i32, cz: i32, cam_x: f32, cam_z: f32) -> Option<(f32, f32, f32)> {
+        let chunk_center_x = cx as f32 * 16.0 + 8.0;
+        let chunk_center_z = cz as f32 * 16.0 + 8.0;
+        let dx = chunk_center_x - cam_x;
+        let dz = chunk_center_z - cam_z;
+        let dist_sq = dx * dx + dz * dz;
+        if dist_sq > self.fog_distance * self.fog_distance {
+            None
+        } else {
+            Some((dx, dz, dist_sq))
+        }
+    }
+
+    fn render_shadow_chunks(&self, cam_x: f32, cam_z: f32, light_mvp: &Mat4) {
+        gl::use_program(self.shadow_program);
+        gl::uniform_matrix4fv(self.u_shadow_pass_light_mvp, false, light_mvp);
+        gl::enable(gl::GL_DEPTH_TEST);
+        gl::depth_func(gl::GL_LESS);
+        gl::disable(gl::GL_BLEND);
+
+        gl::enable_vertex_attrib_array(self.a_shadow_position as u32);
+        let stride = (FLOATS_PER_VERTEX * 4) as i32;
         for (&(cx, cz), &(vbo, vert_count)) in &self.chunk_vbos {
-            // Rough distance check for fog culling
-            let chunk_center_x = cx as f32 * 16.0 + 8.0;
-            let chunk_center_z = cz as f32 * 16.0 + 8.0;
-            let dx = chunk_center_x - cam_x;
-            let dz = chunk_center_z - cam_z;
-            let dist_sq = dx * dx + dz * dz;
-            if dist_sq > self.fog_distance * self.fog_distance {
+            if self.visible_chunk_delta(cx, cz, cam_x, cam_z).is_none() {
                 continue;
             }
+            gl::bind_buffer(gl::GL_ARRAY_BUFFER, vbo);
+            gl::vertex_attrib_pointer(self.a_shadow_position as u32, 3, gl::GL_FLOAT, false, stride, 0);
+            gl::draw_arrays(gl::GL_TRIANGLES, 0, vert_count as i32);
+        }
+        gl::disable_vertex_attrib_array(self.a_shadow_position as u32);
+    }
 
-            // Frustum culling: skip chunks behind camera (with margin for nearby chunks)
+    fn draw_chunk_group(
+        &self,
+        cam_x: f32,
+        cam_z: f32,
+        stride: i32,
+        fwd_x: f32,
+        fwd_z: f32,
+        min_dist_sq: f32,
+        max_dist_sq: f32,
+    ) {
+        for (&(cx, cz), &(vbo, vert_count)) in &self.chunk_vbos {
+            let Some((dx, dz, dist_sq)) = self.visible_chunk_delta(cx, cz, cam_x, cam_z) else {
+                continue;
+            };
+            if dist_sq < min_dist_sq || dist_sq >= max_dist_sq {
+                continue;
+            }
             if dist_sq > 256.0 {
                 let dot = dx * fwd_x + dz * fwd_z;
                 if dot < -12.0 {
@@ -424,25 +594,11 @@ impl Renderer {
             }
 
             gl::bind_buffer(gl::GL_ARRAY_BUFFER, vbo);
-
-            // aPosition: vec3 at offset 0
-            gl::enable_vertex_attrib_array(self.a_position as u32);
             gl::vertex_attrib_pointer(self.a_position as u32, 3, gl::GL_FLOAT, false, stride, 0);
-
-            // aTexCoord: vec2 at offset 12
-            gl::enable_vertex_attrib_array(self.a_texcoord as u32);
             gl::vertex_attrib_pointer(self.a_texcoord as u32, 2, gl::GL_FLOAT, false, stride, 12);
-
-            // aLight: float at offset 20
-            gl::enable_vertex_attrib_array(self.a_light as u32);
             gl::vertex_attrib_pointer(self.a_light as u32, 1, gl::GL_FLOAT, false, stride, 20);
-
             gl::draw_arrays(gl::GL_TRIANGLES, 0, vert_count as i32);
         }
-
-        gl::disable_vertex_attrib_array(self.a_position as u32);
-        gl::disable_vertex_attrib_array(self.a_texcoord as u32);
-        gl::disable_vertex_attrib_array(self.a_light as u32);
     }
 
     pub fn adapt_view_distance(&mut self, fps: f32) {
@@ -466,6 +622,33 @@ fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
         a[1] + (b[1] - a[1]) * t,
         a[2] + (b[2] - a[2]) * t,
     ]
+}
+
+fn compute_sun_state(day_progress: f32) -> SunState {
+    // 0.0 = sunrise (east), 0.25 = noon, 0.5 = sunset (west), 0.75 = midnight
+    let sun_angle = day_progress * 2.0 * gl::PI;
+    let elevation = gl::sin(sun_angle);
+    let sun_x = gl::cos(sun_angle);
+    let sun_y = elevation;
+    let sun_z = 0.3 * gl::sin(sun_angle);
+    let sun_len = gl::sqrt(sun_x * sun_x + sun_y * sun_y + sun_z * sun_z).max(0.0001);
+    let dir = [sun_x / sun_len, sun_y / sun_len, sun_z / sun_len];
+    let (sky_top, sky_horizon, sky_bottom, color, brightness) = compute_sky_colors(elevation);
+    let visible_size = if elevation > -0.1 {
+        SUN_VISIBLE_SIZE
+    } else {
+        SUN_HIDDEN_SIZE
+    };
+    SunState {
+        dir,
+        elevation,
+        color,
+        brightness,
+        sky_top,
+        sky_horizon,
+        sky_bottom,
+        visible_size,
+    }
 }
 
 /// Compute sky colors, sun color, and block brightness from sun elevation (-1..1).
@@ -625,4 +808,3 @@ fn look_matrix(x: f32, y: f32, z: f32, yaw: f32, pitch: f32) -> Mat4 {
 
     m
 }
-

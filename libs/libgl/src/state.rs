@@ -159,6 +159,16 @@ pub struct GlContext {
     /// FXAA post-process enabled.
     pub fxaa_enabled: bool,
 
+    // ── Texture LOD ────────────────────────────────────────────────────
+    /// Desired display refresh / frame cadence used for adaptive texture LOD.
+    pub target_refresh_hz: u32,
+    /// Smoothed frame time in milliseconds.
+    pub frame_time_ema_ms: f32,
+    /// Additional engine-driven mip bias applied on top of geometric LOD.
+    pub lod_bias: f32,
+    /// Last swap timestamp for frame-time smoothing.
+    pub last_swap_ms: u32,
+
     // ── Error State ─────────────────────────────────────────────────────
     pub error: GLenum,
 }
@@ -235,6 +245,11 @@ impl GlContext {
             shadow_prev_viewport: [0; 4],
 
             fxaa_enabled: false,
+
+            target_refresh_hz: 60,
+            frame_time_ema_ms: 16.6,
+            lod_bias: 0.0,
+            last_swap_ms: 0,
 
             error: GL_NO_ERROR,
         }

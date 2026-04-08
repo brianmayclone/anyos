@@ -175,6 +175,7 @@ struct LibGl {
     finish: extern "C" fn(),
     // Anti-Aliasing
     set_fxaa: extern "C" fn(u32),
+    set_target_refresh_hz: extern "C" fn(u32),
     // Backend selection
     set_hw_backend: extern "C" fn(u32),
     get_hw_backend: extern "C" fn() -> u32,
@@ -326,6 +327,7 @@ pub fn init() -> bool {
             flush: resolve(&handle, "glFlush"),
             finish: resolve(&handle, "glFinish"),
             set_fxaa: resolve(&handle, "gl_set_fxaa"),
+            set_target_refresh_hz: resolve(&handle, "gl_set_target_refresh_hz"),
             set_hw_backend: resolve(&handle, "gl_set_hw_backend"),
             get_hw_backend: resolve(&handle, "gl_get_hw_backend"),
             has_hw_backend: resolve(&handle, "gl_has_hw_backend"),
@@ -505,6 +507,9 @@ pub fn tex_image_2d(target: GLenum, level: i32, internal_format: i32,
 /// Set active texture unit.
 pub fn active_texture(texture: GLenum) { (lib().active_texture)(texture); }
 
+/// Generate mipmaps for the currently bound texture.
+pub fn generate_mipmap(target: GLenum) { (lib().generate_mipmap)(target); }
+
 /// Create a shader.
 pub fn create_shader(shader_type: GLenum) -> u32 { (lib().create_shader)(shader_type) }
 
@@ -639,6 +644,9 @@ pub fn finish() { (lib().finish)(); }
 
 /// Enable or disable FXAA post-process anti-aliasing.
 pub fn set_fxaa(enabled: bool) { (lib().set_fxaa)(if enabled { 1 } else { 0 }); }
+
+/// Set target refresh/frame cadence for adaptive engine LOD.
+pub fn set_target_refresh_hz(refresh_hz: u32) { (lib().set_target_refresh_hz)(refresh_hz); }
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Backend Selection

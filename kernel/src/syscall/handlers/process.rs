@@ -305,6 +305,16 @@ pub fn sys_mmap(size: u32) -> u32 {
             return u32::MAX;
         }
     };
+    if base < 0x7000_0000 || base.checked_add(aligned_size).map_or(true, |end| end > 0xBF00_0000) {
+        crate::serial_println!(
+            "sys_mmap: BUG: VMA returned invalid range base={:#x} size={:#x} pd={:#x}",
+            base,
+            aligned_size,
+            pd.as_u64()
+        );
+        crate::memory::vma::free_region(pd, base, aligned_size);
+        return u32::MAX;
+    }
 
     // Allocate and map physical pages.
     let mut addr = base;
@@ -338,6 +348,14 @@ pub fn sys_mmap(size: u32) -> u32 {
     crate::task::scheduler::adjust_current_user_pages(num_pages as i32);
     // Keep mmap_next in sync (threads sharing this PD read it).
     crate::task::scheduler::set_current_thread_mmap_next(base + aligned_size);
+
+    // Shared address spaces (SYS_THREAD_CREATE) can run on multiple CPUs with
+    // the same PCID. After installing new user mappings, remote CPUs may still
+    // cache stale non-present TLB entries for recycled mmap addresses. Flush
+    // all remote non-global entries once per mmap to keep newly mapped stacks
+    // and heaps immediately visible to sibling threads.
+    #[cfg(target_arch = "x86_64")]
+    crate::arch::x86::smp::tlb_shootdown_full();
 
     base
 }
@@ -389,6 +407,15 @@ pub fn sys_munmap(addr: u32, size: u32) -> u32 {
     // Update VMA bookkeeping so the freed virtual addresses can be reused.
     if let Some(pd) = crate::task::scheduler::current_thread_page_directory() {
         crate::memory::vma::free_region(pd, addr, aligned_size);
+    }
+
+    // Same rationale as sys_mmap(): other CPUs may still hold stale present
+    // translations for this process when multiple threads share the address
+    // space. A single full remote flush is much cheaper than debugging random
+    // use-after-free corruption later.
+    #[cfg(target_arch = "x86_64")]
+    if freed > 0 {
+        crate::arch::x86::smp::tlb_shootdown_full();
     }
 
     0

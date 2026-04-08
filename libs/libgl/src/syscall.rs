@@ -5,7 +5,7 @@ pub use libsyscall::{
     gpu_3d_has_hw, gpu_3d_hw_version, gpu_3d_submit, gpu_3d_sync,
     gpu_3d_surface_dma, gpu_3d_surface_dma_read,
     gpu_query_type, dll_load,
-    serial_print,
+    serial_print, uptime_ms,
     syscall1, syscall3, syscall5,
 };
 

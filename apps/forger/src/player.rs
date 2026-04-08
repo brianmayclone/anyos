@@ -149,6 +149,14 @@ impl Player {
         physics::set_flying(self.body_id, !flying);
     }
 
+    pub fn set_flying(&mut self, flying: bool) {
+        physics::set_flying(self.body_id, flying);
+    }
+
+    pub fn is_flying(&self) -> bool {
+        physics::is_flying(self.body_id)
+    }
+
     pub fn scroll_block(&mut self, delta: i32) {
         let min = 1i32;
         let max = block::TORCH as i32;

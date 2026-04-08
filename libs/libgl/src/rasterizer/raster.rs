@@ -357,6 +357,12 @@ pub struct ResolvedTexture {
     pub len: usize,
     pub width: u32,
     pub height: u32,
+    pub mip_data: [*const u32; crate::texture::MAX_MIP_LEVELS],
+    pub mip_lens: [usize; crate::texture::MAX_MIP_LEVELS],
+    pub mip_widths: [u32; crate::texture::MAX_MIP_LEVELS],
+    pub mip_heights: [u32; crate::texture::MAX_MIP_LEVELS],
+    pub level_count: usize,
+    pub min_filter: u32,
 }
 
 impl ResolvedTexture {
@@ -371,12 +377,35 @@ impl ResolvedTexture {
             let tex_id = (*bound)[0];
             if tex_id == 0 { return None; }
             match (*store).get(tex_id) {
-                Some(tex) if tex.width > 0 && tex.height > 0 => Some(ResolvedTexture {
-                    data: tex.data.as_ptr(),
-                    len: tex.data.len(),
-                    width: tex.width,
-                    height: tex.height,
-                }),
+                Some(tex) if tex.width > 0 && tex.height > 0 => {
+                    let mut mip_data = [core::ptr::null(); crate::texture::MAX_MIP_LEVELS];
+                    let mut mip_lens = [0usize; crate::texture::MAX_MIP_LEVELS];
+                    let mut mip_widths = [0u32; crate::texture::MAX_MIP_LEVELS];
+                    let mut mip_heights = [0u32; crate::texture::MAX_MIP_LEVELS];
+                    mip_data[0] = tex.data.as_ptr();
+                    mip_lens[0] = tex.data.len();
+                    mip_widths[0] = tex.width;
+                    mip_heights[0] = tex.height;
+                    for level in 1..tex.mip_count.min(crate::texture::MAX_MIP_LEVELS) {
+                        let idx = level - 1;
+                        mip_data[level] = tex.mip_data[idx].as_ptr();
+                        mip_lens[level] = tex.mip_data[idx].len();
+                        mip_widths[level] = tex.mip_widths[idx];
+                        mip_heights[level] = tex.mip_heights[idx];
+                    }
+                    Some(ResolvedTexture {
+                        data: tex.data.as_ptr(),
+                        len: tex.data.len(),
+                        width: tex.width,
+                        height: tex.height,
+                        mip_data,
+                        mip_lens,
+                        mip_widths,
+                        mip_heights,
+                        level_count: tex.mip_count.max(1),
+                        min_filter: tex.min_filter,
+                    })
+                }
                 _ => None,
             }
         }
@@ -445,9 +474,19 @@ pub fn rasterize_triangle_fast(
     let depth_func = ctx.depth_func;
     let depth_mask = ctx.depth_mask;
 
-    let tex_data = tex.data;
-    let tex_w = tex.width;
-    let tex_h = tex.height;
+    let mip_level = estimate_mip_level(
+        tex,
+        [v0.varyings[1][0], v0.varyings[1][1]],
+        [v1.varyings[1][0], v1.varyings[1][1]],
+        [v2.varyings[1][0], v2.varyings[1][1]],
+        s0,
+        s1,
+        s2,
+        area,
+    );
+    let tex_data = tex.mip_data[mip_level];
+    let tex_w = tex.mip_widths[mip_level];
+    let tex_h = tex.mip_heights[mip_level];
     let tex_w_f = tex_w as f32;
     let tex_h_f = tex_h as f32;
     let tex_w_max = (tex_w - 1) as i32;
@@ -608,8 +647,60 @@ pub fn real_tex_sample(unit: u32, u: f32, v: f32) -> [f32; 4] {
             return [1.0, 1.0, 1.0, 1.0];
         }
         match (*store).get(tex_id) {
-            Some(tex) => tex.sample(u, v),
+            Some(tex) => tex.sample_lod(u, v, crate::GLOBAL_LOD_BIAS),
             None => [1.0, 1.0, 1.0, 1.0],
         }
     }
+}
+
+fn estimate_mip_level(
+    tex: &ResolvedTexture,
+    uv0: [f32; 2],
+    uv1: [f32; 2],
+    uv2: [f32; 2],
+    s0: &[f32; 3],
+    s1: &[f32; 3],
+    s2: &[f32; 3],
+    area: f32,
+) -> usize {
+    let wants_mips = matches!(
+        tex.min_filter,
+        crate::types::GL_NEAREST_MIPMAP_NEAREST
+            | crate::types::GL_LINEAR_MIPMAP_NEAREST
+            | crate::types::GL_NEAREST_MIPMAP_LINEAR
+            | crate::types::GL_LINEAR_MIPMAP_LINEAR
+    );
+    if !wants_mips || tex.level_count <= 1 || area.abs() < 1e-6 {
+        return 0;
+    }
+
+    let inv_area_signed = 1.0 / area;
+    let dudx = (uv0[0] * (s1[1] - s2[1]) + uv1[0] * (s2[1] - s0[1]) + uv2[0] * (s0[1] - s1[1]))
+        * inv_area_signed;
+    let dudy = (uv0[0] * (s2[0] - s1[0]) + uv1[0] * (s0[0] - s2[0]) + uv2[0] * (s1[0] - s0[0]))
+        * inv_area_signed;
+    let dvdx = (uv0[1] * (s1[1] - s2[1]) + uv1[1] * (s2[1] - s0[1]) + uv2[1] * (s0[1] - s1[1]))
+        * inv_area_signed;
+    let dvdy = (uv0[1] * (s2[0] - s1[0]) + uv1[1] * (s0[0] - s2[0]) + uv2[1] * (s1[0] - s0[0]))
+        * inv_area_signed;
+
+    let rho_x = super::math::sqrt(dudx * dudx + dvdx * dvdx) * tex.width as f32;
+    let rho_y = super::math::sqrt(dudy * dudy + dvdy * dvdy) * tex.height as f32;
+    let mut rho = if rho_x > rho_y { rho_x } else { rho_y };
+    if rho <= 1.0 {
+        let bias = unsafe { crate::GLOBAL_LOD_BIAS };
+        if bias <= 0.0 {
+            return 0;
+        }
+        return (bias as usize).min(tex.level_count.saturating_sub(1));
+    }
+
+    let bias = unsafe { crate::GLOBAL_LOD_BIAS };
+    rho *= super::math::pow(2.0, bias);
+    let mut level = 0usize;
+    while rho > 2.0 && level + 1 < tex.level_count {
+        rho *= 0.5;
+        level += 1;
+    }
+    level
 }

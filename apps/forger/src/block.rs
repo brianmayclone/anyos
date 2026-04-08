@@ -22,6 +22,24 @@ pub const TORCH: u8 = 20;
 
 pub const BLOCK_COUNT: usize = 21;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ToolKind {
+    Hand,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum MaterialKind {
+    Fragile,
+    Dirt,
+    Wood,
+    Stone,
+    Metal,
+    Plant,
+    Utility,
+    Liquid,
+    Unbreakable,
+}
+
 pub const BLOCK_NAMES: [&str; BLOCK_COUNT] = [
     "Air",
     "Stone",
@@ -46,6 +64,11 @@ pub const BLOCK_NAMES: [&str; BLOCK_COUNT] = [
     "Torch",
 ];
 
+pub const BLOCK_SHORT_NAMES: [&str; BLOCK_COUNT] = [
+    "--", "STN", "DIR", "GRS", "COB", "PLK", "BED", "SND", "GRV", "LOG", "LVS", "GLS", "IRO",
+    "COL", "GLD", "DIA", "BRK", "SNW", "WTR", "CLY", "TRC",
+];
+
 pub fn is_solid(id: u8) -> bool {
     !matches!(id, AIR | WATER | TORCH)
 }
@@ -56,6 +79,45 @@ pub fn is_transparent(id: u8) -> bool {
 
 pub fn is_light_source(id: u8) -> bool {
     id == TORCH
+}
+
+pub fn is_collectible(id: u8) -> bool {
+    !matches!(id, AIR | WATER | BEDROCK)
+}
+
+pub fn is_breakable(id: u8) -> bool {
+    !matches!(id, AIR | WATER | BEDROCK)
+}
+
+pub fn material_kind(id: u8) -> MaterialKind {
+    match id {
+        AIR => MaterialKind::Utility,
+        BEDROCK => MaterialKind::Unbreakable,
+        WATER => MaterialKind::Liquid,
+        LEAVES | SNOW => MaterialKind::Plant,
+        DIRT | GRASS | SAND | GRAVEL | CLAY => MaterialKind::Dirt,
+        WOOD_PLANKS | WOOD_LOG => MaterialKind::Wood,
+        IRON_ORE | GOLD_ORE | DIAMOND_ORE | COAL_ORE => MaterialKind::Metal,
+        TORCH | GLASS => MaterialKind::Fragile,
+        STONE | COBBLESTONE | BRICK => MaterialKind::Stone,
+        _ => MaterialKind::Stone,
+    }
+}
+
+pub fn break_time_seconds(id: u8, tool: ToolKind) -> Option<f32> {
+    if !is_breakable(id) {
+        return None;
+    }
+    let time = match (material_kind(id), tool) {
+        (MaterialKind::Fragile, ToolKind::Hand) => 0.18,
+        (MaterialKind::Plant, ToolKind::Hand) => 0.25,
+        (MaterialKind::Dirt, ToolKind::Hand) => 0.55,
+        (MaterialKind::Wood, ToolKind::Hand) => 0.95,
+        (MaterialKind::Stone, ToolKind::Hand) => 1.55,
+        (MaterialKind::Metal, ToolKind::Hand) => 1.95,
+        (MaterialKind::Utility, _) | (MaterialKind::Liquid, _) | (MaterialKind::Unbreakable, _) => return None,
+    };
+    Some(time)
 }
 
 /// Block face color (R, G, B) for HW rendering without textures.
