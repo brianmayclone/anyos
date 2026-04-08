@@ -58,6 +58,7 @@ struct AppState {
 
     // UI panels
     editor_view: editor_view::EditorView,
+    side_editor_view: editor_view::EditorView,
     welcome: welcome_tab::WelcomeTab,
     sidebar: sidebar::Sidebar,
     git_panel: git_panel::GitPanel,
@@ -71,6 +72,9 @@ struct AppState {
     status: status_bar::StatusBar,
     activity_bar: activity_bar::ActivityBar,
     command_palette: command_palette::CommandPalette,
+    editor_groups_split: anyui::SplitView,
+    side_file_mgr: file_manager::FileManager,
+    split_visible: bool,
     panel_ids: [u32; 7], // Explorer, Git, Search, Run, Outline, AI, Extensions
 }
 
@@ -103,6 +107,11 @@ fn main() {
     let args = anyos_std::process::args(&mut args_buf);
     let open_folder = if !args.is_empty() && path::is_directory(args) {
         Some(String::from(args))
+    } else if config.reopen_last_project
+        && !config.last_project.is_empty()
+        && path::is_directory(&config.last_project)
+    {
+        Some(config.last_project.clone())
     } else {
         None
     };
@@ -124,7 +133,7 @@ fn build_and_run(
     let win = anyui::Window::new(t("anyOS Code"), -1, -1, 1024, 700);
 
     // ── Toolbar (DOCK_TOP) ──
-    let tb = toolbar::AppToolbar::new(&win);
+    let tb = toolbar::AppToolbar::new(&win, &config);
     win.add(&tb.toolbar);
 
     // ── Status bar (DOCK_BOTTOM) ──
@@ -133,7 +142,7 @@ fn build_and_run(
     win.add(&status.panel);
 
     // ── Activity bar (DOCK_LEFT) ──
-    let activity_bar = activity_bar::ActivityBar::new();
+    let activity_bar = activity_bar::ActivityBar::new(&config);
     win.add(&activity_bar.panel);
 
     // ── Main split: sidebar | editor ──
@@ -198,15 +207,27 @@ fn build_and_run(
     editor_split.set_max_split(95);
     main_split.add(&editor_split);
 
-    let editor_view = editor_view::EditorView::new();
-    editor_split.add(&editor_view.panel);
+    let editor_groups_split = anyui::SplitView::new();
+    editor_groups_split.set_dock(anyui::DOCK_FILL);
+    editor_groups_split.set_split_ratio(100);
+    editor_groups_split.set_min_split(35);
+    editor_groups_split.set_max_split(100);
+    editor_split.add(&editor_groups_split);
+
+    let editor_view = editor_view::EditorView::new(&config);
+    editor_groups_split.add(&editor_view.panel);
 
     // Welcome tab (inside editor panel, shown when no files open)
-    let welcome = welcome_tab::WelcomeTab::new();
+    let welcome = welcome_tab::WelcomeTab::new(&config);
     editor_view.panel.add(&welcome.panel);
     welcome.panel.set_visible(open_folder.is_none());
 
-    let output = output_panel::OutputPanel::new();
+    let side_editor_view = editor_view::EditorView::new(&config);
+    side_editor_view.panel.set_visible(false);
+    side_editor_view.set_breadcrumb("Open a file to the side for reference");
+    editor_groups_split.add(&side_editor_view.panel);
+
+    let output = output_panel::OutputPanel::new(&config);
     editor_split.add(&output.panel);
 
     let problems_panel = problems_panel::ProblemsPanel::new();
@@ -249,6 +270,7 @@ fn build_and_run(
             git_pending_op: None,
             git_timer_id: 0,
             editor_view,
+            side_editor_view,
             welcome,
             sidebar,
             git_panel,
@@ -262,8 +284,20 @@ fn build_and_run(
             status,
             activity_bar,
             command_palette: command_palette::CommandPalette::new(&win),
+            editor_groups_split,
+            side_file_mgr: file_manager::FileManager::new(),
+            split_visible: false,
             panel_ids,
         });
+    }
+
+    if let Some(ref proj) = app().current_project {
+        app().config.push_recent_project(&proj.root);
+        app().config.save();
+        app().status.set_project_type(proj.project_type.display_name());
+        app().output.start_shell(&proj.root);
+    } else {
+        app().status.set_project_type("");
     }
 
     // ── Menu bar ──
@@ -368,6 +402,14 @@ fn build_and_run(
         if let Some(ref proj) = s.current_project {
             s.status.set_project_type(proj.project_type.display_name());
             s.output.start_shell(&proj.root);
+        }
+
+        if s.current_project.is_some() && s.config.reopen_last_project {
+            logic::commands::restore_session();
+        }
+
+        if s.file_mgr.count() == 0 {
+            s.welcome.show();
         }
     }
 

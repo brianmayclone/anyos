@@ -17,9 +17,22 @@ pub fn wire_keyboard(win: &anyui::Window) {
     win.on_key_down(|e| {
         let s = app();
 
-        // Command palette: Ctrl+P
-        if e.ctrl() && e.keycode == b'P' as u32 {
-            s.command_palette.toggle();
+        // Quick Open: Ctrl+P
+        if e.ctrl() && !e.shift() && e.keycode == b'P' as u32 {
+            let root = s.current_project.as_ref().map(|p| p.root.as_str());
+            s.command_palette.show_files(root);
+            return;
+        }
+
+        // Command palette: Ctrl+Shift+P
+        if e.ctrl() && e.shift() && e.keycode == b'P' as u32 {
+            s.command_palette.show_commands();
+            return;
+        }
+
+        // Split editor: Ctrl+\
+        if e.ctrl() && e.keycode == b'\\' as u32 {
+            commands::toggle_editor_split();
             return;
         }
 
@@ -158,7 +171,7 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
             34 => commands::stop(),
             35 => commands::clean(),
             40 => commands::about(),
-            41 => app().command_palette.toggle(),
+            41 => app().command_palette.show_commands(),
             50 => commands::switch_sidebar_view(5),
             51 => commands::ai_action(ai::CodeAction::Explain),
             52 => commands::ai_action(ai::CodeAction::Refactor),
@@ -477,6 +490,19 @@ pub fn wire_editor() {
     app().editor_view.tab_bar.on_tab_close(|e| {
         commands::close_tab(e.index as usize);
     });
+
+    app().side_editor_view.tab_bar.on_active_changed(|e| {
+        let s = app();
+        let idx = e.index as usize;
+        if idx < s.side_file_mgr.count() {
+            s.side_file_mgr.set_active(idx);
+            s.side_editor_view.set_active(idx);
+        }
+    });
+
+    app().side_editor_view.tab_bar.on_tab_close(|e| {
+        commands::close_side_tab(e.index as usize);
+    });
 }
 
 /// Wire text-changed event on a newly created editor (called from editor_view).
@@ -488,6 +514,13 @@ pub fn wire_editor_text_changed(editor_index: usize) {
             let s = app();
             s.file_mgr.mark_modified(editor_index);
             s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+            if editor_index == s.file_mgr.active {
+                commands::update_status();
+                commands::refresh_symbols();
+            }
+            if s.config.auto_save {
+                commands::autosave_editor(editor_index);
+            }
         });
     }
 }
@@ -497,6 +530,7 @@ pub fn wire_editor_text_changed(editor_index: usize) {
 pub fn wire_welcome_tab() {
     app().welcome.btn_new_file.on_click(|_| commands::new_file());
     app().welcome.btn_open_folder.on_click(|_| commands::open_folder());
+    app().welcome.btn_open_recent.on_click(|_| commands::show_recent_projects());
     app().welcome.btn_ai_setup.on_click(|_| commands::ai_settings());
 }
 
@@ -513,7 +547,20 @@ pub fn wire_command_palette() {
     // Enter executes selected command
     app().command_palette.input_field.on_submit(|_| {
         let s = app();
-        if let Some(cmd_id) = s.command_palette.selected_command_id() {
+        if s.command_palette.is_file_mode() {
+            if let Some(path) = s.command_palette.selected_file_path() {
+                let owned = String::from(path);
+                s.command_palette.hide();
+                commands::open_file(&owned);
+                commands::update_status();
+            }
+        } else if s.command_palette.is_project_mode() {
+            if let Some(path) = s.command_palette.selected_project_path() {
+                let owned = String::from(path);
+                s.command_palette.hide();
+                commands::open_workspace(&owned, true);
+            }
+        } else if let Some(cmd_id) = s.command_palette.selected_command_id() {
             s.command_palette.hide();
             execute_palette_command(cmd_id);
         }
@@ -522,7 +569,20 @@ pub fn wire_command_palette() {
     // Click on list item executes command
     app().command_palette.list.on_enter(|_| {
         let s = app();
-        if let Some(cmd_id) = s.command_palette.selected_command_id() {
+        if s.command_palette.is_file_mode() {
+            if let Some(path) = s.command_palette.selected_file_path() {
+                let owned = String::from(path);
+                s.command_palette.hide();
+                commands::open_file(&owned);
+                commands::update_status();
+            }
+        } else if s.command_palette.is_project_mode() {
+            if let Some(path) = s.command_palette.selected_project_path() {
+                let owned = String::from(path);
+                s.command_palette.hide();
+                commands::open_workspace(&owned, true);
+            }
+        } else if let Some(cmd_id) = s.command_palette.selected_command_id() {
             s.command_palette.hide();
             execute_palette_command(cmd_id);
         }
@@ -541,6 +601,9 @@ fn execute_palette_command(cmd_id: u32) {
                 commands::close_tab(s.file_mgr.active);
             }
         }
+        105 => commands::toggle_editor_split(),
+        106 => commands::open_active_file_to_side(),
+        107 => commands::show_recent_projects(),
         110 => commands::build(),
         111 => commands::run(),
         112 => commands::test(),

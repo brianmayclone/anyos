@@ -58,6 +58,12 @@ pub fn show() {
     title.set_text_color(tc.text);
     header.add(&title);
 
+    let subtitle = ui::Label::new(t("Editor, workspace and AI preferences"));
+    subtitle.set_position(20, 30);
+    subtitle.set_font_size(10);
+    subtitle.set_text_color(tc.text_secondary);
+    header.add(&subtitle);
+
     // ── Button bar (bottom) ──
     let btn_bar = ui::View::new();
     btn_bar.set_dock(ui::DOCK_BOTTOM);
@@ -77,6 +83,12 @@ pub fn show() {
     btn_cancel.set_color(tc.control_bg);
     btn_bar.add(&btn_cancel);
 
+    let btn_reset = ui::Button::new(t("Reset"));
+    btn_reset.set_size(80, 32);
+    btn_reset.set_position(12, 8);
+    btn_reset.set_color(tc.control_bg);
+    btn_bar.add(&btn_reset);
+
     // ── Side tabs (left) ──
     let tab_bar = ui::View::new();
     tab_bar.set_dock(ui::DOCK_LEFT);
@@ -84,7 +96,7 @@ pub fn show() {
     tab_bar.set_color(tc.sidebar_bg);
     win.add(&tab_bar);
 
-    let tab_names = [t("Editor"), t("AI Assistant"), t("Build Tools"), t("Appearance")];
+    let tab_names = [t("Editor"), t("AI Assistant"), t("Build Tools"), t("Workbench")];
     let mut tab_btns: [Option<ui::Button>; 4] = [None, None, None, None];
 
     for (i, name) in tab_names.iter().enumerate() {
@@ -96,6 +108,15 @@ pub fn show() {
         tab_bar.add(&btn);
         tab_btns[i] = Some(btn);
     }
+
+    let settings_search = ui::TextField::new();
+    settings_search.set_dock(ui::DOCK_TOP);
+    settings_search.set_size(TAB_W, 32);
+    settings_search.set_margin(8, 8, 8, 6);
+    settings_search.set_color(tc.control_bg);
+    settings_search.set_text_color(tc.text);
+    settings_search.set_placeholder(t("Search settings..."));
+    tab_bar.add(&settings_search);
 
     // ── Content area ──
     let content_area = ui::View::new();
@@ -110,6 +131,13 @@ pub fn show() {
     content_area.add(&page_editor);
 
     let mut y: i32 = 20;
+
+    let editor_desc = ui::Label::new(t("Editor typography, spacing and save behaviour."));
+    editor_desc.set_position(LABEL_X, y);
+    editor_desc.set_font_size(11);
+    editor_desc.set_text_color(tc.text_secondary);
+    page_editor.add(&editor_desc);
+    y += 26;
 
     let fs_label = ui::Label::new(t("Font Size"));
     fs_label.set_position(LABEL_X, y + 4);
@@ -143,6 +171,22 @@ pub fn show() {
 
     y += 42;
 
+    let lh_label = ui::Label::new(t("Line Height"));
+    lh_label.set_position(LABEL_X, y + 4);
+    lh_label.set_font_size(13);
+    lh_label.set_text_color(tc.text);
+    page_editor.add(&lh_label);
+
+    let line_height_field = ui::TextField::new();
+    line_height_field.set_position(FIELD_X, y);
+    line_height_field.set_size(80, 28);
+    line_height_field.set_color(tc.control_bg);
+    line_height_field.set_text_color(tc.text);
+    line_height_field.set_text(&format!("{}", config.line_height));
+    page_editor.add(&line_height_field);
+
+    y += 42;
+
     let ln_label = ui::Label::new(t("Line Numbers"));
     ln_label.set_position(LABEL_X, y + 4);
     ln_label.set_font_size(13);
@@ -154,6 +198,19 @@ pub fn show() {
     line_numbers_toggle.set_size(50, 26);
     page_editor.add(&line_numbers_toggle);
 
+    y += 42;
+
+    let auto_save_label = ui::Label::new(t("Auto Save"));
+    auto_save_label.set_position(LABEL_X, y + 4);
+    auto_save_label.set_font_size(13);
+    auto_save_label.set_text_color(tc.text);
+    page_editor.add(&auto_save_label);
+
+    let auto_save_toggle = ui::Toggle::new(config.auto_save);
+    auto_save_toggle.set_position(FIELD_X, y);
+    auto_save_toggle.set_size(50, 26);
+    page_editor.add(&auto_save_toggle);
+
     // ── Page 1: AI Assistant ──
     let page_ai = ui::View::new();
     page_ai.set_dock(ui::DOCK_FILL);
@@ -162,6 +219,13 @@ pub fn show() {
     content_area.add(&page_ai);
 
     y = 20;
+
+    let ai_desc = ui::Label::new(t("Provider, model and endpoint used for AI features."));
+    ai_desc.set_position(LABEL_X, y);
+    ai_desc.set_font_size(11);
+    ai_desc.set_text_color(tc.text_secondary);
+    page_ai.add(&ai_desc);
+    y += 26;
 
     let prov_label = ui::Label::new(t("Provider"));
     prov_label.set_position(LABEL_X, y + 4);
@@ -267,6 +331,13 @@ pub fn show() {
 
     y = 20;
 
+    let build_desc = ui::Label::new(t("Detected toolchain from PATH and system directories."));
+    build_desc.set_position(LABEL_X, y);
+    build_desc.set_font_size(11);
+    build_desc.set_text_color(tc.text_secondary);
+    page_build.add(&build_desc);
+    y += 26;
+
     let tool_names = [
         (t("Make"), &config.make_path),
         (t("C Compiler"), &config.cc_path),
@@ -305,6 +376,13 @@ pub fn show() {
 
     y = 20;
 
+    let wb_desc = ui::Label::new(t("Window layout, terminal readability and startup behaviour."));
+    wb_desc.set_position(LABEL_X, y);
+    wb_desc.set_font_size(11);
+    wb_desc.set_text_color(tc.text_secondary);
+    page_appearance.add(&wb_desc);
+    y += 26;
+
     let sw_label = ui::Label::new(t("Sidebar Width %"));
     sw_label.set_position(LABEL_X, y + 4);
     sw_label.set_font_size(13);
@@ -335,6 +413,35 @@ pub fn show() {
     output_height_field.set_text(&format!("{}", config.output_height));
     page_appearance.add(&output_height_field);
 
+    y += 42;
+
+    let tf_label = ui::Label::new(t("Terminal Font Size"));
+    tf_label.set_position(LABEL_X, y + 4);
+    tf_label.set_font_size(13);
+    tf_label.set_text_color(tc.text);
+    page_appearance.add(&tf_label);
+
+    let terminal_font_size_field = ui::TextField::new();
+    terminal_font_size_field.set_position(FIELD_X, y);
+    terminal_font_size_field.set_size(80, 28);
+    terminal_font_size_field.set_color(tc.control_bg);
+    terminal_font_size_field.set_text_color(tc.text);
+    terminal_font_size_field.set_text(&format!("{}", config.terminal_font_size));
+    page_appearance.add(&terminal_font_size_field);
+
+    y += 42;
+
+    let reopen_label = ui::Label::new(t("Reopen Last Project"));
+    reopen_label.set_position(LABEL_X, y + 4);
+    reopen_label.set_font_size(13);
+    reopen_label.set_text_color(tc.text);
+    page_appearance.add(&reopen_label);
+
+    let reopen_toggle = ui::Toggle::new(config.reopen_last_project);
+    reopen_toggle.set_position(FIELD_X, y);
+    reopen_toggle.set_size(50, 26);
+    page_appearance.add(&reopen_toggle);
+
     // ── Page IDs for switching ──
     let page_ids = [page_editor.id(), page_ai.id(), page_build.id(), page_appearance.id()];
     let btn_ids: [u32; 4] = [
@@ -350,36 +457,88 @@ pub fn show() {
         let btns = btn_ids;
         let idx = i;
         tab_btns[i].as_ref().unwrap().on_click(move |_| {
-            let tc = ui::theme::colors();
-            for j in 0..4 {
-                ui::Control::from_id(pages[j]).set_visible(j == idx);
-                ui::Control::from_id(btns[j]).set_color(
-                    if j == idx { tc.editor_bg } else { tc.sidebar_bg }
-                );
-            }
+            switch_settings_page(pages, btns, idx);
         });
     }
+
+    let pages = page_ids;
+    let btns = btn_ids;
+    settings_search.on_text_changed(move |_| {
+        let query = read_string(ui::Control::from_id(settings_search.id()).id());
+        let q = ascii_lower(&query);
+        let idx = if q.contains("ai") || q.contains("model") || q.contains("token") || q.contains("endpoint") {
+            1
+        } else if q.contains("build") || q.contains("git") || q.contains("tool") || q.contains("compiler") {
+            2
+        } else if q.contains("terminal") || q.contains("sidebar") || q.contains("project") || q.contains("startup") || q.contains("workbench") {
+            3
+        } else {
+            0
+        };
+        switch_settings_page(pages, btns, idx);
+    });
 
     // ── Save ──
     let fs_id = font_size_field.id();
     let tw_id = tab_width_field.id();
+    let lh_id = line_height_field.id();
     let ln_id = line_numbers_toggle.id();
+    let auto_save_id = auto_save_toggle.id();
     let sw_id = sidebar_width_field.id();
     let oh_id = output_height_field.id();
+    let term_fs_id = terminal_font_size_field.id();
+    let reopen_id = reopen_toggle.id();
     let ai_prov_id = ai_provider.id();
     let ai_key_id = ai_key.id();
     let ai_model_id = ai_model.id();
     let ai_tok_id = ai_tokens.id();
     let ai_ep_id = ai_endpoint.id();
 
+    let fs_reset_id = font_size_field.id();
+    let tw_reset_id = tab_width_field.id();
+    let lh_reset_id = line_height_field.id();
+    let ln_reset_id = line_numbers_toggle.id();
+    let auto_save_reset_id = auto_save_toggle.id();
+    let sw_reset_id = sidebar_width_field.id();
+    let oh_reset_id = output_height_field.id();
+    let term_fs_reset_id = terminal_font_size_field.id();
+    let reopen_reset_id = reopen_toggle.id();
+    let ai_prov_reset_id = ai_provider.id();
+    let ai_model_reset_id = ai_model.id();
+    let ai_tok_reset_id = ai_tokens.id();
+    let ai_ep_reset_id = ai_endpoint.id();
+    let ai_key_reset_id = ai_key.id();
+
+    btn_reset.on_click(move |_| {
+        let defaults = Config::defaults();
+        ui::Control::from_id(fs_reset_id).set_text(&format!("{}", defaults.font_size));
+        ui::Control::from_id(tw_reset_id).set_text(&format!("{}", defaults.tab_width));
+        ui::Control::from_id(lh_reset_id).set_text(&format!("{}", defaults.line_height));
+        ui::Control::from_id(ln_reset_id).set_state(defaults.show_line_numbers as u32);
+        ui::Control::from_id(auto_save_reset_id).set_state(defaults.auto_save as u32);
+        ui::Control::from_id(sw_reset_id).set_text(&format!("{}", defaults.sidebar_width));
+        ui::Control::from_id(oh_reset_id).set_text(&format!("{}", defaults.output_height));
+        ui::Control::from_id(term_fs_reset_id).set_text(&format!("{}", defaults.terminal_font_size));
+        ui::Control::from_id(reopen_reset_id).set_state(defaults.reopen_last_project as u32);
+        ui::Control::from_id(ai_prov_reset_id).set_state(0);
+        ui::Control::from_id(ai_model_reset_id).set_state(0);
+        ui::Control::from_id(ai_tok_reset_id).set_text("4096");
+        ui::Control::from_id(ai_ep_reset_id).set_text("");
+        ui::Control::from_id(ai_key_reset_id).set_text("");
+    });
+
     btn_save.on_click(move |_| {
         // Save editor config
         let mut cfg = Config::load();
         cfg.font_size = read_u32(fs_id, cfg.font_size);
         cfg.tab_width = read_u32(tw_id, cfg.tab_width);
+        cfg.line_height = read_u32(lh_id, cfg.line_height);
         cfg.show_line_numbers = ui::Control::from_id(ln_id).get_state() != 0;
+        cfg.auto_save = ui::Control::from_id(auto_save_id).get_state() != 0;
         cfg.sidebar_width = read_u32(sw_id, cfg.sidebar_width);
         cfg.output_height = read_u32(oh_id, cfg.output_height);
+        cfg.terminal_font_size = read_u32(term_fs_id, cfg.terminal_font_size);
+        cfg.reopen_last_project = ui::Control::from_id(reopen_id).get_state() != 0;
         cfg.save();
 
         // Save AI config
@@ -403,6 +562,9 @@ pub fn show() {
 
         // Update running app
         let s = crate::app();
+        s.config = Config::load();
+        s.editor_view.apply_config(&s.config);
+        s.output.apply_config(&s.config);
         s.ai_client.config = AiConfig::load();
         s.ai_panel.set_provider(s.ai_client.config.provider);
 
@@ -444,4 +606,24 @@ fn parse_u32(s: &str) -> Option<u32> {
         r = r.checked_mul(10)?.checked_add((b - b'0') as u32)?;
     }
     Some(r)
+}
+
+fn ascii_lower(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c >= 'A' && c <= 'Z' {
+            out.push((c as u8 + 32) as char);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn switch_settings_page(pages: [u32; 4], btns: [u32; 4], idx: usize) {
+    let tc = ui::theme::colors();
+    for j in 0..4 {
+        ui::Control::from_id(pages[j]).set_visible(j == idx);
+        ui::Control::from_id(btns[j]).set_color(if j == idx { tc.editor_bg } else { tc.sidebar_bg });
+    }
 }

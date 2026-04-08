@@ -1,5 +1,6 @@
 use alloc::string::String;
 use alloc::format;
+use alloc::vec::Vec;
 use anyos_std::json::{Value, Number};
 
 use crate::util::path;
@@ -8,9 +9,13 @@ use crate::util::path;
 pub struct Config {
     // Display settings
     pub font_size: u32,
+    pub line_height: u32,
     pub font_id: u32,
     pub tab_width: u32,
     pub show_line_numbers: bool,
+    pub auto_save: bool,
+    pub reopen_last_project: bool,
+    pub terminal_font_size: u32,
     pub sidebar_width: u32,
     pub output_height: u32,
     // Path settings (auto-discovered on first launch)
@@ -21,6 +26,11 @@ pub struct Config {
     pub make_path: String,
     pub cc_path: String,
     pub git_path: String,
+    pub last_project: String,
+    pub recent_projects: Vec<String>,
+    pub session_project: String,
+    pub session_files: Vec<String>,
+    pub session_active_file: String,
 }
 
 const DEFAULT_SETTINGS_PATH: &str = "/Users/settings/anycode.json";
@@ -50,9 +60,13 @@ impl Config {
         };
         let mut cfg = Self {
             font_size: json_u32(&val, "font_size", defaults.font_size),
+            line_height: json_u32(&val, "line_height", defaults.line_height),
             font_id: json_u32(&val, "font_id", defaults.font_id),
             tab_width: json_u32(&val, "tab_width", defaults.tab_width),
             show_line_numbers: json_bool(&val, "show_line_numbers", defaults.show_line_numbers),
+            auto_save: json_bool(&val, "auto_save", defaults.auto_save),
+            reopen_last_project: json_bool(&val, "reopen_last_project", defaults.reopen_last_project),
+            terminal_font_size: json_u32(&val, "terminal_font_size", defaults.terminal_font_size),
             sidebar_width: json_u32(&val, "sidebar_width", defaults.sidebar_width),
             output_height: json_u32(&val, "output_height", defaults.output_height),
             settings_path: json_str(&val, "settings_path", DEFAULT_SETTINGS_PATH),
@@ -63,6 +77,11 @@ impl Config {
             make_path: json_str(&val, "make_path", ""),
             cc_path: json_str(&val, "cc_path", ""),
             git_path: json_str(&val, "git_path", ""),
+            last_project: json_str(&val, "last_project", ""),
+            recent_projects: json_str_array(&val, "recent_projects"),
+            session_project: json_str(&val, "session_project", ""),
+            session_files: json_str_array(&val, "session_files"),
+            session_active_file: json_str(&val, "session_active_file", ""),
         };
         // Re-discover any empty tool paths
         if cfg.make_path.is_empty() || cfg.cc_path.is_empty() || cfg.git_path.is_empty() {
@@ -76,9 +95,13 @@ impl Config {
     pub fn save(&self) {
         let mut obj = Value::new_object();
         obj.set("font_size", Value::Number(Number::Int(self.font_size as i64)));
+        obj.set("line_height", Value::Number(Number::Int(self.line_height as i64)));
         obj.set("font_id", Value::Number(Number::Int(self.font_id as i64)));
         obj.set("tab_width", Value::Number(Number::Int(self.tab_width as i64)));
         obj.set("show_line_numbers", Value::Bool(self.show_line_numbers));
+        obj.set("auto_save", Value::Bool(self.auto_save));
+        obj.set("reopen_last_project", Value::Bool(self.reopen_last_project));
+        obj.set("terminal_font_size", Value::Number(Number::Int(self.terminal_font_size as i64)));
         obj.set("sidebar_width", Value::Number(Number::Int(self.sidebar_width as i64)));
         obj.set("output_height", Value::Number(Number::Int(self.output_height as i64)));
         obj.set("settings_path", Value::String(self.settings_path.clone()));
@@ -88,6 +111,11 @@ impl Config {
         obj.set("make_path", Value::String(self.make_path.clone()));
         obj.set("cc_path", Value::String(self.cc_path.clone()));
         obj.set("git_path", Value::String(self.git_path.clone()));
+        obj.set("last_project", Value::String(self.last_project.clone()));
+        obj.set("recent_projects", json_string_array(&self.recent_projects));
+        obj.set("session_project", Value::String(self.session_project.clone()));
+        obj.set("session_files", json_string_array(&self.session_files));
+        obj.set("session_active_file", Value::String(self.session_active_file.clone()));
         let json = obj.to_json_string_pretty();
         let _ = anyos_std::fs::write_bytes(DEFAULT_SETTINGS_PATH, json.as_bytes());
     }
@@ -98,9 +126,13 @@ impl Config {
 
         Self {
             font_size: 13,
+            line_height: 20,
             font_id: FONT_MONO,
             tab_width: 4,
             show_line_numbers: true,
+            auto_save: false,
+            reopen_last_project: true,
+            terminal_font_size: 12,
             sidebar_width: 28,
             output_height: 25,
             settings_path: String::from(DEFAULT_SETTINGS_PATH),
@@ -110,6 +142,11 @@ impl Config {
             make_path: String::new(),
             cc_path: String::new(),
             git_path: String::new(),
+            last_project: String::new(),
+            recent_projects: Vec::new(),
+            session_project: String::new(),
+            session_files: Vec::new(),
+            session_active_file: String::new(),
         }
     }
 
@@ -129,6 +166,14 @@ impl Config {
     /// Check whether git was discovered.
     pub fn has_git(&self) -> bool {
         !self.git_path.is_empty()
+    }
+
+    pub fn push_recent_project(&mut self, project: &str) {
+        self.recent_projects.retain(|p| p != project);
+        self.recent_projects.insert(0, String::from(project));
+        if self.recent_projects.len() > 10 {
+            self.recent_projects.truncate(10);
+        }
     }
 }
 
@@ -212,4 +257,24 @@ fn json_str(val: &Value, key: &str, default: &str) -> String {
         Value::String(s) => s.clone(),
         _ => String::from(default),
     }
+}
+
+fn json_str_array(val: &Value, key: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(arr) = val[key].as_array() {
+        for item in arr {
+            if let Some(s) = item.as_str() {
+                out.push(String::from(s));
+            }
+        }
+    }
+    out
+}
+
+fn json_string_array(values: &[String]) -> Value {
+    let mut arr = Value::new_array();
+    for value in values {
+        arr.push(Value::String(value.clone()));
+    }
+    arr
 }

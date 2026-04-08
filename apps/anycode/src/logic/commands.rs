@@ -25,27 +25,7 @@ pub fn new_file() {
 
 pub fn open_folder() {
     if let Some(folder) = libanyui_client::FileDialog::open_folder() {
-        let s = app();
-        s.sidebar.populate(&folder);
-        let proj = project::Project::open(&folder);
-        s.status.set_project_type(proj.project_type.display_name());
-
-        // Detect tasks
-        s.task_mgr.detect_from_project(&proj);
-        s.run_panel.update(&s.task_mgr);
-
-        // Git
-        s.git_state.is_repo = git::is_git_repo(&folder);
-        if s.git_state.is_repo {
-            crate::trigger_git_refresh();
-        }
-        s.status.set_branch("");
-
-        // Shell
-        s.output.start_shell(&folder);
-
-        s.current_project = Some(proj);
-        update_status();
+        open_workspace(&folder, true);
     }
 }
 
@@ -285,6 +265,38 @@ pub fn open_file(file_path: &str) {
     s.file_mgr.set_active(idx);
     s.editor_view.set_active(idx);
     s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+    persist_session();
+}
+
+pub fn open_file_to_side(file_path: &str) {
+    let s = app();
+    ensure_split_visible();
+
+    if let Some(idx) = s.side_file_mgr.find_open(file_path) {
+        s.side_file_mgr.set_active(idx);
+        s.side_editor_view.set_active(idx);
+        s.side_editor_view
+            .update_tab_labels(&s.side_file_mgr.tab_labels(), s.side_file_mgr.active);
+        return;
+    }
+
+    let content = file_manager::read_file(file_path);
+    let idx = s.side_file_mgr.add_file(file_path);
+    s.side_editor_view
+        .create_editor_with_mode(file_path, content.as_deref(), &s.config, true);
+    s.side_file_mgr.set_active(idx);
+    s.side_editor_view.set_active(idx);
+    s.side_editor_view.set_breadcrumb(file_path);
+    s.side_editor_view
+        .update_tab_labels(&s.side_file_mgr.tab_labels(), s.side_file_mgr.active);
+}
+
+pub fn open_active_file_to_side() {
+    let s = app();
+    if let Some(file) = s.file_mgr.active_file() {
+        let owned = file.path.clone();
+        open_file_to_side(&owned);
+    }
 }
 
 pub fn close_tab(index: usize) {
@@ -301,32 +313,71 @@ pub fn close_tab(index: usize) {
         s.editor_view.update_tab_labels("", 0);
     }
     update_status();
+    persist_session();
+}
+
+pub fn close_side_tab(index: usize) {
+    let s = app();
+    if index >= s.side_file_mgr.count() {
+        return;
+    }
+    s.side_editor_view.remove_editor(index);
+    let new_active = s.side_file_mgr.remove(index);
+    if s.side_file_mgr.count() > 0 {
+        s.side_editor_view.set_active(new_active);
+        s.side_editor_view
+            .update_tab_labels(&s.side_file_mgr.tab_labels(), new_active);
+    } else {
+        s.side_editor_view.update_tab_labels("", 0);
+        s.side_editor_view
+            .set_breadcrumb("Open a file to the side for reference");
+    }
+}
+
+pub fn toggle_editor_split() {
+    let s = app();
+    s.split_visible = !s.split_visible;
+    if s.split_visible {
+        s.editor_groups_split.set_split_ratio(58);
+        s.side_editor_view.panel.set_visible(true);
+    } else {
+        s.editor_groups_split.set_split_ratio(100);
+        s.side_editor_view.panel.set_visible(false);
+    }
 }
 
 fn save_current(s: &mut AppState) {
     if s.file_mgr.count() == 0 {
         return;
     }
-    let idx = s.file_mgr.active;
-    let mut buf = vec![0u8; 128 * 1024];
-    let len = s.editor_view.get_editor_text(idx, &mut buf);
-    if let Some(f) = s.file_mgr.files.get(idx) {
-        if file_manager::write_file(&f.path, &buf[..len as usize]) {
-            s.file_mgr.mark_saved(idx);
-        }
-    }
+    save_index(s, s.file_mgr.active);
 }
 
 fn save_all_files(s: &mut AppState) {
     for i in 0..s.file_mgr.count() {
         if s.file_mgr.files[i].modified {
-            let mut buf = vec![0u8; 128 * 1024];
-            let len = s.editor_view.get_editor_text(i, &mut buf);
-            if file_manager::write_file(&s.file_mgr.files[i].path, &buf[..len as usize]) {
-                s.file_mgr.mark_saved(i);
-            }
+            save_index(s, i);
         }
     }
+}
+
+fn save_index(s: &mut AppState, index: usize) {
+    let mut buf = vec![0u8; 128 * 1024];
+    let len = s.editor_view.get_editor_text(index, &mut buf);
+    if let Some(f) = s.file_mgr.files.get(index) {
+        if file_manager::write_file(&f.path, &buf[..len as usize]) {
+            s.file_mgr.mark_saved(index);
+        }
+    }
+}
+
+pub fn autosave_editor(index: usize) {
+    let s = app();
+    if !s.config.auto_save || index >= s.file_mgr.count() {
+        return;
+    }
+    save_index(s, index);
+    s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -372,12 +423,126 @@ pub fn update_status() {
         s.status.set_filename(filename);
         let lang = language::language_for_filename(filename);
         s.status.set_language(lang.id.display_name());
+        s.editor_view.set_breadcrumb(&f.path);
     } else {
         s.status.set_filename("No file open");
         s.status.set_language("Plain Text");
+        s.editor_view.set_breadcrumb("No file open");
     }
     s.status.set_branch(&s.git_state.branch);
     s.status.set_problems(s.diagnostics.error_count(), s.diagnostics.warning_count());
+}
+
+pub fn show_recent_projects() {
+    let s = app();
+    s.command_palette.show_recent_projects(&s.config.recent_projects);
+}
+
+pub fn open_workspace(folder: &str, should_restore_session: bool) {
+    let s = app();
+    reset_workspace_views();
+    s.sidebar.populate(folder);
+    let proj = project::Project::open(folder);
+    s.status.set_project_type(proj.project_type.display_name());
+
+    s.task_mgr.detect_from_project(&proj);
+    s.run_panel.update(&s.task_mgr);
+
+    s.git_state.is_repo = git::is_git_repo(folder);
+    if s.git_state.is_repo {
+        crate::trigger_git_refresh();
+    }
+    s.status.set_branch("");
+    s.output.start_shell(folder);
+
+    s.current_project = Some(proj);
+    s.config.last_project = String::from(folder);
+    s.config.push_recent_project(folder);
+    s.config.save();
+    update_status();
+
+    if should_restore_session {
+        restore_session();
+    }
+
+    let s = app();
+    if s.file_mgr.count() == 0 {
+        s.welcome.show();
+    }
+}
+
+pub fn restore_session() {
+    let s = app();
+    let project_root = match s.current_project.as_ref() {
+        Some(proj) => proj.root.clone(),
+        None => return,
+    };
+    if s.config.session_project != project_root {
+        return;
+    }
+
+    let files = s.config.session_files.clone();
+    let active_file = s.config.session_active_file.clone();
+    for file in files {
+        if path::exists(&file) {
+            open_file(&file);
+        }
+    }
+
+    if !active_file.is_empty() {
+        let s = app();
+        if let Some(idx) = s.file_mgr.find_open(&active_file) {
+            s.file_mgr.set_active(idx);
+            s.editor_view.set_active(idx);
+            s.editor_view
+                .update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+        }
+    }
+    update_status();
+}
+
+pub fn persist_session() {
+    let s = app();
+    s.config.session_project = s.current_project.as_ref()
+        .map(|proj| proj.root.clone())
+        .unwrap_or_else(String::new);
+    s.config.session_files.clear();
+    for file in &s.file_mgr.files {
+        if !file.is_untitled && path::exists(&file.path) {
+            s.config.session_files.push(file.path.clone());
+        }
+    }
+    s.config.session_active_file = s.file_mgr.active_file()
+        .map(|f| f.path.clone())
+        .unwrap_or_else(String::new);
+    s.config.save();
+}
+
+fn ensure_split_visible() {
+    let s = app();
+    if !s.split_visible {
+        s.split_visible = true;
+        s.editor_groups_split.set_split_ratio(58);
+        s.side_editor_view.panel.set_visible(true);
+    }
+}
+
+fn reset_workspace_views() {
+    let s = app();
+    while s.file_mgr.count() > 0 {
+        s.editor_view.remove_editor(s.file_mgr.count() - 1);
+        s.file_mgr.remove(s.file_mgr.count() - 1);
+    }
+    s.editor_view.update_tab_labels("", 0);
+    s.editor_view.set_breadcrumb("No file open");
+
+    while s.side_file_mgr.count() > 0 {
+        s.side_editor_view.remove_editor(s.side_file_mgr.count() - 1);
+        s.side_file_mgr.remove(s.side_file_mgr.count() - 1);
+    }
+    s.side_editor_view.update_tab_labels("", 0);
+    s.side_editor_view
+        .set_breadcrumb("Open a file to the side for reference");
 }
 
 pub fn refresh_symbols() {

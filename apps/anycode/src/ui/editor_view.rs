@@ -13,24 +13,41 @@ struct EditorTab {
 pub struct EditorView {
     pub tab_bar: ui::TabBar,
     pub panel: ui::View,
+    breadcrumb_bar: ui::View,
+    breadcrumb_label: ui::Label,
     editors: Vec<EditorTab>,
 }
 
 impl EditorView {
     /// Create the editor view with a tab bar and editor panel.
-    pub fn new() -> Self {
+    pub fn new(_config: &Config) -> Self {
         let tc = ui::theme::colors();
         let panel = ui::View::new();
+        panel.set_color(tc.editor_bg);
 
         let tab_bar = ui::TabBar::new("");
         tab_bar.set_dock(ui::DOCK_TOP);
-        tab_bar.set_size(600, 28);
+        tab_bar.set_size(600, 32);
         tab_bar.set_color(tc.tab_inactive_bg);
         panel.add(&tab_bar);
+
+        let breadcrumb_bar = ui::View::new();
+        breadcrumb_bar.set_dock(ui::DOCK_TOP);
+        breadcrumb_bar.set_size(600, 24);
+        breadcrumb_bar.set_color(tc.sidebar_bg);
+        panel.add(&breadcrumb_bar);
+
+        let breadcrumb_label = ui::Label::new("No file open");
+        breadcrumb_label.set_position(10, 4);
+        breadcrumb_label.set_font_size(11);
+        breadcrumb_label.set_text_color(tc.text_secondary);
+        breadcrumb_bar.add(&breadcrumb_label);
 
         Self {
             tab_bar,
             panel,
+            breadcrumb_bar,
+            breadcrumb_label,
             editors: Vec::new(),
         }
     }
@@ -38,6 +55,16 @@ impl EditorView {
     /// Create a new TextEditor for an opened file and add it to the panel.
     /// Returns the editor index.
     pub fn create_editor(&mut self, file_path: &str, content: Option<&[u8]>, config: &Config) -> usize {
+        self.create_editor_with_mode(file_path, content, config, false)
+    }
+
+    pub fn create_editor_with_mode(
+        &mut self,
+        file_path: &str,
+        content: Option<&[u8]>,
+        config: &Config,
+        read_only: bool,
+    ) -> usize {
         // Hide current active editor
         if let Some(last) = self.editors.last() {
             last.editor.set_visible(false);
@@ -46,6 +73,7 @@ impl EditorView {
         let editor = ui::TextEditor::new(600, 400);
         editor.set_dock(ui::DOCK_FILL);
         config.apply_to_editor(&editor);
+        editor.set_read_only(read_only);
 
         // Load content
         if let Some(data) = content {
@@ -69,7 +97,9 @@ impl EditorView {
         self.editors.push(EditorTab { editor });
 
         // Wire text-changed event for modification tracking
-        crate::ui::events::wire_editor_text_changed(idx);
+        if !read_only {
+            crate::ui::events::wire_editor_text_changed(idx);
+        }
 
         idx
     }
@@ -94,6 +124,17 @@ impl EditorView {
     pub fn update_tab_labels(&self, labels: &str, active: usize) {
         self.tab_bar.set_text(labels);
         self.tab_bar.set_state(active as u32);
+    }
+
+    pub fn set_breadcrumb(&self, text: &str) {
+        self.breadcrumb_label.set_text(text);
+        self.breadcrumb_bar.set_visible(true);
+    }
+
+    pub fn apply_config(&self, config: &Config) {
+        for tab in &self.editors {
+            config.apply_to_editor(&tab.editor);
+        }
     }
 
     /// Get the text content of an editor at the given index.
@@ -129,6 +170,7 @@ impl Config {
     /// Apply configuration to a TextEditor instance.
     pub fn apply_to_editor(&self, editor: &ui::TextEditor) {
         editor.set_editor_font(self.font_id, self.font_size);
+        editor.set_line_height(self.line_height);
         editor.set_tab_width(self.tab_width);
         editor.set_show_line_numbers(self.show_line_numbers);
     }

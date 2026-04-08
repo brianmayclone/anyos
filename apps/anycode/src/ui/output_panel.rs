@@ -1,5 +1,7 @@
 use libanyui_client as ui;
 
+use crate::logic::config::Config;
+
 /// The bottom panel with Output, Problems, and Terminal tabs.
 pub struct OutputPanel {
     pub panel: ui::View,
@@ -21,7 +23,7 @@ pub struct OutputPanel {
 
 impl OutputPanel {
     /// Create the bottom panel with Output + Problems + Terminal tabs.
-    pub fn new() -> Self {
+    pub fn new(config: &Config) -> Self {
         let tc = ui::theme::colors();
         let panel = ui::View::new();
         panel.set_color(tc.editor_bg);
@@ -31,7 +33,7 @@ impl OutputPanel {
         let tabs = alloc::format!("{}|{}|{}", t("Output"), t("Problems"), t("Terminal"));
         let tab_bar = ui::TabBar::new(&tabs);
         tab_bar.set_dock(ui::DOCK_TOP);
-        tab_bar.set_size(400, 24);
+        tab_bar.set_size(400, 28);
         tab_bar.set_color(tc.sidebar_bg);
         panel.add(&tab_bar);
 
@@ -44,7 +46,7 @@ impl OutputPanel {
         let output_area = ui::TextArea::new();
         output_area.set_dock(ui::DOCK_FILL);
         output_area.set_font(4); // monospace
-        output_area.set_font_size(12);
+        output_area.set_font_size(config.terminal_font_size);
         output_area.set_color(tc.editor_bg);
         output_area.set_text_color(tc.text);
         output_panel_view.add(&output_area);
@@ -66,16 +68,16 @@ impl OutputPanel {
         let terminal_area = ui::TextArea::new();
         terminal_area.set_dock(ui::DOCK_FILL);
         terminal_area.set_font(4);
-        terminal_area.set_font_size(12);
+        terminal_area.set_font_size(config.terminal_font_size);
         terminal_area.set_color(tc.editor_bg);
         terminal_area.set_text_color(tc.success);
         terminal_panel.add(&terminal_area);
 
         let terminal_input = ui::TextField::new();
         terminal_input.set_dock(ui::DOCK_BOTTOM);
-        terminal_input.set_size(400, 24);
+        terminal_input.set_size(400, 28);
         terminal_input.set_font(4);
-        terminal_input.set_font_size(12);
+        terminal_input.set_font_size(config.terminal_font_size);
         terminal_input.set_color(tc.tab_inactive_bg);
         terminal_input.set_text_color(tc.text);
         terminal_input.set_placeholder("$ ");
@@ -147,6 +149,12 @@ impl OutputPanel {
     /// Switch to the terminal tab.
     pub fn show_terminal(&self) {
         self.tab_bar.set_state(2);
+    }
+
+    pub fn apply_config(&self, config: &Config) {
+        self.output_area.set_font_size(config.terminal_font_size);
+        self.terminal_area.set_font_size(config.terminal_font_size);
+        self.terminal_input.set_font_size(config.terminal_font_size);
     }
 
     // ── Terminal methods ──

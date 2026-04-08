@@ -1,7 +1,7 @@
 use libanyui_client as ui;
 use ui::IconType;
 
-const ICON_SZ: u32 = 24;
+use crate::logic::config::Config;
 
 /// Toolbar with PlainButton (borderless flat icon buttons).
 pub struct AppToolbar {
@@ -17,30 +17,32 @@ pub struct AppToolbar {
 }
 
 impl AppToolbar {
-    pub fn new(_parent: &impl ui::Widget) -> Self {
+    pub fn new(_parent: &impl ui::Widget, config: &Config) -> Self {
         let tc = ui::theme::colors();
+        let toolbar_h = (config.font_size + 24).max(38);
+        let icon_sz = (config.font_size + 9).min(24);
         let toolbar = ui::Toolbar::new();
         toolbar.set_dock(ui::DOCK_TOP);
-        toolbar.set_size(1024, 42);
-        toolbar.set_color(tc.sidebar_bg);
-        toolbar.set_padding(4, 4, 4, 4);
+        toolbar.set_size(1024, toolbar_h);
+        toolbar.set_color(tc.toolbar_bg);
+        toolbar.set_padding(8, 4, 8, 4);
 
         let t = anyos_std::i18n::t;
 
-        let btn_new = make_plain_btn(&toolbar, "file-plus", tc.text, t("New File"));
-        let btn_open = make_plain_btn(&toolbar, "folder-open", tc.text, t("Open Folder"));
-        let btn_save = make_plain_btn(&toolbar, "device-floppy", tc.text, t("Save"));
-        let btn_save_all = make_plain_btn(&toolbar, "files", tc.text, t("Save All"));
+        let btn_new = make_plain_btn(&toolbar, "file-plus", tc.text, t("New File"), toolbar_h, icon_sz);
+        let btn_open = make_plain_btn(&toolbar, "folder-open", tc.text, t("Open Folder"), toolbar_h, icon_sz);
+        let btn_save = make_plain_btn(&toolbar, "device-floppy", tc.text, t("Save"), toolbar_h, icon_sz);
+        let btn_save_all = make_plain_btn(&toolbar, "files", tc.text, t("Save All"), toolbar_h, icon_sz);
 
         toolbar.add_separator();
 
-        let btn_build = make_plain_btn(&toolbar, "hammer", tc.accent, t("Build"));
-        let btn_run = make_plain_btn(&toolbar, "player-play", tc.success, t("Run"));
-        let btn_stop = make_plain_btn(&toolbar, "player-stop", tc.text, t("Stop"));
+        let btn_build = make_plain_btn(&toolbar, "hammer", tc.accent, t("Build"), toolbar_h, icon_sz);
+        let btn_run = make_plain_btn(&toolbar, "player-play", tc.success, t("Run"), toolbar_h, icon_sz);
+        let btn_stop = make_plain_btn(&toolbar, "player-stop", tc.text_secondary, t("Stop"), toolbar_h, icon_sz);
 
         toolbar.add_separator();
 
-        let btn_settings = make_plain_btn(&toolbar, "settings", tc.text, t("Settings"));
+        let btn_settings = make_plain_btn(&toolbar, "settings", tc.text, t("Settings"), toolbar_h, icon_sz);
 
         Self {
             toolbar,
@@ -56,10 +58,18 @@ impl AppToolbar {
     }
 }
 
-fn make_plain_btn(toolbar: &ui::Toolbar, icon: &str, color: u32, tooltip: &str) -> ui::PlainButton {
+fn make_plain_btn(
+    toolbar: &ui::Toolbar,
+    icon: &str,
+    color: u32,
+    tooltip: &str,
+    toolbar_h: u32,
+    icon_sz: u32,
+) -> ui::PlainButton {
     let btn = ui::PlainButton::new("");
-    btn.set_size(34, 34);
-    btn.set_system_icon(icon, IconType::Outline, color, ICON_SZ);
+    let btn_size = toolbar_h.saturating_sub(8).max(30);
+    btn.set_size(btn_size, btn_size);
+    btn.set_system_icon(icon, IconType::Outline, color, icon_sz);
     btn.set_tooltip(tooltip);
     toolbar.add(&btn);
     btn

@@ -1,7 +1,7 @@
 use alloc::format;
 use libanyui_client as ui;
 
-/// Status bar at the bottom of the window — professional IDE look.
+/// Status bar at the bottom of the window.
 pub struct StatusBar {
     pub panel: ui::View,
     file_label: ui::Label,
@@ -14,59 +14,63 @@ pub struct StatusBar {
 }
 
 impl StatusBar {
-    /// Create the status bar view with all labels.
     pub fn new() -> Self {
         let tc = ui::theme::colors();
         let panel = ui::View::new();
         panel.set_color(tc.tab_border_active);
-        panel.set_size(900, 22);
+        panel.set_size(900, 26);
 
-        let t = anyos_std::i18n::t;
+        let left = ui::View::new();
+        left.set_dock(ui::DOCK_LEFT);
+        left.set_size(460, 26);
+        left.set_color(tc.tab_border_active);
+        panel.add(&left);
 
-        // Left group: branch, problems
-        let branch_lbl = ui::Label::new("");
-        branch_lbl.set_position(8, 3);
-        branch_lbl.set_font_size(11);
-        branch_lbl.set_text_color(tc.check_mark);
-        panel.add(&branch_lbl);
+        let left_flow = ui::FlowPanel::new();
+        left_flow.set_dock(ui::DOCK_FILL);
+        left_flow.set_color(tc.tab_border_active);
+        left_flow.set_padding(8, 4, 8, 4);
+        left.add(&left_flow);
 
-        let problems_lbl = ui::Label::new("");
-        problems_lbl.set_position(140, 3);
-        problems_lbl.set_font_size(11);
-        problems_lbl.set_text_color(tc.check_mark);
-        panel.add(&problems_lbl);
+        let right = ui::View::new();
+        right.set_dock(ui::DOCK_RIGHT);
+        right.set_size(430, 26);
+        right.set_color(tc.tab_border_active);
+        panel.add(&right);
 
-        // Center: cursor position
-        let cursor_lbl = ui::Label::new("Ln 1, Col 1");
-        cursor_lbl.set_position(320, 3);
-        cursor_lbl.set_font_size(11);
-        cursor_lbl.set_text_color(tc.check_mark);
-        panel.add(&cursor_lbl);
+        let right_flow = ui::FlowPanel::new();
+        right_flow.set_dock(ui::DOCK_FILL);
+        right_flow.set_color(tc.tab_border_active);
+        right_flow.set_padding(8, 4, 8, 4);
+        right.add(&right_flow);
 
-        // Right group: encoding, language, project type, filename
-        let enc_lbl = ui::Label::new("UTF-8");
-        enc_lbl.set_position(450, 3);
-        enc_lbl.set_font_size(11);
-        enc_lbl.set_text_color(tc.check_mark);
-        panel.add(&enc_lbl);
+        let branch_lbl = make_status_label("", tc.check_mark);
+        branch_lbl.set_margin(0, 0, 14, 0);
+        left_flow.add(&branch_lbl);
 
-        let lang_lbl = ui::Label::new(t("Plain Text"));
-        lang_lbl.set_position(510, 3);
-        lang_lbl.set_font_size(11);
-        lang_lbl.set_text_color(tc.check_mark);
-        panel.add(&lang_lbl);
+        let problems_lbl = make_status_label("", tc.check_mark);
+        problems_lbl.set_margin(0, 0, 14, 0);
+        left_flow.add(&problems_lbl);
 
-        let project_lbl = ui::Label::new("");
-        project_lbl.set_position(630, 3);
-        project_lbl.set_font_size(11);
-        project_lbl.set_text_color(tc.check_mark);
-        panel.add(&project_lbl);
+        let project_lbl = make_status_label("", tc.check_mark);
+        project_lbl.set_margin(0, 0, 14, 0);
+        left_flow.add(&project_lbl);
 
-        let file_lbl = ui::Label::new(t("No file open"));
-        file_lbl.set_position(750, 3);
-        file_lbl.set_font_size(11);
-        file_lbl.set_text_color(tc.check_mark);
-        panel.add(&file_lbl);
+        let cursor_lbl = make_status_label("Ln 1, Col 1", tc.check_mark);
+        cursor_lbl.set_margin(0, 0, 0, 0);
+        left_flow.add(&cursor_lbl);
+
+        let enc_lbl = make_status_label("UTF-8", tc.check_mark);
+        enc_lbl.set_margin(0, 0, 12, 0);
+        right_flow.add(&enc_lbl);
+
+        let lang_lbl = make_status_label("Plain Text", tc.check_mark);
+        lang_lbl.set_margin(0, 0, 12, 0);
+        right_flow.add(&lang_lbl);
+
+        let file_lbl = make_status_label("No file open", tc.check_mark);
+        file_lbl.set_margin(0, 0, 0, 0);
+        right_flow.add(&file_lbl);
 
         Self {
             panel,
@@ -80,34 +84,28 @@ impl StatusBar {
         }
     }
 
-    /// Update the filename display.
     pub fn set_filename(&self, name: &str) {
         self.file_label.set_text(name);
     }
 
-    /// Update cursor position display.
     pub fn set_cursor(&self, line: u32, col: u32) {
         let t = anyos_std::i18n::t;
         let text = format!("{} {}, {} {}", t("Ln"), line + 1, t("Col"), col + 1);
         self.cursor_label.set_text(&text);
     }
 
-    /// Update language display.
     pub fn set_language(&self, lang: &str) {
         self.language_label.set_text(lang);
     }
 
-    /// Update the git branch display.
     pub fn set_branch(&self, branch: &str) {
         if branch.is_empty() {
             self.branch_label.set_text("");
         } else {
-            let text = format!("\u{2387} {}", branch); // ⎇ branch symbol
-            self.branch_label.set_text(&text);
+            self.branch_label.set_text(&format!("\u{2387} {}", branch));
         }
     }
 
-    /// Update the project type display.
     pub fn set_project_type(&self, project_type: &str) {
         if project_type.is_empty() {
             self.project_label.set_text("");
@@ -116,13 +114,20 @@ impl StatusBar {
         }
     }
 
-    /// Update the problems count display.
     pub fn set_problems(&self, errors: usize, warnings: usize) {
         if errors == 0 && warnings == 0 {
             self.problems_label.set_text("");
         } else {
-            let text = format!("\u{2716} {} \u{26A0} {}", errors, warnings);
-            self.problems_label.set_text(&text);
+            self.problems_label
+                .set_text(&format!("\u{2716} {}  \u{26A0} {}", errors, warnings));
         }
     }
+}
+
+fn make_status_label(text: &str, color: u32) -> ui::Label {
+    let lbl = ui::Label::new(text);
+    lbl.set_size(120, 18);
+    lbl.set_font_size(11);
+    lbl.set_text_color(color);
+    lbl
 }
