@@ -12,7 +12,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use super::Vm;
+use super::{LocalSlot, Vm};
 use crate::bytecode::Chunk;
 use crate::value::*;
 
@@ -35,7 +35,7 @@ pub enum GeneratorState {
 pub struct GeneratorFrame {
     pub chunk: Chunk,
     pub ip: usize,
-    pub locals: Vec<Rc<RefCell<JsValue>>>,
+    pub locals: Vec<LocalSlot>,
     pub upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
     pub this_val: JsValue,
     pub stack_snapshot: Vec<JsValue>,
@@ -91,7 +91,7 @@ pub fn free_frame(id: u32) {
 pub fn create_generator_object(
     vm: &Vm,
     chunk: Chunk,
-    locals: Vec<Rc<RefCell<JsValue>>>,
+    locals: Vec<LocalSlot>,
     upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
     this_val: JsValue,
 ) -> JsValue {
@@ -324,7 +324,7 @@ pub enum GeneratorResult {
     Yielded {
         value: JsValue,
         ip: usize,
-        locals: Vec<Rc<RefCell<JsValue>>>,
+        locals: Vec<LocalSlot>,
         stack: Vec<JsValue>,
     },
     /// Hit a `return` — generator is done.

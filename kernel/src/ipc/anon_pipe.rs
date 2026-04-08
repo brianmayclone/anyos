@@ -196,13 +196,10 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
                 if pipe.blocked_reader_count < MAX_BLOCKED {
                     pipe.blocked_readers[pipe.blocked_reader_count] = tid;
                     pipe.blocked_reader_count += 1;
+                    Err(false) // signal: must block (no overflow)
                 } else {
-                    crate::serial_verbose_println!(
-                        "[anon_pipe] WARNING: pipe {} blocked_readers full ({}/{}), tid {} gets silent EOF",
-                        pipe_id, pipe.blocked_reader_count, MAX_BLOCKED, tid
-                    );
+                    Err(true) // signal: must block + blocked_readers full
                 }
-                Err(()) // signal: must block
             }
         };
 
@@ -216,7 +213,14 @@ pub fn read(pipe_id: u32, buf: &mut [u8]) -> u32 {
 
         match result {
             Ok(n) => return n,
-            Err(()) => {
+            Err(overflow) => {
+                if overflow {
+                    // Log OUTSIDE the lock — safe now
+                    crate::serial_verbose_println!(
+                        "[anon_pipe] WARNING: pipe {} blocked_readers full ({}/{}), tid gets silent EOF",
+                        pipe_id, MAX_BLOCKED, MAX_BLOCKED
+                    );
+                }
                 // Block this thread and retry after wake
                 crate::task::scheduler::block_current_thread();
             }
@@ -274,13 +278,10 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                     if pipe.blocked_writer_count < MAX_BLOCKED {
                         pipe.blocked_writers[pipe.blocked_writer_count] = tid;
                         pipe.blocked_writer_count += 1;
+                        Err(false) // signal: must block to write more
                     } else {
-                        crate::serial_verbose_println!(
-                            "[anon_pipe] WARNING: pipe {} blocked_writers full ({}/{}), tid {} gets silent EPIPE",
-                            pipe_id, pipe.blocked_writer_count, MAX_BLOCKED, tid
-                        );
+                        Err(true) // signal: must block + overflow
                     }
-                    Err(()) // signal: must block to write more
                 }
             } else {
                 // Buffer completely full — block
@@ -288,13 +289,10 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
                 if pipe.blocked_writer_count < MAX_BLOCKED {
                     pipe.blocked_writers[pipe.blocked_writer_count] = tid;
                     pipe.blocked_writer_count += 1;
+                    Err(false) // signal: must block
                 } else {
-                    crate::serial_verbose_println!(
-                        "[anon_pipe] WARNING: pipe {} blocked_writers full ({}/{}), tid {} gets silent EPIPE",
-                        pipe_id, pipe.blocked_writer_count, MAX_BLOCKED, tid
-                    );
+                    Err(true) // signal: must block + overflow
                 }
-                Err(()) // signal: must block
             }
         };
 
@@ -305,7 +303,14 @@ pub fn write(pipe_id: u32, data: &[u8]) -> u32 {
 
         match result {
             Ok(n) => return n,
-            Err(()) => {
+            Err(overflow) => {
+                if overflow {
+                    // Log OUTSIDE the lock — safe now
+                    crate::serial_verbose_println!(
+                        "[anon_pipe] WARNING: pipe {} blocked_writers full ({}/{}), tid gets silent EPIPE",
+                        pipe_id, MAX_BLOCKED, MAX_BLOCKED
+                    );
+                }
                 // Block this thread and retry after wake
                 crate::task::scheduler::block_current_thread();
             }

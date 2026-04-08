@@ -433,6 +433,18 @@ pub(crate) fn drain_results_for_tab(tab_index: usize) -> Vec<FetchResult> {
     results
 }
 
+pub(crate) fn mailbox_pending_counts() -> Vec<usize> {
+    acquire(&RESULT_LOCK);
+    let counts = unsafe {
+        RESULT_MAILBOXES
+            .as_ref()
+            .map(|mailboxes| mailboxes.iter().map(|mailbox| mailbox.len()).collect())
+            .unwrap_or_default()
+    };
+    release(&RESULT_LOCK);
+    counts
+}
+
 /// Requeue results to the front of a tab mailbox so they are seen on the next UI poll.
 pub(crate) fn prepend_results_for_tab(tab_index: usize, mut results: Vec<FetchResult>) {
     let requeued = results.len();

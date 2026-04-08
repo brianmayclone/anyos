@@ -73,6 +73,9 @@ struct Scope {
     /// Set by for-loop compilation to the update-step offset so that
     /// `compile_labeled` can patch `continue label` forward-jumps.
     last_for_continue_pos: Option<usize>,
+    /// Per-local-slot flag: true when an inner closure captures this local.
+    /// Built up during compilation as inner functions are encountered.
+    captured: Vec<bool>,
 }
 
 struct Local {
@@ -93,6 +96,7 @@ impl Scope {
             pending_finallies: Vec::new(),
             label_stack: Vec::new(),
             last_for_continue_pos: None,
+            captured: Vec::new(),
         }
     }
 
@@ -111,6 +115,10 @@ impl Scope {
             name,
             depth: self.scope_depth,
         });
+        // Keep captured vec in sync with locals.
+        while self.captured.len() <= idx as usize {
+            self.captured.push(false);
+        }
         if idx + 1 > self.chunk.local_count {
             self.chunk.local_count = idx + 1;
         }
@@ -234,8 +242,10 @@ impl Compiler {
                 if let Stmt::Expr(expr) = stmt {
                     self.compile_expr(expr);
                     self.emit(Op::Return);
-                    let mut chunk = self.scopes.pop().unwrap().chunk;
+                    let scope = self.scopes.pop().unwrap();
+                    let mut chunk = scope.chunk;
                     chunk.strict = self.is_strict;
+                    chunk.captured_locals = scope.captured;
                     return chunk;
                 }
             }
@@ -244,8 +254,10 @@ impl Compiler {
         // Implicit return undefined
         self.emit(Op::LoadUndefined);
         self.emit(Op::Return);
-        let mut chunk = self.scopes.pop().unwrap().chunk;
+        let scope = self.scopes.pop().unwrap();
+        let mut chunk = scope.chunk;
         chunk.strict = self.is_strict;
+        chunk.captured_locals = scope.captured;
         chunk
     }
 
@@ -405,6 +417,13 @@ impl Compiler {
         }
         // Try as a direct local in the immediately enclosing scope.
         if let Some(local_slot) = self.scopes[scope_idx - 1].resolve_local(name) {
+            // Mark the local as captured in the enclosing scope so the VM
+            // allocates it as a shared Rc<RefCell> cell instead of a plain JsValue.
+            let outer = &mut self.scopes[scope_idx - 1];
+            while outer.captured.len() <= local_slot as usize {
+                outer.captured.push(false);
+            }
+            outer.captured[local_slot as usize] = true;
             return Some(self.add_upvalue(scope_idx, name, true, local_slot));
         }
         // Recurse: try as an upvalue of the immediately enclosing scope.
@@ -1830,6 +1849,7 @@ impl Compiler {
         let func_scope = self.scopes.pop().unwrap();
         let mut func_chunk = func_scope.chunk;
         func_chunk.strict = self.is_strict;
+        func_chunk.captured_locals = func_scope.captured;
         // Copy upvalue descriptors into the chunk so the VM knows how to capture them.
         func_chunk.upvalues = func_scope
             .upvalues

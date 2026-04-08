@@ -552,6 +552,8 @@ pub struct JsRuntime {
     /// Viewport dimensions exposed to `window`.
     viewport_width: u32,
     viewport_height: u32,
+    native_api_initialized: bool,
+    native_api_url: String,
 }
 
 impl JsRuntime {
@@ -576,6 +578,8 @@ impl JsRuntime {
             total_elapsed_ms: 0,
             viewport_width: 1024,
             viewport_height: 768,
+            native_api_initialized: false,
+            native_api_url: String::new(),
         }
     }
 
@@ -589,6 +593,12 @@ impl JsRuntime {
     /// as the `Cookie` HTTP request header: `"name=value; name2=value2"`.
     pub fn set_cookies(&mut self, cookies: &str) {
         self.cookies = String::from(cookies);
+        if self.native_api_initialized {
+            let doc = self.engine.vm().get_global("document");
+            if !doc.is_undefined() {
+                doc.set_property(String::from("cookie"), JsValue::String(self.cookies.clone()));
+            }
+        }
     }
 
     /// Collect all `<script>` entries from the DOM in document order.
@@ -678,6 +688,13 @@ impl JsRuntime {
         self.engine.set_step_limit(20_000_000);
 
         // Set up DOM bridge via userdata.
+        anyos_std::println!(
+            "[js] setup begin: url={} scripts={} next_timer_id={} cookies_len={}",
+            url,
+            scripts.len(),
+            self.next_timer_id,
+            self.cookies.len()
+        );
         let mut bridge = DomBridge {
             dom: dom as *const Dom,
             mutations: Vec::new(),
@@ -696,16 +713,48 @@ impl JsRuntime {
             ws_registry: Vec::new(),
             remove_listeners: Vec::new(),
         };
+        anyos_std::println!(
+            "[js] setup bridge ready: mutations={} listeners={} pending_http={} timers={}",
+            bridge.mutations.len(),
+            bridge.event_listeners.len(),
+            bridge.pending_http_requests.len(),
+            bridge.timers.len()
+        );
         self.engine.vm().userdata = &mut bridge as *mut DomBridge as *mut u8;
+        anyos_std::println!(
+            "[js] setup userdata installed: frames={} stack={} vm_userdata_set=true",
+            self.engine.vm().frames.len(),
+            self.engine.vm().stack.len()
+        );
 
-        // Set up native host objects (document, window, etc.).
-        self.setup_native_api(dom, url, &self.cookies.clone());
+        // Set up native host objects (document, window, etc.) once per navigation.
+        if !self.native_api_initialized || self.native_api_url != url {
+            anyos_std::println!("[js] setup native api begin");
+            self.setup_native_api(dom, url, &self.cookies.clone());
+            self.native_api_initialized = true;
+            self.native_api_url = String::from(url);
+            anyos_std::println!(
+                "[js] setup native api done: console_msgs={} engine_logs={}",
+                self.engine.console_output().len(),
+                self.engine.vm().engine_log.len()
+            );
+        } else {
+            anyos_std::println!("[js] setup native api reuse: url={}", url);
+            let doc = self.engine.vm().get_global("document");
+            if !doc.is_undefined() {
+                doc.set_property(String::from("cookie"), JsValue::String(self.cookies.clone()));
+            }
+        }
 
         // Enable property-write interception.
+        anyos_std::println!("[js] setup mutation interception begin");
         unsafe {
             MUTATION_TARGET = &mut bridge.mutations as *mut Vec<DomMutation>;
             VIRTUAL_NODES_TARGET = &mut bridge.virtual_nodes as *mut Vec<VirtualNode>;
         }
+        anyos_std::println!(
+            "[js] setup mutation interception done: mutation_target=true virtual_nodes_target=true"
+        );
 
         // Execute each script (with limits to keep UI responsive).
         let script_count = scripts.len().min(MAX_SCRIPTS);
@@ -719,12 +768,28 @@ impl JsRuntime {
                 continue;
             }
             // Reset step counter and engine state before each script so each gets the full budget.
+            anyos_std::println!(
+                "[js] prepare #{} begin: bytes={} frames={} stack={} last_exc={} pending_exc={}",
+                idx,
+                script.len(),
+                self.engine.vm().frames.len(),
+                self.engine.vm().stack.len(),
+                self.engine.vm().last_exception.is_some(),
+                self.engine.vm().pending_exception.is_some()
+            );
             self.engine.vm().steps = 0;
             self.engine.vm().last_exception = None;
             self.engine.set_step_limit(20_000_000);
             // Clear any leftover call frames from aborted scripts (e.g. step-limit abort).
             self.engine.vm().frames.clear();
             self.engine.vm().stack.clear();
+            anyos_std::println!(
+                "[js] prepare #{} reset done: frames={} stack={} step_limit={}",
+                idx,
+                self.engine.vm().frames.len(),
+                self.engine.vm().stack.len(),
+                self.engine.vm().step_limit
+            );
             anyos_std::println!(
                 "[js] eval #{}: {} bytes (frames={} stack={})",
                 idx,
@@ -858,25 +923,41 @@ impl JsRuntime {
     /// * `cookies` — cookie string for this domain (populates `document.cookie`).
     fn setup_native_api(&mut self, dom: &Dom, url: &str, cookies: &str) {
         let vm = self.engine.vm();
+        anyos_std::println!("[js] setup native api: event-callbacks begin");
 
         // Event callback storage (only tiny bit of eval for array init).
         vm.set_global(
             "__eventCallbacks",
             JsValue::Array(Rc::new(RefCell::new(JsArray::new()))),
         );
+        anyos_std::println!("[js] setup native api: event-callbacks done");
 
         // Create document object natively.
+        anyos_std::println!("[js] setup native api: document make begin");
         let doc = document::make_document(vm, dom, url, cookies);
+        anyos_std::println!("[js] setup native api: document make done");
+        anyos_std::println!("[js] setup native api: document global begin");
         vm.set_global("document", doc.clone());
+        anyos_std::println!("[js] setup native api: document global done");
 
         // Extract origin (scheme + "://" + host) for localStorage key isolation.
+        anyos_std::println!("[js] setup native api: origin extract begin");
         let origin = extract_origin(url);
+        anyos_std::println!("[js] setup native api: origin extract done: {}", origin);
 
         // Create window object natively.
+        anyos_std::println!("[js] setup native api: window make begin");
         let win = window::make_window(vm, doc, &origin, self.viewport_width, self.viewport_height);
+        anyos_std::println!("[js] setup native api: window make done");
+        anyos_std::println!("[js] setup native api: global window begin");
         vm.set_global("window", win.clone());
+        anyos_std::println!("[js] setup native api: global window done");
+        anyos_std::println!("[js] setup native api: global self begin");
         vm.set_global("self", win.clone());
+        anyos_std::println!("[js] setup native api: global self done");
+        anyos_std::println!("[js] setup native api: global globalThis begin");
         vm.set_global("globalThis", win.clone());
+        anyos_std::println!("[js] setup native api: global globalThis done");
 
         // In browsers, window IS the global object — properties on window are directly
         // accessible as global variables (e.g. `MutationObserver` === `window.MutationObserver`).
@@ -920,25 +1001,37 @@ impl JsRuntime {
             "scrollBy",
             "confirm",
             "prompt",
+            "getCookie",
+            "getParameterByName",
+            "clearEventListeners",
+            "getRequestUUID",
+            "crypto",
             "__tcfapi",
             "__cmp",
             "__uspapi",
         ] {
+            anyos_std::println!("[js] setup native api: mirror {} begin", key);
             let val = win.get_property(key);
             if !val.is_undefined() {
                 vm.set_global(key, val);
+                anyos_std::println!("[js] setup native api: mirror {} done", key);
+            } else {
+                anyos_std::println!("[js] setup native api: mirror {} skipped(undefined)", key);
             }
         }
 
         // Top-level constructors/functions from window.
+        anyos_std::println!("[js] setup native api: top-level globals begin");
         vm.set_global("alert", native_fn("alert", window::native_alert));
         vm.set_global("fetch", native_fn("fetch", fetch::native_fetch));
         vm.set_global("XMLHttpRequest", xhr::make_xhr_constructor());
         vm.set_global("WebSocket", websocket::make_ws_constructor());
         vm.set_global("Headers", native_fn("Headers", fetch::native_headers_ctor));
         vm.set_global("Image", native_fn("Image", document::native_image_ctor));
+        anyos_std::println!("[js] setup native api: top-level globals done");
 
         // Timer globals.
+        anyos_std::println!("[js] setup native api: timer globals begin");
         vm.set_global("setTimeout", native_fn("setTimeout", native_set_timeout));
         vm.set_global("setInterval", native_fn("setInterval", native_set_interval));
         vm.set_global(
@@ -957,6 +1050,7 @@ impl JsRuntime {
             "cancelAnimationFrame",
             native_fn("cancelAnimationFrame", native_clear_timeout),
         );
+        anyos_std::println!("[js] setup native api: timer globals done");
     }
 
     pub fn eval(&mut self, source: &str) -> JsValue {
@@ -1039,6 +1133,8 @@ impl JsRuntime {
         self.ws_registry.clear();
         self.active_animations.clear();
         self.active_transitions.clear();
+        self.native_api_initialized = false;
+        self.native_api_url.clear();
     }
 
     pub fn take_mutations(&mut self) -> Vec<DomMutation> {

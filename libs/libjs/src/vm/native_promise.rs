@@ -93,6 +93,25 @@ fn is_internal_promise(value: &JsValue) -> bool {
     )
 }
 
+fn make_bound_native(
+    name: &str,
+    native: fn(&mut Vm, &[JsValue]) -> JsValue,
+    bound_args: Vec<JsValue>,
+) -> JsValue {
+    JsValue::Function(Rc::new(RefCell::new(JsFunction {
+        name: Some(String::from(name)),
+        params: Vec::new(),
+        kind: FnKind::Native(native),
+        this_binding: None,
+        bound_args,
+        upvalues: Vec::new(),
+        prototype: None,
+        own_props: alloc::collections::BTreeMap::new(),
+        arity: None,
+        super_class: None,
+    })))
+}
+
 fn chain_internal_promise(vm: &mut Vm, source: &JsValue, target: &JsValue) {
     if let JsValue::Object(source_obj) = source {
         let state = source_obj.borrow().get("__state").to_js_string();
@@ -120,12 +139,54 @@ fn chain_internal_promise(vm: &mut Vm, source: &JsValue, target: &JsValue) {
     }
 }
 
-fn settle_chained_result(vm: &mut Vm, target: &JsValue, result: JsValue) {
-    if is_internal_promise(&result) {
-        chain_internal_promise(vm, &result, target);
-    } else {
-        settle_promise(vm, target, "fulfilled", &result);
+fn thenable_resolve_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    settle_promise(vm, &target, "fulfilled", &value);
+    JsValue::Undefined
+}
+
+fn thenable_reject_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    settle_promise(vm, &target, "rejected", &value);
+    JsValue::Undefined
+}
+
+fn adopt_thenable(vm: &mut Vm, target: &JsValue, thenable: &JsValue) -> bool {
+    if is_internal_promise(thenable) {
+        chain_internal_promise(vm, thenable, target);
+        return true;
     }
+
+    let then_fn = thenable.get_property("then");
+    if !then_fn.is_function() {
+        return false;
+    }
+
+    let resolve = make_bound_native(
+        "__promise_thenable_resolve__",
+        thenable_resolve_runner,
+        vec![target.clone()],
+    );
+    let reject = make_bound_native(
+        "__promise_thenable_reject__",
+        thenable_reject_runner,
+        vec![target.clone()],
+    );
+
+    vm.call_value(&then_fn, &[resolve, reject], thenable.clone());
+    if let Some(exc) = vm.last_exception.take() {
+        settle_promise(vm, target, "rejected", &exc);
+    }
+    true
+}
+
+fn settle_chained_result(vm: &mut Vm, target: &JsValue, result: JsValue) {
+    if adopt_thenable(vm, target, &result) {
+        return;
+    }
+    settle_promise(vm, target, "fulfilled", &result);
 }
 
 fn promise_resolve_native(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -324,6 +385,30 @@ fn promise_reaction_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Undefined
 }
 
+fn promise_finally_fulfill_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let on_finally = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let value = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    if on_finally.is_function() {
+        let _ = call_callback(vm, &on_finally, &[]);
+        if vm.last_exception.is_some() {
+            return JsValue::Undefined;
+        }
+    }
+    value
+}
+
+fn promise_finally_reject_runner(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let on_finally = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let reason = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    if on_finally.is_function() {
+        let _ = call_callback(vm, &on_finally, &[]);
+        if vm.last_exception.is_some() {
+            return JsValue::Undefined;
+        }
+    }
+    make_rejected_promise(reason)
+}
+
 pub fn promise_catch(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let on_rejected = args.first().cloned().unwrap_or(JsValue::Undefined);
     // .catch(fn) is sugar for .then(undefined, fn)
@@ -335,40 +420,46 @@ pub fn promise_finally(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let promise = vm.current_this.clone();
 
     if let JsValue::Object(obj) = &promise {
-        let (state, value) = {
+        let (state, value, on_fulfilled, on_rejected) = {
             let o = obj.borrow();
-            (o.get("__state").to_js_string(), o.get("__value"))
+            (
+                o.get("__state").to_js_string(),
+                o.get("__value"),
+                make_bound_native(
+                    "__promise_finally_fulfill__",
+                    promise_finally_fulfill_runner,
+                    vec![on_finally.clone()],
+                ),
+                make_bound_native(
+                    "__promise_finally_reject__",
+                    promise_finally_reject_runner,
+                    vec![on_finally.clone()],
+                ),
+            )
         };
-
-        // Create a new chained promise that preserves the original state/value
-        let new_promise = make_pending_promise(vm);
-
-        if state != "pending" {
-            if on_finally.is_function() {
-                call_callback(vm, &on_finally, &[]);
+        if state == "fulfilled" {
+            let result = vm.call_value(&on_fulfilled, &[value], JsValue::Undefined);
+            if let Some(exc) = vm.last_exception.take() {
+                return make_rejected_promise(exc);
             }
-            // Preserve original value and state
-            settle_promise(vm, &new_promise, &state, &value);
-        } else {
-            // Queue for later
-            let o = obj.borrow();
-            if let JsValue::Array(arr) = o.get("__then_cbs") {
-                let mut entry = JsObject::new();
-                entry.set(String::from("cb"), on_finally.clone());
-                entry.set(String::from("promise"), new_promise.clone());
-                arr.borrow_mut()
-                    .push(JsValue::Object(Rc::new(RefCell::new(entry))));
-            }
-            if let JsValue::Array(arr) = o.get("__catch_cbs") {
-                let mut entry = JsObject::new();
-                entry.set(String::from("cb"), on_finally.clone());
-                entry.set(String::from("promise"), new_promise.clone());
-                arr.borrow_mut()
-                    .push(JsValue::Object(Rc::new(RefCell::new(entry))));
-            }
+            return if is_internal_promise(&result) {
+                result
+            } else {
+                make_resolved_promise(result)
+            };
         }
-
-        return new_promise;
+        if state == "rejected" {
+            let result = vm.call_value(&on_rejected, &[value], JsValue::Undefined);
+            if let Some(exc) = vm.last_exception.take() {
+                return make_rejected_promise(exc);
+            }
+            return if is_internal_promise(&result) {
+                result
+            } else {
+                make_resolved_promise(result)
+            };
+        }
+        return promise_then(vm, &[on_fulfilled, on_rejected]);
     }
     promise
 }
@@ -398,6 +489,12 @@ pub fn promise_resolve(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let value = args.first().cloned().unwrap_or(JsValue::Undefined);
     if is_internal_promise(&value) {
         return value;
+    }
+    if value.is_object() || value.is_function() {
+        let adopted = make_pending_promise(vm);
+        if adopt_thenable(vm, &adopted, &value) {
+            return adopted;
+        }
     }
     make_promise(vm, "fulfilled", value)
 }

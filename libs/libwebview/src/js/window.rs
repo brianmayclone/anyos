@@ -5,6 +5,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use libjs::value::JsObject;
 use libjs::vm::native_fn;
@@ -423,10 +424,29 @@ pub fn make_window(
         String::from("structuredClone"),
         native_fn("structuredClone", win_structured_clone),
     );
+    obj.set(String::from("getCookie"), native_fn("getCookie", win_get_cookie));
+    obj.set(
+        String::from("getParameterByName"),
+        native_fn("getParameterByName", win_get_parameter_by_name),
+    );
+    obj.set(
+        String::from("clearEventListeners"),
+        native_fn("clearEventListeners", win_noop),
+    );
+    obj.set(
+        String::from("getRequestUUID"),
+        native_fn("getRequestUUID", win_get_request_uuid),
+    );
     obj.set(
         String::from("DOMParser"),
         native_fn("DOMParser", win_dom_parser),
     );
+    let crypto = JsValue::new_object();
+    crypto.set_property(
+        String::from("randomUUID"),
+        native_fn("randomUUID", win_get_request_uuid),
+    );
+    obj.set(String::from("crypto"), crypto);
     obj.set(
         String::from("Image"),
         native_fn("Image", super::document::native_image_ctor),
@@ -1888,14 +1908,79 @@ fn win_btoa(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 /// system tick counter; on host builds it uses a simple incrementing counter
 /// so React Scheduler can measure elapsed time between calls.
 fn win_performance_now(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    // Use a simple counter: each call increments by ~1ms.
-    // This ensures React Scheduler's `shouldYieldToHost()` works correctly
-    // by seeing time progress between calls.
-    static mut PERF_COUNTER: f64 = 0.0;
-    unsafe {
-        PERF_COUNTER += 0.1;
-        JsValue::Number(PERF_COUNTER)
+    JsValue::Number(anyos_std::sys::uptime_ms() as f64)
+}
+
+fn document_cookie_string(vm: &mut Vm) -> String {
+    vm.get_global("document").get_property("cookie").to_js_string()
+}
+
+fn parse_cookie_value(cookie_string: &str, name: &str) -> Option<String> {
+    for part in cookie_string.split(';') {
+        let trimmed = part.trim();
+        let mut pieces = trimmed.splitn(2, '=');
+        let key = pieces.next().unwrap_or("").trim();
+        if key == name {
+            return Some(url_decode(pieces.next().unwrap_or("").trim()));
+        }
     }
+    None
+}
+
+fn win_get_cookie(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = arg_string(args, 0);
+    if name.is_empty() {
+        return JsValue::Null;
+    }
+    parse_cookie_value(&document_cookie_string(vm), &name)
+        .map(JsValue::String)
+        .unwrap_or(JsValue::Null)
+}
+
+fn extract_query_string(url: &str) -> &str {
+    match url.find('?') {
+        Some(start) => {
+            let query = &url[start + 1..];
+            match query.find('#') {
+                Some(end) => &query[..end],
+                None => query,
+            }
+        }
+        None => url,
+    }
+}
+
+fn win_get_parameter_by_name(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = arg_string(args, 0);
+    if name.is_empty() {
+        return JsValue::Null;
+    }
+    let url = args
+        .get(1)
+        .map(|v| v.to_js_string())
+        .filter(|s| !s.is_empty() && s != "undefined")
+        .unwrap_or_else(|| vm.get_global("location").get_property("href").to_js_string());
+    let query = extract_query_string(&url);
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let mut parts = pair.splitn(2, '=');
+        let key = url_decode(parts.next().unwrap_or(""));
+        if key == name {
+            return JsValue::String(url_decode(parts.next().unwrap_or("")));
+        }
+    }
+    JsValue::Null
+}
+
+fn win_get_request_uuid(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    static NEXT_REQUEST_UUID: AtomicU32 = AtomicU32::new(1);
+    let seq = NEXT_REQUEST_UUID.fetch_add(1, Ordering::Relaxed);
+    let now = anyos_std::sys::uptime_ms();
+    JsValue::String(alloc::format!(
+        "{:08x}-{:08x}-{:08x}",
+        now,
+        seq,
+        now ^ seq.rotate_left(13)
+    ))
 }
 
 // ═══════════════════════════════════════════════════════════

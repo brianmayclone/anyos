@@ -613,58 +613,61 @@ pub fn run_once() -> u32 {
                         crate::syscall::evt_chan_emit(st.channel_id, &cmd);
                     }
 
-                    // Dispatch mouse_move to hovered control (for internal hover tracking)
+                    // Dispatch mouse_move to hovered control — always call
+                    // handle_mouse_move to update internal state (e.g. Canvas
+                    // last_mouse_x/y) and always fire EVENT_MOUSE_MOVE so apps
+                    // can react to hover position changes (tooltips, highlights).
                     if let Some(hover_id) = st.hovered {
-                        if Some(hover_id) != st.pressed {
-                            if let Some(idx) = control::find_idx(&st.controls, hover_id) {
-                                let (ax, ay) = control::abs_position(&st.controls, hover_id);
-                                let local_x = mx - ax;
-                                let local_y = my - ay;
-                                let resp = st.controls[idx].handle_mouse_move(local_x, local_y);
-                                if resp.consumed {
-                                    st.controls[idx].base_mut().mark_dirty();
-                                }
-                            }
-                            // Fire EVENT_MOUSE_MOVE callback so apps can react to hover movement
-                            fire_event_callback(
-                                &st.controls,
-                                hover_id,
-                                control::EVENT_MOUSE_MOVE,
-                                &mut pending_cbs,
-                            );
-                        }
-                    }
-
-                    // If a control is pressed, dispatch mouse_move for drag
-                    if let Some(pressed_id) = st.pressed {
-                        if let Some(idx) = control::find_idx(&st.controls, pressed_id) {
-                            let (ax, ay) = control::abs_position(&st.controls, pressed_id);
+                        if let Some(idx) = control::find_idx(&st.controls, hover_id) {
+                            let (ax, ay) = control::abs_position(&st.controls, hover_id);
                             let local_x = mx - ax;
                             let local_y = my - ay;
                             let resp = st.controls[idx].handle_mouse_move(local_x, local_y);
                             if resp.consumed {
                                 st.controls[idx].base_mut().mark_dirty();
-                                fire_event_callback(
-                                    &st.controls,
-                                    pressed_id,
-                                    control::EVENT_MOUSE_MOVE,
-                                    &mut pending_cbs,
-                                );
-                                if resp.fire_change {
+                            }
+                        }
+                        fire_event_callback(
+                            &st.controls,
+                            hover_id,
+                            control::EVENT_MOUSE_MOVE,
+                            &mut pending_cbs,
+                        );
+                    }
+
+                    // If a different control is pressed (drag outside), dispatch
+                    // mouse_move to it as well for drag tracking.
+                    if let Some(pressed_id) = st.pressed {
+                        if st.hovered != Some(pressed_id) {
+                            if let Some(idx) = control::find_idx(&st.controls, pressed_id) {
+                                let (ax, ay) = control::abs_position(&st.controls, pressed_id);
+                                let local_x = mx - ax;
+                                let local_y = my - ay;
+                                let resp = st.controls[idx].handle_mouse_move(local_x, local_y);
+                                if resp.consumed {
+                                    st.controls[idx].base_mut().mark_dirty();
                                     fire_event_callback(
                                         &st.controls,
                                         pressed_id,
-                                        control::EVENT_CHANGE,
+                                        control::EVENT_MOUSE_MOVE,
                                         &mut pending_cbs,
                                     );
-                                }
-                                if resp.fire_click {
-                                    fire_event_callback(
-                                        &st.controls,
-                                        pressed_id,
-                                        control::EVENT_CLICK,
-                                        &mut pending_cbs,
-                                    );
+                                    if resp.fire_change {
+                                        fire_event_callback(
+                                            &st.controls,
+                                            pressed_id,
+                                            control::EVENT_CHANGE,
+                                            &mut pending_cbs,
+                                        );
+                                    }
+                                    if resp.fire_click {
+                                        fire_event_callback(
+                                            &st.controls,
+                                            pressed_id,
+                                            control::EVENT_CLICK,
+                                            &mut pending_cbs,
+                                        );
+                                    }
                                 }
                             }
                         }

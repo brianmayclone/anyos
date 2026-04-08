@@ -137,8 +137,12 @@ fn extract_pair(entry: &JsValue) -> (JsValue, JsValue) {
 fn expect_map_this(vm: &mut Vm) -> Option<Rc<RefCell<JsObject>>> {
     let this = vm.current_this.clone();
     if let JsValue::Object(obj_rc) = this {
-        let tag = obj_rc.borrow().internal_tag.clone();
-        if matches!(tag.as_deref(), Some(MAP_TAG) | Some("__map__")) {
+        let obj = obj_rc.borrow();
+        let tag = obj.internal_tag.clone();
+        let has_storage = matches!(obj.get("__keys"), JsValue::Array(_))
+            && matches!(obj.get("__values"), JsValue::Array(_));
+        drop(obj);
+        if matches!(tag.as_deref(), Some(MAP_TAG) | Some("__map__")) || has_storage {
             return Some(obj_rc);
         }
     }
@@ -375,8 +379,11 @@ fn set_find_index(obj: &JsObject, value: &JsValue) -> Option<usize> {
 fn expect_set_this(vm: &mut Vm) -> Option<Rc<RefCell<JsObject>>> {
     let this = vm.current_this.clone();
     if let JsValue::Object(obj_rc) = this {
-        let tag = obj_rc.borrow().internal_tag.clone();
-        if matches!(tag.as_deref(), Some(SET_TAG) | Some("__set__")) {
+        let obj = obj_rc.borrow();
+        let tag = obj.internal_tag.clone();
+        let has_storage = matches!(obj.get("__items"), JsValue::Array(_));
+        drop(obj);
+        if matches!(tag.as_deref(), Some(SET_TAG) | Some("__set__")) || has_storage {
             return Some(obj_rc);
         }
     }

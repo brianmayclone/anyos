@@ -401,6 +401,47 @@ fn promise_chain_then_then_catch() {
 }
 
 #[test]
+fn promise_finally_preserves_fulfillment_value() {
+    assert_eq!(
+        eval_console(
+            r#"
+        Promise.resolve(7)
+            .finally(() => 99)
+            .then(v => console.log(v));
+    "#
+        ),
+        "7"
+    );
+}
+
+#[test]
+fn promise_finally_preserves_rejection_reason() {
+    assert_eq!(
+        eval_console(
+            r#"
+        Promise.reject("boom")
+            .finally(() => 99)
+            .catch(e => console.log(e));
+    "#
+        ),
+        "boom"
+    );
+}
+
+#[test]
+fn promise_resolve_thenable_adopts_state() {
+    assert_eq!(
+        eval_console(
+            r#"
+        let thenable = { then(resolve) { resolve(13); } };
+        Promise.resolve(thenable).then(v => console.log(v));
+    "#
+        ),
+        "13"
+    );
+}
+
+#[test]
 fn function_constructor_can_return_promise_chain() {
     assert_eq!(
         eval_console(

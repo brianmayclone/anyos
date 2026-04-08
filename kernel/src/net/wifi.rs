@@ -705,8 +705,11 @@ pub fn handle_beacon(frame: &[u8]) {
             {
                 // Found our target — state will be updated when driver
                 // calls handle_auth_response after sending auth request
-                let state = WIFI_STATE.lock();
-                if matches!(*state, WifiState::Scanning) {
+                let is_scanning = {
+                    let state = WIFI_STATE.lock();
+                    matches!(*state, WifiState::Scanning)
+                };
+                if is_scanning {
                     crate::serial_verbose_println!(
                         "[wifi] Target SSID found on channel {}", bss.channel
                     );

@@ -246,9 +246,16 @@ pub fn handle_router_advertisement(pkt: &Ipv6Packet<'_>) {
 
     // Set default gateway if router lifetime > 0
     if router_lifetime > 0 && router_ip.is_link_local() {
-        let mut cfg = super::NET_CONFIG.lock();
-        if cfg.ipv6_gateway.is_unspecified() {
-            cfg.ipv6_gateway = router_ip;
+        let set_gw = {
+            let mut cfg = super::NET_CONFIG.lock();
+            if cfg.ipv6_gateway.is_unspecified() {
+                cfg.ipv6_gateway = router_ip;
+                true
+            } else {
+                false
+            }
+        };
+        if set_gw {
             crate::serial_verbose_println!("[IPv6] Default gateway set to {}", router_ip);
         }
     }
@@ -295,10 +302,17 @@ fn handle_prefix_info(data: &[u8], _router: &Ipv6Addr) {
     let new_addr = Ipv6Addr(addr);
 
     // Set as our global address if we don't have one yet
-    let mut net_cfg = super::NET_CONFIG.lock();
-    if net_cfg.ipv6_addr.is_unspecified() {
-        net_cfg.ipv6_addr = new_addr;
-        net_cfg.ipv6_prefix_len = prefix_len;
+    let configured = {
+        let mut net_cfg = super::NET_CONFIG.lock();
+        if net_cfg.ipv6_addr.is_unspecified() {
+            net_cfg.ipv6_addr = new_addr;
+            net_cfg.ipv6_prefix_len = prefix_len;
+            true
+        } else {
+            false
+        }
+    };
+    if configured {
         crate::serial_verbose_println!("[IPv6] SLAAC: configured global address {}", new_addr);
     }
 }

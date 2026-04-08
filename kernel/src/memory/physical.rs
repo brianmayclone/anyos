@@ -172,10 +172,8 @@ pub fn init(boot_info: &BootInfo) {
     };
     // _kernel_end already covers BSS + the 512 KiB .boot_stack section.
     let kernel_end = PhysAddr::new(kernel_end_phys).frame_align_up();
-    crate::serial_verbose_println!(
-        "Reserving kernel region: {:#010x} - {:#010x} (includes BSS + stack)",
-        kernel_start.as_u64(), kernel_end.as_u64()
-    );
+    let kern_start_val = kernel_start.as_u64();
+    let kern_end_val = kernel_end.as_u64();
     for frame in kernel_start.frame_index()..kernel_end.frame_index() {
         if frame < MAX_FRAMES && !alloc.is_used(frame) {
             alloc.set_used(frame);
@@ -183,11 +181,18 @@ pub fn init(boot_info: &BootInfo) {
         }
     }
 
+    let total_mib = alloc.total_frames * FRAME_SIZE / (1024 * 1024);
+    let free_frames = alloc.free_frames;
+    let free_mib = free_frames * FRAME_SIZE / (1024 * 1024);
+    drop(alloc); // Release lock BEFORE logging
+
+    crate::serial_verbose_println!(
+        "Reserving kernel region: {:#010x} - {:#010x} (includes BSS + stack)",
+        kern_start_val, kern_end_val
+    );
     crate::serial_verbose_println!(
         "Physical memory: {} MiB total, {} frames free ({} MiB)",
-        alloc.total_frames * FRAME_SIZE / (1024 * 1024),
-        alloc.free_frames,
-        alloc.free_frames * FRAME_SIZE / (1024 * 1024)
+        total_mib, free_frames, free_mib
     );
 }
 

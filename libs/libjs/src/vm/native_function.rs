@@ -120,16 +120,10 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
             match kind {
                 FnKind::Native(native) => native(vm, args),
                 FnKind::Bytecode(chunk) => {
-                    let local_count = chunk.local_count as usize;
-                    let mut locals: alloc::vec::Vec<alloc::rc::Rc<core::cell::RefCell<JsValue>>> =
-                        (0..local_count)
-                            .map(|_| {
-                                alloc::rc::Rc::new(core::cell::RefCell::new(JsValue::Undefined))
-                            })
-                            .collect();
+                    let mut locals = super::Vm::make_locals(&chunk);
                     for (i, arg) in args.iter().enumerate() {
-                        if i < local_count {
-                            *locals[i].borrow_mut() = arg.clone();
+                        if i < locals.len() {
+                            locals[i].set(arg.clone());
                         }
                     }
                     let frame = super::CallFrame {

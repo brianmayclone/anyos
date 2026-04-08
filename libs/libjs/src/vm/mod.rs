@@ -43,14 +43,53 @@ pub mod native_weakref;
 
 // ── Internal structures ──
 
+/// A local variable slot — either a plain value (fast path, no heap allocation)
+/// or a shared cell (required when the local is captured by an inner closure).
+#[derive(Clone)]
+pub enum LocalSlot {
+    /// Non-captured local: stored inline, no Rc/RefCell overhead.
+    Direct(JsValue),
+    /// Captured local: shared with closures via Rc<RefCell>.
+    Cell(Rc<RefCell<JsValue>>),
+}
+
+impl LocalSlot {
+    /// Read the value.
+    #[inline(always)]
+    pub fn get(&self) -> JsValue {
+        match self {
+            LocalSlot::Direct(v) => v.clone(),
+            LocalSlot::Cell(c) => c.borrow().clone(),
+        }
+    }
+
+    /// Write a value.
+    #[inline(always)]
+    pub fn set(&mut self, val: JsValue) {
+        match self {
+            LocalSlot::Direct(v) => *v = val,
+            LocalSlot::Cell(c) => *c.borrow_mut() = val,
+        }
+    }
+
+    /// Get the shared cell (panics if Direct — caller must know this is captured).
+    #[inline(always)]
+    pub fn as_cell(&self) -> &Rc<RefCell<JsValue>> {
+        match self {
+            LocalSlot::Cell(c) => c,
+            LocalSlot::Direct(_) => panic!("LocalSlot::as_cell on non-captured local"),
+        }
+    }
+}
+
 /// Call frame for function invocations.
 pub struct CallFrame {
     pub chunk: Chunk,
     pub ip: usize,
     pub stack_base: usize,
-    /// Local variable cells — each is a shared Rc<RefCell<JsValue>> so that closures
-    /// can capture locals by reference and maintain mutable shared state.
-    pub locals: Vec<Rc<RefCell<JsValue>>>,
+    /// Local variable slots — a mix of Direct (non-captured) and Cell (captured).
+    /// Non-captured locals avoid Rc<RefCell> overhead entirely.
+    pub locals: Vec<LocalSlot>,
     /// Upvalue cells captured by this function's closure.
     pub upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
     pub this_val: JsValue,
@@ -105,7 +144,7 @@ pub struct Vm {
     pub last_exception: Option<JsValue>,
     /// Pending generator yield: (value, ip, locals, stack_snapshot).
     /// Set by `Op::Yield` handler, consumed by `run_generator_step`.
-    pub pending_generator_yield: Option<(JsValue, usize, Vec<Rc<RefCell<JsValue>>>, Vec<JsValue>)>,
+    pub pending_generator_yield: Option<(JsValue, usize, Vec<LocalSlot>, Vec<JsValue>)>,
     /// Event loop for microtask queue and timers.
     pub event_loop: event_loop::EventLoop,
     /// Tracks Rust-level call_value() re-entrancy depth (independent of JS frames).
@@ -150,6 +189,23 @@ impl Vm {
 
     pub fn set_step_limit(&mut self, limit: u64) {
         self.step_limit = limit;
+    }
+
+    /// Create a local-slot vector for a chunk.  Non-captured locals get
+    /// `LocalSlot::Direct` (zero heap alloc), captured locals get
+    /// `LocalSlot::Cell` (shared Rc<RefCell> for closure capture).
+    pub fn make_locals(chunk: &Chunk) -> Vec<LocalSlot> {
+        let n = chunk.local_count as usize;
+        let captured = &chunk.captured_locals;
+        (0..n)
+            .map(|i| {
+                if i < captured.len() && captured[i] {
+                    LocalSlot::Cell(Rc::new(RefCell::new(JsValue::Undefined)))
+                } else {
+                    LocalSlot::Direct(JsValue::Undefined)
+                }
+            })
+            .collect()
     }
 
     /// Signal an exception from a native Rust function.
@@ -295,14 +351,12 @@ impl Vm {
     pub fn execute(&mut self, chunk: Chunk) -> JsValue {
         self.steps = 0;
         self.last_exception = None;
-        let local_count = chunk.local_count as usize;
+        let locals = Self::make_locals(&chunk);
         let frame = CallFrame {
             chunk,
             ip: 0,
             stack_base: self.stack.len(),
-            locals: (0..local_count)
-                .map(|_| Rc::new(RefCell::new(JsValue::Undefined)))
-                .collect(),
+            locals,
             upvalue_cells: Vec::new(),
             this_val: JsValue::Undefined,
             is_constructor: false,
@@ -425,7 +479,7 @@ impl Vm {
                     let val = self.frames[frame_idx]
                         .locals
                         .get(slot as usize)
-                        .map(|c| c.borrow().clone())
+                        .map(|s| s.get())
                         .unwrap_or(JsValue::Undefined);
                     self.stack.push(val);
                 }
@@ -433,9 +487,9 @@ impl Vm {
                     let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
                     let locals = &mut self.frames[frame_idx].locals;
                     while locals.len() <= slot as usize {
-                        locals.push(Rc::new(RefCell::new(JsValue::Undefined)));
+                        locals.push(LocalSlot::Direct(JsValue::Undefined));
                     }
-                    *locals[slot as usize].borrow_mut() = val;
+                    locals[slot as usize].set(val);
                 }
                 Op::LoadGlobal(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
@@ -707,12 +761,20 @@ impl Vm {
                     let mut upvalue_cells: Vec<Rc<RefCell<JsValue>>> = Vec::new();
                     for uv_ref in &chunk.upvalues.clone() {
                         let cell = if uv_ref.is_local {
-                            // Capture the Rc<RefCell> of a local from the current frame.
-                            self.frames[frame_idx]
-                                .locals
-                                .get(uv_ref.index as usize)
-                                .cloned()
-                                .unwrap_or_else(|| Rc::new(RefCell::new(JsValue::Undefined)))
+                            // Capture the shared Rc<RefCell> cell of a captured local.
+                            match self.frames[frame_idx].locals.get(uv_ref.index as usize) {
+                                Some(LocalSlot::Cell(c)) => c.clone(),
+                                Some(LocalSlot::Direct(_)) => {
+                                    // Fallback: promote Direct → Cell on the fly
+                                    // (should not happen if compiler marks correctly,
+                                    //  but be safe for edge cases)
+                                    let val = self.frames[frame_idx].locals[uv_ref.index as usize].get();
+                                    let c = Rc::new(RefCell::new(val));
+                                    self.frames[frame_idx].locals[uv_ref.index as usize] = LocalSlot::Cell(c.clone());
+                                    c
+                                }
+                                None => Rc::new(RefCell::new(JsValue::Undefined)),
+                            }
                         } else {
                             // Re-capture from this frame's own upvalue cells (upvalue-of-upvalue).
                             self.frames[frame_idx]
@@ -1577,21 +1639,22 @@ impl Vm {
                 }
 
                 Op::CloneLocal(slot) => {
-                    // Create a fresh Rc<RefCell<JsValue>> for this local slot,
+                    // Create a fresh Rc<RefCell<JsValue>> cell for this local slot,
                     // copying the current value.  Closures created after this
                     // point capture the new cell (per-iteration let binding).
+                    // CloneLocal is only emitted for captured locals in for-loops.
                     let slot = slot as usize;
                     let current_val = self.frames[frame_idx]
                         .locals
                         .get(slot)
-                        .map(|c| c.borrow().clone())
+                        .map(|s| s.get())
                         .unwrap_or(JsValue::Undefined);
                     let new_cell = Rc::new(RefCell::new(current_val));
                     let frame = &mut self.frames[frame_idx];
                     while frame.locals.len() <= slot {
-                        frame.locals.push(Rc::new(RefCell::new(JsValue::Undefined)));
+                        frame.locals.push(LocalSlot::Direct(JsValue::Undefined));
                     }
-                    frame.locals[slot] = new_cell;
+                    frame.locals[slot] = LocalSlot::Cell(new_cell);
                 }
                 Op::NewRegExp(pattern_idx, flags_idx) => {
                     let pattern = self.get_const_string(frame_idx, pattern_idx);
@@ -2139,7 +2202,7 @@ impl Vm {
         &mut self,
         chunk: Chunk,
         start_ip: usize,
-        locals: Vec<Rc<RefCell<JsValue>>>,
+        locals: Vec<LocalSlot>,
         upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
         this_val: JsValue,
         stack_snapshot: Vec<JsValue>,

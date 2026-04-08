@@ -89,6 +89,7 @@ const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
 const DEBUG_SKIP_BLOCKING_SLOT0: bool = true;
 const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
 const NET_POLL_INTERVAL_MS: u32 = 16;
+const DEBUG_SKIP_BLOCKING_SLOT2: bool = true;
 
 fn phase_name(phase: PageLoadPhase) -> &'static str {
     match phase {
@@ -359,6 +360,12 @@ pub(crate) fn start_anim_timer() {
                 IDLE_TICKS = 0;
             }
         } else {
+            if network_work_pending() {
+                unsafe {
+                    IDLE_TICKS = 0;
+                }
+                return;
+            }
             unsafe {
                 IDLE_TICKS += 1;
             }
@@ -465,6 +472,42 @@ fn script_preview(script: &str) -> String {
     preview
 }
 
+fn log_script_dump(slot: usize, label: &str, script_label: &str, script: &str) {
+    if label != "blocking/defer" || slot != 2 {
+        return;
+    }
+    crate::surf_log!(
+        "[surf] slot-2 dump start: label={} source={} len={}",
+        label,
+        script_label,
+        script.len()
+    );
+    let chars: Vec<char> = script.chars().collect();
+    let mut start = 0usize;
+    let mut chunk_idx = 0usize;
+    while start < chars.len() && chunk_idx < 8 {
+        let end = core::cmp::min(start + 200, chars.len());
+        let mut chunk = String::new();
+        for ch in &chars[start..end] {
+            let normalized = match *ch {
+                '\n' | '\r' | '\t' => ' ',
+                _ => *ch,
+            };
+            chunk.push(normalized);
+        }
+        crate::surf_log!("[surf] slot-2 dump[{}]: {}", chunk_idx, chunk);
+        start = end;
+        chunk_idx += 1;
+    }
+    if start < chars.len() {
+        crate::surf_log!(
+            "[surf] slot-2 dump truncated: shown_chars={} total_chars={}",
+            start,
+            chars.len()
+        );
+    }
+}
+
 fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &str) {
     let script_label = {
         let st = state();
@@ -478,7 +521,19 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
             .unwrap_or_else(|| String::from("<unknown>"))
     };
     let preview = script_preview(&script);
+    log_script_dump(slot, label, &script_label, &script);
     if DEBUG_SKIP_BLOCKING_SLOT0 && label == "blocking/defer" && slot == 0 {
+        crate::surf_log!(
+            "[surf] DEBUG skipping {} script [{}]: {} preview=\"{}\"",
+            label,
+            slot,
+            script_label,
+            preview
+        );
+        request_layout_refresh(tab_index);
+        return;
+    }
+    if DEBUG_SKIP_BLOCKING_SLOT2 && label == "blocking/defer" && slot == 2 {
         crate::surf_log!(
             "[surf] DEBUG skipping {} script [{}]: {} preview=\"{}\"",
             label,
@@ -619,6 +674,13 @@ fn start_net_poll_timer() {
         st.tabs.iter().any(tab_waiting_on_network)
     );
     st.net_poll_timer = ui_lib::set_timer(NET_POLL_INTERVAL_MS, || {
+        let mailbox_counts = net_worker::mailbox_pending_counts();
+        crate::surf_log!(
+            "[surf] net-poll tick: timer={} worker_pending={} mailbox_counts={:?}",
+            state().net_poll_timer,
+            net_worker::has_pending_activity(),
+            mailbox_counts
+        );
         let results = drain_results_from_mailboxes();
         if results.is_empty() {
             let st = state();
@@ -679,6 +741,7 @@ fn drain_results_from_mailboxes() -> Vec<net_worker::FetchResult> {
     let st = state();
     let mut all_results = Vec::new();
     for tab_index in 0..st.tabs.len() {
+        crate::surf_log!("[surf] checking mailbox for tab {}", tab_index);
         let mut tab_results = net_worker::drain_results_for_tab(tab_index);
         if !tab_results.is_empty() {
             crate::surf_log!(
@@ -698,6 +761,7 @@ pub(crate) fn ensure_net_poll_timer() {
         return;
     }
     start_net_poll_timer();
+    ensure_anim_timer();
 }
 
 /// Dispatch completed fetch results to their handlers.

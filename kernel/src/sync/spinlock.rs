@@ -267,6 +267,52 @@ impl<T> Spinlock<T> {
     }
 }
 
+/// Emergency message written directly to UART (no locks) for misaligned-pointer bugs.
+/// Safe to call while any spinlock is held — bypasses OUTPUT_LOCK entirely.
+#[cold]
+fn spinlock_misalign_panic(addr: usize, align: usize) -> ! {
+    unsafe {
+        let msg = b"\r\n!!! BUG: Spinlock Deref misaligned ptr=0x";
+        for &c in msg {
+            crate::drivers::serial::emergency_write_byte(c);
+        }
+        // Print addr as hex
+        let mut tmp = [0u8; 16];
+        let mut val = addr;
+        for i in (0..16).rev() {
+            let nibble = (val & 0xF) as u8;
+            tmp[i] = if nibble < 10 { b'0' + nibble } else { b'a' + nibble - 10 };
+            val >>= 4;
+        }
+        for &c in &tmp {
+            crate::drivers::serial::emergency_write_byte(c);
+        }
+        let msg2 = b" align=";
+        for &c in msg2 {
+            crate::drivers::serial::emergency_write_byte(c);
+        }
+        // Print align as decimal
+        let mut dbuf = [0u8; 8];
+        let mut dval = align;
+        let mut di = 0;
+        loop {
+            dbuf[di] = b'0' + (dval % 10) as u8;
+            dval /= 10;
+            di += 1;
+            if dval == 0 { break; }
+        }
+        for i in (0..di).rev() {
+            crate::drivers::serial::emergency_write_byte(dbuf[i]);
+        }
+        crate::drivers::serial::emergency_write_byte(b'\r');
+        crate::drivers::serial::emergency_write_byte(b'\n');
+    }
+    loop {
+        crate::arch::hal::disable_interrupts();
+        crate::arch::hal::halt();
+    }
+}
+
 impl<'a, T> Deref for SpinlockGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &T {
@@ -274,14 +320,7 @@ impl<'a, T> Deref for SpinlockGuard<'a, T> {
         let addr = ptr as usize;
         let align = core::mem::align_of::<T>();
         if addr % align != 0 {
-            crate::serial_verbose_println!(
-                "BUG: Spinlock Deref misaligned ptr={:#x} align={} lock={:#x}",
-                addr, align, self.lock as *const _ as usize,
-            );
-            loop {
-                crate::arch::hal::disable_interrupts();
-                crate::arch::hal::halt();
-            }
+            spinlock_misalign_panic(addr, align);
         }
         unsafe { &*ptr }
     }
@@ -293,14 +332,7 @@ impl<'a, T> DerefMut for SpinlockGuard<'a, T> {
         let addr = ptr as usize;
         let align = core::mem::align_of::<T>();
         if addr % align != 0 {
-            crate::serial_verbose_println!(
-                "BUG: Spinlock DerefMut misaligned ptr={:#x} align={} lock={:#x}",
-                addr, align, self.lock as *const _ as usize,
-            );
-            loop {
-                crate::arch::hal::disable_interrupts();
-                crate::arch::hal::halt();
-            }
+            spinlock_misalign_panic(addr, align);
         }
         unsafe { &mut *ptr }
     }

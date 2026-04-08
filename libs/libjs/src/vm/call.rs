@@ -5,7 +5,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use super::{CallFrame, Vm};
+use super::{CallFrame, LocalSlot, Vm};
 use crate::value::*;
 
 impl Vm {
@@ -168,13 +168,10 @@ impl Vm {
                         }
                         FnKind::Bytecode(chunk) => {
                             let captured_upvalues = func_rc.borrow().upvalues.clone();
-                            let local_count = chunk.local_count as usize;
-                            let mut locals: Vec<Rc<RefCell<JsValue>>> = (0..local_count)
-                                .map(|_| Rc::new(RefCell::new(JsValue::Undefined)))
-                                .collect();
+                            let mut locals = Vm::make_locals(&chunk);
                             for (i, arg) in args.iter().enumerate() {
-                                if i < local_count {
-                                    *locals[i].borrow_mut() = arg.clone();
+                                if i < locals.len() {
+                                    locals[i].set(arg.clone());
                                 }
                             }
                             let ctor_ref = JsValue::Function(func_rc.clone());
@@ -300,13 +297,10 @@ impl Vm {
                         }
                     }
                     FnKind::Bytecode(chunk) => {
-                        let local_count = chunk.local_count as usize;
-                        let mut locals: Vec<Rc<RefCell<JsValue>>> = (0..local_count)
-                            .map(|_| Rc::new(RefCell::new(JsValue::Undefined)))
-                            .collect();
+                        let mut locals = Vm::make_locals(&chunk);
                         for (i, arg) in args.iter().enumerate() {
-                            if i < local_count {
-                                *locals[i].borrow_mut() = arg.clone();
+                            if i < locals.len() {
+                                locals[i].set(arg.clone());
                             }
                         }
 
@@ -631,13 +625,10 @@ impl Vm {
                         }
                     }
                     FnKind::Bytecode(chunk) => {
-                        let local_count = chunk.local_count as usize;
-                        let mut locals: Vec<Rc<RefCell<JsValue>>> = (0..local_count)
-                            .map(|_| Rc::new(RefCell::new(JsValue::Undefined)))
-                            .collect();
+                        let mut locals = Vm::make_locals(&chunk);
                         for (i, arg) in args.iter().enumerate() {
-                            if i < local_count {
-                                *locals[i].borrow_mut() = arg.clone();
+                            if i < locals.len() {
+                                locals[i].set(arg.clone());
                             }
                         }
                         let frame = CallFrame {

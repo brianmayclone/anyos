@@ -303,6 +303,11 @@ pub struct Chunk {
     pub is_arrow: bool,
     /// True if this is an async function.
     pub is_async: bool,
+    /// Per-local-slot flag: true if this local is captured by an inner closure.
+    /// Slots marked `true` must be stored as `Rc<RefCell<JsValue>>` so that
+    /// closures can share the mutable cell.  Non-captured locals are stored
+    /// as plain `JsValue` (no heap allocation, no borrow overhead).
+    pub captured_locals: Vec<bool>,
 }
 
 impl Chunk {
@@ -318,6 +323,7 @@ impl Chunk {
             is_generator: false,
             is_arrow: false,
             is_async: false,
+            captured_locals: Vec::new(),
         }
     }
 

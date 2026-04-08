@@ -149,7 +149,16 @@ pub fn enter_panic_mode() {
 // ── Direct UART I/O helpers ────────────────────────────────────────────────
 
 /// Write one byte directly to the UART (blocking, bypasses all locks/buffers).
-/// Used for emergency output in deadlock detection and panic.
+/// Used for emergency output in deadlock detection, panic, and spinlock diagnostics.
+///
+/// # Safety
+/// This writes directly to hardware without any lock. Only use when locks
+/// cannot be safely acquired (e.g. inside a held spinlock guard, deadlock recovery).
+#[inline]
+pub unsafe fn emergency_write_byte(byte: u8) {
+    uart_direct_write_byte(byte);
+}
+
 #[inline]
 unsafe fn uart_direct_write_byte(byte: u8) {
     #[cfg(target_arch = "x86_64")]

@@ -713,16 +713,18 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
     let len = name.len().min(31);
     name_buf[..len].copy_from_slice(&name.as_bytes()[..len]);
 
-    let mut dlls = LOADED_DLLS.lock();
-    dlls.push(LoadedDll {
-        name: name_buf,
-        base_vaddr: actual_base,
-        ro_pages,
-        data_template_pages,
-        data_page_count,
-        bss_page_count,
-        total_pages,
-    });
+    {
+        let mut dlls = LOADED_DLLS.lock();
+        dlls.push(LoadedDll {
+            name: name_buf,
+            base_vaddr: actual_base,
+            ro_pages,
+            data_template_pages,
+            data_page_count,
+            bss_page_count,
+            total_pages,
+        });
+    }
 
     if load_bias != 0 {
         crate::serial_verbose_println!(
