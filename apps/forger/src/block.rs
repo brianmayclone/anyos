@@ -81,6 +81,13 @@ pub fn is_light_source(id: u8) -> bool {
     id == TORCH
 }
 
+pub fn translucency(id: u8) -> f32 {
+    match id {
+        LEAVES => 0.65,
+        _ => 0.0,
+    }
+}
+
 pub fn is_collectible(id: u8) -> bool {
     !matches!(id, AIR | WATER | BEDROCK)
 }

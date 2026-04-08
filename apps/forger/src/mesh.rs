@@ -5,7 +5,7 @@ use crate::block;
 use crate::textures::{self, Face};
 use crate::world::World;
 
-pub const FLOATS_PER_VERTEX: usize = 6;
+pub const FLOATS_PER_VERTEX: usize = 10;
 
 const FACE_DIRS: [(i32, i32, i32); 6] = [
     (0, 1, 0),
@@ -16,7 +16,17 @@ const FACE_DIRS: [(i32, i32, i32); 6] = [
     (0, 0, -1),
 ];
 
-const FACE_LIGHT: [f32; 6] = [1.0, 0.5, 0.8, 0.8, 0.7, 0.7];
+const FACE_NORMALS: [[f32; 3]; 6] = [
+    [0.0, 1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, -1.0],
+];
+
+// Kept as a light occlusion / artistic floor, not as the main sun term.
+const FACE_LIGHT: [f32; 6] = [1.0, 0.65, 0.95, 0.95, 0.92, 0.92];
 
 pub struct ChunkMesh {
     pub vertices: Vec<f32>,
@@ -43,6 +53,7 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
                 if id == block::AIR {
                     continue;
                 }
+                let translucency = block::translucency(id);
 
                 for face in 0..6usize {
                     let (dx, dy, dz) = FACE_DIRS[face];
@@ -73,6 +84,7 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
                     let (u0, v0, u1, v1) = textures::block_uv(tex_id);
 
                     let positions = face_vertices(face, wx as f32, wy as f32, wz as f32);
+                    let normal = FACE_NORMALS[face];
                     let uvs = [
                         (u0, v0),
                         (u1, v0),
@@ -90,6 +102,10 @@ pub fn build_chunk_mesh(world: &World, cx: i32, cz: i32) -> ChunkMesh {
                         vertices.push(uvs[i].0);
                         vertices.push(uvs[i].1);
                         vertices.push(light);
+                        vertices.push(normal[0]);
+                        vertices.push(normal[1]);
+                        vertices.push(normal[2]);
+                        vertices.push(translucency);
                     }
                     vertex_count += 6;
                 }

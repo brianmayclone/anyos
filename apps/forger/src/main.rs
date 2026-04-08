@@ -140,6 +140,12 @@ fn main() {
     fps_label.set_font_size(14);
     window.add(&fps_label);
 
+    let sun_debug_label = libanyui_client::Label::new("Zeit --:-- | Sonne --");
+    sun_debug_label.set_position(500, 4);
+    sun_debug_label.set_text_color(0xFFFFFFFF);
+    sun_debug_label.set_font_size(13);
+    window.add(&sun_debug_label);
+
     // Store state with a dummy player first so world_query can access STATE.world
     unsafe {
         STATE = Some(GameState {
@@ -160,6 +166,7 @@ fn main() {
             fps_last_ms: anyos_std::sys::uptime_ms(),
             fps_display: 0,
             fps_label,
+            sun_debug_label,
             upscale_buffer: vec![0u32; (canvas_w * canvas_h) as usize],
             last_mouse_x: 400,
             last_mouse_y: 300,

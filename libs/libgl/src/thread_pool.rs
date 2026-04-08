@@ -55,6 +55,15 @@ pub struct ScreenTri {
     pub s2: [f32; 3],
 }
 
+/// Reference to one triangle together with the sub-batch/render state it uses.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct BandTriRef {
+    tri_idx: u32,
+    sb_idx: u32,
+    depth_key: f32,
+}
+
 /// Per-draw-call render state + triangle range.
 #[repr(C)]
 struct SubBatch {
@@ -127,6 +136,11 @@ struct ThreadPool {
     // Sub-batch list (filled during draw calls, processed at flush)
     sub_batches: [SubBatch; MAX_SUB_BATCHES],
     sub_batch_count: usize,
+
+    // Coarse screen-space binning by worker band. Each worker only walks the
+    // triangles that overlap its y-range instead of re-checking the whole frame.
+    band_refs: [[BandTriRef; MAX_TRIS]; MAX_WORKERS],
+    band_counts: [usize; MAX_WORKERS],
 }
 
 // Worker thread IDs and stacks
@@ -173,6 +187,8 @@ fn init_pool(n: usize, fb_h: u32) {
             tri_count: 0,
             sub_batches: core::mem::zeroed(),
             sub_batch_count: 0,
+            band_refs: core::mem::zeroed(),
+            band_counts: [0; MAX_WORKERS],
         });
         pool.num_workers = n;
 
@@ -248,25 +264,20 @@ fn worker_main(id: usize) {
             idle_spins = idle_spins.saturating_add(1);
         }
 
-        // Process all sub-batches for our y-band
+        // Process only the triangles that were pre-binned for our y-band.
         let pool = unsafe { POOL.as_ref().unwrap() };
         let min_y = ctl.band_min_y as i32;
         let max_y = ctl.band_max_y as i32 - 1; // inclusive
-
-        for sb_idx in 0..pool.sub_batch_count {
+        let refs = &pool.band_refs[id][..pool.band_counts[id]];
+        for tri_ref in refs {
+            let sb_idx = tri_ref.sb_idx as usize;
             let sb = &pool.sub_batches[sb_idx];
-            let start = sb.tri_start as usize;
-            let end = sb.tri_end as usize;
-            if start >= end { continue; }
-
-            CURRENT_SUB_BATCH[id].store(sb_idx as u32, Ordering::Relaxed);
-            let tris = &pool.tri_buf[start..end];
-            for tri in tris {
-                if sb.use_fast_path {
-                    rasterize_tri_fast_band(pool, sb, tri, min_y, max_y);
-                } else {
-                    rasterize_tri_band(pool, sb, tri, min_y, max_y, id);
-                }
+            let tri = &pool.tri_buf[tri_ref.tri_idx as usize];
+            CURRENT_SUB_BATCH[id].store(tri_ref.sb_idx, Ordering::Relaxed);
+            if sb.use_fast_path {
+                rasterize_tri_fast_band(pool, sb, tri, min_y, max_y);
+            } else {
+                rasterize_tri_band(pool, sb, tri, min_y, max_y, id);
             }
         }
         CURRENT_SUB_BATCH[id].store(u32::MAX, Ordering::Relaxed);
@@ -430,6 +441,29 @@ pub fn end_sub_batch(
     }
 
     pool.sub_batch_count = idx + 1;
+
+    for tri_idx in tri_start as usize..tri_end as usize {
+        let tri = &pool.tri_buf[tri_idx];
+        let tri_min_y = min3(tri.s0[1], tri.s1[1], tri.s2[1]).max(0.0) as i32;
+        let tri_max_y = crate::rasterizer::math::ceil(max3(tri.s0[1], tri.s1[1], tri.s2[1])) as i32;
+        for worker_idx in 0..pool.num_workers {
+            let band_min_y = pool.workers[worker_idx].band_min_y as i32;
+            let band_max_y = pool.workers[worker_idx].band_max_y as i32 - 1;
+            if tri_max_y < band_min_y || tri_min_y > band_max_y {
+                continue;
+            }
+            let band_count = pool.band_counts[worker_idx];
+            if band_count >= MAX_TRIS {
+                continue;
+            }
+            pool.band_refs[worker_idx][band_count] = BandTriRef {
+                tri_idx: tri_idx as u32,
+                sb_idx: idx as u32,
+                depth_key: tri.s0[2].min(tri.s1[2]).min(tri.s2[2]),
+            };
+            pool.band_counts[worker_idx] = band_count + 1;
+        }
+    }
 }
 
 /// Flush all accumulated sub-batches: wake workers, wait for completion, reset.
@@ -469,6 +503,35 @@ pub fn flush_frame(ctx: &mut crate::state::GlContext) {
             pool.sub_batch_count, pool.tri_count, n);
     }
 
+    for worker_idx in 0..n {
+        let count = pool.band_counts[worker_idx];
+        let refs = &mut pool.band_refs[worker_idx][..count];
+
+        // Keep global sub-batch order intact. Reordering across sub-batches is
+        // not generally safe because state changes (sky pass, blending,
+        // depth-write off, overlays) are order-dependent. We only sort within
+        // contiguous runs belonging to the same opaque depth-writing sub-batch.
+        let mut start = 0usize;
+        while start < refs.len() {
+            let sb_idx = refs[start].sb_idx as usize;
+            let mut end = start + 1;
+            while end < refs.len() && refs[end].sb_idx == refs[start].sb_idx {
+                end += 1;
+            }
+
+            let sb = &pool.sub_batches[sb_idx];
+            if sb.depth_test && sb.depth_mask && !sb.blend_enabled {
+                refs[start..end].sort_unstable_by(|a, b| {
+                    a.depth_key
+                        .partial_cmp(&b.depth_key)
+                        .unwrap_or(core::cmp::Ordering::Equal)
+                });
+            }
+
+            start = end;
+        }
+    }
+
     // Signal all workers to start
     for i in 0..n {
         pool.workers[i].state.store(WORKER_WORK, Ordering::Release);
@@ -493,6 +556,9 @@ pub fn flush_frame(ctx: &mut crate::state::GlContext) {
     // Reset for next frame
     pool.tri_count = 0;
     pool.sub_batch_count = 0;
+    for i in 0..MAX_WORKERS {
+        pool.band_counts[i] = 0;
+    }
 }
 
 /// Get mutable ref to the triangle buffer for direct filling.

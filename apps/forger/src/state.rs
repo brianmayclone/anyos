@@ -31,6 +31,7 @@ pub struct GameState {
     pub fps_last_ms: u32,
     pub fps_display: u32,
     pub fps_label: libanyui_client::Label,
+    pub sun_debug_label: libanyui_client::Label,
     pub upscale_buffer: Vec<u32>,
     pub last_mouse_x: i32,
     pub last_mouse_y: i32,

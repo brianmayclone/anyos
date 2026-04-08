@@ -142,6 +142,20 @@ pub fn game_tick() {
         s.fps_display, ex, ey, ez, mode, s.render_divisor
     );
     s.fps_label.set_text(&debug_text);
+
+    let sun = crate::render::compute_sun_debug(now);
+    let sun_label_x = (s.canvas_w as i32 - 300).max(180);
+    s.sun_debug_label.set_position(sun_label_x, 4);
+    let sun_text = alloc::format!(
+        "Zeit {:02}:{:02} | Elev {:.1} | Dir {:.2} {:.2} {:.2}",
+        sun.hour,
+        sun.minute,
+        sun.elevation_deg,
+        sun.dir[0],
+        sun.dir[1],
+        sun.dir[2]
+    );
+    s.sun_debug_label.set_text(&sun_text);
 }
 
 pub fn sync_selected_block(inventory: &Inventory, player: &mut player::Player) {
