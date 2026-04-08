@@ -464,6 +464,20 @@ pub fn tlb_shootdown_full() {
     tlb_shootdown(u64::MAX);
 }
 
+/// Register the reschedule IPI handler (IRQ 22 = INT 54).
+/// Must be called after IDT is initialized.
+pub fn register_resched_ipi() {
+    crate::arch::x86::irq::register_irq(22, resched_ipi_handler);
+}
+
+/// IRQ 22 handler: force an immediate scheduler pass on this CPU.
+///
+/// This is used to wake idle remote CPUs promptly when new work is queued for
+/// their run queue, instead of waiting for the next local timer tick.
+fn resched_ipi_handler(_irq: u8) {
+    crate::task::scheduler::schedule_tick();
+}
+
 /// Register the halt IPI handler (IRQ 21 = INT 53).
 /// Must be called after IDT is initialized.
 pub fn register_halt_ipi() {
@@ -497,6 +511,23 @@ pub fn halt_other_cpus() {
         let lapic_id = unsafe { CPU_DATA[i].lapic_id };
         crate::arch::x86::apic::send_ipi(lapic_id, crate::arch::x86::apic::VECTOR_IPI_HALT);
     }
+}
+
+/// Request a remote CPU to run the scheduler immediately.
+///
+/// Used when a thread becomes runnable on another CPU and we don't want that
+/// CPU to sleep in `hlt` until its next local timer interrupt.
+pub fn resched_cpu(cpu_id: usize) {
+    let count = cpu_count() as usize;
+    if cpu_id >= count {
+        return;
+    }
+    let my_cpu = current_cpu_id() as usize;
+    if cpu_id == my_cpu {
+        return;
+    }
+    let lapic_id = unsafe { CPU_DATA[cpu_id].lapic_id };
+    crate::arch::x86::apic::send_ipi(lapic_id, crate::arch::x86::apic::VECTOR_IPI_RESCHED);
 }
 
 fn delay_ms(ms: u32) {

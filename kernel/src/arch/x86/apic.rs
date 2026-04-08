@@ -45,6 +45,8 @@ pub const VECTOR_SPURIOUS: u8 = 255;
 pub const VECTOR_IPI_HALT: u8 = 53;
 /// IPI vector used for TLB shootdown across cores (INT 52 = IRQ 20).
 pub const VECTOR_IPI_TLB: u8  = 52;
+/// IPI vector used to request an immediate reschedule on a remote core (INT 54 = IRQ 22).
+pub const VECTOR_IPI_RESCHED: u8 = 54;
 
 /// Virtual address where LAPIC MMIO is mapped
 const LAPIC_VIRT_BASE: u64 = 0xFFFF_FFFF_D010_0000;

@@ -970,11 +970,23 @@ fn flush_relayout_for_tab(tab_idx: usize) {
         return;
     }
     st.render_dirty[tab_idx] = RenderWork::None;
+    let start_ms = anyos_std::sys::uptime_ms();
     match work {
         RenderWork::Layout => st.tabs[tab_idx].webview.relayout(),
         RenderWork::Paint => st.tabs[tab_idx].webview.repaint_from_cached_layout(),
         RenderWork::None => {}
     }
+    let elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(start_ms);
+    crate::surf_log!(
+        "[surf] render flush done: tab={} work={} elapsed={}ms",
+        tab_idx,
+        match work {
+            RenderWork::Layout => "layout",
+            RenderWork::Paint => "paint",
+            RenderWork::None => "none",
+        },
+        elapsed_ms
+    );
 }
 
 fn flush_pending_render_before_scripts(tab_index: usize) {
@@ -1379,7 +1391,15 @@ fn handle_css_done(
     }
 
     if st.tabs[tab_index].load_state.pending_stylesheet_count == 0 {
-        request_render(tab_index, RenderWork::Layout, RenderSchedule::Immediate);
+        let schedule = if st.tabs[tab_index].load_state.pending_script_count == 0 {
+            RenderSchedule::Immediate
+        } else {
+            // Avoid blocking the UI thread with a huge synchronous relayout
+            // while blocking/defer scripts are still in flight. We'll flush
+            // exactly once right before script execution.
+            RenderSchedule::Debounced
+        };
+        request_render(tab_index, RenderWork::Layout, schedule);
     }
 
     if st.tabs[tab_index].load_state.ready_for_script_execution() {

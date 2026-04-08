@@ -17,9 +17,16 @@ pub fn set_thread_priority(tid: u32, priority: u8) {
 /// Wake a blocked thread by TID.
 pub fn wake_thread(tid: u32) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAKE_THREAD);
+    let kick_cpu = {
     let mut guard = SCHEDULER.lock();
-    if let Some(sched) = guard.as_mut() {
-        sched.wake_thread_inner(tid);
+        if let Some(sched) = guard.as_mut() {
+            sched.wake_thread_inner(tid)
+        } else {
+            None
+        }
+    };
+    if let Some(cpu) = kick_cpu {
+        crate::arch::x86::smp::resched_cpu(cpu);
     }
 }
 
@@ -32,8 +39,14 @@ pub fn wake_thread(tid: u32) {
 /// Safe to call from IRQ context — never blocks.
 pub fn try_wake_thread(tid: u32) -> bool {
     if let Some(mut guard) = SCHEDULER.try_lock() {
-        if let Some(sched) = guard.as_mut() {
-            sched.wake_thread_inner(tid);
+        let kick_cpu = if let Some(sched) = guard.as_mut() {
+            sched.wake_thread_inner(tid)
+        } else {
+            None
+        };
+        drop(guard);
+        if let Some(cpu) = kick_cpu {
+            crate::arch::x86::smp::resched_cpu(cpu);
         }
         true
     } else {

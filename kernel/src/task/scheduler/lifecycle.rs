@@ -6,7 +6,7 @@ use super::{get_cpu_id, SCHEDULER, schedule, close_all_fds_for_thread,
             PER_CPU_HAS_THREAD, PER_CPU_IS_USER, PER_CPU_IDLE_STACK_TOP,
             PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP, SCRATCH_CTX,
             clear_per_cpu_name, update_per_cpu_name};
-use super::deferred::DEFERRED_PD_DESTROY;
+use super::deferred::{DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP, DeferredThreadCleanup};
 use crate::memory::address::PhysAddr;
 use crate::task::context::{context_switch, CpuContext};
 use crate::task::thread::ThreadState;
@@ -163,6 +163,45 @@ fn cleanup_killed_children(children: &[u32]) {
         crate::net::tcp::cleanup_for_thread(child_tid);
         // Clean up audio mixer channels
         crate::drivers::audio::mixer::close_channels_for_pid(child_tid);
+    }
+}
+
+fn defer_fault_exit_cleanup(current_tid: u32, current_code: u32, child_tids: &[u32]) {
+    let mut queue = match DEFERRED_THREAD_CLEANUP.try_lock() {
+        Some(q) => q,
+        None => {
+            crate::serial_verbose_println!(
+                "  WARN: fault-exit skipped deferred cleanup enqueue for tid={} (queue lock busy)",
+                current_tid
+            );
+            return;
+        }
+    };
+    for &child_tid in child_tids {
+        queue.push(DeferredThreadCleanup {
+            tid: child_tid,
+            exit_code: 0,
+            emit_exit_event: false,
+        });
+    }
+    if current_tid != 0 {
+        queue.push(DeferredThreadCleanup {
+            tid: current_tid,
+            exit_code: current_code,
+            emit_exit_event: true,
+        });
+    }
+}
+
+fn defer_fault_pd_destroy(pd: PhysAddr, tid: u32) {
+    if let Some(mut queue) = DEFERRED_PD_DESTROY.try_lock() {
+        queue.push(pd, tid);
+    } else {
+        crate::serial_verbose_println!(
+            "  WARN: fault-exit skipped deferred PD destroy for tid={} pd={:#x} (queue lock busy)",
+            tid,
+            pd.as_u64()
+        );
     }
 }
 
@@ -339,16 +378,12 @@ pub fn try_exit_current(code: u32) -> bool {
         }
     } // Lock released
 
-    cleanup_killed_children(&killed_children);
-
     if let Some(pd) = pd_to_destroy {
         let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
         crate::arch::hal::switch_page_table(kernel_cr3);
-        DEFERRED_PD_DESTROY.lock().push(pd, 0);
+        defer_fault_pd_destroy(pd, tid);
     }
-    crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, code, 0, 0,
-    ));
+    defer_fault_exit_cleanup(tid, code, &killed_children);
     enter_idle_recovery(my_cpu, idle_stack_top, idle_ctx);
 }
 
@@ -459,17 +494,12 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
         sched.per_cpu[cpu_id].current_idx = None;
     });
 
-    if tid != 0 {
-        crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-            crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, signal, 0, 0,
-        ));
-    }
-
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
     if let Some(pd) = pd_to_destroy {
-        DEFERRED_PD_DESTROY.lock().push(pd, tid);
+        defer_fault_pd_destroy(pd, tid);
     }
+    defer_fault_exit_cleanup(tid, signal, &[]);
     enter_idle_recovery(cpu_id, idle_stack_top, idle_ctx);
 }
 

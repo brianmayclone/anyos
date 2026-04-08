@@ -1,4 +1,4 @@
-//! Deferred page-directory destruction queue.
+//! Deferred fault/teardown queues.
 //!
 //! `kill_thread` must not call `destroy_user_page_directory` while holding
 //! the scheduler lock — page-table walks and hundreds of `free_frame` calls
@@ -6,6 +6,7 @@
 
 use crate::memory::address::PhysAddr;
 use crate::sync::spinlock::Spinlock;
+use crate::fs::fd_table::FdKind;
 
 /// Deferred page-directory destruction queue.
 ///
@@ -53,3 +54,76 @@ impl DeferredPdQueue {
 }
 
 pub(super) static DEFERRED_PD_DESTROY: Spinlock<DeferredPdQueue> = Spinlock::new(DeferredPdQueue::new());
+
+/// Deferred thread resource cleanup requested by fault-exit paths.
+///
+/// Fault recovery must not synchronously close files, tear down TCP state, or
+/// emit system-bus events while still unwinding out of a broken exception
+/// context. Those operations take additional global locks and were a recurring
+/// source of secondary deadlocks/crashes after the original userspace fault.
+#[derive(Clone, Copy)]
+pub(super) struct DeferredThreadCleanup {
+    pub tid: u32,
+    pub exit_code: u32,
+    pub emit_exit_event: bool,
+}
+
+pub(super) struct DeferredThreadCleanupQueue {
+    entries: [Option<DeferredThreadCleanup>; 128],
+    next_overwrite: usize,
+}
+
+impl DeferredThreadCleanupQueue {
+    pub(super) const fn new() -> Self {
+        Self { entries: [None; 128], next_overwrite: 0 }
+    }
+
+    pub(super) fn push(&mut self, entry: DeferredThreadCleanup) {
+        for slot in self.entries.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(entry);
+                return;
+            }
+        }
+        crate::serial_verbose_println!(
+            "WARNING: deferred thread cleanup queue full, overwriting oldest entry"
+        );
+        self.entries[self.next_overwrite] = Some(entry);
+        self.next_overwrite = (self.next_overwrite + 1) % self.entries.len();
+    }
+
+    pub(super) fn drain(&mut self) -> [Option<DeferredThreadCleanup>; 128] {
+        let result = self.entries;
+        self.entries = [None; 128];
+        self.next_overwrite = 0;
+        result
+    }
+}
+
+pub(super) static DEFERRED_THREAD_CLEANUP: Spinlock<DeferredThreadCleanupQueue> =
+    Spinlock::new(DeferredThreadCleanupQueue::new());
+
+pub(super) fn process_deferred_thread_cleanup(entry: DeferredThreadCleanup) {
+    let closed = super::close_all_fds_for_thread(entry.tid);
+    for kind in closed.iter() {
+        match kind {
+            FdKind::File { global_id } => crate::fs::vfs::decref(*global_id),
+            FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::decref_read(*pipe_id),
+            FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::decref_write(*pipe_id),
+            FdKind::Tty | FdKind::None => {}
+        }
+    }
+
+    crate::net::tcp::cleanup_for_thread(entry.tid);
+    crate::drivers::audio::mixer::close_channels_for_pid(entry.tid);
+
+    if entry.emit_exit_event {
+        crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
+            crate::ipc::event_bus::EVT_PROCESS_EXITED,
+            entry.tid,
+            entry.exit_code,
+            0,
+            0,
+        ));
+    }
+}

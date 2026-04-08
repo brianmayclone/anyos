@@ -10,11 +10,12 @@
 //!
 //! 1. `SCHEDULER`           — global scheduler state, thread list, run queues
 //! 2. `DEFERRED_PD_DESTROY` — deferred page directory destruction queue
-//! 3. `SHARED_REGIONS`      — IPC shared memory regions (ipc/shared_memory.rs)
-//! 4. `VMA_REGISTRY`        — per-process virtual memory area tracking
-//! 5. `VFS`                 — virtual filesystem layer
-//! 6. `ALLOCATOR`           — physical frame allocator
-//! 7. `HEAP_ALLOCATOR`      — kernel heap (acquired implicitly by alloc/dealloc)
+//! 3. `DEFERRED_THREAD_CLEANUP` — deferred fault-exit resource cleanup
+//! 4. `SHARED_REGIONS`      — IPC shared memory regions (ipc/shared_memory.rs)
+//! 5. `VMA_REGISTRY`        — per-process virtual memory area tracking
+//! 6. `VFS`                 — virtual filesystem layer
+//! 7. `ALLOCATOR`           — physical frame allocator
+//! 8. `HEAP_ALLOCATOR`      — kernel heap (acquired implicitly by alloc/dealloc)
 //!
 //! **Rules:**
 //! - NEVER allocate (Box, Vec, etc.) while holding SCHEDULER — this acquires
@@ -65,7 +66,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use run_queue::RunQueue;
-use deferred::DEFERRED_PD_DESTROY;
+use deferred::{DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP, process_deferred_thread_cleanup};
 
 /// Number of discrete priority levels (Mach-style, like macOS).
 const NUM_PRIORITIES: usize = 128;
@@ -646,10 +647,12 @@ impl Scheduler {
         if let Some(tid) = self.pick_eligible(cpu_id) {
             return Some(tid);
         }
-        // 2. Work stealing: find the busiest CPU and steal only when the
-        //    imbalance is large enough to justify cache-line invalidation.
-        //    With few threads and many CPUs, overeager stealing causes
-        //    constant migration of heavy threads (compositor).
+        // 2. Work stealing: find the busiest CPU.
+        //    If this CPU is idle and another CPU has queued work, steal
+        //    immediately instead of waiting for a large imbalance. The old
+        //    threshold (3 queued threads) left CPUs asleep while one core was
+        //    overloaded, which looked like an artificial 25% ceiling on 4-core
+        //    systems for workloads with bursty wakeups.
         let n = self.num_cpus();
         let mut max_count = 0;
         let mut victim = cpu_id;
@@ -662,10 +665,10 @@ impl Scheduler {
                 }
             }
         }
-        // Only steal when the victim has 3+ queued threads — this keeps 2 for
-        // the victim (1 running + 1 queued) before we take one.  Prevents
-        // thrashing when 2 threads share a CPU via affinity.
-        if max_count >= 3 {
+        // Steal as soon as another CPU has any queued work. The victim still
+        // keeps its currently running thread; we only consume pending ready
+        // work that would otherwise wait for future timer ticks or rebalancing.
+        if max_count >= 1 {
             self.pick_eligible(victim)
         } else {
             None
@@ -705,16 +708,22 @@ impl Scheduler {
     }
 
     /// Wake a blocked thread, enqueuing on its stable `affinity_cpu`.
-    fn wake_thread_inner(&mut self, tid: u32) {
+    ///
+    /// Returns the target CPU if a remote reschedule IPI should be sent after
+    /// releasing the scheduler lock.
+    fn wake_thread_inner(&mut self, tid: u32) -> Option<usize> {
         if let Some(idx) = self.find_idx(tid) {
             if self.threads[idx].state == ThreadState::Blocked {
                 self.threads[idx].state = ThreadState::Ready;
                 let cpu = self.threads[idx].affinity_cpu;
                 let n = self.num_cpus();
                 let target = if cpu < n { cpu } else { 0 };
+                let needs_kick = self.per_cpu[target].run_queue.is_empty();
                 self.per_cpu[target].run_queue.enqueue(tid, self.threads[idx].priority);
+                return if needs_kick { Some(target) } else { None };
             }
         }
+        None
     }
 }
 
@@ -842,6 +851,11 @@ fn schedule_inner(from_timer: bool) {
             // tid == 0: cleanup_process already ran in kill_thread — just destroy.
             crate::memory::virtual_mem::destroy_user_page_directory(pd);
             crate::memory::vma::destroy_process(pd);
+        }
+
+        let deferred_cleanup = DEFERRED_THREAD_CLEANUP.lock().drain();
+        for entry in deferred_cleanup.iter().flatten() {
+            process_deferred_thread_cleanup(*entry);
         }
     }
 

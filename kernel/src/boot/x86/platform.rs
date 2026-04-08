@@ -56,6 +56,7 @@ pub(super) fn init_platform(boot_info: &BootInfo) -> Option<arch::x86::acpi::Acp
         arch::x86::smp::init_bsp();
         arch::x86::smp::register_halt_ipi();
         arch::x86::smp::register_tlb_shootdown_ipi();
+        arch::x86::smp::register_resched_ipi();
         arch::x86::syscall_msr::init_bsp();
 
         for seg in &info.mcfg_segments {
