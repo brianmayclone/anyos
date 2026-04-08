@@ -27,6 +27,7 @@ pub mod framebuffer;
 pub mod draw;
 pub mod compiler;
 pub mod rasterizer;
+pub mod thread_pool;
 pub mod simd;
 pub mod fxaa;
 pub mod svga3d;
@@ -78,6 +79,14 @@ fn ctx() -> &'static mut GlContext {
     unsafe {
         CTX.as_mut().expect("gl_init not called")
     }
+}
+
+fn flush_pending_sw_draws() {
+    if unsafe { USE_HW_BACKEND } {
+        return;
+    }
+    let c = ctx();
+    thread_pool::flush_frame(c);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -136,6 +145,8 @@ pub extern "C" fn gl_init(width: u32, height: u32) {
 /// Shut down libgl — unloads hardware driver and frees resources.
 #[no_mangle]
 pub extern "C" fn gl_deinit() {
+    flush_pending_sw_draws();
+    thread_pool::shutdown_pool();
     drv_loader::deinit();
     unsafe { USE_HW_BACKEND = false; }
     serial_println!("[libgl] gl_deinit done");
@@ -144,6 +155,7 @@ pub extern "C" fn gl_deinit() {
 /// Resize the GL framebuffer without destroying shaders, buffers, or textures.
 #[no_mangle]
 pub extern "C" fn gl_resize(width: u32, height: u32) {
+    flush_pending_sw_draws();
     let c = ctx();
     c.default_fb.resize(width, height);
 
@@ -163,6 +175,7 @@ pub extern "C" fn gl_resize(width: u32, height: u32) {
 /// When using the software rasterizer, runs FXAA and returns the buffer pointer.
 #[no_mangle]
 pub extern "C" fn gl_swap_buffers() -> *const u32 {
+    flush_pending_sw_draws();
     if unsafe { USE_HW_BACKEND } {
         if let Some(drv) = drv_loader::drv() {
             (drv.drv_flush)();
@@ -219,6 +232,7 @@ pub extern "C" fn gl_swap_buffers() -> *const u32 {
 /// Get a pointer to the backbuffer (same as swap_buffers for single-buffered SW).
 #[no_mangle]
 pub extern "C" fn gl_get_backbuffer() -> *const u32 {
+    flush_pending_sw_draws();
     let c = ctx();
     c.default_fb.color.as_ptr()
 }
@@ -287,6 +301,7 @@ pub extern "C" fn gl_get_cursor_captured() -> u32 {
 /// Returns true if the copy was performed, false if not in fullscreen mode.
 #[no_mangle]
 pub extern "C" fn gl_swap_buffers_fullscreen() -> u32 {
+    flush_pending_sw_draws();
     let fb_ptr = unsafe { FULLSCREEN_FB_PTR };
     if fb_ptr.is_null() {
         return 0;
@@ -484,6 +499,7 @@ pub extern "C" fn glClearColor(red: GLclampf, green: GLclampf, blue: GLclampf, a
 /// Clear buffers.
 #[no_mangle]
 pub extern "C" fn glClear(mask: GLbitfield) {
+    flush_pending_sw_draws();
     let c = ctx();
 
     // Hardware clear via loaded driver
@@ -1122,6 +1138,7 @@ pub extern "C" fn glDeleteFramebuffers(n: GLsizei, framebuffers: *const GLuint) 
 /// Binding 0 restores the main color+depth render target.
 #[no_mangle]
 pub extern "C" fn glBindFramebuffer(_target: GLenum, framebuffer: GLuint) {
+    flush_pending_sw_draws();
     ctx().bound_framebuffer = framebuffer;
 }
 
@@ -1183,6 +1200,7 @@ pub extern "C" fn glReadPixels(
     format: GLenum, _type: GLenum, pixels: *mut GLvoid,
 ) {
     if pixels.is_null() { return; }
+    flush_pending_sw_draws();
     let c = ctx();
     let fb_w = c.default_fb.width as i32;
     let dst = pixels as *mut u8;
@@ -1220,11 +1238,15 @@ pub extern "C" fn glReadPixels(
 
 /// Flush pending operations (no-op for SW rasterizer).
 #[no_mangle]
-pub extern "C" fn glFlush() {}
+pub extern "C" fn glFlush() {
+    flush_pending_sw_draws();
+}
 
 /// Finish all pending operations (no-op for SW rasterizer).
 #[no_mangle]
-pub extern "C" fn glFinish() {}
+pub extern "C" fn glFinish() {
+    flush_pending_sw_draws();
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Anti-Aliasing
@@ -1244,6 +1266,7 @@ pub extern "C" fn gl_set_fxaa(enabled: u32) {
 /// 0 = software, non-zero = hardware (only if a .drv was loaded).
 #[no_mangle]
 pub extern "C" fn gl_set_hw_backend(enabled: u32) {
+    flush_pending_sw_draws();
     let want_hw = enabled != 0;
     let has_hw = drv_loader::is_loaded();
     unsafe { USE_HW_BACKEND = want_hw && has_hw; }

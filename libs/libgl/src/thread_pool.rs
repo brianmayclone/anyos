@@ -12,6 +12,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use crate::syscall;
 use crate::rasterizer::ClipVertex;
 use crate::rasterizer::raster::ResolvedTexture;
+use crate::state::MAX_TEXTURE_UNITS;
 
 /// Maximum number of worker threads (hard cap).
 const MAX_WORKERS: usize = 7;
@@ -65,10 +66,11 @@ struct SubBatch {
 
     // General path shader data
     fs_ir_ptr: *const crate::compiler::ir::Program,
-    uniforms_ptr: *const [f32; 4],
+    uniforms: [[f32; 4]; crate::rasterizer::MAX_UNIFORM_SLOTS],
     uniforms_len: usize,
     num_varyings: usize,
     fs_jit: Option<crate::compiler::backend_jit::JitFn>,
+    bound_textures: [u32; MAX_TEXTURE_UNITS],
 }
 
 unsafe impl Send for SubBatch {}
@@ -100,6 +102,8 @@ struct ThreadPool {
     depth_ptr: *mut f32,
     fb_w: u32,
     fb_h: u32,
+    has_color: bool,
+    has_depth: bool,
 
     // Triangle buffer (filled during draw calls)
     tri_buf: [ScreenTri; MAX_TRIS],
@@ -113,6 +117,15 @@ struct ThreadPool {
 // Worker thread IDs and stacks
 static mut WORKER_TIDS: [u32; MAX_WORKERS] = [0; MAX_WORKERS];
 static mut WORKER_STACKS: [u64; MAX_WORKERS] = [0; MAX_WORKERS];
+static CURRENT_SUB_BATCH: [AtomicU32; MAX_WORKERS] = [
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+    AtomicU32::new(u32::MAX),
+];
 
 /// Initialize the thread pool with `n` workers.
 fn init_pool(n: usize, fb_h: u32) {
@@ -131,6 +144,8 @@ fn init_pool(n: usize, fb_h: u32) {
             depth_ptr: core::ptr::null_mut(),
             fb_w: 0,
             fb_h: 0,
+            has_color: false,
+            has_depth: false,
             tri_buf: core::mem::zeroed(),
             tri_count: 0,
             sub_batches: core::mem::zeroed(),
@@ -217,6 +232,7 @@ fn worker_main(id: usize) {
             let end = sb.tri_end as usize;
             if start >= end { continue; }
 
+            CURRENT_SUB_BATCH[id].store(sb_idx as u32, Ordering::Relaxed);
             let tris = &pool.tri_buf[start..end];
             for tri in tris {
                 if sb.use_fast_path {
@@ -226,6 +242,7 @@ fn worker_main(id: usize) {
                 }
             }
         }
+        CURRENT_SUB_BATCH[id].store(u32::MAX, Ordering::Relaxed);
 
         // Signal done
         ctl.state.store(WORKER_DONE, Ordering::Release);
@@ -240,9 +257,9 @@ pub fn pool_active() -> bool {
 /// Determine optimal worker count based on available CPU cores.
 fn optimal_worker_count() -> usize {
     let raw = syscall::cpu_count();
-    let cpus = if raw == 0 || raw > 64 { 8 } else { raw as usize };
+    let cpus = if raw == 0 || raw > 64 { 1 } else { raw as usize };
     crate::serial_println!("[libgl] thread_pool: raw cpu_count={}, effective={}", raw, cpus);
-    if cpus <= 1 { 1 } else { (cpus - 1).min(MAX_WORKERS) }
+    cpus.min(MAX_WORKERS)
 }
 
 /// Ensure pool is initialized for the given framebuffer height.
@@ -250,7 +267,7 @@ pub fn ensure_pool(fb_h: u32) {
     unsafe {
         if POOL.is_none() {
             let n = optimal_worker_count();
-            crate::serial_println!("[libgl] thread_pool: {} CPUs detected, spawning {} workers", syscall::cpu_count(), n);
+            crate::serial_println!("[libgl] thread_pool: spawning {} workers", n);
             if n > 0 {
                 init_pool(n, fb_h);
             }
@@ -306,6 +323,20 @@ pub fn append_tris(tris: &[ScreenTri]) -> usize {
     n
 }
 
+pub fn remaining_tri_capacity() -> usize {
+    unsafe { POOL.as_ref().map_or(0, |p| MAX_TRIS.saturating_sub(p.tri_count)) }
+}
+
+pub fn remaining_sub_batch_capacity() -> usize {
+    unsafe { POOL.as_ref().map_or(0, |p| MAX_SUB_BATCHES.saturating_sub(p.sub_batch_count)) }
+}
+
+pub fn has_pending_work() -> bool {
+    unsafe {
+        POOL.as_ref().map_or(false, |p| p.sub_batch_count > 0 && p.tri_count > 0)
+    }
+}
+
 /// Begin a sub-batch for the current draw call's render state.
 /// Call this BEFORE `append_tris`. Returns the tri_start index.
 pub fn begin_sub_batch() -> Option<u32> {
@@ -328,6 +359,7 @@ pub fn end_sub_batch(
     uniforms: &[[f32; 4]],
     num_varyings: usize,
     fs_jit: Option<crate::compiler::backend_jit::JitFn>,
+    bound_textures: &[u32; MAX_TEXTURE_UNITS],
 ) {
     let pool = unsafe { match POOL.as_mut() { Some(p) => p, None => return } };
     let tri_end = pool.tri_count as u32;
@@ -345,10 +377,17 @@ pub fn end_sub_batch(
     sb.blend_src = blend_src;
     sb.blend_dst = blend_dst;
     sb.fs_ir_ptr = fs_ir;
-    sb.uniforms_ptr = uniforms.as_ptr();
-    sb.uniforms_len = uniforms.len();
+    let uni_len = uniforms.len().min(crate::rasterizer::MAX_UNIFORM_SLOTS);
+    sb.uniforms_len = uni_len;
+    for i in 0..uni_len {
+        sb.uniforms[i] = uniforms[i];
+    }
+    for i in uni_len..crate::rasterizer::MAX_UNIFORM_SLOTS {
+        sb.uniforms[i] = [0.0; 4];
+    }
     sb.num_varyings = num_varyings;
     sb.fs_jit = fs_jit;
+    sb.bound_textures = *bound_textures;
 
     if let Some((tex, mr, mg, mb)) = fast {
         sb.use_fast_path = true;
@@ -377,11 +416,24 @@ pub fn flush_frame(ctx: &mut crate::state::GlContext) {
         return;
     }
 
+    let Some(target) = crate::framebuffer::current_target(ctx) else {
+        pool.tri_count = 0;
+        pool.sub_batch_count = 0;
+        return;
+    };
+
+    ensure_pool(target.height);
+
     // Set framebuffer pointers for this frame
-    pool.color_ptr = ctx.default_fb.color.as_mut_ptr();
-    pool.depth_ptr = ctx.default_fb.depth.as_mut_ptr();
-    pool.fb_w = ctx.default_fb.width;
-    pool.fb_h = ctx.default_fb.height;
+    pool.color_ptr = target.color_ptr;
+    pool.depth_ptr = target.depth_ptr;
+    pool.fb_w = target.width;
+    pool.fb_h = target.height;
+    pool.has_color = target.has_color;
+    pool.has_depth = target.has_depth;
+    unsafe {
+        crate::TEX_STORE_PTR = &ctx.textures as *const _;
+    }
 
     static mut FLUSH_DBG: u32 = 0;
     if unsafe { FLUSH_DBG } < 5 {
@@ -443,6 +495,51 @@ use crate::rasterizer::raster::{self, edge_fn, min3, max3, fast_rcp};
 use crate::rasterizer::fragment;
 use crate::rasterizer::MAX_VARYINGS;
 use crate::simd::Vec4;
+
+#[inline(always)]
+fn worker_tex_sample(worker_id: usize, unit: u32, u: f32, v: f32) -> [f32; 4] {
+    unsafe {
+        let pool = match POOL.as_ref() {
+            Some(pool) => pool,
+            None => return [1.0, 1.0, 1.0, 1.0],
+        };
+        let sb_idx = CURRENT_SUB_BATCH[worker_id].load(Ordering::Relaxed);
+        if sb_idx == u32::MAX {
+            return [1.0, 1.0, 1.0, 1.0];
+        }
+        let sb = &pool.sub_batches[sb_idx as usize];
+        let unit_idx = unit as usize;
+        if unit_idx >= MAX_TEXTURE_UNITS {
+            return [1.0, 1.0, 1.0, 1.0];
+        }
+        let tex_id = sb.bound_textures[unit_idx];
+        if tex_id == 0 || crate::TEX_STORE_PTR.is_null() {
+            return [1.0, 1.0, 1.0, 1.0];
+        }
+        match (*crate::TEX_STORE_PTR).get(tex_id) {
+            Some(tex) => tex.sample(u, v),
+            None => [1.0, 1.0, 1.0, 1.0],
+        }
+    }
+}
+
+fn worker_tex_sample_0(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(0, unit, u, v) }
+fn worker_tex_sample_1(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(1, unit, u, v) }
+fn worker_tex_sample_2(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(2, unit, u, v) }
+fn worker_tex_sample_3(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(3, unit, u, v) }
+fn worker_tex_sample_4(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(4, unit, u, v) }
+fn worker_tex_sample_5(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(5, unit, u, v) }
+fn worker_tex_sample_6(unit: u32, u: f32, v: f32) -> [f32; 4] { worker_tex_sample(6, unit, u, v) }
+
+static WORKER_TEX_SAMPLE_FNS: [fn(u32, f32, f32) -> [f32; 4]; MAX_WORKERS] = [
+    worker_tex_sample_0,
+    worker_tex_sample_1,
+    worker_tex_sample_2,
+    worker_tex_sample_3,
+    worker_tex_sample_4,
+    worker_tex_sample_5,
+    worker_tex_sample_6,
+];
 
 /// Rasterize one triangle in fast path, restricted to [band_min_y, band_max_y].
 fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_min_y: i32, band_max_y: i32) {
@@ -564,7 +661,11 @@ fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, ba
                     let fb_idx = (row_base + px as u32) as usize;
 
                     if depth_test {
-                        let cur = unsafe { *pool.depth_ptr.add(fb_idx) };
+                        let cur = if pool.has_depth {
+                            unsafe { *pool.depth_ptr.add(fb_idx) }
+                        } else {
+                            1.0
+                        };
                         if !fragment::depth_test(depth, cur, depth_func) {
                             w0 += a12; w1 += a20; w2 += a01;
                             continue;
@@ -601,10 +702,12 @@ fn rasterize_tri_fast_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, ba
                     let color = 0xFF000000 | (r << 16) | (g << 8) | b;
 
                     unsafe {
-                        if depth_mask {
+                        if depth_mask && pool.has_depth {
                             *pool.depth_ptr.add(fb_idx) = depth;
                         }
-                        *pool.color_ptr.add(fb_idx) = color;
+                        if pool.has_color {
+                            *pool.color_ptr.add(fb_idx) = color;
+                        }
                     }
                 }
                 w0 += a12; w1 += a20; w2 += a01;
@@ -660,7 +763,8 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
 
     let z0 = s0[2]; let z1 = s1[2]; let z2 = s2[2];
     let fb_width = pool.fb_w;
-    let tex_sample_addr = raster::real_tex_sample as usize;
+    let tex_sample_fn = WORKER_TEX_SAMPLE_FNS[_worker_id];
+    let tex_sample_addr = tex_sample_fn as usize;
 
     let mut a12 = s1[1] - s2[1];
     let mut b12 = s2[0] - s1[0];
@@ -689,7 +793,7 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
     let blend_src = sb.blend_src;
     let blend_dst = sb.blend_dst;
 
-    let uniforms = unsafe { core::slice::from_raw_parts(sb.uniforms_ptr, sb.uniforms_len) };
+    let uniforms = &sb.uniforms[..sb.uniforms_len];
     let fs_ir = unsafe { &*sb.fs_ir_ptr };
     let fs_jit = sb.fs_jit;
 
@@ -743,7 +847,11 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
                     let fb_idx = (row_base + px as u32) as usize;
 
                     if depth_test_enabled {
-                        let cur = unsafe { *pool.depth_ptr.add(fb_idx) };
+                        let cur = if pool.has_depth {
+                            unsafe { *pool.depth_ptr.add(fb_idx) }
+                        } else {
+                            1.0
+                        };
                         if !fragment::depth_test(depth, cur, depth_func) {
                             w0 += a12; w1 += a20; w2 += a01;
                             continue;
@@ -806,17 +914,23 @@ fn rasterize_tri_band(pool: &ThreadPool, sb: &SubBatch, tri: &ScreenTri, band_mi
                     let color = (a << 24) | (r << 16) | (g << 8) | b;
 
                     let final_color = if blend_enabled {
-                        let dst = unsafe { *pool.color_ptr.add(fb_idx) };
+                        let dst = if pool.has_color {
+                            unsafe { *pool.color_ptr.add(fb_idx) }
+                        } else {
+                            0
+                        };
                         fragment::blend(color, dst, blend_src, blend_dst)
                     } else {
                         color
                     };
 
                     unsafe {
-                        if depth_mask {
+                        if depth_mask && pool.has_depth {
                             *pool.depth_ptr.add(fb_idx) = depth;
                         }
-                        *pool.color_ptr.add(fb_idx) = final_color;
+                        if pool.has_color {
+                            *pool.color_ptr.add(fb_idx) = final_color;
+                        }
                     }
                 }
                 w0 += a12; w1 += a20; w2 += a01;

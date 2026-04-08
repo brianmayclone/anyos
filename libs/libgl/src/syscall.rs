@@ -16,7 +16,12 @@ const SYS_THREAD_CREATE: u32 = 170;
 /// Get the number of online CPUs.
 pub fn cpu_count() -> u32 {
     // sysinfo(cmd=2) returns cpu count directly
-    libsyscall::syscall3(SYS_SYSINFO, 2, 0, 0) as u32
+    let ret = libsyscall::syscall3(SYS_SYSINFO, 2, 0, 0);
+    if (ret as i64) < 0 || ret == u64::MAX || ret == u32::MAX as u64 {
+        0
+    } else {
+        ret as u32
+    }
 }
 
 /// Sleep for `us` microseconds (non-busy for >= 1ms).
@@ -27,14 +32,19 @@ pub fn sleep_us(us: u32) {
 /// Create a new thread in the current process.
 /// Returns TID (>0) on success, 0 on error.
 pub fn thread_create(entry: fn(), stack_top: usize, name: &str) -> u32 {
-    syscall5(
+    let ret = syscall5(
         SYS_THREAD_CREATE,
         entry as u64,
         stack_top as u64,
         name.as_ptr() as u64,
         name.len() as u64,
         0, // priority 0 = inherit
-    ) as u32
+    );
+    if (ret as i64) < 0 || ret == u64::MAX || ret == u32::MAX as u64 {
+        0
+    } else {
+        ret as u32
+    }
 }
 
 pub fn _serial_print(args: core::fmt::Arguments) {
