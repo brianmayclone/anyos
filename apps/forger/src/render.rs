@@ -93,8 +93,8 @@ void main() {
             shadowUv.y >= 0.0 && shadowUv.y <= 1.0 &&
             shadowDepth >= 0.0 && shadowDepth <= 1.0) {
             float cmpDepth = shadowDepth - 0.0014;
-            vec2 sx = vec2(uShadowTexelSize.x * 1.5, 0.0);
-            vec2 sy = vec2(0.0, uShadowTexelSize.y * 1.5);
+            vec2 sx = vec2(uShadowTexelSize.x, 0.0);
+            vec2 sy = vec2(0.0, uShadowTexelSize.y);
             float lit = 0.0;
             lit += (cmpDepth <= texture2D(uShadowMap, shadowUv).r ? 1.0 : 0.0) * 0.36;
             lit += (cmpDepth <= texture2D(uShadowMap, shadowUv - sx).r ? 1.0 : 0.0) * 0.16;
@@ -229,6 +229,8 @@ pub struct Renderer {
     // Fog
     pub fog_distance: f32,
     pub target_fog_distance: f32,
+    pub shadow_strength: f32,
+    pub shadow_softness_scale: f32,
 }
 
 struct SunState {
@@ -376,7 +378,20 @@ impl Renderer {
             pitch: 0.0,
             fog_distance: 32.0,
             target_fog_distance: 32.0,
+            shadow_strength: 0.72,
+            shadow_softness_scale: 1.5,
         }
+    }
+
+    pub fn clear_chunks(&mut self) {
+        let mut ids = alloc::vec::Vec::new();
+        for &(vbo, _) in self.chunk_vbos.values() {
+            ids.push(vbo);
+        }
+        if !ids.is_empty() {
+            gl::delete_buffers(&ids);
+        }
+        self.chunk_vbos.clear();
     }
 
     pub fn upload_chunk(&mut self, cx: i32, cz: i32, mesh: &ChunkMesh) {
@@ -544,8 +559,15 @@ impl Renderer {
         gl::uniform3f(self.u_block_sun_dir, sun.dir[0], sun.dir[1], sun.dir[2]);
         gl::uniform_matrix4fv(self.u_light_mvp, false, &light_mvp);
         let shadow_map_size = gl::shadow_get_map_size().max(1) as f32;
-        gl::uniform2f(self.u_shadow_texel_size, 1.0 / shadow_map_size, 1.0 / shadow_map_size);
-        gl::uniform1f(self.u_shadow_strength, if shadows_ready { 0.72 } else { 0.0 });
+        gl::uniform2f(
+            self.u_shadow_texel_size,
+            self.shadow_softness_scale / shadow_map_size,
+            self.shadow_softness_scale / shadow_map_size,
+        );
+        gl::uniform1f(
+            self.u_shadow_strength,
+            if shadows_ready { self.shadow_strength } else { 0.0 },
+        );
 
         gl::active_texture(gl::GL_TEXTURE0);
         gl::uniform1i(self.u_texture, 0);
@@ -649,6 +671,16 @@ impl Renderer {
         } else if fps > 12.0 {
             self.target_fog_distance = (self.target_fog_distance + 4.0).min(64.0);
         }
+    }
+
+    pub fn set_view_quality(&mut self, distance: f32) {
+        self.fog_distance = distance;
+        self.target_fog_distance = distance;
+    }
+
+    pub fn set_shadow_quality(&mut self, strength: f32, softness_scale: f32) {
+        self.shadow_strength = strength;
+        self.shadow_softness_scale = softness_scale;
     }
 }
 

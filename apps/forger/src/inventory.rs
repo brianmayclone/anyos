@@ -117,4 +117,26 @@ impl Inventory {
             self.select_next_filled(1);
         }
     }
+
+    pub fn counts_snapshot(&self) -> [u16; block::BLOCK_COUNT] {
+        self.counts
+    }
+
+    pub fn hotbar_snapshot(&self) -> [u8; HOTBAR_SLOTS] {
+        self.hotbar
+    }
+
+    pub fn restore_snapshot(
+        &mut self,
+        counts: [u16; block::BLOCK_COUNT],
+        hotbar: [u8; HOTBAR_SLOTS],
+        selected_slot: usize,
+    ) {
+        self.counts = counts;
+        self.hotbar = hotbar;
+        self.selected_slot = selected_slot.min(HOTBAR_SLOTS - 1);
+        if self.selected_block().is_none() {
+            self.select_next_filled(1);
+        }
+    }
 }

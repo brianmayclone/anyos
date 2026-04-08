@@ -57,6 +57,7 @@ impl Chunk {
 pub struct World {
     pub chunks: BTreeMap<(i32, i32), Chunk>,
     pub seed: u32,
+    pub modifications: BTreeMap<(i32, i32, i32), u8>,
 }
 
 impl World {
@@ -64,6 +65,7 @@ impl World {
         World {
             chunks: BTreeMap::new(),
             seed,
+            modifications: BTreeMap::new(),
         }
     }
 
@@ -89,6 +91,7 @@ impl World {
             chunk.set(local_coord(x), y as usize, local_coord(z), id);
             chunk.dirty = true;
         }
+        self.modifications.insert((x, y, z), id);
         self.mark_neighbor_chunks_dirty(x, z);
     }
 
@@ -308,6 +311,22 @@ impl World {
                         }
                     }
                 }
+            }
+        }
+
+        if let Some(chunk) = self.chunks.get_mut(&(cx, cz)) {
+            let x0 = cx * 16;
+            let z0 = cz * 16;
+            let x1 = x0 + 15;
+            let z1 = z0 + 15;
+            for (&(mx, my, mz), &block_id) in &self.modifications {
+                if mx < x0 || mx > x1 || mz < z0 || mz > z1 {
+                    continue;
+                }
+                if my < 0 || my >= CHUNK_Y as i32 {
+                    continue;
+                }
+                chunk.set(local_coord(mx), my as usize, local_coord(mz), block_id);
             }
         }
     }

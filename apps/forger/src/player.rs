@@ -15,6 +15,7 @@ pub const WALK_SPEED: f32 = 4.317;
 pub const FLY_SPEED: f32 = 10.0;
 pub const JUMP_VEL: f32 = 8.5;
 pub const MOUSE_SENS: f32 = 0.006;
+pub const KEY_LOOK_SPEED: f32 = 2.8;
 pub const REACH: f32 = 5.0;
 
 pub struct Player {
@@ -29,6 +30,10 @@ pub struct Player {
     pub jump: bool,
     pub descend: bool,
     pub ascend: bool,
+    pub look_left: bool,
+    pub look_right: bool,
+    pub look_up: bool,
+    pub look_down: bool,
 }
 
 impl Player {
@@ -46,6 +51,10 @@ impl Player {
             jump: false,
             descend: false,
             ascend: false,
+            look_left: false,
+            look_right: false,
+            look_up: false,
+            look_down: false,
         }
     }
 
@@ -63,6 +72,10 @@ impl Player {
             jump: false,
             descend: false,
             ascend: false,
+            look_left: false,
+            look_right: false,
+            look_up: false,
+            look_down: false,
         }
     }
 
@@ -76,6 +89,24 @@ impl Player {
     }
 
     pub fn update(&mut self, dt: f32) {
+        let mut look_dx = 0.0f32;
+        let mut look_dy = 0.0f32;
+        if self.look_left {
+            look_dx -= KEY_LOOK_SPEED * dt;
+        }
+        if self.look_right {
+            look_dx += KEY_LOOK_SPEED * dt;
+        }
+        if self.look_up {
+            look_dy -= KEY_LOOK_SPEED * dt;
+        }
+        if self.look_down {
+            look_dy += KEY_LOOK_SPEED * dt;
+        }
+        if look_dx != 0.0 || look_dy != 0.0 {
+            self.look_by(look_dx, look_dy);
+        }
+
         let fwd_x = gl::sin(self.yaw);
         let fwd_z = -gl::cos(self.yaw);
         let right_x = gl::cos(self.yaw);
@@ -134,8 +165,12 @@ impl Player {
     }
 
     pub fn mouse_move(&mut self, dx: f32, dy: f32) {
-        self.yaw += dx * MOUSE_SENS;
-        self.pitch += dy * MOUSE_SENS;
+        self.look_by(dx * MOUSE_SENS, dy * MOUSE_SENS);
+    }
+
+    pub fn look_by(&mut self, dx: f32, dy: f32) {
+        self.yaw += dx;
+        self.pitch += dy;
         if self.pitch < -1.5 {
             self.pitch = -1.5;
         }
