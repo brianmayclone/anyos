@@ -6,129 +6,112 @@ use anyui::Widget;
 use crate::logic::build::ToolStatus;
 
 // ════════════════════════════════════════════════════════════════
-//  Splash screen — Visual Studio-style startup screen
-//  Shows for 3 seconds, then auto-closes. No buttons needed.
+//  Splash screen — borderless, centered, auto-closes after 3s
 // ════════════════════════════════════════════════════════════════
 
 const ESSENTIAL_TOOLS: &[&str] = &["anyrc", "acargo", "cc", "make"];
+const SPLASH_W: u32 = 520;
+const SPLASH_H: u32 = 300;
 const SPLASH_DURATION_MS: u32 = 3000;
 
-/// Show the splash screen for 3 seconds.
-/// Returns `false` if essential tools are missing and user should be warned.
 pub fn show(tool_status: &[ToolStatus]) -> bool {
     let tc = anyui::theme::colors();
 
-    // ── Splash window (no title bar, centered, dark) ──
-    let win = anyui::Window::new("", -1, -1, 520, 320);
+    // Center on screen
+    let (sw, sh) = anyui::screen_size();
+    let x = if sw > SPLASH_W { (sw - SPLASH_W) / 2 } else { 0 } as i32;
+    let y = if sh > SPLASH_H { (sh - SPLASH_H) / 2 } else { 0 } as i32;
 
-    // ── Full dark background ──
+    // Borderless window with shadow
+    let flags = anyui::WIN_FLAG_BORDERLESS | anyui::WIN_FLAG_SHADOW | anyui::WIN_FLAG_NOT_RESIZABLE;
+    let win = anyui::Window::new_with_flags("", x, y, SPLASH_W, SPLASH_H, flags);
+
+    // ── Dark background ──
     let bg = anyui::View::new();
     bg.set_dock(anyui::DOCK_FILL);
-    bg.set_color(0xFF1E1E1E);
+    bg.set_color(0xFF1A1A2E);
     win.add(&bg);
 
-    // ── Accent stripe at top (4px) ──
+    // ── Accent stripe (top, 3px) ──
     let stripe = anyui::View::new();
     stripe.set_dock(anyui::DOCK_TOP);
-    stripe.set_size(520, 4);
+    stripe.set_size(SPLASH_W, 3);
     stripe.set_color(tc.accent);
     bg.add(&stripe);
 
-    // ── Product title ──
+    // ── Product name ──
     let title = anyui::Label::new("anyOS Code");
-    title.set_position(40, 40);
-    title.set_font_size(36);
+    title.set_position(36, 36);
+    title.set_font_size(32);
     title.set_text_color(0xFFFFFFFF);
     bg.add(&title);
 
-    // ── Subtitle ──
     let subtitle = anyui::Label::new("Professional IDE");
-    subtitle.set_position(42, 86);
-    subtitle.set_font_size(14);
+    subtitle.set_position(38, 76);
+    subtitle.set_font_size(13);
     subtitle.set_text_color(0xAACCCCCC);
     bg.add(&subtitle);
 
-    // ── Version ──
     let version = anyui::Label::new("Version 2.0");
-    version.set_position(42, 108);
-    version.set_font_size(12);
-    version.set_text_color(0x88AAAAAA);
+    version.set_position(38, 96);
+    version.set_font_size(11);
+    version.set_text_color(0x88888888);
     bg.add(&version);
 
-    // ── Thin separator line ──
-    let sep = anyui::View::new();
-    sep.set_position(40, 138);
-    sep.set_size(440, 1);
-    sep.set_color(0xFF333333);
-    bg.add(&sep);
-
-    // ── Tool status (compact, right-aligned list) ──
-    let mut y = 152;
+    // ── Tool status (compact list) ──
+    let mut y_pos: i32 = 130;
     let mut all_essential_ok = true;
-    let mut missing_tools = String::new();
+    let mut missing = String::new();
 
     for tool in tool_status {
         let is_essential = ESSENTIAL_TOOLS.contains(&tool.name);
-
         let icon = if tool.available { "\u{2713}" } else { "\u{2717}" };
-        let label_text = format!("{} {}", icon, tool.description);
+        let text = format!("{} {}", icon, tool.description);
 
-        let lbl = anyui::Label::new(&label_text);
-        lbl.set_position(50, y);
+        let lbl = anyui::Label::new(&text);
+        lbl.set_position(44, y_pos);
         lbl.set_font_size(11);
         lbl.set_text_color(if tool.available {
-            0xFF6A9955  // green
+            0xFF6A9955
         } else if is_essential {
-            0xFFF44747  // red
+            all_essential_ok = false;
+            if !missing.is_empty() { missing.push_str(", "); }
+            missing.push_str(tool.name);
+            0xFFF44747
         } else {
-            0xFF808080  // grey
+            0xFF666666
         });
         bg.add(&lbl);
 
-        // Path or "not found" on the right
-        let status = if tool.available {
-            format!("{}", tool.name)
-        } else {
-            if is_essential {
-                all_essential_ok = false;
-                if !missing_tools.is_empty() {
-                    missing_tools.push_str(", ");
-                }
-                missing_tools.push_str(tool.name);
-            }
-            String::from("not found")
-        };
+        if tool.available {
+            let path_lbl = anyui::Label::new(tool.name);
+            path_lbl.set_position(280, y_pos);
+            path_lbl.set_font_size(11);
+            path_lbl.set_text_color(0xFF555555);
+            bg.add(&path_lbl);
+        }
 
-        let status_lbl = anyui::Label::new(&status);
-        status_lbl.set_position(300, y);
-        status_lbl.set_font_size(11);
-        status_lbl.set_text_color(if tool.available { 0xFF808080 } else { 0xFFF44747 });
-        bg.add(&status_lbl);
-
-        y += 18;
+        y_pos += 17;
     }
 
-    // ── Loading indicator ──
-    let loading_text = if all_essential_ok {
+    // ── Bottom bar ──
+    let loading = anyui::Label::new(if all_essential_ok {
         "Loading workspace..."
     } else {
-        "Warning: essential tools missing"
-    };
-    let loading = anyui::Label::new(loading_text);
-    loading.set_position(42, 286);
+        "Some tools are missing"
+    });
+    loading.set_position(38, (SPLASH_H as i32) - 26);
     loading.set_font_size(11);
     loading.set_text_color(if all_essential_ok { 0xFF569CD6 } else { 0xFFF44747 });
     bg.add(&loading);
 
-    // ── Copyright ──
     let copy = anyui::Label::new("anyOS Project");
-    copy.set_position(380, 286);
+    copy.set_position((SPLASH_W as i32) - 110, (SPLASH_H as i32) - 26);
     copy.set_font_size(11);
-    copy.set_text_color(0xFF555555);
+    copy.set_text_color(0xFF444444);
     bg.add(&copy);
 
-    // ── Show for 3 seconds using run_once() loop ──
-    // This avoids calling quit() which would poison the global quit state.
+    // ── Run for 3 seconds then close ──
     let start = anyos_std::sys::uptime_ms();
     loop {
         if !anyui::run_once() {
@@ -140,14 +123,13 @@ pub fn show(tool_status: &[ToolStatus]) -> bool {
         }
     }
 
-    // Close the splash window
     win.destroy();
 
-    // If essential tools are missing, show a warning dialog
+    // Warn about missing tools
     if !all_essential_ok {
         let msg = format!(
-            "The following essential tools are not installed:\n{}\n\nInstall them to /System/bin/ for full IDE functionality.",
-            missing_tools,
+            "Missing: {}\n\nInstall to /System/bin/ for full functionality.",
+            missing,
         );
         anyui::MessageBox::show(anyui::MessageBoxType::Warning, &msg, Some("OK"));
     }

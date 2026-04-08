@@ -48,6 +48,7 @@ pub const KIND_RADIO_GROUP: u32 = 41;
 pub const KIND_DROP_DOWN: u32 = 42;
 pub const KIND_AUTO_COMPLETE_TEXT_FIELD: u32 = 43;
 pub const KIND_SPINNER: u32 = 44;
+pub const KIND_PLAIN_BUTTON: u32 = 45;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 

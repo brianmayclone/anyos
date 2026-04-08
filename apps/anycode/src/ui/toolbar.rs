@@ -3,75 +3,44 @@ use ui::IconType;
 
 const ICON_SZ: u32 = 24;
 
-/// Toolbar button handles for event wiring.
+/// Toolbar with PlainButton (borderless flat icon buttons).
 pub struct AppToolbar {
     pub toolbar: ui::Toolbar,
-    pub btn_new: ui::IconButton,
-    pub btn_open: ui::IconButton,
-    pub btn_save: ui::IconButton,
-    pub btn_save_all: ui::IconButton,
-    pub btn_build: ui::IconButton,
-    pub btn_run: ui::IconButton,
-    pub btn_stop: ui::IconButton,
-    pub btn_settings: ui::IconButton,
+    pub btn_new: ui::PlainButton,
+    pub btn_open: ui::PlainButton,
+    pub btn_save: ui::PlainButton,
+    pub btn_save_all: ui::PlainButton,
+    pub btn_build: ui::PlainButton,
+    pub btn_run: ui::PlainButton,
+    pub btn_stop: ui::PlainButton,
+    pub btn_settings: ui::PlainButton,
 }
 
 impl AppToolbar {
-    /// Create the toolbar with all icon buttons and add it to the parent.
     pub fn new(_parent: &impl ui::Widget) -> Self {
         let tc = ui::theme::colors();
         let toolbar = ui::Toolbar::new();
         toolbar.set_dock(ui::DOCK_TOP);
-        toolbar.set_size(900, 42);
+        toolbar.set_size(1024, 42);
         toolbar.set_color(tc.sidebar_bg);
         toolbar.set_padding(4, 4, 4, 4);
 
-        let btn_new = toolbar.add_icon_button("");
-        btn_new.set_size(34, 34);
-        btn_new.set_system_icon("file-plus", IconType::Outline, tc.text, ICON_SZ);
         let t = anyos_std::i18n::t;
-        btn_new.set_tooltip(t("New File"));
 
-        let btn_open = toolbar.add_icon_button("");
-        btn_open.set_size(34, 34);
-        btn_open.set_system_icon("folder-open", IconType::Outline, tc.text, ICON_SZ);
-        btn_open.set_tooltip(t("Open Folder"));
-
-        let btn_save = toolbar.add_icon_button("");
-        btn_save.set_size(34, 34);
-        btn_save.set_system_icon("device-floppy", IconType::Outline, tc.text, ICON_SZ);
-        btn_save.set_tooltip(t("Save"));
-
-        let btn_save_all = toolbar.add_icon_button("");
-        btn_save_all.set_size(34, 34);
-        btn_save_all.set_system_icon("files", IconType::Outline, tc.text, ICON_SZ);
-        btn_save_all.set_tooltip(t("Save All"));
+        let btn_new = make_plain_btn(&toolbar, "file-plus", tc.text, t("New File"));
+        let btn_open = make_plain_btn(&toolbar, "folder-open", tc.text, t("Open Folder"));
+        let btn_save = make_plain_btn(&toolbar, "device-floppy", tc.text, t("Save"));
+        let btn_save_all = make_plain_btn(&toolbar, "files", tc.text, t("Save All"));
 
         toolbar.add_separator();
 
-        let btn_build = toolbar.add_icon_button("");
-        btn_build.set_size(34, 34);
-        btn_build.set_system_icon("hammer", IconType::Outline, tc.check_mark, ICON_SZ);
-        btn_build.set_color(tc.accent);
-        btn_build.set_tooltip(t("Build"));
-
-        let btn_run = toolbar.add_icon_button("");
-        btn_run.set_size(34, 34);
-        btn_run.set_system_icon("player-play", IconType::Outline, tc.check_mark, ICON_SZ);
-        btn_run.set_color(tc.success);
-        btn_run.set_tooltip(t("Run"));
-
-        let btn_stop = toolbar.add_icon_button("");
-        btn_stop.set_size(34, 34);
-        btn_stop.set_system_icon("player-stop", IconType::Outline, tc.text, ICON_SZ);
-        btn_stop.set_tooltip(t("Stop"));
+        let btn_build = make_plain_btn(&toolbar, "hammer", tc.accent, t("Build"));
+        let btn_run = make_plain_btn(&toolbar, "player-play", tc.success, t("Run"));
+        let btn_stop = make_plain_btn(&toolbar, "player-stop", tc.text, t("Stop"));
 
         toolbar.add_separator();
 
-        let btn_settings = toolbar.add_icon_button("");
-        btn_settings.set_size(34, 34);
-        btn_settings.set_system_icon("settings", IconType::Outline, tc.text, ICON_SZ);
-        btn_settings.set_tooltip(t("Settings"));
+        let btn_settings = make_plain_btn(&toolbar, "settings", tc.text, t("Settings"));
 
         Self {
             toolbar,
@@ -85,4 +54,13 @@ impl AppToolbar {
             btn_settings,
         }
     }
+}
+
+fn make_plain_btn(toolbar: &ui::Toolbar, icon: &str, color: u32, tooltip: &str) -> ui::PlainButton {
+    let btn = ui::PlainButton::new("");
+    btn.set_size(34, 34);
+    btn.set_system_icon(icon, IconType::Outline, color, ICON_SZ);
+    btn.set_tooltip(tooltip);
+    toolbar.add(&btn);
+    btn
 }

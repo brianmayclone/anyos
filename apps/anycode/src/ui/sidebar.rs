@@ -222,6 +222,76 @@ impl Sidebar {
         }
     }
 
+    /// Filter the tree to show only files matching the filter string.
+    pub fn filter_tree(&mut self, filter: &str) {
+        if self.paths.is_empty() {
+            return;
+        }
+        // Get root path (index 0)
+        let root = self.paths[0].clone();
+        self.tree.clear();
+        self.paths.clear();
+
+        let tc = ui::theme::colors();
+        let dir_name = path::basename(&root);
+        let root_node = self.tree.add_root(dir_name);
+        self.paths.push(root.clone());
+        self.tree.set_node_style(root_node, STYLE_BOLD);
+        self.tree.set_node_text_color(root_node, tc.text);
+        self.set_folder_icon(root_node);
+
+        // Recursively add only files matching filter
+        self.add_filtered_entries(root_node, &root, filter, 0);
+        self.tree.set_expanded(root_node, true);
+    }
+
+    fn add_filtered_entries(&mut self, parent_node: u32, dir_path: &str, filter: &str, depth: u32) {
+        if depth > 8 {
+            return;
+        }
+        let entries = match anyos_std::fs::read_dir(dir_path) {
+            Ok(rd) => rd,
+            Err(_) => return,
+        };
+
+        let filter_lower = ascii_lower(filter);
+        let tc = ui::theme::colors();
+
+        for entry in entries {
+            if entry.name == "." || entry.name == ".." {
+                continue;
+            }
+            if entry.is_dir() && is_hidden_dir(&entry.name) {
+                continue;
+            }
+
+            let full = path::join(dir_path, &entry.name);
+
+            if entry.is_dir() {
+                let node = self.tree.add_child(parent_node, &entry.name);
+                self.paths.push(full.clone());
+                self.tree.set_node_style(node, STYLE_BOLD);
+                self.tree.set_node_text_color(node, tc.text);
+                self.set_folder_icon(node);
+                self.add_filtered_entries(node, &full, filter, depth + 1);
+                self.tree.set_expanded(node, true);
+            } else {
+                let name_lower = ascii_lower(&entry.name);
+                if name_lower.contains(filter_lower.as_str()) {
+                    let node = self.tree.add_child(parent_node, &entry.name);
+                    self.paths.push(full);
+                    let icon_color = language_icon_color(syntax_map::language_for_filename(&entry.name));
+                    if icon_color != 0 {
+                        self.tree.set_node_text_color(node, icon_color);
+                    } else {
+                        self.tree.set_node_text_color(node, tc.text_secondary);
+                    }
+                    self.set_file_icon(node, &entry.name);
+                }
+            }
+        }
+    }
+
     /// Cancel inline rename.
     pub fn cancel_rename(&mut self) {
         self.rename_node = u32::MAX;
@@ -264,6 +334,10 @@ impl Sidebar {
             if entry.name == "." || entry.name == ".." {
                 continue;
             }
+            // Hide common build/VCS directories
+            if entry.is_dir() && is_hidden_dir(&entry.name) {
+                continue;
+            }
             let full = path::join(dir_path, &entry.name);
             if entry.is_dir() {
                 dirs.push((entry.name.clone(), full));
@@ -298,6 +372,27 @@ impl Sidebar {
             self.set_file_icon(node, name);
         }
     }
+}
+
+fn ascii_lower(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c >= 'A' && c <= 'Z' {
+            out.push((c as u8 + 32) as char);
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Directories to hide from the explorer tree.
+fn is_hidden_dir(name: &str) -> bool {
+    matches!(name,
+        ".git" | ".svn" | ".hg" | ".vscode" | ".idea" |
+        "target" | "build" | "node_modules" | "__pycache__" |
+        ".cache" | ".npm" | "dist" | ".next"
+    )
 }
 
 fn language_icon_color(lang: &str) -> u32 {

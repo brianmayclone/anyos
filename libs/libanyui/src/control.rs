@@ -249,6 +249,7 @@ pub enum ControlKind {
     DropDown = 42,
     AutoCompleteTextField = 43,
     Spinner = 44,
+    PlainButton = 45,
 }
 
 impl ControlKind {
@@ -299,6 +300,7 @@ impl ControlKind {
             42 => Self::DropDown,
             43 => Self::AutoCompleteTextField,
             44 => Self::Spinner,
+            45 => Self::PlainButton,
             _ => Self::View,
         }
     }

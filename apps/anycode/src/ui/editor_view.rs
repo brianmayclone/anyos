@@ -67,6 +67,10 @@ impl EditorView {
 
         let idx = self.editors.len();
         self.editors.push(EditorTab { editor });
+
+        // Wire text-changed event for modification tracking
+        crate::ui::events::wire_editor_text_changed(idx);
+
         idx
     }
 

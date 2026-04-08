@@ -5,5 +5,6 @@ EXPORTS
     libhttp_download
     libhttp_download_progress
     libhttp_post
+    libhttp_post_with_headers
     libhttp_last_status
     libhttp_last_error

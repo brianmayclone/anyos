@@ -471,6 +471,108 @@ fn build_post_request(url: &Url, body: &[u8], content_type: &str) -> String {
     req
 }
 
+/// Perform an HTTP(S) POST request with custom headers.
+pub fn post_with_headers(url_str: &str, body: &[u8], content_type: &str, extra_headers: &str) -> Option<Vec<u8>> {
+    set_status(0);
+    set_error(ERR_NONE);
+
+    let url = match parse_url(url_str) {
+        Some(u) => u,
+        None => {
+            set_error(ERR_INVALID_URL);
+            return None;
+        }
+    };
+
+    match fetch_post_headers_inner(&url, body, content_type, extra_headers) {
+        Ok((status, resp_body)) => {
+            set_status(status as u32);
+            Some(resp_body)
+        }
+        Err(err) => {
+            set_error(err);
+            None
+        }
+    }
+}
+
+/// Core POST with custom headers — same flow as fetch_post_inner.
+fn fetch_post_headers_inner(url: &Url, body: &[u8], content_type: &str, extra_headers: &str) -> Result<(u16, Vec<u8>), u32> {
+    let mut current = clone_url(url);
+    let mut is_first = true;
+
+    for _redirect_n in 0..MAX_REDIRECTS {
+        let is_https = current.scheme == "https";
+        let conn = connect_to(&current.host, current.port, is_https)?;
+
+        let request = if is_first {
+            build_post_request_with_headers(&current, body, content_type, extra_headers)
+        } else {
+            build_get_request(&current, false)
+        };
+
+        if !send_data(&conn, request.as_bytes(), is_https) {
+            close_conn(conn);
+            return Err(ERR_SEND_FAILURE);
+        }
+
+        if is_first && !body.is_empty() {
+            if !send_data(&conn, body, is_https) {
+                close_conn(conn);
+                return Err(ERR_SEND_FAILURE);
+            }
+        }
+
+        match receive_response(&conn, is_https, false)? {
+            ResponseAction::Redirect(location) => {
+                close_conn(conn);
+                current = resolve_url(&current, &location);
+                is_first = false;
+                continue;
+            }
+            ResponseAction::Complete(status, resp_body) => {
+                close_conn(conn);
+                return Ok((status, resp_body));
+            }
+        }
+    }
+
+    Err(ERR_TOO_MANY_REDIRECTS)
+}
+
+/// Build a POST request with extra headers inserted before Connection header.
+fn build_post_request_with_headers(url: &Url, body: &[u8], content_type: &str, extra_headers: &str) -> String {
+    let mut req = String::new();
+    req.push_str("POST ");
+    req.push_str(&url.path);
+    req.push_str(" HTTP/1.1\r\nHost: ");
+    req.push_str(&url.host);
+    if (url.scheme == "http" && url.port != 80) || (url.scheme == "https" && url.port != 443) {
+        req.push(':');
+        push_u32(&mut req, url.port as u32);
+    }
+    req.push_str("\r\nUser-Agent: libhttp/1.0 (anyOS)");
+    req.push_str("\r\nAccept: */*");
+    req.push_str("\r\nContent-Type: ");
+    req.push_str(content_type);
+    req.push_str("\r\nContent-Length: ");
+    push_u32(&mut req, body.len() as u32);
+    // Insert extra headers
+    if !extra_headers.is_empty() {
+        req.push_str("\r\n");
+        req.push_str(extra_headers);
+        // Ensure no trailing \r\n duplication
+        if !extra_headers.ends_with("\r\n") {
+            req.push_str("\r\n");
+        }
+        req.push_str("Connection: close");
+    } else {
+        req.push_str("\r\nConnection: close");
+    }
+    req.push_str("\r\n\r\n");
+    req
+}
+
 // ── Body reading ────────────────────────────────────────────────────────────
 
 /// Read body with Content-Length or until connection close.

@@ -35,7 +35,7 @@ impl Control for Spinner {
 
         // color = accent color (overridable via set_color)
         let tc = crate::theme::colors();
-        let base_color = if b.color != 0 { b.color } else { tc.accent };
+        let base_color = if b.color != 0 { b.color } else { 0xFFFFFFFF };
 
         // Geometry: spinner fits inside the smaller of w, h
         let size = w.min(h);
@@ -61,7 +61,7 @@ impl Control for Spinner {
             let dy = cy + (radius * SIN12[idx]) / 1024 - dot_r as i32 / 2;
 
             // Dots fade based on distance from the active dot (trailing tail)
-            let dist = ((DOT_COUNT + i - active_dot) % DOT_COUNT) as u32;
+            let dist = ((DOT_COUNT + active_dot - i) % DOT_COUNT) as u32;
             let alpha = if dist == 0 {
                 255u32
             } else if dist <= 4 {

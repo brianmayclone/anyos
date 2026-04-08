@@ -266,7 +266,7 @@ impl Control for IconButton {
 ///
 /// `opacity` is 0–255: 255 = fully opaque, lower values dim the icon
 /// (used for disabled state rendering).
-fn blit_alpha_opacity(
+pub fn blit_alpha_opacity(
     s: &crate::draw::Surface,
     x: i32,
     y: i32,

@@ -72,6 +72,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libhttp_client",
 ]
 
 [[package]]

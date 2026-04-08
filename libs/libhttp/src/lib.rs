@@ -133,6 +133,53 @@ pub extern "C" fn libhttp_post(
     }
 }
 
+/// Perform HTTP(S) POST request with custom headers.
+///
+/// `extra_headers` must be pre-formatted: `"Authorization: Bearer KEY\r\nX-Custom: val\r\n"`
+///
+/// Returns: bytes written to `out_buf`, or `u32::MAX` on error.
+#[no_mangle]
+pub extern "C" fn libhttp_post_with_headers(
+    url_ptr: *const u8, url_len: u32,
+    body_ptr: *const u8, body_len: u32,
+    content_type_ptr: *const u8, content_type_len: u32,
+    headers_ptr: *const u8, headers_len: u32,
+    out_buf: *mut u8, out_buf_len: u32,
+) -> u32 {
+    let url_str = unsafe {
+        core::str::from_utf8_unchecked(core::slice::from_raw_parts(url_ptr, url_len as usize))
+    };
+    let body = unsafe {
+        core::slice::from_raw_parts(body_ptr, body_len as usize)
+    };
+    let content_type = unsafe {
+        core::str::from_utf8_unchecked(
+            core::slice::from_raw_parts(content_type_ptr, content_type_len as usize)
+        )
+    };
+    let extra_headers = unsafe {
+        core::str::from_utf8_unchecked(
+            core::slice::from_raw_parts(headers_ptr, headers_len as usize)
+        )
+    };
+
+    match http::post_with_headers(url_str, body, content_type, extra_headers) {
+        Some(resp_body) => {
+            let copy_len = resp_body.len().min(out_buf_len as usize);
+            if copy_len > 0 {
+                unsafe {
+                    core::ptr::copy_nonoverlapping(resp_body.as_ptr(), out_buf, copy_len);
+                }
+            }
+            if resp_body.len() > out_buf_len as usize {
+                http::set_error(http::ERR_BUFFER_TOO_SMALL);
+            }
+            copy_len as u32
+        }
+        None => u32::MAX,
+    }
+}
+
 /// Download a URL directly to a file path with progress reporting.
 ///
 /// The `callback` is called after each received chunk with

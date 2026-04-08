@@ -47,6 +47,7 @@ pub mod text_editor;
 pub mod textarea;
 pub mod textfield;
 pub mod toggle;
+pub mod plain_button;
 pub mod toolbar;
 pub mod tooltip;
 pub mod tree_view;
@@ -169,6 +170,9 @@ pub fn create_control(
         )),
         ControlKind::Tag => Box::new(tag::Tag::new(TextControlBase::new(base).with_text(text))),
         ControlKind::StatusIndicator => Box::new(status_indicator::StatusIndicator::new(
+            TextControlBase::new(base).with_text(text),
+        )),
+        ControlKind::PlainButton => Box::new(plain_button::PlainButton::new(
             TextControlBase::new(base).with_text(text),
         )),
     }

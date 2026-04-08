@@ -10,3 +10,4 @@ pub mod tasks;
 pub mod symbols;
 pub mod diagnostics;
 pub mod commands;
+pub mod ai;

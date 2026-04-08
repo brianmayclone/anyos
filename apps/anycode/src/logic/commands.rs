@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use crate::app;
 use crate::AppState;
-use crate::logic::{build, file_manager, git, language, project, search, symbols, tasks};
+use crate::logic::{ai, build, file_manager, git, language, project, search, symbols, tasks};
 use crate::util::path;
 
 // ════════════════════════════════════════════════════════════════
@@ -185,10 +185,84 @@ pub fn about() {
 }
 
 pub fn open_settings() {
+    crate::ui::settings_dialog::show();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  AI commands
+// ════════════════════════════════════════════════════════════════
+
+/// Send a chat message to the AI.
+pub fn ai_chat() {
     let s = app();
-    let settings = s.config.settings_path.clone();
-    open_file(&settings);
-    update_status();
+    let input = s.ai_panel.get_input();
+    if input.is_empty() {
+        return;
+    }
+    s.ai_panel.clear_input();
+    s.ai_panel.append_user_message(&input);
+    s.ai_panel.set_status("Thinking...");
+
+    match s.ai_client.chat(&input) {
+        Ok(response) => {
+            s.ai_panel.append_ai_response(&response);
+            s.ai_panel.set_status("");
+        }
+        Err(err) => {
+            s.ai_panel.append_error(&err);
+            s.ai_panel.set_status("Error");
+        }
+    }
+}
+
+/// Execute an AI code action on the current editor content.
+pub fn ai_action(action: ai::CodeAction) {
+    let s = app();
+
+    // Get current file content (or selection — full file for now)
+    if s.file_mgr.count() == 0 {
+        s.ai_panel.append_error("No file open.");
+        return;
+    }
+
+    let filename = path::basename(&s.file_mgr.active_file().unwrap().path);
+    let lang = language::language_for_filename(filename);
+
+    let mut buf = vec![0u8; 64 * 1024];
+    let len = s.editor_view.get_editor_text(s.file_mgr.active, &mut buf);
+    if len == 0 {
+        s.ai_panel.append_error("Editor is empty.");
+        return;
+    }
+
+    let code = match core::str::from_utf8(&buf[..len as usize]) {
+        Ok(s) => s,
+        Err(_) => {
+            s.ai_panel.append_error("Invalid UTF-8 in editor.");
+            return;
+        }
+    };
+
+    // Switch to AI panel
+    switch_sidebar_view(5);
+    s.ai_panel.set_status(&format!("{}...", action.label()));
+
+    match s.ai_client.code_action(action, code, lang.id.display_name()) {
+        Ok(response) => {
+            s.ai_panel.append_user_message(&format!("[{}] {}", action.label(), filename));
+            s.ai_panel.append_ai_response(&response);
+            s.ai_panel.set_status("");
+        }
+        Err(err) => {
+            s.ai_panel.append_error(&err);
+            s.ai_panel.set_status("Error");
+        }
+    }
+}
+
+/// Open the AI settings dialog.
+pub fn ai_settings() {
+    crate::ui::ai_settings_dialog::AiSettingsDialog::show();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -197,6 +271,9 @@ pub fn open_settings() {
 
 pub fn open_file(file_path: &str) {
     let s = app();
+    // Hide welcome tab when opening a file
+    s.welcome.hide();
+
     if let Some(idx) = s.file_mgr.find_open(file_path) {
         s.file_mgr.set_active(idx);
         s.editor_view.set_active(idx);

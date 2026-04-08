@@ -22,10 +22,10 @@ use alloc::string::String;
 use libanyui_client as anyui;
 use anyui::Widget;
 
-use crate::logic::{build, config, diagnostics, file_manager, git, plugin, project, tasks};
-use crate::ui::{activity_bar, editor_view, events, extensions_panel, git_panel, output_panel,
-                problems_panel, run_panel, search_panel, sidebar, splash, status_bar,
-                symbols_panel, toolbar};
+use crate::logic::{ai, build, config, diagnostics, file_manager, git, plugin, project, tasks};
+use crate::ui::{activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel,
+                git_panel, output_panel, problems_panel, run_panel, search_panel, sidebar,
+                splash, status_bar, symbols_panel, toolbar, welcome_tab};
 use crate::util::path;
 
 // ════════════════════════════════════════════════════════════════
@@ -42,6 +42,7 @@ struct AppState {
     task_mgr: tasks::TaskManager,
     diagnostics: diagnostics::DiagnosticSet,
     plugin_mgr: plugin::PluginManager,
+    ai_client: ai::AiClient,
 
     // Build
     build_process: Option<build::BuildProcess>,
@@ -57,17 +58,20 @@ struct AppState {
 
     // UI panels
     editor_view: editor_view::EditorView,
+    welcome: welcome_tab::WelcomeTab,
     sidebar: sidebar::Sidebar,
     git_panel: git_panel::GitPanel,
     search_panel: search_panel::SearchPanel,
     run_panel: run_panel::RunPanel,
     symbols_panel: symbols_panel::SymbolsPanel,
+    ai_panel: ai_panel::AiPanel,
     extensions_panel: extensions_panel::ExtensionsPanel,
     output: output_panel::OutputPanel,
     problems_panel: problems_panel::ProblemsPanel,
     status: status_bar::StatusBar,
     activity_bar: activity_bar::ActivityBar,
-    panel_ids: [u32; 6],
+    command_palette: command_palette::CommandPalette,
+    panel_ids: [u32; 7], // Explorer, Git, Search, Run, Outline, AI, Extensions
 }
 
 anyos_std::global_app_state!(AppState);
@@ -159,6 +163,9 @@ fn build_and_run(
     let symbols_panel = symbols_panel::SymbolsPanel::new();
     sidebar_container.add(&symbols_panel.panel);
 
+    let ai_panel = ai_panel::AiPanel::new();
+    sidebar_container.add(&ai_panel.panel);
+
     let extensions_panel = extensions_panel::ExtensionsPanel::new();
     sidebar_container.add(&extensions_panel.panel);
 
@@ -168,6 +175,7 @@ fn build_and_run(
         search_panel.panel.id(),
         run_panel.panel.id(),
         symbols_panel.panel.id(),
+        ai_panel.panel.id(),
         extensions_panel.panel.id(),
     ];
 
@@ -177,6 +185,7 @@ fn build_and_run(
     search_panel.panel.set_visible(false);
     run_panel.panel.set_visible(false);
     symbols_panel.panel.set_visible(false);
+    ai_panel.panel.set_visible(false);
     extensions_panel.panel.set_visible(false);
 
     main_split.add(&sidebar_container);
@@ -191,6 +200,11 @@ fn build_and_run(
 
     let editor_view = editor_view::EditorView::new();
     editor_split.add(&editor_view.panel);
+
+    // Welcome tab (inside editor panel, shown when no files open)
+    let welcome = welcome_tab::WelcomeTab::new();
+    editor_view.panel.add(&welcome.panel);
+    welcome.panel.set_visible(open_folder.is_none());
 
     let output = output_panel::OutputPanel::new();
     editor_split.add(&output.panel);
@@ -225,6 +239,7 @@ fn build_and_run(
             task_mgr,
             diagnostics: diagnostics::DiagnosticSet::new(),
             plugin_mgr,
+            ai_client: ai::AiClient::new(),
             build_process: None,
             build_rules,
             build_timer_id: 0,
@@ -234,16 +249,19 @@ fn build_and_run(
             git_pending_op: None,
             git_timer_id: 0,
             editor_view,
+            welcome,
             sidebar,
             git_panel,
             search_panel,
             run_panel,
             symbols_panel,
+            ai_panel,
             extensions_panel,
             output,
             problems_panel,
             status,
             activity_bar,
+            command_palette: command_palette::CommandPalette::new(&win),
             panel_ids,
         });
     }
@@ -288,13 +306,27 @@ fn build_and_run(
             .item(34, t("Stop"), 0)
             .item(35, t("Clean"), 0)
         .end_menu()
+        .menu(t("AI"))
+            .item(50, t("AI Assistant"), 0)
+            .separator()
+            .item(51, t("Explain Code"), 0)
+            .item(52, t("Refactor Code"), 0)
+            .item(53, t("Fix Code"), 0)
+            .item(54, t("Generate Code"), 0)
+            .item(55, t("Generate Tests"), 0)
+            .item(56, t("Review Code"), 0)
+            .separator()
+            .item(57, t("AI Settings..."), 0)
+        .end_menu()
         .menu(t("Help"))
             .item(40, t("About anyOS Code"), 0)
+            .item(41, t("Command Palette"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
 
     // ── Wire all events ──
+    events::wire_keyboard(&win);
     events::wire_menu(&menu);
     events::wire_toolbar(&tb);
     events::wire_activity_bar();
@@ -305,7 +337,10 @@ fn build_and_run(
     events::wire_extensions_panel();
     events::wire_problems_panel();
     events::wire_git_panel();
+    events::wire_ai_panel();
     events::wire_editor();
+    events::wire_welcome_tab();
+    events::wire_command_palette();
     events::wire_terminal();
     events::wire_timers();
 

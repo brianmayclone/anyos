@@ -1515,14 +1515,22 @@ pub extern "C" fn anyui_imageview_clear(id: ControlId) {
 pub extern "C" fn anyui_iconbutton_set_pixels(id: ControlId, data: *const u32, w: u32, h: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::IconButton {
-            let count = (w as usize) * (h as usize);
-            if !data.is_null() && count > 0 {
-                let slice = unsafe { core::slice::from_raw_parts(data, count) };
-                let raw: *mut dyn Control = &mut **ctrl;
+        let count = (w as usize) * (h as usize);
+        if data.is_null() || count == 0 {
+            return;
+        }
+        let slice = unsafe { core::slice::from_raw_parts(data, count) };
+        let raw: *mut dyn Control = &mut **ctrl;
+        match ctrl.kind() {
+            ControlKind::IconButton => {
                 let ib = unsafe { &mut *(raw as *mut controls::icon_button::IconButton) };
                 ib.set_icon_pixels(slice, w, h);
             }
+            ControlKind::PlainButton => {
+                let pb = unsafe { &mut *(raw as *mut controls::plain_button::PlainButton) };
+                pb.set_icon_pixels(slice, w, h);
+            }
+            _ => {}
         }
     }
 }

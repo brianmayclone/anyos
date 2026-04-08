@@ -32,6 +32,9 @@ dynlink::dll_exports! {
             cb: Option<ProgressCallback>, userdata: u64) -> u32,
         libhttp_post(url: *const u8, url_len: u32, body: *const u8, body_len: u32,
             ct: *const u8, ct_len: u32, buf: *mut u8, buf_len: u32) -> u32,
+        libhttp_post_with_headers(url: *const u8, url_len: u32, body: *const u8, body_len: u32,
+            ct: *const u8, ct_len: u32, headers: *const u8, headers_len: u32,
+            buf: *mut u8, buf_len: u32) -> u32,
         libhttp_last_status() -> u32,
         libhttp_last_error() -> u32,
     }
@@ -114,6 +117,26 @@ pub fn post(url: &str, body: &[u8], content_type: &str) -> Option<Vec<u8>> {
         url.as_ptr(), url.len() as u32,
         body.as_ptr(), body.len() as u32,
         content_type.as_ptr(), content_type.len() as u32,
+        buf.as_mut_ptr(), buf.len() as u32,
+    );
+    if n == u32::MAX { return None; }
+    buf.truncate(n as usize);
+    Some(buf)
+}
+
+/// Perform an HTTP(S) POST request with custom headers.
+///
+/// `extra_headers` must be pre-formatted with CRLF line endings, e.g.:
+/// `"Authorization: Bearer sk-...\r\nX-Custom: value\r\n"`
+///
+/// Returns `Some(response_body)` on success, `None` on error.
+pub fn post_with_headers(url: &str, body: &[u8], content_type: &str, extra_headers: &str) -> Option<Vec<u8>> {
+    let mut buf = vec![0u8; 256 * 1024];
+    let n = (lib().libhttp_post_with_headers)(
+        url.as_ptr(), url.len() as u32,
+        body.as_ptr(), body.len() as u32,
+        content_type.as_ptr(), content_type.len() as u32,
+        extra_headers.as_ptr(), extra_headers.len() as u32,
         buf.as_mut_ptr(), buf.len() as u32,
     );
     if n == u32::MAX { return None; }

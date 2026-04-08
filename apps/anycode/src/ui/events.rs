@@ -3,7 +3,7 @@ use alloc::string::String;
 use libanyui_client as anyui;
 
 use crate::app;
-use crate::logic::{commands, git, tasks};
+use crate::logic::{ai, commands, git, tasks};
 use crate::ui::toolbar::AppToolbar;
 use crate::util::path;
 
@@ -11,7 +11,92 @@ use crate::util::path;
 //  Event wiring — connects UI widgets to command functions
 // ════════════════════════════════════════════════════════════════
 
-/// Wire all activity bar button click events.
+// ── Keyboard shortcuts (Window-level) ──────────────────────────
+
+pub fn wire_keyboard(win: &anyui::Window) {
+    win.on_key_down(|e| {
+        let s = app();
+
+        // Command palette: Ctrl+P
+        if e.ctrl() && e.keycode == b'P' as u32 {
+            s.command_palette.toggle();
+            return;
+        }
+
+        // Close command palette on Escape
+        if e.keycode == anyui::KEY_ESCAPE && s.command_palette.visible {
+            s.command_palette.hide();
+            return;
+        }
+
+        // Save: Ctrl+S
+        if e.ctrl() && !e.shift() && e.keycode == b'S' as u32 {
+            commands::save();
+            return;
+        }
+
+        // Save All: Ctrl+Shift+S
+        if e.ctrl() && e.shift() && e.keycode == b'S' as u32 {
+            commands::save_all();
+            return;
+        }
+
+        // Find in Files: Ctrl+Shift+F
+        if e.ctrl() && e.shift() && e.keycode == b'F' as u32 {
+            commands::switch_sidebar_view(2);
+            app().search_panel.search_field.focus();
+            return;
+        }
+
+        // AI Assistant: Ctrl+Shift+A
+        if e.ctrl() && e.shift() && e.keycode == b'A' as u32 {
+            commands::switch_sidebar_view(5);
+            return;
+        }
+
+        // Build: F7
+        if e.keycode == anyui::KEY_F7 {
+            commands::build();
+            return;
+        }
+
+        // Run: F5
+        if e.keycode == anyui::KEY_F5 {
+            commands::run();
+            return;
+        }
+
+        // Stop: Shift+F5
+        if e.shift() && e.keycode == anyui::KEY_F5 {
+            commands::stop();
+            return;
+        }
+
+        // New File: Ctrl+N
+        if e.ctrl() && e.keycode == b'N' as u32 {
+            commands::new_file();
+            return;
+        }
+
+        // Close Tab: Ctrl+W
+        if e.ctrl() && e.keycode == b'W' as u32 {
+            let s = app();
+            if s.file_mgr.count() > 0 {
+                commands::close_tab(s.file_mgr.active);
+            }
+            return;
+        }
+
+        // Toggle Terminal: Ctrl+` (backtick = 0x60)
+        if e.ctrl() && e.keycode == 0x60 {
+            app().output.show_terminal();
+            return;
+        }
+    });
+}
+
+// ── Activity bar ───────────────────────────────────────────────
+
 pub fn wire_activity_bar() {
     app().activity_bar.btn_files.on_click(|_| commands::switch_sidebar_view(0));
     app().activity_bar.btn_git.on_click(|_| commands::switch_sidebar_view(1));
@@ -21,10 +106,19 @@ pub fn wire_activity_bar() {
         commands::refresh_symbols();
         commands::switch_sidebar_view(4);
     });
-    app().activity_bar.btn_extensions.on_click(|_| commands::switch_sidebar_view(5));
+    app().activity_bar.btn_ai.on_click(|_| {
+        let s = app();
+        if !s.ai_client.config.is_configured() {
+            s.ai_panel.show_setup_needed();
+        }
+        s.ai_panel.set_provider(s.ai_client.config.provider);
+        commands::switch_sidebar_view(5);
+    });
+    app().activity_bar.btn_extensions.on_click(|_| commands::switch_sidebar_view(6));
 }
 
-/// Wire all toolbar button click events.
+// ── Toolbar ────────────────────────────────────────────────────
+
 pub fn wire_toolbar(tb: &AppToolbar) {
     tb.btn_new.on_click(|_| commands::new_file());
     tb.btn_open.on_click(|_| commands::open_folder());
@@ -36,7 +130,8 @@ pub fn wire_toolbar(tb: &AppToolbar) {
     tb.btn_settings.on_click(|_| commands::open_settings());
 }
 
-/// Wire the menu bar events.
+// ── Menu bar ───────────────────────────────────────────────────
+
 pub fn wire_menu(menu: &anyui::MenuBar) {
     menu.on_item(|e| {
         match e.item_id {
@@ -45,14 +140,14 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
             3 => commands::save(),
             4 => commands::save_all(),
             5 => anyui::quit(),
-            10..=13 => {} // Handled by editor widget
-            14 => commands::switch_sidebar_view(2), // Find in Files
+            10..=13 => {}
+            14 => commands::switch_sidebar_view(2),
             20 => commands::switch_sidebar_view(0),
             21 => commands::switch_sidebar_view(1),
             22 => commands::switch_sidebar_view(2),
             23 => commands::switch_sidebar_view(3),
             24 => commands::switch_sidebar_view(4),
-            25 => commands::switch_sidebar_view(5),
+            25 => commands::switch_sidebar_view(6),
             26 => app().output.show_output(),
             27 => app().output.show_problems(),
             28 => app().output.show_terminal(),
@@ -63,14 +158,24 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
             34 => commands::stop(),
             35 => commands::clean(),
             40 => commands::about(),
+            41 => app().command_palette.toggle(),
+            50 => commands::switch_sidebar_view(5),
+            51 => commands::ai_action(ai::CodeAction::Explain),
+            52 => commands::ai_action(ai::CodeAction::Refactor),
+            53 => commands::ai_action(ai::CodeAction::Fix),
+            54 => commands::ai_action(ai::CodeAction::Generate),
+            55 => commands::ai_action(ai::CodeAction::Test),
+            56 => commands::ai_action(ai::CodeAction::Review),
+            57 => commands::ai_settings(),
             _ => {}
         }
     });
 }
 
-/// Wire sidebar (explorer) events.
+// ── Sidebar (file explorer) ────────────────────────────────────
+
 pub fn wire_sidebar() {
-    // Tree view: selection opens file
+    // File tree selection opens file
     app().sidebar.tree.on_selection_changed(|e| {
         let s = app();
         let idx = e.index;
@@ -83,7 +188,23 @@ pub fn wire_sidebar() {
         }
     });
 
-    // Context menu: New File / New Folder / Delete
+    // Search field: live filter as user types
+    app().sidebar.search.on_text_changed(|_| {
+        let s = app();
+        let mut buf = [0u8; 128];
+        let len = s.sidebar.search.get_text(&mut buf);
+        if len == 0 {
+            // Empty filter → refresh full tree
+            if let Some(ref proj) = s.current_project {
+                let root = proj.root.clone();
+                s.sidebar.populate(&root);
+            }
+        } else if let Ok(filter) = core::str::from_utf8(&buf[..len as usize]) {
+            s.sidebar.filter_tree(filter);
+        }
+    });
+
+    // Context menu
     app().sidebar.context_menu.on_item_click(|e| {
         let s = app();
         let dir = match s.sidebar.selected_dir() {
@@ -121,12 +242,10 @@ pub fn wire_sidebar() {
         }
     });
 
-    // Enter key triggers inline rename
     app().sidebar.tree.on_enter(|_| {
         app().sidebar.start_rename();
     });
 
-    // Rename field submit
     app().sidebar.rename_field.on_submit(|_| {
         let s = app();
         s.sidebar.finish_rename();
@@ -136,7 +255,8 @@ pub fn wire_sidebar() {
     });
 }
 
-/// Wire search panel events.
+// ── Search panel ───────────────────────────────────────────────
+
 pub fn wire_search_panel() {
     app().search_panel.btn_search.on_click(|_| commands::search_in_project());
     app().search_panel.search_field.on_submit(|_| commands::search_in_project());
@@ -151,14 +271,14 @@ pub fn wire_search_panel() {
     });
 }
 
-/// Wire run panel events.
+// ── Run panel ──────────────────────────────────────────────────
+
 pub fn wire_run_panel() {
     app().run_panel.btn_run.on_click(|_| commands::run());
     app().run_panel.btn_build.on_click(|_| commands::build());
     app().run_panel.btn_test.on_click(|_| commands::test());
     app().run_panel.btn_stop.on_click(|_| commands::stop());
 
-    // Task tree click — select task
     app().run_panel.tree.on_selection_changed(|e| {
         let s = app();
         if let Some(task_idx) = s.run_panel.task_index_for_node(e.index) {
@@ -173,7 +293,6 @@ pub fn wire_run_panel() {
         }
     });
 
-    // Double-click (Enter) executes task
     app().run_panel.tree.on_enter(|_| {
         let s = app();
         let sel = s.run_panel.tree.selected();
@@ -185,17 +304,45 @@ pub fn wire_run_panel() {
     });
 }
 
-/// Wire symbols panel events.
+// ── Symbols panel ──────────────────────────────────────────────
+
 pub fn wire_symbols_panel() {
     app().symbols_panel.tree.on_selection_changed(|e| {
         let s = app();
-        if let Some(_line) = s.symbols_panel.line_for_node(e.index) {
-            // TODO: navigate editor to line when TextEditor supports set_cursor_line()
+        if let Some(line) = s.symbols_panel.line_for_node(e.index) {
+            // Navigate editor to the symbol's line
+            if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+                editor.set_cursor(line, 0);
+                editor.ensure_line_visible(line);
+            }
         }
     });
 }
 
-/// Wire extensions panel events.
+// ── AI panel ───────────────────────────────────────────────────
+
+pub fn wire_ai_panel() {
+    app().ai_panel.btn_send.on_click(|_| commands::ai_chat());
+    app().ai_panel.input_field.on_submit(|_| commands::ai_chat());
+
+    app().ai_panel.btn_explain.on_click(|_| commands::ai_action(ai::CodeAction::Explain));
+    app().ai_panel.btn_refactor.on_click(|_| commands::ai_action(ai::CodeAction::Refactor));
+    app().ai_panel.btn_fix.on_click(|_| commands::ai_action(ai::CodeAction::Fix));
+    app().ai_panel.btn_generate.on_click(|_| commands::ai_action(ai::CodeAction::Generate));
+    app().ai_panel.btn_test.on_click(|_| commands::ai_action(ai::CodeAction::Test));
+    app().ai_panel.btn_review.on_click(|_| commands::ai_action(ai::CodeAction::Review));
+
+    app().ai_panel.btn_clear.on_click(|_| {
+        let s = app();
+        s.ai_client.clear_history();
+        s.ai_panel.clear_chat();
+    });
+
+    app().ai_panel.btn_settings.on_click(|_| commands::ai_settings());
+}
+
+// ── Extensions panel ───────────────────────────────────────────
+
 pub fn wire_extensions_panel() {
     app().extensions_panel.btn_refresh.on_click(|_| {
         let s = app();
@@ -212,11 +359,12 @@ pub fn wire_extensions_panel() {
     });
 }
 
-/// Wire problems panel events.
+// ── Problems panel ─────────────────────────────────────────────
+
 pub fn wire_problems_panel() {
     app().problems_panel.tree.on_selection_changed(|e| {
         let s = app();
-        if let Some((file_path, _line)) = s.problems_panel.location_for_node(e.index) {
+        if let Some((file_path, line)) = s.problems_panel.location_for_node(e.index) {
             let owned = String::from(file_path);
             if !owned.is_empty() {
                 let full = if owned.starts_with('/') {
@@ -227,13 +375,22 @@ pub fn wire_problems_panel() {
                     owned
                 };
                 commands::open_file(&full);
+                // Navigate to the error line
+                if line > 0 {
+                    let s = app();
+                    if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+                        editor.set_cursor(line.saturating_sub(1), 0);
+                        editor.ensure_line_visible(line.saturating_sub(1));
+                    }
+                }
                 commands::update_status();
             }
         }
     });
 }
 
-/// Wire git panel events.
+// ── Git panel ──────────────────────────────────────────────────
+
 pub fn wire_git_panel() {
     app().git_panel.tree.on_selection_changed(|e| {
         let s = app();
@@ -303,7 +460,8 @@ pub fn wire_git_panel() {
     });
 }
 
-/// Wire editor tab bar events.
+// ── Editor tab bar + modification tracking ─────────────────────
+
 pub fn wire_editor() {
     app().editor_view.tab_bar.on_active_changed(|e| {
         let s = app();
@@ -321,7 +479,99 @@ pub fn wire_editor() {
     });
 }
 
-/// Wire terminal input.
+/// Wire text-changed event on a newly created editor (called from editor_view).
+/// This enables file-modified tracking and live symbol updates.
+pub fn wire_editor_text_changed(editor_index: usize) {
+    let s = app();
+    if let Some(editor) = s.editor_view.editor_widget(editor_index) {
+        editor.on_text_changed(move |_| {
+            let s = app();
+            s.file_mgr.mark_modified(editor_index);
+            s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+        });
+    }
+}
+
+// ── Welcome tab ────────────────────────────────────────────────
+
+pub fn wire_welcome_tab() {
+    app().welcome.btn_new_file.on_click(|_| commands::new_file());
+    app().welcome.btn_open_folder.on_click(|_| commands::open_folder());
+    app().welcome.btn_ai_setup.on_click(|_| commands::ai_settings());
+}
+
+// ── Command palette ────────────────────────────────────────────
+
+pub fn wire_command_palette() {
+    // Live filter as user types
+    app().command_palette.input_field.on_text_changed(|_| {
+        let s = app();
+        let filter = s.command_palette.get_filter();
+        s.command_palette.update_list(&filter);
+    });
+
+    // Enter executes selected command
+    app().command_palette.input_field.on_submit(|_| {
+        let s = app();
+        if let Some(cmd_id) = s.command_palette.selected_command_id() {
+            s.command_palette.hide();
+            execute_palette_command(cmd_id);
+        }
+    });
+
+    // Click on list item executes command
+    app().command_palette.list.on_enter(|_| {
+        let s = app();
+        if let Some(cmd_id) = s.command_palette.selected_command_id() {
+            s.command_palette.hide();
+            execute_palette_command(cmd_id);
+        }
+    });
+}
+
+fn execute_palette_command(cmd_id: u32) {
+    match cmd_id {
+        100 => commands::new_file(),
+        101 => commands::open_folder(),
+        102 => commands::save(),
+        103 => commands::save_all(),
+        104 => {
+            let s = app();
+            if s.file_mgr.count() > 0 {
+                commands::close_tab(s.file_mgr.active);
+            }
+        }
+        110 => commands::build(),
+        111 => commands::run(),
+        112 => commands::test(),
+        113 => commands::check(),
+        114 => commands::clean(),
+        115 => commands::stop(),
+        120 => commands::switch_sidebar_view(0),
+        121 => commands::switch_sidebar_view(1),
+        122 => commands::switch_sidebar_view(2),
+        123 => commands::switch_sidebar_view(3),
+        124 => commands::switch_sidebar_view(4),
+        125 => commands::switch_sidebar_view(6),
+        126 => commands::switch_sidebar_view(5),
+        127 => app().output.show_output(),
+        128 => app().output.show_problems(),
+        129 => app().output.show_terminal(),
+        130 => commands::ai_action(ai::CodeAction::Explain),
+        131 => commands::ai_action(ai::CodeAction::Refactor),
+        132 => commands::ai_action(ai::CodeAction::Fix),
+        133 => commands::ai_action(ai::CodeAction::Generate),
+        134 => commands::ai_action(ai::CodeAction::Test),
+        135 => commands::ai_action(ai::CodeAction::Review),
+        160 => commands::open_settings(),
+        161 => commands::ai_settings(),
+        199 => commands::about(),
+        _ => {}
+    }
+}
+
+// ── Terminal ───────────────────────────────────────────────────
+
 pub fn wire_terminal() {
     app().output.terminal_input.on_submit(|_| {
         let s = app();
@@ -336,9 +586,10 @@ pub fn wire_terminal() {
     });
 }
 
-/// Wire all timers.
+// ── Timers ─────────────────────────────────────────────────────
+
 pub fn wire_timers() {
-    // Cursor position timer (500ms)
+    // Cursor position update (500ms)
     anyui::set_timer(500, || {
         let s = app();
         if s.file_mgr.count() > 0 {
@@ -347,7 +598,7 @@ pub fn wire_timers() {
         }
     });
 
-    // Terminal output poll timer (200ms)
+    // Terminal output poll (200ms)
     anyui::set_timer(200, || {
         let s = app();
         if s.output.shell_tid != 0 {

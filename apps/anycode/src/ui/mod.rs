@@ -12,3 +12,8 @@ pub mod extensions_panel;
 pub mod symbols_panel;
 pub mod splash;
 pub mod events;
+pub mod ai_panel;
+pub mod command_palette;
+pub mod welcome_tab;
+pub mod settings_dialog;
+pub mod ai_settings_dialog;
