@@ -1363,7 +1363,7 @@ impl ExFatFs {
         let mut entries = Vec::new();
         let raw = self.read_dir_raw(cluster)?;
         self.parse_dir_entries(&raw, &mut entries);
-        crate::serial_println!("  [exFAT] read_dir: cluster={} raw_bytes={} entries={}",
+        crate::serial_verbose_println!("  [exFAT] read_dir: cluster={} raw_bytes={} entries={}",
             cluster, raw.len(), entries.len());
         Ok(entries)
     }

@@ -1267,27 +1267,6 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
         }
         let (cluster, _contiguous) = crate::fs::exfat::decode_inode(r.inode);
         let mut entries = exfat.read_dir(cluster)?;
-        
-        // Resolve symlink target types so file_type is transparent
-        let dir_path = if path.ends_with('/') || path == "/" {
-            String::from(path)
-        } else {
-            let mut s = String::from(path);
-            s.push('/');
-            s
-        };
-        for entry in entries.iter_mut() {
-            if entry.is_symlink {
-                // Try to resolve target to get the real file type
-                let mut entry_path = dir_path.clone();
-                entry_path.push_str(&entry.name);
-                if let Ok(resolved) = resolve_exfat_path(exfat, &entry_path, true) {
-                    entry.file_type = resolved.file_type;
-                    entry.size = resolved.size;
-                }
-                // If resolution fails (broken symlink), keep original type
-            }
-        }
 
         if path == "/" {
             add_virtual_root_entries(state, &mut entries);

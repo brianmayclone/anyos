@@ -501,16 +501,20 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         // syscall or demand-page handler can leave locks permanently held,
         // deadlocking the entire system. Check all critical locks:
         let cpu = crate::arch::x86::smp::current_cpu_id() as u32;
+        let mut recovery_state_dirty = false;
         if crate::task::scheduler::is_scheduler_locked_by_cpu(cpu) {
             unsafe { crate::task::scheduler::force_unlock_scheduler(); }
+            recovery_state_dirty = true;
         }
         if crate::memory::physical::is_allocator_locked_by_cpu(cpu) {
             unsafe { crate::memory::physical::force_unlock_allocator(); }
             crate::serial_println!("  RECOVERED: force-released physical allocator lock");
+            recovery_state_dirty = true;
         }
         if crate::task::dll::is_dll_locked_by_cpu(cpu) {
             unsafe { crate::task::dll::force_unlock_dlls(); }
             crate::serial_println!("  RECOVERED: force-released LOADED_DLLS lock");
+            recovery_state_dirty = true;
         }
         // GPU Mutex: a fault inside a GPU syscall (e.g. SYS_GPU_COMMAND, DMA)
         // leaves the GPU Mutex held. Without release, every subsequent GPU call
@@ -518,35 +522,37 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         if crate::drivers::gpu::is_gpu_locked() {
             unsafe { crate::drivers::gpu::force_unlock_gpu(); }
             crate::serial_println!("  RECOVERED: force-released GPU mutex");
+            recovery_state_dirty = true;
         }
 
-        // Try the clean path: try_exit_current acquires the scheduler lock,
-        // marks the thread terminated, and calls schedule() → context switch.
+        // Once we had to force-release kernel locks, we no longer trust the
+        // global state enough to route the fault through the normal scheduler
+        // path. In that case, skip straight to the dedicated fallback that
+        // parks the CPU on the idle stack.
         //
-        // If try_lock fails (another CPU holds the lock), we must NOT spin
-        // in a tight loop — that causes SPIN TIMEOUT on the contended CPU.
-        // Instead, spin briefly (64 PAUSEs) then yield via schedule() so the
-        // lock holder gets CPU time and can release it.  Cap at 100 attempts
-        // (each attempt may sleep a full scheduler tick ≈ 1 ms → 100 ms max).
-        for _ in 0..100 {
-            if crate::task::scheduler::try_exit_current(signal) {
-                // Clear re-entrancy guard (never reached — try_exit_current
-                // calls schedule() and never returns, but clear for safety)
-                if cpu_id < crate::arch::x86::smp::MAX_CPUS {
-                    FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
+        // Even on the clean path we must NOT call schedule() from the fault
+        // handler. Re-entering the generic scheduler from an exception frame
+        // is fragile and was a major source of corruption when the current
+        // thread faulted during a syscall. Try a few non-blocking exit attempts,
+        // then fall back to the dedicated recovery path.
+        if !recovery_state_dirty {
+            for _ in 0..8 {
+                if crate::task::scheduler::try_exit_current(signal) {
+                    if cpu_id < crate::arch::x86::smp::MAX_CPUS {
+                        FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
+                    }
+                    unreachable!();
                 }
-                unreachable!();
+                for _ in 0..64 { core::hint::spin_loop(); }
             }
-            // Brief spin (gives lock holder a chance to finish without a full
-            // context switch for the common case where the lock is released quickly).
-            for _ in 0..64 { core::hint::spin_loop(); }
-            // Then yield so the lock holder can run if it's on this CPU's queue.
-            crate::task::scheduler::schedule();
         }
         // Clean path failed — use manual fallback: kill thread, repair state,
         // enter idle loop. Does NOT call schedule()/context_switch, avoiding
         // the deadlock where schedule_inner's try_lock loop spins forever.
-        crate::serial_println!("  try_exit_current failed 1000x — falling back to manual recovery");
+        crate::serial_println!(
+            "  fault recovery using manual kill path (scheduler state dirty={}): falling back",
+            recovery_state_dirty as u8
+        );
         if cpu_id < crate::arch::x86::smp::MAX_CPUS {
             FAULT_HANDLER_ACTIVE[cpu_id].store(false, Ordering::Relaxed);
         }
