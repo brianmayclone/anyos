@@ -3,6 +3,15 @@
 use super::{get_cpu_id, SCHEDULER, schedule};
 use crate::task::thread::ThreadState;
 
+#[inline]
+fn consume_exit_status(thread: &mut crate::task::thread::Thread) -> u32 {
+    let code = thread.exit_code.unwrap_or(0);
+    thread.exit_code = None;
+    thread.exit_waiter_tid = None;
+    thread.retain_exit_status = false;
+    code
+}
+
 /// Wait for a thread to terminate and return its exit code.
 pub fn waitpid(tid: u32) -> u32 {
     {
@@ -12,14 +21,12 @@ pub fn waitpid(tid: u32) -> u32 {
         let sched = match guard.as_mut() { Some(s) => s, None => return u32::MAX };
         if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
             if target.state == ThreadState::Terminated {
-                let code = target.exit_code.unwrap_or(0);
-                target.exit_code = None;
-                return code;
+                return consume_exit_status(target);
             }
         } else { return u32::MAX; }
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
-                target.waiting_tid = Some(current_tid);
+                target.exit_waiter_tid = Some(current_tid);
             }
             if let Some(idx) = sched.current_idx(cpu_id) {
                 // CRITICAL: Set Blocked FIRST, then clear save_complete.
@@ -45,9 +52,7 @@ pub fn waitpid(tid: u32) -> u32 {
             if let Some(sched) = guard.as_mut() {
                 if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
                     if target.state == ThreadState::Terminated {
-                        let code = target.exit_code.unwrap_or(0);
-                        target.exit_code = None;
-                        return code;
+                        return consume_exit_status(target);
                     }
                 } else { return u32::MAX; }
             }
@@ -75,8 +80,7 @@ pub fn waitpid_any() -> (u32, u32) {
                 && t.exit_code.is_some()
         ) {
             let child_tid = sched.threads[child_idx].tid;
-            let code = sched.threads[child_idx].exit_code.unwrap_or(0);
-            sched.threads[child_idx].exit_code = None;
+            let code = consume_exit_status(&mut sched.threads[child_idx]);
             return (child_tid, code);
         }
 
@@ -86,10 +90,10 @@ pub fn waitpid_any() -> (u32, u32) {
             return (u32::MAX, u32::MAX);
         }
 
-        // Set waiting_tid on all non-terminated children so exit_current wakes us
+        // Set blocking waiters on all non-terminated children so exit_current wakes us.
         for t in sched.threads.iter_mut() {
             if t.parent_tid == current_tid && t.state != ThreadState::Terminated {
-                t.waiting_tid = Some(current_tid);
+                t.exit_waiter_tid = Some(current_tid);
             }
         }
 
@@ -113,8 +117,7 @@ pub fn waitpid_any() -> (u32, u32) {
                         && t.exit_code.is_some()
                 ) {
                     let child_tid = sched.threads[child_idx].tid;
-                    let code = sched.threads[child_idx].exit_code.unwrap_or(0);
-                    sched.threads[child_idx].exit_code = None;
+                    let code = consume_exit_status(&mut sched.threads[child_idx]);
                     return (child_tid, code);
                 }
                 // No children at all → ECHILD
@@ -142,42 +145,37 @@ pub fn try_waitpid_any() -> (u32, u32) {
             && t.exit_code.is_some()
     ) {
         let child_tid = sched.threads[child_idx].tid;
-        let code = sched.threads[child_idx].exit_code.unwrap_or(0);
-        sched.threads[child_idx].exit_code = None;
-        // Mark waiting so reaper doesn't reclaim before caller checks
-        sched.threads[child_idx].waiting_tid = Some(current_tid);
+        let code = consume_exit_status(&mut sched.threads[child_idx]);
         return (child_tid, code);
     }
     let has_children = sched.threads.iter().any(|t| t.parent_tid == current_tid);
     if !has_children {
         (u32::MAX, u32::MAX)
     } else {
+        for t in sched.threads.iter_mut() {
+            if t.parent_tid == current_tid && t.state != ThreadState::Terminated {
+                t.retain_exit_status = true;
+            }
+        }
         (u32::MAX - 1, u32::MAX - 1) // STILL_RUNNING equivalent
     }
 }
 
 /// Non-blocking check if a thread has terminated.
-/// Also marks the target with `waiting_tid` so the auto-reaper won't
+/// Also marks the target as retainable so the auto-reaper won't
 /// discard the exit code before the caller can retrieve it.
 pub fn try_waitpid(tid: u32) -> u32 {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_TRY_WAITPID);
     let mut guard = SCHEDULER.lock();
     let sched = match guard.as_mut() { Some(s) => s, None => return u32::MAX };
-    let caller_tid = sched.per_cpu[get_cpu_id()].current_tid.unwrap_or(0);
     if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         if target.state == ThreadState::Terminated {
-            let code = target.exit_code.unwrap_or(0);
-            target.exit_code = None;
-            return code;
+            return consume_exit_status(target);
         }
         if target.state == ThreadState::Stopped {
             return u32::MAX - 2; // Stopped by signal
         }
-        // Mark that someone is polling for this thread's exit —
-        // prevents auto-reap from discarding the exit code.
-        if target.waiting_tid.is_none() {
-            target.waiting_tid = Some(caller_tid);
-        }
+        target.retain_exit_status = true;
         return u32::MAX - 1; // Still running
     }
     u32::MAX // Not found

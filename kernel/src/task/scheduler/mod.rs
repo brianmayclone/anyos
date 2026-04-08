@@ -581,7 +581,8 @@ impl Scheduler {
                     continue;
                 }
                 let consumed = self.threads[i].exit_code.is_none();
-                let auto_reap = self.threads[i].waiting_tid.is_none()
+                let auto_reap = self.threads[i].exit_waiter_tid.is_none()
+                    && !self.threads[i].retain_exit_status
                     && self.threads[i].terminated_at_tick
                         .map(|t| current_tick.wrapping_sub(t) > 200)
                         .unwrap_or(false);

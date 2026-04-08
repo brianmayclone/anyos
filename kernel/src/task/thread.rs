@@ -141,7 +141,11 @@ pub struct Thread {
     pub priority: u8,
     pub name: [u8; 32],
     pub exit_code: Option<u32>,
-    pub waiting_tid: Option<u32>,
+    /// Thread blocked in `waitpid`/`waitpid_any` waiting for this thread's state change.
+    pub exit_waiter_tid: Option<u32>,
+    /// Prevent automatic reaping even when no blocking waiter exists.
+    /// Used by non-blocking `WNOHANG` polling so exit status remains observable.
+    pub retain_exit_status: bool,
     pub is_user: bool,
     /// Per-process page directory (None for kernel threads that share the kernel PD).
     pub page_directory: Option<PhysAddr>,
@@ -321,7 +325,8 @@ impl Thread {
             priority,
             name: name_buf,
             exit_code: None,
-            waiting_tid: None,
+            exit_waiter_tid: None,
+            retain_exit_status: false,
             is_user: false,
             page_directory: None,
             brk: 0,

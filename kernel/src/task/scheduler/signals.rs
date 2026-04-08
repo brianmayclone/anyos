@@ -39,7 +39,7 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
                 sched.threads[idx].state = ThreadState::Stopped;
                 crate::serial_verbose_println!("Signal {}: stopped T{} (was {:?})", sig, tid, state);
                 // Wake any waitpid waiter so it can see the stopped state
-                if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
+                if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
                     sched.wake_thread_inner(waiter_tid);
                 }
             }
@@ -237,7 +237,7 @@ pub fn stop_current_thread(sig: u32) {
             sched.threads[idx].state = ThreadState::Stopped;
             sched.threads[idx].context.save_complete = 0;
             // Wake any waitpid waiter so it can see the stopped state
-            if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
+            if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
                 sched.wake_thread_inner(waiter_tid);
             }
         }

@@ -12,6 +12,86 @@ use crate::task::context::{context_switch, CpuContext};
 use crate::task::thread::ThreadState;
 use core::sync::atomic::Ordering;
 
+fn prepare_idle_recovery_context<F>(cpu_id: usize, mut update_sched: F) -> (u64, Option<*const CpuContext>)
+where
+    F: FnMut(&mut super::Scheduler),
+{
+    let mut idle_stack_top: u64 = 0;
+    let mut idle_ctx: Option<*const CpuContext> = None;
+
+    if let Some(mut guard) = SCHEDULER.try_lock() {
+        if let Some(ref mut sched) = *guard {
+            update_sched(sched);
+
+            let idle_tid = sched.idle_tid[cpu_id];
+            if let Some(idx) = sched.find_idx(idle_tid) {
+                let kstack_top = sched.threads[idx].kernel_stack_top();
+                let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
+                crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
+                idle_stack_top = kstack_top;
+                sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
+                sched.per_cpu[cpu_id].current_idx = Some(idx);
+                sched.threads[idx].state = ThreadState::Running;
+                PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
+                PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
+                PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
+                PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
+                PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+                PER_CPU_FPU_PTR[cpu_id].store(
+                    sched.threads[idx].fpu_state.data.as_ptr() as u64,
+                    Ordering::Relaxed,
+                );
+                idle_ctx = Some(&sched.threads[idx].context as *const CpuContext);
+            }
+        }
+    } else {
+        let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
+        if idle_st >= super::KERNEL_ADDR_MIN {
+            crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_st);
+            idle_stack_top = idle_st;
+        }
+    }
+
+    (idle_stack_top, idle_ctx)
+}
+
+fn enter_idle_recovery(cpu_id: usize, idle_stack_top: u64, idle_ctx: Option<*const CpuContext>) -> ! {
+    if idle_ctx.is_none() {
+        PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
+        PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
+        PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
+        clear_per_cpu_name(cpu_id);
+    }
+
+    if let Some(new_ctx) = idle_ctx {
+        PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
+        crate::arch::hal::fpu_set_trap();
+        let scratch_ctx = unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
+        unsafe { context_switch(scratch_ctx, new_ctx); }
+    }
+
+    if idle_stack_top >= super::KERNEL_ADDR_MIN {
+        unsafe {
+            #[cfg(target_arch = "x86_64")]
+            core::arch::asm!(
+                "mov rsp, {0}", "sti", "2: hlt", "jmp 2b",
+                in(reg) idle_stack_top, options(noreturn)
+            );
+            #[cfg(target_arch = "aarch64")]
+            core::arch::asm!(
+                "mov sp, {0}",
+                "msr daifclr, #0xf",
+                "2: wfi",
+                "b 2b",
+                in(reg) idle_stack_top, options(noreturn)
+            );
+        }
+    } else {
+        crate::arch::hal::enable_interrupts();
+        loop { crate::arch::hal::halt(); }
+    }
+}
+
 /// Collect all child TIDs of a dying thread (direct children AND transitive
 /// descendants via recursive parent chains). Called with SCHEDULER lock held.
 /// Also marks all found children as Terminated and removes them from run queues.
@@ -54,7 +134,7 @@ fn collect_and_terminate_children(
             sched.remove_from_all_queues(child_tid);
 
             // Wake anyone waiting for this child
-            if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
+            if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
                 sched.wake_thread_inner(waiter_tid);
             }
         }
@@ -140,7 +220,7 @@ pub fn exit_current(code: u32) {
         sched.threads[idx].page_directory = None;
 
         // Wake any thread waiting via waitpid
-        if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
+        if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
             sched.wake_thread_inner(waiter_tid);
         }
         // Send SIGCHLD to parent
@@ -218,7 +298,7 @@ pub fn try_exit_current(code: u32) -> bool {
             }
         }
         sched.threads[idx].page_directory = None;
-        if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
+        if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
             sched.wake_thread_inner(waiter_tid);
         }
     } // Lock released
@@ -258,101 +338,36 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
 
     crate::arch::hal::irq_eoi();
 
-    let mut idle_stack_top: u64 = 0;
-    let mut idle_ctx: Option<*const CpuContext> = None;
-    {
-        if let Some(mut guard) = SCHEDULER.try_lock() {
-            if let Some(ref mut sched) = *guard {
-                if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
-                    if let Some(idx) = sched.find_idx(current_tid) {
-                        if sched.threads[idx].critical {
-                            crate::serial_verbose_println!(
-                                "  CRITICAL thread '{}' (TID={}) spared",
-                                sched.threads[idx].name_str(), current_tid,
-                            );
-                            sched.threads[idx].state = ThreadState::Ready;
-                            sched.threads[idx].context.save_complete = 1;
-                            let pri = sched.threads[idx].priority;
-                            sched.per_cpu[cpu_id].run_queue.enqueue(current_tid, pri);
-                        } else if !sched.threads[idx].is_idle {
-                            sched.threads[idx].state = ThreadState::Terminated;
-                            sched.threads[idx].exit_code = Some(139);
-                            sched.threads[idx].terminated_at_tick = Some(crate::arch::hal::timer_current_ticks());
-                            if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
-                                sched.wake_thread_inner(waiter_tid);
-                            }
-                        }
-                    }
-                    sched.per_cpu[cpu_id].current_tid = None;
-                    sched.per_cpu[cpu_id].current_idx = None;
-                }
-                let idle_tid = sched.idle_tid[cpu_id];
-                if let Some(idx) = sched.find_idx(idle_tid) {
-                    let kstack_top = sched.threads[idx].kernel_stack_top();
-                    let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
-                    crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
-                    idle_stack_top = kstack_top;
-                    sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
-                    sched.per_cpu[cpu_id].current_idx = Some(idx);
-                    sched.threads[idx].state = ThreadState::Running;
-                    PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-                    PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
-                    PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
-                    PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
-                    PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
-                    PER_CPU_FPU_PTR[cpu_id].store(
-                        sched.threads[idx].fpu_state.data.as_ptr() as u64,
-                        Ordering::Relaxed,
+    let (idle_stack_top, idle_ctx) = prepare_idle_recovery_context(cpu_id, |sched| {
+        if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
+            if let Some(idx) = sched.find_idx(current_tid) {
+                if sched.threads[idx].critical {
+                    crate::serial_verbose_println!(
+                        "  CRITICAL thread '{}' (TID={}) spared",
+                        sched.threads[idx].name_str(), current_tid,
                     );
-                    idle_ctx = Some(&sched.threads[idx].context as *const CpuContext);
+                    sched.threads[idx].state = ThreadState::Ready;
+                    sched.threads[idx].context.save_complete = 1;
+                    let pri = sched.threads[idx].priority;
+                    sched.per_cpu[cpu_id].run_queue.enqueue(current_tid, pri);
+                } else if !sched.threads[idx].is_idle {
+                    sched.threads[idx].state = ThreadState::Terminated;
+                    sched.threads[idx].exit_code = Some(139);
+                    sched.threads[idx].terminated_at_tick =
+                        Some(crate::arch::hal::timer_current_ticks());
+                    if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
+                        sched.wake_thread_inner(waiter_tid);
+                    }
                 }
             }
-        } else {
-            let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
-            if idle_st >= super::KERNEL_ADDR_MIN {
-                crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_st);
-                idle_stack_top = idle_st;
-            }
+            sched.per_cpu[cpu_id].current_tid = None;
+            sched.per_cpu[cpu_id].current_idx = None;
         }
-    }
-
-    if idle_ctx.is_none() {
-        PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
-        PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
-        PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
-        clear_per_cpu_name(cpu_id);
-    }
+    });
 
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
-
-    if let Some(new_ctx) = idle_ctx {
-        PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
-        crate::arch::hal::fpu_set_trap();
-        let scratch_ctx = unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
-        unsafe { context_switch(scratch_ctx, new_ctx); }
-    }
-
-    if idle_stack_top >= super::KERNEL_ADDR_MIN {
-        unsafe {
-            #[cfg(target_arch = "x86_64")]
-            core::arch::asm!(
-                "mov rsp, {0}", "sti", "2: hlt", "jmp 2b",
-                in(reg) idle_stack_top, options(noreturn)
-            );
-            #[cfg(target_arch = "aarch64")]
-            core::arch::asm!(
-                "mov sp, {0}",
-                "msr daifclr, #0xf",
-                "2: wfi",
-                "b 2b",
-                in(reg) idle_stack_top, options(noreturn)
-            );
-        }
-    } else {
-        crate::arch::hal::enable_interrupts();
-        loop { crate::arch::hal::halt(); }
-    }
+    enter_idle_recovery(cpu_id, idle_stack_top, idle_ctx);
 }
 
 /// Fallback recovery when try_exit_current fails. Kills thread and enters idle.
@@ -374,79 +389,40 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
         crate::serial_verbose_println!("  RECOVERED: force-released LOADED_DLLS lock");
     }
 
-    let mut idle_stack_top: u64 = 0;
     let mut pd_to_destroy: Option<PhysAddr> = None;
-    let mut idle_ctx: Option<*const CpuContext> = None;
-    {
-        if let Some(mut guard) = SCHEDULER.try_lock() {
-            if let Some(ref mut sched) = *guard {
-                if let Some(idx) = sched.find_idx(tid) {
-                    let parent_tid = sched.threads[idx].parent_tid;
-                    let tick = crate::arch::hal::timer_current_ticks();
-                    sched.remove_from_all_queues(tid);
-                    sched.threads[idx].state = ThreadState::Terminated;
-                    sched.threads[idx].exit_code = Some(signal);
-                    sched.threads[idx].terminated_at_tick = Some(tick);
-                    if let Some(pd) = sched.threads[idx].page_directory {
-                        if !sched.threads[idx].pd_shared {
-                            let has_live_siblings = sched.threads.iter().any(|t| {
-                                t.tid != tid
-                                    && t.page_directory == Some(pd)
-                                    && t.state != ThreadState::Terminated
-                            });
-                            if !has_live_siblings {
-                                pd_to_destroy = Some(pd);
-                            }
-                        }
+    let (idle_stack_top, idle_ctx) = prepare_idle_recovery_context(cpu_id, |sched| {
+        if let Some(idx) = sched.find_idx(tid) {
+            let parent_tid = sched.threads[idx].parent_tid;
+            let tick = crate::arch::hal::timer_current_ticks();
+            sched.remove_from_all_queues(tid);
+            sched.threads[idx].state = ThreadState::Terminated;
+            sched.threads[idx].exit_code = Some(signal);
+            sched.threads[idx].terminated_at_tick = Some(tick);
+            if let Some(pd) = sched.threads[idx].page_directory {
+                if !sched.threads[idx].pd_shared {
+                    let has_live_siblings = sched.threads.iter().any(|t| {
+                        t.tid != tid
+                            && t.page_directory == Some(pd)
+                            && t.state != ThreadState::Terminated
+                    });
+                    if !has_live_siblings {
+                        pd_to_destroy = Some(pd);
                     }
-                    sched.threads[idx].page_directory = None;
-                    if let Some(waiter_tid) = sched.threads[idx].waiting_tid {
-                        sched.wake_thread_inner(waiter_tid);
-                    }
-                    if parent_tid != 0 {
-                        if let Some(parent_idx) = sched.find_idx(parent_tid) {
-                            sched.threads[parent_idx].signals.send(crate::ipc::signal::SIGCHLD);
-                        }
-                    }
-                }
-                sched.per_cpu[cpu_id].current_tid = None;
-                sched.per_cpu[cpu_id].current_idx = None;
-                let idle_tid = sched.idle_tid[cpu_id];
-                if let Some(idx) = sched.find_idx(idle_tid) {
-                    let kstack_top = sched.threads[idx].kernel_stack_top();
-                    let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
-                    crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
-                    idle_stack_top = kstack_top;
-                    sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
-                    sched.per_cpu[cpu_id].current_idx = Some(idx);
-                    sched.threads[idx].state = ThreadState::Running;
-                    PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
-                    PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
-                    PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
-                    PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
-                    PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
-                    PER_CPU_FPU_PTR[cpu_id].store(
-                        sched.threads[idx].fpu_state.data.as_ptr() as u64,
-                        Ordering::Relaxed,
-                    );
-                    idle_ctx = Some(&sched.threads[idx].context as *const CpuContext);
                 }
             }
-        } else {
-            let idle_st = PER_CPU_IDLE_STACK_TOP[cpu_id].load(Ordering::Relaxed);
-            if idle_st >= super::KERNEL_ADDR_MIN {
-                crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_st);
-                idle_stack_top = idle_st;
+            sched.threads[idx].page_directory = None;
+            if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
+                sched.wake_thread_inner(waiter_tid);
+            }
+            if parent_tid != 0 {
+                if let Some(parent_idx) = sched.find_idx(parent_tid) {
+                    sched.threads[parent_idx].signals.send(crate::ipc::signal::SIGCHLD);
+                }
             }
         }
-    }
-
-    if idle_ctx.is_none() {
-        PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
-        PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
-        PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
-        clear_per_cpu_name(cpu_id);
-    }
+        sched.per_cpu[cpu_id].current_tid = None;
+        sched.per_cpu[cpu_id].current_idx = None;
+    });
 
     if tid != 0 {
         crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
@@ -459,34 +435,7 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
     if let Some(pd) = pd_to_destroy {
         DEFERRED_PD_DESTROY.lock().push(pd, tid);
     }
-
-    if let Some(new_ctx) = idle_ctx {
-        PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
-        crate::arch::hal::fpu_set_trap();
-        let scratch_ctx = unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
-        unsafe { context_switch(scratch_ctx, new_ctx); }
-    }
-
-    if idle_stack_top >= super::KERNEL_ADDR_MIN {
-        unsafe {
-            #[cfg(target_arch = "x86_64")]
-            core::arch::asm!(
-                "mov rsp, {0}", "sti", "2: hlt", "jmp 2b",
-                in(reg) idle_stack_top, options(noreturn)
-            );
-            #[cfg(target_arch = "aarch64")]
-            core::arch::asm!(
-                "mov sp, {0}",
-                "msr daifclr, #0xf",
-                "2: wfi",
-                "b 2b",
-                in(reg) idle_stack_top, options(noreturn)
-            );
-        }
-    } else {
-        crate::arch::hal::enable_interrupts();
-        loop { crate::arch::hal::halt(); }
-    }
+    enter_idle_recovery(cpu_id, idle_stack_top, idle_ctx);
 }
 
 /// Kill a thread by TID. Returns 0 on success, u32::MAX on error.
@@ -546,7 +495,7 @@ pub fn kill_thread(tid: u32) -> u32 {
             }
         }
 
-        if let Some(waiter_tid) = sched.threads[target_idx].waiting_tid {
+        if let Some(waiter_tid) = sched.threads[target_idx].exit_waiter_tid {
             sched.wake_thread_inner(waiter_tid);
         }
     }
