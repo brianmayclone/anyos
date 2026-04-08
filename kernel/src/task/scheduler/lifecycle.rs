@@ -5,7 +5,7 @@ use super::{get_cpu_id, SCHEDULER, schedule, close_all_fds_for_thread,
             PER_CPU_CURRENT_TID, PER_CPU_FPU_OWNER, PER_CPU_FPU_PTR,
             PER_CPU_HAS_THREAD, PER_CPU_IS_USER, PER_CPU_IDLE_STACK_TOP,
             PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP, SCRATCH_CTX,
-            clear_per_cpu_name};
+            clear_per_cpu_name, update_per_cpu_name};
 use super::deferred::DEFERRED_PD_DESTROY;
 use crate::memory::address::PhysAddr;
 use crate::task::context::{context_switch, CpuContext};
@@ -248,11 +248,16 @@ pub fn exit_current(code: u32) {
 
 /// Try to terminate the current thread (non-blocking lock acquisition).
 /// Also cascade-kills all child threads.
+///
+/// This path is used by fault handlers. On success it does NOT re-enter the
+/// generic scheduler; instead it switches directly to the per-CPU idle thread.
 pub fn try_exit_current(code: u32) -> bool {
     let my_cpu = get_cpu_id();
     let mut tid = 0u32;
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let mut killed_children: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+    let mut idle_stack_top: u64 = 0;
+    let mut idle_ctx: Option<*const CpuContext> = None;
     crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_TRY_EXIT_CURRENT);
 
     {
@@ -283,6 +288,8 @@ pub fn try_exit_current(code: u32) -> bool {
                 sched.threads[parent_idx].signals.send(crate::ipc::signal::SIGCHLD);
             }
         }
+
+        sched.remove_from_all_queues(current_tid);
         sched.threads[idx].state = ThreadState::Terminated;
         sched.threads[idx].exit_code = Some(code);
         sched.threads[idx].terminated_at_tick = Some(tick);
@@ -301,6 +308,35 @@ pub fn try_exit_current(code: u32) -> bool {
         if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
             sched.wake_thread_inner(waiter_tid);
         }
+
+        let idle_tid = sched.idle_tid[cpu_id];
+        if let Some(idle_idx) = sched.find_idx(idle_tid) {
+            let kstack_top = sched.threads[idle_idx].kernel_stack_top();
+            let kstack_bottom = sched.threads[idle_idx].kernel_stack_bottom();
+            crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
+            idle_stack_top = kstack_top;
+            sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
+            sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
+            sched.threads[idle_idx].state = ThreadState::Running;
+            PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
+            PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
+            PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
+            PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
+            PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+            PER_CPU_FPU_PTR[cpu_id].store(
+                sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
+                Ordering::Relaxed,
+            );
+            update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
+            idle_ctx = Some(&sched.threads[idle_idx].context as *const CpuContext);
+        } else {
+            sched.per_cpu[cpu_id].current_tid = None;
+            sched.per_cpu[cpu_id].current_idx = None;
+            PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
+            PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
+            PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
+            clear_per_cpu_name(cpu_id);
+        }
     } // Lock released
 
     cleanup_killed_children(&killed_children);
@@ -313,8 +349,7 @@ pub fn try_exit_current(code: u32) -> bool {
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
         crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, code, 0, 0,
     ));
-    schedule();
-    loop { crate::arch::hal::halt(); }
+    enter_idle_recovery(my_cpu, idle_stack_top, idle_ctx);
 }
 
 /// Saved by interrupts.asm before the recovery SWAPGS overwrites RSP.

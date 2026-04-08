@@ -642,6 +642,11 @@ impl Dom {
                     if self.tag(child_id) != Some(Tag::Source) {
                         continue;
                     }
+                    if let Some(mime) = self.attr(child_id, "type") {
+                        if !supports_image_mime(mime) {
+                            continue;
+                        }
+                    }
                     if let Some(srcset) = self.attr(child_id, "srcset") {
                         if let Some(candidate) = pick_srcset_candidate(srcset) {
                             return Some(candidate);
@@ -892,6 +897,9 @@ fn pick_srcset_candidate(srcset: &str) -> Option<String> {
             Some(url) if !url.is_empty() => url,
             _ => continue,
         };
+        if !supports_image_url(url) {
+            continue;
+        }
         let descriptor = parts.next().unwrap_or("");
         let score = if let Some(width) = descriptor.strip_suffix('w') {
             parse_positive_int(width).unwrap_or(1)
@@ -907,6 +915,47 @@ fn pick_srcset_candidate(srcset: &str) -> Option<String> {
     }
 
     best_url.map(String::from)
+}
+
+fn supports_image_mime(mime: &str) -> bool {
+    let mime = mime.trim();
+    mime.is_empty()
+        || mime.eq_ignore_ascii_case("image/png")
+        || mime.eq_ignore_ascii_case("image/jpeg")
+        || mime.eq_ignore_ascii_case("image/jpg")
+        || mime.eq_ignore_ascii_case("image/gif")
+        || mime.eq_ignore_ascii_case("image/webp")
+        || mime.eq_ignore_ascii_case("image/bmp")
+        || mime.eq_ignore_ascii_case("image/x-icon")
+        || mime.eq_ignore_ascii_case("image/vnd.microsoft.icon")
+        || mime.eq_ignore_ascii_case("image/svg+xml")
+}
+
+fn supports_image_url(url: &str) -> bool {
+    let base = url.split('?').next().unwrap_or(url);
+    let base = base.split('#').next().unwrap_or(base);
+    let lower = base.as_bytes();
+    !(ends_with_ascii_nocase(lower, b".avif")
+        || ends_with_ascii_nocase(lower, b".jxl")
+        || ends_with_ascii_nocase(lower, b".heic")
+        || ends_with_ascii_nocase(lower, b".heif"))
+}
+
+fn ends_with_ascii_nocase(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.len() > haystack.len() {
+        return false;
+    }
+    let start = haystack.len() - needle.len();
+    for i in 0..needle.len() {
+        let a = haystack[start + i];
+        let b = needle[i];
+        let a = if a.is_ascii_uppercase() { a + 32 } else { a };
+        let b = if b.is_ascii_uppercase() { b + 32 } else { b };
+        if a != b {
+            return false;
+        }
+    }
+    true
 }
 
 fn parse_positive_int(s: &str) -> Option<i32> {

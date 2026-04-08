@@ -34,13 +34,17 @@ pub fn probe(data: &[u8]) -> Option<ImageInfo> {
 pub fn decode(data: &[u8], out: &mut [u32], _scratch: &mut [u8]) -> i32 {
     if data.len() < 12 { return ERR_INVALID_DATA; }
     if &data[0..4] != b"RIFF" || &data[8..12] != b"WEBP" { return ERR_INVALID_DATA; }
+    let (width, height) = match container_dimensions(data) {
+        Some(dims) => dims,
+        None => return ERR_INVALID_DATA,
+    };
 
     // Walk RIFF chunks — collect VP8/VP8L/VP8X/ALPH
     let mut pos = 12usize;
     let mut vp8_chunk: Option<&[u8]> = None;
     let mut vp8l_chunk: Option<&[u8]> = None;
     let mut alph_chunk: Option<&[u8]> = None;
-    let mut is_vp8x = false;
+    let mut is_animated = false;
 
     while pos + 8 <= data.len() {
         let tag = &data[pos..pos + 4];
@@ -51,12 +55,17 @@ pub fn decode(data: &[u8], out: &mut [u32], _scratch: &mut [u8]) -> i32 {
         match tag {
             b"VP8L" => { vp8l_chunk = Some(chunk); }
             b"VP8 " => { vp8_chunk = Some(chunk); }
-            b"VP8X" => { is_vp8x = true; }
+            b"VP8X" => {}
             b"ALPH" => { alph_chunk = Some(chunk); }
+            b"ANIM" | b"ANMF" => { is_animated = true; }
             _ => {}
         }
 
         pos += (size + 1) & !1; // RIFF pads chunks to even size
+    }
+
+    if is_animated {
+        return ERR_UNSUPPORTED;
     }
 
     // VP8L (lossless) has priority — it encodes its own alpha
@@ -70,7 +79,10 @@ pub fn decode(data: &[u8], out: &mut [u32], _scratch: &mut [u8]) -> i32 {
         if rc != ERR_OK { return rc; }
         // Apply separate alpha plane if present
         if let Some(alph) = alph_chunk {
-            apply_alpha_chunk(alph, out);
+            let rc = apply_alpha_chunk(alph, out, width as usize, height as usize);
+            if rc != ERR_OK {
+                return rc;
+            }
         }
         return ERR_OK;
     }
@@ -108,7 +120,7 @@ fn container_dimensions(data: &[u8]) -> Option<(u32, u32)> {
             }
         }
 
-        if tag == b"VP8X" && pos + 9 <= data.len() {
+        if tag == b"VP8X" && pos + 10 <= data.len() {
             let w = u32::from_le_bytes([data[pos+4], data[pos+5], data[pos+6], 0]) + 1;
             let h = u32::from_le_bytes([data[pos+7], data[pos+8], data[pos+9], 0]) + 1;
             return Some((w, h));
@@ -569,6 +581,97 @@ fn decode_vp8l(chunk: &[u8], out: &mut [u32]) -> i32 {
 
     // Copy decoded pixels to output.
     let copy_len = (width * height).min(tmp_buf.len());
+    out[..copy_len].copy_from_slice(&tmp_buf[..copy_len]);
+    ERR_OK
+}
+
+fn decode_vp8l_image_stream(data: &[u8], width: usize, height: usize, out: &mut [u32]) -> i32 {
+    if width == 0 || height == 0 {
+        return ERR_INVALID_DATA;
+    }
+    if width > 16384 || height > 16384 {
+        return ERR_INVALID_DATA;
+    }
+    if width.saturating_mul(height) > out.len() {
+        return ERR_BUFFER_TOO_SMALL;
+    }
+
+    let mut br = BitReader::new(data);
+
+    // Read transforms (up to 4, innermost first in the stream).
+    let mut transforms: Vec<Transform> = Vec::new();
+    let mut actual_w = width; // may shrink for COLOR_INDEXING
+
+    while br.read_bit() {
+        let kind = br.read(2) as u8;
+        match kind {
+            SUB_GREEN => {
+                transforms.push(Transform {
+                    kind, block_bits: 0, data: Vec::new(),
+                    palette: Vec::new(), bits_per_pixel: 0,
+                });
+            }
+            PREDICTOR | COLOR_XFORM => {
+                let block_bits = br.read(3) + 2; // 2..9
+                let bw = (actual_w + (1 << block_bits) - 1) >> block_bits;
+                let bh = (height  + (1 << block_bits) - 1) >> block_bits;
+                let mut tdata = vec![0u32; bw * bh];
+                if !decode_vp8l_image(&mut br, bw, bh, &mut tdata) {
+                    return ERR_INVALID_DATA;
+                }
+                transforms.push(Transform {
+                    kind, block_bits, data: tdata,
+                    palette: Vec::new(), bits_per_pixel: 0,
+                });
+            }
+            COLOR_INDEXING => {
+                let palette_size = br.read(8) as usize + 1; // 1..256
+                let mut pal = vec![0u32; palette_size];
+                if !decode_vp8l_image(&mut br, palette_size, 1, &mut pal) {
+                    return ERR_INVALID_DATA;
+                }
+                for i in 1..palette_size {
+                    pal[i] = add_argb(pal[i - 1], pal[i]);
+                }
+                let bpp: u32 = if palette_size <= 2 { 1 }
+                    else if palette_size <= 4 { 2 }
+                    else if palette_size <= 16 { 4 }
+                    else { 8 };
+                let ppu = (8 / bpp) as usize;
+                let new_w = if bpp < 8 {
+                    (actual_w + ppu - 1) / ppu
+                } else { actual_w };
+                transforms.push(Transform {
+                    kind, block_bits: 0, data: Vec::new(),
+                    palette: pal, bits_per_pixel: bpp,
+                });
+                actual_w = new_w;
+            }
+            _ => return ERR_INVALID_DATA,
+        }
+    }
+
+    let total_actual = actual_w * height;
+    let mut tmp_buf = vec![0u32; total_actual];
+
+    if !decode_vp8l_image(&mut br, actual_w, height, &mut tmp_buf) {
+        return ERR_INVALID_DATA;
+    }
+
+    for t in transforms.iter().rev() {
+        match t.kind {
+            SUB_GREEN => apply_subtract_green(&mut tmp_buf),
+            COLOR_XFORM => apply_color_transform(&mut tmp_buf, actual_w, height, t),
+            PREDICTOR => apply_predictor(&mut tmp_buf, actual_w, height, t),
+            COLOR_INDEXING => {
+                apply_color_indexing(&tmp_buf, actual_w, out, width, height, t);
+                return ERR_OK;
+            }
+            _ => {}
+        }
+    }
+
+    let copy_len = width * height;
     out[..copy_len].copy_from_slice(&tmp_buf[..copy_len]);
     ERR_OK
 }
@@ -2312,29 +2415,49 @@ static VP8_COEFF_UPDATE_PROBS: [[[[u8; 11]; 3]; 8]; 4] = [
 
 // ── Alpha chunk decoder (VP8X extended format) ──────────────────────────────
 
-fn apply_alpha_chunk(data: &[u8], pixels: &mut [u32]) {
-    if data.is_empty() { return; }
+fn apply_alpha_chunk(data: &[u8], pixels: &mut [u32], width: usize, height: usize) -> i32 {
+    if data.is_empty() { return ERR_INVALID_DATA; }
+    if width == 0 || height == 0 { return ERR_INVALID_DATA; }
+    let pixel_count = width.saturating_mul(height);
+    if pixel_count == 0 || pixel_count > pixels.len() { return ERR_BUFFER_TOO_SMALL; }
 
     let _pre_processing = (data[0] >> 0) & 3;
     let filter_method   = (data[0] >> 2) & 3;
     let compression     = (data[0] >> 4) & 3;
 
+    if filter_method != 0 {
+        return ERR_UNSUPPORTED;
+    }
+
     let alpha_data = &data[1..];
 
     if compression == 0 {
         // Uncompressed alpha
-        let len = alpha_data.len().min(pixels.len());
-        for i in 0..len {
+        if alpha_data.len() < pixel_count {
+            return ERR_INVALID_DATA;
+        }
+        for i in 0..pixel_count {
             pixels[i] = (pixels[i] & 0x00FFFFFF) | ((alpha_data[i] as u32) << 24);
         }
+        ERR_OK
     } else {
-        // Lossless-compressed alpha (VP8L without header)
-        // The alpha data is compressed using the VP8L lossless format.
-        // For now, try to decode as raw VP8L bitstream.
-        // The full alpha decoding would require a headerless VP8L decode.
-        // Simple fallback: set fully opaque
-        for px in pixels.iter_mut() {
-            *px |= 0xFF000000;
+        if compression != 1 {
+            return ERR_UNSUPPORTED;
         }
+
+        // Compressed alpha uses a headerless VP8L image stream with implicit
+        // dimensions. The actual alpha values are stored in the decoded green
+        // channel.
+        let mut alpha_pixels = vec![0u32; pixel_count];
+        let rc = decode_vp8l_image_stream(alpha_data, width, height, &mut alpha_pixels);
+        if rc != ERR_OK {
+            return rc;
+        }
+
+        for i in 0..pixel_count {
+            let alpha = (alpha_pixels[i] >> 8) & 0xFF;
+            pixels[i] = (pixels[i] & 0x00FFFFFF) | (alpha << 24);
+        }
+        ERR_OK
     }
 }

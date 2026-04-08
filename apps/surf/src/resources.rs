@@ -895,3 +895,31 @@ fn decoded_image_looks_suspiciously_black(pixels: &[u32]) -> Option<u32> {
         None
     }
 }
+
+pub(crate) struct DecodedRasterImage {
+    pub pixels: Vec<u32>,
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub suspicious_black_ppm: Option<u32>,
+}
+
+pub(crate) fn decode_raster_to_image(data: &[u8]) -> Result<DecodedRasterImage, libimage_client::ImageError> {
+    let info = libimage_client::probe(data).ok_or(libimage_client::ImageError::InvalidData)?;
+    let w = info.width;
+    let h = info.height;
+    if w == 0 || h == 0 || w > 4096 || h > 4096 {
+        return Err(libimage_client::ImageError::InvalidData);
+    }
+    let mut pixels = vec![0u32; (w * h) as usize];
+    let mut scratch = vec![0u8; info.scratch_needed as usize];
+    libimage_client::decode(data, &mut pixels, &mut scratch)?;
+    let suspicious_black_ppm = decoded_image_looks_suspiciously_black(&pixels);
+    Ok(DecodedRasterImage {
+        pixels,
+        width: w,
+        height: h,
+        format: info.format,
+        suspicious_black_ppm,
+    })
+}

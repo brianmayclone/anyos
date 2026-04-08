@@ -14,6 +14,18 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::http::{self, ConnPool, CookieJar, FetchError, Url};
 
+pub(crate) struct DecodedCss {
+    pub sheet: libwebview::css::Stylesheet,
+}
+
+pub(crate) struct DecodedRaster {
+    pub pixels: Vec<u32>,
+    pub width: u32,
+    pub height: u32,
+    pub format: u32,
+    pub suspicious_black_ppm: Option<u32>,
+}
+
 macro_rules! surf_net_log {
     ($($arg:tt)*) => {
         anyos_std::println!(
@@ -107,6 +119,7 @@ pub(crate) enum FetchResult {
         href: String,
         body: Vec<u8>,
         headers: String,
+        parsed: Option<DecodedCss>,
         generation: u32,
     },
     /// Image fetch completed successfully.
@@ -115,6 +128,7 @@ pub(crate) enum FetchResult {
         src: String,
         body: Vec<u8>,
         headers: String,
+        decoded_raster: Option<DecodedRaster>,
         priority: ImagePriority,
         generation: u32,
     },
@@ -163,7 +177,12 @@ static REQUEST_LOCK_VISIBLE: AtomicBool = AtomicBool::new(false);
 static REQUEST_LOCK_BACKGROUND: AtomicBool = AtomicBool::new(false);
 static RESULT_LOCK: AtomicBool = AtomicBool::new(false);
 const RESULT_MAILBOX_COUNT: usize = 16;
-const TLS_WORKER_LANES: u32 = 3;
+const CRITICAL_WORKER_LANES: u32 = 2;
+const TLS_WORKER_LANES: u32 = 8;
+const SCRIPT_WORKER_LANES: u32 = 2;
+const FONT_WORKER_LANES: u32 = 2;
+const VISIBLE_WORKER_LANES: u32 = 4;
+const BACKGROUND_WORKER_LANES: u32 = 4;
 
 static mut REQUEST_QUEUE_CRITICAL: Option<Vec<FetchRequest>> = None;
 static mut REQUEST_QUEUE_TLS: Option<Vec<FetchRequest>> = None;
@@ -177,13 +196,13 @@ static mut RESULT_MAILBOXES: Option<Vec<Vec<FetchResult>>> = None;
 /// Worker skips CSS/Image requests with a stale generation.
 static GENERATION: AtomicU32 = AtomicU32::new(0);
 
-/// Whether the worker thread has been started.
-static WORKER_STARTED_CRITICAL: AtomicBool = AtomicBool::new(false);
+/// Active worker counts per class.
+static WORKER_ACTIVE_CRITICAL: AtomicU32 = AtomicU32::new(0);
 static WORKER_ACTIVE_TLS: AtomicU32 = AtomicU32::new(0);
-static WORKER_STARTED_SCRIPT: AtomicBool = AtomicBool::new(false);
-static WORKER_STARTED_FONT: AtomicBool = AtomicBool::new(false);
-static WORKER_STARTED_VISIBLE: AtomicBool = AtomicBool::new(false);
-static WORKER_STARTED_BACKGROUND: AtomicBool = AtomicBool::new(false);
+static WORKER_ACTIVE_SCRIPT: AtomicU32 = AtomicU32::new(0);
+static WORKER_ACTIVE_FONT: AtomicU32 = AtomicU32::new(0);
+static WORKER_ACTIVE_VISIBLE: AtomicU32 = AtomicU32::new(0);
+static WORKER_ACTIVE_BACKGROUND: AtomicU32 = AtomicU32::new(0);
 /// Requests currently being processed after they have been dequeued.
 static REQUESTS_IN_FLIGHT: AtomicU32 = AtomicU32::new(0);
 
@@ -237,14 +256,25 @@ fn request_lock(class: WorkerClass) -> &'static AtomicBool {
     }
 }
 
-fn worker_started_flag(class: WorkerClass) -> &'static AtomicBool {
+fn worker_active_count(class: WorkerClass) -> &'static AtomicU32 {
     match class {
-        WorkerClass::Critical => &WORKER_STARTED_CRITICAL,
-        WorkerClass::Script => &WORKER_STARTED_SCRIPT,
-        WorkerClass::Font => &WORKER_STARTED_FONT,
-        WorkerClass::Visible => &WORKER_STARTED_VISIBLE,
-        WorkerClass::Background => &WORKER_STARTED_BACKGROUND,
-        WorkerClass::Tls => unreachable!("TLS workers use an active-count tracker"),
+        WorkerClass::Critical => &WORKER_ACTIVE_CRITICAL,
+        WorkerClass::Tls => &WORKER_ACTIVE_TLS,
+        WorkerClass::Script => &WORKER_ACTIVE_SCRIPT,
+        WorkerClass::Font => &WORKER_ACTIVE_FONT,
+        WorkerClass::Visible => &WORKER_ACTIVE_VISIBLE,
+        WorkerClass::Background => &WORKER_ACTIVE_BACKGROUND,
+    }
+}
+
+fn worker_lane_target(class: WorkerClass) -> u32 {
+    match class {
+        WorkerClass::Critical => CRITICAL_WORKER_LANES,
+        WorkerClass::Tls => TLS_WORKER_LANES,
+        WorkerClass::Script => SCRIPT_WORKER_LANES,
+        WorkerClass::Font => FONT_WORKER_LANES,
+        WorkerClass::Visible => VISIBLE_WORKER_LANES,
+        WorkerClass::Background => BACKGROUND_WORKER_LANES,
     }
 }
 
@@ -299,18 +329,25 @@ fn request_is_https(req: &FetchRequest) -> bool {
 }
 
 fn ensure_worker(class: WorkerClass) {
-    if class == WorkerClass::Tls {
-        ensure_tls_workers();
-        return;
-    }
-    let started = worker_started_flag(class);
-    if started.load(Ordering::Relaxed) {
-        return;
-    }
-    if started
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed)
-        .is_ok()
-    {
+    let target = worker_lane_target(class);
+    let active = worker_active_count(class);
+
+    loop {
+        let reserved = active.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |current| {
+                if current < target {
+                    Some(current + 1)
+                } else {
+                    None
+                }
+            },
+        );
+        if reserved.is_err() {
+            return;
+        }
+
         let (entry, thread_name): (fn(), &str) = match class {
             WorkerClass::Critical => (worker_entry_critical, "surf-net-crit"),
             WorkerClass::Tls => (worker_entry_tls, "surf-net-tls"),
@@ -322,52 +359,19 @@ fn ensure_worker(class: WorkerClass) {
         match anyos_std::process::Thread::spawn_with_stack(entry, 256 * 1024, thread_name) {
             Ok(handle) => {
                 core::mem::forget(handle);
-                surf_net_log!("{} worker thread started", worker_label(class));
+                surf_net_log!(
+                    "{} worker thread started ({}/{})",
+                    worker_label(class),
+                    active.load(Ordering::Relaxed),
+                    target
+                );
             }
             Err(_) => {
+                active.fetch_sub(1, Ordering::SeqCst);
                 surf_net_log!(
                     "ERROR: failed to spawn {} worker thread",
                     worker_label(class)
                 );
-                started.store(false, Ordering::SeqCst);
-            }
-        }
-    }
-}
-
-fn ensure_tls_workers() {
-    loop {
-        let reserved = WORKER_ACTIVE_TLS.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |active| {
-                if active < TLS_WORKER_LANES {
-                    Some(active + 1)
-                } else {
-                    None
-                }
-            },
-        );
-        if reserved.is_err() {
-            return;
-        }
-
-        match anyos_std::process::Thread::spawn_with_stack(
-            worker_entry_tls,
-            256 * 1024,
-            "surf-net-tls",
-        ) {
-            Ok(handle) => {
-                core::mem::forget(handle);
-                surf_net_log!(
-                    "tls worker thread started ({}/{})",
-                    WORKER_ACTIVE_TLS.load(Ordering::Relaxed),
-                    TLS_WORKER_LANES
-                );
-            }
-            Err(_) => {
-                WORKER_ACTIVE_TLS.fetch_sub(1, Ordering::SeqCst);
-                surf_net_log!("ERROR: failed to spawn tls worker thread");
                 return;
             }
         }
@@ -554,12 +558,12 @@ pub(crate) fn has_pending_activity() -> bool {
         return true;
     }
 
-    if WORKER_STARTED_CRITICAL.load(Ordering::Relaxed)
+    if WORKER_ACTIVE_CRITICAL.load(Ordering::Relaxed) > 0
         || WORKER_ACTIVE_TLS.load(Ordering::Relaxed) > 0
-        || WORKER_STARTED_SCRIPT.load(Ordering::Relaxed)
-        || WORKER_STARTED_FONT.load(Ordering::Relaxed)
-        || WORKER_STARTED_VISIBLE.load(Ordering::Relaxed)
-        || WORKER_STARTED_BACKGROUND.load(Ordering::Relaxed)
+        || WORKER_ACTIVE_SCRIPT.load(Ordering::Relaxed) > 0
+        || WORKER_ACTIVE_FONT.load(Ordering::Relaxed) > 0
+        || WORKER_ACTIVE_VISIBLE.load(Ordering::Relaxed) > 0
+        || WORKER_ACTIVE_BACKGROUND.load(Ordering::Relaxed) > 0
     {
         return true;
     }
@@ -700,22 +704,17 @@ fn worker_entry(class: WorkerClass) {
                 idle_count += 1;
                 if idle_count > 1000 {
                     // ~5 seconds idle — exit the thread.
-                    // Must store false BEFORE exiting so ensure_worker() can
-                    // respawn.  Cannot `return` — the stack has no valid
-                    // return address (mmap zeroes it), so RIP would become 0.
-                    if class == WorkerClass::Tls {
-                        let remaining = WORKER_ACTIVE_TLS
-                            .fetch_sub(1, Ordering::SeqCst)
-                            .saturating_sub(1);
-                        surf_net_log!(
-                            "{} worker idle, exiting (remaining={})",
-                            worker_label(class),
-                            remaining
-                        );
-                    } else {
-                        worker_started_flag(class).store(false, Ordering::SeqCst);
-                        surf_net_log!("{} worker idle, exiting", worker_label(class));
-                    }
+                    // Must decrement the active count BEFORE exiting so
+                    // ensure_worker() can respawn lanes on demand. Cannot
+                    // `return` — the stack has no valid return address.
+                    let remaining = worker_active_count(class)
+                        .fetch_sub(1, Ordering::SeqCst)
+                        .saturating_sub(1);
+                    surf_net_log!(
+                        "{} worker idle, exiting (remaining={})",
+                        worker_label(class),
+                        remaining
+                    );
                     anyos_std::process::exit(0);
                 }
                 anyos_std::process::sleep(5);
@@ -914,11 +913,18 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             // Check sub-resource cache first.
             if let Some((body, headers)) = cache.get(&key) {
                 surf_net_log!("CSS cache hit: {}", href);
+                let body_vec = body.to_vec();
+                let headers_string = String::from(headers);
+                let css_text = crate::resources::decode_http_body(&body_vec, &headers_string);
+                let parsed = Some(DecodedCss {
+                    sheet: libwebview::css::parse_stylesheet(&css_text),
+                });
                 enqueue_result(FetchResult::CssDone {
                     tab_index,
                     href,
-                    body: body.to_vec(),
-                    headers: String::from(headers),
+                    body: body_vec,
+                    headers: headers_string,
+                    parsed,
                     generation,
                 });
                 return;
@@ -930,11 +936,16 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                 Ok(resp) if resp.status >= 200 && resp.status < 400 => {
                     // Cache the response for future requests.
                     cache.put(key, resp.body.clone(), resp.headers.clone());
+                    let css_text = crate::resources::decode_http_body(&resp.body, &resp.headers);
+                    let parsed = Some(DecodedCss {
+                        sheet: libwebview::css::parse_stylesheet(&css_text),
+                    });
                     enqueue_result(FetchResult::CssDone {
                         tab_index,
                         href,
                         body: resp.body,
                         headers: resp.headers,
+                        parsed,
                         generation,
                     });
                 }
@@ -948,6 +959,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                         href,
                         body: Vec::new(),
                         headers: String::new(),
+                        parsed: None,
                         generation,
                     });
                 }
@@ -970,11 +982,27 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             // Check sub-resource cache first.
             if let Some((body, headers)) = cache.get(&key) {
                 surf_net_log!("image cache hit: {}", src);
+                let body_vec = body.to_vec();
+                let headers_string = String::from(headers);
+                let decoded_raster = if crate::resources::is_svg(&src, &headers_string) {
+                    None
+                } else {
+                    crate::resources::decode_raster_to_image(&body_vec)
+                        .ok()
+                        .map(|image| DecodedRaster {
+                            pixels: image.pixels,
+                            width: image.width,
+                            height: image.height,
+                            format: image.format,
+                            suspicious_black_ppm: image.suspicious_black_ppm,
+                        })
+                };
                 enqueue_result(FetchResult::ImageDone {
                     tab_index,
                     src,
-                    body: body.to_vec(),
-                    headers: String::from(headers),
+                    body: body_vec,
+                    headers: headers_string,
+                    decoded_raster,
                     priority,
                     generation,
                 });
@@ -984,11 +1012,25 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             match http::fetch(&url, &mut CookieJar::new(), pool) {
                 Ok(resp) => {
                     cache.put(key, resp.body.clone(), resp.headers.clone());
+                    let decoded_raster = if crate::resources::is_svg(&src, &resp.headers) {
+                        None
+                    } else {
+                        crate::resources::decode_raster_to_image(&resp.body)
+                            .ok()
+                            .map(|image| DecodedRaster {
+                                pixels: image.pixels,
+                                width: image.width,
+                                height: image.height,
+                                format: image.format,
+                                suspicious_black_ppm: image.suspicious_black_ppm,
+                            })
+                    };
                     enqueue_result(FetchResult::ImageDone {
                         tab_index,
                         src,
                         body: resp.body,
                         headers: resp.headers,
+                        decoded_raster,
                         priority,
                         generation,
                     });

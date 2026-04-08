@@ -87,6 +87,8 @@ const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
 const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
 const DEBUG_SKIP_BLOCKING_SLOT0: bool = true;
+const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
+const NET_POLL_INTERVAL_MS: u32 = 16;
 
 fn phase_name(phase: PageLoadPhase) -> &'static str {
     match phase {
@@ -214,6 +216,8 @@ struct AppState {
     render_dirty: [RenderWork; 16],
     /// Timer ID for the relayout debounce timer (0 = not running).
     relayout_timer: u32,
+    /// Absolute uptime deadline for the pending relayout timer.
+    relayout_due_ms: u32,
     /// Timer ID for debounced viewport resize handling (0 = not running).
     resize_timer: u32,
     /// A resize was requested while the active page was still in a heavy load phase.
@@ -614,7 +618,7 @@ fn start_net_poll_timer() {
         net_worker::has_pending_activity(),
         st.tabs.iter().any(tab_waiting_on_network)
     );
-    st.net_poll_timer = ui_lib::set_timer(50, || {
+    st.net_poll_timer = ui_lib::set_timer(NET_POLL_INTERVAL_MS, || {
         let results = drain_results_from_mailboxes();
         if results.is_empty() {
             let st = state();
@@ -698,9 +702,9 @@ pub(crate) fn ensure_net_poll_timer() {
 
 /// Dispatch completed fetch results to their handlers.
 ///
-/// CSS and image results set per-tab dirty flags instead of triggering
-/// immediate relayouts.  A separate debounce timer (`flush_relayout`)
-/// coalesces all pending relayouts into one pass every 300 ms.
+/// Image and font results usually set per-tab dirty flags instead of triggering
+/// immediate relayouts. CSS is applied more strictly: Surf now waits for the
+/// stylesheet chain to finish and flushes layout before running blocking scripts.
 fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
     let mut batches: Vec<(usize, Vec<net_worker::FetchResult>)> = Vec::new();
     let mut nav_count = 0usize;
@@ -812,21 +816,29 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     href,
                     body,
                     headers,
+                    parsed,
                     generation,
                 } => {
-                    if handle_css_done(tab_index, href, body, headers, generation) {
-                        request_render(tab_index, RenderWork::Layout, RenderSchedule::Debounced);
-                    }
+                    handle_css_done(tab_index, href, body, headers, parsed, generation);
                 }
                 net_worker::FetchResult::ImageDone {
                     tab_index,
                     src,
                     body,
                     headers,
+                    decoded_raster,
                     priority,
                     generation,
                 } => {
-                    if handle_image_done(tab_index, src, body, headers, priority, generation) {
+                    if handle_image_done(
+                        tab_index,
+                        src,
+                        body,
+                        headers,
+                        decoded_raster,
+                        priority,
+                        generation,
+                    ) {
                         request_image_refresh(tab_index);
                     }
                 }
@@ -865,27 +877,37 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
 fn render_delay_ms_for(tab_index: usize, work: RenderWork) -> u32 {
     let st = state();
     if tab_index >= st.tabs.len() {
-        return 300;
+        return 120;
     }
     let active = tab_index == st.active_tab;
     let phase = st.tabs[tab_index].load_state.phase;
     match (active, work, phase) {
-        (true, RenderWork::Paint, _) => 40,
+        (true, RenderWork::Paint, _) => 16,
         (true, RenderWork::Layout, PageLoadPhase::FetchingDocument)
         | (true, RenderWork::Layout, PageLoadPhase::ParsingDocument)
-        | (true, RenderWork::Layout, PageLoadPhase::LoadingSubresources) => 80,
-        (true, RenderWork::Layout, _) => 140,
-        _ => 300,
+        | (true, RenderWork::Layout, PageLoadPhase::LoadingSubresources) => 24,
+        (true, RenderWork::Layout, _) => 48,
+        (_, RenderWork::Paint, _) => 80,
+        _ => 120,
     }
 }
 
 fn schedule_render_flush(delay_ms: u32) {
     let st = state();
-    if st.relayout_timer != 0 {
+    let now = anyos_std::sys::uptime_ms();
+    let new_due_ms = now.wrapping_add(delay_ms);
+
+    if st.relayout_timer != 0 && st.relayout_due_ms != 0 {
+        let current_remaining = st.relayout_due_ms.wrapping_sub(now);
+        let new_remaining = new_due_ms.wrapping_sub(now);
+        if current_remaining <= new_remaining {
+            return;
+        }
         ui_lib::kill_timer(st.relayout_timer);
         st.relayout_timer = 0;
     }
     st.relayout_timer = ui_lib::set_timer(delay_ms, flush_relayout);
+    st.relayout_due_ms = new_due_ms;
 }
 
 /// Mark a tab as needing a relayout and start the debounce timer if not
@@ -955,10 +977,26 @@ fn flush_relayout_for_tab(tab_idx: usize) {
     }
 }
 
+fn flush_pending_render_before_scripts(tab_index: usize) {
+    let should_flush = {
+        let st = state();
+        tab_index < st.render_dirty.len() && st.render_dirty[tab_index] != RenderWork::None
+    };
+    if should_flush {
+        crate::surf_log!(
+            "[surf] flushing pending render before blocking scripts: tab={}",
+            tab_index
+        );
+        flush_relayout_for_tab(tab_index);
+    }
+}
+
 /// Debounce callback: perform one relayout per dirty tab, then clear flags
 /// and stop the timer.
 fn flush_relayout() {
     let st = state();
+    st.relayout_timer = 0;
+    st.relayout_due_ms = 0;
     let mut any_dirty = false;
     let active_tab = st.active_tab;
     let mut background_renders = 0usize;
@@ -990,12 +1028,8 @@ fn flush_relayout() {
         }
     }
 
-    if !any_dirty {
-        // All clean — kill the debounce timer.
-        if st.relayout_timer != 0 {
-            ui_lib::kill_timer(st.relayout_timer);
-            st.relayout_timer = 0;
-        }
+    if any_dirty {
+        schedule_render_flush(RELAYOUT_FOLLOWUP_DELAY_MS);
     }
 }
 
@@ -1227,8 +1261,8 @@ fn handle_nav_done(
     }
     log_tab_load_state(tab_idx, "after_queue_images");
 
-    // Match the surf-host order more closely: run scripts only after
-    // the initial external stylesheet chain has finished loading.
+    // Run scripts only after the stylesheet chain has finished loading, and
+    // flush any pending CSS layout before JS gets a chance to mutate the DOM.
     if st.tabs[tab_idx].load_state.ready_for_script_execution() {
         execute_pending_scripts(tab_idx);
     } else {
@@ -1257,22 +1291,20 @@ fn handle_nav_error(tab_index: usize, error_msg: &'static str, generation: u32) 
 }
 
 /// Handle a completed CSS stylesheet fetch: apply the stylesheet.
-///
-/// Returns `true` if the stylesheet was applied and a relayout is needed.
-/// The caller batches relayouts to avoid redundant work.
 fn handle_css_done(
     tab_index: usize,
     href: String,
     body: Vec<u8>,
     headers: String,
+    parsed: Option<net_worker::DecodedCss>,
     generation: u32,
-) -> bool {
+) {
     let st = state();
     if tab_index >= st.tabs.len() {
-        return false;
+        return;
     }
     if !st.tabs[tab_index].load_state.generation_matches(generation) {
-        return false;
+        return;
     }
 
     crate::surf_log!(
@@ -1290,13 +1322,18 @@ fn handle_css_done(
     if body.is_empty() {
         crate::surf_log!("[surf] skipped empty/failed CSS: {}", href);
         if st.tabs[tab_index].load_state.ready_for_script_execution() {
+            flush_pending_render_before_scripts(tab_index);
             execute_pending_scripts(tab_index);
         }
-        return false;
+        return;
     }
 
-    let css_text = resources::decode_http_body(&body, &headers);
-    st.tabs[tab_index].webview.add_stylesheet(&css_text);
+    if let Some(parsed) = parsed {
+        st.tabs[tab_index].webview.add_parsed_stylesheet(parsed.sheet);
+    } else {
+        let css_text = resources::decode_http_body(&body, &headers);
+        st.tabs[tab_index].webview.add_stylesheet(&css_text);
+    }
     crate::surf_log!("[surf] applied CSS: {}", href);
 
     // Process @import URLs from the newly added stylesheet.
@@ -1341,11 +1378,14 @@ fn handle_css_done(
         resources::queue_font_face_batch(tab_index, generation, &base_url, &font_faces);
     }
 
-    if st.tabs[tab_index].load_state.ready_for_script_execution() {
-        execute_pending_scripts(tab_index);
+    if st.tabs[tab_index].load_state.pending_stylesheet_count == 0 {
+        request_render(tab_index, RenderWork::Layout, RenderSchedule::Immediate);
     }
 
-    true
+    if st.tabs[tab_index].load_state.ready_for_script_execution() {
+        flush_pending_render_before_scripts(tab_index);
+        execute_pending_scripts(tab_index);
+    }
 }
 
 /// Handle a completed web font fetch: load TTF data into libfont.
@@ -1428,6 +1468,7 @@ fn handle_image_done(
     src: String,
     body: Vec<u8>,
     headers: String,
+    decoded_raster: Option<net_worker::DecodedRaster>,
     priority: net_worker::ImagePriority,
     generation: u32,
 ) -> bool {
@@ -1447,7 +1488,25 @@ fn handle_image_done(
         generation
     );
 
-    if resources::is_svg(&src, &headers) {
+    if let Some(decoded_raster) = decoded_raster {
+        if let Some(black_ratio_ppm) = decoded_raster.suspicious_black_ppm {
+            crate::surf_log!(
+                "[surf] WARN suspicious worker image decode: src={} format={} {}x{} black_ratio_ppm={} tab={}",
+                src,
+                libimage_client::format_name(decoded_raster.format),
+                decoded_raster.width,
+                decoded_raster.height,
+                black_ratio_ppm,
+                tab_index
+            );
+        }
+        st.tabs[tab_index].webview.add_image(
+            &src,
+            decoded_raster.pixels,
+            decoded_raster.width,
+            decoded_raster.height,
+        );
+    } else if resources::is_svg(&src, &headers) {
         resources::decode_svg_no_relayout(&body, &src, tab_index);
     } else {
         resources::decode_raster_no_relayout(&body, &src, tab_index);
@@ -1557,6 +1616,8 @@ fn handle_script_done(
 /// Called when all external script fetches have completed (or immediately
 /// if the page has only inline scripts).
 fn execute_pending_scripts(tab_index: usize) {
+    flush_pending_render_before_scripts(tab_index);
+
     let st = state();
     if tab_index >= st.tabs.len() {
         return;
@@ -1584,12 +1645,6 @@ fn execute_pending_scripts(tab_index: usize) {
         scripts.len(),
         st.tabs[tab_index].pending_scripts.len()
     );
-    if tab_index < st.render_dirty.len() && st.render_dirty[tab_index] != RenderWork::None {
-        crate::surf_log!(
-            "[surf] execute_pending_scripts: tab={} skipping blocking pre-script relayout",
-            tab_index
-        );
-    }
 
     if scripts.is_empty() {
         st.tabs[tab_index].load_state.mark_interactive();
@@ -1824,6 +1879,7 @@ fn main() {
             net_poll_timer: 0,
             render_dirty: [RenderWork::None; 16],
             relayout_timer: 0,
+            relayout_due_ms: 0,
             resize_timer: 0,
             deferred_resize_pending: false,
             config: surf_config,

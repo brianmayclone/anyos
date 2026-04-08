@@ -184,6 +184,10 @@ pub struct WebView {
     /// Last fully resolved styles used for layout. Reused for safe local DOM
     /// mutations that do not require a global restyle pass.
     resolved_styles_cache: Vec<style::ComputedStyle>,
+    /// Viewport width used when `resolved_styles_cache` was built.
+    resolved_styles_viewport_width: i32,
+    /// Viewport height used when `resolved_styles_cache` was built.
+    resolved_styles_viewport_height: u32,
     /// Pseudo styles that match `resolved_styles_cache`.
     resolved_pseudo_styles: style::PseudoStyles,
     /// Pending animation/transition overrides to apply during the next relayout.
@@ -238,6 +242,8 @@ impl WebView {
             web_fonts: Vec::new(),
             prev_styles: Vec::new(),
             resolved_styles_cache: Vec::new(),
+            resolved_styles_viewport_width: 0,
+            resolved_styles_viewport_height: 0,
             resolved_pseudo_styles: style::PseudoStyles::empty(0),
             anim_overrides: Vec::new(),
             scroll_offsets: Vec::new(),
@@ -283,7 +289,12 @@ impl WebView {
     /// the pre-parsed form, which is orders of magnitude faster than re-parsing
     /// hundreds of kilobytes of CSS text on every image or resource load.
     pub fn add_stylesheet(&mut self, css_text: &str) {
-        self.external_sheets.push(css::parse_stylesheet(css_text));
+        self.add_parsed_stylesheet(css::parse_stylesheet(css_text));
+    }
+
+    /// Cache an already parsed external CSS stylesheet.
+    pub fn add_parsed_stylesheet(&mut self, sheet: css::Stylesheet) {
+        self.external_sheets.push(sheet);
         self.keyframes_dirty = true;
     }
 
@@ -374,6 +385,8 @@ impl WebView {
         self.keyframes_dirty = true;
         self.inline_style_cache.clear();
         self.resolved_styles_cache.clear();
+        self.resolved_styles_viewport_width = 0;
+        self.resolved_styles_viewport_height = 0;
         self.resolved_pseudo_styles = style::PseudoStyles::empty(0);
         // Clear web fonts from the previous page.
         self.web_fonts.clear();
@@ -611,6 +624,8 @@ impl WebView {
                         return;
                     }
                 }
+            } else if self.can_reuse_cached_styles_for_full_relayout(&d) {
+                self.do_layout_and_render_with_cached_styles(&d, None);
             } else {
                 self.do_layout_and_render(&d, None);
             }
@@ -1820,15 +1835,91 @@ impl WebView {
         self.repaint_from_cached_layout();
     }
 
+    fn resolved_style_cache_matches_dom(&self, dom: &dom::Dom) -> bool {
+        self.resolved_styles_cache.len() == dom.nodes.len()
+            && self.resolved_pseudo_styles.before.len() == dom.nodes.len()
+            && self.resolved_pseudo_styles.after.len() == dom.nodes.len()
+            && self.resolved_styles_viewport_width == self.viewport_width
+            && self.resolved_styles_viewport_height == self.viewport_height
+    }
+
+    fn can_reuse_cached_styles_for_full_relayout(&self, dom: &dom::Dom) -> bool {
+        !self.inline_sheets_dirty
+            && !self.keyframes_dirty
+            && self.anim_overrides.is_empty()
+            && self.resolved_style_cache_matches_dom(dom)
+    }
+
+    fn update_resolved_style_cache(
+        &mut self,
+        styles: &[style::ComputedStyle],
+        pseudo_styles: &style::PseudoStyles,
+    ) {
+        self.resolved_styles_cache.clear();
+        self.resolved_styles_cache.extend_from_slice(styles);
+        self.resolved_pseudo_styles.clone_from(pseudo_styles);
+        self.resolved_styles_viewport_width = self.viewport_width;
+        self.resolved_styles_viewport_height = self.viewport_height;
+    }
+
+    fn rebuild_keyframes_if_dirty(&mut self) {
+        if !self.keyframes_dirty {
+            return;
+        }
+        self.keyframes.clear();
+        for kf in &self.default_sheet.keyframes {
+            self.keyframes.push(kf.clone());
+        }
+        for sheet in &self.external_sheets {
+            for kf in &sheet.keyframes {
+                self.keyframes.push(kf.clone());
+            }
+        }
+        for sheet in &self.inline_sheets {
+            for kf in &sheet.keyframes {
+                self.keyframes.push(kf.clone());
+            }
+        }
+        self.keyframes_dirty = false;
+    }
+
+    fn apply_animation_overrides_to_styles(
+        &self,
+        d: &dom::Dom,
+        styles: &mut [style::ComputedStyle],
+    ) {
+        if self.anim_overrides.is_empty() {
+            return;
+        }
+
+        let root_fs = if !styles.is_empty() {
+            styles[0].font_size
+        } else {
+            16
+        };
+        for (node_id, decls) in &self.anim_overrides {
+            if *node_id < styles.len() {
+                let parent_fs = {
+                    let pid = d.nodes.get(*node_id).and_then(|n| n.parent).unwrap_or(0);
+                    if pid < styles.len() {
+                        styles[pid].font_size
+                    } else {
+                        root_fs
+                    }
+                };
+                for decl in decls {
+                    style::apply_declaration(&mut styles[*node_id], decl, parent_fs, root_fs);
+                }
+            }
+        }
+    }
+
     fn do_layout_and_render_with_cached_styles(
         &mut self,
         d: &dom::Dom,
         incremental_mutations: Option<&[js::DomMutation]>,
     ) {
-        if self.resolved_styles_cache.len() != d.nodes.len()
-            || self.resolved_pseudo_styles.before.len() != d.nodes.len()
-            || self.resolved_pseudo_styles.after.len() != d.nodes.len()
-        {
+        if !self.resolved_style_cache_matches_dom(d) {
             self.do_layout_and_render(d, incremental_mutations);
             return;
         }
@@ -1917,6 +2008,7 @@ impl WebView {
             Self::apply_style_mutations_to_cached_styles(d, &mut styles, mutations);
         }
         let mut pseudo_styles = self.resolved_pseudo_styles.clone();
+        self.apply_animation_overrides_to_styles(d, &mut styles);
 
         self.layout_root = None;
         unsafe {
@@ -1935,8 +2027,7 @@ impl WebView {
         }
         self.total_height_val = calc_total_height(&root);
         self.layout_root = Some(root);
-        self.resolved_styles_cache.clone_from(&styles);
-        self.resolved_pseudo_styles.clone_from(&pseudo_styles);
+        self.update_resolved_style_cache(&styles, &pseudo_styles);
         self.refresh_render_surface_for_layout(d, &styles);
     }
 
@@ -2099,23 +2190,7 @@ impl WebView {
 
         // Collect @keyframes blocks from all stylesheets so the animation
         // tick loop can look them up by name.  Only rebuild when sheets change.
-        if self.keyframes_dirty {
-            self.keyframes.clear();
-            for kf in &self.default_sheet.keyframes {
-                self.keyframes.push(kf.clone());
-            }
-            for sheet in &self.external_sheets {
-                for kf in &sheet.keyframes {
-                    self.keyframes.push(kf.clone());
-                }
-            }
-            for sheet in &self.inline_sheets {
-                for kf in &sheet.keyframes {
-                    self.keyframes.push(kf.clone());
-                }
-            }
-            self.keyframes_dirty = false;
-        }
+        self.rebuild_keyframes_if_dirty();
 
         // Register new @keyframe animations for nodes that request them.
         self.js_runtime.start_animations(&styles);
@@ -2131,31 +2206,9 @@ impl WebView {
 
         // Apply pending animation/transition overrides on top of the
         // resolved styles so layout uses the interpolated values.
-        if !self.anim_overrides.is_empty() {
-            let root_fs = if !styles.is_empty() {
-                styles[0].font_size
-            } else {
-                16
-            };
-            for (node_id, decls) in &self.anim_overrides {
-                if *node_id < styles.len() {
-                    let parent_fs = {
-                        let pid = d.nodes.get(*node_id).and_then(|n| n.parent).unwrap_or(0);
-                        if pid < styles.len() {
-                            styles[pid].font_size
-                        } else {
-                            root_fs
-                        }
-                    };
-                    for decl in decls {
-                        style::apply_declaration(&mut styles[*node_id], decl, parent_fs, root_fs);
-                    }
-                }
-            }
-        }
+        self.apply_animation_overrides_to_styles(d, &mut styles);
 
-        self.resolved_styles_cache.clone_from(&styles);
-        self.resolved_pseudo_styles.clone_from(&pseudo_styles);
+        self.update_resolved_style_cache(&styles, &pseudo_styles);
 
         #[cfg(feature = "debug_surf")]
         debug_surf!(
