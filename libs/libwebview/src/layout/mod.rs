@@ -912,6 +912,7 @@ pub fn layout(
             body_id,
             images,
             viewport_width,
+            viewport_height,
         )
     };
 
@@ -969,6 +970,7 @@ pub(super) fn layout_children(
     _parent_node: NodeId,
     images: &ImageCache,
     viewport_w: i32,
+    viewport_h: i32,
 ) -> i32 {
     layout_children_ex(
         dom,
@@ -980,6 +982,7 @@ pub(super) fn layout_children(
         _parent_node,
         images,
         viewport_w,
+        viewport_h,
         None,
         None,
     )
@@ -997,6 +1000,7 @@ pub(super) fn layout_children_ex(
     _parent_node: NodeId,
     images: &ImageCache,
     viewport_w: i32,
+    viewport_h: i32,
     before_block: Option<LayoutBox>,
     after_block: Option<LayoutBox>,
 ) -> i32 {
@@ -1046,6 +1050,7 @@ pub(super) fn layout_children_ex(
                 cid,
                 images,
                 viewport_w,
+                viewport_h,
             );
             cursor_y += h;
             i += 1;
@@ -1361,8 +1366,11 @@ pub(super) fn layout_children_ex(
                     abs_box.x = (viewport_w - r - abs_box.width - abs_box.margin.right).max(0);
                 }
             }
-            // bottom: on fixed elements requires viewport height, which we don't track yet.
-            // Leave y as-is when only bottom: is set (element appears at top of viewport).
+            if abs_style.top.is_none() {
+                if let Some(b) = abs_style.bottom_offset {
+                    abs_box.y = (viewport_h - b - abs_box.height - abs_box.margin.bottom).max(0);
+                }
+            }
 
             abs_box.is_fixed = true;
             abs_box.is_out_of_flow = true;
@@ -1370,13 +1378,16 @@ pub(super) fn layout_children_ex(
             // position:absolute — coordinates relative to the direct containing block (parent box).
             let t = abs_style.top.unwrap_or(0);
             let l = abs_style.left_offset.unwrap_or(0);
+            let content_x = bw + parent.padding.left;
+            let content_y = bw + parent.padding.top;
 
-            abs_box.x = bw + parent.padding.left + l + abs_box.margin.left;
-            abs_box.y = bw + parent.padding.top + t + abs_box.margin.top;
+            abs_box.x = content_x + l + abs_box.margin.left;
+            abs_box.y = content_y + t + abs_box.margin.top;
 
             if abs_style.left_offset.is_none() {
                 if let Some(r) = abs_style.right_offset {
-                    abs_box.x = available_width - r - abs_box.width - abs_box.margin.right;
+                    abs_box.x =
+                        content_x + available_width - r - abs_box.width - abs_box.margin.right;
                 }
             }
             if abs_style.top.is_none() {
@@ -1707,7 +1718,7 @@ fn measure_min_content(
     }
 
     // Image.
-    if dom.tag(node_id) == Some(crate::dom::Tag::Img) {
+    if dom.tag(node_id) == Some(crate::dom::Tag::Img) || dom.has_tag_name(node_id, "a-img") {
         return flex::measure_max_content(dom, styles, pseudo, node_id, images, viewport_w);
     }
 

@@ -127,4 +127,24 @@ impl JsEngine {
         let mut compiler = compiler::Compiler::new();
         compiler.compile(&program)
     }
+
+    /// Register a module by its source code.
+    ///
+    /// When JS code executes `import { x } from 'specifier'`, the engine
+    /// will compile and execute this source, cache the resulting exports,
+    /// and return the namespace object.
+    pub fn register_module_source(&mut self, specifier: &str, source: &str) {
+        self.vm
+            .module_sources
+            .insert(String::from(specifier), String::from(source));
+    }
+
+    /// Register a pre-built module namespace object.
+    ///
+    /// Useful for native/host modules (e.g. `fs`, `path`, `http`).
+    pub fn register_module_object(&mut self, specifier: &str, namespace: JsValue) {
+        self.vm
+            .module_registry
+            .insert(String::from(specifier), namespace);
+    }
 }

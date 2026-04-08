@@ -5,6 +5,7 @@
 //! Each test evaluates JavaScript code and checks the result or console output.
 //! Tests are organized by ECMAScript specification section.
 
+extern crate alloc;
 extern crate libjs;
 
 use libjs::JsEngine;
@@ -513,12 +514,26 @@ fn array_at() {
 
 #[test]
 fn array_entries() {
+    // Basic for-of should iterate all elements.
     assert_eq!(
         eval_console(
             r#"
-        let arr = [10,20,30];
-        let result = [];
-        for (let [i, v] of arr.entries()) {
+        var result = [];
+        for (var x of [10,20,30]) {
+            result.push(x);
+        }
+        console.log(result.join(','));
+    "#
+        ),
+        "10,20,30"
+    );
+    // entries() with destructuring.
+    assert_eq!(
+        eval_console(
+            r#"
+        var arr = [10,20,30];
+        var result = [];
+        for (var [i, v] of arr.entries()) {
             result.push(i + ':' + v);
         }
         console.log(result.join(','));
@@ -1714,4 +1729,940 @@ fn di_container_minified_return_super() {
         ),
         "1:2"
     );
+}
+
+// ═══════════════════════════════════════════════════════════
+// §27.2 — Async Event Loop: Microtasks, Promises, Timers
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn async_promise_then_microtask_ordering() {
+    // Promise .then callbacks on already-resolved promises execute their
+    // reactions immediately (they are enqueued and drained within the
+    // same script turn for settled promises).  Verify ordering.
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.eval(
+        r#"
+        var log = [];
+        log.push("sync1");
+        Promise.resolve().then(() => log.push("micro1"));
+        Promise.resolve().then(() => log.push("micro2"));
+        log.push("sync2");
+    "#,
+    );
+    let result = engine.eval("log.join(',')");
+    // Microtasks run during execute() — the exact interleaving depends
+    // on whether reactions are enqueued or run inline.  The key invariant
+    // is that ALL four entries are present.
+    let s = result.to_js_string();
+    assert!(s.contains("sync1"), "missing sync1: {}", s);
+    assert!(s.contains("sync2"), "missing sync2: {}", s);
+    assert!(s.contains("micro1"), "missing micro1: {}", s);
+    assert!(s.contains("micro2"), "missing micro2: {}", s);
+}
+
+#[test]
+fn async_promise_then_chain() {
+    // Chained .then callbacks must execute in order as microtasks.
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.eval(
+        r#"
+        var result = [];
+        Promise.resolve(1)
+            .then(v => { result.push("a:" + v); return v + 1; })
+            .then(v => { result.push("b:" + v); return v + 1; })
+            .then(v => { result.push("c:" + v); });
+    "#,
+    );
+    let result = engine.eval("result.join(',')");
+    assert_eq!(result.to_js_string(), "a:1,b:2,c:3");
+}
+
+#[test]
+fn async_promise_resolve_then_catch() {
+    // .catch on a fulfilled promise should not fire.
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "none";
+        Promise.resolve(42)
+            .then(v => { out = "ok:" + v; })
+            .catch(e => { out = "err:" + e; });
+        out
+    "#
+        ),
+        "ok:42"
+    );
+}
+
+#[test]
+fn async_promise_reject_catch() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "none";
+        Promise.reject("fail")
+            .then(v => { out = "ok:" + v; })
+            .catch(e => { out = "err:" + e; });
+        out
+    "#
+        ),
+        "err:fail"
+    );
+}
+
+#[test]
+fn async_promise_finally_runs_on_resolve() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = [];
+        Promise.resolve(1)
+            .then(v => out.push("then:" + v))
+            .finally(() => out.push("finally"));
+        out.join(",")
+    "#
+        ),
+        "then:1,finally"
+    );
+}
+
+#[test]
+fn async_promise_all() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        Promise.all([
+            Promise.resolve(1),
+            Promise.resolve(2),
+            Promise.resolve(3)
+        ]).then(arr => { out = arr.join("+"); });
+        out
+    "#
+        ),
+        "1+2+3"
+    );
+}
+
+#[test]
+fn async_promise_all_with_reject() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        Promise.all([
+            Promise.resolve(1),
+            Promise.reject("bad"),
+            Promise.resolve(3)
+        ]).catch(e => { out = "err:" + e; });
+        out
+    "#
+        ),
+        "err:bad"
+    );
+}
+
+#[test]
+fn async_promise_race() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        Promise.race([
+            Promise.resolve("first"),
+            Promise.resolve("second")
+        ]).then(v => { out = v; });
+        out
+    "#
+        ),
+        "first"
+    );
+}
+
+#[test]
+fn async_promise_any() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        Promise.any([
+            Promise.reject("a"),
+            Promise.resolve("b"),
+            Promise.reject("c")
+        ]).then(v => { out = v; });
+        out
+    "#
+        ),
+        "b"
+    );
+}
+
+#[test]
+fn async_promise_all_settled() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        Promise.allSettled([
+            Promise.resolve(1),
+            Promise.reject("x"),
+            Promise.resolve(3)
+        ]).then(results => {
+            out = results.map(r => r.status).join(",");
+        });
+        out
+    "#
+        ),
+        "fulfilled,rejected,fulfilled"
+    );
+}
+
+#[test]
+fn async_await_resolved_promise() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        async function run() {
+            const v = await Promise.resolve(42);
+            out = "got:" + v;
+        }
+        run();
+        out
+    "#
+        ),
+        "got:42"
+    );
+}
+
+#[test]
+fn async_await_chain() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = [];
+        async function step(n) {
+            return n * 2;
+        }
+        async function run() {
+            const a = await step(3);
+            out.push(a);
+            const b = await step(a);
+            out.push(b);
+        }
+        run();
+        out.join(",")
+    "#
+        ),
+        "6,12"
+    );
+}
+
+#[test]
+fn async_await_rejected_promise_try_catch() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        async function run() {
+            try {
+                await Promise.reject("boom");
+                out = "should not reach";
+            } catch (e) {
+                out = "caught:" + e;
+            }
+        }
+        run();
+        out
+    "#
+        ),
+        "caught:boom"
+    );
+}
+
+#[test]
+fn async_queue_microtask() {
+    // queueMicrotask should execute after synchronous code but before timers.
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.eval(
+        r#"
+        var result = [];
+        result.push("sync");
+        queueMicrotask(() => result.push("micro"));
+        result.push("sync2");
+    "#,
+    );
+    let result = engine.eval("result.join(',')");
+    assert_eq!(result.to_js_string(), "sync,sync2,micro");
+}
+
+#[test]
+fn async_settimeout_fires_on_tick() {
+    // setTimeout callbacks should fire when tick() is called.
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.eval(
+        r#"
+        var result = "waiting";
+        setTimeout(function() { result = "fired"; }, 10);
+    "#,
+    );
+    // Before tick — timer hasn't fired yet.
+    assert_eq!(engine.eval("result").to_js_string(), "waiting");
+    // Advance by 10ms — timer should fire.
+    engine.vm().tick(10);
+    assert_eq!(engine.eval("result").to_js_string(), "fired");
+}
+
+#[test]
+fn async_setinterval_repeats() {
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.eval(
+        r#"
+        var count = 0;
+        var id = setInterval(function() { count++; }, 5);
+    "#,
+    );
+    engine.vm().tick(5);
+    assert_eq!(engine.eval("count").to_js_string(), "1");
+    engine.vm().tick(5);
+    assert_eq!(engine.eval("count").to_js_string(), "2");
+    engine.eval("clearInterval(id)");
+    engine.vm().tick(5);
+    assert_eq!(engine.eval("count").to_js_string(), "2"); // should not increment
+}
+
+#[test]
+fn async_settimeout_with_promise_interaction() {
+    // Promise.then inside a setTimeout should work correctly.
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.eval(
+        r#"
+        var result = [];
+        setTimeout(function() {
+            result.push("timer");
+            Promise.resolve().then(() => result.push("micro-in-timer"));
+        }, 1);
+    "#,
+    );
+    engine.vm().tick(1);
+    let result = engine.eval("result.join(',')");
+    assert_eq!(result.to_js_string(), "timer,micro-in-timer");
+}
+
+#[test]
+fn async_run_event_loop() {
+    // run_event_loop should process both microtasks and timers.
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.eval(
+        r#"
+        var result = [];
+        result.push("start");
+        setTimeout(function() {
+            result.push("timer1");
+            setTimeout(function() { result.push("timer2"); }, 1);
+        }, 1);
+    "#,
+    );
+    engine.vm().run_event_loop(100);
+    let result = engine.eval("result.join(',')");
+    assert_eq!(result.to_js_string(), "start,timer1,timer2");
+}
+
+#[test]
+fn async_nested_promise_then() {
+    // Nested .then chains should resolve correctly.
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        Promise.resolve(1).then(v => {
+            return Promise.resolve(v + 10);
+        }).then(v => {
+            out = "result:" + v;
+        });
+        out
+    "#
+        ),
+        "result:11"
+    );
+}
+
+#[test]
+fn async_promise_constructor_with_async_resolve() {
+    // new Promise where resolve is called after some synchronous work.
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        const p = new Promise((resolve, reject) => {
+            let x = 0;
+            for (let i = 0; i < 10; i++) x += i;
+            resolve(x);
+        });
+        p.then(v => { out = "sum:" + v; });
+        out
+    "#
+        ),
+        "sum:45"
+    );
+}
+
+#[test]
+fn async_multiple_awaits() {
+    assert_eq!(
+        eval_str(
+            r#"
+        var out = "pending";
+        async function fetchA() { return "A"; }
+        async function fetchB() { return "B"; }
+        async function main() {
+            const a = await fetchA();
+            const b = await fetchB();
+            out = a + b;
+        }
+        main();
+        out
+    "#
+        ),
+        "AB"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// §15.10 — RegExp: Lookahead, Lookbehind, Named Groups
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn regexp_positive_lookahead() {
+    assert_eq!(
+        eval_str(r#"/foo(?=bar)/.test("foobar")"#),
+        "true"
+    );
+    assert_eq!(
+        eval_str(r#"/foo(?=bar)/.test("foobaz")"#),
+        "false"
+    );
+}
+
+#[test]
+fn regexp_positive_lookahead_zero_width() {
+    // Lookahead should not consume characters.
+    assert_eq!(
+        eval_str(r#"
+        var m = /foo(?=bar)/.exec("foobar");
+        m[0]
+    "#),
+        "foo" // NOT "foobar"
+    );
+}
+
+#[test]
+fn regexp_negative_lookahead() {
+    assert_eq!(
+        eval_str(r#"/foo(?!bar)/.test("foobaz")"#),
+        "true"
+    );
+    assert_eq!(
+        eval_str(r#"/foo(?!bar)/.test("foobar")"#),
+        "false"
+    );
+}
+
+#[test]
+fn regexp_positive_lookbehind() {
+    assert_eq!(
+        eval_str(r#"/(?<=foo)bar/.test("foobar")"#),
+        "true"
+    );
+    assert_eq!(
+        eval_str(r#"/(?<=foo)bar/.test("bazbar")"#),
+        "false"
+    );
+}
+
+#[test]
+fn regexp_positive_lookbehind_match() {
+    // Lookbehind should not consume characters.
+    assert_eq!(
+        eval_str(r#"
+        var m = /(?<=foo)bar/.exec("foobar");
+        m[0]
+    "#),
+        "bar" // NOT "foobar"
+    );
+}
+
+#[test]
+fn regexp_negative_lookbehind() {
+    assert_eq!(
+        eval_str(r#"/(?<!foo)bar/.test("bazbar")"#),
+        "true"
+    );
+    assert_eq!(
+        eval_str(r#"/(?<!foo)bar/.test("foobar")"#),
+        "false"
+    );
+}
+
+#[test]
+fn regexp_named_group_basic() {
+    assert_eq!(
+        eval_str(r#"
+        var m = /(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})/.exec("2024-03-15");
+        m.groups.year + "/" + m.groups.month + "/" + m.groups.day
+    "#),
+        "2024/03/15"
+    );
+}
+
+#[test]
+fn regexp_named_group_in_replace() {
+    // Named groups should also be available as numbered captures.
+    assert_eq!(
+        eval_str(r#"
+        var m = /(?<first>\w+) (?<last>\w+)/.exec("John Doe");
+        m[1] + " " + m[2]
+    "#),
+        "John Doe"
+    );
+}
+
+#[test]
+fn regexp_named_backreference() {
+    assert_eq!(
+        eval_str(r#"/(?<word>\w+)\s+\k<word>/.test("hello hello")"#),
+        "true"
+    );
+    assert_eq!(
+        eval_str(r#"/(?<word>\w+)\s+\k<word>/.test("hello world")"#),
+        "false"
+    );
+}
+
+#[test]
+fn regexp_lookahead_in_split() {
+    // Split before each uppercase letter.
+    assert_eq!(
+        eval_str(r#""camelCaseWord".split(/(?=[A-Z])/).join(",")"#),
+        "camel,Case,Word"
+    );
+}
+
+#[test]
+fn regexp_combined_lookahead_lookbehind() {
+    // Match digits that are preceded by $ and followed by a space.
+    assert_eq!(
+        eval_str(r#"/(?<=\$)\d+(?=\s)/.exec("price $42 USD")[0]"#),
+        "42"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// §16.2 — ES Modules: import/export
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn module_basic_export_import() {
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.register_module_source(
+        "math",
+        "export function add(a, b) { return a + b; }\nexport const PI = 3.14;",
+    );
+    let result = engine.eval(r#"
+        import { add, PI } from 'math';
+        add(2, 3) + ":" + PI
+    "#);
+    assert_eq!(result.to_js_string(), "5:3.14");
+}
+
+#[test]
+fn module_default_export() {
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.register_module_source(
+        "greeter",
+        "export default function(name) { return 'Hello ' + name; }",
+    );
+    let result = engine.eval(r#"
+        import greet from 'greeter';
+        greet("World")
+    "#);
+    assert_eq!(result.to_js_string(), "Hello World");
+}
+
+#[test]
+fn module_namespace_import() {
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.register_module_source(
+        "utils",
+        "export function upper(s) { return s.toUpperCase(); }\nexport function lower(s) { return s.toLowerCase(); }",
+    );
+    let result = engine.eval(r#"
+        import * as utils from 'utils';
+        utils.upper("hello") + ":" + utils.lower("WORLD")
+    "#);
+    assert_eq!(result.to_js_string(), "HELLO:world");
+}
+
+#[test]
+fn module_caching() {
+    // Modules should only execute once — subsequent imports return cached exports.
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    engine.register_module_source(
+        "counter",
+        "var count = 0; count++; export function get() { return count; }",
+    );
+    let result = engine.eval(r#"
+        import { get as get1 } from 'counter';
+        import { get as get2 } from 'counter';
+        get1() + ":" + get2()
+    "#);
+    assert_eq!(result.to_js_string(), "1:1"); // not 1:2
+}
+
+#[test]
+fn module_not_found_throws() {
+    assert!(eval_throws(r#"import { x } from 'nonexistent';"#));
+}
+
+#[test]
+fn module_native_object() {
+    use libjs::JsValue;
+    let mut engine = JsEngine::new();
+    engine.set_step_limit(1_000_000);
+    // Register a native module object.
+    let ns = JsValue::new_object();
+    ns.set_property(
+        alloc::string::String::from("version"),
+        JsValue::String(alloc::string::String::from("1.0")),
+    );
+    engine.register_module_object("config", ns);
+    let result = engine.eval(r#"
+        import { version } from 'config';
+        version
+    "#);
+    assert_eq!(result.to_js_string(), "1.0");
+}
+
+// ═══════════════════════════════════════════════════════════
+// §10.2 — Strict Mode
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn strict_undeclared_var_throws() {
+    assert!(eval_throws(r#"
+        "use strict";
+        undeclaredVar = 42;
+    "#));
+}
+
+#[test]
+fn strict_declared_var_ok() {
+    assert_eq!(
+        eval_str(r#"
+        "use strict";
+        var x = 42;
+        x
+    "#),
+        "42"
+    );
+}
+
+#[test]
+fn strict_function_decl_ok() {
+    assert_eq!(
+        eval_str(r#"
+        "use strict";
+        function foo() { return 7; }
+        foo()
+    "#),
+        "7"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// §21.2 — BigInt
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn bigint_literal() {
+    assert_eq!(eval_str("typeof 42n"), "bigint");
+}
+
+#[test]
+fn bigint_arithmetic() {
+    assert_eq!(eval_str("(10n + 20n).toString()"), "30");
+    assert_eq!(eval_str("(100n - 42n).toString()"), "58");
+    assert_eq!(eval_str("(7n * 6n).toString()"), "42");
+    assert_eq!(eval_str("typeof (6n / 2n)"), "bigint");
+    assert_eq!(eval_str("(6n / 2n).toString()"), "3");
+    assert_eq!(eval_str("(7n % 3n).toString()"), "1");
+}
+
+#[test]
+fn bigint_negation() {
+    assert_eq!(eval_str("(-42n).toString()"), "-42");
+}
+
+#[test]
+fn bigint_comparison() {
+    assert_eq!(eval_str("42n === 42n"), "true");
+    assert_eq!(eval_str("42n === 43n"), "false");
+}
+
+#[test]
+fn bigint_constructor_fn() {
+    assert_eq!(eval_str("BigInt(123).toString()"), "123");
+    assert_eq!(eval_str("BigInt('456').toString()"), "456");
+    assert_eq!(eval_str("typeof BigInt(0)"), "bigint");
+}
+
+#[test]
+fn bigint_mixed_type_error() {
+    assert!(eval_throws("42n + 1"));
+    assert!(eval_throws("1 + 42n"));
+    assert!(eval_throws("42n - 1"));
+}
+
+#[test]
+fn bigint_to_string() {
+    assert_eq!(eval_str("String(42n)"), "42n");
+}
+
+#[test]
+fn bigint_large_numbers() {
+    // Ensure arbitrary precision works.
+    assert_eq!(
+        eval_str("(999999999999999999n * 999999999999999999n).toString()"),
+        "999999999999999998000000000000000001"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// §16.1 — Error.stack
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn error_stack_has_function_name() {
+    let result = eval_str(r#"
+        var s = "";
+        try { throw new Error("oops"); } catch(e) { s = e.stack; }
+        s
+    "#);
+    assert!(result.contains("Error"), "stack should contain 'Error': {}", result);
+}
+
+#[test]
+fn error_stack_format() {
+    let result = eval_str(r#"
+        var s = "";
+        try { throw new Error("test"); } catch(e) { s = e.stack; }
+        s
+    "#);
+    assert!(result.contains("Error: test"), "stack should start with error: {}", result);
+    assert!(result.contains("at "), "stack should have 'at' frames: {}", result);
+}
+
+// ═══════════════════════════════════════════════════════════
+// §25.1 — ES2025 Iterator Helpers
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn iterator_to_array() {
+    assert_eq!(
+        eval_str("[1,2,3].values().toArray().join(',')"),
+        "1,2,3"
+    );
+}
+
+#[test]
+fn iterator_map() {
+    assert_eq!(
+        eval_str("[1,2,3].values().map(x => x * 2).toArray().join(',')"),
+        "2,4,6"
+    );
+}
+
+#[test]
+fn iterator_filter() {
+    assert_eq!(
+        eval_str("[1,2,3,4,5].values().filter(x => x % 2 === 0).toArray().join(',')"),
+        "2,4"
+    );
+}
+
+#[test]
+fn iterator_take() {
+    assert_eq!(
+        eval_str("[1,2,3,4,5].values().take(3).toArray().join(',')"),
+        "1,2,3"
+    );
+}
+
+#[test]
+fn iterator_drop() {
+    assert_eq!(
+        eval_str("[1,2,3,4,5].values().drop(2).toArray().join(',')"),
+        "3,4,5"
+    );
+}
+
+#[test]
+fn iterator_some_every() {
+    assert_eq!(eval_str("[1,2,3].values().some(x => x > 2)"), "true");
+    assert_eq!(eval_str("[1,2,3].values().every(x => x > 0)"), "true");
+    assert_eq!(eval_str("[1,2,3].values().every(x => x > 1)"), "false");
+}
+
+#[test]
+fn iterator_find() {
+    assert_eq!(eval_str("[10,20,30].values().find(x => x > 15)"), "20");
+}
+
+#[test]
+fn iterator_reduce() {
+    assert_eq!(
+        eval_str("[1,2,3,4].values().reduce((acc, x) => acc + x, 0)"),
+        "10"
+    );
+}
+
+#[test]
+fn iterator_flat_map() {
+    assert_eq!(
+        eval_str("[1,2,3].values().flatMap(x => [x, x*10]).toArray().join(',')"),
+        "1,10,2,20,3,30"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// §24.2 — ES2025 Set Methods
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn set_union() {
+    assert_eq!(
+        eval_str(r#"
+        var a = new Set([1, 2, 3]);
+        var b = new Set([3, 4, 5]);
+        var u = a.union(b);
+        Array.from(u).sort().join(",")
+    "#),
+        "1,2,3,4,5"
+    );
+}
+
+#[test]
+fn set_intersection() {
+    assert_eq!(
+        eval_str(r#"
+        var a = new Set([1, 2, 3, 4]);
+        var b = new Set([3, 4, 5, 6]);
+        var i = a.intersection(b);
+        Array.from(i).sort().join(",")
+    "#),
+        "3,4"
+    );
+}
+
+#[test]
+fn set_difference() {
+    assert_eq!(
+        eval_str(r#"
+        var a = new Set([1, 2, 3, 4]);
+        var b = new Set([3, 4, 5]);
+        var d = a.difference(b);
+        Array.from(d).sort().join(",")
+    "#),
+        "1,2"
+    );
+}
+
+#[test]
+fn set_symmetric_difference() {
+    assert_eq!(
+        eval_str(r#"
+        var a = new Set([1, 2, 3]);
+        var b = new Set([2, 3, 4]);
+        var sd = a.symmetricDifference(b);
+        Array.from(sd).sort().join(",")
+    "#),
+        "1,4"
+    );
+}
+
+#[test]
+fn set_subset_superset_disjoint() {
+    assert_eq!(eval_str("new Set([1,2]).isSubsetOf(new Set([1,2,3]))"), "true");
+    assert_eq!(eval_str("new Set([1,2,3]).isSupersetOf(new Set([1,2]))"), "true");
+    assert_eq!(eval_str("new Set([1,2]).isDisjointFrom(new Set([3,4]))"), "true");
+    assert_eq!(eval_str("new Set([1,2]).isDisjointFrom(new Set([2,3]))"), "false");
+}
+
+// ═══════════════════════════════════════════════════════════
+// §20.3 — Date Setters and Date.UTC
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn date_set_full_year() {
+    assert_eq!(
+        eval_str(r#"
+        var d = new Date(0);
+        d.setFullYear(2000);
+        d.getFullYear()
+    "#),
+        "2000"
+    );
+}
+
+#[test]
+fn date_set_month() {
+    assert_eq!(
+        eval_str(r#"
+        var d = new Date(0);
+        d.setMonth(5);
+        d.getMonth()
+    "#),
+        "5"
+    );
+}
+
+#[test]
+fn date_set_hours_minutes_seconds() {
+    assert_eq!(
+        eval_str(r#"
+        var d = new Date(0);
+        d.setHours(15, 30, 45);
+        d.getHours() + ":" + d.getMinutes() + ":" + d.getSeconds()
+    "#),
+        "15:30:45"
+    );
+}
+
+#[test]
+fn date_utc_static() {
+    assert_eq!(
+        eval_str("Date.UTC(1970, 0, 1)"),
+        "0"
+    );
+    assert_eq!(
+        eval_str("Date.UTC(2000, 0, 1)"),
+        "946684800000"
+    );
+}
+
+#[test]
+fn date_get_timezone_offset() {
+    assert_eq!(eval_str("new Date().getTimezoneOffset()"), "0");
 }

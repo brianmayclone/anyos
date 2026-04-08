@@ -138,6 +138,22 @@ fn build_exec_result(_vm: &Vm, m: &crate::regexp::Match, input: &str) -> JsValue
     let arr_val = JsValue::Array(Rc::new(RefCell::new(arr)));
     arr_val.set_property(String::from("index"), JsValue::Number(m.start as f64));
     arr_val.set_property(String::from("input"), JsValue::String(String::from(input)));
+
+    // ES2018: named groups as .groups property
+    if !m.named_groups.is_empty() {
+        let groups_obj = JsValue::new_object();
+        for (name, idx) in &m.named_groups {
+            let val = m
+                .group(*idx as usize, input)
+                .map(|s| JsValue::String(String::from(s)))
+                .unwrap_or(JsValue::Undefined);
+            groups_obj.set_property(name.clone(), val);
+        }
+        arr_val.set_property(String::from("groups"), groups_obj);
+    } else {
+        arr_val.set_property(String::from("groups"), JsValue::Undefined);
+    }
+
     arr_val
 }
 

@@ -66,6 +66,22 @@ enum Node {
     NonCapGroup { body: Vec<Node> },
     /// Backreference `\n`.
     Backref(u32),
+    /// Positive lookahead `(?=...)`.
+    Lookahead(Vec<Node>),
+    /// Negative lookahead `(?!...)`.
+    NegLookahead(Vec<Node>),
+    /// Positive lookbehind `(?<=...)`.
+    Lookbehind(Vec<Node>),
+    /// Negative lookbehind `(?<!...)`.
+    NegLookbehind(Vec<Node>),
+    /// Named capturing group `(?<name>...)`.
+    NamedGroup {
+        index: u32,
+        name: String,
+        body: Vec<Node>,
+    },
+    /// Named backreference `\k<name>`.
+    NamedBackref(String),
 }
 
 /// Compiled regular expression.
@@ -75,6 +91,8 @@ pub struct Regex {
     pub source: String,
     pub flags: RegexFlags,
     pub group_count: u32,
+    /// Named group index: name → group index.
+    pub named_groups: Vec<(String, u32)>,
 }
 
 /// Regex flags.
@@ -138,6 +156,8 @@ pub struct Match {
     pub end: usize,
     /// Captured groups (index 0 = full match, 1.. = groups).
     pub groups: Vec<Option<(usize, usize)>>,
+    /// Named group mappings: (name, group_index).
+    pub named_groups: Vec<(String, u32)>,
 }
 
 impl Match {
@@ -173,6 +193,7 @@ struct RegexParser<'a> {
     pos: usize,
     flags: RegexFlags,
     group_count: u32,
+    named_groups: Vec<(String, u32)>,
     _src: &'a str,
 }
 
@@ -183,6 +204,7 @@ impl<'a> RegexParser<'a> {
             pos: 0,
             flags,
             group_count: 0,
+            named_groups: Vec::new(),
             _src: pattern,
         }
     }
@@ -244,11 +266,56 @@ impl<'a> RegexParser<'a> {
             '(' => {
                 self.advance();
                 if self.eat('?') {
-                    // Non-capturing group (?:...)
                     if self.eat(':') {
+                        // Non-capturing group (?:...)
                         let body = self.parse_alternation();
                         self.eat(')');
                         Some(Node::NonCapGroup { body })
+                    } else if self.eat('=') {
+                        // Positive lookahead (?=...)
+                        let body = self.parse_alternation();
+                        self.eat(')');
+                        Some(Node::Lookahead(body))
+                    } else if self.eat('!') {
+                        // Negative lookahead (?!...)
+                        let body = self.parse_alternation();
+                        self.eat(')');
+                        Some(Node::NegLookahead(body))
+                    } else if self.eat('<') {
+                        if self.peek() == Some('=') {
+                            // Positive lookbehind (?<=...)
+                            self.advance();
+                            let body = self.parse_alternation();
+                            self.eat(')');
+                            Some(Node::Lookbehind(body))
+                        } else if self.peek() == Some('!') {
+                            // Negative lookbehind (?<!...)
+                            self.advance();
+                            let body = self.parse_alternation();
+                            self.eat(')');
+                            Some(Node::NegLookbehind(body))
+                        } else {
+                            // Named capturing group (?<name>...)
+                            let mut name = String::new();
+                            while let Some(c) = self.peek() {
+                                if c == '>' {
+                                    self.advance();
+                                    break;
+                                }
+                                name.push(c);
+                                self.advance();
+                            }
+                            self.group_count += 1;
+                            let idx = self.group_count;
+                            self.named_groups.push((name.clone(), idx));
+                            let body = self.parse_alternation();
+                            self.eat(')');
+                            Some(Node::NamedGroup {
+                                index: idx,
+                                name,
+                                body,
+                            })
+                        }
                     } else {
                         // Skip unknown group modifiers
                         while self.peek() != Some(')') && self.peek().is_some() {
@@ -310,6 +377,23 @@ impl<'a> RegexParser<'a> {
             'S' => Node::NotWhitespace,
             'b' => Node::WordBoundary,
             'B' => Node::NotWordBoundary,
+            'k' => {
+                // Named backreference \k<name>
+                if self.eat('<') {
+                    let mut name = String::new();
+                    while let Some(c) = self.peek() {
+                        if c == '>' {
+                            self.advance();
+                            break;
+                        }
+                        name.push(c);
+                        self.advance();
+                    }
+                    Node::NamedBackref(name)
+                } else {
+                    Node::Literal('k')
+                }
+            }
             'n' => Node::Literal('\n'),
             'r' => Node::Literal('\r'),
             't' => Node::Literal('\t'),
@@ -549,15 +633,23 @@ struct ExecState<'a> {
     flags: RegexFlags,
     /// Captured groups: (start, end) char indices. Index 0 reserved for full match.
     groups: Vec<Option<(usize, usize)>>,
+    /// Named group name → group index mapping (for `\k<name>` backreferences).
+    named_group_indices: Vec<(String, u32)>,
 }
 
 impl<'a> ExecState<'a> {
-    fn new(chars: &'a [char], flags: RegexFlags, group_count: u32) -> Self {
+    fn new(
+        chars: &'a [char],
+        flags: RegexFlags,
+        group_count: u32,
+        named_groups: &[(String, u32)],
+    ) -> Self {
         let cap = (group_count + 1) as usize;
         ExecState {
             chars,
             flags,
             groups: vec![None; cap],
+            named_group_indices: named_groups.to_vec(),
         }
     }
 
@@ -756,6 +848,118 @@ impl<'a> ExecState<'a> {
                 }
             }
             Node::NonCapGroup { body } => self.exec_nodes(body, pos),
+            Node::Lookahead(body) => {
+                // Zero-width positive lookahead: match body at pos but don't consume.
+                let saved = self.groups.clone();
+                if self.exec_nodes(body, pos).is_some() {
+                    // Restore groups — lookahead doesn't capture permanently
+                    // (but groups captured inside DO persist per ES spec).
+                    Some(pos)
+                } else {
+                    self.groups = saved;
+                    None
+                }
+            }
+            Node::NegLookahead(body) => {
+                // Zero-width negative lookahead: succeed only if body does NOT match.
+                let saved = self.groups.clone();
+                if self.exec_nodes(body, pos).is_some() {
+                    self.groups = saved;
+                    None
+                } else {
+                    self.groups = saved;
+                    Some(pos)
+                }
+            }
+            Node::Lookbehind(body) => {
+                // Zero-width positive lookbehind: try matching body ending at pos.
+                // We try all possible start positions from 0 to pos.
+                let saved = self.groups.clone();
+                for start in (0..=pos).rev() {
+                    let mut trial_groups = saved.clone();
+                    core::mem::swap(&mut self.groups, &mut trial_groups);
+                    if let Some(end) = self.exec_nodes(body, start) {
+                        if end == pos {
+                            return Some(pos);
+                        }
+                    }
+                    self.groups = trial_groups;
+                }
+                self.groups = saved;
+                None
+            }
+            Node::NegLookbehind(body) => {
+                // Zero-width negative lookbehind: succeed only if body does NOT match ending at pos.
+                let saved = self.groups.clone();
+                for start in (0..=pos).rev() {
+                    let mut trial_groups = saved.clone();
+                    core::mem::swap(&mut self.groups, &mut trial_groups);
+                    if let Some(end) = self.exec_nodes(body, start) {
+                        if end == pos {
+                            self.groups = saved;
+                            return None;
+                        }
+                    }
+                    self.groups = trial_groups;
+                }
+                self.groups = saved;
+                Some(pos)
+            }
+            Node::NamedGroup { index, name: _, body } => {
+                // Same as capturing group but with a name.
+                let saved = self.groups.clone();
+                let start = pos;
+                if let Some(end) = self.exec_nodes(body, pos) {
+                    let idx = *index as usize;
+                    if idx < self.groups.len() {
+                        self.groups[idx] = Some((start, end));
+                    }
+                    Some(end)
+                } else {
+                    self.groups = saved;
+                    None
+                }
+            }
+            Node::NamedBackref(name) => {
+                // Find the group index for this name from the regex's named_groups.
+                // Since ExecState doesn't have access to the named_groups map,
+                // we search all groups — the named group index was assigned during
+                // parsing and stored in the Node tree. We need to find the group
+                // by walking the node tree, but a simpler approach: store named
+                // group mappings in ExecState.
+                if let Some(&(_, idx)) = self.named_group_indices.iter().find(|(n, _)| n == name) {
+                    let idx = idx as usize;
+                    if idx < self.groups.len() {
+                        if let Some((gs, ge)) = self.groups[idx] {
+                            let group_chars = &self.chars[gs..ge];
+                            let len = group_chars.len();
+                            if pos + len > self.chars.len() {
+                                return None;
+                            }
+                            if self.flags.ignore_case {
+                                for i in 0..len {
+                                    if to_lower(self.chars[pos + i]) != to_lower(group_chars[i]) {
+                                        return None;
+                                    }
+                                }
+                            } else {
+                                for i in 0..len {
+                                    if self.chars[pos + i] != group_chars[i] {
+                                        return None;
+                                    }
+                                }
+                            }
+                            Some(pos + len)
+                        } else {
+                            Some(pos) // unmatched group matches empty
+                        }
+                    } else {
+                        Some(pos)
+                    }
+                } else {
+                    Some(pos) // unknown name matches empty
+                }
+            }
             Node::Backref(n) => {
                 let idx = *n as usize;
                 if idx < self.groups.len() {
@@ -896,6 +1100,7 @@ impl Regex {
             source: String::from(pattern),
             flags,
             group_count: parser.group_count,
+            named_groups: parser.named_groups,
         })
     }
 
@@ -924,13 +1129,14 @@ impl Regex {
     }
 
     fn try_match_at(&self, chars: &[char], pos: usize) -> Option<Match> {
-        let mut state = ExecState::new(chars, self.flags, self.group_count);
+        let mut state = ExecState::new(chars, self.flags, self.group_count, self.named_groups.as_slice());
         if let Some(end) = state.exec_nodes(&self.nodes, pos) {
             state.groups[0] = Some((pos, end));
             Some(Match {
                 start: pos,
                 end,
                 groups: state.groups,
+                named_groups: self.named_groups.clone(),
             })
         } else {
             None

@@ -36,6 +36,10 @@ impl ImageEntry {
     fn byte_size(&self) -> usize {
         self.pixels.len() * 4
     }
+
+    fn has_pixels(&self) -> bool {
+        !self.pixels.is_empty() && self.width > 0 && self.height > 0
+    }
 }
 
 /// LRU cache of decoded images with a total byte-size cap.
@@ -106,16 +110,21 @@ impl ImageCache {
     }
 
     fn evict_to_budget(&mut self) {
-        while self.total_bytes > IMAGE_CACHE_MAX_BYTES && !self.entries.is_empty() {
-            let min_idx = self
+        while self.total_bytes > IMAGE_CACHE_MAX_BYTES {
+            let Some(min_idx) = self
                 .entries
                 .iter()
                 .enumerate()
+                .filter(|(_, e)| !e.pixels.is_empty())
                 .min_by_key(|(_, e)| e.generation)
                 .map(|(i, _)| i)
-                .unwrap_or(0);
-            self.total_bytes -= self.entries[min_idx].byte_size();
-            self.entries.swap_remove(min_idx);
+            else {
+                break;
+            };
+
+            let entry = &mut self.entries[min_idx];
+            self.total_bytes -= entry.byte_size();
+            entry.pixels.clear();
         }
     }
 }
@@ -312,6 +321,9 @@ impl DisplayList {
                 }
                 DrawKind::Image { src, object_fit } => {
                     if let Some(entry) = images.get_ref(src) {
+                        if !entry.has_pixels() {
+                            continue;
+                        }
                         blit_image_scaled(
                             buf,
                             stride,

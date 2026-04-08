@@ -21,6 +21,19 @@ fn make_iterator(items: Vec<JsValue>) -> JsValue {
         String::from(super::native_symbol::WELL_KNOWN_ITERATOR),
         native_fn("[Symbol.iterator]", iterator_self),
     );
+    // ES2025 Iterator Helper methods
+    use super::iter::*;
+    iter_obj.set_property(String::from("toArray"), native_fn("toArray", iterator_to_array));
+    iter_obj.set_property(String::from("forEach"), native_fn("forEach", iterator_for_each));
+    iter_obj.set_property(String::from("map"), native_fn("map", iterator_map));
+    iter_obj.set_property(String::from("filter"), native_fn("filter", iterator_filter));
+    iter_obj.set_property(String::from("take"), native_fn("take", iterator_take));
+    iter_obj.set_property(String::from("drop"), native_fn("drop", iterator_drop));
+    iter_obj.set_property(String::from("some"), native_fn("some", iterator_some));
+    iter_obj.set_property(String::from("every"), native_fn("every", iterator_every));
+    iter_obj.set_property(String::from("find"), native_fn("find", iterator_find));
+    iter_obj.set_property(String::from("reduce"), native_fn("reduce", iterator_reduce));
+    iter_obj.set_property(String::from("flatMap"), native_fn("flatMap", iterator_flat_map));
     iter_obj
 }
 
@@ -61,13 +74,22 @@ fn iterator_self(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 // ═══════════════════════════════════════════════════════════
 
 pub fn ctor_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Map requires construction via `new`.
+    let obj_rc = match &vm.current_this {
+        JsValue::Object(rc) => rc.clone(),
+        _ => {
+            let exc = vm.make_type_error("Constructor Map requires 'new'");
+            vm.throw_native(exc);
+            return JsValue::Undefined;
+        }
+    };
+
     // Tag `this` (created by `new_object` with the correct prototype chain).
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    {
         let mut o = obj_rc.borrow_mut();
         o.internal_tag = Some(String::from(MAP_TAG));
         o.set(String::from("__keys"), JsValue::new_array(Vec::new()));
         o.set(String::from("__values"), JsValue::new_array(Vec::new()));
-        o.set(String::from("size"), JsValue::Number(0.0));
     }
     // Handle iterable argument: new Map(iterable)
     // Accepts any iterable of [key, value] pairs (Array, Map, Set, generator, etc.)
@@ -77,7 +99,7 @@ pub fn ctor_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             let entries = collect_iterable_entries(vm, iterable);
             for entry in &entries {
                 let (key, val) = extract_pair(entry);
-                if let JsValue::Object(obj_rc) = &vm.current_this {
+                {
                     let (keys_arr, vals_arr) = {
                         let ob = obj_rc.borrow();
                         (ob.get("__keys"), ob.get("__values"))
@@ -86,7 +108,7 @@ pub fn ctor_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                         keys.borrow_mut().push(key);
                         vals.borrow_mut().push(val);
                     }
-                    update_size(obj_rc);
+                    update_size(&obj_rc);
                 }
             }
         }
@@ -164,17 +186,22 @@ fn map_find_index(obj: &JsObject, key: &JsValue) -> Option<usize> {
 }
 
 fn update_size(obj_rc: &Rc<RefCell<JsObject>>) {
-    let size = {
-        let o = obj_rc.borrow();
-        if let JsValue::Array(keys) = o.get("__keys") {
-            keys.borrow().count() as f64
-        } else {
-            0.0
-        }
-    };
-    obj_rc
-        .borrow_mut()
-        .set(String::from("size"), JsValue::Number(size));
+    obj_rc.borrow_mut().properties.remove("size");
+}
+
+pub fn map_size_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if let Some(obj_rc) = expect_map_this(vm) {
+        let size = {
+            let o = obj_rc.borrow();
+            if let JsValue::Array(keys) = o.get("__keys") {
+                keys.borrow().count() as f64
+            } else {
+                0.0
+            }
+        };
+        return JsValue::Number(size);
+    }
+    JsValue::Undefined
 }
 
 pub fn map_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -330,18 +357,26 @@ pub fn map_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // ═══════════════════════════════════════════════════════════
 
 pub fn ctor_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    if let JsValue::Object(obj_rc) = &vm.current_this {
+    let obj_rc = match &vm.current_this {
+        JsValue::Object(rc) => rc.clone(),
+        _ => {
+            let exc = vm.make_type_error("Constructor Set requires 'new'");
+            vm.throw_native(exc);
+            return JsValue::Undefined;
+        }
+    };
+
+    {
         let mut o = obj_rc.borrow_mut();
         o.internal_tag = Some(String::from(SET_TAG));
         o.set(String::from("__items"), JsValue::new_array(Vec::new()));
-        o.set(String::from("size"), JsValue::Number(0.0));
     }
     // Pre-populate from iterable argument if provided.
     if let Some(iterable) = args.first() {
         if !iterable.is_undefined() && !iterable.is_null() {
             let elements = collect_iterable_entries(vm, iterable);
             for v in &elements {
-                if let JsValue::Object(obj_rc) = &vm.current_this {
+                {
                     if let JsValue::Array(items) = obj_rc.borrow().get("__items") {
                         let mut items_mut = items.borrow_mut();
                         let has = items_mut.elements.values().any(|s| s.strict_eq(v));
@@ -349,14 +384,7 @@ pub fn ctor_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                             items_mut.push(v.clone());
                         }
                     }
-                    let size = if let JsValue::Array(items) = obj_rc.borrow().get("__items") {
-                        items.borrow().count() as f64
-                    } else {
-                        0.0
-                    };
-                    obj_rc
-                        .borrow_mut()
-                        .set(String::from("size"), JsValue::Number(size));
+                    update_set_size(&obj_rc);
                 }
             }
         }
@@ -393,17 +421,22 @@ fn expect_set_this(vm: &mut Vm) -> Option<Rc<RefCell<JsObject>>> {
 }
 
 fn update_set_size(obj_rc: &Rc<RefCell<JsObject>>) {
-    let size = {
-        let o = obj_rc.borrow();
-        if let JsValue::Array(items) = o.get("__items") {
-            items.borrow().count() as f64
-        } else {
-            0.0
-        }
-    };
-    obj_rc
-        .borrow_mut()
-        .set(String::from("size"), JsValue::Number(size));
+    obj_rc.borrow_mut().properties.remove("size");
+}
+
+pub fn set_size_get(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if let Some(obj_rc) = expect_set_this(vm) {
+        let size = {
+            let o = obj_rc.borrow();
+            if let JsValue::Array(items) = o.get("__items") {
+                items.borrow().count() as f64
+            } else {
+                0.0
+            }
+        };
+        return JsValue::Number(size);
+    }
+    JsValue::Undefined
 }
 
 pub fn set_add(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -506,4 +539,157 @@ pub fn set_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
     }
     JsValue::Undefined
+}
+
+// ═══════════════════════════════════════════════════════════
+// ES2025 Set methods
+// ═══════════════════════════════════════════════════════════
+
+fn get_set_items(obj_rc: &Rc<RefCell<JsObject>>) -> Vec<JsValue> {
+    let o = obj_rc.borrow();
+    if let JsValue::Array(arr) = o.get("__items") {
+        arr.borrow().values_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+fn get_other_set_items(vm: &mut Vm, args: &[JsValue]) -> Vec<JsValue> {
+    let other = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if let JsValue::Object(obj) = &other {
+        if obj.borrow().internal_tag.as_deref() == Some("Set") {
+            return get_set_items(obj);
+        }
+    }
+    // Try iterating over the argument as an iterable.
+    if let JsValue::Array(arr) = &other {
+        return arr.borrow().values_vec();
+    }
+    Vec::new()
+}
+
+fn make_new_set(vm: &Vm, items: Vec<JsValue>) -> JsValue {
+    // Deduplicate.
+    let mut unique = Vec::new();
+    for v in items {
+        if !unique.iter().any(|u: &JsValue| u.strict_eq(&v)) {
+            unique.push(v);
+        }
+    }
+    let mut obj = JsObject::with_tag("Set");
+    obj.set(
+        String::from("__items"),
+        JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(unique)))),
+    );
+    // Set prototype methods (reuse the Set constructor's proto).
+    if let JsValue::Function(ctor) = vm.globals.borrow().get("Set") {
+        if let Some(proto) = &ctor.borrow().prototype {
+            obj.prototype = Some(proto.clone());
+        }
+    }
+    let obj_rc = Rc::new(RefCell::new(obj));
+    update_set_size(&obj_rc);
+    JsValue::Object(obj_rc)
+}
+
+/// `Set.prototype.union(other)` — ES2025
+pub fn set_union(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let this_items = expect_set_this(vm)
+        .map(|rc| get_set_items(&rc))
+        .unwrap_or_default();
+    let other_items = get_other_set_items(vm, args);
+    let mut combined = this_items;
+    for v in other_items {
+        if !combined.iter().any(|u| u.strict_eq(&v)) {
+            combined.push(v);
+        }
+    }
+    make_new_set(vm, combined)
+}
+
+/// `Set.prototype.intersection(other)` — ES2025
+pub fn set_intersection(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let this_items = expect_set_this(vm)
+        .map(|rc| get_set_items(&rc))
+        .unwrap_or_default();
+    let other_items = get_other_set_items(vm, args);
+    let result: Vec<JsValue> = this_items
+        .into_iter()
+        .filter(|v| other_items.iter().any(|u| u.strict_eq(v)))
+        .collect();
+    make_new_set(vm, result)
+}
+
+/// `Set.prototype.difference(other)` — ES2025
+pub fn set_difference(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let this_items = expect_set_this(vm)
+        .map(|rc| get_set_items(&rc))
+        .unwrap_or_default();
+    let other_items = get_other_set_items(vm, args);
+    let result: Vec<JsValue> = this_items
+        .into_iter()
+        .filter(|v| !other_items.iter().any(|u| u.strict_eq(v)))
+        .collect();
+    make_new_set(vm, result)
+}
+
+/// `Set.prototype.symmetricDifference(other)` — ES2025
+pub fn set_symmetric_difference(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let this_items = expect_set_this(vm)
+        .map(|rc| get_set_items(&rc))
+        .unwrap_or_default();
+    let other_items = get_other_set_items(vm, args);
+    let mut result = Vec::new();
+    // Items in this but not other.
+    for v in &this_items {
+        if !other_items.iter().any(|u| u.strict_eq(v)) {
+            result.push(v.clone());
+        }
+    }
+    // Items in other but not this.
+    for v in &other_items {
+        if !this_items.iter().any(|u| u.strict_eq(v)) {
+            result.push(v.clone());
+        }
+    }
+    make_new_set(vm, result)
+}
+
+/// `Set.prototype.isSubsetOf(other)` — ES2025
+pub fn set_is_subset_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let this_items = expect_set_this(vm)
+        .map(|rc| get_set_items(&rc))
+        .unwrap_or_default();
+    let other_items = get_other_set_items(vm, args);
+    JsValue::Bool(
+        this_items
+            .iter()
+            .all(|v| other_items.iter().any(|u| u.strict_eq(v))),
+    )
+}
+
+/// `Set.prototype.isSupersetOf(other)` — ES2025
+pub fn set_is_superset_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let this_items = expect_set_this(vm)
+        .map(|rc| get_set_items(&rc))
+        .unwrap_or_default();
+    let other_items = get_other_set_items(vm, args);
+    JsValue::Bool(
+        other_items
+            .iter()
+            .all(|v| this_items.iter().any(|u| u.strict_eq(v))),
+    )
+}
+
+/// `Set.prototype.isDisjointFrom(other)` — ES2025
+pub fn set_is_disjoint_from(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let this_items = expect_set_this(vm)
+        .map(|rc| get_set_items(&rc))
+        .unwrap_or_default();
+    let other_items = get_other_set_items(vm, args);
+    JsValue::Bool(
+        !this_items
+            .iter()
+            .any(|v| other_items.iter().any(|u| u.strict_eq(v))),
+    )
 }

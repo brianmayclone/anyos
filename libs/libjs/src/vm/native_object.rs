@@ -162,47 +162,111 @@ pub fn object_keys(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 .collect();
             JsValue::new_array(keys)
         }
+        Some(JsValue::Function(func)) => {
+            let keys: Vec<JsValue> = func
+                .borrow()
+                .own_props
+                .keys()
+                .filter(|k| !k.starts_with("__get_") && !k.starts_with("__set_"))
+                .cloned()
+                .map(JsValue::String)
+                .collect();
+            JsValue::new_array(keys)
+        }
         _ => JsValue::new_array(Vec::new()),
     }
 }
 
-pub fn object_values(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn object_values(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(JsValue::Object(obj)) => {
-            let o = obj.borrow();
-            let vals: Vec<JsValue> = o
-                .keys()
+            let keys = obj.borrow().keys();
+            let vals: Vec<JsValue> = keys
                 .into_iter()
-                .map(|k| {
-                    o.properties
-                        .get(&k)
-                        .map(|p| p.value.clone())
-                        .unwrap_or(JsValue::Undefined)
-                })
+                .map(|k| vm.get_property_invoking_getter(args.first().unwrap(), &k))
                 .collect();
             JsValue::new_array(vals)
         }
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
-            JsValue::new_array(a.values_vec())
+            let mut vals = a.values_vec();
+            let prop_keys: Vec<String> = a
+                .properties
+                .keys()
+                .filter(|k| k.parse::<usize>().is_err())
+                .cloned()
+                .collect();
+            drop(a);
+            for key in prop_keys {
+                vals.push(vm.get_property_invoking_getter(args.first().unwrap(), &key));
+            }
+            JsValue::new_array(vals)
+        }
+        Some(JsValue::Function(func)) => {
+            let keys: Vec<String> = func
+                .borrow()
+                .own_props
+                .keys()
+                .filter(|k| !k.starts_with("__get_") && !k.starts_with("__set_"))
+                .cloned()
+                .collect();
+            let vals: Vec<JsValue> = keys
+                .into_iter()
+                .map(|k| vm.get_property_invoking_getter(args.first().unwrap(), &k))
+                .collect();
+            JsValue::new_array(vals)
         }
         _ => JsValue::new_array(Vec::new()),
     }
 }
 
-pub fn object_entries(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn object_entries(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(JsValue::Object(obj)) => {
-            let o = obj.borrow();
-            let entries: Vec<JsValue> = o
-                .keys()
+            let keys = obj.borrow().keys();
+            let entries: Vec<JsValue> = keys
                 .into_iter()
                 .map(|k| {
-                    let v = o
-                        .properties
-                        .get(&k)
-                        .map(|p| p.value.clone())
-                        .unwrap_or(JsValue::Undefined);
+                    let v = vm.get_property_invoking_getter(args.first().unwrap(), &k);
+                    JsValue::new_array(alloc::vec![JsValue::String(k), v])
+                })
+                .collect();
+            JsValue::new_array(entries)
+        }
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            let mut entries: Vec<JsValue> = a
+                .elements
+                .iter()
+                .map(|(i, v)| {
+                    JsValue::new_array(alloc::vec![JsValue::String(format_usize(*i)), v.clone()])
+                })
+                .collect();
+            let prop_keys: Vec<String> = a
+                .properties
+                .keys()
+                .filter(|k| k.parse::<usize>().is_err())
+                .cloned()
+                .collect();
+            drop(a);
+            for key in prop_keys {
+                let v = vm.get_property_invoking_getter(args.first().unwrap(), &key);
+                entries.push(JsValue::new_array(alloc::vec![JsValue::String(key), v]));
+            }
+            JsValue::new_array(entries)
+        }
+        Some(JsValue::Function(func)) => {
+            let keys: Vec<String> = func
+                .borrow()
+                .own_props
+                .keys()
+                .filter(|k| !k.starts_with("__get_") && !k.starts_with("__set_"))
+                .cloned()
+                .collect();
+            let entries: Vec<JsValue> = keys
+                .into_iter()
+                .map(|k| {
+                    let v = vm.get_property_invoking_getter(args.first().unwrap(), &k);
                     JsValue::new_array(alloc::vec![JsValue::String(k), v])
                 })
                 .collect();
@@ -212,18 +276,34 @@ pub fn object_entries(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
-pub fn object_assign(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn object_assign(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Object(target_obj) = &target {
-        for source in args.iter().skip(1) {
-            if let JsValue::Object(src) = source {
-                let s = src.borrow();
-                for key in s.keys() {
-                    if let Some(prop) = s.properties.get(&key) {
-                        target_obj.borrow_mut().set(key, prop.value.clone());
-                    }
-                }
+    for source in args.iter().skip(1) {
+        let keys: Vec<String> = match source {
+            JsValue::Object(src) => src.borrow().keys(),
+            JsValue::Array(arr) => {
+                let a = arr.borrow();
+                let mut keys: Vec<String> = a.elements.keys().map(|&i| format_usize(i)).collect();
+                keys.extend(
+                    a.properties
+                        .keys()
+                        .filter(|k| k.parse::<usize>().is_err())
+                        .cloned(),
+                );
+                keys
             }
+            JsValue::Function(func) => func
+                .borrow()
+                .own_props
+                .keys()
+                .filter(|k| !k.starts_with("__get_") && !k.starts_with("__set_"))
+                .cloned()
+                .collect(),
+            _ => Vec::new(),
+        };
+        for key in keys {
+            let value = vm.get_property_invoking_getter(source, &key);
+            target.set_property(key, value);
         }
     }
     target
@@ -635,12 +715,80 @@ fn fn_get_own_property_descriptor(fn_rc: &Rc<RefCell<JsFunction>>, key: &str) ->
 /// `Object.getOwnPropertyDescriptors(obj)`.
 pub fn object_get_own_property_descriptors(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let result = JsValue::new_object();
-    if let Some(JsValue::Object(obj)) = args.first() {
-        let o = obj.borrow();
-        for (key, prop) in &o.properties {
-            let desc = prop_to_descriptor(prop);
-            result.set_property(key.clone(), desc);
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let o = obj.borrow();
+            for (key, prop) in &o.properties {
+                let desc = prop_to_descriptor(prop);
+                result.set_property(key.clone(), desc);
+            }
         }
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            for (idx, value) in &a.elements {
+                let desc = prop_to_descriptor(&Property::data(value.clone()));
+                result.set_property(format_usize(*idx), desc);
+            }
+            for (key, prop) in &a.properties {
+                let desc = prop_to_descriptor(prop);
+                result.set_property(key.clone(), desc);
+            }
+            result.set_property(
+                String::from("length"),
+                prop_to_descriptor(&Property {
+                    value: JsValue::Number(a.length as f64),
+                    writable: true,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                }),
+            );
+        }
+        Some(JsValue::Function(func)) => {
+            let f = func.borrow();
+            for (key, value) in &f.own_props {
+                if let Some(name) = key.strip_prefix("__get_") {
+                    let existing = result.get_property(name);
+                    let desc = if let JsValue::Object(obj) = existing {
+                        obj
+                    } else {
+                        let obj = JsValue::new_object();
+                        result.set_property(String::from(name), obj.clone());
+                        match obj {
+                            JsValue::Object(o) => o,
+                            _ => continue,
+                        }
+                    };
+                    desc.borrow_mut().set(String::from("get"), value.clone());
+                    desc.borrow_mut()
+                        .set(String::from("enumerable"), JsValue::Bool(true));
+                    desc.borrow_mut()
+                        .set(String::from("configurable"), JsValue::Bool(true));
+                } else if let Some(name) = key.strip_prefix("__set_") {
+                    let existing = result.get_property(name);
+                    let desc = if let JsValue::Object(obj) = existing {
+                        obj
+                    } else {
+                        let obj = JsValue::new_object();
+                        result.set_property(String::from(name), obj.clone());
+                        match obj {
+                            JsValue::Object(o) => o,
+                            _ => continue,
+                        }
+                    };
+                    desc.borrow_mut().set(String::from("set"), value.clone());
+                    desc.borrow_mut()
+                        .set(String::from("enumerable"), JsValue::Bool(true));
+                    desc.borrow_mut()
+                        .set(String::from("configurable"), JsValue::Bool(true));
+                } else {
+                    let desc = prop_to_descriptor(&Property::data(value.clone()));
+                    result.set_property(key.clone(), desc);
+                }
+            }
+        }
+        _ => {}
     }
     result
 }

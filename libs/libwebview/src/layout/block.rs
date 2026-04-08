@@ -287,7 +287,7 @@ pub fn build_block(
     }
 
     // Handle <img> as block/inline-block replaced element.
-    if tag == Some(Tag::Img) {
+    if tag == Some(Tag::Img) || dom.has_tag_name(node_id, "a-img") {
         let (iw, ih) = image_dimensions(dom, node_id, bx.width, images);
         bx.image_src = dom.image_url(node_id);
         bx.image_width = Some(iw);
@@ -543,8 +543,18 @@ pub fn build_block(
         };
 
         let ch = layout_children_ex(
-            dom, styles, pseudo, &children, inner_w, &mut bx, node_id, images, viewport_w,
-            before_box, after_box,
+            dom,
+            styles,
+            pseudo,
+            &children,
+            inner_w,
+            &mut bx,
+            node_id,
+            images,
+            viewport_w,
+            parent_height,
+            before_box,
+            after_box,
         );
 
         // ── Parent-child top margin collapse (CSS §8.3.1) ──────────────────────

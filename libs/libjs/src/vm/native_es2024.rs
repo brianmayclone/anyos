@@ -32,12 +32,11 @@ pub fn array_find_last(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             .map(|(&k, v)| (k, v.clone()))
             .collect();
         for &(i, ref el) in entries.iter().rev() {
-            let result = vm.invoke_function(
+            let val = vm.call_value(
                 &callback,
                 &[el.clone(), JsValue::Number(i as f64), this.clone()],
                 JsValue::Undefined,
             );
-            let val = vm.stack.pop().unwrap_or(JsValue::Undefined);
             if val.to_boolean() {
                 return el.clone();
             }
@@ -58,12 +57,11 @@ pub fn array_find_last_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             .map(|(&k, v)| (k, v.clone()))
             .collect();
         for &(i, ref el) in entries.iter().rev() {
-            vm.invoke_function(
+            let val = vm.call_value(
                 &callback,
                 &[el.clone(), JsValue::Number(i as f64), this.clone()],
                 JsValue::Undefined,
             );
-            let val = vm.stack.pop().unwrap_or(JsValue::Undefined);
             if val.to_boolean() {
                 return JsValue::Number(i as f64);
             }

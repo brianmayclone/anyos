@@ -67,7 +67,8 @@ pub fn function_bind(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 this_binding: Some(bound_this),
                 bound_args: bound_args,
                 upvalues: original.upvalues.clone(),
-                prototype: original.prototype.clone(),
+                // ES2023 §10.4.1.3: Bound functions do NOT have own .prototype
+                prototype: None,
                 own_props: original.own_props.clone(),
                 arity: original.arity,
                 super_class: original.super_class.clone(),

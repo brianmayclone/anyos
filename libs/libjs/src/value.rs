@@ -30,6 +30,377 @@ pub enum JsValue {
     Object(Rc<RefCell<JsObject>>),
     Array(Rc<RefCell<JsArray>>),
     Function(Rc<RefCell<JsFunction>>),
+    BigInt(JsBigInt),
+}
+
+/// Arbitrary-precision integer (ES2020 BigInt).
+///
+/// Uses a sign + magnitude representation with base-2^32 digits.
+/// Sufficient for all practical BigInt use cases (crypto, IDs, bitfields).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsBigInt {
+    /// True if the value is negative.
+    pub negative: bool,
+    /// Magnitude in base 2^32 (little-endian: digits[0] is least significant).
+    /// Empty vec represents zero.
+    pub digits: Vec<u32>,
+}
+
+impl JsBigInt {
+    pub fn zero() -> Self {
+        JsBigInt {
+            negative: false,
+            digits: Vec::new(),
+        }
+    }
+
+    pub fn from_i64(val: i64) -> Self {
+        if val == 0 {
+            return Self::zero();
+        }
+        let negative = val < 0;
+        let abs = if val == i64::MIN {
+            val as u64
+        } else if negative {
+            (-val) as u64
+        } else {
+            val as u64
+        };
+        let lo = abs as u32;
+        let hi = (abs >> 32) as u32;
+        let mut digits = vec![lo];
+        if hi != 0 {
+            digits.push(hi);
+        }
+        JsBigInt { negative, digits }
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.digits.is_empty() || self.digits.iter().all(|&d| d == 0)
+    }
+
+    /// Convert to string in given radix (2-36).
+    pub fn to_string_radix(&self, radix: u32) -> String {
+        if self.is_zero() {
+            return String::from("0");
+        }
+        // Simple conversion: repeated division by radix.
+        let mut result = Vec::new();
+        let mut tmp = self.digits.clone();
+        while !tmp.is_empty() && !tmp.iter().all(|&d| d == 0) {
+            let rem = div_by_u32(&mut tmp, radix);
+            result.push(digit_char(rem));
+            // Remove leading zeros.
+            while tmp.last() == Some(&0) {
+                tmp.pop();
+            }
+        }
+        if result.is_empty() {
+            return String::from("0");
+        }
+        result.reverse();
+        let mut s = String::new();
+        if self.negative {
+            s.push('-');
+        }
+        for c in result {
+            s.push(c);
+        }
+        s
+    }
+
+    /// Parse a BigInt from a decimal string (no trailing 'n').
+    pub fn from_str(s: &str) -> Option<Self> {
+        if s.is_empty() {
+            return None;
+        }
+        let (negative, digits_str) = if s.starts_with('-') {
+            (true, &s[1..])
+        } else {
+            (false, s)
+        };
+        if digits_str.is_empty() || !digits_str.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        // Build magnitude by multiplying by 10 and adding each digit.
+        let mut mag: Vec<u32> = Vec::new();
+        for ch in digits_str.chars() {
+            let d = ch as u32 - '0' as u32;
+            mul_by_u32(&mut mag, 10);
+            add_u32(&mut mag, d);
+        }
+        // Remove leading zeros.
+        while mag.last() == Some(&0) {
+            mag.pop();
+        }
+        Some(JsBigInt {
+            negative: negative && !mag.is_empty(),
+            digits: mag,
+        })
+    }
+
+    pub fn add(&self, other: &JsBigInt) -> JsBigInt {
+        if self.negative == other.negative {
+            // Same sign: add magnitudes.
+            JsBigInt {
+                negative: self.negative,
+                digits: add_mag(&self.digits, &other.digits),
+            }
+        } else {
+            // Different signs: subtract smaller from larger.
+            match cmp_mag(&self.digits, &other.digits) {
+                core::cmp::Ordering::Equal => JsBigInt::zero(),
+                core::cmp::Ordering::Greater => JsBigInt {
+                    negative: self.negative,
+                    digits: sub_mag(&self.digits, &other.digits),
+                },
+                core::cmp::Ordering::Less => JsBigInt {
+                    negative: other.negative,
+                    digits: sub_mag(&other.digits, &self.digits),
+                },
+            }
+        }
+    }
+
+    pub fn sub(&self, other: &JsBigInt) -> JsBigInt {
+        let neg_other = JsBigInt {
+            negative: !other.negative && !other.is_zero(),
+            digits: other.digits.clone(),
+        };
+        self.add(&neg_other)
+    }
+
+    pub fn mul(&self, other: &JsBigInt) -> JsBigInt {
+        if self.is_zero() || other.is_zero() {
+            return JsBigInt::zero();
+        }
+        let mut result = vec![0u32; self.digits.len() + other.digits.len()];
+        for (i, &a) in self.digits.iter().enumerate() {
+            let mut carry = 0u64;
+            for (j, &b) in other.digits.iter().enumerate() {
+                let prod = a as u64 * b as u64 + result[i + j] as u64 + carry;
+                result[i + j] = prod as u32;
+                carry = prod >> 32;
+            }
+            if carry > 0 {
+                result[i + other.digits.len()] += carry as u32;
+            }
+        }
+        while result.last() == Some(&0) {
+            result.pop();
+        }
+        JsBigInt {
+            negative: self.negative != other.negative && !result.is_empty(),
+            digits: result,
+        }
+    }
+
+    pub fn div(&self, other: &JsBigInt) -> JsBigInt {
+        if other.is_zero() {
+            return JsBigInt::zero(); // Division by zero → handled by caller
+        }
+        let (q, _) = div_rem(self, other);
+        q
+    }
+
+    pub fn rem(&self, other: &JsBigInt) -> JsBigInt {
+        if other.is_zero() {
+            return JsBigInt::zero();
+        }
+        let (_, r) = div_rem(self, other);
+        r
+    }
+
+    pub fn neg(&self) -> JsBigInt {
+        JsBigInt {
+            negative: !self.negative && !self.is_zero(),
+            digits: self.digits.clone(),
+        }
+    }
+
+    pub fn cmp_val(&self, other: &JsBigInt) -> core::cmp::Ordering {
+        use core::cmp::Ordering::*;
+        if self.negative != other.negative {
+            return if self.negative { Less } else { Greater };
+        }
+        let mag = cmp_mag(&self.digits, &other.digits);
+        if self.negative {
+            mag.reverse()
+        } else {
+            mag
+        }
+    }
+
+    pub fn to_f64(&self) -> f64 {
+        if self.is_zero() {
+            return 0.0;
+        }
+        let mut val = 0.0f64;
+        let base = (1u64 << 32) as f64;
+        for &d in self.digits.iter().rev() {
+            val = val * base + d as f64;
+        }
+        if self.negative {
+            -val
+        } else {
+            val
+        }
+    }
+}
+
+// ── BigInt arithmetic helpers ──
+
+fn add_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let len = a.len().max(b.len());
+    let mut result = Vec::with_capacity(len + 1);
+    let mut carry = 0u64;
+    for i in 0..len {
+        let av = *a.get(i).unwrap_or(&0) as u64;
+        let bv = *b.get(i).unwrap_or(&0) as u64;
+        let sum = av + bv + carry;
+        result.push(sum as u32);
+        carry = sum >> 32;
+    }
+    if carry > 0 {
+        result.push(carry as u32);
+    }
+    result
+}
+
+fn sub_mag(a: &[u32], b: &[u32]) -> Vec<u32> {
+    // Assumes a >= b.
+    let mut result = Vec::with_capacity(a.len());
+    let mut borrow = 0i64;
+    for i in 0..a.len() {
+        let av = *a.get(i).unwrap_or(&0) as i64;
+        let bv = *b.get(i).unwrap_or(&0) as i64;
+        let diff = av - bv - borrow;
+        if diff < 0 {
+            result.push((diff + (1i64 << 32)) as u32);
+            borrow = 1;
+        } else {
+            result.push(diff as u32);
+            borrow = 0;
+        }
+    }
+    while result.last() == Some(&0) {
+        result.pop();
+    }
+    result
+}
+
+fn cmp_mag(a: &[u32], b: &[u32]) -> core::cmp::Ordering {
+    let al = a.len();
+    let bl = b.len();
+    if al != bl {
+        return al.cmp(&bl);
+    }
+    for i in (0..al).rev() {
+        if a[i] != b[i] {
+            return a[i].cmp(&b[i]);
+        }
+    }
+    core::cmp::Ordering::Equal
+}
+
+fn mul_by_u32(mag: &mut Vec<u32>, factor: u32) {
+    let mut carry = 0u64;
+    for d in mag.iter_mut() {
+        let prod = *d as u64 * factor as u64 + carry;
+        *d = prod as u32;
+        carry = prod >> 32;
+    }
+    if carry > 0 {
+        mag.push(carry as u32);
+    }
+}
+
+fn add_u32(mag: &mut Vec<u32>, val: u32) {
+    if mag.is_empty() {
+        if val != 0 {
+            mag.push(val);
+        }
+        return;
+    }
+    let mut carry = val as u64;
+    for d in mag.iter_mut() {
+        let sum = *d as u64 + carry;
+        *d = sum as u32;
+        carry = sum >> 32;
+        if carry == 0 {
+            return;
+        }
+    }
+    if carry > 0 {
+        mag.push(carry as u32);
+    }
+}
+
+fn div_by_u32(mag: &mut Vec<u32>, divisor: u32) -> u32 {
+    let mut rem = 0u64;
+    for d in mag.iter_mut().rev() {
+        let val = (rem << 32) | (*d as u64);
+        *d = (val / divisor as u64) as u32;
+        rem = val % divisor as u64;
+    }
+    rem as u32
+}
+
+fn div_rem(a: &JsBigInt, b: &JsBigInt) -> (JsBigInt, JsBigInt) {
+    // Simple long division via repeated subtraction (for now).
+    if a.is_zero() {
+        return (JsBigInt::zero(), JsBigInt::zero());
+    }
+    if cmp_mag(&a.digits, &b.digits) == core::cmp::Ordering::Less {
+        return (JsBigInt::zero(), a.clone());
+    }
+    // Use digit-by-digit division.
+    let mut remainder = JsBigInt::zero();
+    let mut quotient_digits = vec![0u32; a.digits.len()];
+    let abs_b = JsBigInt {
+        negative: false,
+        digits: b.digits.clone(),
+    };
+    for i in (0..a.digits.len()).rev() {
+        // Shift remainder left by one digit and add a.digits[i].
+        remainder.digits.insert(0, a.digits[i]);
+        while remainder.digits.last() == Some(&0) {
+            remainder.digits.pop();
+        }
+        // Find how many times b fits into remainder.
+        let mut count = 0u32;
+        while cmp_mag(&remainder.digits, &abs_b.digits) != core::cmp::Ordering::Less {
+            remainder = remainder.sub(&abs_b);
+            count += 1;
+            if count > u32::MAX - 1 {
+                break;
+            }
+        }
+        quotient_digits[i] = count;
+    }
+    while quotient_digits.last() == Some(&0) {
+        quotient_digits.pop();
+    }
+    let q_neg = a.negative != b.negative && !quotient_digits.is_empty();
+    let r_neg = a.negative && !remainder.is_zero();
+    (
+        JsBigInt {
+            negative: q_neg,
+            digits: quotient_digits,
+        },
+        JsBigInt {
+            negative: r_neg,
+            digits: remainder.digits,
+        },
+    )
+}
+
+fn digit_char(d: u32) -> char {
+    if d < 10 {
+        (b'0' + d as u8) as char
+    } else {
+        (b'a' + (d - 10) as u8) as char
+    }
 }
 
 impl fmt::Debug for JsValue {
@@ -45,6 +416,7 @@ impl fmt::Debug for JsValue {
                 let arr = a.borrow();
                 write!(f, "[Array({})]", arr.length)
             }
+            JsValue::BigInt(bi) => write!(f, "{}n", bi.to_string_radix(10)),
             JsValue::Function(func) => {
                 let fun = func.borrow();
                 if let Some(ref name) = fun.name {
@@ -246,7 +618,8 @@ impl JsObject {
                 return false;
             }
         }
-        self.properties.remove(key).is_some()
+        self.properties.remove(key);
+        true
     }
 
     /// Enumerable string-keyed property names (excludes symbol-like keys).
@@ -583,6 +956,7 @@ impl JsValue {
             JsValue::Number(n) => *n != 0.0 && !n.is_nan(),
             JsValue::String(s) => !s.is_empty(),
             JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => true,
+            JsValue::BigInt(bi) => !bi.is_zero(),
         }
     }
 
@@ -603,6 +977,7 @@ impl JsValue {
                 f64::NAN
             }
             JsValue::Array(_) | JsValue::Function(_) => f64::NAN,
+            JsValue::BigInt(bi) => bi.to_f64(),
         }
     }
 
@@ -640,6 +1015,11 @@ impl JsValue {
                     String::from("function() { [native code] }")
                 }
             }
+            JsValue::BigInt(bi) => {
+                let mut s = bi.to_string_radix(10);
+                s.push('n');
+                s
+            }
         }
     }
 
@@ -650,6 +1030,7 @@ impl JsValue {
             JsValue::Null => "object", // historical JS quirk
             JsValue::Bool(_) => "boolean",
             JsValue::Number(_) => "number",
+            JsValue::BigInt(_) => "bigint",
             JsValue::String(s) => {
                 // Symbols are represented as strings with "__symbol__" or
                 // "__symbol_global__" prefix (for Symbol.for() values).
@@ -717,6 +1098,7 @@ impl JsValue {
             (JsValue::Number(a), JsValue::Number(b)) => *a == *b,
             (JsValue::String(a), JsValue::String(b)) => *a == *b,
             (JsValue::Bool(a), JsValue::Bool(b)) => *a == *b,
+            (JsValue::BigInt(a), JsValue::BigInt(b)) => a == b,
             (JsValue::Object(a), JsValue::Object(b)) => Rc::ptr_eq(a, b),
             (JsValue::Array(a), JsValue::Array(b)) => Rc::ptr_eq(a, b),
             (JsValue::Function(a), JsValue::Function(b)) => Rc::ptr_eq(a, b),
@@ -758,6 +1140,69 @@ impl JsValue {
                         buf.push(ch);
                         return JsValue::String(buf);
                     }
+                }
+                JsValue::Undefined
+            }
+            JsValue::Bool(_) => {
+                if key == "toString" {
+                    return JsValue::Function(Rc::new(RefCell::new(JsFunction {
+                        name: Some(String::from("toString")),
+                        params: Vec::new(),
+                        kind: FnKind::Native(crate::vm::native_globals::boolean_to_string),
+                        this_binding: Some(self.clone()),
+                        bound_args: Vec::new(),
+                        upvalues: Vec::new(),
+                        prototype: None,
+                        own_props: BTreeMap::new(),
+                        arity: None,
+                        super_class: None,
+                    })));
+                }
+                if key == "valueOf" {
+                    return JsValue::Function(Rc::new(RefCell::new(JsFunction {
+                        name: Some(String::from("valueOf")),
+                        params: Vec::new(),
+                        kind: FnKind::Native(crate::vm::native_globals::boolean_value_of),
+                        this_binding: Some(self.clone()),
+                        bound_args: Vec::new(),
+                        upvalues: Vec::new(),
+                        prototype: None,
+                        own_props: BTreeMap::new(),
+                        arity: None,
+                        super_class: None,
+                    })));
+                }
+                JsValue::Undefined
+            }
+            JsValue::BigInt(_) => {
+                // BigInt primitive auto-boxing: provide toString/valueOf.
+                if key == "toString" {
+                    return JsValue::Function(Rc::new(RefCell::new(JsFunction {
+                        name: Some(String::from("toString")),
+                        params: Vec::new(),
+                        kind: FnKind::Native(bigint_to_string_native),
+                        this_binding: Some(self.clone()),
+                        bound_args: Vec::new(),
+                        upvalues: Vec::new(),
+                        prototype: None,
+                        own_props: BTreeMap::new(),
+                        arity: None,
+                        super_class: None,
+                    })));
+                }
+                if key == "valueOf" {
+                    return JsValue::Function(Rc::new(RefCell::new(JsFunction {
+                        name: Some(String::from("valueOf")),
+                        params: Vec::new(),
+                        kind: FnKind::Native(bigint_value_of_native),
+                        this_binding: Some(self.clone()),
+                        bound_args: Vec::new(),
+                        upvalues: Vec::new(),
+                        prototype: None,
+                        own_props: BTreeMap::new(),
+                        arity: None,
+                        super_class: None,
+                    })));
                 }
                 JsValue::Undefined
             }
@@ -1069,4 +1514,20 @@ fn format_float_exponential(n: f64, exp: i32) -> String {
     }
     out.push_str(&format_i64(exp as i64));
     out
+}
+
+// ── BigInt primitive method natives ──
+
+fn bigint_to_string_native(vm: &mut crate::vm::Vm, args: &[JsValue]) -> JsValue {
+    let this = vm.current_this.clone();
+    let radix = args.first().map(|v| v.to_number() as u32).unwrap_or(10);
+    if let JsValue::BigInt(bi) = &this {
+        JsValue::String(bi.to_string_radix(if radix >= 2 && radix <= 36 { radix } else { 10 }))
+    } else {
+        JsValue::String(String::from("0"))
+    }
+}
+
+fn bigint_value_of_native(vm: &mut crate::vm::Vm, _args: &[JsValue]) -> JsValue {
+    vm.current_this.clone()
 }

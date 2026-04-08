@@ -69,6 +69,8 @@ pub(crate) enum FetchRequest {
         tab_index: usize,
         src: String,
         url: Url,
+        target_width: Option<u32>,
+        target_height: Option<u32>,
         priority: ImagePriority,
         generation: u32,
     },
@@ -982,6 +984,8 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
             tab_index,
             src,
             url,
+            target_width,
+            target_height,
             priority,
             generation,
         } => {
@@ -999,7 +1003,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                 let decoded_raster = if crate::resources::is_svg(&src, &headers_string) {
                     None
                 } else {
-                    crate::resources::decode_raster_to_image(&body_vec)
+                    crate::resources::decode_raster_to_image(&body_vec, target_width, target_height)
                         .ok()
                         .map(|image| DecodedRaster {
                             pixels: image.pixels,
@@ -1027,7 +1031,7 @@ fn process_request(req: FetchRequest, pool: &mut ConnPool, cache: &mut SubResour
                     let decoded_raster = if crate::resources::is_svg(&src, &resp.headers) {
                         None
                     } else {
-                        crate::resources::decode_raster_to_image(&resp.body)
+                        crate::resources::decode_raster_to_image(&resp.body, target_width, target_height)
                             .ok()
                             .map(|image| DecodedRaster {
                                 pixels: image.pixels,

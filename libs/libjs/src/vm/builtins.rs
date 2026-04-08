@@ -448,6 +448,36 @@ impl Vm {
                 String::from("toString"),
                 native_fn_with_length("toString", native_function::function_to_string, 0),
             );
+            // ES2023 §10.2.4: "caller" and "arguments" are poison-pill accessor
+            // properties on %Function.prototype% that throw TypeError.
+            let thrower = native_fn("ThrowTypeError", |vm: &mut Vm, _args: &[JsValue]| {
+                vm.pending_exception = Some(vm.make_type_error(
+                    "'caller', 'arguments', and 'callee' are restricted function properties and cannot be accessed in this context",
+                ));
+                JsValue::Undefined
+            });
+            p.properties.insert(
+                String::from("caller"),
+                Property {
+                    value: JsValue::Undefined,
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                    getter: Some(thrower.clone()),
+                    setter: Some(thrower.clone()),
+                },
+            );
+            p.properties.insert(
+                String::from("arguments"),
+                Property {
+                    value: JsValue::Undefined,
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                    getter: Some(thrower.clone()),
+                    setter: Some(thrower),
+                },
+            );
         }
 
         // ── Error.prototype ──
@@ -572,7 +602,15 @@ impl Vm {
 
         // ── Constructors ──
         self.set_global("Object", native_fn("Object", native_globals::ctor_object));
+        // Wire Object.prototype to the VM's object_proto so `instanceof` works.
+        if let JsValue::Function(f) = self.globals.borrow().get("Object") {
+            f.borrow_mut().prototype = Some(self.object_proto.clone());
+        }
         self.set_global("Array", native_fn("Array", native_globals::ctor_array));
+        // Wire Array.prototype to the VM's array_proto so `instanceof` works.
+        if let JsValue::Function(f) = self.globals.borrow().get("Array") {
+            f.borrow_mut().prototype = Some(self.array_proto.clone());
+        }
         self.set_global("String", native_fn("String", native_globals::ctor_string));
         self.set_global("Number", native_fn("Number", native_globals::ctor_number));
         self.set_global(
@@ -631,25 +669,25 @@ impl Vm {
         // ── Set constructor properties on prototypes (must happen AFTER globals) ──
         self.array_proto
             .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.get("Array"));
+            .set_hidden(String::from("constructor"), self.globals.borrow().get("Array"));
         self.string_proto
             .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.get("String"));
+            .set_hidden(String::from("constructor"), self.globals.borrow().get("String"));
         self.number_proto
             .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.get("Number"));
+            .set_hidden(String::from("constructor"), self.globals.borrow().get("Number"));
         self.object_proto
             .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.get("Object"));
+            .set_hidden(String::from("constructor"), self.globals.borrow().get("Object"));
         self.boolean_proto
             .borrow_mut()
-            .set_hidden(String::from("constructor"), self.globals.get("Boolean"));
+            .set_hidden(String::from("constructor"), self.globals.borrow().get("Boolean"));
 
         // ── Array static methods ──
         self.init_array_statics();
 
         // ── String static methods + prototype link ──
-        if let JsValue::Function(f) = self.globals.get("String") {
+        if let JsValue::Function(f) = self.globals.borrow().get("String") {
             let ctor = JsValue::Function(f.clone());
             ctor.set_property(
                 String::from("prototype"),
@@ -738,6 +776,12 @@ impl Vm {
                 String::from(native_symbol::WELL_KNOWN_ITERATOR),
                 native_fn("[Symbol.iterator]", native_map::map_entries),
             );
+            if let JsValue::Object(proto_obj) = &proto {
+                proto_obj.borrow_mut().properties.insert(
+                    String::from("size"),
+                    Property::accessor(Some(native_fn("get size", native_map::map_size_get)), None),
+                );
+            }
             ctor.set_property(String::from("prototype"), proto);
             self.set_global("Map", ctor);
         }
@@ -776,6 +820,41 @@ impl Vm {
                 String::from(native_symbol::WELL_KNOWN_ITERATOR),
                 native_fn("[Symbol.iterator]", native_map::set_values),
             );
+            // ES2025 Set methods
+            proto.set_property(
+                String::from("union"),
+                native_fn("union", native_map::set_union),
+            );
+            proto.set_property(
+                String::from("intersection"),
+                native_fn("intersection", native_map::set_intersection),
+            );
+            proto.set_property(
+                String::from("difference"),
+                native_fn("difference", native_map::set_difference),
+            );
+            proto.set_property(
+                String::from("symmetricDifference"),
+                native_fn("symmetricDifference", native_map::set_symmetric_difference),
+            );
+            proto.set_property(
+                String::from("isSubsetOf"),
+                native_fn("isSubsetOf", native_map::set_is_subset_of),
+            );
+            proto.set_property(
+                String::from("isSupersetOf"),
+                native_fn("isSupersetOf", native_map::set_is_superset_of),
+            );
+            proto.set_property(
+                String::from("isDisjointFrom"),
+                native_fn("isDisjointFrom", native_map::set_is_disjoint_from),
+            );
+            if let JsValue::Object(proto_obj) = &proto {
+                proto_obj.borrow_mut().properties.insert(
+                    String::from("size"),
+                    Property::accessor(Some(native_fn("get size", native_map::set_size_get)), None),
+                );
+            }
             ctor.set_property(String::from("prototype"), proto);
             self.set_global("Set", ctor);
         }
@@ -962,6 +1041,16 @@ impl Vm {
             native_fn("queueMicrotask", queue_microtask_fn),
         );
 
+        // ── ES Modules runtime ──
+        self.set_global(
+            "__import__",
+            native_fn("__import__", module_import_fn),
+        );
+        self.set_global("__exports__", JsValue::new_object());
+
+        // ── BigInt constructor ──
+        self.set_global("BigInt", native_fn("BigInt", bigint_constructor));
+
         // ── Number constants ──
         self.set_global("Infinity", JsValue::Number(f64::INFINITY));
         self.set_global("NaN", JsValue::Number(f64::NAN));
@@ -991,6 +1080,10 @@ impl Vm {
         console.set_property(
             String::from("debug"),
             native_fn("debug", native_console::console_log),
+        );
+        console.set_property(
+            String::from("dir"),
+            native_fn("dir", native_console::console_log),
         );
         self.set_global("console", console);
     }
@@ -1193,7 +1286,7 @@ impl Vm {
     }
 
     fn init_object_statics(&mut self) {
-        if let JsValue::Function(f) = self.globals.get("Object") {
+        if let JsValue::Function(f) = self.globals.borrow().get("Object") {
             let obj_ctor = JsValue::Function(f.clone());
             obj_ctor.set_property(
                 String::from("keys"),
@@ -1314,7 +1407,7 @@ impl Vm {
     }
 
     fn init_array_statics(&mut self) {
-        if let JsValue::Function(f) = self.globals.get("Array") {
+        if let JsValue::Function(f) = self.globals.borrow().get("Array") {
             let arr_ctor = JsValue::Function(f.clone());
             arr_ctor.set_property(
                 String::from("isArray"),
@@ -1334,7 +1427,7 @@ impl Vm {
     }
 
     fn init_number_statics(&mut self) {
-        if let JsValue::Function(f) = self.globals.get("Number") {
+        if let JsValue::Function(f) = self.globals.borrow().get("Number") {
             let num_ctor = JsValue::Function(f.clone());
             num_ctor.set_property(
                 String::from("prototype"),
@@ -1402,7 +1495,7 @@ impl Vm {
             "EvalError",
             "AggregateError",
         ] {
-            if let JsValue::Function(f) = self.globals.get(name) {
+            if let JsValue::Function(f) = self.globals.borrow().get(name) {
                 let ctor = JsValue::Function(f.clone());
                 ctor.set_property(
                     String::from("prototype"),
@@ -1413,7 +1506,7 @@ impl Vm {
     }
 
     fn init_promise_statics(&mut self) {
-        if let JsValue::Function(f) = self.globals.get("Promise") {
+        if let JsValue::Function(f) = self.globals.borrow().get("Promise") {
             let ctor = JsValue::Function(f.clone());
             ctor.set_property(
                 String::from("resolve"),
@@ -1443,12 +1536,16 @@ impl Vm {
     }
 
     fn init_date_statics(&mut self) {
-        if let JsValue::Function(f) = self.globals.get("Date") {
+        if let JsValue::Function(f) = self.globals.borrow().get("Date") {
             let ctor = JsValue::Function(f.clone());
             ctor.set_property(String::from("now"), native_fn("now", native_date::date_now));
             ctor.set_property(
                 String::from("parse"),
                 native_fn("parse", native_date::date_parse),
+            );
+            ctor.set_property(
+                String::from("UTC"),
+                native_fn("UTC", native_date::date_utc),
             );
         }
     }
@@ -1457,7 +1554,7 @@ impl Vm {
     /// so that `Boolean.hasOwnProperty("prototype")` is `true`, and wire back
     /// `Boolean.prototype.constructor = Boolean`.  Also sets `Boolean.length = 1`.
     fn init_boolean_statics(&mut self) {
-        if let JsValue::Function(f) = self.globals.get("Boolean") {
+        if let JsValue::Function(f) = self.globals.borrow().get("Boolean") {
             let ctor = JsValue::Function(f.clone());
             // Boolean.prototype → boolean_proto (own_prop so hasOwnProperty works)
             ctor.set_property(
@@ -1475,7 +1572,7 @@ impl Vm {
 
     /// Install `Function.prototype` as an own property on the Function constructor.
     fn init_function_statics(&mut self) {
-        if let JsValue::Function(f) = self.globals.get("Function") {
+        if let JsValue::Function(f) = self.globals.borrow().get("Function") {
             let ctor = JsValue::Function(f.clone());
             // Function.prototype → function_proto (own_prop for hasOwnProperty + isPrototypeOf)
             ctor.set_property(
@@ -1545,6 +1642,118 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         JsValue::Undefined,
     );
     result
+}
+
+/// `__import__(specifier)` — ES Module loader.
+///
+/// Resolves a module specifier:
+/// 1. If already in `module_registry` → return cached namespace object.
+/// 2. If source text is in `module_sources` → compile and execute it,
+///    cache the resulting `__exports__` object, and return it.
+/// 3. Otherwise → throw an error.
+/// `BigInt(value)` — converts a value to BigInt (ES2020 §21.2.1.1).
+fn bigint_constructor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let val = args.first().cloned().unwrap_or(JsValue::Undefined);
+    match &val {
+        JsValue::BigInt(_) => val,
+        JsValue::Number(n) => {
+            let n = *n;
+            if n.is_nan() || n.is_infinite() || n.fract() != 0.0 {
+                let err =
+                    vm.make_range_error("The number is not safe to convert to a BigInt");
+                vm.throw_native(err);
+                return JsValue::Undefined;
+            }
+            JsValue::BigInt(JsBigInt::from_i64(n as i64))
+        }
+        JsValue::String(s) => match JsBigInt::from_str(s) {
+            Some(bi) => JsValue::BigInt(bi),
+            None => {
+                let err = vm.make_syntax_error("Cannot convert string to BigInt");
+                vm.throw_native(err);
+                JsValue::Undefined
+            }
+        },
+        JsValue::Bool(true) => JsValue::BigInt(JsBigInt::from_i64(1)),
+        JsValue::Bool(false) => JsValue::BigInt(JsBigInt::from_i64(0)),
+        _ => {
+            let err = vm.make_type_error("Cannot convert value to BigInt");
+            vm.throw_native(err);
+            JsValue::Undefined
+        }
+    }
+}
+
+fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let specifier = match args.first() {
+        Some(JsValue::String(s)) => s.clone(),
+        _ => {
+            vm.throw_native(vm.make_type_error("import() requires a string specifier"));
+            return JsValue::Undefined;
+        }
+    };
+
+    // 1. Check cached registry.
+    if let Some(ns) = vm.module_registry.get(&specifier) {
+        return ns.clone();
+    }
+
+    // 2. Check source registry — compile, execute, cache.
+    if let Some(source) = vm.module_sources.get(&specifier).cloned() {
+        // Save current __exports__ and install a fresh one for this module.
+        let prev_exports = vm.get_global("__exports__");
+        let module_exports = JsValue::new_object();
+        vm.set_global("__exports__", module_exports.clone());
+
+        // Compile the module source.
+        let tokens = crate::lexer::Lexer::tokenize(&source);
+        let mut parser = crate::parser::Parser::new(tokens);
+        let program = parser.parse_program();
+        if !parser.errors.is_empty() {
+            vm.set_global("__exports__", prev_exports);
+            let err = vm.make_syntax_error(&parser.errors[0]);
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
+        let mut compiler = crate::compiler::Compiler::new();
+        let chunk = compiler.compile_eval(&program);
+
+        // Execute the module body.
+        let module_fn = JsValue::Function(alloc::rc::Rc::new(core::cell::RefCell::new(
+            crate::value::JsFunction {
+                name: Some(alloc::format!("<module:{}>", specifier)),
+                params: alloc::vec::Vec::new(),
+                kind: crate::value::FnKind::Bytecode(chunk),
+                this_binding: None,
+                bound_args: alloc::vec::Vec::new(),
+                upvalues: alloc::vec::Vec::new(),
+                prototype: None,
+                own_props: alloc::collections::BTreeMap::new(),
+                arity: None,
+                super_class: None,
+            },
+        )));
+        vm.call_value(&module_fn, &[], JsValue::Undefined);
+
+        // Collect exports and restore previous __exports__.
+        let final_exports = vm.get_global("__exports__");
+        vm.set_global("__exports__", prev_exports);
+
+        // Also copy any global-scope declarations that `export let/const/function`
+        // placed into the global scope.  ExportDecl::Decl compiles to global stores.
+        // (Named exports via `export { a, b }` already wrote to __exports__.)
+
+        // Cache the module namespace.
+        vm.module_registry
+            .insert(specifier, final_exports.clone());
+        return final_exports;
+    }
+
+    // 3. Module not found.
+    let msg = alloc::format!("Cannot find module '{}'", specifier);
+    let err = vm.make_error(&msg);
+    vm.throw_native(err);
+    JsValue::Undefined
 }
 
 // ═══════════════════════════════════════════════════════

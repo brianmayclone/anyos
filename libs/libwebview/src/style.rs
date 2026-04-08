@@ -1842,6 +1842,27 @@ fn simple_selector_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> 
     true
 }
 
+fn element_has_attr(dom: &Dom, node_id: NodeId, name: &str) -> bool {
+    let Some(node) = dom.nodes.get(node_id) else {
+        return false;
+    };
+    let NodeType::Element { attrs, .. } = &node.node_type else {
+        return false;
+    };
+    attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, name))
+}
+
+fn ancestor_has_attr(dom: &Dom, node_id: NodeId, name: &str) -> bool {
+    let mut cur = dom.nodes.get(node_id).and_then(|n| n.parent);
+    while let Some(pid) = cur {
+        if element_has_attr(dom, pid, name) {
+            return true;
+        }
+        cur = dom.nodes.get(pid).and_then(|n| n.parent);
+    }
+    false
+}
+
 fn starts_with_ignore_case(haystack: &str, needle: &str) -> bool {
     if haystack.len() < needle.len() {
         return false;
@@ -1991,6 +2012,22 @@ pub fn resolve_styles(
                 (s, 0u16)
             }
         };
+
+        // UA override: [hidden] → display:none (per HTML spec).
+        if let NodeType::Element { attrs, .. } = &node.node_type {
+            if attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "hidden")) {
+                style.display = Display::None;
+            }
+        }
+
+        // Heuristic for component-driven collapse UIs: collapsed content is
+        // usually materialized as a `data-collapse-target` subtree and only
+        // becomes visible when an ancestor gains `is-open`.
+        if element_has_attr(dom, id, "data-collapse-target")
+            && !ancestor_has_attr(dom, id, "is-open")
+        {
+            style.display = Display::None;
+        }
 
         // UA override: <input type="hidden"> → display:none (per HTML spec).
         if let NodeType::Element { tag, attrs, .. } = &node.node_type {

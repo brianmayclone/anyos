@@ -578,7 +578,16 @@ fn layout_cell(
 
     let child_ids: Vec<NodeId> = dom.get(cell_id).children.iter().copied().collect();
     let height = layout_children(
-        dom, styles, pseudo, &child_ids, inner_w, &mut bx, cell_id, images, viewport_w,
+        dom,
+        styles,
+        pseudo,
+        &child_ids,
+        inner_w,
+        &mut bx,
+        cell_id,
+        images,
+        viewport_w,
+        0,
     );
 
     bx.height = height + bx.padding.top + bx.padding.bottom + h_border;

@@ -624,12 +624,28 @@ impl Dom {
         }
     }
 
+    pub fn raw_tag_name(&self, id: NodeId) -> Option<&str> {
+        match &self.nodes[id].node_type {
+            NodeType::Element { attrs, .. } => attrs
+                .iter()
+                .find(|a| a.name == "\x00")
+                .map(|a| a.value.as_str()),
+            NodeType::Text(_) => None,
+        }
+    }
+
+    pub fn has_tag_name(&self, id: NodeId, name: &str) -> bool {
+        self.raw_tag_name(id)
+            .map(|raw| raw.eq_ignore_ascii_case(name))
+            .unwrap_or(false)
+    }
+
     /// Resolve the best available image URL for an `<img>` element.
     ///
     /// Prefers modern sources such as `<picture><source srcset>`, `srcset`,
     /// and common lazy-loading attributes before falling back to `src`.
     pub fn image_url(&self, id: NodeId) -> Option<String> {
-        if self.tag(id) != Some(Tag::Img) {
+        if self.tag(id) != Some(Tag::Img) && !self.has_tag_name(id, "a-img") {
             return None;
         }
 

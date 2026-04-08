@@ -122,7 +122,12 @@ impl Vm {
                         FnKind::Bytecode(chunk) => chunk.is_arrow,
                         _ => false,
                     };
-                    if is_arrow {
+                    // Arrow functions and generators cannot be constructors (ES2023 §15.4.1)
+                    let is_generator = match &kind {
+                        FnKind::Bytecode(chunk) => chunk.is_generator,
+                        _ => false,
+                    };
+                    if is_arrow || is_generator {
                         let name = func_rc.borrow().name.clone().unwrap_or_default();
                         let msg = alloc::format!(
                             "{} is not a constructor",
@@ -271,7 +276,46 @@ impl Vm {
                 let captured_upvalues = func_rc.borrow().upvalues.clone();
                 let bound_args = func_rc.borrow().bound_args.clone();
 
+                // ES2023 §15.7.1: Class constructors cannot be invoked without `new`.
+                let is_class_ctor = match &kind {
+                    FnKind::Bytecode(chunk) => chunk.is_class_constructor,
+                    _ => false,
+                };
+                if is_class_ctor {
+                    let name = func_rc.borrow().name.clone().unwrap_or_default();
+                    let msg = alloc::format!(
+                        "Class constructor {} cannot be invoked without 'new'",
+                        if name.is_empty() { "(anonymous)".into() } else { name }
+                    );
+                    let exc = self.make_type_error(&msg);
+                    if !self.handle_exception(exc) {
+                        self.stack.push(JsValue::Undefined);
+                    }
+                    return;
+                }
+
                 let effective_this = this_bind.unwrap_or(this_val);
+                // ES2023 §10.2.1.1: In sloppy mode, if `this` is undefined/null,
+                // coerce to the global object (the "this substitution" rule).
+                // Arrow functions don't have their own `this` — they inherit from
+                // the enclosing scope via `this_binding`, so this only applies
+                // to regular functions.
+                let is_arrow = match &kind {
+                    FnKind::Bytecode(c) => c.is_arrow,
+                    _ => false,
+                };
+                let is_strict_fn = match &kind {
+                    FnKind::Bytecode(c) => c.strict,
+                    _ => false,
+                };
+                let effective_this = if !is_arrow
+                    && !is_strict_fn
+                    && matches!(effective_this, JsValue::Undefined | JsValue::Null)
+                {
+                    JsValue::Object(self.globals.clone())
+                } else {
+                    effective_this
+                };
                 self.current_this = effective_this.clone();
 
                 // Prepend bound arguments (from Function.prototype.bind) to call args
@@ -385,6 +429,7 @@ impl Vm {
                                             }
                                             JsValue::Array(_) => "array",
                                             JsValue::Function(_) => "function",
+                                            JsValue::BigInt(_) => "bigint",
                                         };
                                         context = alloc::format!(" {}.{}()", this_desc, s);
                                         break;
@@ -511,6 +556,7 @@ impl Vm {
                 }
                 JsValue::Array(_) => "array",
                 JsValue::Function(_) => "function",
+                JsValue::BigInt(_) => "bigint",
             };
             self.log_engine(&alloc::format!(
                 "[libjs] WARN: new on non-constructor type={}{}",

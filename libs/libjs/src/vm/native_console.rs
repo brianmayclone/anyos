@@ -80,6 +80,10 @@ fn format_args_to_string(args: &[JsValue]) -> String {
                 }
                 out.push(']');
             }
+            JsValue::BigInt(bi) => {
+                out.push_str(&bi.to_string_radix(10));
+                out.push('n');
+            }
         }
     }
     out

@@ -22,6 +22,8 @@ pub struct Token {
 pub enum TokenKind {
     // Literals
     Number(f64),
+    /// BigInt literal (the decimal string without trailing 'n').
+    BigInt(String),
     String(String),
     Template(String),       // template literal segment
     RegExp(String, String), // pattern, flags

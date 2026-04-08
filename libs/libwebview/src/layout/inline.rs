@@ -413,7 +413,7 @@ fn collect_inline_fragments(
             }
 
             // Handle inline <img> — use available_width instead of hardcoded 300
-            if *tag == Tag::Img {
+            if *tag == Tag::Img || dom.has_tag_name(node_id, "a-img") {
                 let (iw, ih) = image_dimensions(dom, node_id, available_width, images);
                 let mut img = LayoutBox::new(Some(node_id), BoxType::Inline);
                 img.image_src = dom.image_url(node_id);

@@ -200,6 +200,18 @@ pub enum Op {
     /// Delegates to another iterable/generator.
     YieldDelegate,
 
+    // ── With Statement ──
+    /// Enter `with` scope: pops object from stack, pushes it onto with-scope chain.
+    EnterWith,
+    /// Leave `with` scope: pops the top of the with-scope chain.
+    LeaveWith,
+    /// Delete a named binding from with-scope or global scope.
+    /// Used for `delete ident` inside `with` blocks.
+    DeleteName(u16),
+    /// Declare a global variable (set to undefined) only if it doesn't already exist.
+    /// Used for var hoisting to avoid overwriting existing globals.
+    DeclareGlobal(u16),
+
     // ── No-op ──
     Nop,
 
@@ -303,11 +315,22 @@ pub struct Chunk {
     pub is_arrow: bool,
     /// True if this is an async function.
     pub is_async: bool,
+    /// True if this is a class constructor (must be called with `new`).
+    pub is_class_constructor: bool,
     /// Per-local-slot flag: true if this local is captured by an inner closure.
     /// Slots marked `true` must be stored as `Rc<RefCell<JsValue>>` so that
     /// closures can share the mutable cell.  Non-captured locals are stored
     /// as plain `JsValue` (no heap allocation, no borrow overhead).
     pub captured_locals: Vec<bool>,
+    /// Names declared at global scope (`var`, `let`, `const`, `function`, `class`).
+    /// Used by strict-mode `StoreGlobal` to distinguish declared globals from
+    /// implicit global assignments (which are ReferenceErrors in strict mode).
+    pub declared_globals: Vec<String>,
+    /// Source line number for each opcode (parallel to `code`).
+    /// Used to generate stack traces with line information.
+    pub line_map: Vec<u32>,
+    /// Current source line (set by the compiler before emitting opcodes).
+    pub current_line: u32,
 }
 
 impl Chunk {
@@ -323,7 +346,11 @@ impl Chunk {
             is_generator: false,
             is_arrow: false,
             is_async: false,
+            is_class_constructor: false,
             captured_locals: Vec::new(),
+            declared_globals: Vec::new(),
+            line_map: Vec::new(),
+            current_line: 0,
         }
     }
 
@@ -344,6 +371,7 @@ impl Chunk {
     pub fn emit(&mut self, op: Op) -> usize {
         let idx = self.code.len();
         self.code.push(op);
+        self.line_map.push(self.current_line);
         idx
     }
 
@@ -377,6 +405,8 @@ pub enum Constant {
     String(String),
     /// A nested function prototype.
     Function(Chunk),
+    /// BigInt literal (decimal string representation).
+    BigInt(String),
 }
 
 impl Constant {
@@ -384,6 +414,7 @@ impl Constant {
         match (self, other) {
             (Constant::Number(a), Constant::Number(b)) => a.to_bits() == b.to_bits(),
             (Constant::String(a), Constant::String(b)) => a == b,
+            (Constant::BigInt(a), Constant::BigInt(b)) => a == b,
             _ => false,
         }
     }

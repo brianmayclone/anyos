@@ -429,11 +429,14 @@ pub(crate) fn queue_images(
     let mut deferred: Vec<(i32, crate::tab::DeferredImageRequest)> = Vec::new();
 
     for (i, node) in dom.nodes.iter().enumerate() {
-        if let libwebview::dom::NodeType::Element {
-            tag: libwebview::dom::Tag::Img,
-            ..
-        } = &node.node_type
-        {
+        let is_image_like = matches!(
+            &node.node_type,
+            libwebview::dom::NodeType::Element {
+                tag: libwebview::dom::Tag::Img,
+                ..
+            }
+        ) || dom.has_tag_name(i, "a-img");
+        if is_image_like {
             if let Some(src) = dom.image_url(i) {
                 if src.is_empty() {
                     continue;
@@ -458,8 +461,6 @@ pub(crate) fn queue_images(
                 let lazy_requested = loading.eq_ignore_ascii_case("lazy");
                 let high_priority = loading.eq_ignore_ascii_case("eager")
                     || fetchpriority.eq_ignore_ascii_case("high");
-                let width = dom.attr(i, "width").and_then(parse_dimension_attr);
-                let height = dom.attr(i, "height").and_then(parse_dimension_attr);
                 let initial_viewport_hit = {
                     let st = crate::state();
                     if tab_index >= st.tabs.len() {
@@ -470,6 +471,32 @@ pub(crate) fn queue_images(
                         webview
                             .node_bounds(i)
                             .is_some_and(|(_, y, _, h)| y < viewport_h + 640 && y + h > -192)
+                    }
+                };
+                let (width, height) = {
+                    let st = crate::state();
+                    if tab_index >= st.tabs.len() {
+                        (
+                            dom.attr(i, "width").and_then(parse_dimension_attr),
+                            dom.attr(i, "height").and_then(parse_dimension_attr),
+                        )
+                    } else {
+                        let webview = &st.tabs[tab_index].webview;
+                        if let Some((_, _, w, h)) = webview.node_bounds(i) {
+                            if w > 0 && h > 0 {
+                                (Some(w), Some(h))
+                            } else {
+                                (
+                                    dom.attr(i, "width").and_then(parse_dimension_attr),
+                                    dom.attr(i, "height").and_then(parse_dimension_attr),
+                                )
+                            }
+                        } else {
+                            (
+                                dom.attr(i, "width").and_then(parse_dimension_attr),
+                                dom.attr(i, "height").and_then(parse_dimension_attr),
+                            )
+                        }
                     }
                 };
                 let should_start_immediately = if lazy_requested && !initial_viewport_hit {
@@ -492,6 +519,8 @@ pub(crate) fn queue_images(
                         tab_index,
                         src,
                         url: img_url,
+                        target_width: width.map(|v| v.max(1) as u32),
+                        target_height: height.map(|v| v.max(1) as u32),
                         priority: crate::net_worker::ImagePriority::Viewport,
                         generation,
                     });
@@ -573,6 +602,8 @@ pub(crate) fn submit_deferred_images(tab_index: usize, max_batch: usize) -> usiz
             tab_index,
             src: req.src,
             url: req.url,
+            target_width: req.width.map(|v| v.max(1) as u32),
+            target_height: req.height.map(|v| v.max(1) as u32),
             priority: req.priority,
             generation: req.generation,
         });
@@ -791,7 +822,7 @@ pub(crate) fn decode_raster_no_relayout(data: &[u8], src: &str, tab_idx: usize) 
     };
     let w = info.width;
     let h = info.height;
-    if w == 0 || h == 0 || w > 4096 || h > 4096 {
+    if w == 0 || h == 0 || w > 16384 || h > 16384 || (w as u64 * h as u64) > 67_108_864 {
         crate::surf_log!(
             "[surf] image rejected by dimensions: src={} format={} {}x{} tab={}",
             src,
@@ -904,21 +935,78 @@ pub(crate) struct DecodedRasterImage {
     pub suspicious_black_ppm: Option<u32>,
 }
 
-pub(crate) fn decode_raster_to_image(data: &[u8]) -> Result<DecodedRasterImage, libimage_client::ImageError> {
+const MAX_DECODE_DIM: u32 = 2048;
+
+fn compute_decode_size(
+    orig_w: u32,
+    orig_h: u32,
+    target_w: Option<u32>,
+    target_h: Option<u32>,
+) -> (u32, u32) {
+    let (tw, th) = match (target_w, target_h) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => (w, h),
+        (Some(w), None) if w > 0 && orig_w > 0 => {
+            (w, (orig_h as u64 * w as u64 / orig_w as u64).max(1) as u32)
+        }
+        (None, Some(h)) if h > 0 && orig_h > 0 => {
+            ((orig_w as u64 * h as u64 / orig_h as u64).max(1) as u32, h)
+        }
+        _ => {
+            if orig_w > MAX_DECODE_DIM || orig_h > MAX_DECODE_DIM {
+                let max_dim = orig_w.max(orig_h) as u64;
+                return (
+                    ((orig_w as u64 * MAX_DECODE_DIM as u64) / max_dim).max(1) as u32,
+                    ((orig_h as u64 * MAX_DECODE_DIM as u64) / max_dim).max(1) as u32,
+                );
+            }
+            return (orig_w, orig_h);
+        }
+    };
+
+    if orig_w <= tw.saturating_mul(2) && orig_h <= th.saturating_mul(2) {
+        return (orig_w, orig_h);
+    }
+
+    (tw.max(1), th.max(1))
+}
+
+pub(crate) fn decode_raster_to_image(
+    data: &[u8],
+    target_w: Option<u32>,
+    target_h: Option<u32>,
+) -> Result<DecodedRasterImage, libimage_client::ImageError> {
     let info = libimage_client::probe(data).ok_or(libimage_client::ImageError::InvalidData)?;
     let w = info.width;
     let h = info.height;
-    if w == 0 || h == 0 || w > 4096 || h > 4096 {
+    if w == 0 || h == 0 || w > 16384 || h > 16384 || (w as u64 * h as u64) > 67_108_864 {
         return Err(libimage_client::ImageError::InvalidData);
     }
     let mut pixels = vec![0u32; (w * h) as usize];
     let mut scratch = vec![0u8; info.scratch_needed as usize];
     libimage_client::decode(data, &mut pixels, &mut scratch)?;
+    let (final_w, final_h) = compute_decode_size(w, h, target_w, target_h);
+    let pixels = if final_w != w || final_h != h {
+        let mut scaled = vec![0u32; (final_w * final_h) as usize];
+        if !libimage_client::scale_image(
+            &pixels,
+            w,
+            h,
+            &mut scaled,
+            final_w,
+            final_h,
+            libimage_client::MODE_SCALE,
+        ) {
+            return Err(libimage_client::ImageError::InvalidData);
+        }
+        scaled
+    } else {
+        pixels
+    };
     let suspicious_black_ppm = decoded_image_looks_suspiciously_black(&pixels);
     Ok(DecodedRasterImage {
         pixels,
-        width: w,
-        height: h,
+        width: final_w,
+        height: final_h,
         format: info.format,
         suspicious_black_ppm,
     })

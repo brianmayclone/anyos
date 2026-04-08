@@ -526,8 +526,6 @@ pub fn make_window(
         native_fn("__uspapi", win_cmp_stub),
     );
     parent.set_property(String::from("__tcfapiLocator"), JsValue::new_object());
-    win.set_property(String::from("top"), parent.clone());
-    win.set_property(String::from("parent"), parent);
     win.set_property(String::from("frames"), frames);
     win.set_property(String::from("frameElement"), JsValue::Null);
     win.set_property(String::from("opener"), JsValue::Null);
@@ -540,6 +538,11 @@ pub fn make_window(
         native_fn("__uspapi", win_cmp_stub),
     );
     win.set_property(String::from("__tcfapiLocator"), JsValue::new_object());
+    // Top-level documents are their own parent/top. Exposing a detached stub
+    // here breaks feature detection on sites that access helpers through
+    // `window.top` / `window.parent`.
+    win.set_property(String::from("top"), win.clone());
+    win.set_property(String::from("parent"), win.clone());
     if let (JsValue::Object(doc_obj), Some(doc_proto)) = (&document, document_proto) {
         doc_obj.borrow_mut().prototype = Some(doc_proto);
     }

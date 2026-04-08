@@ -1602,6 +1602,10 @@ impl JsRuntime {
             VIRTUAL_NODES_TARGET = core::ptr::null_mut();
         }
 
+        // Drain microtask queue after event dispatch (ECMAScript spec:
+        // microtasks run to completion after each task/callback).
+        self.engine.vm().drain_microtasks();
+
         // Collect all side-effects from the dispatch.
         for msg in self.engine.console_output() {
             self.console.push(msg.clone());
@@ -1674,6 +1678,10 @@ impl JsRuntime {
                 self.engine
                     .vm()
                     .call_value(&t.callback, &cb_args, JsValue::Undefined);
+
+                // Drain microtask queue after each macrotask (ECMAScript spec:
+                // all microtasks run to completion before the next macrotask).
+                self.engine.vm().drain_microtasks();
 
                 // Clear any timer callback exceptions so next timer can run fresh.
                 self.engine.vm().last_exception = None;

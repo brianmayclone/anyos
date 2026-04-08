@@ -64,12 +64,20 @@ impl Parser {
     /// Parse a complete JavaScript program.
     pub fn parse_program(&mut self) -> Program {
         let mut body = Vec::new();
+        let mut stmt_lines = Vec::new();
         while !self.at_end() {
+            // Record the source line of the first token of each statement.
+            let line = if self.pos < self.tokens.len() {
+                self.tokens[self.pos].span.line
+            } else {
+                0
+            };
             if let Some(stmt) = self.parse_statement() {
                 body.push(stmt);
+                stmt_lines.push(line);
             }
         }
-        Program { body }
+        Program { body, stmt_lines }
     }
 
     // ── Helpers ──
@@ -139,7 +147,7 @@ impl Parser {
             kind,
             TokenKind::As | TokenKind::From | TokenKind::Of |
             TokenKind::Async | TokenKind::Yield | TokenKind::Await |
-            TokenKind::Let | TokenKind::With |
+            TokenKind::Let |
             // Some keywords used as identifiers in minified bundles
             TokenKind::Catch | TokenKind::Finally | TokenKind::Extends |
             TokenKind::Export | TokenKind::Import | TokenKind::Default
@@ -371,6 +379,7 @@ impl Parser {
                 self.eat_semicolon();
                 Some(Stmt::Debugger)
             }
+            TokenKind::With => Some(self.parse_with()),
             TokenKind::Import => Some(self.parse_import()),
             TokenKind::Export => Some(self.parse_export()),
             TokenKind::Eof => None,
@@ -551,6 +560,15 @@ impl Parser {
             consequent,
             alternate,
         }
+    }
+
+    fn parse_with(&mut self) -> Stmt {
+        self.expect(&TokenKind::With);
+        self.expect(&TokenKind::LParen);
+        let object = self.parse_expression();
+        self.expect(&TokenKind::RParen);
+        let body = Box::new(self.parse_statement().unwrap_or(Stmt::Empty));
+        Stmt::With { object, body }
     }
 
     fn parse_while(&mut self) -> Stmt {
@@ -908,23 +926,39 @@ impl Parser {
         // export default expr
         if self.eat(&TokenKind::Default) {
             let expr = if matches!(self.peek(), TokenKind::Function) {
-                // export default function name() {}
-                let stmt = self.parse_function_decl(false);
-                match stmt {
-                    Stmt::FunctionDecl {
-                        name,
-                        params,
-                        body,
-                        is_async,
-                        is_generator,
-                    } => Expr::FunctionExpr {
-                        name: Some(name),
-                        params,
-                        body,
-                        is_async,
-                        is_generator,
-                    },
-                    _ => Expr::Undefined,
+                // export default function name() {} OR export default function() {}
+                // Check if the function is named or anonymous.
+                let has_name = {
+                    // Peek ahead past `function` and optional `*` to see if there's an identifier.
+                    let mut look = self.pos + 1; // past `function`
+                    if look < self.tokens.len() && matches!(self.tokens[look].kind, TokenKind::Star)
+                    {
+                        look += 1;
+                    }
+                    look < self.tokens.len()
+                        && matches!(self.tokens[look].kind, TokenKind::Ident(_))
+                };
+                if has_name {
+                    let stmt = self.parse_function_decl(false);
+                    match stmt {
+                        Stmt::FunctionDecl {
+                            name,
+                            params,
+                            body,
+                            is_async,
+                            is_generator,
+                        } => Expr::FunctionExpr {
+                            name: Some(name),
+                            params,
+                            body,
+                            is_async,
+                            is_generator,
+                        },
+                        _ => Expr::Undefined,
+                    }
+                } else {
+                    // Anonymous: parse as function expression.
+                    self.parse_function_expr(false)
                 }
             } else if matches!(self.peek(), TokenKind::Class) {
                 let stmt = self.parse_class_decl();
@@ -1977,6 +2011,10 @@ impl Parser {
             TokenKind::Number(n) => {
                 self.pos += 1;
                 Expr::Number(n)
+            }
+            TokenKind::BigInt(s) => {
+                self.pos += 1;
+                Expr::BigIntLit(s)
             }
             TokenKind::String(s) => {
                 self.pos += 1;

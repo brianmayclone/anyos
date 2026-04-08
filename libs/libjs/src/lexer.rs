@@ -41,6 +41,7 @@ impl<'a> Lexer<'a> {
                     Some(TokenKind::PlusPlus) => false,
                     Some(TokenKind::MinusMinus) => false,
                     Some(TokenKind::Number(_)) => false,
+                    Some(TokenKind::BigInt(_)) => false,
                     Some(TokenKind::String(_)) => false,
                     Some(TokenKind::Template(_)) => false,
                     Some(TokenKind::RegExp(_, _)) => false,
@@ -653,6 +654,19 @@ impl<'a> Lexer<'a> {
                 s.push(self.src[self.pos] as char);
                 self.pos += 1;
             }
+        }
+
+        // Check for BigInt suffix 'n' (ES2020).
+        if self.pos < self.src.len() && self.src[self.pos] == b'n' {
+            self.pos += 1;
+            return Token {
+                kind: TokenKind::BigInt(s),
+                span: Span {
+                    start,
+                    end: self.pos as u32,
+                    line,
+                },
+            };
         }
 
         let val = parse_js_float(&s);

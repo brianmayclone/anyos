@@ -8,6 +8,9 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone)]
 pub struct Program {
     pub body: Vec<Stmt>,
+    /// Source line number for each statement (parallel to `body`).
+    /// Set by the parser; used by the compiler to generate line maps.
+    pub stmt_lines: Vec<u32>,
 }
 
 /// Statement nodes.
@@ -110,6 +113,12 @@ pub enum Stmt {
     /// Debugger: `debugger;`
     Debugger,
 
+    /// With statement: `with (expr) stmt`
+    With {
+        object: Expr,
+        body: Box<Stmt>,
+    },
+
     /// Import declaration: `import { a, b } from 'module'`
     Import {
         specifiers: Vec<ImportSpecifier>,
@@ -159,6 +168,9 @@ pub struct ExportSpecifier {
 pub enum Expr {
     /// Numeric literal
     Number(f64),
+
+    /// BigInt literal (decimal string, e.g. "123" for 123n)
+    BigIntLit(String),
 
     /// String literal
     String(String),
@@ -607,5 +619,6 @@ pub fn stmt_variant_name(stmt: &Stmt) -> &'static str {
         Stmt::Debugger => "Debugger",
         Stmt::Import { .. } => "Import",
         Stmt::Export(_) => "Export",
+        Stmt::With { .. } => "With",
     }
 }

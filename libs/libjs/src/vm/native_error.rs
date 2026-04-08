@@ -113,7 +113,7 @@ fn ctor_error_with_name(vm: &mut Vm, args: &[JsValue], type_name: &str) -> JsVal
         if o.prototype.is_none() {
             o.prototype = Some(vm.error_proto.clone());
         }
-        let ctor = vm.globals.get(type_name);
+        let ctor = vm.globals.borrow().get(type_name);
         if !matches!(ctor, JsValue::Undefined) {
             o.set(String::from("constructor"), ctor);
         }

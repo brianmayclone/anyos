@@ -134,6 +134,8 @@ pub struct Compiler {
     binding_is_global: bool,
     /// True if the current compilation is in strict mode (`"use strict"` directive).
     pub is_strict: bool,
+    /// Nesting depth of `with` statements (>0 means we're inside a `with` block).
+    with_depth: u32,
 }
 
 impl Compiler {
@@ -142,6 +144,7 @@ impl Compiler {
             scopes: Vec::new(),
             is_strict: false,
             binding_is_global: false,
+            with_depth: 0,
         }
     }
 
@@ -149,6 +152,25 @@ impl Compiler {
     /// i.e. not inside any compiled function body.
     fn is_global_scope(&self) -> bool {
         self.scopes.len() == 1
+    }
+
+    /// Extract the declared name(s) from a statement (for `export` declarations).
+    fn extract_decl_names(stmt: &Stmt) -> Vec<String> {
+        match stmt {
+            Stmt::FunctionDecl { name, .. } | Stmt::ClassDecl { name, .. } => {
+                vec![name.clone()]
+            }
+            Stmt::VarDecl { decls, .. } => {
+                decls
+                    .iter()
+                    .filter_map(|d| match &d.name {
+                        crate::ast::Pattern::Ident(name) => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// Set the continue target for the current loop AND propagate it to
@@ -219,6 +241,74 @@ impl Compiler {
             }
         }
 
+        // Collect all names declared at global scope (for strict-mode checks).
+        {
+            let mut globals: Vec<String> = Vec::new();
+            Self::collect_var_names(&program.body, &mut globals);
+            // Also add import/export names and built-in globals.
+            for stmt in &program.body {
+                match stmt {
+                    Stmt::Import { specifiers, .. } => {
+                        for spec in specifiers {
+                            match spec {
+                                crate::ast::ImportSpecifier::Default(name) => {
+                                    if !globals.contains(name) {
+                                        globals.push(name.clone());
+                                    }
+                                }
+                                crate::ast::ImportSpecifier::Named { local, .. } => {
+                                    if !globals.contains(local) {
+                                        globals.push(local.clone());
+                                    }
+                                }
+                                crate::ast::ImportSpecifier::Namespace(name) => {
+                                    if !globals.contains(name) {
+                                        globals.push(name.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Stmt::VarDecl {
+                        kind: crate::ast::VarKind::Let | crate::ast::VarKind::Const,
+                        decls,
+                    } => {
+                        for decl in decls {
+                            Self::collect_pattern_names(&decl.name, &mut globals);
+                        }
+                    }
+                    Stmt::ClassDecl { name, .. } => {
+                        if !globals.contains(name) {
+                            globals.push(name.clone());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            self.scope_mut().chunk.declared_globals = globals;
+        }
+
+        // ES2023 §10.4.1.1 — Pre-initialize hoisted `var` declarations to undefined
+        // in the global scope.  This ensures that `var x` inside a `with` block
+        // creates the global binding even when the assignment is intercepted by the
+        // with-object.  Only initialize if the binding doesn't already exist (to
+        // avoid overwriting existing globals like harness-injected functions).
+        {
+            let mut var_names: Vec<String> = Vec::new();
+            Self::collect_var_names(&program.body, &mut var_names);
+            for name in &var_names {
+                let ci = self.add_const(Constant::String(name.clone()));
+                // LoadGlobalSafe returns undefined for non-existent globals.
+                // Use typeof check: if typeof name === "undefined" AND the name
+                // is not explicitly set to undefined, initialize it.
+                // Simpler: use a dedicated opcode or just do conditional init.
+                // For now: load current value, if undefined store undefined (no-op for
+                // existing undefined), if not undefined skip.
+                // Actually simplest: just use DeclareGlobal opcode.
+                self.emit(Op::DeclareGlobal(ci));
+            }
+        }
+
         // ES2023 §10.2.1 — hoist function declarations: compile all top-level
         // FunctionDecl statements first so they are available before any other
         // code executes (function hoisting in the global scope).
@@ -233,6 +323,11 @@ impl Compiler {
             // Skip FunctionDecl — already compiled above.
             if let Stmt::FunctionDecl { .. } = stmt {
                 continue;
+            }
+
+            // Set source line for this statement (for stack trace line_map).
+            if let Some(&line) = program.stmt_lines.get(i) {
+                self.scope_mut().chunk.current_line = line;
             }
 
             let is_last = i == body_len - 1;
@@ -374,7 +469,7 @@ impl Compiler {
                     Self::collect_var_names(f, out);
                 }
             }
-            Stmt::Labeled { body, .. } => {
+            Stmt::Labeled { body, .. } | Stmt::With { body, .. } => {
                 Self::collect_var_names_stmt(body, out);
             }
             // Function declarations are hoisted separately (already handled).
@@ -514,8 +609,16 @@ impl Compiler {
                 // visible to subsequent <script> tags.  We mirror this by
                 // storing ALL top-level declarations as globals so that
                 // separate eval() calls (one per <script>) share them.
-                let is_global = self.is_global_scope();
+                // HOWEVER: let/const inside a block scope must be local,
+                // even in the global compilation scope (ES2023 §14.2.1).
                 let is_var = *kind == VarKind::Var;
+                let is_global = if is_var {
+                    self.is_global_scope()
+                } else {
+                    // let/const are only global at the top-level (scope_depth == 0),
+                    // not inside blocks (scope_depth > 0).
+                    self.is_global_scope() && self.scope().scope_depth == 0
+                };
                 for decl in decls {
                     self.compile_var_decl(decl, is_global, is_var);
                 }
@@ -827,6 +930,14 @@ impl Compiler {
             Stmt::Labeled { label, body } => {
                 self.compile_labeled(label, body);
             }
+            Stmt::With { object, body } => {
+                self.compile_expr(object);
+                self.emit(Op::EnterWith);
+                self.with_depth += 1;
+                self.compile_stmt(body);
+                self.with_depth -= 1;
+                self.emit(Op::LeaveWith);
+            }
             Stmt::Empty | Stmt::Debugger => {
                 self.emit(Op::Nop);
             }
@@ -882,9 +993,21 @@ impl Compiler {
                         self.emit(Op::Pop); // pop exports obj
                     }
                     ExportDecl::Decl(stmt) => {
-                        // export function/class/var — compile the declaration normally.
-                        // The exported names become available via the global scope.
+                        // export function/class/var — compile the declaration, then
+                        // copy the declared name(s) into __exports__.
+                        let names = Self::extract_decl_names(&stmt);
                         self.compile_stmt(stmt);
+                        for name in names {
+                            let exports_ci =
+                                self.add_const(Constant::String(String::from("__exports__")));
+                            self.emit(Op::LoadGlobal(exports_ci));
+                            let name_ci = self.add_const(Constant::String(name.clone()));
+                            self.emit(Op::LoadGlobal(name_ci));
+                            let prop_ci = self.add_const(Constant::String(name));
+                            self.emit(Op::SetPropNamed(prop_ci));
+                            self.emit(Op::Pop);
+                            self.emit(Op::Pop);
+                        }
                     }
                     ExportDecl::Named(specifiers) => {
                         // export { a, b as c } — alias existing globals into __exports__
@@ -997,7 +1120,6 @@ impl Compiler {
             match elem {
                 None => {
                     // Elision: [,] — advance iterator without binding
-                    self.emit(Op::Dup); // [..., iter, iter]
                     self.emit(Op::IterNext); // [..., iter, value, has_more]
                     self.emit(Op::Pop); // [..., iter, value]
                     self.emit(Op::Pop); // [..., iter]
@@ -1029,8 +1151,7 @@ impl Compiler {
                     self.emit(Op::Pop);
                     // Loop
                     let loop_top = self.offset();
-                    self.emit(Op::Dup); // dup iterator
-                    self.emit(Op::IterNext); // value, has_more
+                    self.emit(Op::IterNext); // iter, value, has_more
                     let exit = self.emit(Op::JumpIfFalse(0)); // if !has_more, exit
                                                               // Push value into array
                     self.emit(Op::LoadLocal(result_arr));
@@ -1057,7 +1178,6 @@ impl Compiler {
                 }
                 Some(pat) => {
                     // Normal element: get next value from iterator
-                    self.emit(Op::Dup); // [..., iter, iter]
                     self.emit(Op::IterNext); // [..., iter, value, has_more]
                     self.emit(Op::Pop); // [..., iter, value]  (drop has_more flag)
                     self.compile_pattern_binding(pat);
@@ -1182,14 +1302,10 @@ impl Compiler {
         let loop_start = self.offset();
         let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
 
-        self.emit(Op::Dup); // dup iterator
         self.emit(Op::IterNext);
-        // Stack: [..., iterator, {value, done}]
-        // We need to check `done` — simplified: IterNext pushes value or Undefined if done
-        // Actually let's simplify: IterNext pushes value and a bool (done)
-        // For our VM: IterNext pops iterator, pushes (value, done_bool)
-        // Let's just push the value; the VM's IterNext returns Undefined when done
+        // Stack: [..., iterator, value, has_more_bool]
         let exit_jump = self.emit(Op::JumpIfFalse(0)); // done flag
+        // Stack: [..., iterator, value]
 
         // Bind the iteration value to the loop variable.
         // The current iteration value is on top of the stack.
@@ -1877,6 +1993,18 @@ impl Compiler {
         self.binding_is_global = prev_binding_is_global;
     }
 
+    /// Mark the last compiled function (most recent Constant::Function) as a class constructor.
+    fn mark_last_function_as_class_constructor(&mut self) {
+        let consts = &mut self.scope_mut().chunk.constants;
+        for c in consts.iter_mut().rev() {
+            if let Constant::Function(ref mut chunk) = c {
+                chunk.is_class_constructor = true;
+                chunk.strict = true; // Class bodies are always strict
+                break;
+            }
+        }
+    }
+
     fn compile_class(
         &mut self,
         name: Option<&String>,
@@ -1964,6 +2092,7 @@ impl Compiler {
                     body_with_inits
                 };
                 self.compile_function(name, params, &full_body, false);
+                self.mark_last_function_as_class_constructor();
             }
         } else {
             if super_class.is_some() {
@@ -1983,6 +2112,7 @@ impl Compiler {
             } else {
                 self.compile_function(name, &[], &instance_inits, false);
             }
+            self.mark_last_function_as_class_constructor();
         }
         // Stack: [..., Constructor]
 
@@ -2456,6 +2586,10 @@ impl Compiler {
                 let ci = self.add_const(Constant::Number(*n));
                 self.emit(Op::LoadConst(ci));
             }
+            Expr::BigIntLit(s) => {
+                let ci = self.add_const(Constant::BigInt(s.clone()));
+                self.emit(Op::LoadConst(ci));
+            }
             Expr::String(s) => {
                 let ci = self.add_const(Constant::String(s.clone()));
                 self.emit(Op::LoadConst(ci));
@@ -2918,6 +3052,11 @@ impl Compiler {
                             "Delete of an unqualified identifier '{}' in strict mode",
                             name
                         ));
+                    }
+                    Expr::Ident(ref name) if self.with_depth > 0 => {
+                        // Inside `with`: delete from with-scope or global scope.
+                        let ci = self.add_const(Constant::String(name.clone()));
+                        self.emit(Op::DeleteName(ci));
                     }
                     _ => {
                         self.emit(Op::LoadTrue);

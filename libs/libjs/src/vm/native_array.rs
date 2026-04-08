@@ -112,6 +112,7 @@ pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
             f64::NAN
         }
         JsValue::Array(_) | JsValue::Function(_) => f64::NAN,
+        JsValue::BigInt(bi) => bi.to_f64(),
     }
 }
 
@@ -1197,13 +1198,12 @@ pub fn array_keys(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    if let Some(arr) = this_array(vm) {
-        let a = arr.borrow();
-        let vals: Vec<JsValue> = a.elements.values().cloned().collect();
-        JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(vals))))
+    let vals = if let Some(arr) = this_array(vm) {
+        arr.borrow().to_dense_vec()
     } else {
-        JsValue::new_array(Vec::new())
-    }
+        Vec::new()
+    };
+    vm.make_internal_iterator(vals)
 }
 
 // ═══════════════════════════════════════════════════════════

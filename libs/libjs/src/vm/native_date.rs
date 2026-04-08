@@ -79,6 +79,14 @@ pub fn ctor_date(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         native_fn("getMilliseconds", date_get_milliseconds),
     );
     obj.set(String::from("setTime"), native_fn("setTime", date_set_time));
+    obj.set(String::from("setFullYear"), native_fn("setFullYear", date_set_full_year));
+    obj.set(String::from("setMonth"), native_fn("setMonth", date_set_month));
+    obj.set(String::from("setDate"), native_fn("setDate", date_set_date));
+    obj.set(String::from("setHours"), native_fn("setHours", date_set_hours));
+    obj.set(String::from("setMinutes"), native_fn("setMinutes", date_set_minutes));
+    obj.set(String::from("setSeconds"), native_fn("setSeconds", date_set_seconds));
+    obj.set(String::from("setMilliseconds"), native_fn("setMilliseconds", date_set_milliseconds));
+    obj.set(String::from("getTimezoneOffset"), native_fn("getTimezoneOffset", date_get_timezone_offset));
     obj.set(
         String::from("toISOString"),
         native_fn("toISOString", date_to_iso_string),
@@ -263,11 +271,104 @@ pub fn date_get_milliseconds(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 pub fn date_set_time(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let ms = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    set_ms(vm, ms);
+    JsValue::Number(ms)
+}
+
+pub fn date_set_full_year(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let cur = get_ms(vm);
+    let (_, mo, d, h, mi, s, ms) = decompose(cur);
+    let year = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let month = args.get(1).map(|v| v.to_number()).unwrap_or(mo as f64);
+    let day = args.get(2).map(|v| v.to_number()).unwrap_or(d as f64);
+    let new_ms = compute_epoch_ms(year, month, day, h as f64, mi as f64, s as f64, ms as f64);
+    set_ms(vm, new_ms);
+    JsValue::Number(new_ms)
+}
+
+pub fn date_set_month(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let cur = get_ms(vm);
+    let (y, _, d, h, mi, s, ms) = decompose(cur);
+    let month = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let day = args.get(1).map(|v| v.to_number()).unwrap_or(d as f64);
+    let new_ms = compute_epoch_ms(y as f64, month, day, h as f64, mi as f64, s as f64, ms as f64);
+    set_ms(vm, new_ms);
+    JsValue::Number(new_ms)
+}
+
+pub fn date_set_date(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let cur = get_ms(vm);
+    let (y, mo, _, h, mi, s, ms) = decompose(cur);
+    let day = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let new_ms = compute_epoch_ms(y as f64, mo as f64, day, h as f64, mi as f64, s as f64, ms as f64);
+    set_ms(vm, new_ms);
+    JsValue::Number(new_ms)
+}
+
+pub fn date_set_hours(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let cur = get_ms(vm);
+    let (y, mo, d, _, mi, s, ms) = decompose(cur);
+    let hours = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let minutes = args.get(1).map(|v| v.to_number()).unwrap_or(mi as f64);
+    let seconds = args.get(2).map(|v| v.to_number()).unwrap_or(s as f64);
+    let millis = args.get(3).map(|v| v.to_number()).unwrap_or(ms as f64);
+    let new_ms = compute_epoch_ms(y as f64, mo as f64, d as f64, hours, minutes, seconds, millis);
+    set_ms(vm, new_ms);
+    JsValue::Number(new_ms)
+}
+
+pub fn date_set_minutes(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let cur = get_ms(vm);
+    let (y, mo, d, h, _, s, ms) = decompose(cur);
+    let minutes = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let seconds = args.get(1).map(|v| v.to_number()).unwrap_or(s as f64);
+    let millis = args.get(2).map(|v| v.to_number()).unwrap_or(ms as f64);
+    let new_ms = compute_epoch_ms(y as f64, mo as f64, d as f64, h as f64, minutes, seconds, millis);
+    set_ms(vm, new_ms);
+    JsValue::Number(new_ms)
+}
+
+pub fn date_set_seconds(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let cur = get_ms(vm);
+    let (y, mo, d, h, mi, _, ms) = decompose(cur);
+    let seconds = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let millis = args.get(1).map(|v| v.to_number()).unwrap_or(ms as f64);
+    let new_ms = compute_epoch_ms(y as f64, mo as f64, d as f64, h as f64, mi as f64, seconds, millis);
+    set_ms(vm, new_ms);
+    JsValue::Number(new_ms)
+}
+
+pub fn date_set_milliseconds(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let cur = get_ms(vm);
+    let (y, mo, d, h, mi, s, _) = decompose(cur);
+    let millis = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let new_ms = compute_epoch_ms(y as f64, mo as f64, d as f64, h as f64, mi as f64, s as f64, millis);
+    set_ms(vm, new_ms);
+    JsValue::Number(new_ms)
+}
+
+/// `Date.UTC(year, month, ...)` — static method
+pub fn date_utc(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let year = args.first().map(|v| v.to_number()).unwrap_or(f64::NAN);
+    let month = args.get(1).map(|v| v.to_number()).unwrap_or(0.0);
+    let day = args.get(2).map(|v| v.to_number()).unwrap_or(1.0);
+    let hours = args.get(3).map(|v| v.to_number()).unwrap_or(0.0);
+    let minutes = args.get(4).map(|v| v.to_number()).unwrap_or(0.0);
+    let seconds = args.get(5).map(|v| v.to_number()).unwrap_or(0.0);
+    let ms = args.get(6).map(|v| v.to_number()).unwrap_or(0.0);
+    JsValue::Number(compute_epoch_ms(year, month, day, hours, minutes, seconds, ms))
+}
+
+pub fn date_get_timezone_offset(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    // UTC-only implementation: offset is always 0.
+    JsValue::Number(0.0)
+}
+
+fn set_ms(vm: &mut Vm, ms: f64) {
     if let JsValue::Object(obj) = &vm.current_this {
         obj.borrow_mut()
             .set(String::from("__ms"), JsValue::Number(ms));
     }
-    JsValue::Number(ms)
 }
 
 pub fn date_to_iso_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {

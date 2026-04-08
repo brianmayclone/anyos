@@ -1,44 +1,52 @@
 //! setTimeout / setInterval / clearTimeout / clearInterval.
 //!
-//! In the libjs core these are stubs that record pending timers.
-//! The host environment (libwebview) can consume them via the
-//! `pending_timers` field on the VM, or override them with real
-//! native implementations that hook into an event loop.
+//! These functions register timers in the VM's `EventLoop`.  The host
+//! environment (libwebview) can override them with its own natives that
+//! hook into a real frame-driven event loop.  When no host overrides are
+//! installed (standalone libjs), the timers live in `vm.event_loop` and
+//! are advanced by calling `vm.tick(delta_ms)`.
 
-use alloc::string::String;
+use alloc::vec::Vec;
 
 use super::Vm;
 use crate::value::*;
 
-// Timer ID counter — simple global.
-static mut NEXT_TIMER_ID: f64 = 1.0;
-
-/// `setTimeout(callback, delay)` — stub that returns a timer ID.
-pub fn set_timeout(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let id = unsafe {
-        let id = NEXT_TIMER_ID;
-        NEXT_TIMER_ID += 1.0;
-        id
-    };
-    JsValue::Number(id)
+/// `setTimeout(callback, delay)` — schedules a one-shot timer.
+pub fn set_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let delay = args
+        .get(1)
+        .map(|v| v.to_number().max(0.0) as u32)
+        .unwrap_or(0);
+    if !callback.is_function() {
+        return JsValue::Number(0.0);
+    }
+    let id = vm.event_loop.set_timer(callback, delay, false);
+    JsValue::Number(id as f64)
 }
 
-/// `setInterval(callback, delay)` — stub that returns a timer ID.
-pub fn set_interval(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let id = unsafe {
-        let id = NEXT_TIMER_ID;
-        NEXT_TIMER_ID += 1.0;
-        id
-    };
-    JsValue::Number(id)
+/// `setInterval(callback, delay)` — schedules a repeating timer.
+pub fn set_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let delay = args
+        .get(1)
+        .map(|v| v.to_number().max(1.0) as u32)
+        .unwrap_or(10);
+    if !callback.is_function() {
+        return JsValue::Number(0.0);
+    }
+    let id = vm.event_loop.set_timer(callback, delay, true);
+    JsValue::Number(id as f64)
 }
 
-/// `clearTimeout(id)` — stub.
-pub fn clear_timeout(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+/// `clearTimeout(id)` — cancels a one-shot timer.
+pub fn clear_timeout(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let id = args.first().map(|v| v.to_number() as u32).unwrap_or(0);
+    vm.event_loop.clear_timer(id);
     JsValue::Undefined
 }
 
-/// `clearInterval(id)` — stub.
-pub fn clear_interval(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::Undefined
+/// `clearInterval(id)` — cancels a repeating timer.
+pub fn clear_interval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    clear_timeout(vm, args)
 }

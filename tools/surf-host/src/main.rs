@@ -206,6 +206,123 @@ fn load_page(wv: &mut libwebview::WebView, url: &str) -> PendingImages {
     pending
 }
 
+fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
+    if std::env::var("SURF_DEBUG_HEISE").ok().as_deref() != Some("1") {
+        return;
+    }
+    let Some(dom) = wv.dom() else { return; };
+    eprintln!("[surf-host] debug module bounds begin");
+    for (i, _) in dom.nodes.iter().enumerate() {
+        let module_name = dom.attr(i, "data-module-name");
+        let component = dom.attr(i, "data-component");
+        let collapse_target = dom.attr(i, "data-collapse-target");
+        let id_attr = dom.attr(i, "id");
+        if module_name.is_none()
+            && component.is_none()
+            && collapse_target.is_none()
+            && !matches!(id_attr, Some("HEI_D_Top" | "HEI_D_Right" | "HEI_M_Incontent-1" | "HEI_D_Stage" | "topnavimodule"))
+        {
+            continue;
+        }
+        let Some((x, y, w, h)) = wv.node_bounds(i) else { continue; };
+        if y > 2200 || h <= 0 {
+            continue;
+        }
+        eprintln!(
+            "[surf-host]   module node={} y={} h={} x={} w={} module={:?} component={:?} id={:?} collapse={:?}",
+            i,
+            y,
+            h,
+            x,
+            w,
+            module_name,
+            component,
+            id_attr,
+            collapse_target
+        );
+    }
+    eprintln!("[surf-host] debug module bounds end");
+    eprintln!("[surf-host] debug image bounds begin");
+    let mut rows: Vec<(i32, usize, Option<&str>, Option<(i32, i32, i32, i32)>, String)> = Vec::new();
+    for (i, _) in dom.nodes.iter().enumerate() {
+        if !(dom.tag(i) == Some(libwebview::dom::Tag::Img) || dom.has_tag_name(i, "a-img")) {
+            continue;
+        }
+        let src = dom.image_url(i).unwrap_or_default();
+        let bounds = wv.node_bounds(i);
+        let sort_y = bounds.map(|(_, y, _, _)| y).unwrap_or(i32::MAX);
+        rows.push((sort_y, i, dom.raw_tag_name(i), bounds, src));
+    }
+    rows.sort_by_key(|(y, _, _, _, _)| *y);
+    for (_, node_id, raw, bounds, src) in rows.into_iter().take(40) {
+        let cache_info = wv.images.get_ref(&src).map(|entry| {
+            let mut sample = String::new();
+            for &idx in &[0usize, entry.pixels.len() / 2, entry.pixels.len().saturating_sub(1)] {
+                if let Some(&px) = entry.pixels.get(idx) {
+                    if !sample.is_empty() {
+                        sample.push(',');
+                    }
+                    sample.push_str(&format!("{:08X}", px));
+                }
+            }
+            format!(" cache={}x{} sample=[{}]", entry.width, entry.height, sample)
+        }).unwrap_or_else(|| String::from(" cache=missing"));
+        eprintln!(
+            "[surf-host]   node={} raw={:?} bounds={:?} src={}{}",
+            node_id, raw, bounds, src, cache_info
+        );
+    }
+    eprintln!("[surf-host] debug image bounds end");
+
+    fn dump_subtree(
+        wv: &libwebview::WebView,
+        dom: &libwebview::dom::Dom,
+        node_id: usize,
+        depth: usize,
+        max_depth: usize,
+    ) {
+        if depth > max_depth {
+            return;
+        }
+        let indent = "  ".repeat(depth);
+        let bounds = wv.node_bounds(node_id);
+        let tag = dom.raw_tag_name(node_id).unwrap_or("#text");
+        let id_attr = dom.attr(node_id, "id").unwrap_or("");
+        let class_attr = dom.attr(node_id, "class").unwrap_or("");
+        let component = dom.attr(node_id, "data-component").unwrap_or("");
+        let text = dom.text_content(node_id).replace('\n', " ");
+        let text = text.trim();
+        let text = if text.len() > 80 { &text[..80] } else { text };
+        eprintln!(
+            "[surf-host] {}node={} tag={} bounds={:?} id={:?} class={:?} component={:?} text={:?}",
+            indent,
+            node_id,
+            tag,
+            bounds,
+            id_attr,
+            class_attr,
+            component,
+            text
+        );
+        for &child_id in &dom.nodes[node_id].children {
+            dump_subtree(wv, dom, child_id, depth + 1, max_depth);
+        }
+    }
+
+    for (root, label, max_depth) in [
+        (76usize, "topnavi", 5usize),
+        (371usize, "header-scroll", 3usize),
+        (421usize, "teaser-scroll", 3usize),
+    ] {
+        if root < dom.nodes.len() {
+            eprintln!("[surf-host] debug subtree begin: {}", label);
+            dump_subtree(wv, dom, root, 0, max_depth);
+            eprintln!("[surf-host] debug subtree end: {}", label);
+        }
+    }
+
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -233,6 +350,7 @@ fn main() {
             wv.add_image(&r.src_attr, r.pixels, r.width, r.height);
         }
         wv.relayout();
+        debug_log_image_bounds(&mut wv);
     }
 
     // Build initial framebuffer
@@ -258,11 +376,13 @@ fn main() {
             }
             // Final relayout after timers
             wv.relayout();
+            debug_log_image_bounds(&mut wv);
             // Print any console output from timer callbacks
             for line in wv.js_console() {
                 eprintln!("[js:console:timer] {}", line);
             }
         }
+        extract_pixels(&wv, &mut framebuffer, width as usize, height as usize, 0);
         if let Some((y_start, y_end)) = args.y_range {
             save_range_screenshot(&mut wv, width, y_start, y_end, path);
         } else if args.fullpage {
@@ -1104,7 +1224,7 @@ impl PendingImages {
     }
 }
 
-/// Collect `<img>` URLs from DOM and spawn parallel fetch+decode threads.
+/// Collect image URLs from DOM and spawn parallel fetch+decode threads.
 /// Returns a `PendingImages` handle to poll or drain results.
 fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImages {
     let img_infos = {
@@ -1112,17 +1232,34 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
         let mut infos = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for (i, node) in dom.nodes.iter().enumerate() {
-            if let NodeType::Element { tag: Tag::Img, .. } = &node.node_type {
-                if let Some(src) = dom.attr(i, "src") {
-                    if src.is_empty() || src.starts_with("data:") { continue; }
-                    if !seen.insert(src.to_string()) { continue; }
-                    let abs_url = resolve_url(base_url, src);
-                    let target_w: Option<u32> = dom.attr(i, "width")
-                        .and_then(|s| s.trim().trim_end_matches("px").parse().ok());
-                    let target_h: Option<u32> = dom.attr(i, "height")
-                        .and_then(|s| s.trim().trim_end_matches("px").parse().ok());
-                    infos.push((abs_url, String::from(src), target_w, target_h));
-                }
+            let is_image_like = matches!(
+                &node.node_type,
+                NodeType::Element { tag: Tag::Img, .. }
+            ) || dom.has_tag_name(i, "a-img");
+            if !is_image_like {
+                continue;
+            }
+
+            if let Some(src) = dom.image_url(i) {
+                if src.is_empty() || src.starts_with("data:") { continue; }
+                if !seen.insert(src.to_string()) { continue; }
+                let abs_url = resolve_url(base_url, &src);
+                let bounds_hint = wv
+                    .node_bounds(i)
+                    .and_then(|(_, _, w, h)| {
+                        if w > 0 && h > 0 {
+                            Some((w as u32, h as u32))
+                        } else {
+                            None
+                        }
+                    });
+                let target_w: Option<u32> = bounds_hint
+                    .map(|(w, _)| w)
+                    .or_else(|| dom.attr(i, "width").and_then(|s| s.trim().trim_end_matches("px").parse().ok()));
+                let target_h: Option<u32> = bounds_hint
+                    .map(|(_, h)| h)
+                    .or_else(|| dom.attr(i, "height").and_then(|s| s.trim().trim_end_matches("px").parse().ok()));
+                infos.push((abs_url, src, target_w, target_h));
             }
         }
         infos

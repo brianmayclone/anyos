@@ -57,7 +57,7 @@ pub fn ctor_promise(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 fn promise_proto(vm: &Vm) -> Option<Rc<RefCell<JsObject>>> {
-    match vm.globals.get("Promise") {
+    match vm.globals.borrow().get("Promise") {
         JsValue::Function(func) => func.borrow().prototype.clone(),
         _ => None,
     }

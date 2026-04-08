@@ -115,7 +115,7 @@ pub struct TryHandler {
 pub struct Vm {
     pub stack: Vec<JsValue>,
     pub frames: Vec<CallFrame>,
-    pub globals: JsObject,
+    pub globals: Rc<RefCell<JsObject>>,
     pub try_handlers: Vec<TryHandler>,
     pub console_output: Vec<String>,
     pub engine_log: Vec<String>,
@@ -149,6 +149,16 @@ pub struct Vm {
     pub event_loop: event_loop::EventLoop,
     /// Tracks Rust-level call_value() re-entrancy depth (independent of JS frames).
     pub call_value_depth: usize,
+    /// Module registry: maps module specifier → cached namespace object.
+    /// Populated by `register_module_source()` / `register_module_object()`.
+    /// Used by the `__import__()` built-in.
+    pub module_registry: BTreeMap<String, JsValue>,
+    /// Module source registry: maps module specifier → JS source text.
+    /// When `__import__` is called for a specifier not yet in `module_registry`,
+    /// it compiles and executes the source, caches the result, and returns it.
+    pub module_sources: BTreeMap<String, String>,
+    /// `with` statement scope chain — stack of objects to check before globals.
+    pub with_scopes: Vec<Rc<RefCell<JsObject>>>,
 }
 
 impl Vm {
@@ -156,7 +166,7 @@ impl Vm {
         let mut vm = Vm {
             stack: Vec::with_capacity(256),
             frames: Vec::new(),
-            globals: JsObject::new(),
+            globals: Rc::new(RefCell::new(JsObject::new())),
             try_handlers: Vec::new(),
             console_output: Vec::new(),
             engine_log: Vec::new(),
@@ -180,6 +190,9 @@ impl Vm {
             pending_generator_yield: None,
             event_loop: event_loop::EventLoop::new(),
             call_value_depth: 0,
+            module_registry: BTreeMap::new(),
+            module_sources: BTreeMap::new(),
+            with_scopes: Vec::new(),
         };
         vm.init_prototypes();
         vm.init_globals();
@@ -230,7 +243,7 @@ impl Vm {
             JsValue::String(String::from(message)),
         );
         obj.set(String::from("stack"), JsValue::String(stack_str));
-        let ctor = self.globals.get("SyntaxError");
+        let ctor = self.globals.borrow().get("SyntaxError");
         if !matches!(ctor, JsValue::Undefined) {
             obj.set(String::from("constructor"), ctor);
         }
@@ -250,10 +263,27 @@ impl Vm {
             JsValue::String(String::from(message)),
         );
         obj.set(String::from("stack"), JsValue::String(stack_str));
-        let ctor = self.globals.get("TypeError");
+        let ctor = self.globals.borrow().get("TypeError");
         if !matches!(ctor, JsValue::Undefined) {
             obj.set(String::from("constructor"), ctor);
         }
+        JsValue::Object(Rc::new(RefCell::new(obj)))
+    }
+
+    /// Create a generic `Error` object.
+    pub fn make_error(&self, message: &str) -> JsValue {
+        let stack_str = self.make_stack_trace("Error", message);
+        let mut obj = JsObject::new();
+        obj.prototype = Some(self.error_proto.clone());
+        obj.set(
+            String::from("name"),
+            JsValue::String(String::from("Error")),
+        );
+        obj.set(
+            String::from("message"),
+            JsValue::String(String::from(message)),
+        );
+        obj.set(String::from("stack"), JsValue::String(stack_str));
         JsValue::Object(Rc::new(RefCell::new(obj)))
     }
 
@@ -271,7 +301,7 @@ impl Vm {
             JsValue::String(String::from(message)),
         );
         obj.set(String::from("stack"), JsValue::String(stack_str));
-        let ctor = self.globals.get("RangeError");
+        let ctor = self.globals.borrow().get("RangeError");
         if !matches!(ctor, JsValue::Undefined) {
             obj.set(String::from("constructor"), ctor);
         }
@@ -292,7 +322,7 @@ impl Vm {
             JsValue::String(String::from(message)),
         );
         obj.set(String::from("stack"), JsValue::String(stack_str));
-        let ctor = self.globals.get("ReferenceError");
+        let ctor = self.globals.borrow().get("ReferenceError");
         if !matches!(ctor, JsValue::Undefined) {
             obj.set(String::from("constructor"), ctor);
         }
@@ -306,6 +336,13 @@ impl Vm {
             let fname = frame.chunk.name.as_deref().unwrap_or("<anonymous>");
             s.push_str("\n    at ");
             s.push_str(fname);
+            // Append line number if available from the line_map.
+            let ip = if frame.ip > 0 { frame.ip - 1 } else { 0 };
+            if let Some(&line) = frame.chunk.line_map.get(ip) {
+                if line > 0 {
+                    s.push_str(&format!(" (line {})", line));
+                }
+            }
         }
         s
     }
@@ -358,7 +395,7 @@ impl Vm {
             stack_base: self.stack.len(),
             locals,
             upvalue_cells: Vec::new(),
-            this_val: JsValue::Undefined,
+            this_val: JsValue::Object(self.globals.clone()),
             is_constructor: false,
             all_args: Vec::new(),
             self_ref: JsValue::Undefined,
@@ -390,12 +427,72 @@ impl Vm {
         self.event_loop.enqueue_microtask(callback, args);
     }
 
+    /// Advance the event loop by `dt_ms` milliseconds.
+    ///
+    /// Fires any due timers (setTimeout/setInterval) and drains the
+    /// microtask queue after each one — implementing the ECMAScript
+    /// event loop semantics: one macrotask → drain all microtasks → next
+    /// macrotask.
+    ///
+    /// Returns the number of timer callbacks that fired.
+    pub fn tick(&mut self, dt_ms: u32) -> usize {
+        let fired = self.event_loop.tick(dt_ms);
+        let count = fired.len();
+        for task in fired {
+            self.call_value(&task.callback, &task.args, JsValue::Undefined);
+            self.drain_microtasks();
+        }
+        count
+    }
+
+    /// Run the event loop until no microtasks and no pending timers remain,
+    /// or a safety limit is reached.  Useful after `execute()` to let
+    /// async code (Promises, setTimeout-based state machines) complete.
+    ///
+    /// `max_rounds` caps the number of 1ms-tick iterations (default: 10000,
+    /// i.e. simulates up to 10 seconds of wall time).
+    pub fn run_event_loop(&mut self, max_rounds: u32) {
+        for _ in 0..max_rounds {
+            self.drain_microtasks();
+            if !self.event_loop.has_microtasks() && !self.event_loop.has_pending_timers() {
+                break;
+            }
+            self.tick(1);
+        }
+        // Final drain.
+        self.drain_microtasks();
+    }
+
     pub fn set_global(&mut self, name: &str, value: JsValue) {
-        self.globals.set(String::from(name), value);
+        self.globals.borrow_mut().set(String::from(name), value);
     }
 
     pub fn get_global(&mut self, name: &str) -> JsValue {
-        self.globals.get(name)
+        self.globals.borrow().get(name)
+    }
+
+    /// Look up a name in the with-scope chain (most-recently-pushed first).
+    /// Returns `Some(value)` if found, `None` otherwise.
+    fn with_scope_get(&self, name: &str) -> Option<JsValue> {
+        for scope in self.with_scopes.iter().rev() {
+            let obj = scope.borrow();
+            if obj.has(name) {
+                return Some(obj.get(name));
+            }
+        }
+        None
+    }
+
+    /// Try to store a value in the with-scope chain.
+    /// Returns `true` if the name was found on a with-object and set there.
+    fn with_scope_set(&self, name: &str, val: &JsValue) -> bool {
+        for scope in self.with_scopes.iter().rev() {
+            if scope.borrow().has(name) {
+                scope.borrow_mut().set(String::from(name), val.clone());
+                return true;
+            }
+        }
+        false
     }
 
     pub fn register_native(&mut self, name: &str, func: fn(&mut Vm, &[JsValue]) -> JsValue) {
@@ -494,15 +591,12 @@ impl Vm {
                 Op::LoadGlobal(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     if name == "globalThis" {
-                        // ES2020: globalThis — create a snapshot object of global scope
-                        let mut obj = JsObject::new();
-                        obj.prototype = Some(self.object_proto.clone());
-                        for (k, prop) in &self.globals.properties {
-                            obj.properties.insert(k.clone(), prop.clone());
-                        }
-                        self.stack.push(JsValue::Object(Rc::new(RefCell::new(obj))));
-                    } else if self.globals.has(&name) {
-                        let val = self.globals.get(&name);
+                        // ES2020: globalThis — return the live global object
+                        self.stack.push(JsValue::Object(self.globals.clone()));
+                    } else if let Some(val) = self.with_scope_get(&name) {
+                        self.stack.push(val);
+                    } else if self.globals.borrow().has(&name) {
+                        let val = self.globals.borrow().get(&name);
                         self.stack.push(val);
                     } else {
                         let msg = format!("{} is not defined", name);
@@ -515,21 +609,80 @@ impl Vm {
                 Op::LoadGlobalSafe(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     if name == "globalThis" {
-                        let mut obj = JsObject::new();
-                        obj.prototype = Some(self.object_proto.clone());
-                        for (k, prop) in &self.globals.properties {
-                            obj.properties.insert(k.clone(), prop.clone());
-                        }
-                        self.stack.push(JsValue::Object(Rc::new(RefCell::new(obj))));
+                        self.stack.push(JsValue::Object(self.globals.clone()));
+                    } else if let Some(val) = self.with_scope_get(&name) {
+                        self.stack.push(val);
                     } else {
-                        let val = self.globals.get(&name);
+                        let val = self.globals.borrow().get(&name);
                         self.stack.push(val);
                     }
                 }
                 Op::StoreGlobal(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
-                    self.globals.set(name, val);
+                    // Check with-scope first: if the name exists on a with-object, set it there.
+                    if self.with_scope_set(&name, &val) {
+                        // stored in with-scope
+                    } else if self.frames[frame_idx].chunk.strict
+                        && !self.globals.borrow().properties.contains_key(&name)
+                        && !self.frames[frame_idx]
+                            .chunk
+                            .declared_globals
+                            .iter()
+                            .any(|g| g == &name)
+                    {
+                        let msg = format!("{} is not defined", name);
+                        let err = self.make_reference_error(&msg);
+                        if !self.handle_exception(err) {
+                            return JsValue::Undefined;
+                        }
+                    } else {
+                        self.globals.borrow_mut().set(name, val);
+                    }
+                }
+                Op::EnterWith => {
+                    let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let obj_rc = match obj {
+                        JsValue::Object(rc) => rc,
+                        other => {
+                            // ToObject: wrap primitive in object
+                            let mut wrapper = JsObject::new();
+                            wrapper.set(String::from("__primitiveValue__"), other);
+                            Rc::new(RefCell::new(wrapper))
+                        }
+                    };
+                    self.with_scopes.push(obj_rc);
+                }
+                Op::DeleteName(name_idx) => {
+                    let name = self.get_const_string(frame_idx, name_idx);
+                    let mut deleted = false;
+                    // Check with-scopes first (most recent first)
+                    for scope in self.with_scopes.iter().rev() {
+                        if scope.borrow().has(&name) {
+                            scope.borrow_mut().delete(&name);
+                            deleted = true;
+                            break;
+                        }
+                    }
+                    if !deleted {
+                        // Try global scope
+                        if self.globals.borrow().has(&name) {
+                            self.globals.borrow_mut().delete(&name);
+                            deleted = true;
+                        }
+                    }
+                    self.stack.push(JsValue::Bool(deleted));
+                }
+                Op::DeclareGlobal(name_idx) => {
+                    let name = self.get_const_string(frame_idx, name_idx);
+                    if !self.globals.borrow().has(&name) {
+                        self.globals
+                            .borrow_mut()
+                            .set(name, JsValue::Undefined);
+                    }
+                }
+                Op::LeaveWith => {
+                    self.with_scopes.pop();
                 }
                 Op::LoadUpvalue(idx) => {
                     let val = self.frames[frame_idx]
@@ -604,6 +757,21 @@ impl Vm {
 
                     // Perform addition
                     let result = match (&a_prim, &b_prim) {
+                        // BigInt + BigInt
+                        (JsValue::BigInt(a), JsValue::BigInt(b)) => {
+                            JsValue::BigInt(a.add(b))
+                        }
+                        // BigInt + Number or Number + BigInt → TypeError
+                        (JsValue::BigInt(_), JsValue::Number(_))
+                        | (JsValue::Number(_), JsValue::BigInt(_)) => {
+                            let err = self.make_type_error(
+                                "Cannot mix BigInt and other types, use explicit conversions",
+                            );
+                            if !self.handle_exception(err) {
+                                return JsValue::Undefined;
+                            }
+                            continue;
+                        }
                         (JsValue::String(sa), _) => {
                             let mut r = sa.clone();
                             r.push_str(&b_prim.to_js_string());
@@ -618,14 +786,18 @@ impl Vm {
                     };
                     self.stack.push(result);
                 }
-                Op::Sub => self.binary_num_op(|a, b| a - b),
-                Op::Mul => self.binary_num_op(|a, b| a * b),
-                Op::Div => self.binary_num_op(|a, b| a / b),
-                Op::Mod => self.binary_num_op(|a, b| a % b),
+                Op::Sub => self.binary_num_or_bigint_op(|a, b| a - b, |a, b| a.sub(b)),
+                Op::Mul => self.binary_num_or_bigint_op(|a, b| a * b, |a, b| a.mul(b)),
+                Op::Div => self.binary_num_or_bigint_op(|a, b| a / b, |a, b| a.div(b)),
+                Op::Mod => self.binary_num_or_bigint_op(|a, b| a % b, |a, b| a.rem(b)),
                 Op::Exp => self.binary_num_op(|a, b| native_math::pow_f64(a, b)),
                 Op::Neg => {
                     let a = self.stack.pop().unwrap_or(JsValue::Undefined);
-                    self.stack.push(JsValue::Number(-a.to_number()));
+                    if let JsValue::BigInt(bi) = &a {
+                        self.stack.push(JsValue::BigInt(bi.neg()));
+                    } else {
+                        self.stack.push(JsValue::Number(-a.to_number()));
+                    }
                 }
                 Op::Pos => {
                     let a = self.stack.pop().unwrap_or(JsValue::Undefined);
@@ -731,11 +903,27 @@ impl Vm {
                     let frame = self.frames.pop().unwrap();
                     let is_async_fn = frame.chunk.is_async;
                     self.stack.truncate(frame.stack_base);
-                    // `new` calls: if constructor returned non-object, return `this` instead.
+                    // `new` calls: constructor return value semantics (ES2023 §9.2.2 step 13).
                     let ret = if frame.is_constructor
                         && !val.is_object()
                         && !matches!(val, JsValue::Function(_))
                     {
+                        // Derived class constructor: if return value is not undefined,
+                        // throw TypeError (§9.2.2 step 13c).
+                        let is_derived = match &frame.self_ref {
+                            JsValue::Function(f) => f.borrow().super_class.is_some(),
+                            _ => false,
+                        };
+                        if is_derived && !matches!(val, JsValue::Undefined) {
+                            let exc = self.make_type_error(
+                                "Derived constructors may only return object or undefined",
+                            );
+                            if !self.handle_exception(exc) {
+                                return JsValue::Undefined;
+                            }
+                            continue;
+                        }
+                        // Base class: ignore non-object return, use `this`.
                         frame.this_val
                     } else {
                         val
@@ -950,6 +1138,41 @@ impl Vm {
                         if !self.handle_exception(exc) {
                             return JsValue::Undefined;
                         }
+                    // Private member brand check (ES2023 §7.3.29 PrivateGet)
+                    } else if name.starts_with('#') {
+                        let has_private = match &obj {
+                            JsValue::Object(o) => o.borrow().has(&name),
+                            _ => false,
+                        };
+                        if has_private {
+                            // Check for getter accessor
+                            if let Some(getter) = self.find_getter(&obj, &name) {
+                                self.invoke_function(&getter, &[], obj.clone());
+                            } else {
+                                let val = self.get_property_with_proto(&obj, &name);
+                                self.stack.push(val);
+                            }
+                        } else {
+                            // Check prototype for private method/accessor (installed on proto)
+                            let proto_val = self.get_property_with_proto(&obj, &name);
+                            if !matches!(proto_val, JsValue::Undefined) {
+                                // Private getter without getter on this brand
+                                if let Some(getter) = self.find_getter(&obj, &name) {
+                                    self.invoke_function(&getter, &[], obj.clone());
+                                } else {
+                                    self.stack.push(proto_val);
+                                }
+                            } else {
+                                let msg = alloc::format!(
+                                    "Cannot read private member {} from an object whose class did not declare it",
+                                    name
+                                );
+                                let exc = self.make_type_error(&msg);
+                                if !self.handle_exception(exc) {
+                                    return JsValue::Undefined;
+                                }
+                            }
+                        }
                     } else if let JsValue::Object(ref o) = obj {
                         if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
                             let val = native_proxy::proxy_get(self, &obj, &name)
@@ -988,6 +1211,76 @@ impl Vm {
                         if !self.handle_exception(exc) {
                             return JsValue::Undefined;
                         }
+                        continue;
+                    }
+                    // Private member write check (ES2023 §7.3.30 PrivateSet)
+                    if name.starts_with('#') {
+                        // Check if the target has this private name
+                        let has_own = match &obj {
+                            JsValue::Object(o) => o.borrow().has(&name),
+                            _ => false,
+                        };
+                        if has_own {
+                            // Field exists on own object — check if it's a method (not writable)
+                            let is_method = match &obj {
+                                JsValue::Object(o) => {
+                                    matches!(o.borrow().get(&name), JsValue::Function(_))
+                                        && !o.borrow().properties.get(&name)
+                                            .map_or(false, |p| p.writable)
+                                }
+                                _ => false,
+                            };
+                            if is_method {
+                                let msg = alloc::format!(
+                                    "Private method '{}' is not writable",
+                                    name
+                                );
+                                let exc = self.make_type_error(&msg);
+                                self.stack.push(val);
+                                if !self.handle_exception(exc) {
+                                    return JsValue::Undefined;
+                                }
+                                continue;
+                            }
+                            // Check for setter (accessor property)
+                            if let Some(setter) = self.find_setter(&obj, &name) {
+                                self.invoke_function(&setter, &[val.clone()], obj.clone());
+                            } else {
+                                obj.set_property(name.clone(), val.clone());
+                            }
+                        } else {
+                            // Check prototype for private method/accessor
+                            let proto_val = self.get_property_with_proto(&obj, &name);
+                            if matches!(proto_val, JsValue::Function(_)) {
+                                // Trying to write to a private method — TypeError
+                                let msg = alloc::format!(
+                                    "Private method '{}' is not writable",
+                                    name
+                                );
+                                let exc = self.make_type_error(&msg);
+                                self.stack.push(val);
+                                if !self.handle_exception(exc) {
+                                    return JsValue::Undefined;
+                                }
+                                continue;
+                            }
+                            // Check for setter on prototype
+                            if let Some(setter) = self.find_setter(&obj, &name) {
+                                self.invoke_function(&setter, &[val.clone()], obj.clone());
+                            } else {
+                                let msg = alloc::format!(
+                                    "Cannot write private member {} to an object whose class did not declare it",
+                                    name
+                                );
+                                let exc = self.make_type_error(&msg);
+                                self.stack.push(val);
+                                if !self.handle_exception(exc) {
+                                    return JsValue::Undefined;
+                                }
+                                continue;
+                            }
+                        }
+                        self.stack.push(val);
                         continue;
                     }
                     // `__proto__` assignment updates the actual prototype chain.
@@ -1100,6 +1393,34 @@ impl Vm {
                 Op::SetSuperClass => {
                     // Stack: [..., Constructor, SuperClass]
                     let super_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    // ES2023 §15.7.11 ClassDefinitionEvaluation:
+                    // SuperClass must be null or a constructable function.
+                    if !matches!(super_val, JsValue::Null) {
+                        let is_ctor = matches!(super_val, JsValue::Function(_));
+                        if !is_ctor {
+                            let exc = self.make_type_error(
+                                "Class extends value is not a constructor or null",
+                            );
+                            if !self.handle_exception(exc) {
+                                return JsValue::Undefined;
+                            }
+                            continue;
+                        }
+                        // SuperClass.prototype must be an object or null.
+                        let proto = self.get_property_invoking_getter(&super_val, "prototype");
+                        if !matches!(proto, JsValue::Object(_) | JsValue::Null | JsValue::Function(_))
+                            && !proto.is_array()
+                        {
+                            // Undefined prototype means bound function without prototype — TypeError
+                            let exc = self.make_type_error(
+                                "Class extends value does not have valid prototype property",
+                            );
+                            if !self.handle_exception(exc) {
+                                return JsValue::Undefined;
+                            }
+                            continue;
+                        }
+                    }
                     if let Some(JsValue::Function(ref ctor_fn)) = self.stack.last() {
                         ctor_fn.borrow_mut().super_class = Some(super_val);
                     }
@@ -1118,6 +1439,20 @@ impl Vm {
                 Op::Delete => {
                     let key = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    // ES2023 §13.5.1.2: ToObject on null/undefined throws TypeError
+                    if matches!(obj, JsValue::Null | JsValue::Undefined) {
+                        let type_str = if matches!(obj, JsValue::Null) { "null" } else { "undefined" };
+                        let msg = alloc::format!(
+                            "Cannot convert {} to object",
+                            type_str
+                        );
+                        let exc = self.make_type_error(&msg);
+                        self.stack.push(JsValue::Bool(false));
+                        if !self.handle_exception(exc) {
+                            return JsValue::Undefined;
+                        }
+                        continue;
+                    }
                     let key_str = key.to_js_string();
                     let success = obj.delete_property(&key_str);
                     // Strict mode: TypeError when deleting non-configurable property.
@@ -1222,13 +1557,16 @@ impl Vm {
                     self.stack.push(iter_obj);
                 }
                 Op::IterNext => {
-                    let (value, has_more) = self.iter_next_mut();
+                    // Pop the iterator, advance it, push it back + value + has_more.
+                    let iter = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let (value, has_more) = self.iter_next_for(&iter);
                     if let Some(exc) = self.pending_exception.take() {
                         if !self.handle_exception(exc) {
                             return JsValue::Undefined;
                         }
                         continue;
                     }
+                    self.stack.push(iter);
                     self.stack.push(value);
                     self.stack.push(JsValue::Bool(has_more));
                 }
@@ -1508,12 +1846,41 @@ impl Vm {
 
                 // ── Async ──
                 Op::Await => {
-                    // Synchronous await: extract Promise value or pass through
+                    // Await: if the value is a promise, drain microtasks until
+                    // it settles (or a safety limit is hit).  This implements
+                    // the ECMAScript AwaitExpression semantics for our
+                    // single-threaded VM: microtasks queued by the promise
+                    // executor or `.then` chains are processed, which may
+                    // resolve the awaited promise.
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     if let JsValue::Object(ref obj) = val {
                         let is_promise =
                             obj.borrow().internal_tag.as_deref() == Some("__promise__");
                         if is_promise {
+                            // Drain microtasks — this may settle the promise.
+                            self.drain_microtasks();
+
+                            // Also run a few timer ticks for promises that
+                            // resolve via setTimeout(resolve, 0) patterns.
+                            let mut await_rounds = 0u32;
+                            while obj.borrow().get("__state").to_js_string() == "pending"
+                                && await_rounds < 100
+                            {
+                                let fired = self.event_loop.tick(1);
+                                if fired.is_empty() {
+                                    break; // No timers can advance this further
+                                }
+                                for task in fired {
+                                    self.call_value(
+                                        &task.callback,
+                                        &task.args,
+                                        JsValue::Undefined,
+                                    );
+                                }
+                                self.drain_microtasks();
+                                await_rounds += 1;
+                            }
+
                             let state = obj.borrow().get("__state").to_js_string();
                             if state == "fulfilled" {
                                 let resolved = obj.borrow().get("__value");
@@ -1524,12 +1891,26 @@ impl Vm {
                                     return JsValue::Undefined;
                                 }
                             } else {
-                                // Still pending after drain — push undefined
+                                // Still pending after draining — push undefined
+                                // (best-effort in single-threaded VM).
                                 self.stack.push(JsValue::Undefined);
                             }
                         } else {
-                            // Object but not a promise — pass through
-                            self.stack.push(val);
+                            // Non-promise object: wrap in Promise.resolve semantics.
+                            // Check for thenable (.then method).
+                            let then_fn = val.get_property("then");
+                            if then_fn.is_function() {
+                                // It's a thenable — call .then and await
+                                let result = self.call_value(
+                                    &then_fn,
+                                    &[],
+                                    val.clone(),
+                                );
+                                self.drain_microtasks();
+                                self.stack.push(result);
+                            } else {
+                                self.stack.push(val);
+                            }
                         }
                     } else {
                         // Non-object value — pass through unchanged.
@@ -1773,6 +2154,9 @@ impl Vm {
         match &self.frames[frame_idx].chunk.constants[idx as usize] {
             Constant::Number(n) => JsValue::Number(*n),
             Constant::String(s) => JsValue::String(s.clone()),
+            Constant::BigInt(s) => {
+                JsValue::BigInt(JsBigInt::from_str(s).unwrap_or_else(JsBigInt::zero))
+            }
             Constant::Function(chunk) => {
                 let param_stubs: Vec<alloc::string::String> = (0..chunk.param_count)
                     .map(|_| alloc::string::String::new())
@@ -1845,6 +2229,11 @@ impl Vm {
             if let Some(getter) = f.own_props.get(&getter_key) {
                 return Some(getter.clone());
             }
+            // Walk to function_proto for inherited accessor properties
+            // (e.g. "caller" and "arguments" poison-pill getters)
+            drop(f);
+            let proto_val = JsValue::Object(self.function_proto.clone());
+            return self.find_getter(&proto_val, key);
         }
         None
     }
@@ -1895,6 +2284,10 @@ impl Vm {
             if let Some(setter) = f.own_props.get(&setter_key) {
                 return Some(setter.clone());
             }
+            // Walk to function_proto for inherited accessor properties
+            drop(f);
+            let proto_val = JsValue::Object(self.function_proto.clone());
+            return self.find_setter(&proto_val, key);
         }
         None
     }
@@ -1947,6 +2340,7 @@ impl Vm {
                 get_proto_prop_rc(&self.string_proto, key)
             }
             JsValue::Number(_) => get_proto_prop_rc(&self.number_proto, key),
+            JsValue::Bool(_) => get_proto_prop_rc(&self.boolean_proto, key),
             JsValue::Function(f) => {
                 let func = f.borrow();
                 // Check own properties first (static methods etc.)
@@ -1969,6 +2363,11 @@ impl Vm {
                     if func.kind.is_arrow() {
                         return JsValue::Undefined;
                     }
+                    // Bound functions have no own .prototype (ES2023 §10.4.1.3)
+                    if func.this_binding.is_some() && func.prototype.is_none() {
+                        drop(func);
+                        return get_proto_prop_rc(&self.function_proto, key);
+                    }
                     // Return the stored prototype object (shared across new calls).
                     if let Some(ref proto) = func.prototype {
                         return JsValue::Object(proto.clone());
@@ -1986,6 +2385,7 @@ impl Vm {
                 drop(func);
                 get_proto_prop_rc(&self.function_proto, key)
             }
+            JsValue::BigInt(_) => val.get_property(key),
             _ => JsValue::Undefined,
         }
     }
@@ -2129,9 +2529,41 @@ impl Vm {
     }
 
     fn binary_num_op(&mut self, f: fn(f64, f64) -> f64) {
-        let b = self.stack.pop().unwrap_or(JsValue::Undefined).to_number();
-        let a = self.stack.pop().unwrap_or(JsValue::Undefined).to_number();
-        self.stack.push(JsValue::Number(f(a, b)));
+        let b = self.stack.pop().unwrap_or(JsValue::Undefined);
+        let a = self.stack.pop().unwrap_or(JsValue::Undefined);
+        // BigInt operands not supported for this op (e.g. **)
+        if matches!((&a, &b), (JsValue::BigInt(_), _) | (_, JsValue::BigInt(_))) {
+            let err = self.make_type_error(
+                "Cannot mix BigInt and other types, use explicit conversions",
+            );
+            self.handle_exception(err);
+            return;
+        }
+        self.stack.push(JsValue::Number(f(a.to_number(), b.to_number())));
+    }
+
+    fn binary_num_or_bigint_op(
+        &mut self,
+        num_f: fn(f64, f64) -> f64,
+        big_f: fn(&JsBigInt, &JsBigInt) -> JsBigInt,
+    ) {
+        let b = self.stack.pop().unwrap_or(JsValue::Undefined);
+        let a = self.stack.pop().unwrap_or(JsValue::Undefined);
+        match (&a, &b) {
+            (JsValue::BigInt(ba), JsValue::BigInt(bb)) => {
+                self.stack.push(JsValue::BigInt(big_f(ba, bb)));
+            }
+            (JsValue::BigInt(_), _) | (_, JsValue::BigInt(_)) => {
+                let err = self.make_type_error(
+                    "Cannot mix BigInt and other types, use explicit conversions",
+                );
+                self.handle_exception(err);
+            }
+            _ => {
+                self.stack
+                    .push(JsValue::Number(num_f(a.to_number(), b.to_number())));
+            }
+        }
     }
 
     fn binary_int_op(&mut self, f: fn(i32, i32) -> i32) {
