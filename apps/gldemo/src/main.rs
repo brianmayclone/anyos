@@ -626,6 +626,7 @@ struct RenderState {
     fps_display: u32,
     // Fullscreen state
     fullscreen: bool,
+    shadows_enabled: bool,
 }
 
 static mut STATE: Option<RenderState> = None;
@@ -698,24 +699,27 @@ fn render_frame() {
     let l0_z = gl::cos(t * 0.7) * 3.0;
     let l0_y = 2.0f32;
 
-    let shadow_radius = (s.camera_dist * 1.8).max(4.0);
-    let ran_shadow = gl::shadow_pass_begin(l0_x, l0_y, l0_z, 0.0, 0.0, 0.0, shadow_radius);
-    if ran_shadow {
-        let light_mvp_ptr = gl::shadow_get_light_mvp();
-        if !light_mvp_ptr.is_null() {
-            let light_mvp = unsafe { *(light_mvp_ptr as *const [f32; 16]) };
-            gl::use_program(s.shadow_program);
-            gl::color_mask(false, false, false, false);
-            gl::clear(gl::GL_DEPTH_BUFFER_BIT);
-            draw_scene_geometry_shadow(s, &light_mvp);
-            gl::color_mask(true, true, true, true);
+    if s.shadows_enabled {
+        let shadow_radius = (s.camera_dist * 1.8).max(4.0);
+        let ran_shadow = gl::shadow_pass_begin(l0_x, l0_y, l0_z, 0.0, 0.0, 0.0, shadow_radius);
+        if ran_shadow {
+            let light_mvp_ptr = gl::shadow_get_light_mvp();
+            if !light_mvp_ptr.is_null() {
+                let light_mvp = unsafe { *(light_mvp_ptr as *const [f32; 16]) };
+                gl::use_program(s.shadow_program);
+                gl::color_mask(false, false, false, false);
+                gl::clear(gl::GL_DEPTH_BUFFER_BIT);
+                draw_scene_geometry_shadow(s, &light_mvp);
+                gl::color_mask(true, true, true, true);
+            }
+            gl::shadow_pass_end();
         }
-        gl::shadow_pass_end();
     }
 
     // ── Main pass ──────────────────────────────────────────────────────
     let camera_vp = mat4_mul(&proj, &view);
-    let light_mvp = if gl::shadow_available() {
+    let shadows_ready = s.shadows_enabled && gl::shadow_available();
+    let light_mvp = if shadows_ready {
         let ptr = gl::shadow_get_light_mvp();
         if !ptr.is_null() {
             unsafe { *(ptr as *const [f32; 16]) }
@@ -731,14 +735,21 @@ fn render_frame() {
     gl::uniform3f(s.loc_main_light_color0, 1.0, 0.95, 0.8);
     gl::uniform3f(s.loc_main_eye_pos, eye[0], eye[1], eye[2]);
     gl::uniform_matrix4fv(s.loc_main_light_mvp, false, &light_mvp);
-    let shadow_map_size = gl::shadow_get_map_size().max(1) as f32;
+    let shadow_map_size = if shadows_ready {
+        gl::shadow_get_map_size().max(1) as f32
+    } else {
+        1.0
+    };
     gl::uniform2f(
         s.loc_main_shadow_texel_size,
         1.0 / shadow_map_size,
         1.0 / shadow_map_size,
     );
     gl::active_texture(gl::GL_TEXTURE0 + gl::shadow_get_unit());
-    gl::bind_texture(gl::GL_TEXTURE_2D, gl::shadow_get_texture());
+    gl::bind_texture(
+        gl::GL_TEXTURE_2D,
+        if shadows_ready { gl::shadow_get_texture() } else { 0 },
+    );
     gl::uniform1i(s.loc_main_shadow_map, gl::shadow_get_unit() as i32);
 
     draw_scene_geometry_main(s, &camera_vp);
@@ -1003,6 +1014,20 @@ fn main() {
     hw_toggle.on_checked_changed(|e| { gl::set_hw_backend(e.checked); });
     window.add(&hw_toggle);
 
+    let shadow_label = libanyui_client::Label::new("Shadow");
+    shadow_label.set_position(80, 6);
+    shadow_label.set_text_color(0xFFCCCCCC);
+    shadow_label.set_font_size(13);
+    window.add(&shadow_label);
+
+    let shadow_toggle = libanyui_client::Toggle::new(true);
+    shadow_toggle.set_position(132, 4);
+    shadow_toggle.on_checked_changed(|e| {
+        let s = unsafe { STATE.as_mut().unwrap() };
+        s.shadows_enabled = e.checked;
+    });
+    window.add(&shadow_toggle);
+
     // ── Compile shaders ──────────────────────────────────────────────────
     let main_vs = gl::create_shader(gl::GL_VERTEX_SHADER);
     gl::shader_source(main_vs, VS_SOURCE);
@@ -1165,7 +1190,7 @@ fn main() {
 
     // ── FPS counter label (top-right area) ──────────────────────────────
     let fps_label = libanyui_client::Label::new("-- FPS");
-    fps_label.set_position(80, 6);
+    fps_label.set_position(172, 6);
     fps_label.set_text_color(0xFF00FF88);
     fps_label.set_font_size(13);
     window.add(&fps_label);
@@ -1213,7 +1238,7 @@ fn main() {
 
     // ── Boing Ball button ─────────────────────────────────────────────────
     let boing_btn = libanyui_client::Button::new("Boing!");
-    boing_btn.set_position(140, 2);
+    boing_btn.set_position(232, 2);
     boing_btn.set_size(60, 22);
     boing_btn.on_click(move |_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -1255,7 +1280,7 @@ fn main() {
 
     // ── Zoom buttons ──────────────────────────────────────────────────────
     let zoom_in_btn = libanyui_client::Button::new("+");
-    zoom_in_btn.set_position(210, 2);
+    zoom_in_btn.set_position(302, 2);
     zoom_in_btn.set_size(28, 22);
     zoom_in_btn.on_click(move |_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -1264,7 +1289,7 @@ fn main() {
     window.add(&zoom_in_btn);
 
     let zoom_out_btn = libanyui_client::Button::new("-");
-    zoom_out_btn.set_position(242, 2);
+    zoom_out_btn.set_position(334, 2);
     zoom_out_btn.set_size(28, 22);
     zoom_out_btn.on_click(move |_| {
         let s = unsafe { STATE.as_mut().unwrap() };
@@ -1323,6 +1348,7 @@ fn main() {
             fps_last_ms: anyos_std::sys::uptime_ms(),
             fps_display: 0,
             fullscreen: false,
+            shadows_enabled: true,
         });
     }
 

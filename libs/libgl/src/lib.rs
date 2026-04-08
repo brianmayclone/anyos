@@ -1480,6 +1480,7 @@ pub extern "C" fn gl_physics_add_box(mass: f32, hx: f32, hy: f32, hz: f32, x: f3
 pub extern "C" fn gl_physics_set_velocity(id: u32, vx: f32, vy: f32, vz: f32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
         b.velocity = physics::Vec3::new(vx, vy, vz);
+        b.wake();
     }
 }
 
@@ -1488,6 +1489,7 @@ pub extern "C" fn gl_physics_set_velocity(id: u32, vx: f32, vy: f32, vz: f32) {
 pub extern "C" fn gl_physics_set_position(id: u32, x: f32, y: f32, z: f32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
         b.position = physics::Vec3::new(x, y, z);
+        b.wake();
     }
 }
 
@@ -1516,6 +1518,7 @@ pub extern "C" fn gl_physics_get_velocity(id: u32, out_x: *mut f32, out_y: *mut 
 pub extern "C" fn gl_physics_set_restitution(id: u32, e: f32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
         b.restitution = e;
+        b.wake();
     }
 }
 
@@ -1526,6 +1529,7 @@ pub extern "C" fn gl_physics_set_mass(id: u32, mass: f32) {
         b.mass = mass;
         b.inv_mass = if mass <= 0.0 { 0.0 } else { 1.0 / mass };
         b.use_gravity = mass > 0.0;
+        b.wake();
     }
 }
 
@@ -1546,6 +1550,7 @@ pub extern "C" fn gl_physics_apply_impulse(id: u32, ix: f32, iy: f32, iz: f32) {
 pub extern "C" fn gl_physics_set_angular_vel_y(id: u32, omega: f32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
         b.angular_vel.y = omega;
+        b.wake();
     }
 }
 
@@ -1560,6 +1565,7 @@ pub extern "C" fn gl_physics_get_rotation_y(id: u32) -> f32 {
 pub extern "C" fn gl_physics_set_angular_velocity(id: u32, wx: f32, wy: f32, wz: f32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
         b.angular_vel = physics::Vec3::new(wx, wy, wz);
+        b.wake();
     }
 }
 
@@ -1579,6 +1585,7 @@ pub extern "C" fn gl_physics_get_orientation(id: u32, out_w: *mut f32, out_x: *m
 pub extern "C" fn gl_physics_set_angular_damping(id: u32, damping: f32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
         b.angular_damping = damping;
+        b.wake();
     }
 }
 
@@ -1587,6 +1594,7 @@ pub extern "C" fn gl_physics_set_angular_damping(id: u32, damping: f32) {
 pub extern "C" fn gl_physics_set_linear_damping(id: u32, damping: f32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
         b.linear_damping = damping;
+        b.wake();
     }
 }
 
@@ -1595,6 +1603,7 @@ pub extern "C" fn gl_physics_set_linear_damping(id: u32, damping: f32) {
 pub extern "C" fn gl_physics_set_use_gravity(id: u32, use_grav: u32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
         b.use_gravity = use_grav != 0;
+        b.wake();
     }
 }
 
@@ -1603,6 +1612,9 @@ pub extern "C" fn gl_physics_set_use_gravity(id: u32, use_grav: u32) {
 pub extern "C" fn gl_physics_set_active(id: u32, active: u32) {
     if let Some(b) = phys().bodies.get_mut(id as usize) {
         b.active = active != 0;
+        if b.active {
+            b.wake();
+        }
     }
 }
 
