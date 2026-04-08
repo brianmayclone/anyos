@@ -314,10 +314,14 @@ impl Compositor {
     /// Move a layer to a new position.
     pub fn move_layer(&mut self, id: u32, new_x: i32, new_y: i32) {
         if let Some(idx) = self.layer_index(id) {
-            let old_bounds = self.layers[idx].damage_bounds();
+            // Give drag/move damage a 1px safety margin. Some window chrome and
+            // shadow edges use anti-aliased pixels right at the boundary, and a
+            // strict old/new bounds update can otherwise leave thin stale traces
+            // behind until another damage pass repaints them.
+            let old_bounds = self.layers[idx].damage_bounds().expand(1);
             self.layers[idx].x = new_x;
             self.layers[idx].y = new_y;
-            let new_bounds = self.layers[idx].damage_bounds();
+            let new_bounds = self.layers[idx].damage_bounds().expand(1);
 
             if self.gpu_accel {
                 // Coalesce: keep first old_bounds, update last new_bounds

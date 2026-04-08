@@ -1698,6 +1698,8 @@ pub fn run_once() -> u32 {
                             cw.logical_height = orig_lh;
                             let new_count = (phys_w as usize) * (phys_h as usize);
                             cw.back_buffer.resize(new_count, 0);
+                            cw.present_pending = false;
+                            cw.pending_present_rect = None;
                             cw.dirty = true;
                             cw.dirty_rect = None;
                             // Update control tree size and re-layout
@@ -1806,19 +1808,12 @@ pub fn run_once() -> u32 {
     for wi in 0..st.windows.len() {
         let win_id = st.windows[wi];
 
-        // Back-pressure: skip if previous frame hasn't been composited yet.
-        // This prevents overwriting SHM while compositor is reading it.
-        // Safety timeout after 64ms (~4 frames) to avoid hangs if ACK is lost.
-        if st.comp_windows[wi].frame_presented {
-            let now = crate::syscall::uptime_ms();
-            if now.wrapping_sub(st.comp_windows[wi].last_present_ms) < 64 {
-                continue;
-            }
-            st.comp_windows[wi].frame_presented = false;
-        }
+        let frame_presented = st.comp_windows[wi].frame_presented;
+        let needs_render = st.comp_windows[wi].dirty;
+        let has_pending_present = st.comp_windows[wi].present_pending;
 
-        // Skip rendering if no control in this window tree is dirty (O(1) check)
-        if !st.comp_windows[wi].dirty {
+        // No new rendering work and nothing staged for upload.
+        if !needs_render && !has_pending_present {
             continue;
         }
 
@@ -1830,63 +1825,77 @@ pub fn run_once() -> u32 {
         let dirty_rect = st.comp_windows[wi].dirty_rect;
         let logical_w = st.comp_windows[wi].logical_width;
         let logical_h = st.comp_windows[wi].logical_height;
+        let mut staged_rect = st.comp_windows[wi].pending_present_rect;
 
-        // Clamp dirty rect in logical space (for render_tree intersection tests)
-        let logical_dr = dirty_rect
-            .map(|(dx, dy, dw, dh)| {
-                let x0 = dx.max(0) as u32;
-                let y0 = dy.max(0) as u32;
-                let x1 = ((dx + dw as i32).max(0) as u32).min(logical_w);
-                let y1 = ((dy + dh as i32).max(0) as u32).min(logical_h);
-                (
-                    x0 as i32,
-                    y0 as i32,
-                    x1.saturating_sub(x0),
-                    y1.saturating_sub(y0),
-                )
-            })
-            .filter(|&(_, _, w, h)| w > 0 && h > 0);
+        if needs_render {
+            // Clamp dirty rect in logical space (for render_tree intersection tests)
+            let logical_dr = dirty_rect
+                .map(|(dx, dy, dw, dh)| {
+                    let x0 = dx.max(0) as u32;
+                    let y0 = dy.max(0) as u32;
+                    let x1 = ((dx + dw as i32).max(0) as u32).min(logical_w);
+                    let y1 = ((dy + dh as i32).max(0) as u32).min(logical_h);
+                    (
+                        x0 as i32,
+                        y0 as i32,
+                        x1.saturating_sub(x0),
+                        y1.saturating_sub(y0),
+                    )
+                })
+                .filter(|&(_, _, w, h)| w > 0 && h > 0);
 
-        // Scale dirty rect to physical space (for Surface clip, SHM copy, present_rect)
-        let physical_dr = logical_dr
-            .map(|(dx, dy, dw, dh)| {
-                let px = crate::theme::scale_i32(dx);
-                let py = crate::theme::scale_i32(dy);
-                let pw = crate::theme::scale(dw as u32);
-                let ph = crate::theme::scale(dh as u32);
-                // Clamp to physical surface bounds
-                let px = px.max(0);
-                let py = py.max(0);
-                let pw = pw.min(sw.saturating_sub(px as u32));
-                let ph = ph.min(sh.saturating_sub(py as u32));
-                (px, py, pw, ph)
-            })
-            .filter(|&(_, _, w, h)| w > 0 && h > 0);
+            // Scale dirty rect to physical space (for Surface clip, SHM copy, present_rect)
+            let physical_dr = logical_dr
+                .map(|(dx, dy, dw, dh)| {
+                    let px = crate::theme::scale_i32(dx);
+                    let py = crate::theme::scale_i32(dy);
+                    let pw = crate::theme::scale(dw as u32);
+                    let ph = crate::theme::scale(dh as u32);
+                    // Clamp to physical surface bounds
+                    let px = px.max(0);
+                    let py = py.max(0);
+                    let pw = pw.min(sw.saturating_sub(px as u32));
+                    let ph = ph.min(sh.saturating_sub(py as u32));
+                    (px, py, pw, ph)
+                })
+                .filter(|&(_, _, w, h)| w > 0 && h > 0);
 
-        // Double-buffered rendering: draw to a local back buffer first, then
-        // copy the changed region to SHM in one shot.
-        let back_buf = st.comp_windows[wi].back_buffer.as_mut_ptr();
-        let full_surf = crate::draw::Surface::new(back_buf, sw, sh);
+            // Double-buffered rendering: draw to a local back buffer first.
+            let back_buf = st.comp_windows[wi].back_buffer.as_mut_ptr();
+            let full_surf = crate::draw::Surface::new(back_buf, sw, sh);
 
-        // CRITICAL: Clip the surface to the PHYSICAL dirty rect so that Window::render()
-        // (which fills the entire background) only touches pixels inside the dirty
-        // region. Pixels outside are retained from the previous frame.
-        let surf = if let Some((dx, dy, dw, dh)) = physical_dr {
-            full_surf.with_clip(dx, dy, dw, dh)
-        } else {
-            full_surf
-        };
+            let surf = if let Some((dx, dy, dw, dh)) = physical_dr {
+                full_surf.with_clip(dx, dy, dw, dh)
+            } else {
+                full_surf
+            };
 
-        // Render control tree — only controls intersecting the LOGICAL dirty rect
-        // are drawn. The surface's physical clip rect ensures drawing ops outside
-        // the dirty region are discarded at the pixel level.
-        render_tree(&st.controls, win_id, &surf, 0, 0, logical_dr);
+            render_tree(&st.controls, win_id, &surf, 0, 0, logical_dr);
 
-        // Copy back buffer → SHM: either the dirty region or the full buffer.
-        // Uses PHYSICAL dirty rect for pixel-level copy offsets.
+            clear_dirty(&mut st.controls, win_id);
+            st.comp_windows[wi].dirty = false;
+            st.comp_windows[wi].dirty_rect = None;
+            staged_rect = if st.comp_windows[wi].present_pending {
+                merge_pending_present_rect(staged_rect, physical_dr)
+            } else {
+                physical_dr
+            };
+            st.comp_windows[wi].present_pending = true;
+            st.comp_windows[wi].pending_present_rect = staged_rect;
+        }
+
+        // Respect compositor ACK strictly: never overwrite the SHM surface while
+        // the previous frame may still be in flight. New renders stay staged in
+        // the persistent back buffer until EVT_FRAME_ACK arrives.
+        if frame_presented || !st.comp_windows[wi].present_pending {
+            continue;
+        }
+
+        let pending_rect = st.comp_windows[wi].pending_present_rect;
+        let back_buf = st.comp_windows[wi].back_buffer.as_ptr();
+
         unsafe {
-            if let Some((dx, dy, dw, dh)) = physical_dr {
-                // Partial copy: only the dirty region (row by row)
+            if let Some((dx, dy, dw, dh)) = pending_rect {
                 let dx = dx as usize;
                 let dy = dy as usize;
                 let dw = dw as usize;
@@ -1896,25 +1905,12 @@ pub fn run_once() -> u32 {
                     core::ptr::copy_nonoverlapping(back_buf.add(off), surface_ptr.add(off), dw);
                 }
             } else {
-                // Full copy (fallback for first frame, resize, etc.)
                 let pixel_count = (sw as usize) * (sh as usize);
                 core::ptr::copy_nonoverlapping(back_buf, surface_ptr, pixel_count);
             }
         }
 
-        // Clear dirty flags + reset prev_x/y/w/h after rendering
-        clear_dirty(&mut st.controls, win_id);
-
-        // Clear the CompWindow dirty state — without this, cw.dirty stays true
-        // forever (Phase 3.7 only resets it when needs_repaint is true, but no
-        // control calls mark_dirty() after clear_dirty), causing an infinite
-        // render→present→frame_ack→render loop (~42 fps idle).
-        st.comp_windows[wi].dirty = false;
-        st.comp_windows[wi].dirty_rect = None;
-
-        // Present via compositor DLL — pass physical dirty rect if available so
-        // the compositor only copies and recomposites the changed region.
-        if let Some((dx, dy, dw, dh)) = physical_dr {
+        if let Some((dx, dy, dw, dh)) = pending_rect {
             compositor::present_rect(
                 channel_id,
                 comp_window_id,
@@ -1927,6 +1923,8 @@ pub fn run_once() -> u32 {
         } else {
             compositor::present(channel_id, comp_window_id, shm_id);
         }
+        st.comp_windows[wi].present_pending = false;
+        st.comp_windows[wi].pending_present_rect = None;
         st.comp_windows[wi].frame_presented = true;
         st.comp_windows[wi].last_present_ms = crate::syscall::uptime_ms();
     }
@@ -2274,6 +2272,20 @@ fn union_rect(
             let x1 = (ex + ew as i32).max(x + w as i32);
             let y1 = (ey + eh as i32).max(y + h as i32);
             (x0, y0, (x1 - x0).max(0) as u32, (y1 - y0).max(0) as u32)
+        }
+    }
+}
+
+/// Merge two pending physical present rects.
+/// `None` means "full window", which dominates any partial rect.
+fn merge_pending_present_rect(
+    existing: Option<(i32, i32, u32, u32)>,
+    next: Option<(i32, i32, u32, u32)>,
+) -> Option<(i32, i32, u32, u32)> {
+    match (existing, next) {
+        (None, _) | (_, None) => None,
+        (Some((ex, ey, ew, eh)), Some((nx, ny, nw, nh))) => {
+            Some(union_rect(Some((ex, ey, ew, eh)), nx, ny, nw, nh))
         }
     }
 }

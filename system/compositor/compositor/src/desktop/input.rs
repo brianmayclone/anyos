@@ -29,6 +29,39 @@ const INPUT_MOUSE_MOVE_ABSOLUTE: u32 = 6;
 // ── Desktop Input Methods ──────────────────────────────────────────────────
 
 impl Desktop {
+    fn topmost_hit_in_group<F>(&self, mx: i32, my: i32, ipc_only: bool, predicate: F) -> Option<(u32, HitTest)>
+    where
+        F: Fn(&WindowInfo) -> bool,
+    {
+        for win in self.windows.iter().rev() {
+            if ipc_only && win.owner_tid == 0 {
+                continue;
+            }
+            if !predicate(win) {
+                continue;
+            }
+            let hit = win.hit_test(mx, my);
+            if hit != HitTest::None {
+                return Some((win.id, hit));
+            }
+        }
+        None
+    }
+
+    fn topmost_window_hit(&self, mx: i32, my: i32, ipc_only: bool) -> Option<(u32, HitTest)> {
+        self.topmost_hit_in_group(mx, my, ipc_only, |w| w.is_always_on_top())
+            .or_else(|| {
+                self.topmost_hit_in_group(mx, my, ipc_only, |w| {
+                    !w.is_always_on_top() && w.modal_owner != 0
+                })
+            })
+            .or_else(|| {
+                self.topmost_hit_in_group(mx, my, ipc_only, |w| {
+                    !w.is_always_on_top() && w.modal_owner == 0
+                })
+            })
+    }
+
     /// Process a batch of raw input events. Returns true if a compose is needed.
     pub fn process_input(&mut self, events: &[[u32; 5]], count: usize) -> bool {
         let mut needs_compose = false;
@@ -244,12 +277,8 @@ impl Desktop {
             let mx = self.mouse_x;
             let my = self.mouse_y;
             let mut shape = CursorShape::Arrow;
-            for w in self.windows.iter().rev() {
-                let hit = w.hit_test(mx, my);
-                if hit != HitTest::None {
-                    shape = self.cursor_for_hit(hit);
-                    break;
-                }
+            if let Some((_, hit)) = self.topmost_window_hit(mx, my, false) {
+                shape = self.cursor_for_hit(hit);
             }
             self.set_cursor_shape(shape);
         }
@@ -275,21 +304,17 @@ impl Desktop {
 
         // Forward mouse move to topmost IPC window under cursor
         if self.dragging.is_none() && self.resizing.is_none() {
-            for win in self.windows.iter().rev() {
-                if win.owner_tid != 0 {
-                    let ht = win.hit_test(self.mouse_x, self.mouse_y);
-                    if ht != HitTest::None {
-                        let lx = self.mouse_x - win.x;
-                        let mut ly = self.mouse_y - win.y;
-                        if !win.is_borderless() {
-                            ly -= title_bar_height() as i32;
-                        }
-                        self.push_event(
-                            win.id,
-                            [EVENT_MOUSE_MOVE, lx as u32, ly as u32, 0, 0],
-                        );
-                        break;
+            if let Some((win_id, _)) = self.topmost_window_hit(self.mouse_x, self.mouse_y, true) {
+                if let Some(win) = self.windows.iter().find(|w| w.id == win_id) {
+                    let lx = self.mouse_x - win.x;
+                    let mut ly = self.mouse_y - win.y;
+                    if !win.is_borderless() {
+                        ly -= title_bar_height() as i32;
                     }
+                    self.push_event(
+                        win.id,
+                        [EVENT_MOUSE_MOVE, lx as u32, ly as u32, 0, 0],
+                    );
                 }
             }
         }
@@ -311,13 +336,11 @@ impl Desktop {
     fn get_button_under_cursor(&self) -> Option<(u32, u8)> {
         let mx = self.mouse_x;
         let my = self.mouse_y;
-        for win in self.windows.iter().rev() {
-            let ht = win.hit_test(mx, my);
+        if let Some((win_id, ht)) = self.topmost_window_hit(mx, my, false) {
             match ht {
-                HitTest::CloseButton => return Some((win.id, 0)),
-                HitTest::MinButton => return Some((win.id, 1)),
-                HitTest::MaxButton => return Some((win.id, 2)),
-                HitTest::None => continue,
+                HitTest::CloseButton => return Some((win_id, 0)),
+                HitTest::MinButton => return Some((win_id, 1)),
+                HitTest::MaxButton => return Some((win_id, 2)),
                 _ => return None,
             }
         }
@@ -479,18 +502,7 @@ impl Desktop {
             let mx = self.mouse_x;
             let my = self.mouse_y;
 
-            let mut hit_win_id = None;
-            let mut hit_test = HitTest::None;
-            for win in self.windows.iter().rev() {
-                let ht = win.hit_test(mx, my);
-                if ht != HitTest::None {
-                    hit_win_id = Some(win.id);
-                    hit_test = ht;
-                    break;
-                }
-            }
-
-            if let Some(win_id) = hit_win_id {
+            if let Some((win_id, hit_test)) = self.topmost_window_hit(mx, my, false) {
                 // If the clicked window has a modal child, block the click and
                 // redirect focus to the modal child instead.
                 let has_modal_child = self.windows.iter()

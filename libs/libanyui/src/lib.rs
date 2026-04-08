@@ -98,6 +98,12 @@ pub(crate) struct CompWindow {
     pub logical_height: u32,
     /// Back-pressure: true after present(), cleared on EVT_FRAME_ACK from compositor.
     pub frame_presented: bool,
+    /// A fully rendered frame is staged in `back_buffer` and still needs upload
+    /// to the SHM surface once the compositor has ACKed the previous frame.
+    pub present_pending: bool,
+    /// Pending physical dirty rect to upload from `back_buffer` into SHM.
+    /// `None` means the next upload must present the full window.
+    pub pending_present_rect: Option<(i32, i32, u32, u32)>,
     /// Timestamp of last present() call (for safety timeout).
     pub last_present_ms: u32,
     /// Window-level dirty flag: true if any control in this window's subtree is dirty.
@@ -478,6 +484,8 @@ pub extern "C" fn anyui_create_window(
         logical_width: w,
         logical_height: h,
         frame_presented: false,
+        present_pending: false,
+        pending_present_rect: None,
         last_present_ms: 0,
         dirty: true,
         dirty_rect: None,
@@ -3145,6 +3153,8 @@ pub extern "C" fn anyui_resize_window(win_id: ControlId, new_w: u32, new_h: u32)
         cw.logical_height = new_h;
         let new_count = (phys_w as usize) * (phys_h as usize);
         cw.back_buffer.resize(new_count, 0);
+        cw.present_pending = false;
+        cw.pending_present_rect = None;
         cw.dirty = true;
         cw.dirty_rect = None; // full redraw
     }

@@ -293,8 +293,6 @@ pub fn exit_current(code: u32) {
 pub fn try_exit_current(code: u32) -> bool {
     let my_cpu = get_cpu_id();
     let mut tid = 0u32;
-    let mut pd_to_destroy: Option<PhysAddr> = None;
-    let mut killed_children: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
     let mut idle_stack_top: u64 = 0;
     let mut idle_ctx: Option<*const CpuContext> = None;
     crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_TRY_EXIT_CURRENT);
@@ -316,37 +314,20 @@ pub fn try_exit_current(code: u32) -> bool {
             None => return false,
         };
 
-        let parent_tid = sched.threads[idx].parent_tid;
         let tick = crate::arch::hal::timer_current_ticks();
 
-        // Cascade kill children
-        killed_children = collect_and_terminate_children(sched, current_tid, tick);
-
-        if parent_tid != 0 {
-            if let Some(parent_idx) = sched.find_idx(parent_tid) {
-                sched.threads[parent_idx].signals.send(crate::ipc::signal::SIGCHLD);
-            }
-        }
-
+        // Fault-exit must stay extremely small and non-blocking. Avoid child
+        // scans, waiter wakeups, SIGCHLD delivery, and page-directory sibling
+        // checks here: after a corrupted userspace fault, those traversals were
+        // a recurring source of secondary deadlocks and re-entrant faults while
+        // still holding the scheduler lock. A small leak is acceptable here.
         sched.remove_from_all_queues(current_tid);
         sched.threads[idx].state = ThreadState::Terminated;
         sched.threads[idx].exit_code = Some(code);
         sched.threads[idx].terminated_at_tick = Some(tick);
-        if let Some(pd) = sched.threads[idx].page_directory {
-            if !sched.threads[idx].pd_shared {
-                let has_live_siblings = sched.threads.iter().any(|t| {
-                    t.tid != current_tid && t.page_directory == Some(pd)
-                        && t.state != ThreadState::Terminated
-                });
-                if !has_live_siblings {
-                    pd_to_destroy = Some(pd);
-                }
-            }
-        }
         sched.threads[idx].page_directory = None;
-        if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
-            sched.wake_thread_inner(waiter_tid);
-        }
+        sched.threads[idx].exit_waiter_tid = None;
+        sched.threads[idx].retain_exit_status = true;
 
         let idle_tid = sched.idle_tid[cpu_id];
         if let Some(idle_idx) = sched.find_idx(idle_tid) {
@@ -378,12 +359,9 @@ pub fn try_exit_current(code: u32) -> bool {
         }
     } // Lock released
 
-    if let Some(pd) = pd_to_destroy {
-        let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
-        crate::arch::hal::switch_page_table(kernel_cr3);
-        defer_fault_pd_destroy(pd, tid);
-    }
-    defer_fault_exit_cleanup(tid, code, &killed_children);
+    let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
+    crate::arch::hal::switch_page_table(kernel_cr3);
+    defer_fault_exit_cleanup(tid, code, &[]);
     enter_idle_recovery(my_cpu, idle_stack_top, idle_ctx);
 }
 
@@ -459,36 +437,16 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
         crate::serial_verbose_println!("  RECOVERED: force-released LOADED_DLLS lock");
     }
 
-    let mut pd_to_destroy: Option<PhysAddr> = None;
     let (idle_stack_top, idle_ctx) = prepare_idle_recovery_context(cpu_id, |sched| {
         if let Some(idx) = sched.find_idx(tid) {
-            let parent_tid = sched.threads[idx].parent_tid;
             let tick = crate::arch::hal::timer_current_ticks();
             sched.remove_from_all_queues(tid);
             sched.threads[idx].state = ThreadState::Terminated;
             sched.threads[idx].exit_code = Some(signal);
             sched.threads[idx].terminated_at_tick = Some(tick);
-            if let Some(pd) = sched.threads[idx].page_directory {
-                if !sched.threads[idx].pd_shared {
-                    let has_live_siblings = sched.threads.iter().any(|t| {
-                        t.tid != tid
-                            && t.page_directory == Some(pd)
-                            && t.state != ThreadState::Terminated
-                    });
-                    if !has_live_siblings {
-                        pd_to_destroy = Some(pd);
-                    }
-                }
-            }
             sched.threads[idx].page_directory = None;
-            if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
-                sched.wake_thread_inner(waiter_tid);
-            }
-            if parent_tid != 0 {
-                if let Some(parent_idx) = sched.find_idx(parent_tid) {
-                    sched.threads[parent_idx].signals.send(crate::ipc::signal::SIGCHLD);
-                }
-            }
+            sched.threads[idx].exit_waiter_tid = None;
+            sched.threads[idx].retain_exit_status = true;
         }
         sched.per_cpu[cpu_id].current_tid = None;
         sched.per_cpu[cpu_id].current_idx = None;
@@ -496,9 +454,6 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
 
     let kcr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kcr3);
-    if let Some(pd) = pd_to_destroy {
-        defer_fault_pd_destroy(pd, tid);
-    }
     defer_fault_exit_cleanup(tid, signal, &[]);
     enter_idle_recovery(cpu_id, idle_stack_top, idle_ctx);
 }
