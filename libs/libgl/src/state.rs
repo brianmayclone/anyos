@@ -154,6 +154,8 @@ pub struct GlContext {
     pub shadow_depth_program: u32,
     /// Shadow-pass viewport restore state.
     pub shadow_prev_viewport: [i32; 4],
+    /// Temporary storage for software shadow-map prefiltering.
+    pub shadow_blur_tmp: Vec<f32>,
 
     // ── Anti-Aliasing ──────────────────────────────────────────────────
     /// FXAA post-process enabled.
@@ -243,6 +245,7 @@ impl GlContext {
             shadow_map_ready: false,
             shadow_depth_program: 0,
             shadow_prev_viewport: [0; 4],
+            shadow_blur_tmp: Vec::new(),
 
             fxaa_enabled: false,
 
