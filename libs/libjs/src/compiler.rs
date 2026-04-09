@@ -2386,6 +2386,8 @@ impl Compiler {
             self.compile_stmt(s);
         }
 
+        let fn_effective_strict = self.is_strict;
+
         // Restore strict mode state
         self.is_strict = prev_strict;
 
@@ -2402,7 +2404,7 @@ impl Compiler {
 
         let func_scope = self.scopes.pop().unwrap();
         let mut func_chunk = func_scope.chunk;
-        func_chunk.strict = self.is_strict;
+        func_chunk.strict = fn_effective_strict;
         func_chunk.captured_locals = func_scope.captured;
         // Copy upvalue descriptors into the chunk so the VM knows how to capture them.
         func_chunk.upvalues = func_scope

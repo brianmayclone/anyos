@@ -1281,6 +1281,15 @@ impl JsValue {
                         return;
                     }
                 }
+                if key == "prototype" {
+                    let mut func = f.borrow_mut();
+                    match &value {
+                        JsValue::Object(obj) => func.prototype = Some(obj.clone()),
+                        _ => func.prototype = None,
+                    }
+                    func.own_props.insert(key, value);
+                    return;
+                }
                 f.borrow_mut().own_props.insert(key, value);
             }
             _ => {} // silently ignore

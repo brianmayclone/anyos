@@ -9,6 +9,42 @@ use super::{CallFrame, LocalSlot, Vm};
 use crate::value::*;
 
 impl Vm {
+    fn materialize_prototype_object_from_value(
+        &mut self,
+        value: &JsValue,
+    ) -> Option<Rc<RefCell<JsObject>>> {
+        match value {
+            JsValue::Object(obj_rc) => Some(obj_rc.clone()),
+            JsValue::Array(arr_rc) => {
+                let arr = arr_rc.borrow();
+                let mut obj = JsObject::new();
+                obj.prototype = Some(self.array_proto.clone());
+                obj.properties.insert(
+                    String::from("length"),
+                    Property::data(JsValue::Number(arr.length as f64)),
+                );
+                for (&idx, val) in &arr.elements {
+                    obj.properties
+                        .insert(idx.to_string(), Property::data(val.clone()));
+                }
+                for (key, prop) in &arr.properties {
+                    obj.properties.insert(key.clone(), prop.clone());
+                }
+                Some(Rc::new(RefCell::new(obj)))
+            }
+            JsValue::Function(func_rc) => {
+                let func = func_rc.borrow();
+                let mut obj = JsObject::new();
+                obj.prototype = Some(self.function_proto.clone());
+                for (key, val) in &func.own_props {
+                    obj.properties.insert(key.clone(), Property::data(val.clone()));
+                }
+                Some(Rc::new(RefCell::new(obj)))
+            }
+            _ => None,
+        }
+    }
+
     fn is_constructable_value(&mut self, value: &JsValue) -> bool {
         match value {
             JsValue::Function(func_rc) => {
@@ -86,8 +122,12 @@ impl Vm {
             JsValue::Function(func_rc) => {
                 let maybe_proto = {
                     let f = func_rc.borrow();
-                    if let Some(JsValue::Object(proto_obj)) = f.own_props.get("prototype") {
-                        Some(proto_obj.clone())
+                    if let Some(proto_val) = f.own_props.get("prototype") {
+                        match proto_val {
+                            JsValue::Object(proto_obj) => Some(proto_obj.clone()),
+                            JsValue::Array(_) | JsValue::Function(_) => None,
+                            _ => Some(self.object_proto.clone()),
+                        }
                     } else if matches!(
                         &f.kind,
                         FnKind::Native(_) if !matches!(
@@ -102,6 +142,18 @@ impl Vm {
                 };
                 if maybe_proto.is_some() {
                     return maybe_proto;
+                }
+
+                let own_proto_val = {
+                    let f = func_rc.borrow();
+                    f.own_props.get("prototype").cloned()
+                };
+                if let Some(proto_val @ (JsValue::Array(_) | JsValue::Function(_))) = own_proto_val {
+                    if let Some(proto_obj) = self.materialize_prototype_object_from_value(&proto_val)
+                    {
+                        func_rc.borrow_mut().prototype = Some(proto_obj.clone());
+                        return Some(proto_obj);
+                    }
                 }
 
                 let proto = Rc::new(RefCell::new(JsObject::new()));
@@ -793,8 +845,12 @@ impl Vm {
         let target_proto = match right {
             JsValue::Function(func) => {
                 let f = func.borrow();
-                if let Some(JsValue::Object(proto_obj)) = f.own_props.get("prototype") {
-                    Some(proto_obj.clone())
+                if let Some(proto_val) = f.own_props.get("prototype") {
+                    match proto_val {
+                        JsValue::Object(proto_obj) => Some(proto_obj.clone()),
+                        JsValue::Array(_) | JsValue::Function(_) => f.prototype.clone(),
+                        _ => Some(self.object_proto.clone()),
+                    }
                 } else {
                     f.prototype.clone()
                 }

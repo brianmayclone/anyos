@@ -1567,6 +1567,11 @@ impl Vm {
     fn init_date_statics(&mut self) {
         if let JsValue::Function(f) = self.globals.borrow().get("Date") {
             let ctor = JsValue::Function(f.clone());
+            let proto = Rc::new(RefCell::new(JsObject::new()));
+            proto.borrow_mut().prototype = Some(self.object_proto.clone());
+            proto.borrow_mut()
+                .set(String::from("constructor"), ctor.clone());
+            ctor.set_property(String::from("prototype"), JsValue::Object(proto));
             ctor.set_property(String::from("now"), native_fn("now", native_date::date_now));
             ctor.set_property(
                 String::from("parse"),

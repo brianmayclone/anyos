@@ -47,6 +47,14 @@ pub fn ctor_date(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
 
     let mut obj = JsObject::new();
+    let date_proto = match vm.globals.borrow().get("Date") {
+        JsValue::Function(f) => match f.borrow().own_props.get("prototype") {
+            Some(JsValue::Object(proto)) => Some(proto.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    obj.prototype = date_proto.or_else(|| Some(vm.object_proto.clone()));
     obj.internal_tag = Some(String::from("__date__"));
     obj.set(String::from("__ms"), JsValue::Number(ms));
     // Install methods
