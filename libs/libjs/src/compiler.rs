@@ -2429,10 +2429,26 @@ impl Compiler {
             None
         };
 
-        // Step 1: Collect instance properties (public + private fields).
+        // Step 1: Evaluate all computed member names once, in class element order.
+        // These locals are then captured by the constructor / method definitions
+        // so instance fields do not re-evaluate their computed key per instance.
+        let mut computed_key_locals: Vec<Option<String>> = vec![None; body.len()];
+        for (member_idx, member) in body.iter().enumerate() {
+            if let PropKey::Computed(expr) = &member.key {
+                self.compile_expr(expr);
+                self.emit(Op::ToPropertyKey);
+                let local_name = alloc::format!("__class_key_{}", member_idx);
+                let slot = self.scope_mut().add_local(local_name.clone());
+                self.emit(Op::StoreLocal(slot));
+                self.emit(Op::Pop);
+                computed_key_locals[member_idx] = Some(local_name);
+            }
+        }
+
+        // Step 2: Collect instance properties (public + private fields).
         // These need to be initialized in the constructor on `this`, NOT on prototype.
         let mut instance_inits: Vec<Stmt> = Vec::new();
-        for member in body {
+        for (member_idx, member) in body.iter().enumerate() {
             if member.is_static {
                 continue;
             }
@@ -2475,12 +2491,19 @@ impl Compiler {
                         }
                     }
                     PropKey::Computed(expr) => {
-                        // Generate: this[<expr>] = <value>;
+                        // Generate: this[<precomputed-key>] = <value>;
                         Expr::Assign {
                             op: AssignOp::Assign,
                             left: Box::new(Expr::Index {
                                 object: Box::new(Expr::This),
-                                index: expr.clone(),
+                                index: Box::new(Expr::Ident(
+                                    computed_key_locals[member_idx]
+                                        .clone()
+                                        .unwrap_or_else(|| {
+                                            let _ = expr;
+                                            String::from("__missing_class_key__")
+                                        }),
+                                )),
                             }),
                             right: rhs,
                         }
@@ -2490,7 +2513,7 @@ impl Compiler {
             }
         }
 
-        // Step 2: compile the constructor (or a default one), with instance field
+        // Step 3: compile the constructor (or a default one), with instance field
         // initializers prepended to the body.
         let ctor = body
             .iter()
@@ -2533,7 +2556,7 @@ impl Compiler {
         }
         // Stack: [..., Constructor]
 
-        // Step 3: if there's a super class, set up the prototype chain.
+        // Step 4: if there's a super class, set up the prototype chain.
         if let Some(super_slot) = super_local {
             // Store super class directly on the constructor function
             // Stack: [..., Constructor]
@@ -2555,7 +2578,7 @@ impl Compiler {
             self.emit(Op::Pop); // [..., Constructor]
         }
 
-        // Step 3b: If the class has a name and contains static blocks, temporarily
+        // Step 4b: If the class has a name and contains static blocks, temporarily
         // bind the constructor to a local so that static blocks can reference the class.
         let class_name_slot: Option<u16> = if let Some(n) = name {
             if body
@@ -2574,8 +2597,8 @@ impl Compiler {
             None
         };
 
-        // Step 4: add instance methods and static members to Constructor/prototype.
-        for member in body {
+        // Step 5: add instance methods and static members to Constructor/prototype.
+        for (member_idx, member) in body.iter().enumerate() {
             if matches!(member.kind, ClassMemberKind::Constructor { .. }) {
                 continue;
             }
@@ -2628,9 +2651,10 @@ impl Compiler {
                     } => {
                         self.emit(Op::Dup); // [Ctor, Ctor]
                         if is_computed {
-                            if let PropKey::Computed(ref e) = member.key {
-                                self.compile_expr(e);
-                            }
+                            let slot_name = computed_key_locals[member_idx]
+                                .clone()
+                                .expect("computed class key missing");
+                            self.compile_expr(&Expr::Ident(slot_name));
                         }
                         self.compile_function_gen(
                             Some(&fn_name),
@@ -2650,9 +2674,10 @@ impl Compiler {
                     ClassMemberKind::Property { value } => {
                         self.emit(Op::Dup);
                         if is_computed {
-                            if let PropKey::Computed(ref e) = member.key {
-                                self.compile_expr(e);
-                            }
+                            let slot_name = computed_key_locals[member_idx]
+                                .clone()
+                                .expect("computed class key missing");
+                            self.compile_expr(&Expr::Ident(slot_name));
                         }
                         if let Some(v) = value {
                             self.compile_expr(v);
@@ -2670,9 +2695,10 @@ impl Compiler {
                     ClassMemberKind::Getter { body } => {
                         self.emit(Op::Dup);
                         if is_computed {
-                            if let PropKey::Computed(ref e) = member.key {
-                                self.compile_expr(e);
-                            }
+                            let slot_name = computed_key_locals[member_idx]
+                                .clone()
+                                .expect("computed class key missing");
+                            self.compile_expr(&Expr::Ident(slot_name));
                         }
                         let getter_name = alloc::format!("get {}", fn_name);
                         self.compile_function(Some(&getter_name), &[], body, false);
@@ -2686,9 +2712,10 @@ impl Compiler {
                     ClassMemberKind::Setter { param, body } => {
                         self.emit(Op::Dup);
                         if is_computed {
-                            if let PropKey::Computed(ref e) = member.key {
-                                self.compile_expr(e);
-                            }
+                            let slot_name = computed_key_locals[member_idx]
+                                .clone()
+                                .expect("computed class key missing");
+                            self.compile_expr(&Expr::Ident(slot_name));
                         }
                         let setter_name = alloc::format!("set {}", fn_name);
                         let p = vec![Param {
@@ -2720,9 +2747,10 @@ impl Compiler {
                         self.emit(Op::GetPropNamed(proto_idx));
                         // Stack: [..., Constructor, Constructor.prototype]
                         if is_computed {
-                            if let PropKey::Computed(ref e) = member.key {
-                                self.compile_expr(e);
-                            }
+                            let slot_name = computed_key_locals[member_idx]
+                                .clone()
+                                .expect("computed class key missing");
+                            self.compile_expr(&Expr::Ident(slot_name));
                         }
                         self.compile_function_gen(
                             Some(&fn_name),
@@ -2744,9 +2772,10 @@ impl Compiler {
                         let proto_idx = self.add_const(Constant::String(String::from("prototype")));
                         self.emit(Op::GetPropNamed(proto_idx));
                         if is_computed {
-                            if let PropKey::Computed(ref e) = member.key {
-                                self.compile_expr(e);
-                            }
+                            let slot_name = computed_key_locals[member_idx]
+                                .clone()
+                                .expect("computed class key missing");
+                            self.compile_expr(&Expr::Ident(slot_name));
                         }
                         let getter_name = alloc::format!("get {}", fn_name);
                         self.compile_function(Some(&getter_name), &[], body, false);
@@ -2763,9 +2792,10 @@ impl Compiler {
                         let proto_idx = self.add_const(Constant::String(String::from("prototype")));
                         self.emit(Op::GetPropNamed(proto_idx));
                         if is_computed {
-                            if let PropKey::Computed(ref e) = member.key {
-                                self.compile_expr(e);
-                            }
+                            let slot_name = computed_key_locals[member_idx]
+                                .clone()
+                                .expect("computed class key missing");
+                            self.compile_expr(&Expr::Ident(slot_name));
                         }
                         let setter_name = alloc::format!("set {}", fn_name);
                         let p = vec![Param {

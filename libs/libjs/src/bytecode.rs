@@ -127,6 +127,8 @@ pub enum Op {
     InstanceOf,
     /// in operator: stack = [..., key, object] → [..., bool]
     In,
+    /// Convert top-of-stack value to a property key using ToPropertyKey.
+    ToPropertyKey,
 
     // ── Iteration ──
     /// Get iterator from iterable on top of stack.

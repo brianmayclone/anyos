@@ -1614,6 +1614,20 @@ impl Vm {
                     };
                     self.stack.push(JsValue::Bool(result));
                 }
+                Op::ToPropertyKey => {
+                    let val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let key = match &val {
+                        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
+                            let prim = self.to_primitive_for_op(val, "string");
+                            if self.pending_exception.is_some() {
+                                return JsValue::Undefined;
+                            }
+                            JsValue::String(prim.to_js_string())
+                        }
+                        _ => JsValue::String(val.to_js_string()),
+                    };
+                    self.stack.push(key);
+                }
 
                 // ── Iteration ──
                 Op::GetIterator => {
@@ -2654,6 +2668,10 @@ impl Vm {
                 return JsValue::Undefined;
             }
             return result;
+        } else if !matches!(to_prim_fn, JsValue::Undefined | JsValue::Null) {
+            let err = self.make_type_error("@@toPrimitive is not callable");
+            self.pending_exception = Some(err);
+            return JsValue::Undefined;
         }
 
         // No Symbol.toPrimitive — use valueOf/toString
