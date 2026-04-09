@@ -26,7 +26,7 @@ use super::native_symbol;
 use super::native_timer;
 use super::native_typed_array;
 use super::native_weakref;
-use super::{native_fn, native_fn_with_length, Vm};
+use super::{native_ctor_fn, native_fn, native_fn_with_length, Vm};
 use crate::value::*;
 
 impl Vm {
@@ -601,57 +601,57 @@ impl Vm {
         self.set_global("eval", native_fn("eval", global_eval));
 
         // ── Constructors ──
-        self.set_global("Object", native_fn("Object", native_globals::ctor_object));
+        self.set_global("Object", native_ctor_fn("Object", native_globals::ctor_object));
         // Wire Object.prototype to the VM's object_proto so `instanceof` works.
         if let JsValue::Function(f) = self.globals.borrow().get("Object") {
             f.borrow_mut().prototype = Some(self.object_proto.clone());
         }
-        self.set_global("Array", native_fn("Array", native_globals::ctor_array));
+        self.set_global("Array", native_ctor_fn("Array", native_globals::ctor_array));
         // Wire Array.prototype to the VM's array_proto so `instanceof` works.
         if let JsValue::Function(f) = self.globals.borrow().get("Array") {
             f.borrow_mut().prototype = Some(self.array_proto.clone());
         }
-        self.set_global("String", native_fn("String", native_globals::ctor_string));
-        self.set_global("Number", native_fn("Number", native_globals::ctor_number));
+        self.set_global("String", native_ctor_fn("String", native_globals::ctor_string));
+        self.set_global("Number", native_ctor_fn("Number", native_globals::ctor_number));
         self.set_global(
             "Boolean",
-            native_fn("Boolean", native_globals::ctor_boolean),
+            native_ctor_fn("Boolean", native_globals::ctor_boolean),
         );
         // Function constructor stub — creates an empty no-op function. Full source
         // evaluation is not implemented; this satisfies `new Function()` being callable
         // and truthy, and makes Function.prototype.isPrototypeOf(Boolean) work.
         self.set_global(
             "Function",
-            native_fn("Function", native_globals::ctor_function),
+            native_ctor_fn("Function", native_globals::ctor_function),
         );
-        self.set_global("Error", native_fn("Error", native_error::ctor_error));
+        self.set_global("Error", native_ctor_fn("Error", native_error::ctor_error));
         self.set_global(
             "TypeError",
-            native_fn("TypeError", native_error::ctor_type_error),
+            native_ctor_fn("TypeError", native_error::ctor_type_error),
         );
         self.set_global(
             "RangeError",
-            native_fn("RangeError", native_error::ctor_range_error),
+            native_ctor_fn("RangeError", native_error::ctor_range_error),
         );
         self.set_global(
             "ReferenceError",
-            native_fn("ReferenceError", native_error::ctor_reference_error),
+            native_ctor_fn("ReferenceError", native_error::ctor_reference_error),
         );
         self.set_global(
             "SyntaxError",
-            native_fn("SyntaxError", native_error::ctor_syntax_error),
+            native_ctor_fn("SyntaxError", native_error::ctor_syntax_error),
         );
         self.set_global(
             "URIError",
-            native_fn("URIError", native_error::ctor_uri_error),
+            native_ctor_fn("URIError", native_error::ctor_uri_error),
         );
         self.set_global(
             "EvalError",
-            native_fn("EvalError", native_error::ctor_eval_error),
+            native_ctor_fn("EvalError", native_error::ctor_eval_error),
         );
         self.set_global(
             "AggregateError",
-            native_fn("AggregateError", native_error::ctor_aggregate_error),
+            native_ctor_fn("AggregateError", native_error::ctor_aggregate_error),
         );
 
         // ── console ──
@@ -721,7 +721,7 @@ impl Vm {
 
         // ── Promise ──
         {
-            let ctor = native_fn("Promise", native_promise::ctor_promise);
+            let ctor = native_ctor_fn("Promise", native_promise::ctor_promise);
             let proto = JsValue::new_object();
             proto.set_property(
                 String::from("then"),
@@ -742,7 +742,7 @@ impl Vm {
 
         // ── Map ──
         {
-            let ctor = native_fn("Map", native_map::ctor_map);
+            let ctor = native_ctor_fn("Map", native_map::ctor_map);
             let proto = JsValue::new_object();
             proto.set_property(String::from("set"), native_fn("set", native_map::map_set));
             proto.set_property(String::from("get"), native_fn("get", native_map::map_get));
@@ -787,7 +787,7 @@ impl Vm {
         }
         // ── Set ──
         {
-            let ctor = native_fn("Set", native_map::ctor_set);
+            let ctor = native_ctor_fn("Set", native_map::ctor_set);
             let proto = JsValue::new_object();
             proto.set_property(String::from("add"), native_fn("add", native_map::set_add));
             proto.set_property(String::from("has"), native_fn("has", native_map::set_has));
@@ -860,7 +860,7 @@ impl Vm {
         }
 
         // ── Date ──
-        self.set_global("Date", native_fn("Date", native_date::ctor_date));
+        self.set_global("Date", native_ctor_fn("Date", native_date::ctor_date));
         self.init_date_statics();
 
         // ── Timers ──
@@ -887,7 +887,7 @@ impl Vm {
         self.set_global("Symbol", symbol_ctor);
 
         // ── Proxy ──
-        let proxy_ctor = native_fn("Proxy", native_proxy::ctor_proxy);
+        let proxy_ctor = native_ctor_fn("Proxy", native_proxy::ctor_proxy);
         proxy_ctor.set_property(
             String::from("revocable"),
             native_fn("revocable", native_proxy::proxy_revocable),
@@ -899,7 +899,7 @@ impl Vm {
 
         // ── WeakMap ──
         {
-            let wm = native_fn("WeakMap", native_weakref::ctor_weakmap);
+            let wm = native_ctor_fn("WeakMap", native_weakref::ctor_weakmap);
             let proto = JsValue::new_object();
             proto.set_property(
                 String::from("set"),
@@ -922,7 +922,7 @@ impl Vm {
         }
         // ── WeakSet ──
         {
-            let ws = native_fn("WeakSet", native_weakref::ctor_weakset);
+            let ws = native_ctor_fn("WeakSet", native_weakref::ctor_weakset);
             let proto = JsValue::new_object();
             proto.set_property(
                 String::from("add"),
@@ -941,7 +941,7 @@ impl Vm {
         }
         // ── WeakRef ──
         {
-            let wr = native_fn("WeakRef", native_weakref::ctor_weakref);
+            let wr = native_ctor_fn("WeakRef", native_weakref::ctor_weakref);
             let proto = JsValue::new_object();
             proto.set_property(
                 String::from("deref"),
@@ -952,7 +952,7 @@ impl Vm {
         }
         // ── FinalizationRegistry ──
         {
-            let fr = native_fn(
+            let fr = native_ctor_fn(
                 "FinalizationRegistry",
                 native_weakref::ctor_finalization_registry,
             );
@@ -975,7 +975,7 @@ impl Vm {
         );
 
         // ── RegExp ──
-        let regexp_ctor = native_fn("RegExp", native_regexp::regexp_constructor);
+        let regexp_ctor = native_ctor_fn("RegExp", native_regexp::regexp_constructor);
         regexp_ctor.set_property(
             String::from("prototype"),
             JsValue::Object(self.regexp_proto.clone()),
@@ -985,54 +985,54 @@ impl Vm {
         // ── ArrayBuffer ──
         self.set_global(
             "ArrayBuffer",
-            native_fn("ArrayBuffer", native_typed_array::ctor_arraybuffer),
+            native_ctor_fn("ArrayBuffer", native_typed_array::ctor_arraybuffer),
         );
 
         // ── DataView ──
         self.set_global(
             "DataView",
-            native_fn("DataView", native_typed_array::ctor_dataview),
+            native_ctor_fn("DataView", native_typed_array::ctor_dataview),
         );
 
         // ── TypedArrays ──
         self.set_global(
             "Int8Array",
-            native_fn("Int8Array", native_typed_array::ctor_int8array),
+            native_ctor_fn("Int8Array", native_typed_array::ctor_int8array),
         );
         self.set_global(
             "Uint8Array",
-            native_fn("Uint8Array", native_typed_array::ctor_uint8array),
+            native_ctor_fn("Uint8Array", native_typed_array::ctor_uint8array),
         );
         self.set_global(
             "Uint8ClampedArray",
-            native_fn(
+            native_ctor_fn(
                 "Uint8ClampedArray",
                 native_typed_array::ctor_uint8clampedarray,
             ),
         );
         self.set_global(
             "Int16Array",
-            native_fn("Int16Array", native_typed_array::ctor_int16array),
+            native_ctor_fn("Int16Array", native_typed_array::ctor_int16array),
         );
         self.set_global(
             "Uint16Array",
-            native_fn("Uint16Array", native_typed_array::ctor_uint16array),
+            native_ctor_fn("Uint16Array", native_typed_array::ctor_uint16array),
         );
         self.set_global(
             "Int32Array",
-            native_fn("Int32Array", native_typed_array::ctor_int32array),
+            native_ctor_fn("Int32Array", native_typed_array::ctor_int32array),
         );
         self.set_global(
             "Uint32Array",
-            native_fn("Uint32Array", native_typed_array::ctor_uint32array),
+            native_ctor_fn("Uint32Array", native_typed_array::ctor_uint32array),
         );
         self.set_global(
             "Float32Array",
-            native_fn("Float32Array", native_typed_array::ctor_float32array),
+            native_ctor_fn("Float32Array", native_typed_array::ctor_float32array),
         );
         self.set_global(
             "Float64Array",
-            native_fn("Float64Array", native_typed_array::ctor_float64array),
+            native_ctor_fn("Float64Array", native_typed_array::ctor_float64array),
         );
 
         // ── queueMicrotask ──

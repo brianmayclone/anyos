@@ -11,7 +11,16 @@ use crate::value::*;
 impl Vm {
     fn is_constructable_value(&mut self, value: &JsValue) -> bool {
         match value {
-            JsValue::Function(_) => true,
+            JsValue::Function(func_rc) => {
+                let func = func_rc.borrow();
+                match &func.kind {
+                    FnKind::Bytecode(chunk) => !chunk.is_arrow && !chunk.is_generator,
+                    FnKind::Native(_) => matches!(
+                        func.own_props.get("__constructable__"),
+                        Some(JsValue::Bool(true))
+                    ),
+                }
+            }
             JsValue::Object(obj_rc)
                 if obj_rc.borrow().internal_tag.as_deref()
                     == Some(super::native_proxy::PROXY_TAG) =>
@@ -79,6 +88,14 @@ impl Vm {
                     let f = func_rc.borrow();
                     if let Some(JsValue::Object(proto_obj)) = f.own_props.get("prototype") {
                         Some(proto_obj.clone())
+                    } else if matches!(
+                        &f.kind,
+                        FnKind::Native(_) if !matches!(
+                            f.own_props.get("__constructable__"),
+                            Some(JsValue::Bool(true))
+                        )
+                    ) {
+                        None
                     } else {
                         f.prototype.clone()
                     }
@@ -112,11 +129,44 @@ impl Vm {
         args: &[JsValue],
         new_target: &JsValue,
     ) -> bool {
+        if !self.is_constructable_value(new_target) {
+            let exc = self.make_type_error("newTarget is not a constructor");
+            if !self.handle_exception(exc) {
+                self.stack.push(JsValue::Undefined);
+            }
+            return true;
+        }
         let mut ctor = ctor.clone();
         loop {
             match ctor {
                 JsValue::Function(func_rc) => {
                     let kind = func_rc.borrow().kind.clone();
+                    let constructable = {
+                        let f = func_rc.borrow();
+                        match &f.kind {
+                            FnKind::Bytecode(chunk) => !chunk.is_arrow && !chunk.is_generator,
+                            FnKind::Native(_) => matches!(
+                                f.own_props.get("__constructable__"),
+                                Some(JsValue::Bool(true))
+                            ),
+                        }
+                    };
+                    if !constructable {
+                        let name = func_rc.borrow().name.clone().unwrap_or_default();
+                        let msg = alloc::format!(
+                            "{} is not a constructor",
+                            if name.is_empty() {
+                                "(intermediate value)".into()
+                            } else {
+                                name
+                            }
+                        );
+                        let exc = self.make_type_error(&msg);
+                        if !self.handle_exception(exc) {
+                            self.stack.push(JsValue::Undefined);
+                        }
+                        return true;
+                    }
 
                     let is_arrow = match &kind {
                         FnKind::Bytecode(chunk) => chunk.is_arrow,
@@ -741,7 +791,14 @@ impl Vm {
     /// compares it against `right.prototype`.
     pub fn instance_of(&self, left: &JsValue, right: &JsValue) -> bool {
         let target_proto = match right {
-            JsValue::Function(func) => func.borrow().prototype.clone(),
+            JsValue::Function(func) => {
+                let f = func.borrow();
+                if let Some(JsValue::Object(proto_obj)) = f.own_props.get("prototype") {
+                    Some(proto_obj.clone())
+                } else {
+                    f.prototype.clone()
+                }
+            }
             _ => None,
         };
         let Some(target_proto) = target_proto else {

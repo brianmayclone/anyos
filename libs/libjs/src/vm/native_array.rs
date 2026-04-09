@@ -1,5 +1,6 @@
 //! Array.prototype methods and Array static methods.
 
+use alloc::boxed::Box;
 use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec;
@@ -106,11 +107,9 @@ pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
                     _ => {} // Non-primitive: TypeError
                 }
             }
-            // If both valueOf and toString were tried and returned objects → TypeError
-            if tried_valueof || tried_tostring {
-                let err = vm.make_type_error("Cannot convert object to primitive value");
-                vm.throw_native(err);
-            }
+            // OrdinaryToPrimitive failed to produce a primitive.
+            let err = vm.make_type_error("Cannot convert object to primitive value");
+            vm.throw_native(err);
             f64::NAN
         }
         JsValue::Array(_) | JsValue::Function(_) => f64::NAN,
@@ -758,6 +757,65 @@ fn observe_array_species_create(vm: &mut Vm, original: &JsValue) -> bool {
     true
 }
 
+fn wrap_primitive_for_concat(vm: &Vm, value: &JsValue) -> JsValue {
+    let mut obj = JsObject::new();
+    match value {
+        JsValue::Bool(b) => {
+            obj.prototype = Some(vm.boolean_proto.clone());
+            obj.internal_tag = Some(String::from("__boolean__"));
+            obj.primitive_value = Some(Box::new(JsValue::Bool(*b)));
+            obj.set(String::from("__bool_data__"), JsValue::Bool(*b));
+        }
+        JsValue::Number(n) => {
+            obj.prototype = Some(vm.number_proto.clone());
+            obj.internal_tag = Some(String::from("__number__"));
+            obj.primitive_value = Some(Box::new(JsValue::Number(*n)));
+        }
+        JsValue::String(s) => {
+            obj.prototype = Some(vm.string_proto.clone());
+            obj.internal_tag = Some(String::from("__string__"));
+            obj.primitive_value = Some(Box::new(JsValue::String(s.clone())));
+        }
+        JsValue::BigInt(bi) => {
+            obj.prototype = Some(vm.object_proto.clone());
+            obj.primitive_value = Some(Box::new(JsValue::BigInt(bi.clone())));
+        }
+        _ => return value.clone(),
+    }
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+fn has_concat_property(vm: &Vm, value: &JsValue, key: &str) -> bool {
+    match value {
+        JsValue::Array(arr) => {
+            if let Some(idx) = super::try_parse_index(key) {
+                if arr.borrow().has(idx) {
+                    return true;
+                }
+                return vm.array_proto.borrow().has(key);
+            }
+            key == "length" || arr.borrow().properties.contains_key(key) || vm.array_proto.borrow().has(key)
+        }
+        JsValue::Object(obj) if obj.borrow().primitive_value.is_some() => {
+            let o = obj.borrow();
+            if let Some(prim) = &o.primitive_value {
+                if let JsValue::String(s) = prim.as_ref() {
+                    return key == "length"
+                        || super::try_parse_index(key).is_some_and(|idx| idx < s.chars().count())
+                        || o.has(key);
+                }
+            }
+            o.has(key)
+        }
+        JsValue::Object(obj) => obj.borrow().has(key),
+        JsValue::Function(f) => {
+            let func = f.borrow();
+            func.own_props.contains_key(key) || vm.function_proto.borrow().has(key)
+        }
+        _ => false,
+    }
+}
+
 fn is_concat_spreadable(vm: &mut Vm, value: &JsValue) -> Option<bool> {
     match value {
         JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
@@ -779,53 +837,149 @@ fn is_concat_spreadable(vm: &mut Vm, value: &JsValue) -> Option<bool> {
     }
 }
 
-fn concat_spread_into(vm: &mut Vm, result: &mut JsArray, value: &JsValue) -> bool {
-    match value {
-        JsValue::Array(arr) => {
-            let arr = arr.borrow();
-            let offset = result.length;
-            for (&idx, val) in arr.elements.iter() {
-                result.elements.insert(offset + idx, val.clone());
-            }
-            result.length += arr.length;
-            true
-        }
-        JsValue::Object(_) | JsValue::Function(_) => {
-            let len_val = vm.get_property_invoking_getter(value, "length");
-            if vm.pending_exception.is_some() {
-                return false;
-            }
+fn array_species_create_concat(vm: &mut Vm, original: &JsValue) -> Option<JsValue> {
+    if !matches!(original, JsValue::Array(_)) {
+        return Some(JsValue::Array(Rc::new(RefCell::new(JsArray::new()))));
+    }
+    let ctor = vm.get_property_invoking_getter(original, "constructor");
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+    }
+    if vm.pending_exception.is_some() {
+        return None;
+    }
+    let species = match ctor {
+        JsValue::Undefined => JsValue::Undefined,
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
+            let species = vm.get_property_invoking_getter(&ctor, native_symbol::WELL_KNOWN_SPECIES);
             if let Some(exc) = vm.last_exception.take() {
                 vm.pending_exception = Some(exc);
-                return false;
             }
-            let len = to_length_vm(vm, &len_val);
             if vm.pending_exception.is_some() {
+                return None;
+            }
+            species
+        }
+        _ => {
+            let err = vm.make_type_error("Array constructor is not an object");
+            vm.throw_native(err);
+            return None;
+        }
+    };
+    match species {
+        JsValue::Undefined | JsValue::Null => {
+            Some(JsValue::Array(Rc::new(RefCell::new(JsArray::new()))))
+        }
+        _ => {
+            if !vm.construct_with_new_target(&species, &[JsValue::Number(0.0)], &species) {
+                let err = vm.make_type_error("Array species is not a constructor");
+                vm.throw_native(err);
+                return None;
+            }
+            Some(vm.stack.pop().unwrap_or(JsValue::Undefined))
+        }
+    }
+}
+
+fn concat_define_result_index(vm: &mut Vm, target: &JsValue, index: usize, value: JsValue) -> bool {
+    let key = alloc::format!("{}", index);
+    match target {
+        JsValue::Array(arr) => {
+            let mut arr = arr.borrow_mut();
+            let non_extensible = arr.properties.contains_key("__non_extensible__");
+            if non_extensible && !arr.has(index) {
+                let err = vm.make_type_error("Cannot define property on non-extensible array");
+                vm.throw_native(err);
                 return false;
             }
-            let offset = result.length;
-            for idx in 0..len {
-                let key = alloc::format!("{}", idx);
-                let entry = vm.get_property_invoking_getter(value, &key);
-                if vm.pending_exception.is_some() {
+            arr.set(index, value);
+            true
+        }
+        JsValue::Object(obj) => {
+            let mut obj = obj.borrow_mut();
+            let non_extensible = obj.properties.contains_key("__non_extensible__");
+            if let Some(existing) = obj.properties.get(&key) {
+                if existing.is_accessor() || !existing.writable {
+                    let err = vm.make_type_error("Cannot define property on target object");
+                    vm.throw_native(err);
                     return false;
                 }
-                if let Some(exc) = vm.last_exception.take() {
-                    vm.pending_exception = Some(exc);
-                    return false;
-                }
-                if !matches!(entry, JsValue::Undefined) {
-                    result.elements.insert(offset + idx, entry);
-                }
+            } else if non_extensible {
+                let err = vm.make_type_error("Cannot define property on non-extensible object");
+                vm.throw_native(err);
+                return false;
             }
-            result.length += len;
+            obj.properties.insert(key, Property::data(value));
+            true
+        }
+        JsValue::Function(f) => {
+            let mut func = f.borrow_mut();
+            if !func.own_props.contains_key(&key)
+                && matches!(func.own_props.get("__non_extensible__"), Some(JsValue::Bool(true)))
+            {
+                let err = vm.make_type_error("Cannot define property on non-extensible object");
+                vm.throw_native(err);
+                return false;
+            }
+            func.own_props.insert(key, value);
             true
         }
         _ => {
-            result.push(value.clone());
-            true
+            let err = vm.make_type_error("Concat result is not an object");
+            vm.throw_native(err);
+            false
         }
     }
+}
+
+fn concat_set_result_length(target: &JsValue, length: usize) {
+    match target {
+        JsValue::Array(arr) => arr.borrow_mut().length = length,
+        JsValue::Object(obj) => {
+            obj.borrow_mut()
+                .properties
+                .insert(String::from("length"), Property::data(JsValue::Number(length as f64)));
+        }
+        JsValue::Function(f) => {
+            f.borrow_mut()
+                .own_props
+                .insert(String::from("length"), JsValue::Number(length as f64));
+        }
+        _ => {}
+    }
+}
+
+fn concat_append_spread(vm: &mut Vm, result: &JsValue, next_index: &mut usize, value: &JsValue) -> bool {
+    let len_val = vm.get_property_invoking_getter(value, "length");
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+    }
+    if vm.pending_exception.is_some() {
+        return false;
+    }
+    let len = to_length_vm(vm, &len_val);
+    if vm.pending_exception.is_some() {
+        return false;
+    }
+    for idx in 0..len {
+        let key = alloc::format!("{}", idx);
+        if !has_concat_property(vm, value, &key) {
+            *next_index += 1;
+            continue;
+        }
+        let entry = vm.get_property_invoking_getter(value, &key);
+        if let Some(exc) = vm.last_exception.take() {
+            vm.pending_exception = Some(exc);
+        }
+        if vm.pending_exception.is_some() {
+            return false;
+        }
+        if !concat_define_result_index(vm, result, *next_index, entry) {
+            return false;
+        }
+        *next_index += 1;
+    }
+    true
 }
 
 pub fn array_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -833,38 +987,54 @@ pub fn array_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Undefined;
     }
 
-    if matches!(&vm.current_this, JsValue::Array(_)) && !observe_array_species_create(vm, &vm.current_this.clone()) {
-        return JsValue::Undefined;
-    }
-
-    let mut result = JsArray::new();
-    let this_val = vm.current_this.clone();
+    let this_val = match &vm.current_this {
+        JsValue::Bool(_) | JsValue::Number(_) | JsValue::String(_) | JsValue::BigInt(_) => {
+            wrap_primitive_for_concat(vm, &vm.current_this.clone())
+        }
+        _ => vm.current_this.clone(),
+    };
+    let result = match array_species_create_concat(vm, &this_val) {
+        Some(result) => result,
+        None => return JsValue::Undefined,
+    };
     let this_spreadable = is_concat_spreadable(vm, &this_val);
     if vm.pending_exception.is_some() {
         return JsValue::Undefined;
     }
+    let mut next_index = 0usize;
     match this_spreadable {
         Some(true) => {
-            if !concat_spread_into(vm, &mut result, &this_val) {
+            if !concat_append_spread(vm, &result, &mut next_index, &this_val) {
                 return JsValue::Undefined;
             }
         }
-        Some(false) => result.push(this_val),
+        Some(false) => {
+            if !concat_define_result_index(vm, &result, next_index, this_val) {
+                return JsValue::Undefined;
+            }
+            next_index += 1;
+        }
         None => return JsValue::Undefined,
     }
 
     for arg in args {
         match is_concat_spreadable(vm, arg) {
             Some(true) => {
-                if !concat_spread_into(vm, &mut result, arg) {
+                if !concat_append_spread(vm, &result, &mut next_index, arg) {
                     return JsValue::Undefined;
                 }
             }
-            Some(false) => result.push(arg.clone()),
+            Some(false) => {
+                if !concat_define_result_index(vm, &result, next_index, arg.clone()) {
+                    return JsValue::Undefined;
+                }
+                next_index += 1;
+            }
             None => return JsValue::Undefined,
         }
     }
-    JsValue::Array(Rc::new(RefCell::new(result)))
+    concat_set_result_length(&result, next_index);
+    result
 }
 
 pub fn array_flat(vm: &mut Vm, args: &[JsValue]) -> JsValue {

@@ -2602,7 +2602,11 @@ impl Vm {
                     return JsValue::Number(a.len() as f64);
                 }
                 if let Some(idx) = try_parse_index(key) {
-                    return a.get(idx);
+                    if a.has(idx) {
+                        return a.get(idx);
+                    }
+                    drop(a);
+                    return get_proto_prop_rc(&self.array_proto, key);
                 }
                 if let Some(prop) = a.properties.get(key) {
                     if prop.is_accessor() {
@@ -2630,6 +2634,13 @@ impl Vm {
             JsValue::Bool(_) => get_proto_prop_rc(&self.boolean_proto, key),
             JsValue::Function(f) => {
                 let func = f.borrow();
+                let constructable = match &func.kind {
+                    FnKind::Bytecode(chunk) => !chunk.is_arrow && !chunk.is_generator,
+                    FnKind::Native(_) => matches!(
+                        func.own_props.get("__constructable__"),
+                        Some(JsValue::Bool(true))
+                    ),
+                };
                 let builtin_deleted = |name: &str| {
                     matches!(
                         func.own_props.get(&alloc::format!("__deleted_builtin_{}", name)),
@@ -2652,6 +2663,9 @@ impl Vm {
                     return JsValue::Number(len as f64);
                 }
                 if key == "prototype" && !builtin_deleted("prototype") {
+                    if !constructable {
+                        return JsValue::Undefined;
+                    }
                     // Arrow functions have no .prototype (ES2023 §14.2.17)
                     if func.kind.is_arrow() {
                         return JsValue::Undefined;
@@ -3054,6 +3068,17 @@ pub fn native_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
     })))
 }
 
+/// Create a native function that may be used as a constructor via `new`.
+pub fn native_ctor_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
+    let func = native_fn(name, f);
+    if let JsValue::Function(f) = &func {
+        f.borrow_mut()
+            .own_props
+            .insert(String::from("__constructable__"), JsValue::Bool(true));
+    }
+    func
+}
+
 /// Create a native function with an explicit `.length` (arity) property.
 pub fn native_fn_with_length(
     name: &str,
@@ -3072,4 +3097,18 @@ pub fn native_fn_with_length(
         arity: Some(length),
         super_class: None,
     })))
+}
+
+pub fn native_ctor_fn_with_length(
+    name: &str,
+    f: fn(&mut Vm, &[JsValue]) -> JsValue,
+    length: usize,
+) -> JsValue {
+    let func = native_fn_with_length(name, f, length);
+    if let JsValue::Function(f) = &func {
+        f.borrow_mut()
+            .own_props
+            .insert(String::from("__constructable__"), JsValue::Bool(true));
+    }
+    func
 }

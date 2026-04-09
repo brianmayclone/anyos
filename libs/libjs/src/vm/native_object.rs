@@ -63,6 +63,7 @@ fn is_function_hidden_prop_key(key: &str) -> bool {
         || key.starts_with("__set_")
         || key.starts_with("__desc_")
         || key.starts_with("__deleted_builtin_")
+        || key == "__constructable__"
 }
 
 fn function_public_own_prop_names(func: &JsFunction) -> Vec<String> {
@@ -118,12 +119,19 @@ pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         // Function values: check own_props AND built-in properties (name, length, prototype).
         JsValue::Function(f) => {
             let func = f.borrow();
+            let constructable = match &func.kind {
+                FnKind::Bytecode(chunk) => !chunk.is_arrow && !chunk.is_generator,
+                FnKind::Native(_) => matches!(
+                    func.own_props.get("__constructable__"),
+                    Some(JsValue::Bool(true))
+                ),
+            };
             JsValue::Bool(
                 function_public_own_prop_names(&func).iter().any(|k| k == &key)
                     || (key == "name" && !function_builtin_deleted(&func, "name"))
                     || (key == "length" && !function_builtin_deleted(&func, "length"))
                     || (key == "prototype"
-                        && !func.kind.is_arrow()
+                        && constructable
                         && !function_builtin_deleted(&func, "prototype")),
             )
         }
