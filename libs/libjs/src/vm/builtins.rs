@@ -70,6 +70,7 @@ impl Vm {
         {
             let mut p = self.array_proto.borrow_mut();
             p.prototype = Some(self.object_proto.clone());
+            let values_fn = native_fn_with_length("values", native_array::array_values, 0);
             p.set_hidden(
                 String::from("push"),
                 native_fn_with_length("push", native_array::array_push, 1),
@@ -184,7 +185,7 @@ impl Vm {
             );
             p.set_hidden(
                 String::from("values"),
-                native_fn_with_length("values", native_array::array_values, 0),
+                values_fn.clone(),
             );
             p.set_hidden(
                 String::from("at"),
@@ -197,8 +198,31 @@ impl Vm {
             // Symbol.iterator — returns an array iterator
             p.set_hidden(
                 String::from(native_symbol::WELL_KNOWN_ITERATOR),
-                native_fn("[Symbol.iterator]", array_symbol_iterator),
+                values_fn,
             );
+            let unscopables = JsValue::new_object();
+            for key in [
+                "at",
+                "copyWithin",
+                "entries",
+                "fill",
+                "find",
+                "findIndex",
+                "findLast",
+                "findLastIndex",
+                "flat",
+                "flatMap",
+                "includes",
+                "keys",
+                "toReversed",
+                "toSorted",
+                "toSpliced",
+                "values",
+                "with",
+            ] {
+                unscopables.set_property(String::from(key), JsValue::Bool(true));
+            }
+            p.set_hidden(String::from(native_symbol::WELL_KNOWN_UNSCOPABLES), unscopables);
             // ES2023+
             p.set_hidden(
                 String::from("findLast"),

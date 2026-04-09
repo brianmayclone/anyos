@@ -19,6 +19,7 @@ pub const WELL_KNOWN_HAS_INSTANCE: &str = "__symbol__0_Symbol.hasInstance";
 pub const WELL_KNOWN_MATCH: &str = "__symbol__0_Symbol.match";
 pub const WELL_KNOWN_IS_CONCAT_SPREADABLE: &str = "__symbol__0_Symbol.isConcatSpreadable";
 pub const WELL_KNOWN_SPECIES: &str = "__symbol__0_Symbol.species";
+pub const WELL_KNOWN_UNSCOPABLES: &str = "__symbol__0_Symbol.unscopables";
 
 // Monotonically increasing symbol counter.
 static mut NEXT_SYMBOL_ID: u64 = 1;
@@ -105,7 +106,7 @@ pub fn install_well_known_symbols(symbol_ctor: &JsValue) {
     );
     symbol_ctor.set_property(
         String::from("unscopables"),
-        JsValue::String(String::from("__symbol__0_Symbol.unscopables")),
+        JsValue::String(String::from(WELL_KNOWN_UNSCOPABLES)),
     );
     symbol_ctor.set_property(
         String::from("asyncIterator"),
