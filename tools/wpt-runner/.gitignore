@@ -1,0 +1,5 @@
+# WPT repository (downloaded by setup.sh)
+wpt/
+
+# Test results (screenshots)
+results/

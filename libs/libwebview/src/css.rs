@@ -3,6 +3,7 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::dom::Tag;
@@ -14,6 +15,8 @@ use crate::dom::Tag;
 #[derive(Clone)]
 pub struct Stylesheet {
     pub rules: Vec<Rule>,
+    /// Ordered layer names from lowest to highest normal-priority precedence.
+    pub layer_order: Vec<String>,
     /// @media rules: each contains a query and the rules inside it.
     pub media_rules: Vec<MediaRule>,
     /// @keyframes blocks indexed by animation name.
@@ -111,6 +114,10 @@ pub enum MediaCondition {
 pub struct Rule {
     pub selectors: Vec<Selector>,
     pub declarations: Vec<Declaration>,
+    /// Full layer name (e.g. "framework.components") if declared inside `@layer`.
+    pub layer_name: Option<String>,
+    /// Global layer order assigned during stylesheet preparation.
+    pub layer_index: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -198,6 +205,26 @@ pub enum PseudoClass {
     FocusWithin,
     /// `:placeholder-shown` — matches input elements showing placeholder text.
     PlaceholderShown,
+    /// `:required` — form elements with required attribute.
+    Required,
+    /// `:optional` — form elements without required attribute.
+    Optional,
+    /// `:read-only` — elements that are not editable.
+    ReadOnly,
+    /// `:read-write` — elements that are user-editable.
+    ReadWrite,
+    /// `:valid` — form elements that pass constraint validation.
+    Valid,
+    /// `:invalid` — form elements that fail constraint validation.
+    Invalid,
+    /// `:in-range` — number/range/date inputs within min/max bounds.
+    InRange,
+    /// `:out-of-range` — number/range/date inputs outside min/max bounds.
+    OutOfRange,
+    /// `:default` — default submit button or initially-checked radio/checkbox.
+    Default,
+    /// `:indeterminate` — checkbox/radio/progress with no definite state.
+    Indeterminate,
 }
 
 #[derive(Clone)]
@@ -265,6 +292,10 @@ pub enum Property {
     JustifyContent,
     AlignItems,
     AlignSelf,
+    JustifySelf,
+    PlaceItems,
+    PlaceSelf,
+    PlaceContent,
     AlignContent,
     FlexGrow,
     FlexShrink,
@@ -401,7 +432,9 @@ pub enum Property {
     MarginBlock,
     // Additional properties for modern CSS
     Appearance,
+    AccentColor,
     BackgroundClip,
+    ColorScheme,
     ScrollBehavior,
     Resize,
     ObjectPosition,
@@ -649,7 +682,9 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
     let mut keyframes = Vec::new();
     let mut imports = Vec::new();
     let mut font_faces = Vec::new();
-    let mut layer_depth: u32 = 0;
+    let mut layer_order = Vec::new();
+    let mut layer_stack: Vec<String> = Vec::new();
+    let mut anon_layer_counter: u32 = 0;
 
     loop {
         p.skip_whitespace();
@@ -657,11 +692,10 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
             break;
         }
 
-        // Closing brace from @layer container
         if p.peek() == b'}' {
             p.pos += 1;
-            if layer_depth > 0 {
-                layer_depth -= 1;
+            if !layer_stack.is_empty() {
+                layer_stack.pop();
             }
             continue;
         }
@@ -844,7 +878,12 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
 
             if kw_lower == "media" {
                 // Parse @media query and inner rules.
-                if let Some(mr) = parse_media_rule(&mut p) {
+                if let Some(mr) = parse_media_rule(
+                    &mut p,
+                    layer_stack.last().map(|s| s.as_str()),
+                    &mut layer_order,
+                    &mut anon_layer_counter,
+                ) {
                     media_rules.push(mr);
                 }
                 continue;
@@ -859,7 +898,12 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
 
             // @supports — evaluate the condition and include rules if supported.
             if kw_lower == "supports" {
-                if let Some(sr) = parse_supports_rule(&mut p) {
+                if let Some(sr) = parse_supports_rule(
+                    &mut p,
+                    layer_stack.last().map(|s| s.as_str()),
+                    &mut layer_order,
+                    &mut anon_layer_counter,
+                ) {
                     // @supports rules whose condition evaluates to true have their
                     // inner rules and media rules merged into the main lists.
                     for rule in sr.rules {
@@ -872,18 +916,27 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
                 continue;
             }
 
-            // @layer — CSS Cascade Layers. Transparent container: skip name + opening
-            // brace, let the main loop parse inner rules. Closing } handled below.
             if kw_lower == "layer" {
                 p.skip_whitespace();
+                let name_start = p.pos;
                 while !p.eof() && p.peek() != b'{' && p.peek() != b';' {
                     p.pos += 1;
                 }
+                let name_text = core::str::from_utf8(&p.input[name_start..p.pos])
+                    .unwrap_or("")
+                    .trim();
                 if p.peek() == b';' {
+                    register_layer_statement(name_text, layer_stack.last().map(|s| s.as_str()), &mut layer_order);
                     p.pos += 1;
                 } else if p.peek() == b'{' {
-                    p.pos += 1; // skip { — main loop continues with inner rules
-                    layer_depth += 1;
+                    let full_name = resolve_layer_block_name(
+                        name_text,
+                        layer_stack.last().map(|s| s.as_str()),
+                        &mut layer_order,
+                        &mut anon_layer_counter,
+                    );
+                    p.pos += 1;
+                    layer_stack.push(full_name);
                 }
                 continue;
             }
@@ -920,7 +973,7 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
         }
 
         // Parse rule: selectors { declarations }
-        if let Some(rule) = parse_rule(&mut p) {
+        if let Some(rule) = parse_rule(&mut p, layer_stack.last().map(|s| s.as_str())) {
             rules.push(rule);
         }
     }
@@ -934,6 +987,7 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
     );
     Stylesheet {
         rules,
+        layer_order,
         media_rules,
         keyframes,
         imports,
@@ -942,7 +996,12 @@ pub fn parse_stylesheet(css: &str) -> Stylesheet {
 }
 
 /// Parse a @media rule: query { rules }.
-fn parse_media_rule(p: &mut Parser) -> Option<MediaRule> {
+fn parse_media_rule(
+    p: &mut Parser,
+    current_layer: Option<&str>,
+    layer_order: &mut Vec<String>,
+    anon_layer_counter: &mut u32,
+) -> Option<MediaRule> {
     p.skip_whitespace();
 
     // Read everything until '{' as the media query text.
@@ -960,6 +1019,11 @@ fn parse_media_rule(p: &mut Parser) -> Option<MediaRule> {
 
     // Parse inner rules until matching '}'.
     let mut inner_rules = Vec::new();
+    let mut layer_stack: Vec<String> = Vec::new();
+    if let Some(layer) = current_layer {
+        layer_stack.push(String::from(layer));
+    }
+    let base_layer_depth = layer_stack.len();
     loop {
         p.skip_whitespace();
         if p.eof() {
@@ -967,6 +1031,10 @@ fn parse_media_rule(p: &mut Parser) -> Option<MediaRule> {
         }
         if p.peek() == b'}' {
             p.pos += 1;
+            if layer_stack.len() > base_layer_depth {
+                layer_stack.pop();
+                continue;
+            }
             break;
         }
         // Handle nested at-rules inside @media.
@@ -983,12 +1051,41 @@ fn parse_media_rule(p: &mut Parser) -> Option<MediaRule> {
             };
             // Handle @supports nested inside @media.
             if kw_lower == "supports" {
-                if let Some(sr) = parse_supports_rule(p) {
+                if let Some(sr) = parse_supports_rule(
+                    p,
+                    layer_stack.last().map(|s| s.as_str()),
+                    layer_order,
+                    anon_layer_counter,
+                ) {
                     for rule in sr.rules {
                         inner_rules.push(rule);
                     }
-                    // Note: nested media rules inside @supports inside @media
-                    // are dropped (three-level nesting not supported).
+                }
+            } else if kw_lower == "layer" {
+                p.skip_whitespace();
+                let name_start = p.pos;
+                while !p.eof() && p.peek() != b'{' && p.peek() != b';' {
+                    p.pos += 1;
+                }
+                let name_text = core::str::from_utf8(&p.input[name_start..p.pos])
+                    .unwrap_or("")
+                    .trim();
+                if p.peek() == b';' {
+                    register_layer_statement(
+                        name_text,
+                        layer_stack.last().map(|s| s.as_str()),
+                        layer_order,
+                    );
+                    p.pos += 1;
+                } else if p.peek() == b'{' {
+                    let full_name = resolve_layer_block_name(
+                        name_text,
+                        layer_stack.last().map(|s| s.as_str()),
+                        layer_order,
+                        anon_layer_counter,
+                    );
+                    p.pos += 1;
+                    layer_stack.push(full_name);
                 }
             } else {
                 // Skip other nested at-rules.
@@ -1010,7 +1107,7 @@ fn parse_media_rule(p: &mut Parser) -> Option<MediaRule> {
             }
             continue;
         }
-        if let Some(rule) = parse_rule(p) {
+        if let Some(rule) = parse_rule(p, layer_stack.last().map(|s| s.as_str())) {
             inner_rules.push(rule);
         }
     }
@@ -1469,7 +1566,63 @@ struct SupportsResult {
     media_rules: Vec<MediaRule>,
 }
 
-fn parse_supports_rule(p: &mut Parser) -> Option<SupportsResult> {
+fn register_layer_name(full_name: &str, layer_order: &mut Vec<String>) {
+    if full_name.is_empty() {
+        return;
+    }
+    if !layer_order.iter().any(|name| name == full_name) {
+        layer_order.push(String::from(full_name));
+    }
+}
+
+fn qualify_layer_name(name: &str, parent: Option<&str>) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        return String::new();
+    }
+    if let Some(parent_name) = parent {
+        let mut full = String::from(parent_name);
+        full.push('.');
+        full.push_str(name);
+        full
+    } else {
+        String::from(name)
+    }
+}
+
+fn register_layer_statement(name_text: &str, parent: Option<&str>, layer_order: &mut Vec<String>) {
+    for raw_name in name_text.split(',') {
+        let full_name = qualify_layer_name(raw_name.trim(), parent);
+        register_layer_name(&full_name, layer_order);
+    }
+}
+
+fn resolve_layer_block_name(
+    name_text: &str,
+    parent: Option<&str>,
+    layer_order: &mut Vec<String>,
+    anon_layer_counter: &mut u32,
+) -> String {
+    let trimmed = name_text.trim();
+    if trimmed.is_empty() {
+        *anon_layer_counter += 1;
+        let mut full = String::from("__anon_layer_");
+        full.push_str(&anon_layer_counter.to_string());
+        register_layer_name(&full, layer_order);
+        return full;
+    }
+
+    let full_name = qualify_layer_name(trimmed, parent);
+    register_layer_name(&full_name, layer_order);
+    full_name
+}
+
+fn parse_supports_rule(
+    p: &mut Parser,
+    current_layer: Option<&str>,
+    layer_order: &mut Vec<String>,
+    anon_layer_counter: &mut u32,
+) -> Option<SupportsResult> {
     p.skip_whitespace();
 
     // Read everything until '{' as the supports condition.
@@ -1489,6 +1642,12 @@ fn parse_supports_rule(p: &mut Parser) -> Option<SupportsResult> {
     // Parse inner rules (including nested @media).
     let mut inner_rules = Vec::new();
     let mut inner_media = Vec::new();
+    let mut layer_stack: Vec<String> = Vec::new();
+    if let Some(layer) = current_layer {
+        layer_stack.push(String::from(layer));
+    }
+    let base_layer_depth = layer_stack.len();
+
     loop {
         p.skip_whitespace();
         if p.eof() {
@@ -1496,6 +1655,10 @@ fn parse_supports_rule(p: &mut Parser) -> Option<SupportsResult> {
         }
         if p.peek() == b'}' {
             p.pos += 1;
+            if layer_stack.len() > base_layer_depth {
+                layer_stack.pop();
+                continue;
+            }
             break;
         }
         if p.peek() == b'@' {
@@ -1510,8 +1673,53 @@ fn parse_supports_rule(p: &mut Parser) -> Option<SupportsResult> {
                 String::from(core::str::from_utf8(&buf[..len]).unwrap_or(""))
             };
             if kw_lower == "media" {
-                if let Some(mr) = parse_media_rule(p) {
+                if let Some(mr) = parse_media_rule(
+                    p,
+                    layer_stack.last().map(|s| s.as_str()),
+                    layer_order,
+                    anon_layer_counter,
+                ) {
                     inner_media.push(mr);
+                }
+            } else if kw_lower == "supports" {
+                if let Some(sr) = parse_supports_rule(
+                    p,
+                    layer_stack.last().map(|s| s.as_str()),
+                    layer_order,
+                    anon_layer_counter,
+                ) {
+                    for rule in sr.rules {
+                        inner_rules.push(rule);
+                    }
+                    for mr in sr.media_rules {
+                        inner_media.push(mr);
+                    }
+                }
+            } else if kw_lower == "layer" {
+                p.skip_whitespace();
+                let name_start = p.pos;
+                while !p.eof() && p.peek() != b'{' && p.peek() != b';' {
+                    p.pos += 1;
+                }
+                let name_text = core::str::from_utf8(&p.input[name_start..p.pos])
+                    .unwrap_or("")
+                    .trim();
+                if p.peek() == b';' {
+                    register_layer_statement(
+                        name_text,
+                        layer_stack.last().map(|s| s.as_str()),
+                        layer_order,
+                    );
+                    p.pos += 1;
+                } else if p.peek() == b'{' {
+                    let full_name = resolve_layer_block_name(
+                        name_text,
+                        layer_stack.last().map(|s| s.as_str()),
+                        layer_order,
+                        anon_layer_counter,
+                    );
+                    p.pos += 1;
+                    layer_stack.push(full_name);
                 }
             } else {
                 // Skip other nested at-rules.
@@ -1533,7 +1741,7 @@ fn parse_supports_rule(p: &mut Parser) -> Option<SupportsResult> {
             }
             continue;
         }
-        if let Some(rule) = parse_rule(p) {
+        if let Some(rule) = parse_rule(p, layer_stack.last().map(|s| s.as_str())) {
             inner_rules.push(rule);
         }
     }
@@ -1779,7 +1987,7 @@ fn parse_declarations_block(p: &mut Parser) -> Vec<Declaration> {
     parse_declarations(&mut inner)
 }
 
-fn parse_rule(p: &mut Parser) -> Option<Rule> {
+fn parse_rule(p: &mut Parser, current_layer: Option<&str>) -> Option<Rule> {
     let selectors = parse_selector_list(p);
     if selectors.is_empty() {
         return Option::None;
@@ -1809,6 +2017,8 @@ fn parse_rule(p: &mut Parser) -> Option<Rule> {
     Some(Rule {
         selectors,
         declarations,
+        layer_name: current_layer.map(String::from),
+        layer_index: None,
     })
 }
 
@@ -2177,6 +2387,16 @@ fn parse_pseudo_class_from_name(lower: &str, p: &mut Parser) -> Option<PseudoCla
         "focus-visible" => Some(PseudoClass::FocusVisible),
         "focus-within" => Some(PseudoClass::FocusWithin),
         "placeholder-shown" => Some(PseudoClass::PlaceholderShown),
+        "required" => Some(PseudoClass::Required),
+        "optional" => Some(PseudoClass::Optional),
+        "read-only" => Some(PseudoClass::ReadOnly),
+        "read-write" => Some(PseudoClass::ReadWrite),
+        "valid" => Some(PseudoClass::Valid),
+        "invalid" => Some(PseudoClass::Invalid),
+        "in-range" => Some(PseudoClass::InRange),
+        "out-of-range" => Some(PseudoClass::OutOfRange),
+        "default" => Some(PseudoClass::Default),
+        "indeterminate" => Some(PseudoClass::Indeterminate),
         _ => {
             // Skip unknown pseudo-class arguments
             if p.peek() == b'(' {
@@ -2519,6 +2739,10 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "justify-content" => Some(Property::JustifyContent),
         "align-items" => Some(Property::AlignItems),
         "align-self" => Some(Property::AlignSelf),
+        "justify-self" => Some(Property::JustifySelf),
+        "place-items" => Some(Property::PlaceItems),
+        "place-self" => Some(Property::PlaceSelf),
+        "place-content" => Some(Property::PlaceContent),
         "align-content" => Some(Property::AlignContent),
         "flex-grow" => Some(Property::FlexGrow),
         "flex-shrink" => Some(Property::FlexShrink),
@@ -2646,7 +2870,9 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "font" => Some(Property::FontFamily),
         // Additional properties
         "appearance" | "-webkit-appearance" | "-moz-appearance" => Some(Property::Appearance),
+        "accent-color" => Some(Property::AccentColor),
         "background-clip" | "-webkit-background-clip" => Some(Property::BackgroundClip),
+        "color-scheme" => Some(Property::ColorScheme),
         "text-decoration-line" => Some(Property::TextDecoration),
         "scroll-behavior" => Some(Property::ScrollBehavior),
         "resize" => Some(Property::Resize),
@@ -3176,6 +3402,7 @@ fn is_color_property(p: &Property) -> bool {
             | Property::BorderLeftColor
             | Property::OutlineColor
             | Property::TextDecorationColor
+            | Property::AccentColor
     )
 }
 

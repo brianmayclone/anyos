@@ -321,7 +321,23 @@ Find the form control (TextInput / Textarea) at viewport position `(vx, vy)` giv
 
 ### `focus_form_control_at_canvas(canvas_ctrl_id: u32) -> bool`
 
-Check if a canvas click hit a form control (TextInput/Textarea). If so, focus the control and return `true`.
+Check if a canvas click hit a form control (TextInput/Textarea). If so, focus the control, update CSS selector focus state, and return `true`.
+
+### `set_hovered_node(node_id: Option<usize>)`
+
+Update selector state for CSS `:hover`.
+
+### `set_active_node(node_id: Option<usize>)`
+
+Update selector state for CSS `:active`.
+
+### `set_focused_node(node_id: Option<usize>, focus_visible: bool)`
+
+Update selector state for CSS `:focus`, `:focus-visible`, and `:focus-within`.
+
+### `clear_selector_state()`
+
+Reset all dynamic selector pseudo-class state.
 
 ### `get_form_control_text(control_id: u32) -> String`
 

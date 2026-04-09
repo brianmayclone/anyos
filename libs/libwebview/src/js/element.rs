@@ -374,6 +374,47 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
     obj.set(String::from("name"), JsValue::String(name_val));
     obj.set(String::from("checked"), JsValue::Bool(checked));
     obj.set(String::from("disabled"), JsValue::Bool(disabled));
+    // Additional form properties (HTML §4.10).
+    let required = !matches!(read_attribute(vm, node_id, "required"), JsValue::Null);
+    let read_only = !matches!(read_attribute(vm, node_id, "readonly"), JsValue::Null);
+    let multiple = !matches!(read_attribute(vm, node_id, "multiple"), JsValue::Null);
+    obj.set(String::from("required"), JsValue::Bool(required));
+    obj.set(String::from("readOnly"), JsValue::Bool(read_only));
+    obj.set(String::from("multiple"), JsValue::Bool(multiple));
+    obj.set(
+        String::from("placeholder"),
+        JsValue::String(attr_or_empty(vm, "placeholder")),
+    );
+    obj.set(String::from("min"), JsValue::String(attr_or_empty(vm, "min")));
+    obj.set(String::from("max"), JsValue::String(attr_or_empty(vm, "max")));
+    obj.set(String::from("step"), JsValue::String(attr_or_empty(vm, "step")));
+    obj.set(
+        String::from("pattern"),
+        JsValue::String(attr_or_empty(vm, "pattern")),
+    );
+    obj.set(String::from("accept"), JsValue::String(attr_or_empty(vm, "accept")));
+    obj.set(
+        String::from("autocomplete"),
+        JsValue::String(attr_or_empty(vm, "autocomplete")),
+    );
+    // maxLength / minLength — -1 if not set (per HTML spec).
+    let maxlength = read_attribute(vm, node_id, "maxlength");
+    let maxlength_num = match &maxlength {
+        JsValue::String(s) => s.parse::<f64>().unwrap_or(-1.0),
+        _ => -1.0,
+    };
+    obj.set(String::from("maxLength"), JsValue::Number(maxlength_num));
+    let minlength = read_attribute(vm, node_id, "minlength");
+    let minlength_num = match &minlength {
+        JsValue::String(s) => s.parse::<f64>().unwrap_or(-1.0),
+        _ => -1.0,
+    };
+    obj.set(String::from("minLength"), JsValue::Number(minlength_num));
+    // selectedIndex for <select> (reflects DOM `selected` attr on <option> children).
+    let selected_index = read_attribute(vm, node_id, "selectedIndex");
+    if !matches!(selected_index, JsValue::Null) {
+        obj.set(String::from("selectedIndex"), selected_index);
+    }
     obj.set(
         String::from("namespaceURI"),
         JsValue::String(String::from("http://www.w3.org/1999/xhtml")),
@@ -657,6 +698,78 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
             String::from("toBlob"),
             native_fn("toBlob", |_, _| JsValue::Undefined),
         );
+    }
+
+    // <form> element: add submit(), reset(), elements, checkValidity().
+    if tag_name == "FORM" {
+        obj.set(
+            String::from("submit"),
+            native_fn("submit", |vm, _args| {
+                let this = vm.current_this.clone();
+                let nid = extract_node_id(&this);
+                if nid >= 0 {
+                    if let Some(bridge) = get_bridge(vm) {
+                        bridge.mutations.push(crate::js::DomMutation::FormSubmit {
+                            form_node_id: nid as usize,
+                        });
+                    }
+                }
+                JsValue::Undefined
+            }),
+        );
+        obj.set(
+            String::from("reset"),
+            native_fn("reset", |vm, _args| {
+                let this = vm.current_this.clone();
+                let nid = extract_node_id(&this);
+                if nid >= 0 {
+                    if let Some(bridge) = get_bridge(vm) {
+                        bridge.mutations.push(crate::js::DomMutation::FormReset {
+                            form_node_id: nid as usize,
+                        });
+                    }
+                }
+                JsValue::Undefined
+            }),
+        );
+        // checkValidity() — validates all descendant form controls.
+        obj.set(
+            String::from("checkValidity"),
+            native_fn("checkValidity", el_form_check_validity),
+        );
+        obj.set(
+            String::from("reportValidity"),
+            native_fn("reportValidity", el_form_check_validity),
+        );
+    }
+
+    // Form control elements: add checkValidity(), setCustomValidity(), validity.
+    if matches!(
+        tag_name.as_str(),
+        "INPUT" | "SELECT" | "TEXTAREA" | "BUTTON"
+    ) {
+        obj.set(
+            String::from("checkValidity"),
+            native_fn("checkValidity", el_check_validity),
+        );
+        obj.set(
+            String::from("reportValidity"),
+            native_fn("reportValidity", el_report_validity),
+        );
+        obj.set(
+            String::from("setCustomValidity"),
+            native_fn("setCustomValidity", |_, _| JsValue::Undefined),
+        );
+        // validity — getter that runs real constraint validation.
+        obj.set(
+            String::from("validity"),
+            native_fn("validity", el_get_validity),
+        );
+        obj.set(
+            String::from("validationMessage"),
+            JsValue::String(String::new()),
+        );
+        obj.set(String::from("willValidate"), JsValue::Bool(true));
     }
 
     // Set property-write interception hook so that assignments like
@@ -2048,6 +2161,92 @@ fn el_get_root_node(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 fn el_noop(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     JsValue::Undefined
+}
+
+/// `form.checkValidity()` — validates all descendant form controls.
+fn el_form_check_validity(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let form_nid = this_node_id(vm);
+    if form_nid < 0 {
+        return JsValue::Bool(true);
+    }
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        // Walk all nodes in the DOM and validate those that are children of this form.
+        for i in 0..dom.nodes.len() {
+            let tag = dom.tag(i);
+            if !matches!(tag, Some(crate::dom::Tag::Input) | Some(crate::dom::Tag::Select) | Some(crate::dom::Tag::Textarea)) {
+                continue;
+            }
+            // Check if this node is a descendant of the form.
+            let mut cur = dom.nodes[i].parent;
+            let mut is_child = false;
+            while let Some(pid) = cur {
+                if pid == form_nid as usize {
+                    is_child = true;
+                    break;
+                }
+                cur = dom.nodes[pid].parent;
+            }
+            if is_child {
+                let r = crate::dom::validate_form_control(dom, i);
+                if !r.is_valid() {
+                    return JsValue::Bool(false);
+                }
+            }
+        }
+        JsValue::Bool(true)
+    } else {
+        JsValue::Bool(true)
+    }
+}
+
+/// `element.reportValidity()` — validates and returns result.
+/// Per W3C, this reports validation errors to the user. In our implementation
+/// it runs the same checks as checkValidity() — the browser UI layer (Surf)
+/// can show error bubbles based on the result.
+fn el_report_validity(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    el_check_validity(vm, _args)
+}
+
+/// `element.checkValidity()` — real constraint validation.
+fn el_check_validity(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    if nid < 0 {
+        return JsValue::Bool(true);
+    }
+    if let Some(bridge) = get_bridge(vm) {
+        let r = crate::dom::validate_form_control(bridge.dom(), nid as usize);
+        JsValue::Bool(r.is_valid())
+    } else {
+        JsValue::Bool(true)
+    }
+}
+
+/// `element.validity` — returns a ValidityState object with real constraint check results.
+fn el_get_validity(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let nid = this_node_id(vm);
+    let r = if nid >= 0 {
+        if let Some(bridge) = get_bridge(vm) {
+            crate::dom::validate_form_control(bridge.dom(), nid as usize)
+        } else {
+            crate::dom::ValidationResult::default()
+        }
+    } else {
+        crate::dom::ValidationResult::default()
+    };
+    let mut obj = JsObject::new();
+    obj.set(String::from("valid"), JsValue::Bool(r.is_valid()));
+    obj.set(String::from("valueMissing"), JsValue::Bool(r.value_missing));
+    obj.set(String::from("typeMismatch"), JsValue::Bool(r.type_mismatch));
+    obj.set(String::from("patternMismatch"), JsValue::Bool(r.pattern_mismatch));
+    obj.set(String::from("tooLong"), JsValue::Bool(r.too_long));
+    obj.set(String::from("tooShort"), JsValue::Bool(r.too_short));
+    obj.set(String::from("rangeUnderflow"), JsValue::Bool(r.range_underflow));
+    obj.set(String::from("rangeOverflow"), JsValue::Bool(r.range_overflow));
+    obj.set(String::from("stepMismatch"), JsValue::Bool(r.step_mismatch));
+    obj.set(String::from("badInput"), JsValue::Bool(r.bad_input));
+    obj.set(String::from("customError"), JsValue::Bool(false));
+    JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
 /// `element.scrollTo(x, y)` or `element.scrollTo({ top, left })`.

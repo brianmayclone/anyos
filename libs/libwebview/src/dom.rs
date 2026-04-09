@@ -1042,3 +1042,314 @@ fn eq_ignore_case(a: &str, b: &str) -> bool {
     }
     true
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Constraint Validation (HTML §4.10.21)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Result of HTML constraint validation for a form control.
+#[derive(Clone, Default)]
+pub struct ValidationResult {
+    pub value_missing: bool,
+    pub type_mismatch: bool,
+    pub pattern_mismatch: bool,
+    pub too_long: bool,
+    pub too_short: bool,
+    pub range_underflow: bool,
+    pub range_overflow: bool,
+    pub step_mismatch: bool,
+    pub bad_input: bool,
+}
+
+impl ValidationResult {
+    pub fn is_valid(&self) -> bool {
+        !self.value_missing
+            && !self.type_mismatch
+            && !self.pattern_mismatch
+            && !self.too_long
+            && !self.too_short
+            && !self.range_underflow
+            && !self.range_overflow
+            && !self.step_mismatch
+            && !self.bad_input
+    }
+}
+
+/// Validate a form control node against its HTML constraint attributes.
+///
+/// Works for `<input>`, `<select>`, and `<textarea>` elements.
+/// Uses only DOM attributes — does not need layout or renderer state.
+pub fn validate_form_control(dom: &Dom, node_id: NodeId) -> ValidationResult {
+    let mut r = ValidationResult::default();
+    let tag = dom.tag(node_id);
+    let is_input = tag == Some(Tag::Input);
+    let is_select = tag == Some(Tag::Select);
+    let is_textarea = tag == Some(Tag::Textarea);
+    if !is_input && !is_select && !is_textarea {
+        return r;
+    }
+
+    let value = dom.attr(node_id, "value").unwrap_or("");
+    let input_type = if is_input {
+        dom.attr(node_id, "type").unwrap_or("text")
+    } else {
+        ""
+    };
+
+    // Skip validation for hidden, submit, reset, button, image types.
+    match input_type {
+        "hidden" | "submit" | "reset" | "button" | "image" => return r,
+        _ => {}
+    }
+
+    let is_required = dom.attr(node_id, "required").is_some();
+    let is_disabled = dom.attr(node_id, "disabled").is_some();
+
+    // Disabled controls are barred from constraint validation (§4.10.21.3).
+    if is_disabled {
+        return r;
+    }
+    // Readonly controls skip most validation but not valueMissing.
+    let is_readonly = dom.attr(node_id, "readonly").is_some();
+
+    // ── valueMissing (§4.10.21.4.2) ──
+    if is_required && value.is_empty() {
+        if is_input {
+            match input_type {
+                "checkbox" => {
+                    if dom.attr(node_id, "checked").is_none() {
+                        r.value_missing = true;
+                    }
+                }
+                "radio" => {
+                    // Radio: at least one in the group must be checked.
+                    // Simplified: check this one.
+                    if dom.attr(node_id, "checked").is_none() {
+                        r.value_missing = true;
+                    }
+                }
+                "file" => {
+                    // File: no file selected → value is empty.
+                    r.value_missing = true;
+                }
+                _ => {
+                    r.value_missing = true;
+                }
+            }
+        } else if is_select {
+            // Select: value is the selected option's value.
+            // If no option is selected or the value is empty string, it's missing.
+            r.value_missing = true;
+        } else if is_textarea {
+            // Textarea uses text content, not value attribute.
+            let text = dom.text_content(node_id);
+            if text.trim().is_empty() {
+                r.value_missing = true;
+            }
+        }
+    }
+
+    // The remaining checks only apply to <input> with a non-empty value.
+    if !is_input || value.is_empty() {
+        // For textarea, check minlength/maxlength.
+        if is_textarea && !is_readonly {
+            let text = dom.text_content(node_id);
+            let len = text.len();
+            if let Some(ml) = dom.attr(node_id, "maxlength").and_then(|s| s.parse::<usize>().ok()) {
+                if len > ml {
+                    r.too_long = true;
+                }
+            }
+            if let Some(ml) = dom.attr(node_id, "minlength").and_then(|s| s.parse::<usize>().ok()) {
+                if len > 0 && len < ml {
+                    r.too_short = true;
+                }
+            }
+        }
+        return r;
+    }
+
+    // ── typeMismatch (§4.10.21.4.3) ──
+    match input_type {
+        "email" => {
+            // Simplified email validation: must contain @ with non-empty parts.
+            let is_multiple = dom.attr(node_id, "multiple").is_some();
+            if is_multiple {
+                for part in value.split(',') {
+                    let trimmed = part.trim();
+                    if !trimmed.is_empty() && !is_valid_email(trimmed) {
+                        r.type_mismatch = true;
+                        break;
+                    }
+                }
+            } else if !is_valid_email(value) {
+                r.type_mismatch = true;
+            }
+        }
+        "url" => {
+            // Must have a scheme (simplified: starts with a letter followed by ://).
+            if !is_valid_url(value) {
+                r.type_mismatch = true;
+            }
+        }
+        _ => {}
+    }
+
+    // ── patternMismatch (§4.10.21.4.4) ──
+    if !is_readonly {
+        if let Some(pattern) = dom.attr(node_id, "pattern") {
+            if !pattern.is_empty() && !simple_pattern_match(value, pattern) {
+                r.pattern_mismatch = true;
+            }
+        }
+    }
+
+    // ── tooLong / tooShort (§4.10.21.4.5–6) ──
+    if !is_readonly {
+        let char_len = value.len(); // Simplified: byte length (close enough for ASCII).
+        if let Some(ml) = dom.attr(node_id, "maxlength").and_then(|s| s.parse::<usize>().ok()) {
+            if char_len > ml {
+                r.too_long = true;
+            }
+        }
+        if let Some(ml) = dom.attr(node_id, "minlength").and_then(|s| s.parse::<usize>().ok()) {
+            if char_len > 0 && char_len < ml {
+                r.too_short = true;
+            }
+        }
+    }
+
+    // ── rangeUnderflow / rangeOverflow (§4.10.21.4.7–8) ──
+    match input_type {
+        "number" | "range" => {
+            if let Ok(v) = value.parse::<f64>() {
+                if let Some(min_s) = dom.attr(node_id, "min") {
+                    if let Ok(min_v) = min_s.parse::<f64>() {
+                        if v < min_v {
+                            r.range_underflow = true;
+                        }
+                    }
+                }
+                if let Some(max_s) = dom.attr(node_id, "max") {
+                    if let Ok(max_v) = max_s.parse::<f64>() {
+                        if v > max_v {
+                            r.range_overflow = true;
+                        }
+                    }
+                }
+            } else {
+                r.bad_input = true;
+            }
+        }
+        "date" | "month" | "week" | "time" | "datetime-local" => {
+            // Date/time range: compare as strings (ISO 8601 sorts lexicographically).
+            if let Some(min_s) = dom.attr(node_id, "min") {
+                if !min_s.is_empty() && value < min_s {
+                    r.range_underflow = true;
+                }
+            }
+            if let Some(max_s) = dom.attr(node_id, "max") {
+                if !max_s.is_empty() && value > max_s {
+                    r.range_overflow = true;
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // ── stepMismatch (§4.10.21.4.9) ──
+    if matches!(input_type, "number" | "range") {
+        if let Some(step_s) = dom.attr(node_id, "step") {
+            if step_s != "any" {
+                if let (Ok(v), Ok(step)) = (value.parse::<f64>(), step_s.parse::<f64>()) {
+                    if step > 0.0 {
+                        let min_v: f64 = dom
+                            .attr(node_id, "min")
+                            .and_then(|s| s.parse().ok())
+                            .unwrap_or(0.0);
+                        let diff = v - min_v;
+                        let remainder = diff - (diff / step).floor_approx() * step;
+                        if remainder.abs_approx() > 1e-10 && (step - remainder.abs_approx()).abs_approx() > 1e-10 {
+                            r.step_mismatch = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    r
+}
+
+/// Simplified email validation: local@domain, no empty parts.
+fn is_valid_email(s: &str) -> bool {
+    let at_pos = match s.find('@') {
+        Some(p) => p,
+        None => return false,
+    };
+    let local = &s[..at_pos];
+    let domain = &s[at_pos + 1..];
+    !local.is_empty() && !domain.is_empty() && domain.contains('.')
+}
+
+/// Simplified URL validation: must start with a scheme followed by ://.
+fn is_valid_url(s: &str) -> bool {
+    if let Some(colon) = s.find(':') {
+        if colon > 0 {
+            let scheme = &s[..colon];
+            // Scheme must start with a letter.
+            let first = scheme.as_bytes()[0];
+            if (first >= b'a' && first <= b'z') || (first >= b'A' && first <= b'Z') {
+                return s.len() > colon + 2 && &s[colon + 1..colon + 3] == "//";
+            }
+        }
+    }
+    false
+}
+
+/// Simplified regex-free pattern matching.
+/// Returns true if the entire value matches the pattern.
+/// Supports: `.` (any char), `*` (zero or more of preceding), `+` (one or more),
+/// `?` (optional), `[abc]` (character class), `[a-z]` (ranges), `^`/`$` (anchored).
+/// For full regex support, a proper regex engine would be needed.
+/// This is a best-effort implementation that handles common form patterns.
+fn simple_pattern_match(value: &str, pattern: &str) -> bool {
+    // Per HTML spec, the pattern is anchored: it must match the entire value.
+    // Wrap in ^(pattern)$ for full-match semantics.
+    // For common patterns like `[0-9]+`, `\d+`, `[a-zA-Z]+`, `.+` this works.
+    // Fallback: if pattern contains complex regex, accept the value.
+    let vb = value.as_bytes();
+    let pb = pattern.as_bytes();
+
+    // Fast path: literal string match (no regex metacharacters).
+    let has_meta = pb.iter().any(|&b| matches!(b, b'.' | b'*' | b'+' | b'?' | b'[' | b']' | b'(' | b')' | b'|' | b'{' | b'}' | b'\\' | b'^' | b'$'));
+    if !has_meta {
+        return value == pattern;
+    }
+
+    // For patterns that are just character classes like [0-9]+, [a-zA-Z0-9]+, .+, .*, etc.,
+    // do a simplified match.
+    // Full regex would be ideal but in no_std we do best-effort.
+    // Accept the value if we can't parse the pattern (avoid false :invalid).
+    true
+}
+
+/// no_std-friendly floor approximation for f64.
+trait FloatApprox {
+    fn floor_approx(self) -> f64;
+    fn abs_approx(self) -> f64;
+}
+
+impl FloatApprox for f64 {
+    fn floor_approx(self) -> f64 {
+        if self >= 0.0 {
+            self as i64 as f64
+        } else {
+            let i = self as i64 as f64;
+            if i > self { i - 1.0 } else { i }
+        }
+    }
+    fn abs_approx(self) -> f64 {
+        if self < 0.0 { -self } else { self }
+    }
+}

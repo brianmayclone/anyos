@@ -471,6 +471,39 @@ impl core::ops::Deref for ProgressBar { type Target = Control; fn deref(&self) -
 impl Widget for ProgressBar { fn id(&self) -> u32 { self.ctrl.id } }
 impl ProgressBar { pub fn new(_val: u32) -> Self { ProgressBar { ctrl: Control { id: next_id() } } } }
 
+// ── DropDown ────────────────────────────────────────────────────────────────
+
+pub struct DropDown { ctrl: Control }
+impl core::ops::Deref for DropDown { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for DropDown { fn id(&self) -> u32 { self.ctrl.id } }
+impl DropDown {
+    pub fn new(items: &str) -> Self {
+        let dd = DropDown { ctrl: Control { id: next_id() } };
+        // Store items as text so get_text can retrieve them.
+        let entry = get_control_text_mut(dd.ctrl.id);
+        entry.text.extend_from_slice(items.as_bytes());
+        dd
+    }
+    pub fn set_items(&self, items: &str) { self.ctrl.set_text(items); }
+    pub fn selected_index(&self) -> u32 { self.ctrl.get_state() }
+    pub fn set_selected_index(&self, idx: u32) { self.ctrl.set_state(idx); }
+    pub fn on_selection_changed(&self, _f: impl FnMut(&SelectionChangedEvent) + 'static) {}
+}
+
+// ── Slider ──────────────────────────────────────────────────────────────────
+
+pub struct Slider { ctrl: Control }
+impl core::ops::Deref for Slider { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for Slider { fn id(&self) -> u32 { self.ctrl.id } }
+impl Slider {
+    pub fn new(value: u32) -> Self {
+        let s = Slider { ctrl: Control { id: next_id() } };
+        get_control_text_mut(s.ctrl.id).state = value;
+        s
+    }
+    pub fn on_value_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
+}
+
 pub struct Spinner { ctrl: Control }
 impl core::ops::Deref for Spinner { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
 impl Widget for Spinner { fn id(&self) -> u32 { self.ctrl.id } }
@@ -479,6 +512,112 @@ impl Spinner {
     pub fn start(&self) -> u32 { 0 }
     pub fn stop(_timer_id: u32) {}
     pub fn set_spinner_color(&self, _color: u32) {}
+}
+
+// ── ListBox ─────────────────────────────────────────────────────────────
+
+pub struct ListBox { ctrl: Control }
+impl core::ops::Deref for ListBox { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for ListBox { fn id(&self) -> u32 { self.ctrl.id } }
+impl ListBox {
+    pub fn new(items: &str) -> Self {
+        let lb = ListBox { ctrl: Control { id: next_id() } };
+        let entry = get_control_text_mut(lb.ctrl.id);
+        entry.text.extend_from_slice(items.as_bytes());
+        lb
+    }
+    pub fn set_items(&self, items: &str) { self.ctrl.set_text(items); }
+    pub fn selected_index(&self) -> u32 { self.ctrl.get_state() }
+    pub fn set_selected_index(&self, idx: u32) { self.ctrl.set_state(idx); }
+    pub fn on_selection_changed(&self, _f: impl FnMut(&SelectionChangedEvent) + 'static) {}
+}
+
+// ── ColorWell ───────────────────────────────────────────────────────────
+
+pub struct ColorWell { ctrl: Control }
+impl core::ops::Deref for ColorWell { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for ColorWell { fn id(&self) -> u32 { self.ctrl.id } }
+impl ColorWell {
+    pub fn new() -> Self { ColorWell { ctrl: Control { id: next_id() } } }
+    pub fn set_selected_color(&self, color: u32) { self.ctrl.set_state(color); }
+    pub fn get_selected_color(&self) -> u32 { self.ctrl.get_state() }
+    pub fn on_color_selected(&self, _f: impl FnMut(&ColorSelectedEvent) + 'static) {}
+}
+
+pub struct ColorSelectedEvent { pub id: u32, pub color: u32 }
+
+// ── AutoCompleteTextField ────────────────────────────────────────────────
+
+pub struct AutoCompleteTextField { ctrl: Control }
+impl core::ops::Deref for AutoCompleteTextField { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for AutoCompleteTextField { fn id(&self) -> u32 { self.ctrl.id } }
+impl AutoCompleteTextField {
+    pub fn new() -> Self { AutoCompleteTextField { ctrl: Control { id: next_id() } } }
+    pub fn set_placeholder(&self, _text: &str) {}
+    pub fn set_suggestions(&self, _items: &str) {}
+    pub fn set_password_mode(&self, _enabled: bool) {}
+    pub fn on_text_changed(&self, _f: impl FnMut(&TextChangedEvent) + 'static) {}
+    pub fn on_submit(&self, _f: impl FnMut(&SubmitEvent) + 'static) {}
+}
+
+// ── DateTimePicker / DatePicker / TimePicker ────────────────────────────
+
+pub struct DateTimePicker { ctrl: Control }
+impl core::ops::Deref for DateTimePicker { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for DateTimePicker { fn id(&self) -> u32 { self.ctrl.id } }
+impl DateTimePicker {
+    pub fn new() -> Self { DateTimePicker { ctrl: Control { id: next_id() } } }
+    pub fn set_datetime(&self, day: u32, month: u32, year: u32, hour: u32, minute: u32) {
+        get_control_text_mut(self.ctrl.id).state = datetime_pack(year, month, day, hour, minute);
+    }
+    pub fn get_value(&self) -> u32 { get_control_text(self.ctrl.id).state }
+    pub fn day(&self) -> u32 { let (_, _, d, _, _) = datetime_unpack(self.get_value()); d }
+    pub fn month(&self) -> u32 { let (_, m, _, _, _) = datetime_unpack(self.get_value()); m }
+    pub fn year(&self) -> u32 { let (y, _, _, _, _) = datetime_unpack(self.get_value()); y }
+    pub fn hour(&self) -> u32 { let (_, _, _, h, _) = datetime_unpack(self.get_value()); h }
+    pub fn minute(&self) -> u32 { let (_, _, _, _, m) = datetime_unpack(self.get_value()); m }
+    pub fn on_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
+}
+
+pub struct DatePicker { ctrl: Control }
+impl core::ops::Deref for DatePicker { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for DatePicker { fn id(&self) -> u32 { self.ctrl.id } }
+impl DatePicker {
+    pub fn new() -> Self { DatePicker { ctrl: Control { id: next_id() } } }
+    pub fn set_date(&self, day: u32, month: u32, year: u32) {
+        get_control_text_mut(self.ctrl.id).state = datetime_pack(year, month, day, 0, 0);
+    }
+    pub fn day(&self) -> u32 { let (_, _, d, _, _) = datetime_unpack(get_control_text(self.ctrl.id).state); d }
+    pub fn month(&self) -> u32 { let (_, m, _, _, _) = datetime_unpack(get_control_text(self.ctrl.id).state); m }
+    pub fn year(&self) -> u32 { let (y, _, _, _, _) = datetime_unpack(get_control_text(self.ctrl.id).state); y }
+    pub fn on_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
+}
+
+pub struct TimePicker { ctrl: Control }
+impl core::ops::Deref for TimePicker { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for TimePicker { fn id(&self) -> u32 { self.ctrl.id } }
+impl TimePicker {
+    pub fn new() -> Self { TimePicker { ctrl: Control { id: next_id() } } }
+    pub fn set_time(&self, hour: u32, minute: u32) {
+        get_control_text_mut(self.ctrl.id).state = datetime_pack(0, 0, 0, hour, minute);
+    }
+    pub fn hour(&self) -> u32 { let (_, _, _, h, _) = datetime_unpack(get_control_text(self.ctrl.id).state); h }
+    pub fn minute(&self) -> u32 { let (_, _, _, _, m) = datetime_unpack(get_control_text(self.ctrl.id).state); m }
+    pub fn on_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
+}
+
+pub fn datetime_pack(year: u32, month: u32, day: u32, hour: u32, minute: u32) -> u32 {
+    (minute & 0x3F) | ((hour & 0x1F) << 6) | ((day & 0x1F) << 11)
+        | ((month & 0x0F) << 16) | ((year & 0xFFF) << 20)
+}
+
+pub fn datetime_unpack(v: u32) -> (u32, u32, u32, u32, u32) {
+    let minute = v & 0x3F;
+    let hour = (v >> 6) & 0x1F;
+    let day = (v >> 11) & 0x1F;
+    let month = (v >> 16) & 0x0F;
+    let year = (v >> 20) & 0xFFF;
+    (year, month, day, hour, minute)
 }
 
 pub struct TabBar { container: Container }
@@ -523,6 +662,7 @@ impl TextChangedEvent {
 
 pub struct SubmitEvent { pub id: u32 }
 pub struct ValueChangedEvent { pub id: u32, pub value: u32 }
+pub struct SelectionChangedEvent { pub id: u32, pub index: u32 }
 
 pub struct KeyEvent {
     pub keycode: u32,

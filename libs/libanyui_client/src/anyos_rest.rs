@@ -49,6 +49,8 @@ pub const KIND_DROP_DOWN: u32 = 42;
 pub const KIND_AUTO_COMPLETE_TEXT_FIELD: u32 = 43;
 pub const KIND_SPINNER: u32 = 44;
 pub const KIND_PLAIN_BUTTON: u32 = 45;
+pub const KIND_DATE_TIME_PICKER: u32 = 46;
+pub const KIND_LIST_BOX: u32 = 47;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 

@@ -213,6 +213,8 @@ pub struct WebView {
     /// real render after external CSS arrives should prefer correctness over
     /// aggressive progressive culling.
     dom_only_initial_render_pending: bool,
+    /// Dynamic selector state for pseudo-classes such as :hover and :focus.
+    selector_state: style::SelectorState,
 }
 
 impl WebView {
@@ -269,6 +271,7 @@ impl WebView {
             anim_overrides: Vec::new(),
             scroll_offsets: Vec::new(),
             dom_only_initial_render_pending: false,
+            selector_state: style::SelectorState::default(),
         };
         webview.js_runtime.set_viewport(w, h);
         webview
@@ -402,6 +405,7 @@ impl WebView {
         self.last_render_scroll_y = 0;
         self.pending_tiles = false;
         self.clear_deferred_layout_state();
+        self.selector_state = style::SelectorState::default();
         self.content_view.set_size(self.viewport_width as u32, 1);
         // Clear all stylesheets (external + inline).
         self.external_sheets.clear();
@@ -1015,6 +1019,216 @@ impl WebView {
         None
     }
 
+    /// Check if a canvas click hit a reset button.  Returns the DOM node_id
+    /// of the reset element, or None.
+    pub fn canvas_reset_hit(&self, control_id: u32) -> Option<usize> {
+        if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) {
+            return self.renderer.hit_test_reset_at(mx, doc_y);
+        }
+        None
+    }
+
+    /// Check if a control is a reset button (canvas or legacy).
+    pub fn is_reset_button(&self, control_id: u32) -> bool {
+        self.canvas_reset_hit(control_id).is_some()
+    }
+
+    /// Check if a canvas click hit a file input. Returns the DOM node_id.
+    pub fn canvas_file_input_hit(&self, control_id: u32) -> Option<usize> {
+        if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) {
+            return self.renderer.hit_test_file_input_at(mx, doc_y);
+        }
+        None
+    }
+
+    /// Check if a canvas click hit a color input. Returns the DOM node_id.
+    pub fn canvas_color_input_hit(&self, control_id: u32) -> Option<usize> {
+        if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) {
+            return self.renderer.hit_test_color_input_at(mx, doc_y);
+        }
+        None
+    }
+
+    /// Set the selected file path for a file input control.
+    /// Updates the DOM value attribute and the control's display text.
+    pub fn set_file_input_value(&mut self, node_id: usize, file_path: &str) {
+        // Extract just the filename from the path.
+        let filename = file_path.rsplit('/').next().unwrap_or(file_path);
+        // Update the DOM attribute.
+        if let Some(dom) = self.dom_val.as_mut() {
+            if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(node_id).node_type {
+                if let Some(attr) = attrs.iter_mut().find(|a| a.name == "value") {
+                    attr.value = String::from(filename);
+                } else {
+                    attrs.push(dom::Attr {
+                        name: String::from("value"),
+                        value: String::from(filename),
+                    });
+                }
+                // Store full path in data-filepath for form submission.
+                if let Some(attr) = attrs.iter_mut().find(|a| a.name == "data-filepath") {
+                    attr.value = String::from(file_path);
+                } else {
+                    attrs.push(dom::Attr {
+                        name: String::from("data-filepath"),
+                        value: String::from(file_path),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Set the color value for a color input control.
+    pub fn set_color_input_value(&mut self, node_id: usize, color_hex: &str) {
+        if let Some(dom) = self.dom_val.as_mut() {
+            if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(node_id).node_type {
+                if let Some(attr) = attrs.iter_mut().find(|a| a.name == "value") {
+                    attr.value = String::from(color_hex);
+                } else {
+                    attrs.push(dom::Attr {
+                        name: String::from("value"),
+                        value: String::from(color_hex),
+                    });
+                }
+            }
+        }
+        // Update the native control's text and background color.
+        if let Some(fc) = self
+            .renderer
+            .form_controls
+            .iter()
+            .find(|fc| fc.node_id == node_id)
+        {
+            if fc.control_id != 0 {
+                let ctrl = ui::Control::from_id(fc.control_id);
+                ctrl.set_text(color_hex);
+                let color = renderer::parse_color_value(color_hex);
+                ctrl.set_color(color);
+            }
+        }
+    }
+
+    /// Reset all form controls in the form containing the given reset button.
+    /// Restores each control to its initial/default value (HTML §4.10.22.3).
+    pub fn reset_form(&mut self, control_id: u32) {
+        let node_id = match self.canvas_reset_hit(control_id) {
+            Some(n) => n,
+            None => return,
+        };
+        let dom = match self.dom_val.as_ref() {
+            Some(d) => d,
+            None => return,
+        };
+
+        // Find parent <form>.
+        let mut form_node = None;
+        let mut cur = Some(node_id);
+        while let Some(id) = cur {
+            if dom.tag(id) == Some(dom::Tag::Form) {
+                form_node = Some(id);
+                break;
+            }
+            cur = dom.get(id).parent;
+        }
+        let form_id = match form_node {
+            Some(id) => id,
+            None => return,
+        };
+
+        // Reset all form controls that are descendants of this form.
+        for fc in &self.renderer.form_controls {
+            let mut is_child = false;
+            let mut up = Some(fc.node_id);
+            while let Some(id) = up {
+                if id == form_id {
+                    is_child = true;
+                    break;
+                }
+                up = dom.get(id).parent;
+            }
+            if !is_child {
+                continue;
+            }
+
+            match fc.kind {
+                FormFieldKind::TextInput | FormFieldKind::Password => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    let default_val = dom.attr(fc.node_id, "value").unwrap_or("");
+                    ui::Control::from_id(fc.control_id).set_text(default_val);
+                }
+                FormFieldKind::Checkbox => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    let checked = dom.attr(fc.node_id, "checked").is_some();
+                    ui::Control::from_id(fc.control_id)
+                        .set_state(if checked { 1 } else { 0 });
+                }
+                FormFieldKind::Radio => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    let checked = dom.attr(fc.node_id, "checked").is_some();
+                    ui::Control::from_id(fc.control_id)
+                        .set_state(if checked { 1 } else { 0 });
+                }
+                FormFieldKind::Textarea => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    let default_val = dom.text_content(fc.node_id);
+                    ui::Control::from_id(fc.control_id).set_text(default_val.trim());
+                }
+                FormFieldKind::Select => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    // Reset to the initially-selected option (first with `selected` attr).
+                    let mut sel_idx: u32 = 0;
+                    let mut idx: u32 = 0;
+                    let children = &dom.get(fc.node_id).children;
+                    for &cid in children {
+                        if dom.tag(cid) == Some(dom::Tag::Option) {
+                            if dom.attr(cid, "selected").is_some() {
+                                sel_idx = idx;
+                                break;
+                            }
+                            idx += 1;
+                        }
+                    }
+                    ui::Control::from_id(fc.control_id).set_state(sel_idx);
+                }
+                FormFieldKind::Range => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    // Reset to initial value attribute.
+                    let min_f: f32 = dom
+                        .attr(fc.node_id, "min")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0);
+                    let max_f: f32 = dom
+                        .attr(fc.node_id, "max")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(100.0);
+                    let val_f: f32 = dom
+                        .attr(fc.node_id, "value")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(50.0);
+                    let pct = if max_f > min_f {
+                        ((val_f - min_f) / (max_f - min_f) * 100.0) as u32
+                    } else {
+                        50
+                    };
+                    ui::Control::from_id(fc.control_id).set_state(pct.min(100));
+                }
+                _ => {}
+            }
+        }
+    }
+
     // ── Viewport-coordinate hit-test helpers (for host/surf-host) ────────────
 
     /// Find the link URL at viewport position (vx, vy) given a scroll offset.
@@ -1034,16 +1248,165 @@ impl WebView {
         self.renderer.hit_test_form_at(vx, scroll_y + vy)
     }
 
+    /// Find the topmost DOM node at viewport position `(vx, vy)`.
+    pub fn hit_test_node_viewport(&self, vx: i32, vy: i32, scroll_y: i32) -> Option<usize> {
+        self.hit_test_node_document(vx, scroll_y + vy)
+    }
+
+    /// Find the topmost DOM node hit on a tile canvas control.
+    pub fn hit_test_node_canvas(&self, canvas_ctrl_id: u32) -> Option<usize> {
+        let (mx, doc_y) = self.renderer.tile_hit_coords(canvas_ctrl_id)?;
+        self.hit_test_node_document(mx, doc_y)
+    }
+
     /// Check if a canvas click hit a form control (TextInput/Textarea).
     /// If so, focus the control and return true.
-    pub fn focus_form_control_at_canvas(&self, canvas_ctrl_id: u32) -> bool {
+    /// Also handles `<label for="id">` clicks — focuses the associated control.
+    pub fn focus_form_control_at_canvas(&mut self, canvas_ctrl_id: u32) -> bool {
         if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(canvas_ctrl_id) {
+            // Direct form control hit.
             if let Some(fc_id) = self.renderer.hit_test_form_at(mx, doc_y) {
                 ui::Control::from_id(fc_id).focus();
+                if let Some(node_id) = self
+                    .renderer
+                    .form_controls
+                    .iter()
+                    .find(|fc| fc.control_id == fc_id)
+                    .map(|fc| fc.node_id)
+                {
+                    self.set_focused_node(Some(node_id), true);
+                }
                 return true;
+            }
+
+            // Label-for-control: check if we hit a <label for="..."> and focus
+            // the referenced form control (HTML §4.10.4).
+            if let Some(dom) = self.dom_val.as_ref() {
+                if let Some(hit_node) = self.hit_test_node_document(mx, doc_y) {
+                    // Walk up from hit node to find an ancestor <label>.
+                    let mut cur = Some(hit_node);
+                    while let Some(nid) = cur {
+                        if dom.tag(nid) == Some(dom::Tag::Label) {
+                            if let Some(for_id) = dom.attr(nid, "for") {
+                                // Find the form control with matching id attribute.
+                                if let Some(target_node) =
+                                    self.find_node_by_id(for_id)
+                                {
+                                    if let Some(fc) = self
+                                        .renderer
+                                        .form_controls
+                                        .iter()
+                                        .find(|fc| fc.node_id == target_node)
+                                    {
+                                        if fc.control_id != 0 {
+                                            ui::Control::from_id(fc.control_id).focus();
+                                            self.set_focused_node(Some(target_node), true);
+                                            return true;
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Implicit label association: <label> wrapping a control.
+                                // Find the first form control descendant.
+                                if let Some(fc) = self.find_first_control_in_label(nid) {
+                                    if fc.control_id != 0 {
+                                        ui::Control::from_id(fc.control_id).focus();
+                                        self.set_focused_node(Some(fc.node_id), true);
+                                        return true;
+                                    }
+                                }
+                            }
+                            break;
+                        }
+                        cur = dom.get(nid).parent;
+                    }
+                }
             }
         }
         false
+    }
+
+    /// Find a DOM node by its `id` attribute.
+    fn find_node_by_id(&self, id: &str) -> Option<usize> {
+        let dom = self.dom_val.as_ref()?;
+        for i in 0..dom.nodes.len() {
+            if dom.attr(i, "id") == Some(id) {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Find the first form control that is a descendant of a <label> node.
+    /// Used for implicit label association (HTML §4.10.4).
+    fn find_first_control_in_label(&self, label_node: usize) -> Option<&renderer::FormControl> {
+        let dom = self.dom_val.as_ref()?;
+        // BFS through label's children.
+        let mut stack = dom.get(label_node).children.clone();
+        while let Some(nid) = stack.pop() {
+            if let Some(fc) = self
+                .renderer
+                .form_controls
+                .iter()
+                .find(|fc| fc.node_id == nid)
+            {
+                return Some(fc);
+            }
+            let children = &dom.get(nid).children;
+            for &child in children.iter().rev() {
+                stack.push(child);
+            }
+        }
+        None
+    }
+
+    pub fn set_hovered_node(&mut self, node_id: Option<usize>) {
+        self.selector_state.hovered_node = node_id;
+    }
+
+    pub fn set_active_node(&mut self, node_id: Option<usize>) {
+        self.selector_state.active_node = node_id;
+    }
+
+    pub fn set_focused_node(&mut self, node_id: Option<usize>, focus_visible: bool) {
+        self.selector_state.focused_node = node_id;
+        self.selector_state.focus_visible_node = if focus_visible { node_id } else { None };
+    }
+
+    pub fn clear_selector_state(&mut self) {
+        self.selector_state = style::SelectorState::default();
+    }
+
+    fn hit_test_node_document(&self, doc_x: i32, doc_y: i32) -> Option<usize> {
+        let root = self.layout_root.as_ref()?;
+        Self::hit_test_layout_box(root, 0, 0, doc_x, doc_y)
+    }
+
+    fn hit_test_layout_box(
+        bx: &LayoutBox,
+        offset_x: i32,
+        offset_y: i32,
+        doc_x: i32,
+        doc_y: i32,
+    ) -> Option<usize> {
+        let abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
+        let abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
+
+        for child in bx.children.iter().rev() {
+            if let Some(node_id) = Self::hit_test_layout_box(child, abs_x, abs_y, doc_x, doc_y) {
+                return Some(node_id);
+            }
+        }
+
+        if doc_x >= abs_x
+            && doc_x < abs_x + bx.width
+            && doc_y >= abs_y
+            && doc_y < abs_y + bx.height
+        {
+            return bx.node_id;
+        }
+
+        None
     }
 
     /// Read the text content of a form control by its control_id.
@@ -1059,16 +1422,31 @@ impl WebView {
         ui::Control::from_id(control_id).set_text(text);
     }
 
-    /// Find the form action URL for a submit button identified by DOM node_id.
-    /// Used for canvas-based submit hit regions.
-    pub fn form_action_for_node(&self, node_id: usize) -> Option<(String, String)> {
+    pub fn node_id_for_control(&self, control_id: u32) -> Option<usize> {
+        self.renderer
+            .form_controls
+            .iter()
+            .find(|fc| fc.control_id == control_id)
+            .map(|fc| fc.node_id)
+    }
+
+    /// Find the form action URL, method, and enctype for a submit button identified by DOM node_id.
+    /// Returns (action, method, enctype).
+    pub fn form_action_for_node(&self, node_id: usize) -> Option<(String, String, String)> {
         let dom = self.dom_val.as_ref()?;
         let mut cur = Some(node_id);
         while let Some(id) = cur {
             if dom.tag(id) == Some(dom::Tag::Form) {
                 let action = dom.attr(id, "action").unwrap_or("");
                 let method = dom.attr(id, "method").unwrap_or("GET");
-                return Some((String::from(action), method.to_ascii_uppercase()));
+                let enctype = dom
+                    .attr(id, "enctype")
+                    .unwrap_or("application/x-www-form-urlencoded");
+                return Some((
+                    String::from(action),
+                    method.to_ascii_uppercase(),
+                    String::from(enctype),
+                ));
             }
             cur = dom.get(id).parent;
         }
@@ -1120,7 +1498,14 @@ impl WebView {
             }
 
             match fc.kind {
-                FormFieldKind::TextInput | FormFieldKind::Password => {
+                FormFieldKind::TextInput
+                | FormFieldKind::Password
+                | FormFieldKind::Number
+                | FormFieldKind::Date
+                | FormFieldKind::Time
+                | FormFieldKind::DatetimeLocal
+                | FormFieldKind::Month
+                | FormFieldKind::Week => {
                     if fc.control_id == 0 {
                         continue;
                     }
@@ -1129,6 +1514,28 @@ impl WebView {
                     let len = ctrl.get_text(&mut buf);
                     let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
                     data.push((String::from(name), String::from(val)));
+                }
+                FormFieldKind::Color => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    // ColorWell stores the color as u32 ARGB via get_state().
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let argb = ctrl.get_state();
+                    let r = (argb >> 16) & 0xFF;
+                    let g = (argb >> 8) & 0xFF;
+                    let b = argb & 0xFF;
+                    let mut hex = String::from("#");
+                    let hex_digit = |n: u32| -> char {
+                        if n < 10 { (b'0' + n as u8) as char } else { (b'a' + (n - 10) as u8) as char }
+                    };
+                    hex.push(hex_digit(r >> 4));
+                    hex.push(hex_digit(r & 0xF));
+                    hex.push(hex_digit(g >> 4));
+                    hex.push(hex_digit(g & 0xF));
+                    hex.push(hex_digit(b >> 4));
+                    hex.push(hex_digit(b & 0xF));
+                    data.push((String::from(name), hex));
                 }
                 FormFieldKind::Checkbox => {
                     if fc.control_id == 0 {
@@ -1164,10 +1571,89 @@ impl WebView {
                     let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
                     data.push((String::from(name), String::from(val)));
                 }
+                FormFieldKind::Select => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    // Get selected index from the native DropDown widget.
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let sel_idx = ctrl.get_state() as usize;
+                    let val = self.select_option_value(dom, fc.node_id, sel_idx);
+                    data.push((String::from(name), val));
+                }
+                FormFieldKind::Range => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    // Slider state is 0..100. Map back to min..max range.
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let pct = ctrl.get_state() as f32 / 100.0;
+                    let min_f: f32 = dom
+                        .attr(fc.node_id, "min")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0);
+                    let max_f: f32 = dom
+                        .attr(fc.node_id, "max")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(100.0);
+                    let step_f: f32 = dom
+                        .attr(fc.node_id, "step")
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(1.0);
+                    let raw = min_f + pct * (max_f - min_f);
+                    let snapped = if step_f > 0.0 {
+                        let steps = (raw - min_f) / step_f;
+                        let rounded_steps = if steps >= 0.0 {
+                            (steps + 0.5) as i32
+                        } else {
+                            (steps - 0.5) as i32
+                        } as f32;
+                        (rounded_steps * step_f + min_f).min(max_f).max(min_f)
+                    } else {
+                        raw
+                    };
+                    let val = format_range_value(snapped);
+                    data.push((String::from(name), val));
+                }
                 _ => {}
             }
         }
         data
+    }
+
+    /// Look up the value of the nth `<option>` within a `<select>` node.
+    /// Walks the DOM children (including `<optgroup>` wrappers).
+    fn select_option_value(&self, dom: &dom::Dom, select_node: usize, idx: usize) -> String {
+        let mut count = 0usize;
+        let children = &dom.get(select_node).children;
+        for &cid in children {
+            if dom.tag(cid) == Some(dom::Tag::Optgroup) {
+                // Optgroup label entry.
+                if count == idx {
+                    return String::new(); // optgroup separator has no value
+                }
+                count += 1;
+                let group_children = &dom.get(cid).children;
+                for &gcid in group_children {
+                    if dom.tag(gcid) == Some(dom::Tag::Option) {
+                        if count == idx {
+                            let txt = dom.text_content(gcid);
+                            let val = dom.attr(gcid, "value").unwrap_or(txt.trim());
+                            return String::from(val);
+                        }
+                        count += 1;
+                    }
+                }
+            } else if dom.tag(cid) == Some(dom::Tag::Option) {
+                if count == idx {
+                    let txt = dom.text_content(cid);
+                    let val = dom.attr(cid, "value").unwrap_or(txt.trim());
+                    return String::from(val);
+                }
+                count += 1;
+            }
+        }
+        String::new()
     }
 
     /// Extract scroll offset mutations from the pending mutation list and merge
@@ -1222,7 +1708,9 @@ impl WebView {
         let mut impact = MutationImpact::None;
         for m in &self.js_runtime.mutations {
             match m {
-                js::DomMutation::SetCookie { .. } => {}
+                js::DomMutation::SetCookie { .. }
+                | js::DomMutation::FormSubmit { .. }
+                | js::DomMutation::FormReset { .. } => {}
                 js::DomMutation::SetScrollTop { .. } | js::DomMutation::SetScrollLeft { .. } => {
                     if impact == MutationImpact::None {
                         impact = MutationImpact::Paint;
@@ -2405,16 +2893,24 @@ impl WebView {
         let prepared = self.prepared_stylesheets.as_ref().unwrap();
         let style_budget = self.style_budget_for_document(d);
         let (mut styles, mut pseudo_styles) = if let Some(node_budget) = style_budget {
-            style::resolve_styles_prepared_budgeted(
+            style::resolve_styles_prepared_budgeted_with_state(
                 d,
                 prepared,
                 vw,
                 vh,
                 &mut self.inline_style_cache,
                 node_budget,
+                &self.selector_state,
             )
         } else {
-            style::resolve_styles_prepared(d, prepared, vw, vh, &mut self.inline_style_cache)
+            style::resolve_styles_prepared_with_state(
+                d,
+                prepared,
+                vw,
+                vh,
+                &mut self.inline_style_cache,
+                &self.selector_state,
+            )
         };
         let _style_elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(style_start_ms);
         debug_surf!(
@@ -2620,6 +3116,36 @@ impl WebView {
         &self.renderer.form_controls
     }
 
+    /// Drain pending JS-initiated form submissions.
+    /// Returns a list of form node IDs that called `form.submit()`.
+    pub fn drain_form_submits(&mut self) -> Vec<usize> {
+        let mut submits = Vec::new();
+        self.js_runtime.mutations.retain(|m| {
+            if let js::DomMutation::FormSubmit { form_node_id } = m {
+                submits.push(*form_node_id);
+                false // remove from mutation list
+            } else {
+                true
+            }
+        });
+        submits
+    }
+
+    /// Drain pending JS-initiated form resets.
+    /// Returns a list of form node IDs that called `form.reset()`.
+    pub fn drain_form_resets(&mut self) -> Vec<usize> {
+        let mut resets = Vec::new();
+        self.js_runtime.mutations.retain(|m| {
+            if let js::DomMutation::FormReset { form_node_id } = m {
+                resets.push(*form_node_id);
+                false
+            } else {
+                true
+            }
+        });
+        resets
+    }
+
     /// Check if a control ID belongs to a submit button (real control or canvas hit).
     pub fn is_submit_button(&self, control_id: u32) -> bool {
         // Canvas hit-test for submit regions.
@@ -2633,9 +3159,10 @@ impl WebView {
         })
     }
 
-    /// Find the form action URL for a submit button click.
+    /// Find the form action URL, method, and enctype for a submit button click.
+    /// Returns (action, method, enctype).
     /// Handles both real controls and canvas-based submit hit regions.
-    pub fn form_action_for(&self, control_id: u32) -> Option<(String, String)> {
+    pub fn form_action_for(&self, control_id: u32) -> Option<(String, String, String)> {
         // Canvas hit-test for submit regions.
         if let Some(node_id) = self.canvas_submit_hit(control_id) {
             return self.form_action_for_node(node_id);
@@ -2652,7 +3179,14 @@ impl WebView {
             if dom.tag(id) == Some(dom::Tag::Form) {
                 let action = dom.attr(id, "action").unwrap_or("");
                 let method = dom.attr(id, "method").unwrap_or("GET");
-                return Some((String::from(action), method.to_ascii_uppercase()));
+                let enctype = dom
+                    .attr(id, "enctype")
+                    .unwrap_or("application/x-www-form-urlencoded");
+                return Some((
+                    String::from(action),
+                    method.to_ascii_uppercase(),
+                    String::from(enctype),
+                ));
             }
             cur = dom.get(id).parent;
         }
@@ -2681,6 +3215,56 @@ impl WebView {
             None => return Vec::new(),
         };
         self.collect_form_data_for_node(fc.node_id)
+    }
+}
+
+/// Format a range slider value as a decimal string.
+fn format_range_value(v: f32) -> String {
+    let mut s = String::new();
+    if v < 0.0 {
+        s.push('-');
+    }
+    let abs_v = if v < 0.0 { -v } else { v };
+    let i = abs_v as u32;
+    let frac = ((abs_v - i as f32) * 100.0 + 0.5) as u32;
+    format_u32_into(&mut s, i);
+    if frac > 0 {
+        s.push('.');
+        if frac < 10 {
+            s.push('0');
+        }
+        format_u32_into(&mut s, frac);
+        // Strip trailing zero.
+        if s.ends_with('0') {
+            s.pop();
+        }
+    }
+    s
+}
+
+/// Append a u32 as decimal text.
+fn format_u32_into(s: &mut String, mut n: u32) {
+    if n == 0 {
+        s.push('0');
+        return;
+    }
+    let start = s.len();
+    while n > 0 {
+        s.push((b'0' + (n % 10) as u8) as char);
+        n /= 10;
+    }
+    // Reverse the digits we just pushed.
+    let bytes = unsafe { s.as_bytes_mut() };
+    bytes[start..].reverse();
+}
+
+/// Append an i32 as decimal text.
+fn format_i32_into(s: &mut String, n: i32) {
+    if n < 0 {
+        s.push('-');
+        format_u32_into(s, (-(n as i64)) as u32);
+    } else {
+        format_u32_into(s, n as u32);
     }
 }
 

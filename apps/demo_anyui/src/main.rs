@@ -30,7 +30,7 @@ fn main() {
     // Content container — tall enough for all sections
     let content = ui::StackPanel::vertical();
     content.set_position(0, 0);
-    content.set_size(440, 1400);
+    content.set_size(440, 1600);
     content.set_padding(20, 10, 20, 20);
     scroll.add(&content);
 
@@ -398,7 +398,87 @@ fn main() {
     status_row.add(&si3);
 
     // ════════════════════════════════════════════════════════════════
-    //  Section 7: Canvas Drawing
+    //  Section 7: Date/Time Pickers & ListBox
+    // ════════════════════════════════════════════════════════════════
+
+    let exp_datetime = ui::Expander::new("Date/Time & Lists");
+    exp_datetime.set_size(420, 220);
+    exp_datetime.set_margin(0, 0, 0, 8);
+    content.add(&exp_datetime);
+
+    let dt_stack = ui::StackPanel::vertical();
+    dt_stack.set_size(420, 180);
+    dt_stack.set_padding(4, 4, 4, 4);
+    exp_datetime.add(&dt_stack);
+
+    // DatePicker row
+    let date_row = ui::View::new();
+    date_row.set_size(412, 28);
+    date_row.set_margin(0, 0, 0, 6);
+    dt_stack.add(&date_row);
+
+    let date_label = ui::Label::new("Date:");
+    date_label.set_position(0, 6);
+    date_label.set_size(80, 20);
+    date_row.add(&date_label);
+
+    let date_picker = ui::DatePicker::new();
+    date_picker.set_position(80, 0);
+    date_picker.set_size(180, 28);
+    date_picker.set_date(9, 4, 2026);
+    date_row.add(&date_picker);
+
+    // TimePicker row
+    let time_row = ui::View::new();
+    time_row.set_size(412, 28);
+    time_row.set_margin(0, 0, 0, 6);
+    dt_stack.add(&time_row);
+
+    let time_label = ui::Label::new("Time:");
+    time_label.set_position(0, 6);
+    time_label.set_size(80, 20);
+    time_row.add(&time_label);
+
+    let time_picker = ui::TimePicker::new();
+    time_picker.set_position(80, 0);
+    time_picker.set_size(120, 28);
+    time_picker.set_time(14, 30);
+    time_row.add(&time_picker);
+
+    // DateTimePicker row
+    let datetime_row = ui::View::new();
+    datetime_row.set_size(412, 28);
+    datetime_row.set_margin(0, 0, 0, 6);
+    dt_stack.add(&datetime_row);
+
+    let datetime_label = ui::Label::new("DateTime:");
+    datetime_label.set_position(0, 6);
+    datetime_label.set_size(80, 20);
+    datetime_row.add(&datetime_label);
+
+    let datetime_picker = ui::DateTimePicker::new();
+    datetime_picker.set_position(80, 0);
+    datetime_picker.set_size(220, 28);
+    datetime_picker.set_datetime(9, 4, 2026, 14, 30);
+    datetime_row.add(&datetime_picker);
+
+    // ListBox row
+    let list_row = ui::View::new();
+    list_row.set_size(412, 80);
+    dt_stack.add(&list_row);
+
+    let list_label = ui::Label::new("ListBox:");
+    list_label.set_position(0, 0);
+    list_label.set_size(80, 20);
+    list_row.add(&list_label);
+
+    let listbox = ui::ListBox::new("Apple|Banana|Cherry|Date|Elderberry|Fig|Grape");
+    listbox.set_position(80, 0);
+    listbox.set_size(200, 80);
+    list_row.add(&listbox);
+
+    // ════════════════════════════════════════════════════════════════
+    //  Section 8: Canvas Drawing
     // ════════════════════════════════════════════════════════════════
 
     let exp_canvas = ui::Expander::new(i18n::t("Canvas Drawing"));
@@ -445,6 +525,84 @@ fn main() {
     });
     content.add(&menu);
     ctx_btn.set_context_menu(&menu);
+
+    // ════════════════════════════════════════════════════════════════
+    //  Section 9: Date & Time Pickers
+    // ════════════════════════════════════════════════════════════════
+
+    let exp_pickers = ui::Expander::new(i18n::t("Date & Time Pickers"));
+    exp_pickers.set_size(420, 180);
+    exp_pickers.set_margin(0, 0, 0, 8);
+    content.add(&exp_pickers);
+
+    let pick_stack = ui::StackPanel::vertical();
+    pick_stack.set_position(0, 0);
+    pick_stack.set_size(420, 148);
+    pick_stack.set_padding(4, 4, 4, 4);
+    exp_pickers.add(&pick_stack);
+
+    // DateTimePicker row
+    let dtp_row = ui::View::new();
+    dtp_row.set_size(412, 28);
+    dtp_row.set_margin(0, 0, 0, 8);
+    pick_stack.add(&dtp_row);
+
+    let dtp_label = ui::Label::new(i18n::t("DateTime:"));
+    dtp_label.set_position(0, 6);
+    dtp_row.add(&dtp_label);
+
+    let dtp = ui::DateTimePicker::new();
+    dtp.set_position(100, 0);
+    dtp.set_size(200, 28);
+    dtp.set_datetime(9, 4, 2026, 14, 30);
+    dtp_row.add(&dtp);
+
+    // DatePicker row
+    let dp_row = ui::View::new();
+    dp_row.set_size(412, 28);
+    dp_row.set_margin(0, 0, 0, 8);
+    pick_stack.add(&dp_row);
+
+    let dp_label = ui::Label::new(i18n::t("Date:"));
+    dp_label.set_position(0, 6);
+    dp_row.add(&dp_label);
+
+    let dp = ui::DatePicker::new();
+    dp.set_position(100, 0);
+    dp.set_size(160, 28);
+    dp.set_date(25, 12, 2026);
+    dp_row.add(&dp);
+
+    // TimePicker row
+    let tp_row = ui::View::new();
+    tp_row.set_size(412, 28);
+    tp_row.set_margin(0, 0, 0, 8);
+    pick_stack.add(&tp_row);
+
+    let tp_label = ui::Label::new(i18n::t("Time:"));
+    tp_label.set_position(0, 6);
+    tp_row.add(&tp_label);
+
+    let tp = ui::TimePicker::new();
+    tp.set_position(100, 0);
+    tp.set_size(100, 28);
+    tp.set_time(8, 15);
+    tp_row.add(&tp);
+
+    // Status label that updates when pickers change
+    let pick_status = ui::Label::new(i18n::t("Change a value with Up/Down keys"));
+    pick_status.set_size(412, 20);
+    pick_stack.add(&pick_status);
+
+    dtp.on_changed(move |_e| {
+        let d = dtp.day();
+        let m = dtp.month();
+        let y = dtp.year();
+        let h = dtp.hour();
+        let mi = dtp.minute();
+        let msg = alloc::format!("DateTime: {:02}.{:02}.{:04} {:02}:{:02}", d, m, y, h, mi);
+        pick_status.set_text(&msg);
+    });
 
     // ════════════════════════════════════════════════════════════════
     //  Footer

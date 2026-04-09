@@ -241,6 +241,13 @@ pub enum Visibility {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ColorSchemeVal {
+    Auto,
+    Light,
+    Dark,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FloatVal {
     None,
     Left,
@@ -298,6 +305,14 @@ pub enum AlignContent {
     SpaceAround,
     SpaceEvenly,
     Stretch,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct SelectorState {
+    pub hovered_node: Option<NodeId>,
+    pub active_node: Option<NodeId>,
+    pub focused_node: Option<NodeId>,
+    pub focus_visible_node: Option<NodeId>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -539,6 +554,7 @@ pub struct ComputedStyle {
     pub display: Display,
     pub color: u32,            // 0xAARRGGBB
     pub background_color: u32, // 0xAARRGGBB (0 = transparent)
+    pub accent_color: u32,     // 0 = auto/current platform accent
     pub font_size: i32,        // pixels
     pub font_weight: FontWeight,
     pub font_style: FontStyleVal,
@@ -586,6 +602,7 @@ pub struct ComputedStyle {
     pub justify_content: JustifyContent,
     pub align_items: AlignItems,
     pub align_self: Option<AlignItems>,
+    pub justify_self: Option<AlignItems>,
     pub flex_grow: i32,          // fixed-point * 100
     pub flex_shrink: i32,        // fixed-point * 100
     pub flex_basis: Option<i32>, // None = auto, Some(px)
@@ -626,6 +643,7 @@ pub struct ComputedStyle {
     pub opacity: i32, // 0..255 (255 = fully opaque)
     pub visibility: Visibility,
     pub text_transform: TextTransform,
+    pub color_scheme: ColorSchemeVal,
     // Overflow
     pub overflow_x: OverflowVal,
     pub overflow_y: OverflowVal,
@@ -677,9 +695,17 @@ pub struct ComputedStyle {
     pub content_url: Option<String>,
     // Object-fit for replaced elements (img, video)
     pub object_fit: ObjectFit,
+    pub object_position_x: i32, // px or pct*100
+    pub object_position_x_is_percent: bool,
+    pub object_position_y: i32, // px or pct*100
+    pub object_position_y_is_percent: bool,
     // CSS transform — translate offsets (resolved to px).
     pub transform_tx: i32,
     pub transform_ty: i32,
+    pub transform_origin_x: i32, // px or pct*100
+    pub transform_origin_x_is_percent: bool,
+    pub transform_origin_y: i32, // px or pct*100
+    pub transform_origin_y_is_percent: bool,
     // Filter effects (litehtml-inspired)
     pub filter: FilterVal,
     // Aspect ratio (width / height as fixed-point * 100, 0 = auto)
@@ -744,22 +770,24 @@ impl PseudoStyles {
 }
 
 // Bitflags for tracking which inheritable properties were explicitly set.
-const SET_COLOR: u16 = 1 << 0;
-const SET_FONT_SIZE: u16 = 1 << 1;
-const SET_FONT_WEIGHT: u16 = 1 << 2;
-const SET_FONT_STYLE: u16 = 1 << 3;
-const SET_TEXT_ALIGN: u16 = 1 << 4;
-const SET_LINE_HEIGHT: u16 = 1 << 5;
-const SET_WHITE_SPACE: u16 = 1 << 6;
-const SET_LIST_STYLE: u16 = 1 << 7;
-const SET_TEXT_DECO: u16 = 1 << 8;
-const SET_VISIBILITY: u16 = 1 << 9;
-const SET_TEXT_TRANSFORM: u16 = 1 << 10;
-const SET_LETTER_SPACING: u16 = 1 << 11;
-const SET_WORD_SPACING: u16 = 1 << 12;
-const SET_WORD_BREAK: u16 = 1 << 13;
-const SET_OVERFLOW_WRAP: u16 = 1 << 14;
-const SET_LIST_STYLE_POS: u16 = 1 << 15;
+const SET_COLOR: u32 = 1 << 0;
+const SET_FONT_SIZE: u32 = 1 << 1;
+const SET_FONT_WEIGHT: u32 = 1 << 2;
+const SET_FONT_STYLE: u32 = 1 << 3;
+const SET_TEXT_ALIGN: u32 = 1 << 4;
+const SET_LINE_HEIGHT: u32 = 1 << 5;
+const SET_WHITE_SPACE: u32 = 1 << 6;
+const SET_LIST_STYLE: u32 = 1 << 7;
+const SET_TEXT_DECO: u32 = 1 << 8;
+const SET_VISIBILITY: u32 = 1 << 9;
+const SET_TEXT_TRANSFORM: u32 = 1 << 10;
+const SET_LETTER_SPACING: u32 = 1 << 11;
+const SET_WORD_SPACING: u32 = 1 << 12;
+const SET_WORD_BREAK: u32 = 1 << 13;
+const SET_OVERFLOW_WRAP: u32 = 1 << 14;
+const SET_LIST_STYLE_POS: u32 = 1 << 15;
+const SET_ACCENT_COLOR: u32 = 1 << 16;
+const SET_COLOR_SCHEME: u32 = 1 << 17;
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -771,6 +799,7 @@ pub fn default_style() -> ComputedStyle {
         display: Display::Block,
         color: 0xFF000000,
         background_color: 0,
+        accent_color: 0,
         font_size: 16,
         font_weight: FontWeight::Normal,
         font_style: FontStyleVal::Normal,
@@ -813,6 +842,7 @@ pub fn default_style() -> ComputedStyle {
         justify_content: JustifyContent::FlexStart,
         align_items: AlignItems::Stretch,
         align_self: Option::None,
+        justify_self: Option::None,
         flex_grow: 0,
         flex_shrink: 100,         // default 1.0 = 100 in fixed-point
         flex_basis: Option::None, // auto
@@ -846,6 +876,7 @@ pub fn default_style() -> ComputedStyle {
         opacity: 255,
         visibility: Visibility::Visible,
         text_transform: TextTransform::None,
+        color_scheme: ColorSchemeVal::Auto,
         // Overflow
         overflow_x: OverflowVal::Visible,
         overflow_y: OverflowVal::Visible,
@@ -884,8 +915,16 @@ pub fn default_style() -> ComputedStyle {
         // Content
         content: Option::None,
         object_fit: ObjectFit::Fill,
+        object_position_x: 5000,
+        object_position_x_is_percent: true,
+        object_position_y: 5000,
+        object_position_y_is_percent: true,
         transform_tx: 0,
         transform_ty: 0,
+        transform_origin_x: 5000,
+        transform_origin_x_is_percent: true,
+        transform_origin_y: 5000,
+        transform_origin_y_is_percent: true,
         // Filter
         filter: FilterVal::none(),
         // Aspect ratio
@@ -931,9 +970,9 @@ pub fn default_style() -> ComputedStyle {
 /// User-agent stylesheet: hardcoded browser defaults per HTML tag.
 /// Returns the base style AND a bitfield indicating which inheritable
 /// properties the UA explicitly sets (so inheritance does not clobber them).
-fn ua_style_and_flags(tag: Tag) -> (ComputedStyle, u16) {
+fn ua_style_and_flags(tag: Tag) -> (ComputedStyle, u32) {
     let mut s = default_style();
-    let mut flags: u16 = 0;
+    let mut flags: u32 = 0;
     match tag {
         Tag::Body => {
             s.margin_top = 8;
@@ -1257,6 +1296,7 @@ struct RuleIndex {
 pub struct PreparedStylesheets {
     rules: Vec<(Rule, usize)>,
     rule_index: RuleIndex,
+    layer_count: usize,
 }
 
 impl PreparedStylesheets {
@@ -1265,17 +1305,35 @@ impl PreparedStylesheets {
         viewport_width: i32,
         viewport_height: i32,
     ) -> Self {
+        let mut global_layer_order: Vec<String> = Vec::new();
+        for sheet in stylesheets {
+            for layer_name in &sheet.layer_order {
+                if !global_layer_order.iter().any(|existing| existing == layer_name) {
+                    global_layer_order.push(layer_name.clone());
+                }
+            }
+        }
+
         let mut rules: Vec<(Rule, usize)> = Vec::new();
         let mut order = 0usize;
         for sheet in stylesheets {
             for rule in &sheet.rules {
-                rules.push((rule.clone(), order));
+                let mut prepared_rule = rule.clone();
+                prepared_rule.layer_index = prepared_rule.layer_name.as_ref().and_then(|name| {
+                    global_layer_order.iter().position(|existing| existing == name)
+                });
+                rules.push((prepared_rule, order));
                 order += 1;
             }
             for mr in &sheet.media_rules {
                 if crate::css::evaluate_media_query(&mr.query, viewport_width, viewport_height) {
                     for rule in &mr.rules {
-                        rules.push((rule.clone(), order));
+                        let mut prepared_rule = rule.clone();
+                        prepared_rule.layer_index =
+                            prepared_rule.layer_name.as_ref().and_then(|name| {
+                                global_layer_order.iter().position(|existing| existing == name)
+                            });
+                        rules.push((prepared_rule, order));
                         order += 1;
                     }
                 }
@@ -1283,7 +1341,11 @@ impl PreparedStylesheets {
         }
         let refs: Vec<(&Rule, usize)> = rules.iter().map(|(rule, order)| (rule, *order)).collect();
         let rule_index = RuleIndex::build(&refs);
-        Self { rules, rule_index }
+        Self {
+            rules,
+            rule_index,
+            layer_count: global_layer_order.len(),
+        }
     }
 
     fn as_rule_refs(&self) -> Vec<(&Rule, usize)> {
@@ -1433,6 +1495,86 @@ impl RuleIndex {
     }
 }
 
+fn cascade_layer_key(layer_index: Option<usize>, important: bool, layer_count: usize) -> usize {
+    if !important {
+        layer_index.unwrap_or(layer_count)
+    } else if let Some(idx) = layer_index {
+        layer_count.saturating_sub(idx)
+    } else {
+        0
+    }
+}
+
+fn sort_matches_for_phase(
+    matches: &mut Vec<((u32, u32, u32), usize)>,
+    all_rules: &[(&Rule, usize)],
+    important: bool,
+    layer_count: usize,
+) {
+    matches.sort_by(|a, b| {
+        let (rule_a, order_a) = all_rules[a.1];
+        let (rule_b, order_b) = all_rules[b.1];
+        cascade_layer_key(rule_a.layer_index, important, layer_count)
+            .cmp(&cascade_layer_key(rule_b.layer_index, important, layer_count))
+            .then(a.0.cmp(&b.0))
+            .then(order_a.cmp(&order_b))
+    });
+}
+
+fn ensure_pseudo_style<'a>(
+    slot: &'a mut Option<ComputedStyle>,
+    base: &ComputedStyle,
+) -> &'a mut ComputedStyle {
+    if slot.is_none() {
+        let mut ps = base.clone();
+        ps.content = None;
+        ps.content_url = None;
+        ps.background_color = 0;
+        ps.border_width = 0;
+        ps.padding_top = 0;
+        ps.padding_right = 0;
+        ps.padding_bottom = 0;
+        ps.padding_left = 0;
+        ps.margin_top = 0;
+        ps.margin_right = 0;
+        ps.margin_bottom = 0;
+        ps.margin_left = 0;
+        ps.width = None;
+        ps.height = None;
+        ps.display = Display::Inline;
+        *slot = Some(ps);
+    }
+    slot.as_mut().unwrap()
+}
+
+fn apply_pseudo_rule_matches(
+    before_style: &mut Option<ComputedStyle>,
+    after_style: &mut Option<ComputedStyle>,
+    node_id: usize,
+    styles: &[ComputedStyle],
+    matches: &[((u32, u32, u32), usize)],
+    all_rules: &[(&Rule, usize)],
+    important: bool,
+    parent_fs: i32,
+    root_fs: i32,
+) {
+    for &(_, idx) in matches.iter() {
+        let (rule, _) = all_rules[idx];
+        for sel in &rule.selectors {
+            let ps = match sel.pseudo_element() {
+                Some(PseudoElement::Before) => ensure_pseudo_style(before_style, &styles[node_id]),
+                Some(PseudoElement::After) => ensure_pseudo_style(after_style, &styles[node_id]),
+                _ => continue,
+            };
+            for decl in &rule.declarations {
+                if decl.important == important {
+                    apply_declaration(ps, decl, parent_fs, root_fs);
+                }
+            }
+        }
+    }
+}
+
 /// Extract the leaf (rightmost) SimpleSelector from a combinator chain.
 /// Returns None for Universal selectors.
 fn leaf_simple(sel: &Selector) -> Option<&SimpleSelector> {
@@ -1465,17 +1607,27 @@ fn keyed_bucket<'a>(buckets: &'a BTreeMap<String, Vec<usize>>, key: &str) -> Opt
 // ---------------------------------------------------------------------------
 
 /// Check if a CSS selector matches a DOM element node.
-fn selector_matches(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
+fn selector_matches(
+    selector: &Selector,
+    dom: &Dom,
+    node_id: NodeId,
+    selector_state: &SelectorState,
+) -> bool {
     // Skip selectors that target ::before/::after — those are handled separately.
     if selector.pseudo_element().is_some() {
         return false;
     }
-    selector_matches_base(selector, dom, node_id)
+    selector_matches_base(selector, dom, node_id, selector_state)
 }
 
 /// Match a selector against a node, ignoring the pseudo-element part.
 /// Used both for normal matching (via selector_matches) and pseudo-element resolution.
-fn selector_matches_base(selector: &Selector, dom: &Dom, node_id: NodeId) -> bool {
+fn selector_matches_base(
+    selector: &Selector,
+    dom: &Dom,
+    node_id: NodeId,
+    selector_state: &SelectorState,
+) -> bool {
     // Bounds check to prevent crashes from corrupted node indices.
     if node_id >= dom.nodes.len() {
         return false;
@@ -1484,9 +1636,9 @@ fn selector_matches_base(selector: &Selector, dom: &Dom, node_id: NodeId) -> boo
         Selector::Universal => {
             matches!(dom.nodes[node_id].node_type, NodeType::Element { .. })
         }
-        Selector::Simple(simple) => simple_matches(simple, dom, node_id),
+        Selector::Simple(simple) => simple_matches(simple, dom, node_id, selector_state),
         Selector::Descendant(ancestor_sel, leaf) => {
-            if !simple_matches(leaf, dom, node_id) {
+            if !simple_matches(leaf, dom, node_id, selector_state) {
                 return false;
             }
             let mut cur = dom.nodes[node_id].parent;
@@ -1494,7 +1646,7 @@ fn selector_matches_base(selector: &Selector, dom: &Dom, node_id: NodeId) -> boo
                 if pid >= dom.nodes.len() {
                     break;
                 }
-                if selector_matches_base(ancestor_sel, dom, pid) {
+                if selector_matches_base(ancestor_sel, dom, pid, selector_state) {
                     return true;
                 }
                 cur = dom.nodes[pid].parent;
@@ -1502,37 +1654,37 @@ fn selector_matches_base(selector: &Selector, dom: &Dom, node_id: NodeId) -> boo
             false
         }
         Selector::Child(parent_sel, leaf) => {
-            if !simple_matches(leaf, dom, node_id) {
+            if !simple_matches(leaf, dom, node_id, selector_state) {
                 return false;
             }
             if let Some(pid) = dom.nodes[node_id].parent {
                 if pid >= dom.nodes.len() {
                     return false;
                 }
-                selector_matches_base(parent_sel, dom, pid)
+                selector_matches_base(parent_sel, dom, pid, selector_state)
             } else {
                 false
             }
         }
         Selector::AdjacentSibling(prev_sel, leaf) => {
-            if !simple_matches(leaf, dom, node_id) {
+            if !simple_matches(leaf, dom, node_id, selector_state) {
                 return false;
             }
             // Find preceding sibling element
             if let Some(sib) = preceding_element_sibling(dom, node_id) {
-                selector_matches_base(prev_sel, dom, sib)
+                selector_matches_base(prev_sel, dom, sib, selector_state)
             } else {
                 false
             }
         }
         Selector::GeneralSibling(prev_sel, leaf) => {
-            if !simple_matches(leaf, dom, node_id) {
+            if !simple_matches(leaf, dom, node_id, selector_state) {
                 return false;
             }
             // Check all preceding sibling elements
             let mut sib = preceding_element_sibling(dom, node_id);
             while let Some(sid) = sib {
-                if selector_matches_base(prev_sel, dom, sid) {
+                if selector_matches_base(prev_sel, dom, sid, selector_state) {
                     return true;
                 }
                 sib = preceding_element_sibling(dom, sid);
@@ -1556,7 +1708,12 @@ fn preceding_element_sibling(dom: &Dom, node_id: NodeId) -> Option<NodeId> {
     Option::None
 }
 
-fn simple_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> bool {
+fn simple_matches(
+    sel: &SimpleSelector,
+    dom: &Dom,
+    node_id: NodeId,
+    selector_state: &SelectorState,
+) -> bool {
     if node_id >= dom.nodes.len() {
         return false;
     }
@@ -1680,7 +1837,7 @@ fn simple_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> bool {
 
     // Pseudo-class check.
     for pc in &sel.pseudo_classes {
-        if !pseudo_class_matches(pc, dom, node_id) {
+        if !pseudo_class_matches(pc, dom, node_id, selector_state) {
             return false;
         }
     }
@@ -1688,7 +1845,12 @@ fn simple_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> bool {
     true
 }
 
-fn pseudo_class_matches(pc: &PseudoClass, dom: &Dom, node_id: NodeId) -> bool {
+fn pseudo_class_matches(
+    pc: &PseudoClass,
+    dom: &Dom,
+    node_id: NodeId,
+    selector_state: &SelectorState,
+) -> bool {
     match pc {
         PseudoClass::Root => {
             // Root is the <html> element (no parent or parent is document root)
@@ -1776,7 +1938,7 @@ fn pseudo_class_matches(pc: &PseudoClass, dom: &Dom, node_id: NodeId) -> bool {
             // :not(a, b, c) — matches if NONE of the listed selectors match.
             !selectors
                 .iter()
-                .any(|sel| simple_matches(sel, dom, node_id))
+                .any(|sel| simple_matches(sel, dom, node_id, selector_state))
         }
         PseudoClass::Checked | PseudoClass::Disabled | PseudoClass::Enabled => {
             // Check for corresponding HTML attributes
@@ -1800,17 +1962,14 @@ fn pseudo_class_matches(pc: &PseudoClass, dom: &Dom, node_id: NodeId) -> bool {
         // :is() — matches if any selector in the list matches.
         PseudoClass::Is(selectors) | PseudoClass::Where(selectors) => selectors
             .iter()
-            .any(|sel| simple_selector_matches(sel, dom, node_id)),
+            .any(|sel| simple_selector_matches(sel, dom, node_id, selector_state)),
         // :has() — matches if any descendant matches the inner selector.
-        // For performance, only check direct children (shallow :has).
-        PseudoClass::Has(sel) => {
-            let children = &dom.nodes[node_id].children;
-            children
-                .iter()
-                .any(|&c| simple_selector_matches(sel, dom, c))
+        PseudoClass::Has(sel) => subtree_has_match(dom, node_id, sel, selector_state),
+        PseudoClass::FocusVisible => selector_state.focus_visible_node == Some(node_id),
+        PseudoClass::FocusWithin => {
+            selector_state.focused_node == Some(node_id)
+                || has_descendant_node(dom, node_id, selector_state.focused_node)
         }
-        // :focus-visible, :focus-within — stateful, not applicable in static rendering.
-        PseudoClass::FocusVisible | PseudoClass::FocusWithin => false,
         // :placeholder-shown — check if input has no value.
         PseudoClass::PlaceholderShown => {
             if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
@@ -1822,16 +1981,181 @@ fn pseudo_class_matches(pc: &PseudoClass, dom: &Dom, node_id: NodeId) -> bool {
                 false
             }
         }
-        // Stateful pseudo-classes (hover, active, focus, visited) are not
-        // applicable in static rendering; always return false.
-        PseudoClass::Hover | PseudoClass::Active | PseudoClass::Focus | PseudoClass::Visited => {
-            false
+        PseudoClass::Hover => selector_state.hovered_node == Some(node_id),
+        PseudoClass::Active => selector_state.active_node == Some(node_id),
+        PseudoClass::Focus => selector_state.focused_node == Some(node_id),
+        // Browsers restrict :visited matching for privacy; until we have a
+        // history model, treat it as not matched.
+        PseudoClass::Visited => false,
+        // ── Form validation pseudo-classes (HTML §4.10.21) ──────────────────
+        PseudoClass::Required => {
+            if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+                attrs
+                    .iter()
+                    .any(|a| eq_ignore_ascii_case(&a.name, "required"))
+            } else {
+                false
+            }
         }
+        PseudoClass::Optional => {
+            let tag = dom.tag(node_id);
+            let is_form_el = matches!(
+                tag,
+                Some(Tag::Input) | Some(Tag::Select) | Some(Tag::Textarea)
+            );
+            if !is_form_el {
+                return false;
+            }
+            if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+                !attrs
+                    .iter()
+                    .any(|a| eq_ignore_ascii_case(&a.name, "required"))
+            } else {
+                false
+            }
+        }
+        PseudoClass::ReadOnly => {
+            if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+                let tag = dom.tag(node_id);
+                if matches!(tag, Some(Tag::Input) | Some(Tag::Textarea)) {
+                    attrs
+                        .iter()
+                        .any(|a| eq_ignore_ascii_case(&a.name, "readonly"))
+                        || attrs
+                            .iter()
+                            .any(|a| eq_ignore_ascii_case(&a.name, "disabled"))
+                } else {
+                    // Non-editable elements are :read-only by default.
+                    true
+                }
+            } else {
+                true
+            }
+        }
+        PseudoClass::ReadWrite => {
+            let tag = dom.tag(node_id);
+            if matches!(tag, Some(Tag::Input) | Some(Tag::Textarea)) {
+                if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+                    !attrs
+                        .iter()
+                        .any(|a| {
+                            eq_ignore_ascii_case(&a.name, "readonly")
+                                || eq_ignore_ascii_case(&a.name, "disabled")
+                        })
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        PseudoClass::Valid => {
+            let tag = dom.tag(node_id);
+            if !matches!(tag, Some(Tag::Input) | Some(Tag::Select) | Some(Tag::Textarea)) {
+                return false;
+            }
+            crate::dom::validate_form_control(dom, node_id).is_valid()
+        }
+        PseudoClass::Invalid => {
+            let tag = dom.tag(node_id);
+            if !matches!(tag, Some(Tag::Input) | Some(Tag::Select) | Some(Tag::Textarea)) {
+                return false;
+            }
+            !crate::dom::validate_form_control(dom, node_id).is_valid()
+        }
+        PseudoClass::InRange => {
+            let tag = dom.tag(node_id);
+            if tag != Some(Tag::Input) {
+                return false;
+            }
+            let r = crate::dom::validate_form_control(dom, node_id);
+            // :in-range matches if neither underflow nor overflow.
+            !r.range_underflow && !r.range_overflow
+        }
+        PseudoClass::OutOfRange => {
+            let tag = dom.tag(node_id);
+            if tag != Some(Tag::Input) {
+                return false;
+            }
+            let r = crate::dom::validate_form_control(dom, node_id);
+            r.range_underflow || r.range_overflow
+        }
+        PseudoClass::Default => {
+            // :default matches the default submit button or initially-checked checkbox/radio.
+            let tag = dom.tag(node_id);
+            if tag == Some(Tag::Input) {
+                if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+                    let is_submit = attrs.iter().any(|a| {
+                        eq_ignore_ascii_case(&a.name, "type")
+                            && eq_ignore_ascii_case(&a.value, "submit")
+                    });
+                    let is_checked_default = attrs
+                        .iter()
+                        .any(|a| eq_ignore_ascii_case(&a.name, "checked"));
+                    is_submit || is_checked_default
+                } else {
+                    false
+                }
+            } else if tag == Some(Tag::Button) {
+                // First submit button is :default.
+                true
+            } else {
+                false
+            }
+        }
+        PseudoClass::Indeterminate => {
+            let tag = dom.tag(node_id);
+            if tag == Some(Tag::Progress) {
+                // <progress> without value attribute is indeterminate.
+                if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+                    !attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "value"))
+                } else {
+                    false
+                }
+            } else if tag == Some(Tag::Input) {
+                if let NodeType::Element { attrs, .. } = &dom.nodes[node_id].node_type {
+                    let input_type = attrs
+                        .iter()
+                        .find(|a| eq_ignore_ascii_case(&a.name, "type"))
+                        .map(|a| a.value.as_str())
+                        .unwrap_or("text");
+                    if input_type == "checkbox" {
+                        // Checkbox: indeterminate if has `indeterminate` attribute (set via JS).
+                        attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "indeterminate"))
+                    } else if input_type == "radio" {
+                        // Radio: indeterminate if no radio in the same name group is checked.
+                        let name = attrs
+                            .iter()
+                            .find(|a| eq_ignore_ascii_case(&a.name, "name"))
+                            .map(|a| a.value.as_str())
+                            .unwrap_or("");
+                        if name.is_empty() {
+                            // No name group — check just this one.
+                            !attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "checked"))
+                        } else {
+                            // Check all radios with same name in the form.
+                            !radio_group_has_checked(dom, node_id, name)
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        },
     }
 }
 
 /// Check if a SimpleSelector matches a node (used for :is/:where/:has).
-fn simple_selector_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> bool {
+fn simple_selector_matches(
+    sel: &SimpleSelector,
+    dom: &Dom,
+    node_id: NodeId,
+    selector_state: &SelectorState,
+) -> bool {
     if let Some(tag) = sel.tag {
         if dom.tag(node_id) != Some(tag) {
             return false;
@@ -1881,7 +2205,86 @@ fn simple_selector_matches(sel: &SimpleSelector, dom: &Dom, node_id: NodeId) -> 
             return false;
         }
     }
+    for pc in &sel.pseudo_classes {
+        if !pseudo_class_matches(pc, dom, node_id, selector_state) {
+            return false;
+        }
+    }
     true
+}
+
+/// Check if any radio button with the given name in the form is checked.
+fn radio_group_has_checked(dom: &Dom, radio_node: NodeId, name: &str) -> bool {
+    // Find the parent <form> (or document root).
+    let mut form_root = 0;
+    let mut cur = dom.nodes[radio_node].parent;
+    while let Some(pid) = cur {
+        if dom.tag(pid) == Some(Tag::Form) {
+            form_root = pid;
+            break;
+        }
+        cur = dom.nodes[pid].parent;
+    }
+    // Walk all descendants of form_root looking for radio inputs with matching name.
+    let mut stack = dom.nodes[form_root].children.clone();
+    while let Some(nid) = stack.pop() {
+        if dom.tag(nid) == Some(Tag::Input) {
+            if let NodeType::Element { ref attrs, .. } = dom.nodes[nid].node_type {
+                let is_radio = attrs
+                    .iter()
+                    .any(|a| eq_ignore_ascii_case(&a.name, "type") && eq_ignore_ascii_case(&a.value, "radio"));
+                if is_radio {
+                    let n = attrs
+                        .iter()
+                        .find(|a| eq_ignore_ascii_case(&a.name, "name"))
+                        .map(|a| a.value.as_str())
+                        .unwrap_or("");
+                    if n == name {
+                        if attrs.iter().any(|a| eq_ignore_ascii_case(&a.name, "checked")) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        for &cid in dom.nodes[nid].children.iter().rev() {
+            stack.push(cid);
+        }
+    }
+    false
+}
+
+fn subtree_has_match(
+    dom: &Dom,
+    root_id: NodeId,
+    sel: &SimpleSelector,
+    selector_state: &SelectorState,
+) -> bool {
+    let children = &dom.nodes[root_id].children;
+    for &child in children {
+        if matches!(dom.nodes[child].node_type, NodeType::Element { .. })
+            && simple_selector_matches(sel, dom, child, selector_state)
+        {
+            return true;
+        }
+        if subtree_has_match(dom, child, sel, selector_state) {
+            return true;
+        }
+    }
+    false
+}
+
+fn has_descendant_node(dom: &Dom, root_id: NodeId, target: Option<NodeId>) -> bool {
+    let Some(target_id) = target else {
+        return false;
+    };
+    let children = &dom.nodes[root_id].children;
+    for &child in children {
+        if child == target_id || has_descendant_node(dom, child, Some(target_id)) {
+            return true;
+        }
+    }
+    false
 }
 
 fn element_has_attr(dom: &Dom, node_id: NodeId, name: &str) -> bool {
@@ -1959,7 +2362,14 @@ pub fn resolve_styles(
     inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
 ) -> (Vec<ComputedStyle>, PseudoStyles) {
     let prepared = PreparedStylesheets::prepare(stylesheets, viewport_width, viewport_height);
-    resolve_styles_prepared(dom, &prepared, viewport_width, viewport_height, inline_style_cache)
+    resolve_styles_prepared_with_state(
+        dom,
+        &prepared,
+        viewport_width,
+        viewport_height,
+        inline_style_cache,
+        &SelectorState::default(),
+    )
 }
 
 pub fn resolve_styles_prepared(
@@ -1969,6 +2379,24 @@ pub fn resolve_styles_prepared(
     viewport_height: i32,
     inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
 ) -> (Vec<ComputedStyle>, PseudoStyles) {
+    resolve_styles_prepared_with_state(
+        dom,
+        prepared,
+        viewport_width,
+        viewport_height,
+        inline_style_cache,
+        &SelectorState::default(),
+    )
+}
+
+pub fn resolve_styles_prepared_with_state(
+    dom: &Dom,
+    prepared: &PreparedStylesheets,
+    viewport_width: i32,
+    viewport_height: i32,
+    inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
+    selector_state: &SelectorState,
+) -> (Vec<ComputedStyle>, PseudoStyles) {
     resolve_styles_prepared_impl(
         dom,
         prepared,
@@ -1976,6 +2404,7 @@ pub fn resolve_styles_prepared(
         viewport_height,
         inline_style_cache,
         None,
+        selector_state,
     )
 }
 
@@ -1987,6 +2416,26 @@ pub fn resolve_styles_prepared_budgeted(
     inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
     node_budget: usize,
 ) -> (Vec<ComputedStyle>, PseudoStyles) {
+    resolve_styles_prepared_budgeted_with_state(
+        dom,
+        prepared,
+        viewport_width,
+        viewport_height,
+        inline_style_cache,
+        node_budget,
+        &SelectorState::default(),
+    )
+}
+
+pub fn resolve_styles_prepared_budgeted_with_state(
+    dom: &Dom,
+    prepared: &PreparedStylesheets,
+    viewport_width: i32,
+    viewport_height: i32,
+    inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
+    node_budget: usize,
+    selector_state: &SelectorState,
+) -> (Vec<ComputedStyle>, PseudoStyles) {
     resolve_styles_prepared_impl(
         dom,
         prepared,
@@ -1994,6 +2443,7 @@ pub fn resolve_styles_prepared_budgeted(
         viewport_height,
         inline_style_cache,
         Some(node_budget),
+        selector_state,
     )
 }
 
@@ -2004,6 +2454,7 @@ fn resolve_styles_prepared_impl(
     viewport_height: i32,
     inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
     node_budget: Option<usize>,
+    selector_state: &SelectorState,
 ) -> (Vec<ComputedStyle>, PseudoStyles) {
     // Store viewport dimensions for resolve_length() to resolve vh/vw units.
     unsafe {
@@ -2084,7 +2535,7 @@ fn resolve_styles_prepared_impl(
             NodeType::Text(_) => {
                 let mut s = default_style();
                 s.display = Display::Inline;
-                (s, 0u16)
+                (s, 0u32)
             }
         };
 
@@ -2188,6 +2639,7 @@ fn resolve_styles_prepared_impl(
                 dom,
                 id,
                 &all_rules,
+                prepared.layer_count,
                 &prepared.rule_index,
                 &mut candidates,
                 &mut seen_bitset,
@@ -2196,6 +2648,7 @@ fn resolve_styles_prepared_impl(
                 root_font_size,
                 node_cp,
                 ancestors_cp,
+                selector_state,
             );
 
             // Phase 3: Apply inline styles (highest specificity).
@@ -2284,6 +2737,7 @@ fn resolve_styles_prepared_impl(
     let mut pseudo = PseudoStyles::empty(count);
     let mut pseudo_candidates: Vec<usize> = Vec::with_capacity(128);
     let mut pseudo_seen_bitset: Vec<u64> = Vec::with_capacity((all_rules.len() + 63) / 64);
+    let mut pseudo_matches: Vec<((u32, u32, u32), usize)> = Vec::with_capacity(32);
     for id in 0..resolved_count {
         let node = &dom.nodes[id];
         let (tag, attrs) = match &node.node_type {
@@ -2305,6 +2759,7 @@ fn resolve_styles_prepared_impl(
             &mut pseudo_candidates,
             &mut pseudo_seen_bitset,
         );
+        pseudo_matches.clear();
         for &rule_idx in pseudo_candidates.iter() {
             let (rule, _order) = all_rules[rule_idx];
             for sel in &rule.selectors {
@@ -2313,45 +2768,43 @@ fn resolve_styles_prepared_impl(
                     continue;
                 }
                 // Check if the base selector (without pseudo-element) matches this node.
-                if !selector_matches_base(sel, dom, id) {
+                if !selector_matches_base(sel, dom, id, selector_state) {
                     continue;
                 }
-                let pe = pe.unwrap();
-                let slot = match pe {
-                    PseudoElement::Before => &mut pseudo.before[id],
-                    PseudoElement::After => &mut pseudo.after[id],
-                    PseudoElement::Unknown => continue, // skip unknown pseudo-elements
-                };
-                // Create or update the pseudo-element style.
-                // Start from parent style (inherit), then apply rule declarations.
-                if slot.is_none() {
-                    let mut ps = styles[id].clone();
-                    ps.content = None;
-                    ps.content_url = None;
-                    // Reset non-inherited properties to defaults.
-                    ps.background_color = 0;
-                    ps.border_width = 0;
-                    ps.padding_top = 0;
-                    ps.padding_right = 0;
-                    ps.padding_bottom = 0;
-                    ps.padding_left = 0;
-                    ps.margin_top = 0;
-                    ps.margin_right = 0;
-                    ps.margin_bottom = 0;
-                    ps.margin_left = 0;
-                    ps.width = None;
-                    ps.height = None;
-                    ps.display = Display::Inline;
-                    *slot = Some(ps);
-                }
-                let ps = slot.as_mut().unwrap();
-                let parent_fs = styles[id].font_size;
-                let root_fs = 16;
-                for decl in &rule.declarations {
-                    apply_declaration(ps, decl, parent_fs, root_fs);
-                }
+                pseudo_matches.push((sel.specificity(), rule_idx));
+                break;
             }
         }
+        let parent_fs = styles[id].font_size;
+        let root_fs = 16;
+        let mut before_style: Option<ComputedStyle> = None;
+        let mut after_style: Option<ComputedStyle> = None;
+        sort_matches_for_phase(&mut pseudo_matches, &all_rules, false, prepared.layer_count);
+        apply_pseudo_rule_matches(
+            &mut before_style,
+            &mut after_style,
+            id,
+            &styles,
+            &pseudo_matches,
+            &all_rules,
+            false,
+            parent_fs,
+            root_fs,
+        );
+        sort_matches_for_phase(&mut pseudo_matches, &all_rules, true, prepared.layer_count);
+        apply_pseudo_rule_matches(
+            &mut before_style,
+            &mut after_style,
+            id,
+            &styles,
+            &pseudo_matches,
+            &all_rules,
+            true,
+            parent_fs,
+            root_fs,
+        );
+        pseudo.before[id] = before_style;
+        pseudo.after[id] = after_style;
         // Resolve line_height for pseudo styles.
         if let Some(ref mut ps) = pseudo.before[id] {
             if ps.line_height == 0 {
@@ -2380,6 +2833,7 @@ fn apply_author_rules(
     dom: &Dom,
     node_id: NodeId,
     all_rules: &[(&Rule, usize)],
+    layer_count: usize,
     rule_index: &RuleIndex,
     candidates: &mut Vec<usize>,
     seen_bitset: &mut Vec<u64>,
@@ -2388,7 +2842,8 @@ fn apply_author_rules(
     root_fs: i32,
     node_cp: &mut Vec<(String, String)>,
     ancestors_cp: &[Vec<(String, String)>],
-) -> u16 {
+    selector_state: &SelectorState,
+) -> u32 {
     // Reuse the caller's matches buffer (avoids alloc/free per node).
     matches.clear();
 
@@ -2412,19 +2867,17 @@ fn apply_author_rules(
     for &idx in candidates.iter() {
         let (rule, _order) = all_rules[idx];
         for sel in &rule.selectors {
-            if selector_matches(sel, dom, node_id) {
+            if selector_matches(sel, dom, node_id, selector_state) {
                 matches.push((sel.specificity(), idx));
                 break;
             }
         }
     }
 
-    // Sort by specificity (ascending); equal specificity keeps source order.
-    matches.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-
-    let mut set_flags: u16 = 0;
+    let mut set_flags: u32 = 0;
 
     // Phase 1: Apply normal (non-!important) declarations.
+    sort_matches_for_phase(matches, all_rules, false, layer_count);
     for &(_, idx) in matches.iter() {
         let (rule, _) = all_rules[idx];
         for decl in &rule.declarations {
@@ -2451,6 +2904,7 @@ fn apply_author_rules(
     }
 
     // Phase 2: Apply !important declarations (override normal ones).
+    sort_matches_for_phase(matches, all_rules, true, layer_count);
     for &(_, idx) in matches.iter() {
         let (rule, _) = all_rules[idx];
         for decl in &rule.declarations {
@@ -2643,7 +3097,7 @@ fn resolve_nested_var_decl(
 // Inheritance (only unset inheritable properties)
 // ---------------------------------------------------------------------------
 
-fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u16) {
+fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u32) {
     if set & SET_COLOR == 0 {
         child.color = parent.color;
     }
@@ -2692,12 +3146,20 @@ fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u16) {
     if set & SET_OVERFLOW_WRAP == 0 {
         child.overflow_wrap = parent.overflow_wrap;
     }
+    if set & SET_ACCENT_COLOR == 0 {
+        child.accent_color = parent.accent_color;
+    }
+    if set & SET_COLOR_SCHEME == 0 {
+        child.color_scheme = parent.color_scheme;
+    }
 }
 
 /// Map a CSS property to the inheritable-set bitflag (0 if not inheritable).
-fn decl_set_flag(prop: &Property) -> u16 {
+fn decl_set_flag(prop: &Property) -> u32 {
     match prop {
         Property::Color => SET_COLOR,
+        Property::AccentColor => SET_ACCENT_COLOR,
+        Property::ColorScheme => SET_COLOR_SCHEME,
         Property::FontSize => SET_FONT_SIZE,
         Property::FontWeight => SET_FONT_WEIGHT,
         Property::FontStyle => SET_FONT_STYLE,
@@ -2880,6 +3342,18 @@ pub fn apply_declaration(
                 _ => {}
             }
         }
+        Property::AccentColor => match decl.value {
+            CssValue::Color(c) => {
+                style.accent_color = c;
+            }
+            CssValue::CurrentColor => {
+                style.accent_color = style.color;
+            }
+            CssValue::Auto | CssValue::None => {
+                style.accent_color = 0;
+            }
+            _ => {}
+        },
         Property::FontSize => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 if px > 0 {
@@ -3360,15 +3834,37 @@ pub fn apply_declaration(
         }
         Property::AlignSelf => {
             if let CssValue::Keyword(ref kw) = decl.value {
-                style.align_self = match kw.as_str() {
-                    "auto" => Option::None,
-                    "flex-start" | "start" => Some(AlignItems::FlexStart),
-                    "flex-end" | "end" => Some(AlignItems::FlexEnd),
-                    "center" => Some(AlignItems::Center),
-                    "stretch" => Some(AlignItems::Stretch),
-                    "baseline" => Some(AlignItems::Baseline),
-                    _ => style.align_self,
-                };
+                if let Some(v) = parse_self_alignment_kw(kw) {
+                    style.align_self = v;
+                }
+            }
+        }
+        Property::JustifySelf => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                if let Some(v) = parse_self_alignment_kw(kw) {
+                    style.justify_self = v;
+                }
+            }
+        }
+        Property::PlaceItems => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                let (align, justify) = parse_place_items_value(kw);
+                style.align_items = align;
+                style.justify_items = justify;
+            }
+        }
+        Property::PlaceSelf => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                let (align, justify) = parse_place_self_value(kw);
+                style.align_self = align;
+                style.justify_self = justify;
+            }
+        }
+        Property::PlaceContent => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                let (align, justify) = parse_place_content_value(kw);
+                style.align_content = align;
+                style.justify_content = justify;
             }
         }
         Property::FlexGrow => {
@@ -3917,6 +4413,16 @@ pub fn apply_declaration(
                 };
             }
         }
+        Property::ObjectPosition => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                let (x, x_is_percent, y, y_is_percent) =
+                    parse_position_pair(kw, parent_fs, root_fs, 5000, true, 5000, true);
+                style.object_position_x = x;
+                style.object_position_x_is_percent = x_is_percent;
+                style.object_position_y = y;
+                style.object_position_y_is_percent = y_is_percent;
+            }
+        }
         Property::Transform => {
             // Parse transform functions: translate(x,y), translateX(x), translateY(y)
             if matches!(decl.value, CssValue::None)
@@ -4033,7 +4539,16 @@ pub fn apply_declaration(
                 style.transform_ty = ty;
             }
         }
-        Property::TransformOrigin => {}
+        Property::TransformOrigin => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                let (x, x_is_percent, y, y_is_percent) =
+                    parse_position_pair(kw, parent_fs, root_fs, 5000, true, 5000, true);
+                style.transform_origin_x = x;
+                style.transform_origin_x_is_percent = x_is_percent;
+                style.transform_origin_y = y;
+                style.transform_origin_y_is_percent = y_is_percent;
+            }
+        }
         Property::AlignContent => {
             if let CssValue::Keyword(ref kw) = decl.value {
                 style.align_content = match kw.as_str() {
@@ -4116,6 +4631,34 @@ pub fn apply_declaration(
         Property::TextDecorationThickness => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.text_decoration_thickness = px;
+            }
+        }
+        Property::ColorScheme => {
+            if matches!(decl.value, CssValue::Auto) {
+                style.color_scheme = ColorSchemeVal::Auto;
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                let mut resolved = ColorSchemeVal::Auto;
+                for part in kw.split_whitespace() {
+                    match part {
+                        "dark" => {
+                            resolved = ColorSchemeVal::Dark;
+                            break;
+                        }
+                        "light" => {
+                            resolved = ColorSchemeVal::Light;
+                            break;
+                        }
+                        "normal" => {
+                            resolved = ColorSchemeVal::Auto;
+                            break;
+                        }
+                        "only" => {
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                style.color_scheme = resolved;
             }
         }
         Property::TextUnderlineOffset => {
@@ -4364,8 +4907,7 @@ pub fn apply_declaration(
         Property::Appearance
         | Property::BackgroundClip
         | Property::ScrollBehavior
-        | Property::Resize
-        | Property::ObjectPosition => {}
+        | Property::Resize => {}
     }
 }
 
@@ -4669,6 +5211,70 @@ fn parse_align_items_kw(kw: &str) -> AlignItems {
         "baseline" => AlignItems::Baseline,
         _ => AlignItems::Stretch,
     }
+}
+
+fn parse_self_alignment_kw(kw: &str) -> Option<Option<AlignItems>> {
+    match kw {
+        "auto" => Some(None),
+        "flex-start" | "start" | "self-start" => Some(Some(AlignItems::FlexStart)),
+        "flex-end" | "end" | "self-end" => Some(Some(AlignItems::FlexEnd)),
+        "center" => Some(Some(AlignItems::Center)),
+        "stretch" | "normal" => Some(Some(AlignItems::Stretch)),
+        "baseline" => Some(Some(AlignItems::Baseline)),
+        _ => None,
+    }
+}
+
+fn parse_align_content_kw(kw: &str) -> Option<AlignContent> {
+    match kw {
+        "flex-start" | "start" => Some(AlignContent::FlexStart),
+        "flex-end" | "end" => Some(AlignContent::FlexEnd),
+        "center" => Some(AlignContent::Center),
+        "space-between" => Some(AlignContent::SpaceBetween),
+        "space-around" => Some(AlignContent::SpaceAround),
+        "space-evenly" => Some(AlignContent::SpaceEvenly),
+        "stretch" | "normal" => Some(AlignContent::Stretch),
+        _ => None,
+    }
+}
+
+fn parse_justify_content_kw(kw: &str) -> Option<JustifyContent> {
+    match kw {
+        "flex-start" | "start" | "left" => Some(JustifyContent::FlexStart),
+        "flex-end" | "end" | "right" => Some(JustifyContent::FlexEnd),
+        "center" => Some(JustifyContent::Center),
+        "space-between" => Some(JustifyContent::SpaceBetween),
+        "space-around" => Some(JustifyContent::SpaceAround),
+        "space-evenly" => Some(JustifyContent::SpaceEvenly),
+        _ => None,
+    }
+}
+
+fn parse_place_items_value(kw: &str) -> (AlignItems, AlignItems) {
+    let mut parts = kw.split_whitespace();
+    let first = parts.next().unwrap_or("stretch");
+    let second = parts.next().unwrap_or(first);
+    (parse_align_items_kw(first), parse_align_items_kw(second))
+}
+
+fn parse_place_self_value(kw: &str) -> (Option<AlignItems>, Option<AlignItems>) {
+    let mut parts = kw.split_whitespace();
+    let first = parts.next().unwrap_or("auto");
+    let second = parts.next().unwrap_or(first);
+    (
+        parse_self_alignment_kw(first).unwrap_or(None),
+        parse_self_alignment_kw(second).unwrap_or(None),
+    )
+}
+
+fn parse_place_content_value(kw: &str) -> (AlignContent, JustifyContent) {
+    let mut parts = kw.split_whitespace();
+    let first = parts.next().unwrap_or("stretch");
+    let second = parts.next().unwrap_or(first);
+    (
+        parse_align_content_kw(first).unwrap_or(AlignContent::Stretch),
+        parse_justify_content_kw(second).unwrap_or(JustifyContent::FlexStart),
+    )
 }
 
 fn parse_overflow_keyword(kw: &str) -> OverflowVal {
@@ -5228,6 +5834,90 @@ fn parse_bg_position_part(s: &str, parent_fs: i32, root_fs: i32) -> i32 {
             0
         }
     }
+}
+
+fn parse_position_component(
+    s: &str,
+    parent_fs: i32,
+    root_fs: i32,
+    default_value: i32,
+    default_is_percent: bool,
+) -> (i32, bool) {
+    let s = s.trim();
+    match s {
+        "left" | "top" => (0, true),
+        "center" => (5000, true),
+        "right" | "bottom" => (10000, true),
+        _ => {
+            if let Some(stripped) = s.strip_suffix('%') {
+                if let Ok(v) = stripped.trim().parse::<i32>() {
+                    return (v * 100, true);
+                }
+            }
+            if let Some(dim) = crate::css::try_parse_dimension_pub(s) {
+                if matches!(dim, CssValue::Length(_, Unit::Percent) | CssValue::Percentage(_)) {
+                    match dim {
+                        CssValue::Length(v, Unit::Percent) | CssValue::Percentage(v) => {
+                            return (v, true);
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(px) = resolve_length(&dim, parent_fs, root_fs) {
+                    return (px, false);
+                }
+            }
+            (default_value, default_is_percent)
+        }
+    }
+}
+
+fn parse_position_pair(
+    s: &str,
+    parent_fs: i32,
+    root_fs: i32,
+    default_x: i32,
+    default_x_is_percent: bool,
+    default_y: i32,
+    default_y_is_percent: bool,
+) -> (i32, bool, i32, bool) {
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.is_empty() {
+        return (
+            default_x,
+            default_x_is_percent,
+            default_y,
+            default_y_is_percent,
+        );
+    }
+
+    if parts.len() == 1 {
+        let part = parts[0];
+        if matches!(part, "top" | "bottom") {
+            let (y, y_is_percent) =
+                parse_position_component(part, parent_fs, root_fs, default_y, default_y_is_percent);
+            return (default_x, default_x_is_percent, y, y_is_percent);
+        }
+        let (x, x_is_percent) =
+            parse_position_component(part, parent_fs, root_fs, default_x, default_x_is_percent);
+        return (x, x_is_percent, default_y, default_y_is_percent);
+    }
+
+    let (x, x_is_percent) = parse_position_component(
+        parts[0],
+        parent_fs,
+        root_fs,
+        default_x,
+        default_x_is_percent,
+    );
+    let (y, y_is_percent) = parse_position_component(
+        parts[1],
+        parent_fs,
+        root_fs,
+        default_y,
+        default_y_is_percent,
+    );
+    (x, x_is_percent, y, y_is_percent)
 }
 
 // ---------------------------------------------------------------------------

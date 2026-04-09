@@ -23,7 +23,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use libjs::value::JsArray;
+use libjs::value::{JsArray, JsObject};
 use libjs::vm::native_fn;
 use libjs::{JsEngine, JsValue, Vm};
 
@@ -287,6 +287,14 @@ pub enum DomMutation {
     SetScrollLeft {
         node_id: usize,
         value: i32,
+    },
+    /// JS `form.submit()` — programmatic form submission.
+    FormSubmit {
+        form_node_id: usize,
+    },
+    /// JS `form.reset()` — programmatic form reset.
+    FormReset {
+        form_node_id: usize,
     },
 }
 
@@ -1028,6 +1036,7 @@ impl JsRuntime {
         vm.set_global("WebSocket", websocket::make_ws_constructor());
         vm.set_global("Headers", native_fn("Headers", fetch::native_headers_ctor));
         vm.set_global("Image", native_fn("Image", document::native_image_ctor));
+        vm.set_global("FormData", native_fn("FormData", native_formdata_ctor));
         anyos_std::println!("[js] setup native api: top-level globals done");
 
         // Timer globals.
@@ -1414,6 +1423,10 @@ impl JsRuntime {
                     // Scroll offset mutations do not modify the DOM tree.
                     // They are consumed by WebView::apply_scroll_offsets()
                     // and applied to LayoutBox.scroll_top/scroll_left before rendering.
+                }
+                DomMutation::FormSubmit { .. } | DomMutation::FormReset { .. } => {
+                    // Form actions do not modify the DOM tree.
+                    // They are consumed by WebView::drain_form_submits/resets().
                 }
             }
         }
@@ -2546,6 +2559,166 @@ fn extract_origin(url: &str) -> String {
     origin.push_str("://");
     origin.push_str(host);
     origin
+}
+
+// ═══════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════
+// FormData API (W3C XMLHttpRequest §5)
+// ═══════════════════════════════════════════════════════════
+
+/// `new FormData()` or `new FormData(formElement)`.
+/// Stores entries as an internal `__entries` array of [name, value] pairs on the object.
+fn native_formdata_ctor(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let mut obj = JsObject::new();
+    // Store entries as __entries: [[name, value], ...]
+    obj.set(String::from("__entries"), JsValue::new_array(Vec::new()));
+    obj.set(String::from("append"), native_fn("append", formdata_append));
+    obj.set(String::from("set"), native_fn("set", formdata_set));
+    obj.set(String::from("get"), native_fn("get", formdata_get));
+    obj.set(String::from("getAll"), native_fn("getAll", formdata_get_all));
+    obj.set(String::from("has"), native_fn("has", formdata_has));
+    obj.set(String::from("delete"), native_fn("delete", formdata_delete));
+    obj.set(String::from("entries"), native_fn("entries", formdata_entries));
+    obj.set(String::from("keys"), native_fn("keys", formdata_keys));
+    obj.set(String::from("values"), native_fn("values", formdata_values));
+    obj.set(String::from("forEach"), native_fn("forEach", formdata_foreach));
+    JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+/// Helper: read all [name, value] pairs from FormData's __entries.
+fn formdata_read_entries(vm: &Vm) -> Vec<(String, String)> {
+    let this = vm.current_this.clone();
+    if let JsValue::Object(ref obj_rc) = this {
+        if let Some(prop) = obj_rc.borrow().properties.get("__entries") {
+            if let JsValue::Array(ref arr_rc) = prop.value {
+                let arr = arr_rc.borrow();
+                let mut entries = Vec::new();
+                for i in 0..arr.length {
+                    if let Some(elem) = arr.elements.get(&i) {
+                        if let JsValue::Array(ref pair_rc) = elem {
+                            let pair = pair_rc.borrow();
+                            let name = pair.elements.get(&0).map(|v| v.to_js_string()).unwrap_or_default();
+                            let value = pair.elements.get(&1).map(|v| v.to_js_string()).unwrap_or_default();
+                            entries.push((name, value));
+                        }
+                    }
+                }
+                return entries;
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// Helper: write entries back to FormData's __entries.
+fn formdata_write_entries(vm: &Vm, entries: &[(String, String)]) {
+    let this = vm.current_this.clone();
+    if let JsValue::Object(ref obj_rc) = this {
+        let pairs: Vec<JsValue> = entries
+            .iter()
+            .map(|(n, v)| {
+                JsValue::new_array(alloc::vec![
+                    JsValue::String(n.clone()),
+                    JsValue::String(v.clone()),
+                ])
+            })
+            .collect();
+        obj_rc.borrow_mut().set(String::from("__entries"), JsValue::new_array(pairs));
+    }
+}
+
+fn formdata_append(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let value = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    let mut entries = formdata_read_entries(vm);
+    entries.push((name, value));
+    formdata_write_entries(vm, &entries);
+    JsValue::Undefined
+}
+
+fn formdata_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let value = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    let mut entries = formdata_read_entries(vm);
+    entries.retain(|(n, _)| n != &name);
+    entries.push((name, value));
+    formdata_write_entries(vm, &entries);
+    JsValue::Undefined
+}
+
+fn formdata_get(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let entries = formdata_read_entries(vm);
+    for (n, v) in &entries {
+        if n == &name {
+            return JsValue::String(v.clone());
+        }
+    }
+    JsValue::Null
+}
+
+fn formdata_get_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let entries = formdata_read_entries(vm);
+    let vals: Vec<JsValue> = entries
+        .iter()
+        .filter(|(n, _)| n == &name)
+        .map(|(_, v)| JsValue::String(v.clone()))
+        .collect();
+    JsValue::new_array(vals)
+}
+
+fn formdata_has(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let entries = formdata_read_entries(vm);
+    JsValue::Bool(entries.iter().any(|(n, _)| n == &name))
+}
+
+fn formdata_delete(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let name = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let mut entries = formdata_read_entries(vm);
+    entries.retain(|(n, _)| n != &name);
+    formdata_write_entries(vm, &entries);
+    JsValue::Undefined
+}
+
+fn formdata_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let entries = formdata_read_entries(vm);
+    let pairs: Vec<JsValue> = entries
+        .iter()
+        .map(|(n, v)| {
+            JsValue::new_array(alloc::vec![
+                JsValue::String(n.clone()),
+                JsValue::String(v.clone()),
+            ])
+        })
+        .collect();
+    JsValue::new_array(pairs)
+}
+
+fn formdata_keys(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let entries = formdata_read_entries(vm);
+    let keys: Vec<JsValue> = entries.iter().map(|(n, _)| JsValue::String(n.clone())).collect();
+    JsValue::new_array(keys)
+}
+
+fn formdata_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let entries = formdata_read_entries(vm);
+    let vals: Vec<JsValue> = entries.iter().map(|(_, v)| JsValue::String(v.clone())).collect();
+    JsValue::new_array(vals)
+}
+
+fn formdata_foreach(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let cb = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let entries = formdata_read_entries(vm);
+    for (n, v) in entries {
+        vm.call_value(
+            &cb,
+            &[JsValue::String(v), JsValue::String(n)],
+            JsValue::Undefined,
+        );
+    }
+    JsValue::Undefined
 }
 
 // ═══════════════════════════════════════════════════════════

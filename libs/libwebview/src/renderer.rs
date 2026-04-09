@@ -144,6 +144,12 @@ pub struct HitRegion {
 pub enum HitKind {
     Link(String),
     Submit(usize),
+    /// Reset button — node_id of the reset element.
+    Reset(usize),
+    /// File input — node_id of the `<input type="file">` element.
+    FileInput(usize),
+    /// Color input — node_id of the `<input type="color">` element.
+    ColorInput(usize),
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -207,6 +213,10 @@ enum DrawKind {
     Image {
         src: String,
         object_fit: crate::style::ObjectFit,
+        object_position_x: i32,
+        object_position_x_is_percent: bool,
+        object_position_y: i32,
+        object_position_y_is_percent: bool,
     },
 }
 
@@ -339,7 +349,14 @@ impl DisplayList {
                         buf, stride, buf_h, cmd.x, draw_y, *color, *font_id, *font_size, text,
                     );
                 }
-                DrawKind::Image { src, object_fit } => {
+                DrawKind::Image {
+                    src,
+                    object_fit,
+                    object_position_x,
+                    object_position_x_is_percent,
+                    object_position_y,
+                    object_position_y_is_percent,
+                } => {
                     if let Some(entry) = images.get_ref(src) {
                         if !entry.has_pixels() {
                             continue;
@@ -348,14 +365,19 @@ impl DisplayList {
                             buf,
                             stride,
                             buf_h,
-                            cx,
-                            cy,
-                            cw,
-                            ch,
+                            cmd.x,
+                            draw_y,
+                            cmd.w,
+                            cmd.h,
+                            (cx, cy, cw, ch),
                             &entry.pixels,
                             entry.width,
                             entry.height,
                             *object_fit,
+                            *object_position_x,
+                            *object_position_x_is_percent,
+                            *object_position_y,
+                            *object_position_y_is_percent,
                         );
                     }
                 }
@@ -400,17 +422,26 @@ impl DisplayList {
             orig_abs_y
         };
 
-        // Apply CSS transform: scale.
-        // Scale dimensions around the box center (transform-origin: center center).
+        // Apply CSS transform: scale around the resolved transform origin.
         let (abs_x, abs_y, draw_w, draw_h) = if bx.transform_sx != 1000 || bx.transform_sy != 1000 {
             let sx = bx.transform_sx as f32 / 1000.0;
             let sy = bx.transform_sy as f32 / 1000.0;
-            let cx = orig_abs_x + bx.width / 2;
-            let cy = orig_abs_y + bx.height / 2;
+            let cx = resolve_axis_origin(
+                orig_abs_x,
+                bx.width,
+                bx.transform_origin_x,
+                bx.transform_origin_x_is_percent,
+            );
+            let cy = resolve_axis_origin(
+                orig_abs_y,
+                bx.height,
+                bx.transform_origin_y,
+                bx.transform_origin_y_is_percent,
+            );
             let new_w = (bx.width as f32 * sx) as i32;
             let new_h = (bx.height as f32 * sy) as i32;
-            let new_x = cx - new_w / 2;
-            let new_y = cy - new_h / 2;
+            let new_x = cx + ((orig_abs_x - cx) as f32 * sx) as i32;
+            let new_y = cy + ((orig_abs_y - cy) as f32 * sy) as i32;
             (new_x, new_y, new_w, new_h)
         } else {
             (orig_abs_x, orig_abs_y, bx.width, bx.height)
@@ -827,14 +858,20 @@ impl DisplayList {
                 DrawKind::Image {
                     src: src.clone(),
                     object_fit: bx.object_fit,
+                    object_position_x: bx.object_position_x,
+                    object_position_x_is_percent: bx.object_position_x_is_percent,
+                    object_position_y: bx.object_position_y,
+                    object_position_y_is_percent: bx.object_position_y_is_percent,
                 },
             );
         }
 
         // Form control pixel drawing.
+        // Native-widget controls (Select, Range) are rendered by the anyui
+        // toolkit — skip canvas painting for those.
         if let Some(kind) = bx.form_field {
             match kind {
-                FormFieldKind::Submit | FormFieldKind::ButtonEl => {
+                FormFieldKind::Submit | FormFieldKind::ButtonEl | FormFieldKind::Reset => {
                     self.emit_submit(abs_x, abs_y, bx);
                 }
                 FormFieldKind::TextInput | FormFieldKind::Password => {
@@ -846,15 +883,20 @@ impl DisplayList {
                 FormFieldKind::Radio => {
                     self.emit_radio(abs_x, abs_y, bx);
                 }
-                FormFieldKind::Range => {
-                    self.emit_range(abs_x, abs_y, bx);
-                }
                 FormFieldKind::Progress => {
                     self.emit_progress(abs_x, abs_y, bx);
                 }
-                FormFieldKind::Select => {
-                    self.emit_select(abs_x, abs_y, bx);
+                FormFieldKind::Meter => {
+                    self.emit_meter(abs_x, abs_y, bx);
                 }
+                FormFieldKind::File => {
+                    self.emit_submit(abs_x, abs_y, bx);
+                }
+                FormFieldKind::Color => {
+                    self.emit_color_swatch(abs_x, abs_y, bx);
+                }
+                // Select and Range use native widgets now.
+                FormFieldKind::Select | FormFieldKind::Range => {}
                 _ => {}
             }
         }
@@ -1318,11 +1360,53 @@ impl DisplayList {
                         DrawKind::Image {
                             src: src.clone(),
                             object_fit: bx.object_fit,
+                            object_position_x: 5000,
+                            object_position_x_is_percent: true,
+                            object_position_y: 5000,
+                            object_position_y_is_percent: true,
                         },
                     );
                 }
             }
             _ => {}
+        }
+    }
+
+    fn default_accent_color(&self) -> u32 { 0xFF0A84FF }
+
+    fn effective_accent_color(&self, bx: &LayoutBox) -> u32 {
+        if bx.accent_color != 0 {
+            bx.accent_color
+        } else {
+            self.default_accent_color()
+        }
+    }
+
+    fn default_control_bg(&self, bx: &LayoutBox) -> u32 {
+        if bx.bg_color != 0 {
+            bx.bg_color
+        } else if bx.uses_dark_color_scheme {
+            0xFF1E1E1E
+        } else {
+            0xFFFFFFFF
+        }
+    }
+
+    fn default_control_fg(&self, bx: &LayoutBox) -> u32 {
+        if bx.color != 0 {
+            bx.color
+        } else if bx.uses_dark_color_scheme {
+            0xFFF5F5F5
+        } else {
+            0xFF000000
+        }
+    }
+
+    fn default_control_border(&self, bx: &LayoutBox) -> u32 {
+        if bx.uses_dark_color_scheme {
+            0xFF8A8A8A
+        } else {
+            0xFF767676
         }
     }
 
@@ -1369,7 +1453,7 @@ impl DisplayList {
 
         // Center text in button.
         let font_size = bx.font_size.max(1) as u16;
-        let text_color = if bx.color != 0 { bx.color } else { 0xFF000000 };
+        let text_color = self.default_control_fg(bx);
         let (tw, _) = libfont_client::measure(0, font_size, &label_text);
         let tx = x + (bx.width - tw as i32) / 2;
         let ty = y + (bx.height - font_size as i32) / 2;
@@ -1389,12 +1473,8 @@ impl DisplayList {
 
     /// Draw a text input / search / password field as a simple rectangle with border.
     fn emit_text_input(&mut self, x: i32, y: i32, bx: &LayoutBox) {
-        let bg = if bx.bg_color != 0 {
-            bx.bg_color
-        } else {
-            0xFFFFFFFF
-        };
-        let border_color = 0xFF767676;
+        let bg = self.default_control_bg(bx);
+        let border_color = self.default_control_border(bx);
         // Background fill.
         self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: bg });
         // 1px border.
@@ -1472,12 +1552,31 @@ impl DisplayList {
         let sz = bx.height.min(bx.width).min(16);
         let cx = x + (bx.width - sz) / 2;
         let cy = y + (bx.height - sz) / 2;
-        self.push(cx, cy, sz, sz, DrawKind::Rect { color: 0xFFFFFFFF });
+        let bg = if bx.form_checked {
+            self.effective_accent_color(bx)
+        } else {
+            self.default_control_bg(bx)
+        };
+        let border = if bx.form_checked {
+            self.effective_accent_color(bx)
+        } else {
+            self.default_control_border(bx)
+        };
+        self.push(cx, cy, sz, sz, DrawKind::Rect { color: bg });
         // Border.
-        self.push(cx, cy, sz, 1, DrawKind::Rect { color: 0xFF767676 });
-        self.push(cx, cy + sz - 1, sz, 1, DrawKind::Rect { color: 0xFF767676 });
-        self.push(cx, cy, 1, sz, DrawKind::Rect { color: 0xFF767676 });
-        self.push(cx + sz - 1, cy, 1, sz, DrawKind::Rect { color: 0xFF767676 });
+        self.push(cx, cy, sz, 1, DrawKind::Rect { color: border });
+        self.push(cx, cy + sz - 1, sz, 1, DrawKind::Rect { color: border });
+        self.push(cx, cy, 1, sz, DrawKind::Rect { color: border });
+        self.push(cx + sz - 1, cy, 1, sz, DrawKind::Rect { color: border });
+        if bx.form_checked && sz >= 10 {
+            let check = 0xFFFFFFFF;
+            self.push(cx + 3, cy + sz / 2, 2, 1, DrawKind::Rect { color: check });
+            self.push(cx + 4, cy + sz / 2 + 1, 2, 1, DrawKind::Rect { color: check });
+            self.push(cx + 5, cy + sz / 2 + 2, 2, 1, DrawKind::Rect { color: check });
+            self.push(cx + 6, cy + sz / 2 + 1, 2, 1, DrawKind::Rect { color: check });
+            self.push(cx + 7, cy + sz / 2, 2, 1, DrawKind::Rect { color: check });
+            self.push(cx + 8, cy + sz / 2 - 1, 1, 1, DrawKind::Rect { color: check });
+        }
     }
 
     /// Draw a radio button as a rounded rectangle (circle approximation).
@@ -1493,27 +1592,43 @@ impl DisplayList {
             sz,
             sz,
             DrawKind::RoundedRect {
-                color: 0xFFFFFFFF,
+                color: self.default_control_bg(bx),
                 radii: [r, r, r, r],
             },
         );
         // Border ring.
-        self.push(cx + 1, cy, sz - 2, 1, DrawKind::Rect { color: 0xFF767676 });
+        let border = self.default_control_border(bx);
+        self.push(cx + 1, cy, sz - 2, 1, DrawKind::Rect { color: border });
         self.push(
             cx + 1,
             cy + sz - 1,
             sz - 2,
             1,
-            DrawKind::Rect { color: 0xFF767676 },
+            DrawKind::Rect { color: border },
         );
-        self.push(cx, cy + 1, 1, sz - 2, DrawKind::Rect { color: 0xFF767676 });
+        self.push(cx, cy + 1, 1, sz - 2, DrawKind::Rect { color: border });
         self.push(
             cx + sz - 1,
             cy + 1,
             1,
             sz - 2,
-            DrawKind::Rect { color: 0xFF767676 },
+            DrawKind::Rect { color: border },
         );
+        if bx.form_checked && sz >= 8 {
+            let inner = (sz / 2).max(4);
+            let inset = (sz - inner) / 2;
+            let ir = inner / 2;
+            self.push(
+                cx + inset,
+                cy + inset,
+                inner,
+                inner,
+                DrawKind::RoundedRect {
+                    color: self.effective_accent_color(bx),
+                    radii: [ir, ir, ir, ir],
+                },
+            );
+        }
     }
 
     /// Draw an `<input type="range">` as a track with a thumb indicator.
@@ -1540,13 +1655,14 @@ impl DisplayList {
         let r = track_h / 2;
 
         // Track background (light gray, rounded).
+        let accent = self.effective_accent_color(bx);
         self.push(
             x,
             track_y,
             w,
             track_h,
             DrawKind::RoundedRect {
-                color: 0xFFE0E0E0,
+                color: if bx.uses_dark_color_scheme { 0xFF3A3A3A } else { 0xFFE0E0E0 },
                 radii: [r, r, r, r],
             },
         );
@@ -1560,7 +1676,7 @@ impl DisplayList {
                 fill_w,
                 track_h,
                 DrawKind::RoundedRect {
-                    color: 0xFF4A90D9,
+                    color: accent,
                     radii: [r, r, r, r],
                 },
             );
@@ -1577,7 +1693,7 @@ impl DisplayList {
             thumb_sz,
             thumb_sz,
             DrawKind::RoundedRect {
-                color: 0xFF4A90D9,
+                color: accent,
                 radii: [thumb_r, thumb_r, thumb_r, thumb_r],
             },
         );
@@ -1587,28 +1703,28 @@ impl DisplayList {
             thumb_y,
             thumb_sz - 2,
             1,
-            DrawKind::Rect { color: 0xFF3A7BC8 },
+            DrawKind::Rect { color: accent },
         );
         self.push(
             thumb_x + 1,
             thumb_y + thumb_sz - 1,
             thumb_sz - 2,
             1,
-            DrawKind::Rect { color: 0xFF3A7BC8 },
+            DrawKind::Rect { color: accent },
         );
         self.push(
             thumb_x,
             thumb_y + 1,
             1,
             thumb_sz - 2,
-            DrawKind::Rect { color: 0xFF3A7BC8 },
+            DrawKind::Rect { color: accent },
         );
         self.push(
             thumb_x + thumb_sz - 1,
             thumb_y + 1,
             1,
             thumb_sz - 2,
-            DrawKind::Rect { color: 0xFF3A7BC8 },
+            DrawKind::Rect { color: accent },
         );
     }
 
@@ -1634,13 +1750,14 @@ impl DisplayList {
         let r = 4;
 
         // Track background (light gray, rounded).
+        let accent = self.effective_accent_color(bx);
         self.push(
             x,
             y,
             w,
             h,
             DrawKind::RoundedRect {
-                color: 0xFFE0E0E0,
+                color: if bx.uses_dark_color_scheme { 0xFF3A3A3A } else { 0xFFE0E0E0 },
                 radii: [r, r, r, r],
             },
         );
@@ -1655,21 +1772,78 @@ impl DisplayList {
                 fill_w,
                 h,
                 DrawKind::RoundedRect {
-                    color: 0xFF4A90D9,
+                    color: accent,
                     radii: [r, fr, fr, r],
                 },
             );
         }
     }
 
+    /// Draw a color swatch for `<input type="color">`.
+    fn emit_color_swatch(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        let val = bx.form_value.as_deref().unwrap_or("#000000");
+        let color = parse_color_value(val);
+        let w = bx.width;
+        let h = bx.height;
+        // Border.
+        self.push(x, y, w, h, DrawKind::Rect { color: 0xFF767676 });
+        // Inner swatch (2px border).
+        if w > 4 && h > 4 {
+            self.push(x + 2, y + 2, w - 4, h - 4, DrawKind::Rect { color });
+        }
+    }
+
+    /// Draw a `<meter>` element — like progress but with green/yellow/red coloring.
+    fn emit_meter(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        let pct = if let Some(ref v) = bx.form_value {
+            if v == "X" {
+                1.0f32
+            } else {
+                let bytes = v.as_bytes();
+                let n = bytes
+                    .iter()
+                    .fold(0i32, |acc, &b| acc * 10 + (b - b'0') as i32);
+                (n as f32) / 1000.0
+            }
+        } else {
+            0.0
+        };
+
+        let w = bx.width;
+        let h = bx.height;
+        let r = 4;
+
+        // Track background.
+        self.push(
+            x,
+            y,
+            w,
+            h,
+            DrawKind::RoundedRect {
+                color: if bx.uses_dark_color_scheme { 0xFF3A3A3A } else { 0xFFE0E0E0 },
+                radii: [r, r, r, r],
+            },
+        );
+
+        // Fill bar — color depends on value (green=ok, yellow=suboptimal, red=danger).
+        let fill_color = if pct < 0.25 {
+            0xFFE74C3C // red
+        } else if pct < 0.75 {
+            0xFFF1C40F // yellow
+        } else {
+            0xFF2ECC71 // green
+        };
+        let fill_w = ((w as f32) * pct) as i32;
+        if fill_w > 0 {
+            let fr = if pct >= 0.99 { r } else { 0 };
+            self.push(x, y, fill_w, h, DrawKind::RoundedRect { color: fill_color, radii: [r, fr, fr, r] });
+        }
+    }
+
     /// Draw a `<select>` dropdown as a text field with a dropdown arrow.
     fn emit_select(&mut self, x: i32, y: i32, bx: &LayoutBox) {
-        let bg = if bx.bg_color != 0 {
-            bx.bg_color
-        } else {
-            0xFFFFFFFF
-        };
-        let border_color = 0xFF767676;
+        let bg = self.default_control_bg(bx);
+        let border_color = self.default_control_border(bx);
 
         // Background fill.
         self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: bg });
@@ -1899,6 +2073,36 @@ pub(crate) struct Renderer {
 }
 
 impl Renderer {
+    fn default_accent_color(&self) -> u32 { 0xFF0A84FF }
+
+    fn effective_accent_color(&self, bx: &LayoutBox) -> u32 {
+        if bx.accent_color != 0 {
+            bx.accent_color
+        } else {
+            self.default_accent_color()
+        }
+    }
+
+    fn default_control_bg(&self, bx: &LayoutBox) -> u32 {
+        if bx.bg_color != 0 {
+            bx.bg_color
+        } else if bx.uses_dark_color_scheme {
+            0xFF1E1E1E
+        } else {
+            0xFFFFFFFF
+        }
+    }
+
+    fn default_control_fg(&self, bx: &LayoutBox) -> u32 {
+        if bx.color != 0 {
+            bx.color
+        } else if bx.uses_dark_color_scheme {
+            0xFFF5F5F5
+        } else {
+            0xFF000000
+        }
+    }
+
     fn prioritized_tile_rows(
         first_row: u32,
         last_row: u32,
@@ -2039,6 +2243,51 @@ impl Renderer {
                 && doc_y < region.y + region.h
             {
                 if let HitKind::Submit(node_id) = region.kind {
+                    return Some(node_id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn hit_test_reset_at(&self, x: i32, doc_y: i32) -> Option<usize> {
+        for region in &self.hit_regions {
+            if x >= region.x
+                && x < region.x + region.w
+                && doc_y >= region.y
+                && doc_y < region.y + region.h
+            {
+                if let HitKind::Reset(node_id) = region.kind {
+                    return Some(node_id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn hit_test_file_input_at(&self, x: i32, doc_y: i32) -> Option<usize> {
+        for region in &self.hit_regions {
+            if x >= region.x
+                && x < region.x + region.w
+                && doc_y >= region.y
+                && doc_y < region.y + region.h
+            {
+                if let HitKind::FileInput(node_id) = region.kind {
+                    return Some(node_id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn hit_test_color_input_at(&self, x: i32, doc_y: i32) -> Option<usize> {
+        for region in &self.hit_regions {
+            if x >= region.x
+                && x < region.x + region.w
+                && doc_y >= region.y
+                && doc_y < region.y + region.h
+            {
+                if let HitKind::ColorInput(node_id) = region.kind {
                     return Some(node_id);
                 }
             }
@@ -2454,11 +2703,28 @@ impl Renderer {
         c.set_size(doc_w, tile_h);
         if let Some(cb) = self.link_cb {
             c.on_click_raw(cb, self.link_cb_ud);
+            c.on_event_raw(ui::EVENT_MOUSE_MOVE, cb, self.link_cb_ud);
+            c.on_event_raw(ui::EVENT_MOUSE_DOWN, cb, self.link_cb_ud);
+            c.on_event_raw(ui::EVENT_MOUSE_UP, cb, self.link_cb_ud);
+            c.on_event_raw(ui::EVENT_MOUSE_LEAVE, cb, self.link_cb_ud);
         }
         parent.add(&c);
         c.copy_pixels_from(pixels);
 
         self.tile_canvases.push(TileCanvas { row, canvas: c });
+    }
+
+    fn register_control_selector_events(&self, control_id: u32) {
+        let Some(cb) = self.link_cb else {
+            return;
+        };
+        let ctrl = ui::Control::from_id(control_id);
+        ctrl.on_focus_raw(cb, self.link_cb_ud);
+        ctrl.on_blur_raw(cb, self.link_cb_ud);
+        ctrl.on_event_raw(ui::EVENT_MOUSE_ENTER, cb, self.link_cb_ud);
+        ctrl.on_event_raw(ui::EVENT_MOUSE_LEAVE, cb, self.link_cb_ud);
+        ctrl.on_event_raw(ui::EVENT_MOUSE_DOWN, cb, self.link_cb_ud);
+        ctrl.on_event_raw(ui::EVENT_MOUSE_UP, cb, self.link_cb_ud);
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -2590,6 +2856,8 @@ impl Renderer {
 
         match kind {
             FormFieldKind::TextInput | FormFieldKind::Password => {
+                let bg = self.default_control_bg(bx);
+                let fg = self.default_control_fg(bx);
                 if let Some(fc) = self
                     .form_controls
                     .iter_mut()
@@ -2598,46 +2866,59 @@ impl Renderer {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
                     ctrl.set_size(w as u32, h as u32);
-                    let bg = if bx.bg_color != 0 {
-                        bx.bg_color
-                    } else {
-                        0xFFFFFFFF
-                    };
-                    let fg = if bx.color != 0 { bx.color } else { 0xFF000000 };
                     ctrl.set_color(bg);
                     ctrl.set_text_color(fg);
+                    ctrl.set_enabled(!bx.form_disabled);
                     fc.seen = true;
                     fc.doc_x = x;
                     fc.doc_y = y;
                     fc.doc_w = w;
                     fc.doc_h = h;
                 } else {
-                    let tf = ui::TextField::new();
-                    if kind == FormFieldKind::Password {
-                        tf.set_password_mode(true);
-                    }
-                    tf.set_position(x, y);
-                    tf.set_size(w as u32, h as u32);
-                    let bg = if bx.bg_color != 0 {
-                        bx.bg_color
+                    // If this input has a datalist, use AutoCompleteTextField.
+                    let id = if let Some(ref suggestions) = bx.form_datalist {
+                        let atf = ui::AutoCompleteTextField::new();
+                        atf.set_position(x, y);
+                        atf.set_size(w as u32, h as u32);
+                        atf.set_color(bg);
+                        atf.set_text_color(fg);
+                        atf.set_enabled(!bx.form_disabled);
+                        atf.set_suggestions(suggestions);
+                        if let Some(ref ph) = bx.form_placeholder {
+                            atf.set_placeholder(ph);
+                        }
+                        if let Some(ref val) = bx.form_value {
+                            atf.set_text(val);
+                        }
+                        if let Some(cb) = submit_cb {
+                            atf.on_submit_raw(cb, submit_cb_ud);
+                        }
+                        parent.add(&atf);
+                        atf.id()
                     } else {
-                        0xFFFFFFFF
+                        let tf = ui::TextField::new();
+                        if kind == FormFieldKind::Password {
+                            tf.set_password_mode(true);
+                        }
+                        tf.set_position(x, y);
+                        tf.set_size(w as u32, h as u32);
+                        tf.set_color(bg);
+                        tf.set_text_color(fg);
+                        tf.set_enabled(!bx.form_disabled);
+                        if let Some(ref ph) = bx.form_placeholder {
+                            tf.set_placeholder(ph);
+                        }
+                        if let Some(ref val) = bx.form_value {
+                            tf.set_text(val);
+                        }
+                        if let Some(cb) = submit_cb {
+                            tf.on_submit_raw(cb, submit_cb_ud);
+                        }
+                        parent.add(&tf);
+                        tf.id()
                     };
-                    let fg = if bx.color != 0 { bx.color } else { 0xFF000000 };
-                    tf.set_color(bg);
-                    tf.set_text_color(fg);
-                    if let Some(ref ph) = bx.form_placeholder {
-                        tf.set_placeholder(ph);
-                    }
-                    if let Some(ref val) = bx.form_value {
-                        tf.set_text(val);
-                    }
-                    // Register Enter key callback for form submission.
-                    if let Some(cb) = submit_cb {
-                        tf.on_submit_raw(cb, submit_cb_ud);
-                    }
-                    parent.add(&tf);
-                    let id = tf.id();
+                    let id = id;
+
                     self.form_controls.push(FormControl {
                         control_id: id,
                         node_id,
@@ -2662,7 +2943,18 @@ impl Renderer {
                 });
             }
 
+            FormFieldKind::Reset => {
+                self.hit_regions.push(HitRegion {
+                    x,
+                    y,
+                    w,
+                    h,
+                    kind: HitKind::Reset(node_id),
+                });
+            }
+
             FormFieldKind::Checkbox => {
+                let accent = self.effective_accent_color(bx);
                 if let Some(fc) = self
                     .form_controls
                     .iter_mut()
@@ -2671,6 +2963,9 @@ impl Renderer {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
                     ctrl.set_size(w as u32, h as u32);
+                    ctrl.set_color(accent);
+                    ctrl.set_state(if bx.form_checked { 1 } else { 0 });
+                    ctrl.set_enabled(!bx.form_disabled);
                     fc.seen = true;
                     fc.doc_x = x;
                     fc.doc_y = y;
@@ -2680,8 +2975,12 @@ impl Renderer {
                     let cb = ui::Checkbox::new("");
                     cb.set_position(x, y);
                     cb.set_size(w as u32, h as u32);
+                    cb.set_color(accent);
+                    cb.set_state(if bx.form_checked { 1 } else { 0 });
+                    cb.set_enabled(!bx.form_disabled);
                     parent.add(&cb);
                     let id = cb.id();
+
                     self.form_controls.push(FormControl {
                         control_id: id,
                         node_id,
@@ -2697,6 +2996,7 @@ impl Renderer {
             }
 
             FormFieldKind::Radio => {
+                let accent = self.effective_accent_color(bx);
                 if let Some(fc) = self
                     .form_controls
                     .iter_mut()
@@ -2705,6 +3005,9 @@ impl Renderer {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
                     ctrl.set_size(w as u32, h as u32);
+                    ctrl.set_color(accent);
+                    ctrl.set_state(if bx.form_checked { 1 } else { 0 });
+                    ctrl.set_enabled(!bx.form_disabled);
                     fc.seen = true;
                     fc.doc_x = x;
                     fc.doc_y = y;
@@ -2714,8 +3017,12 @@ impl Renderer {
                     let rb = ui::RadioButton::new("");
                     rb.set_position(x, y);
                     rb.set_size(w as u32, h as u32);
+                    rb.set_color(accent);
+                    rb.set_state(if bx.form_checked { 1 } else { 0 });
+                    rb.set_enabled(!bx.form_disabled);
                     parent.add(&rb);
                     let id = rb.id();
+
                     self.form_controls.push(FormControl {
                         control_id: id,
                         node_id,
@@ -2731,6 +3038,8 @@ impl Renderer {
             }
 
             FormFieldKind::Textarea => {
+                let bg = self.default_control_bg(bx);
+                let fg = self.default_control_fg(bx);
                 if let Some(fc) = self
                     .form_controls
                     .iter_mut()
@@ -2739,6 +3048,9 @@ impl Renderer {
                     let ctrl = ui::Control::from_id(fc.control_id);
                     ctrl.set_position(x, y);
                     ctrl.set_size(w as u32, h as u32);
+                    ctrl.set_color(bg);
+                    ctrl.set_text_color(fg);
+                    ctrl.set_enabled(!bx.form_disabled);
                     fc.seen = true;
                     fc.doc_x = x;
                     fc.doc_y = y;
@@ -2748,10 +3060,12 @@ impl Renderer {
                     let ta = ui::TextArea::new();
                     ta.set_position(x, y);
                     ta.set_size(w as u32, h as u32);
-                    ta.set_color(0xFFFFFFFF);
-                    ta.set_text_color(0xFF000000);
+                    ta.set_color(bg);
+                    ta.set_text_color(fg);
+                    ta.set_enabled(!bx.form_disabled);
                     parent.add(&ta);
                     let id = ta.id();
+
                     self.form_controls.push(FormControl {
                         control_id: id,
                         node_id,
@@ -2794,21 +3108,344 @@ impl Renderer {
                 }
             }
 
-            // Range, Progress, Select — no native anyui widget; rendered as
-            // painted rects by the display-list path.  Nothing to do here.
-            FormFieldKind::Range | FormFieldKind::Progress | FormFieldKind::Select => {}
+            FormFieldKind::Select => {
+                let bg = self.default_control_bg(bx);
+                let fg = self.default_control_fg(bx);
+                if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    ctrl.set_position(x, y);
+                    ctrl.set_size(w as u32, h as u32);
+                    ctrl.set_color(bg);
+                    ctrl.set_text_color(fg);
+                    ctrl.set_enabled(!bx.form_disabled);
+                    fc.seen = true;
+                    fc.doc_x = x;
+                    fc.doc_y = y;
+                    fc.doc_w = w;
+                    fc.doc_h = h;
+                } else {
+                    let items = bx.form_options.as_deref().unwrap_or("");
+                    let dd = ui::DropDown::new(items);
+                    dd.set_position(x, y);
+                    dd.set_size(w as u32, h as u32);
+                    dd.set_color(bg);
+                    dd.set_text_color(fg);
+                    if bx.form_selected_index >= 0 {
+                        dd.set_selected_index(bx.form_selected_index as u32);
+                    }
+                    dd.set_enabled(!bx.form_disabled);
+                    parent.add(&dd);
+                    let id = dd.id();
+
+                    self.form_controls.push(FormControl {
+                        control_id: id,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
+                    });
+                }
+            }
+
+            FormFieldKind::Range => {
+                let accent = self.effective_accent_color(bx);
+                if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    ctrl.set_position(x, y);
+                    ctrl.set_size(w as u32, h as u32);
+                    ctrl.set_color(accent);
+                    ctrl.set_enabled(!bx.form_disabled);
+                    fc.seen = true;
+                    fc.doc_x = x;
+                    fc.doc_y = y;
+                    fc.doc_w = w;
+                    fc.doc_h = h;
+                } else {
+                    // Parse percentage from form_value (encoded as 0..1000).
+                    let pct_i: u32 = bx
+                        .form_value
+                        .as_deref()
+                        .and_then(|s| {
+                            if s == "X" {
+                                Some(100u32)
+                            } else {
+                                s.parse::<u32>().ok().map(|v| v / 10)
+                            }
+                        })
+                        .unwrap_or(50);
+                    let slider = ui::Slider::new(pct_i);
+                    slider.set_position(x, y);
+                    slider.set_size(w as u32, h as u32);
+                    slider.set_color(accent);
+                    slider.set_enabled(!bx.form_disabled);
+                    parent.add(&slider);
+                    let id = slider.id();
+
+                    self.form_controls.push(FormControl {
+                        control_id: id,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
+                    });
+                }
+            }
+
+            // Progress, Meter — display-list painted only (read-only indicators).
+            FormFieldKind::Progress | FormFieldKind::Meter => {}
+
+            // Number — TextField with placeholder.
+            FormFieldKind::Number => {
+                let bg = self.default_control_bg(bx);
+                let fg = self.default_control_fg(bx);
+                if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    ctrl.set_position(x, y);
+                    ctrl.set_size(w as u32, h as u32);
+                    ctrl.set_color(bg);
+                    ctrl.set_text_color(fg);
+                    ctrl.set_enabled(!bx.form_disabled);
+                    fc.seen = true;
+                    fc.doc_x = x;
+                    fc.doc_y = y;
+                    fc.doc_w = w;
+                    fc.doc_h = h;
+                } else {
+                    let tf = ui::TextField::new();
+                    tf.set_position(x, y);
+                    tf.set_size(w as u32, h as u32);
+                    tf.set_color(bg);
+                    tf.set_text_color(fg);
+                    if let Some(ref ph) = bx.form_placeholder {
+                        tf.set_placeholder(ph);
+                    }
+                    if let Some(ref val) = bx.form_value {
+                        tf.set_text(val);
+                    }
+                    tf.set_enabled(!bx.form_disabled);
+                    if let Some(cb) = submit_cb {
+                        tf.on_submit_raw(cb, submit_cb_ud);
+                    }
+                    parent.add(&tf);
+                    let id = tf.id();
+                    self.form_controls.push(FormControl {
+                        control_id: id,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
+                    });
+                }
+            }
+
+            // Date, Time, DatetimeLocal, Month, Week — native DateTimePicker.
+            FormFieldKind::Date
+            | FormFieldKind::Time
+            | FormFieldKind::DatetimeLocal
+            | FormFieldKind::Month
+            | FormFieldKind::Week => {
+                if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    ctrl.set_position(x, y);
+                    ctrl.set_size(w as u32, h as u32);
+                    ctrl.set_enabled(!bx.form_disabled);
+                    fc.seen = true;
+                    fc.doc_x = x;
+                    fc.doc_y = y;
+                    fc.doc_w = w;
+                    fc.doc_h = h;
+                } else {
+                    let picker = match kind {
+                        FormFieldKind::Time => {
+                            let tp = ui::TimePicker::new();
+                            // Parse "HH:MM" from value.
+                            if let Some(ref val) = bx.form_value {
+                                if let Some((h, m)) = parse_time_value(val) {
+                                    tp.set_time(h, m);
+                                }
+                            }
+                            tp.set_position(x, y);
+                            tp.set_size(w as u32, h as u32);
+                            tp.set_enabled(!bx.form_disabled);
+                            parent.add(&tp);
+                            tp.id()
+                        }
+                        FormFieldKind::Date | FormFieldKind::Month | FormFieldKind::Week => {
+                            let dp = ui::DatePicker::new();
+                            if let Some(ref val) = bx.form_value {
+                                if let Some((y, m, d)) = parse_date_value(val) {
+                                    dp.set_date(d, m, y);
+                                }
+                            }
+                            dp.set_position(x, y);
+                            dp.set_size(w as u32, h as u32);
+                            dp.set_enabled(!bx.form_disabled);
+                            parent.add(&dp);
+                            dp.id()
+                        }
+                        _ => {
+                            // DatetimeLocal
+                            let dtp = ui::DateTimePicker::new();
+                            if let Some(ref val) = bx.form_value {
+                                // Parse "YYYY-MM-DDThh:mm"
+                                if let (Some((y, mo, d)), Some((h, mi))) = (
+                                    parse_date_value(&val.split('T').next().unwrap_or("")),
+                                    val.split('T').nth(1).and_then(|t| parse_time_value(t)),
+                                ) {
+                                    dtp.set_datetime(d, mo, y, h, mi);
+                                }
+                            }
+                            dtp.set_position(x, y);
+                            dtp.set_size(w as u32, h as u32);
+                            dtp.set_enabled(!bx.form_disabled);
+                            parent.add(&dtp);
+                            dtp.id()
+                        }
+                    };
+                    self.form_controls.push(FormControl {
+                        control_id: picker,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
+                    });
+                }
+            }
+
+            // Color input — native ColorWell with color picker dialog.
+            FormFieldKind::Color => {
+                if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    ctrl.set_position(x, y);
+                    ctrl.set_size(w as u32, h as u32);
+                    fc.seen = true;
+                    fc.doc_x = x;
+                    fc.doc_y = y;
+                    fc.doc_w = w;
+                    fc.doc_h = h;
+                } else {
+                    let cw = ui::ColorWell::new();
+                    cw.set_position(x, y);
+                    cw.set_size(w as u32, h as u32);
+                    let val = bx.form_value.as_deref().unwrap_or("#000000");
+                    let color = parse_color_value(val);
+                    cw.set_selected_color(color);
+                    if bx.form_disabled {
+                        cw.set_enabled(false);
+                    }
+                    parent.add(&cw);
+                    let id = cw.id();
+                    self.form_controls.push(FormControl {
+                        control_id: id,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
+                    });
+                }
+            }
+
+            // File input — button + filename display.
+            FormFieldKind::File => {
+                self.hit_regions.push(HitRegion {
+                    x,
+                    y,
+                    w,
+                    h,
+                    kind: HitKind::FileInput(node_id),
+                });
+                // Store a hidden control for form data.
+                if !self
+                    .form_controls
+                    .iter()
+                    .any(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
+                    self.form_controls.push(FormControl {
+                        control_id: 0,
+                        node_id,
+                        kind,
+                        name: String::new(),
+                        seen: true,
+                        doc_x: x,
+                        doc_y: y,
+                        doc_w: w,
+                        doc_h: h,
+                    });
+                } else if let Some(fc) = self
+                    .form_controls
+                    .iter_mut()
+                    .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                {
+                    fc.seen = true;
+                }
+            }
+
+            FormFieldKind::Reset => {
+                // Already handled above in the hit_regions push.
+            }
         }
     }
 
-    /// Hit-test for a text/textarea form control at document coordinates.
-    /// Returns the control_id of the first matching TextInput/Password/Textarea control.
+    /// Hit-test for a focusable form control at document coordinates.
+    /// Returns the control_id of the first matching control.
     pub fn hit_test_form_at(&self, x: i32, doc_y: i32) -> Option<u32> {
         for fc in &self.form_controls {
             if fc.control_id == 0 {
                 continue;
             }
             match fc.kind {
-                FormFieldKind::TextInput | FormFieldKind::Password | FormFieldKind::Textarea => {}
+                FormFieldKind::TextInput
+                | FormFieldKind::Password
+                | FormFieldKind::Textarea
+                | FormFieldKind::Number
+                | FormFieldKind::Date
+                | FormFieldKind::Time
+                | FormFieldKind::DatetimeLocal
+                | FormFieldKind::Month
+                | FormFieldKind::Week
+                | FormFieldKind::Color
+                | FormFieldKind::Select
+                | FormFieldKind::Range => {}
                 _ => continue,
             }
             if x >= fc.doc_x
@@ -2828,6 +3465,72 @@ impl Renderer {
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Fill a rectangle directly in the ARGB pixel buffer with clipping.
+/// Parse a CSS color hex value (#RGB, #RRGGBB) into ARGB u32.
+/// Parse "YYYY-MM-DD" into (year, month, day).
+fn parse_date_value(s: &str) -> Option<(u32, u32, u32)> {
+    let b = s.as_bytes();
+    // Expect at least YYYY-MM-DD (10 chars).
+    if b.len() < 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let year = parse_uint(&b[0..4])?;
+    let month = parse_uint(&b[5..7])?;
+    let day = parse_uint(&b[8..10])?;
+    Some((year, month, day))
+}
+
+/// Parse "HH:MM" into (hour, minute).
+fn parse_time_value(s: &str) -> Option<(u32, u32)> {
+    let b = s.as_bytes();
+    if b.len() < 5 || b[2] != b':' {
+        return None;
+    }
+    let hour = parse_uint(&b[0..2])?;
+    let minute = parse_uint(&b[3..5])?;
+    Some((hour, minute))
+}
+
+fn parse_uint(b: &[u8]) -> Option<u32> {
+    let mut n: u32 = 0;
+    for &c in b {
+        if c < b'0' || c > b'9' {
+            return None;
+        }
+        n = n * 10 + (c - b'0') as u32;
+    }
+    Some(n)
+}
+
+pub fn parse_color_value(s: &str) -> u32 {
+    let s = s.trim();
+    let hex = if s.starts_with('#') { &s[1..] } else { s };
+    let (r, g, b) = match hex.len() {
+        3 => {
+            let r = hex_nibble(hex.as_bytes()[0]) * 17;
+            let g = hex_nibble(hex.as_bytes()[1]) * 17;
+            let b = hex_nibble(hex.as_bytes()[2]) * 17;
+            (r, g, b)
+        }
+        6 => {
+            let r = hex_nibble(hex.as_bytes()[0]) * 16 + hex_nibble(hex.as_bytes()[1]);
+            let g = hex_nibble(hex.as_bytes()[2]) * 16 + hex_nibble(hex.as_bytes()[3]);
+            let b = hex_nibble(hex.as_bytes()[4]) * 16 + hex_nibble(hex.as_bytes()[5]);
+            (r, g, b)
+        }
+        _ => (0, 0, 0),
+    };
+    0xFF000000 | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+}
+
+fn hex_nibble(c: u8) -> u32 {
+    match c {
+        b'0'..=b'9' => (c - b'0') as u32,
+        b'a'..=b'f' => (c - b'a' + 10) as u32,
+        b'A'..=b'F' => (c - b'A' + 10) as u32,
+        _ => 0,
+    }
+}
+
 fn fill_rect_buf(
     buf: *mut u32,
     stride: u32,
@@ -2955,6 +3658,108 @@ fn blit_image_buf(
     }
 }
 
+fn blit_image_buf_clipped(
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    dx: i32,
+    dy: i32,
+    dw: i32,
+    dh: i32,
+    clip: (i32, i32, i32, i32),
+    src: &[u32],
+    src_w: u32,
+    src_h: u32,
+) {
+    if dw <= 0 || dh <= 0 || src.is_empty() || src_w == 0 || src_h == 0 || buf.is_null() {
+        return;
+    }
+    let s = stride as i32;
+    let bh = buf_h as i32;
+    let (clip_x, clip_y, clip_w, clip_h) = clip;
+    let x0 = dx.max(clip_x).max(0);
+    let y0 = dy.max(clip_y).max(0);
+    let x1 = (dx + dw).min(clip_x + clip_w).min(s);
+    let y1 = (dy + dh).min(clip_y + clip_h).min(bh);
+    if x0 >= x1 || y0 >= y1 {
+        return;
+    }
+
+    unsafe {
+        for row in y0..y1 {
+            let sy = ((row - dy) as u64 * src_h as u64 / dh as u64) as usize;
+            if sy >= src_h as usize {
+                continue;
+            }
+            let dst_offset = row as usize * stride as usize;
+            let src_row = sy * src_w as usize;
+            for col in x0..x1 {
+                let sx = ((col - dx) as u64 * src_w as u64 / dw as u64) as usize;
+                if sx >= src_w as usize {
+                    continue;
+                }
+                let src_idx = src_row + sx;
+                if src_idx >= src.len() {
+                    continue;
+                }
+                let pixel = src[src_idx];
+                let alpha = (pixel >> 24) & 0xFF;
+                let dst_idx = dst_offset + col as usize;
+                if alpha >= 255 {
+                    *buf.add(dst_idx) = pixel;
+                } else if alpha > 0 {
+                    let dst = *buf.add(dst_idx);
+                    let inv_a = 255 - alpha;
+                    let r = (((pixel >> 16) & 0xFF) * alpha + ((dst >> 16) & 0xFF) * inv_a) / 255;
+                    let g = (((pixel >> 8) & 0xFF) * alpha + ((dst >> 8) & 0xFF) * inv_a) / 255;
+                    let b = ((pixel & 0xFF) * alpha + (dst & 0xFF) * inv_a) / 255;
+                    *buf.add(dst_idx) = 0xFF000000 | (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+    }
+}
+
+fn resolve_axis_origin(start: i32, size: i32, value: i32, is_percent: bool) -> i32 {
+    if is_percent {
+        start + (size as i64 * value as i64 / 10000) as i32
+    } else {
+        start + value
+    }
+}
+
+fn resolve_object_position_offset(free_space: i32, value: i32, is_percent: bool) -> i32 {
+    if is_percent {
+        (free_space as i64 * value as i64 / 10000) as i32
+    } else {
+        value
+    }
+}
+
+fn fit_contain_size(dw: i32, dh: i32, src_w: u32, src_h: u32) -> (i32, i32) {
+    let sw = src_w as i64;
+    let sh = src_h as i64;
+    let dw64 = dw as i64;
+    let dh64 = dh as i64;
+    if sw * dh64 > sh * dw64 {
+        (dw, (sh * dw64 / sw).max(1) as i32)
+    } else {
+        ((sw * dh64 / sh).max(1) as i32, dh)
+    }
+}
+
+fn fit_cover_size(dw: i32, dh: i32, src_w: u32, src_h: u32) -> (i32, i32) {
+    let sw = src_w as i64;
+    let sh = src_h as i64;
+    let dw64 = dw as i64;
+    let dh64 = dh as i64;
+    if sw * dh64 < sh * dw64 {
+        (dw, (sh * dw64 / sw).max(1) as i32)
+    } else {
+        ((sw * dh64 / sh).max(1) as i32, dh)
+    }
+}
+
 /// Blit image with object-fit semantics.
 fn blit_image_scaled(
     buf: *mut u32,
@@ -2964,10 +3769,15 @@ fn blit_image_scaled(
     dy: i32,
     dw: i32,
     dh: i32,
+    clip: (i32, i32, i32, i32),
     src: &[u32],
     src_w: u32,
     src_h: u32,
     fit: crate::style::ObjectFit,
+    pos_x: i32,
+    pos_x_is_percent: bool,
+    pos_y: i32,
+    pos_y_is_percent: bool,
 ) {
     use crate::style::ObjectFit;
     if dw <= 0 || dh <= 0 || src.is_empty() || src_w == 0 || src_h == 0 {
@@ -2975,48 +3785,34 @@ fn blit_image_scaled(
     }
     match fit {
         ObjectFit::Fill => {
-            // Stretch to fill (default, same as original blit).
-            blit_image_buf(buf, stride, buf_h, dx, dy, dw, dh, src, src_w, src_h);
+            blit_image_buf_clipped(buf, stride, buf_h, dx, dy, dw, dh, clip, src, src_w, src_h);
         }
         ObjectFit::Contain | ObjectFit::ScaleDown => {
-            // Scale to fit inside, preserving aspect ratio.
-            let sw = src_w as i64;
-            let sh = src_h as i64;
-            let dw64 = dw as i64;
-            let dh64 = dh as i64;
-            let (fw, fh) = if sw * dh64 > sh * dw64 {
-                // Width-limited.
-                (dw, (sh * dw64 / sw).max(1) as i32)
+            let (fw, fh) = fit_contain_size(dw, dh, src_w, src_h);
+            let (fw, fh) = if matches!(fit, ObjectFit::ScaleDown)
+                && src_w as i32 <= dw
+                && src_h as i32 <= dh
+            {
+                (src_w as i32, src_h as i32)
             } else {
-                // Height-limited.
-                ((sw * dh64 / sh).max(1) as i32, dh)
+                (fw, fh)
             };
-            let ox = dx + (dw - fw) / 2;
-            let oy = dy + (dh - fh) / 2;
-            blit_image_buf(buf, stride, buf_h, ox, oy, fw, fh, src, src_w, src_h);
+            let ox = dx + resolve_object_position_offset(dw - fw, pos_x, pos_x_is_percent);
+            let oy = dy + resolve_object_position_offset(dh - fh, pos_y, pos_y_is_percent);
+            blit_image_buf_clipped(buf, stride, buf_h, ox, oy, fw, fh, clip, src, src_w, src_h);
         }
         ObjectFit::Cover => {
-            // Scale to cover, preserving aspect ratio (may crop).
-            let sw = src_w as i64;
-            let sh = src_h as i64;
-            let dw64 = dw as i64;
-            let dh64 = dh as i64;
-            let (fw, fh) = if sw * dh64 < sh * dw64 {
-                (dw, (sh * dw64 / sw).max(1) as i32)
-            } else {
-                ((sw * dh64 / sh).max(1) as i32, dh)
-            };
-            let ox = dx + (dw - fw) / 2;
-            let oy = dy + (dh - fh) / 2;
-            blit_image_buf(buf, stride, buf_h, ox, oy, fw, fh, src, src_w, src_h);
+            let (fw, fh) = fit_cover_size(dw, dh, src_w, src_h);
+            let ox = dx + resolve_object_position_offset(dw - fw, pos_x, pos_x_is_percent);
+            let oy = dy + resolve_object_position_offset(dh - fh, pos_y, pos_y_is_percent);
+            blit_image_buf_clipped(buf, stride, buf_h, ox, oy, fw, fh, clip, src, src_w, src_h);
         }
         ObjectFit::None => {
-            // Render at natural size, centered.
             let nw = src_w as i32;
             let nh = src_h as i32;
-            let ox = dx + (dw - nw) / 2;
-            let oy = dy + (dh - nh) / 2;
-            blit_image_buf(buf, stride, buf_h, ox, oy, nw, nh, src, src_w, src_h);
+            let ox = dx + resolve_object_position_offset(dw - nw, pos_x, pos_x_is_percent);
+            let oy = dy + resolve_object_position_offset(dh - nh, pos_y, pos_y_is_percent);
+            blit_image_buf_clipped(buf, stride, buf_h, ox, oy, nw, nh, clip, src, src_w, src_h);
         }
     }
 }

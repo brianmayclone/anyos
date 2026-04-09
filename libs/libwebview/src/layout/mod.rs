@@ -53,6 +53,8 @@ pub struct LayoutBox {
     pub italic: bool,
     pub color: u32,
     pub bg_color: u32,
+    pub accent_color: u32,
+    pub uses_dark_color_scheme: bool,
     pub border_color: u32,
     pub border_radius: i32,
     pub text_decoration: TextDeco,
@@ -71,6 +73,38 @@ pub struct LayoutBox {
     pub form_placeholder: Option<String>,
     /// Default value for form text inputs.
     pub form_value: Option<String>,
+    /// Pipe-separated option labels for `<select>` (used by native DropDown).
+    pub form_options: Option<String>,
+    /// Index of the initially selected `<option>` (0-based).
+    pub form_selected_index: i32,
+    /// Pipe-separated option values for `<select>` (parallel to form_options).
+    pub form_option_values: Option<String>,
+    /// Whether `<select>` has `multiple` attribute.
+    pub form_multiple: bool,
+    /// `size` attribute for `<select>` (number of visible rows, 0 = default dropdown).
+    pub form_size: u32,
+    /// `disabled` attribute.
+    pub form_disabled: bool,
+    /// `checked` state for checkbox/radio controls.
+    pub form_checked: bool,
+    /// `readonly` attribute.
+    pub form_readonly: bool,
+    /// `required` attribute.
+    pub form_required: bool,
+    /// `min` attribute (for number/range/date/time).
+    pub form_min: Option<String>,
+    /// `max` attribute (for number/range/date/time).
+    pub form_max: Option<String>,
+    /// `step` attribute (for number/range/date/time).
+    pub form_step: Option<String>,
+    /// `pattern` attribute (regex constraint).
+    pub form_pattern: Option<String>,
+    /// `maxlength` attribute (-1 = unset).
+    pub form_maxlength: i32,
+    /// `minlength` attribute (-1 = unset).
+    pub form_minlength: i32,
+    /// Pipe-separated datalist suggestions (from `<datalist>` referenced by `list` attr).
+    pub form_datalist: Option<String>,
     /// If true, children that extend outside this box should be clipped.
     pub overflow_hidden: bool,
     /// If true, this box is invisible but still takes up space.
@@ -141,6 +175,10 @@ pub struct LayoutBox {
     pub text_underline_offset: i32,
     /// Object-fit for `<img>` elements.
     pub object_fit: crate::style::ObjectFit,
+    pub object_position_x: i32,
+    pub object_position_x_is_percent: bool,
+    pub object_position_y: i32,
+    pub object_position_y_is_percent: bool,
     /// Custom font ID from web fonts (0 = use system font based on bold/italic).
     pub custom_font_id: u32,
     /// If true, this box is `position:sticky` — the renderer should clamp its Y
@@ -155,6 +193,12 @@ pub struct LayoutBox {
     pub transform_sx: i32,
     /// CSS transform scale Y (×1000 fixed-point, 1000 = 1.0).
     pub transform_sy: i32,
+    /// CSS transform origin X (px or pct*100 of box width).
+    pub transform_origin_x: i32,
+    pub transform_origin_x_is_percent: bool,
+    /// CSS transform origin Y (px or pct*100 of box height).
+    pub transform_origin_y: i32,
+    pub transform_origin_y_is_percent: bool,
     /// CSS transform rotation in degrees (×100 fixed-point).
     pub transform_rotate: i32,
     /// CSS backdrop-filter blur radius (px).  0 = no effect.
@@ -197,6 +241,26 @@ pub enum FormFieldKind {
     Range,
     Progress,
     Select,
+    /// `<input type="number">` — text field + spinner buttons.
+    Number,
+    /// `<input type="color">` — color picker swatch.
+    Color,
+    /// `<input type="file">` — file picker button + label.
+    File,
+    /// `<input type="date">`.
+    Date,
+    /// `<input type="time">`.
+    Time,
+    /// `<input type="datetime-local">`.
+    DatetimeLocal,
+    /// `<input type="month">`.
+    Month,
+    /// `<input type="week">`.
+    Week,
+    /// `<meter>` element.
+    Meter,
+    /// `<input type="reset">` or `<button type="reset">`.
+    Reset,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -230,6 +294,8 @@ impl LayoutBox {
             italic: false,
             color: 0xFF000000,
             bg_color: 0,
+            accent_color: 0,
+            uses_dark_color_scheme: false,
             border_color: 0,
             border_radius: 0,
             text_decoration: TextDeco::None,
@@ -244,6 +310,22 @@ impl LayoutBox {
             form_field: None,
             form_placeholder: None,
             form_value: None,
+            form_options: None,
+            form_selected_index: -1,
+            form_option_values: None,
+            form_multiple: false,
+            form_size: 0,
+            form_disabled: false,
+            form_checked: false,
+            form_readonly: false,
+            form_required: false,
+            form_min: None,
+            form_max: None,
+            form_step: None,
+            form_pattern: None,
+            form_maxlength: -1,
+            form_minlength: -1,
+            form_datalist: None,
             overflow_hidden: false,
             visibility_hidden: false,
             opacity: 255,
@@ -291,6 +373,10 @@ impl LayoutBox {
             text_decoration_thickness: 0,
             text_underline_offset: 0,
             object_fit: crate::style::ObjectFit::Fill,
+            object_position_x: 5000,
+            object_position_x_is_percent: true,
+            object_position_y: 5000,
+            object_position_y_is_percent: true,
             custom_font_id: 0,
             is_sticky: false,
             sticky_top: 0,
@@ -301,6 +387,10 @@ impl LayoutBox {
             clip_rect: None,
             transform_sx: 1000,
             transform_sy: 1000,
+            transform_origin_x: 5000,
+            transform_origin_x_is_percent: true,
+            transform_origin_y: 5000,
+            transform_origin_y_is_percent: true,
             transform_rotate: 0,
             scroll_top: 0,
             scroll_left: 0,
@@ -894,6 +984,8 @@ pub fn layout_with_budget(
     root.width = viewport_width;
     root.bg_color = style.background_color;
     root.color = style.color;
+    root.accent_color = style.accent_color;
+    root.uses_dark_color_scheme = style.color_scheme == crate::style::ColorSchemeVal::Dark;
     root.padding = edges_from(
         style.padding_top,
         style.padding_right,

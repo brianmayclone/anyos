@@ -420,6 +420,10 @@ fn collect_inline_fragments(
                 img.image_width = Some(iw);
                 img.image_height = Some(ih);
                 img.object_fit = style.object_fit;
+                img.object_position_x = style.object_position_x;
+                img.object_position_x_is_percent = style.object_position_x_is_percent;
+                img.object_position_y = style.object_position_y;
+                img.object_position_y_is_percent = style.object_position_y_is_percent;
                 img.width = iw;
                 img.height = ih;
                 out.push(InlineFragment {
@@ -453,6 +457,10 @@ fn collect_inline_fragments(
                 img.image_width = Some(iw);
                 img.image_height = Some(ih);
                 img.object_fit = style.object_fit;
+                img.object_position_x = style.object_position_x;
+                img.object_position_x_is_percent = style.object_position_x_is_percent;
+                img.object_position_y = style.object_position_y;
+                img.object_position_y_is_percent = style.object_position_y_is_percent;
                 img.width = iw;
                 img.height = ih;
                 out.push(InlineFragment {
@@ -491,6 +499,13 @@ fn collect_inline_fragments(
                 let h = (rows * 18).max(28).min(400);
                 let mut ta = LayoutBox::new(Some(node_id), BoxType::Inline);
                 ta.form_field = Some(FormFieldKind::Textarea);
+                if node_id < styles.len() {
+                    ta.bg_color = styles[node_id].background_color;
+                    ta.color = styles[node_id].color;
+                    ta.accent_color = styles[node_id].accent_color;
+                    ta.uses_dark_color_scheme =
+                        styles[node_id].color_scheme == crate::style::ColorSchemeVal::Dark;
+                }
                 out.push(InlineFragment {
                     width: w,
                     height: h,
@@ -502,44 +517,137 @@ fn collect_inline_fragments(
 
             // Handle <select>
             if *tag == Tag::Select {
-                // Find the selected <option> text (first with `selected` attr,
-                // or the first <option> child if none is marked).
-                let mut selected_text = String::new();
+                // Collect all <option> items with their values and optgroup labels.
+                // DropDown widget uses pipe-separated items.
+                let mut labels = String::new();
+                let mut values = String::new();
+                let mut selected_idx: i32 = -1;
+                let mut opt_count: i32 = 0;
+                let mut first_enabled_idx: i32 = -1;
                 let children = &dom.get(node_id).children.clone();
                 for &cid in children {
-                    if dom.tag(cid) == Some(Tag::Option) {
+                    if dom.tag(cid) == Some(Tag::Optgroup) {
+                        // Optgroup: add a disabled separator label (prefixed with "─ ")
+                        let group_label = dom.attr(cid, "label").unwrap_or("");
+                        if !labels.is_empty() {
+                            labels.push('|');
+                            values.push('|');
+                        }
+                        labels.push_str("\u{2500} ");
+                        labels.push_str(group_label);
+                        values.push_str("__optgroup__");
+                        opt_count += 1;
+                        // Process children of optgroup
+                        let group_children = &dom.get(cid).children.clone();
+                        for &gcid in group_children {
+                            if dom.tag(gcid) == Some(Tag::Option) {
+                                let txt = dom.text_content(gcid);
+                                let txt = txt.trim();
+                                let val = dom.attr(gcid, "value").unwrap_or(txt);
+                                if !labels.is_empty() {
+                                    labels.push('|');
+                                    values.push('|');
+                                }
+                                // Indent options within optgroup
+                                labels.push_str("  ");
+                                labels.push_str(txt);
+                                values.push_str(val);
+                                if dom.attr(gcid, "disabled").is_none() && first_enabled_idx < 0 {
+                                    first_enabled_idx = opt_count;
+                                }
+                                if dom.attr(gcid, "selected").is_some() && selected_idx < 0 {
+                                    selected_idx = opt_count;
+                                }
+                                opt_count += 1;
+                            }
+                        }
+                    } else if dom.tag(cid) == Some(Tag::Option) {
                         let txt = dom.text_content(cid);
                         let txt = txt.trim();
-                        // Pick the first option with `selected` attribute, or the very first option.
-                        if dom.attr(cid, "selected").is_some() {
-                            selected_text = String::from(txt);
-                            break;
+                        let val = dom.attr(cid, "value").unwrap_or(txt);
+                        if !labels.is_empty() {
+                            labels.push('|');
+                            values.push('|');
                         }
-                        if selected_text.is_empty() {
-                            selected_text = String::from(txt);
+                        labels.push_str(txt);
+                        values.push_str(val);
+                        if dom.attr(cid, "disabled").is_none() && first_enabled_idx < 0 {
+                            first_enabled_idx = opt_count;
                         }
+                        if dom.attr(cid, "selected").is_some() && selected_idx < 0 {
+                            selected_idx = opt_count;
+                        }
+                        opt_count += 1;
                     }
                 }
-                if selected_text.is_empty() {
-                    selected_text = String::from("\u{00a0}"); // non-breaking space placeholder
+                // Default to first enabled option if none explicitly selected.
+                if selected_idx < 0 {
+                    selected_idx = if first_enabled_idx >= 0 {
+                        first_enabled_idx
+                    } else {
+                        0
+                    };
                 }
+
+                // Determine display text for sizing.
+                let selected_text = if selected_idx >= 0 {
+                    labels
+                        .split('|')
+                        .nth(selected_idx as usize)
+                        .unwrap_or("\u{00a0}")
+                } else {
+                    "\u{00a0}"
+                };
+
+                let is_multiple = dom.attr(node_id, "multiple").is_some();
+                let size_attr: u32 = dom
+                    .attr(node_id, "size")
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(if is_multiple { 4 } else { 0 });
+                let disabled = dom.attr(node_id, "disabled").is_some();
+                let required = dom.attr(node_id, "required").is_some();
+
                 let fs = font_size_px(style);
                 let bold = is_bold(style);
-                let (tw, _) = measure_text(&selected_text, fs, bold);
-                // Width: text width + padding (12 left + 24 right for dropdown arrow)
-                let w = (tw + 36).max(80).min(400);
+                let (tw, _) = measure_text(selected_text, fs, bold);
+                // Width: max of all option widths + padding for arrow
+                let mut max_w = tw;
+                for opt_label in labels.split('|') {
+                    let (ow, _) = measure_text(opt_label, fs, bold);
+                    if ow > max_w {
+                        max_w = ow;
+                    }
+                }
+                let w = (max_w + 36).max(80).min(400);
+                let h = if size_attr > 1 {
+                    // Listbox mode: show `size` rows.
+                    (size_attr as i32 * (fs + 4)).max(28)
+                } else {
+                    28
+                };
+
                 let mut sel = LayoutBox::new(Some(node_id), BoxType::Inline);
                 sel.form_field = Some(FormFieldKind::Select);
-                sel.text = Some(selected_text);
+                sel.text = Some(String::from(selected_text));
                 sel.font_size = fs;
                 sel.bold = bold;
+                sel.form_options = Some(labels);
+                sel.form_option_values = Some(values);
+                sel.form_selected_index = selected_idx;
+                sel.form_multiple = is_multiple;
+                sel.form_size = size_attr;
+                sel.form_disabled = disabled;
+                sel.form_required = required;
                 if node_id < styles.len() {
                     sel.bg_color = styles[node_id].background_color;
                     sel.color = styles[node_id].color;
+                    sel.accent_color = styles[node_id].accent_color;
+                    sel.uses_dark_color_scheme =
+                        styles[node_id].color_scheme == crate::style::ColorSchemeVal::Dark;
                 }
                 out.push(InlineFragment {
                     width: w,
-                    height: 28,
+                    height: h,
                     layout_box: sel,
                     breaks_after: false,
                 });
@@ -587,10 +695,67 @@ fn collect_inline_fragments(
                     val_str.push('X');
                 } // 100%
                 pb.form_value = Some(val_str);
+                if node_id < styles.len() {
+                    pb.bg_color = styles[node_id].background_color;
+                    pb.color = styles[node_id].color;
+                    pb.accent_color = styles[node_id].accent_color;
+                    pb.uses_dark_color_scheme =
+                        styles[node_id].color_scheme == crate::style::ColorSchemeVal::Dark;
+                }
                 out.push(InlineFragment {
                     width: w,
                     height: h,
                     layout_box: pb,
+                    breaks_after: false,
+                });
+                return;
+            }
+
+            // Handle <meter> (HTML §4.10.16)
+            if *tag == Tag::Meter {
+                let min_val: f32 = dom
+                    .attr(node_id, "min")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let max_val: f32 = dom
+                    .attr(node_id, "max")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(1.0);
+                let cur_val: f32 = dom
+                    .attr(node_id, "value")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .unwrap_or(0.0);
+                let range = max_val - min_val;
+                let pct = if range > 0.0 {
+                    ((cur_val - min_val) / range).min(1.0).max(0.0)
+                } else {
+                    0.0
+                };
+                let pct_i = (pct * 1000.0) as i32;
+                let mut val_str = String::new();
+                if pct_i >= 1000 {
+                    val_str.push('X');
+                } else {
+                    val_str.push((b'0' + (pct_i / 100 % 10) as u8) as char);
+                    val_str.push((b'0' + (pct_i / 10 % 10) as u8) as char);
+                    val_str.push((b'0' + (pct_i % 10) as u8) as char);
+                }
+                let mut mb = LayoutBox::new(Some(node_id), BoxType::Inline);
+                mb.form_field = Some(FormFieldKind::Meter);
+                mb.width = 200;
+                mb.height = 20;
+                mb.form_value = Some(val_str);
+                if node_id < styles.len() {
+                    mb.bg_color = styles[node_id].background_color;
+                    mb.color = styles[node_id].color;
+                    mb.accent_color = styles[node_id].accent_color;
+                    mb.uses_dark_color_scheme =
+                        styles[node_id].color_scheme == crate::style::ColorSchemeVal::Dark;
+                }
+                out.push(InlineFragment {
+                    width: 200,
+                    height: 20,
+                    layout_box: mb,
                     breaks_after: false,
                 });
                 return;
@@ -856,10 +1021,15 @@ fn emit_input_fragment(
 
     // Propagate CSS-declared background and text colors to the fragment so the
     // renderer can apply them to the native widget instead of its theme default.
-    let (css_bg, css_fg) = if node_id < styles.len() {
-        (styles[node_id].background_color, styles[node_id].color)
+    let (css_bg, css_fg, css_accent, uses_dark_color_scheme) = if node_id < styles.len() {
+        (
+            styles[node_id].background_color,
+            styles[node_id].color,
+            styles[node_id].accent_color,
+            styles[node_id].color_scheme == crate::style::ColorSchemeVal::Dark,
+        )
     } else {
-        (0, 0)
+        (0, 0, 0, false)
     };
 
     match lower {
@@ -869,6 +1039,8 @@ fn emit_input_fragment(
             let mut hid = LayoutBox::new(Some(node_id), BoxType::Inline);
             hid.form_field = Some(FormFieldKind::Hidden);
             hid.form_value = dom.attr(node_id, "value").map(String::from);
+            hid.accent_color = css_accent;
+            hid.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: 0,
                 height: 0,
@@ -880,6 +1052,10 @@ fn emit_input_fragment(
         "checkbox" => {
             let mut cb = LayoutBox::new(Some(node_id), BoxType::Inline);
             cb.form_field = Some(FormFieldKind::Checkbox);
+            cb.form_checked = dom.attr(node_id, "checked").is_some();
+            cb.form_disabled = dom.attr(node_id, "disabled").is_some();
+            cb.accent_color = css_accent;
+            cb.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: 20,
                 height: 20,
@@ -890,6 +1066,10 @@ fn emit_input_fragment(
         "radio" => {
             let mut rb = LayoutBox::new(Some(node_id), BoxType::Inline);
             rb.form_field = Some(FormFieldKind::Radio);
+            rb.form_checked = dom.attr(node_id, "checked").is_some();
+            rb.form_disabled = dom.attr(node_id, "disabled").is_some();
+            rb.accent_color = css_accent;
+            rb.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: 20,
                 height: 20,
@@ -897,7 +1077,7 @@ fn emit_input_fragment(
                 breaks_after: false,
             });
         }
-        "submit" | "button" | "reset" => {
+        "submit" | "button" => {
             let label = dom.attr(node_id, "value").unwrap_or("Submit");
             let (bw, _) = measure_text(label, 14, false);
             let w = (bw + 24).max(60);
@@ -906,6 +1086,26 @@ fn emit_input_fragment(
             btn.text = Some(String::from(label));
             btn.bg_color = css_bg;
             btn.color = css_fg;
+            btn.accent_color = css_accent;
+            btn.uses_dark_color_scheme = uses_dark_color_scheme;
+            out.push(InlineFragment {
+                width: w,
+                height: 28,
+                layout_box: btn,
+                breaks_after: false,
+            });
+        }
+        "reset" => {
+            let label = dom.attr(node_id, "value").unwrap_or("Reset");
+            let (bw, _) = measure_text(label, 14, false);
+            let w = (bw + 24).max(60);
+            let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
+            btn.form_field = Some(FormFieldKind::Reset);
+            btn.text = Some(String::from(label));
+            btn.bg_color = css_bg;
+            btn.color = css_fg;
+            btn.accent_color = css_accent;
+            btn.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
                 height: 28,
@@ -921,6 +1121,8 @@ fn emit_input_fragment(
             tf.form_value = dom.attr(node_id, "value").map(String::from);
             tf.bg_color = css_bg;
             tf.color = css_fg;
+            tf.accent_color = css_accent;
+            tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
                 height: 28,
@@ -971,10 +1173,166 @@ fn emit_input_fragment(
             rng.form_field = Some(FormFieldKind::Range);
             rng.form_value = Some(val_str);
             rng.bg_color = css_bg;
+            rng.form_disabled = dom.attr(node_id, "disabled").is_some();
+            rng.accent_color = css_accent;
+            rng.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
                 height: h,
                 layout_box: rng,
+                breaks_after: false,
+            });
+        }
+        "number" => {
+            let w = size_attr_width(dom, node_id, 150);
+            let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
+            tf.form_field = Some(FormFieldKind::Number);
+            tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
+            tf.form_value = dom.attr(node_id, "value").map(String::from);
+            tf.form_min = dom.attr(node_id, "min").map(String::from);
+            tf.form_max = dom.attr(node_id, "max").map(String::from);
+            tf.form_step = dom.attr(node_id, "step").map(String::from);
+            tf.form_disabled = dom.attr(node_id, "disabled").is_some();
+            tf.form_readonly = dom.attr(node_id, "readonly").is_some();
+            tf.form_required = dom.attr(node_id, "required").is_some();
+            tf.bg_color = css_bg;
+            tf.color = css_fg;
+            tf.accent_color = css_accent;
+            tf.uses_dark_color_scheme = uses_dark_color_scheme;
+            out.push(InlineFragment {
+                width: w,
+                height: 28,
+                layout_box: tf,
+                breaks_after: false,
+            });
+        }
+        "color" => {
+            let mut cb = LayoutBox::new(Some(node_id), BoxType::Inline);
+            cb.form_field = Some(FormFieldKind::Color);
+            cb.form_value = dom.attr(node_id, "value").map(String::from);
+            cb.form_disabled = dom.attr(node_id, "disabled").is_some();
+            cb.bg_color = css_bg;
+            cb.accent_color = css_accent;
+            cb.uses_dark_color_scheme = uses_dark_color_scheme;
+            out.push(InlineFragment {
+                width: 44,
+                height: 28,
+                layout_box: cb,
+                breaks_after: false,
+            });
+        }
+        "file" => {
+            let label = "Choose File";
+            let (bw, _) = measure_text(label, 14, false);
+            let w = (bw + 24).max(120);
+            let mut fb = LayoutBox::new(Some(node_id), BoxType::Inline);
+            fb.form_field = Some(FormFieldKind::File);
+            fb.text = Some(String::from(label));
+            fb.form_disabled = dom.attr(node_id, "disabled").is_some();
+            fb.bg_color = css_bg;
+            fb.color = css_fg;
+            fb.accent_color = css_accent;
+            fb.uses_dark_color_scheme = uses_dark_color_scheme;
+            out.push(InlineFragment {
+                width: w,
+                height: 28,
+                layout_box: fb,
+                breaks_after: false,
+            });
+        }
+        "date" => {
+            let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
+            tf.form_field = Some(FormFieldKind::Date);
+            tf.form_value = dom.attr(node_id, "value").map(String::from);
+            tf.form_placeholder = Some(String::from("yyyy-mm-dd"));
+            tf.form_min = dom.attr(node_id, "min").map(String::from);
+            tf.form_max = dom.attr(node_id, "max").map(String::from);
+            tf.form_disabled = dom.attr(node_id, "disabled").is_some();
+            tf.form_required = dom.attr(node_id, "required").is_some();
+            tf.bg_color = css_bg;
+            tf.color = css_fg;
+            tf.accent_color = css_accent;
+            tf.uses_dark_color_scheme = uses_dark_color_scheme;
+            out.push(InlineFragment {
+                width: 160,
+                height: 28,
+                layout_box: tf,
+                breaks_after: false,
+            });
+        }
+        "time" => {
+            let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
+            tf.form_field = Some(FormFieldKind::Time);
+            tf.form_value = dom.attr(node_id, "value").map(String::from);
+            tf.form_placeholder = Some(String::from("hh:mm"));
+            tf.form_min = dom.attr(node_id, "min").map(String::from);
+            tf.form_max = dom.attr(node_id, "max").map(String::from);
+            tf.form_disabled = dom.attr(node_id, "disabled").is_some();
+            tf.form_required = dom.attr(node_id, "required").is_some();
+            tf.bg_color = css_bg;
+            tf.color = css_fg;
+            tf.accent_color = css_accent;
+            tf.uses_dark_color_scheme = uses_dark_color_scheme;
+            out.push(InlineFragment {
+                width: 120,
+                height: 28,
+                layout_box: tf,
+                breaks_after: false,
+            });
+        }
+        "datetime-local" => {
+            let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
+            tf.form_field = Some(FormFieldKind::DatetimeLocal);
+            tf.form_value = dom.attr(node_id, "value").map(String::from);
+            tf.form_placeholder = Some(String::from("yyyy-mm-ddThh:mm"));
+            tf.form_min = dom.attr(node_id, "min").map(String::from);
+            tf.form_max = dom.attr(node_id, "max").map(String::from);
+            tf.form_disabled = dom.attr(node_id, "disabled").is_some();
+            tf.form_required = dom.attr(node_id, "required").is_some();
+            tf.bg_color = css_bg;
+            tf.color = css_fg;
+            tf.accent_color = css_accent;
+            tf.uses_dark_color_scheme = uses_dark_color_scheme;
+            out.push(InlineFragment {
+                width: 230,
+                height: 28,
+                layout_box: tf,
+                breaks_after: false,
+            });
+        }
+        "month" => {
+            let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
+            tf.form_field = Some(FormFieldKind::Month);
+            tf.form_value = dom.attr(node_id, "value").map(String::from);
+            tf.form_placeholder = Some(String::from("yyyy-mm"));
+            tf.form_disabled = dom.attr(node_id, "disabled").is_some();
+            tf.form_required = dom.attr(node_id, "required").is_some();
+            tf.bg_color = css_bg;
+            tf.color = css_fg;
+            tf.accent_color = css_accent;
+            tf.uses_dark_color_scheme = uses_dark_color_scheme;
+            out.push(InlineFragment {
+                width: 140,
+                height: 28,
+                layout_box: tf,
+                breaks_after: false,
+            });
+        }
+        "week" => {
+            let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
+            tf.form_field = Some(FormFieldKind::Week);
+            tf.form_value = dom.attr(node_id, "value").map(String::from);
+            tf.form_placeholder = Some(String::from("yyyy-Www"));
+            tf.form_disabled = dom.attr(node_id, "disabled").is_some();
+            tf.form_required = dom.attr(node_id, "required").is_some();
+            tf.bg_color = css_bg;
+            tf.color = css_fg;
+            tf.accent_color = css_accent;
+            tf.uses_dark_color_scheme = uses_dark_color_scheme;
+            out.push(InlineFragment {
+                width: 140,
+                height: 28,
+                layout_box: tf,
                 breaks_after: false,
             });
         }
@@ -984,8 +1342,23 @@ fn emit_input_fragment(
             tf.form_field = Some(FormFieldKind::TextInput);
             tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
             tf.form_value = dom.attr(node_id, "value").map(String::from);
+            tf.form_disabled = dom.attr(node_id, "disabled").is_some();
+            tf.form_readonly = dom.attr(node_id, "readonly").is_some();
+            tf.form_required = dom.attr(node_id, "required").is_some();
+            tf.form_pattern = dom.attr(node_id, "pattern").map(String::from);
+            tf.form_maxlength = dom
+                .attr(node_id, "maxlength")
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(-1);
+            tf.form_minlength = dom
+                .attr(node_id, "minlength")
+                .and_then(|s| s.parse::<i32>().ok())
+                .unwrap_or(-1);
+            tf.form_datalist = collect_datalist_suggestions(dom, node_id);
             tf.bg_color = css_bg;
             tf.color = css_fg;
+            tf.accent_color = css_accent;
+            tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
                 height: 28,
@@ -994,6 +1367,42 @@ fn emit_input_fragment(
             });
         }
     }
+}
+
+/// Collect pipe-separated suggestions from a `<datalist>` referenced by the `list` attribute.
+/// Returns None if no datalist is found, or Some(pipe_separated_options).
+fn collect_datalist_suggestions(dom: &Dom, input_node_id: NodeId) -> Option<String> {
+    let list_id = dom.attr(input_node_id, "list")?;
+    if list_id.is_empty() {
+        return None;
+    }
+    // Find the <datalist> element with matching id.
+    for i in 0..dom.nodes.len() {
+        if dom.tag(i) == Some(Tag::Datalist) {
+            if dom.attr(i, "id") == Some(list_id) {
+                let mut suggestions = String::new();
+                let children = &dom.get(i).children;
+                for &cid in children {
+                    if dom.tag(cid) == Some(Tag::Option) {
+                        let val = dom.attr(cid, "value").unwrap_or("");
+                        let label = dom.attr(cid, "label").unwrap_or(val);
+                        let text = if !val.is_empty() { val } else { label };
+                        if !text.is_empty() {
+                            if !suggestions.is_empty() {
+                                suggestions.push('|');
+                            }
+                            suggestions.push_str(text);
+                        }
+                    }
+                }
+                if !suggestions.is_empty() {
+                    return Some(suggestions);
+                }
+                return None;
+            }
+        }
+    }
+    None
 }
 
 /// Emit a `<button>` form field fragment.
@@ -1009,10 +1418,10 @@ fn emit_button_fragment(
     let (bw, _) = measure_text(label, 14, false);
     let w = (bw + 24).max(60);
     let btn_type = dom.attr(node_id, "type").unwrap_or("submit");
-    let kind = if btn_type == "submit" {
-        FormFieldKind::Submit
-    } else {
-        FormFieldKind::ButtonEl
+    let kind = match btn_type {
+        "submit" => FormFieldKind::Submit,
+        "reset" => FormFieldKind::Reset,
+        _ => FormFieldKind::ButtonEl,
     };
     let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
     btn.form_field = Some(kind);

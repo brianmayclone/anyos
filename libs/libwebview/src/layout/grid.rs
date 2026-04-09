@@ -226,11 +226,14 @@ pub fn layout_grid(
         if let Some(mut bx) = item.layout.take() {
             let item_w = bx.width;
             let item_h = bx.height;
+            let item_style = &styles[item.node_id];
+            let effective_justify = item_style.justify_self.unwrap_or(justify_items);
+            let effective_align = item_style.align_self.unwrap_or(container_align);
 
-            // Horizontal alignment (justify-items).
-            let x_offset = align_offset(justify_items, item_w, cell_w);
-            // Vertical alignment (align-items).
-            let y_offset = align_offset(container_align, item_h, cell_h);
+            // Horizontal alignment (justify-self falling back to justify-items).
+            let x_offset = align_offset(effective_justify, item_w, cell_w);
+            // Vertical alignment (align-self falling back to align-items).
+            let y_offset = align_offset(effective_align, item_h, cell_h);
 
             // Position the item box at its grid cell offset.
             // Do NOT use translate_box (recursive) — flatten() accumulates

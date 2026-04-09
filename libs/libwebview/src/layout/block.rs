@@ -67,6 +67,8 @@ pub fn build_block_with_budget(
     let mut bx = LayoutBox::new(Some(node_id), BoxType::Block);
     bx.color = style.color;
     bx.bg_color = style.background_color;
+    bx.accent_color = style.accent_color;
+    bx.uses_dark_color_scheme = style.color_scheme == crate::style::ColorSchemeVal::Dark;
     bx.border_width = style.border_width;
     bx.border_color = style.border_color;
     bx.border_radius = style.border_radius;
@@ -319,6 +321,10 @@ pub fn build_block_with_budget(
         bx.image_width = Some(iw);
         bx.image_height = Some(ih);
         bx.object_fit = style.object_fit;
+        bx.object_position_x = style.object_position_x;
+        bx.object_position_x_is_percent = style.object_position_x_is_percent;
+        bx.object_position_y = style.object_position_y;
+        bx.object_position_y_is_percent = style.object_position_y_is_percent;
         bx.height = ih + bx.padding.top + bx.padding.bottom + border2;
         bx.width = iw + bx.padding.left + bx.padding.right + border2;
         return bx;
@@ -346,6 +352,10 @@ pub fn build_block_with_budget(
         bx.image_width = Some(w);
         bx.image_height = Some(h);
         bx.object_fit = style.object_fit;
+        bx.object_position_x = style.object_position_x;
+        bx.object_position_x_is_percent = style.object_position_x_is_percent;
+        bx.object_position_y = style.object_position_y;
+        bx.object_position_y_is_percent = style.object_position_y_is_percent;
         bx.height = h + bx.padding.top + bx.padding.bottom + border2;
         bx.width = w + bx.padding.left + bx.padding.right + border2;
         return bx;
@@ -366,25 +376,30 @@ pub fn build_block_with_budget(
                 bx.width = if let Some(w) = style.width { w } else { sz };
                 bx.height = sz + bx.padding.top + bx.padding.bottom + border2;
                 bx.form_field = Some(FormFieldKind::Checkbox);
+                bx.form_checked = dom.attr(node_id, "checked").is_some();
+                bx.form_disabled = dom.attr(node_id, "disabled").is_some();
             }
             "radio" => {
                 let sz = if let Some(h) = style.height { h } else { 16 };
                 bx.width = if let Some(w) = style.width { w } else { sz };
                 bx.height = sz + bx.padding.top + bx.padding.bottom + border2;
                 bx.form_field = Some(FormFieldKind::Radio);
+                bx.form_checked = dom.attr(node_id, "checked").is_some();
+                bx.form_disabled = dom.attr(node_id, "disabled").is_some();
             }
-            "submit" | "button" | "reset" => {
+            "submit" | "button" => {
                 let input_h = if let Some(h) = style.height { h } else { 30 };
                 bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
                 bx.form_field = Some(FormFieldKind::Submit);
                 bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
-                bx.text = bx.form_value.clone().or_else(|| {
-                    Some(String::from(if input_type == "reset" {
-                        "Reset"
-                    } else {
-                        "Submit"
-                    }))
-                });
+                bx.text = bx.form_value.clone().or_else(|| Some(String::from("Submit")));
+            }
+            "reset" => {
+                let input_h = if let Some(h) = style.height { h } else { 30 };
+                bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
+                bx.form_field = Some(FormFieldKind::Reset);
+                bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
+                bx.text = bx.form_value.clone().or_else(|| Some(String::from("Reset")));
             }
             "password" => {
                 let input_h = if let Some(h) = style.height { h } else { 28 };
@@ -397,6 +412,7 @@ pub fn build_block_with_budget(
                 bx.width = if let Some(w) = style.width { w } else { 200 };
                 bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
                 bx.form_field = Some(FormFieldKind::Range);
+                bx.form_disabled = dom.attr(node_id, "disabled").is_some();
                 // Compute percentage and encode as 0..1000 in form_value.
                 let min_v: f32 = dom
                     .attr(node_id, "min")
@@ -427,12 +443,25 @@ pub fn build_block_with_budget(
                 bx.form_value = Some(val_str);
             }
             _ => {
-                // text, search, email, url, tel, number, etc.
                 let input_h = if let Some(h) = style.height { h } else { 28 };
                 bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
-                bx.form_field = Some(FormFieldKind::TextInput);
+                let kind = match input_type {
+                    "number" => FormFieldKind::Number,
+                    "color" => FormFieldKind::Color,
+                    "file" => FormFieldKind::File,
+                    "date" => FormFieldKind::Date,
+                    "time" => FormFieldKind::Time,
+                    "datetime-local" => FormFieldKind::DatetimeLocal,
+                    "month" => FormFieldKind::Month,
+                    "week" => FormFieldKind::Week,
+                    _ => FormFieldKind::TextInput,
+                };
+                bx.form_field = Some(kind);
                 bx.form_placeholder = dom.attr(node_id, "placeholder").map(|s| String::from(s));
                 bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
+                bx.form_disabled = dom.attr(node_id, "disabled").is_some();
+                bx.form_readonly = dom.attr(node_id, "readonly").is_some();
+                bx.form_required = dom.attr(node_id, "required").is_some();
             }
         }
         return bx;
@@ -738,6 +767,10 @@ pub fn build_block_with_budget(
     // Apply CSS transform: scale and rotate.
     bx.transform_sx = style.transform_sx;
     bx.transform_sy = style.transform_sy;
+    bx.transform_origin_x = style.transform_origin_x;
+    bx.transform_origin_x_is_percent = style.transform_origin_x_is_percent;
+    bx.transform_origin_y = style.transform_origin_y;
+    bx.transform_origin_y_is_percent = style.transform_origin_y_is_percent;
     bx.transform_rotate = style.transform_rotate;
 
     bx

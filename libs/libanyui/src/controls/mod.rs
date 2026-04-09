@@ -48,6 +48,8 @@ pub mod textarea;
 pub mod textfield;
 pub mod toggle;
 pub mod plain_button;
+pub mod date_time_picker;
+pub mod list_box;
 pub mod toolbar;
 pub mod tooltip;
 pub mod tree_view;
@@ -173,6 +175,12 @@ pub fn create_control(
             TextControlBase::new(base).with_text(text),
         )),
         ControlKind::PlainButton => Box::new(plain_button::PlainButton::new(
+            TextControlBase::new(base).with_text(text),
+        )),
+        ControlKind::DateTimePicker => Box::new(date_time_picker::DateTimePicker::new(
+            TextControlBase::new(base).with_text(text),
+        )),
+        ControlKind::ListBox => Box::new(list_box::ListBox::new(
             TextControlBase::new(base).with_text(text),
         )),
     }
