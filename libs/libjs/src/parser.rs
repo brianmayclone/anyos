@@ -22,6 +22,8 @@ pub struct Parser {
     no_in: bool,
     /// Parser recursion depth — prevents stack overflow on deeply nested input.
     depth: usize,
+    /// Whether `super` is currently syntactically valid.
+    allow_super: usize,
 }
 
 /// Maximum parser recursion depth before bailing out with a SyntaxError.
@@ -35,6 +37,7 @@ impl Parser {
             errors: Vec::new(),
             no_in: false,
             depth: 0,
+            allow_super: 0,
         }
     }
 
@@ -1084,6 +1087,7 @@ impl Parser {
 
     fn parse_class_body(&mut self) -> Vec<ClassMember> {
         self.expect(&TokenKind::LBrace);
+        self.allow_super += 1;
         let mut members = Vec::new();
         while !matches!(self.peek(), TokenKind::RBrace | TokenKind::Eof) {
             if self.eat(&TokenKind::Semicolon) {
@@ -1257,6 +1261,7 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RBrace);
+        self.allow_super = self.allow_super.saturating_sub(1);
         members
     }
 
@@ -2069,7 +2074,14 @@ impl Parser {
             TokenKind::Class => self.parse_class_expr(),
             TokenKind::Super => {
                 self.pos += 1;
-                Expr::Ident(String::from("super"))
+                if self.allow_super == 0 {
+                    self.syntax_error(
+                        "super is only valid inside class bodies or object literal methods",
+                    );
+                    Expr::Undefined
+                } else {
+                    Expr::Ident(String::from("super"))
+                }
             }
             TokenKind::Yield => {
                 self.pos += 1;
@@ -2154,7 +2166,9 @@ impl Parser {
                 let key = self.parse_prop_key();
                 let params = self.parse_params();
                 self.expect(&TokenKind::LBrace);
+                self.allow_super += 1;
                 let body = self.parse_block_body();
+                self.allow_super = self.allow_super.saturating_sub(1);
                 self.expect(&TokenKind::RBrace);
                 props.push(ObjProp {
                     key,
@@ -2164,6 +2178,34 @@ impl Parser {
                         body,
                         is_async: true,
                         is_generator,
+                    },
+                    kind: PropKind::Method,
+                    shorthand: false,
+                });
+                if !self.eat(&TokenKind::Comma) {
+                    break;
+                }
+                continue;
+            }
+
+            // Generator method shorthand: { *foo() { } }
+            if matches!(self.peek(), TokenKind::Star) {
+                self.pos += 1; // skip '*'
+                let key = self.parse_prop_key();
+                let params = self.parse_params();
+                self.expect(&TokenKind::LBrace);
+                self.allow_super += 1;
+                let body = self.parse_block_body();
+                self.allow_super = self.allow_super.saturating_sub(1);
+                self.expect(&TokenKind::RBrace);
+                props.push(ObjProp {
+                    key,
+                    value: Expr::FunctionExpr {
+                        name: None,
+                        params,
+                        body,
+                        is_async: false,
+                        is_generator: true,
                     },
                     kind: PropKind::Method,
                     shorthand: false,
@@ -2188,7 +2230,9 @@ impl Parser {
                 let key = self.parse_prop_key();
                 let params = self.parse_params();
                 self.expect(&TokenKind::LBrace);
+                self.allow_super += 1;
                 let body = self.parse_block_body();
+                self.allow_super = self.allow_super.saturating_sub(1);
                 self.expect(&TokenKind::RBrace);
                 props.push(ObjProp {
                     key,
@@ -2243,7 +2287,9 @@ impl Parser {
             if matches!(self.peek(), TokenKind::LParen) {
                 let params = self.parse_params();
                 self.expect(&TokenKind::LBrace);
+                self.allow_super += 1;
                 let body = self.parse_block_body();
+                self.allow_super = self.allow_super.saturating_sub(1);
                 self.expect(&TokenKind::RBrace);
                 props.push(ObjProp {
                     key,

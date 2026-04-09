@@ -136,6 +136,26 @@ fn main() {
         full_source.push('\n');
         full_source.push_str(&assert_js);
         full_source.push('\n');
+        full_source.push_str(
+            "function formatIdentityFreeValue(value) {\n\
+             \tif (typeof value === 'number') {\n\
+             \t\tif (value !== value) return 'NaN';\n\
+             \t\tif (value === 0 && 1 / value === -Infinity) return '-0';\n\
+             \t}\n\
+             \treturn String(value);\n\
+             }\n",
+        );
+        full_source.push_str(
+            "var $262 = {\n\
+             \tglobal: this,\n\
+             \tcreateRealm: function () {\n\
+             \t\treturn {\n\
+             \t\t\tglobal: this.global,\n\
+             \t\t\tevalScript: function (source) { return eval(source); }\n\
+             \t\t};\n\
+             \t}\n\
+             };\n",
+        );
         // $DONOTEVALUATE for negative parse tests
         full_source.push_str("function $DONOTEVALUATE() { throw new Test262Error('$DONOTEVALUATE: test should not have been evaluated'); }\n");
         // Async test support: inject $DONE callback

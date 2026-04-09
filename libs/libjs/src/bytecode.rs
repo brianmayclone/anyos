@@ -200,6 +200,11 @@ pub enum Op {
     /// Delegates to another iterable/generator.
     YieldDelegate,
 
+    /// Create a `for...in` iterator over enumerable property names.
+    /// Unlike `GetIterator`, this follows property enumeration semantics
+    /// instead of the ordinary iterator protocol.
+    GetForInIterator,
+
     // ── With Statement ──
     /// Enter `with` scope: pops object from stack, pushes it onto with-scope chain.
     EnterWith,

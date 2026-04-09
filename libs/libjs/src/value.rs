@@ -8,6 +8,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use core::cell::RefCell;
@@ -990,7 +991,12 @@ impl JsValue {
             JsValue::Bool(false) => String::from("false"),
             JsValue::Number(n) => format_number(*n),
             JsValue::String(s) => s.clone(),
-            JsValue::Object(_) => String::from("[object Object]"),
+            JsValue::Object(obj) => {
+                if let Some(prim) = &obj.borrow().primitive_value {
+                    return prim.to_js_string();
+                }
+                String::from("[object Object]")
+            }
             JsValue::Array(a) => {
                 let arr = a.borrow();
                 let mut out = String::new();
@@ -1109,7 +1115,30 @@ impl JsValue {
     /// Get a property (works on objects, arrays, strings).
     pub fn get_property(&self, key: &str) -> JsValue {
         match self {
-            JsValue::Object(obj) => obj.borrow().get(key),
+            JsValue::Object(obj) => {
+                let o = obj.borrow();
+                if let Some(prop) = o.properties.get(key) {
+                    return prop.value.clone();
+                }
+                if let Some(prim) = &o.primitive_value {
+                    if let JsValue::String(s) = prim.as_ref() {
+                        if key == "length" {
+                            return JsValue::Number(s.chars().count() as f64);
+                        }
+                        if let Some(idx) = parse_index(key) {
+                            if let Some(ch) = s.chars().nth(idx) {
+                                let mut buf = String::new();
+                                buf.push(ch);
+                                return JsValue::String(buf);
+                            }
+                        }
+                    }
+                }
+                if let Some(ref proto) = o.prototype {
+                    return proto.borrow().get(key);
+                }
+                JsValue::Undefined
+            }
             JsValue::Array(arr) => {
                 let a = arr.borrow();
                 if key == "length" {
@@ -1234,6 +1263,8 @@ impl JsValue {
                 }
             }
             JsValue::Function(f) => {
+                let deleted_key = alloc::format!("__deleted_builtin_{}", key);
+                f.borrow_mut().own_props.remove(&deleted_key);
                 // ES2023 §10.2.4: name and length are non-writable, configurable.
                 // Reject writes to these built-in properties (silent in sloppy mode).
                 if key == "name" || key == "length" {
@@ -1259,6 +1290,22 @@ impl JsValue {
                     }
                 }
                 arr.borrow_mut().properties.remove(key);
+                true
+            }
+            JsValue::Function(f) => {
+                let mut func = f.borrow_mut();
+                if key == "name" || key == "length" || key == "prototype" {
+                    if func.own_props.contains_key(key) {
+                        func.own_props.remove(key);
+                    } else {
+                        func.own_props.insert(
+                            alloc::format!("__deleted_builtin_{}", key),
+                            JsValue::Bool(true),
+                        );
+                    }
+                    return true;
+                }
+                func.own_props.remove(key);
                 true
             }
             _ => true,

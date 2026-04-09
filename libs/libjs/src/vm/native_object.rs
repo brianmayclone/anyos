@@ -8,6 +8,87 @@ use core::cell::RefCell;
 use super::Vm;
 use crate::value::*;
 
+fn string_exotic_own_property_descriptor(s: &str, key: &str) -> Option<Property> {
+    if key == "length" {
+        return Some(Property {
+            value: JsValue::Number(s.chars().count() as f64),
+            writable: false,
+            enumerable: false,
+            configurable: false,
+            getter: None,
+            setter: None,
+        });
+    }
+    if let Some(idx) = super::try_parse_index(key) {
+        if let Some(ch) = s.chars().nth(idx) {
+            let mut buf = String::new();
+            buf.push(ch);
+            return Some(Property {
+                value: JsValue::String(buf),
+                writable: false,
+                enumerable: true,
+                configurable: false,
+                getter: None,
+                setter: None,
+            });
+        }
+    }
+    None
+}
+
+fn boxed_string_value(obj: &JsObject) -> Option<String> {
+    match obj.primitive_value.as_deref() {
+        Some(JsValue::String(s)) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+fn function_desc_flag_key(key: &str, flag: &str) -> String {
+    alloc::format!("__desc_{}_{}", flag, key)
+}
+
+fn function_deleted_builtin_key(key: &str) -> String {
+    alloc::format!("__deleted_builtin_{}", key)
+}
+
+fn function_builtin_deleted(func: &JsFunction, key: &str) -> bool {
+    matches!(
+        func.own_props.get(&function_deleted_builtin_key(key)),
+        Some(JsValue::Bool(true))
+    )
+}
+
+fn is_function_hidden_prop_key(key: &str) -> bool {
+    key.starts_with("__get_")
+        || key.starts_with("__set_")
+        || key.starts_with("__desc_")
+        || key.starts_with("__deleted_builtin_")
+}
+
+fn function_public_own_prop_names(func: &JsFunction) -> Vec<String> {
+    let mut keys: Vec<String> = func
+        .own_props
+        .keys()
+        .filter(|k| !is_function_hidden_prop_key(k))
+        .cloned()
+        .collect();
+    for raw in func.own_props.keys() {
+        if let Some(name) = raw.strip_prefix("__get_").or_else(|| raw.strip_prefix("__set_")) {
+            if !keys.iter().any(|k| k == name) {
+                keys.push(String::from(name));
+            }
+        }
+    }
+    keys
+}
+
+fn function_descriptor_flag(func: &JsFunction, key: &str, flag: &str, default: bool) -> bool {
+    match func.own_props.get(&function_desc_flag_key(key, flag)) {
+        Some(JsValue::Bool(v)) => *v,
+        _ => default,
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // Object.prototype methods
 // ═══════════════════════════════════════════════════════════
@@ -15,7 +96,16 @@ use crate::value::*;
 pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let key = args.first().map(|v| v.to_js_string()).unwrap_or_default();
     match &vm.current_this {
-        JsValue::Object(obj) => JsValue::Bool(obj.borrow().has_own(&key)),
+        JsValue::Object(obj) => {
+            let o = obj.borrow();
+            if o.has_own(&key) {
+                JsValue::Bool(true)
+            } else if let Some(s) = boxed_string_value(&o) {
+                JsValue::Bool(string_exotic_own_property_descriptor(&s, &key).is_some())
+            } else {
+                JsValue::Bool(false)
+            }
+        }
         JsValue::Array(arr) => {
             let a = arr.borrow();
             if let Some(idx) = super::try_parse_index(&key) {
@@ -24,14 +114,17 @@ pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 JsValue::Bool(key == "length" || a.properties.contains_key(&key))
             }
         }
+        JsValue::String(s) => JsValue::Bool(string_exotic_own_property_descriptor(s, &key).is_some()),
         // Function values: check own_props AND built-in properties (name, length, prototype).
         JsValue::Function(f) => {
             let func = f.borrow();
             JsValue::Bool(
-                func.own_props.contains_key(&key)
-                    || key == "name"
-                    || key == "length"
-                    || (key == "prototype" && !func.kind.is_arrow()),
+                function_public_own_prop_names(&func).iter().any(|k| k == &key)
+                    || (key == "name" && !function_builtin_deleted(&func, "name"))
+                    || (key == "length" && !function_builtin_deleted(&func, "length"))
+                    || (key == "prototype"
+                        && !func.kind.is_arrow()
+                        && !function_builtin_deleted(&func, "prototype")),
             )
         }
         _ => JsValue::Bool(false),
@@ -72,18 +165,22 @@ pub fn object_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         JsValue::Null => JsValue::String(String::from("[object Null]")),
         JsValue::Undefined => JsValue::String(String::from("[object Undefined]")),
         JsValue::Object(obj) => {
-            // Return the appropriate [object X] tag based on the object's internal tag.
-            let tag = obj.borrow().internal_tag.clone();
-            let kind = match tag.as_deref() {
-                Some("__boolean__") => "Boolean",
-                Some("__number__") => "Number",
-                Some("__string__") => "String",
-                Some("__regexp__") => "RegExp",
-                Some("__date__") => "Date",
-                Some("__math__") => "Math",
-                Some("__json__") => "JSON",
-                Some("__error__") => "Error",
-                _ => "Object",
+            let o = obj.borrow();
+            let tag_value = o.get(super::native_symbol::WELL_KNOWN_TO_STRING_TAG);
+            let kind = if let JsValue::String(tag) = tag_value {
+                tag
+            } else {
+                match o.internal_tag.as_deref() {
+                    Some("__boolean__") => String::from("Boolean"),
+                    Some("__number__") => String::from("Number"),
+                    Some("__string__") => String::from("String"),
+                    Some("__regexp__") => String::from("RegExp"),
+                    Some("__date__") => String::from("Date"),
+                    Some("__math__") => String::from("Math"),
+                    Some("__json__") => String::from("JSON"),
+                    Some("__error__") => String::from("Error"),
+                    _ => String::from("Object"),
+                }
             };
             JsValue::String(alloc::format!("[object {}]", kind))
         }
@@ -103,6 +200,12 @@ pub fn object_property_is_enumerable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             let o = obj.borrow();
             if let Some(prop) = o.properties.get(&key) {
                 JsValue::Bool(prop.enumerable)
+            } else if let Some(s) = boxed_string_value(&o) {
+                if let Some(prop) = string_exotic_own_property_descriptor(&s, &key) {
+                    JsValue::Bool(prop.enumerable)
+                } else {
+                    JsValue::Bool(false)
+                }
             } else {
                 JsValue::Bool(false)
             }
@@ -114,6 +217,13 @@ pub fn object_property_is_enumerable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             } else if key == "length" {
                 JsValue::Bool(false) // length is not enumerable
             } else if let Some(prop) = a.properties.get(&key) {
+                JsValue::Bool(prop.enumerable)
+            } else {
+                JsValue::Bool(false)
+            }
+        }
+        JsValue::String(s) => {
+            if let Some(prop) = string_exotic_own_property_descriptor(s, &key) {
                 JsValue::Bool(prop.enumerable)
             } else {
                 JsValue::Bool(false)
@@ -450,9 +560,11 @@ pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 }
             }
             JsValue::Function(f) => {
+                let deleted_builtin_key = function_deleted_builtin_key(&key);
                 if prop.is_accessor() {
                     // Store getter/setter as __get_key / __set_key pattern
                     let mut func = f.borrow_mut();
+                    func.own_props.remove(&deleted_builtin_key);
                     if let Some(ref g) = prop.getter {
                         func.own_props
                             .insert(alloc::format!("__get_{}", key), g.clone());
@@ -461,8 +573,30 @@ pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                         func.own_props
                             .insert(alloc::format!("__set_{}", key), s.clone());
                     }
+                    func.own_props.insert(
+                        function_desc_flag_key(&key, "enumerable"),
+                        JsValue::Bool(prop.enumerable),
+                    );
+                    func.own_props.insert(
+                        function_desc_flag_key(&key, "configurable"),
+                        JsValue::Bool(prop.configurable),
+                    );
                 } else {
-                    f.borrow_mut().own_props.insert(key, prop.value);
+                    let mut func = f.borrow_mut();
+                    func.own_props.remove(&deleted_builtin_key);
+                    func.own_props.insert(key.clone(), prop.value);
+                    func.own_props.insert(
+                        function_desc_flag_key(&key, "writable"),
+                        JsValue::Bool(prop.writable),
+                    );
+                    func.own_props.insert(
+                        function_desc_flag_key(&key, "enumerable"),
+                        JsValue::Bool(prop.enumerable),
+                    );
+                    func.own_props.insert(
+                        function_desc_flag_key(&key, "configurable"),
+                        JsValue::Bool(prop.configurable),
+                    );
                 }
             }
             _ => {}
@@ -558,11 +692,19 @@ pub fn object_get_own_property_names(_vm: &mut Vm, args: &[JsValue]) -> JsValue 
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
-            let keys: Vec<JsValue> = o
-                .own_property_names()
-                .into_iter()
-                .map(JsValue::String)
-                .collect();
+            let mut keys: Vec<JsValue> = Vec::new();
+            if let Some(s) = boxed_string_value(&o) {
+                for i in 0..s.chars().count() {
+                    keys.push(JsValue::String(format_usize(i)));
+                }
+                keys.push(JsValue::String(String::from("length")));
+            }
+            keys.extend(
+                o.own_property_names()
+                    .into_iter()
+                    .filter(|k| !(k == "length" && boxed_string_value(&o).is_some()))
+                    .map(JsValue::String),
+            );
             JsValue::new_array(keys)
         }
         Some(JsValue::Array(arr)) => {
@@ -584,16 +726,27 @@ pub fn object_get_own_property_names(_vm: &mut Vm, args: &[JsValue]) -> JsValue 
         Some(JsValue::Function(f)) => {
             let func = f.borrow();
             let mut keys: Vec<JsValue> = Vec::new();
-            keys.push(JsValue::String(String::from("length")));
-            keys.push(JsValue::String(String::from("name")));
-            if !func.kind.is_arrow() {
+            if !function_builtin_deleted(&func, "length") {
+                keys.push(JsValue::String(String::from("length")));
+            }
+            if !function_builtin_deleted(&func, "name") {
+                keys.push(JsValue::String(String::from("name")));
+            }
+            if !func.kind.is_arrow() && !function_builtin_deleted(&func, "prototype") {
                 keys.push(JsValue::String(String::from("prototype")));
             }
-            for k in func.own_props.keys() {
+            for k in function_public_own_prop_names(&func) {
                 if k != "length" && k != "name" && k != "prototype" {
-                    keys.push(JsValue::String(k.clone()));
+                    keys.push(JsValue::String(k));
                 }
             }
+            JsValue::new_array(keys)
+        }
+        Some(JsValue::String(s)) => {
+            let mut keys: Vec<JsValue> = (0..s.chars().count())
+                .map(|i| JsValue::String(format_usize(i)))
+                .collect();
+            keys.push(JsValue::String(String::from("length")));
             JsValue::new_array(keys)
         }
         _ => JsValue::new_array(Vec::new()),
@@ -608,6 +761,10 @@ pub fn object_get_own_property_descriptor(_vm: &mut Vm, args: &[JsValue]) -> JsV
             let o = obj.borrow();
             if let Some(prop) = o.properties.get(&key) {
                 prop_to_descriptor(prop)
+            } else if let Some(s) = boxed_string_value(&o) {
+                string_exotic_own_property_descriptor(&s, &key)
+                    .map(|p| prop_to_descriptor(&p))
+                    .unwrap_or(JsValue::Undefined)
             } else {
                 JsValue::Undefined
             }
@@ -638,6 +795,9 @@ pub fn object_get_own_property_descriptor(_vm: &mut Vm, args: &[JsValue]) -> JsV
             JsValue::Undefined
         }
         Some(JsValue::Function(fn_rc)) => fn_get_own_property_descriptor(fn_rc, &key),
+        Some(JsValue::String(s)) => string_exotic_own_property_descriptor(s, &key)
+            .map(|p| prop_to_descriptor(&p))
+            .unwrap_or(JsValue::Undefined),
         _ => JsValue::Undefined,
     }
 }
@@ -655,15 +815,29 @@ fn fn_get_own_property_descriptor(fn_rc: &Rc<RefCell<JsFunction>>, key: &str) ->
     if has_getter || has_setter {
         let getter = func.own_props.get(&get_key).cloned();
         let setter = func.own_props.get(&set_key).cloned();
-        return prop_to_descriptor(&Property::accessor(getter, setter));
+        let mut prop = Property::accessor(getter, setter);
+        prop.enumerable = function_descriptor_flag(&func, key, "enumerable", true);
+        prop.configurable = function_descriptor_flag(&func, key, "configurable", true);
+        return prop_to_descriptor(&prop);
     }
     // Check regular own_props first
     if let Some(val) = func.own_props.get(key) {
-        return prop_to_descriptor(&Property::data(val.clone()));
+        let prop = Property {
+            value: val.clone(),
+            writable: function_descriptor_flag(&func, key, "writable", true),
+            enumerable: function_descriptor_flag(&func, key, "enumerable", true),
+            configurable: function_descriptor_flag(&func, key, "configurable", true),
+            getter: None,
+            setter: None,
+        };
+        return prop_to_descriptor(&prop);
     }
     // Built-in function properties (ES2023 §10.2.4, §20.2.4)
     match key {
         "name" => {
+            if function_builtin_deleted(&func, "name") {
+                return JsValue::Undefined;
+            }
             let name_val = func
                 .name
                 .as_ref()
@@ -679,6 +853,9 @@ fn fn_get_own_property_descriptor(fn_rc: &Rc<RefCell<JsFunction>>, key: &str) ->
             })
         }
         "length" => {
+            if function_builtin_deleted(&func, "length") {
+                return JsValue::Undefined;
+            }
             let len = func.arity.unwrap_or(func.params.len());
             prop_to_descriptor(&Property {
                 value: JsValue::Number(len as f64),
@@ -690,7 +867,7 @@ fn fn_get_own_property_descriptor(fn_rc: &Rc<RefCell<JsFunction>>, key: &str) ->
             })
         }
         "prototype" => {
-            if func.kind.is_arrow() {
+            if func.kind.is_arrow() || function_builtin_deleted(&func, "prototype") {
                 return JsValue::Undefined; // Arrow functions have no .prototype
             }
             let proto_val = if let Some(ref proto) = func.prototype {
@@ -718,6 +895,18 @@ pub fn object_get_own_property_descriptors(_vm: &mut Vm, args: &[JsValue]) -> Js
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
+            if let Some(s) = boxed_string_value(&o) {
+                for i in 0..s.chars().count() {
+                    if let Some(prop) =
+                        string_exotic_own_property_descriptor(&s, &format_usize(i))
+                    {
+                        result.set_property(format_usize(i), prop_to_descriptor(&prop));
+                    }
+                }
+                if let Some(prop) = string_exotic_own_property_descriptor(&s, "length") {
+                    result.set_property(String::from("length"), prop_to_descriptor(&prop));
+                }
+            }
             for (key, prop) in &o.properties {
                 let desc = prop_to_descriptor(prop);
                 result.set_property(key.clone(), desc);
@@ -747,45 +936,33 @@ pub fn object_get_own_property_descriptors(_vm: &mut Vm, args: &[JsValue]) -> Js
         }
         Some(JsValue::Function(func)) => {
             let f = func.borrow();
-            for (key, value) in &f.own_props {
-                if let Some(name) = key.strip_prefix("__get_") {
-                    let existing = result.get_property(name);
-                    let desc = if let JsValue::Object(obj) = existing {
-                        obj
-                    } else {
-                        let obj = JsValue::new_object();
-                        result.set_property(String::from(name), obj.clone());
-                        match obj {
-                            JsValue::Object(o) => o,
-                            _ => continue,
-                        }
-                    };
-                    desc.borrow_mut().set(String::from("get"), value.clone());
-                    desc.borrow_mut()
-                        .set(String::from("enumerable"), JsValue::Bool(true));
-                    desc.borrow_mut()
-                        .set(String::from("configurable"), JsValue::Bool(true));
-                } else if let Some(name) = key.strip_prefix("__set_") {
-                    let existing = result.get_property(name);
-                    let desc = if let JsValue::Object(obj) = existing {
-                        obj
-                    } else {
-                        let obj = JsValue::new_object();
-                        result.set_property(String::from(name), obj.clone());
-                        match obj {
-                            JsValue::Object(o) => o,
-                            _ => continue,
-                        }
-                    };
-                    desc.borrow_mut().set(String::from("set"), value.clone());
-                    desc.borrow_mut()
-                        .set(String::from("enumerable"), JsValue::Bool(true));
-                    desc.borrow_mut()
-                        .set(String::from("configurable"), JsValue::Bool(true));
-                } else {
-                    let desc = prop_to_descriptor(&Property::data(value.clone()));
-                    result.set_property(key.clone(), desc);
+            let length_desc = fn_get_own_property_descriptor(func, "length");
+            if !matches!(length_desc, JsValue::Undefined) {
+                result.set_property(String::from("length"), length_desc);
+            }
+            let name_desc = fn_get_own_property_descriptor(func, "name");
+            if !matches!(name_desc, JsValue::Undefined) {
+                result.set_property(String::from("name"), name_desc);
+            }
+            if !f.kind.is_arrow() {
+                let proto_desc = fn_get_own_property_descriptor(func, "prototype");
+                if !matches!(proto_desc, JsValue::Undefined) {
+                    result.set_property(String::from("prototype"), proto_desc);
                 }
+            }
+            for key in function_public_own_prop_names(&f) {
+                let desc = fn_get_own_property_descriptor(func, &key);
+                result.set_property(key, desc);
+            }
+        }
+        Some(JsValue::String(s)) => {
+            for i in 0..s.chars().count() {
+                if let Some(prop) = string_exotic_own_property_descriptor(s, &format_usize(i)) {
+                    result.set_property(format_usize(i), prop_to_descriptor(&prop));
+                }
+            }
+            if let Some(prop) = string_exotic_own_property_descriptor(s, "length") {
+                result.set_property(String::from("length"), prop_to_descriptor(&prop));
             }
         }
         _ => {}
@@ -902,7 +1079,15 @@ pub fn object_is_frozen(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn object_has_own(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
     match args.first() {
-        Some(JsValue::Object(obj)) => JsValue::Bool(obj.borrow().has_own(&key)),
+        Some(JsValue::Object(obj)) => {
+            let o = obj.borrow();
+            JsValue::Bool(
+                o.has_own(&key)
+                    || boxed_string_value(&o)
+                        .map(|s| string_exotic_own_property_descriptor(&s, &key).is_some())
+                        .unwrap_or(false),
+            )
+        }
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
             if let Some(idx) = super::try_parse_index(&key) {
@@ -910,6 +1095,9 @@ pub fn object_has_own(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             } else {
                 JsValue::Bool(key == "length" || a.properties.contains_key(&key))
             }
+        }
+        Some(JsValue::String(s)) => {
+            JsValue::Bool(string_exotic_own_property_descriptor(s, &key).is_some())
         }
         Some(JsValue::Function(f)) => {
             let func = f.borrow();

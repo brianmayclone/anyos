@@ -139,6 +139,10 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    fn mangle_private_name(name: &str) -> String {
+        alloc::format!("__private_slot_{}", name)
+    }
+
     pub fn new() -> Self {
         Compiler {
             scopes: Vec::new(),
@@ -1288,7 +1292,7 @@ impl Compiler {
             self.emit(Op::LoadUndefined);
             self.emit(Op::StrictEq);
             let skip_undef = self.emit(Op::JumpIfTrue(0));
-            self.emit(Op::GetIterator);
+            self.emit(Op::GetForInIterator);
             let skip_over = self.emit(Op::Jump(0));
             // Null/undefined path: pop value, push empty iterator
             self.patch_jump(skip_null);
@@ -2035,15 +2039,27 @@ impl Compiler {
                 let rhs = Box::new(value.clone().unwrap_or(Expr::Undefined));
                 let init_expr = match &member.key {
                     PropKey::Ident(s) | PropKey::String(s) => {
-                        // Generate: this.<key> = <value>;
-                        Expr::Assign {
-                            op: AssignOp::Assign,
-                            left: Box::new(Expr::Member {
-                                object: Box::new(Expr::This),
-                                property: s.clone(),
-                                computed: false,
-                            }),
-                            right: rhs,
+                        if s.starts_with('#') {
+                            let hidden = Self::mangle_private_name(s);
+                            Expr::Assign {
+                                op: AssignOp::Assign,
+                                left: Box::new(Expr::Index {
+                                    object: Box::new(Expr::This),
+                                    index: Box::new(Expr::String(hidden)),
+                                }),
+                                right: rhs,
+                            }
+                        } else {
+                            // Generate: this.<key> = <value>;
+                            Expr::Assign {
+                                op: AssignOp::Assign,
+                                left: Box::new(Expr::Member {
+                                    object: Box::new(Expr::This),
+                                    property: s.clone(),
+                                    computed: false,
+                                }),
+                                right: rhs,
+                            }
                         }
                     }
                     PropKey::Number(n) => {
@@ -2178,7 +2194,13 @@ impl Compiler {
             // Resolve the member key: named keys get a string, computed keys
             // are evaluated at runtime via SetProp.
             let key_name = match &member.key {
-                PropKey::Ident(s) | PropKey::String(s) => Some(s.clone()),
+                PropKey::Ident(s) | PropKey::String(s) => {
+                    if s.starts_with('#') {
+                        Some(Self::mangle_private_name(s))
+                    } else {
+                        Some(s.clone())
+                    }
+                }
                 PropKey::Number(n) => {
                     let mut s = alloc::format!("{}", n);
                     // Strip trailing ".0" for integer numbers (e.g. 10.0 → "10")
@@ -2709,14 +2731,30 @@ impl Compiler {
             Expr::Member {
                 object, property, ..
             } => {
-                self.compile_expr(object);
-                let ci = self.add_const(Constant::String(property.clone()));
-                self.emit(Op::GetPropNamed(ci));
+                if matches!(object.as_ref(), Expr::Ident(n) if n == "super") {
+                    self.emit_load_name("$$super$$");
+                    let proto_ci = self.add_const(Constant::String(String::from("prototype")));
+                    self.emit(Op::GetPropNamed(proto_ci));
+                    let ci = self.add_const(Constant::String(property.clone()));
+                    self.emit(Op::GetPropNamed(ci));
+                } else {
+                    self.compile_expr(object);
+                    let ci = self.add_const(Constant::String(property.clone()));
+                    self.emit(Op::GetPropNamed(ci));
+                }
             }
             Expr::Index { object, index } => {
-                self.compile_expr(object);
-                self.compile_expr(index);
-                self.emit(Op::GetProp);
+                if matches!(object.as_ref(), Expr::Ident(n) if n == "super") {
+                    self.emit_load_name("$$super$$");
+                    let proto_ci = self.add_const(Constant::String(String::from("prototype")));
+                    self.emit(Op::GetPropNamed(proto_ci));
+                    self.compile_expr(index);
+                    self.emit(Op::GetProp);
+                } else {
+                    self.compile_expr(object);
+                    self.compile_expr(index);
+                    self.emit(Op::GetProp);
+                }
             }
             Expr::Call { callee, arguments } => {
                 // Check for super() and super.method() before other patterns.

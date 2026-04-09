@@ -160,7 +160,9 @@ impl Vm {
 
                     match kind {
                         FnKind::Native(native_fn) => {
+                            self.native_constructor_depth += 1;
                             let result = native_fn(self, args);
+                            self.native_constructor_depth -= 1;
                             if let Some(exc) = self.pending_exception.take() {
                                 if !self.handle_exception(exc) {
                                     self.stack.push(JsValue::Undefined);
@@ -661,7 +663,9 @@ impl Vm {
                 self.current_this = this_val.clone();
                 match kind {
                     FnKind::Native(native_fn) => {
+                        self.native_constructor_depth += 1;
                         let result = native_fn(self, &args);
+                        self.native_constructor_depth -= 1;
                         if let Some(exc) = self.pending_exception.take() {
                             if !self.handle_exception(exc) {
                                 self.stack.push(JsValue::Undefined);

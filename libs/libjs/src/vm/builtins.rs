@@ -1658,7 +1658,7 @@ fn bigint_constructor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         JsValue::BigInt(_) => val,
         JsValue::Number(n) => {
             let n = *n;
-            if n.is_nan() || n.is_infinite() || n.fract() != 0.0 {
+            if n.is_nan() || n.is_infinite() || n != (n as i64 as f64) {
                 let err =
                     vm.make_range_error("The number is not safe to convert to a BigInt");
                 vm.throw_native(err);

@@ -159,6 +159,10 @@ pub struct Vm {
     pub module_sources: BTreeMap<String, String>,
     /// `with` statement scope chain — stack of objects to check before globals.
     pub with_scopes: Vec<Rc<RefCell<JsObject>>>,
+    /// Nesting depth of active native constructor invocations entered via `new`.
+    /// Needed because native built-ins like `String` are callable both as
+    /// functions and constructors, so `current_this` alone is not enough.
+    pub native_constructor_depth: usize,
 }
 
 impl Vm {
@@ -193,6 +197,7 @@ impl Vm {
             module_registry: BTreeMap::new(),
             module_sources: BTreeMap::new(),
             with_scopes: Vec::new(),
+            native_constructor_depth: 0,
         };
         vm.init_prototypes();
         vm.init_globals();
@@ -202,6 +207,14 @@ impl Vm {
 
     pub fn set_step_limit(&mut self, limit: u64) {
         self.step_limit = limit;
+    }
+
+    pub fn is_in_constructor_call(&self) -> bool {
+        self.native_constructor_depth > 0 || self.frames.last().is_some_and(|f| f.is_constructor)
+    }
+
+    fn mangle_private_name(name: &str) -> String {
+        alloc::format!("__private_slot_{}", name)
     }
 
     /// Create a local-slot vector for a chunk.  Non-captured locals get
@@ -1140,24 +1153,25 @@ impl Vm {
                         }
                     // Private member brand check (ES2023 §7.3.29 PrivateGet)
                     } else if name.starts_with('#') {
+                        let private_name = Self::mangle_private_name(&name);
                         let has_private = match &obj {
-                            JsValue::Object(o) => o.borrow().has(&name),
+                            JsValue::Object(o) => o.borrow().has(&private_name),
                             _ => false,
                         };
                         if has_private {
                             // Check for getter accessor
-                            if let Some(getter) = self.find_getter(&obj, &name) {
+                            if let Some(getter) = self.find_getter(&obj, &private_name) {
                                 self.invoke_function(&getter, &[], obj.clone());
                             } else {
-                                let val = self.get_property_with_proto(&obj, &name);
+                                let val = self.get_property_with_proto(&obj, &private_name);
                                 self.stack.push(val);
                             }
                         } else {
                             // Check prototype for private method/accessor (installed on proto)
-                            let proto_val = self.get_property_with_proto(&obj, &name);
+                            let proto_val = self.get_property_with_proto(&obj, &private_name);
                             if !matches!(proto_val, JsValue::Undefined) {
                                 // Private getter without getter on this brand
-                                if let Some(getter) = self.find_getter(&obj, &name) {
+                                if let Some(getter) = self.find_getter(&obj, &private_name) {
                                     self.invoke_function(&getter, &[], obj.clone());
                                 } else {
                                     self.stack.push(proto_val);
@@ -1215,17 +1229,18 @@ impl Vm {
                     }
                     // Private member write check (ES2023 §7.3.30 PrivateSet)
                     if name.starts_with('#') {
+                        let private_name = Self::mangle_private_name(&name);
                         // Check if the target has this private name
                         let has_own = match &obj {
-                            JsValue::Object(o) => o.borrow().has(&name),
+                            JsValue::Object(o) => o.borrow().has(&private_name),
                             _ => false,
                         };
                         if has_own {
                             // Field exists on own object — check if it's a method (not writable)
                             let is_method = match &obj {
                                 JsValue::Object(o) => {
-                                    matches!(o.borrow().get(&name), JsValue::Function(_))
-                                        && !o.borrow().properties.get(&name)
+                                    matches!(o.borrow().get(&private_name), JsValue::Function(_))
+                                        && !o.borrow().properties.get(&private_name)
                                             .map_or(false, |p| p.writable)
                                 }
                                 _ => false,
@@ -1243,14 +1258,14 @@ impl Vm {
                                 continue;
                             }
                             // Check for setter (accessor property)
-                            if let Some(setter) = self.find_setter(&obj, &name) {
+                            if let Some(setter) = self.find_setter(&obj, &private_name) {
                                 self.invoke_function(&setter, &[val.clone()], obj.clone());
                             } else {
-                                obj.set_property(name.clone(), val.clone());
+                                obj.set_property(private_name.clone(), val.clone());
                             }
                         } else {
                             // Check prototype for private method/accessor
-                            let proto_val = self.get_property_with_proto(&obj, &name);
+                            let proto_val = self.get_property_with_proto(&obj, &private_name);
                             if matches!(proto_val, JsValue::Function(_)) {
                                 // Trying to write to a private method — TypeError
                                 let msg = alloc::format!(
@@ -1265,7 +1280,7 @@ impl Vm {
                                 continue;
                             }
                             // Check for setter on prototype
-                            if let Some(setter) = self.find_setter(&obj, &name) {
+                            if let Some(setter) = self.find_setter(&obj, &private_name) {
                                 self.invoke_function(&setter, &[val.clone()], obj.clone());
                             } else {
                                 let msg = alloc::format!(
@@ -1522,13 +1537,22 @@ impl Vm {
                         }
                         JsValue::Function(f) => {
                             let func = f.borrow();
+                            let builtin_deleted = |name: &str| {
+                                matches!(
+                                    func.own_props.get(&alloc::format!("__deleted_builtin_{}", name)),
+                                    Some(JsValue::Bool(true))
+                                )
+                            };
                             // Check own_props, then built-in properties
                             if func.own_props.contains_key(&key_str) {
                                 true
                             } else {
                                 match key_str.as_str() {
-                                    "name" | "length" => true,
-                                    "prototype" => !func.kind.is_arrow(),
+                                    "name" => !builtin_deleted("name"),
+                                    "length" => !builtin_deleted("length"),
+                                    "prototype" => {
+                                        !func.kind.is_arrow() && !builtin_deleted("prototype")
+                                    }
                                     _ => {
                                         // Check function prototype chain
                                         drop(func);
@@ -1554,6 +1578,11 @@ impl Vm {
                         }
                         continue;
                     }
+                    self.stack.push(iter_obj);
+                }
+                Op::GetForInIterator => {
+                    let val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let iter_obj = self.create_for_in_iterator(&val);
                     self.stack.push(iter_obj);
                 }
                 Op::IterNext => {
@@ -2067,6 +2096,14 @@ impl Vm {
                         f.own_props.remove(&name);
                         f.own_props
                             .insert(alloc::format!("__get_{}", name), getter_fn);
+                        f.own_props.insert(
+                            alloc::format!("__desc_enumerable_{}", name),
+                            JsValue::Bool(false),
+                        );
+                        f.own_props.insert(
+                            alloc::format!("__desc_configurable_{}", name),
+                            JsValue::Bool(true),
+                        );
                     }
                 }
                 Op::DefineGetterComputed => {
@@ -2085,6 +2122,14 @@ impl Vm {
                         f.own_props.remove(&name);
                         f.own_props
                             .insert(alloc::format!("__get_{}", name), getter_fn);
+                        f.own_props.insert(
+                            alloc::format!("__desc_enumerable_{}", name),
+                            JsValue::Bool(false),
+                        );
+                        f.own_props.insert(
+                            alloc::format!("__desc_configurable_{}", name),
+                            JsValue::Bool(true),
+                        );
                     }
                 }
                 Op::DefineSetter(name_idx) => {
@@ -2101,6 +2146,14 @@ impl Vm {
                         let mut f = fn_rc.borrow_mut();
                         f.own_props
                             .insert(alloc::format!("__set_{}", name), setter_fn);
+                        f.own_props.insert(
+                            alloc::format!("__desc_enumerable_{}", name),
+                            JsValue::Bool(false),
+                        );
+                        f.own_props.insert(
+                            alloc::format!("__desc_configurable_{}", name),
+                            JsValue::Bool(true),
+                        );
                     }
                 }
                 Op::DefineSetterComputed => {
@@ -2118,6 +2171,14 @@ impl Vm {
                         let mut f = fn_rc.borrow_mut();
                         f.own_props
                             .insert(alloc::format!("__set_{}", name), setter_fn);
+                        f.own_props.insert(
+                            alloc::format!("__desc_enumerable_{}", name),
+                            JsValue::Bool(false),
+                        );
+                        f.own_props.insert(
+                            alloc::format!("__desc_configurable_{}", name),
+                            JsValue::Bool(true),
+                        );
                     }
                 }
                 Op::DefineMethod(name_idx) => {
@@ -2140,7 +2201,20 @@ impl Vm {
                         );
                     } else if let JsValue::Function(fn_rc) = &obj {
                         // Static methods on class constructors.
-                        fn_rc.borrow_mut().own_props.insert(name, val.clone());
+                        let mut f = fn_rc.borrow_mut();
+                        f.own_props.insert(name.clone(), val.clone());
+                        f.own_props.insert(
+                            alloc::format!("__desc_writable_{}", name),
+                            JsValue::Bool(true),
+                        );
+                        f.own_props.insert(
+                            alloc::format!("__desc_enumerable_{}", name),
+                            JsValue::Bool(false),
+                        );
+                        f.own_props.insert(
+                            alloc::format!("__desc_configurable_{}", name),
+                            JsValue::Bool(true),
+                        );
                     }
                     self.stack.push(val);
                 }
@@ -2304,6 +2378,21 @@ impl Vm {
                     }
                     return prop.value.clone();
                 }
+                if let Some(prim) = &o.primitive_value {
+                    if let JsValue::String(s) = prim.as_ref() {
+                        if key == "length" {
+                            return JsValue::Number(s.chars().count() as f64);
+                        }
+                        if let Some(idx) = try_parse_index(key) {
+                            if let Some(ch) = s.chars().nth(idx) {
+                                let mut buf = String::new();
+                                buf.push(ch);
+                                return JsValue::String(buf);
+                            }
+                            return JsValue::Undefined;
+                        }
+                    }
+                }
                 if let Some(ref proto) = o.prototype {
                     let proto_rc = proto.clone();
                     drop(o);
@@ -2343,22 +2432,28 @@ impl Vm {
             JsValue::Bool(_) => get_proto_prop_rc(&self.boolean_proto, key),
             JsValue::Function(f) => {
                 let func = f.borrow();
+                let builtin_deleted = |name: &str| {
+                    matches!(
+                        func.own_props.get(&alloc::format!("__deleted_builtin_{}", name)),
+                        Some(JsValue::Bool(true))
+                    )
+                };
                 // Check own properties first (static methods etc.)
                 if let Some(v) = func.own_props.get(key) {
                     return v.clone();
                 }
-                if key == "name" {
+                if key == "name" && !builtin_deleted("name") {
                     return func
                         .name
                         .as_ref()
                         .map(|n| JsValue::String(n.clone()))
                         .unwrap_or(JsValue::String(String::new()));
                 }
-                if key == "length" {
+                if key == "length" && !builtin_deleted("length") {
                     let len = func.arity.unwrap_or(func.params.len());
                     return JsValue::Number(len as f64);
                 }
-                if key == "prototype" {
+                if key == "prototype" && !builtin_deleted("prototype") {
                     // Arrow functions have no .prototype (ES2023 §14.2.17)
                     if func.kind.is_arrow() {
                         return JsValue::Undefined;

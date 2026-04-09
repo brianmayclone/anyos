@@ -6,7 +6,9 @@
 
 use alloc::rc::Rc;
 use alloc::string::String;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::collections::BTreeSet;
 use core::cell::RefCell;
 
 use super::native_symbol::WELL_KNOWN_ITERATOR;
@@ -15,6 +17,76 @@ use super::native_fn;
 use crate::value::*;
 
 impl Vm {
+    fn collect_for_in_keys_from_object(
+        &self,
+        obj: &Rc<RefCell<JsObject>>,
+        seen: &mut BTreeSet<String>,
+        out: &mut Vec<JsValue>,
+    ) {
+        let borrowed = obj.borrow();
+        for key in borrowed.keys() {
+            if seen.insert(key.clone()) {
+                out.push(JsValue::String(key));
+            }
+        }
+        if let Some(ref proto) = borrowed.prototype {
+            let proto = proto.clone();
+            drop(borrowed);
+            self.collect_for_in_keys_from_object(&proto, seen, out);
+        }
+    }
+
+    fn collect_for_in_keys(&self, val: &JsValue) -> Vec<JsValue> {
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+        match val {
+            JsValue::Object(obj) => {
+                self.collect_for_in_keys_from_object(obj, &mut seen, &mut out);
+            }
+            JsValue::Array(arr) => {
+                let a = arr.borrow();
+                for idx in a.elements.keys() {
+                    let key = idx.to_string();
+                    if seen.insert(key.clone()) {
+                        out.push(JsValue::String(key));
+                    }
+                }
+                for (key, prop) in &a.properties {
+                    if prop.enumerable && seen.insert(key.clone()) {
+                        out.push(JsValue::String(key.clone()));
+                    }
+                }
+            }
+            JsValue::Function(func) => {
+                let f = func.borrow();
+                for (key, val) in &f.own_props {
+                    if key.starts_with("__get_") || key.starts_with("__set_") || key.starts_with("__desc_") {
+                        continue;
+                    }
+                    let enumerable = match f.own_props.get(&alloc::format!("__desc_enumerable_{}", key)) {
+                        Some(JsValue::Bool(v)) => *v,
+                        _ => true,
+                    };
+                    if enumerable && seen.insert(key.clone()) {
+                        out.push(JsValue::String(key.clone()));
+                    }
+                    let _ = val;
+                }
+            }
+            JsValue::String(s) => {
+                for (idx, _) in s.chars().enumerate() {
+                    out.push(JsValue::String(idx.to_string()));
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    pub fn create_for_in_iterator(&self, val: &JsValue) -> JsValue {
+        self.make_internal_iterator(self.collect_for_in_keys(val))
+    }
+
     /// ES2023 §7.4.1 GetIterator(obj).
     ///
     /// 1. Look up `obj[Symbol.iterator]`.
@@ -35,8 +107,7 @@ impl Vm {
             if self.pending_exception.is_some() {
                 return self.make_internal_iterator(Vec::new());
             }
-            // If the result is a proper iterator (has .next method), use it directly.
-            // Otherwise (e.g. Array returned from Map.entries), wrap in internal iterator.
+            // The iterator result must be an object with a callable `.next()`.
             match &iterator {
                 JsValue::Object(obj) => {
                     let has_next = {
@@ -47,21 +118,26 @@ impl Vm {
                     if has_next || is_internal {
                         return iterator;
                     }
-                    // Object without .next — not a spec-compliant iterator, wrap it
-                    let items = obj
-                        .borrow()
-                        .keys()
-                        .into_iter()
-                        .map(JsValue::String)
-                        .collect();
-                    return self.make_internal_iterator(items);
+                    let exc =
+                        self.make_type_error("Symbol.iterator returned an object without a callable next method");
+                    self.pending_exception = Some(exc);
+                    return self.make_internal_iterator(Vec::new());
                 }
-                JsValue::Array(arr) => {
-                    // Array returned — convert to internal iterator over elements
-                    let items = arr.borrow().to_dense_vec();
-                    return self.make_internal_iterator(items);
+                JsValue::Array(_) | JsValue::Function(_) => {
+                    let next = self.get_property_with_proto(&iterator, "next");
+                    if next.is_function() {
+                        return iterator;
+                    }
+                    let exc =
+                        self.make_type_error("Symbol.iterator returned an object without a callable next method");
+                    self.pending_exception = Some(exc);
+                    return self.make_internal_iterator(Vec::new());
                 }
-                _ => return iterator,
+                _ => {
+                    let exc = self.make_type_error("Symbol.iterator returned a non-object value");
+                    self.pending_exception = Some(exc);
+                    return self.make_internal_iterator(Vec::new());
+                }
             }
         }
 
@@ -76,14 +152,6 @@ impl Vm {
                     JsValue::String(cs)
                 })
                 .collect(),
-            JsValue::Object(obj) => {
-                // For-in semantics: iterate over keys
-                obj.borrow()
-                    .keys()
-                    .into_iter()
-                    .map(JsValue::String)
-                    .collect()
-            }
             _ => {
                 // ES2023 §7.4.1: non-iterable values throw TypeError
                 let type_str = val.type_of();
@@ -107,6 +175,11 @@ impl Vm {
             JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(items)))),
         );
         iter_obj.set(String::from("__index__"), JsValue::Number(0.0));
+        iter_obj.set(String::from("next"), native_fn("next", iterator_next));
+        iter_obj.set(
+            String::from(WELL_KNOWN_ITERATOR),
+            native_fn("[Symbol.iterator]", iterator_self),
+        );
         // ES2025 Iterator Helper methods
         iter_obj.set(String::from("toArray"), native_fn("toArray", iterator_to_array));
         iter_obj.set(String::from("forEach"), native_fn("forEach", iterator_for_each));
@@ -169,6 +242,8 @@ impl Vm {
                     drop(obj);
                     let next_fn = self.get_property_with_proto(&iter, "next");
                     if !next_fn.is_function() {
+                        self.pending_exception =
+                            Some(self.make_type_error("Iterator protocol violation: missing next method"));
                         return (JsValue::Undefined, false);
                     }
                     // Call next() with this=iterator
@@ -179,6 +254,12 @@ impl Vm {
                     }
                     if let Some(exc) = self.last_exception.take() {
                         self.pending_exception = Some(exc);
+                        return (JsValue::Undefined, false);
+                    }
+                    if !result.is_object() && !result.is_array() && !result.is_function() {
+                        self.pending_exception = Some(
+                            self.make_type_error("Iterator protocol violation: next() returned a non-object value"),
+                        );
                         return (JsValue::Undefined, false);
                     }
 
@@ -229,6 +310,8 @@ impl Vm {
                 } else {
                     let next_fn = self.get_property_with_proto(iter, "next");
                     if !next_fn.is_function() {
+                        self.pending_exception =
+                            Some(self.make_type_error("Iterator protocol violation: missing next method"));
                         return (JsValue::Undefined, false);
                     }
                     let result = self.call_value(&next_fn, &[], iter.clone());
@@ -237,6 +320,12 @@ impl Vm {
                     }
                     if let Some(exc) = self.last_exception.take() {
                         self.pending_exception = Some(exc);
+                        return (JsValue::Undefined, false);
+                    }
+                    if !result.is_object() && !result.is_array() && !result.is_function() {
+                        self.pending_exception = Some(
+                            self.make_type_error("Iterator protocol violation: next() returned a non-object value"),
+                        );
                         return (JsValue::Undefined, false);
                     }
                     let done = self.get_property_with_proto(&result, "done").to_boolean();
@@ -295,10 +384,18 @@ fn drain_iterator(vm: &mut Vm, iter: &JsValue) -> Vec<JsValue> {
     loop {
         let next_fn = vm.get_property_with_proto(iter, "next");
         if !next_fn.is_function() {
+            vm.pending_exception =
+                Some(vm.make_type_error("Iterator protocol violation: missing next method"));
             break;
         }
         let result = vm.call_value(&next_fn, &[], iter.clone());
         if vm.pending_exception.is_some() {
+            break;
+        }
+        if !result.is_object() && !result.is_array() && !result.is_function() {
+            vm.pending_exception = Some(
+                vm.make_type_error("Iterator protocol violation: next() returned a non-object value"),
+            );
             break;
         }
         let done = vm.get_property_with_proto(&result, "done").to_boolean();
@@ -312,6 +409,38 @@ fn drain_iterator(vm: &mut Vm, iter: &JsValue) -> Vec<JsValue> {
         }
     }
     items
+}
+
+fn iterator_next(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    let this = vm.current_this.clone();
+    if let JsValue::Object(obj) = &this {
+        let mut o = obj.borrow_mut();
+        let index = o.get("__index__").to_number() as usize;
+        let items = o.get("__items__");
+        if let JsValue::Array(arr) = &items {
+            let a = arr.borrow();
+            if index < a.length {
+                let val = a.get(index);
+                o.properties.insert(
+                    String::from("__index__"),
+                    Property::data(JsValue::Number((index + 1) as f64)),
+                );
+                drop(o);
+                let result = JsValue::new_object();
+                result.set_property(String::from("value"), val);
+                result.set_property(String::from("done"), JsValue::Bool(false));
+                return result;
+            }
+        }
+    }
+    let result = JsValue::new_object();
+    result.set_property(String::from("value"), JsValue::Undefined);
+    result.set_property(String::from("done"), JsValue::Bool(true));
+    result
+}
+
+fn iterator_self(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    vm.current_this.clone()
 }
 
 /// `Iterator.prototype.toArray()`
