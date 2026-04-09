@@ -85,6 +85,7 @@ dependencies = [
  "anyos_std",
  "libanyui_client",
  "libimage_client",
+ "libtls",
  "libwebview",
 ]
 
@@ -790,6 +791,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "libtls"
+version = "0.1.0"
+
+[[package]]
 name = "libwebview"
 version = "0.1.0"
 dependencies = [
@@ -1231,6 +1236,7 @@ dependencies = [
  "libfont_client",
  "libimage_client",
  "libsvg_client",
+ "libtls",
  "libwebview",
 ]
 
