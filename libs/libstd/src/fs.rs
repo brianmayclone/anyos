@@ -224,7 +224,7 @@ impl FileType {
 /// File permissions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Permissions {
-    mode: u32,
+    pub mode: u32,
 }
 
 impl Permissions {

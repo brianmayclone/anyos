@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 host = ["libheap/host"]
+mmap_heap = []
 
 [dependencies]
 libheap = { path = "../libheap" }

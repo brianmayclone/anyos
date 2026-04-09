@@ -18,8 +18,18 @@ use crate::style::TextDeco;
 // Image cache
 // ═══════════════════════════════════════════════════════════════════════════
 
-/// Maximum total decoded image bytes in the cache (128 MiB).
-const IMAGE_CACHE_MAX_BYTES: usize = 128 * 1024 * 1024;
+/// Maximum total decoded image bytes in the cache.
+///
+/// The old 512 MiB cap protected against aggressive evictions, but it also let
+/// Surf accumulate far too much decoded image memory on pages like Heise. That
+/// pushed allocator pressure and made failures around `sbrk` much more likely.
+/// Keep the cache large enough for smooth scrolling, but substantially smaller.
+const IMAGE_CACHE_MAX_BYTES: usize = 192 * 1024 * 1024;
+/// When we cross the hard cap, trim to a softer target so we do not thrash
+/// around the limit by evicting only one entry per insertion.
+const IMAGE_CACHE_TRIM_TARGET_BYTES: usize = 144 * 1024 * 1024;
+const PROGRESSIVE_BAND_VIEWPORTS_BEFORE: i32 = 1;
+const PROGRESSIVE_BAND_VIEWPORTS_AFTER: i32 = 3;
 
 /// Image cache entry (decoded pixel data).
 pub struct ImageEntry {
@@ -74,6 +84,10 @@ impl ImageCache {
         self.entries.iter().find(|e| e.src == src)
     }
 
+    pub fn has_pixels_for(&self, src: &str) -> bool {
+        self.get_ref(src).is_some_and(|e| e.has_pixels())
+    }
+
     /// Add a decoded image.  Evicts LRU entries if the cache exceeds the byte cap.
     pub fn add(&mut self, src: String, pixels: Vec<u32>, width: u32, height: u32) {
         let new_bytes = pixels.len() * 4;
@@ -110,7 +124,12 @@ impl ImageCache {
     }
 
     fn evict_to_budget(&mut self) {
-        while self.total_bytes > IMAGE_CACHE_MAX_BYTES {
+        let target = if self.total_bytes > IMAGE_CACHE_MAX_BYTES {
+            IMAGE_CACHE_TRIM_TARGET_BYTES
+        } else {
+            IMAGE_CACHE_MAX_BYTES
+        };
+        while self.total_bytes > target {
             let Some(min_idx) = self
                 .entries
                 .iter()
@@ -2103,6 +2122,13 @@ impl Renderer {
         }
     }
 
+    fn progressive_band_range(scroll_y: i32, viewport_h: u32, doc_h: u32) -> (i32, i32) {
+        let vp = viewport_h.max(1) as i32;
+        let start = (scroll_y - vp * PROGRESSIVE_BAND_VIEWPORTS_BEFORE).max(0);
+        let end = (scroll_y + vp * PROGRESSIVE_BAND_VIEWPORTS_AFTER).min(doc_h as i32).max(start + 1);
+        (start, end)
+    }
+
     fn prioritized_tile_rows(
         first_row: u32,
         last_row: u32,
@@ -2353,12 +2379,10 @@ impl Renderer {
         let immediate_rows =
             Self::prioritized_tile_rows(visible_first_row, visible_last_row, scroll_y, viewport_h);
 
-        let initial_visible_y_start = (first_row * TILE_HEIGHT) as i32;
-        let initial_visible_y_end =
-            (((last_row + 1) * TILE_HEIGHT) as i32).min(doc_h as i32);
-        let fast_initial_display_list = allow_progressive_display_list
-            && (doc_h > viewport_h.saturating_mul(3)
-                || root.subtree_bottom > viewport_h as i32 * 3);
+        let fast_initial_display_list = doc_h > viewport_h.saturating_mul(3)
+            || root.subtree_bottom > viewport_h as i32 * 3;
+        let (initial_visible_y_start, initial_visible_y_end) =
+            Self::progressive_band_range(scroll_y, viewport_h, doc_h);
 
         // 3.5 For very tall documents, build only the visible display list first.
         // This makes the first styled paint arrive quickly; the full list is
@@ -2474,8 +2498,8 @@ impl Renderer {
             Self::prioritized_tile_rows(visible_first_row, visible_last_row, scroll_y, viewport_h);
 
         if !self.display_list_complete {
-            let visible_y_start = (visible_first_row * TILE_HEIGHT) as i32;
-            let visible_y_end = (((visible_last_row + 1) * TILE_HEIGHT) as i32).min(doc_h as i32);
+            let (visible_y_start, visible_y_end) =
+                Self::progressive_band_range(scroll_y, viewport_h, doc_h);
             let needs_full_list = match self.display_list_y_range {
                 Some((built_y_start, built_y_end)) => {
                     visible_y_start < built_y_start || visible_y_end > built_y_end
@@ -2484,7 +2508,7 @@ impl Renderer {
             };
             if needs_full_list {
                 crate::debug_surf!(
-                    "[render] repaint upgrading visible display list to full list for [{}..{})",
+                    "[render] repaint expanding visible display list to [{}..{})",
                     visible_y_start,
                     visible_y_end
                 );
@@ -2493,10 +2517,20 @@ impl Renderer {
                 for fc in &mut self.form_controls {
                     fc.seen = false;
                 }
-                self.walk_controls(root, 0, 0, parent, self.submit_cb, self.submit_cb_ud);
-                self.display_list = DisplayList::build(root);
-                self.display_list_complete = true;
-                self.display_list_y_range = None;
+                self.walk_controls_visible(
+                    root,
+                    0,
+                    0,
+                    parent,
+                    self.submit_cb,
+                    self.submit_cb_ud,
+                    visible_y_start,
+                    visible_y_end,
+                );
+                self.display_list =
+                    DisplayList::build_visible(root, visible_y_start, visible_y_end);
+                self.display_list_complete = false;
+                self.display_list_y_range = Some((visible_y_start, visible_y_end));
             }
         }
 
@@ -2551,41 +2585,41 @@ impl Renderer {
             Self::prioritized_tile_rows(first_row, last_row, scroll_y, viewport_h);
 
         if !self.display_list_complete {
-            let needs_full_list = match self.display_list_y_range {
+            let (band_y_start, band_y_end) =
+                Self::progressive_band_range(scroll_y, viewport_h, doc_h);
+            let needs_band_expand = match self.display_list_y_range {
                 Some((built_y_start, built_y_end)) => {
-                    scroll_y < built_y_start
-                        || (scroll_y + viewport_h as i32) > built_y_end
+                    band_y_start < built_y_start || band_y_end > built_y_end
                 }
                 None => true,
             };
-            if needs_full_list {
+            if needs_band_expand {
                 crate::debug_surf!(
-                    "[render] upgrading visible display list to full list for scroll range [{}..{})",
-                    render_y_start,
-                    render_y_end
+                    "[render] expanding visible display list for scroll range [{}..{})",
+                    band_y_start,
+                    band_y_end
                 );
                 self.hit_regions.clear();
                 self.link_map.clear();
                 for fc in &mut self.form_controls {
                     fc.seen = false;
                 }
-                self.walk_controls(
+                self.walk_controls_visible(
                     root,
                     0,
                     0,
                     parent,
                     self.submit_cb,
                     self.submit_cb_ud,
+                    band_y_start,
+                    band_y_end,
                 );
-                self.display_list = DisplayList::build(root);
-                self.display_list_complete = true;
-                self.display_list_y_range = None;
-                self.tile_cache.invalidate_all();
-                for tc in self.tile_canvases.drain(..) {
-                    ui::Control::from_id(tc.canvas.id()).remove();
-                }
-            } else {
-                return false;
+                self.display_list = DisplayList::build_visible(root, band_y_start, band_y_end);
+                self.display_list_complete = false;
+                self.display_list_y_range = Some((band_y_start, band_y_end));
+                // Keep already rasterized tiles/canvases. Expanding the band only
+                // adds more commands outside the previous range; it should not
+                // destroy the current viewport and force a full repaint/jank spike.
             }
         }
 

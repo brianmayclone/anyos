@@ -35,6 +35,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "agit"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libgit",
+ "libstd",
+]
+
+[[package]]
 name = "ami"
 version = "0.1.0"
 dependencies = [
@@ -847,6 +856,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "libgit"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libhttp_client",
+ "libstd",
+ "libtls",
+]
+
+[[package]]
 name = "libgl_client"
 version = "0.1.0"
 dependencies = [
@@ -899,6 +919,13 @@ version = "0.1.0"
 
 [[package]]
 name = "libshellcommon"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "libstd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",

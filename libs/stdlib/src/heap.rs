@@ -78,6 +78,11 @@ static mut FREE_LIST: *mut FreeBlock = ptr::null_mut();
 /// Allocations ≥ this size bypass sbrk and go directly through mmap/munmap.
 /// 64 KiB — matches typical OS large-allocation thresholds.
 const MMAP_THRESHOLD: usize = 64 * 1024;
+/// Browser / heavy-app small-allocation arenas. Backed by mmap so we avoid
+/// fragile sbrk growth in allocation-heavy apps like Surf, but still reuse
+/// memory via the free list instead of wasting a page per tiny allocation.
+#[cfg(feature = "mmap_heap")]
+const MMAP_ARENA_CHUNK: usize = 256 * 1024;
 
 /// Start of the mmap virtual address region.
 const MMAP_REGION_START: u64 = 0x7000_0000;
@@ -86,6 +91,11 @@ const MMAP_REGION_END: u64 = 0xBF00_0000;
 
 /// Initialize the heap allocator. Must be called before any allocation.
 pub fn init() {
+    #[cfg(feature = "mmap_heap")]
+    {
+        return;
+    }
+
     let brk = crate::process::sbrk(0) as u64;
     if brk == u32::MAX as u64 {
         return;
@@ -144,6 +154,32 @@ fn is_mmap_ptr(ptr: *mut u8) -> bool {
     addr >= MMAP_REGION_START && addr < MMAP_REGION_END
 }
 
+#[cfg(feature = "mmap_heap")]
+#[inline]
+unsafe fn alloc_from_mmap_arena(size: usize, align: usize) -> *mut u8 {
+    let arena_size = core::cmp::max(page_align(size + align), MMAP_ARENA_CHUNK);
+    let base = mmap_alloc(arena_size);
+    if base.is_null() {
+        return ptr::null_mut();
+    }
+
+    let base_addr = base as usize;
+    let aligned_addr = (base_addr + align - 1) & !(align - 1);
+    let aligned_ptr = aligned_addr as *mut u8;
+
+    let prefix = aligned_addr.saturating_sub(base_addr);
+    let suffix = arena_size.saturating_sub(prefix + size);
+
+    // Prefix is intentionally not recycled: it is usually tiny (< alignment)
+    // and tracking it would complicate the headerless allocator path.
+    if suffix >= core::mem::size_of::<FreeBlock>() {
+        let tail = aligned_ptr.add(size);
+        free_list_dealloc(&mut FREE_LIST, tail, suffix);
+    }
+
+    aligned_ptr
+}
+
 unsafe impl GlobalAlloc for FreeListAlloc {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let size = block_size(layout);
@@ -173,6 +209,14 @@ unsafe impl GlobalAlloc for FreeListAlloc {
         // 1) Search free list for first fit.
         let ptr = free_list_alloc(&mut FREE_LIST, size);
         if !ptr.is_null() {
+            unlock();
+            return ptr;
+        }
+
+        #[cfg(feature = "mmap_heap")]
+        {
+            let align = layout.align().max(16);
+            let ptr = alloc_from_mmap_arena(size, align);
             unlock();
             return ptr;
         }
@@ -236,8 +280,16 @@ unsafe impl GlobalAlloc for FreeListAlloc {
             return;
         }
 
-        // Large allocations from mmap are returned directly to the OS.
         let size = block_size(layout);
+        // Large allocations from mmap are returned directly to the OS.
+        #[cfg(feature = "mmap_heap")]
+        if size >= MMAP_THRESHOLD {
+            let mapped_size = page_align(size);
+            crate::process::munmap(ptr, mapped_size);
+            return;
+        }
+
+        #[cfg(not(feature = "mmap_heap"))]
         if is_mmap_ptr(ptr) {
             let mapped_size = page_align(size);
             crate::process::munmap(ptr, mapped_size);

@@ -457,6 +457,14 @@ pub(crate) fn queue_images(
                 }
 
                 let img_url = crate::http::resolve_url(base_url, &src);
+                {
+                    let st = crate::state();
+                    if tab_index < st.tabs.len()
+                        && st.tabs[tab_index].webview.has_decoded_image(&src)
+                    {
+                        continue;
+                    }
+                }
                 let loading = dom.attr(i, "loading").unwrap_or("");
                 let fetchpriority = dom.attr(i, "fetchpriority").unwrap_or("");
                 let lazy_requested = loading.eq_ignore_ascii_case("lazy");

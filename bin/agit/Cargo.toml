@@ -1,0 +1,16 @@
+[package]
+name = "agit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../libs/stdlib" }
+std = { package = "libstd", path = "../../libs/libstd" }
+libgit = { path = "../../libs/libgit" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

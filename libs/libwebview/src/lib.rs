@@ -454,6 +454,10 @@ impl WebView {
         self.images.add(String::from(src), pixels, w, h);
     }
 
+    pub fn has_decoded_image(&self, src: &str) -> bool {
+        self.images.has_pixels_for(src)
+    }
+
     /// Returns true when loading `src` can change geometry and therefore needs
     /// a full relayout instead of a paint-only refresh.
     ///
@@ -761,14 +765,8 @@ impl WebView {
         if self.deferred_full_layout_pending && self.deferred_layout_budget_px > 0 {
             return Some(self.deferred_layout_budget_px);
         }
-        let large_doc = dom.nodes.len() > 1800;
-        let initial_large_document_layout =
-            self.layout_root.is_none() && self.total_height_val == 0 && large_doc;
-        if initial_large_document_layout {
-            None
-        } else {
-            None
-        }
+        let _ = dom;
+        None
     }
 
     fn style_budget_for_document(&self, dom: &dom::Dom) -> Option<usize> {
@@ -793,17 +791,17 @@ impl WebView {
         let budget_multiplier = if dom.nodes.len() > 7000 {
             1
         } else if dom.nodes.len() > 4000 {
-            2
+            1
         } else {
-            3
+            2
         };
         self.deferred_layout_budget_px = (viewport_h * budget_multiplier).max(1024);
         self.deferred_style_node_budget = if dom.nodes.len() > 7000 {
-            480
+            220
         } else if dom.nodes.len() > 4000 {
-            768
+            320
         } else {
-            1200
+            512
         }
         .min(dom.nodes.len());
         self.deferred_budget_last_expand_ms = anyos_std::sys::uptime_ms() as u64;

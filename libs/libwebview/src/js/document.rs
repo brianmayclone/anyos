@@ -5,7 +5,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use libjs::value::{JsArray, JsObject};
+use libjs::value::{JsArray, JsObject, Property};
 use libjs::vm::native_fn;
 use libjs::JsValue;
 use libjs::Vm;
@@ -135,19 +135,7 @@ fn doc_property_hook(_data: *mut u8, key: &str, value: &libjs::JsValue) {
 ///               `document.cookie`.  Writes to `document.cookie` are recorded
 ///               as `DomMutation::SetCookie` mutations.
 pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValue {
-    let body_id = dom.find_body().unwrap_or(0);
-    let head_id: usize = dom
-        .nodes
-        .iter()
-        .enumerate()
-        .find(|(_, n)| matches!(&n.node_type, NodeType::Element { tag: Tag::Head, .. }))
-        .map(|(i, _)| i)
-        .unwrap_or(0);
     let title = dom.find_title().unwrap_or_else(|| String::from(""));
-
-    let doc_el = element::make_element(vm, 0);
-    let body_el = element::make_element(vm, body_id as i64);
-    let head_el = element::make_element(vm, head_id as i64);
 
     // Parse URL into location fields.
     let href = String::from(url);
@@ -161,9 +149,18 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
 
     // Properties.
     obj.set(String::from("title"), JsValue::String(title));
-    obj.set(String::from("documentElement"), doc_el);
-    obj.set(String::from("body"), body_el.clone());
-    obj.set(String::from("head"), head_el);
+    obj.properties.insert(
+        String::from("documentElement"),
+        Property::accessor(Some(native_fn("get documentElement", doc_get_document_element)), None),
+    );
+    obj.properties.insert(
+        String::from("body"),
+        Property::accessor(Some(native_fn("get body", doc_get_body)), None),
+    );
+    obj.properties.insert(
+        String::from("head"),
+        Property::accessor(Some(native_fn("get head", doc_get_head)), None),
+    );
     // cookie — readable; writes are intercepted by doc_property_hook
     obj.set(
         String::from("cookie"),
@@ -286,7 +283,10 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     );
 
     // W3C DOM: activeElement defaults to <body>.
-    obj.set(String::from("activeElement"), body_el.clone());
+    obj.properties.insert(
+        String::from("activeElement"),
+        Property::accessor(Some(native_fn("get activeElement", doc_get_active_element)), None),
+    );
     // createTreeWalker / createRange stubs (used by React hydration).
     obj.set(
         String::from("createTreeWalker"),
@@ -313,6 +313,47 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
 // ═══════════════════════════════════════════════════════════
 // Document methods
 // ═══════════════════════════════════════════════════════════
+
+fn doc_get_document_element(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        for (i, node) in dom.nodes.iter().enumerate() {
+            if matches!(&node.node_type, NodeType::Element { tag: Tag::Html, .. }) {
+                return element::make_element(vm, i as i64);
+            }
+        }
+        if !dom.nodes.is_empty() {
+            return element::make_element(vm, 0);
+        }
+    }
+    JsValue::Null
+}
+
+fn doc_get_body(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        if let Some(body_id) = dom.find_body() {
+            return element::make_element(vm, body_id as i64);
+        }
+    }
+    JsValue::Null
+}
+
+fn doc_get_head(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if let Some(bridge) = get_bridge(vm) {
+        let dom = bridge.dom();
+        for (i, node) in dom.nodes.iter().enumerate() {
+            if matches!(&node.node_type, NodeType::Element { tag: Tag::Head, .. }) {
+                return element::make_element(vm, i as i64);
+            }
+        }
+    }
+    JsValue::Null
+}
+
+fn doc_get_active_element(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    doc_get_body(vm, &[])
+}
 
 fn doc_get_element_by_id(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let id = arg_string(args, 0);

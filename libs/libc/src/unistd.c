@@ -101,7 +101,7 @@ void _exit(int status) {
 
 void *sbrk(int increment) {
     int ret = _syscall(SYS_SBRK, increment, 0, 0, 0);
-    if (ret == -1) { errno = ENOMEM; return (void *)-1; }
+    if (ret == -1 || ret == (int)0xFFFFFFFF) { errno = ENOMEM; return (void *)-1; }
     return (void *)ret;
 }
 

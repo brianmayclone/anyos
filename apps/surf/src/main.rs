@@ -81,8 +81,8 @@ enum RenderWork {
 }
 
 const IMAGE_RESULTS_PER_TAB_BATCH: usize = 24;
-const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 32;
-const DEFERRED_IMAGE_BATCH_SIZE: usize = 32;
+const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 8;
+const DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
 const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
 const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
@@ -697,6 +697,7 @@ fn start_net_poll_timer() {
     );
     st.net_poll_timer = ui_lib::set_timer(NET_POLL_INTERVAL_MS, || {
         let mailbox_counts = net_worker::mailbox_pending_counts();
+        #[cfg(feature = "debug_surf")]
         crate::surf_log!(
             "[surf] net-poll tick: timer={} worker_pending={} mailbox_counts={:?}",
             state().net_poll_timer,

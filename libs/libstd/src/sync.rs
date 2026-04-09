@@ -108,6 +108,12 @@ pub struct MutexGuard<'a, T: ?Sized> {
     mutex: &'a Mutex<T>,
 }
 
+impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for MutexGuard<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
+    }
+}
+
 impl<T: ?Sized> Deref for MutexGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
@@ -253,6 +259,12 @@ pub struct RwLockReadGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
 }
 
+impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for RwLockReadGuard<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
+    }
+}
+
 impl<T: ?Sized> Deref for RwLockReadGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
@@ -268,6 +280,12 @@ impl<T: ?Sized> Drop for RwLockReadGuard<'_, T> {
 
 pub struct RwLockWriteGuard<'a, T: ?Sized> {
     lock: &'a RwLock<T>,
+}
+
+impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for RwLockWriteGuard<'_, T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Debug::fmt(&**self, f)
+    }
 }
 
 impl<T: ?Sized> Deref for RwLockWriteGuard<'_, T> {

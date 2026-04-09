@@ -956,22 +956,27 @@ pub fn layout_with_budget(
         crate::debug_heap_pos()
     );
 
-    // Pre-pass: compute CSS counter values and resolve counter() references in
-    // pseudo-element content strings.
-    let cv = compute_counter_values_budgeted(dom, styles, style_budget_nodes);
-    let n = pseudo.before.len();
-    for id in 0..n {
-        if let Some(ref mut ps) = pseudo.before[id] {
-            if let Some(ref text) = ps.content.clone() {
-                if text.contains('\x01') {
-                    ps.content = Some(resolve_counters_in_content(text, id, &cv));
+    // Counter()/pseudo-content resolution is surprisingly expensive on large
+    // pages because it snapshots counter state per node. For the staged first
+    // render we intentionally skip this pre-pass and accept that some list
+    // markers/generated content may finalize a little later once the deferred
+    // full layout catches up.
+    if style_budget_nodes.is_none() {
+        let cv = compute_counter_values_budgeted(dom, styles, style_budget_nodes);
+        let n = pseudo.before.len();
+        for id in 0..n {
+            if let Some(ref mut ps) = pseudo.before[id] {
+                if let Some(ref text) = ps.content.clone() {
+                    if text.contains('\x01') {
+                        ps.content = Some(resolve_counters_in_content(text, id, &cv));
+                    }
                 }
             }
-        }
-        if let Some(ref mut ps) = pseudo.after[id] {
-            if let Some(ref text) = ps.content.clone() {
-                if text.contains('\x01') {
-                    ps.content = Some(resolve_counters_in_content(text, id, &cv));
+            if let Some(ref mut ps) = pseudo.after[id] {
+                if let Some(ref text) = ps.content.clone() {
+                    if text.contains('\x01') {
+                        ps.content = Some(resolve_counters_in_content(text, id, &cv));
+                    }
                 }
             }
         }

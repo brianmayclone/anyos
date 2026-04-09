@@ -1,0 +1,18 @@
+[package]
+name = "libgit"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../stdlib" }
+std = { package = "libstd", path = "../libstd" }
+libtls = { path = "../libtls" }
+libhttp_client = { path = "../libhttp_client" }
+dynlink = { path = "../dynlink" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

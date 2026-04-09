@@ -1,0 +1,123 @@
+//! Working tree checkout — materialize a tree into the filesystem.
+
+use alloc::string::String;
+use alloc::format;
+use crate::oid::Oid;
+use crate::object::ObjectType;
+use crate::tree;
+use crate::repo::{Repository, Result, Error};
+use std::path::Path;
+
+/// Checkout a tree object into the working directory.
+pub fn checkout_tree(repo: &Repository, tree_oid: &Oid) -> Result<u32> {
+    checkout_tree_recursive(repo, tree_oid, "")
+}
+
+fn checkout_tree_recursive(repo: &Repository, tree_oid: &Oid, prefix: &str) -> Result<u32> {
+    let obj = repo.read_object(tree_oid)?;
+    if obj.obj_type != ObjectType::Tree {
+        return Err(Error::InvalidObject);
+    }
+
+    let entries = tree::parse_tree(&obj.data);
+    let mut count = 0u32;
+
+    for entry in &entries {
+        let path = if prefix.is_empty() {
+            entry.name.clone()
+        } else {
+            format!("{}/{}", prefix, entry.name)
+        };
+
+        if entry.is_tree() {
+            // Create directory and recurse
+            let dir_path = repo.workdir_path(&path);
+            let _ = std::fs::create_dir_all(&dir_path);
+            count += checkout_tree_recursive(repo, &entry.oid, &path)?;
+        } else {
+            // Write file
+            let blob = repo.read_object(&entry.oid)?;
+            let file_path = repo.workdir_path(&path);
+
+            // Ensure parent directory exists
+            if let Some(parent) = file_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            std::fs::write(&file_path, &blob.data).map_err(|_| Error::IoError)?;
+
+            // Set executable permission if needed
+            if entry.is_executable() {
+                let _ = std::fs::set_permissions(
+                    &file_path,
+                    std::fs::Permissions { mode: 0o755 },
+                );
+            }
+
+            count += 1;
+        }
+    }
+
+    Ok(count)
+}
+
+/// Build index from a tree (used after clone/checkout).
+pub fn build_index_from_tree(repo: &Repository, tree_oid: &Oid) -> Result<crate::index::Index> {
+    let mut index = crate::index::Index::new();
+    build_index_recursive(repo, tree_oid, "", &mut index)?;
+    Ok(index)
+}
+
+fn build_index_recursive(
+    repo: &Repository,
+    tree_oid: &Oid,
+    prefix: &str,
+    index: &mut crate::index::Index,
+) -> Result<()> {
+    let obj = repo.read_object(tree_oid)?;
+    if obj.obj_type != ObjectType::Tree {
+        return Err(Error::InvalidObject);
+    }
+
+    let entries = tree::parse_tree(&obj.data);
+
+    for entry in &entries {
+        let path = if prefix.is_empty() {
+            entry.name.clone()
+        } else {
+            format!("{}/{}", prefix, entry.name)
+        };
+
+        if entry.is_tree() {
+            build_index_recursive(repo, &entry.oid, &path, index)?;
+        } else {
+            // Read blob to get its size
+            let blob = repo.read_object(&entry.oid)?;
+            let index_entry = crate::index::IndexEntry::new(
+                &path,
+                entry.oid,
+                entry.mode,
+                blob.data.len() as u32,
+            );
+            index.add(index_entry);
+        }
+    }
+
+    Ok(())
+}
+
+/// Reset working tree to match HEAD.
+pub fn checkout_head(repo: &Repository) -> Result<u32> {
+    let head_oid = repo.head()?;
+    let commit_obj = repo.read_object(&head_oid)?;
+    let commit = crate::object::Commit::parse(&commit_obj.data)
+        .ok_or(Error::InvalidObject)?;
+
+    let count = checkout_tree(repo, &commit.tree)?;
+
+    // Update index to match
+    let index = build_index_from_tree(repo, &commit.tree)?;
+    index.write(repo)?;
+
+    Ok(count)
+}

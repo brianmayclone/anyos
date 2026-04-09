@@ -7,7 +7,7 @@ edition = "2021"
 debug_surf = ["libwebview/debug_surf"]
 
 [dependencies]
-anyos_std = { path = "../../libs/stdlib" }
+anyos_std = { path = "../../libs/stdlib", features = ["mmap_heap"] }
 libanyui_client = { path = "../../libs/libanyui_client" }
 libimage_client = { path = "../../libs/libimage_client" }
 libsvg_client = { path = "../../libs/libsvg_client" }
