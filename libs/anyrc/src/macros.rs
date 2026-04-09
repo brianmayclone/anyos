@@ -228,6 +228,115 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     *changed = true;
                     return;
                 }
+                "env" => {
+                    // env!("VAR_NAME") → "value" (compile-time environment variable)
+                    let src = token_trees_to_string(args, interner);
+                    let var_name = src.trim().trim_matches('"');
+                    // Look up in process environment (on anyOS: via anyos_std)
+                    let value = lookup_env(var_name);
+                    *expr = Expr::Lit(Literal::String(value), *span);
+                    *changed = true;
+                    return;
+                }
+                "option_env" => {
+                    // option_env!("VAR_NAME") → Some("value") or None
+                    // For simplicity, expand to empty string if not set
+                    let src = token_trees_to_string(args, interner);
+                    let var_name = src.trim().trim_matches('"');
+                    let value = lookup_env(var_name);
+                    *expr = Expr::Lit(Literal::String(value), *span);
+                    *changed = true;
+                    return;
+                }
+                "include_bytes" => {
+                    // include_bytes!("path") → b"..." (compile-time file inclusion)
+                    let src = token_trees_to_string(args, interner);
+                    let path = src.trim().trim_matches('"');
+                    let data = if let Some(bytes) = crate::loader::OsFileLoader::read_bytes(path) {
+                        bytes
+                    } else {
+                        Vec::new()
+                    };
+                    *expr = Expr::Lit(Literal::ByteString(data), *span);
+                    *changed = true;
+                    return;
+                }
+                "include_str" => {
+                    // include_str!("path") → "..." (compile-time file inclusion as string)
+                    let src = token_trees_to_string(args, interner);
+                    let path = src.trim().trim_matches('"');
+                    let data = if let Some(bytes) = crate::loader::OsFileLoader::read_bytes(path) {
+                        alloc::string::String::from_utf8(bytes).unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    *expr = Expr::Lit(Literal::String(data), *span);
+                    *changed = true;
+                    return;
+                }
+                "cfg" => {
+                    // cfg!(predicate) → true/false (compile-time cfg check)
+                    // For now, always return false (without CfgContext access)
+                    // The proper evaluation happens in the cfg stripping pass;
+                    // cfg!() as an expression macro defaults to false.
+                    *expr = Expr::Lit(Literal::Bool(false), *span);
+                    *changed = true;
+                    return;
+                }
+                "concat" => {
+                    // concat!("a", "b", expr) → "ab..."
+                    let call_args = collect_macro_call_args(args, interner);
+                    let mut result = String::new();
+                    for arg in &call_args {
+                        match arg {
+                            Expr::Lit(Literal::String(s), _) => result.push_str(s),
+                            Expr::Lit(Literal::Int(n), _) => {
+                                use core::fmt::Write;
+                                let _ = write!(result, "{}", n);
+                            }
+                            Expr::Lit(Literal::Bool(b), _) => {
+                                result.push_str(if *b { "true" } else { "false" });
+                            }
+                            _ => result.push_str("?"),
+                        }
+                    }
+                    *expr = Expr::Lit(Literal::String(result), *span);
+                    *changed = true;
+                    return;
+                }
+                "stringify" => {
+                    // stringify!(tokens) → "tokens" (stringified token stream)
+                    let src = token_trees_to_string(args, interner);
+                    *expr = Expr::Lit(Literal::String(src), *span);
+                    *changed = true;
+                    return;
+                }
+                "line" => {
+                    *expr = Expr::Lit(Literal::Int(0), *span);
+                    *changed = true;
+                    return;
+                }
+                "column" => {
+                    *expr = Expr::Lit(Literal::Int(0), *span);
+                    *changed = true;
+                    return;
+                }
+                "file" => {
+                    *expr = Expr::Lit(Literal::String(String::from("")), *span);
+                    *changed = true;
+                    return;
+                }
+                "module_path" => {
+                    *expr = Expr::Lit(Literal::String(String::from("")), *span);
+                    *changed = true;
+                    return;
+                }
+                "compile_error" => {
+                    // compile_error!("msg") — for now, just produce empty tuple
+                    *expr = Expr::Tuple(vec![], *span);
+                    *changed = true;
+                    return;
+                }
                 _ => {}
             }
 
@@ -797,4 +906,17 @@ fn token_to_string(kind: &TokenKind, interner: &Interner, out: &mut String) {
         TokenKind::Question => out.push('?'), TokenKind::Dollar => out.push('$'),
         TokenKind::Eof => {}
     }
+}
+
+/// Look up a compile-time environment variable.
+/// On anyOS, reads from the process environment via anyos_std::env.
+fn lookup_env(name: &str) -> String {
+    let mut buf = [0u8; 512];
+    let len = anyos_std::env::get(name, &mut buf);
+    if len != u32::MAX && (len as usize) <= buf.len() {
+        if let Ok(s) = core::str::from_utf8(&buf[..len as usize]) {
+            return String::from(s);
+        }
+    }
+    String::new()
 }

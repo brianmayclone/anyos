@@ -467,7 +467,9 @@ pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
     let proto = args.get(1).cloned().unwrap_or(JsValue::Null);
     let new_proto = match &proto {
-        JsValue::Object(p) => Some(p.clone()),
+        JsValue::Object(p) => Some(JsValue::Object(p.clone())),
+        JsValue::Array(a) => Some(JsValue::Array(a.clone())),
+        JsValue::Function(f) => Some(JsValue::Function(f.clone())),
         JsValue::Null => None,
         _ => {
             let err = vm.make_type_error("Object prototype may only be an Object or null");
@@ -475,12 +477,39 @@ pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             return JsValue::Undefined;
         }
     };
-    if let JsValue::Object(obj) = &target {
-        return JsValue::Bool(native_object::set_prototype_of_internal(vm, obj, new_proto));
+    match &target {
+        JsValue::Object(obj) => {
+            let proto_obj = match &new_proto {
+                Some(JsValue::Object(p)) => Some(p.clone()),
+                Some(_) => {
+                    let err = vm.make_type_error("Object prototype may only be an Object or null");
+                    vm.throw_native(err);
+                    return JsValue::Undefined;
+                }
+                None => None,
+            };
+            JsValue::Bool(native_object::set_prototype_of_internal(vm, obj, proto_obj))
+        }
+        JsValue::Array(arr) => {
+            let mut a = arr.borrow_mut();
+            match new_proto {
+                Some(proto) => {
+                    a.properties
+                        .insert(String::from("__proto__"), Property::hidden(proto));
+                }
+                None => {
+                    a.properties
+                        .insert(String::from("__proto__"), Property::hidden(JsValue::Null));
+                }
+            }
+            JsValue::Bool(true)
+        }
+        _ => {
+            let err = vm.make_type_error("Reflect.setPrototypeOf called on non-object");
+            vm.throw_native(err);
+            JsValue::Undefined
+        }
     }
-    let err = vm.make_type_error("Reflect.setPrototypeOf called on non-object");
-    vm.throw_native(err);
-    JsValue::Undefined
 }
 
 pub fn reflect_is_extensible(vm: &mut Vm, args: &[JsValue]) -> JsValue {

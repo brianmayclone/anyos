@@ -1292,7 +1292,20 @@ impl JsValue {
     pub fn set_property(&self, key: String, value: JsValue) {
         match self {
             JsValue::Object(obj) => {
-                obj.borrow_mut().set(key, value);
+                let mut borrowed = obj.borrow_mut();
+                if borrowed.internal_tag.as_deref()
+                    == Some(crate::vm::native_typed_array::TYPED_ARRAY_TAG)
+                {
+                    if let Some(idx) = parse_index(&key) {
+                        let _ = crate::vm::native_typed_array::typed_array_set_index(
+                            &borrowed,
+                            idx,
+                            value.to_number(),
+                        );
+                        return;
+                    }
+                }
+                borrowed.set(key, value);
             }
             JsValue::Array(arr) => {
                 let mut a = arr.borrow_mut();

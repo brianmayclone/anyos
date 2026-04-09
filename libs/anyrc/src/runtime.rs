@@ -270,5 +270,121 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         code
     }));
 
+    // ── compiler_builtins memory intrinsics ──
+    // These are required for no_std builds where the compiler may emit calls
+    // to memcpy, memset, memmove, memcmp, and bcmp.
+
+    // memcpy(dest: *mut u8, src: *const u8, n: usize) -> *mut u8
+    // RDI=dest, RSI=src, RDX=n, returns RAX=dest
+    stubs.push(("memcpy".to_string(), {
+        let mut code = Vec::new();
+        code.extend_from_slice(&[0x48, 0x89, 0xF8]);         // mov rax, rdi (save dest for return)
+        code.extend_from_slice(&[0x48, 0x89, 0xD1]);         // mov rcx, rdx (count)
+        code.extend_from_slice(&[0xF3, 0xA4]);               // rep movsb
+        code.push(0xC3);                                       // ret
+        code
+    }));
+
+    // memmove(dest: *mut u8, src: *const u8, n: usize) -> *mut u8
+    // Handles overlapping regions by checking direction.
+    stubs.push(("memmove".to_string(), {
+        let mut code = Vec::new();
+        code.extend_from_slice(&[0x48, 0x89, 0xF8]);         // mov rax, rdi (save dest)
+        code.extend_from_slice(&[0x48, 0x89, 0xD1]);         // mov rcx, rdx (count)
+        code.extend_from_slice(&[0x48, 0x39, 0xFE]);         // cmp rsi, rdi (src vs dest)
+        code.extend_from_slice(&[0x73, 0x09]);               // jae .forward (src >= dest)
+        // Backward copy: set direction flag, adjust pointers to end
+        code.extend_from_slice(&[0xFD]);                       // std
+        code.extend_from_slice(&[0x48, 0x8D, 0x7C, 0x0F, 0xFF]); // lea rdi, [rdi+rcx-1]
+        code.extend_from_slice(&[0x48, 0x8D, 0x74, 0x0E, 0xFF]); // lea rsi, [rsi+rcx-1]
+        code.extend_from_slice(&[0xF3, 0xA4]);               // rep movsb
+        code.extend_from_slice(&[0xFC]);                       // cld (clear direction flag)
+        code.push(0xC3);                                       // ret
+        // .forward:
+        code[9] = (code.len() as u8) - 10; // fix jae offset
+        code.extend_from_slice(&[0xF3, 0xA4]);               // rep movsb
+        code.push(0xC3);                                       // ret
+        code
+    }));
+
+    // memset(dest: *mut u8, val: i32, n: usize) -> *mut u8
+    // RDI=dest, ESI=val, RDX=n, returns RAX=dest
+    stubs.push(("memset".to_string(), {
+        let mut code = Vec::new();
+        code.extend_from_slice(&[0x48, 0x89, 0xF8]);         // mov rax, rdi (save dest)
+        code.extend_from_slice(&[0x48, 0x89, 0xD1]);         // mov rcx, rdx (count)
+        code.extend_from_slice(&[0x40, 0x88, 0xF0]);         // mov al, sil (byte value)
+        // Note: rax was overwritten, save and restore dest
+        code.clear();
+        code.extend_from_slice(&[0x48, 0x89, 0xFA]);         // mov rdx, rdi (save dest)
+        code.extend_from_slice(&[0x89, 0xF0]);               // mov eax, esi (value)
+        code.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, 0x00]); // hm, rdx is count in sysv
+        // Actually: RDI=dest, ESI=val, RDX=n
+        code.clear();
+        code.extend_from_slice(&[0x50]);                       // push rax (dummy, save rbx-compat)
+        code.extend_from_slice(&[0x48, 0x89, 0xF8]);         // mov rax, rdi (save dest for return)
+        code.extend_from_slice(&[0x48, 0x89, 0xD1]);         // mov rcx, rdx (count)
+        code.extend_from_slice(&[0x40, 0x88, 0xF2]);         // mov dl, sil (byte value... no, we need al)
+        // Let me just do this cleanly:
+        code.clear();
+        // memset: rdi=dest, esi=value, rdx=count → returns dest in rax
+        code.extend_from_slice(&[0x53]);                       // push rbx (callee-saved)
+        code.extend_from_slice(&[0x48, 0x89, 0xFB]);         // mov rbx, rdi (save dest)
+        code.extend_from_slice(&[0x89, 0xF0]);               // mov eax, esi (fill value → al)
+        code.extend_from_slice(&[0x48, 0x89, 0xD1]);         // mov rcx, rdx (count)
+        code.extend_from_slice(&[0xF3, 0xAA]);               // rep stosb (fill [rdi] with al, rcx times)
+        code.extend_from_slice(&[0x48, 0x89, 0xD8]);         // mov rax, rbx (return dest)
+        code.extend_from_slice(&[0x5B]);                       // pop rbx
+        code.push(0xC3);                                       // ret
+        code
+    }));
+
+    // memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32
+    // RDI=s1, RSI=s2, RDX=n, returns EAX (negative/0/positive)
+    stubs.push(("memcmp".to_string(), {
+        let mut code = Vec::new();
+        code.extend_from_slice(&[0x48, 0x89, 0xD1]);         // mov rcx, rdx (count)
+        code.extend_from_slice(&[0xF3, 0xA6]);               // repe cmpsb
+        code.extend_from_slice(&[0x74, 0x07]);               // je .equal
+        code.extend_from_slice(&[0x0F, 0xB6, 0x47, 0xFF]);   // movzx eax, byte [rdi-1]
+        code.extend_from_slice(&[0x0F, 0xB6, 0x4E, 0xFF]);   // movzx ecx, byte [rsi-1]
+        code.extend_from_slice(&[0x29, 0xC8]);               // sub eax, ecx
+        code.push(0xC3);                                       // ret
+        // .equal:
+        code.extend_from_slice(&[0x31, 0xC0]);               // xor eax, eax
+        code.push(0xC3);                                       // ret
+        code
+    }));
+
+    // bcmp(s1: *const u8, s2: *const u8, n: usize) -> i32
+    // Same as memcmp for our purposes
+    stubs.push(("bcmp".to_string(), {
+        let mut code = Vec::new();
+        code.extend_from_slice(&[0x48, 0x89, 0xD1]);         // mov rcx, rdx
+        code.extend_from_slice(&[0xF3, 0xA6]);               // repe cmpsb
+        code.extend_from_slice(&[0x74, 0x07]);               // je .equal
+        code.extend_from_slice(&[0x0F, 0xB6, 0x47, 0xFF]);   // movzx eax, byte [rdi-1]
+        code.extend_from_slice(&[0x0F, 0xB6, 0x4E, 0xFF]);   // movzx ecx, byte [rsi-1]
+        code.extend_from_slice(&[0x29, 0xC8]);               // sub eax, ecx
+        code.push(0xC3);
+        code.extend_from_slice(&[0x31, 0xC0]);               // xor eax, eax
+        code.push(0xC3);
+        code
+    }));
+
+    // strlen(s: *const u8) -> usize
+    stubs.push(("strlen".to_string(), {
+        let mut code = Vec::new();
+        code.extend_from_slice(&[0x48, 0x31, 0xC0]);         // xor rax, rax (len = 0)
+        // .scan:
+        code.extend_from_slice(&[0x80, 0x3C, 0x07, 0x00]);   // cmp byte [rdi+rax], 0
+        code.extend_from_slice(&[0x74, 0x04]);               // je .done
+        code.extend_from_slice(&[0x48, 0xFF, 0xC0]);         // inc rax
+        code.extend_from_slice(&[0xEB, 0xF5]);               // jmp .scan
+        // .done:
+        code.push(0xC3);                                       // ret
+        code
+    }));
+
     stubs
 }

@@ -150,6 +150,42 @@ pub fn ctor_object(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
         Some(val @ JsValue::Object(_)) => val.clone(),
         Some(val @ JsValue::Array(_)) => val.clone(),
+        Some(JsValue::String(s)) => {
+            let obj = JsValue::new_object();
+            if let JsValue::Object(rc) = &obj {
+                let mut o = rc.borrow_mut();
+                o.internal_tag = Some(String::from("__string__"));
+                o.primitive_value = Some(Box::new(JsValue::String(s.clone())));
+            }
+            obj
+        }
+        Some(JsValue::Number(n)) => {
+            let obj = JsValue::new_object();
+            if let JsValue::Object(rc) = &obj {
+                let mut o = rc.borrow_mut();
+                o.internal_tag = Some(String::from("__number__"));
+                o.primitive_value = Some(Box::new(JsValue::Number(*n)));
+            }
+            obj
+        }
+        Some(JsValue::Bool(b)) => {
+            let obj = JsValue::new_object();
+            if let JsValue::Object(rc) = &obj {
+                let mut o = rc.borrow_mut();
+                o.internal_tag = Some(String::from("__boolean__"));
+                o.primitive_value = Some(Box::new(JsValue::Bool(*b)));
+            }
+            obj
+        }
+        Some(JsValue::BigInt(bi)) => {
+            let obj = JsValue::new_object();
+            if let JsValue::Object(rc) = &obj {
+                let mut o = rc.borrow_mut();
+                o.internal_tag = Some(String::from("__bigint__"));
+                o.primitive_value = Some(Box::new(JsValue::BigInt(bi.clone())));
+            }
+            obj
+        }
         None | Some(JsValue::Undefined) | Some(JsValue::Null) => JsValue::new_object(),
         _ => JsValue::new_object(),
     }

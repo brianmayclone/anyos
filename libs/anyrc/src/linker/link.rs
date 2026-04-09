@@ -2,9 +2,52 @@ use crate::prelude::*;
 use anyos_std::collections::HashMap;
 use super::elf;
 
+/// Extended link options for kernel-level linking.
+#[derive(Debug, Clone, Default)]
+pub struct LinkOptions {
+    /// Linker script path (parsed for ENTRY point and section layout).
+    pub linker_script: Option<String>,
+    /// Additional pre-assembled object files to link in.
+    pub extra_objects: Vec<Vec<u8>>,
+    /// Base address override (from linker script or flag).
+    pub base_address: Option<u64>,
+    /// Custom entry point symbol name (default: "_start").
+    pub entry_symbol: Option<String>,
+}
+
+/// Link one or more ELF object files into an executable (extended version).
+pub fn link_ext(objects: &[Vec<u8>], _output_name: &str, no_main: bool, opts: &LinkOptions) -> Vec<u8> {
+    // Merge extra objects into the object list
+    let mut all_objects = objects.to_vec();
+    for extra in &opts.extra_objects {
+        all_objects.push(extra.clone());
+    }
+
+    // Parse linker script for base address and entry point
+    let mut base_addr = opts.base_address.unwrap_or(0x400000);
+    let mut entry_name = opts.entry_symbol.clone().unwrap_or_else(|| "_start".to_string());
+
+    if let Some(ref script_path) = opts.linker_script {
+        if let Some(parsed) = parse_linker_script_minimal(script_path) {
+            if let Some(addr) = parsed.base_address {
+                base_addr = addr;
+            }
+            if let Some(ref entry) = parsed.entry_point {
+                entry_name = entry.clone();
+            }
+        }
+    }
+
+    link_impl(&all_objects, no_main, base_addr, &entry_name)
+}
+
 /// Link one or more ELF object files into an executable.
 /// Returns the raw bytes of the ELF executable.
 pub fn link(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Vec<u8> {
+    link_impl(objects, no_main, 0x400000, "_start")
+}
+
+fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &str) -> Vec<u8> {
     let mut merged_code = Vec::new();
     let mut merged_data = Vec::new();
 
@@ -99,7 +142,6 @@ pub fn link(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Vec<u8> {
     }
 
     // Resolve relocations
-    let base_addr: u64 = 0x400000;
     // Content starts at offset 128 (64 ehdr + 56 phdr, aligned to 16 = 128)
     let content_file_offset: u64 = 128;
 
@@ -144,8 +186,64 @@ pub fn link(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Vec<u8> {
         }
     }
 
-    // Entry point is _start
-    let entry_offset = *global_symbols.get("_start").unwrap_or(&0);
+    // Entry point
+    let entry_offset = *global_symbols.get(entry_name).unwrap_or(&0);
 
     elf::write_executable(&merged_code, &merged_data, entry_offset)
+}
+
+/// Minimal linker script info extracted from a `.ld` file.
+struct LinkerScriptInfo {
+    base_address: Option<u64>,
+    entry_point: Option<String>,
+}
+
+/// Parse a linker script for ENTRY() and base address.
+/// Only extracts minimal info needed for linking — not a full LD script parser.
+fn parse_linker_script_minimal(path: &str) -> Option<LinkerScriptInfo> {
+    let data = crate::loader::OsFileLoader::read_bytes(path)?;
+    let text = core::str::from_utf8(&data).ok()?;
+
+    let mut info = LinkerScriptInfo {
+        base_address: None,
+        entry_point: None,
+    };
+
+    for line in text.lines() {
+        let line = line.trim();
+
+        // ENTRY(symbol)
+        if line.starts_with("ENTRY(") {
+            if let Some(end) = line.find(')') {
+                let sym = line[6..end].trim();
+                info.entry_point = Some(sym.to_string());
+            }
+        }
+
+        // . = 0xFFFFFFFF80000000; or . = 0x400000;
+        if line.starts_with(". =") || line.starts_with(".=") {
+            let after_eq = if line.starts_with(". =") {
+                &line[3..]
+            } else {
+                &line[2..]
+            };
+            let after_eq = after_eq.trim().trim_end_matches(';').trim();
+            if let Some(addr) = parse_hex_or_dec(after_eq) {
+                if info.base_address.is_none() {
+                    info.base_address = Some(addr);
+                }
+            }
+        }
+    }
+
+    Some(info)
+}
+
+fn parse_hex_or_dec(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.starts_with("0x") || s.starts_with("0X") {
+        u64::from_str_radix(&s[2..], 16).ok()
+    } else {
+        s.parse::<u64>().ok()
+    }
 }

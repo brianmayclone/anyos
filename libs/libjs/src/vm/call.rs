@@ -754,6 +754,34 @@ impl Vm {
         result
     }
 
+    /// Construct a value directly from Rust and wait for bytecode constructors
+    /// to complete before returning the constructed result.
+    pub fn construct_value(
+        &mut self,
+        ctor: &JsValue,
+        args: &[JsValue],
+        new_target: &JsValue,
+    ) -> Option<JsValue> {
+        let saved_depth = self.frames.len();
+        let stack_before = self.stack.len();
+
+        if !self.construct_with_new_target(ctor, args, new_target) {
+            return None;
+        }
+
+        if self.frames.len() <= saved_depth {
+            let result = self.stack.pop().unwrap_or(JsValue::Undefined);
+            return Some(result);
+        }
+
+        let prev_target = self.run_target_depth;
+        self.run_target_depth = saved_depth;
+        let result = self.run();
+        self.run_target_depth = prev_target;
+        self.stack.truncate(stack_before);
+        Some(result)
+    }
+
     /// `super(args)` — call parent constructor, forwarding new.target from the
     /// current (derived) constructor frame.  Stack: [..., SuperClass, arg1..argN]
     pub fn super_call(&mut self, argc: usize) {

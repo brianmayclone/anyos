@@ -1499,6 +1499,7 @@ impl Vm {
                     // `new` calls: constructor return value semantics (ES2023 §9.2.2 step 13).
                     let ret = if frame.is_constructor
                         && !val.is_object()
+                        && !val.is_array()
                         && !matches!(val, JsValue::Function(_))
                     {
                         // Derived class constructor: if return value is not undefined,
@@ -3071,6 +3072,181 @@ impl Vm {
         }
     }
 
+    pub fn has_property(&mut self, obj: &JsValue, key: &str) -> Option<bool> {
+        if let JsValue::Object(o) = obj {
+            if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                return native_proxy::proxy_has(self, obj, key);
+            }
+        }
+        let has = match obj {
+            JsValue::Object(o) => {
+                let borrowed = o.borrow();
+                if borrowed.internal_tag.as_deref()
+                    == Some(crate::vm::native_typed_array::TYPED_ARRAY_TAG)
+                {
+                    if let Some(idx) = try_parse_index(key) {
+                        crate::vm::native_typed_array::typed_array_get_index(&borrowed, idx)
+                            .is_some()
+                            || borrowed.has(key)
+                    } else {
+                        borrowed.has(key)
+                    }
+                } else {
+                    borrowed.has(key)
+                }
+            }
+            JsValue::Array(arr) => {
+                let a = arr.borrow();
+                if let Some(idx) = try_parse_index(key) {
+                    a.has(idx) || a.properties.contains_key(key) || !crate::vm::native_array::array_effective_proto_value(self, &a).get_property(key).is_undefined()
+                } else {
+                    key == "length"
+                        || a.properties.contains_key(key)
+                        || !crate::vm::native_array::array_effective_proto_value(self, &a).get_property(key).is_undefined()
+                }
+            }
+            JsValue::Function(f) => {
+                let func = f.borrow();
+                func.own_props.contains_key(key) || self.function_proto.borrow().has(key)
+            }
+            JsValue::String(s) => {
+                key == "length"
+                    || try_parse_index(key).is_some_and(|idx| idx < s.chars().count())
+            }
+            _ => false,
+        };
+        Some(has)
+    }
+
+    pub fn set_property_or_throw(&mut self, obj: &JsValue, key: &str, value: JsValue) -> bool {
+        if let JsValue::Object(o) = obj {
+            if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                return match native_proxy::proxy_set(self, obj, key, &value) {
+                    Some(true) => true,
+                    Some(false) => {
+                        let err = self.make_type_error("Cannot assign to property");
+                        self.throw_native(err);
+                        false
+                    }
+                    None => false,
+                };
+            }
+        }
+
+        if let Some(setter) = self.find_setter(obj, key) {
+            let _ = self.call_value(&setter, &[value], obj.clone());
+            if let Some(exc) = self.last_exception.take() {
+                self.pending_exception = Some(exc);
+            }
+            return self.pending_exception.is_none();
+        }
+
+        match obj {
+            JsValue::Object(o) => {
+                if let Some(prim) = o.borrow().primitive_value.as_deref() {
+                    if let JsValue::String(s) = prim {
+                        let is_index = try_parse_index(key).is_some_and(|idx| idx < s.chars().count());
+                        if key == "length" || is_index {
+                            let err = self.make_type_error("Cannot assign to property");
+                            self.throw_native(err);
+                            return false;
+                        }
+                    }
+                }
+                let borrowed = o.borrow();
+                let exists = borrowed.properties.contains_key(key);
+                let accessor_without_setter = borrowed
+                    .properties
+                    .get(key)
+                    .map(|p| p.is_accessor() && p.setter.is_none())
+                    .unwrap_or(false);
+                let readonly = borrowed
+                    .properties
+                    .get(key)
+                    .map(|p| !p.writable && !p.is_accessor())
+                    .unwrap_or(false);
+                let non_extensible = borrowed.properties.contains_key("__non_extensible__");
+                drop(borrowed);
+                if accessor_without_setter || readonly || (!exists && non_extensible) {
+                    let err = self.make_type_error("Cannot assign to property");
+                    self.throw_native(err);
+                    return false;
+                }
+            }
+            JsValue::Array(arr) => {
+                let borrowed = arr.borrow();
+                let exists = if let Some(idx) = try_parse_index(key) {
+                    borrowed.has(idx) || borrowed.properties.contains_key(key)
+                } else {
+                    key == "length" || borrowed.properties.contains_key(key)
+                };
+                let accessor_without_setter = borrowed
+                    .properties
+                    .get(key)
+                    .map(|p| p.is_accessor() && p.setter.is_none())
+                    .unwrap_or(false);
+                let readonly = borrowed
+                    .properties
+                    .get(key)
+                    .map(|p| !p.writable && !p.is_accessor())
+                    .unwrap_or(false);
+                let non_extensible = borrowed.properties.contains_key("__non_extensible__");
+                drop(borrowed);
+                if accessor_without_setter || readonly || (!exists && non_extensible) {
+                    let err = self.make_type_error("Cannot assign to property");
+                    self.throw_native(err);
+                    return false;
+                }
+            }
+            JsValue::Function(f) => {
+                let borrowed = f.borrow();
+                if key == "length" && !borrowed.own_props.contains_key("length") {
+                    let err = self.make_type_error("Cannot assign to property");
+                    self.throw_native(err);
+                    return false;
+                }
+                let exists = borrowed.own_props.contains_key(key)
+                    || key == "name"
+                    || key == "length"
+                    || (key == "prototype" && !borrowed.kind.is_arrow());
+                let non_extensible =
+                    matches!(borrowed.own_props.get("__non_extensible__"), Some(JsValue::Bool(true)));
+                drop(borrowed);
+                if !exists && non_extensible {
+                    let err = self.make_type_error("Cannot assign to property");
+                    self.throw_native(err);
+                    return false;
+                }
+            }
+            _ => {}
+        }
+
+        obj.set_property(String::from(key), value);
+        true
+    }
+
+    pub fn delete_property_or_throw(&mut self, obj: &JsValue, key: &str) -> bool {
+        if let JsValue::Object(o) = obj {
+            if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                return match native_proxy::proxy_delete(self, obj, key) {
+                    Some(true) => true,
+                    Some(false) => {
+                        let err = self.make_type_error("Cannot delete property");
+                        self.throw_native(err);
+                        false
+                    }
+                    None => false,
+                };
+            }
+        }
+        let ok = obj.delete_property(key);
+        if !ok {
+            let err = self.make_type_error("Cannot delete property");
+            self.throw_native(err);
+        }
+        ok
+    }
+
     fn has_private_member(&self, val: &JsValue, key: &str) -> bool {
         match val {
             JsValue::Object(obj) => obj.borrow().has(key),
@@ -3207,6 +3383,13 @@ impl Vm {
         match val {
             JsValue::Object(obj) => {
                 let o = obj.borrow();
+                if let Some(idx) = try_parse_index(key) {
+                    if let Some(value) =
+                        crate::vm::native_typed_array::typed_array_get_index(&o, idx)
+                    {
+                        return value;
+                    }
+                }
                 if let Some(prop) = o.properties.get(key) {
                     if prop.is_accessor() {
                         // Getter needs to be invoked by caller (VM run loop)

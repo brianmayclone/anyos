@@ -21,6 +21,11 @@ fn main() {
     let mut crate_name: Option<String> = None;
     let mut src_dir: Option<String> = None;
     let mut extern_crates: Vec<ExternCrateSpec> = Vec::new();
+    let mut cfg_flags: Vec<String> = Vec::new();
+    let mut linker_script: Option<String> = None;
+    let mut link_args: Vec<String> = Vec::new();
+    let mut env_vars: Vec<(String, String)> = Vec::new();
+    let mut features: Vec<String> = Vec::new();
 
     let mut i = 1;
     while i < args.len() {
@@ -97,8 +102,44 @@ fn main() {
                     }
                 }
             }
+            "--cfg" => {
+                // --cfg 'target_arch="x86_64"' or --cfg feature="kunit"
+                i += 1;
+                if i < args.len() {
+                    cfg_flags.push(String::from(args[i]));
+                }
+            }
+            "-T" | "--linker-script" => {
+                i += 1;
+                if i < args.len() {
+                    linker_script = Some(String::from(args[i]));
+                }
+            }
+            "--link-arg" | "-l" => {
+                i += 1;
+                if i < args.len() {
+                    link_args.push(String::from(args[i]));
+                }
+            }
+            "--env" => {
+                // --env KEY=VALUE
+                i += 1;
+                if i < args.len() {
+                    if let Some(eq_pos) = args[i].find('=') {
+                        let key = &args[i][..eq_pos];
+                        let val = &args[i][eq_pos + 1..];
+                        env_vars.push((String::from(key), String::from(val)));
+                    }
+                }
+            }
+            "--feature" => {
+                i += 1;
+                if i < args.len() {
+                    features.push(String::from(args[i]));
+                }
+            }
             "--version" => {
-                anyos_std::println!("anyrc 0.2.0");
+                anyos_std::println!("anyrc 0.3.0");
                 return;
             }
             "--help" | "-h" => {
@@ -112,6 +153,11 @@ fn main() {
                 anyos_std::println!("  --crate-name <NAME>    Crate name");
                 anyos_std::println!("  --src-dir <DIR>        Source directory for module resolution");
                 anyos_std::println!("  --extern <name=path>   Link against extern crate .rlib");
+                anyos_std::println!("  --cfg <SPEC>           Set cfg flag (e.g. target_arch=\"x86_64\")");
+                anyos_std::println!("  -T <SCRIPT>            Linker script path");
+                anyos_std::println!("  --link-arg <ARG>       Additional linker argument (.o file)");
+                anyos_std::println!("  --env <KEY=VALUE>      Set compile-time environment variable");
+                anyos_std::println!("  --feature <NAME>       Enable feature gate");
                 anyos_std::println!("  --version              Print version");
                 anyos_std::println!("  -h, --help             Print help");
                 return;
@@ -153,6 +199,11 @@ fn main() {
         crate_name,
         src_dir,
         extern_crates,
+        cfg_flags,
+        linker_script,
+        link_args,
+        env_vars,
+        features,
     };
 
     match compile(&source, input_file, &options) {

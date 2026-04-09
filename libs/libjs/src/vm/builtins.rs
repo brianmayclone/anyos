@@ -727,10 +727,24 @@ impl Vm {
         // ── String static methods + prototype link ──
         if let JsValue::Function(f) = self.globals.borrow().get("String") {
             let ctor = JsValue::Function(f.clone());
-            ctor.set_property(
-                String::from("prototype"),
-                JsValue::Object(self.string_proto.clone()),
-            );
+            if let JsValue::Function(func_rc) = &ctor {
+                func_rc.borrow_mut().own_props.insert(
+                    String::from("prototype"),
+                    JsValue::Object(self.string_proto.clone()),
+                );
+                func_rc.borrow_mut().own_props.insert(
+                    String::from("__desc_writable_prototype"),
+                    JsValue::Bool(false),
+                );
+                func_rc.borrow_mut().own_props.insert(
+                    String::from("__desc_enumerable_prototype"),
+                    JsValue::Bool(false),
+                );
+                func_rc.borrow_mut().own_props.insert(
+                    String::from("__desc_configurable_prototype"),
+                    JsValue::Bool(false),
+                );
+            }
             ctor.set_property(
                 String::from("fromCharCode"),
                 native_fn("fromCharCode", native_string::string_from_char_code),
@@ -1823,7 +1837,32 @@ fn array_symbol_iterator(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 /// `String.prototype[Symbol.iterator]()` — returns a string character iterator.
 fn string_symbol_iterator(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
-    let s = this.to_js_string();
+    let s = match &this {
+        JsValue::Null | JsValue::Undefined => {
+            let err = vm.make_type_error("Cannot convert undefined or null to object");
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
+        JsValue::Object(obj) => {
+            if let Some(prim) = obj.borrow().primitive_value.as_deref() {
+                prim.to_js_string()
+            } else {
+                let prim = vm.to_primitive_for_op(this.clone(), "string");
+                if vm.pending_exception.is_some() {
+                    return JsValue::Undefined;
+                }
+                prim.to_js_string()
+            }
+        }
+        JsValue::Array(_) | JsValue::Function(_) => {
+            let prim = vm.to_primitive_for_op(this.clone(), "string");
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            prim.to_js_string()
+        }
+        _ => this.to_js_string(),
+    };
     let items: alloc::vec::Vec<JsValue> = s
         .chars()
         .map(|c| {

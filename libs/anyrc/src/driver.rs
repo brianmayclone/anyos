@@ -30,6 +30,16 @@ pub struct CompileOptions {
     pub src_dir: Option<String>,
     /// Paths to .rlib files to link against (extern crate dependencies).
     pub extern_crates: Vec<ExternCrateSpec>,
+    /// Cfg flags for conditional compilation (e.g. "target_arch=\"x86_64\"", "feature=\"kunit\"").
+    pub cfg_flags: Vec<String>,
+    /// Linker script path (e.g. "-T kernel/link.ld").
+    pub linker_script: Option<String>,
+    /// Additional linker arguments (object files, libraries, flags).
+    pub link_args: Vec<String>,
+    /// Environment variables available to env!() macro (key=value pairs).
+    pub env_vars: Vec<(String, String)>,
+    /// Feature gates enabled via #![feature(...)].
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +79,36 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         a.path.segments.len() == 1 && interner.resolve(a.path.segments[0].ident) == "no_std"
     });
 
-    // 2. Expand macros
+    // Recognize #![feature(...)] attributes — accepted silently for compatibility.
+    // anyrc doesn't have unstable features like rustc, but we need to accept
+    // these attributes without erroring so that kernel code compiles.
+    let _feature_gates: Vec<String> = krate.attrs.iter().filter_map(|a| {
+        if a.path.segments.len() == 1 && interner.resolve(a.path.segments[0].ident) == "feature" {
+            // Extract feature names from the token tree
+            if let crate::ast::AttrArgs::Delimited(tokens) = &a.args {
+                let names: Vec<String> = tokens.iter().filter_map(|tt| {
+                    if let crate::ast::TokenTree::Token(t) = tt {
+                        if let crate::lexer::TokenKind::Ident(sym) = t.kind {
+                            return Some(interner.resolve(sym).to_string());
+                        }
+                    }
+                    None
+                }).collect();
+                return Some(names.join(","));
+            }
+            None
+        } else {
+            None
+        }
+    }).collect();
+
+    // 1b. Build cfg context from options
+    let cfg_ctx = crate::cfg::CfgContext::from_flags(&options.cfg_flags);
+
+    // 1c. Strip items that don't match cfg predicates
+    crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+
+    // 2. Expand macros (pass env_vars and cfg_ctx for built-in macros)
     expand_macros(&mut krate, &mut interner);
 
     // 2b. Resolve multi-file modules (mod foo;)
@@ -217,8 +256,29 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
                 }
             }
             let no_main_flag = no_main || options.crate_type == CrateType::StaticLib;
-            let exe = link::link(&all_objects, &options.output, no_main_flag);
-            Ok(exe)
+            // Use extended linker if linker script or link args are provided
+            if options.linker_script.is_some() || !options.link_args.is_empty() {
+                let mut extra_objects = Vec::new();
+                for arg in &options.link_args {
+                    // If link arg is an object file, read it
+                    if arg.ends_with(".o") || arg.ends_with(".a") {
+                        if let Some(data) = crate::loader::OsFileLoader::read_bytes(arg) {
+                            extra_objects.push(data);
+                        }
+                    }
+                }
+                let link_opts = link::LinkOptions {
+                    linker_script: options.linker_script.clone(),
+                    extra_objects,
+                    base_address: None,
+                    entry_symbol: None,
+                };
+                let exe = link::link_ext(&all_objects, &options.output, no_main_flag, &link_opts);
+                Ok(exe)
+            } else {
+                let exe = link::link(&all_objects, &options.output, no_main_flag);
+                Ok(exe)
+            }
         }
         EmitKind::Rlib => {
             let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &static_data);

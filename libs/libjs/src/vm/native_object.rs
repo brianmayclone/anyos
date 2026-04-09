@@ -492,29 +492,66 @@ pub fn object_assign(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn object_freeze(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    if let Some(JsValue::Object(obj)) = args.first() {
-        let mut o = obj.borrow_mut();
-        let keys: Vec<String> = o.properties.keys().cloned().collect();
-        for key in keys {
-            if let Some(prop) = o.properties.get_mut(&key) {
-                if !prop.is_accessor() {
-                    prop.writable = false;
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let mut o = obj.borrow_mut();
+            let keys: Vec<String> = o.properties.keys().cloned().collect();
+            for key in keys {
+                if let Some(prop) = o.properties.get_mut(&key) {
+                    if !prop.is_accessor() {
+                        prop.writable = false;
+                    }
+                    prop.configurable = false;
                 }
+            }
+            // Mark as non-extensible (frozen implies sealed implies non-extensible).
+            o.properties.insert(
+                String::from("__non_extensible__"),
+                crate::value::Property {
+                    value: JsValue::Bool(true),
+                    writable: false,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                },
+            );
+        }
+        Some(JsValue::Array(arr)) => {
+            let mut a = arr.borrow_mut();
+            let element_keys: Vec<usize> = a.elements.keys().copied().collect();
+            for idx in element_keys {
+                let key = format_usize(idx);
+                let value = a.elements.get(&idx).cloned().unwrap_or(JsValue::Undefined);
+                let prop = a.properties.entry(key).or_insert_with(|| Property::data(value));
+                prop.writable = false;
                 prop.configurable = false;
             }
-        }
-        // Mark as non-extensible (frozen implies sealed implies non-extensible).
-        o.properties.insert(
-            String::from("__non_extensible__"),
-            crate::value::Property {
-                value: JsValue::Bool(true),
-                writable: false,
+            let current_len = a.length;
+            let len_prop = a.properties.entry(String::from("length")).or_insert(Property {
+                value: JsValue::Number(current_len as f64),
+                writable: true,
                 enumerable: false,
                 configurable: false,
                 getter: None,
                 setter: None,
-            },
-        );
+            });
+            len_prop.value = JsValue::Number(current_len as f64);
+            len_prop.writable = false;
+            len_prop.configurable = false;
+            a.properties.insert(
+                String::from("__non_extensible__"),
+                crate::value::Property {
+                    value: JsValue::Bool(true),
+                    writable: false,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                },
+            );
+        }
+        _ => {}
     }
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }
@@ -636,9 +673,15 @@ pub fn object_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     }
                     a.properties.insert(key, prop);
                 } else if key == "length" {
+                    let mut a = arr.borrow_mut();
                     if let JsValue::Number(n) = &prop.value {
-                        arr.borrow_mut().set_length(*n as usize);
+                        a.set_length(*n as usize);
                     }
+                    let mut stored = prop;
+                    stored.value = JsValue::Number(a.length as f64);
+                    stored.enumerable = false;
+                    stored.configurable = false;
+                    a.properties.insert(key, stored);
                 } else {
                     arr.borrow_mut().properties.insert(key, prop);
                 }
@@ -698,7 +741,13 @@ pub fn object_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 None => JsValue::Null,
             }
         }
-        Some(JsValue::Array(_)) => JsValue::Object(vm.array_proto.clone()),
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            match a.properties.get("__proto__") {
+                Some(prop) => prop.value.clone(),
+                None => JsValue::Object(vm.array_proto.clone()),
+            }
+        }
         Some(JsValue::Function(_)) => {
             // Functions inherit from Function.prototype
             JsValue::Object(vm.function_proto.clone())
@@ -815,7 +864,9 @@ pub fn object_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let obj = args.first().cloned().unwrap_or(JsValue::Undefined);
     let proto = args.get(1).cloned().unwrap_or(JsValue::Null);
     let new_proto = match &proto {
-        JsValue::Object(p) => Some(p.clone()),
+        JsValue::Object(p) => Some(JsValue::Object(p.clone())),
+        JsValue::Array(a) => Some(JsValue::Array(a.clone())),
+        JsValue::Function(f) => Some(JsValue::Function(f.clone())),
         JsValue::Null => None,
         _ => {
             let err = vm.make_type_error("Object prototype may only be an Object or null");
@@ -823,14 +874,57 @@ pub fn object_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             return JsValue::Undefined;
         }
     };
-    if let JsValue::Object(o) = &obj {
-        if !set_prototype_of_internal(vm, o, new_proto) {
-            let err = vm.make_type_error("Cannot set prototype");
-            vm.throw_native(err);
-            return JsValue::Undefined;
+    match &obj {
+        JsValue::Object(o) => {
+            let proto_obj = match &new_proto {
+                Some(JsValue::Object(p)) => Some(p.clone()),
+                Some(_) => {
+                    let err = vm.make_type_error("Object prototype may only be an Object or null");
+                    vm.throw_native(err);
+                    return JsValue::Undefined;
+                }
+                None => None,
+            };
+            if !set_prototype_of_internal(vm, o, proto_obj) {
+                let err = vm.make_type_error("Cannot set prototype");
+                vm.throw_native(err);
+                return JsValue::Undefined;
+            }
+            obj
         }
+        JsValue::Array(arr) => {
+            {
+                let mut a = arr.borrow_mut();
+                match new_proto {
+                    Some(proto) => {
+                        a.properties.insert(
+                            String::from("__proto__"),
+                            Property::hidden(proto),
+                        );
+                    }
+                    None => {
+                        a.properties
+                            .insert(String::from("__proto__"), Property::hidden(JsValue::Null));
+                    }
+                }
+            }
+            obj
+        }
+        JsValue::Function(f) => {
+            match new_proto {
+                Some(JsValue::Object(proto)) => f.borrow_mut().prototype = Some(proto),
+                Some(JsValue::Array(_)) | Some(JsValue::Function(_)) => {
+                    let err = vm.make_type_error("Object prototype may only be an Object or null");
+                    vm.throw_native(err);
+                    return JsValue::Undefined;
+                }
+                None => f.borrow_mut().prototype = None,
+                Some(_) => unreachable!(),
+            }
+            obj
+        }
+        _ => obj,
     }
-    obj
 }
 
 /// `Object.getOwnPropertyNames(obj)` — all own property names (including non-enumerable).
@@ -1145,20 +1239,35 @@ fn prop_to_descriptor(prop: &Property) -> JsValue {
 
 /// `Object.preventExtensions(obj)`.
 pub fn object_prevent_extensions(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    if let Some(JsValue::Object(obj)) = args.first() {
-        let mut o = obj.borrow_mut();
-        // Use a hidden property to mark non-extensibility without overwriting internal_tag.
-        o.properties.insert(
-            String::from("__non_extensible__"),
-            crate::value::Property {
-                value: JsValue::Bool(true),
-                writable: false,
-                enumerable: false,
-                configurable: false,
-                getter: None,
-                setter: None,
-            },
-        );
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let mut o = obj.borrow_mut();
+            o.properties.insert(
+                String::from("__non_extensible__"),
+                crate::value::Property {
+                    value: JsValue::Bool(true),
+                    writable: false,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                },
+            );
+        }
+        Some(JsValue::Array(arr)) => {
+            arr.borrow_mut().properties.insert(
+                String::from("__non_extensible__"),
+                crate::value::Property {
+                    value: JsValue::Bool(true),
+                    writable: false,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                },
+            );
+        }
+        _ => {}
     }
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }
@@ -1170,6 +1279,10 @@ pub fn object_is_extensible(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             let o = obj.borrow();
             JsValue::Bool(!o.properties.contains_key("__non_extensible__"))
         }
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            JsValue::Bool(!a.properties.contains_key("__non_extensible__"))
+        }
         Some(JsValue::Function(_)) => JsValue::Bool(true),
         _ => JsValue::Bool(false),
     }
@@ -1177,25 +1290,60 @@ pub fn object_is_extensible(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// `Object.seal(obj)` — make all properties non-configurable.
 pub fn object_seal(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    if let Some(JsValue::Object(obj)) = args.first() {
-        let mut o = obj.borrow_mut();
-        let keys: Vec<String> = o.properties.keys().cloned().collect();
-        for key in keys {
-            if let Some(prop) = o.properties.get_mut(&key) {
+    match args.first() {
+        Some(JsValue::Object(obj)) => {
+            let mut o = obj.borrow_mut();
+            let keys: Vec<String> = o.properties.keys().cloned().collect();
+            for key in keys {
+                if let Some(prop) = o.properties.get_mut(&key) {
+                    prop.configurable = false;
+                }
+            }
+            o.properties.insert(
+                String::from("__non_extensible__"),
+                crate::value::Property {
+                    value: JsValue::Bool(true),
+                    writable: false,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                },
+            );
+        }
+        Some(JsValue::Array(arr)) => {
+            let mut a = arr.borrow_mut();
+            let element_keys: Vec<usize> = a.elements.keys().copied().collect();
+            for idx in element_keys {
+                let key = format_usize(idx);
+                let value = a.elements.get(&idx).cloned().unwrap_or(JsValue::Undefined);
+                let prop = a.properties.entry(key).or_insert_with(|| Property::data(value));
                 prop.configurable = false;
             }
-        }
-        o.properties.insert(
-            String::from("__non_extensible__"),
-            crate::value::Property {
-                value: JsValue::Bool(true),
-                writable: false,
+            let current_len = a.length;
+            let len_prop = a.properties.entry(String::from("length")).or_insert(Property {
+                value: JsValue::Number(current_len as f64),
+                writable: true,
                 enumerable: false,
                 configurable: false,
                 getter: None,
                 setter: None,
-            },
-        );
+            });
+            len_prop.value = JsValue::Number(current_len as f64);
+            len_prop.configurable = false;
+            a.properties.insert(
+                String::from("__non_extensible__"),
+                crate::value::Property {
+                    value: JsValue::Bool(true),
+                    writable: false,
+                    enumerable: false,
+                    configurable: false,
+                    getter: None,
+                    setter: None,
+                },
+            );
+        }
+        _ => {}
     }
     args.first().cloned().unwrap_or(JsValue::Undefined)
 }
@@ -1207,6 +1355,22 @@ pub fn object_is_sealed(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
             let o = obj.borrow();
             let all_non_configurable = o.properties.values().all(|p| !p.configurable);
             JsValue::Bool(all_non_configurable)
+        }
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            let all_elements_sealed = a.elements.keys().all(|idx| {
+                let key = format_usize(*idx);
+                a.properties.get(&key).is_some_and(|p| !p.configurable)
+            });
+            let length_sealed = a
+                .properties
+                .get("length")
+                .is_none_or(|p| !p.configurable);
+            JsValue::Bool(
+                a.properties.contains_key("__non_extensible__")
+                    && all_elements_sealed
+                    && length_sealed,
+            )
         }
         _ => JsValue::Bool(true),
     }
@@ -1222,6 +1386,21 @@ pub fn object_is_frozen(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 .values()
                 .all(|p| !p.writable && !p.configurable);
             JsValue::Bool(all_frozen)
+        }
+        Some(JsValue::Array(arr)) => {
+            let a = arr.borrow();
+            let all_elements_frozen = a.elements.keys().all(|idx| {
+                let key = format_usize(*idx);
+                a.properties
+                    .get(&key)
+                    .is_some_and(|p| !p.is_accessor() && !p.writable && !p.configurable)
+            });
+            let length_frozen = a.properties.get("length").is_some_and(|p| !p.writable && !p.configurable);
+            JsValue::Bool(
+                a.properties.contains_key("__non_extensible__")
+                    && all_elements_frozen
+                    && length_frozen,
+            )
         }
         _ => JsValue::Bool(true),
     }

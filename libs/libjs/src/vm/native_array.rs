@@ -173,12 +173,15 @@ fn array_like_length(vm: &mut Vm, this_obj: &JsValue) -> Option<usize> {
     Some(to_length_vm(vm, &len_val))
 }
 
-fn array_like_has_index(vm: &Vm, this_obj: &JsValue, idx: usize) -> bool {
+fn array_like_has_index(vm: &mut Vm, this_obj: &JsValue, idx: usize) -> Option<bool> {
     has_concat_property(vm, this_obj, &alloc::format!("{}", idx))
 }
 
-pub(crate) fn array_effective_proto_value(vm: &Vm, _arr: &JsArray) -> JsValue {
-    JsValue::Object(vm.array_proto.clone())
+pub(crate) fn array_effective_proto_value(vm: &Vm, arr: &JsArray) -> JsValue {
+    match arr.properties.get("__proto__") {
+        Some(prop) => prop.value.clone(),
+        None => JsValue::Object(vm.array_proto.clone()),
+    }
 }
 
 
@@ -211,7 +214,7 @@ fn this_array_like_entries(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, J
         return Some((this_obj, len, entries));
     }
     for idx in 0..len {
-        if !array_like_has_index(vm, &this_obj, idx) {
+        if !array_like_has_index(vm, &this_obj, idx)? {
             continue;
         }
         let val = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", idx));
@@ -250,6 +253,44 @@ fn require_object_coercible(vm: &mut Vm) -> bool {
     }
 }
 
+fn is_string_receiver(value: &JsValue) -> bool {
+    match value {
+        JsValue::String(_) => true,
+        JsValue::Object(obj) => matches!(
+            obj.borrow().primitive_value.as_deref(),
+            Some(JsValue::String(_))
+        ),
+        _ => false,
+    }
+}
+
+fn array_like_max_length_for(value: &JsValue) -> usize {
+    if matches!(value, JsValue::Array(_)) {
+        0xFFFF_FFFF
+    } else {
+        MAX_SAFE_INTEGER_LEN
+    }
+}
+
+fn set_array_like_length_or_throw(vm: &mut Vm, this_obj: &JsValue, new_len: usize) -> bool {
+    if !vm.set_property_or_throw(this_obj, "length", JsValue::Number(new_len as f64)) {
+        return false;
+    }
+    match this_obj {
+        JsValue::Array(arr) => {
+            arr.borrow_mut().length = new_len;
+        }
+        JsValue::Object(obj) => {
+            let mut o = obj.borrow_mut();
+            if let Some(prop) = o.properties.get_mut("length") {
+                prop.value = JsValue::Number(new_len as f64);
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
 // ═══════════════════════════════════════════════════════════
 // Mutating methods
 // ═══════════════════════════════════════════════════════════
@@ -258,72 +299,180 @@ pub fn array_push(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_object_coercible(vm) {
         return JsValue::Undefined;
     }
-    if let Some(arr) = this_array(vm) {
-        let current_len = arr.borrow().len();
-        if args.is_empty() {
-            return JsValue::Number(current_len as f64);
-        }
-        let new_len = current_len + args.len();
-        // Max array length is 2^32 − 1 (ES2023 §23.1.3.20 step 5).
-        if new_len > 0xFFFF_FFFF {
-            let exc = vm.make_range_error("Invalid array length");
-            if !vm.handle_exception(exc) {
-                return JsValue::Undefined;
-            }
+    let Some(this_obj) = coerce_array_like_this(vm) else {
+        return JsValue::Undefined;
+    };
+    let Some(current_len) = array_like_length(vm, &this_obj) else {
+        return JsValue::Undefined;
+    };
+    if !matches!(this_obj, JsValue::Array(_)) {
+        let max_len = array_like_max_length_for(&this_obj);
+        if current_len > max_len.saturating_sub(args.len()) {
+            let err = vm.make_type_error("Invalid array length");
+            vm.throw_native(err);
             return JsValue::Undefined;
         }
-        let mut a = arr.borrow_mut();
-        for (i, arg) in args.iter().enumerate() {
-            a.set(current_len + i, arg.clone());
-        }
-        JsValue::Number(a.len() as f64)
-    } else {
-        JsValue::Undefined
     }
+    let mut new_len = current_len;
+    for arg in args {
+        if !vm.set_property_or_throw(&this_obj, &alloc::format!("{}", new_len), arg.clone()) {
+            return JsValue::Undefined;
+        }
+        new_len += 1;
+    }
+    if matches!(this_obj, JsValue::Array(_)) && new_len > 0xFFFF_FFFF {
+        let err = vm.make_range_error("Invalid array length");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    if !set_array_like_length_or_throw(vm, &this_obj, new_len) {
+        return JsValue::Undefined;
+    }
+    JsValue::Number(new_len as f64)
 }
 
 pub fn array_pop(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if !require_object_coercible(vm) {
         return JsValue::Undefined;
     }
-    if let Some(arr) = this_array(vm) {
-        let mut a = arr.borrow_mut();
-        a.pop()
-    } else {
-        JsValue::Undefined
+    let Some(this_obj) = coerce_array_like_this(vm) else {
+        return JsValue::Undefined;
+    };
+    let Some(len) = array_like_length(vm, &this_obj) else {
+        return JsValue::Undefined;
+    };
+    if len == 0 {
+        if !set_array_like_length_or_throw(vm, &this_obj, 0) {
+            return JsValue::Undefined;
+        }
+        return JsValue::Undefined;
     }
+    let index = len - 1;
+    let elem = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", index));
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+    }
+    if vm.pending_exception.is_some() {
+        return JsValue::Undefined;
+    }
+    if !vm.delete_property_or_throw(&this_obj, &alloc::format!("{}", index)) {
+        return JsValue::Undefined;
+    }
+    if !set_array_like_length_or_throw(vm, &this_obj, index) {
+        return JsValue::Undefined;
+    }
+    elem
 }
 
 pub fn array_shift(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if !require_object_coercible(vm) {
         return JsValue::Undefined;
     }
-    if let Some(arr) = this_array(vm) {
-        let mut a = arr.borrow_mut();
-        if a.length == 0 {
-            JsValue::Undefined
-        } else {
-            a.remove_and_shift(0)
+    let Some(this_obj) = coerce_array_like_this(vm) else {
+        return JsValue::Undefined;
+    };
+    let Some(len) = array_like_length(vm, &this_obj) else {
+        return JsValue::Undefined;
+    };
+    if len == 0 {
+        if !set_array_like_length_or_throw(vm, &this_obj, 0) {
+            return JsValue::Undefined;
         }
-    } else {
-        JsValue::Undefined
+        return JsValue::Undefined;
     }
+    let first = vm.get_property_invoking_getter(&this_obj, "0");
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+    }
+    if vm.pending_exception.is_some() {
+        return JsValue::Undefined;
+    }
+    for k in 1..len {
+        let from_key = alloc::format!("{}", k);
+        let to_key = alloc::format!("{}", k - 1);
+        let from_present = match array_like_has_index(vm, &this_obj, k) {
+            Some(v) => v,
+            None => return JsValue::Undefined,
+        };
+        if from_present {
+            let from_val = vm.get_property_invoking_getter(&this_obj, &from_key);
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+            }
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            if !vm.set_property_or_throw(&this_obj, &to_key, from_val) {
+                return JsValue::Undefined;
+            }
+        } else if !vm.delete_property_or_throw(&this_obj, &to_key) {
+            return JsValue::Undefined;
+        }
+    }
+    if !vm.delete_property_or_throw(&this_obj, &alloc::format!("{}", len - 1)) {
+        return JsValue::Undefined;
+    }
+    if !set_array_like_length_or_throw(vm, &this_obj, len - 1) {
+        return JsValue::Undefined;
+    }
+    first
 }
 
 pub fn array_unshift(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_object_coercible(vm) {
         return JsValue::Undefined;
     }
-    if let Some(arr) = this_array(vm) {
-        let mut a = arr.borrow_mut();
-        // Insert in reverse order so they end up in the right position.
-        for (i, arg) in args.iter().enumerate() {
-            a.insert_and_shift(i, arg.clone());
-        }
-        JsValue::Number(a.length as f64)
-    } else {
-        JsValue::Undefined
+    let Some(this_obj) = coerce_array_like_this(vm) else {
+        return JsValue::Undefined;
+    };
+    let Some(len) = array_like_length(vm, &this_obj) else {
+        return JsValue::Undefined;
+    };
+    let max_len = array_like_max_length_for(&this_obj);
+    if len > max_len.saturating_sub(args.len()) {
+        let err = if matches!(this_obj, JsValue::Array(_)) {
+            vm.make_range_error("Invalid array length")
+        } else {
+            vm.make_type_error("Invalid array length")
+        };
+        vm.throw_native(err);
+        return JsValue::Undefined;
     }
+    let arg_count = args.len();
+    if arg_count > 0 {
+        for k in (0..len).rev() {
+            let from_key = alloc::format!("{}", k);
+            let to_key = alloc::format!("{}", k + arg_count);
+            let from_present = match array_like_has_index(vm, &this_obj, k) {
+                Some(v) => v,
+                None => return JsValue::Undefined,
+            };
+            if from_present {
+                let from_val = vm.get_property_invoking_getter(&this_obj, &from_key);
+                if let Some(exc) = vm.last_exception.take() {
+                    vm.pending_exception = Some(exc);
+                }
+                if vm.pending_exception.is_some() {
+                    return JsValue::Undefined;
+                }
+                if !vm.set_property_or_throw(&this_obj, &to_key, from_val) {
+                    return JsValue::Undefined;
+                }
+            } else if !vm.delete_property_or_throw(&this_obj, &to_key) {
+                return JsValue::Undefined;
+            }
+        }
+        for (j, item) in args.iter().enumerate() {
+            if !vm.set_property_or_throw(&this_obj, &alloc::format!("{}", j), item.clone()) {
+                return JsValue::Undefined;
+            }
+        }
+    }
+    let new_len = len + arg_count;
+    if !set_array_like_length_or_throw(vm, &this_obj, new_len) {
+        return JsValue::Undefined;
+    }
+    JsValue::Number(new_len as f64)
 }
 
 pub fn array_splice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -519,7 +668,7 @@ pub fn array_copy_within(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             for offset in (0..count).rev() {
                 let from_idx = start + offset;
                 let to_idx = target + offset;
-                if array_like_has_index(vm, &this_obj, from_idx) {
+                if array_like_has_index(vm, &this_obj, from_idx).unwrap_or(false) {
                     let value =
                         vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", from_idx));
                     if let Some(exc) = vm.last_exception.take() {
@@ -528,16 +677,20 @@ pub fn array_copy_within(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     if vm.pending_exception.is_some() {
                         return JsValue::Undefined;
                     }
-                    this_obj.set_property(alloc::format!("{}", to_idx), value);
+                    if !vm.set_property_or_throw(&this_obj, &alloc::format!("{}", to_idx), value) {
+                        return JsValue::Undefined;
+                    }
                 } else {
-                    this_obj.delete_property(&alloc::format!("{}", to_idx));
+                    if !vm.delete_property_or_throw(&this_obj, &alloc::format!("{}", to_idx)) {
+                        return JsValue::Undefined;
+                    }
                 }
             }
         } else {
             for offset in 0..count {
                 let from_idx = start + offset;
                 let to_idx = target + offset;
-                if array_like_has_index(vm, &this_obj, from_idx) {
+                if array_like_has_index(vm, &this_obj, from_idx).unwrap_or(false) {
                     let value =
                         vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", from_idx));
                     if let Some(exc) = vm.last_exception.take() {
@@ -546,9 +699,13 @@ pub fn array_copy_within(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     if vm.pending_exception.is_some() {
                         return JsValue::Undefined;
                     }
-                    this_obj.set_property(alloc::format!("{}", to_idx), value);
+                    if !vm.set_property_or_throw(&this_obj, &alloc::format!("{}", to_idx), value) {
+                        return JsValue::Undefined;
+                    }
                 } else {
-                    this_obj.delete_property(&alloc::format!("{}", to_idx));
+                    if !vm.delete_property_or_throw(&this_obj, &alloc::format!("{}", to_idx)) {
+                        return JsValue::Undefined;
+                    }
                 }
             }
         }
@@ -803,12 +960,14 @@ fn array_species_create(vm: &mut Vm, original: &JsValue, length: usize) -> Optio
             Some(JsValue::Array(Rc::new(RefCell::new(arr))))
         }
         _ => {
-            if !vm.construct_with_new_target(&species, &[JsValue::Number(length as f64)], &species) {
+            let Some(result) =
+                vm.construct_value(&species, &[JsValue::Number(length as f64)], &species)
+            else {
                 let err = vm.make_type_error("Array species is not a constructor");
                 vm.throw_native(err);
                 return None;
-            }
-            Some(vm.stack.pop().unwrap_or(JsValue::Undefined))
+            };
+            Some(result)
         }
     }
 }
@@ -841,37 +1000,58 @@ fn wrap_primitive_for_concat(vm: &Vm, value: &JsValue) -> JsValue {
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
-fn has_concat_property(vm: &Vm, value: &JsValue, key: &str) -> bool {
+fn has_concat_property(vm: &mut Vm, value: &JsValue, key: &str) -> Option<bool> {
     match value {
         JsValue::Array(arr) => {
             if let Some(idx) = super::try_parse_index(key) {
                 let arr = arr.borrow();
                 if arr.has(idx) || arr.properties.contains_key(key) {
-                    return true;
+                    return Some(true);
                 }
-                return vm.array_proto.borrow().has(key);
+                let proto = array_effective_proto_value(vm, &arr);
+                return Some(!proto.is_null() && !vm.get_property_with_proto(&proto, key).is_undefined());
             }
-            key == "length"
+            Some(
+                key == "length"
                 || arr.borrow().properties.contains_key(key)
-                || vm.array_proto.borrow().has(key)
+                || vm.array_proto.borrow().has(key),
+            )
         }
         JsValue::Object(obj) if obj.borrow().primitive_value.is_some() => {
             let o = obj.borrow();
             if let Some(prim) = &o.primitive_value {
                 if let JsValue::String(s) = prim.as_ref() {
-                    return key == "length"
+                    return Some(
+                        key == "length"
                         || super::try_parse_index(key).is_some_and(|idx| idx < s.chars().count())
-                        || o.has(key);
+                        || o.has(key),
+                    );
                 }
             }
-            o.has(key)
+            Some(o.has(key))
         }
-        JsValue::Object(obj) => obj.borrow().has(key),
+        JsValue::Object(obj) => {
+            if let Some(idx) = super::try_parse_index(key) {
+                let borrowed = obj.borrow();
+                if borrowed.internal_tag.as_deref()
+                    == Some(crate::vm::native_typed_array::TYPED_ARRAY_TAG)
+                {
+                    return Some(
+                        crate::vm::native_typed_array::typed_array_get_index(&borrowed, idx)
+                            .is_some(),
+                    );
+                }
+            }
+            if obj.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                return vm.has_property(value, key);
+            }
+            Some(obj.borrow().has(key))
+        }
         JsValue::Function(f) => {
             let func = f.borrow();
-            func.own_props.contains_key(key) || vm.function_proto.borrow().has(key)
+            Some(func.own_props.contains_key(key) || vm.function_proto.borrow().has(key))
         }
-        _ => false,
+        _ => Some(false),
     }
 }
 
@@ -890,8 +1070,14 @@ fn is_concat_spreadable(vm: &mut Vm, value: &JsValue) -> Option<bool> {
             if !matches!(spreadable, JsValue::Undefined) {
                 return Some(spreadable.to_boolean());
             }
-            if let Some(target) = native_proxy::proxy_target(value) {
-                return Some(matches!(target, JsValue::Array(_)));
+            if matches!(value, JsValue::Object(obj) if obj.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG))
+            {
+                if let Some(target) = native_proxy::proxy_target(value) {
+                    return is_array_value(vm, &target);
+                }
+                let err = vm.make_type_error("Cannot perform 'IsArray' on a revoked Proxy");
+                vm.throw_native(err);
+                return None;
             }
             Some(matches!(value, JsValue::Array(_)))
         }
@@ -961,7 +1147,7 @@ fn concat_define_result_index(vm: &mut Vm, target: &JsValue, index: usize, value
             let mut obj = obj.borrow_mut();
             let non_extensible = obj.properties.contains_key("__non_extensible__");
             if let Some(existing) = obj.properties.get(&key) {
-                if existing.is_accessor() || !existing.writable {
+                if !existing.configurable {
                     let err = vm.make_type_error("Cannot define property on target object");
                     vm.throw_native(err);
                     return false;
@@ -1051,6 +1237,19 @@ fn collect_numeric_keys_from_value(vm: &mut Vm, value: &JsValue, len: usize, out
             collect_numeric_keys_from_object(&vm.array_proto, len, out);
         }
         JsValue::Object(obj) => {
+            if obj.borrow().internal_tag.as_deref()
+                == Some(crate::vm::native_typed_array::TYPED_ARRAY_TAG)
+            {
+                let borrowed = obj.borrow();
+                for idx in 0..len {
+                    if crate::vm::native_typed_array::typed_array_get_index(&borrowed, idx)
+                        .is_some()
+                    {
+                        out.push(idx);
+                    }
+                }
+                return;
+            }
             if obj.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
                 if let Some(keys) = native_proxy::proxy_own_keys(vm, value) {
                     for key in keys {
@@ -1128,7 +1327,7 @@ fn concat_append_spread(vm: &mut Vm, result: &JsValue, next_index: &mut usize, v
     }
     for idx in 0..len {
         let key = alloc::format!("{}", idx);
-        if !has_concat_property(vm, value, &key) {
+        if !has_concat_property(vm, value, &key).unwrap_or(false) {
             *next_index += 1;
             continue;
         }
@@ -1158,7 +1357,7 @@ pub fn array_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         _ => vm.current_this.clone(),
     };
-    let result = match array_species_create_concat(vm, &this_val) {
+    let result = match array_species_create(vm, &this_val, 0) {
         Some(result) => result,
         None => return JsValue::Undefined,
     };
@@ -1321,7 +1520,10 @@ pub fn array_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         None => return JsValue::Undefined,
     };
     for idx in 0..len {
-        if !array_like_has_index(vm, &this_obj, idx) {
+        if !array_like_has_index(vm, &this_obj, idx).unwrap_or(false) {
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
             continue;
         }
         let el = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", idx));
@@ -1364,7 +1566,10 @@ pub fn array_filter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
     let mut to = 0usize;
     for idx in 0..len {
-        if !array_like_has_index(vm, &this_obj, idx) {
+        if !array_like_has_index(vm, &this_obj, idx).unwrap_or(false) {
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
             continue;
         }
         let el = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", idx));
@@ -1405,7 +1610,10 @@ pub fn array_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Undefined;
     }
     for idx in 0..len {
-        if !array_like_has_index(vm, &this_obj, idx) {
+        if !array_like_has_index(vm, &this_obj, idx).unwrap_or(false) {
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
             continue;
         }
         let el = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", idx));
@@ -1524,7 +1732,10 @@ pub fn array_find(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Undefined;
     }
     for idx in 0..len {
-        if !array_like_has_index(vm, &this_obj, idx) {
+        if !array_like_has_index(vm, &this_obj, idx).unwrap_or(false) {
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
             continue;
         }
         let el = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", idx));
@@ -1561,7 +1772,10 @@ pub fn array_find_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Undefined;
     }
     for idx in 0..len {
-        if !array_like_has_index(vm, &this_obj, idx) {
+        if !array_like_has_index(vm, &this_obj, idx).unwrap_or(false) {
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
             continue;
         }
         let el = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", idx));
@@ -1598,7 +1812,10 @@ pub fn array_some(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Undefined;
     }
     for idx in 0..len {
-        if !array_like_has_index(vm, &this_obj, idx) {
+        if !array_like_has_index(vm, &this_obj, idx).unwrap_or(false) {
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
             continue;
         }
         let el = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", idx));
@@ -1635,7 +1852,10 @@ pub fn array_every(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Undefined;
     }
     for idx in 0..len {
-        if !array_like_has_index(vm, &this_obj, idx) {
+        if !array_like_has_index(vm, &this_obj, idx).unwrap_or(false) {
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
             continue;
         }
         let el = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", idx));
