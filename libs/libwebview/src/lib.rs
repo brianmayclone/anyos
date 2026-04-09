@@ -209,6 +209,10 @@ pub struct WebView {
     /// Stored as (node_id, scroll_top, scroll_left).  Applied to LayoutBoxes
     /// after layout so overflow containers shift their children.
     scroll_offsets: Vec<(usize, i32, i32)>,
+    /// True when the page was loaded via `set_html_dom_only()` and the first
+    /// real render after external CSS arrives should prefer correctness over
+    /// aggressive progressive culling.
+    dom_only_initial_render_pending: bool,
 }
 
 impl WebView {
@@ -264,6 +268,7 @@ impl WebView {
             resolved_pseudo_styles: style::PseudoStyles::empty(0),
             anim_overrides: Vec::new(),
             scroll_offsets: Vec::new(),
+            dom_only_initial_render_pending: false,
         };
         webview.js_runtime.set_viewport(w, h);
         webview
@@ -567,6 +572,7 @@ impl WebView {
         self.inline_sheets_dirty = true;
         self.inline_style_cache.clear();
         self.prepared_stylesheets = None;
+        self.dom_only_initial_render_pending = false;
 
         // Layout and render (no JS).
         self.do_layout_and_render(&parsed_dom, None);
@@ -595,6 +601,7 @@ impl WebView {
         self.pending_tiles = false;
         self.clear_deferred_layout_state();
         self.content_view.set_size(self.viewport_width.max(1) as u32, 1);
+        self.dom_only_initial_render_pending = true;
 
         self.prime_inline_stylesheets_from_dom(&parsed_dom);
         self.dom_val = Some(parsed_dom);
@@ -2323,6 +2330,9 @@ impl WebView {
             "[webview] do_layout_and_render: {} DOM nodes",
             d.nodes.len()
         );
+        let dom_only_first_render = self.dom_only_initial_render_pending
+            && self.layout_root.is_none()
+            && self.total_height_val == 0;
         self.ensure_initial_progressive_budget(d);
 
         // ── Stylesheet pipeline — parse once, reuse on every relayout ────────────
@@ -2570,6 +2580,7 @@ impl WebView {
             self.link_cb_ud,
             self.submit_cb,
             self.submit_cb_ud,
+            !dom_only_first_render,
         );
         let _render_elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(render_start_ms);
         debug_surf!(
@@ -2578,6 +2589,7 @@ impl WebView {
             _render_elapsed_ms
         );
         self.last_render_scroll_y = 0;
+        self.dom_only_initial_render_pending = false;
         debug_surf!(
             "[webview] renderer done: {} form_controls",
             self.renderer.control_count()

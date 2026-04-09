@@ -329,7 +329,8 @@ pub fn exit(code: u32) -> ! {
 /// Extend the process heap by `increment` bytes.
 /// Returns previous break address, or `u64::MAX` on failure.
 pub fn sbrk(increment: u32) -> u64 {
-    syscall1(SYS_SBRK, increment as u64)
+    let ret = syscall1(SYS_SBRK, increment as u64);
+    if ret == u32::MAX as u64 { u64::MAX } else { ret }
 }
 
 /// Map anonymous pages. Returns address or `u64::MAX` on failure.

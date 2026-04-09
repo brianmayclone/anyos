@@ -87,6 +87,9 @@ const MMAP_REGION_END: u64 = 0xBF00_0000;
 /// Initialize the heap allocator. Must be called before any allocation.
 pub fn init() {
     let brk = crate::process::sbrk(0) as u64;
+    if brk == u32::MAX as u64 {
+        return;
+    }
     unsafe {
         HEAP_POS = brk;
         HEAP_END = brk;
@@ -183,7 +186,7 @@ unsafe impl GlobalAlloc for FreeListAlloc {
             let grow = ((new_pos - HEAP_END + 4095) & !4095) as usize;
             let result = crate::process::sbrk(grow as i32);
 
-            if result == u32::MAX as usize {
+            if result == u32::MAX as usize || result == u64::MAX as usize {
                 // sbrk failed — fall back to mmap for this allocation.
                 unlock();
                 return mmap_alloc(size);
@@ -207,7 +210,7 @@ unsafe impl GlobalAlloc for FreeListAlloc {
                 if new_pos > mapped_end {
                     let extra = ((new_pos - mapped_end + 4095) & !4095) as usize;
                     let r2 = crate::process::sbrk(extra as i32);
-                    if r2 == u32::MAX as usize {
+                    if r2 == u32::MAX as usize || r2 == u64::MAX as usize {
                         // sbrk ran out even for the extra — mmap fallback.
                         unlock();
                         return mmap_alloc(size);

@@ -59,7 +59,12 @@ pub fn sleep_us(us: u32) {
 }
 
 pub fn sbrk(increment: i32) -> usize {
-    syscall1(SYS_SBRK, increment as i64 as u64) as usize
+    let ret = syscall1(SYS_SBRK, increment as i64 as u64);
+    if ret == u32::MAX {
+        u32::MAX as usize
+    } else {
+        ret as usize
+    }
 }
 
 /// Map anonymous pages into the process address space.

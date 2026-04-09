@@ -10,5 +10,7 @@ anyos_std = { path = "../stdlib" }
 panic = "abort"
 opt-level = 2
 
+[workspace]
+
 [profile.release]
 panic = "abort"

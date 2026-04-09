@@ -10,8 +10,8 @@
 //! DLLs should use the [`dll_allocator!`] macro to define their
 //! `#[global_allocator]`. It generates a free-list allocator with mmap
 //! fallback. The syscall module must export:
-//! - `sbrk(u32) -> u64` (returns `u64::MAX` on failure)
-//! - `mmap(u32) -> u64` (returns `u64::MAX` on failure)
+//! - `sbrk(u32) -> u64` (returns `u64::MAX` or `u32::MAX as u64` on failure)
+//! - `mmap(u32) -> u64` (returns `u64::MAX` or `u32::MAX as u64` on failure)
 //! - `munmap(u64, u32) -> u64` (returns 0 on success)
 //!
 //! ```ignore
@@ -33,6 +33,13 @@ pub struct FreeBlock {
 
 /// Minimum block size (must fit a FreeBlock node = 16 bytes on 64-bit).
 pub const MIN_BLOCK: usize = 16;
+
+/// Some anyOS syscall veneers return 32-bit `u32::MAX` widened to `u64`
+/// instead of `u64::MAX`. Treat both as failure sentinels.
+#[inline]
+pub fn is_syscall_error_u64(value: u64) -> bool {
+    value == u64::MAX || value == u32::MAX as u64
+}
 
 /// Round `value` up to the next multiple of `align`.
 #[inline]
@@ -126,8 +133,8 @@ pub unsafe fn free_list_dealloc(free_list: *mut *mut FreeBlock, ptr: *mut u8, si
 ///
 /// # Arguments
 ///
-/// - `$sbrk` — `fn(u32) -> u64`, returns `u64::MAX` on failure
-/// - `$mmap` — `fn(u32) -> u64`, returns `u64::MAX` on failure
+/// - `$sbrk` — `fn(u32) -> u64`, returns `u64::MAX` or `u32::MAX as u64` on failure
+/// - `$mmap` — `fn(u32) -> u64`, returns `u64::MAX` or `u32::MAX as u64` on failure
 /// - `$munmap` — `fn(u64, u32) -> u64`, returns 0 on success
 ///
 /// # Example
@@ -181,7 +188,7 @@ macro_rules! dll_allocator {
                 let mapped_size = page_align(size) as u32;
                 let mmap_fn: fn(u32) -> u64 = $mmap;
                 let addr = mmap_fn(mapped_size);
-                if addr == u64::MAX { return ptr::null_mut(); }
+                if $crate::is_syscall_error_u64(addr) { return ptr::null_mut(); }
                 if addr < MMAP_REGION_START || addr >= MMAP_REGION_END {
                     let munmap_fn: fn(u64, u32) -> u64 = $munmap;
                     munmap_fn(addr, mapped_size);
@@ -206,12 +213,12 @@ macro_rules! dll_allocator {
                     // 2) Try sbrk.
                     let sbrk_fn: fn(u32) -> u64 = $sbrk;
                     let brk = sbrk_fn(0);
-                    if brk != u64::MAX {
+                    if !$crate::is_syscall_error_u64(brk) {
                         let align = layout.align().max(16) as u64;
                         let aligned = (brk + align - 1) & !(align - 1);
                         let needed = (aligned - brk + size as u64) as u32;
                         let result = sbrk_fn(needed);
-                        if result != u64::MAX {
+                        if !$crate::is_syscall_error_u64(result) {
                             return aligned as *mut u8;
                         }
                     }

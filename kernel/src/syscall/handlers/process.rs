@@ -220,7 +220,10 @@ pub fn sys_sbrk(increment: i32) -> u32 {
     let page_size = 4096u32;
 
     if increment > 0 {
-        let new_brk = old_brk + increment as u32;
+        let new_brk = match old_brk.checked_add(increment as u32) {
+            Some(v) => v,
+            None => return u32::MAX,
+        };
 
         // Prevent heap from growing into the DLIB region (0x0400_0000 - 0x07FF_FFFF).
         // DLLs are demand-paged there; heap writes would corrupt their export tables.
@@ -244,7 +247,10 @@ pub fn sys_sbrk(increment: i32) -> u32 {
             // Skip pages already mapped (another thread sharing this PD may have mapped them)
             if !virtual_mem::is_page_mapped(VirtAddr::new(addr as u64)) {
                 if let Some(phys) = physical::alloc_frame() {
-                    virtual_mem::map_page(VirtAddr::new(addr as u64), phys, 0x02 | 0x04);
+                    if !virtual_mem::map_page(VirtAddr::new(addr as u64), phys, 0x02 | 0x04) {
+                        physical::free_frame(phys);
+                        return u32::MAX;
+                    }
                     unsafe { core::ptr::write_bytes(addr as *mut u8, 0, page_size as usize); }
                     pages_mapped += 1;
                 } else {

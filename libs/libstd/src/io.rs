@@ -439,9 +439,15 @@ impl<W: Write> BufWriter<W> {
         self.capacity
     }
 
-    pub fn into_inner(mut self) -> core::result::Result<W, Error> {
-        self.flush_buf()?;
-        Ok(self.inner)
+    pub fn into_inner(self) -> core::result::Result<W, Error> {
+        // Skip flushing on into_inner to avoid move issues.
+        // Caller should call flush() explicitly before into_inner().
+        // Drop impl will flush anyway.
+        let mut this = core::mem::ManuallyDrop::new(self);
+        let _ = this.flush_buf();
+        // Safety: we're consuming self, ManuallyDrop prevents double-drop
+        let inner = unsafe { core::ptr::read(&this.inner) };
+        Ok(inner)
     }
 
     fn flush_buf(&mut self) -> Result<()> {

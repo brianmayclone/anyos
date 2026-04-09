@@ -153,23 +153,23 @@ impl Path {
 
     /// Check if the path starts with a prefix.
     pub fn starts_with<P: AsRef<Path>>(&self, base: P) -> bool {
-        let base = base.as_ref().as_str();
-        if self.inner == base {
+        let base_str = base.as_ref().as_str();
+        if self.inner == *base_str {
             return true;
         }
-        self.inner.starts_with(base)
-            && (base.ends_with('/') || self.inner.as_bytes().get(base.len()) == Some(&b'/'))
+        self.inner.starts_with(base_str)
+            && (base_str.ends_with('/') || self.inner.as_bytes().get(base_str.len()) == Some(&b'/'))
     }
 
     /// Check if the path ends with a suffix.
     pub fn ends_with<P: AsRef<Path>>(&self, child: P) -> bool {
-        let child = child.as_ref().as_str();
-        if self.inner == child {
+        let child_str = child.as_ref().as_str();
+        if self.inner == *child_str {
             return true;
         }
-        self.inner.ends_with(child)
-            && (child.starts_with('/')
-                || self.inner.as_bytes().get(self.inner.len() - child.len() - 1) == Some(&b'/'))
+        self.inner.ends_with(child_str)
+            && (child_str.starts_with('/')
+                || self.inner.as_bytes().get(self.inner.len() - child_str.len() - 1) == Some(&b'/'))
     }
 
     /// Iterate over path components.
@@ -197,13 +197,13 @@ impl Path {
 
     /// Check if this path exists (via stat).
     pub fn exists(&self) -> bool {
-        let mut buf = [0u32; 8];
+        let mut buf = [0u32; 7];
         anyos_std::fs::stat(&self.inner, &mut buf) != u32::MAX
     }
 
     /// Check if this is a file.
     pub fn is_file(&self) -> bool {
-        let mut buf = [0u32; 8];
+        let mut buf = [0u32; 7];
         if anyos_std::fs::stat(&self.inner, &mut buf) == u32::MAX {
             return false;
         }
@@ -212,7 +212,7 @@ impl Path {
 
     /// Check if this is a directory.
     pub fn is_dir(&self) -> bool {
-        let mut buf = [0u32; 8];
+        let mut buf = [0u32; 7];
         if anyos_std::fs::stat(&self.inner, &mut buf) == u32::MAX {
             return false;
         }
@@ -221,12 +221,12 @@ impl Path {
 
     /// Strip a prefix from this path.
     pub fn strip_prefix<P: AsRef<Path>>(&self, base: P) -> Result<&Path, StripPrefixError> {
-        let base = base.as_ref().as_str();
-        if self.inner == base {
+        let base_str = base.as_ref().as_str();
+        if self.inner == *base_str {
             return Ok(Path::new(""));
         }
-        if self.inner.starts_with(base) {
-            let rest = &self.inner[base.len()..];
+        if self.inner.starts_with(base_str) {
+            let rest = &self.inner[base_str.len()..];
             let rest = rest.strip_prefix('/').unwrap_or(rest);
             Ok(Path::new(rest))
         } else {
@@ -528,6 +528,12 @@ impl ToOwned for OsStr {
     }
 }
 
+impl core::borrow::Borrow<OsStr> for OsString {
+    fn borrow(&self) -> &OsStr {
+        OsStr::new(&self.inner)
+    }
+}
+
 impl PartialEq for OsStr {
     fn eq(&self, other: &OsStr) -> bool { self.inner == other.inner }
 }
@@ -653,7 +659,7 @@ pub enum Component<'a> {
 }
 
 impl<'a> Component<'a> {
-    pub fn as_os_str(&self) -> &'a OsStr {
+    pub fn as_os_str(&self) -> &OsStr {
         match self {
             Component::RootDir => OsStr::new("/"),
             Component::CurDir => OsStr::new("."),

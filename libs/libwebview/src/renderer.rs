@@ -2064,6 +2064,7 @@ impl Renderer {
         link_cb_ud: u64,
         submit_cb: Option<ui::Callback>,
         submit_cb_ud: u64,
+        allow_progressive_display_list: bool,
     ) -> bool {
         crate::debug_surf!(
             "[render] full render start ({}x{}, vp_h={}, scroll_y={})",
@@ -2106,8 +2107,9 @@ impl Renderer {
         let initial_visible_y_start = (first_row * TILE_HEIGHT) as i32;
         let initial_visible_y_end =
             (((last_row + 1) * TILE_HEIGHT) as i32).min(doc_h as i32);
-        let fast_initial_display_list =
-            doc_h > viewport_h.saturating_mul(3) || root.subtree_bottom > viewport_h as i32 * 3;
+        let fast_initial_display_list = allow_progressive_display_list
+            && (doc_h > viewport_h.saturating_mul(3)
+                || root.subtree_bottom > viewport_h as i32 * 3);
 
         // 3.5 For very tall documents, build only the visible display list first.
         // This makes the first styled paint arrive quickly; the full list is
@@ -2135,6 +2137,11 @@ impl Renderer {
                 initial_visible_y_end
             );
         } else {
+            if !allow_progressive_display_list {
+                crate::debug_surf!(
+                    "[render] progressive display list disabled for correctness-sensitive initial render"
+                );
+            }
             // 2. Walk full tree for form controls + hit regions.
             self.walk_controls(root, 0, 0, parent, self.submit_cb, self.submit_cb_ud);
 
