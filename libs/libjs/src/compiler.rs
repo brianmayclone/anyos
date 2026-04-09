@@ -1492,6 +1492,13 @@ impl Compiler {
         }
     }
 
+    fn assign_target_inferred_name(target: &Expr) -> Option<String> {
+        match target {
+            Expr::Ident(name) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
     fn compile_for_in_of(&mut self, left: &ForInit, right: &Expr, body: &Stmt, is_of: bool) {
         self.begin_scope();
         self.compile_expr(right);
@@ -3819,15 +3826,23 @@ impl Compiler {
                 self.compile_expr(right);
                 self.emit(Op::Dup); // keep RHS value as result of the assignment expression
                 self.emit(Op::GetIterator); // convert to iterator
-                                            // Stack: [..., rhs_value, iterator]
-                                            // Note: IterNext peeks the iterator from stack.last() without popping.
-                                            // After IterNext, stack is [..., iter, value, has_more].
-                                            // After consuming value and has_more, iter is back on top for next call.
+                // Stack: [..., rhs_value, iterator]
+                let has_rest = matches!(elements.last(), Some(Some(Expr::Spread(_))));
+                let done_slot = self
+                    .scope_mut()
+                    .add_local(String::from("__assign_iter_done__"));
+                self.emit(Op::LoadFalse);
+                self.emit(Op::StoreLocal(done_slot));
+                self.emit(Op::Pop);
                 for elem in elements.iter() {
                     match elem {
                         None => {
                             // Elision: [,] — advance iterator without binding
                             self.emit(Op::IterNext);
+                            self.emit(Op::Dup);
+                            self.emit(Op::Not);
+                            self.emit(Op::StoreLocal(done_slot));
+                            self.emit(Op::Pop);
                             self.emit(Op::Pop); // pop has_more
                             self.emit(Op::Pop); // pop value
                         }
@@ -3855,6 +3870,9 @@ impl Compiler {
                                     self.emit(Op::Jump(loop_top as i32 - self.offset() as i32 - 1));
                                     self.patch_jump(exit);
                                     self.emit(Op::Pop); // pop value (undefined when done)
+                                    self.emit(Op::LoadTrue);
+                                    self.emit(Op::StoreLocal(done_slot));
+                                    self.emit(Op::Pop);
                                     self.emit(Op::LoadLocal(result_arr));
                                     self.compile_assign_target(inner);
                                 }
@@ -3865,6 +3883,10 @@ impl Compiler {
                                 } => {
                                     // Element with default: [x = default] = arr
                                     self.emit(Op::IterNext); // value, has_more
+                                    self.emit(Op::Dup);
+                                    self.emit(Op::Not);
+                                    self.emit(Op::StoreLocal(done_slot));
+                                    self.emit(Op::Pop);
                                     self.emit(Op::Pop); // pop has_more
                                                         // If undefined, use default
                                     self.emit(Op::Dup);
@@ -3872,18 +3894,32 @@ impl Compiler {
                                     self.emit(Op::StrictEq);
                                     let skip = self.emit(Op::JumpIfFalse(0));
                                     self.emit(Op::Pop);
-                                    self.compile_expr(default);
+                                    if let Some(name) = Self::assign_target_inferred_name(left) {
+                                        self.compile_expr_with_name(default, &name);
+                                    } else {
+                                        self.compile_expr(default);
+                                    }
                                     self.patch_jump(skip);
                                     self.compile_assign_target(left);
                                 }
                                 _ => {
                                     self.emit(Op::IterNext); // value, has_more
+                                    self.emit(Op::Dup);
+                                    self.emit(Op::Not);
+                                    self.emit(Op::StoreLocal(done_slot));
+                                    self.emit(Op::Pop);
                                     self.emit(Op::Pop); // pop has_more
                                     self.compile_assign_target(expr);
                                 }
                             }
                         }
                     }
+                }
+                if !has_rest {
+                    self.emit(Op::LoadLocal(done_slot));
+                    let skip_close = self.emit(Op::JumpIfTrue(0));
+                    self.emit(Op::IteratorClose);
+                    self.patch_jump(skip_close);
                 }
                 self.emit(Op::Pop); // pop the iterator
                                     // Stack: [..., rhs_value] — original RHS is the result
@@ -3941,7 +3977,11 @@ impl Compiler {
                         self.emit(Op::StrictEq);
                         let skip = self.emit(Op::JumpIfFalse(0));
                         self.emit(Op::Pop);
-                        self.compile_expr(default);
+                        if let Some(name) = Self::assign_target_inferred_name(left) {
+                            self.compile_expr_with_name(default, &name);
+                        } else {
+                            self.compile_expr(default);
+                        }
                         self.patch_jump(skip);
                         self.compile_assign_target(left);
                     } else {
@@ -4009,10 +4049,21 @@ impl Compiler {
                 // Nested array destructuring: [[a, b]] = [[1, 2]]
                 // Use iterator protocol. IterNext peeks the iterator without popping.
                 self.emit(Op::GetIterator);
+                let has_rest = matches!(elements.last(), Some(Some(Expr::Spread(_))));
+                let done_slot = self
+                    .scope_mut()
+                    .add_local(String::from("__assign_nested_iter_done__"));
+                self.emit(Op::LoadFalse);
+                self.emit(Op::StoreLocal(done_slot));
+                self.emit(Op::Pop);
                 for elem in elements.iter() {
                     match elem {
                         None => {
                             self.emit(Op::IterNext);
+                            self.emit(Op::Dup);
+                            self.emit(Op::Not);
+                            self.emit(Op::StoreLocal(done_slot));
+                            self.emit(Op::Pop);
                             self.emit(Op::Pop);
                             self.emit(Op::Pop);
                         }
@@ -4035,6 +4086,9 @@ impl Compiler {
                             self.emit(Op::Jump(loop_top as i32 - self.offset() as i32 - 1));
                             self.patch_jump(exit);
                             self.emit(Op::Pop);
+                            self.emit(Op::LoadTrue);
+                            self.emit(Op::StoreLocal(done_slot));
+                            self.emit(Op::Pop);
                             self.emit(Op::LoadLocal(result_arr));
                             self.compile_assign_target(inner);
                         }
@@ -4044,22 +4098,40 @@ impl Compiler {
                             right: default,
                         }) => {
                             self.emit(Op::IterNext);
+                            self.emit(Op::Dup);
+                            self.emit(Op::Not);
+                            self.emit(Op::StoreLocal(done_slot));
+                            self.emit(Op::Pop);
                             self.emit(Op::Pop);
                             self.emit(Op::Dup);
                             self.emit(Op::LoadUndefined);
                             self.emit(Op::StrictEq);
                             let skip = self.emit(Op::JumpIfFalse(0));
                             self.emit(Op::Pop);
-                            self.compile_expr(default);
+                            if let Some(name) = Self::assign_target_inferred_name(left) {
+                                self.compile_expr_with_name(default, &name);
+                            } else {
+                                self.compile_expr(default);
+                            }
                             self.patch_jump(skip);
                             self.compile_assign_target(left);
                         }
                         Some(e) => {
                             self.emit(Op::IterNext);
+                            self.emit(Op::Dup);
+                            self.emit(Op::Not);
+                            self.emit(Op::StoreLocal(done_slot));
+                            self.emit(Op::Pop);
                             self.emit(Op::Pop);
                             self.compile_assign_target(e);
                         }
                     }
+                }
+                if !has_rest {
+                    self.emit(Op::LoadLocal(done_slot));
+                    let skip_close = self.emit(Op::JumpIfTrue(0));
+                    self.emit(Op::IteratorClose);
+                    self.patch_jump(skip_close);
                 }
                 self.emit(Op::Pop); // pop iterator
             }
@@ -4106,7 +4178,11 @@ impl Compiler {
                         self.emit(Op::StrictEq);
                         let skip = self.emit(Op::JumpIfFalse(0));
                         self.emit(Op::Pop);
-                        self.compile_expr(default);
+                        if let Some(name) = Self::assign_target_inferred_name(left) {
+                            self.compile_expr_with_name(default, &name);
+                        } else {
+                            self.compile_expr(default);
+                        }
                         self.patch_jump(skip);
                         self.compile_assign_target(left);
                     } else {
