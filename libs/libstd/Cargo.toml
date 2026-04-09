@@ -1,17 +1,10 @@
 [package]
-name = "libtls"
+name = "libstd"
 version = "0.1.0"
 edition = "2021"
 
-[features]
-default = []
-host = []
-
 [dependencies]
-
-[dev-dependencies]
-rcgen = "0.13"
-rustls = "0.23"
+anyos_std = { path = "../stdlib" }
 
 [profile.dev]
 panic = "abort"

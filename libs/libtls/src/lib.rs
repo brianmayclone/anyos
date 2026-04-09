@@ -257,3 +257,184 @@ pub fn close(handle: TlsHandle) {
 pub fn last_error(handle: TlsHandle) -> i32 {
     with_conn(handle, |conn| conn.last_error() as i32).unwrap_or(-1)
 }
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use alloc::vec;
+    use super::*;
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use rcgen::generate_simple_self_signed;
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    use rustls::{ServerConfig, ServerConnection, StreamOwned};
+    use std::collections::BTreeMap;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Mutex, OnceLock};
+    use std::thread;
+    use std::time::Duration;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    static NEXT_FD: AtomicU32 = AtomicU32::new(1000);
+    static SOCKETS: OnceLock<Mutex<BTreeMap<u32, TcpStream>>> = OnceLock::new();
+
+    fn socket_map() -> &'static Mutex<BTreeMap<u32, TcpStream>> {
+        SOCKETS.get_or_init(|| Mutex::new(BTreeMap::new()))
+    }
+
+    fn register_stream(stream: TcpStream) -> u32 {
+        let fd = NEXT_FD.fetch_add(1, Ordering::SeqCst);
+        socket_map().lock().unwrap().insert(fd, stream);
+        fd
+    }
+
+    fn unregister_stream(fd: u32) {
+        socket_map().lock().unwrap().remove(&fd);
+    }
+
+    fn test_send(fd: u32, data: &[u8]) -> i32 {
+        let mut guard = socket_map().lock().unwrap();
+        let Some(stream) = guard.get_mut(&fd) else { return -1; };
+        match stream.write(data) {
+            Ok(n) => n as i32,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
+            Err(_) => -1,
+        }
+    }
+
+    fn test_recv(fd: u32, buf: &mut [u8]) -> i32 {
+        let mut guard = socket_map().lock().unwrap();
+        let Some(stream) = guard.get_mut(&fd) else { return -1; };
+        match stream.read(buf) {
+            Ok(n) => n as i32,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
+            Err(_) => -1,
+        }
+    }
+
+    fn test_sleep(ms: u32) {
+        thread::sleep(Duration::from_millis(ms as u64));
+    }
+
+    fn test_random(buf: &mut [u8]) -> u32 {
+        // Deterministic but non-zero bytes keep tests reproducible.
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(37).wrapping_add(11);
+        }
+        buf.len() as u32
+    }
+
+    fn install_test_transport() {
+        set_transport(test_send, test_recv, test_sleep, test_random);
+    }
+
+    fn make_server_config() -> (ServerConfig, CertificateDer<'static>) {
+        let cert = generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert_der: CertificateDer<'static> = cert.cert.der().clone();
+        let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der()));
+        let cfg = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], key_der)
+            .unwrap();
+        (cfg, cert_der)
+    }
+
+    #[test]
+    fn tls_connect_send_recv_close_works_against_local_server() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        install_test_transport();
+
+        let (server_cfg, cert_der) = make_server_config();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            let conn = ServerConnection::new(std::sync::Arc::new(server_cfg)).unwrap();
+            let mut tls = StreamOwned::new(conn, tcp);
+
+            let mut req = [0u8; 5];
+            tls.read_exact(&mut req).unwrap();
+            assert_eq!(&req, b"ping!");
+            tls.write_all(b"pong-first").unwrap();
+            tls.flush().unwrap();
+        });
+
+        let tcp = TcpStream::connect(addr).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        let fd = register_stream(tcp);
+
+        let handle = connect(fd, "localhost");
+        assert!(handle > 0, "connect failed with {}", handle);
+
+        assert_eq!(send(handle as u32, b"ping!"), 5);
+
+        let mut buf = [0u8; 32];
+        let n = recv(handle as u32, &mut buf);
+        assert!(n > 0, "recv failed with {}", n);
+        assert_eq!(&buf[..n as usize], b"pong-first");
+
+        assert_eq!(last_error(handle as u32), 0);
+        close(handle as u32);
+        unregister_stream(fd);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn tls_recv_buffers_partial_plaintext_across_calls() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        install_test_transport();
+
+        let (server_cfg, cert_der) = make_server_config();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_thread = thread::spawn(move || {
+            let (tcp, _) = listener.accept().unwrap();
+            let conn = ServerConnection::new(std::sync::Arc::new(server_cfg)).unwrap();
+            let mut tls = StreamOwned::new(conn, tcp);
+
+            let mut req = [0u8; 4];
+            tls.read_exact(&mut req).unwrap();
+            assert_eq!(&req, b"more");
+            tls.write_all(b"abcdef").unwrap();
+            tls.flush().unwrap();
+        });
+
+        let tcp = TcpStream::connect(addr).unwrap();
+        tcp.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        tcp.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+        let fd = register_stream(tcp);
+
+        let handle = connect(fd, "localhost");
+        assert!(handle > 0, "connect failed with {}", handle);
+        assert_eq!(send(handle as u32, b"more"), 4);
+
+        let mut small = [0u8; 3];
+        let n1 = recv(handle as u32, &mut small);
+        assert_eq!(n1, 3);
+        assert_eq!(&small, b"abc");
+
+        let mut rest = [0u8; 8];
+        let n2 = recv(handle as u32, &mut rest);
+        assert_eq!(n2, 3);
+        assert_eq!(&rest[..3], b"def");
+
+        close(handle as u32);
+        unregister_stream(fd);
+        server_thread.join().unwrap();
+    }
+
+    #[test]
+    fn invalid_handle_reports_error() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        install_test_transport();
+
+        assert_eq!(send(0xDEAD_BEEF, b"x"), -1);
+        let mut buf = [0u8; 1];
+        assert_eq!(recv(0xDEAD_BEEF, &mut buf), -1);
+        assert_eq!(last_error(0xDEAD_BEEF), -1);
+    }
+}

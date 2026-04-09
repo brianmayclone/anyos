@@ -362,6 +362,7 @@ fn strip_leading_zeros(data: &[u8]) -> &[u8] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
 
     #[test]
     fn test_generator_on_curve() {

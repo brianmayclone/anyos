@@ -91,6 +91,26 @@ const RELAYOUT_FOLLOWUP_DELAY_MS: u32 = 16;
 const NET_POLL_INTERVAL_MS: u32 = 16;
 const DEBUG_SKIP_BLOCKING_SLOT2: bool = true;
 
+fn debug_text_fingerprint(text: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &b in text.as_bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn debug_text_prefix(text: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for ch in text.chars().take(max_chars) {
+        match ch {
+            '\n' | '\r' | '\t' => out.push(' '),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
 fn phase_name(phase: PageLoadPhase) -> &'static str {
     match phase {
         PageLoadPhase::Idle => "idle",
@@ -1416,10 +1436,18 @@ fn handle_css_done(
         return;
     }
 
+    let css_text = resources::decode_http_body(&body, &headers);
+    crate::surf_log!(
+        "[surf] css fingerprint: href={} chars={} fnv1a={:016x} prefix={:?}",
+        href,
+        css_text.len(),
+        debug_text_fingerprint(&css_text),
+        debug_text_prefix(&css_text, 120)
+    );
+
     if let Some(parsed) = parsed {
         st.tabs[tab_index].webview.add_parsed_stylesheet(parsed.sheet);
     } else {
-        let css_text = resources::decode_http_body(&body, &headers);
         st.tabs[tab_index].webview.add_stylesheet(&css_text);
     }
     crate::surf_log!("[surf] applied CSS: {}", href);
