@@ -766,7 +766,13 @@ impl Vm {
                         .get(slot as usize)
                         .map(|s| s.get())
                         .unwrap_or(JsValue::Undefined);
-                    if matches!(val, JsValue::Empty) {
+                    let starts_tdz = self.frames[frame_idx]
+                        .chunk
+                        .local_starts_tdz
+                        .get(slot as usize)
+                        .copied()
+                        .unwrap_or(false);
+                    if starts_tdz && matches!(val, JsValue::Empty) {
                         let name = self.frames[frame_idx]
                             .chunk
                             .local_names
@@ -784,6 +790,14 @@ impl Vm {
                     }
                     self.stack.push(val);
                 }
+                Op::InitLocal(slot) => {
+                    let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    let locals = &mut self.frames[frame_idx].locals;
+                    while locals.len() <= slot as usize {
+                        locals.push(LocalSlot::Direct(JsValue::Undefined));
+                    }
+                    locals[slot as usize].set(val);
+                }
                 Op::StoreLocal(slot) => {
                     let val = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
                     let mutable = self.frames[frame_idx]
@@ -798,11 +812,27 @@ impl Vm {
                         .get(slot as usize)
                         .cloned()
                         .unwrap_or_else(|| format!("<local:{}>", slot));
+                    let starts_tdz = self.frames[frame_idx]
+                        .chunk
+                        .local_starts_tdz
+                        .get(slot as usize)
+                        .copied()
+                        .unwrap_or(false);
                     let locals = &mut self.frames[frame_idx].locals;
                     while locals.len() <= slot as usize {
                         locals.push(LocalSlot::Direct(JsValue::Undefined));
                     }
                     let current = locals[slot as usize].get();
+                    if starts_tdz && matches!(current, JsValue::Empty) {
+                        let err = self.make_reference_error(&format!(
+                            "Cannot access '{}' before initialization",
+                            local_name
+                        ));
+                        if !self.handle_exception(err) {
+                            return JsValue::Undefined;
+                        }
+                        continue;
+                    }
                     if !mutable && !matches!(current, JsValue::Empty) {
                         let err = self.make_type_error(&format!(
                             "Assignment to constant variable '{}'",
@@ -825,7 +855,13 @@ impl Vm {
                             .get(slot as usize)
                             .map(|s| s.get())
                             .unwrap_or(JsValue::Undefined);
-                        if matches!(val, JsValue::Empty) {
+                        let starts_tdz = self.frames[frame_idx]
+                            .chunk
+                            .local_starts_tdz
+                            .get(slot as usize)
+                            .copied()
+                            .unwrap_or(false);
+                        if starts_tdz && matches!(val, JsValue::Empty) {
                             let err = self.make_reference_error(&format!(
                                 "Cannot access '{}' before initialization",
                                 name
@@ -842,7 +878,13 @@ impl Vm {
                             .get(idx as usize)
                             .map(|c| c.borrow().clone())
                             .unwrap_or(JsValue::Undefined);
-                        if matches!(val, JsValue::Empty) {
+                        let starts_tdz = self.frames[frame_idx]
+                            .chunk
+                            .upvalue_starts_tdz
+                            .get(idx as usize)
+                            .copied()
+                            .unwrap_or(false);
+                        if starts_tdz && matches!(val, JsValue::Empty) {
                             let err = self.make_reference_error(&format!(
                                 "Cannot access '{}' before initialization",
                                 name
@@ -898,7 +940,13 @@ impl Vm {
                             .get(slot as usize)
                             .map(|s| s.get())
                             .unwrap_or(JsValue::Undefined);
-                        if matches!(val, JsValue::Empty) {
+                        let starts_tdz = self.frames[frame_idx]
+                            .chunk
+                            .local_starts_tdz
+                            .get(slot as usize)
+                            .copied()
+                            .unwrap_or(false);
+                        if starts_tdz && matches!(val, JsValue::Empty) {
                             let err = self.make_reference_error(&format!(
                                 "Cannot access '{}' before initialization",
                                 name
@@ -915,7 +963,13 @@ impl Vm {
                             .get(idx as usize)
                             .map(|c| c.borrow().clone())
                             .unwrap_or(JsValue::Undefined);
-                        if matches!(val, JsValue::Empty) {
+                        let starts_tdz = self.frames[frame_idx]
+                            .chunk
+                            .upvalue_starts_tdz
+                            .get(idx as usize)
+                            .copied()
+                            .unwrap_or(false);
+                        if starts_tdz && matches!(val, JsValue::Empty) {
                             let err = self.make_reference_error(&format!(
                                 "Cannot access '{}' before initialization",
                                 name
@@ -1005,11 +1059,27 @@ impl Vm {
                             .get(slot as usize)
                             .copied()
                             .unwrap_or(true);
+                        let starts_tdz = self.frames[frame_idx]
+                            .chunk
+                            .local_starts_tdz
+                            .get(slot as usize)
+                            .copied()
+                            .unwrap_or(false);
                         let locals = &mut self.frames[frame_idx].locals;
                         while locals.len() <= slot as usize {
                             locals.push(LocalSlot::Direct(JsValue::Undefined));
                         }
                         let current = locals[slot as usize].get();
+                        if starts_tdz && matches!(current, JsValue::Empty) {
+                            let err = self.make_reference_error(&format!(
+                                "Cannot access '{}' before initialization",
+                                name
+                            ));
+                            if !self.handle_exception(err) {
+                                return JsValue::Undefined;
+                            }
+                            continue;
+                        }
                         if !mutable && !matches!(current, JsValue::Empty) {
                             let err = self
                                 .make_type_error(&format!("Assignment to constant variable '{}'", name));
@@ -1025,15 +1095,29 @@ impl Vm {
                             .get(idx as usize)
                             .map(|c| c.borrow().clone())
                             .unwrap_or(JsValue::Undefined);
-                        let mutable = self.frames[frame_idx]
-                            .chunk
-                            .upvalue_mutable
-                            .get(idx as usize)
-                            .copied()
-                            .unwrap_or(true);
-                        if !mutable && !matches!(current, JsValue::Empty) {
-                            let err = self
-                                .make_type_error(&format!("Assignment to constant variable '{}'", name));
+                    let mutable = self.frames[frame_idx]
+                        .chunk
+                        .upvalue_mutable
+                        .get(idx as usize)
+                        .copied()
+                        .unwrap_or(true);
+                    let starts_tdz = self.frames[frame_idx]
+                        .chunk
+                        .upvalue_starts_tdz
+                        .get(idx as usize)
+                        .copied()
+                        .unwrap_or(false);
+                    if starts_tdz && matches!(current, JsValue::Empty) {
+                        let err = self
+                            .make_reference_error(&format!("Cannot access '{}' before initialization", name));
+                        if !self.handle_exception(err) {
+                            return JsValue::Undefined;
+                        }
+                        continue;
+                    }
+                    if !mutable && !matches!(current, JsValue::Empty) {
+                        let err = self
+                            .make_type_error(&format!("Assignment to constant variable '{}'", name));
                             if !self.handle_exception(err) {
                                 return JsValue::Undefined;
                             }
@@ -1129,7 +1213,13 @@ impl Vm {
                         .get(idx as usize)
                         .map(|c| c.borrow().clone())
                         .unwrap_or(JsValue::Undefined);
-                    if matches!(val, JsValue::Empty) {
+                    let starts_tdz = self.frames[frame_idx]
+                        .chunk
+                        .upvalue_starts_tdz
+                        .get(idx as usize)
+                        .copied()
+                        .unwrap_or(false);
+                    if starts_tdz && matches!(val, JsValue::Empty) {
                         let name = self.frames[frame_idx]
                             .chunk
                             .upvalue_names
@@ -1160,6 +1250,28 @@ impl Vm {
                         .get(idx as usize)
                         .copied()
                         .unwrap_or(true);
+                    let starts_tdz = self.frames[frame_idx]
+                        .chunk
+                        .upvalue_starts_tdz
+                        .get(idx as usize)
+                        .copied()
+                        .unwrap_or(false);
+                    if starts_tdz && matches!(current, JsValue::Empty) {
+                        let name = self.frames[frame_idx]
+                            .chunk
+                            .upvalue_names
+                            .get(idx as usize)
+                            .cloned()
+                            .unwrap_or_else(|| format!("<upvalue:{}>", idx));
+                        let err = self.make_reference_error(&format!(
+                            "Cannot access '{}' before initialization",
+                            name
+                        ));
+                        if !self.handle_exception(err) {
+                            return JsValue::Undefined;
+                        }
+                        continue;
+                    }
                     if !mutable && !matches!(current, JsValue::Empty) {
                         let name = self.frames[frame_idx]
                             .chunk

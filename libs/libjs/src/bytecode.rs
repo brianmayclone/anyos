@@ -31,6 +31,8 @@ pub enum Op {
     // ── Variable Operations ──
     /// Load a local variable by slot index.
     LoadLocal(u16),
+    /// Initialize a pre-allocated local binding, bypassing TDZ write checks.
+    InitLocal(u16),
     /// Store top of stack into a local variable slot.
     StoreLocal(u16),
     /// Load a global variable by name (constant pool index).
@@ -364,6 +366,8 @@ pub struct Chunk {
     pub upvalue_names: Vec<String>,
     /// Per-upvalue mutability propagated from the originating binding.
     pub upvalue_mutable: Vec<bool>,
+    /// Per-upvalue flag: true if the captured binding starts in TDZ/uninitialized state.
+    pub upvalue_starts_tdz: Vec<bool>,
     /// Names declared at global scope (`var`, `let`, `const`, `function`, `class`).
     /// Used by strict-mode `StoreGlobal` to distinguish declared globals from
     /// implicit global assignments (which are ReferenceErrors in strict mode).
@@ -395,6 +399,7 @@ impl Chunk {
             local_names: Vec::new(),
             upvalue_names: Vec::new(),
             upvalue_mutable: Vec::new(),
+            upvalue_starts_tdz: Vec::new(),
             declared_globals: Vec::new(),
             line_map: Vec::new(),
             current_line: 0,

@@ -27,6 +27,7 @@ struct UpvalueDesc {
     is_local: bool,
     index: u16,
     mutable: bool,
+    starts_tdz: bool,
 }
 
 /// Entry on the label stack, tracking forward jumps for `break label`
@@ -394,6 +395,7 @@ impl Compiler {
         chunk.local_names = scope.locals.iter().map(|l| l.name.clone()).collect();
         chunk.upvalue_names = scope.upvalues.iter().map(|uv| uv.name.clone()).collect();
         chunk.upvalue_mutable = scope.upvalues.iter().map(|uv| uv.mutable).collect();
+        chunk.upvalue_starts_tdz = scope.upvalues.iter().map(|uv| uv.starts_tdz).collect();
         chunk
     }
 
@@ -814,7 +816,19 @@ impl Compiler {
                 .get(local_slot as usize)
                 .map(|l| l.mutable)
                 .unwrap_or(true);
-            return Some(self.add_upvalue(scope_idx, name, true, local_slot, mutable));
+            let starts_tdz = outer
+                .locals
+                .get(local_slot as usize)
+                .map(|l| l.starts_tdz)
+                .unwrap_or(false);
+            return Some(self.add_upvalue(
+                scope_idx,
+                name,
+                true,
+                local_slot,
+                mutable,
+                starts_tdz,
+            ));
         }
         // Recurse: try as an upvalue of the immediately enclosing scope.
         if let Some(outer_uv) = self.resolve_upvalue_in_scope(scope_idx - 1, name) {
@@ -823,7 +837,19 @@ impl Compiler {
                 .get(outer_uv as usize)
                 .map(|uv| uv.mutable)
                 .unwrap_or(true);
-            return Some(self.add_upvalue(scope_idx, name, false, outer_uv, mutable));
+            let starts_tdz = self.scopes[scope_idx - 1]
+                .upvalues
+                .get(outer_uv as usize)
+                .map(|uv| uv.starts_tdz)
+                .unwrap_or(false);
+            return Some(self.add_upvalue(
+                scope_idx,
+                name,
+                false,
+                outer_uv,
+                mutable,
+                starts_tdz,
+            ));
         }
         None
     }
@@ -836,6 +862,7 @@ impl Compiler {
         is_local: bool,
         index: u16,
         mutable: bool,
+        starts_tdz: bool,
     ) -> u16 {
         for (i, uv) in self.scopes[scope_idx].upvalues.iter().enumerate() {
             if uv.name == name {
@@ -848,6 +875,7 @@ impl Compiler {
             is_local,
             index,
             mutable,
+            starts_tdz,
         });
         idx
     }
@@ -1431,7 +1459,7 @@ impl Compiler {
                 }
                 if let Some(slot) = prealloc_slot {
                     // Local was pre-allocated; just store into it.
-                    self.emit(Op::StoreLocal(slot));
+                    self.emit(Op::InitLocal(slot));
                     self.emit(Op::Pop);
                 } else {
                     let name_clone = name.clone();
@@ -1617,7 +1645,7 @@ impl Compiler {
         match pat {
             Pattern::Ident(name) => {
                 if let Some(slot) = self.scope().resolve_local(name) {
-                    self.emit(Op::StoreLocal(slot));
+                    self.emit(Op::InitLocal(slot));
                     self.emit(Op::Pop);
                 } else {
                     self.bind_ident(name);
@@ -1823,7 +1851,7 @@ impl Compiler {
                             if *kind == VarKind::Var {
                                 self.bind_ident(&name_clone);
                             } else if let Some(slot) = self.scope().resolve_local(&name_clone) {
-                                self.emit(Op::StoreLocal(slot));
+                                self.emit(Op::InitLocal(slot));
                                 self.emit(Op::Pop);
                             } else {
                                 self.bind_ident(&name_clone);
@@ -1977,7 +2005,7 @@ impl Compiler {
                             if *kind == VarKind::Var {
                                 self.bind_ident(&name_clone);
                             } else if let Some(slot) = self.scope().resolve_local(&name_clone) {
-                                self.emit(Op::StoreLocal(slot));
+                                self.emit(Op::InitLocal(slot));
                                 self.emit(Op::Pop);
                             } else {
                                 self.bind_ident(&name_clone);
@@ -2770,6 +2798,11 @@ impl Compiler {
         // Copy upvalue descriptors into the chunk so the VM knows how to capture them.
         func_chunk.upvalue_names = func_scope.upvalues.iter().map(|uv| uv.name.clone()).collect();
         func_chunk.upvalue_mutable = func_scope.upvalues.iter().map(|uv| uv.mutable).collect();
+        func_chunk.upvalue_starts_tdz = func_scope
+            .upvalues
+            .iter()
+            .map(|uv| uv.starts_tdz)
+            .collect();
         func_chunk.upvalues = func_scope
             .upvalues
             .iter()
