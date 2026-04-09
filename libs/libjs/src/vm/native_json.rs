@@ -54,6 +54,7 @@ fn stringify_value(val: &JsValue, indent: &str, depth: usize) -> Option<String> 
         return None; // treated as undefined → omitted or "null"
     }
     match val {
+        JsValue::Empty => None,
         JsValue::Undefined | JsValue::Function(_) | JsValue::BigInt(_) => None,
         JsValue::Null => Some(String::from("null")),
         JsValue::Bool(true) => Some(String::from("true")),

@@ -11,6 +11,8 @@ pub enum Op {
     // ── Stack Operations ──
     /// Push a constant from the constant pool.
     LoadConst(u16),
+    /// Push internal empty-completion sentinel.
+    LoadEmpty,
     /// Push undefined.
     LoadUndefined,
     /// Push null.

@@ -44,6 +44,7 @@ fn snapshot_entries(a: &JsArray) -> Vec<(usize, JsValue)> {
 /// Throws TypeError if ToPrimitive fails (both valueOf and toString return objects).
 pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
     match val {
+        JsValue::Empty => f64::NAN,
         JsValue::Number(n) => *n,
         JsValue::String(s) => crate::value::parse_js_float(s),
         JsValue::Bool(true) => 1.0,

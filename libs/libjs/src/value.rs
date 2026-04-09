@@ -23,6 +23,7 @@ use crate::bytecode::Chunk;
 /// through one handle are visible through all others.
 #[derive(Clone)]
 pub enum JsValue {
+    Empty,
     Undefined,
     Null,
     Bool(bool),
@@ -407,6 +408,7 @@ fn digit_char(d: u32) -> char {
 impl fmt::Debug for JsValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            JsValue::Empty => write!(f, "<empty>"),
             JsValue::Undefined => write!(f, "undefined"),
             JsValue::Null => write!(f, "null"),
             JsValue::Bool(b) => write!(f, "{}", b),
@@ -952,6 +954,7 @@ impl JsValue {
     /// ToBoolean
     pub fn to_boolean(&self) -> bool {
         match self {
+            JsValue::Empty => false,
             JsValue::Undefined | JsValue::Null => false,
             JsValue::Bool(b) => *b,
             JsValue::Number(n) => *n != 0.0 && !n.is_nan(),
@@ -964,6 +967,7 @@ impl JsValue {
     /// ToNumber
     pub fn to_number(&self) -> f64 {
         match self {
+            JsValue::Empty => f64::NAN,
             JsValue::Undefined => f64::NAN,
             JsValue::Null => 0.0,
             JsValue::Bool(true) => 1.0,
@@ -985,6 +989,7 @@ impl JsValue {
     /// ToString
     pub fn to_js_string(&self) -> String {
         match self {
+            JsValue::Empty => String::new(),
             JsValue::Undefined => String::from("undefined"),
             JsValue::Null => String::from("null"),
             JsValue::Bool(true) => String::from("true"),
@@ -1032,6 +1037,7 @@ impl JsValue {
     /// typeof operator result
     pub fn type_of(&self) -> &'static str {
         match self {
+            JsValue::Empty => "undefined",
             JsValue::Undefined => "undefined",
             JsValue::Null => "object", // historical JS quirk
             JsValue::Bool(_) => "boolean",
@@ -1061,6 +1067,7 @@ impl JsValue {
     /// Abstract equality (==)
     pub fn abstract_eq(&self, other: &JsValue) -> bool {
         match (self, other) {
+            (JsValue::Empty, JsValue::Empty) => true,
             (JsValue::Undefined, JsValue::Undefined) => true,
             (JsValue::Null, JsValue::Null) => true,
             (JsValue::Undefined, JsValue::Null) | (JsValue::Null, JsValue::Undefined) => true,
@@ -1099,6 +1106,7 @@ impl JsValue {
     /// Strict equality (===)
     pub fn strict_eq(&self, other: &JsValue) -> bool {
         match (self, other) {
+            (JsValue::Empty, JsValue::Empty) => true,
             (JsValue::Undefined, JsValue::Undefined) => true,
             (JsValue::Null, JsValue::Null) => true,
             (JsValue::Number(a), JsValue::Number(b)) => *a == *b,

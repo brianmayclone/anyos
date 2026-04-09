@@ -571,6 +571,7 @@ impl Vm {
                     let val = self.load_constant(frame_idx, idx);
                     self.stack.push(val);
                 }
+                Op::LoadEmpty => self.stack.push(JsValue::Empty),
                 Op::LoadUndefined => self.stack.push(JsValue::Undefined),
                 Op::LoadNull => self.stack.push(JsValue::Null),
                 Op::LoadTrue => self.stack.push(JsValue::Bool(true)),
@@ -1123,6 +1124,8 @@ impl Vm {
                                 _ => {}
                             }
                         }
+                    } else if let Some(setter) = self.find_setter(&obj, &key_str) {
+                        self.invoke_function(&setter, &[val.clone()], obj.clone());
                     } else if let JsValue::Object(ref o) = obj {
                         if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
                             native_proxy::proxy_set(self, &obj, &key_str, &val);

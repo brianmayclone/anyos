@@ -412,6 +412,7 @@ impl Vm {
                                     {
                                         // Show the `this` object type for method calls
                                         let this_desc = match &this_val {
+                                            JsValue::Empty => "empty",
                                             JsValue::Undefined => "undefined",
                                             JsValue::Null => "null",
                                             JsValue::Number(_) => "number",
@@ -531,6 +532,7 @@ impl Vm {
             }
 
             let value_type = match &ctor {
+                JsValue::Empty => "empty",
                 JsValue::Undefined => "undefined",
                 JsValue::Null => "null",
                 JsValue::Bool(_) => "bool",

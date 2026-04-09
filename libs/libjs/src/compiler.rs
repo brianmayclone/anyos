@@ -322,6 +322,15 @@ impl Compiler {
             }
         }
 
+        let mut eval_completion_slot: Option<u16> = None;
+        if is_eval {
+            let slot = self.scope_mut().add_local(String::from("__eval_completion__"));
+            self.emit(Op::LoadEmpty);
+            self.emit(Op::StoreLocal(slot));
+            self.emit(Op::Pop);
+            eval_completion_slot = Some(slot);
+        }
+
         let body_len = program.body.len();
         for (i, stmt) in program.body.iter().enumerate() {
             // Skip FunctionDecl — already compiled above.
@@ -334,30 +343,261 @@ impl Compiler {
                 self.scope_mut().chunk.current_line = line;
             }
 
-            let is_last = i == body_len - 1;
-            if is_eval && is_last {
-                // For eval: if the last statement is an expression statement,
-                // compile it without popping so the value is returned.
-                if let Stmt::Expr(expr) = stmt {
-                    self.compile_expr(expr);
-                    self.emit(Op::Return);
-                    let scope = self.scopes.pop().unwrap();
-                    let mut chunk = scope.chunk;
-                    chunk.strict = self.is_strict;
-                    chunk.captured_locals = scope.captured;
-                    return chunk;
-                }
+            if let Some(slot) = eval_completion_slot {
+                self.compile_stmt_completion(stmt);
+                self.emit_update_completion(slot);
+            } else {
+                let _is_last = i == body_len - 1;
+                self.compile_stmt(stmt);
             }
-            self.compile_stmt(stmt);
         }
-        // Implicit return undefined
-        self.emit(Op::LoadUndefined);
-        self.emit(Op::Return);
+        if let Some(slot) = eval_completion_slot {
+            self.emit(Op::LoadLocal(slot));
+            self.emit(Op::Dup);
+            self.emit(Op::LoadEmpty);
+            self.emit(Op::StrictEq);
+            let has_value = self.emit(Op::JumpIfFalse(0));
+            self.emit(Op::Pop);
+            self.emit(Op::LoadUndefined);
+            self.patch_jump(has_value);
+            self.emit(Op::Return);
+        } else {
+            // Implicit return undefined
+            self.emit(Op::LoadUndefined);
+            self.emit(Op::Return);
+        }
         let scope = self.scopes.pop().unwrap();
         let mut chunk = scope.chunk;
         chunk.strict = self.is_strict;
         chunk.captured_locals = scope.captured;
         chunk
+    }
+
+    fn emit_update_completion(&mut self, slot: u16) {
+        self.emit(Op::Dup);
+        self.emit(Op::LoadEmpty);
+        self.emit(Op::StrictEq);
+        let skip_store = self.emit(Op::JumpIfTrue(0));
+        self.emit(Op::StoreLocal(slot));
+        self.emit(Op::Pop);
+        let done = self.emit(Op::Jump(0));
+        self.patch_jump(skip_store);
+        self.emit(Op::Pop);
+        self.patch_jump(done);
+    }
+
+    fn compile_stmt_list_completion(&mut self, stmts: &[Stmt]) {
+        let slot = self.scope_mut().add_local(String::from("__completion__"));
+        self.emit(Op::LoadEmpty);
+        self.emit(Op::StoreLocal(slot));
+        self.emit(Op::Pop);
+        for stmt in stmts {
+            self.compile_stmt_completion(stmt);
+            self.emit_update_completion(slot);
+        }
+        self.emit(Op::LoadLocal(slot));
+    }
+
+    fn compile_loop_body_completion(&mut self, slot: u16, body: &Stmt) {
+        self.compile_stmt_completion(body);
+        self.emit_update_completion(slot);
+    }
+
+    fn compile_stmt_completion(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Expr(expr) => {
+                self.compile_expr(expr);
+            }
+            Stmt::VarDecl { .. }
+            | Stmt::FunctionDecl { .. }
+            | Stmt::ClassDecl { .. }
+            | Stmt::Import { .. }
+            | Stmt::Export(_) => {
+                self.compile_stmt(stmt);
+                self.emit(Op::LoadEmpty);
+            }
+            Stmt::Block(stmts) => {
+                self.begin_scope();
+                self.compile_stmt_list_completion(stmts);
+                self.end_scope();
+            }
+            Stmt::If {
+                condition,
+                consequent,
+                alternate,
+            } => {
+                self.compile_expr(condition);
+                let else_jump = self.emit(Op::JumpIfFalse(0));
+                self.compile_stmt_completion(consequent);
+                if let Some(alt) = alternate {
+                    let end_jump = self.emit(Op::Jump(0));
+                    self.patch_jump(else_jump);
+                    self.compile_stmt_completion(alt);
+                    self.patch_jump(end_jump);
+                } else {
+                    self.patch_jump(else_jump);
+                    self.emit(Op::LoadEmpty);
+                }
+            }
+            Stmt::While { condition, body } => {
+                let slot = self.scope_mut().add_local(String::from("__while_completion__"));
+                self.emit(Op::LoadEmpty);
+                self.emit(Op::StoreLocal(slot));
+                self.emit(Op::Pop);
+                let loop_start = self.offset();
+                let old_continue = self.scope_mut().continue_target.take();
+                self.set_continue_target(loop_start);
+                let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+
+                self.compile_expr(condition);
+                let exit_jump = self.emit(Op::JumpIfFalse(0));
+                self.compile_loop_body_completion(slot, body);
+                let back = loop_start as i32 - self.offset() as i32 - 1;
+                self.emit(Op::Jump(back));
+                self.patch_jump(exit_jump);
+
+                let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+                for b in breaks {
+                    self.patch_jump(b);
+                }
+                self.scope_mut().break_jumps = old_breaks;
+                self.scope_mut().continue_target = old_continue;
+                self.emit(Op::LoadLocal(slot));
+            }
+            Stmt::DoWhile { body, condition } => {
+                let slot = self.scope_mut().add_local(String::from("__do_completion__"));
+                self.emit(Op::LoadEmpty);
+                self.emit(Op::StoreLocal(slot));
+                self.emit(Op::Pop);
+                let loop_start = self.offset();
+                let old_continue = self.scope_mut().continue_target.take();
+                let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+                self.set_continue_target(self.offset());
+                self.compile_loop_body_completion(slot, body);
+                let cond_pos = self.offset();
+                self.set_continue_target(cond_pos);
+                self.compile_expr(condition);
+                let back = loop_start as i32 - self.offset() as i32 - 1;
+                self.emit(Op::JumpIfTrue(back));
+                let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+                for b in breaks {
+                    self.patch_jump(b);
+                }
+                self.scope_mut().break_jumps = old_breaks;
+                self.scope_mut().continue_target = old_continue;
+                self.emit(Op::LoadLocal(slot));
+            }
+            Stmt::For {
+                init,
+                test,
+                update,
+                body,
+            } => {
+                self.begin_scope();
+                let slot = self.scope_mut().add_local(String::from("__for_completion__"));
+                self.emit(Op::LoadEmpty);
+                self.emit(Op::StoreLocal(slot));
+                self.emit(Op::Pop);
+                let mut let_slots: Vec<u16> = Vec::new();
+                if let Some(init) = init {
+                    match init.as_ref() {
+                        ForInit::VarDecl { kind, decls } => {
+                            let is_global = *kind == VarKind::Var && self.is_global_scope();
+                            let for_is_var = *kind == VarKind::Var;
+                            if *kind != VarKind::Var && !is_global {
+                                let before = self.scope().locals.len() as u16;
+                                for d in decls {
+                                    self.compile_var_decl(d, false, false);
+                                }
+                                let after = self.scope().locals.len() as u16;
+                                for local_slot in before..after {
+                                    let_slots.push(local_slot);
+                                }
+                            } else {
+                                for d in decls {
+                                    self.compile_var_decl(d, is_global, for_is_var);
+                                }
+                            }
+                        }
+                        ForInit::Expr(e) => {
+                            self.compile_expr(e);
+                            self.emit(Op::Pop);
+                        }
+                    }
+                }
+                let loop_start = self.offset();
+                let old_continue = self.scope_mut().continue_target.take();
+                let old_continue_jumps = core::mem::take(&mut self.scope_mut().continue_jumps);
+                let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+                let exit_jump = if let Some(test) = test {
+                    self.compile_expr(test);
+                    Some(self.emit(Op::JumpIfFalse(0)))
+                } else {
+                    None
+                };
+                self.compile_loop_body_completion(slot, body);
+                let continue_pos = self.offset();
+                let cont_jumps = core::mem::take(&mut self.scope_mut().continue_jumps);
+                for cj in &cont_jumps {
+                    self.patch_jump_to_pos(*cj, continue_pos);
+                }
+                self.scope_mut().last_for_continue_pos = Some(continue_pos);
+                for local_slot in &let_slots {
+                    self.emit(Op::CloneLocal(*local_slot));
+                }
+                if let Some(update) = update {
+                    self.compile_expr(update);
+                    self.emit(Op::Pop);
+                }
+                let back = loop_start as i32 - self.offset() as i32 - 1;
+                self.emit(Op::Jump(back));
+                if let Some(ej) = exit_jump {
+                    self.patch_jump(ej);
+                }
+                let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+                for b in breaks {
+                    self.patch_jump(b);
+                }
+                self.scope_mut().break_jumps = old_breaks;
+                self.scope_mut().continue_jumps = old_continue_jumps;
+                self.scope_mut().continue_target = old_continue;
+                self.emit(Op::LoadLocal(slot));
+                self.end_scope();
+            }
+            Stmt::ForIn { left, right, body } => {
+                self.compile_for_in_of_completion(left, right, body, false);
+            }
+            Stmt::ForOf { left, right, body } => {
+                self.compile_for_in_of_completion(left, right, body, true);
+            }
+            Stmt::Switch {
+                discriminant,
+                cases,
+            } => {
+                self.compile_switch_completion(discriminant, cases);
+            }
+            Stmt::Try {
+                block,
+                catch,
+                finally,
+            } => {
+                self.compile_try_completion(block, catch, finally);
+            }
+            Stmt::With { object, body } => {
+                self.compile_expr(object);
+                self.emit(Op::EnterWith);
+                self.compile_stmt_completion(body);
+                self.emit(Op::LeaveWith);
+            }
+            Stmt::Labeled { label, body } => {
+                let _ = label;
+                self.compile_stmt_completion(body);
+            }
+            _ => {
+                self.compile_stmt(stmt);
+                self.emit(Op::LoadEmpty);
+            }
+        }
     }
 
     fn scope(&self) -> &Scope {
@@ -1374,6 +1614,97 @@ impl Compiler {
         self.end_scope();
     }
 
+    fn compile_for_in_of_completion(
+        &mut self,
+        left: &ForInit,
+        right: &Expr,
+        body: &Stmt,
+        is_of: bool,
+    ) {
+        self.begin_scope();
+        let slot = self
+            .scope_mut()
+            .add_local(String::from("__for_in_of_completion__"));
+        self.emit(Op::LoadEmpty);
+        self.emit(Op::StoreLocal(slot));
+        self.emit(Op::Pop);
+        self.compile_expr(right);
+
+        if is_of {
+            self.emit(Op::GetIterator);
+        } else {
+            self.emit(Op::Dup);
+            self.emit(Op::LoadNull);
+            self.emit(Op::StrictEq);
+            let skip_null = self.emit(Op::JumpIfTrue(0));
+            self.emit(Op::Dup);
+            self.emit(Op::LoadUndefined);
+            self.emit(Op::StrictEq);
+            let skip_undef = self.emit(Op::JumpIfTrue(0));
+            self.emit(Op::GetForInIterator);
+            let skip_over = self.emit(Op::Jump(0));
+            self.patch_jump(skip_null);
+            self.patch_jump(skip_undef);
+            self.emit(Op::Pop);
+            self.emit(Op::NewArray(0));
+            self.emit(Op::GetIterator);
+            self.patch_jump(skip_over);
+        }
+
+        let loop_start = self.offset();
+        let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+        self.emit(Op::IterNext);
+        let exit_jump = self.emit(Op::JumpIfFalse(0));
+        match left {
+            ForInit::VarDecl { kind, decls } => {
+                if let Some(decl) = decls.first() {
+                    let is_global = *kind == VarKind::Var && self.is_global_scope();
+                    let prev = self.binding_is_global;
+                    self.binding_is_global = is_global;
+                    match &decl.name {
+                        Pattern::Ident(name) => {
+                            let name_clone = name.clone();
+                            self.bind_ident(&name_clone);
+                        }
+                        Pattern::Array(elems) => self.compile_array_destructure(elems),
+                        Pattern::Object(props) => self.compile_object_destructure(props),
+                        Pattern::Assign(inner, _) => self.compile_pattern_binding(inner),
+                        Pattern::Rest(inner) => self.compile_pattern_binding(inner),
+                    }
+                    self.binding_is_global = prev;
+                } else {
+                    self.emit(Op::Pop);
+                }
+            }
+            ForInit::Expr(Expr::Ident(name)) => {
+                if let Some(local_slot) = self.scope().resolve_local(name.as_str()) {
+                    self.emit(Op::StoreLocal(local_slot));
+                    self.emit(Op::Pop);
+                } else {
+                    let ci = self.add_const(Constant::String(name.clone()));
+                    self.emit(Op::StoreGlobal(ci));
+                    self.emit(Op::Pop);
+                }
+            }
+            _ => {
+                self.emit(Op::Pop);
+            }
+        }
+        self.set_continue_target(loop_start);
+        self.compile_loop_body_completion(slot, body);
+        let back = loop_start as i32 - self.offset() as i32 - 1;
+        self.emit(Op::Jump(back));
+        self.patch_jump(exit_jump);
+        self.emit(Op::Pop);
+        let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+        for b in breaks {
+            self.patch_jump(b);
+        }
+        self.scope_mut().break_jumps = old_breaks;
+        self.emit(Op::LoadLocal(slot));
+        self.end_scope();
+    }
+
     fn compile_switch(&mut self, discriminant: &Expr, cases: &[SwitchCase]) {
         self.compile_expr(discriminant);
         let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
@@ -1426,6 +1757,56 @@ impl Compiler {
             self.patch_jump(b);
         }
         self.scope_mut().break_jumps = old_breaks;
+    }
+
+    fn compile_switch_completion(&mut self, discriminant: &Expr, cases: &[SwitchCase]) {
+        let slot = self
+            .scope_mut()
+            .add_local(String::from("__switch_completion__"));
+        self.emit(Op::LoadEmpty);
+        self.emit(Op::StoreLocal(slot));
+        self.emit(Op::Pop);
+        self.compile_expr(discriminant);
+        let old_breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+
+        let mut case_jumps: Vec<Option<usize>> = Vec::new();
+        let mut default_idx: Option<usize> = None;
+        for (i, case) in cases.iter().enumerate() {
+            if let Some(ref test) = case.test {
+                self.emit(Op::Dup);
+                self.compile_expr(test);
+                self.emit(Op::StrictEq);
+                let j = self.emit(Op::JumpIfTrue(0));
+                case_jumps.push(Some(j));
+            } else {
+                default_idx = Some(i);
+                case_jumps.push(None);
+            }
+        }
+        let no_match_jump = self.emit(Op::Jump(0));
+        let mut body_positions: Vec<usize> = Vec::new();
+        for (i, case) in cases.iter().enumerate() {
+            body_positions.push(self.offset());
+            if let Some(j) = case_jumps[i] {
+                self.patch_jump(j);
+            }
+            for s in &case.consequent {
+                self.compile_stmt_completion(s);
+                self.emit_update_completion(slot);
+            }
+        }
+        if let Some(di) = default_idx {
+            self.patch_jump_to_pos(no_match_jump, body_positions[di]);
+        } else {
+            self.patch_jump(no_match_jump);
+        }
+        self.emit(Op::Pop);
+        let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
+        for b in breaks {
+            self.patch_jump(b);
+        }
+        self.scope_mut().break_jumps = old_breaks;
+        self.emit(Op::LoadLocal(slot));
     }
 
     /// Compile a labeled statement (ES2023 §14.13).
@@ -1542,6 +1923,60 @@ impl Compiler {
                 self.compile_stmt(s);
             }
         }
+    }
+
+    fn compile_try_completion(
+        &mut self,
+        block: &[Stmt],
+        catch: &Option<CatchClause>,
+        finally: &Option<Vec<Stmt>>,
+    ) {
+        let slot = self.scope_mut().add_local(String::from("__try_completion__"));
+        self.emit(Op::LoadEmpty);
+        self.emit(Op::StoreLocal(slot));
+        self.emit(Op::Pop);
+
+        let catch_offset_slot = self.emit(Op::TryCatch(0, 0));
+        if let Some(fin) = finally {
+            self.scope_mut().pending_finallies.push(fin.clone());
+        }
+        for s in block {
+            self.compile_stmt_completion(s);
+            self.emit_update_completion(slot);
+        }
+        let try_end_jump = self.emit(Op::Jump(0));
+        if finally.is_some() {
+            self.scope_mut().pending_finallies.pop();
+        }
+        let catch_pos = self.offset();
+        let catch_off = catch_pos as i32 - catch_offset_slot as i32 - 1;
+        if let Op::TryCatch(ref mut co, _) = self.scope_mut().chunk.code[catch_offset_slot] {
+            *co = catch_off;
+        }
+        if let Some(cc) = catch {
+            self.begin_scope();
+            if let Some(ref param) = cc.param {
+                self.compile_pattern_binding(param);
+            } else {
+                self.emit(Op::Pop);
+            }
+            for s in &cc.body {
+                self.compile_stmt_completion(s);
+                self.emit_update_completion(slot);
+            }
+            self.end_scope();
+        } else {
+            self.emit(Op::Pop);
+        }
+        self.patch_jump(try_end_jump);
+        self.emit(Op::TryEnd);
+        if let Some(fin) = finally {
+            for s in fin {
+                self.compile_stmt_completion(s);
+                self.emit_update_completion(slot);
+            }
+        }
+        self.emit(Op::LoadLocal(slot));
     }
 
     /// Compile an expression, inferring a name for anonymous functions/arrows/classes.

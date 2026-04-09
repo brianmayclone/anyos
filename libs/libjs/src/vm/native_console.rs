@@ -51,6 +51,7 @@ fn format_args_to_string(args: &[JsValue]) -> String {
             out.push(' ');
         }
         match arg {
+            JsValue::Empty => out.push_str("<empty>"),
             JsValue::String(s) => out.push_str(s),
             JsValue::Undefined => out.push_str("undefined"),
             JsValue::Null => out.push_str("null"),
