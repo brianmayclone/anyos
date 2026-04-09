@@ -153,6 +153,8 @@ pub struct WebView {
     /// Cached parsed inline `style="..."` declarations per node_id.
     /// Avoids re-parsing the same style attribute on every relayout.
     inline_style_cache: Vec<Option<Vec<css::Declaration>>>,
+    /// Prepared flattened CSS rule set plus selector index.
+    prepared_stylesheets: Option<style::PreparedStylesheets>,
     pub images: ImageCache,
     viewport_width: i32,
     /// Viewport height in pixels (visible ScrollView area).
@@ -177,6 +179,16 @@ pub struct WebView {
     bg_color_cached: u32,
     /// True while the renderer still has buffered/offscreen tiles to fill in.
     pending_tiles: bool,
+    /// True when the current layout tree only covers an initial viewport budget
+    /// and should be upgraded to a full layout once the user scrolls near the
+    /// current bottom edge.
+    deferred_full_layout_pending: bool,
+    /// Current progressive layout budget in pixels for staged first render.
+    deferred_layout_budget_px: i32,
+    /// Current progressive style budget in node count for staged first render.
+    deferred_style_node_budget: usize,
+    /// Last expansion time for the staged first render budgets.
+    deferred_budget_last_expand_ms: u64,
     /// Web font mapping: (family_name_lowercase, font_id from libfont).
     web_fonts: Vec<(String, u32)>,
     /// Previous resolved styles — kept for CSS transition change detection.
@@ -224,6 +236,7 @@ impl WebView {
             inline_sheets_dirty: true,
             keyframes_dirty: true,
             inline_style_cache: Vec::new(),
+            prepared_stylesheets: None,
             images: ImageCache::new(),
             viewport_width: w as i32,
             viewport_height: h,
@@ -239,6 +252,10 @@ impl WebView {
             last_render_scroll_y: 0,
             bg_color_cached: 0xFFFFFFFF,
             pending_tiles: false,
+            deferred_full_layout_pending: false,
+            deferred_layout_budget_px: 0,
+            deferred_style_node_budget: 0,
+            deferred_budget_last_expand_ms: 0,
             web_fonts: Vec::new(),
             prev_styles: Vec::new(),
             resolved_styles_cache: Vec::new(),
@@ -296,6 +313,7 @@ impl WebView {
     pub fn add_parsed_stylesheet(&mut self, sheet: css::Stylesheet) {
         self.external_sheets.push(sheet);
         self.keyframes_dirty = true;
+        self.prepared_stylesheets = None;
     }
 
     /// Return `@import` URLs from the most recently added external stylesheet.
@@ -361,6 +379,7 @@ impl WebView {
         self.inline_sheets.clear();
         self.inline_sheets_dirty = true;
         self.keyframes_dirty = true;
+        self.prepared_stylesheets = None;
     }
 
     /// Full cleanup for page navigation.
@@ -377,6 +396,7 @@ impl WebView {
         self.total_height_val = 0;
         self.last_render_scroll_y = 0;
         self.pending_tiles = false;
+        self.clear_deferred_layout_state();
         self.content_view.set_size(self.viewport_width as u32, 1);
         // Clear all stylesheets (external + inline).
         self.external_sheets.clear();
@@ -384,6 +404,7 @@ impl WebView {
         self.inline_sheets_dirty = true;
         self.keyframes_dirty = true;
         self.inline_style_cache.clear();
+        self.prepared_stylesheets = None;
         self.resolved_styles_cache.clear();
         self.resolved_styles_viewport_width = 0;
         self.resolved_styles_viewport_height = 0;
@@ -412,6 +433,7 @@ impl WebView {
         }
         self.inline_sheets_dirty = false;
         self.keyframes_dirty = true;
+        self.prepared_stylesheets = None;
         debug_surf!(
             "[webview] primed {} inline <style> blocks without initial relayout",
             inline_count
@@ -421,6 +443,42 @@ impl WebView {
     /// Add a decoded image to the cache. Will be displayed on next render.
     pub fn add_image(&mut self, src: &str, pixels: Vec<u32>, w: u32, h: u32) {
         self.images.add(String::from(src), pixels, w, h);
+    }
+
+    /// Returns true when loading `src` can change geometry and therefore needs
+    /// a full relayout instead of a paint-only refresh.
+    ///
+    /// This is primarily needed for `<img>` elements without explicit width or
+    /// height attributes, where the intrinsic image size becomes known only
+    /// after decoding.
+    pub fn image_requires_layout_refresh(&self, src: &str) -> bool {
+        let Some(dom) = self.dom_val.as_ref() else {
+            return false;
+        };
+        for (node_id, node) in dom.nodes.iter().enumerate() {
+            let is_image_like = matches!(
+                &node.node_type,
+                dom::NodeType::Element {
+                    tag: dom::Tag::Img,
+                    ..
+                }
+            ) || dom.has_tag_name(node_id, "a-img");
+            if !is_image_like {
+                continue;
+            }
+            let Some(node_src) = dom.image_url(node_id) else {
+                continue;
+            };
+            if node_src != src {
+                continue;
+            }
+            let has_width = dom.attr(node_id, "width").is_some();
+            let has_height = dom.attr(node_id, "height").is_some();
+            if !(has_width && has_height) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Set HTML content and render it.
@@ -459,6 +517,7 @@ impl WebView {
         self.inline_sheets.clear();
         self.inline_sheets_dirty = true;
         self.inline_style_cache.clear();
+        self.prepared_stylesheets = None;
 
         // Collect stylesheets and resolve + layout + render.
         self.do_layout_and_render(&parsed_dom, None);
@@ -507,6 +566,7 @@ impl WebView {
         self.inline_sheets.clear();
         self.inline_sheets_dirty = true;
         self.inline_style_cache.clear();
+        self.prepared_stylesheets = None;
 
         // Layout and render (no JS).
         self.do_layout_and_render(&parsed_dom, None);
@@ -533,6 +593,7 @@ impl WebView {
         self.total_height_val = 0;
         self.last_render_scroll_y = 0;
         self.pending_tiles = false;
+        self.clear_deferred_layout_state();
         self.content_view.set_size(self.viewport_width.max(1) as u32, 1);
 
         self.prime_inline_stylesheets_from_dom(&parsed_dom);
@@ -653,6 +714,7 @@ impl WebView {
         }
         self.viewport_width = w as i32;
         self.viewport_height = h;
+        self.prepared_stylesheets = None;
         self.js_runtime.set_viewport(w, h);
         self.scroll_view.set_size(w, h);
 
@@ -684,6 +746,81 @@ impl WebView {
         }
     }
 
+    fn layout_budget_for_document(&self, dom: &dom::Dom) -> Option<i32> {
+        if self.deferred_full_layout_pending && self.deferred_layout_budget_px > 0 {
+            return Some(self.deferred_layout_budget_px);
+        }
+        let large_doc = dom.nodes.len() > 1800;
+        let initial_large_document_layout =
+            self.layout_root.is_none() && self.total_height_val == 0 && large_doc;
+        if initial_large_document_layout {
+            None
+        } else {
+            None
+        }
+    }
+
+    fn style_budget_for_document(&self, dom: &dom::Dom) -> Option<usize> {
+        if self.deferred_full_layout_pending && self.deferred_style_node_budget > 0 {
+            return Some(self.deferred_style_node_budget.min(dom.nodes.len()));
+        }
+        None
+    }
+
+    fn ensure_initial_progressive_budget(&mut self, dom: &dom::Dom) {
+        let large_doc = dom.nodes.len() > 1800;
+        let initial_large_document_layout =
+            self.layout_root.is_none() && self.total_height_val == 0 && large_doc;
+        if !initial_large_document_layout {
+            return;
+        }
+        if self.deferred_layout_budget_px > 0 || self.deferred_style_node_budget > 0 {
+            return;
+        }
+
+        let viewport_h = self.viewport_height.max(1) as i32;
+        let budget_multiplier = if dom.nodes.len() > 7000 {
+            1
+        } else if dom.nodes.len() > 4000 {
+            2
+        } else {
+            3
+        };
+        self.deferred_layout_budget_px = (viewport_h * budget_multiplier).max(1024);
+        self.deferred_style_node_budget = if dom.nodes.len() > 7000 {
+            480
+        } else if dom.nodes.len() > 4000 {
+            768
+        } else {
+            1200
+        }
+        .min(dom.nodes.len());
+        self.deferred_budget_last_expand_ms = anyos_std::sys::uptime_ms() as u64;
+        self.deferred_full_layout_pending = true;
+        debug_surf!(
+            "[webview] using progressive first-render budget: nodes={} style_budget={} layout_budget={}px",
+            dom.nodes.len(),
+            self.deferred_style_node_budget,
+            self.deferred_layout_budget_px
+        );
+    }
+
+    fn clear_deferred_layout_state(&mut self) {
+        self.deferred_full_layout_pending = false;
+        self.deferred_layout_budget_px = 0;
+        self.deferred_style_node_budget = 0;
+        self.deferred_budget_last_expand_ms = 0;
+    }
+
+    fn should_upgrade_deferred_layout(&self, scroll_y: i32) -> bool {
+        if !self.deferred_full_layout_pending {
+            return false;
+        }
+        let viewport_h = self.viewport_height.max(1) as i32;
+        let upgrade_threshold = (viewport_h * 2).max(1024);
+        scroll_y + upgrade_threshold >= self.total_height_val
+    }
+
     /// Repaint the current document from the cached layout tree without
     /// recomputing style or layout.
     ///
@@ -704,8 +841,7 @@ impl WebView {
             0xFFFFFFFF
         };
 
-        self.renderer.clear();
-        self.pending_tiles = self.renderer.render(
+        self.pending_tiles = self.renderer.repaint(
             root,
             &self.content_view,
             &self.images,
@@ -714,10 +850,6 @@ impl WebView {
             self.viewport_height,
             scroll_y,
             bg_color,
-            self.link_cb,
-            self.link_cb_ud,
-            self.submit_cb,
-            self.submit_cb_ud,
         );
         self.last_render_scroll_y = scroll_y;
     }
@@ -793,6 +925,17 @@ impl WebView {
     /// present.  Cache-miss tiles are rasterized incrementally (max 2 per
     /// call).  Returns `true` if there are still pending tiles.
     fn render_viewport(&mut self, scroll_y: i32) -> bool {
+        if self.should_upgrade_deferred_layout(scroll_y) {
+            debug_surf!(
+                "[webview] upgrading budgeted layout to full layout at scroll_y={} current_height={}",
+                scroll_y,
+                self.total_height_val
+            );
+            self.clear_deferred_layout_state();
+            self.relayout();
+            return self.pending_tiles;
+        }
+
         // The display list is stored in the renderer — no layout_root needed
         // for scroll rendering.  We still pass root for API compatibility but
         // render_scroll ignores it (uses the display list instead).
@@ -830,6 +973,7 @@ impl WebView {
         self.total_height_val = 0;
         self.last_render_scroll_y = 0;
         self.pending_tiles = false;
+        self.clear_deferred_layout_state();
         self.content_view.set_size(self.viewport_width as u32, 1);
     }
 
@@ -2065,19 +2209,26 @@ impl WebView {
         unsafe {
             WEB_FONT_MAP = &self.web_fonts as *const _;
         }
-        let mut root = layout::layout(
+        let layout_budget = self.layout_budget_for_document(d);
+        let mut root = layout::layout_with_budget(
             d,
             &styles,
             &mut pseudo_styles,
             self.viewport_width,
             self.viewport_height as i32,
             &self.images,
+            layout_budget,
+            None,
         );
         if !self.scroll_offsets.is_empty() {
             Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
         }
         self.total_height_val = calc_total_height(&root);
         self.layout_root = Some(root);
+        self.deferred_full_layout_pending = layout_budget.is_some();
+        if !self.deferred_full_layout_pending {
+            self.clear_deferred_layout_state();
+        }
         self.update_resolved_style_cache(&styles, &pseudo_styles);
         self.refresh_render_surface_for_layout(d, &styles);
     }
@@ -2146,6 +2297,7 @@ impl WebView {
                 if Self::mutations_dirty_inline_style_cache(&pending_mutations) {
                     self.inline_style_cache.clear();
                 }
+                self.prepared_stylesheets = None;
                 self.do_layout_and_render(dom, Some(&pending_mutations));
             }
             MutationImpact::Paint => {
@@ -2171,6 +2323,7 @@ impl WebView {
             "[webview] do_layout_and_render: {} DOM nodes",
             d.nodes.len()
         );
+        self.ensure_initial_progressive_budget(d);
 
         // ── Stylesheet pipeline — parse once, reuse on every relayout ────────────
         //
@@ -2207,6 +2360,7 @@ impl WebView {
             }
             self.inline_sheets_dirty = false;
             self.keyframes_dirty = true;
+            self.prepared_stylesheets = None;
             debug_surf!("[webview] parsed {} inline <style> blocks", inline_count);
         }
 
@@ -2225,7 +2379,8 @@ impl WebView {
             self.viewport_width
         };
         debug_surf!("[webview] resolve_styles start ({} nodes)", d.nodes.len());
-        let (mut styles, mut pseudo_styles) = {
+        let style_start_ms = anyos_std::sys::uptime_ms();
+        if self.prepared_stylesheets.is_none() {
             let mut all_sheets: Vec<&css::Stylesheet> =
                 Vec::with_capacity(1 + self.external_sheets.len() + self.inline_sheets.len());
             all_sheets.push(&self.default_sheet);
@@ -2235,9 +2390,29 @@ impl WebView {
             for sheet in &self.inline_sheets {
                 all_sheets.push(sheet);
             }
-            style::resolve_styles(d, &all_sheets, vw, vh, &mut self.inline_style_cache)
+            self.prepared_stylesheets = Some(style::PreparedStylesheets::prepare(&all_sheets, vw, vh));
+        }
+        let prepared = self.prepared_stylesheets.as_ref().unwrap();
+        let style_budget = self.style_budget_for_document(d);
+        let (mut styles, mut pseudo_styles) = if let Some(node_budget) = style_budget {
+            style::resolve_styles_prepared_budgeted(
+                d,
+                prepared,
+                vw,
+                vh,
+                &mut self.inline_style_cache,
+                node_budget,
+            )
+        } else {
+            style::resolve_styles_prepared(d, prepared, vw, vh, &mut self.inline_style_cache)
         };
-        debug_surf!("[webview] resolve_styles done: {} styles", styles.len());
+        let _style_elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(style_start_ms);
+        debug_surf!(
+            "[webview] resolve_styles done: {} styles elapsed={}ms style_budget={}",
+            styles.len(),
+            _style_elapsed_ms,
+            style_budget.unwrap_or(0)
+        );
 
         // Collect @keyframes blocks from all stylesheets so the animation
         // tick loop can look them up by name.  Only rebuild when sheets change.
@@ -2259,7 +2434,14 @@ impl WebView {
         // resolved styles so layout uses the interpolated values.
         self.apply_animation_overrides_to_styles(d, &mut styles);
 
-        self.update_resolved_style_cache(&styles, &pseudo_styles);
+        if style_budget.is_some() {
+            self.resolved_styles_cache.clear();
+            self.resolved_pseudo_styles = style::PseudoStyles::empty(0);
+            self.resolved_styles_viewport_width = -1;
+            self.resolved_styles_viewport_height = 0;
+        } else {
+            self.update_resolved_style_cache(&styles, &pseudo_styles);
+        }
 
         #[cfg(feature = "debug_surf")]
         debug_surf!(
@@ -2310,26 +2492,42 @@ impl WebView {
         unsafe {
             WEB_FONT_MAP = &self.web_fonts as *const _;
         }
-        let mut root = layout::layout(
+        let layout_budget = self.layout_budget_for_document(d);
+        let layout_start_ms = anyos_std::sys::uptime_ms();
+        let mut root = layout::layout_with_budget(
             d,
             &styles,
             &mut pseudo_styles,
             self.viewport_width,
             self.viewport_height as i32,
             &self.images,
+            layout_budget,
+            style_budget,
         );
         // Apply JS scroll offsets (element.scrollTop/scrollLeft) to layout boxes.
         if !self.scroll_offsets.is_empty() {
             Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
         }
         self.total_height_val = calc_total_height(&root);
+        self.deferred_full_layout_pending = layout_budget.is_some() || style_budget.is_some();
+        if !self.deferred_full_layout_pending {
+            self.clear_deferred_layout_state();
+        }
+        let _layout_elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(layout_start_ms);
         #[cfg(feature = "debug_surf")]
         {
             let box_count = count_layout_boxes(&root);
             debug_surf!(
-                "[webview] layout done: {} boxes, height={}",
+                "[webview] layout done: {} boxes, height={} elapsed={}ms",
                 box_count,
-                self.total_height_val
+                self.total_height_val,
+                _layout_elapsed_ms
+            );
+            debug_surf!(
+                "[webview] deferred budgets: pending={} style_budget={} layout_budget={}px",
+                self.deferred_full_layout_pending,
+                self.deferred_style_node_budget,
+                self.deferred_layout_budget_px
             );
             debug_surf!(
                 "[webview]   RSP=0x{:X} heap=0x{:X}",
@@ -2358,6 +2556,7 @@ impl WebView {
         // Render into canvas + update form controls.
         // Initial render starts at scroll_y=0.
         debug_surf!("[webview] renderer start");
+        let render_start_ms = anyos_std::sys::uptime_ms();
         self.pending_tiles = self.renderer.render(
             &root,
             &self.content_view,
@@ -2371,6 +2570,12 @@ impl WebView {
             self.link_cb_ud,
             self.submit_cb,
             self.submit_cb_ud,
+        );
+        let _render_elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(render_start_ms);
+        debug_surf!(
+            "[webview] renderer done: pending_tiles={} elapsed={}ms",
+            self.pending_tiles,
+            _render_elapsed_ms
         );
         self.last_render_scroll_y = 0;
         debug_surf!(

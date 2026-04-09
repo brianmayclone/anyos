@@ -26,6 +26,9 @@ mod workspace;
 mod fingerprint;
 mod jobs;
 mod scaffold;
+mod registry;
+mod semver;
+mod lockfile;
 mod fs;
 
 use prelude::*;
@@ -128,6 +131,15 @@ fn main() {
         }
         "bench" => {
             cmd_bench(&positional, &features, target);
+        }
+        "fetch" => {
+            cmd_fetch(&positional);
+        }
+        "update" => {
+            cmd_update(&positional);
+        }
+        "search" => {
+            cmd_search(&positional);
         }
         "doc" => {
             println!("acargo: doc generation not yet implemented");
@@ -280,6 +292,136 @@ fn print_tree_deps(nodes: &[resolve::BuildNode], idx: usize, prefix: &str, last:
     }
 }
 
+fn cmd_fetch(positional: &[&str]) {
+    let dir = if positional.is_empty() { "." } else { positional[0] };
+    println!("      Fetching dependencies for {}", dir);
+    registry::init_cache();
+    // Resolve triggers the fetch automatically
+    let nodes = resolve::resolve(dir);
+    let reg_count = nodes.iter().filter(|n| n.from_registry).count();
+    if reg_count > 0 {
+        println!("      Fetched {} registry crate(s)", reg_count);
+    } else {
+        println!("      No registry dependencies to fetch");
+    }
+}
+
+fn cmd_update(positional: &[&str]) {
+    let dir = if positional.is_empty() { "." } else { positional[0] };
+
+    if positional.len() > 1 && positional[0] == "--aggressive" {
+        // Clear all index caches to force re-fetch
+        registry::clean_cache();
+        println!("      Cleaned registry cache, re-fetching...");
+    } else {
+        // Just invalidate index entries to get fresh versions
+        let manifest_path = format!("{}/Cargo.toml", dir);
+        if let Some(toml_src) = fs::read_file(&manifest_path) {
+            let table = crate::toml::parse(&toml_src);
+            let mf = crate::manifest::parse(&table);
+            for dep in &mf.dependencies {
+                if dep.path.is_none() {
+                    registry::invalidate_index(&dep.name);
+                }
+            }
+        }
+    }
+
+    // Delete existing lock file to force re-resolution
+    let lock_path = format!("{}/Cargo.lock", dir);
+    if fs::file_exists(&lock_path) {
+        anyos_std::fs::unlink(&lock_path);
+    }
+
+    // Re-resolve
+    registry::init_cache();
+    let nodes = resolve::resolve(dir);
+    let reg_count = nodes.iter().filter(|n| n.from_registry).count();
+    println!("      Updated {} registry crate(s)", reg_count);
+}
+
+fn cmd_search(positional: &[&str]) {
+    if positional.is_empty() {
+        println!("Usage: acargo search <query>");
+        return;
+    }
+    let query = positional[0];
+    println!("      Searching crates.io for `{}`...", query);
+
+    // Use the crates.io API for search
+    libhttp_client::init();
+    let url = format!("https://crates.io/api/v1/crates?q={}&per_page=10", query);
+    if let Some(data) = libhttp_client::get(&url) {
+        if let Ok(text) = alloc::string::String::from_utf8(data) {
+            // Simple extraction of name+description from API response
+            // The response is JSON with a "crates" array
+            print_search_results(&text);
+        }
+    } else {
+        println!("acargo: error: could not reach crates.io");
+    }
+}
+
+fn print_search_results(json: &str) {
+    // Very basic extraction: find "name":"..." and "description":"..." pairs
+    // Full JSON parsing would be better but this works for display
+    let mut pos = 0;
+    let bytes = json.as_bytes();
+    let mut count = 0;
+
+    while pos < bytes.len() && count < 10 {
+        // Find next "name":"
+        if let Some(name_start) = json[pos..].find("\"name\":\"") {
+            let abs_start = pos + name_start + 8;
+            if let Some(name_end) = json[abs_start..].find('"') {
+                let name = &json[abs_start..abs_start + name_end];
+
+                // Find "max_version":"
+                let search_from = abs_start + name_end;
+                let version = if let Some(ver_start) = json[search_from..].find("\"max_version\":\"") {
+                    let abs_ver = search_from + ver_start + 15;
+                    if let Some(ver_end) = json[abs_ver..].find('"') {
+                        &json[abs_ver..abs_ver + ver_end]
+                    } else {
+                        "?"
+                    }
+                } else {
+                    "?"
+                };
+
+                // Find "description":"
+                let desc = if let Some(desc_start) = json[search_from..].find("\"description\":\"") {
+                    let abs_desc = search_from + desc_start + 15;
+                    if let Some(desc_end) = json[abs_desc..].find('"') {
+                        let d = &json[abs_desc..abs_desc + desc_end];
+                        if d.len() > 60 { &d[..60] } else { d }
+                    } else {
+                        ""
+                    }
+                } else {
+                    ""
+                };
+
+                // Skip internal fields
+                if !name.contains("_") || name.len() > 2 {
+                    println!("  {} = \"{}\"  # {}", name, version, desc);
+                    count += 1;
+                }
+
+                pos = abs_start + name_end + 1;
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    if count == 0 {
+        println!("  No results found");
+    }
+}
+
 fn cmd_metadata(positional: &[&str]) {
     let dir = if positional.is_empty() { "." } else { positional[0] };
     let manifest_path = format!("{}/Cargo.toml", dir);
@@ -339,6 +481,9 @@ fn print_usage() {
     println!("  new <name>     Create a new package");
     println!("  init [dir]     Initialize package in existing directory");
     println!("  clean          Remove build artifacts");
+    println!("  fetch          Download registry dependencies");
+    println!("  update         Update registry dependencies to latest");
+    println!("  search <query> Search crates.io");
     println!("  tree           Display dependency tree");
     println!("  metadata       Output package metadata as JSON");
     println!("  doc            Generate documentation");

@@ -1239,6 +1239,7 @@ const TAG_COUNT: usize = 128; // Tag enum has ~100 variants, 128 is safe
 /// we partition rules into buckets so that for a given `<div id="foo" class="bar baz">`
 /// we only check rules whose leaf selector requires `div`, `#foo`, `.bar`, or `.baz`
 /// — plus the "wildcard" rules that have no tag/id/class restriction.
+#[derive(Clone)]
 struct RuleIndex {
     /// `by_tag[tag_discriminant]` = rule indices whose leaf selector requires that tag.
     by_tag: [Vec<usize>; TAG_COUNT],
@@ -1250,6 +1251,47 @@ struct RuleIndex {
     wildcard: Vec<usize>,
     /// Total number of rules (for bitset sizing).
     rule_count: usize,
+}
+
+#[derive(Clone)]
+pub struct PreparedStylesheets {
+    rules: Vec<(Rule, usize)>,
+    rule_index: RuleIndex,
+}
+
+impl PreparedStylesheets {
+    pub fn prepare(
+        stylesheets: &[&Stylesheet],
+        viewport_width: i32,
+        viewport_height: i32,
+    ) -> Self {
+        let mut rules: Vec<(Rule, usize)> = Vec::new();
+        let mut order = 0usize;
+        for sheet in stylesheets {
+            for rule in &sheet.rules {
+                rules.push((rule.clone(), order));
+                order += 1;
+            }
+            for mr in &sheet.media_rules {
+                if crate::css::evaluate_media_query(&mr.query, viewport_width, viewport_height) {
+                    for rule in &mr.rules {
+                        rules.push((rule.clone(), order));
+                        order += 1;
+                    }
+                }
+            }
+        }
+        let refs: Vec<(&Rule, usize)> = rules.iter().map(|(rule, order)| (rule, *order)).collect();
+        let rule_index = RuleIndex::build(&refs);
+        Self { rules, rule_index }
+    }
+
+    fn as_rule_refs(&self) -> Vec<(&Rule, usize)> {
+        self.rules
+            .iter()
+            .map(|(rule, order)| (rule, *order))
+            .collect()
+    }
 }
 
 impl RuleIndex {
@@ -1916,6 +1958,53 @@ pub fn resolve_styles(
     viewport_height: i32,
     inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
 ) -> (Vec<ComputedStyle>, PseudoStyles) {
+    let prepared = PreparedStylesheets::prepare(stylesheets, viewport_width, viewport_height);
+    resolve_styles_prepared(dom, &prepared, viewport_width, viewport_height, inline_style_cache)
+}
+
+pub fn resolve_styles_prepared(
+    dom: &Dom,
+    prepared: &PreparedStylesheets,
+    viewport_width: i32,
+    viewport_height: i32,
+    inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
+) -> (Vec<ComputedStyle>, PseudoStyles) {
+    resolve_styles_prepared_impl(
+        dom,
+        prepared,
+        viewport_width,
+        viewport_height,
+        inline_style_cache,
+        None,
+    )
+}
+
+pub fn resolve_styles_prepared_budgeted(
+    dom: &Dom,
+    prepared: &PreparedStylesheets,
+    viewport_width: i32,
+    viewport_height: i32,
+    inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
+    node_budget: usize,
+) -> (Vec<ComputedStyle>, PseudoStyles) {
+    resolve_styles_prepared_impl(
+        dom,
+        prepared,
+        viewport_width,
+        viewport_height,
+        inline_style_cache,
+        Some(node_budget),
+    )
+}
+
+fn resolve_styles_prepared_impl(
+    dom: &Dom,
+    prepared: &PreparedStylesheets,
+    viewport_width: i32,
+    viewport_height: i32,
+    inline_style_cache: &mut Vec<Option<Vec<Declaration>>>,
+    node_budget: Option<usize>,
+) -> (Vec<ComputedStyle>, PseudoStyles) {
     // Store viewport dimensions for resolve_length() to resolve vh/vw units.
     unsafe {
         VIEWPORT_W = viewport_width;
@@ -1923,13 +2012,17 @@ pub fn resolve_styles(
     }
 
     let count = dom.nodes.len();
-    if inline_style_cache.len() < count {
-        inline_style_cache.resize_with(count, || None);
+    let resolved_count = node_budget.unwrap_or(count).min(count);
+    let budgeted = resolved_count < count;
+    if inline_style_cache.len() < resolved_count {
+        inline_style_cache.resize_with(resolved_count, || None);
     }
     crate::debug_surf!(
-        "[style] resolve_styles: {} nodes, {} stylesheets",
+        "[style] resolve_styles: {} nodes, {} stylesheets, resolved_count={}, budgeted={}",
         count,
-        stylesheets.len()
+        prepared.rules.len(),
+        resolved_count,
+        budgeted
     );
     #[cfg(feature = "debug_surf")]
     crate::debug_surf!(
@@ -1938,38 +2031,20 @@ pub fn resolve_styles(
         crate::debug_heap_pos()
     );
 
-    let mut styles: Vec<ComputedStyle> = Vec::with_capacity(count);
+    let mut styles: Vec<ComputedStyle> = Vec::with_capacity(resolved_count.max(1));
     let root_font_size: i32 = 16;
 
-    // ── Pre-collect all applicable CSS rules ONCE (node-independent). ──
-    let mut all_rules: Vec<(&Rule, usize)> = Vec::new();
-    let mut order = 0usize;
-    for sheet in stylesheets {
-        for rule in &sheet.rules {
-            all_rules.push((rule, order));
-            order += 1;
-        }
-        for mr in &sheet.media_rules {
-            if crate::css::evaluate_media_query(&mr.query, viewport_width, viewport_height) {
-                for rule in &mr.rules {
-                    all_rules.push((rule, order));
-                    order += 1;
-                }
-            }
-        }
-    }
+    let all_rules = prepared.as_rule_refs();
     crate::debug_surf!(
         "[style] collected {} applicable rules (once)",
         all_rules.len()
     );
 
-    // Build rule index for O(1) tag/id/class lookup (avoids O(nodes × rules) brute force).
-    let rule_index = RuleIndex::build(&all_rules);
     crate::debug_surf!(
         "[style] rule index: {} wildcard, {} id-buckets, {} class-buckets",
-        rule_index.wildcard.len(),
-        rule_index.by_id.len(),
-        rule_index.by_class.len()
+        prepared.rule_index.wildcard.len(),
+        prepared.rule_index.by_id.len(),
+        prepared.rule_index.by_class.len()
     );
 
     // Reusable scratch buffers for per-node matching (avoids repeated alloc/free).
@@ -1982,9 +2057,9 @@ pub fn resolve_styles(
     // var() references are resolved on-demand by walking the DOM parent chain,
     // eliminating the per-node clone that caused heap-stack collision on large
     // pages (~54 MiB for chip.de's 6228 nodes).
-    let mut custom_props: Vec<Vec<(String, String)>> = vec![Vec::new(); count];
+    let mut custom_props: Vec<Vec<(String, String)>> = vec![Vec::new(); resolved_count];
 
-    for id in 0..count {
+    for id in 0..resolved_count {
         #[cfg(feature = "debug_surf")]
         {
             if id < 5 || id % 1000 == 0 {
@@ -2113,7 +2188,7 @@ pub fn resolve_styles(
                 dom,
                 id,
                 &all_rules,
-                &rule_index,
+                &prepared.rule_index,
                 &mut candidates,
                 &mut seen_bitset,
                 &mut matches,
@@ -2191,6 +2266,12 @@ pub fn resolve_styles(
         styles.push(style);
     }
 
+    if budgeted {
+        let mut hidden = default_style();
+        hidden.display = Display::None;
+        styles.resize(count, hidden);
+    }
+
     crate::debug_surf!("[style] resolve_styles done: {} styles", styles.len());
     #[cfg(feature = "debug_surf")]
     crate::debug_surf!(
@@ -2203,7 +2284,7 @@ pub fn resolve_styles(
     let mut pseudo = PseudoStyles::empty(count);
     let mut pseudo_candidates: Vec<usize> = Vec::with_capacity(128);
     let mut pseudo_seen_bitset: Vec<u64> = Vec::with_capacity((all_rules.len() + 63) / 64);
-    for id in 0..count {
+    for id in 0..resolved_count {
         let node = &dom.nodes[id];
         let (tag, attrs) = match &node.node_type {
             NodeType::Element { tag, attrs } => (*tag, attrs),
@@ -2217,7 +2298,7 @@ pub fn resolve_styles(
             .iter()
             .find(|a| eq_ignore_ascii_case(&a.name, "class"))
             .map(|a| a.value.as_str());
-        rule_index.candidates(
+        prepared.rule_index.candidates(
             tag,
             id_attr,
             class_attr,

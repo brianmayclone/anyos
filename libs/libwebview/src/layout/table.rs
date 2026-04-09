@@ -588,6 +588,8 @@ fn layout_cell(
         images,
         viewport_w,
         0,
+        0,
+        None,
     );
 
     bx.height = height + bx.padding.top + bx.padding.bottom + h_border;

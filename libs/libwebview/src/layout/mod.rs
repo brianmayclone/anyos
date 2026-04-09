@@ -27,7 +27,7 @@ use crate::style::{
 use crate::ImageCache;
 
 // Re-export sub-module public items.
-use block::build_block;
+use block::{build_block, build_block_with_budget};
 pub use form::{collect_form_positions, FormFieldPos};
 use inline::{layout_inline_content, layout_inline_content_with_pseudo};
 
@@ -162,7 +162,12 @@ pub struct LayoutBox {
     /// Maximum Y extent of this subtree (relative to parent origin, like `y`).
     /// Computed by `compute_subtree_bottom()` after layout.  Used by the
     /// tile rasterizer to cull entire subtrees that are outside the tile.
+    pub subtree_top: i32,
     pub subtree_bottom: i32,
+    /// True when this subtree contains fixed or sticky positioning that can
+    /// move descendants independently of the normal parent offset chain.
+    /// Visible-band culling must stay conservative in that case.
+    pub subtree_has_viewport_positioned: bool,
     /// Scroll offset for overflow:auto/scroll containers (set via JS scrollTop).
     pub scroll_top: i32,
     /// Scroll offset for overflow:auto/scroll containers (set via JS scrollLeft).
@@ -290,7 +295,9 @@ impl LayoutBox {
             is_sticky: false,
             sticky_top: 0,
             backdrop_filter_blur: 0,
+            subtree_top: 0,
             subtree_bottom: 0,
+            subtree_has_viewport_positioned: false,
             clip_rect: None,
             transform_sx: 1000,
             transform_sy: 1000,
@@ -652,11 +659,20 @@ impl CounterValues {
 /// Each node's counter values reflect the state AFTER counter-reset / counter-increment
 /// of that node have been applied.
 pub fn compute_counter_values(dom: &Dom, styles: &[ComputedStyle]) -> CounterValues {
+    compute_counter_values_budgeted(dom, styles, None)
+}
+
+pub fn compute_counter_values_budgeted(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    node_limit: Option<usize>,
+) -> CounterValues {
     let n = dom.nodes.len();
-    let mut cv = CounterValues::empty(n);
+    let tracked = node_limit.unwrap_or(n).min(n);
+    let mut cv = CounterValues::empty(tracked);
     // Current counter state: list of (name, value). Most recent entry wins.
     let mut state: Vec<(String, i32)> = Vec::new();
-    walk_counters(dom, styles, 0, &mut state, &mut cv);
+    walk_counters(dom, styles, 0, &mut state, &mut cv, node_limit);
     cv
 }
 
@@ -666,7 +682,11 @@ fn walk_counters(
     node_id: NodeId,
     state: &mut Vec<(String, i32)>,
     cv: &mut CounterValues,
+    node_limit: Option<usize>,
 ) {
+    if node_limit.map(|limit| node_id >= limit).unwrap_or(false) {
+        return;
+    }
     if node_id < styles.len() {
         let style = &styles[node_id];
 
@@ -740,7 +760,7 @@ fn walk_counters(
 
     let children: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
     for child in children {
-        walk_counters(dom, styles, child, state, cv);
+        walk_counters(dom, styles, child, state, cv, node_limit);
     }
 }
 
@@ -810,6 +830,30 @@ pub fn layout(
     viewport_height: i32,
     images: &ImageCache,
 ) -> LayoutBox {
+    layout_with_budget(
+        dom,
+        styles,
+        pseudo,
+        viewport_width,
+        viewport_height,
+        images,
+        None,
+        None,
+    )
+}
+
+/// Build a layout tree from the DOM and computed styles, optionally stopping
+/// normal-flow traversal once the initial document Y exceeds `layout_budget_bottom`.
+pub fn layout_with_budget(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &mut PseudoStyles,
+    viewport_width: i32,
+    viewport_height: i32,
+    images: &ImageCache,
+    layout_budget_bottom: Option<i32>,
+    style_budget_nodes: Option<usize>,
+) -> LayoutBox {
     crate::debug_surf!(
         "[layout] layout start: {} nodes, viewport_width={}",
         dom.nodes.len(),
@@ -824,7 +868,7 @@ pub fn layout(
 
     // Pre-pass: compute CSS counter values and resolve counter() references in
     // pseudo-element content strings.
-    let cv = compute_counter_values(dom, styles);
+    let cv = compute_counter_values_budgeted(dom, styles, style_budget_nodes);
     let n = pseudo.before.len();
     for id in 0..n {
         if let Some(ref mut ps) = pseudo.before[id] {
@@ -913,6 +957,8 @@ pub fn layout(
             images,
             viewport_width,
             viewport_height,
+            0,
+            layout_budget_bottom,
         )
     };
 
@@ -931,23 +977,34 @@ pub fn layout(
     root
 }
 
-/// Compute `subtree_bottom` for every node in the tree.
+/// Compute subtree extents for every node in the tree.
 ///
-/// `subtree_bottom` is the maximum Y extent (relative to parent, same space
-/// as `y`) of the node and all its descendants.  The tile rasterizer uses
-/// this to skip entire subtrees that are above or below the tile strip.
+/// `subtree_top` / `subtree_bottom` are the minimum/maximum Y extents
+/// (relative to parent, same space as `y`) of the node and all its
+/// descendants. The tile rasterizer uses this to skip entire subtrees that
+/// are fully above or below the visible band.
 pub(crate) fn compute_subtree_bottom(bx: &mut LayoutBox) {
-    // subtree_bottom = max extent from the node's OWN top (y=0 local).
-    // In walk_pixels: absolute subtree bottom = abs_y + subtree_bottom.
+    // In renderer space:
+    //   absolute subtree top    = abs_y + subtree_top
+    //   absolute subtree bottom = abs_y + subtree_bottom
+    let mut min_t = 0;
     let mut max_b = bx.height;
+    let mut has_viewport_positioned = bx.is_fixed || bx.is_sticky;
     for child in &mut bx.children {
         compute_subtree_bottom(child);
+        let ct = child.y + child.subtree_top;
         let cb = child.y + child.subtree_bottom;
+        if ct < min_t {
+            min_t = ct;
+        }
         if cb > max_b {
             max_b = cb;
         }
+        has_viewport_positioned |= child.subtree_has_viewport_positioned;
     }
+    bx.subtree_top = min_t;
     bx.subtree_bottom = max_b;
+    bx.subtree_has_viewport_positioned = has_viewport_positioned;
 }
 
 // ---------------------------------------------------------------------------
@@ -971,8 +1028,10 @@ pub(super) fn layout_children(
     images: &ImageCache,
     viewport_w: i32,
     viewport_h: i32,
+    abs_y: i32,
+    layout_budget_bottom: Option<i32>,
 ) -> i32 {
-    layout_children_ex(
+    layout_children_ex_with_budget(
         dom,
         styles,
         pseudo,
@@ -985,12 +1044,14 @@ pub(super) fn layout_children(
         viewport_h,
         None,
         None,
+        abs_y,
+        layout_budget_bottom,
     )
 }
 
 /// Like `layout_children` but also accepts optional pre-built block pseudo-element boxes
 /// (from the parent's `::before` / `::after`) that must be placed INSIDE the flow.
-pub(super) fn layout_children_ex(
+pub(super) fn layout_children_ex_with_budget(
     dom: &Dom,
     styles: &[ComputedStyle],
     pseudo: &PseudoStyles,
@@ -1003,6 +1064,8 @@ pub(super) fn layout_children_ex(
     viewport_h: i32,
     before_block: Option<LayoutBox>,
     after_block: Option<LayoutBox>,
+    abs_y: i32,
+    layout_budget_bottom: Option<i32>,
 ) -> i32 {
     // Children start after the border and padding on the top-left.
     let bw = parent.border_width;
@@ -1026,6 +1089,13 @@ pub(super) fn layout_children_ex(
 
     let mut i = 0;
     while i < child_ids.len() {
+        if layout_budget_bottom
+            .map(|budget_bottom| abs_y + cursor_y >= budget_bottom && !parent.children.is_empty())
+            .unwrap_or(false)
+        {
+            break;
+        }
+
         let cid = child_ids[i];
         let style = &styles[cid];
 
@@ -1051,6 +1121,8 @@ pub(super) fn layout_children_ex(
                 images,
                 viewport_w,
                 viewport_h,
+                abs_y + cursor_y,
+                layout_budget_bottom,
             );
             cursor_y += h;
             i += 1;
@@ -1139,7 +1211,18 @@ pub(super) fn layout_children_ex(
                     viewport_w,
                 )
             } else {
-                build_block(
+                let child_margin_top = style.margin_top;
+                let collapsed = if prev_margin_bottom > child_margin_top {
+                    prev_margin_bottom
+                } else {
+                    child_margin_top
+                };
+                let child_y = if cursor_y == bw + parent.padding.top {
+                    cursor_y + child_margin_top
+                } else {
+                    cursor_y + collapsed - prev_margin_bottom
+                };
+                build_block_with_budget(
                     dom,
                     styles,
                     pseudo,
@@ -1148,6 +1231,8 @@ pub(super) fn layout_children_ex(
                     images,
                     viewport_w,
                     0,
+                    abs_y + child_y,
+                    layout_budget_bottom,
                 )
             };
 
@@ -1156,11 +1241,11 @@ pub(super) fn layout_children_ex(
             } else {
                 child_box.margin.top
             };
-            if cursor_y == bw + parent.padding.top {
-                cursor_y += child_box.margin.top;
+            let placed_y = if cursor_y == bw + parent.padding.top {
+                cursor_y + child_box.margin.top
             } else {
-                cursor_y += collapsed - prev_margin_bottom;
-            }
+                cursor_y + collapsed - prev_margin_bottom
+            };
 
             let mut placed = child_box;
             placed.x = bw + parent.padding.left + placed.margin.left + li;
@@ -1180,11 +1265,17 @@ pub(super) fn layout_children_ex(
                 }
             }
 
-            placed.y = cursor_y;
-            cursor_y += placed.height + placed.margin.bottom;
+            placed.y = placed_y;
+            cursor_y = placed_y + placed.height + placed.margin.bottom;
             prev_margin_bottom = placed.margin.bottom;
 
             parent.children.push(placed);
+            if layout_budget_bottom
+                .map(|budget_bottom| abs_y + cursor_y >= budget_bottom)
+                .unwrap_or(false)
+            {
+                break;
+            }
             i += 1;
         } else {
             // ── Inline run ──
@@ -1314,6 +1405,12 @@ pub(super) fn layout_children_ex(
                 parent.children.push(placed);
             }
             prev_margin_bottom = 0;
+            if layout_budget_bottom
+                .map(|budget_bottom| abs_y + cursor_y >= budget_bottom)
+                .unwrap_or(false)
+            {
+                break;
+            }
         }
     }
 

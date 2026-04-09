@@ -13,9 +13,9 @@ use crate::ImageCache;
 use super::flex::layout_flex;
 use super::grid::layout_grid;
 use super::{
-    edges_from, font_size_px, image_dimensions, is_bold, is_italic, layout_children,
-    layout_children_ex, link_href, list_marker_for, parse_attr_int, BoxType, FormFieldKind,
-    LayoutBox,
+    edges_from, font_size_px, image_dimensions, is_bold, is_italic,
+    layout_children_ex_with_budget, link_href, list_marker_for, parse_attr_int, BoxType,
+    FormFieldKind, LayoutBox,
 };
 
 /// Build a block-level layout box for a single DOM node.
@@ -34,6 +34,32 @@ pub fn build_block(
     // Used to resolve percentage heights. Per CSS spec, if the parent has no
     // definite height, `height: X%` computes to `auto`.
     parent_height: i32,
+) -> LayoutBox {
+    build_block_with_budget(
+        dom,
+        styles,
+        pseudo,
+        node_id,
+        available_width,
+        images,
+        viewport_w,
+        parent_height,
+        0,
+        None,
+    )
+}
+
+pub fn build_block_with_budget(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    available_width: i32,
+    images: &ImageCache,
+    viewport_w: i32,
+    parent_height: i32,
+    abs_y: i32,
+    layout_budget_bottom: Option<i32>,
 ) -> LayoutBox {
     let style = &styles[node_id];
     let tag = dom.tag(node_id);
@@ -542,7 +568,7 @@ pub fn build_block(
             None
         };
 
-        let ch = layout_children_ex(
+        let ch = layout_children_ex_with_budget(
             dom,
             styles,
             pseudo,
@@ -555,6 +581,8 @@ pub fn build_block(
             parent_height,
             before_box,
             after_box,
+            abs_y,
+            layout_budget_bottom,
         );
 
         // ── Parent-child top margin collapse (CSS §8.3.1) ──────────────────────

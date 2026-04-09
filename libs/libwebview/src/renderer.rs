@@ -374,6 +374,16 @@ impl DisplayList {
         let orig_abs_x = if bx.is_fixed { bx.x } else { offset_x + bx.x };
         let orig_abs_y = if bx.is_fixed { bx.y } else { offset_y + bx.y };
 
+        if let Some((y_start, y_end)) = self.cull_y_range {
+            if !bx.subtree_has_viewport_positioned {
+                let subtree_abs_top = orig_abs_y + bx.subtree_top;
+                let subtree_abs_bottom = orig_abs_y + bx.subtree_bottom;
+                if subtree_abs_bottom <= y_start || subtree_abs_top >= y_end {
+                    return;
+                }
+            }
+        }
+
         // Position: sticky — clamp Y so the element doesn't scroll above its
         // sticky threshold (top offset from the viewport top).  The element
         // stays in normal flow until scrolling would move it past the threshold,
@@ -2093,9 +2103,9 @@ impl Renderer {
         let immediate_rows =
             Self::prioritized_tile_rows(visible_first_row, visible_last_row, scroll_y, viewport_h);
 
-        let initial_visible_y_start = (visible_first_row * TILE_HEIGHT) as i32;
+        let initial_visible_y_start = (first_row * TILE_HEIGHT) as i32;
         let initial_visible_y_end =
-            (((visible_last_row + 1) * TILE_HEIGHT) as i32).min(doc_h as i32);
+            (((last_row + 1) * TILE_HEIGHT) as i32).min(doc_h as i32);
         let fast_initial_display_list =
             doc_h > viewport_h.saturating_mul(3) || root.subtree_bottom > viewport_h as i32 * 3;
 
@@ -2173,6 +2183,82 @@ impl Renderer {
         !self.display_list_complete || immediate_rows.len() < prioritized_rows.len()
     }
 
+    /// Paint-only refresh path.
+    ///
+    /// Reuses the existing display list / controls / hit regions and only
+    /// invalidates tile pixels for the current viewport. This is the fast path
+    /// for late image arrivals and pure paint mutations after layout is already
+    /// stable.
+    pub fn repaint(
+        &mut self,
+        root: &LayoutBox,
+        parent: &ui::View,
+        images: &ImageCache,
+        doc_w: u32,
+        doc_h: u32,
+        viewport_h: u32,
+        scroll_y: i32,
+        bg_color: u32,
+    ) -> bool {
+        let w = doc_w.max(1);
+        let clear_color = if bg_color != 0 { bg_color } else { 0xFFFFFFFF };
+
+        self.doc_w = w;
+        self.doc_h = doc_h;
+        self.last_scroll_y = scroll_y;
+
+        self.tile_cache.invalidate_all();
+        for tc in self.tile_canvases.drain(..) {
+            ui::Control::from_id(tc.canvas.id()).remove();
+        }
+
+        let (visible_first_row, visible_last_row) =
+            Self::visible_tile_row_range(scroll_y, viewport_h, doc_h);
+        let immediate_rows =
+            Self::prioritized_tile_rows(visible_first_row, visible_last_row, scroll_y, viewport_h);
+
+        if !self.display_list_complete {
+            let visible_y_start = (visible_first_row * TILE_HEIGHT) as i32;
+            let visible_y_end = (((visible_last_row + 1) * TILE_HEIGHT) as i32).min(doc_h as i32);
+            let needs_full_list = match self.display_list_y_range {
+                Some((built_y_start, built_y_end)) => {
+                    visible_y_start < built_y_start || visible_y_end > built_y_end
+                }
+                None => true,
+            };
+            if needs_full_list {
+                crate::debug_surf!(
+                    "[render] repaint upgrading visible display list to full list for [{}..{})",
+                    visible_y_start,
+                    visible_y_end
+                );
+                self.hit_regions.clear();
+                self.link_map.clear();
+                for fc in &mut self.form_controls {
+                    fc.seen = false;
+                }
+                self.walk_controls(root, 0, 0, parent, self.submit_cb, self.submit_cb_ud);
+                self.display_list = DisplayList::build(root);
+                self.display_list_complete = true;
+                self.display_list_y_range = None;
+            }
+        }
+
+        for row in immediate_rows.iter().copied() {
+            let tile_buf = self.rasterize_tile_dl(images, w, row, doc_h, clear_color);
+            self.tile_cache.insert(row, tile_buf);
+            self.create_tile_canvas(row, w, doc_h, parent);
+        }
+
+        for fc in &self.form_controls {
+            if fc.control_id != 0 && fc.seen {
+                ui::Control::from_id(fc.control_id).bring_to_front();
+            }
+        }
+
+        !self.display_list_complete
+    }
+
     // ─────────────────────────────────────────────────────────────────────
     // Scroll render (fast path)
     // ─────────────────────────────────────────────────────────────────────
@@ -2211,7 +2297,8 @@ impl Renderer {
         if !self.display_list_complete {
             let needs_full_list = match self.display_list_y_range {
                 Some((built_y_start, built_y_end)) => {
-                    render_y_start < built_y_start || render_y_end > built_y_end
+                    scroll_y < built_y_start
+                        || (scroll_y + viewport_h as i32) > built_y_end
                 }
                 None => true,
             };
@@ -2433,6 +2520,14 @@ impl Renderer {
         } else {
             (offset_x + bx.x, offset_y + bx.y)
         };
+
+        if !bx.subtree_has_viewport_positioned {
+            let subtree_abs_top = abs_y + bx.subtree_top;
+            let subtree_abs_bottom = abs_y + bx.subtree_bottom;
+            if subtree_abs_bottom <= visible_y_start || subtree_abs_top >= visible_y_end {
+                return;
+            }
+        }
 
         let overlaps_visible_band =
             abs_y < visible_y_end && abs_y + bx.height.max(1) > visible_y_start;

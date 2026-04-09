@@ -32,12 +32,29 @@ extern "C" fn anyos_tcp_recv(fd: i32, data: *mut u8, len: i32) -> i32 {
         return -1;
     }
     let buf = unsafe { core::slice::from_raw_parts_mut(data, len as usize) };
-    let n = net::tcp_recv(fd as u32, buf);
-    if n == u32::MAX {
-        -1
-    } else {
-        n as i32
+    let sock = fd as u32;
+
+    // Match the more robust BearSSL callback path used by libhttp:
+    // a transient tcp_recv timeout must not look like a hard TLS failure.
+    // Retry a few times when the socket still appears alive.
+    for _attempt in 0..3 {
+        let n = net::tcp_recv(sock, buf);
+        if n == 0 {
+            return 0;
+        }
+        if n != u32::MAX {
+            return n as i32;
+        }
+
+        let avail = net::tcp_recv_available(sock);
+        match avail {
+            u32::MAX => return -1,
+            0xFFFF_FFFE => return 0,
+            _ => anyos_std::process::sleep(100),
+        }
     }
+
+    -1
 }
 
 #[no_mangle]

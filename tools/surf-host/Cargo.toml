@@ -3,6 +3,9 @@ name = "surf-host"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+debug_surf = ["libwebview/debug_surf"]
+
 [dependencies]
 libwebview = { path = "../../libs/libwebview", features = ["host"] }
 libfont_client = { path = "../../libs/libfont_client", features = ["host"] }

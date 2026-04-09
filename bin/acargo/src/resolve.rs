@@ -1,10 +1,16 @@
 //! Dependency resolution and topological sorting.
+//!
+//! Resolves dependencies from both local paths and the crates.io registry.
+//! Path-based dependencies take priority; registry dependencies are fetched
+//! and cached automatically.
 
 use crate::prelude::*;
 use anyos_std::println;
 use anyos_std::collections::HashMap;
 use crate::manifest::{self, Manifest, CrateKind};
 use crate::toml;
+use crate::registry;
+use crate::lockfile::{self, Lockfile, LockedPackage};
 use crate::fs;
 
 /// A node in the dependency graph.
@@ -16,19 +22,25 @@ pub struct BuildNode {
     pub src_file: String,
     /// Indices of dependencies in the node list.
     pub deps: Vec<usize>,
+    /// Whether this crate was fetched from the registry.
+    pub from_registry: bool,
 }
 
 /// Resolve the full dependency graph starting from a root directory.
-/// Walks all path-based dependencies recursively.
+/// Walks all path-based dependencies recursively, and fetches registry
+/// dependencies from crates.io when no path is specified.
 pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
+    // Load existing Cargo.lock for version pinning
+    let lockfile = lockfile::read(root_dir);
+
     let mut nodes: Vec<BuildNode> = Vec::new();
     let mut name_to_idx: HashMap<String, usize> = HashMap::new();
 
-    // BFS queue: directories to process
-    let mut queue: Vec<String> = Vec::new();
-    queue.push(String::from(root_dir));
+    // BFS queue: (directory, from_registry)
+    let mut queue: Vec<(String, bool)> = Vec::new();
+    queue.push((String::from(root_dir), false));
 
-    while let Some(dir) = queue.pop() {
+    while let Some((dir, from_registry)) = queue.pop() {
         let manifest_path = format!("{}/Cargo.toml", dir);
         let toml_src = match fs::read_file(&manifest_path) {
             Some(s) => s,
@@ -49,12 +61,40 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
         let idx = nodes.len();
         name_to_idx.insert(mf.name.clone(), idx);
 
-        // Queue path-based dependencies
+        // Queue dependencies
         for dep in &mf.dependencies {
+            if name_to_idx.contains_key(&dep.name) {
+                continue;
+            }
+
             if let Some(ref dep_path) = dep.path {
+                // Path-based dependency — resolve relative to manifest dir
                 let resolved_dir = fs::resolve_path(&dir, dep_path);
-                if !name_to_idx.contains_key(&dep.name) {
-                    queue.push(resolved_dir);
+                queue.push((resolved_dir, false));
+            } else if let Some(ref version_req) = dep.version {
+                // Registry dependency — fetch from crates.io
+                let actual_name = dep.name.clone();
+
+                // Check lockfile for pinned version first
+                let resolved = if let Some(ref lf) = lockfile {
+                    if let Some(locked) = lf.find(&actual_name) {
+                        // Use pinned version
+                        let pinned_req = format!("={}", locked.version);
+                        registry::get_crate(&actual_name, &pinned_req)
+                    } else {
+                        registry::get_crate(&actual_name, version_req)
+                    }
+                } else {
+                    registry::get_crate(&actual_name, version_req)
+                };
+
+                match resolved {
+                    Some((src_dir, _entry)) => {
+                        queue.push((src_dir, true));
+                    }
+                    None => {
+                        println!("acargo: error: failed to resolve `{}` {}", actual_name, version_req);
+                    }
                 }
             }
         }
@@ -65,6 +105,7 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
             manifest: mf,
             src_file,
             deps: Vec::new(),
+            from_registry,
         });
     }
 
@@ -79,7 +120,46 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
         nodes[i].deps = dep_indices;
     }
 
+    // Write updated Cargo.lock if we resolved any registry dependencies
+    let has_registry_deps = nodes.iter().any(|n| n.from_registry);
+    if has_registry_deps {
+        update_lockfile(root_dir, &nodes);
+    }
+
     nodes
+}
+
+/// Update or create Cargo.lock with resolved versions.
+fn update_lockfile(root_dir: &str, nodes: &[BuildNode]) {
+    let mut lockfile = Lockfile::new();
+
+    for node in nodes {
+        let source = if node.from_registry {
+            Some("registry+https://github.com/rust-lang/crates.io-index".to_string())
+        } else {
+            None
+        };
+
+        let dep_names: Vec<String> = node.deps.iter()
+            .filter_map(|&idx| {
+                if idx < nodes.len() {
+                    Some(nodes[idx].name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        lockfile.upsert(LockedPackage {
+            name: node.name.clone(),
+            version: node.manifest.version.clone(),
+            source,
+            checksum: None,
+            dependencies: dep_names,
+        });
+    }
+
+    lockfile::write(root_dir, &lockfile);
 }
 
 /// Topological sort using Kahn's algorithm.

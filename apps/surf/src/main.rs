@@ -895,7 +895,7 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                     priority,
                     generation,
                 } => {
-                    if handle_image_done(
+                    let needs_layout = handle_image_done(
                         tab_index,
                         src,
                         body,
@@ -903,7 +903,10 @@ fn process_fetched_results(results: Vec<net_worker::FetchResult>) {
                         decoded_raster,
                         priority,
                         generation,
-                    ) {
+                    );
+                    if needs_layout {
+                        request_layout_refresh(tab_index);
+                    } else {
                         request_image_refresh(tab_index);
                     }
                 }
@@ -1554,8 +1557,8 @@ fn handle_font_done(
 
 /// Handle a completed image fetch: decode SVG or raster and add to cache.
 ///
-/// Returns `true` if the image was decoded and a relayout is needed.
-/// The caller batches relayouts to avoid redundant work.
+/// Returns `true` if the image decode can affect geometry and therefore needs
+/// a relayout instead of a paint-only refresh.
 fn handle_image_done(
     tab_index: usize,
     src: String,
@@ -1604,6 +1607,7 @@ fn handle_image_done(
     } else {
         resources::decode_raster_no_relayout(&body, &src, tab_index);
     }
+    let needs_layout = st.tabs[tab_index].webview.image_requires_layout_refresh(&src);
     if priority == net_worker::ImagePriority::Deferred
         && st.tabs[tab_index].deferred_images_inflight > 0
     {
@@ -1616,7 +1620,7 @@ fn handle_image_done(
         pump_deferred_images_for_tab(tab_index);
     }
     log_tab_load_state(tab_index, "after_image_done");
-    true
+    needs_layout
 }
 
 /// Handle a completed external script fetch.

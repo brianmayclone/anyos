@@ -243,6 +243,9 @@ Commands:
   new <name>            Create a new package
   init [dir]            Initialize package in existing directory
   clean                 Remove build artifacts
+  fetch                 Download registry dependencies
+  update                Update registry dependencies to latest
+  search <query>        Search crates.io
   tree                  Display dependency tree
   metadata              Output package metadata as JSON
   doc                   Generate documentation
@@ -259,6 +262,78 @@ Options:
   --lib                  Create a library project (with new/init)
   --                     Pass remaining args to the binary (with run)
 ```
+
+## Package Registry (crates.io)
+
+acargo downloads dependencies from crates.io when no `path` is specified:
+
+```toml
+[dependencies]
+serde = "1.0"                          # Fetched from crates.io
+serde_json = { version = "1.0" }       # Also from crates.io
+anyos_std = { path = "../../libs/stdlib" }  # Local path (preferred)
+```
+
+### How it works
+
+1. **Sparse Index**: acargo fetches crate metadata from `https://index.crates.io/` using the RFC 2789 sparse index protocol
+2. **SemVer Resolution**: Finds the newest non-yanked version matching the requirement (`^1.0` → latest `1.x.y`)
+3. **Download**: Fetches `.crate` files from `https://static.crates.io/crates/{name}/{name}-{version}.crate`
+4. **Extract**: Decompresses gzip tar archives using libzip
+5. **Cache**: All files cached in `/System/var/acargo/registry/`
+6. **Lock**: Resolved versions written to `Cargo.lock` for reproducible builds
+
+### Version Requirements (Cargo-compatible)
+
+| Syntax | Meaning |
+|--------|---------|
+| `^1.2.3` or `1.2.3` | >=1.2.3, <2.0.0 (caret, default) |
+| `^0.2.3` | >=0.2.3, <0.3.0 |
+| `~1.2.3` | >=1.2.3, <1.3.0 (tilde) |
+| `=1.2.3` | Exactly 1.2.3 |
+| `>=1.0, <2.0` | Explicit range |
+| `*` | Any version |
+
+### Commands
+
+```bash
+acargo fetch          # Download all registry dependencies
+acargo update         # Re-resolve to latest compatible versions
+acargo search serde   # Search crates.io
+```
+
+### Cache Layout
+
+```
+/System/var/acargo/registry/
+├── index/            # Sparse index cache (NDJSON per crate)
+│   ├── se/rd/serde
+│   └── to/ki/tokio
+├── cache/            # Downloaded .crate archives
+│   ├── serde-1.0.193.crate
+│   └── tokio-1.35.0.crate
+└── src/              # Extracted source directories
+    ├── serde-1.0.193/
+    │   ├── Cargo.toml
+    │   └── src/
+    └── tokio-1.35.0/
+```
+
+### Cargo.lock
+
+acargo generates and respects `Cargo.lock` for version pinning:
+
+```toml
+version = 3
+
+[[package]]
+name = "serde"
+version = "1.0.193"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abcdef..."
+```
+
+Use `acargo update` to refresh locked versions.
 
 ## Feature Resolution
 
