@@ -217,6 +217,20 @@ impl Vm {
         alloc::format!("__private_slot_{}", name)
     }
 
+    fn close_iterator_on_abrupt(&mut self, iter: &JsValue, original_exc: JsValue) -> JsValue {
+        let return_fn = self.get_property_with_proto(iter, "return");
+        if return_fn.is_function() {
+            let _ = self.call_value(&return_fn, &[], iter.clone());
+            if let Some(close_exc) = self.last_exception.take() {
+                return close_exc;
+            }
+            if let Some(close_exc) = self.pending_exception.take() {
+                return close_exc;
+            }
+        }
+        original_exc
+    }
+
     /// Create a local-slot vector for a chunk.  Non-captured locals get
     /// `LocalSlot::Direct` (zero heap alloc), captured locals get
     /// `LocalSlot::Cell` (shared Rc<RefCell> for closure capture).
@@ -1162,7 +1176,6 @@ impl Vm {
                             _ => false,
                         };
                         if has_private {
-                            // Check for getter accessor
                             if let Some(getter) = self.find_getter(&obj, &private_name) {
                                 self.invoke_function(&getter, &[], obj.clone());
                             } else {
@@ -1593,6 +1606,7 @@ impl Vm {
                     let iter = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let (value, has_more) = self.iter_next_for(&iter);
                     if let Some(exc) = self.pending_exception.take() {
+                        let exc = self.close_iterator_on_abrupt(&iter, exc);
                         if !self.handle_exception(exc) {
                             return JsValue::Undefined;
                         }
@@ -1605,18 +1619,24 @@ impl Vm {
                 Op::IterCollectRest => {
                     let iter = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let mut items = Vec::new();
+                    let mut resumed_via_exception = false;
                     loop {
                         let (value, has_more) = self.iter_next_for(&iter);
                         if let Some(exc) = self.pending_exception.take() {
+                            let exc = self.close_iterator_on_abrupt(&iter, exc);
                             if !self.handle_exception(exc) {
                                 return JsValue::Undefined;
                             }
+                            resumed_via_exception = true;
                             break;
                         }
                         if !has_more {
                             break;
                         }
                         items.push(value);
+                    }
+                    if resumed_via_exception {
+                        continue;
                     }
                     self.stack.push(iter);
                     self.stack.push(JsValue::new_array(items));
@@ -2812,6 +2832,16 @@ impl Vm {
                 locals: yield_locals,
                 stack: yield_stack,
             };
+        }
+
+        if let Some(exc) = self.pending_exception.take() {
+            self.stack.truncate(stack_base);
+            return native_generator::GeneratorResult::Threw(exc);
+        }
+
+        if let Some(exc) = self.last_exception.take() {
+            self.stack.truncate(stack_base);
+            return native_generator::GeneratorResult::Threw(exc);
         }
 
         // Normal return or exception
