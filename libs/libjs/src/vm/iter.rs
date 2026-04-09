@@ -95,6 +95,14 @@ impl Vm {
     ///
     /// The result is an iterator object that has a `.next()` method.
     pub fn create_iterator(&mut self, val: &JsValue) -> JsValue {
+        // Symbols are not iterable by default. Since symbols are internally
+        // encoded as strings in libjs, guard them here before string-like
+        // prototype lookup can accidentally expose String iteration semantics.
+        if super::is_symbol_value(val) {
+            self.pending_exception = Some(self.make_type_error("Symbol is not iterable"));
+            return self.make_internal_iterator(Vec::new());
+        }
+
         // 1. Try Symbol.iterator method
         let iter_fn = self.get_property_invoking_getter(val, WELL_KNOWN_ITERATOR);
         if matches!(iter_fn, JsValue::Empty) {

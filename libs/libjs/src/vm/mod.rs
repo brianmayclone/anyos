@@ -229,14 +229,30 @@ impl Vm {
         if let Some(close_exc) = self.pending_exception.take() {
             return close_exc;
         }
-        if return_fn.is_function() {
-            let _ = self.call_value(&return_fn, &[], iter.clone());
-            if let Some(close_exc) = self.last_exception.take() {
-                return close_exc;
-            }
-            if let Some(close_exc) = self.pending_exception.take() {
-                return close_exc;
-            }
+        if matches!(return_fn, JsValue::Undefined | JsValue::Null) {
+            return original_exc;
+        }
+        if !return_fn.is_function() {
+            return self.make_type_error("IteratorClose return method is not callable");
+        }
+
+        let result = self.call_value(&return_fn, &[], iter.clone());
+        let close_threw = self
+            .last_exception
+            .take()
+            .or_else(|| self.pending_exception.take());
+
+        // Per IteratorClose, an original throw completion wins over errors from
+        // the return() call itself once return() has been invoked.
+        if !matches!(original_exc, JsValue::Undefined) {
+            return original_exc;
+        }
+
+        if let Some(close_exc) = close_threw {
+            return close_exc;
+        }
+        if !matches!(result, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+            return self.make_type_error("IteratorClose return() must return an object");
         }
         original_exc
     }
@@ -1716,10 +1732,23 @@ impl Vm {
                     if let Some(exc) = self.last_exception.take() {
                         self.pending_exception = Some(exc);
                     }
-                    if return_fn.is_function() {
-                        let _ = self.call_value(&return_fn, &[], iter.clone());
+                    if matches!(return_fn, JsValue::Undefined | JsValue::Null) {
+                        continue;
+                    }
+                    if !return_fn.is_function() {
+                        self.pending_exception =
+                            Some(self.make_type_error("IteratorClose return method is not callable"));
+                    } else {
+                        let result = self.call_value(&return_fn, &[], iter.clone());
                         if let Some(exc) = self.last_exception.take() {
                             self.pending_exception = Some(exc);
+                        } else if !matches!(
+                            result,
+                            JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)
+                        ) {
+                            self.pending_exception = Some(
+                                self.make_type_error("IteratorClose return() must return an object"),
+                            );
                         }
                     }
                     if let Some(exc) = self.pending_exception.take() {
