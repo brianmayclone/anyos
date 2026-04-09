@@ -141,12 +141,11 @@ fn to_length_vm(vm: &mut Vm, val: &JsValue) -> usize {
     if n.is_nan() || n < 0.0 {
         0
     } else if !n.is_finite() {
-        usize::MAX
+        MAX_SAFE_INTEGER_LEN
     }
-    // Infinity → huge value (callers check for RangeError)
     else {
-        (n as u64).min(0x1F_FFFF_FFFF_FFFF) as usize
-    } // 2^53 - 1
+        (n as u64).min(MAX_SAFE_INTEGER_LEN as u64) as usize
+    }
 }
 
 fn coerce_array_like_this(vm: &mut Vm) -> Option<JsValue> {
