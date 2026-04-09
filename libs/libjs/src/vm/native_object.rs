@@ -684,17 +684,75 @@ fn same_value(a: &JsValue, b: &JsValue) -> bool {
     }
 }
 
+fn prototype_slots_equal(
+    current: &Option<Rc<RefCell<JsObject>>>,
+    new_proto: &Option<Rc<RefCell<JsObject>>>,
+) -> bool {
+    match (current, new_proto) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Rc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+fn would_create_prototype_cycle(
+    target: &Rc<RefCell<JsObject>>,
+    new_proto: &Option<Rc<RefCell<JsObject>>>,
+) -> bool {
+    let mut current = new_proto.clone();
+    let mut seen = Vec::new();
+    while let Some(obj) = current {
+        if Rc::ptr_eq(&obj, target) {
+            return true;
+        }
+        let ptr = Rc::as_ptr(&obj) as usize;
+        if seen.contains(&ptr) {
+            return false;
+        }
+        seen.push(ptr);
+        current = obj.borrow().prototype.clone();
+    }
+    false
+}
+
+pub(crate) fn set_prototype_of_internal(
+    vm: &mut Vm,
+    obj: &Rc<RefCell<JsObject>>,
+    new_proto: Option<Rc<RefCell<JsObject>>>,
+) -> bool {
+    let current = obj.borrow().prototype.clone();
+    if prototype_slots_equal(&current, &new_proto) {
+        return true;
+    }
+    if Rc::ptr_eq(obj, &vm.object_proto) {
+        return false;
+    }
+    if would_create_prototype_cycle(obj, &new_proto) {
+        return false;
+    }
+    obj.borrow_mut().prototype = new_proto;
+    true
+}
+
 /// `Object.setPrototypeOf(obj, proto)` — set __proto__.
-pub fn object_set_prototype_of(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn object_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let obj = args.first().cloned().unwrap_or(JsValue::Undefined);
     let proto = args.get(1).cloned().unwrap_or(JsValue::Null);
+    let new_proto = match &proto {
+        JsValue::Object(p) => Some(p.clone()),
+        JsValue::Null => None,
+        _ => {
+            let err = vm.make_type_error("Object prototype may only be an Object or null");
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
+    };
     if let JsValue::Object(o) = &obj {
-        let new_proto = match &proto {
-            JsValue::Object(p) => Some(p.clone()),
-            JsValue::Null => None,
-            _ => return obj,
-        };
-        o.borrow_mut().prototype = new_proto;
+        if !set_prototype_of_internal(vm, o, new_proto) {
+            let err = vm.make_type_error("Cannot set prototype");
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
     }
     obj
 }

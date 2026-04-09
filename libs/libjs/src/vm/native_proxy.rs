@@ -11,7 +11,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use super::{native_fn, Vm};
+use super::{native_fn, native_object, Vm};
 use crate::value::*;
 
 pub const PROXY_TAG: &str = "__proxy__";
@@ -414,18 +414,21 @@ pub fn reflect_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
     let proto = args.get(1).cloned().unwrap_or(JsValue::Null);
-    if let JsValue::Object(obj) = &target {
-        match &proto {
-            JsValue::Object(p) => {
-                obj.borrow_mut().prototype = Some(p.clone());
-            }
-            JsValue::Null => {
-                obj.borrow_mut().prototype = None;
-            }
-            _ => {}
+    let new_proto = match &proto {
+        JsValue::Object(p) => Some(p.clone()),
+        JsValue::Null => None,
+        _ => {
+            let err = vm.make_type_error("Object prototype may only be an Object or null");
+            vm.throw_native(err);
+            return JsValue::Undefined;
         }
+    };
+    if let JsValue::Object(obj) = &target {
+        return JsValue::Bool(native_object::set_prototype_of_internal(vm, obj, new_proto));
     }
-    JsValue::Bool(true)
+    let err = vm.make_type_error("Reflect.setPrototypeOf called on non-object");
+    vm.throw_native(err);
+    JsValue::Undefined
 }
 
 pub fn reflect_is_extensible(vm: &mut Vm, args: &[JsValue]) -> JsValue {
