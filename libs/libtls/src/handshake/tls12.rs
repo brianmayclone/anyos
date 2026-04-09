@@ -229,15 +229,22 @@ fn send_record(fd: u32, content_type: u8, data: &[u8], send_fn: fn(u32, &[u8]) -
         length: data.len() as u16,
     };
     let hdr = header.to_bytes();
-    if send_fn(fd, &hdr) < 0 || send_fn(fd, data) < 0 {
-        return Err(TlsError::SendFailed);
-    }
+    send_all_fn(fd, &hdr, send_fn)?;
+    send_all_fn(fd, data, send_fn)?;
     Ok(())
 }
 
 fn send_record_raw(fd: u32, data: &[u8], send_fn: fn(u32, &[u8]) -> i32) -> Result<(), TlsError> {
-    if send_fn(fd, data) < 0 {
-        return Err(TlsError::SendFailed);
+    send_all_fn(fd, data, send_fn)
+}
+
+fn send_all_fn(fd: u32, data: &[u8], send_fn: fn(u32, &[u8]) -> i32) -> Result<(), TlsError> {
+    let mut offset = 0;
+    while offset < data.len() {
+        let n = send_fn(fd, &data[offset..]);
+        if n < 0 { return Err(TlsError::SendFailed); }
+        if n == 0 { core::hint::spin_loop(); continue; }
+        offset += n as usize;
     }
     Ok(())
 }

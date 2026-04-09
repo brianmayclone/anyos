@@ -154,7 +154,7 @@ impl TlsConnection {
                 }
             };
 
-            if transport_send(self.fd, &record) < 0 {
+            if send_all(self.fd, &record).is_err() {
                 self.state = ConnState::Error;
                 self.error = TlsError::SendFailed;
                 return -1;
@@ -342,6 +342,27 @@ fn parse_cipher_suite(server_hello: &[u8]) -> Result<CipherSuite, TlsError> {
     CipherSuite::from_u16(suite_id).ok_or(TlsError::NoCipherSuite)
 }
 
+/// Send ALL bytes, retrying on partial sends. TCP may accept fewer bytes
+/// than requested when the send buffer is under pressure (many concurrent
+/// connections). Without this, the server would receive a truncated TLS
+/// record and either hang or send a fatal alert.
+fn send_all(fd: u32, data: &[u8]) -> Result<(), TlsError> {
+    let mut offset = 0;
+    while offset < data.len() {
+        let n = transport_send(fd, &data[offset..]);
+        if n < 0 {
+            return Err(TlsError::SendFailed);
+        }
+        if n == 0 {
+            // TCP buffer full, brief sleep and retry
+            transport_sleep(1);
+            continue;
+        }
+        offset += n as usize;
+    }
+    Ok(())
+}
+
 fn send_plaintext_record(fd: u32, content_type: u8, data: &[u8]) -> Result<(), TlsError> {
     let header = RecordHeader {
         content_type,
@@ -349,9 +370,8 @@ fn send_plaintext_record(fd: u32, content_type: u8, data: &[u8]) -> Result<(), T
         length: data.len() as u16,
     };
     let hdr = header.to_bytes();
-    if transport_send(fd, &hdr) < 0 || transport_send(fd, data) < 0 {
-        return Err(TlsError::SendFailed);
-    }
+    send_all(fd, &hdr)?;
+    send_all(fd, data)?;
     Ok(())
 }
 
@@ -498,9 +518,7 @@ fn do_tls13_continuation(
     finished_msg.extend_from_slice(&verify_data);
 
     let encrypted = tls13::encrypt_record(cipher_suite, &c_hs_key, &c_hs_iv, 0, &finished_msg, ContentType::Handshake as u8);
-    if transport_send(fd, &encrypted) < 0 {
-        return Err(TlsError::SendFailed);
-    }
+    send_all(fd, &encrypted)?;
 
     // Derive application traffic secrets BEFORE adding client Finished to transcript.
     // Per RFC 8446 Section 7.1: app traffic secrets use Transcript-Hash(CH..SF),
