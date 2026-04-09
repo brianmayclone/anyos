@@ -65,6 +65,7 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
 
     // We need to store all resolved objects for delta resolution
     let mut resolved: Vec<(Oid, Vec<u8>, u8)> = Vec::with_capacity(num_objects);
+    let mut offsets: Vec<usize> = Vec::with_capacity(num_objects);
 
     for _ in 0..num_objects {
         if pos >= data.len() {
@@ -79,7 +80,10 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
         match obj_type_raw {
             OBJ_COMMIT | OBJ_TREE | OBJ_BLOB | OBJ_TAG => {
                 // Non-delta object: inflate the data
-                let (inflated, consumed) = inflate_with_size(&data[pos..], uncompressed_size);
+                let (inflated, consumed) = match inflate::inflate_counted(&data[pos..]) {
+                    Some(r) => r,
+                    None => break,
+                };
                 pos += consumed;
 
                 let obj_type = match obj_type_raw {
@@ -92,6 +96,7 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
 
                 let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &inflated));
                 resolved.push((oid, inflated.clone(), obj_type_raw));
+                offsets.push(entry_start);
 
                 entries.push(PackEntry {
                     obj_type,
@@ -109,7 +114,10 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 let base_oid = Oid::from_bytes(base_sha);
                 pos += 20;
 
-                let (delta_data, consumed) = inflate_with_size(&data[pos..], uncompressed_size);
+                let (delta_data, consumed) = match inflate::inflate_counted(&data[pos..]) {
+                    Some(r) => r,
+                    None => break,
+                };
                 pos += consumed;
 
                 // Find base object and apply delta
@@ -122,6 +130,7 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                         &result,
                     ));
                     resolved.push((oid, result.clone(), *base_type));
+                    offsets.push(entry_start);
 
                     entries.push(PackEntry {
                         obj_type,
@@ -135,32 +144,37 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 let (offset, offset_bytes) = read_ofs_delta_offset(&data[pos..]);
                 pos += offset_bytes;
 
-                let (delta_data, consumed) = inflate_with_size(&data[pos..], uncompressed_size);
+                let (delta_data, consumed) = match inflate::inflate_counted(&data[pos..]) {
+                    Some(r) => r,
+                    None => break,
+                };
                 pos += consumed;
 
-                // Base object is at (entry_start - offset)
-                let base_pos = entry_start.checked_sub(offset);
-                if let Some(_base_pos) = base_pos {
-                    // Look up in resolved objects (by order)
-                    // OFS_DELTA references objects earlier in the pack
-                    let base_idx = entries.len().saturating_sub(1);
-                    if base_idx < resolved.len() {
-                        let (_, base_data, base_type) = &resolved[base_idx];
-                        let result = apply_delta(base_data, &delta_data);
-                        let obj_type = pack_type_to_object_type(*base_type);
+                // Base object is at absolute pack offset (entry_start - offset)
+                // We need to find which resolved object was at that offset.
+                // Use the offsets we recorded.
+                let base_abs = entry_start.saturating_sub(offset);
+                // Find the resolved object whose pack offset matches
+                if let Some((_, base_data, base_type)) = offsets.iter()
+                    .zip(resolved.iter())
+                    .find(|(off, _)| **off == base_abs)
+                    .map(|(_, res)| res)
+                {
+                    let result = apply_delta(base_data, &delta_data);
+                    let obj_type = pack_type_to_object_type(*base_type);
 
-                        let oid = Oid::from_bytes(sha1::hash_object(
-                            obj_type.as_str(),
-                            &result,
-                        ));
-                        resolved.push((oid, result.clone(), *base_type));
+                    let oid = Oid::from_bytes(sha1::hash_object(
+                        obj_type.as_str(),
+                        &result,
+                    ));
+                    resolved.push((oid, result.clone(), *base_type));
+                    offsets.push(entry_start);
 
-                        entries.push(PackEntry {
-                            obj_type,
-                            data: result,
-                            oid,
-                        });
-                    }
+                    entries.push(PackEntry {
+                        obj_type,
+                        data: result,
+                        oid,
+                    });
                 }
             }
             _ => {
@@ -213,20 +227,17 @@ fn read_pack_entry_header(data: &[u8]) -> (u8, usize, usize) {
         return (0, 0, 0);
     }
 
-    let c = data[0];
+    let mut c = data[0];
     let obj_type = (c >> 4) & 0x07;
     let mut size = (c & 0x0F) as usize;
     let mut shift = 4;
     let mut pos = 1;
 
     while c & 0x80 != 0 && pos < data.len() {
-        let c = data[pos];
+        c = data[pos];
         size |= ((c & 0x7F) as usize) << shift;
         shift += 7;
         pos += 1;
-        if c & 0x80 == 0 {
-            break;
-        }
     }
 
     (obj_type, size, pos)
@@ -504,29 +515,6 @@ pub fn demux_sideband(data: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn inflate_with_size(data: &[u8], expected_size: usize) -> (Vec<u8>, usize) {
-    // Try inflating progressively larger chunks until we get enough data
-    // or the inflate succeeds.
-    for try_len in [data.len(), data.len().min(expected_size * 2 + 256)] {
-        let chunk = &data[..core::cmp::min(try_len, data.len())];
-        if let Some(result) = inflate::inflate(chunk) {
-            // Estimate how many compressed bytes were consumed
-            // This is approximate — deflate doesn't tell us exactly
-            let consumed = estimate_compressed_size(chunk, result.len());
-            return (result, consumed);
-        }
-    }
-    (Vec::new(), 1) // Skip at least 1 byte to avoid infinite loop
-}
-
-fn estimate_compressed_size(compressed: &[u8], decompressed_size: usize) -> usize {
-    // Heuristic: try inflating with increasingly smaller input
-    // until it fails, to find the actual compressed size.
-    // Simple approximation: compressed is typically 30-70% of decompressed
-    let estimate = core::cmp::max(decompressed_size / 3, 2);
-    core::cmp::min(estimate, compressed.len())
-}
 
 fn pack_type_to_object_type(t: u8) -> ObjectType {
     match t {

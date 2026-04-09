@@ -41,6 +41,16 @@ impl<'a> BitReader<'a> {
         val
     }
 
+    /// Return the number of input bytes actually consumed.
+    /// Accounts for bits read-ahead that haven't been used.
+    fn bytes_consumed(&self) -> usize {
+        // pos is the next byte to read from input.
+        // bit_count is the number of bits still buffered (read but not consumed).
+        // Each buffered byte = 8 bits, so subtract the whole bytes worth of buffered bits.
+        let buffered_bytes = (self.bit_count / 8) as usize;
+        self.pos.saturating_sub(buffered_bytes)
+    }
+
     fn read_byte_aligned(&mut self) -> u8 {
         // Discard remaining bits in current byte
         self.bit_buf = 0;
@@ -184,6 +194,11 @@ const CL_ORDER: [usize; 19] = [
 
 /// Decompress DEFLATE data. Returns decompressed bytes or None on error.
 pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
+    inflate_counted(compressed).map(|(data, _)| data)
+}
+
+/// Decompress DEFLATE data. Returns (decompressed bytes, consumed input bytes).
+pub fn inflate_counted(compressed: &[u8]) -> Option<(Vec<u8>, usize)> {
     let mut reader = BitReader::new(compressed);
     let mut output = Vec::new();
 
@@ -274,7 +289,9 @@ pub fn inflate(compressed: &[u8]) -> Option<Vec<u8>> {
         }
     }
 
-    Some(output)
+    // Calculate consumed bytes: pos is how far we read, minus buffered bits
+    let consumed = reader.bytes_consumed();
+    Some((output, consumed))
 }
 
 fn decode_block(
