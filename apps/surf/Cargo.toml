@@ -13,6 +13,7 @@ libimage_client = { path = "../../libs/libimage_client" }
 libsvg_client = { path = "../../libs/libsvg_client" }
 libwebview = { path = "../../libs/libwebview" }
 libfont_client = { path = "../../libs/libfont_client" }
+libtls = { path = "../../libs/libtls" }
 
 [profile.dev]
 panic = "abort"

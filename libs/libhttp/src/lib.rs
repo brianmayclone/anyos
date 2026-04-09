@@ -1,10 +1,10 @@
 //! libhttp — HTTP/HTTPS client library for anyOS.
 //!
-//! Provides HTTP/1.1 GET, POST, and file download over HTTP and HTTPS (BearSSL TLS).
+//! Provides HTTP/1.1 GET, POST, and file download over HTTP and HTTPS (libtls).
 //! Built as a `.so` shared library loaded via `dl_open`/`dl_sym`.
 //!
 //! # Features
-//! - HTTP and HTTPS (TLS via BearSSL with trust-all validator)
+//! - HTTP and HTTPS (TLS via libtls, pure Rust, TLS 1.3 + 1.2)
 //! - Automatic redirect following (301, 302, 303, 307, 308)
 //! - Chunked transfer-encoding support
 //! - gzip/deflate content-encoding decompression

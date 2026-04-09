@@ -124,7 +124,7 @@ endif()
 # Architecture-specific workspace exclusions
 set(_WS_EXCLUDES "--exclude;anyos_kernel")
 if(ANYOS_ARCH STREQUAL "arm64")
-  # surf depends on BearSSL (x86_64-only) for TLS — exclude from ARM64 builds
+  # surf/libhttp TLS now pure Rust (libtls), but libhttp .so build is x86_64-only for now
   list(APPEND _WS_EXCLUDES "--exclude;surf")
 endif()
 
@@ -487,24 +487,15 @@ elseif(NOT ANYOS_ARCH STREQUAL "arm64")
   message(STATUS "CoreVM submodule not found at corevm/ — skipping libcorevm and BIOS")
 endif()
 
-# --- libhttp (custom: links BearSSL for HTTPS support) ---
-# BearSSL is x86_64-only; skip libhttp entirely on ARM64.
+# --- libhttp (custom: TLS via libtls, pure Rust) ---
 if(NOT ANYOS_ARCH STREQUAL "arm64")
   set(_LIBHTTP_SRC "${CMAKE_SOURCE_DIR}/libs/libhttp")
   set(_LIBHTTP_A "${SHLIB_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/liblibhttp.a")
   set(_LIBHTTP_SO "${CMAKE_BINARY_DIR}/shlib/libhttp.so")
-  set(_BEARSSL_X64_A "${CMAKE_SOURCE_DIR}/third_party/bearssl/build_x64/libbearssl_x64.a")
-  set(_BEARSSL_X64_SCRIPT "${CMAKE_SOURCE_DIR}/scripts/build_bearssl_x64.sh")
   file(GLOB_RECURSE _LIBHTTP_RS CONFIGURE_DEPENDS "${_LIBHTTP_SRC}/src/*.rs")
+  file(GLOB_RECURSE _LIBTLS_RS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/libs/libtls/src/*.rs")
 
-  add_custom_command(
-    OUTPUT ${_BEARSSL_X64_A}
-    COMMAND bash ${_BEARSSL_X64_SCRIPT}
-    DEPENDS ${_BEARSSL_X64_SCRIPT} ${_LIBHTTP_SRC}/anyos_tls.c
-    COMMENT "Building BearSSL for anyOS (x86_64)"
-  )
-
-  # Step 1: Cargo → static archive (.a)
+  # Step 1: Cargo → static archive (.a) — libtls is built as a Cargo dependency
   add_custom_command(
     OUTPUT ${_LIBHTTP_A}
     COMMAND ${CMAKE_COMMAND} -E env "RUSTFLAGS=-Awarnings"
@@ -516,25 +507,23 @@ if(NOT ANYOS_ARCH STREQUAL "arm64")
     DEPENDS
       ${_LIBHTTP_SRC}/Cargo.toml
       ${_LIBHTTP_SRC}/build.rs
-      ${_LIBHTTP_SRC}/anyos_tls.c
       ${_LIBHTTP_RS}
+      ${_LIBTLS_RS}
       ${USER_TARGET_JSON}
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    COMMENT "Building shared library: libhttp (Cargo)"
+    COMMENT "Building shared library: libhttp (Cargo + libtls)"
   )
 
-  # Step 2: anyld → .so (Rust .a + BearSSL .a, with the TLS wrapper coming
-  # from libbearssl_x64.a exactly once)
+  # Step 2: anyld → .so (pure Rust, no external C libraries needed)
   add_custom_command(
     OUTPUT ${_LIBHTTP_SO}
     COMMAND ${ANYLD_EXECUTABLE} -q
       -o ${_LIBHTTP_SO}
       -e ${_LIBHTTP_SRC}/exports.def
       ${_LIBHTTP_A}
-      ${_BEARSSL_X64_A}
-    DEPENDS ${_LIBHTTP_A} ${_BEARSSL_X64_A}
+    DEPENDS ${_LIBHTTP_A}
       ${_LIBHTTP_SRC}/exports.def ${ANYLD_EXECUTABLE}
-    COMMENT "Linking libhttp.so (anyld + BearSSL)"
+    COMMENT "Linking libhttp.so (anyld)"
   )
 
   # Step 3: Install to sysroot
@@ -735,7 +724,7 @@ add_app(calc        ${CMAKE_SOURCE_DIR}/apps/calc           "Calculator")
 add_app(fontviewer  ${CMAKE_SOURCE_DIR}/apps/fontviewer     "Font Viewer")
 add_app(clock       ${CMAKE_SOURCE_DIR}/apps/clock          "Clock")
 add_app(screenshot  ${CMAKE_SOURCE_DIR}/apps/screenshot     "Screenshot")
-# surf depends on BearSSL (x86_64-only) — skip on ARM64
+# surf TLS now pure Rust (libtls) — skip on ARM64 only because libhttp .so is x86_64
 if(NOT ANYOS_ARCH STREQUAL "arm64")
   add_app(surf        ${CMAKE_SOURCE_DIR}/apps/surf           "Surf")
 endif()

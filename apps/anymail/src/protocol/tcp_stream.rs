@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 //! Unified TCP/TLS stream for email protocols.
 //!
-//! Wraps `anyos_std::net::tcp_*` and the BearSSL TLS layer to provide
+//! Wraps `anyos_std::net::tcp_*` and libtls (pure Rust TLS) to provide
 //! a single interface for plain and encrypted connections.
 
 use alloc::string::String;
@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use anyos_std::net;
 
 // ---------------------------------------------------------------------------
-// TLS FFI (same pattern as surf/tls.rs)
+// TLS via libtls (pure Rust, replaces former BearSSL C FFI)
 // ---------------------------------------------------------------------------
 
 mod tls {
@@ -18,61 +18,35 @@ mod tls {
 
     pub type TlsHandle = u32;
 
-    #[no_mangle]
-    extern "C" fn anyos_tcp_send(fd: i32, data: *const u8, len: i32) -> i32 {
-        if data.is_null() || len <= 0 {
-            return -1;
-        }
-        let buf = unsafe { core::slice::from_raw_parts(data, len as usize) };
-        let n = net::tcp_send(fd as u32, buf);
-        if n == u32::MAX {
-            -1
-        } else {
-            n as i32
+    fn ensure_initialized() {
+        use core::sync::atomic::{AtomicBool, Ordering};
+        static INITIALIZED: AtomicBool = AtomicBool::new(false);
+        if !INITIALIZED.swap(true, Ordering::SeqCst) {
+            libtls::set_transport(tcp_send, tcp_recv, sleep, random);
         }
     }
 
-    #[no_mangle]
-    extern "C" fn anyos_tcp_recv(fd: i32, data: *mut u8, len: i32) -> i32 {
-        if data.is_null() || len <= 0 {
-            return -1;
-        }
-        let buf = unsafe { core::slice::from_raw_parts_mut(data, len as usize) };
-        let n = net::tcp_recv(fd as u32, buf);
-        if n == u32::MAX {
-            -1
-        } else {
-            n as i32
-        }
+    fn tcp_send(fd: u32, data: &[u8]) -> i32 {
+        let n = net::tcp_send(fd, data);
+        if n == u32::MAX { -1 } else { n as i32 }
     }
 
-    #[no_mangle]
-    extern "C" fn anyos_sleep(ms: i32) {
-        anyos_std::process::sleep(ms as u32);
+    fn tcp_recv(fd: u32, buf: &mut [u8]) -> i32 {
+        let n = net::tcp_recv(fd, buf);
+        if n == u32::MAX { -1 } else { n as i32 }
     }
 
-    #[no_mangle]
-    extern "C" fn anyos_random(buf: *mut u8, len: i32) -> i32 {
-        if buf.is_null() || len <= 0 {
-            return -1;
-        }
-        let slice = unsafe { core::slice::from_raw_parts_mut(buf, len as usize) };
-        anyos_std::sys::random(slice) as i32
+    fn sleep(ms: u32) {
+        anyos_std::process::sleep(ms);
     }
 
-    extern "C" {
-        fn tls_connect(fd: i32, host: *const u8) -> i32;
-        fn tls_send(handle: i32, data: *const u8, len: i32) -> i32;
-        fn tls_recv(handle: i32, data: *mut u8, len: i32) -> i32;
-        fn tls_close(handle: i32);
+    fn random(buf: &mut [u8]) -> u32 {
+        anyos_std::sys::random(buf) as u32
     }
 
     pub fn connect(fd: u32, host: &str) -> Result<TlsHandle, i32> {
-        let mut host_buf = [0u8; 256];
-        let len = host.len().min(host_buf.len() - 1);
-        host_buf[..len].copy_from_slice(&host.as_bytes()[..len]);
-        host_buf[len] = 0;
-        let handle = unsafe { tls_connect(fd as i32, host_buf.as_ptr()) };
+        ensure_initialized();
+        let handle = libtls::connect(fd, host);
         if handle > 0 {
             Ok(handle as TlsHandle)
         } else {
@@ -81,17 +55,15 @@ mod tls {
     }
 
     pub fn send(handle: TlsHandle, data: &[u8]) -> i32 {
-        unsafe { tls_send(handle as i32, data.as_ptr(), data.len() as i32) }
+        libtls::send(handle, data)
     }
 
     pub fn recv(handle: TlsHandle, buf: &mut [u8]) -> i32 {
-        unsafe { tls_recv(handle as i32, buf.as_mut_ptr(), buf.len() as i32) }
+        libtls::recv(handle, buf)
     }
 
     pub fn close(handle: TlsHandle) {
-        unsafe {
-            tls_close(handle as i32);
-        }
+        libtls::close(handle);
     }
 }
 

@@ -9,6 +9,7 @@ crate-type = ["staticlib"]
 [dependencies]
 libheap = { path = "../libheap" }
 libsyscall = { path = "../libsyscall" }
+libtls = { path = "../libtls" }
 
 [profile.dev]
 panic = "abort"

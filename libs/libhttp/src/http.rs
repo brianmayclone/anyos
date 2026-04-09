@@ -2,7 +2,7 @@
 //!
 //! Supports GET and POST requests with automatic redirect following,
 //! Content-Length and chunked transfer-encoding body reading,
-//! gzip/deflate content-encoding decompression, and HTTPS via BearSSL.
+//! gzip/deflate content-encoding decompression, and HTTPS via libtls.
 
 use alloc::string::String;
 use alloc::vec::Vec;
