@@ -614,10 +614,14 @@ pub fn object_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 None => JsValue::Null,
             }
         }
+        Some(JsValue::Array(_)) => JsValue::Object(vm.array_proto.clone()),
         Some(JsValue::Function(_)) => {
             // Functions inherit from Function.prototype
             JsValue::Object(vm.function_proto.clone())
         }
+        Some(JsValue::String(_)) => JsValue::Object(vm.string_proto.clone()),
+        Some(JsValue::Number(_)) => JsValue::Object(vm.number_proto.clone()),
+        Some(JsValue::Bool(_)) => JsValue::Object(vm.boolean_proto.clone()),
         _ => JsValue::Null,
     }
 }

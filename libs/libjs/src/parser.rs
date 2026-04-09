@@ -163,6 +163,10 @@ impl Parser {
                 self.pos += 1;
                 s
             }
+            TokenKind::PrivateIdent(s) => {
+                self.pos += 1;
+                s
+            }
             // Keywords are valid property names after `.` in member expressions.
             TokenKind::Delete => {
                 self.pos += 1;
@@ -1268,6 +1272,10 @@ impl Parser {
     fn parse_prop_key(&mut self) -> PropKey {
         match self.peek().clone() {
             TokenKind::Ident(s) => {
+                self.pos += 1;
+                PropKey::Ident(s)
+            }
+            TokenKind::PrivateIdent(s) => {
                 self.pos += 1;
                 PropKey::Ident(s)
             }

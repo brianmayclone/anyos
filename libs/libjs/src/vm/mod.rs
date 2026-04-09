@@ -1061,6 +1061,7 @@ impl Vm {
                     // (ES6 §14.2.17).  Only regular functions get a prototype.
                     if !is_arrow {
                         let proto = Rc::new(RefCell::new(JsObject::new()));
+                        proto.borrow_mut().prototype = Some(self.object_proto.clone());
                         proto.borrow_mut().set(
                             String::from("constructor"),
                             JsValue::Function(func_rc.clone()),
@@ -1202,10 +1203,7 @@ impl Vm {
                     // Private member brand check (ES2023 §7.3.29 PrivateGet)
                     } else if name.starts_with('#') {
                         let private_name = Self::mangle_private_name(&name);
-                        let has_private = match &obj {
-                            JsValue::Object(o) => o.borrow().has(&private_name),
-                            _ => false,
-                        };
+                        let has_private = self.has_private_member(&obj, &private_name);
                         if has_private {
                             if let Some(getter) = self.find_getter(&obj, &private_name) {
                                 self.invoke_function(&getter, &[], obj.clone());
@@ -1278,10 +1276,7 @@ impl Vm {
                     if name.starts_with('#') {
                         let private_name = Self::mangle_private_name(&name);
                         // Check if the target has this private name
-                        let has_own = match &obj {
-                            JsValue::Object(o) => o.borrow().has(&private_name),
-                            _ => false,
-                        };
+                        let has_own = self.has_private_member(&obj, &private_name);
                         if has_own {
                             // Field exists on own object — check if it's a method (not writable)
                             let is_method = match &obj {
@@ -1289,6 +1284,15 @@ impl Vm {
                                     matches!(o.borrow().get(&private_name), JsValue::Function(_))
                                         && !o.borrow().properties.get(&private_name)
                                             .map_or(false, |p| p.writable)
+                                }
+                                JsValue::Function(f) => {
+                                    let func = f.borrow();
+                                    matches!(
+                                        func.own_props.get(&private_name),
+                                        Some(JsValue::Function(_))
+                                    ) && !func
+                                        .own_props
+                                        .contains_key(&alloc::format!("__set_{}", private_name))
                                 }
                                 _ => false,
                             };
@@ -2379,6 +2383,19 @@ impl Vm {
         }
     }
 
+    fn has_private_member(&self, val: &JsValue, key: &str) -> bool {
+        match val {
+            JsValue::Object(obj) => obj.borrow().has(key),
+            JsValue::Function(fn_rc) => {
+                let f = fn_rc.borrow();
+                f.own_props.contains_key(key)
+                    || f.own_props.contains_key(&alloc::format!("__get_{}", key))
+                    || f.own_props.contains_key(&alloc::format!("__set_{}", key))
+            }
+            _ => false,
+        }
+    }
+
     /// Get property with prototype chain lookup.
     /// Check for a getter in an object's property and return it (without invoking).
     /// Returns `Some(getter_fn)` if found, `None` if it's a data property or not found.
@@ -2573,6 +2590,7 @@ impl Vm {
                     // Set constructor back to the function (ES2023 §10.2.4).
                     drop(func);
                     let proto = Rc::new(RefCell::new(JsObject::new()));
+                    proto.borrow_mut().prototype = Some(self.object_proto.clone());
                     proto
                         .borrow_mut()
                         .set(String::from("constructor"), JsValue::Function(f.clone()));
@@ -2914,6 +2932,9 @@ pub fn is_symbol_value(val: &JsValue) -> bool {
 pub fn get_proto_prop_rc(proto: &Rc<RefCell<JsObject>>, key: &str) -> JsValue {
     let p = proto.borrow();
     if let Some(prop) = p.properties.get(key) {
+        if prop.is_accessor() {
+            return prop.getter.as_ref().cloned().unwrap_or(JsValue::Undefined);
+        }
         return prop.value.clone();
     }
     if let Some(ref parent) = p.prototype {
