@@ -620,6 +620,10 @@ impl Vm {
                 }
                 continue;
             }
+            if let Some(exc) = self.last_exception.take() {
+                self.pending_exception = Some(exc);
+                continue;
+            }
 
             let frame_idx = self.frames.len() - 1;
             let ip = self.frames[frame_idx].ip;
@@ -2423,6 +2427,11 @@ impl Vm {
     /// calls the getter and returns its result. Exceptions from getters are propagated
     /// via `pending_exception` / `last_exception`.
     pub fn get_property_invoking_getter(&mut self, obj: &JsValue, key: &str) -> JsValue {
+        if let JsValue::Object(o) = obj {
+            if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                return native_proxy::proxy_get(self, obj, key).unwrap_or(JsValue::Undefined);
+            }
+        }
         if let Some(getter) = self.find_getter(obj, key) {
             let result = self.call_value(&getter, &[], obj.clone());
             // Propagate unhandled exceptions from getter call

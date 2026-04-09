@@ -113,7 +113,7 @@ pub fn proxy_get(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<JsValue> {
         ],
     ) {
         Some(val) => Some(val),
-        None => Some(vm.get_property_with_proto(&target, key)),
+        None => Some(vm.get_property_invoking_getter(&target, key)),
     }
 }
 

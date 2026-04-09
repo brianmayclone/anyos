@@ -3145,21 +3145,61 @@ impl Compiler {
 
                     // Getter/Setter: { get prop() { }, set prop(v) { } }
                     if prop.kind == PropKind::Get || prop.kind == PropKind::Set {
-                        if let PropKey::Ident(name) | PropKey::String(name) = &prop.key {
-                            self.emit(Op::Dup); // [obj, obj]
-                            let accessor_name = if prop.kind == PropKind::Get {
-                                alloc::format!("get {}", name)
-                            } else {
-                                alloc::format!("set {}", name)
-                            };
-                            self.compile_expr_with_name(&prop.value, &accessor_name); // [obj, obj, fn]
-                            let ci = self.add_const(Constant::String(name.clone()));
-                            if prop.kind == PropKind::Get {
-                                self.emit(Op::DefineGetter(ci)); // [obj, obj] (pops fn, peeks obj)
-                            } else {
-                                self.emit(Op::DefineSetter(ci)); // [obj, obj]
+                        match &prop.key {
+                            PropKey::Ident(name) | PropKey::String(name) => {
+                                self.emit(Op::Dup); // [obj, obj]
+                                let accessor_name = if prop.kind == PropKind::Get {
+                                    alloc::format!("get {}", name)
+                                } else {
+                                    alloc::format!("set {}", name)
+                                };
+                                self.compile_expr_with_name(&prop.value, &accessor_name); // [obj, obj, fn]
+                                let ci = self.add_const(Constant::String(name.clone()));
+                                if prop.kind == PropKind::Get {
+                                    self.emit(Op::DefineGetter(ci));
+                                } else {
+                                    self.emit(Op::DefineSetter(ci));
+                                }
+                                self.emit(Op::Pop); // [obj]
                             }
-                            self.emit(Op::Pop); // [obj] — pop the Dup'd reference
+                            PropKey::Number(n) => {
+                                self.emit(Op::Dup); // [obj, obj]
+                                let key_ci = self.add_const(Constant::Number(*n));
+                                self.emit(Op::LoadConst(key_ci)); // [obj, obj, key]
+                                let key_name = if n.fract() == 0.0 {
+                                    alloc::format!("{}", *n as i64)
+                                } else {
+                                    alloc::format!("{}", n)
+                                };
+                                let accessor_name = if prop.kind == PropKind::Get {
+                                    alloc::format!("get {}", key_name)
+                                } else {
+                                    alloc::format!("set {}", key_name)
+                                };
+                                self.compile_expr_with_name(&prop.value, &accessor_name); // [obj, obj, key, fn]
+                                if prop.kind == PropKind::Get {
+                                    self.emit(Op::DefineGetterComputed);
+                                } else {
+                                    self.emit(Op::DefineSetterComputed);
+                                }
+                                self.emit(Op::Pop); // [obj]
+                            }
+                            PropKey::Computed(key) => {
+                                self.emit(Op::Dup); // [obj, obj]
+                                self.compile_expr(key); // [obj, obj, key]
+                                let accessor_name = if prop.kind == PropKind::Get {
+                                    alloc::format!("get [computed]")
+                                } else {
+                                    alloc::format!("set [computed]")
+                                };
+                                self.compile_expr_with_name(&prop.value, &accessor_name); // [obj, obj, key, fn]
+                                if prop.kind == PropKind::Get {
+                                    self.emit(Op::DefineGetterComputed);
+                                } else {
+                                    self.emit(Op::DefineSetterComputed);
+                                }
+                                self.emit(Op::Pop); // [obj]
+                            }
                         }
                         continue;
                     }

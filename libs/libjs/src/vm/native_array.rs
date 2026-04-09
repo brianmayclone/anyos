@@ -7,6 +7,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+use super::native_proxy;
 use super::native_symbol;
 use super::Vm;
 use crate::value::*;
@@ -43,11 +44,8 @@ fn resolve_index(idx: f64, len: usize) -> usize {
     }
 }
 
-/// Snapshot all (index, value) pairs from the array — used by higher-order
-/// methods that must not be affected by mutations during iteration.
-fn snapshot_entries(a: &JsArray) -> Vec<(usize, JsValue)> {
-    a.elements.iter().map(|(&k, v)| (k, v.clone())).collect()
-}
+const MAX_SAFE_INTEGER_LEN: usize = 9_007_199_254_740_991;
+const SPARSE_INDEX_SCAN_THRESHOLD: usize = 4096;
 
 /// ToNumber with VM — calls valueOf/toString on Objects per ES2023 §7.1.4.
 /// Throws TypeError if ToPrimitive fails (both valueOf and toString return objects).
@@ -180,11 +178,34 @@ fn array_like_has_index(vm: &Vm, this_obj: &JsValue, idx: usize) -> bool {
     has_concat_property(vm, this_obj, &alloc::format!("{}", idx))
 }
 
-/// Get array-like entries from `this` after proper ToObject coercion.
-fn this_array_like(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>)> {
+/// Coerce `this` to an object and read its `length` once.
+fn this_array_like_len(vm: &mut Vm) -> Option<(JsValue, usize)> {
     let this_obj = coerce_array_like_this(vm)?;
     let len = array_like_length(vm, &this_obj)?;
+    Some((this_obj, len))
+}
+
+/// Snapshot present array-like entries from `this`.
+fn this_array_like_entries(vm: &mut Vm) -> Option<(JsValue, usize, Vec<(usize, JsValue)>)> {
+    let (this_obj, len) = this_array_like_len(vm)?;
     let mut entries = Vec::new();
+    if len > SPARSE_INDEX_SCAN_THRESHOLD {
+        let mut indices = Vec::new();
+        collect_numeric_keys_from_value(vm, &this_obj, len, &mut indices);
+        indices.sort_unstable();
+        indices.dedup();
+        for idx in indices {
+            let val = vm.get_property_invoking_getter(&this_obj, &alloc::format!("{}", idx));
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+            }
+            if vm.pending_exception.is_some() {
+                return None;
+            }
+            entries.push((idx, val));
+        }
+        return Some((this_obj, len, entries));
+    }
     for idx in 0..len {
         if !array_like_has_index(vm, &this_obj, idx) {
             continue;
@@ -536,7 +557,7 @@ pub fn array_copy_within(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // ═══════════════════════════════════════════════════════════
 
 pub fn array_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let (_this_obj, len, entries) = match this_array_like(vm) {
+    let (_this_obj, len, entries) = match this_array_like_entries(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -567,7 +588,7 @@ pub fn array_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_last_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let (_this_obj, len, entries) = match this_array_like(vm) {
+    let (_this_obj, len, entries) = match this_array_like_entries(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -599,7 +620,7 @@ pub fn array_last_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_includes(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let (_this_obj, len, entries) = match this_array_like(vm) {
+    let (_this_obj, len, entries) = match this_array_like_entries(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -657,7 +678,7 @@ pub fn array_join(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_slice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let (_this_obj, len, entries) = match this_array_like(vm) {
+    let (_this_obj, len, entries) = match this_array_like_entries(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -785,6 +806,9 @@ fn is_concat_spreadable(vm: &mut Vm, value: &JsValue) -> Option<bool> {
             if !matches!(spreadable, JsValue::Undefined) {
                 return Some(spreadable.to_boolean());
             }
+            if let Some(target) = native_proxy::proxy_target(value) {
+                return Some(matches!(target, JsValue::Array(_)));
+            }
             Some(matches!(value, JsValue::Array(_)))
         }
         _ => Some(false),
@@ -903,6 +927,87 @@ fn concat_set_result_length(target: &JsValue, length: usize) {
     }
 }
 
+fn collect_numeric_keys_from_object(
+    obj: &Rc<RefCell<JsObject>>,
+    len: usize,
+    out: &mut Vec<usize>,
+) {
+    let o = obj.borrow();
+    for key in o.properties.keys() {
+        if let Some(idx) = super::try_parse_index(key) {
+            if idx < len {
+                out.push(idx);
+            }
+        }
+    }
+    let proto = o.prototype.clone();
+    drop(o);
+    if let Some(proto) = proto {
+        collect_numeric_keys_from_object(&proto, len, out);
+    }
+}
+
+fn collect_numeric_keys_from_value(vm: &mut Vm, value: &JsValue, len: usize, out: &mut Vec<usize>) {
+    match value {
+        JsValue::Array(arr) => {
+            let a = arr.borrow();
+            for idx in a.elements.keys() {
+                if *idx < len {
+                    out.push(*idx);
+                }
+            }
+            for key in a.properties.keys() {
+                if let Some(idx) = super::try_parse_index(key) {
+                    if idx < len {
+                        out.push(idx);
+                    }
+                }
+            }
+            drop(a);
+            collect_numeric_keys_from_object(&vm.array_proto, len, out);
+        }
+        JsValue::Object(obj) => {
+            if obj.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                if let Some(keys) = native_proxy::proxy_own_keys(vm, value) {
+                    for key in keys {
+                        if let Some(idx) = super::try_parse_index(&key) {
+                            if idx < len {
+                                out.push(idx);
+                            }
+                        }
+                    }
+                }
+            } else {
+                collect_numeric_keys_from_object(obj, len, out);
+            }
+        }
+        JsValue::Function(f) => {
+            let func = f.borrow();
+            for key in func.own_props.keys() {
+                if let Some(idx) = super::try_parse_index(key) {
+                    if idx < len {
+                        out.push(idx);
+                    }
+                }
+            }
+            drop(func);
+            collect_numeric_keys_from_object(&vm.function_proto, len, out);
+        }
+        _ => {}
+    }
+}
+
+fn concat_sparse_indices(vm: &mut Vm, value: &JsValue, len: usize) -> Option<Vec<usize>> {
+    if len <= SPARSE_INDEX_SCAN_THRESHOLD {
+        return None;
+    }
+    let mut indices = Vec::new();
+    collect_numeric_keys_from_value(vm, value, len, &mut indices);
+    indices.sort_unstable();
+    indices.dedup();
+    Some(indices)
+}
+
 fn concat_append_spread(vm: &mut Vm, result: &JsValue, next_index: &mut usize, value: &JsValue) -> bool {
     let len_val = vm.get_property_invoking_getter(value, "length");
     if let Some(exc) = vm.last_exception.take() {
@@ -914,6 +1019,28 @@ fn concat_append_spread(vm: &mut Vm, result: &JsValue, next_index: &mut usize, v
     let len = to_length_vm(vm, &len_val);
     if vm.pending_exception.is_some() {
         return false;
+    }
+    if *next_index > MAX_SAFE_INTEGER_LEN.saturating_sub(len) {
+        let err = vm.make_type_error("Invalid array length");
+        vm.throw_native(err);
+        return false;
+    }
+    if let Some(indices) = concat_sparse_indices(vm, value, len) {
+        for idx in indices {
+            let key = alloc::format!("{}", idx);
+            let entry = vm.get_property_invoking_getter(value, &key);
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+            }
+            if vm.pending_exception.is_some() {
+                return false;
+            }
+            if !concat_define_result_index(vm, result, *next_index + idx, entry) {
+                return false;
+            }
+        }
+        *next_index += len;
+        return true;
     }
     for idx in 0..len {
         let key = alloc::format!("{}", idx);
@@ -1092,7 +1219,7 @@ fn call_callback_with_this(
 pub fn array_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let this_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, len, _entries) = match this_array_like(vm) {
+    let (this_obj, len) = match this_array_like_len(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -1135,7 +1262,7 @@ pub fn array_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_filter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let this_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, len, _entries) = match this_array_like(vm) {
+    let (this_obj, len) = match this_array_like_len(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -1173,7 +1300,7 @@ pub fn array_filter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let this_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, len, _entries) = match this_array_like(vm) {
+    let (this_obj, len) = match this_array_like_len(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -1206,7 +1333,7 @@ pub fn array_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn array_reduce(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, _len, entries) = match this_array_like(vm) {
+    let (this_obj, _len, entries) = match this_array_like_entries(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -1246,7 +1373,7 @@ pub fn array_reduce(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn array_reduce_right(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, _len, entries) = match this_array_like(vm) {
+    let (this_obj, _len, entries) = match this_array_like_entries(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -1292,7 +1419,7 @@ pub fn array_reduce_right(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_find(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let this_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, len, _entries) = match this_array_like(vm) {
+    let (this_obj, len) = match this_array_like_len(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -1329,7 +1456,7 @@ pub fn array_find(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_find_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let this_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, len, _entries) = match this_array_like(vm) {
+    let (this_obj, len) = match this_array_like_len(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -1366,7 +1493,7 @@ pub fn array_find_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_some(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let this_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, len, _entries) = match this_array_like(vm) {
+    let (this_obj, len) = match this_array_like_len(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -1403,7 +1530,7 @@ pub fn array_some(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_every(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let this_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, len, _entries) = match this_array_like(vm) {
+    let (this_obj, len) = match this_array_like_len(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -1440,7 +1567,7 @@ pub fn array_every(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 pub fn array_flat_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
     let this_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
-    let (this_obj, _len, entries) = match this_array_like(vm) {
+    let (this_obj, _len, entries) = match this_array_like_entries(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
