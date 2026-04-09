@@ -1359,6 +1359,7 @@ impl Compiler {
         // Convert to iterator using GetIterator (calls Symbol.iterator).
         self.emit(Op::GetIterator);
         // Stack: [..., iterator]
+        let has_rest = matches!(elements.last(), Some(Some(Pattern::Rest(_))));
 
         for elem in elements.iter() {
             match elem {
@@ -1369,56 +1370,8 @@ impl Compiler {
                     self.emit(Op::Pop); // [..., iter]
                 }
                 Some(Pattern::Rest(inner)) => {
-                    // Rest element: [...rest] — collect remaining into array
-                    // Stack: [..., iterator]
-                    self.emit(Op::NewArray(0)); // [..., iter, result_arr]
-                    let loop_start = self.offset();
-                    // Dup iterator (under the array): need [iter, arr, iter]
-                    // Use: load iter from below arr
-                    // Simpler: swap iter and arr, dup iter, swap back
-                    // Actually: just emit a loop that calls IterNext
-                    self.emit(Op::Dup); // [..., iter, arr, arr] -- wrong, need iter
-                                        // This is tricky with stack. Let me use a different approach:
-                                        // Store the array in a local, iterate, push elements.
-                                        // Actually, simplest: just use IterCollectRest or inline loop.
-                    self.emit(Op::Pop); // undo the Dup
-                                        // Approach: swap(iter, arr), dup iter, IterNext, if done break, else push to arr
-                                        // But we don't have Swap. Let me use a simpler approach:
-                                        // Pop the empty array, use iterator directly, collect into new array.
-                    self.emit(Op::Pop); // pop empty array
-                                        // Stack: [..., iterator]
-                                        // Emit: collect remaining from iterator into array
-                                        // We'll use a loop: dup iter, IterNext, check has_more, push to array
-                    let result_arr = self.scope_mut().add_local(String::from("__rest_arr__"));
-                    self.emit(Op::NewArray(0));
-                    self.emit(Op::StoreLocal(result_arr));
-                    self.emit(Op::Pop);
-                    // Loop
-                    let loop_top = self.offset();
-                    self.emit(Op::IterNext); // iter, value, has_more
-                    let exit = self.emit(Op::JumpIfFalse(0)); // if !has_more, exit
-                                                              // Push value into array
-                    self.emit(Op::LoadLocal(result_arr));
-                    // Stack: [..., iter, value, arr]
-                    // Need to swap value and arr... no Swap op.
-                    // Use StoreLocal to save value temporarily
-                    let tmp = self.scope_mut().add_local(String::from("__rest_tmp__"));
-                    // Stack: [..., iter, value, arr]
-                    self.emit(Op::Pop); // pop arr
-                    self.emit(Op::StoreLocal(tmp)); // save value
-                    self.emit(Op::Pop); // pop value (StoreLocal peeks)
-                    self.emit(Op::LoadLocal(result_arr)); // load arr
-                    self.emit(Op::LoadLocal(tmp)); // load value
-                    self.emit(Op::ArrayPush); // arr.push(value)
-                    self.emit(Op::Pop); // pop arr
-                    self.emit(Op::Jump(loop_top as i32 - self.offset() as i32 - 1));
-                    self.patch_jump(exit);
-                    self.emit(Op::Pop); // pop the value (undefined when done)
-                                        // Stack: [..., iterator]
-                    self.emit(Op::LoadLocal(result_arr));
-                    // Stack: [..., iterator, rest_array]
+                    self.emit(Op::IterCollectRest);
                     self.compile_pattern_binding(inner);
-                    // Stack: [..., iterator]
                 }
                 Some(pat) => {
                     // Normal element: get next value from iterator
@@ -1428,6 +1381,9 @@ impl Compiler {
                     // Stack: [..., iter]
                 }
             }
+        }
+        if !has_rest {
+            self.emit(Op::IteratorClose);
         }
         self.emit(Op::Pop); // pop the iterator
     }

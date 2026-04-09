@@ -1602,6 +1602,40 @@ impl Vm {
                     self.stack.push(value);
                     self.stack.push(JsValue::Bool(has_more));
                 }
+                Op::IterCollectRest => {
+                    let iter = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let mut items = Vec::new();
+                    loop {
+                        let (value, has_more) = self.iter_next_for(&iter);
+                        if let Some(exc) = self.pending_exception.take() {
+                            if !self.handle_exception(exc) {
+                                return JsValue::Undefined;
+                            }
+                            break;
+                        }
+                        if !has_more {
+                            break;
+                        }
+                        items.push(value);
+                    }
+                    self.stack.push(iter);
+                    self.stack.push(JsValue::new_array(items));
+                }
+                Op::IteratorClose => {
+                    let iter = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
+                    let return_fn = self.get_property_with_proto(&iter, "return");
+                    if return_fn.is_function() {
+                        let _ = self.call_value(&return_fn, &[], iter.clone());
+                        if let Some(exc) = self.last_exception.take() {
+                            self.pending_exception = Some(exc);
+                        }
+                        if let Some(exc) = self.pending_exception.take() {
+                            if !self.handle_exception(exc) {
+                                return JsValue::Undefined;
+                            }
+                        }
+                    }
+                }
 
                 // ── Exception handling ──
                 Op::TryCatch(catch_off, _finally_off) => {

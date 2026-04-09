@@ -133,6 +133,10 @@ pub enum Op {
     GetIterator,
     /// Advance iterator: pushes { value, done }.
     IterNext,
+    /// Collect all remaining values from an iterator into a new array.
+    IterCollectRest,
+    /// Invoke IteratorClose semantics via `.return()` when present.
+    IteratorClose,
 
     // ── Exception Handling ──
     /// Set up try-catch: TryCatch(catch_offset, finally_offset).
