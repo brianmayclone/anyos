@@ -1192,10 +1192,30 @@ impl Vm {
                         if let JsValue::Object(obj_rc) = &obj {
                             match &val {
                                 JsValue::Object(proto_rc) => {
-                                    obj_rc.borrow_mut().prototype = Some(proto_rc.clone());
+                                    if !native_object::set_prototype_of_internal(
+                                        self,
+                                        obj_rc,
+                                        Some(proto_rc.clone()),
+                                    ) {
+                                        let exc = self.make_type_error("Cannot set prototype");
+                                        self.stack.push(val);
+                                        if !self.handle_exception(exc) {
+                                            return JsValue::Undefined;
+                                        }
+                                        continue;
+                                    }
                                 }
                                 JsValue::Null => {
-                                    obj_rc.borrow_mut().prototype = None;
+                                    if !native_object::set_prototype_of_internal(
+                                        self, obj_rc, None,
+                                    ) {
+                                        let exc = self.make_type_error("Cannot set prototype");
+                                        self.stack.push(val);
+                                        if !self.handle_exception(exc) {
+                                            return JsValue::Undefined;
+                                        }
+                                        continue;
+                                    }
                                 }
                                 _ => {}
                             }
@@ -1384,10 +1404,30 @@ impl Vm {
                         if let JsValue::Object(obj_rc) = &obj {
                             match &val {
                                 JsValue::Object(proto_rc) => {
-                                    obj_rc.borrow_mut().prototype = Some(proto_rc.clone());
+                                    if !native_object::set_prototype_of_internal(
+                                        self,
+                                        obj_rc,
+                                        Some(proto_rc.clone()),
+                                    ) {
+                                        let exc = self.make_type_error("Cannot set prototype");
+                                        self.stack.push(val);
+                                        if !self.handle_exception(exc) {
+                                            return JsValue::Undefined;
+                                        }
+                                        continue;
+                                    }
                                 }
                                 JsValue::Null => {
-                                    obj_rc.borrow_mut().prototype = None;
+                                    if !native_object::set_prototype_of_internal(
+                                        self, obj_rc, None,
+                                    ) {
+                                        let exc = self.make_type_error("Cannot set prototype");
+                                        self.stack.push(val);
+                                        if !self.handle_exception(exc) {
+                                            return JsValue::Undefined;
+                                        }
+                                        continue;
+                                    }
                                 }
                                 _ => {}
                             }
