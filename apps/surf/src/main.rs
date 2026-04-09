@@ -81,8 +81,8 @@ enum RenderWork {
 }
 
 const IMAGE_RESULTS_PER_TAB_BATCH: usize = 24;
-const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 12;
-const DEFERRED_IMAGE_BATCH_SIZE: usize = 8;
+const MAX_DEFERRED_IMAGE_INFLIGHT: usize = 32;
+const DEFERRED_IMAGE_BATCH_SIZE: usize = 32;
 const MAX_DEFERRED_FONT_INFLIGHT: usize = 2;
 const DEFERRED_FONT_BATCH_SIZE: usize = 2;
 const MAX_BACKGROUND_RENDERS_PER_FLUSH: usize = 2;
@@ -444,12 +444,14 @@ fn execute_script_batch(tab_index: usize, scripts: Vec<String>, label: &str) {
         scripts.len(),
         label
     );
-    st.tabs[tab_index].webview.execute_js(&scripts);
+    let changed = st.tabs[tab_index].webview.execute_js(&scripts);
     for line in st.tabs[tab_index].webview.js_console() {
         crate::surf_log!("[surf-js] {}", line);
     }
     connect_pending_ws(tab_index);
-    request_layout_refresh(tab_index);
+    if changed {
+        request_image_refresh(tab_index);
+    }
 }
 
 fn script_preview(script: &str) -> String {
@@ -530,7 +532,6 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
             script_label,
             preview
         );
-        request_layout_refresh(tab_index);
         return;
     }
     if DEBUG_SKIP_BLOCKING_SLOT2 && label == "blocking/defer" && slot == 2 {
@@ -541,7 +542,6 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
             script_label,
             preview
         );
-        request_layout_refresh(tab_index);
         return;
     }
     let st = state();
@@ -553,7 +553,7 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
         preview
     );
     let (exec_start_ms, _) = surf_log_times();
-    st.tabs[tab_index].webview.execute_js(&[script]);
+    let changed = st.tabs[tab_index].webview.execute_js(&[script]);
     let exec_elapsed_ms = anyos_std::sys::uptime_ms().wrapping_sub(exec_start_ms);
     crate::surf_log!(
         "[surf] finished {} script [{}]: {} exec_ms={}",
@@ -566,7 +566,9 @@ fn execute_script_slot(tab_index: usize, slot: usize, script: String, label: &st
         crate::surf_log!("[surf-js] {}", line);
     }
     connect_pending_ws(tab_index);
-    request_layout_refresh(tab_index);
+    if changed {
+        request_image_refresh(tab_index);
+    }
 }
 
 fn execute_buffered_async_scripts(tab_index: usize) {
@@ -741,7 +743,6 @@ fn drain_results_from_mailboxes() -> Vec<net_worker::FetchResult> {
     let st = state();
     let mut all_results = Vec::new();
     for tab_index in 0..st.tabs.len() {
-        crate::surf_log!("[surf] checking mailbox for tab {}", tab_index);
         let mut tab_results = net_worker::drain_results_for_tab(tab_index);
         if !tab_results.is_empty() {
             crate::surf_log!(
@@ -1193,11 +1194,13 @@ fn handle_nav_done(
         st.tabs[tab_idx].webview.js_runtime().set_cookies("");
     }
 
-    // Parse and render the HTML document (without JS — scripts are executed
-    // after external scripts have been fetched, matching the surf-host flow).
+    // Parse and store the HTML document (without JS). We intentionally defer
+    // the first expensive full relayout until the stylesheet gate is ready so
+    // large pages do not spend seconds rendering a mostly-unstyled version
+    // only to immediately throw it away once CSS arrives.
     st.tabs[tab_idx].load_state.begin_parse();
     log_tab_load_state(tab_idx, "begin_parse");
-    st.tabs[tab_idx].webview.set_html_no_js(&body_text);
+    st.tabs[tab_idx].webview.set_html_dom_only(&body_text);
     crate::surf_log!(
         "[surf] html parsed: tab={} title_present={} dom_present={}",
         tab_idx,
@@ -1257,7 +1260,7 @@ fn handle_nav_done(
     // hundreds of images block external scripts in the single network worker.
     let pending_stylesheet_count = if let Some(dom) = st.tabs[tab_idx].webview.dom() {
         let css_count = resources::queue_stylesheets(dom, &base_url, tab_idx);
-        if resources::queue_inline_svgs(dom, tab_idx) {
+        if resources::queue_inline_svgs(dom, tab_idx) && css_count == 0 {
             request_layout_refresh(tab_idx);
         }
         css_count
@@ -1333,9 +1336,15 @@ fn handle_nav_done(
     }
 
     if let Some(dom) = st.tabs[tab_idx].webview.dom() {
-        resources::queue_images(dom, &base_url, tab_idx);
+        let startup_critical_only =
+            pending_stylesheet_count > 0 || st.tabs[tab_idx].load_state.pending_script_count > 0;
+        resources::queue_images(dom, &base_url, tab_idx, startup_critical_only);
     }
     log_tab_load_state(tab_idx, "after_queue_images");
+
+    if pending_stylesheet_count == 0 {
+        request_render(tab_idx, RenderWork::Layout, RenderSchedule::Immediate);
+    }
 
     // Run scripts only after the stylesheet chain has finished loading, and
     // flush any pending CSS layout before JS gets a chance to mutate the DOM.
@@ -1455,13 +1464,13 @@ fn handle_css_done(
     }
 
     if st.tabs[tab_index].load_state.pending_stylesheet_count == 0 {
-        let schedule = if st.tabs[tab_index].load_state.pending_script_count == 0 {
-            RenderSchedule::Immediate
-        } else {
-            // Avoid blocking the UI thread with a huge synchronous relayout
-            // while blocking/defer scripts are still in flight. We'll flush
-            // exactly once right before script execution.
-            RenderSchedule::Debounced
+        let schedule = {
+            let active = tab_index == st.active_tab;
+            if active {
+                RenderSchedule::Immediate
+            } else {
+                RenderSchedule::Debounced
+            }
         };
         request_render(tab_index, RenderWork::Layout, schedule);
     }

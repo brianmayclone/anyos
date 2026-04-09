@@ -394,6 +394,30 @@ impl WebView {
         self.js_runtime.reset();
     }
 
+    fn prime_inline_stylesheets_from_dom(&mut self, dom: &dom::Dom) {
+        self.inline_sheets.clear();
+        let mut inline_count = 0u32;
+        for (i, node) in dom.nodes.iter().enumerate() {
+            if let dom::NodeType::Element {
+                tag: dom::Tag::Style,
+                ..
+            } = &node.node_type
+            {
+                let css_text = dom.text_content(i);
+                if !css_text.is_empty() {
+                    self.inline_sheets.push(css::parse_stylesheet(&css_text));
+                    inline_count += 1;
+                }
+            }
+        }
+        self.inline_sheets_dirty = false;
+        self.keyframes_dirty = true;
+        debug_surf!(
+            "[webview] primed {} inline <style> blocks without initial relayout",
+            inline_count
+        );
+    }
+
     /// Add a decoded image to the cache. Will be displayed on next render.
     pub fn add_image(&mut self, src: &str, pixels: Vec<u32>, w: u32, h: u32) {
         self.images.add(String::from(src), pixels, w, h);
@@ -491,6 +515,30 @@ impl WebView {
         self.dom_val = Some(parsed_dom);
     }
 
+    /// Parse HTML and store the DOM without performing the initial layout pass.
+    ///
+    /// This is useful for hosts that want to discover subresources first and
+    /// only perform the first expensive relayout once the stylesheet chain is
+    /// complete, avoiding a large unstyled render followed by a second full
+    /// render moments later.
+    pub fn set_html_dom_only(&mut self, html_text: &str) {
+        debug_surf!("[webview] set_html_dom_only: {} bytes input", html_text.len());
+
+        let parsed_dom = html::parse(html_text);
+
+        self.inline_sheets.clear();
+        self.inline_sheets_dirty = true;
+        self.inline_style_cache.clear();
+        self.layout_root = None;
+        self.total_height_val = 0;
+        self.last_render_scroll_y = 0;
+        self.pending_tiles = false;
+        self.content_view.set_size(self.viewport_width.max(1) as u32, 1);
+
+        self.prime_inline_stylesheets_from_dom(&parsed_dom);
+        self.dom_val = Some(parsed_dom);
+    }
+
     /// Collect script entries from the current DOM in document order.
     ///
     /// Returns [`js::ScriptEntry::Inline`] for inline scripts and
@@ -508,21 +556,24 @@ impl WebView {
     ///
     /// `scripts` should contain the text of each script to execute, in
     /// document order (resolved from [`script_entries`]).
-    pub fn execute_js(&mut self, scripts: &[String]) {
+    pub fn execute_js(&mut self, scripts: &[String]) -> bool {
         let mut dom = match self.dom_val.take() {
             Some(d) => d,
-            None => return,
+            None => return false,
         };
 
         let url = self.current_url.clone();
         self.js_runtime.execute_script_sources(&dom, &url, scripts);
 
         // Apply DOM mutations and re-layout.
+        let mut changed = false;
         if !self.js_runtime.mutations.is_empty() {
             self.flush_pending_mutations(&mut dom);
+            changed = true;
         }
 
         self.dom_val = Some(dom);
+        changed
     }
 
     /// Run JS timers for `delta_ms` milliseconds and apply any resulting mutations.

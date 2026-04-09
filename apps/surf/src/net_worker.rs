@@ -183,8 +183,8 @@ const CRITICAL_WORKER_LANES: u32 = 2;
 const TLS_WORKER_LANES: u32 = 8;
 const SCRIPT_WORKER_LANES: u32 = 2;
 const FONT_WORKER_LANES: u32 = 2;
-const VISIBLE_WORKER_LANES: u32 = 4;
-const BACKGROUND_WORKER_LANES: u32 = 4;
+const VISIBLE_WORKER_LANES: u32 = 6;
+const BACKGROUND_WORKER_LANES: u32 = 8;
 
 static mut REQUEST_QUEUE_CRITICAL: Option<Vec<FetchRequest>> = None;
 static mut REQUEST_QUEUE_TLS: Option<Vec<FetchRequest>> = None;
@@ -569,16 +569,6 @@ pub(crate) fn handle_closed_tab(closed_idx: usize) {
 /// produce results soon.
 pub(crate) fn has_pending_activity() -> bool {
     if REQUESTS_IN_FLIGHT.load(Ordering::Relaxed) > 0 {
-        return true;
-    }
-
-    if WORKER_ACTIVE_CRITICAL.load(Ordering::Relaxed) > 0
-        || WORKER_ACTIVE_TLS.load(Ordering::Relaxed) > 0
-        || WORKER_ACTIVE_SCRIPT.load(Ordering::Relaxed) > 0
-        || WORKER_ACTIVE_FONT.load(Ordering::Relaxed) > 0
-        || WORKER_ACTIVE_VISIBLE.load(Ordering::Relaxed) > 0
-        || WORKER_ACTIVE_BACKGROUND.load(Ordering::Relaxed) > 0
-    {
         return true;
     }
 

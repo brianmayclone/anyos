@@ -222,6 +222,8 @@ pub(crate) struct DisplayList {
     clip_stack: Vec<(i32, i32, i32, i32)>,
     /// Maximum command height seen — used as search margin for binary search.
     max_h: i32,
+    /// Optional document-space Y cull range for fast initial paints.
+    cull_y_range: Option<(i32, i32)>,
 }
 
 impl DisplayList {
@@ -230,6 +232,7 @@ impl DisplayList {
             cmds: Vec::new(),
             max_h: 0,
             clip_stack: Vec::new(),
+            cull_y_range: None,
         }
     }
 
@@ -241,6 +244,22 @@ impl DisplayList {
             cmds: Vec::new(),
             max_h: 0,
             clip_stack: Vec::new(),
+            cull_y_range: None,
+        };
+        dl.flatten(root, 0, 0);
+        dl
+    }
+
+    /// Build only commands overlapping the given document-space Y band.
+    ///
+    /// This is used for the first visible paint so we can show a usable,
+    /// styled viewport before building the full display list on demand.
+    pub fn build_visible(root: &LayoutBox, y_start: i32, y_end: i32) -> Self {
+        let mut dl = DisplayList {
+            cmds: Vec::new(),
+            max_h: 0,
+            clip_stack: Vec::new(),
+            cull_y_range: Some((y_start, y_end)),
         };
         dl.flatten(root, 0, 0);
         dl
@@ -250,6 +269,7 @@ impl DisplayList {
     pub fn clear(&mut self) {
         self.cmds.clear();
         self.max_h = 0;
+        self.cull_y_range = None;
     }
 
     /// Rasterize all commands overlapping `[tile_y_start, tile_y_end)` into `buf`.
@@ -1716,6 +1736,11 @@ impl DisplayList {
 
     #[inline]
     fn push(&mut self, x: i32, y: i32, w: i32, h: i32, kind: DrawKind) {
+        if let Some((y_start, y_end)) = self.cull_y_range {
+            if y + h <= y_start || y >= y_end {
+                return;
+            }
+        }
         if h > self.max_h {
             self.max_h = h;
         }
@@ -1854,9 +1879,13 @@ pub(crate) struct Renderer {
     pub link_map: Vec<(u32, String)>,
     link_cb: Option<ui::Callback>,
     link_cb_ud: u64,
+    submit_cb: Option<ui::Callback>,
+    submit_cb_ud: u64,
     last_scroll_y: i32,
     /// The display list — built once after layout, used for all tile rasterization.
     display_list: DisplayList,
+    display_list_complete: bool,
+    display_list_y_range: Option<(i32, i32)>,
 }
 
 impl Renderer {
@@ -1892,8 +1921,12 @@ impl Renderer {
             link_map: Vec::new(),
             link_cb: None,
             link_cb_ud: 0,
+            submit_cb: None,
+            submit_cb_ud: 0,
             last_scroll_y: 0,
             display_list: DisplayList::new(),
+            display_list_complete: true,
+            display_list_y_range: None,
         }
     }
 
@@ -1943,6 +1976,8 @@ impl Renderer {
             fc.seen = false;
         }
         self.display_list.clear();
+        self.display_list_complete = true;
+        self.display_list_y_range = None;
     }
 
     /// Hard clear: destroy everything.
@@ -1963,8 +1998,12 @@ impl Renderer {
         self.tile_cache.invalidate_all();
         self.link_cb = None;
         self.link_cb_ud = 0;
+        self.submit_cb = None;
+        self.submit_cb_ud = 0;
         self.last_scroll_y = 0;
         self.display_list.clear();
+        self.display_list_complete = true;
+        self.display_list_y_range = None;
     }
 
     pub fn hit_test_link_at(&self, x: i32, doc_y: i32) -> Option<&str> {
@@ -2031,21 +2070,12 @@ impl Renderer {
         self.doc_h = doc_h;
         self.link_cb = link_cb;
         self.link_cb_ud = link_cb_ud;
+        self.submit_cb = submit_cb;
+        self.submit_cb_ud = submit_cb_ud;
         self.last_scroll_y = scroll_y;
 
         // 1. Invalidate tile cache (layout has changed).
         self.tile_cache.invalidate_all();
-
-        // 2. Walk full tree for form controls + hit regions.
-        self.walk_controls(root, 0, 0, parent, submit_cb, submit_cb_ud);
-
-        // 3. Build display list (flat, Y-sorted draw commands).
-        self.display_list = DisplayList::build(root);
-        crate::debug_surf!(
-            "[render] display list: {} commands, max_h={}",
-            self.display_list.cmds.len(),
-            self.display_list.max_h
-        );
 
         // 4. Compute visible tile rows.
         let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
@@ -2062,6 +2092,52 @@ impl Renderer {
             Self::visible_tile_row_range(scroll_y, viewport_h, doc_h);
         let immediate_rows =
             Self::prioritized_tile_rows(visible_first_row, visible_last_row, scroll_y, viewport_h);
+
+        let initial_visible_y_start = (visible_first_row * TILE_HEIGHT) as i32;
+        let initial_visible_y_end =
+            (((visible_last_row + 1) * TILE_HEIGHT) as i32).min(doc_h as i32);
+        let fast_initial_display_list =
+            doc_h > viewport_h.saturating_mul(3) || root.subtree_bottom > viewport_h as i32 * 3;
+
+        // 3.5 For very tall documents, build only the visible display list first.
+        // This makes the first styled paint arrive quickly; the full list is
+        // materialized later on demand when the user scrolls outside the
+        // initial viewport band.
+        if fast_initial_display_list {
+            self.walk_controls_visible(
+                root,
+                0,
+                0,
+                parent,
+                self.submit_cb,
+                self.submit_cb_ud,
+                initial_visible_y_start,
+                initial_visible_y_end,
+            );
+            self.display_list =
+                DisplayList::build_visible(root, initial_visible_y_start, initial_visible_y_end);
+            self.display_list_complete = false;
+            self.display_list_y_range = Some((initial_visible_y_start, initial_visible_y_end));
+            crate::debug_surf!(
+                "[render] initial visible display list: {} commands in [{}..{})",
+                self.display_list.cmds.len(),
+                initial_visible_y_start,
+                initial_visible_y_end
+            );
+        } else {
+            // 2. Walk full tree for form controls + hit regions.
+            self.walk_controls(root, 0, 0, parent, self.submit_cb, self.submit_cb_ud);
+
+            // 3. Build display list (flat, Y-sorted draw commands).
+            self.display_list = DisplayList::build(root);
+            self.display_list_complete = true;
+            self.display_list_y_range = None;
+            crate::debug_surf!(
+                "[render] display list: {} commands, max_h={}",
+                self.display_list.cmds.len(),
+                self.display_list.max_h
+            );
+        }
 
         // 5. Rasterize visible tiles using the display list.
         for row in immediate_rows.iter().copied() {
@@ -2094,7 +2170,7 @@ impl Renderer {
             self.hit_regions.len(),
             self.form_controls.len()
         );
-        immediate_rows.len() < prioritized_rows.len()
+        !self.display_list_complete || immediate_rows.len() < prioritized_rows.len()
     }
 
     // ─────────────────────────────────────────────────────────────────────
@@ -2103,7 +2179,7 @@ impl Renderer {
 
     pub fn render_scroll(
         &mut self,
-        _root: &LayoutBox,
+        root: &LayoutBox,
         parent: &ui::View,
         images: &ImageCache,
         doc_w: u32,
@@ -2131,6 +2207,44 @@ impl Renderer {
         };
         let prioritized_rows =
             Self::prioritized_tile_rows(first_row, last_row, scroll_y, viewport_h);
+
+        if !self.display_list_complete {
+            let needs_full_list = match self.display_list_y_range {
+                Some((built_y_start, built_y_end)) => {
+                    render_y_start < built_y_start || render_y_end > built_y_end
+                }
+                None => true,
+            };
+            if needs_full_list {
+                crate::debug_surf!(
+                    "[render] upgrading visible display list to full list for scroll range [{}..{})",
+                    render_y_start,
+                    render_y_end
+                );
+                self.hit_regions.clear();
+                self.link_map.clear();
+                for fc in &mut self.form_controls {
+                    fc.seen = false;
+                }
+                self.walk_controls(
+                    root,
+                    0,
+                    0,
+                    parent,
+                    self.submit_cb,
+                    self.submit_cb_ud,
+                );
+                self.display_list = DisplayList::build(root);
+                self.display_list_complete = true;
+                self.display_list_y_range = None;
+                self.tile_cache.invalidate_all();
+                for tc in self.tile_canvases.drain(..) {
+                    ui::Control::from_id(tc.canvas.id()).remove();
+                }
+            } else {
+                return false;
+            }
+        }
 
         let mut rasterized = 0usize;
         let mut pending = false;
@@ -2296,6 +2410,64 @@ impl Renderer {
 
         for child in &bx.children {
             self.walk_controls(child, abs_x, abs_y, parent, submit_cb, submit_cb_ud);
+        }
+    }
+
+    fn walk_controls_visible(
+        &mut self,
+        bx: &LayoutBox,
+        offset_x: i32,
+        offset_y: i32,
+        parent: &ui::View,
+        submit_cb: Option<ui::Callback>,
+        submit_cb_ud: u64,
+        visible_y_start: i32,
+        visible_y_end: i32,
+    ) {
+        if bx.visibility_hidden {
+            return;
+        }
+
+        let (abs_x, abs_y) = if bx.is_fixed {
+            (bx.x, bx.y)
+        } else {
+            (offset_x + bx.x, offset_y + bx.y)
+        };
+
+        let overlaps_visible_band =
+            abs_y < visible_y_end && abs_y + bx.height.max(1) > visible_y_start;
+
+        if overlaps_visible_band {
+            if let Some(ref text) = bx.text {
+                if !text.is_empty() && bx.form_field.is_none() {
+                    if let Some(ref url) = bx.link_url {
+                        self.hit_regions.push(HitRegion {
+                            x: abs_x,
+                            y: abs_y,
+                            w: bx.width,
+                            h: bx.height,
+                            kind: HitKind::Link(url.clone()),
+                        });
+                    }
+                }
+            }
+
+            if let Some(kind) = bx.form_field {
+                self.emit_form_control(kind, bx, abs_x, abs_y, parent, submit_cb, submit_cb_ud);
+            }
+        }
+
+        for child in &bx.children {
+            self.walk_controls_visible(
+                child,
+                abs_x,
+                abs_y,
+                parent,
+                submit_cb,
+                submit_cb_ud,
+                visible_y_start,
+                visible_y_end,
+            );
         }
     }
 

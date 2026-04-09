@@ -416,6 +416,7 @@ pub(crate) fn queue_images(
     dom: &libwebview::dom::Dom,
     base_url: &crate::http::Url,
     tab_index: usize,
+    startup_critical_only: bool,
 ) {
     let generation = crate::net_worker::current_generation();
     let mut count = 0u32;
@@ -424,8 +425,8 @@ pub(crate) fn queue_images(
     // `loading=lazy` stays out of the startup path entirely, while explicit
     // eager/high-priority images get a small bonus budget similar to browsers'
     // visible-first behaviour.
-    let mut immediate_budget = 8usize;
-    let mut high_priority_budget = 4usize;
+    let mut immediate_budget = if startup_critical_only { 0usize } else { 8usize };
+    let mut high_priority_budget = if startup_critical_only { 2usize } else { 4usize };
     let mut deferred: Vec<(i32, crate::tab::DeferredImageRequest)> = Vec::new();
 
     for (i, node) in dom.nodes.iter().enumerate() {
@@ -501,6 +502,13 @@ pub(crate) fn queue_images(
                 };
                 let should_start_immediately = if lazy_requested && !initial_viewport_hit {
                     false
+                } else if startup_critical_only {
+                    if high_priority && initial_viewport_hit && high_priority_budget > 0 {
+                        high_priority_budget -= 1;
+                        true
+                    } else {
+                        false
+                    }
                 } else if initial_viewport_hit && immediate_budget > 0 {
                     immediate_budget -= 1;
                     true
@@ -564,10 +572,11 @@ pub(crate) fn queue_images(
     if count > 0 {
         let deferred_count = count.saturating_sub(immediate_count);
         crate::surf_log!(
-            "[surf] image queue summary: total={} immediate={} deferred={} tab={}",
+            "[surf] image queue summary: total={} immediate={} deferred={} startup_critical_only={} tab={}",
             count,
             immediate_count,
             deferred_count,
+            startup_critical_only,
             tab_index
         );
         crate::ensure_net_poll_timer();
@@ -598,13 +607,26 @@ pub(crate) fn submit_deferred_images(tab_index: usize, max_batch: usize) -> usiz
         tab.deferred_images.drain(0..count).collect();
     tab.deferred_images_inflight += requests.len();
     for req in requests {
+        let dynamic_priority = if let Some((_, y, _, h)) = tab.webview.node_bounds(req.node_id) {
+            let top = scroll_y;
+            let bottom = scroll_y + viewport_h.max(1);
+            let near_above = top - viewport_h;
+            let near_below = bottom + viewport_h * 2;
+            if y < near_below && y + h > near_above {
+                crate::net_worker::ImagePriority::Viewport
+            } else {
+                req.priority
+            }
+        } else {
+            req.priority
+        };
         crate::net_worker::submit(crate::net_worker::FetchRequest::Image {
             tab_index,
             src: req.src,
             url: req.url,
             target_width: req.width.map(|v| v.max(1) as u32),
             target_height: req.height.map(|v| v.max(1) as u32),
-            priority: req.priority,
+            priority: dynamic_priority,
             generation: req.generation,
         });
     }
