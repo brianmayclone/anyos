@@ -39,26 +39,31 @@ impl Vm {
             let mut p = self.object_proto.borrow_mut();
             p.set_hidden(
                 String::from("hasOwnProperty"),
-                native_fn("hasOwnProperty", native_object::object_has_own_property),
+                native_fn_with_length("hasOwnProperty", native_object::object_has_own_property, 1),
             );
             p.set_hidden(
                 String::from("propertyIsEnumerable"),
-                native_fn(
+                native_fn_with_length(
                     "propertyIsEnumerable",
                     native_object::object_property_is_enumerable,
+                    1,
                 ),
             );
             p.set_hidden(
                 String::from("isPrototypeOf"),
-                native_fn("isPrototypeOf", native_object::object_is_prototype_of),
+                native_fn_with_length("isPrototypeOf", native_object::object_is_prototype_of, 1),
             );
             p.set_hidden(
                 String::from("toString"),
-                native_fn("toString", native_object::object_to_string),
+                native_fn_with_length("toString", native_object::object_to_string, 0),
+            );
+            p.set_hidden(
+                String::from("toLocaleString"),
+                native_fn_with_length("toLocaleString", native_object::object_to_locale_string, 0),
             );
             p.set_hidden(
                 String::from("valueOf"),
-                native_fn("valueOf", native_object::object_value_of),
+                native_fn_with_length("valueOf", native_object::object_value_of, 0),
             );
             p.set_hidden(
                 String::from("keys"),

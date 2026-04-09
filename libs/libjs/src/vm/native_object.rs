@@ -90,12 +90,39 @@ fn function_descriptor_flag(func: &JsFunction, key: &str, flag: &str, default: b
     }
 }
 
+fn to_property_key(vm: &mut Vm, val: &JsValue) -> Option<String> {
+    let key_val = match val {
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
+            vm.to_primitive_for_op(val.clone(), "string")
+        }
+        _ => val.clone(),
+    };
+    if vm.pending_exception.is_some() {
+        return None;
+    }
+    Some(match key_val {
+        JsValue::String(s) => s,
+        other => other.to_js_string(),
+    })
+}
+
 // ═══════════════════════════════════════════════════════════
 // Object.prototype methods
 // ═══════════════════════════════════════════════════════════
 
 pub fn object_has_own_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let key = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let key = match args.first() {
+        Some(v) => match to_property_key(vm, v) {
+            Some(k) => k,
+            None => return JsValue::Undefined,
+        },
+        None => String::new(),
+    };
+    if matches!(vm.current_this, JsValue::Null | JsValue::Undefined) {
+        let err = vm.make_type_error("Cannot convert undefined or null to object");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
     match &vm.current_this {
         JsValue::Object(obj) => {
             let o = obj.borrow();
@@ -202,7 +229,18 @@ pub fn object_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 /// `Object.prototype.propertyIsEnumerable(key)`
 pub fn object_property_is_enumerable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let key = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let key = match args.first() {
+        Some(v) => match to_property_key(vm, v) {
+            Some(k) => k,
+            None => return JsValue::Undefined,
+        },
+        None => String::new(),
+    };
+    if matches!(vm.current_this, JsValue::Null | JsValue::Undefined) {
+        let err = vm.make_type_error("Cannot convert undefined or null to object");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
     match &vm.current_this {
         JsValue::Object(obj) => {
             let o = obj.borrow();
@@ -239,6 +277,26 @@ pub fn object_property_is_enumerable(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         _ => JsValue::Bool(false),
     }
+}
+
+pub fn object_to_locale_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+    if matches!(vm.current_this, JsValue::Null | JsValue::Undefined) {
+        let err = vm.make_type_error("Cannot convert undefined or null to object");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    let to_string = vm.get_property_with_proto(&vm.current_this.clone(), "toString");
+    if !matches!(to_string, JsValue::Function(_)) {
+        let err = vm.make_type_error("toString is not callable");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    let result = vm.call_value(&to_string, &[], vm.current_this.clone());
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+        return JsValue::Undefined;
+    }
+    result
 }
 
 pub fn object_keys_method(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
