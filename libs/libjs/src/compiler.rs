@@ -1559,12 +1559,17 @@ impl Compiler {
         let back = loop_start as i32 - self.offset() as i32 - 1;
         self.emit(Op::Jump(back));
         self.patch_jump(exit_jump);
+        self.emit(Op::Pop); // normal completion: pop iterator without closing
 
-        self.emit(Op::Pop); // pop iterator
+        let break_close_pos = self.offset();
+        if is_of {
+            self.emit(Op::IteratorClose);
+        }
+        self.emit(Op::Pop); // abrupt completion via break: pop iterator after close
 
         let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
         for b in breaks {
-            self.patch_jump(b);
+            self.patch_jump_to_pos(b, break_close_pos);
         }
         self.scope_mut().break_jumps = old_breaks;
         self.end_scope();
@@ -1651,10 +1656,15 @@ impl Compiler {
         let back = loop_start as i32 - self.offset() as i32 - 1;
         self.emit(Op::Jump(back));
         self.patch_jump(exit_jump);
-        self.emit(Op::Pop);
+        self.emit(Op::Pop); // normal completion: pop iterator without closing
+        let break_close_pos = self.offset();
+        if is_of {
+            self.emit(Op::IteratorClose);
+        }
+        self.emit(Op::Pop); // abrupt completion via break: pop iterator after close
         let breaks: Vec<usize> = core::mem::take(&mut self.scope_mut().break_jumps);
         for b in breaks {
-            self.patch_jump(b);
+            self.patch_jump_to_pos(b, break_close_pos);
         }
         self.scope_mut().break_jumps = old_breaks;
         self.emit(Op::LoadLocal(slot));

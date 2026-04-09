@@ -231,6 +231,36 @@ impl Vm {
         original_exc
     }
 
+    fn is_active_iterator_candidate(&self, val: &JsValue) -> bool {
+        match val {
+            JsValue::Object(obj) => {
+                if obj.borrow().internal_tag.as_deref() == Some("__iterator__") {
+                    return true;
+                }
+                self.get_property_with_proto(val, "next").is_function()
+            }
+            JsValue::Array(_) | JsValue::Function(_) => {
+                self.get_property_with_proto(val, "next").is_function()
+            }
+            _ => false,
+        }
+    }
+
+    fn close_iterators_in_stack_range(&mut self, start: usize) {
+        if start >= self.stack.len() {
+            return;
+        }
+        let values: Vec<JsValue> = self.stack[start..].to_vec();
+        for val in values.iter().rev() {
+            if !self.is_active_iterator_candidate(val) {
+                continue;
+            }
+            let _ = self.close_iterator_on_abrupt(val, JsValue::Undefined);
+            let _ = self.pending_exception.take();
+            let _ = self.last_exception.take();
+        }
+    }
+
     /// Create a local-slot vector for a chunk.  Non-captured locals get
     /// `LocalSlot::Direct` (zero heap alloc), captured locals get
     /// `LocalSlot::Cell` (shared Rc<RefCell> for closure capture).
@@ -930,6 +960,7 @@ impl Vm {
                     }
                     let frame = self.frames.pop().unwrap();
                     let is_async_fn = frame.chunk.is_async;
+                    self.close_iterators_in_stack_range(frame.stack_base);
                     self.stack.truncate(frame.stack_base);
                     // `new` calls: constructor return value semantics (ES2023 §9.2.2 step 13).
                     let ret = if frame.is_constructor
@@ -2759,6 +2790,7 @@ impl Vm {
         if let Some(handler) = self.try_handlers.last() {
             if handler.frame_depth > self.run_target_depth {
                 let handler = self.try_handlers.pop().unwrap();
+                self.close_iterators_in_stack_range(handler.stack_depth);
                 self.stack.truncate(handler.stack_depth);
                 while self.frames.len() > handler.frame_depth {
                     self.frames.pop();
@@ -2772,6 +2804,9 @@ impl Vm {
         }
         let detail = self.describe_exception(&val);
         let stack_info = self.frame_stack_summary(8);
+        if let Some(frame) = self.frames.last() {
+            self.close_iterators_in_stack_range(frame.stack_base);
+        }
         self.log_engine(&format!(
             "[libjs] WARN: unhandled exception: {} [{}]",
             detail, stack_info
