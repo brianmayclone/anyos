@@ -172,6 +172,11 @@ pub fn object_is_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // `this` is the candidate prototype; arg[0] is the object whose chain we walk.
     let self_rc = match &vm.current_this {
         JsValue::Object(rc) => rc.clone(),
+        JsValue::Null | JsValue::Undefined => {
+            let err = vm.make_type_error("Cannot convert undefined or null to object");
+            vm.throw_native(err);
+            return JsValue::Undefined;
+        }
         _ => return JsValue::Bool(false),
     };
 
@@ -179,6 +184,7 @@ pub fn object_is_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // Functions inherit from function_proto, so treat them specially.
     let mut maybe_proto: Option<Rc<RefCell<JsObject>>> = match args.first() {
         Some(JsValue::Object(obj)) => obj.borrow().prototype.clone(),
+        Some(JsValue::Array(_)) => Some(vm.array_proto.clone()),
         // Functions' implicit [[Prototype]] is Function.prototype.
         Some(JsValue::Function(_)) => Some(vm.function_proto.clone()),
         _ => return JsValue::Bool(false),
