@@ -199,16 +199,18 @@ pub fn do_handshake(
     send_record_raw(fd, &encrypted, send_fn)?;
     client_seq += 1;
 
-    // Add client Finished to transcript
+    // 9. Derive application traffic secrets
+    // Per RFC 8446 Section 7.1: app traffic secrets use Transcript-Hash(CH..SF),
+    // i.e. ClientHello through Server Finished — NOT including Client Finished.
+    let transcript_hash_for_app = compute_hash(&transcript, cipher_suite);
+
+    // Now add client Finished to transcript (for resumption, not used for app keys)
     transcript.extend_from_slice(&finished_msg);
 
-    // 9. Derive application traffic secrets
     let derived_secret2 = derive_secret(cipher_suite, &handshake_secret, b"derived", &empty_hash);
     let master_secret = hkdf_extract(cipher_suite, &derived_secret2, &zero_key);
-
-    let transcript_hash_final = compute_hash(&transcript, cipher_suite);
-    let c_app_secret = derive_secret(cipher_suite, &master_secret, b"c ap traffic", &transcript_hash_final);
-    let s_app_secret = derive_secret(cipher_suite, &master_secret, b"s ap traffic", &transcript_hash_final);
+    let c_app_secret = derive_secret(cipher_suite, &master_secret, b"c ap traffic", &transcript_hash_for_app);
+    let s_app_secret = derive_secret(cipher_suite, &master_secret, b"s ap traffic", &transcript_hash_for_app);
 
     let client_app_key = hkdf_expand_label(cipher_suite, &c_app_secret, b"key", &[], cipher_suite.key_len());
     let client_app_iv = hkdf_expand_label(cipher_suite, &c_app_secret, b"iv", &[], cipher_suite.iv_len());

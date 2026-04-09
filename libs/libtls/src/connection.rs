@@ -205,43 +205,54 @@ impl TlsConnection {
             return copy_len as i32;
         }
 
-        // Read and decrypt a TLS record
-        let mut header_buf = [0u8; RECORD_HEADER_SIZE];
-        if recv_exact_raw(self.fd, &mut header_buf).is_err() {
-            return 0; // EOF
-        }
-        let header = RecordHeader::parse(&header_buf);
-        let mut record_body = alloc::vec![0u8; header.length as usize];
-        if recv_exact_raw(self.fd, &mut record_body).is_err() {
-            return 0;
-        }
+        // Read and decrypt TLS records. Loop to skip post-handshake messages
+        // (NewSessionTicket, KeyUpdate) which return empty plaintext.
+        let plaintext = loop {
+            let mut header_buf = [0u8; RECORD_HEADER_SIZE];
+            if recv_exact_raw(self.fd, &mut header_buf).is_err() {
+                return 0; // EOF
+            }
+            let header = RecordHeader::parse(&header_buf);
 
-        // Decrypt
-        let plaintext = match self.version {
-            NegotiatedVersion::Tls13 => {
-                match decrypt_tls13_record(
-                    self.cipher_suite, &self.server_key, &self.server_iv,
-                    self.recv_seq, &record_body,
-                ) {
-                    Ok(pt) => pt,
-                    Err(_) => return -1,
-                }
+            // TLS 1.3 middlebox compat: skip ChangeCipherSpec records
+            if header.content_type == ContentType::ChangeCipherSpec as u8 {
+                let mut discard = alloc::vec![0u8; header.length as usize];
+                let _ = recv_exact_raw(self.fd, &mut discard);
+                continue;
             }
-            NegotiatedVersion::Tls12 => {
-                match decrypt_tls12_record(
-                    self.cipher_suite, &self.server_key, &self.server_iv,
-                    self.recv_seq, header.content_type, &record_body,
-                ) {
-                    Ok(pt) => pt,
-                    Err(_) => return -1,
-                }
+
+            let mut record_body = alloc::vec![0u8; header.length as usize];
+            if recv_exact_raw(self.fd, &mut record_body).is_err() {
+                return 0;
             }
+
+            let pt = match self.version {
+                NegotiatedVersion::Tls13 => {
+                    match decrypt_tls13_record(
+                        self.cipher_suite, &self.server_key, &self.server_iv,
+                        self.recv_seq, &record_body,
+                    ) {
+                        Ok(pt) => pt,
+                        Err(_) => return -1,
+                    }
+                }
+                NegotiatedVersion::Tls12 => {
+                    match decrypt_tls12_record(
+                        self.cipher_suite, &self.server_key, &self.server_iv,
+                        self.recv_seq, header.content_type, &record_body,
+                    ) {
+                        Ok(pt) => pt,
+                        Err(_) => return -1,
+                    }
+                }
+            };
+            self.recv_seq += 1;
+
+            if !pt.is_empty() {
+                break pt;
+            }
+            // Empty plaintext = post-handshake message or padding, read next record
         };
-        self.recv_seq += 1;
-
-        if plaintext.is_empty() {
-            return 0;
-        }
 
         // Copy what we can to buf, buffer the rest
         let copy_len = plaintext.len().min(buf.len());
@@ -506,15 +517,18 @@ fn do_tls13_continuation(
         return Err(TlsError::SendFailed);
     }
 
+    // Derive application traffic secrets BEFORE adding client Finished to transcript.
+    // Per RFC 8446 Section 7.1: app traffic secrets use Transcript-Hash(CH..SF),
+    // which is ClientHello through Server Finished — NOT including Client Finished.
+    let transcript_hash_for_app = compute_hash(&transcript, cipher_suite);
+
     transcript.extend_from_slice(&finished_msg);
 
-    // Derive application traffic secrets
     let derived2 = derive_secret(cipher_suite, &handshake_secret, b"derived", &empty_hash);
     let master_secret = hkdf_extract(cipher_suite, &derived2, &zero_key);
-    let transcript_hash_final = compute_hash(&transcript, cipher_suite);
 
-    let c_app = derive_secret(cipher_suite, &master_secret, b"c ap traffic", &transcript_hash_final);
-    let s_app = derive_secret(cipher_suite, &master_secret, b"s ap traffic", &transcript_hash_final);
+    let c_app = derive_secret(cipher_suite, &master_secret, b"c ap traffic", &transcript_hash_for_app);
+    let s_app = derive_secret(cipher_suite, &master_secret, b"s ap traffic", &transcript_hash_for_app);
 
     Ok(tls13::Tls13Handshake {
         cipher_suite,
@@ -611,6 +625,9 @@ fn build_nonce(iv: &[u8], seq: u64) -> [u8; 12] {
     nonce
 }
 
+/// Decrypt a TLS 1.3 record. Returns only ApplicationData content.
+/// Post-handshake messages (NewSessionTicket etc.) are silently skipped
+/// by returning an empty Vec, causing the caller to read the next record.
 fn decrypt_tls13_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, ciphertext: &[u8]) -> Result<Vec<u8>, TlsError> {
     if ciphertext.len() < 16 {
         return Err(TlsError::DecryptionFailed);
@@ -629,23 +646,27 @@ fn decrypt_tls13_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, cip
         return Err(TlsError::DecryptionFailed);
     }
 
-    // Strip content type byte and any trailing zeros (padding)
+    // Strip trailing zeros (TLS 1.3 padding) and the content type byte
     while data.last() == Some(&0) && data.len() > 1 {
         data.pop();
     }
-    // Last byte is content type — for ApplicationData, we strip it and return the rest
     if data.is_empty() {
         return Ok(Vec::new());
     }
     let content_type = data[data.len() - 1];
+    data.pop(); // Remove content type byte
+
     if content_type == ContentType::ApplicationData as u8 {
-        data.pop();
         Ok(data)
     } else if content_type == ContentType::Alert as u8 {
+        if data.len() >= 2 && data[0] == 1 && data[1] == 0 {
+            return Ok(Vec::new()); // close_notify
+        }
         Err(TlsError::AlertReceived)
     } else {
-        // Other types (handshake) — return as-is including content type
-        Ok(data)
+        // Post-handshake messages (NewSessionTicket, KeyUpdate, etc.)
+        // Return empty to signal "no app data yet, read next record"
+        Ok(Vec::new())
     }
 }
 
