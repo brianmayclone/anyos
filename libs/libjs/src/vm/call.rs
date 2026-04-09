@@ -337,6 +337,11 @@ impl Vm {
                         if let Some(exc) = self.pending_exception.take() {
                             if !self.handle_exception(exc) {
                                 self.stack.push(JsValue::Undefined);
+                            } else {
+                                // Control transferred into a JS catch handler.
+                                // Internal helpers must stop normal execution
+                                // without disturbing the handler-prepared stack.
+                                self.control_flow_restored = true;
                             }
                         } else {
                             self.stack.push(result);
@@ -595,7 +600,12 @@ impl Vm {
         // Native function: result already on stack, no new frame pushed.
         if self.frames.len() <= saved_depth {
             self.call_value_depth -= 1;
-            return self.stack.pop().unwrap_or(JsValue::Undefined);
+            if self.control_flow_restored {
+                self.control_flow_restored = false;
+                return JsValue::Empty;
+            }
+            let result = self.stack.pop().unwrap_or(JsValue::Undefined);
+            return result;
         }
 
         // Bytecode function: run until we're back to saved depth.

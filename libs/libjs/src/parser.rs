@@ -530,7 +530,7 @@ impl Parser {
                 self.eat(&TokenKind::Comma);
                 break;
             }
-            let key = self.ident_str();
+            let key = self.pattern_prop_key();
             let value = if self.eat(&TokenKind::Colon) {
                 self.parse_binding_pattern()
             } else {
@@ -549,6 +549,25 @@ impl Parser {
         }
         self.expect(&TokenKind::RBrace);
         Pattern::Object(props)
+    }
+
+    fn pattern_prop_key(&mut self) -> String {
+        match self.peek().clone() {
+            TokenKind::String(s) => {
+                self.pos += 1;
+                s
+            }
+            TokenKind::Number(n) => {
+                self.pos += 1;
+                let int_n = n as i64;
+                if n == int_n as f64 {
+                    alloc::format!("{}", int_n)
+                } else {
+                    alloc::format!("{}", n)
+                }
+            }
+            _ => self.ident_str(),
+        }
     }
 
     fn parse_if(&mut self) -> Stmt {

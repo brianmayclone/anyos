@@ -1360,22 +1360,39 @@ impl Compiler {
         self.emit(Op::GetIterator);
         // Stack: [..., iterator]
         let has_rest = matches!(elements.last(), Some(Some(Pattern::Rest(_))));
+        let done_slot = self
+            .scope_mut()
+            .add_local(String::from("__dstr_iter_done__"));
+        self.emit(Op::LoadFalse);
+        self.emit(Op::StoreLocal(done_slot));
+        self.emit(Op::Pop);
 
         for elem in elements.iter() {
             match elem {
                 None => {
                     // Elision: [,] — advance iterator without binding
                     self.emit(Op::IterNext); // [..., iter, value, has_more]
+                    self.emit(Op::Dup); // [..., iter, value, has_more, has_more]
+                    self.emit(Op::Not); // [..., iter, value, has_more, done]
+                    self.emit(Op::StoreLocal(done_slot));
+                    self.emit(Op::Pop); // [..., iter, value, has_more]
                     self.emit(Op::Pop); // [..., iter, value]
                     self.emit(Op::Pop); // [..., iter]
                 }
                 Some(Pattern::Rest(inner)) => {
                     self.emit(Op::IterCollectRest);
+                    self.emit(Op::LoadTrue);
+                    self.emit(Op::StoreLocal(done_slot));
+                    self.emit(Op::Pop);
                     self.compile_pattern_binding(inner);
                 }
                 Some(pat) => {
                     // Normal element: get next value from iterator
                     self.emit(Op::IterNext); // [..., iter, value, has_more]
+                    self.emit(Op::Dup); // [..., iter, value, has_more, has_more]
+                    self.emit(Op::Not); // [..., iter, value, has_more, done]
+                    self.emit(Op::StoreLocal(done_slot));
+                    self.emit(Op::Pop); // [..., iter, value, has_more]
                     self.emit(Op::Pop); // [..., iter, value]  (drop has_more flag)
                     self.compile_pattern_binding(pat);
                     // Stack: [..., iter]
@@ -1383,7 +1400,10 @@ impl Compiler {
             }
         }
         if !has_rest {
+            self.emit(Op::LoadLocal(done_slot));
+            let skip_close = self.emit(Op::JumpIfTrue(0));
             self.emit(Op::IteratorClose);
+            self.patch_jump(skip_close);
         }
         self.emit(Op::Pop); // pop the iterator
     }
@@ -1548,6 +1568,9 @@ impl Compiler {
                     self.emit(Op::Pop);
                 }
             }
+            ForInit::Expr(expr) => {
+                self.compile_assign_target(expr);
+            }
             _ => {
                 self.emit(Op::Pop);
             }
@@ -1646,6 +1669,9 @@ impl Compiler {
                     self.emit(Op::StoreGlobal(ci));
                     self.emit(Op::Pop);
                 }
+            }
+            ForInit::Expr(expr) => {
+                self.compile_assign_target(expr);
             }
             _ => {
                 self.emit(Op::Pop);

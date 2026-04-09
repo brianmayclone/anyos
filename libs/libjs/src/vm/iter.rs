@@ -96,7 +96,17 @@ impl Vm {
     /// The result is an iterator object that has a `.next()` method.
     pub fn create_iterator(&mut self, val: &JsValue) -> JsValue {
         // 1. Try Symbol.iterator method
-        let iter_fn = self.get_property_with_proto(val, WELL_KNOWN_ITERATOR);
+        let iter_fn = self.get_property_invoking_getter(val, WELL_KNOWN_ITERATOR);
+        if matches!(iter_fn, JsValue::Empty) {
+            return JsValue::Empty;
+        }
+        if self.pending_exception.is_some() {
+            return self.make_internal_iterator(Vec::new());
+        }
+        if let Some(exc) = self.last_exception.take() {
+            self.pending_exception = Some(exc);
+            return self.make_internal_iterator(Vec::new());
+        }
         if iter_fn.is_function() {
             // Call val[Symbol.iterator]() with this=val
             let iterator = self.call_value(&iter_fn, &[], val.clone());
@@ -124,7 +134,17 @@ impl Vm {
                     return self.make_internal_iterator(Vec::new());
                 }
                 JsValue::Array(_) | JsValue::Function(_) => {
-                    let next = self.get_property_with_proto(&iterator, "next");
+                    let next = self.get_property_invoking_getter(&iterator, "next");
+                    if matches!(next, JsValue::Empty) {
+                        return JsValue::Empty;
+                    }
+                    if self.pending_exception.is_some() {
+                        return self.make_internal_iterator(Vec::new());
+                    }
+                    if let Some(exc) = self.last_exception.take() {
+                        self.pending_exception = Some(exc);
+                        return self.make_internal_iterator(Vec::new());
+                    }
                     if next.is_function() {
                         return iterator;
                     }
@@ -141,29 +161,12 @@ impl Vm {
             }
         }
 
-        // 2. Fallback: create internal iterator for built-in types
-        let items: Vec<JsValue> = match val {
-            JsValue::Array(arr) => arr.borrow().to_dense_vec(),
-            JsValue::String(s) => s
-                .chars()
-                .map(|c| {
-                    let mut cs = String::new();
-                    cs.push(c);
-                    JsValue::String(cs)
-                })
-                .collect(),
-            _ => {
-                // ES2023 §7.4.1: non-iterable values throw TypeError
-                let type_str = val.type_of();
-                let val_str = val.to_js_string();
-                let msg = alloc::format!("{} is not iterable", val_str);
-                let exc = self.make_type_error(&msg);
-                self.pending_exception = Some(exc);
-                return self.make_internal_iterator(Vec::new());
-            }
-        };
-
-        self.make_internal_iterator(items)
+        // 2. ES2023 §7.4.1: without a callable @@iterator, the value is not iterable.
+        let val_str = val.to_js_string();
+        let msg = alloc::format!("{} is not iterable", val_str);
+        let exc = self.make_type_error(&msg);
+        self.pending_exception = Some(exc);
+        self.make_internal_iterator(Vec::new())
     }
 
     /// Create an internal iterator object from a Vec of values.
@@ -239,8 +242,18 @@ impl Vm {
                     }
                 } else {
                     // Spec path: call iterator.next()
-                    drop(obj);
-                    let next_fn = self.get_property_with_proto(&iter, "next");
+                    let _ = obj;
+                    let next_fn = self.get_property_invoking_getter(&iter, "next");
+                    if matches!(next_fn, JsValue::Empty) {
+                        return (JsValue::Empty, false);
+                    }
+                    if self.pending_exception.is_some() {
+                        return (JsValue::Undefined, false);
+                    }
+                    if let Some(exc) = self.last_exception.take() {
+                        self.pending_exception = Some(exc);
+                        return (JsValue::Undefined, false);
+                    }
                     if !next_fn.is_function() {
                         self.pending_exception =
                             Some(self.make_type_error("Iterator protocol violation: missing next method"));
@@ -248,6 +261,9 @@ impl Vm {
                     }
                     // Call next() with this=iterator
                     let result = self.call_value(&next_fn, &[], iter.clone());
+                    if matches!(result, JsValue::Empty) {
+                        return (JsValue::Empty, false);
+                    }
                     // Propagate exceptions from next() call
                     if self.pending_exception.is_some() {
                         return (JsValue::Undefined, false);
@@ -264,11 +280,32 @@ impl Vm {
                     }
 
                     // Extract { value, done } from the result
-                    let done = self.get_property_with_proto(&result, "done").to_boolean();
+                    let done_val = self.get_property_invoking_getter(&result, "done");
+                    if matches!(done_val, JsValue::Empty) {
+                        return (JsValue::Empty, false);
+                    }
+                    if self.pending_exception.is_some() {
+                        return (JsValue::Undefined, false);
+                    }
+                    if let Some(exc) = self.last_exception.take() {
+                        self.pending_exception = Some(exc);
+                        return (JsValue::Undefined, false);
+                    }
+                    let done = done_val.to_boolean();
                     if done {
                         return (JsValue::Undefined, false);
                     }
-                    let value = self.get_property_with_proto(&result, "value");
+                    let value = self.get_property_invoking_getter(&result, "value");
+                    if matches!(value, JsValue::Empty) {
+                        return (JsValue::Empty, false);
+                    }
+                    if self.pending_exception.is_some() {
+                        return (JsValue::Undefined, false);
+                    }
+                    if let Some(exc) = self.last_exception.take() {
+                        self.pending_exception = Some(exc);
+                        return (JsValue::Undefined, false);
+                    }
                     (value, true)
                 }
             }
@@ -308,13 +345,26 @@ impl Vm {
                         _ => (JsValue::Undefined, false),
                     }
                 } else {
-                    let next_fn = self.get_property_with_proto(iter, "next");
+                    let next_fn = self.get_property_invoking_getter(iter, "next");
+                    if matches!(next_fn, JsValue::Empty) {
+                        return (JsValue::Empty, false);
+                    }
+                    if self.pending_exception.is_some() {
+                        return (JsValue::Undefined, false);
+                    }
+                    if let Some(exc) = self.last_exception.take() {
+                        self.pending_exception = Some(exc);
+                        return (JsValue::Undefined, false);
+                    }
                     if !next_fn.is_function() {
                         self.pending_exception =
                             Some(self.make_type_error("Iterator protocol violation: missing next method"));
                         return (JsValue::Undefined, false);
                     }
                     let result = self.call_value(&next_fn, &[], iter.clone());
+                    if matches!(result, JsValue::Empty) {
+                        return (JsValue::Empty, false);
+                    }
                     if self.pending_exception.is_some() {
                         return (JsValue::Undefined, false);
                     }
@@ -328,11 +378,32 @@ impl Vm {
                         );
                         return (JsValue::Undefined, false);
                     }
-                    let done = self.get_property_with_proto(&result, "done").to_boolean();
+                    let done_val = self.get_property_invoking_getter(&result, "done");
+                    if matches!(done_val, JsValue::Empty) {
+                        return (JsValue::Empty, false);
+                    }
+                    if self.pending_exception.is_some() {
+                        return (JsValue::Undefined, false);
+                    }
+                    if let Some(exc) = self.last_exception.take() {
+                        self.pending_exception = Some(exc);
+                        return (JsValue::Undefined, false);
+                    }
+                    let done = done_val.to_boolean();
                     if done {
                         return (JsValue::Undefined, false);
                     }
-                    let value = self.get_property_with_proto(&result, "value");
+                    let value = self.get_property_invoking_getter(&result, "value");
+                    if matches!(value, JsValue::Empty) {
+                        return (JsValue::Empty, false);
+                    }
+                    if self.pending_exception.is_some() {
+                        return (JsValue::Undefined, false);
+                    }
+                    if let Some(exc) = self.last_exception.take() {
+                        self.pending_exception = Some(exc);
+                        return (JsValue::Undefined, false);
+                    }
                     (value, true)
                 }
             }

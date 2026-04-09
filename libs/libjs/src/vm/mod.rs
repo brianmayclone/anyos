@@ -142,6 +142,9 @@ pub struct Vm {
     /// Last unhandled exception (no try/catch caught it).
     /// Set by `handle_exception` when there is no handler.
     pub last_exception: Option<JsValue>,
+    /// Set when a native call threw and control was already redirected into a
+    /// JS catch handler. Internal helpers must stop normal execution in that case.
+    pub control_flow_restored: bool,
     /// Pending generator yield: (value, ip, locals, stack_snapshot).
     /// Set by `Op::Yield` handler, consumed by `run_generator_step`.
     pub pending_generator_yield: Option<(JsValue, usize, Vec<LocalSlot>, Vec<JsValue>)>,
@@ -191,6 +194,7 @@ impl Vm {
             run_target_depth: 0,
             pending_exception: None,
             last_exception: None,
+            control_flow_restored: false,
             pending_generator_yield: None,
             event_loop: event_loop::EventLoop::new(),
             call_value_depth: 0,
@@ -218,7 +222,13 @@ impl Vm {
     }
 
     fn close_iterator_on_abrupt(&mut self, iter: &JsValue, original_exc: JsValue) -> JsValue {
-        let return_fn = self.get_property_with_proto(iter, "return");
+        let return_fn = self.get_property_invoking_getter(iter, "return");
+        if let Some(close_exc) = self.last_exception.take() {
+            return close_exc;
+        }
+        if let Some(close_exc) = self.pending_exception.take() {
+            return close_exc;
+        }
         if return_fn.is_function() {
             let _ = self.call_value(&return_fn, &[], iter.clone());
             if let Some(close_exc) = self.last_exception.take() {
@@ -1637,6 +1647,9 @@ impl Vm {
                 Op::GetIterator => {
                     let val = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let iter_obj = self.create_iterator(&val);
+                    if matches!(iter_obj, JsValue::Empty) {
+                        continue;
+                    }
                     if let Some(exc) = self.pending_exception.take() {
                         if !self.handle_exception(exc) {
                             return JsValue::Undefined;
@@ -1654,6 +1667,9 @@ impl Vm {
                     // Pop the iterator, advance it, push it back + value + has_more.
                     let iter = self.stack.pop().unwrap_or(JsValue::Undefined);
                     let (value, has_more) = self.iter_next_for(&iter);
+                    if matches!(value, JsValue::Empty) {
+                        continue;
+                    }
                     if let Some(exc) = self.pending_exception.take() {
                         let exc = self.close_iterator_on_abrupt(&iter, exc);
                         if !self.handle_exception(exc) {
@@ -1671,6 +1687,10 @@ impl Vm {
                     let mut resumed_via_exception = false;
                     loop {
                         let (value, has_more) = self.iter_next_for(&iter);
+                        if matches!(value, JsValue::Empty) {
+                            resumed_via_exception = true;
+                            break;
+                        }
                         if let Some(exc) = self.pending_exception.take() {
                             let exc = self.close_iterator_on_abrupt(&iter, exc);
                             if !self.handle_exception(exc) {
@@ -1692,16 +1712,19 @@ impl Vm {
                 }
                 Op::IteratorClose => {
                     let iter = self.stack.last().cloned().unwrap_or(JsValue::Undefined);
-                    let return_fn = self.get_property_with_proto(&iter, "return");
+                    let return_fn = self.get_property_invoking_getter(&iter, "return");
+                    if let Some(exc) = self.last_exception.take() {
+                        self.pending_exception = Some(exc);
+                    }
                     if return_fn.is_function() {
                         let _ = self.call_value(&return_fn, &[], iter.clone());
                         if let Some(exc) = self.last_exception.take() {
                             self.pending_exception = Some(exc);
                         }
-                        if let Some(exc) = self.pending_exception.take() {
-                            if !self.handle_exception(exc) {
-                                return JsValue::Undefined;
-                            }
+                    }
+                    if let Some(exc) = self.pending_exception.take() {
+                        if !self.handle_exception(exc) {
+                            return JsValue::Undefined;
                         }
                     }
                 }
@@ -2415,6 +2438,18 @@ impl Vm {
                 return self.find_getter(&proto_val, key);
             }
         }
+        if let JsValue::Array(arr) = val {
+            let a = arr.borrow();
+            if let Some(prop) = a.properties.get(key) {
+                if prop.is_accessor() {
+                    return prop.getter.clone();
+                }
+                return None;
+            }
+            drop(a);
+            let proto_val = JsValue::Object(self.array_proto.clone());
+            return self.find_getter(&proto_val, key);
+        }
         // Static getters on Function objects (class constructors).
         if let JsValue::Function(fn_rc) = val {
             let f = fn_rc.borrow();
@@ -2469,6 +2504,18 @@ impl Vm {
                 drop(o);
                 return self.find_setter(&proto_val, key);
             }
+        }
+        if let JsValue::Array(arr) = val {
+            let a = arr.borrow();
+            if let Some(prop) = a.properties.get(key) {
+                if prop.is_accessor() {
+                    return prop.setter.clone();
+                }
+                return None;
+            }
+            drop(a);
+            let proto_val = JsValue::Object(self.array_proto.clone());
+            return self.find_setter(&proto_val, key);
         }
         // Static setters on Function objects (class constructors).
         if let JsValue::Function(fn_rc) = val {
@@ -2529,6 +2576,9 @@ impl Vm {
                     return a.get(idx);
                 }
                 if let Some(prop) = a.properties.get(key) {
+                    if prop.is_accessor() {
+                        return prop.getter.as_ref().cloned().unwrap_or(JsValue::Undefined);
+                    }
                     return prop.value.clone();
                 }
                 drop(a);
