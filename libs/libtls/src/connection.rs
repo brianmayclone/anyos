@@ -71,25 +71,7 @@ impl TlsConnection {
 
         match version {
             NegotiatedVersion::Tls13 => {
-                // TLS 1.3 handshake
-                let result = tls13::do_handshake(
-                    fd, host,
-                    transport_send, transport_recv, transport_random,
-                );
-
-                // Since tls13::do_handshake does its own ClientHello, we need
-                // to use a different approach: call it directly and let it handle everything.
-                // Actually, we already sent ClientHello above, so we need to continue from
-                // ServerHello. For simplicity, restart the handshake:
-                // TODO: refactor to avoid double ClientHello. For now, use the tls13 module
-                // which sends its own ClientHello.
-
-                // For the initial implementation, delegate entirely to tls13::do_handshake
-                // which sends its own ClientHello. This means we sent a duplicate, but
-                // servers will ignore the first one when they see a second ClientHello.
-                // This is not ideal but works for the initial integration.
-
-                // Actually, let's parse what we already have:
+                // Continue TLS 1.3 handshake from the ServerHello we already received.
                 let hs = do_tls13_continuation(
                     fd, &private_key, &public_key, &client_random,
                     &client_hello, &server_hello, host,
@@ -228,7 +210,7 @@ impl TlsConnection {
 
             let pt = match self.version {
                 NegotiatedVersion::Tls13 => {
-                    match decrypt_tls13_record(
+                    match decrypt_tls13_app_record(
                         self.cipher_suite, &self.server_key, &self.server_iv,
                         self.recv_seq, &record_body,
                     ) {
@@ -447,6 +429,7 @@ fn do_tls13_continuation(
     let s_hs_key = hkdf_expand_label(cipher_suite, &s_hs_secret, b"key", &[], cipher_suite.key_len());
     let s_hs_iv = hkdf_expand_label(cipher_suite, &s_hs_secret, b"iv", &[], cipher_suite.iv_len());
 
+
     // Receive encrypted server handshake messages
     let mut server_seq: u64 = 0;
     let mut server_finished_received = false;
@@ -455,6 +438,7 @@ fn do_tls13_continuation(
         let mut hdr = [0u8; RECORD_HEADER_SIZE];
         recv_exact_raw(fd, &mut hdr)?;
         let header = RecordHeader::parse(&hdr);
+
         let mut record_body = alloc::vec![0u8; header.length as usize];
         recv_exact_raw(fd, &mut record_body)?;
 
@@ -463,7 +447,7 @@ fn do_tls13_continuation(
             continue; // Ignore CCS in TLS 1.3
         }
 
-        let plaintext = decrypt_tls13_record(cipher_suite, &s_hs_key, &s_hs_iv, server_seq, &record_body)?;
+        let plaintext = decrypt_tls13_record_raw(cipher_suite, &s_hs_key, &s_hs_iv, server_seq, &record_body)?;
         server_seq += 1;
 
         if plaintext.is_empty() {
@@ -483,6 +467,7 @@ fn do_tls13_continuation(
                     | (msg_data[pos + 3] as usize);
                 let msg_end = pos + 4 + msg_len;
                 if msg_end > msg_data.len() { break; }
+
 
                 transcript.extend_from_slice(&msg_data[pos..msg_end]);
 
@@ -625,11 +610,11 @@ fn build_nonce(iv: &[u8], seq: u64) -> [u8; 12] {
     nonce
 }
 
-/// Decrypt a TLS 1.3 record. Returns only ApplicationData content.
-/// Post-handshake messages (NewSessionTicket etc.) are silently skipped
-/// by returning an empty Vec, causing the caller to read the next record.
-fn decrypt_tls13_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, ciphertext: &[u8]) -> Result<Vec<u8>, TlsError> {
-    if ciphertext.len() < 16 {
+/// Decrypt a TLS 1.3 record and return the plaintext WITH the content type
+/// byte still at the end. Used by both handshake and application data paths.
+fn decrypt_tls13_record_raw(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, ciphertext: &[u8]) -> Result<Vec<u8>, TlsError> {
+    if ciphertext.len() < 17 {
+        // Need at least 1 byte plaintext + 16 byte tag
         return Err(TlsError::DecryptionFailed);
     }
     let nonce = build_nonce(iv, seq);
@@ -646,13 +631,22 @@ fn decrypt_tls13_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, cip
         return Err(TlsError::DecryptionFailed);
     }
 
-    // Strip trailing zeros (TLS 1.3 padding) and the content type byte
-    while data.last() == Some(&0) && data.len() > 1 {
+    // Strip trailing zeros (TLS 1.3 padding) but keep the content type byte
+    while data.len() > 1 && data[data.len() - 1] == 0 && data[data.len() - 2] == 0 {
         data.pop();
     }
+    Ok(data)
+}
+
+/// Decrypt a TLS 1.3 application-data record.
+/// Returns only ApplicationData content. Post-handshake messages
+/// (NewSessionTicket etc.) return empty Vec to signal "read next record".
+fn decrypt_tls13_app_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, ciphertext: &[u8]) -> Result<Vec<u8>, TlsError> {
+    let mut data = decrypt_tls13_record_raw(suite, key, iv, seq, ciphertext)?;
     if data.is_empty() {
         return Ok(Vec::new());
     }
+
     let content_type = data[data.len() - 1];
     data.pop(); // Remove content type byte
 
@@ -665,7 +659,6 @@ fn decrypt_tls13_record(suite: CipherSuite, key: &[u8], iv: &[u8], seq: u64, cip
         Err(TlsError::AlertReceived)
     } else {
         // Post-handshake messages (NewSessionTicket, KeyUpdate, etc.)
-        // Return empty to signal "no app data yet, read next record"
         Ok(Vec::new())
     }
 }
