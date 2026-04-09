@@ -6,6 +6,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+use super::native_symbol;
 use super::Vm;
 use crate::value::*;
 
@@ -735,28 +736,132 @@ pub fn array_slice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
-pub fn array_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let mut result = JsArray::new();
-    if let Some(arr) = this_array(vm) {
-        let a = arr.borrow();
-        for (&idx, val) in a.elements.iter() {
-            result.elements.insert(idx, val.clone());
-        }
-        result.length = a.length;
+fn observe_array_species_create(vm: &mut Vm, original: &JsValue) -> bool {
+    let ctor = vm.get_property_invoking_getter(original, "constructor");
+    if vm.pending_exception.is_some() {
+        return false;
     }
-    for arg in args {
-        match arg {
-            JsValue::Array(a) => {
-                let arr = a.borrow();
-                let offset = result.length;
-                for (&idx, val) in arr.elements.iter() {
-                    result.elements.insert(offset + idx, val.clone());
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+        return false;
+    }
+    if matches!(ctor, JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) {
+        let _species = vm.get_property_invoking_getter(&ctor, native_symbol::WELL_KNOWN_SPECIES);
+        if vm.pending_exception.is_some() {
+            return false;
+        }
+        if let Some(exc) = vm.last_exception.take() {
+            vm.pending_exception = Some(exc);
+            return false;
+        }
+    }
+    true
+}
+
+fn is_concat_spreadable(vm: &mut Vm, value: &JsValue) -> Option<bool> {
+    match value {
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
+            let spreadable =
+                vm.get_property_invoking_getter(value, native_symbol::WELL_KNOWN_IS_CONCAT_SPREADABLE);
+            if vm.pending_exception.is_some() {
+                return None;
+            }
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+                return None;
+            }
+            if !matches!(spreadable, JsValue::Undefined) {
+                return Some(spreadable.to_boolean());
+            }
+            Some(matches!(value, JsValue::Array(_)))
+        }
+        _ => Some(false),
+    }
+}
+
+fn concat_spread_into(vm: &mut Vm, result: &mut JsArray, value: &JsValue) -> bool {
+    match value {
+        JsValue::Array(arr) => {
+            let arr = arr.borrow();
+            let offset = result.length;
+            for (&idx, val) in arr.elements.iter() {
+                result.elements.insert(offset + idx, val.clone());
+            }
+            result.length += arr.length;
+            true
+        }
+        JsValue::Object(_) | JsValue::Function(_) => {
+            let len_val = vm.get_property_invoking_getter(value, "length");
+            if vm.pending_exception.is_some() {
+                return false;
+            }
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+                return false;
+            }
+            let len = to_length_vm(vm, &len_val);
+            if vm.pending_exception.is_some() {
+                return false;
+            }
+            let offset = result.length;
+            for idx in 0..len {
+                let key = alloc::format!("{}", idx);
+                let entry = vm.get_property_invoking_getter(value, &key);
+                if vm.pending_exception.is_some() {
+                    return false;
                 }
-                result.length += arr.length;
+                if let Some(exc) = vm.last_exception.take() {
+                    vm.pending_exception = Some(exc);
+                    return false;
+                }
+                if !matches!(entry, JsValue::Undefined) {
+                    result.elements.insert(offset + idx, entry);
+                }
             }
-            _ => {
-                result.push(arg.clone());
+            result.length += len;
+            true
+        }
+        _ => {
+            result.push(value.clone());
+            true
+        }
+    }
+}
+
+pub fn array_concat(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if !require_object_coercible(vm) {
+        return JsValue::Undefined;
+    }
+
+    if matches!(&vm.current_this, JsValue::Array(_)) && !observe_array_species_create(vm, &vm.current_this.clone()) {
+        return JsValue::Undefined;
+    }
+
+    let mut result = JsArray::new();
+    let this_val = vm.current_this.clone();
+    let this_spreadable = is_concat_spreadable(vm, &this_val);
+    if vm.pending_exception.is_some() {
+        return JsValue::Undefined;
+    }
+    match this_spreadable {
+        Some(true) => {
+            if !concat_spread_into(vm, &mut result, &this_val) {
+                return JsValue::Undefined;
             }
+        }
+        Some(false) => result.push(this_val),
+        None => return JsValue::Undefined,
+    }
+
+    for arg in args {
+        match is_concat_spreadable(vm, arg) {
+            Some(true) => {
+                if !concat_spread_into(vm, &mut result, arg) {
+                    return JsValue::Undefined;
+                }
+            }
+            Some(false) => result.push(arg.clone()),
+            None => return JsValue::Undefined,
         }
     }
     JsValue::Array(Rc::new(RefCell::new(result)))

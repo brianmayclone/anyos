@@ -17,6 +17,8 @@ pub const WELL_KNOWN_TO_PRIMITIVE: &str = "__symbol__0_Symbol.toPrimitive";
 pub const WELL_KNOWN_TO_STRING_TAG: &str = "__symbol__0_Symbol.toStringTag";
 pub const WELL_KNOWN_HAS_INSTANCE: &str = "__symbol__0_Symbol.hasInstance";
 pub const WELL_KNOWN_MATCH: &str = "__symbol__0_Symbol.match";
+pub const WELL_KNOWN_IS_CONCAT_SPREADABLE: &str = "__symbol__0_Symbol.isConcatSpreadable";
+pub const WELL_KNOWN_SPECIES: &str = "__symbol__0_Symbol.species";
 
 // Monotonically increasing symbol counter.
 static mut NEXT_SYMBOL_ID: u64 = 1;
@@ -79,11 +81,11 @@ pub fn install_well_known_symbols(symbol_ctor: &JsValue) {
     );
     symbol_ctor.set_property(
         String::from("isConcatSpreadable"),
-        JsValue::String(String::from("__symbol__0_Symbol.isConcatSpreadable")),
+        JsValue::String(String::from(WELL_KNOWN_IS_CONCAT_SPREADABLE)),
     );
     symbol_ctor.set_property(
         String::from("species"),
-        JsValue::String(String::from("__symbol__0_Symbol.species")),
+        JsValue::String(String::from(WELL_KNOWN_SPECIES)),
     );
     symbol_ctor.set_property(
         String::from("match"),
