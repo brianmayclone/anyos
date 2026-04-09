@@ -91,17 +91,19 @@ pub fn free_frame(id: u32) {
 pub fn create_generator_object(
     vm: &Vm,
     chunk: Chunk,
+    start_ip: usize,
     locals: Vec<LocalSlot>,
     upvalue_cells: Vec<Rc<RefCell<JsValue>>>,
     this_val: JsValue,
+    stack_snapshot: Vec<JsValue>,
 ) -> JsValue {
     let frame = GeneratorFrame {
         chunk,
-        ip: 0,
+        ip: start_ip,
         locals,
         upvalue_cells,
         this_val,
-        stack_snapshot: Vec::new(),
+        stack_snapshot,
         state: GeneratorState::Suspended,
     };
     let id = alloc_frame(frame);

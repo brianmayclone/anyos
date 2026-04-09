@@ -536,9 +536,15 @@ pub fn object_create(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
-pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn object_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    let key = match args.get(1) {
+        Some(v) => match to_property_key(vm, v) {
+            Some(k) => k,
+            None => return JsValue::Undefined,
+        },
+        None => String::new(),
+    };
     let descriptor = args.get(2).cloned().unwrap_or(JsValue::Undefined);
 
     if let JsValue::Object(desc_obj) = &descriptor {
@@ -612,7 +618,14 @@ pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 // For arrays: accessor properties go in .properties,
                 // data properties can go in .elements if numeric
                 if prop.is_accessor() {
-                    arr.borrow_mut().properties.insert(key, prop);
+                    let idx = key.parse::<usize>().ok();
+                    let mut a = arr.borrow_mut();
+                    a.properties.insert(key, prop);
+                    if let Some(idx) = idx {
+                        if idx >= a.length {
+                            a.length = idx + 1;
+                        }
+                    }
                 } else if let Ok(idx) = key.parse::<usize>() {
                     // Store as data in elements, but also keep descriptor in properties
                     // so that getOwnPropertyDescriptor works correctly
@@ -623,7 +636,6 @@ pub fn object_define_property(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     }
                     a.properties.insert(key, prop);
                 } else if key == "length" {
-                    // length is handled specially
                     if let JsValue::Number(n) = &prop.value {
                         arr.borrow_mut().set_length(*n as usize);
                     }
@@ -888,8 +900,14 @@ pub fn object_get_own_property_names(_vm: &mut Vm, args: &[JsValue]) -> JsValue 
 }
 
 /// `Object.getOwnPropertyDescriptor(obj, key)`.
-pub fn object_get_own_property_descriptor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+pub fn object_get_own_property_descriptor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let key = match args.get(1) {
+        Some(v) => match to_property_key(vm, v) {
+            Some(k) => k,
+            None => return JsValue::Undefined,
+        },
+        None => String::new(),
+    };
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();
@@ -1210,8 +1228,14 @@ pub fn object_is_frozen(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 /// `Object.hasOwn(obj, key)` — static version of hasOwnProperty.
-pub fn object_has_own(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+pub fn object_has_own(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let key = match args.get(1) {
+        Some(v) => match to_property_key(vm, v) {
+            Some(k) => k,
+            None => return JsValue::Undefined,
+        },
+        None => String::new(),
+    };
     match args.first() {
         Some(JsValue::Object(obj)) => {
             let o = obj.borrow();

@@ -7,21 +7,33 @@ use crate::value::JsValue;
 // Math object native methods
 // ═══════════════════════════════════════════════════════════
 
-pub fn math_abs(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = arg_num(args, 0);
+pub fn math_abs(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let n = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     JsValue::Number(if n < 0.0 { -n } else { n })
 }
 
-pub fn math_floor(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(floor_f64(arg_num(args, 0)))
+pub fn math_floor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match arg_num(vm, args, 0) {
+        Some(n) => JsValue::Number(floor_f64(n)),
+        None => JsValue::Undefined,
+    }
 }
 
-pub fn math_ceil(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(ceil_f64(arg_num(args, 0)))
+pub fn math_ceil(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match arg_num(vm, args, 0) {
+        Some(n) => JsValue::Number(ceil_f64(n)),
+        None => JsValue::Undefined,
+    }
 }
 
-pub fn math_round(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = arg_num(args, 0);
+pub fn math_round(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let n = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if n.is_nan() || n.is_infinite() {
         return JsValue::Number(n);
     }
@@ -36,17 +48,23 @@ pub fn math_round(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(floor_f64(n + 0.5))
 }
 
-pub fn math_trunc(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(trunc_f64(arg_num(args, 0)))
+pub fn math_trunc(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match arg_num(vm, args, 0) {
+        Some(n) => JsValue::Number(trunc_f64(n)),
+        None => JsValue::Undefined,
+    }
 }
 
-pub fn math_max(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn math_max(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if args.is_empty() {
         return JsValue::Number(f64::NEG_INFINITY);
     }
     let mut max = f64::NEG_INFINITY;
     for a in args {
-        let n = a.to_number();
+        let n = crate::vm::native_array::to_number_vm(vm, a);
+        if vm.pending_exception.is_some() {
+            return JsValue::Undefined;
+        }
         if n.is_nan() {
             return JsValue::Number(f64::NAN);
         }
@@ -57,13 +75,16 @@ pub fn math_max(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(max)
 }
 
-pub fn math_min(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn math_min(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if args.is_empty() {
         return JsValue::Number(f64::INFINITY);
     }
     let mut min = f64::INFINITY;
     for a in args {
-        let n = a.to_number();
+        let n = crate::vm::native_array::to_number_vm(vm, a);
+        if vm.pending_exception.is_some() {
+            return JsValue::Undefined;
+        }
         if n.is_nan() {
             return JsValue::Number(f64::NAN);
         }
@@ -74,16 +95,30 @@ pub fn math_min(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(min)
 }
 
-pub fn math_pow(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(pow_f64(arg_num(args, 0), arg_num(args, 1)))
+pub fn math_pow(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let a = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
+    let b = match arg_num(vm, args, 1) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
+    JsValue::Number(pow_f64(a, b))
 }
 
-pub fn math_sqrt(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(sqrt_f64(arg_num(args, 0)))
+pub fn math_sqrt(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match arg_num(vm, args, 0) {
+        Some(n) => JsValue::Number(sqrt_f64(n)),
+        None => JsValue::Undefined,
+    }
 }
 
-pub fn math_cbrt(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = arg_num(args, 0);
+pub fn math_cbrt(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let n = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if n == 0.0 || n.is_nan() || n.is_infinite() {
         return JsValue::Number(n);
     }
@@ -91,8 +126,11 @@ pub fn math_cbrt(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(sign * pow_f64(n * sign, 1.0 / 3.0))
 }
 
-pub fn math_sign(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = arg_num(args, 0);
+pub fn math_sign(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let n = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if n.is_nan() {
         JsValue::Number(f64::NAN)
     } else if n > 0.0 {
@@ -104,12 +142,18 @@ pub fn math_sign(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
-pub fn math_log_fn(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(ln_approx(arg_num(args, 0)))
+pub fn math_log_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match arg_num(vm, args, 0) {
+        Some(n) => JsValue::Number(ln_approx(n)),
+        None => JsValue::Undefined,
+    }
 }
 
-pub fn math_log2(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = arg_num(args, 0);
+pub fn math_log2(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let n = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     // Exact result for exact powers of 2 using IEEE 754 exponent extraction
     if n > 0.0 && n.is_finite() {
         let bits = n.to_bits();
@@ -122,8 +166,11 @@ pub fn math_log2(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(ln_approx(n) / core::f64::consts::LN_2)
 }
 
-pub fn math_log10(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = arg_num(args, 0);
+pub fn math_log10(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let n = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     // Exact result for exact powers of 10
     if n > 0.0 && n.is_finite() {
         let mut check = 1.0_f64;
@@ -150,16 +197,25 @@ pub fn math_log10(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(ln_approx(n) / core::f64::consts::LN_10)
 }
 
-pub fn math_sin(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(sin_approx(arg_num(args, 0)))
+pub fn math_sin(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match arg_num(vm, args, 0) {
+        Some(n) => JsValue::Number(sin_approx(n)),
+        None => JsValue::Undefined,
+    }
 }
 
-pub fn math_cos(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(cos_approx(arg_num(args, 0)))
+pub fn math_cos(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match arg_num(vm, args, 0) {
+        Some(n) => JsValue::Number(cos_approx(n)),
+        None => JsValue::Undefined,
+    }
 }
 
-pub fn math_tan(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_tan(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     let c = cos_approx(x);
     if c == 0.0 {
         JsValue::Number(f64::INFINITY)
@@ -168,16 +224,27 @@ pub fn math_tan(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
-pub fn math_atan2(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(atan2_approx(arg_num(args, 0), arg_num(args, 1)))
+pub fn math_atan2(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let y = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
+    let x = match arg_num(vm, args, 1) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
+    JsValue::Number(atan2_approx(y, x))
 }
 
-pub fn math_hypot(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn math_hypot(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // If any arg is ±Infinity → +Infinity (before checking NaN)
     let mut has_nan = false;
     let mut sum = 0.0f64;
     for a in args {
-        let n = a.to_number();
+        let n = crate::vm::native_array::to_number_vm(vm, a);
+        if vm.pending_exception.is_some() {
+            return JsValue::Undefined;
+        }
         if n.is_infinite() {
             return JsValue::Number(f64::INFINITY);
         }
@@ -193,9 +260,12 @@ pub fn math_hypot(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(sqrt_f64(sum))
 }
 
-pub fn math_clz32(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn math_clz32(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // ToUint32: NaN, ±0, ±Infinity all become 0 → 32 leading zeros
-    let n = to_uint32(arg_num(args, 0));
+    let n = match arg_num(vm, args, 0) {
+        Some(n) => to_uint32(n),
+        None => return JsValue::Undefined,
+    };
     JsValue::Number(if n == 0 {
         32.0
     } else {
@@ -203,8 +273,11 @@ pub fn math_clz32(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     })
 }
 
-pub fn math_fround(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(arg_num(args, 0) as f32 as f64)
+pub fn math_fround(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match arg_num(vm, args, 0) {
+        Some(n) => JsValue::Number(n as f32 as f64),
+        None => JsValue::Undefined,
+    }
 }
 
 pub fn math_random(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -218,12 +291,18 @@ pub fn math_random(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     }
 }
 
-pub fn math_exp(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Number(exp_approx(arg_num(args, 0)))
+pub fn math_exp(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match arg_num(vm, args, 0) {
+        Some(n) => JsValue::Number(exp_approx(n)),
+        None => JsValue::Undefined,
+    }
 }
 
-pub fn math_expm1(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_expm1(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() {
         return JsValue::Number(f64::NAN);
     }
@@ -242,8 +321,11 @@ pub fn math_expm1(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(exp_approx(x) - 1.0)
 }
 
-pub fn math_log1p(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_log1p(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() {
         return JsValue::Number(f64::NAN);
     }
@@ -264,8 +346,11 @@ pub fn math_log1p(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(ln_approx(1.0 + x))
 }
 
-pub fn math_asin(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_asin(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() || x.abs() > 1.0 {
         return JsValue::Number(f64::NAN);
     }
@@ -281,8 +366,11 @@ pub fn math_asin(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(atan_approx(x / sqrt_f64(1.0 - x * x)))
 }
 
-pub fn math_acos(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_acos(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() || x.abs() > 1.0 {
         return JsValue::Number(f64::NAN);
     }
@@ -295,8 +383,11 @@ pub fn math_acos(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(core::f64::consts::FRAC_PI_2 - atan_approx(x / sqrt_f64(1.0 - x * x)))
 }
 
-pub fn math_atan(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_atan(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() {
         return JsValue::Number(f64::NAN);
     }
@@ -310,8 +401,11 @@ pub fn math_atan(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(atan_approx(x))
 }
 
-pub fn math_sinh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_sinh(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() {
         return JsValue::Number(f64::NAN);
     }
@@ -325,8 +419,11 @@ pub fn math_sinh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number((exp_approx(x) - exp_approx(-x)) / 2.0)
 }
 
-pub fn math_cosh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_cosh(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() {
         return JsValue::Number(f64::NAN);
     }
@@ -336,8 +433,11 @@ pub fn math_cosh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number((exp_approx(x) + exp_approx(-x)) / 2.0)
 }
 
-pub fn math_tanh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_tanh(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() {
         return JsValue::Number(f64::NAN);
     }
@@ -353,8 +453,11 @@ pub fn math_tanh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number((ex - enx) / (ex + enx))
 }
 
-pub fn math_acosh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_acosh(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() || x < 1.0 {
         return JsValue::Number(f64::NAN);
     }
@@ -367,8 +470,11 @@ pub fn math_acosh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(ln_approx(x + sqrt_f64(x * x - 1.0)))
 }
 
-pub fn math_asinh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_asinh(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() {
         return JsValue::Number(f64::NAN);
     }
@@ -384,8 +490,11 @@ pub fn math_asinh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(sign * ln_approx(ax + sqrt_f64(ax * ax + 1.0)))
 }
 
-pub fn math_atanh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let x = arg_num(args, 0);
+pub fn math_atanh(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let x = match arg_num(vm, args, 0) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if x.is_nan() || x.abs() > 1.0 {
         return JsValue::Number(f64::NAN);
     }
@@ -402,10 +511,16 @@ pub fn math_atanh(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::Number(ln_approx((1.0 + x) / (1.0 - x)) / 2.0)
 }
 
-pub fn math_imul(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
+pub fn math_imul(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     // Spec: ToUint32 each arg, then multiply modulo 2^32, then interpret as i32
-    let a = to_uint32(arg_num(args, 0)) as i32;
-    let b = to_uint32(arg_num(args, 1)) as i32;
+    let a = match arg_num(vm, args, 0) {
+        Some(n) => to_uint32(n) as i32,
+        None => return JsValue::Undefined,
+    };
+    let b = match arg_num(vm, args, 1) {
+        Some(n) => to_uint32(n) as i32,
+        None => return JsValue::Undefined,
+    };
     JsValue::Number(a.wrapping_mul(b) as f64)
 }
 
@@ -413,8 +528,18 @@ pub fn math_imul(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 // no_std math utilities
 // ═══════════════════════════════════════════════════════════
 
-fn arg_num(args: &[JsValue], i: usize) -> f64 {
-    args.get(i).map(|v| v.to_number()).unwrap_or(f64::NAN)
+fn arg_num(vm: &mut Vm, args: &[JsValue], i: usize) -> Option<f64> {
+    match args.get(i) {
+        Some(v) => {
+            let n = crate::vm::native_array::to_number_vm(vm, v);
+            if vm.pending_exception.is_some() {
+                None
+            } else {
+                Some(n)
+            }
+        }
+        None => Some(f64::NAN),
+    }
 }
 
 /// Safe i64 range for float-to-integer conversions (beyond this all floats are already integers).

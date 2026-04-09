@@ -67,6 +67,7 @@ pub fn function_bind(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 this_binding: Some(bound_this),
                 bound_args: bound_args,
                 upvalues: original.upvalues.clone(),
+                with_scopes: original.with_scopes.clone(),
                 // ES2023 §10.4.1.3: Bound functions do NOT have own .prototype
                 prototype: None,
                 own_props: original.own_props.clone(),
@@ -121,6 +122,10 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
             match kind {
                 FnKind::Native(native) => native(vm, args),
                 FnKind::Bytecode(chunk) => {
+                    let captured_with_scopes = match &func {
+                        JsValue::Function(f) => f.borrow().with_scopes.clone(),
+                        _ => Vec::new(),
+                    };
                     let mut locals = super::Vm::make_locals(&chunk);
                     for (i, arg) in args.iter().enumerate() {
                         if i < locals.len() {
@@ -133,6 +138,11 @@ fn invoke_with_this(vm: &mut Vm, func: &JsValue, this_val: &JsValue, args: &[JsV
                         stack_base: vm.stack.len(),
                         locals,
                         upvalue_cells: captured_upvalues,
+                        with_scopes: captured_with_scopes,
+                        captured_with_scope_len: match &func {
+                            JsValue::Function(f) => f.borrow().with_scopes.len(),
+                            _ => 0,
+                        },
                         this_val: effective_this,
                         is_constructor: false,
                         all_args: args.to_vec(),

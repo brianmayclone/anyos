@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use super::Vm;
+use crate::ast::*;
 use crate::compiler::Compiler;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -170,7 +171,22 @@ pub fn ctor_array(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// `String(value)` — converts to string.
 pub fn ctor_string(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let s = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let s = args
+        .first()
+        .map(|v| {
+            let prim = match v {
+                JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
+                    vm.to_primitive_for_op(v.clone(), "string")
+                }
+                _ => v.clone(),
+            };
+            if super::is_symbol_value(&prim) {
+                super::native_string::symbol_display_name(&prim.to_js_string())
+            } else {
+                prim.to_js_string()
+            }
+        })
+        .unwrap_or_default();
     // Only constructor calls entered via `new` may create wrapper objects.
     if vm.is_in_constructor_call() {
         if let JsValue::Object(obj) = vm.current_this.clone() {
@@ -200,6 +216,160 @@ pub fn ctor_number(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
     // Called as plain function: return primitive
     JsValue::Number(n)
+}
+
+fn strict_code_contains_with(stmts: &[Stmt], inherited_strict: bool) -> bool {
+    let mut is_strict = inherited_strict;
+    if let Some(Stmt::Expr(Expr::String(s))) = stmts.first() {
+        if s == "use strict" {
+            is_strict = true;
+        }
+    }
+    stmts.iter().any(|stmt| stmt_contains_strict_with(stmt, is_strict))
+}
+
+fn stmt_contains_strict_with(stmt: &Stmt, is_strict: bool) -> bool {
+    match stmt {
+        Stmt::With { .. } => is_strict,
+        Stmt::Block(stmts) => strict_code_contains_with(stmts, is_strict),
+        Stmt::If {
+            consequent,
+            alternate,
+            ..
+        } => {
+            stmt_contains_strict_with(consequent, is_strict)
+                || alternate
+                    .as_ref()
+                    .map(|alt| stmt_contains_strict_with(alt, is_strict))
+                    .unwrap_or(false)
+        }
+        Stmt::While { body, .. }
+        | Stmt::DoWhile { body, .. }
+        | Stmt::Labeled { body, .. } => stmt_contains_strict_with(body, is_strict),
+        Stmt::For { body, .. }
+        | Stmt::ForIn { body, .. }
+        | Stmt::ForOf { body, .. } => stmt_contains_strict_with(body, is_strict),
+        Stmt::Switch { cases, .. } => cases
+            .iter()
+            .flat_map(|c| c.consequent.iter())
+            .any(|s| stmt_contains_strict_with(s, is_strict)),
+        Stmt::Try {
+            block,
+            catch,
+            finally,
+        } => {
+            strict_code_contains_with(block, is_strict)
+                || catch
+                    .as_ref()
+                    .map(|clause| strict_code_contains_with(&clause.body, is_strict))
+                    .unwrap_or(false)
+                || finally
+                    .as_ref()
+                    .map(|body| strict_code_contains_with(body, is_strict))
+                    .unwrap_or(false)
+        }
+        Stmt::FunctionDecl { body, .. } => strict_code_contains_with(body, is_strict),
+        Stmt::VarDecl { decls, .. } => decls.iter().any(|d| {
+            d.init
+                .as_ref()
+                .map(|e| expr_contains_strict_with(e, is_strict))
+                .unwrap_or(false)
+        }),
+        Stmt::Expr(expr) => expr_contains_strict_with(expr, is_strict),
+        _ => false,
+    }
+}
+
+fn expr_contains_strict_with(expr: &Expr, is_strict: bool) -> bool {
+    match expr {
+        Expr::FunctionExpr { body, .. } | Expr::Arrow { body: ArrowBody::Block(body), .. } => {
+            strict_code_contains_with(body, is_strict)
+        }
+        Expr::Arrow {
+            body: ArrowBody::Expr(expr),
+            ..
+        } => expr_contains_strict_with(expr, is_strict),
+        Expr::Assign { left, right, .. } => {
+            expr_contains_strict_with(left, is_strict)
+                || expr_contains_strict_with(right, is_strict)
+        }
+        Expr::Binary { left, right, .. }
+        | Expr::Logical { left, right, .. }
+        | Expr::Index {
+            object: left,
+            index: right,
+        } => {
+            expr_contains_strict_with(left, is_strict)
+                || expr_contains_strict_with(right, is_strict)
+        }
+        Expr::Unary { argument: expr, .. }
+        | Expr::Await(expr)
+        | Expr::Yield(Some(expr))
+        | Expr::YieldDelegate(expr)
+        | Expr::Spread(expr)
+        | Expr::Void(expr)
+        | Expr::Typeof(expr)
+        | Expr::Delete(expr) => expr_contains_strict_with(expr, is_strict),
+        Expr::Call { callee, arguments }
+        | Expr::New { callee, arguments } => {
+            expr_contains_strict_with(callee, is_strict)
+                || arguments
+                    .iter()
+                    .any(|arg| expr_contains_strict_with(arg, is_strict))
+        }
+        Expr::Member { object, .. } | Expr::OptionalChain { object, .. } => {
+            expr_contains_strict_with(object, is_strict)
+        }
+        Expr::OptionalCall { callee, arguments } => {
+            expr_contains_strict_with(callee, is_strict)
+                || arguments
+                    .iter()
+                    .any(|arg| expr_contains_strict_with(arg, is_strict))
+        }
+        Expr::Array(items) => items
+            .iter()
+            .flatten()
+            .any(|e| expr_contains_strict_with(e, is_strict)),
+        Expr::Object(props) => props.iter().any(|p| {
+            let key_has_with = match &p.key {
+                PropKey::Computed(expr) => expr_contains_strict_with(expr, is_strict),
+                _ => false,
+            };
+            key_has_with || expr_contains_strict_with(&p.value, is_strict)
+        }),
+        Expr::Conditional {
+            test,
+            consequent,
+            alternate,
+        } => {
+            expr_contains_strict_with(test, is_strict)
+                || expr_contains_strict_with(consequent, is_strict)
+                || expr_contains_strict_with(alternate, is_strict)
+        }
+        Expr::Sequence(exprs) => exprs.iter().any(|e| expr_contains_strict_with(e, is_strict)),
+        Expr::ClassExpr { body, .. } => body.iter().any(|member| {
+            let key_has_with = match &member.key {
+                PropKey::Computed(expr) => expr_contains_strict_with(expr, true),
+                _ => false,
+            };
+            key_has_with
+                || match &member.kind {
+                    ClassMemberKind::Method { body, .. }
+                    | ClassMemberKind::Constructor { body, .. }
+                    | ClassMemberKind::Getter { body }
+                    | ClassMemberKind::Setter { body, .. }
+                    | ClassMemberKind::StaticBlock { body } => {
+                        strict_code_contains_with(body, true)
+                    }
+                    ClassMemberKind::Property { value } => value
+                        .as_ref()
+                        .map(|expr| expr_contains_strict_with(expr, true))
+                        .unwrap_or(false),
+                }
+        }),
+        Expr::TaggedTemplate { tag, .. } => expr_contains_strict_with(tag, is_strict),
+        _ => false,
+    }
 }
 
 /// `Function([arg1[, arg2[, ...argN]],] body)` — dynamically compiles a function.
@@ -232,6 +402,11 @@ pub fn ctor_function(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let program = parser.parse_program();
     if !parser.errors.is_empty() {
         let err = vm.make_syntax_error(&parser.errors[0]);
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    if strict_code_contains_with(&program.body, false) {
+        let err = vm.make_syntax_error("Strict mode code may not include a with statement");
         vm.throw_native(err);
         return JsValue::Undefined;
     }

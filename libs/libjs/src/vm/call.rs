@@ -25,7 +25,7 @@ impl Vm {
                 );
                 for (&idx, val) in &arr.elements {
                     obj.properties
-                        .insert(idx.to_string(), Property::data(val.clone()));
+                        .insert(alloc::format!("{}", idx), Property::data(val.clone()));
                 }
                 for (key, prop) in &arr.properties {
                     obj.properties.insert(key.clone(), prop.clone());
@@ -277,6 +277,7 @@ impl Vm {
                         }
                         FnKind::Bytecode(chunk) => {
                             let captured_upvalues = func_rc.borrow().upvalues.clone();
+                            let captured_with_scopes = func_rc.borrow().with_scopes.clone();
                             let mut locals = Vm::make_locals(&chunk);
                             for (i, arg) in args.iter().enumerate() {
                                 if i < locals.len() {
@@ -290,6 +291,8 @@ impl Vm {
                                 stack_base: self.stack.len(),
                                 locals,
                                 upvalue_cells: captured_upvalues,
+                                with_scopes: captured_with_scopes,
+                                captured_with_scope_len: func_rc.borrow().with_scopes.len(),
                                 this_val: new_obj,
                                 is_constructor: true,
                                 all_args: args.to_vec(),
@@ -459,23 +462,50 @@ impl Vm {
 
                         // Generator function: return a GeneratorObject instead of executing
                         if chunk.is_generator {
-                            let gen_obj = super::native_generator::create_generator_object(
-                                self,
-                                chunk,
+                            match self.run_generator_prologue(
+                                chunk.clone(),
                                 locals,
-                                captured_upvalues,
-                                effective_this,
-                            );
-                            self.stack.push(gen_obj);
+                                captured_upvalues.clone(),
+                                effective_this.clone(),
+                            ) {
+                                Ok((start_ip, locals, stack_snapshot)) => {
+                                    let gen_obj = super::native_generator::create_generator_object(
+                                        self,
+                                        chunk,
+                                        start_ip,
+                                        locals,
+                                        captured_upvalues,
+                                        effective_this,
+                                        stack_snapshot,
+                                    );
+                                    self.stack.push(gen_obj);
+                                }
+                                Err(exc) => {
+                                    if !self.handle_exception(exc) {
+                                        self.stack.push(JsValue::Undefined);
+                                    } else {
+                                        self.control_flow_restored = true;
+                                    }
+                                }
+                            }
                             return;
                         }
 
+                        let captured_with_scopes = match callee {
+                            JsValue::Function(f) => f.borrow().with_scopes.clone(),
+                            _ => Vec::new(),
+                        };
                         let frame = CallFrame {
                             chunk,
                             ip: 0,
                             stack_base: self.stack.len(),
                             locals,
                             upvalue_cells: captured_upvalues,
+                            with_scopes: captured_with_scopes,
+                            captured_with_scope_len: match callee {
+                                JsValue::Function(ref f) => f.borrow().with_scopes.len(),
+                                _ => 0,
+                            },
                             this_val: effective_this,
                             is_constructor: false,
                             all_args: args.to_vec(),
@@ -789,6 +819,7 @@ impl Vm {
                         }
                     }
                     FnKind::Bytecode(chunk) => {
+                        let captured_with_scopes = func_rc.borrow().with_scopes.clone();
                         let mut locals = Vm::make_locals(&chunk);
                         for (i, arg) in args.iter().enumerate() {
                             if i < locals.len() {
@@ -801,6 +832,8 @@ impl Vm {
                             stack_base: self.stack.len(),
                             locals,
                             upvalue_cells: captured_upvalues,
+                            with_scopes: captured_with_scopes,
+                            captured_with_scope_len: func_rc.borrow().with_scopes.len(),
                             this_val,
                             is_constructor: true,
                             all_args: args.to_vec(),
@@ -864,7 +897,7 @@ impl Vm {
         let mut current_proto = match left {
             JsValue::Object(obj) => obj.borrow().prototype.clone(),
             JsValue::Array(_) => Some(self.array_proto.clone()),
-            JsValue::Function(func) => func.borrow().prototype.clone(),
+            JsValue::Function(_) => Some(self.function_proto.clone()),
             _ => None,
         };
 

@@ -688,7 +688,9 @@ impl JsArray {
         let len = v.len();
         let mut map = BTreeMap::new();
         for (i, val) in v.into_iter().enumerate() {
-            map.insert(i, val);
+            if !matches!(val, JsValue::Empty) {
+                map.insert(i, val);
+            }
         }
         JsArray {
             elements: map,
@@ -752,11 +754,44 @@ impl JsArray {
     /// Set the logical length.  Removes entries >= `new_len`.
     pub fn set_length(&mut self, new_len: usize) {
         if new_len < self.length {
-            // Truncate: remove all entries with index >= new_len.
-            let to_remove: Vec<usize> = self.elements.range(new_len..).map(|(&k, _)| k).collect();
+            // Truncate while honoring non-configurable numeric properties.
+            let mut effective_new_len = new_len;
+            for (idx, prop) in self.properties.iter().rev().filter_map(|(k, p)| {
+                parse_index(k).map(|idx| (idx, p))
+            }) {
+                if idx >= new_len && !prop.configurable {
+                    effective_new_len = idx + 1;
+                    break;
+                }
+            }
+
+            let to_remove: Vec<usize> = self
+                .elements
+                .range(effective_new_len..)
+                .map(|(&k, _)| k)
+                .collect();
             for k in to_remove {
                 self.elements.remove(&k);
             }
+
+            let prop_keys_to_remove: Vec<String> = self
+                .properties
+                .iter()
+                .filter_map(|(k, prop)| {
+                    parse_index(k).and_then(|idx| {
+                        if idx >= effective_new_len && prop.configurable {
+                            Some(k.clone())
+                        } else {
+                            None
+                        }
+                    })
+                })
+                .collect();
+            for key in prop_keys_to_remove {
+                self.properties.remove(&key);
+            }
+            self.length = effective_new_len;
+            return;
         }
         self.length = new_len;
     }
@@ -858,6 +893,8 @@ pub struct JsFunction {
     pub bound_args: Vec<JsValue>,
     /// Captured upvalue cells — shared `Rc<RefCell<JsValue>>` for each closed-over variable.
     pub upvalues: Vec<Rc<RefCell<JsValue>>>,
+    /// Captured `with`-scope chain at function creation time.
+    pub with_scopes: Vec<Rc<RefCell<JsObject>>>,
     /// The function's `.prototype` object (instance methods for classes, shared across `new` calls).
     pub prototype: Option<Rc<RefCell<JsObject>>>,
     /// Own properties stored directly on the function (e.g. static class methods).
@@ -1189,6 +1226,7 @@ impl JsValue {
                         this_binding: Some(self.clone()),
                         bound_args: Vec::new(),
                         upvalues: Vec::new(),
+                        with_scopes: Vec::new(),
                         prototype: None,
                         own_props: BTreeMap::new(),
                         arity: None,
@@ -1203,6 +1241,7 @@ impl JsValue {
                         this_binding: Some(self.clone()),
                         bound_args: Vec::new(),
                         upvalues: Vec::new(),
+                        with_scopes: Vec::new(),
                         prototype: None,
                         own_props: BTreeMap::new(),
                         arity: None,
@@ -1221,6 +1260,7 @@ impl JsValue {
                         this_binding: Some(self.clone()),
                         bound_args: Vec::new(),
                         upvalues: Vec::new(),
+                        with_scopes: Vec::new(),
                         prototype: None,
                         own_props: BTreeMap::new(),
                         arity: None,
@@ -1235,6 +1275,7 @@ impl JsValue {
                         this_binding: Some(self.clone()),
                         bound_args: Vec::new(),
                         upvalues: Vec::new(),
+                        with_scopes: Vec::new(),
                         prototype: None,
                         own_props: BTreeMap::new(),
                         arity: None,
@@ -1303,7 +1344,14 @@ impl JsValue {
             JsValue::Array(arr) => {
                 if let Some(idx) = parse_index(key) {
                     if idx <= MAX_ARRAY_INDEX {
-                        return arr.borrow_mut().delete(idx);
+                        let mut a = arr.borrow_mut();
+                        if let Some(prop) = a.properties.get(key) {
+                            if !prop.configurable {
+                                return false;
+                            }
+                        }
+                        a.properties.remove(key);
+                        return a.delete(idx);
                     }
                 }
                 arr.borrow_mut().properties.remove(key);

@@ -25,6 +25,8 @@ pub enum Op {
     Pop,
     /// Duplicate the top value.
     Dup,
+    /// Truncate the operand stack to `frame.stack_base + keep`.
+    TrimStack(u16),
 
     // ── Variable Operations ──
     /// Load a local variable by slot index.
@@ -34,11 +36,22 @@ pub enum Op {
     /// Load a global variable by name (constant pool index).
     /// Throws ReferenceError if the variable is not defined.
     LoadGlobal(u16),
+    /// Dynamically load a name (with/local/upvalue/global resolution).
+    /// Throws ReferenceError if the binding is not defined.
+    LoadName(u16),
     /// Load a global variable by name, returning undefined if not defined.
     /// Used by `typeof` to avoid ReferenceError on undeclared variables.
     LoadGlobalSafe(u16),
+    /// Dynamically load a name for `typeof` / similar contexts, returning
+    /// undefined if no binding exists.
+    LoadNameSafe(u16),
     /// Store top of stack into a global variable.
     StoreGlobal(u16),
+    /// Store top of stack into a declared global binding without consulting
+    /// dynamic `with` environments.
+    StoreGlobalDirect(u16),
+    /// Dynamically store into a name (with/local/upvalue/global resolution).
+    StoreName(u16),
     /// Load from closure (upvalue) — (upvalue_index).
     LoadUpvalue(u16),
     /// Store into closure (upvalue).
@@ -179,6 +192,9 @@ pub enum Op {
     /// Build an array from all call arguments starting at index `n`.
     /// Stack before: [...] → Stack after: [..., Array(args[n..])]
     LoadArgsArray(u16),
+    /// Build an arguments-like object from all call arguments.
+    /// Stack before: [...] → Stack after: [..., ArgumentsObject]
+    LoadArgumentsObject,
     /// Call a function with arguments supplied as an array on the stack.
     /// Stack before: [..., callee, args_array]
     /// Stack after:  [..., return_value]
@@ -189,6 +205,9 @@ pub enum Op {
     CallMethodSpread,
     /// Load the currently-executing function value (for named function expressions).
     LoadSelf,
+    /// Suspend generator creation after function instantiation/prologue but
+    /// before the first body statement executes.
+    GeneratorStart,
 
     // ── Debugger ──
     Debugger,
@@ -335,6 +354,16 @@ pub struct Chunk {
     /// closures can share the mutable cell.  Non-captured locals are stored
     /// as plain `JsValue` (no heap allocation, no borrow overhead).
     pub captured_locals: Vec<bool>,
+    /// Per-local-slot flag: true if writes after initialization are allowed.
+    pub local_mutable: Vec<bool>,
+    /// Per-local-slot flag: true if the slot starts in TDZ/uninitialized state.
+    pub local_starts_tdz: Vec<bool>,
+    /// Per-local-slot names, used for runtime dynamic lookup inside `with`.
+    pub local_names: Vec<String>,
+    /// Per-upvalue names, used for runtime dynamic lookup inside `with`.
+    pub upvalue_names: Vec<String>,
+    /// Per-upvalue mutability propagated from the originating binding.
+    pub upvalue_mutable: Vec<bool>,
     /// Names declared at global scope (`var`, `let`, `const`, `function`, `class`).
     /// Used by strict-mode `StoreGlobal` to distinguish declared globals from
     /// implicit global assignments (which are ReferenceErrors in strict mode).
@@ -361,6 +390,11 @@ impl Chunk {
             is_async: false,
             is_class_constructor: false,
             captured_locals: Vec::new(),
+            local_mutable: Vec::new(),
+            local_starts_tdz: Vec::new(),
+            local_names: Vec::new(),
+            upvalue_names: Vec::new(),
+            upvalue_mutable: Vec::new(),
             declared_globals: Vec::new(),
             line_map: Vec::new(),
             current_line: 0,

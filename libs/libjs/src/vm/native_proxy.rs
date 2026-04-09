@@ -27,17 +27,22 @@ fn invoke_trap(
     handler: &JsValue,
     trap_name: &str,
     args: &[JsValue],
-) -> Option<JsValue> {
+) -> Result<Option<JsValue>, ()> {
     let trap_fn = handler.get_property(trap_name);
     if trap_fn.is_undefined() || trap_fn.is_null() {
-        return None;
+        return Ok(None);
     }
     if !trap_fn.is_function() {
-        return None;
+        return Ok(None);
     }
-    let result = vm.invoke_function(&trap_fn, args, handler.clone());
-    // The invoke pushed a result on the stack
-    Some(vm.stack.pop().unwrap_or(JsValue::Undefined))
+    let result = vm.call_value(&trap_fn, args, handler.clone());
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+    }
+    if vm.pending_exception.is_some() {
+        return Err(());
+    }
+    Ok(Some(result))
 }
 
 fn get_target_handler(this: &JsValue) -> Option<(JsValue, JsValue)> {
@@ -112,8 +117,9 @@ pub fn proxy_get(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<JsValue> {
             proxy.clone(),
         ],
     ) {
-        Some(val) => Some(val),
-        None => Some(vm.get_property_invoking_getter(&target, key)),
+        Ok(Some(val)) => Some(val),
+        Ok(None) => Some(vm.get_property_invoking_getter(&target, key)),
+        Err(()) => None,
     }
 }
 
@@ -131,11 +137,12 @@ pub fn proxy_set(vm: &mut Vm, proxy: &JsValue, key: &str, value: &JsValue) -> Op
             proxy.clone(),
         ],
     ) {
-        Some(result) => Some(result.to_boolean()),
-        None => {
+        Ok(Some(result)) => Some(result.to_boolean()),
+        Ok(None) => {
             target.set_property(String::from(key), value.clone());
             Some(true)
         }
+        Err(()) => None,
     }
 }
 
@@ -148,14 +155,15 @@ pub fn proxy_has(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
         "has",
         &[target.clone(), JsValue::String(String::from(key))],
     ) {
-        Some(result) => Some(result.to_boolean()),
-        None => {
+        Ok(Some(result)) => Some(result.to_boolean()),
+        Ok(None) => {
             if let JsValue::Object(t) = &target {
                 Some(t.borrow().has(key))
             } else {
                 Some(false)
             }
         }
+        Err(()) => None,
     }
 }
 
@@ -168,8 +176,9 @@ pub fn proxy_delete(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
         "deleteProperty",
         &[target.clone(), JsValue::String(String::from(key))],
     ) {
-        Some(result) => Some(result.to_boolean()),
-        None => Some(target.delete_property(key)),
+        Ok(Some(result)) => Some(result.to_boolean()),
+        Ok(None) => Some(target.delete_property(key)),
+        Err(()) => None,
     }
 }
 
@@ -177,18 +186,19 @@ pub fn proxy_delete(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
 pub fn proxy_own_keys(vm: &mut Vm, proxy: &JsValue) -> Option<Vec<String>> {
     let (target, handler) = get_target_handler(proxy)?;
     match invoke_trap(vm, &handler, "ownKeys", &[target.clone()]) {
-        Some(JsValue::Array(arr)) => {
+        Ok(Some(JsValue::Array(arr))) => {
             let a = arr.borrow();
             Some(a.elements.values().map(|v| v.to_js_string()).collect())
         }
-        Some(_) => None,
-        None => {
+        Ok(Some(_)) => None,
+        Ok(None) => {
             if let JsValue::Object(t) = &target {
                 Some(t.borrow().keys())
             } else {
                 Some(Vec::new())
             }
         }
+        Err(()) => None,
     }
 }
 
@@ -207,12 +217,13 @@ pub fn proxy_apply(
         "apply",
         &[target.clone(), this_arg.clone(), args_array],
     ) {
-        Some(val) => Some(val),
-        None => {
+        Ok(Some(val)) => Some(val),
+        Ok(None) => {
             // No trap — call target directly
             vm.invoke_function(&target, args, this_arg.clone());
             Some(vm.stack.pop().unwrap_or(JsValue::Undefined))
         }
+        Err(()) => None,
     }
 }
 
@@ -226,8 +237,9 @@ pub fn proxy_construct(vm: &mut Vm, proxy: &JsValue, args: &[JsValue]) -> Option
         "construct",
         &[target.clone(), args_array, proxy.clone()],
     ) {
-        Some(val) => Some(val),
-        None => None, // Let normal new() handle it
+        Ok(Some(val)) => Some(val),
+        Ok(None) => None, // Let normal new() handle it
+        Err(()) => None,
     }
 }
 
@@ -308,13 +320,33 @@ fn target_prototype_value(target: &JsValue) -> JsValue {
 
 pub fn reflect_get(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    let key = match args.get(1) {
+        Some(JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) => {
+            let prim = vm.to_primitive_for_op(args[1].clone(), "string");
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            prim.to_js_string()
+        }
+        Some(v) => v.to_js_string(),
+        None => String::new(),
+    };
     vm.get_property_with_proto(&target, &key)
 }
 
 pub fn reflect_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    let key = match args.get(1) {
+        Some(JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) => {
+            let prim = vm.to_primitive_for_op(args[1].clone(), "string");
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            prim.to_js_string()
+        }
+        Some(v) => v.to_js_string(),
+        None => String::new(),
+    };
     let value = args.get(2).cloned().unwrap_or(JsValue::Undefined);
     target.set_property(key, value);
     JsValue::Bool(true)
@@ -322,7 +354,17 @@ pub fn reflect_set(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn reflect_has(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    let key = match args.get(1) {
+        Some(JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) => {
+            let prim = vm.to_primitive_for_op(args[1].clone(), "string");
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            prim.to_js_string()
+        }
+        Some(v) => v.to_js_string(),
+        None => String::new(),
+    };
     match &target {
         JsValue::Object(obj) => JsValue::Bool(obj.borrow().has(&key)),
         _ => JsValue::Bool(false),
@@ -331,7 +373,17 @@ pub fn reflect_has(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn reflect_delete_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let target = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let key = args.get(1).map(|v| v.to_js_string()).unwrap_or_default();
+    let key = match args.get(1) {
+        Some(JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)) => {
+            let prim = vm.to_primitive_for_op(args[1].clone(), "string");
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            prim.to_js_string()
+        }
+        Some(v) => v.to_js_string(),
+        None => String::new(),
+    };
     JsValue::Bool(target.delete_property(&key))
 }
 
@@ -506,6 +558,7 @@ pub fn reflect_metadata(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         this_binding: None,
         bound_args,
         upvalues: Vec::new(),
+        with_scopes: Vec::new(),
         prototype: None,
         own_props: BTreeMap::new(),
         arity: Some(2),

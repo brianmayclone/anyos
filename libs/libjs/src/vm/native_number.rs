@@ -7,16 +7,78 @@ use super::native_math::{floor_f64, ln_approx, trunc_f64};
 use super::Vm;
 use crate::value::*;
 
+fn this_number_value(vm: &mut Vm) -> Option<f64> {
+    match &vm.current_this {
+        JsValue::Number(n) => Some(*n),
+        JsValue::Object(obj) => {
+            let o = obj.borrow();
+            match o.primitive_value.as_deref() {
+                Some(JsValue::Number(n)) => Some(*n),
+                _ => {
+                    let err = vm.make_type_error("Number.prototype method called on incompatible receiver");
+                    drop(o);
+                    vm.throw_native(err);
+                    None
+                }
+            }
+        }
+        _ => {
+            let err = vm.make_type_error("Number.prototype method called on incompatible receiver");
+            vm.throw_native(err);
+            None
+        }
+    }
+}
+
+fn to_number_arg(vm: &mut Vm, value: &JsValue) -> Option<f64> {
+    let n = crate::vm::native_array::to_number_vm(vm, value);
+    if vm.pending_exception.is_some() {
+        None
+    } else {
+        Some(n)
+    }
+}
+
+fn integer_arg_in_range(
+    vm: &mut Vm,
+    args: &[JsValue],
+    default: Option<usize>,
+    min: usize,
+    max: usize,
+    name: &str,
+) -> Option<Option<usize>> {
+    match args.first() {
+        None => Some(default),
+        Some(JsValue::Undefined) => Some(default),
+        Some(v) => {
+            let raw = to_number_arg(vm, v)?;
+            let int = trunc_f64(raw);
+            if !int.is_finite() || int < min as f64 || int > max as f64 {
+                let err = vm.make_range_error(name);
+                vm.throw_native(err);
+                return None;
+            }
+            Some(Some(int as usize))
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════
 // Number.prototype methods
 // ═══════════════════════════════════════════════════════════
 
 pub fn number_to_string(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = vm.current_this.to_number();
+    let n = match this_number_value(vm) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     let radix = match args.first() {
         None | Some(JsValue::Undefined) => 10,
         Some(v) => {
-            let r = v.to_number() as u32;
+            let r = match to_number_arg(vm, v) {
+                Some(n) => n as u32,
+                None => return JsValue::Undefined,
+            };
             if r < 2 || r > 36 {
                 let err = vm.make_range_error("toString() radix must be between 2 and 36");
                 vm.throw_native(err);
@@ -64,26 +126,29 @@ pub fn number_to_string(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn number_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    match &vm.current_this {
-        JsValue::Number(n) => JsValue::Number(*n),
-        JsValue::Object(obj) => {
-            let o = obj.borrow();
-            match o.primitive_value.as_deref() {
-                Some(JsValue::Number(n)) => JsValue::Number(*n),
-                _ => JsValue::Number(f64::NAN),
-            }
-        }
-        _ => JsValue::Number(vm.current_this.to_number()),
+    match this_number_value(vm) {
+        Some(n) => JsValue::Number(n),
+        None => JsValue::Undefined,
     }
 }
 
 pub fn number_to_fixed(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = vm.current_this.to_number();
-    let digits = args
-        .first()
-        .map(|v| v.to_number() as usize)
-        .unwrap_or(0)
-        .min(100);
+    let n = match this_number_value(vm) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
+    let digits = match integer_arg_in_range(
+        vm,
+        args,
+        Some(0),
+        0,
+        100,
+        "toFixed() digits must be between 0 and 100",
+    ) {
+        Some(Some(d)) => d,
+        Some(None) => 0,
+        None => return JsValue::Undefined,
+    };
 
     if n.is_nan() {
         return JsValue::String(String::from("NaN"));
@@ -129,16 +194,25 @@ pub fn number_to_fixed(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// `Number.prototype.toPrecision(precision)`
 pub fn number_to_precision(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = vm.current_this.to_number();
+    let n = match this_number_value(vm) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if args.is_empty() || matches!(args.first(), Some(JsValue::Undefined)) {
         return JsValue::String(format_number(n));
     }
-    let prec = args
-        .first()
-        .map(|v| v.to_number() as usize)
-        .unwrap_or(1)
-        .max(1)
-        .min(100);
+    let prec = match integer_arg_in_range(
+        vm,
+        args,
+        None,
+        1,
+        100,
+        "toPrecision() precision must be between 1 and 100",
+    ) {
+        Some(Some(p)) => p,
+        Some(None) => 1,
+        None => return JsValue::Undefined,
+    };
 
     if n.is_nan() {
         return JsValue::String(String::from("NaN"));
@@ -221,7 +295,10 @@ pub fn number_to_precision(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// `Number.prototype.toExponential(fractionDigits)`
 pub fn number_to_exponential(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let n = vm.current_this.to_number();
+    let n = match this_number_value(vm) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
     if n.is_nan() {
         return JsValue::String(String::from("NaN"));
     }
@@ -239,12 +316,17 @@ pub fn number_to_exponential(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let frac_digits = if args.is_empty() || matches!(args.first(), Some(JsValue::Undefined)) {
         None
     } else {
-        Some(
-            args.first()
-                .map(|v| v.to_number() as usize)
-                .unwrap_or(0)
-                .min(100),
-        )
+        match integer_arg_in_range(
+            vm,
+            args,
+            None,
+            0,
+            100,
+            "toExponential() fractionDigits must be between 0 and 100",
+        ) {
+            Some(v) => v,
+            None => return JsValue::Undefined,
+        }
     };
 
     if abs == 0.0 {

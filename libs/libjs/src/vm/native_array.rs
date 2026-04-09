@@ -177,6 +177,11 @@ fn array_like_has_index(vm: &Vm, this_obj: &JsValue, idx: usize) -> bool {
     has_concat_property(vm, this_obj, &alloc::format!("{}", idx))
 }
 
+pub(crate) fn array_effective_proto_value(vm: &Vm, _arr: &JsArray) -> JsValue {
+    JsValue::Object(vm.array_proto.clone())
+}
+
+
 /// Coerce `this` to an object and read its `length` once.
 fn this_array_like_len(vm: &mut Vm) -> Option<(JsValue, usize)> {
     let this_obj = coerce_array_like_this(vm)?;
@@ -677,7 +682,7 @@ pub fn array_join(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn array_slice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let (_this_obj, len, entries) = match this_array_like_entries(vm) {
+    let (this_obj, len, entries) = match this_array_like_entries(vm) {
         Some(v) => v,
         None => return JsValue::Undefined,
     };
@@ -697,16 +702,21 @@ pub fn array_slice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
     let start = resolve_index(start_num, len);
     let end = resolve_index(end_num, len);
-    let mut result = JsArray::new();
+    let result = match array_species_create(vm, &this_obj, end.saturating_sub(start)) {
+        Some(v) => v,
+        None => return JsValue::Undefined,
+    };
     if start < end {
-        result.length = end - start;
         for (idx, val) in entries {
             if idx >= start && idx < end {
-                result.elements.insert(idx - start, val);
+                if !concat_define_result_index(vm, &result, idx - start, val) {
+                    return JsValue::Undefined;
+                }
             }
         }
     }
-    JsValue::Array(Rc::new(RefCell::new(result)))
+    concat_set_result_length(&result, end.saturating_sub(start));
+    result
 }
 
 fn observe_array_species_create(vm: &mut Vm, original: &JsValue) -> bool {
@@ -729,6 +739,78 @@ fn observe_array_species_create(vm: &mut Vm, original: &JsValue) -> bool {
         }
     }
     true
+}
+
+fn is_array_value(vm: &mut Vm, value: &JsValue) -> Option<bool> {
+    match value {
+        JsValue::Array(_) => Some(true),
+        JsValue::Object(obj) => {
+            if obj.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                return match native_proxy::proxy_target(value) {
+                    Some(target) => is_array_value(vm, &target),
+                    None => {
+                        let err = vm.make_type_error("Cannot perform 'IsArray' on a revoked Proxy");
+                        vm.throw_native(err);
+                        None
+                    }
+                };
+            }
+            Some(false)
+        }
+        _ => Some(false),
+    }
+}
+
+fn array_species_create(vm: &mut Vm, original: &JsValue, length: usize) -> Option<JsValue> {
+    let is_array = is_array_value(vm, original)?;
+    if !is_array {
+        let mut arr = JsArray::new();
+        arr.length = length;
+        return Some(JsValue::Array(Rc::new(RefCell::new(arr))));
+    }
+
+    let ctor = vm.get_property_invoking_getter(original, "constructor");
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+    }
+    if vm.pending_exception.is_some() {
+        return None;
+    }
+
+    let species = match ctor {
+        JsValue::Undefined => JsValue::Undefined,
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
+            let species = vm.get_property_invoking_getter(&ctor, native_symbol::WELL_KNOWN_SPECIES);
+            if let Some(exc) = vm.last_exception.take() {
+                vm.pending_exception = Some(exc);
+            }
+            if vm.pending_exception.is_some() {
+                return None;
+            }
+            species
+        }
+        _ => {
+            let err = vm.make_type_error("Array constructor is not an object");
+            vm.throw_native(err);
+            return None;
+        }
+    };
+
+    match species {
+        JsValue::Undefined | JsValue::Null => {
+            let mut arr = JsArray::new();
+            arr.length = length;
+            Some(JsValue::Array(Rc::new(RefCell::new(arr))))
+        }
+        _ => {
+            if !vm.construct_with_new_target(&species, &[JsValue::Number(length as f64)], &species) {
+                let err = vm.make_type_error("Array species is not a constructor");
+                vm.throw_native(err);
+                return None;
+            }
+            Some(vm.stack.pop().unwrap_or(JsValue::Undefined))
+        }
+    }
 }
 
 fn wrap_primitive_for_concat(vm: &Vm, value: &JsValue) -> JsValue {
@@ -763,12 +845,15 @@ fn has_concat_property(vm: &Vm, value: &JsValue, key: &str) -> bool {
     match value {
         JsValue::Array(arr) => {
             if let Some(idx) = super::try_parse_index(key) {
-                if arr.borrow().has(idx) {
+                let arr = arr.borrow();
+                if arr.has(idx) || arr.properties.contains_key(key) {
                     return true;
                 }
                 return vm.array_proto.borrow().has(key);
             }
-            key == "length" || arr.borrow().properties.contains_key(key) || vm.array_proto.borrow().has(key)
+            key == "length"
+                || arr.borrow().properties.contains_key(key)
+                || vm.array_proto.borrow().has(key)
         }
         JsValue::Object(obj) if obj.borrow().primitive_value.is_some() => {
             let o = obj.borrow();
@@ -1231,8 +1316,10 @@ pub fn array_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         vm.throw_native(err);
         return JsValue::Undefined;
     }
-    let mut result = JsArray::new();
-    result.length = len;
+    let result = match array_species_create(vm, &this_obj, len) {
+        Some(v) => v,
+        None => return JsValue::Undefined,
+    };
     for idx in 0..len {
         if !array_like_has_index(vm, &this_obj, idx) {
             continue;
@@ -1253,9 +1340,12 @@ pub fn array_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if vm.pending_exception.is_some() {
             return JsValue::Undefined;
         }
-        result.elements.insert(idx, val);
+        if !concat_define_result_index(vm, &result, idx, val) {
+            return JsValue::Undefined;
+        }
     }
-    JsValue::Array(Rc::new(RefCell::new(result)))
+    concat_set_result_length(&result, len);
+    result
 }
 
 pub fn array_filter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -1268,7 +1358,11 @@ pub fn array_filter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) {
         return JsValue::Undefined;
     }
-    let mut result = Vec::new();
+    let result = match array_species_create(vm, &this_obj, 0) {
+        Some(v) => v,
+        None => return JsValue::Undefined,
+    };
+    let mut to = 0usize;
     for idx in 0..len {
         if !array_like_has_index(vm, &this_obj, idx) {
             continue;
@@ -1290,10 +1384,14 @@ pub fn array_filter(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             return JsValue::Undefined;
         }
         if val.to_boolean() {
-            result.push(el);
+            if !concat_define_result_index(vm, &result, to, el) {
+                return JsValue::Undefined;
+            }
+            to += 1;
         }
     }
-    JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(result))))
+    concat_set_result_length(&result, to);
+    result
 }
 
 pub fn array_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -1664,8 +1762,14 @@ pub fn array_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 // Array static methods
 // ═══════════════════════════════════════════════════════════
 
-pub fn array_is_array(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    JsValue::Bool(matches!(args.first(), Some(JsValue::Array(_))))
+pub fn array_is_array(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    match args.first() {
+        Some(value) => match is_array_value(vm, value) {
+            Some(is_array) => JsValue::Bool(is_array),
+            None => JsValue::Undefined,
+        },
+        None => JsValue::Bool(false),
+    }
 }
 
 pub fn array_from(vm: &mut Vm, args: &[JsValue]) -> JsValue {

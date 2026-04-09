@@ -26,6 +26,7 @@ struct UpvalueDesc {
     /// If false, captures from the enclosing function's upvalue slot `index`.
     is_local: bool,
     index: u16,
+    mutable: bool,
 }
 
 /// Entry on the label stack, tracking forward jumps for `break label`
@@ -81,6 +82,8 @@ struct Scope {
 struct Local {
     name: String,
     depth: u32,
+    mutable: bool,
+    starts_tdz: bool,
 }
 
 impl Scope {
@@ -110,10 +113,16 @@ impl Scope {
     }
 
     fn add_local(&mut self, name: String) -> u16 {
+        self.add_local_with_flags(name, true, false)
+    }
+
+    fn add_local_with_flags(&mut self, name: String, mutable: bool, starts_tdz: bool) -> u16 {
         let idx = self.locals.len() as u16;
         self.locals.push(Local {
             name,
             depth: self.scope_depth,
+            mutable,
+            starts_tdz,
         });
         // Keep captured vec in sync with locals.
         while self.captured.len() <= idx as usize {
@@ -139,6 +148,10 @@ pub struct Compiler {
 }
 
 impl Compiler {
+    fn is_strict_poisoned_ident(name: &str) -> bool {
+        name == "eval" || name == "arguments"
+    }
+
     fn mangle_private_name(name: &str) -> String {
         alloc::format!("__private_slot_{}", name)
     }
@@ -215,6 +228,12 @@ impl Compiler {
             self.emit(Op::StoreGlobal(ci));
             self.emit(Op::Pop);
         } else {
+            if self.with_depth > 0 {
+                let ci = self.add_const(Constant::String(name.to_string()));
+                self.emit(Op::StoreName(ci));
+                self.emit(Op::Pop);
+                return;
+            }
             let slot = self
                 .scope()
                 .resolve_local(name)
@@ -370,6 +389,11 @@ impl Compiler {
         let mut chunk = scope.chunk;
         chunk.strict = self.is_strict;
         chunk.captured_locals = scope.captured;
+        chunk.local_mutable = scope.locals.iter().map(|l| l.mutable).collect();
+        chunk.local_starts_tdz = scope.locals.iter().map(|l| l.starts_tdz).collect();
+        chunk.local_names = scope.locals.iter().map(|l| l.name.clone()).collect();
+        chunk.upvalue_names = scope.upvalues.iter().map(|uv| uv.name.clone()).collect();
+        chunk.upvalue_mutable = scope.upvalues.iter().map(|uv| uv.mutable).collect();
         chunk
     }
 
@@ -507,7 +531,7 @@ impl Compiler {
                             if *kind != VarKind::Var && !is_global {
                                 let before = self.scope().locals.len() as u16;
                                 for d in decls {
-                                    self.compile_var_decl(d, false, false);
+                                    self.compile_var_decl(d, false, false, *kind == VarKind::Const);
                                 }
                                 let after = self.scope().locals.len() as u16;
                                 for local_slot in before..after {
@@ -515,7 +539,12 @@ impl Compiler {
                                 }
                             } else {
                                 for d in decls {
-                                    self.compile_var_decl(d, is_global, for_is_var);
+                                    self.compile_var_decl(
+                                        d,
+                                        is_global,
+                                        for_is_var,
+                                        *kind == VarKind::Const,
+                                    );
                                 }
                             }
                         }
@@ -584,10 +613,27 @@ impl Compiler {
                 self.compile_try_completion(block, catch, finally);
             }
             Stmt::With { object, body } => {
+                if self.is_strict {
+                    self.emit_throw_syntax_error("Strict mode code may not include a with statement");
+                    return;
+                }
                 self.compile_expr(object);
                 self.emit(Op::EnterWith);
+                self.with_depth += 1;
+                let catch_slot = self.emit(Op::TryCatch(0, 0));
                 self.compile_stmt_completion(body);
+                self.emit(Op::TryEnd);
                 self.emit(Op::LeaveWith);
+                let end_jump = self.emit(Op::Jump(0));
+                let catch_pos = self.offset();
+                let catch_off = catch_pos as i32 - catch_slot as i32 - 1;
+                if let Op::TryCatch(ref mut co, _) = self.scope_mut().chunk.code[catch_slot] {
+                    *co = catch_off;
+                }
+                self.emit(Op::LeaveWith);
+                self.emit(Op::Throw);
+                self.patch_jump(end_jump);
+                self.with_depth -= 1;
             }
             Stmt::Labeled { label, body } => {
                 let _ = label;
@@ -763,17 +809,34 @@ impl Compiler {
                 outer.captured.push(false);
             }
             outer.captured[local_slot as usize] = true;
-            return Some(self.add_upvalue(scope_idx, name, true, local_slot));
+            let mutable = outer
+                .locals
+                .get(local_slot as usize)
+                .map(|l| l.mutable)
+                .unwrap_or(true);
+            return Some(self.add_upvalue(scope_idx, name, true, local_slot, mutable));
         }
         // Recurse: try as an upvalue of the immediately enclosing scope.
         if let Some(outer_uv) = self.resolve_upvalue_in_scope(scope_idx - 1, name) {
-            return Some(self.add_upvalue(scope_idx, name, false, outer_uv));
+            let mutable = self.scopes[scope_idx - 1]
+                .upvalues
+                .get(outer_uv as usize)
+                .map(|uv| uv.mutable)
+                .unwrap_or(true);
+            return Some(self.add_upvalue(scope_idx, name, false, outer_uv, mutable));
         }
         None
     }
 
     /// Add (or deduplicate) an upvalue descriptor in `scopes[scope_idx]`.
-    fn add_upvalue(&mut self, scope_idx: usize, name: &str, is_local: bool, index: u16) -> u16 {
+    fn add_upvalue(
+        &mut self,
+        scope_idx: usize,
+        name: &str,
+        is_local: bool,
+        index: u16,
+        mutable: bool,
+    ) -> u16 {
         for (i, uv) in self.scopes[scope_idx].upvalues.iter().enumerate() {
             if uv.name == name {
                 return i as u16;
@@ -784,6 +847,7 @@ impl Compiler {
             name: String::from(name),
             is_local,
             index,
+            mutable,
         });
         idx
     }
@@ -804,6 +868,15 @@ impl Compiler {
 
     /// Emit a load for `name` using the appropriate opcode.
     fn emit_load_name(&mut self, name: &str) {
+        if self.with_depth > 0 {
+            // Even inside `with`, lexical resolution for locals/upvalues must
+            // still be recorded so the runtime LoadName path can see captured
+            // bindings after checking the object environment first.
+            let _ = self.resolve_name(name);
+            let ci = self.add_const(Constant::String(name.to_string()));
+            self.emit(Op::LoadName(ci));
+            return;
+        }
         match self.resolve_name(name) {
             NameLookup::Local(slot) => {
                 self.emit(Op::LoadLocal(slot));
@@ -818,8 +891,24 @@ impl Compiler {
         }
     }
 
+    fn emit_leave_with_scopes(&mut self) {
+        for _ in 0..self.with_depth {
+            self.emit(Op::LeaveWith);
+        }
+    }
+
     /// Emit a store for `name` (leaves value on stack, used for assignment expressions).
     fn emit_store_name(&mut self, name: &str) {
+        if self.with_depth > 0 {
+            // Record captured upvalues even though the actual write uses the
+            // dynamic with/local/upvalue/global StoreName path.
+            let _ = self.resolve_name(name);
+            let ci = self.add_const(Constant::String(name.to_string()));
+            self.emit(Op::Dup);
+            self.emit(Op::StoreName(ci));
+            self.emit(Op::Pop);
+            return;
+        }
         match self.resolve_name(name) {
             NameLookup::Local(slot) => {
                 self.emit(Op::Dup);
@@ -864,7 +953,7 @@ impl Compiler {
                     self.is_global_scope() && self.scope().scope_depth == 0
                 };
                 for decl in decls {
-                    self.compile_var_decl(decl, is_global, is_var);
+                    self.compile_var_decl(decl, is_global, is_var, *kind == VarKind::Const);
                 }
             }
             Stmt::Block(stmts) => {
@@ -956,7 +1045,7 @@ impl Compiler {
                                 // Record slot indices before and after to find new let/const bindings.
                                 let before = self.scope().locals.len() as u16;
                                 for d in decls {
-                                    self.compile_var_decl(d, false, false);
+                                    self.compile_var_decl(d, false, false, *kind == VarKind::Const);
                                 }
                                 let after = self.scope().locals.len() as u16;
                                 for slot in before..after {
@@ -964,7 +1053,12 @@ impl Compiler {
                                 }
                             } else {
                                 for d in decls {
-                                    self.compile_var_decl(d, is_global, for_is_var);
+                                    self.compile_var_decl(
+                                        d,
+                                        is_global,
+                                        for_is_var,
+                                        *kind == VarKind::Const,
+                                    );
                                 }
                             }
                         }
@@ -1041,6 +1135,7 @@ impl Compiler {
                 } else {
                     self.emit(Op::LoadUndefined);
                 }
+                self.emit_leave_with_scopes();
                 // Inline any pending finally blocks before returning (innermost first).
                 // Temporarily clear pending_finallies to prevent infinite recursion
                 // when the finally block itself contains a `return` statement.
@@ -1054,6 +1149,7 @@ impl Compiler {
                 self.emit(Op::Return);
             }
             Stmt::Break(ref label) => {
+                self.emit_leave_with_scopes();
                 if let Some(label_name) = label {
                     // ES2023 §14.9.1 — `break label;` targets the LabelledStatement.
                     // Search the label stack for the matching label.
@@ -1074,6 +1170,7 @@ impl Compiler {
                 }
             }
             Stmt::Continue(ref label) => {
+                self.emit_leave_with_scopes();
                 if let Some(label_name) = label {
                     // ES2023 §14.8.1 — `continue label;` targets the IterationStatement
                     // labeled by `label`.  Search the label stack.
@@ -1175,12 +1272,27 @@ impl Compiler {
                 self.compile_labeled(label, body);
             }
             Stmt::With { object, body } => {
+                if self.is_strict {
+                    self.emit_throw_syntax_error("Strict mode code may not include a with statement");
+                    return;
+                }
                 self.compile_expr(object);
                 self.emit(Op::EnterWith);
                 self.with_depth += 1;
+                let catch_slot = self.emit(Op::TryCatch(0, 0));
                 self.compile_stmt(body);
-                self.with_depth -= 1;
+                self.emit(Op::TryEnd);
                 self.emit(Op::LeaveWith);
+                let end_jump = self.emit(Op::Jump(0));
+                let catch_pos = self.offset();
+                let catch_off = catch_pos as i32 - catch_slot as i32 - 1;
+                if let Op::TryCatch(ref mut co, _) = self.scope_mut().chunk.code[catch_slot] {
+                    *co = catch_off;
+                }
+                self.emit(Op::LeaveWith);
+                self.emit(Op::Throw);
+                self.patch_jump(end_jump);
+                self.with_depth -= 1;
             }
             Stmt::Empty | Stmt::Debugger => {
                 self.emit(Op::Nop);
@@ -1280,7 +1392,13 @@ impl Compiler {
         }
     }
 
-    fn compile_var_decl(&mut self, decl: &VarDeclarator, is_global_var: bool, is_var: bool) {
+    fn compile_var_decl(
+        &mut self,
+        decl: &VarDeclarator,
+        is_global_var: bool,
+        is_var: bool,
+        is_const: bool,
+    ) {
         let prev = self.binding_is_global;
         self.binding_is_global = is_global_var;
         match &decl.name {
@@ -1298,7 +1416,10 @@ impl Compiler {
                     let slot = self
                         .scope()
                         .resolve_local(name)
-                        .unwrap_or_else(|| self.scope_mut().add_local(name.clone()));
+                        .unwrap_or_else(|| {
+                            self.scope_mut()
+                                .add_local_with_flags(name.clone(), !is_const, true)
+                        });
                     Some(slot)
                 } else {
                     None
@@ -1492,6 +1613,143 @@ impl Compiler {
         }
     }
 
+    fn compile_pattern_binding_existing(&mut self, pat: &Pattern) {
+        match pat {
+            Pattern::Ident(name) => {
+                if let Some(slot) = self.scope().resolve_local(name) {
+                    self.emit(Op::StoreLocal(slot));
+                    self.emit(Op::Pop);
+                } else {
+                    self.bind_ident(name);
+                }
+            }
+            Pattern::Assign(inner, default) => {
+                self.emit(Op::Dup);
+                self.emit(Op::LoadUndefined);
+                self.emit(Op::StrictEq);
+                let skip = self.emit(Op::JumpIfFalse(0));
+                self.emit(Op::Pop);
+                if let Pattern::Ident(ref name) = **inner {
+                    self.compile_expr_with_name(default, name);
+                } else {
+                    self.compile_expr(default);
+                }
+                self.patch_jump(skip);
+                self.compile_pattern_binding_existing(inner);
+            }
+            Pattern::Array(elems) => self.compile_array_destructure_into_existing(elems),
+            Pattern::Object(props) => self.compile_object_destructure_into_existing(props),
+            Pattern::Rest(inner) => self.compile_pattern_binding_existing(inner),
+        }
+    }
+
+    fn compile_array_destructure_into_existing(&mut self, elements: &[Option<Pattern>]) {
+        self.emit(Op::GetIterator);
+        let has_rest = matches!(elements.last(), Some(Some(Pattern::Rest(_))));
+        let done_slot = self
+            .scope_mut()
+            .add_local(String::from("__dstr_iter_done_existing__"));
+        self.emit(Op::LoadFalse);
+        self.emit(Op::StoreLocal(done_slot));
+        self.emit(Op::Pop);
+        for elem in elements.iter() {
+            match elem {
+                None => {
+                    self.emit(Op::IterNext);
+                    self.emit(Op::Dup);
+                    self.emit(Op::Not);
+                    self.emit(Op::StoreLocal(done_slot));
+                    self.emit(Op::Pop);
+                    self.emit(Op::Pop);
+                    self.emit(Op::Pop);
+                }
+                Some(Pattern::Rest(inner)) => {
+                    self.emit(Op::IterCollectRest);
+                    self.emit(Op::LoadTrue);
+                    self.emit(Op::StoreLocal(done_slot));
+                    self.emit(Op::Pop);
+                    self.compile_pattern_binding_existing(inner);
+                }
+                Some(Pattern::Assign(inner, default)) => {
+                    self.emit(Op::IterNext);
+                    self.emit(Op::Dup);
+                    self.emit(Op::Not);
+                    self.emit(Op::StoreLocal(done_slot));
+                    self.emit(Op::Pop);
+                    self.emit(Op::Pop);
+                    self.emit(Op::Dup);
+                    self.emit(Op::LoadUndefined);
+                    self.emit(Op::StrictEq);
+                    let skip = self.emit(Op::JumpIfFalse(0));
+                    self.emit(Op::Pop);
+                    if let Pattern::Ident(ref name) = **inner {
+                        self.compile_expr_with_name(default, name);
+                    } else {
+                        self.compile_expr(default);
+                    }
+                    self.patch_jump(skip);
+                    self.compile_pattern_binding_existing(inner);
+                }
+                Some(pat) => {
+                    self.emit(Op::IterNext);
+                    self.emit(Op::Dup);
+                    self.emit(Op::Not);
+                    self.emit(Op::StoreLocal(done_slot));
+                    self.emit(Op::Pop);
+                    self.emit(Op::Pop);
+                    self.compile_pattern_binding_existing(pat);
+                }
+            }
+        }
+        if !has_rest {
+            self.emit(Op::LoadLocal(done_slot));
+            let skip_close = self.emit(Op::JumpIfTrue(0));
+            self.emit(Op::IteratorClose);
+            self.patch_jump(skip_close);
+        }
+        self.emit(Op::Pop);
+    }
+
+    fn compile_object_destructure_into_existing(&mut self, props: &[ObjPatProp]) {
+        let mut excluded_keys: Vec<String> = Vec::new();
+        let mut has_rest = false;
+        for prop in props {
+            if matches!(&prop.value, Pattern::Rest(_)) {
+                has_rest = true;
+            } else {
+                excluded_keys.push(prop.key.clone());
+            }
+        }
+
+        for prop in props {
+            if matches!(&prop.value, Pattern::Rest(_)) {
+                continue;
+            }
+            self.emit(Op::Dup);
+            let name_idx = self.add_const(Constant::String(prop.key.clone()));
+            self.emit(Op::GetPropNamed(name_idx));
+            self.compile_pattern_binding_existing(&prop.value);
+        }
+
+        if has_rest {
+            for prop in props {
+                if let Pattern::Rest(inner) = &prop.value {
+                    self.emit(Op::Dup);
+                    for key in &excluded_keys {
+                        let ki = self.add_const(Constant::String(key.clone()));
+                        self.emit(Op::LoadConst(ki));
+                    }
+                    let n = excluded_keys.len() as u8;
+                    self.emit(Op::ObjectRest(n));
+                    self.compile_pattern_binding_existing(&inner);
+                    break;
+                }
+            }
+        }
+
+        self.emit(Op::Pop);
+    }
+
     fn assign_target_inferred_name(target: &Expr) -> Option<String> {
         match target {
             Expr::Ident(name) => Some(name.clone()),
@@ -1501,6 +1759,23 @@ impl Compiler {
 
     fn compile_for_in_of(&mut self, left: &ForInit, right: &Expr, body: &Stmt, is_of: bool) {
         self.begin_scope();
+        if let ForInit::VarDecl { kind, decls } = left {
+            if *kind != VarKind::Var {
+                for decl in decls {
+                    let mut names = Vec::new();
+                    Self::collect_pattern_names(&decl.name, &mut names);
+                    for name in names {
+                        if self.scope().resolve_local(&name).is_none() {
+                            self.scope_mut().add_local_with_flags(
+                                name,
+                                *kind != VarKind::Const,
+                                true,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         self.compile_expr(right);
 
         if is_of {
@@ -1545,19 +1820,42 @@ impl Compiler {
                     match &decl.name {
                         Pattern::Ident(name) => {
                             let name_clone = name.clone();
-                            self.bind_ident(&name_clone);
+                            if *kind == VarKind::Var {
+                                self.bind_ident(&name_clone);
+                            } else if let Some(slot) = self.scope().resolve_local(&name_clone) {
+                                self.emit(Op::StoreLocal(slot));
+                                self.emit(Op::Pop);
+                            } else {
+                                self.bind_ident(&name_clone);
+                            }
                         }
                         Pattern::Array(elems) => {
-                            self.compile_array_destructure(elems);
+                            if *kind == VarKind::Var {
+                                self.compile_array_destructure(elems);
+                            } else {
+                                self.compile_array_destructure_into_existing(elems);
+                            }
                         }
                         Pattern::Object(props) => {
-                            self.compile_object_destructure(props);
+                            if *kind == VarKind::Var {
+                                self.compile_object_destructure(props);
+                            } else {
+                                self.compile_object_destructure_into_existing(props);
+                            }
                         }
                         Pattern::Assign(inner, _) => {
-                            self.compile_pattern_binding(inner);
+                            if *kind == VarKind::Var {
+                                self.compile_pattern_binding(inner);
+                            } else {
+                                self.compile_pattern_binding_existing(inner);
+                            }
                         }
                         Pattern::Rest(inner) => {
-                            self.compile_pattern_binding(inner);
+                            if *kind == VarKind::Var {
+                                self.compile_pattern_binding(inner);
+                            } else {
+                                self.compile_pattern_binding_existing(inner);
+                            }
                         }
                     }
                     self.binding_is_global = prev;
@@ -1585,6 +1883,10 @@ impl Compiler {
 
         self.set_continue_target(loop_start);
         self.compile_stmt(body);
+        // Loop bodies must restore the iterator-only stack shape before the
+        // next iteration. Some statement forms currently leave transient
+        // values behind; trimming here keeps for-in/for-of robust.
+        self.emit(Op::TrimStack(1));
 
         let back = loop_start as i32 - self.offset() as i32 - 1;
         self.emit(Op::Jump(back));
@@ -1619,6 +1921,23 @@ impl Compiler {
         self.emit(Op::LoadEmpty);
         self.emit(Op::StoreLocal(slot));
         self.emit(Op::Pop);
+        if let ForInit::VarDecl { kind, decls } = left {
+            if *kind != VarKind::Var {
+                for decl in decls {
+                    let mut names = Vec::new();
+                    Self::collect_pattern_names(&decl.name, &mut names);
+                    for name in names {
+                        if self.scope().resolve_local(&name).is_none() {
+                            self.scope_mut().add_local_with_flags(
+                                name,
+                                *kind != VarKind::Const,
+                                true,
+                            );
+                        }
+                    }
+                }
+            }
+        }
         self.compile_expr(right);
 
         if is_of {
@@ -1655,12 +1974,43 @@ impl Compiler {
                     match &decl.name {
                         Pattern::Ident(name) => {
                             let name_clone = name.clone();
-                            self.bind_ident(&name_clone);
+                            if *kind == VarKind::Var {
+                                self.bind_ident(&name_clone);
+                            } else if let Some(slot) = self.scope().resolve_local(&name_clone) {
+                                self.emit(Op::StoreLocal(slot));
+                                self.emit(Op::Pop);
+                            } else {
+                                self.bind_ident(&name_clone);
+                            }
                         }
-                        Pattern::Array(elems) => self.compile_array_destructure(elems),
-                        Pattern::Object(props) => self.compile_object_destructure(props),
-                        Pattern::Assign(inner, _) => self.compile_pattern_binding(inner),
-                        Pattern::Rest(inner) => self.compile_pattern_binding(inner),
+                        Pattern::Array(elems) => {
+                            if *kind == VarKind::Var {
+                                self.compile_array_destructure(elems);
+                            } else {
+                                self.compile_array_destructure_into_existing(elems);
+                            }
+                        }
+                        Pattern::Object(props) => {
+                            if *kind == VarKind::Var {
+                                self.compile_object_destructure(props);
+                            } else {
+                                self.compile_object_destructure_into_existing(props);
+                            }
+                        }
+                        Pattern::Assign(inner, _) => {
+                            if *kind == VarKind::Var {
+                                self.compile_pattern_binding(inner);
+                            } else {
+                                self.compile_pattern_binding_existing(inner);
+                            }
+                        }
+                        Pattern::Rest(inner) => {
+                            if *kind == VarKind::Var {
+                                self.compile_pattern_binding(inner);
+                            } else {
+                                self.compile_pattern_binding_existing(inner);
+                            }
+                        }
                     }
                     self.binding_is_global = prev;
                 } else {
@@ -1686,6 +2036,7 @@ impl Compiler {
         }
         self.set_continue_target(loop_start);
         self.compile_loop_body_completion(slot, body);
+        self.emit(Op::TrimStack(1));
         let back = loop_start as i32 - self.offset() as i32 - 1;
         self.emit(Op::Jump(back));
         self.patch_jump(exit_jump);
@@ -2226,9 +2577,8 @@ impl Compiler {
 
         // ── Function prologue ──
 
-        // 1. Build `arguments` from all call args.
         let rest_start = rest_param_idx.unwrap_or(params.len()) as u16;
-        self.emit(Op::LoadArgsArray(0));
+        self.emit(Op::LoadArgumentsObject);
         self.emit(Op::StoreLocal(arguments_slot));
         // StoreLocal peeks; we still have the array on stack — pop it.
         self.emit(Op::Pop);
@@ -2255,7 +2605,6 @@ impl Compiler {
                 self.emit(Op::LoadUndefined);
                 self.emit(Op::StrictEq);
                 let skip = self.emit(Op::JumpIfFalse(0));
-                // Infer function name from parameter name
                 if let Pattern::Ident(ref pname) = param.pattern {
                     self.compile_expr_with_name(default, pname);
                 } else {
@@ -2343,7 +2692,11 @@ impl Compiler {
                             Self::collect_pattern_names(&decl.name, &mut names);
                             for name in names {
                                 if self.scope().resolve_local(&name).is_none() {
-                                    self.scope_mut().add_local(name);
+                                    self.scope_mut().add_local_with_flags(
+                                        name,
+                                        *kind != VarKind::Const,
+                                        true,
+                                    );
                                 }
                             }
                         }
@@ -2351,7 +2704,8 @@ impl Compiler {
                 }
                 Stmt::ClassDecl { name, .. } => {
                     if self.scope().resolve_local(name).is_none() {
-                        self.scope_mut().add_local(name.clone());
+                        self.scope_mut()
+                            .add_local_with_flags(name.clone(), false, true);
                     }
                 }
                 _ => {}
@@ -2382,6 +2736,10 @@ impl Compiler {
             }
         }
 
+        if is_generator {
+            self.emit(Op::GeneratorStart);
+        }
+
         for s in body {
             self.compile_stmt(s);
         }
@@ -2406,7 +2764,12 @@ impl Compiler {
         let mut func_chunk = func_scope.chunk;
         func_chunk.strict = fn_effective_strict;
         func_chunk.captured_locals = func_scope.captured;
+        func_chunk.local_mutable = func_scope.locals.iter().map(|l| l.mutable).collect();
+        func_chunk.local_starts_tdz = func_scope.locals.iter().map(|l| l.starts_tdz).collect();
+        func_chunk.local_names = func_scope.locals.iter().map(|l| l.name.clone()).collect();
         // Copy upvalue descriptors into the chunk so the VM knows how to capture them.
+        func_chunk.upvalue_names = func_scope.upvalues.iter().map(|uv| uv.name.clone()).collect();
+        func_chunk.upvalue_mutable = func_scope.upvalues.iter().map(|uv| uv.mutable).collect();
         func_chunk.upvalues = func_scope
             .upvalues
             .iter()
@@ -3118,7 +3481,7 @@ impl Compiler {
                             self.compile_expr(e);
                             self.emit(Op::ArrayPush);
                         } else {
-                            self.emit(Op::LoadUndefined);
+                            self.emit(Op::LoadEmpty);
                             self.emit(Op::ArrayPush);
                         }
                     }
@@ -3127,7 +3490,7 @@ impl Compiler {
                         if let Some(e) = elem {
                             self.compile_expr(e);
                         } else {
-                            self.emit(Op::LoadUndefined);
+                            self.emit(Op::LoadEmpty);
                         }
                     }
                     self.emit(Op::NewArray(elements.len() as u16));
@@ -3168,7 +3531,7 @@ impl Compiler {
                                 self.emit(Op::Dup); // [obj, obj]
                                 let key_ci = self.add_const(Constant::Number(*n));
                                 self.emit(Op::LoadConst(key_ci)); // [obj, obj, key]
-                                let key_name = if n.fract() == 0.0 {
+                                let key_name = if *n == (*n as i64) as f64 {
                                     alloc::format!("{}", *n as i64)
                                 } else {
                                     alloc::format!("{}", n)
@@ -3189,6 +3552,7 @@ impl Compiler {
                             PropKey::Computed(key) => {
                                 self.emit(Op::Dup); // [obj, obj]
                                 self.compile_expr(key); // [obj, obj, key]
+                                self.emit(Op::ToPropertyKey);
                                 let accessor_name = if prop.kind == PropKind::Get {
                                     alloc::format!("get [computed]")
                                 } else {
@@ -3227,6 +3591,7 @@ impl Compiler {
                             // [obj] → [obj, obj] → [obj, obj, key] → [obj, obj, key, val] → [obj, val] → [obj]
                             self.emit(Op::Dup);
                             self.compile_expr(key);
+                            self.emit(Op::ToPropertyKey);
                             self.compile_expr(&prop.value);
                             self.emit(Op::SetProp);
                             self.emit(Op::Pop);
@@ -3554,16 +3919,21 @@ impl Compiler {
             Expr::Typeof(inner) => {
                 // typeof on an unresolvable global must return "undefined", not throw.
                 if let Expr::Ident(name) = inner.as_ref() {
-                    match self.resolve_name(name) {
-                        NameLookup::Local(slot) => {
-                            self.emit(Op::LoadLocal(slot));
-                        }
-                        NameLookup::Upvalue(idx) => {
-                            self.emit(Op::LoadUpvalue(idx));
-                        }
-                        NameLookup::Global => {
-                            let ci = self.add_const(Constant::String(name.to_string()));
-                            self.emit(Op::LoadGlobalSafe(ci));
+                    if self.with_depth > 0 {
+                        let ci = self.add_const(Constant::String(name.to_string()));
+                        self.emit(Op::LoadNameSafe(ci));
+                    } else {
+                        match self.resolve_name(name) {
+                            NameLookup::Local(slot) => {
+                                self.emit(Op::LoadLocal(slot));
+                            }
+                            NameLookup::Upvalue(idx) => {
+                                self.emit(Op::LoadUpvalue(idx));
+                            }
+                            NameLookup::Global => {
+                                let ci = self.add_const(Constant::String(name.to_string()));
+                                self.emit(Op::LoadGlobalSafe(ci));
+                            }
                         }
                     }
                 } else {
@@ -3764,7 +4134,6 @@ impl Compiler {
     }
 
     /// Emit the short-circuit jump for a logical assignment.
-    /// JumpIfFalse/JumpIfTrue/JumpIfNullish all PEEK (don't pop).
     /// For &&=: skip RHS if current value is falsy.
     /// For ||=: skip RHS if current value is truthy.
     /// For ??=: skip RHS if current value is NOT nullish.
@@ -3792,10 +4161,21 @@ impl Compiler {
         match left {
             Expr::Ident(name) => {
                 let name = name.clone();
+                if self.is_strict && Self::is_strict_poisoned_ident(&name) {
+                    self.emit_throw_syntax_error(&alloc::format!(
+                        "Assignment to '{}' is not allowed in strict mode",
+                        name
+                    ));
+                    return;
+                }
                 if Self::is_logical_assign(op) {
-                    // x &&= expr: if x is falsy, leave x on stack; else eval expr, assign, leave new val.
-                    // JumpIfFalse/True/Nullish all PEEK (value stays on stack).
+                    // x &&= expr / x ||= expr / x ??= expr
+                    // The VM's JumpIfFalse/JumpIfTrue POP the tested value, so for &&=/||=
+                    // we must duplicate first to preserve the old result on the short-circuit path.
                     self.emit_load_name(&name); // [old_val]
+                    if matches!(op, AssignOp::AndAssign | AssignOp::OrAssign) {
+                        self.emit(Op::Dup); // [old_val, old_val]
+                    }
                     let skip = self.emit_logical_skip(op); // [old_val] — jumps if should skip RHS
                     self.emit(Op::Pop); // [] — discard old_val
                     self.compile_expr(right); // [new_val]
@@ -4297,6 +4677,33 @@ impl Compiler {
         match argument {
             Expr::Ident(name) => {
                 let name = name.clone();
+                if self.is_strict && Self::is_strict_poisoned_ident(&name) {
+                    self.emit_throw_syntax_error(&alloc::format!(
+                        "Update of '{}' is not allowed in strict mode",
+                        name
+                    ));
+                    return;
+                }
+                if self.with_depth > 0 {
+                    let ci = self.add_const(Constant::String(name.clone()));
+                    if !prefix {
+                        self.emit(Op::LoadName(ci));
+                    }
+                    self.emit(Op::LoadName(ci));
+                    match op {
+                        UpdateOp::Inc => {
+                            self.emit(Op::Inc);
+                        }
+                        UpdateOp::Dec => {
+                            self.emit(Op::Dec);
+                        }
+                    }
+                    self.emit(Op::StoreName(ci));
+                    if !prefix {
+                        self.emit(Op::Pop);
+                    }
+                    return;
+                }
                 let lookup = self.resolve_name(&name);
                 match lookup {
                     NameLookup::Local(slot) => {
@@ -4313,9 +4720,7 @@ impl Compiler {
                             }
                         }
                         self.emit(Op::StoreLocal(slot));
-                        if prefix {
-                            self.emit(Op::LoadLocal(slot)); // reload after store
-                        } else {
+                        if !prefix {
                             self.emit(Op::Pop); // pop stored value, old value remains
                         }
                     }
@@ -4333,9 +4738,7 @@ impl Compiler {
                             }
                         }
                         self.emit(Op::StoreUpvalue(idx));
-                        if prefix {
-                            self.emit(Op::LoadUpvalue(idx));
-                        } else {
+                        if !prefix {
                             self.emit(Op::Pop);
                         }
                     }
@@ -4354,9 +4757,7 @@ impl Compiler {
                             }
                         }
                         self.emit(Op::StoreGlobal(ci));
-                        if prefix {
-                            self.emit(Op::LoadGlobal(ci));
-                        } else {
+                        if !prefix {
                             self.emit(Op::Pop);
                         }
                     }
@@ -4386,6 +4787,55 @@ impl Compiler {
                 let ci2 = self.add_const(Constant::String(property.clone()));
                 self.emit(Op::SetPropNamed(ci2));
                 // SetPropNamed pops [obj, new_val], pushes new_val — that is the expression result.
+            }
+            Expr::Index { object, index } => {
+                let obj_slot = self.scope_mut().add_local(String::from("__update_obj__"));
+                let key_slot = self.scope_mut().add_local(String::from("__update_key__"));
+                let val_slot = self.scope_mut().add_local(String::from("__update_val__"));
+                let old_slot = if prefix {
+                    None
+                } else {
+                    Some(self.scope_mut().add_local(String::from("__update_old__")))
+                };
+
+                self.compile_expr(object);
+                self.emit(Op::StoreLocal(obj_slot));
+                self.emit(Op::Pop);
+
+                self.compile_expr(index);
+                self.emit(Op::StoreLocal(key_slot));
+                self.emit(Op::Pop);
+
+                self.emit(Op::LoadLocal(obj_slot));
+                self.emit(Op::LoadLocal(key_slot));
+                self.emit(Op::GetProp);
+
+                if let Some(old_slot) = old_slot {
+                    self.emit(Op::StoreLocal(old_slot));
+                    self.emit(Op::Pop);
+                    self.emit(Op::LoadLocal(old_slot));
+                }
+
+                match op {
+                    UpdateOp::Inc => {
+                        self.emit(Op::Inc);
+                    }
+                    UpdateOp::Dec => {
+                        self.emit(Op::Dec);
+                    }
+                }
+
+                self.emit(Op::StoreLocal(val_slot));
+                self.emit(Op::Pop);
+                self.emit(Op::LoadLocal(obj_slot));
+                self.emit(Op::LoadLocal(key_slot));
+                self.emit(Op::LoadLocal(val_slot));
+                self.emit(Op::SetProp);
+
+                if let Some(old_slot) = old_slot {
+                    self.emit(Op::Pop);
+                    self.emit(Op::LoadLocal(old_slot));
+                }
             }
             _ => {
                 // Index and other cases: simplified (no store-back).

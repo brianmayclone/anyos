@@ -65,7 +65,15 @@ fn this_string_checked(vm: &mut Vm) -> Option<String> {
             vm.throw_native(err);
             None
         }
-        JsValue::String(s) => Some(s.clone()),
+        JsValue::String(s) => {
+            if super::is_symbol_value(&this) {
+                let err = vm.make_type_error("Cannot convert a Symbol value to a string");
+                vm.throw_native(err);
+                None
+            } else {
+                Some(s.clone())
+            }
+        }
         JsValue::Number(_) | JsValue::Bool(_) => Some(this.to_js_string()),
         JsValue::Object(obj) => {
             // Check for Symbol.toPrimitive getter (the most common Test262Error case)
@@ -86,11 +94,55 @@ fn this_string_checked(vm: &mut Vm) -> Option<String> {
                 if vm.pending_exception.is_some() {
                     return None;
                 }
+                if super::is_symbol_value(&prim) {
+                    let err = vm.make_type_error("Cannot convert a Symbol value to a string");
+                    vm.throw_native(err);
+                    return None;
+                }
                 return Some(prim.to_js_string());
             }
             Some(this_string(vm))
         }
         _ => Some(this_string(vm)),
+    }
+}
+
+fn arg_to_number_checked(vm: &mut Vm, value: &JsValue) -> Option<f64> {
+    let n = crate::vm::native_array::to_number_vm(vm, value);
+    if vm.pending_exception.is_some() {
+        None
+    } else {
+        Some(n)
+    }
+}
+
+fn arg_to_string_checked(vm: &mut Vm, value: &JsValue) -> Option<String> {
+    if super::is_symbol_value(value) {
+        let err = vm.make_type_error("Cannot convert a Symbol value to a string");
+        vm.throw_native(err);
+        return None;
+    }
+    match value {
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
+            let prim = vm.to_primitive_for_op(value.clone(), "string");
+            if vm.pending_exception.is_some() {
+                return None;
+            }
+            if super::is_symbol_value(&prim) {
+                let err = vm.make_type_error("Cannot convert a Symbol value to a string");
+                vm.throw_native(err);
+                return None;
+            }
+            Some(prim.to_js_string())
+        }
+        _ => Some(value.to_js_string()),
+    }
+}
+
+fn search_string_arg_or_undefined(vm: &mut Vm, args: &[JsValue]) -> Option<String> {
+    match args.first() {
+        Some(v) => arg_to_string_checked(vm, v),
+        None => Some(String::from("undefined")),
     }
 }
 
@@ -140,7 +192,7 @@ pub fn string_char_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let chars = chars_vec(&s);
     let idx = args
         .first()
-        .map(|v| to_usize_clamped(v.to_number(), chars.len()))
+        .and_then(|v| arg_to_number_checked(vm, v).map(|n| to_usize_clamped(n, chars.len())))
         .unwrap_or(0);
     if idx < chars.len() {
         let mut buf = String::new();
@@ -159,7 +211,7 @@ pub fn string_char_code_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let chars = chars_vec(&s);
     let idx = args
         .first()
-        .map(|v| to_usize_clamped(v.to_number(), chars.len()))
+        .and_then(|v| arg_to_number_checked(vm, v).map(|n| to_usize_clamped(n, chars.len())))
         .unwrap_or(0);
     if idx < chars.len() {
         JsValue::Number(chars[idx] as u32 as f64)
@@ -176,7 +228,7 @@ pub fn string_code_point_at(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let chars = chars_vec(&s);
     let idx = args
         .first()
-        .map(|v| to_usize_clamped(v.to_number(), chars.len()))
+        .and_then(|v| arg_to_number_checked(vm, v).map(|n| to_usize_clamped(n, chars.len())))
         .unwrap_or(0);
     if idx < chars.len() {
         JsValue::Number(chars[idx] as u32 as f64)
@@ -190,11 +242,14 @@ pub fn string_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(s) => s,
         None => return JsValue::Undefined,
     };
-    let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let search = match search_string_arg_or_undefined(vm, args) {
+        Some(s) => s,
+        None => return JsValue::Undefined,
+    };
     let s_chars = chars_vec(&s);
     let from = args
         .get(1)
-        .map(|v| to_usize_clamped(v.to_number(), s_chars.len()))
+        .and_then(|v| arg_to_number_checked(vm, v).map(|n| to_usize_clamped(n, s_chars.len())))
         .unwrap_or(0);
 
     if search.is_empty() {
@@ -222,7 +277,10 @@ pub fn string_last_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(s) => s,
         None => return JsValue::Undefined,
     };
-    let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let search = match search_string_arg_or_undefined(vm, args) {
+        Some(s) => s,
+        None => return JsValue::Undefined,
+    };
     let s_chars = chars_vec(&s);
     let search_chars = chars_vec(&search);
     let s_len = s_chars.len();
@@ -234,12 +292,12 @@ pub fn string_last_index_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
     let from = args
         .get(1)
-        .map(|v| {
-            let n = v.to_number();
+        .and_then(|v| {
+            let n = arg_to_number_checked(vm, v)?;
             if n.is_nan() {
-                s_len
+                Some(s_len)
             } else {
-                (n as usize).min(s_len)
+                Some((n as usize).min(s_len))
             }
         })
         .unwrap_or(s_len);
@@ -261,12 +319,15 @@ pub fn string_includes(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(s) => s,
         None => return JsValue::Undefined,
     };
-    let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let search = match search_string_arg_or_undefined(vm, args) {
+        Some(s) => s,
+        None => return JsValue::Undefined,
+    };
 
     let s_chars = chars_vec(&s);
     let from = args
         .get(1)
-        .map(|v| to_usize_clamped(v.to_number(), s_chars.len()))
+        .and_then(|v| arg_to_number_checked(vm, v).map(|n| to_usize_clamped(n, s_chars.len())))
         .unwrap_or(0);
     let search_chars = chars_vec(&search);
     let s_len = s_chars.len();
@@ -295,13 +356,16 @@ pub fn string_starts_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(s) => s,
         None => return JsValue::Undefined,
     };
-    let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let search = match search_string_arg_or_undefined(vm, args) {
+        Some(s) => s,
+        None => return JsValue::Undefined,
+    };
 
     let s_chars = chars_vec(&s);
     let search_chars = chars_vec(&search);
     let pos = args
         .get(1)
-        .map(|v| to_usize_clamped(v.to_number(), s_chars.len()))
+        .and_then(|v| arg_to_number_checked(vm, v).map(|n| to_usize_clamped(n, s_chars.len())))
         .unwrap_or(0);
 
     if search_chars.len() > s_chars.len() || pos > s_chars.len() - search_chars.len() {
@@ -318,13 +382,16 @@ pub fn string_ends_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(s) => s,
         None => return JsValue::Undefined,
     };
-    let search = args.first().map(|v| v.to_js_string()).unwrap_or_default();
+    let search = match search_string_arg_or_undefined(vm, args) {
+        Some(s) => s,
+        None => return JsValue::Undefined,
+    };
     let s_chars = chars_vec(&s);
     let search_chars = chars_vec(&search);
 
     let end_pos = args
         .get(1)
-        .map(|v| to_usize_clamped(v.to_number(), s_chars.len()))
+        .and_then(|v| arg_to_number_checked(vm, v).map(|n| to_usize_clamped(n, s_chars.len())))
         .unwrap_or(s_chars.len());
 
     if search_chars.len() > end_pos {
@@ -721,7 +788,7 @@ pub fn string_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 /// Convert internal symbol representation to "Symbol(description)" display format.
-fn symbol_display_name(s: &str) -> String {
+pub(crate) fn symbol_display_name(s: &str) -> String {
     if let Some(rest) = s.strip_prefix("__symbol__") {
         if let Some(idx) = rest.find('_') {
             let desc = &rest[idx + 1..];

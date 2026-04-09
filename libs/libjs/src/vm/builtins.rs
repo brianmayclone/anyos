@@ -223,11 +223,20 @@ impl Vm {
                 "toSorted",
                 "toSpliced",
                 "values",
-                "with",
             ] {
                 unscopables.set_property(String::from(key), JsValue::Bool(true));
             }
-            p.set_hidden(String::from(native_symbol::WELL_KNOWN_UNSCOPABLES), unscopables);
+            p.properties.insert(
+                String::from(native_symbol::WELL_KNOWN_UNSCOPABLES),
+                crate::value::Property {
+                    value: unscopables,
+                    writable: false,
+                    enumerable: false,
+                    configurable: true,
+                    getter: None,
+                    setter: None,
+                },
+            );
             // ES2023+
             p.set_hidden(
                 String::from("findLast"),
@@ -263,43 +272,43 @@ impl Vm {
             p.primitive_value = Some(Box::new(JsValue::String(String::new())));
             p.set_hidden(
                 String::from("charAt"),
-                native_fn("charAt", native_string::string_char_at),
+                native_fn_with_length("charAt", native_string::string_char_at, 1),
             );
             p.set_hidden(
                 String::from("charCodeAt"),
-                native_fn("charCodeAt", native_string::string_char_code_at),
+                native_fn_with_length("charCodeAt", native_string::string_char_code_at, 1),
             );
             p.set_hidden(
                 String::from("codePointAt"),
-                native_fn("codePointAt", native_string::string_code_point_at),
+                native_fn_with_length("codePointAt", native_string::string_code_point_at, 1),
             );
             p.set_hidden(
                 String::from("indexOf"),
-                native_fn("indexOf", native_string::string_index_of),
+                native_fn_with_length("indexOf", native_string::string_index_of, 1),
             );
             p.set_hidden(
                 String::from("lastIndexOf"),
-                native_fn("lastIndexOf", native_string::string_last_index_of),
+                native_fn_with_length("lastIndexOf", native_string::string_last_index_of, 1),
             );
             p.set_hidden(
                 String::from("includes"),
-                native_fn("includes", native_string::string_includes),
+                native_fn_with_length("includes", native_string::string_includes, 1),
             );
             p.set_hidden(
                 String::from("startsWith"),
-                native_fn("startsWith", native_string::string_starts_with),
+                native_fn_with_length("startsWith", native_string::string_starts_with, 1),
             );
             p.set_hidden(
                 String::from("endsWith"),
-                native_fn("endsWith", native_string::string_ends_with),
+                native_fn_with_length("endsWith", native_string::string_ends_with, 1),
             );
             p.set_hidden(
                 String::from("slice"),
-                native_fn("slice", native_string::string_slice),
+                native_fn_with_length("slice", native_string::string_slice, 2),
             );
             p.set_hidden(
                 String::from("substring"),
-                native_fn("substring", native_string::string_substring),
+                native_fn_with_length("substring", native_string::string_substring, 2),
             );
             p.set_hidden(
                 String::from("toLowerCase"),
@@ -323,43 +332,43 @@ impl Vm {
             );
             p.set_hidden(
                 String::from("split"),
-                native_fn("split", native_string::string_split),
+                native_fn_with_length("split", native_string::string_split, 2),
             );
             p.set_hidden(
                 String::from("replace"),
-                native_fn("replace", native_string::string_replace),
+                native_fn_with_length("replace", native_string::string_replace, 2),
             );
             p.set_hidden(
                 String::from("replaceAll"),
-                native_fn("replaceAll", native_string::string_replace_all),
+                native_fn_with_length("replaceAll", native_string::string_replace_all, 2),
             );
             p.set_hidden(
                 String::from("repeat"),
-                native_fn("repeat", native_string::string_repeat),
+                native_fn_with_length("repeat", native_string::string_repeat, 1),
             );
             p.set_hidden(
                 String::from("padStart"),
-                native_fn("padStart", native_string::string_pad_start),
+                native_fn_with_length("padStart", native_string::string_pad_start, 1),
             );
             p.set_hidden(
                 String::from("padEnd"),
-                native_fn("padEnd", native_string::string_pad_end),
+                native_fn_with_length("padEnd", native_string::string_pad_end, 1),
             );
             p.set_hidden(
                 String::from("at"),
-                native_fn("at", native_string::string_at),
+                native_fn_with_length("at", native_string::string_at, 1),
             );
             p.set_hidden(
                 String::from("concat"),
-                native_fn("concat", native_string::string_concat),
+                native_fn_with_length("concat", native_string::string_concat, 1),
             );
             p.set_hidden(
                 String::from("toString"),
-                native_fn("toString", native_string::string_to_string),
+                native_fn_with_length("toString", native_string::string_to_string, 0),
             );
             p.set_hidden(
                 String::from("valueOf"),
-                native_fn("valueOf", native_string::string_to_string),
+                native_fn_with_length("valueOf", native_string::string_to_string, 0),
             );
             p.set_hidden(
                 String::from("normalize"),
@@ -367,19 +376,19 @@ impl Vm {
             );
             p.set_hidden(
                 String::from("localeCompare"),
-                native_fn("localeCompare", native_string::string_locale_compare),
+                native_fn_with_length("localeCompare", native_string::string_locale_compare, 1),
             );
             p.set_hidden(
                 String::from("match"),
-                native_fn("match", native_regexp::string_match),
+                native_fn_with_length("match", native_regexp::string_match, 1),
             );
             p.set_hidden(
                 String::from("matchAll"),
-                native_fn("matchAll", native_regexp::string_match_all),
+                native_fn_with_length("matchAll", native_regexp::string_match_all, 1),
             );
             p.set_hidden(
                 String::from("search"),
-                native_fn("search", native_regexp::string_search),
+                native_fn_with_length("search", native_regexp::string_search, 1),
             );
             // toLocaleLowerCase / toLocaleUpperCase = same as toLowerCase/toUpperCase
             p.set_hidden(
@@ -393,7 +402,7 @@ impl Vm {
             // Symbol.iterator — returns a string character iterator
             p.set_hidden(
                 String::from(native_symbol::WELL_KNOWN_ITERATOR),
-                native_fn("[Symbol.iterator]", string_symbol_iterator),
+                native_fn_with_length("[Symbol.iterator]", string_symbol_iterator, 0),
             );
             // ES2024
             p.set_hidden(
@@ -415,27 +424,27 @@ impl Vm {
             p.primitive_value = Some(Box::new(JsValue::Number(0.0)));
             p.set_hidden(
                 String::from("toString"),
-                native_fn("toString", native_number::number_to_string),
+                native_fn_with_length("toString", native_number::number_to_string, 1),
             );
             p.set_hidden(
                 String::from("valueOf"),
-                native_fn("valueOf", native_number::number_value_of),
+                native_fn_with_length("valueOf", native_number::number_value_of, 0),
             );
             p.set_hidden(
                 String::from("toFixed"),
-                native_fn("toFixed", native_number::number_to_fixed),
+                native_fn_with_length("toFixed", native_number::number_to_fixed, 1),
             );
             p.set_hidden(
                 String::from("toPrecision"),
-                native_fn("toPrecision", native_number::number_to_precision),
+                native_fn_with_length("toPrecision", native_number::number_to_precision, 1),
             );
             p.set_hidden(
                 String::from("toExponential"),
-                native_fn("toExponential", native_number::number_to_exponential),
+                native_fn_with_length("toExponential", native_number::number_to_exponential, 1),
             );
             p.set_hidden(
                 String::from("toLocaleString"),
-                native_fn("toLocaleString", native_number::number_to_string),
+                native_fn_with_length("toLocaleString", native_number::number_to_string, 0),
             );
         }
 
@@ -1654,6 +1663,9 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Undefined;
     }
     let mut compiler = crate::compiler::Compiler::new();
+    if vm.frames.last().map(|f| f.chunk.strict).unwrap_or(false) {
+        compiler.is_strict = true;
+    }
     let chunk = compiler.compile_eval(&program);
 
     // Run inline in the current VM
@@ -1666,6 +1678,7 @@ fn global_eval(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 this_binding: None,
                 bound_args: alloc::vec::Vec::new(),
                 upvalues: alloc::vec::Vec::new(),
+                with_scopes: alloc::vec::Vec::new(),
                 prototype: None,
                 own_props: alloc::collections::BTreeMap::new(),
                 arity: None,
@@ -1761,6 +1774,7 @@ fn module_import_fn(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 this_binding: None,
                 bound_args: alloc::vec::Vec::new(),
                 upvalues: alloc::vec::Vec::new(),
+                with_scopes: alloc::vec::Vec::new(),
                 prototype: None,
                 own_props: alloc::collections::BTreeMap::new(),
                 arity: None,
