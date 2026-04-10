@@ -4,13 +4,39 @@ use super::{get_cpu_id, SCHEDULER, schedule, close_all_fds_for_thread,
             is_scheduler_locked_by_cpu, force_unlock_scheduler,
             PER_CPU_CURRENT_TID, PER_CPU_FPU_OWNER, PER_CPU_FPU_PTR,
             PER_CPU_HAS_THREAD, PER_CPU_IS_USER, PER_CPU_IDLE_STACK_TOP,
-            PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP, SCRATCH_CTX,
+            PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP,
             clear_per_cpu_name, update_per_cpu_name};
 use super::deferred::{DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP, DeferredThreadCleanup};
 use crate::memory::address::PhysAddr;
-use crate::task::context::{context_switch, CpuContext};
+use crate::task::context::CpuContext;
 use crate::task::thread::ThreadState;
 use core::sync::atomic::Ordering;
+
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn try_exit_diag_putc(c: u8) {
+    unsafe {
+        while crate::arch::x86::port::inb(0x3FD) & 0x20 == 0 {
+            core::hint::spin_loop();
+        }
+        crate::arch::x86::port::outb(0x3F8, c);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn try_exit_diag_mark(mark: u8) {
+    try_exit_diag_putc(b'[');
+    try_exit_diag_putc(b't');
+    try_exit_diag_putc(b'x');
+    try_exit_diag_putc(b':');
+    try_exit_diag_putc(mark);
+    try_exit_diag_putc(b']');
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+fn try_exit_diag_mark(_mark: u8) {}
 
 fn prepare_idle_recovery_context<F>(cpu_id: usize, mut update_sched: F) -> (u64, Option<*const CpuContext>)
 where
@@ -56,6 +82,7 @@ where
 }
 
 fn enter_idle_recovery(cpu_id: usize, idle_stack_top: u64, idle_ctx: Option<*const CpuContext>) -> ! {
+    try_exit_diag_mark(b'S');
     if idle_ctx.is_none() {
         PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
         PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
@@ -63,14 +90,22 @@ fn enter_idle_recovery(cpu_id: usize, idle_stack_top: u64, idle_ctx: Option<*con
         clear_per_cpu_name(cpu_id);
     }
 
-    if let Some(new_ctx) = idle_ctx {
+    if idle_ctx.is_some() {
+        try_exit_diag_mark(b'T');
+        // Fault recovery must not rely on the normal context_switch path.
+        // By the time we arrive here we already redirected the scheduler's
+        // current_tid/current_idx to the per-CPU idle thread, updated TSS.RSP0,
+        // and switched back to the kernel page table. A direct jump onto the
+        // idle stack is enough to let timer interrupts resume normal
+        // scheduling, while avoiding a second fragile register/stack restore
+        // from a context that may have been corrupted by the fault.
         PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
         crate::arch::hal::fpu_set_trap();
-        let scratch_ctx = unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
-        unsafe { context_switch(scratch_ctx, new_ctx); }
+        try_exit_diag_mark(b'U');
     }
 
     if idle_stack_top >= super::KERNEL_ADDR_MIN {
+        try_exit_diag_mark(b'V');
         unsafe {
             #[cfg(target_arch = "x86_64")]
             core::arch::asm!(
@@ -296,25 +331,33 @@ pub fn try_exit_current(code: u32) -> bool {
     let mut idle_stack_top: u64 = 0;
     let mut idle_ctx: Option<*const CpuContext> = None;
     crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_TRY_EXIT_CURRENT);
+    try_exit_diag_mark(b'A');
 
     {
+        try_exit_diag_mark(b'B');
         let mut guard = match SCHEDULER.try_lock() {
             Some(g) => g,
             None => return false,
         };
+        try_exit_diag_mark(b'C');
         let cpu_id = get_cpu_id();
+        try_exit_diag_mark(b'D');
         let sched = match guard.as_mut() { Some(s) => s, None => return false };
+        try_exit_diag_mark(b'E');
         let current_tid = match sched.per_cpu[cpu_id].current_tid {
             Some(t) => t,
             None => return false,
         };
+        try_exit_diag_mark(b'F');
         tid = current_tid;
         let idx = match sched.current_idx(cpu_id) {
             Some(i) => i,
             None => return false,
         };
+        try_exit_diag_mark(b'G');
 
         let tick = crate::arch::hal::timer_current_ticks();
+        try_exit_diag_mark(b'H');
 
         // Fault-exit must stay extremely small and non-blocking. Avoid child
         // scans, waiter wakeups, SIGCHLD delivery, and page-directory sibling
@@ -322,15 +365,19 @@ pub fn try_exit_current(code: u32) -> bool {
         // a recurring source of secondary deadlocks and re-entrant faults while
         // still holding the scheduler lock. A small leak is acceptable here.
         sched.remove_from_all_queues(current_tid);
+        try_exit_diag_mark(b'I');
         sched.threads[idx].state = ThreadState::Terminated;
         sched.threads[idx].exit_code = Some(code);
         sched.threads[idx].terminated_at_tick = Some(tick);
         sched.threads[idx].page_directory = None;
         sched.threads[idx].exit_waiter_tid = None;
         sched.threads[idx].retain_exit_status = true;
+        try_exit_diag_mark(b'J');
 
         let idle_tid = sched.idle_tid[cpu_id];
+        try_exit_diag_mark(b'K');
         if let Some(idle_idx) = sched.find_idx(idle_tid) {
+            try_exit_diag_mark(b'L');
             let kstack_top = sched.threads[idle_idx].kernel_stack_top();
             let kstack_bottom = sched.threads[idle_idx].kernel_stack_bottom();
             crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
@@ -349,19 +396,26 @@ pub fn try_exit_current(code: u32) -> bool {
             );
             update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
             idle_ctx = Some(&sched.threads[idle_idx].context as *const CpuContext);
+            try_exit_diag_mark(b'M');
         } else {
+            try_exit_diag_mark(b'N');
             sched.per_cpu[cpu_id].current_tid = None;
             sched.per_cpu[cpu_id].current_idx = None;
             PER_CPU_CURRENT_TID[cpu_id].store(0, Ordering::Relaxed);
             PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
             PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
             clear_per_cpu_name(cpu_id);
+            try_exit_diag_mark(b'O');
         }
     } // Lock released
+    try_exit_diag_mark(b'P');
 
     let kernel_cr3 = crate::memory::virtual_mem::kernel_cr3();
     crate::arch::hal::switch_page_table(kernel_cr3);
+    try_exit_diag_mark(b'Q');
     defer_fault_exit_cleanup(tid, code, &[]);
+    try_exit_diag_mark(b'R');
+    crate::sched_diag::set(my_cpu, crate::sched_diag::PHASE_IDLE);
     enter_idle_recovery(my_cpu, idle_stack_top, idle_ctx);
 }
 
