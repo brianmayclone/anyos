@@ -61,24 +61,29 @@ pub fn reload_hosts() -> u32 {
 
 /// Get interface configurations from the kernel.
 ///
-/// Each interface entry is 64 bytes:
-///   - `[0]`:      method (0=dhcp, 1=static)
+/// Each interface entry is 128 bytes:
+///   - `[0]`:      method (0=dhcp, 1=static, 2=loopback)
 ///   - `[1]`:      name length
 ///   - `[2..18]`:  name (max 16 chars)
-///   - `[18..22]`: address
-///   - `[22..26]`: netmask
-///   - `[26..30]`: gateway
-///   - `[30..34]`: dns
-///   - `[34..64]`: reserved
+///   - `[18..22]`: IPv4 address
+///   - `[22..26]`: IPv4 netmask
+///   - `[26..30]`: IPv4 gateway
+///   - `[30..34]`: IPv4 dns
+///   - `[34]`:     IPv6 prefix length
+///   - `[35..37]`: reserved
+///   - `[37..53]`: IPv6 address (16 bytes)
+///   - `[53..69]`: IPv6 gateway (16 bytes)
+///   - `[69..85]`: IPv6 dns (16 bytes)
+///   - `[85..128]`: reserved
 ///
 /// Returns the number of interface entries written.
-pub fn get_interfaces(buf: &mut [u8; 512]) -> u32 {
+pub fn get_interfaces(buf: &mut [u8; 1024]) -> u32 {
     syscall2(SYS_NET_CONFIG, 7, buf.as_mut_ptr() as u64)
 }
 
 /// Save and apply interface configurations.
 ///
-/// `buf` layout: `[count:u32, entries: count*64 bytes]` (same 64-byte format
+/// `buf` layout: `[count:u32, entries: count*128 bytes]` (same 128-byte format
 /// as returned by `get_interfaces`).
 ///
 /// Returns 0 on success.
@@ -90,6 +95,20 @@ pub fn set_interfaces(buf: &[u8]) -> u32 {
 /// Returns the number of bytes written, or 0 if no NIC is detected.
 pub fn nic_driver_name(buf: &mut [u8; 64]) -> u32 {
     syscall2(SYS_NET_CONFIG, 9, buf.as_mut_ptr() as u64)
+}
+
+/// Get IPv6 network config. Writes 80 bytes:
+///   - `[0..16]`:  link-local address
+///   - `[16..32]`: global address
+///   - `[32]`:     prefix length
+///   - `[33..35]`: reserved
+///   - `[35..51]`: gateway
+///   - `[51..67]`: dns
+///   - `[67..80]`: reserved
+///
+/// Returns 0 on success.
+pub fn get_ipv6_config(buf: &mut [u8; 80]) -> u32 {
+    syscall2(SYS_NET_CONFIG, 10, buf.as_mut_ptr() as u64)
 }
 
 /// Get ARP table. Each entry 12 bytes: [ip:4, mac:6, pad:2]. Returns count.

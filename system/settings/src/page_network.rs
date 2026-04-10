@@ -74,7 +74,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
         };
 
         // Read current interface config for eth0
-        let mut iface_buf = [0u8; 512];
+        let mut iface_buf = [0u8; 1024];
         let iface_count = net::get_interfaces(&mut iface_buf);
 
         // Determine current method for eth0
@@ -126,7 +126,7 @@ pub fn build(parent: &ui::ScrollView) -> u32 {
 fn open_configure_dialog(
     iface_name: &str,
     current_method: u8,
-    iface_buf: &[u8; 512],
+    iface_buf: &[u8; 1024],
     method_label_id: u32,
 ) {
     let title = i18n::t("Configure Network Interface");

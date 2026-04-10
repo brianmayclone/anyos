@@ -108,11 +108,21 @@ pub fn init() {
 
 #[inline]
 fn lock() {
+    let mut spins = 0u32;
     while HEAP_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         core::hint::spin_loop();
+        spins = spins.saturating_add(1);
+        // Userspace must not monopolize all CPUs while waiting for the heap
+        // lock. Under allocation-heavy multi-threaded loads the lock holder can
+        // otherwise be descheduled while every other runnable thread just burns
+        // cycles here, making the process look deadlocked.
+        if spins >= 1024 {
+            spins = 0;
+            crate::process::yield_cpu();
+        }
     }
 }
 

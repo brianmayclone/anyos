@@ -3,7 +3,7 @@
 /// Starts Application Processors (APs) using the INIT-SIPI-SIPI sequence.
 /// Each AP gets its own stack, GDT, TSS, and enters the scheduler loop.
 
-use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use crate::arch::x86::acpi::ProcessorInfo;
 
 /// Maximum number of CPUs supported
@@ -391,6 +391,74 @@ static TLB_FLUSH_VA: AtomicU64 = AtomicU64::new(u64::MAX);
 /// Number of CPUs that still need to acknowledge the TLB shootdown.
 static TLB_ACK_COUNT: AtomicU32 = AtomicU32::new(0);
 
+/// Serializes concurrent TLB shootdown requests.
+///
+/// Without this lock, two CPUs calling `tlb_shootdown()` simultaneously can
+/// corrupt `TLB_ACK_COUNT` (the second `store` overwrites the first), leading
+/// to either underflow (wrap to u32::MAX → infinite spin) or missed flushes.
+static TLB_SHOOTDOWN_LOCK: AtomicBool = AtomicBool::new(false);
+
+/// After this many spin iterations waiting for remote TLB ACKs, emit a
+/// lock-free serial diagnostic and give up instead of freezing the machine.
+const TLB_SHOOTDOWN_TIMEOUT_SPINS: u32 = 50_000_000;
+
+#[inline(never)]
+fn diag_putc(c: u8) {
+    unsafe {
+        while crate::arch::x86::port::inb(0x3FD) & 0x20 == 0 {
+            core::hint::spin_loop();
+        }
+        crate::arch::x86::port::outb(0x3F8, c);
+    }
+}
+
+fn diag_puts(s: &[u8]) {
+    for &c in s {
+        if c == b'\n' {
+            diag_putc(b'\r');
+        }
+        diag_putc(c);
+    }
+}
+
+fn diag_hex(mut n: u64) {
+    diag_puts(b"0x");
+    if n == 0 {
+        diag_putc(b'0');
+        return;
+    }
+    let mut buf = [0u8; 16];
+    let mut i = 0usize;
+    while n > 0 {
+        let d = (n & 0xF) as u8;
+        buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+        n >>= 4;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        diag_putc(buf[i]);
+    }
+}
+
+fn diag_dec(mut n: u32) {
+    if n == 0 {
+        diag_putc(b'0');
+        return;
+    }
+    let mut buf = [0u8; 10];
+    let mut i = 0usize;
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        diag_putc(buf[i]);
+    }
+}
+
 /// Register the TLB shootdown IPI handler (IRQ 20 = INT 52).
 /// Must be called after IDT is initialized (same time as halt IPI).
 pub fn register_tlb_shootdown_ipi() {
@@ -410,7 +478,9 @@ fn tlb_shootdown_ipi_handler(_irq: u8) {
             core::arch::asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags));
         }
     }
-    TLB_ACK_COUNT.fetch_sub(1, Ordering::Release);
+    let _ = TLB_ACK_COUNT.fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+        if count == 0 { None } else { Some(count - 1) }
+    });
 }
 
 /// Send a TLB shootdown IPI to all other online CPUs and wait for acknowledgment.
@@ -432,6 +502,15 @@ pub fn tlb_shootdown(va: u64) {
         return; // Nothing to shoot down
     }
 
+    // Serialize concurrent shootdowns.  Without this, two CPUs can corrupt
+    // TLB_ACK_COUNT (store/store race → underflow → infinite spin).
+    while TLB_SHOOTDOWN_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+
     let my_cpu = current_cpu_id();
     let others = count - 1;
 
@@ -451,9 +530,26 @@ pub fn tlb_shootdown(va: u64) {
     }
 
     // Spin until all remote CPUs have acknowledged
+    let mut spin_count = 0u32;
     while TLB_ACK_COUNT.load(Ordering::Acquire) > 0 {
         core::hint::spin_loop();
+        spin_count = spin_count.saturating_add(1);
+        if spin_count >= TLB_SHOOTDOWN_TIMEOUT_SPINS {
+            let pending = TLB_ACK_COUNT.swap(0, Ordering::AcqRel);
+            diag_puts(b"\n!!! TLB SHOOTDOWN TIMEOUT cpu=");
+            diag_dec(my_cpu as u32);
+            diag_puts(b" pending=");
+            diag_dec(pending);
+            diag_puts(b" va=");
+            diag_hex(va);
+            diag_puts(b" cpus=");
+            diag_dec(count as u32);
+            diag_putc(b'\n');
+            break;
+        }
     }
+
+    TLB_SHOOTDOWN_LOCK.store(false, Ordering::Release);
 }
 
 /// Batch TLB shootdown: invalidates ALL TLB entries on remote CPUs.

@@ -16,7 +16,7 @@ fn main() {
         return;
     }
 
-    let mut iface_buf = [0u8; 512];
+    let mut iface_buf = [0u8; 1024];
     let count = net::get_interfaces(&mut iface_buf);
 
     if count == 0 || count == u32::MAX {
@@ -26,7 +26,7 @@ fn main() {
     }
 
     for i in 0..count as usize {
-        let off = i * 64;
+        let off = i * 128;
         let method = iface_buf[off];
         let name_len = (iface_buf[off + 1] as usize).min(16);
         let name = core::str::from_utf8(&iface_buf[off + 2..off + 2 + name_len]).unwrap_or("?");

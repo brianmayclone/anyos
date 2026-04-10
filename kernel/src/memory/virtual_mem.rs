@@ -415,11 +415,20 @@ fn ensure_table_entry(table: *mut u64, index: usize, flags: u64) -> Option<u64> 
 #[inline]
 fn lock_page_table_mutation() -> u64 {
     let saved = crate::arch::hal::save_and_disable_interrupts();
+    let was_enabled = (saved & 0x200) != 0;
     while PAGE_TABLE_LOCK
         .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
         core::hint::spin_loop();
+        // Re-enable interrupts briefly so the timer IRQ can fire and preempt
+        // the lock holder (same pattern as Spinlock::lock to avoid cascading
+        // deadlocks and KVM PLE stalls).
+        if was_enabled {
+            crate::arch::hal::restore_interrupt_state(saved);
+            for _ in 0..4u32 { core::hint::spin_loop(); }
+            crate::arch::hal::save_and_disable_interrupts();
+        }
     }
     saved
 }
@@ -663,10 +672,12 @@ pub fn set_guard_page(virt: VirtAddr) {
         pt_ptr.add(pti).write_volatile(new_pte);
         asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
     }
-    // Notify other CPUs to invalidate their TLB for this address
-    #[cfg(target_arch = "x86_64")]
-    crate::arch::x86::smp::tlb_shootdown(virt.as_u64());
-    // ARM64: TLB shootdown handled by TLBI broadcast (IS variants)
+    // No remote shootdown here: guard pages are used only for private kernel
+    // thread stacks. The creating CPU has already invalidated its own TLB via
+    // `invlpg`, and no other CPU can legally have a live translation for a
+    // stack page that has never run there yet. A global shootdown from this
+    // path is especially dangerous because stack destruction happens from the
+    // scheduler reap path with IF=0.
 }
 
 /// Restore a guard page to accessible (present + writable).
@@ -698,10 +709,10 @@ pub fn restore_guard_page(virt: VirtAddr) {
         pt_ptr.add(pti).write_volatile(new_pte);
         asm!("invlpg [{}]", in(reg) virt.as_u64(), options(nostack, preserves_flags));
     }
-    // Notify other CPUs so they don't use a stale not-present TLB entry
-    #[cfg(target_arch = "x86_64")]
-    crate::arch::x86::smp::tlb_shootdown(virt.as_u64());
-    // ARM64: TLB shootdown handled by TLBI broadcast (IS variants)
+    // No remote shootdown here: this path only restores the bottom page of a
+    // dead kernel thread's private stack so the heap can free it. Reap happens
+    // after ensuring no CPU still runs on that stack, and often with IF=0, so
+    // forcing a global IPI-based flush here creates deadlock risk for no gain.
 }
 
 /// Get the kernel PML4's physical address.

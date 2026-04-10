@@ -377,13 +377,11 @@ pub fn sys_mmap(size: u32) -> u32 {
     // Keep mmap_next in sync (threads sharing this PD read it).
     crate::task::scheduler::set_current_thread_mmap_next(base + aligned_size);
 
-    // Shared address spaces (SYS_THREAD_CREATE) can run on multiple CPUs with
-    // the same PCID. After installing new user mappings, remote CPUs may still
-    // cache stale non-present TLB entries for recycled mmap addresses. Flush
-    // all remote non-global entries once per mmap to keep newly mapped stacks
-    // and heaps immediately visible to sibling threads.
-    #[cfg(target_arch = "x86_64")]
-    crate::arch::x86::smp::tlb_shootdown_full();
+    // No TLB shootdown needed for mmap: x86-64 does not cache non-present
+    // TLB entries (Intel SDM Vol. 3A §4.10.2.1).  When a sibling thread on
+    // another CPU accesses a newly mapped address, the hardware page walker
+    // will find the freshly installed PTE.  Only munmap (present→not-present
+    // transitions) requires a remote TLB flush.
 
     base
 }
@@ -437,12 +435,14 @@ pub fn sys_munmap(addr: u32, size: u32) -> u32 {
         crate::memory::vma::free_region(pd, addr, aligned_size);
     }
 
-    // Same rationale as sys_mmap(): other CPUs may still hold stale present
-    // translations for this process when multiple threads share the address
-    // space. A single full remote flush is much cheaper than debugging random
-    // use-after-free corruption later.
+    // Only shared address spaces need a remote shootdown. `unmap_page()`
+    // already invalidates the local CPU's TLB entry, and CPUs running other
+    // page directories cannot legally use this translation. kstress is
+    // typically single-threaded here, so an unconditional global shootdown on
+    // every munmap needlessly drives the most fragile SMP path and can wedge
+    // the whole machine if one CPU misses the ack.
     #[cfg(target_arch = "x86_64")]
-    if freed > 0 {
+    if freed > 0 && crate::task::scheduler::has_live_pd_siblings() {
         crate::arch::x86::smp::tlb_shootdown_full();
     }
 
