@@ -32,6 +32,7 @@ pub mod diff;
 pub mod tree;
 pub mod config;
 pub mod pack;
+pub mod stream;
 pub mod transport;
 pub mod remote;
 pub mod checkout;

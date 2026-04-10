@@ -172,18 +172,11 @@ fn cmd_clone(args: &anyos_std::args::ParsedArgs) {
         }
     }
 
-    // Step 5: Fetch pack data
+    // Step 5+6: Stream pack data directly into repository (no buffering)
     anyos_std::println!("remote: Counting objects...");
-    let pack_data = match libgit::transport::fetch_pack(&url, &unique_wants, &[]) {
-        Ok(d) => d,
+    match libgit::transport::fetch_pack_streamed(&url, &unique_wants, &[], &repo) {
+        Ok(_n) => {}
         Err(e) => { anyos_std::println!("fatal: {}", e); return; }
-    };
-
-    // Step 6: Store pack objects
-    anyos_std::println!("Receiving objects...");
-    match repo.store_pack(&pack_data) {
-        Ok(n) => anyos_std::println!("Receiving objects: 100% ({}/{}), done.", n, n),
-        Err(e) => { anyos_std::println!("fatal: failed to store pack: {}", e); return; }
     }
 
     // Step 7: Update remote refs
@@ -717,15 +710,9 @@ fn cmd_fetch(args: &anyos_std::args::ParsedArgs) {
         return;
     }
 
-    // Fetch pack
-    let pack_data = match libgit::transport::fetch_pack(&url, &wants, &haves) {
-        Ok(d) => d,
-        Err(e) => { anyos_std::println!("fatal: {}", e); return; }
-    };
-
-    // Store objects
-    match repo.store_pack(&pack_data) {
-        Ok(n) => anyos_std::println!("Unpacking objects: 100% ({}/{}), done.", n, n),
+    // Stream pack directly into repository
+    match libgit::transport::fetch_pack_streamed(&url, &wants, &haves, &repo) {
+        Ok(_n) => {}
         Err(e) => { anyos_std::println!("fatal: {}", e); return; }
     }
 

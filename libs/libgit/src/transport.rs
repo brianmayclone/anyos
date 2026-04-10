@@ -8,6 +8,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::format;
+use crate::pack::{OBJ_COMMIT, OBJ_TREE, OBJ_BLOB, OBJ_TAG, OBJ_REF_DELTA, OBJ_OFS_DELTA};
 use crate::oid::Oid;
 use crate::remote::GitUrl;
 use crate::repo::{Result, Error};
@@ -221,67 +222,220 @@ pub fn build_receive_pack_request(
 }
 
 /// Perform git-upload-pack (fetch objects from remote).
-pub fn fetch_pack(url: &GitUrl, wants: &[Oid], haves: &[Oid]) -> Result<Vec<u8>> {
+/// Fetch pack data and stream it directly into the repository.
+/// Returns the number of objects written. Uses constant memory.
+pub fn fetch_pack_streamed(
+    url: &GitUrl,
+    wants: &[Oid],
+    haves: &[Oid],
+    repo: &crate::repo::Repository,
+) -> Result<u32> {
     // Step 1: Discover refs and capabilities
     let (_, caps) = discover_refs(url, "git-upload-pack")?;
 
     // Step 2: Build request body
     let request_body = build_upload_pack_request(wants, haves, &caps);
 
-    // Step 3: POST to git-upload-pack — use raw TCP+TLS to avoid libhttp issues
+    // Step 3: Open streaming connection
     let service_path = format!("{}/git-upload-pack", url.path.trim_end_matches('/'));
+    let extra_headers = "Accept: application/x-git-upload-pack-result\r\n";
 
     if crate::pack::verbose() {
-        anyos_std::println!("[fetch] POST https://{}{} ({} bytes body)", url.host, service_path, request_body.len());
+        anyos_std::println!("[fetch] POST https://{}{} ({} bytes)", url.host, service_path, request_body.len());
     }
 
-    let response = raw_https_post(&url.host, &service_path, &request_body)?;
+    let mut stream = crate::stream::HttpStream::post(
+        &url.host,
+        &service_path,
+        &request_body,
+        "application/x-git-upload-pack-request",
+        extra_headers,
+    ).map_err(|e| Error::Other(e))?;
 
-    if crate::pack::verbose() {
-        anyos_std::println!("[fetch] response: {} bytes", response.len());
-    }
-
-    if crate::pack::verbose() {
-        anyos_std::println!("[fetch] response: {} bytes", response.len());
-        let show = core::cmp::min(response.len(), 128);
-        anyos_std::println!("[fetch] first {} bytes (hex):", show);
-        for i in 0..show {
-            anyos_std::print!("{:02x} ", response[i]);
-            if (i + 1) % 32 == 0 { anyos_std::println!(); }
-        }
-        anyos_std::println!();
-        // Also show as text if possible
-        if let Ok(text) = core::str::from_utf8(&response[..core::cmp::min(256, response.len())]) {
-            anyos_std::println!("[fetch] as text: {}", text);
-        }
-    }
-
-    // Step 4: Process response — check for side-band data
-    // We requested minimal caps (no side-band), but check anyway
-    if false && (caps.side_band_64k || caps.side_band) {
-        let (pack_data, progress, errors) = crate::pack::demux_sideband(&response);
-        if crate::pack::verbose() {
-            anyos_std::println!("[fetch] sideband: pack={} progress={} errors={}", pack_data.len(), progress.len(), errors.len());
-        }
-        if !errors.is_empty() {
-            let err_msg = core::str::from_utf8(&errors).unwrap_or("remote error");
-            return Err(Error::Other(String::from(err_msg)));
-        }
-        if crate::pack::verbose() {
-            if let Ok(p) = core::str::from_utf8(&progress) {
-                anyos_std::println!("[fetch] progress: {}", p);
+    // Step 4: Skip pkt-line NAK/ACK before PACK data
+    // Read until we find "PACK" magic
+    let mut prefix = [0u8; 4];
+    let mut skipped = 0;
+    let mut debug_buf = Vec::new();
+    loop {
+        if !stream.read_exact(&mut prefix) {
+            if crate::pack::verbose() {
+                anyos_std::println!("[fetch] EOF before PACK. Got {} bytes: {:?}",
+                    debug_buf.len(),
+                    core::str::from_utf8(&debug_buf).unwrap_or("(binary)"));
             }
+            return Err(Error::Other(String::from("EOF before PACK header")));
         }
-        Ok(pack_data)
-    } else {
-        // No side-band — response is raw pack data
-        // Skip any pkt-line NAK/ACK headers
-        let pack_start = find_pack_start(&response);
-        if crate::pack::verbose() {
-            anyos_std::println!("[fetch] no sideband, pack starts at offset {}", pack_start);
+        if skipped == 0 {
+            debug_buf.extend_from_slice(&prefix);
         }
-        Ok(response[pack_start..].to_vec())
+        if &prefix == b"PACK" {
+            break;
+        }
+        // Not PACK yet — skip one byte and try again (slide window)
+        skipped += 1;
+        if skipped <= 256 {
+            debug_buf.push(prefix[0]);
+        }
+        prefix[0] = prefix[1];
+        prefix[1] = prefix[2];
+        prefix[2] = prefix[3];
+        let mut one = [0u8; 1];
+        if !stream.read_exact(&mut one) {
+            if crate::pack::verbose() {
+                anyos_std::println!("[fetch] EOF scanning for PACK. Got: {:?}",
+                    core::str::from_utf8(&debug_buf).unwrap_or("(binary)"));
+            }
+            return Err(Error::Other(String::from("EOF before PACK header")));
+        }
+        prefix[3] = one[0];
+        if skipped <= 256 {
+            debug_buf.push(one[0]);
+        }
+
+        if skipped > 1024 {
+            anyos_std::print!("First 64 bytes (hex): ");
+            for (i, b) in debug_buf.iter().take(64).enumerate() {
+                anyos_std::print!("{:02x} ", b);
+                if (i + 1) % 16 == 0 { anyos_std::println!(); }
+            }
+            anyos_std::println!();
+            // Also try as text
+            if let Ok(text) = core::str::from_utf8(&debug_buf[..debug_buf.len().min(128)]) {
+                anyos_std::println!("As text: {}", text);
+            }
+            return Err(Error::Other(String::from("PACK header not found in first 1KB")));
+        }
     }
+
+    // Step 5: Read pack version + count (8 bytes)
+    let mut pack_hdr = [0u8; 8];
+    if !stream.read_exact(&mut pack_hdr) {
+        return Err(Error::Other(String::from("truncated pack header")));
+    }
+
+    // "PACK" already consumed; pack_hdr has version(4) + count(4)
+    // But parse_pack_streamed expects to read from AFTER the 12-byte header.
+    // We need to re-inject the version+count into the stream... or just
+    // call parse_pack_streamed which reads the 12-byte header itself.
+    // Let's skip re-injection: we already have version+count.
+
+    let version = crate::pack::read_u32_be(&pack_hdr[0..4]);
+    let num_objects = crate::pack::read_u32_be(&pack_hdr[4..8]);
+
+    if crate::pack::verbose() {
+        anyos_std::println!("[fetch] PACK v{} with {} objects (streaming)", version, num_objects);
+    }
+
+    // Step 6: Stream-parse objects directly into the repository
+    let count = stream_parse_objects(&mut stream, repo, num_objects)?;
+
+    if crate::pack::verbose() {
+        anyos_std::println!("[fetch] {} objects written, {} bytes received", count, stream.total_read);
+    }
+
+    // Stream is closed on drop
+    Ok(count)
+}
+
+/// Parse pack objects from a stream and write to repository.
+fn stream_parse_objects(
+    stream: &mut crate::stream::HttpStream,
+    repo: &crate::repo::Repository,
+    num_objects: u32,
+) -> Result<u32> {
+    use crate::object::{Object, ObjectType};
+
+    let mut resolved: Vec<(Oid, Vec<u8>, u8)> = Vec::new();
+    let mut count = 0u32;
+
+    for i in 0..num_objects {
+        let (obj_type_raw, _size) = crate::pack::read_entry_header_stream(stream)
+            .map_err(|e| Error::Other(e))?;
+
+        if i % 200 == 0 || i == num_objects - 1 {
+            anyos_std::print!("\rReceiving objects: {}% ({}/{})", (i + 1) * 100 / num_objects, i + 1, num_objects);
+        }
+
+        match obj_type_raw {
+            OBJ_COMMIT | OBJ_TREE | OBJ_BLOB | OBJ_TAG => {
+                let inflated = crate::pack::inflate_from_stream(stream)
+                    .map_err(|e| Error::Other(e))?;
+
+                let obj_type = match obj_type_raw {
+                    OBJ_COMMIT => ObjectType::Commit,
+                    OBJ_TREE => ObjectType::Tree,
+                    OBJ_BLOB => ObjectType::Blob,
+                    _ => ObjectType::Tag,
+                };
+
+                let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &inflated));
+                let obj = Object { obj_type, data: inflated.clone() };
+                let _ = repo.write_object(&obj);
+                resolved.push((oid, inflated, obj_type_raw));
+                count += 1;
+            }
+            OBJ_REF_DELTA => {
+                let mut base_sha = [0u8; 20];
+                if !stream.read_exact(&mut base_sha) {
+                    break;
+                }
+                let base_oid = Oid::from_bytes(base_sha);
+
+                let delta_data = crate::pack::inflate_from_stream(stream)
+                    .map_err(|e| Error::Other(e))?;
+
+                let base = resolved.iter().find(|(o, _, _)| *o == base_oid)
+                    .map(|(_, d, t)| (d.clone(), *t))
+                    .or_else(|| {
+                        repo.read_object(&base_oid).ok().map(|o| {
+                            let t = match o.obj_type {
+                                ObjectType::Commit => OBJ_COMMIT,
+                                ObjectType::Tree => OBJ_TREE,
+                                ObjectType::Blob => OBJ_BLOB,
+                                ObjectType::Tag => OBJ_TAG,
+                            };
+                            (o.data, t)
+                        })
+                    });
+
+                if let Some((base_data, base_type)) = base {
+                    let result = crate::pack::apply_delta(&base_data, &delta_data);
+                    let obj_type = crate::pack::pack_type_to_object_type(base_type);
+                    let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
+                    let obj = Object { obj_type, data: result.clone() };
+                    let _ = repo.write_object(&obj);
+                    resolved.push((oid, result, base_type));
+                    count += 1;
+                }
+            }
+            OBJ_OFS_DELTA => {
+                let _offset = crate::pack::read_ofs_offset_stream(stream)
+                    .map_err(|e| Error::Other(e))?;
+                let delta_data = crate::pack::inflate_from_stream(stream)
+                    .map_err(|e| Error::Other(e))?;
+
+                if let Some((_, base_data, base_type)) = resolved.last() {
+                    let result = crate::pack::apply_delta(base_data, &delta_data);
+                    let obj_type = crate::pack::pack_type_to_object_type(*base_type);
+                    let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
+                    let obj = Object { obj_type, data: result.clone() };
+                    let _ = repo.write_object(&obj);
+                    resolved.push((oid, result, *base_type));
+                    count += 1;
+                }
+            }
+            _ => {}
+        }
+
+        // Cap delta cache
+        if resolved.len() > 8192 {
+            resolved.drain(..resolved.len() - 4096);
+        }
+    }
+
+    anyos_std::println!("\rReceiving objects: 100% ({}/{}), done.", num_objects, num_objects);
+    Ok(count)
 }
 
 /// Perform git-receive-pack (push objects to remote).
@@ -314,294 +468,6 @@ fn write_pkt_line(buf: &mut Vec<u8>, line: &str) {
 fn write_flush(buf: &mut Vec<u8>) {
     buf.extend_from_slice(b"0000");
 }
-
-/// Perform an HTTPS POST directly using anyos_std TCP + libtls.
-/// Bypasses libhttp to avoid potential issues with POST handling.
-fn raw_https_post(host: &str, path: &str, body: &[u8]) -> Result<Vec<u8>> {
-    // DNS resolve
-    let mut ip = [0u8; 4];
-    let ret = anyos_std::net::dns(host, &mut ip);
-    if crate::pack::verbose() {
-        anyos_std::println!("[raw] DNS {} -> ret={} ip={}.{}.{}.{}", host, ret, ip[0], ip[1], ip[2], ip[3]);
-    }
-    if ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0 {
-        return Err(Error::Other(format!("DNS failed for {}", host)));
-    }
-
-    if crate::pack::verbose() {
-        anyos_std::println!("[raw] connecting to {}.{}.{}.{}:443", ip[0], ip[1], ip[2], ip[3]);
-    }
-
-    // TCP connect
-    let sock = anyos_std::net::tcp_connect(&ip, 443, 15000);
-    if sock == u32::MAX {
-        return Err(Error::Other(String::from("TCP connect failed")));
-    }
-
-    if crate::pack::verbose() {
-        anyos_std::println!("[raw] TCP connected, socket={}", sock);
-    }
-
-    // TLS handshake — initialize libtls transport first
-    libtls::set_transport(tls_send, tls_recv, tls_sleep, tls_random);
-    let tls_handle = libtls::connect(sock, host);
-    if tls_handle < 0 {
-        anyos_std::net::tcp_close(sock);
-        return Err(Error::Other(format!("TLS handshake failed ({})", tls_handle)));
-    }
-    let tls_handle = tls_handle as u32;
-
-    if crate::pack::verbose() {
-        anyos_std::println!("[raw] TLS connected, handle={}", tls_handle);
-    }
-
-    // Build HTTP request (headers + body combined)
-    let request = format!(
-        "POST {} HTTP/1.1\r\n\
-         Host: {}\r\n\
-         Content-Type: application/x-git-upload-pack-request\r\n\
-         Accept: application/x-git-upload-pack-result\r\n\
-         Content-Length: {}\r\n\
-         User-Agent: agit/1.0\r\n\
-         Connection: close\r\n\
-         \r\n",
-        path, host, body.len()
-    );
-
-    // Send headers + body as one blob
-    let mut send_buf = Vec::with_capacity(request.len() + body.len());
-    send_buf.extend_from_slice(request.as_bytes());
-    send_buf.extend_from_slice(body);
-
-    if crate::pack::verbose() {
-        anyos_std::println!("[raw] sending {} bytes (headers={}, body={})", send_buf.len(), request.len(), body.len());
-    }
-
-    let sent = libtls::send(tls_handle, &send_buf);
-    if sent <= 0 {
-        libtls::close(tls_handle);
-        anyos_std::net::tcp_close(sock);
-        return Err(Error::Other(format!("TLS send failed ({})", sent)));
-    }
-
-    // If partial send, send remaining
-    let mut total_sent = sent as usize;
-    while total_sent < send_buf.len() {
-        let n = libtls::send(tls_handle, &send_buf[total_sent..]);
-        if n <= 0 {
-            break;
-        }
-        total_sent += n as usize;
-    }
-
-    if crate::pack::verbose() {
-        anyos_std::println!("[raw] sent {} bytes total", total_sent);
-    }
-
-    // Receive full HTTP response (headers + body).
-    // GitHub uses Transfer-Encoding: chunked and does NOT close the connection,
-    // so we must parse the chunked encoding to know when the body ends.
-    let mut raw = Vec::with_capacity(64 * 1024);
-    let mut recv_buf = [0u8; 16384];
-
-    // Step A: Read until we have the full HTTP headers (\r\n\r\n)
-    let header_end;
-    loop {
-        let n = libtls::recv(tls_handle, &mut recv_buf);
-        if crate::pack::verbose() {
-            anyos_std::println!("[raw] recv={} total={}", n, raw.len());
-        }
-        if n <= 0 {
-            libtls::close(tls_handle);
-            anyos_std::net::tcp_close(sock);
-            return Err(Error::Other(String::from("connection closed before headers")));
-        }
-        raw.extend_from_slice(&recv_buf[..n as usize]);
-
-        if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
-            header_end = pos + 4;
-            break;
-        }
-    }
-
-    let header_str = core::str::from_utf8(&raw[..header_end]).unwrap_or("");
-    if crate::pack::verbose() {
-        anyos_std::println!("[raw] headers:\n{}", header_str);
-    }
-
-    // Parse headers: check for chunked encoding and content-length
-    let is_chunked = header_str.to_lowercase().contains("transfer-encoding: chunked");
-    let content_length = parse_content_length(header_str);
-
-    if crate::pack::verbose() {
-        anyos_std::println!("[raw] chunked={} content_length={:?}", is_chunked, content_length);
-    }
-
-    // Step B: Read body
-    let body = if is_chunked {
-        // Chunked transfer-encoding: read chunks until "0\r\n"
-        read_chunked_body(tls_handle, &raw[header_end..])
-    } else if let Some(cl) = content_length {
-        // Fixed Content-Length
-        let mut body = raw[header_end..].to_vec();
-        while body.len() < cl {
-            let n = libtls::recv(tls_handle, &mut recv_buf);
-            if n <= 0 { break; }
-            body.extend_from_slice(&recv_buf[..n as usize]);
-        }
-        body
-    } else {
-        // No content-length, no chunked — read until EOF/timeout
-        let mut body = raw[header_end..].to_vec();
-        let mut failures = 0u32;
-        loop {
-            let n = libtls::recv(tls_handle, &mut recv_buf);
-            if n > 0 {
-                body.extend_from_slice(&recv_buf[..n as usize]);
-                failures = 0;
-            } else if n == 0 {
-                break;
-            } else {
-                failures += 1;
-                if failures > 5 { break; }
-                anyos_std::process::sleep(200);
-            }
-        }
-        body
-    };
-
-    libtls::close(tls_handle);
-    anyos_std::net::tcp_close(sock);
-
-    if crate::pack::verbose() {
-        anyos_std::println!("[raw] body: {} bytes", body.len());
-    }
-
-    Ok(body)
-}
-
-// TLS transport callbacks for raw HTTPS
-fn tls_send(fd: u32, data: &[u8]) -> i32 {
-    let n = anyos_std::net::tcp_send(fd, data);
-    if n == u32::MAX { -1 } else { n as i32 }
-}
-
-fn tls_recv(fd: u32, buf: &mut [u8]) -> i32 {
-    // First try: blocking recv (kernel has 30s timeout)
-    let n = anyos_std::net::tcp_recv(fd, buf);
-    if n == 0 { return 0; }
-    if n != u32::MAX { return n as i32; }
-
-    // Timeout — check if connection is still alive
-    let avail = anyos_std::net::tcp_recv_available(fd);
-    match avail {
-        u32::MAX => -1,        // Error
-        0xFFFFFFFE => 0,       // EOF
-        _ => {
-            // Connection alive but no data yet, retry once after short delay
-            anyos_std::process::sleep(50);
-            let n = anyos_std::net::tcp_recv(fd, buf);
-            if n == 0 { 0 }
-            else if n != u32::MAX { n as i32 }
-            else { -1 }
-        }
-    }
-}
-
-/// Parse Content-Length from HTTP headers.
-fn parse_content_length(headers: &str) -> Option<usize> {
-    for line in headers.lines() {
-        let lower = line.to_lowercase();
-        if lower.starts_with("content-length:") {
-            let val = line[15..].trim();
-            return val.parse().ok();
-        }
-    }
-    None
-}
-
-/// Read a chunked HTTP body from TLS.
-/// `initial` contains any body bytes already read with the headers.
-fn read_chunked_body(tls_handle: u32, initial: &[u8]) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(initial.len() + 4096);
-    buf.extend_from_slice(initial);
-    let mut body = Vec::with_capacity(64 * 1024);
-    let mut cursor = 0usize;
-    let mut recv_buf = [0u8; 16384];
-
-    loop {
-        // Ensure we have enough data to parse chunk header
-        while !has_crlf(&buf[cursor..]) {
-            let n = libtls::recv(tls_handle, &mut recv_buf);
-            if n <= 0 { return body; } // EOF or error
-            buf.extend_from_slice(&recv_buf[..n as usize]);
-        }
-
-        // Parse chunk size (hex)
-        let crlf_pos = find_crlf_pos(&buf[cursor..]).unwrap();
-        let size_str = core::str::from_utf8(&buf[cursor..cursor + crlf_pos]).unwrap_or("0");
-        let size_str = match size_str.find(';') {
-            Some(i) => &size_str[..i],
-            None => size_str,
-        };
-        let chunk_size = usize::from_str_radix(size_str.trim(), 16).unwrap_or(0);
-        cursor += crlf_pos + 2; // Skip size line + \r\n
-
-        if crate::pack::verbose() {
-            anyos_std::println!("[raw] chunk size={} (body so far={})", chunk_size, body.len());
-        }
-
-        // Progress display (like git)
-        let mb = body.len() / (1024 * 1024);
-        let kb = (body.len() % (1024 * 1024)) / 1024;
-        if mb > 0 {
-            anyos_std::print!("\rReceiving objects: {}.{:02} MiB", mb, kb * 100 / 1024);
-        } else {
-            anyos_std::print!("\rReceiving objects: {} KiB", body.len() / 1024);
-        }
-
-        if chunk_size == 0 {
-            // Final progress line
-            let mb = body.len() / (1024 * 1024);
-            let kb = (body.len() % (1024 * 1024)) / 1024;
-            if mb > 0 {
-                anyos_std::println!("\rReceiving objects: {}.{:02} MiB, done.", mb, kb * 100 / 1024);
-            } else {
-                anyos_std::println!("\rReceiving objects: {} KiB, done.", body.len() / 1024);
-            }
-            break;
-        }
-
-        // Read chunk data
-        while buf.len() - cursor < chunk_size + 2 { // +2 for trailing \r\n
-            let n = libtls::recv(tls_handle, &mut recv_buf);
-            if n <= 0 { return body; }
-            buf.extend_from_slice(&recv_buf[..n as usize]);
-        }
-
-        body.extend_from_slice(&buf[cursor..cursor + chunk_size]);
-        cursor += chunk_size + 2; // Skip data + \r\n
-
-        // Compact buffer periodically
-        if cursor > 32768 {
-            buf = buf[cursor..].to_vec();
-            cursor = 0;
-        }
-    }
-
-    body
-}
-
-fn has_crlf(data: &[u8]) -> bool {
-    data.windows(2).any(|w| w == b"\r\n")
-}
-
-fn find_crlf_pos(data: &[u8]) -> Option<usize> {
-    data.windows(2).position(|w| w == b"\r\n")
-}
-
-fn tls_sleep(ms: u32) { anyos_std::process::sleep(ms); }
-fn tls_random(buf: &mut [u8]) -> u32 { anyos_std::sys::random(buf) }
 
 /// Find where "PACK" header starts in response data.
 fn find_pack_start(data: &[u8]) -> usize {

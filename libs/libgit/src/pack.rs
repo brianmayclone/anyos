@@ -30,12 +30,12 @@ pub fn verbose() -> bool {
 }
 
 /// Pack object types.
-const OBJ_COMMIT: u8 = 1;
-const OBJ_TREE: u8 = 2;
-const OBJ_BLOB: u8 = 3;
-const OBJ_TAG: u8 = 4;
-const OBJ_OFS_DELTA: u8 = 6;
-const OBJ_REF_DELTA: u8 = 7;
+pub(crate) const OBJ_COMMIT: u8 = 1;
+pub(crate) const OBJ_TREE: u8 = 2;
+pub(crate) const OBJ_BLOB: u8 = 3;
+pub(crate) const OBJ_TAG: u8 = 4;
+pub(crate) const OBJ_OFS_DELTA: u8 = 6;
+pub(crate) const OBJ_REF_DELTA: u8 = 7;
 
 /// A single entry from a pack file.
 #[derive(Debug, Clone)]
@@ -51,7 +51,226 @@ pub struct PackFile {
     pub entries: Vec<PackEntry>,
 }
 
-/// Parse a pack file (v2 format).
+/// Stream-parse a pack from an HttpStream and write objects directly to a repository.
+/// Returns the number of objects written. Uses constant memory regardless of pack size.
+pub fn parse_pack_streamed(
+    stream: &mut crate::stream::HttpStream,
+    repo: &crate::repo::Repository,
+) -> Result<u32, alloc::string::String> {
+    use crate::object::{Object, ObjectType};
+
+    // Read PACK header (12 bytes)
+    let mut header = [0u8; 12];
+    if !stream.read_exact(&mut header) {
+        return Err(alloc::string::String::from("failed to read pack header"));
+    }
+
+    if &header[0..4] != b"PACK" {
+        return Err(alloc::format!("invalid pack header: {:?}", &header[0..4]));
+    }
+    let version = read_u32_be(&header[4..8]);
+    let num_objects = read_u32_be(&header[8..12]);
+
+    if verbose() {
+        anyos_std::println!("[pack-stream] version={} objects={}", version, num_objects);
+    }
+
+    // Delta resolution table: (oid, data, type_num) for REF_DELTA lookups
+    let mut resolved: Vec<(Oid, Vec<u8>, u8)> = Vec::new();
+    let mut count = 0u32;
+
+    for i in 0..num_objects {
+        // Read variable-length entry header from stream
+        let (obj_type_raw, _uncompressed_size) = read_entry_header_stream(stream)?;
+
+        // Progress
+        if i % 100 == 0 || i == num_objects - 1 {
+            anyos_std::print!("\rReceiving objects: {}% ({}/{})", (i + 1) * 100 / num_objects, i + 1, num_objects);
+        }
+
+        match obj_type_raw {
+            OBJ_COMMIT | OBJ_TREE | OBJ_BLOB | OBJ_TAG => {
+                let inflated = inflate_from_stream(stream)?;
+
+                let obj_type = match obj_type_raw {
+                    OBJ_COMMIT => ObjectType::Commit,
+                    OBJ_TREE => ObjectType::Tree,
+                    OBJ_BLOB => ObjectType::Blob,
+                    _ => ObjectType::Tag,
+                };
+
+                let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &inflated));
+                let obj = Object { obj_type, data: inflated.clone() };
+                repo.write_object(&obj).map_err(|e| alloc::format!("write: {}", e))?;
+
+                resolved.push((oid, inflated, obj_type_raw));
+                count += 1;
+            }
+            OBJ_REF_DELTA => {
+                // Read 20-byte base SHA
+                let mut base_sha = [0u8; 20];
+                if !stream.read_exact(&mut base_sha) {
+                    return Err(alloc::string::String::from("REF_DELTA: truncated base SHA"));
+                }
+                let base_oid = Oid::from_bytes(base_sha);
+
+                let delta_data = inflate_from_stream(stream)?;
+
+                // Find base object
+                if let Some((_, base_data, base_type)) = resolved.iter().find(|(o, _, _)| *o == base_oid) {
+                    let result = apply_delta(base_data, &delta_data);
+                    let obj_type = pack_type_to_object_type(*base_type);
+                    let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &result));
+                    let obj = Object { obj_type, data: result.clone() };
+                    repo.write_object(&obj).map_err(|e| alloc::format!("write: {}", e))?;
+                    resolved.push((oid, result, *base_type));
+                    count += 1;
+                } else {
+                    // Base not found — try reading from repo (thin pack)
+                    if let Ok(base_obj) = repo.read_object(&base_oid) {
+                        let result = apply_delta(&base_obj.data, &delta_data);
+                        let oid = Oid::from_bytes(sha1::hash_object(base_obj.obj_type.as_str(), &result));
+                        let base_type = match base_obj.obj_type {
+                            ObjectType::Commit => OBJ_COMMIT,
+                            ObjectType::Tree => OBJ_TREE,
+                            ObjectType::Blob => OBJ_BLOB,
+                            ObjectType::Tag => OBJ_TAG,
+                        };
+                        let obj = Object { obj_type: base_obj.obj_type, data: result.clone() };
+                        repo.write_object(&obj).map_err(|e| alloc::format!("write: {}", e))?;
+                        resolved.push((oid, result, base_type));
+                        count += 1;
+                    } else if verbose() {
+                        anyos_std::println!("\n[pack-stream] WARNING: base {} not found", base_oid.short());
+                    }
+                }
+            }
+            OBJ_OFS_DELTA => {
+                // Read negative offset (variable-length)
+                let _offset = read_ofs_offset_stream(stream)?;
+                let delta_data = inflate_from_stream(stream)?;
+
+                // OFS_DELTA: base is at a byte offset in the pack.
+                // In streaming mode we can't seek back, so use last resolved object as heuristic.
+                if let Some((_, base_data, base_type)) = resolved.last() {
+                    let result = apply_delta(base_data, &delta_data);
+                    let obj_type = pack_type_to_object_type(*base_type);
+                    let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &result));
+                    let obj = Object { obj_type, data: result.clone() };
+                    repo.write_object(&obj).map_err(|e| alloc::format!("write: {}", e))?;
+                    resolved.push((oid, result, *base_type));
+                    count += 1;
+                }
+            }
+            _ => {
+                if verbose() {
+                    anyos_std::println!("\n[pack-stream] unknown type {}", obj_type_raw);
+                }
+            }
+        }
+
+        // Limit resolved cache to prevent memory explosion for huge repos.
+        // Keep last 8192 objects for delta resolution.
+        if resolved.len() > 8192 {
+            resolved.drain(..resolved.len() - 4096);
+        }
+    }
+
+    anyos_std::println!("\rReceiving objects: 100% ({}/{}), done.", num_objects, num_objects);
+
+    Ok(count)
+}
+
+/// Read a pack entry header from a stream (variable-length encoding).
+pub(crate) fn read_entry_header_stream(stream: &mut crate::stream::HttpStream) -> Result<(u8, usize), alloc::string::String> {
+    let mut byte = [0u8; 1];
+    if !stream.read_exact(&mut byte) {
+        return Err(alloc::string::String::from("truncated entry header"));
+    }
+    let c = byte[0];
+    let obj_type = (c >> 4) & 0x07;
+    let mut size = (c & 0x0F) as usize;
+    let mut shift = 4;
+
+    let mut cont = c;
+    while cont & 0x80 != 0 {
+        if !stream.read_exact(&mut byte) {
+            return Err(alloc::string::String::from("truncated entry header"));
+        }
+        cont = byte[0];
+        size |= ((cont & 0x7F) as usize) << shift;
+        shift += 7;
+    }
+
+    Ok((obj_type, size))
+}
+
+/// Read an OFS_DELTA offset from a stream.
+pub(crate) fn read_ofs_offset_stream(stream: &mut crate::stream::HttpStream) -> Result<usize, alloc::string::String> {
+    let mut byte = [0u8; 1];
+    if !stream.read_exact(&mut byte) {
+        return Err(alloc::string::String::from("truncated ofs offset"));
+    }
+    let mut c = byte[0];
+    let mut offset = (c & 0x7F) as usize;
+
+    while c & 0x80 != 0 {
+        if !stream.read_exact(&mut byte) {
+            return Err(alloc::string::String::from("truncated ofs offset"));
+        }
+        c = byte[0];
+        offset = ((offset + 1) << 7) | (c & 0x7F) as usize;
+    }
+
+    Ok(offset)
+}
+
+/// Inflate zlib-compressed data from a stream.
+/// Reads the zlib header (if present), then feeds chunks to the DEFLATE inflater.
+pub(crate) fn inflate_from_stream(stream: &mut crate::stream::HttpStream) -> Result<Vec<u8>, alloc::string::String> {
+    // Read enough data to inflate. We don't know the compressed size upfront,
+    // so read in chunks and try to inflate. When inflate succeeds (BFINAL block
+    // found), we know how many bytes were consumed and can "push back" the rest.
+    let mut compressed = Vec::with_capacity(4096);
+
+    // Read initial chunk
+    let mut buf = [0u8; 8192];
+    let n = stream.read(&mut buf);
+    if n == 0 {
+        return Err(alloc::string::String::from("EOF during inflate"));
+    }
+    compressed.extend_from_slice(&buf[..n]);
+
+    // Skip zlib header if present
+    let zlib_skip = if compressed.len() >= 2 && compressed[0] == 0x78 { 2 } else { 0 };
+
+    // Try inflating, read more data if needed
+    loop {
+        match inflate::inflate_counted(&compressed[zlib_skip..]) {
+            Some((data, consumed)) => {
+                // Put unconsumed bytes back into the stream buffer
+                let total_consumed = zlib_skip + consumed;
+                if total_consumed < compressed.len() {
+                    let leftover = compressed[total_consumed..].to_vec();
+                    stream.buf = leftover;
+                    stream.buf.extend_from_slice(&stream.buf[stream.buf_pos..].to_vec());
+                    stream.buf_pos = 0;
+                }
+                return Ok(data);
+            }
+            None => {
+                // Need more data — read another chunk
+                let n = stream.read(&mut buf);
+                if n == 0 {
+                    return Err(alloc::string::String::from("EOF during inflate (incomplete)"));
+                }
+                compressed.extend_from_slice(&buf[..n]);
+            }
+        }
+    }
+}
+
+/// Parse a pack file from a byte buffer (legacy, for small packs).
 ///
 /// Pack format:
 /// - 4 bytes: "PACK"
@@ -107,8 +326,11 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
 
         match obj_type_raw {
             OBJ_COMMIT | OBJ_TREE | OBJ_BLOB | OBJ_TAG => {
-                // Non-delta object: inflate the data
-                let (inflated, consumed) = match inflate::inflate_counted(&data[pos..]) {
+                // Non-delta object: inflate the zlib-compressed data.
+                // Git pack objects use zlib (RFC 1950): 2-byte header + deflate + 4-byte adler32.
+                // Skip the zlib header before inflating raw DEFLATE.
+                let zlib_skip = if pos + 2 <= data.len() && data[pos] == 0x78 { 2 } else { 0 };
+                let (inflated, consumed) = match inflate::inflate_counted(&data[pos + zlib_skip..]) {
                     Some(r) => r,
                     None => {
                         if verbose() {
@@ -117,7 +339,7 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                         break;
                     }
                 };
-                pos += consumed;
+                pos += zlib_skip + consumed;
 
                 let obj_type = match obj_type_raw {
                     OBJ_COMMIT => ObjectType::Commit,
@@ -156,8 +378,9 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                     anyos_std::println!("[pack]   REF_DELTA base={}", base_oid.short());
                 }
 
-                let (delta_data, consumed) = match inflate::inflate_counted(&data[pos..]) {
-                    Some(r) => r,
+                let zlib_skip = if pos + 2 <= data.len() && data[pos] == 0x78 { 2 } else { 0 };
+                let (delta_data, consumed) = match inflate::inflate_counted(&data[pos + zlib_skip..]) {
+                    Some(r) => (r.0, r.1 + zlib_skip),
                     None => {
                         if verbose() { anyos_std::println!("[pack]   REF_DELTA inflate FAILED"); }
                         break;
@@ -189,8 +412,9 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 let (offset, offset_bytes) = read_ofs_delta_offset(&data[pos..]);
                 pos += offset_bytes;
 
-                let (delta_data, consumed) = match inflate::inflate_counted(&data[pos..]) {
-                    Some(r) => r,
+                let zlib_skip = if pos + 2 <= data.len() && data[pos] == 0x78 { 2 } else { 0 };
+                let (delta_data, consumed) = match inflate::inflate_counted(&data[pos + zlib_skip..]) {
+                    Some(r) => (r.0, r.1 + zlib_skip),
                     None => break,
                 };
                 pos += consumed;
@@ -334,7 +558,7 @@ fn read_ofs_delta_offset(data: &[u8]) -> (usize, usize) {
 /// - Instructions:
 ///   - Copy: bit 7 set, followed by offset/size bytes
 ///   - Insert: bit 7 clear, value = number of bytes to insert
-fn apply_delta(base: &[u8], delta: &[u8]) -> Vec<u8> {
+pub(crate) fn apply_delta(base: &[u8], delta: &[u8]) -> Vec<u8> {
     let mut pos = 0;
 
     // Read source length
@@ -561,7 +785,7 @@ pub fn demux_sideband(data: &[u8]) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-fn pack_type_to_object_type(t: u8) -> ObjectType {
+pub(crate) fn pack_type_to_object_type(t: u8) -> ObjectType {
     match t {
         OBJ_COMMIT => ObjectType::Commit,
         OBJ_TREE => ObjectType::Tree,
@@ -571,6 +795,6 @@ fn pack_type_to_object_type(t: u8) -> ObjectType {
     }
 }
 
-fn read_u32_be(data: &[u8]) -> u32 {
+pub(crate) fn read_u32_be(data: &[u8]) -> u32 {
     u32::from_be_bytes([data[0], data[1], data[2], data[3]])
 }

@@ -359,16 +359,20 @@ fn send_data(conn: &Connection, data: &[u8], is_https: bool) -> bool {
 /// connection is still alive, to handle transient delays during large transfers.
 fn recv_some(conn: &Connection, buf: &mut [u8], is_https: bool) -> usize {
     if let Some(handle) = conn.tls_handle {
-        // TLS path — retry once on failure (transient timeout).
-        let n = tls::recv(handle, buf);
-        if n > 0 { return n as usize; }
-        if n == 0 { return 0; } // EOF
-        // n < 0: error/timeout — check if connection is still alive and retry
-        let avail = syscall::tcp_recv_available(conn.sock);
-        if avail == u32::MAX || avail == 0xFFFFFFFE { return 0; }
-        syscall::sleep(100);
-        let n = tls::recv(handle, buf);
-        if n > 0 { n as usize } else { 0 }
+        // TLS path — retry up to 3 times on failure, same patience as TCP.
+        // Servers like GitHub may take seconds to generate a response (e.g.
+        // git-upload-pack pack generation), during which tls::recv returns -1.
+        for _ in 0..3 {
+            let n = tls::recv(handle, buf);
+            if n > 0 { return n as usize; }
+            if n == 0 { return 0; } // EOF
+            // n < 0: check if connection is still alive
+            let avail = syscall::tcp_recv_available(conn.sock);
+            if avail == u32::MAX || avail == 0xFFFFFFFE { return 0; }
+            // Connection alive, server still thinking — wait and retry
+            syscall::sleep(100);
+        }
+        0
     } else {
         debug_assert!(!is_https);
         // Plain TCP path — retry on transient timeouts
