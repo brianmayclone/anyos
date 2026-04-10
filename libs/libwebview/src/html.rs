@@ -841,6 +841,14 @@ pub fn parse(html: &str) -> Dom {
     let mut head_id: Option<NodeId> = None;
     let mut body_id: Option<NodeId> = None;
 
+    // Tracks whether we are still in the implicit "in head" insertion mode.
+    // While true, whitespace-only text tokens are not added to the body —
+    // they would otherwise become inline whitespace fragments and shift
+    // subsequent inline-level boxes (e.g. inline-grid containers) to the right.
+    // Per HTML5 §13.2.6.4 ("in head" / "after head"), whitespace before the
+    // first body content is associated with head, not body.
+    let mut in_implicit_head_mode = true;
+
     // First pass: check for explicit html/head/body
     for tok in &tokens {
         if let Token::StartTag { name, .. } = tok {
@@ -933,6 +941,7 @@ pub fn parse(html: &str) -> Dom {
                         continue;
                     }
                     Tag::Body => {
+                        in_implicit_head_mode = false;
                         if body_id.is_none() {
                             let bid = dom.add_node(
                                 NodeType::Element {
@@ -962,10 +971,21 @@ pub fn parse(html: &str) -> Dom {
                     _ => {}
                 }
 
-                // Head-only elements go into <head>
+                // Head-only elements go into <head>.
+                // Per HTML5 §13.2.6.4 ("in head"), Title/Meta/Link/Style are
+                // routed to head while we are still before any body content,
+                // even when body has been auto-created as the default
+                // insertion point. The previous `!stack_has(Body)` check was
+                // wrong for that auto-body case (body is always on the stack)
+                // and caused metadata to be inserted into body instead.
                 let is_head_element =
                     matches!(tag, Tag::Title | Tag::Meta | Tag::Link | Tag::Style)
-                        && !stack_has(&dom, &stack, Tag::Body);
+                        && (in_implicit_head_mode || !stack_has(&dom, &stack, Tag::Body));
+                // Any non-head start tag means we are now in body content;
+                // subsequent whitespace text is real body content.
+                if !is_head_element && !matches!(tag, Tag::Script | Tag::Noscript | Tag::Template) {
+                    in_implicit_head_mode = false;
+                }
                 if is_head_element {
                     if let Some(hid) = head_id {
                         let parent = hid;
@@ -1125,6 +1145,25 @@ pub fn parse(html: &str) -> Dom {
                 }
 
                 let parent = stack.last().copied().unwrap_or(root);
+                let is_ws =
+                    processed.bytes().all(|b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r');
+
+                // While still in implicit "in head" mode, whitespace-only text
+                // that would land in body is dropped — per HTML5 §13.2.6.4
+                // ("in head"/"after head"), such whitespace belongs to head
+                // and is visually irrelevant. Otherwise it would become inline
+                // whitespace fragments shifting later inline-level boxes
+                // (e.g. inline-grid containers) to the right.
+                if in_implicit_head_mode && is_ws && Some(parent) == body_id {
+                    continue;
+                }
+                // Non-whitespace text inside body content marks the end of
+                // implicit head mode. Text inside head descendants (e.g. CSS
+                // inside <style>) does not.
+                if !is_ws && Some(parent) == body_id {
+                    in_implicit_head_mode = false;
+                }
+
                 dom.add_node(NodeType::Text(processed), Some(parent));
             }
         }

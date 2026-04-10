@@ -118,6 +118,28 @@ pub fn layout_grid(
         .collect();
 
     if items.is_empty() {
+        // No in-flow children, but still need to handle absolutely-positioned
+        // children which form their containing block from this grid container.
+        // Compute the grid's intrinsic content height from grid-template-rows
+        // (even without items, the explicit grid defines a content area).
+        // Then clamp by max-height (parent.height was already set by build_block
+        // before layout_grid was called).
+        let template_h: i32 = parent_style.grid_template_rows.iter().map(|t| match t {
+            GridTrackSize::Px(px) => *px,
+            GridTrackSize::Minmax { min_px, .. } => *min_px,
+            _ => 0,
+        }).sum();
+        let row_gap_total = if parent_style.grid_template_rows.len() > 1 {
+            row_gap * (parent_style.grid_template_rows.len() as i32 - 1)
+        } else { 0 };
+        let computed_h = parent_style.height.unwrap_or(template_h + row_gap_total);
+        // Clamp by max-height if set (CSS Grid container intrinsic sizing).
+        let h = if let Some(max_h) = parent_style.max_height {
+            computed_h.min(max_h)
+        } else {
+            computed_h
+        };
+        layout_grid_abs_children(dom, styles, pseudo, child_ids, parent, images, viewport_w, available_width, h);
         return 0;
     }
 
@@ -246,7 +268,74 @@ pub fn layout_grid(
         }
     }
 
+    // ── 6. Handle absolutely-positioned grid children ─────────────────────
+    layout_grid_abs_children(dom, styles, pseudo, child_ids, parent, images, viewport_w, available_width, cursor_y);
+
     cursor_y
+}
+
+/// Lay out absolutely-positioned children of a grid container.
+/// Per CSS Grid §9: abs children have the grid container's content area as
+/// their containing block (when the container is positioned).
+fn layout_grid_abs_children(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    child_ids: &[NodeId],
+    parent: &mut LayoutBox,
+    images: &ImageCache,
+    viewport_w: i32,
+    available_width: i32,
+    grid_content_h: i32,
+) {
+    let bw = parent.border_width;
+    // For width: prefer parent.width if set, else available_width.
+    let parent_w = if parent.width > 0 { parent.width } else { available_width };
+    let cb_w = (parent_w - parent.padding.left - parent.padding.right - 2 * bw).max(0);
+    let cb_h = grid_content_h.max(0);
+    let content_x = bw + parent.padding.left;
+    let content_y = bw + parent.padding.top;
+
+    for &cid in child_ids {
+        let st = &styles[cid];
+        if !matches!(st.position, Position::Absolute | Position::Fixed) {
+            continue;
+        }
+        if st.display == Display::None {
+            continue;
+        }
+
+        let sizing_width = if st.left_offset.is_some() && st.right_offset.is_some()
+            && st.width.is_none() && st.width_pct.is_none()
+        {
+            (cb_w - st.left_offset.unwrap_or(0) - st.right_offset.unwrap_or(0)).max(0)
+        } else {
+            cb_w
+        };
+
+        let mut abs_box = build_block(
+            dom, styles, pseudo, cid, sizing_width, images, viewport_w, cb_h,
+        );
+
+        let l = st.left_offset.unwrap_or(0);
+        let t = st.top.unwrap_or(0);
+        abs_box.x = content_x + l + abs_box.margin.left;
+        abs_box.y = content_y + t + abs_box.margin.top;
+
+        if st.left_offset.is_none() {
+            if let Some(r) = st.right_offset {
+                abs_box.x = content_x + cb_w - r - abs_box.width - abs_box.margin.right;
+            }
+        }
+        if st.top.is_none() {
+            if let Some(b) = st.bottom_offset {
+                abs_box.y = content_y + cb_h - b - abs_box.height - abs_box.margin.bottom;
+            }
+        }
+
+        abs_box.is_out_of_flow = true;
+        parent.children.push(abs_box);
+    }
 }
 
 // ────────────────────────────────────────────────────────────

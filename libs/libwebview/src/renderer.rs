@@ -429,21 +429,14 @@ impl DisplayList {
             }
         }
 
-        // Position: sticky — clamp Y so the element doesn't scroll above its
-        // sticky threshold (top offset from the viewport top).  The element
-        // stays in normal flow until scrolling would move it past the threshold,
-        // then it "sticks" at that position.
-        let orig_abs_y = if bx.is_sticky {
-            let viewport_top = 0; // TODO: adjust for nested scroll containers
-            let sticky_threshold = viewport_top + bx.sticky_top;
-            if orig_abs_y < sticky_threshold {
-                sticky_threshold
-            } else {
-                orig_abs_y
-            }
-        } else {
-            orig_abs_y
-        };
+        // Position: sticky — per CSS spec §6.3, a sticky element behaves like
+        // `position: relative` (no offset applied) UNLESS the user has scrolled
+        // past the sticky threshold within the nearest scrollable ancestor.
+        // Since surf-host doesn't currently track scroll offsets per container,
+        // we don't apply any sticky shift — sticky elements stay at their
+        // natural in-flow position. This matches reference renderings where
+        // no JavaScript scroll has occurred.
+        // (TODO: implement scroll-aware sticky clamping for nested scrollers.)
 
         // Apply CSS transform: scale around the resolved transform origin.
         let (abs_x, abs_y, draw_w, draw_h) = if bx.transform_sx != 1000 || bx.transform_sy != 1000 {

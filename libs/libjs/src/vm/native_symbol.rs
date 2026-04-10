@@ -17,6 +17,10 @@ pub const WELL_KNOWN_TO_PRIMITIVE: &str = "__symbol__0_Symbol.toPrimitive";
 pub const WELL_KNOWN_TO_STRING_TAG: &str = "__symbol__0_Symbol.toStringTag";
 pub const WELL_KNOWN_HAS_INSTANCE: &str = "__symbol__0_Symbol.hasInstance";
 pub const WELL_KNOWN_MATCH: &str = "__symbol__0_Symbol.match";
+pub const WELL_KNOWN_MATCH_ALL: &str = "__symbol__0_Symbol.matchAll";
+pub const WELL_KNOWN_REPLACE: &str = "__symbol__0_Symbol.replace";
+pub const WELL_KNOWN_SEARCH: &str = "__symbol__0_Symbol.search";
+pub const WELL_KNOWN_SPLIT: &str = "__symbol__0_Symbol.split";
 pub const WELL_KNOWN_IS_CONCAT_SPREADABLE: &str = "__symbol__0_Symbol.isConcatSpreadable";
 pub const WELL_KNOWN_SPECIES: &str = "__symbol__0_Symbol.species";
 pub const WELL_KNOWN_UNSCOPABLES: &str = "__symbol__0_Symbol.unscopables";
@@ -93,16 +97,20 @@ pub fn install_well_known_symbols(symbol_ctor: &JsValue) {
         JsValue::String(String::from(WELL_KNOWN_MATCH)),
     );
     symbol_ctor.set_property(
+        String::from("matchAll"),
+        JsValue::String(String::from(WELL_KNOWN_MATCH_ALL)),
+    );
+    symbol_ctor.set_property(
         String::from("replace"),
-        JsValue::String(String::from("__symbol__0_Symbol.replace")),
+        JsValue::String(String::from(WELL_KNOWN_REPLACE)),
     );
     symbol_ctor.set_property(
         String::from("search"),
-        JsValue::String(String::from("__symbol__0_Symbol.search")),
+        JsValue::String(String::from(WELL_KNOWN_SEARCH)),
     );
     symbol_ctor.set_property(
         String::from("split"),
-        JsValue::String(String::from("__symbol__0_Symbol.split")),
+        JsValue::String(String::from(WELL_KNOWN_SPLIT)),
     );
     symbol_ctor.set_property(
         String::from("unscopables"),

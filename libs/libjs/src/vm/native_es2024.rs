@@ -20,26 +20,88 @@ use crate::value::*;
 // Array.prototype additions (ES2023+)
 // ═══════════════════════════════════════════════════════════
 
+/// Length of an array-like `this` per ES `LengthOfArrayLike`. Reads the
+/// `length` property (invoking accessors), coerces it via ToInteger, and
+/// propagates any exceptions through `pending_exception`.
+fn array_like_length(vm: &mut Vm, this: &JsValue) -> Option<usize> {
+    let len_val = vm.get_property_invoking_getter(this, "length");
+    if vm.pending_exception.is_some() {
+        return None;
+    }
+    let n = super::native_array::to_number_vm(vm, &len_val);
+    if vm.pending_exception.is_some() {
+        return None;
+    }
+    if n.is_nan() || n <= 0.0 {
+        Some(0)
+    } else if !n.is_finite() {
+        Some(usize::MAX)
+    } else {
+        Some(n as usize)
+    }
+}
+
+/// Generic Get(O, k) for findLast/findLastIndex paths. Falls back to
+/// direct array indexing for `JsValue::Array`, otherwise invokes any
+/// accessor on the object.
+fn array_like_get(vm: &mut Vm, this: &JsValue, idx: usize) -> Option<JsValue> {
+    let key = alloc::format!("{}", idx);
+    let val = match this {
+        JsValue::Array(arr) => {
+            let a = arr.borrow();
+            if let Some(v) = a.elements.get(&idx) {
+                v.clone()
+            } else {
+                drop(a);
+                vm.get_property_invoking_getter(this, &key)
+            }
+        }
+        _ => vm.get_property_invoking_getter(this, &key),
+    };
+    if vm.pending_exception.is_some() {
+        return None;
+    }
+    Some(val)
+}
+
 /// `Array.prototype.findLast(callback)`
 pub fn array_find_last(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
+    // §1: Let O be ? ToObject(this value). For null/undefined this fails.
+    if matches!(this, JsValue::Null | JsValue::Undefined) {
+        let err = vm.make_type_error("Array.prototype.findLast called on null or undefined");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Array(arr) = &this {
-        let entries: Vec<(usize, JsValue)> = arr
-            .borrow()
-            .elements
-            .iter()
-            .map(|(&k, v)| (k, v.clone()))
-            .collect();
-        for &(i, ref el) in entries.iter().rev() {
-            let val = vm.call_value(
-                &callback,
-                &[el.clone(), JsValue::Number(i as f64), this.clone()],
-                JsValue::Undefined,
-            );
-            if val.to_boolean() {
-                return el.clone();
-            }
+    let len = match array_like_length(vm, &this) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
+    if len == 0 {
+        return JsValue::Undefined;
+    }
+    let mut k = len;
+    while k > 0 {
+        k -= 1;
+        let el = match array_like_get(vm, &this, k) {
+            Some(v) => v,
+            None => return JsValue::Undefined,
+        };
+        let val = vm.call_value(
+            &callback,
+            &[el.clone(), JsValue::Number(k as f64), this.clone()],
+            JsValue::Undefined,
+        );
+        if let Some(exc) = vm.last_exception.take() {
+            vm.pending_exception = Some(exc);
+            return JsValue::Undefined;
+        }
+        if vm.pending_exception.is_some() {
+            return JsValue::Undefined;
+        }
+        if val.to_boolean() {
+            return el;
         }
     }
     JsValue::Undefined
@@ -48,23 +110,41 @@ pub fn array_find_last(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 /// `Array.prototype.findLastIndex(callback)`
 pub fn array_find_last_index(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
+    if matches!(this, JsValue::Null | JsValue::Undefined) {
+        let err =
+            vm.make_type_error("Array.prototype.findLastIndex called on null or undefined");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
     let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
-    if let JsValue::Array(arr) = &this {
-        let entries: Vec<(usize, JsValue)> = arr
-            .borrow()
-            .elements
-            .iter()
-            .map(|(&k, v)| (k, v.clone()))
-            .collect();
-        for &(i, ref el) in entries.iter().rev() {
-            let val = vm.call_value(
-                &callback,
-                &[el.clone(), JsValue::Number(i as f64), this.clone()],
-                JsValue::Undefined,
-            );
-            if val.to_boolean() {
-                return JsValue::Number(i as f64);
-            }
+    let len = match array_like_length(vm, &this) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
+    if len == 0 {
+        return JsValue::Number(-1.0);
+    }
+    let mut k = len;
+    while k > 0 {
+        k -= 1;
+        let el = match array_like_get(vm, &this, k) {
+            Some(v) => v,
+            None => return JsValue::Undefined,
+        };
+        let val = vm.call_value(
+            &callback,
+            &[el, JsValue::Number(k as f64), this.clone()],
+            JsValue::Undefined,
+        );
+        if let Some(exc) = vm.last_exception.take() {
+            vm.pending_exception = Some(exc);
+            return JsValue::Undefined;
+        }
+        if vm.pending_exception.is_some() {
+            return JsValue::Undefined;
+        }
+        if val.to_boolean() {
+            return JsValue::Number(k as f64);
         }
     }
     JsValue::Number(-1.0)
@@ -82,19 +162,117 @@ pub fn array_to_reversed(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     }
 }
 
-/// `Array.prototype.toSorted(compareFn?)` — non-mutating sort
+/// `Array.prototype.toSorted(compareFn?)` — non-mutating sort. Per
+/// ES §23.1.3.34: read all elements first, then sort using SortCompare.
+/// Exceptions from accessor reads or from the user-supplied comparator
+/// must abort the sort and propagate.
 pub fn array_to_sorted(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let this = vm.current_this.clone();
-    if let JsValue::Array(arr) = &this {
-        let mut dense = arr.borrow().to_dense_vec();
-        dense.sort_by(|a, b| {
-            let sa = a.to_js_string();
-            let sb = b.to_js_string();
-            sa.cmp(&sb)
-        });
-        JsValue::new_array(dense)
+    if matches!(this, JsValue::Null | JsValue::Undefined) {
+        let err = vm.make_type_error("Array.prototype.toSorted called on null or undefined");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    let compare_fn = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if !matches!(compare_fn, JsValue::Undefined | JsValue::Function(_)) {
+        let err = vm.make_type_error("toSorted: compareFn must be a function or undefined");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+
+    let len = match array_like_length(vm, &this) {
+        Some(n) => n,
+        None => return JsValue::Undefined,
+    };
+    // Guard against pathological lengths from array-likes that report e.g.
+    // 2^53 — we can't allocate that and tests using such lengths usually
+    // expect a TypeError or different code path.
+    if len > 16 * 1024 * 1024 {
+        let err = vm.make_range_error("Invalid array length");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+
+    // Step 5: read all len entries (this can throw via accessors).
+    let mut items: Vec<JsValue> = Vec::with_capacity(len);
+    for k in 0..len {
+        let v = match array_like_get(vm, &this, k) {
+            Some(v) => v,
+            None => return JsValue::Undefined,
+        };
+        items.push(v);
+    }
+
+    // Step 6: SortIndexedProperties with the SortCompare abstract operation.
+    // We use insertion sort so we can stop on the first abrupt completion
+    // without invoking sort_by's panic-on-throw behaviour.
+    let n = items.len();
+    for i in 1..n {
+        let mut j = i;
+        while j > 0 {
+            let cmp = sort_compare(vm, &compare_fn, &items[j - 1], &items[j]);
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            if cmp <= 0 {
+                break;
+            }
+            items.swap(j - 1, j);
+            j -= 1;
+        }
+    }
+
+    JsValue::new_array(items)
+}
+
+/// SortCompare(x, y) — returns negative, zero, or positive `i32`.
+/// Mirrors ECMA §23.1.3.30.2 with `READ-THROUGH-HOLES` behaviour
+/// (undefined is sorted to the end when no comparator is supplied).
+fn sort_compare(vm: &mut Vm, compare_fn: &JsValue, x: &JsValue, y: &JsValue) -> i32 {
+    let x_undef = matches!(x, JsValue::Undefined);
+    let y_undef = matches!(y, JsValue::Undefined);
+    if x_undef && y_undef {
+        return 0;
+    }
+    if x_undef {
+        return 1;
+    }
+    if y_undef {
+        return -1;
+    }
+    if let JsValue::Function(_) = compare_fn {
+        let result = vm.call_value(compare_fn, &[x.clone(), y.clone()], JsValue::Undefined);
+        if let Some(exc) = vm.last_exception.take() {
+            vm.pending_exception = Some(exc);
+            return 0;
+        }
+        if vm.pending_exception.is_some() {
+            return 0;
+        }
+        let n = super::native_array::to_number_vm(vm, &result);
+        if vm.pending_exception.is_some() {
+            return 0;
+        }
+        if n.is_nan() {
+            return 0;
+        }
+        if n < 0.0 {
+            return -1;
+        }
+        if n > 0.0 {
+            return 1;
+        }
+        return 0;
+    }
+    // No comparator: compare as strings.
+    let sx = x.to_js_string();
+    let sy = y.to_js_string();
+    if sx < sy {
+        -1
+    } else if sx > sy {
+        1
     } else {
-        JsValue::new_array(Vec::new())
+        0
     }
 }
 
@@ -202,15 +380,26 @@ pub fn object_group_by(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// `String.prototype.isWellFormed()` — ES2024
 pub fn string_is_well_formed(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let s = vm.current_this.to_js_string();
-    // In Rust, all Strings are valid UTF-8, so always well-formed
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
+    // ToString must invoke Symbol.toPrimitive / toString and propagate exceptions.
+    let _s = match super::native_string::this_string_checked(vm) {
+        Some(s) => s,
+        None => return JsValue::Undefined,
+    };
+    // In Rust, all Strings are valid UTF-8, so always well-formed.
     JsValue::Bool(true)
 }
 
 /// `String.prototype.toWellFormed()` — ES2024
 pub fn string_to_well_formed(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let s = vm.current_this.to_js_string();
-    // Already well-formed in Rust
+    // 1. Let O be ? RequireObjectCoercible(this value).
+    // 2. Let S be ? ToString(O).
+    let s = match super::native_string::this_string_checked(vm) {
+        Some(s) => s,
+        None => return JsValue::Undefined,
+    };
+    // Already well-formed in Rust.
     JsValue::String(s)
 }
 

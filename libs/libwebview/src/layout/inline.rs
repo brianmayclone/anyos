@@ -802,8 +802,8 @@ fn collect_inline_fragments(
                 return;
             }
 
-            // Handle display: inline-block / inline-flex — lay out as block, emit as inline fragment.
-            if matches!(style.display, Display::InlineBlock | Display::InlineFlex) {
+            // Handle display: inline-block / inline-flex / inline-grid — lay out as block, emit as inline fragment.
+            if matches!(style.display, Display::InlineBlock | Display::InlineFlex | Display::InlineGrid) {
                 use super::block::build_block;
                 // Shrink-to-fit: if no explicit width, use max-content so the box is only as
                 // wide as its content (CSS §10.3.9 "Inline replaced elements, block-level

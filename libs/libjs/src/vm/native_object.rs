@@ -200,33 +200,48 @@ pub fn object_is_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn object_to_string(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    match &vm.current_this {
-        JsValue::Array(_) => JsValue::String(String::from("[object Array]")),
-        JsValue::Function(_) => JsValue::String(String::from("[object Function]")),
-        JsValue::Null => JsValue::String(String::from("[object Null]")),
-        JsValue::Undefined => JsValue::String(String::from("[object Undefined]")),
+    // §20.1.3.6 step 1–2: Null/Undefined receivers have fixed strings.
+    let this = vm.current_this.clone();
+    if matches!(this, JsValue::Null) {
+        return JsValue::String(String::from("[object Null]"));
+    }
+    if matches!(this, JsValue::Undefined) {
+        return JsValue::String(String::from("[object Undefined]"));
+    }
+    // Determine the builtin tag (step 4–14) before consulting @@toStringTag,
+    // so that an accessor on @@toStringTag still overrides it (step 16–17).
+    let builtin_tag = match &this {
+        JsValue::Array(_) => "Array",
+        JsValue::Function(_) => "Function",
         JsValue::Object(obj) => {
             let o = obj.borrow();
-            let tag_value = o.get(super::native_symbol::WELL_KNOWN_TO_STRING_TAG);
-            let kind = if let JsValue::String(tag) = tag_value {
-                tag
-            } else {
-                match o.internal_tag.as_deref() {
-                    Some("__boolean__") => String::from("Boolean"),
-                    Some("__number__") => String::from("Number"),
-                    Some("__string__") => String::from("String"),
-                    Some("__regexp__") => String::from("RegExp"),
-                    Some("__date__") => String::from("Date"),
-                    Some("__math__") => String::from("Math"),
-                    Some("__json__") => String::from("JSON"),
-                    Some("__error__") => String::from("Error"),
-                    _ => String::from("Object"),
-                }
-            };
-            JsValue::String(alloc::format!("[object {}]", kind))
+            match o.internal_tag.as_deref() {
+                Some("__boolean__") => "Boolean",
+                Some("__number__") => "Number",
+                Some("__string__") => "String",
+                Some("__regexp__") => "RegExp",
+                Some("__date__") => "Date",
+                Some("__math__") => "Math",
+                Some("__json__") => "JSON",
+                Some("__error__") => "Error",
+                _ => "Object",
+            }
         }
-        _ => JsValue::String(String::from("[object Object]")),
+        _ => "Object",
+    };
+
+    // §20.1.3.6 step 16: Let tag be Get(O, @@toStringTag). Must invoke
+    // accessors and propagate any abrupt completion.
+    let tag_value = vm.get_property_invoking_getter(&this, super::native_symbol::WELL_KNOWN_TO_STRING_TAG);
+    if vm.pending_exception.is_some() {
+        return JsValue::Undefined;
     }
+    let kind = if let JsValue::String(tag) = tag_value {
+        tag
+    } else {
+        String::from(builtin_tag)
+    };
+    JsValue::String(alloc::format!("[object {}]", kind))
 }
 
 pub fn object_value_of(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -734,7 +749,16 @@ pub fn object_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn object_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
-        Some(JsValue::Object(obj)) => {
+        Some(v @ JsValue::Object(obj)) => {
+            // Proxy receivers must dispatch through the getPrototypeOf trap
+            // (or fall through to the target object).
+            let is_proxy = obj.borrow().internal_tag.as_deref()
+                == Some(super::native_proxy::PROXY_TAG);
+            if is_proxy {
+                let v_clone = v.clone();
+                return super::native_proxy::proxy_get_prototype_of(vm, &v_clone)
+                    .unwrap_or(JsValue::Undefined);
+            }
             let o = obj.borrow();
             match &o.prototype {
                 Some(proto) => JsValue::Object(proto.clone()),

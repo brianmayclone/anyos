@@ -299,20 +299,10 @@ pub fn number_to_exponential(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(n) => n,
         None => return JsValue::Undefined,
     };
-    if n.is_nan() {
-        return JsValue::String(String::from("NaN"));
-    }
-    if n.is_infinite() {
-        return JsValue::String(if n > 0.0 {
-            String::from("Infinity")
-        } else {
-            String::from("-Infinity")
-        });
-    }
 
-    let negative = n < 0.0;
-    let abs = if negative { -n } else { n };
-
+    // §21.1.3.5 step 2: ToIntegerOrInfinity(fractionDigits) — must run BEFORE
+    // the finite/NaN early-return so that abrupt completions from valueOf or
+    // toString on the argument propagate even for NaN/Infinity receivers.
     let frac_digits = if args.is_empty() || matches!(args.first(), Some(JsValue::Undefined)) {
         None
     } else {
@@ -328,6 +318,20 @@ pub fn number_to_exponential(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             None => return JsValue::Undefined,
         }
     };
+
+    if n.is_nan() {
+        return JsValue::String(String::from("NaN"));
+    }
+    if n.is_infinite() {
+        return JsValue::String(if n > 0.0 {
+            String::from("Infinity")
+        } else {
+            String::from("-Infinity")
+        });
+    }
+
+    let negative = n < 0.0;
+    let abs = if negative { -n } else { n };
 
     if abs == 0.0 {
         let mut s = String::from("0");

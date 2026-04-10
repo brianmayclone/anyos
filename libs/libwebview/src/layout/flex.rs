@@ -103,6 +103,15 @@ pub(super) fn measure_max_content(
         return 0;
     }
 
+    // CSS Sizing §5.1: If box has a definite size in block axis and an aspect
+    // ratio, the inline size is computed from the block size × aspect ratio.
+    // aspect_ratio is stored as (w/h) * 100.
+    if st.aspect_ratio > 0 {
+        if let Some(h) = st.height {
+            return (h * st.aspect_ratio / 100).max(0);
+        }
+    }
+
     let pad_border = st.padding_left
         + st.padding_right
         + st.border_width * 2

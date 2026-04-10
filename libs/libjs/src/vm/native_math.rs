@@ -237,14 +237,22 @@ pub fn math_atan2(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn math_hypot(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    // If any arg is ±Infinity → +Infinity (before checking NaN)
-    let mut has_nan = false;
-    let mut sum = 0.0f64;
+    // Per ES §21.3.2.18 step 1–2: coerce ALL arguments to Number first,
+    // before inspecting any of them. Short-circuiting on Infinity before
+    // running the remaining ToNumber calls would skip side effects from
+    // their valueOf/Symbol.toPrimitive methods.
+    let mut coerced: alloc::vec::Vec<f64> = alloc::vec::Vec::with_capacity(args.len());
     for a in args {
         let n = crate::vm::native_array::to_number_vm(vm, a);
         if vm.pending_exception.is_some() {
             return JsValue::Undefined;
         }
+        coerced.push(n);
+    }
+
+    let mut has_nan = false;
+    let mut sum = 0.0f64;
+    for n in coerced {
         if n.is_infinite() {
             return JsValue::Number(f64::INFINITY);
         }

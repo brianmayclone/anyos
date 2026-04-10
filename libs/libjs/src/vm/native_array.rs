@@ -623,7 +623,14 @@ pub fn array_fill(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         let start = resolve_index(start_num, len);
         let end = resolve_index(end_num, len);
         for i in start..end {
-            this_obj.set_property(alloc::format!("{}", i), value.clone());
+            // §22.1.3.6 step 11.b: Set(O, Pk, value, true) — invokes setters and
+            // must propagate any exception they throw.
+            if !vm.set_property_or_throw(&this_obj, &alloc::format!("{}", i), value.clone()) {
+                return JsValue::Undefined;
+            }
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
         }
         this_obj
     }
@@ -789,10 +796,18 @@ pub fn array_includes(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Bool(false);
     }
     let search = args.first().cloned().unwrap_or(JsValue::Undefined);
-    let from = args
-        .get(1)
-        .map(|v| resolve_index(v.to_number(), len))
-        .unwrap_or(0);
+    // §22.1.3.13 step 4: ToInteger(fromIndex). Must invoke valueOf/Symbol.toPrimitive
+    // and propagate exceptions.
+    let from = match args.get(1) {
+        None | Some(JsValue::Undefined) => 0,
+        Some(v) => {
+            let n = to_number_vm(vm, v);
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            resolve_index(n, len)
+        }
+    };
     for (idx, val) in &entries {
         if *idx < from {
             continue;

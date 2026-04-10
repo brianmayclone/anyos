@@ -4877,9 +4877,18 @@ pub fn apply_declaration(
                 if kw == "auto" {
                     style.aspect_ratio = 0;
                 } else if let Some(pos) = kw.find('/') {
-                    // "16 / 9" format
-                    let w_str = kw[..pos].trim();
-                    let h_str = kw[pos + 1..].trim();
+                    // "16 / 9" or "auto 16/9" or "16/9 auto" format
+                    // Strip optional "auto" keyword (CSS Sizing §5.1.2).
+                    let w_str = kw[..pos]
+                        .trim()
+                        .trim_start_matches("auto")
+                        .trim_end_matches("auto")
+                        .trim();
+                    let h_str = kw[pos + 1..]
+                        .trim()
+                        .trim_start_matches("auto")
+                        .trim_end_matches("auto")
+                        .trim();
                     if let (Some(w), Some(h)) =
                         (try_parse_simple_float(w_str), try_parse_simple_float(h_str))
                     {
@@ -4887,7 +4896,7 @@ pub fn apply_declaration(
                             style.aspect_ratio = w * 100 / h;
                         }
                     }
-                } else if let Some(v) = try_parse_simple_float(kw.trim()) {
+                } else if let Some(v) = try_parse_simple_float(kw.trim().trim_start_matches("auto").trim()) {
                     style.aspect_ratio = v;
                 }
             } else if let CssValue::Number(v) = decl.value {

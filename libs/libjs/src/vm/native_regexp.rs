@@ -280,8 +280,50 @@ pub fn regexp_constructor(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 // ── String methods that use RegExp ──
 
+/// Per ECMA §22.1.3.{11,15,17,21}: the String.prototype.{match,replace,search,split,matchAll}
+/// methods must first call GetMethod(arg, well-known symbol). If a callable
+/// is returned, dispatch to it. Otherwise fall through to the regex-based path.
+///
+/// Returns Some(result) if dispatched (caller should return immediately).
+/// Returns None if no custom method was found and the caller should continue.
+fn dispatch_well_known(
+    vm: &mut Vm,
+    args: &[JsValue],
+    sym_key: &str,
+) -> Option<JsValue> {
+    let arg = args.first()?;
+    if matches!(arg, JsValue::Null | JsValue::Undefined) {
+        return None;
+    }
+    let arg_clone = arg.clone();
+    let method = vm.get_property_invoking_getter(&arg_clone, sym_key);
+    if vm.pending_exception.is_some() {
+        return Some(JsValue::Undefined);
+    }
+    if !matches!(method, JsValue::Function(_)) {
+        return None;
+    }
+    // ToString(this) — propagate exceptions from the receiver coercion.
+    let this_str = match super::native_string::this_string_checked(vm) {
+        Some(s) => JsValue::String(s),
+        None => return Some(JsValue::Undefined),
+    };
+    let result = vm.call_value(&method, &[this_str], arg_clone);
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+        return Some(JsValue::Undefined);
+    }
+    if vm.pending_exception.is_some() {
+        return Some(JsValue::Undefined);
+    }
+    Some(result)
+}
+
 /// Implements `String.prototype.match(regexp)`
 pub fn string_match(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if let Some(r) = dispatch_well_known(vm, args, super::native_symbol::WELL_KNOWN_MATCH) {
+        return r;
+    }
     let this_str = vm.current_this.to_js_string();
     let arg = args.first().cloned().unwrap_or(JsValue::Undefined);
 
@@ -333,6 +375,9 @@ pub fn string_match(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 /// Implements `String.prototype.search(regexp)`
 pub fn string_search(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if let Some(r) = dispatch_well_known(vm, args, super::native_symbol::WELL_KNOWN_SEARCH) {
+        return r;
+    }
     let this_str = vm.current_this.to_js_string();
     let arg = args.first().cloned().unwrap_or(JsValue::Undefined);
 
@@ -547,6 +592,9 @@ fn apply_replacement(out: &mut String, replace: &str, m: &crate::regexp::Match, 
 
 /// `String.prototype.matchAll(regexp)` — returns an array of all exec results.
 pub fn string_match_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    if let Some(r) = dispatch_well_known(vm, args, super::native_symbol::WELL_KNOWN_MATCH_ALL) {
+        return r;
+    }
     let this_str = vm.current_this.to_js_string();
     let arg = args.first().cloned().unwrap_or(JsValue::Undefined);
 
