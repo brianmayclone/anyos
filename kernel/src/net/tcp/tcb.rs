@@ -17,8 +17,8 @@ pub(crate) const ACK: u8 = 0x10;
 // ── Protocol constants ──────────────────────────────────────────────
 pub(crate) const TCP_HEADER_LEN: usize = 20;
 pub(crate) const MAX_CONNECTIONS: usize = 256;
-/// Receive buffer size per connection (256 KB).
-pub(crate) const RECV_BUF_SIZE: usize = 262144;
+/// Receive buffer size per connection (1 MiB — allows large TCP windows).
+pub(crate) const RECV_BUF_SIZE: usize = 1_048_576;
 /// Maximum segment size (standard Ethernet MTU minus IP+TCP headers).
 pub(crate) const MSS: usize = 1460;
 /// Base retransmission timeout in ticks (3 seconds at 100 Hz).
@@ -29,11 +29,11 @@ pub(crate) const MAX_RETRANSMITS: u32 = 5;
 pub(crate) const TIME_WAIT_TICKS: u32 = 200;
 /// Maximum pending connections per listener.
 pub(crate) const MAX_BACKLOG: usize = 128;
-/// Maximum bytes in flight (sliding window send limit, 1 MB).
-pub(crate) const MAX_IN_FLIGHT: usize = 1_048_576;
+/// Maximum bytes in flight (sliding window send limit, 4 MiB).
+pub(crate) const MAX_IN_FLIGHT: usize = 4_194_304;
 /// Our TCP Window Scale shift count (RFC 7323).
-/// WINDOW_SIZE << 4 = ~1 MB effective receive window.
-pub(crate) const OUR_WINDOW_SHIFT: u8 = 4;
+/// Effective receive window = RECV_BUF_SIZE = 1 MiB (advertised as 1048576 >> 6 = 16384 * 64).
+pub(crate) const OUR_WINDOW_SHIFT: u8 = 6;
 /// Maximum segments to batch per lock acquisition in send().
 pub(crate) const SEND_BATCH_SIZE: usize = 64;
 /// Delayed ACK: flush after this many accepted data segments.

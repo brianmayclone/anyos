@@ -720,6 +720,10 @@ impl super::NetworkDriver for E1000NetworkDriver {
     fn transmit(&mut self, data: &[u8]) -> bool { transmit(data) }
     fn get_mac(&self) -> [u8; 6] { get_mac().unwrap_or([0; 6]) }
     fn link_up(&self) -> bool { is_link_up() }
+    fn set_enabled(&mut self, enabled: bool) { set_enabled(enabled); }
+    fn is_enabled(&self) -> bool { is_enabled() }
+    fn get_stats(&self) -> (u64, u64, u64, u64, u64, u64) { get_stats() }
+    fn driver_name(&self) -> &str { "e1000" }
 }
 
 /// Probe: return a HAL driver wrapper for the E1000 Ethernet controller.

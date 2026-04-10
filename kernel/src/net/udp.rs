@@ -212,6 +212,8 @@ pub fn handle_udp(pkt: &Ipv4Packet<'_>) {
     let dst_port = ((data[2] as u16) << 8) | data[3] as u16;
     let length = ((data[4] as u16) << 8) | data[5] as u16;
 
+    crate::serial_verbose_println!("  UDP: {}:{} -> port {} len={}", pkt.src, src_port, dst_port, length);
+
     if (length as usize) > data.len() { return; }
 
     let payload = &data[UDP_HEADER_LEN..(length as usize)];

@@ -17,28 +17,31 @@ fn ensure_initialized() {
 }
 
 fn tcp_send(fd: u32, data: &[u8]) -> i32 {
+    // Single attempt — libtls handles partial writes via send_all().
     let n = syscall::tcp_send(fd, data);
     if n == u32::MAX { -1 } else { n as i32 }
 }
 
 fn tcp_recv(fd: u32, buf: &mut [u8]) -> i32 {
-    let sock = fd;
-    for _attempt in 0..3 {
-        let n = syscall::tcp_recv(sock, buf);
-        if n == 0 {
-            return 0;
-        }
-        if n != u32::MAX {
-            return n as i32;
-        }
-        let avail = syscall::tcp_recv_available(sock);
-        match avail {
-            u32::MAX => return -1,
-            0xFFFFFFFE => return 0,
-            _ => syscall::sleep(100),
+    // First try: blocking recv (kernel has 30s timeout).
+    let n = syscall::tcp_recv(fd, buf);
+    if n == 0 { return 0; }          // EOF
+    if n != u32::MAX { return n as i32; } // Got data
+
+    // Timeout — check if connection is still alive.
+    let avail = syscall::tcp_recv_available(fd);
+    match avail {
+        u32::MAX => -1,          // Connection error
+        0xFFFFFFFE => 0,         // EOF (remote closed)
+        _ => {
+            // Connection alive but no data yet — one more try after brief delay.
+            syscall::sleep(50);
+            let n = syscall::tcp_recv(fd, buf);
+            if n == 0 { 0 }
+            else if n != u32::MAX { n as i32 }
+            else { -1 }
         }
     }
-    -1
 }
 
 fn sleep(ms: u32) {

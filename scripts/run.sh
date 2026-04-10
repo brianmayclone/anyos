@@ -750,11 +750,11 @@ if [ -n "$BRIDGE_IFACE" ]; then
         echo "  Fix: echo 'allow ${BRIDGE_IFACE}' | sudo tee -a $BRIDGE_CONF"
         echo "  And: sudo chmod u+s $HELPER"
     fi
-    NET_FLAGS="-netdev bridge,id=net0,br=${BRIDGE_IFACE},helper=${HELPER} -device e1000,netdev=net0"
-    NET_LABEL=", net: bridge (${BRIDGE_IFACE})"
+    NET_FLAGS="-netdev bridge,id=net0,br=${BRIDGE_IFACE},helper=${HELPER} -device virtio-net-pci,netdev=net0"
+    NET_LABEL=", net: bridge (${BRIDGE_IFACE}, virtio)"
 else
-    NET_FLAGS="-netdev user,id=net0${FWD_RULES} -device e1000,netdev=net0"
-    NET_LABEL=", net: NAT (user)"
+    NET_FLAGS="-netdev user,id=net0${FWD_RULES} -device virtio-net-pci,netdev=net0"
+    NET_LABEL=", net: NAT (user, virtio)"
     [ -n "$FWD_RULES" ] && NET_LABEL="${NET_LABEL}${FWD_RULES//,hostfwd=tcp::/ fwd:}"
 fi
 

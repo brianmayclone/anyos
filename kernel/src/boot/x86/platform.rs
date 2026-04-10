@@ -107,9 +107,10 @@ pub(super) fn init_early_drivers(boot_info: &BootInfo) {
     arch::x86::acpi_pm::init(rsdp_addr);
     drivers::boot_console::tick_spinner();
 
-    if drivers::network::e1000::init() {
-        net::init();
-    }
+    // Try E1000 legacy init (pre-PCI-probe path).
+    // net::init() is called later, after PCI probe, so it picks up
+    // whichever NIC was registered (E1000, VirtIO Net, etc.).
+    let _ = drivers::network::e1000::init();
     drivers::boot_console::tick_spinner();
 }
 
@@ -134,6 +135,12 @@ pub(super) fn enable_interrupts_and_bind(has_acpi: bool) {
     drivers::hal::probe_and_bind_all();
     drivers::hal::register_legacy_devices();
     drivers::hal::print_devices();
+
+    // Initialize network stack AFTER PCI probe — picks up whatever NIC
+    // was registered (E1000, VirtIO Net, RTL8125, IGC, etc.)
+    if drivers::network::is_available() {
+        net::init();
+    }
 }
 
 fn register_input_irqs(has_acpi: bool) {

@@ -49,7 +49,7 @@ qemu-system-x86_64 \
     -smp cpus=4 \
     -serial stdio \
     -vga "$VGA" \
-    -netdev user,id=net0 -device e1000,netdev=net0 \
+    -netdev user,id=net0 -device virtio-net-pci,netdev=net0 \
     -s -S \
     -no-reboot \
     -no-shutdown

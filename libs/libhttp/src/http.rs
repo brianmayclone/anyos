@@ -241,14 +241,17 @@ fn fetch_post_inner(url: &Url, body: &[u8], content_type: &str) -> Result<(u16, 
             build_get_request(&current, false)
         };
 
-        if !send_data(&conn, request.as_bytes(), is_https) {
-            close_conn(conn);
-            return Err(ERR_SEND_FAILURE);
-        }
-
-        // Send POST body after headers (POST requests only)
+        // Combine headers and body into a single send for TLS compatibility
         if use_post && !body.is_empty() {
-            if !send_data(&conn, body, is_https) {
+            let mut combined = Vec::with_capacity(request.len() + body.len());
+            combined.extend_from_slice(request.as_bytes());
+            combined.extend_from_slice(body);
+            if !send_data(&conn, &combined, is_https) {
+                close_conn(conn);
+                return Err(ERR_SEND_FAILURE);
+            }
+        } else {
+            if !send_data(&conn, request.as_bytes(), is_https) {
                 close_conn(conn);
                 return Err(ERR_SEND_FAILURE);
             }
@@ -356,9 +359,16 @@ fn send_data(conn: &Connection, data: &[u8], is_https: bool) -> bool {
 /// connection is still alive, to handle transient delays during large transfers.
 fn recv_some(conn: &Connection, buf: &mut [u8], is_https: bool) -> usize {
     if let Some(handle) = conn.tls_handle {
-        // TLS path — retry logic is in anyos_tcp_recv callback
+        // TLS path — retry once on failure (transient timeout).
         let n = tls::recv(handle, buf);
-        if n <= 0 { 0 } else { n as usize }
+        if n > 0 { return n as usize; }
+        if n == 0 { return 0; } // EOF
+        // n < 0: error/timeout — check if connection is still alive and retry
+        let avail = syscall::tcp_recv_available(conn.sock);
+        if avail == u32::MAX || avail == 0xFFFFFFFE { return 0; }
+        syscall::sleep(100);
+        let n = tls::recv(handle, buf);
+        if n > 0 { n as usize } else { 0 }
     } else {
         debug_assert!(!is_https);
         // Plain TCP path — retry on transient timeouts
@@ -538,13 +548,18 @@ fn fetch_post_headers_inner(url: &Url, body: &[u8], content_type: &str, extra_he
             build_get_request(&current, false)
         };
 
-        if !send_data(&conn, request.as_bytes(), is_https) {
-            close_conn(conn);
-            return Err(ERR_SEND_FAILURE);
-        }
-
+        // Combine headers and body into a single buffer to send as one TLS record.
+        // Sending them separately can cause issues with some TLS implementations.
         if use_post && !body.is_empty() {
-            if !send_data(&conn, body, is_https) {
+            let mut combined = Vec::with_capacity(request.len() + body.len());
+            combined.extend_from_slice(request.as_bytes());
+            combined.extend_from_slice(body);
+            if !send_data(&conn, &combined, is_https) {
+                close_conn(conn);
+                return Err(ERR_SEND_FAILURE);
+            }
+        } else {
+            if !send_data(&conn, request.as_bytes(), is_https) {
                 close_conn(conn);
                 return Err(ERR_SEND_FAILURE);
             }

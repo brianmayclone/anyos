@@ -18,10 +18,7 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
         0 => {
             if buf_ptr == 0 { return u32::MAX; }
             let cfg = crate::net::config();
-            #[cfg(target_arch = "x86_64")]
-            let link_up = crate::drivers::network::e1000::is_link_up();
-            #[cfg(target_arch = "aarch64")]
-            let link_up = false;
+            let link_up = crate::drivers::network::link_up();
             unsafe {
                 let buf = buf_ptr as *mut u8;
                 core::ptr::copy_nonoverlapping(cfg.ip.0.as_ptr(), buf, 4);
@@ -53,29 +50,21 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
         }
         2 => {
             // Disable NIC
-            #[cfg(target_arch = "x86_64")]
-            crate::drivers::network::e1000::set_enabled(false);
+            crate::drivers::network::set_enabled(false);
             0
         }
         3 => {
             // Enable NIC
-            #[cfg(target_arch = "x86_64")]
-            crate::drivers::network::e1000::set_enabled(true);
+            crate::drivers::network::set_enabled(true);
             0
         }
         4 => {
             // Query enabled state
-            #[cfg(target_arch = "x86_64")]
-            { if crate::drivers::network::e1000::is_enabled() { 1 } else { 0 } }
-            #[cfg(target_arch = "aarch64")]
-            { 0 }
+            if crate::drivers::network::is_enabled() { 1 } else { 0 }
         }
         5 => {
             // Query hardware availability
-            #[cfg(target_arch = "x86_64")]
-            { if crate::drivers::network::e1000::is_available() { 1 } else { 0 } }
-            #[cfg(target_arch = "aarch64")]
-            { 0 }
+            if crate::drivers::network::is_available() { 1 } else { 0 }
         }
         6 => {
             // Reload hosts file from disk
@@ -545,7 +534,7 @@ pub fn sys_net_stats(buf_ptr: u32, buf_size: u32) -> u32 {
 
     // NIC stats
     #[cfg(target_arch = "x86_64")]
-    let (rxp, txp, rxb, txb, rxe, txe) = crate::drivers::network::e1000::get_stats();
+    let (rxp, txp, rxb, txb, rxe, txe) = crate::drivers::network::get_stats();
     #[cfg(target_arch = "aarch64")]
     let (rxp, txp, rxb, txb, rxe, txe): (u64, u64, u64, u64, u64, u64) = (0, 0, 0, 0, 0, 0);
     buf[0..8].copy_from_slice(&rxp.to_le_bytes());

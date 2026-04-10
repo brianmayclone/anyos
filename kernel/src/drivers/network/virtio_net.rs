@@ -67,34 +67,37 @@ impl VirtioNet {
 
     /// Poll the receive queue for completed packets.
     fn poll_rx(&mut self) {
-        while let Some((_id, len)) = self.receiveq.poll_used() {
-            self.rx_posted -= 1;
+        while let Some((id, len)) = self.receiveq.poll_used() {
             let bytes = len as usize;
+            let buf_idx = id as usize;
 
             // Skip the virtio-net header, copy only the Ethernet frame.
-            if bytes > VIRTIO_NET_HDR_SIZE && bytes <= RX_BUF_SIZE {
+            if bytes > VIRTIO_NET_HDR_SIZE && bytes <= RX_BUF_SIZE && buf_idx < NUM_BUFFERS {
                 let frame_len = bytes - VIRTIO_NET_HDR_SIZE;
-                // Find which buffer was returned (round-robin, use rx_posted as index).
-                let buf_idx = self.rx_posted;
-                if buf_idx < NUM_BUFFERS {
-                    let buf_phys = self.rx_bufs_phys[buf_idx];
-                    let mut packet = Vec::with_capacity(frame_len);
-                    unsafe {
-                        packet.set_len(frame_len);
-                        core::ptr::copy_nonoverlapping(
-                            (buf_phys + VIRTIO_NET_HDR_SIZE as u64) as *const u8,
-                            packet.as_mut_ptr(),
-                            frame_len,
-                        );
-                    }
-                    if self.rx_queue.len() < 1024 {
-                        self.rx_queue.push_back(packet);
-                    }
+                let buf_phys = self.rx_bufs_phys[buf_idx];
+                let mut packet = Vec::with_capacity(frame_len);
+                unsafe {
+                    packet.set_len(frame_len);
+                    core::ptr::copy_nonoverlapping(
+                        (buf_phys + VIRTIO_NET_HDR_SIZE as u64) as *const u8,
+                        packet.as_mut_ptr(),
+                        frame_len,
+                    );
+                }
+                if self.rx_queue.len() < 1024 {
+                    self.rx_queue.push_back(packet);
+                }
+            }
+
+            // Re-post this buffer immediately so the device can reuse it.
+            if buf_idx < NUM_BUFFERS {
+                let buf_phys = self.rx_bufs_phys[buf_idx];
+                let writable = [(buf_phys, RX_BUF_SIZE as u32)];
+                if self.receiveq.push(&[], &writable).is_some() {
+                    self.vdev.notify_queue(0);
                 }
             }
         }
-        // Re-post consumed buffers.
-        self.post_rx_buffers();
     }
 }
 

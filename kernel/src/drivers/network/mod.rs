@@ -29,6 +29,14 @@ pub trait NetworkDriver: Send {
     fn get_mac(&self) -> [u8; 6];
     /// Check if the network link is up.
     fn link_up(&self) -> bool;
+    /// Enable the NIC. Default: no-op (always enabled).
+    fn set_enabled(&mut self, _enabled: bool) {}
+    /// Check if the NIC is enabled. Default: true if registered.
+    fn is_enabled(&self) -> bool { true }
+    /// Get NIC statistics: (rx_packets, tx_packets, rx_bytes, tx_bytes, rx_errors, tx_errors).
+    fn get_stats(&self) -> (u64, u64, u64, u64, u64, u64) { (0, 0, 0, 0, 0, 0) }
+    /// Get the NIC driver name for display (e.g. "e1000", "virtio-net").
+    fn driver_name(&self) -> &str { self.name() }
 }
 
 /// Global network driver instance, set during PCI probe.
@@ -69,6 +77,26 @@ pub fn is_available() -> bool {
 /// Check if the network link is up.
 pub fn link_up() -> bool {
     with_net(|d| d.link_up()).unwrap_or(false)
+}
+
+/// Enable or disable the NIC.
+pub fn set_enabled(enabled: bool) {
+    with_net(|d| d.set_enabled(enabled));
+}
+
+/// Check if the NIC is enabled.
+pub fn is_enabled() -> bool {
+    with_net(|d| d.is_enabled()).unwrap_or(false)
+}
+
+/// Get NIC statistics.
+pub fn get_stats() -> (u64, u64, u64, u64, u64, u64) {
+    with_net(|d| d.get_stats()).unwrap_or((0, 0, 0, 0, 0, 0))
+}
+
+/// Get NIC driver name for display.
+pub fn driver_name() -> Option<alloc::string::String> {
+    with_net(|d| alloc::string::String::from(d.driver_name()))
 }
 
 // ── WiFi (second network slot) ───────────────────────────────────────────────

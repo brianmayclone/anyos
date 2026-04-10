@@ -28,11 +28,8 @@ static NET_CONFIG: Spinlock<NetConfig> = Spinlock::new(NetConfig::new());
 
 /// Initialize the network stack. Call after NIC driver is initialized.
 pub fn init() {
-    // Get MAC from NIC driver
-    #[cfg(target_arch = "x86_64")]
-    let mac_bytes = crate::drivers::network::e1000::get_mac().unwrap_or([0; 6]);
-    #[cfg(target_arch = "aarch64")]
-    let mac_bytes = [0u8; 6];
+    // Get MAC from the registered NIC driver (E1000, VirtIO Net, etc.)
+    let mac_bytes = crate::drivers::network::get_mac().unwrap_or([0; 6]);
     let mac = MacAddr(mac_bytes);
 
     // Generate IPv6 link-local address from MAC (EUI-64)
@@ -120,14 +117,13 @@ pub fn poll() {
 pub fn poll_rx() {
     #[cfg(target_arch = "x86_64")]
     {
-        // Batch-drain E1000 rx_queue (single lock acquisition)
         let mut packets: Vec<Vec<u8>> = Vec::new();
+
+        // E1000: batch-drain rx_queue + poll hardware ring
         crate::drivers::network::e1000::recv_all_packets(&mut packets);
         for packet in packets.iter() {
             ethernet::handle_frame(packet);
         }
-
-        // Poll hardware RX ring in case IRQs were missed, then drain again
         crate::drivers::network::e1000::poll_rx();
         packets.clear();
         crate::drivers::network::e1000::recv_all_packets(&mut packets);
@@ -135,12 +131,18 @@ pub fn poll_rx() {
             ethernet::handle_frame(packet);
         }
 
-        // Process CDC-ECM (USB Ethernet) RX packets
+        // VirtIO Net: poll virtqueue and drain received packets
+        crate::drivers::network::virtio_net::poll_rx();
+        while let Some(packet) = crate::drivers::network::virtio_net::recv_packet() {
+            ethernet::handle_frame(&packet);
+        }
+
+        // CDC-ECM (USB Ethernet)
         while let Some(packet) = crate::drivers::usb::cdc_ecm::recv_packet() {
             ethernet::handle_frame(&packet);
         }
 
-        // Poll RTL8188EU WiFi RX
+        // RTL8188EU WiFi
         while let Some(packet) = crate::drivers::network::rtl8188eu::recv_packet() {
             ethernet::handle_frame(&packet);
         }
