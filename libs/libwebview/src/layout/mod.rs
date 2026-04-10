@@ -1180,7 +1180,6 @@ fn resolve_absolute_alignment_rec(
     let parent_border_abs_y = abs_y;
     let parent_border_w = bx.width;
     let parent_border_h = bx.height;
-
     for child in &mut bx.children {
         let mut child_abs_x = if child.is_fixed { child.x } else { abs_x + child.x };
         let mut child_abs_y = if child.is_fixed { child.y } else { abs_y + child.y };
@@ -1236,11 +1235,7 @@ fn resolve_absolute_alignment_rec(
                      -> i32 {
                         if !start_auto && !end_auto {
                             let available = (cb_size - start - end).max(0);
-                            if allow_stretch
-                                && normal_start_align == AlignItems::Stretch
-                                && !auto_margin_start
-                                && !auto_margin_end
-                            {
+                            if allow_stretch && normal_start_align == AlignItems::Stretch {
                                 *size = (available - *margin_start - *margin_end).max(0);
                             }
                             let remaining = (available - *size - *margin_start - *margin_end).max(0);

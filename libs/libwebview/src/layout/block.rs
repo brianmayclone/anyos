@@ -280,7 +280,9 @@ pub fn build_block_with_budget(
 
     // Clamp to available space.
     let max_allowed = available_width - bx.margin.left - bx.margin.right;
-    if bx.width > max_allowed && max_allowed > 0 {
+    let preserve_explicit_abs_width = explicit_w.is_some()
+        && matches!(style.position, Position::Absolute | Position::Fixed);
+    if bx.width > max_allowed && max_allowed > 0 && !preserve_explicit_abs_width {
         bx.width = max_allowed;
     }
 
@@ -780,6 +782,22 @@ pub fn build_block_with_budget(
         apply_block_align_content(&mut bx, style, border2);
     }
 
+    if matches!(
+        style.display,
+        Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+    ) {
+        append_out_of_flow_children(
+            dom,
+            styles,
+            pseudo,
+            node_id,
+            inner_w,
+            &mut bx,
+            images,
+            viewport_w,
+        );
+    }
+
     // Apply position:relative offset (does not affect child layout).
     if style.position == Position::Relative {
         if let Some(t) = style.top {
@@ -824,6 +842,64 @@ pub fn build_block_with_budget(
     bx.transform_rotate = style.transform_rotate;
 
     bx
+}
+
+fn append_out_of_flow_children(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    available_width: i32,
+    parent: &mut LayoutBox,
+    images: &ImageCache,
+    viewport_w: i32,
+) {
+    let child_ids: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
+    for abs_id in child_ids {
+        let abs_style = &styles[abs_id];
+        if !matches!(abs_style.position, Position::Absolute | Position::Fixed) {
+            continue;
+        }
+
+        let mut abs_box = build_block(
+            dom,
+            styles,
+            pseudo,
+            abs_id,
+            available_width,
+            images,
+            viewport_w,
+            0,
+        );
+
+        let content_x = parent.border_width + parent.padding.left;
+        let content_y = parent.border_width + parent.padding.top;
+        let content_h =
+            (parent.height - parent.padding.top - parent.padding.bottom - parent.border_width * 2)
+                .max(0);
+
+        abs_box.x = content_x + abs_style.left_offset.unwrap_or(0) + abs_box.margin.left;
+        abs_box.y = content_y + abs_style.top.unwrap_or(0) + abs_box.margin.top;
+
+        if abs_style.left_offset.is_none() {
+            if let Some(r) = abs_style.right_offset {
+                abs_box.x = content_x + available_width - r - abs_box.width - abs_box.margin.right;
+            }
+        }
+        if abs_style.top.is_none() {
+            if let Some(b) = abs_style.bottom_offset {
+                abs_box.y = content_y + content_h - b - abs_box.height - abs_box.margin.bottom;
+            }
+        }
+
+        abs_box.is_fixed = abs_style.position == Position::Fixed;
+        abs_box.is_out_of_flow = true;
+        abs_box.static_position_x = Some(content_x);
+        abs_box.static_position_y = Some(content_y);
+        abs_box.static_position_width = Some(available_width);
+        abs_box.static_position_height = Some(content_h);
+        parent.children.push(abs_box);
+    }
 }
 
 fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
