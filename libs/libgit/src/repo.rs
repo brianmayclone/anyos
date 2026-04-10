@@ -233,6 +233,22 @@ impl Repository {
 
     /// Store a pack file and its objects.
     pub fn store_pack(&self, pack_data: &[u8]) -> Result<u32> {
+        if crate::pack::verbose() {
+            anyos_std::println!("[store_pack] input size={}", pack_data.len());
+            if pack_data.len() >= 12 {
+                anyos_std::println!("[store_pack] header: {:?}", &pack_data[..12]);
+            }
+            if pack_data.len() < 12 {
+                anyos_std::println!("[store_pack] ERROR: pack data too small ({} bytes)", pack_data.len());
+                // Dump first bytes for debugging
+                let show = core::cmp::min(pack_data.len(), 64);
+                for i in 0..show {
+                    anyos_std::print!("{:02x} ", pack_data[i]);
+                    if (i + 1) % 16 == 0 { anyos_std::println!(); }
+                }
+                anyos_std::println!();
+            }
+        }
         let pack = crate::pack::parse_pack(pack_data)
             .ok_or(Error::InvalidObject)?;
 

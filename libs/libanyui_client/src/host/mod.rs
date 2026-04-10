@@ -39,7 +39,11 @@ pub const DOCK_FILL: u32 = 5;
 pub const EVENT_CLICK: u32 = 1;
 pub const EVENT_CHANGE: u32 = 2;
 pub const EVENT_KEY: u32 = 3;
+pub const EVENT_FOCUS: u32 = 4;
+pub const EVENT_BLUR: u32 = 5;
 pub const EVENT_SCROLL: u32 = 8;
+pub const EVENT_MOUSE_ENTER: u32 = 12;
+pub const EVENT_MOUSE_LEAVE: u32 = 13;
 pub const EVENT_SUBMIT: u32 = 17;
 pub const EVENT_MOUSE_DOWN: u32 = 14;
 pub const EVENT_MOUSE_UP: u32 = 15;
@@ -161,6 +165,8 @@ impl Control {
     pub fn on_click_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_change_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_submit_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_focus_raw(&self, _cb: Callback, _userdata: u64) {}
+    pub fn on_blur_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_key_down_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_mouse_down_raw(&self, _cb: Callback, _userdata: u64) {}
     pub fn on_mouse_up_raw(&self, _cb: Callback, _userdata: u64) {}
@@ -570,7 +576,7 @@ impl DateTimePicker {
     pub fn set_datetime(&self, day: u32, month: u32, year: u32, hour: u32, minute: u32) {
         get_control_text_mut(self.ctrl.id).state = datetime_pack(year, month, day, hour, minute);
     }
-    pub fn get_value(&self) -> u32 { get_control_text(self.ctrl.id).state }
+    pub fn get_value(&self) -> u32 { get_control_text(self.ctrl.id).map(|t| t.state).unwrap_or(0) }
     pub fn day(&self) -> u32 { let (_, _, d, _, _) = datetime_unpack(self.get_value()); d }
     pub fn month(&self) -> u32 { let (_, m, _, _, _) = datetime_unpack(self.get_value()); m }
     pub fn year(&self) -> u32 { let (y, _, _, _, _) = datetime_unpack(self.get_value()); y }
@@ -587,9 +593,9 @@ impl DatePicker {
     pub fn set_date(&self, day: u32, month: u32, year: u32) {
         get_control_text_mut(self.ctrl.id).state = datetime_pack(year, month, day, 0, 0);
     }
-    pub fn day(&self) -> u32 { let (_, _, d, _, _) = datetime_unpack(get_control_text(self.ctrl.id).state); d }
-    pub fn month(&self) -> u32 { let (_, m, _, _, _) = datetime_unpack(get_control_text(self.ctrl.id).state); m }
-    pub fn year(&self) -> u32 { let (y, _, _, _, _) = datetime_unpack(get_control_text(self.ctrl.id).state); y }
+    pub fn day(&self) -> u32 { let (_, _, d, _, _) = datetime_unpack(get_control_text(self.ctrl.id).map(|t| t.state).unwrap_or(0)); d }
+    pub fn month(&self) -> u32 { let (_, m, _, _, _) = datetime_unpack(get_control_text(self.ctrl.id).map(|t| t.state).unwrap_or(0)); m }
+    pub fn year(&self) -> u32 { let (y, _, _, _, _) = datetime_unpack(get_control_text(self.ctrl.id).map(|t| t.state).unwrap_or(0)); y }
     pub fn on_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
 }
 
@@ -601,8 +607,8 @@ impl TimePicker {
     pub fn set_time(&self, hour: u32, minute: u32) {
         get_control_text_mut(self.ctrl.id).state = datetime_pack(0, 0, 0, hour, minute);
     }
-    pub fn hour(&self) -> u32 { let (_, _, _, h, _) = datetime_unpack(get_control_text(self.ctrl.id).state); h }
-    pub fn minute(&self) -> u32 { let (_, _, _, _, m) = datetime_unpack(get_control_text(self.ctrl.id).state); m }
+    pub fn hour(&self) -> u32 { let (_, _, _, h, _) = datetime_unpack(get_control_text(self.ctrl.id).map(|t| t.state).unwrap_or(0)); h }
+    pub fn minute(&self) -> u32 { let (_, _, _, _, m) = datetime_unpack(get_control_text(self.ctrl.id).map(|t| t.state).unwrap_or(0)); m }
     pub fn on_changed(&self, _f: impl FnMut(&ValueChangedEvent) + 'static) {}
 }
 

@@ -10,7 +10,7 @@ anyos_std::entry!(main);
 const SVC_CONFIG_DIR: &str = "/System/etc/svc";
 
 /// Thread list entry size from sysinfo cmd=1.
-const THREAD_ENTRY_SIZE: usize = 60;
+const THREAD_ENTRY_SIZE: usize = 80;
 /// Max threads to query.
 const MAX_THREADS: usize = 256;
 

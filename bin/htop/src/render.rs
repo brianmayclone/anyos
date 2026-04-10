@@ -189,13 +189,13 @@ pub fn render_frame(f: &FrameData) {
         BG_BCYAN, FG_BLACK, RESET, FG_BBLACK, RESET);
 
     // ── Column header ─────────────────────────────────────────────────────────
-    // Fixed part: "  PID USER      PRI  NI  VIRT   RES   SHR S  CPU%  MEM%   TIME+ "
-    // Widths:      7+1 + 8+1 + 3+1 + 3+1 + 5+1 + 5+1 + 5+1 + 1+1 + 5+1 + 5+1 + 7+1 = 65 chars
-    // cmd_w fills the rest → total = 65 + cmd_w = term_cols → cmd_w = term_cols - 65
-    let cmd_w = f.term_cols.saturating_sub(65).max(4);
+    // Fixed part: "  PID USER     NET      PRI  NI  VIRT   RES   SHR S  CPU%  MEM%   TIME+ "
+    // Widths:      7+1 + 8+1 + 9+1 + 3+1 + 3+1 + 5+1 + 5+1 + 5+1 + 1+1 + 5+1 + 5+1 + 7+1 = 75 chars
+    // cmd_w fills the rest → total = 75 + cmd_w = term_cols → cmd_w = term_cols - 75
+    let cmd_w = f.term_cols.saturating_sub(75).max(4);
     anyos_std::print!("{}{}", BG_BCYAN, FG_BLACK);
-    anyos_std::print!("{:>7} {:<8} {:>3} {:>3} {:>5} {:>5} {:>5} {:1} {:>5} {:>5} {:>7} ",
-        "PID", "USER", "PRI", "NI", "VIRT", "RES", "SHR", "S", "CPU%", "MEM%", "TIME+");
+    anyos_std::print!("{:>7} {:<8} {:>9} {:>3} {:>3} {:>5} {:>5} {:>5} {:1} {:>5} {:>5} {:>7} ",
+        "PID", "USER", "NET", "PRI", "NI", "VIRT", "RES", "SHR", "S", "CPU%", "MEM%", "TIME+");
     anyos_std::print!("{:<width$}", "Command", width = cmd_w);
     anyos_std::print!("{}\x1B[K\n", RESET);
 
@@ -222,6 +222,36 @@ pub fn render_frame(f: &FrameData) {
         anyos_std::print!("{}{}F{}{}{}{}{}", BOLD, FG_BBLACK, num, RESET, BG_BCYAN, FG_BLACK, lbl);
     }
     anyos_std::print!("{}\x1B[K", RESET);
+}
+
+/// Format kbit/s as "X.X Mbit" (9 chars wide).
+fn fmt_net_mbit<'a>(buf: &'a mut [u8; 16], kbit: u32) -> &'a str {
+    if kbit == 0 {
+        return "   0 Mbit";
+    }
+    // kbit to Mbit with 1 decimal: mbit_x10 = kbit / 100
+    let mbit_x10 = (kbit as u64 * 10 / 1000) as u32;
+    let whole = mbit_x10 / 10;
+    let frac = mbit_x10 % 10;
+    // Format: "XXX.X Mbit" right-aligned in 9 chars
+    let mut pos = 0usize;
+    // Integer part
+    let mut tmp = [0u8; 10];
+    let mut tpos = 10;
+    if whole == 0 { tpos -= 1; tmp[tpos] = b'0'; } else {
+        let mut v = whole;
+        while v > 0 { tpos -= 1; tmp[tpos] = b'0' + (v % 10) as u8; v /= 10; }
+    }
+    let int_len = 10 - tpos;
+    buf[pos..pos + int_len].copy_from_slice(&tmp[tpos..10]);
+    pos += int_len;
+    buf[pos] = b'.'; pos += 1;
+    buf[pos] = b'0' + frac as u8; pos += 1;
+    buf[pos..pos + 5].copy_from_slice(b" Mbit");
+    pos += 5;
+    // Right-align in 9 chars
+    let s = core::str::from_utf8(&buf[..pos]).unwrap_or("?");
+    s
 }
 
 fn render_task_row(
@@ -264,6 +294,12 @@ fn render_task_row(
 
     let uname = if username.len() > 8 { &username[..8] } else { username };
     anyos_std::print!("{}{:<8}{} ", FG_BYELLOW, uname, RESET);
+
+    // NET column (before PRI)
+    let mut nbuf = [0u8; 16];
+    let net_s = fmt_net_mbit(&mut nbuf, task.net_kbit);
+    let net_color = if task.net_kbit > 1000 { FG_BGREEN } else { RESET };
+    anyos_std::print!("{}{:>9}{} ", net_color, net_s, RESET);
 
     anyos_std::print!("{:>3} {:>3} ", task.priority as i32, 0i32);
     anyos_std::print!("{:>5} {:>5} {:>5} ", virt_s, virt_s, "0");

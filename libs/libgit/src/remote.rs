@@ -162,11 +162,20 @@ impl GitUrl {
             })
         };
 
+        // Ensure path ends with .git for GitHub-style hosting
+        let path = String::from(path);
+        let path = if !path.ends_with(".git") && !path.ends_with(".git/") {
+            let trimmed = path.trim_end_matches('/');
+            format!("{}.git", trimmed)
+        } else {
+            path
+        };
+
         Some(GitUrl {
             scheme: String::from(scheme),
             host,
             port,
-            path: String::from(path),
+            path,
             user,
             password,
         })

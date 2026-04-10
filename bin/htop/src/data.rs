@@ -4,6 +4,8 @@ use crate::{MAX_TASKS, MAX_CPUS, THREAD_ENTRY_SIZE};
 
 pub struct PrevTicks {
     pub entries:    [(u32, u32); MAX_TASKS],
+    /// Previous (tid, net_tx_bytes + net_rx_bytes) for rate calculation.
+    pub net_entries: [(u32, u64); MAX_TASKS],
     pub count:      usize,
     pub prev_total: u32,
 }
@@ -40,6 +42,8 @@ pub struct TaskEntry {
     pub uid:         u16,
     pub user_pages:  u32,
     pub cpu_pct_x10: u32,
+    /// Network rate in kbit/s (tx+rx combined).
+    pub net_kbit:    u32,
 }
 
 pub fn fetch_cpu(state: &mut CpuState) {
@@ -96,6 +100,17 @@ pub fn fetch_tasks(
         let cpu_ticks  = u32::from_le_bytes([raw[off+36], raw[off+37], raw[off+38], raw[off+39]]);
         let uid        = u16::from_le_bytes([raw[off+56], raw[off+57]]);
 
+        // Network bytes (tx at offset 64, rx at offset 72)
+        let net_tx = u64::from_le_bytes([
+            raw[off+64], raw[off+65], raw[off+66], raw[off+67],
+            raw[off+68], raw[off+69], raw[off+70], raw[off+71],
+        ]);
+        let net_rx = u64::from_le_bytes([
+            raw[off+72], raw[off+73], raw[off+74], raw[off+75],
+            raw[off+76], raw[off+77], raw[off+78], raw[off+79],
+        ]);
+        let net_total = net_tx.wrapping_add(net_rx);
+
         let prev_ticks = prev.entries[..prev.count]
             .iter().find(|e| e.0 == tid).map(|e| e.1).unwrap_or(cpu_ticks);
         let d_ticks = cpu_ticks.wrapping_sub(prev_ticks);
@@ -103,8 +118,19 @@ pub fn fetch_tasks(
             (d_ticks as u64 * 1000 / dt as u64).min(9999) as u32
         } else { 0 };
 
+        // Network rate: delta bytes over REFRESH_MS → kbit/s
+        let prev_net = prev.net_entries[..prev.count]
+            .iter().find(|e| e.0 == tid).map(|e| e.1).unwrap_or(net_total);
+        let d_net = net_total.wrapping_sub(prev_net);
+        // kbit/s = d_net * 8 / (REFRESH_MS / 1000) / 1000
+        //        = d_net * 8000 / REFRESH_MS / 1000
+        //        = d_net * 8 / REFRESH_MS
+        let net_kbit = if d_net > 0 {
+            (d_net * 8 / crate::REFRESH_MS as u64).min(u32::MAX as u64) as u32
+        } else { 0 };
+
         out[i] = TaskEntry { tid, name, name_len, state: state_byte,
-                             priority: prio, uid, user_pages, cpu_pct_x10 };
+                             priority: prio, uid, user_pages, cpu_pct_x10, net_kbit };
     }
 
     prev.count = n;
@@ -112,7 +138,16 @@ pub fn fetch_tasks(
         let off = i * THREAD_ENTRY_SIZE;
         let tid       = u32::from_le_bytes([raw[off],   raw[off+1], raw[off+2], raw[off+3]]);
         let cpu_ticks = u32::from_le_bytes([raw[off+36], raw[off+37], raw[off+38], raw[off+39]]);
+        let net_tx = u64::from_le_bytes([
+            raw[off+64], raw[off+65], raw[off+66], raw[off+67],
+            raw[off+68], raw[off+69], raw[off+70], raw[off+71],
+        ]);
+        let net_rx = u64::from_le_bytes([
+            raw[off+72], raw[off+73], raw[off+74], raw[off+75],
+            raw[off+76], raw[off+77], raw[off+78], raw[off+79],
+        ]);
         prev.entries[i] = (tid, cpu_ticks);
+        prev.net_entries[i] = (tid, net_tx.wrapping_add(net_rx));
     }
     prev.prev_total = total_sched_ticks;
     n

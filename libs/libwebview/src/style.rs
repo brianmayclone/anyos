@@ -565,8 +565,12 @@ pub struct ComputedStyle {
     pub margin_right: i32,
     pub margin_bottom: i32,
     pub margin_left: i32,
+    /// true if margin-top was explicitly `auto`
+    pub margin_top_auto: bool,
     /// true if margin-left was explicitly `auto`
     pub margin_left_auto: bool,
+    /// true if margin-bottom was explicitly `auto`
+    pub margin_bottom_auto: bool,
     /// true if margin-right was explicitly `auto`
     pub margin_right_auto: bool,
     pub padding_top: i32,
@@ -602,13 +606,20 @@ pub struct ComputedStyle {
     pub justify_content: JustifyContent,
     pub align_items: AlignItems,
     pub align_self: Option<AlignItems>,
+    pub align_self_is_normal: bool,
     pub justify_self: Option<AlignItems>,
+    pub justify_self_is_normal: bool,
     pub flex_grow: i32,          // fixed-point * 100
     pub flex_shrink: i32,        // fixed-point * 100
     pub flex_basis: Option<i32>, // None = auto, Some(px)
     pub row_gap: i32,
     pub column_gap: i32,
     pub align_content: AlignContent,
+    /// True while `align-content` is still at its initial `normal` behavior.
+    /// Block layout uses this to detect when a non-normal alignment value
+    /// should establish a new formatting context even if the used value falls
+    /// back to stretch-like behavior.
+    pub align_content_is_normal: bool,
     pub order: i32,
     // Grid container
     /// Track sizes for `grid-template-columns` (empty = no explicit columns).
@@ -810,7 +821,9 @@ pub fn default_style() -> ComputedStyle {
         margin_right: 0,
         margin_bottom: 0,
         margin_left: 0,
+        margin_top_auto: false,
         margin_left_auto: false,
+        margin_bottom_auto: false,
         margin_right_auto: false,
         padding_top: 0,
         padding_right: 0,
@@ -842,13 +855,16 @@ pub fn default_style() -> ComputedStyle {
         justify_content: JustifyContent::FlexStart,
         align_items: AlignItems::Stretch,
         align_self: Option::None,
+        align_self_is_normal: false,
         justify_self: Option::None,
+        justify_self_is_normal: false,
         flex_grow: 0,
         flex_shrink: 100,         // default 1.0 = 100 in fixed-point
         flex_basis: Option::None, // auto
         row_gap: 0,
         column_gap: 0,
         align_content: AlignContent::Stretch,
+        align_content_is_normal: true,
         order: 0,
         // Grid container
         grid_template_columns: Vec::new(),
@@ -3550,20 +3566,27 @@ pub fn apply_declaration(
         // Margin properties — track `auto` for centering.
         Property::Margin => {
             if matches!(decl.value, CssValue::Auto) {
+                style.margin_top_auto = true;
                 style.margin_left_auto = true;
+                style.margin_bottom_auto = true;
                 style.margin_right_auto = true;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_top = px;
                 style.margin_right = px;
                 style.margin_bottom = px;
                 style.margin_left = px;
+                style.margin_top_auto = false;
                 style.margin_left_auto = false;
+                style.margin_bottom_auto = false;
                 style.margin_right_auto = false;
             }
         }
         Property::MarginTop => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if matches!(decl.value, CssValue::Auto) {
+                style.margin_top_auto = true;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_top = px;
+                style.margin_top_auto = false;
             }
         }
         Property::MarginRight => {
@@ -3575,8 +3598,11 @@ pub fn apply_declaration(
             }
         }
         Property::MarginBottom => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if matches!(decl.value, CssValue::Auto) {
+                style.margin_bottom_auto = true;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_bottom = px;
+                style.margin_bottom_auto = false;
             }
         }
         Property::MarginLeft => {
@@ -3836,6 +3862,7 @@ pub fn apply_declaration(
             if let CssValue::Keyword(ref kw) = decl.value {
                 if let Some(v) = parse_self_alignment_kw(kw) {
                     style.align_self = v;
+                    style.align_self_is_normal = kw.trim() == "normal";
                 }
             }
         }
@@ -3843,6 +3870,7 @@ pub fn apply_declaration(
             if let CssValue::Keyword(ref kw) = decl.value {
                 if let Some(v) = parse_self_alignment_kw(kw) {
                     style.justify_self = v;
+                    style.justify_self_is_normal = kw.trim() == "normal";
                 }
             }
         }
@@ -3858,12 +3886,17 @@ pub fn apply_declaration(
                 let (align, justify) = parse_place_self_value(kw);
                 style.align_self = align;
                 style.justify_self = justify;
+                style.align_self_is_normal = kw.split_whitespace().next() == Some("normal");
+                style.justify_self_is_normal = kw.split_whitespace().nth(1) == Some("normal")
+                    || (kw.split_whitespace().nth(1).is_none()
+                        && kw.split_whitespace().next() == Some("normal"));
             }
         }
         Property::PlaceContent => {
             if let CssValue::Keyword(ref kw) = decl.value {
                 let (align, justify) = parse_place_content_value(kw);
                 style.align_content = align;
+                style.align_content_is_normal = kw.split_whitespace().next() == Some("normal");
                 style.justify_content = justify;
             }
         }
@@ -4551,16 +4584,10 @@ pub fn apply_declaration(
         }
         Property::AlignContent => {
             if let CssValue::Keyword(ref kw) = decl.value {
-                style.align_content = match kw.as_str() {
-                    "flex-start" | "start" => AlignContent::FlexStart,
-                    "flex-end" | "end" => AlignContent::FlexEnd,
-                    "center" => AlignContent::Center,
-                    "space-between" => AlignContent::SpaceBetween,
-                    "space-around" => AlignContent::SpaceAround,
-                    "space-evenly" => AlignContent::SpaceEvenly,
-                    "stretch" => AlignContent::Stretch,
-                    _ => style.align_content,
-                };
+                if let Some(v) = parse_align_content_kw(kw) {
+                    style.align_content = v;
+                    style.align_content_is_normal = kw.trim() == "normal";
+                }
             }
         }
         // Properties we parse but do not yet resolve:
@@ -4898,9 +4925,14 @@ pub fn apply_declaration(
             }
         }
         Property::MarginBlock => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if matches!(decl.value, CssValue::Auto) {
+                style.margin_top_auto = true;
+                style.margin_bottom_auto = true;
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_top = px;
                 style.margin_bottom = px;
+                style.margin_top_auto = false;
+                style.margin_bottom_auto = false;
             }
         }
         // Parsed but not visually applied (accepted to prevent "unknown property" skips)
@@ -5204,32 +5236,57 @@ fn try_integer(val: &CssValue) -> Option<i32> {
 
 /// Parse an `align-items` / `justify-items` keyword into `AlignItems`.
 fn parse_align_items_kw(kw: &str) -> AlignItems {
+    let kw = kw.trim();
+    let kw = kw
+        .strip_prefix("safe ")
+        .or_else(|| kw.strip_prefix("unsafe "))
+        .unwrap_or(kw)
+        .trim();
     match kw {
-        "flex-start" | "start" => AlignItems::FlexStart,
-        "flex-end" | "end" => AlignItems::FlexEnd,
+        "flex-start" | "start" | "self-start" | "left" => AlignItems::FlexStart,
+        "flex-end" | "end" | "self-end" | "right" | "last baseline" => AlignItems::FlexEnd,
         "center" => AlignItems::Center,
-        "baseline" => AlignItems::Baseline,
+        "baseline" | "first baseline" => AlignItems::Baseline,
         _ => AlignItems::Stretch,
     }
 }
 
 fn parse_self_alignment_kw(kw: &str) -> Option<Option<AlignItems>> {
+    let kw = kw.trim();
+    let kw = kw
+        .strip_prefix("safe ")
+        .or_else(|| kw.strip_prefix("unsafe "))
+        .unwrap_or(kw)
+        .trim();
     match kw {
         "auto" => Some(None),
-        "flex-start" | "start" | "self-start" => Some(Some(AlignItems::FlexStart)),
-        "flex-end" | "end" | "self-end" => Some(Some(AlignItems::FlexEnd)),
-        "center" => Some(Some(AlignItems::Center)),
+        "flex-start" | "start" | "self-start" | "left" => {
+            Some(Some(AlignItems::FlexStart))
+        }
+        "flex-end" | "end" | "self-end" | "right" | "last baseline" => {
+            Some(Some(AlignItems::FlexEnd))
+        }
+        "center" | "anchor-center" => Some(Some(AlignItems::Center)),
         "stretch" | "normal" => Some(Some(AlignItems::Stretch)),
-        "baseline" => Some(Some(AlignItems::Baseline)),
+        "baseline" | "first baseline" => Some(Some(AlignItems::Baseline)),
+        "legacy" => Some(Some(AlignItems::FlexStart)),
         _ => None,
     }
 }
 
 fn parse_align_content_kw(kw: &str) -> Option<AlignContent> {
+    let kw = kw.trim();
+    let kw = kw
+        .strip_prefix("safe ")
+        .or_else(|| kw.strip_prefix("unsafe "))
+        .unwrap_or(kw)
+        .trim();
     match kw {
-        "flex-start" | "start" => Some(AlignContent::FlexStart),
-        "flex-end" | "end" => Some(AlignContent::FlexEnd),
-        "center" => Some(AlignContent::Center),
+        "flex-start" | "start" | "baseline" | "first baseline" => {
+            Some(AlignContent::FlexStart)
+        }
+        "flex-end" | "end" | "last baseline" => Some(AlignContent::FlexEnd),
+        "center" | "anchor-center" => Some(AlignContent::Center),
         "space-between" => Some(AlignContent::SpaceBetween),
         "space-around" => Some(AlignContent::SpaceAround),
         "space-evenly" => Some(AlignContent::SpaceEvenly),
@@ -5239,10 +5296,16 @@ fn parse_align_content_kw(kw: &str) -> Option<AlignContent> {
 }
 
 fn parse_justify_content_kw(kw: &str) -> Option<JustifyContent> {
+    let kw = kw.trim();
+    let kw = kw
+        .strip_prefix("safe ")
+        .or_else(|| kw.strip_prefix("unsafe "))
+        .unwrap_or(kw)
+        .trim();
     match kw {
         "flex-start" | "start" | "left" => Some(JustifyContent::FlexStart),
         "flex-end" | "end" | "right" => Some(JustifyContent::FlexEnd),
-        "center" => Some(JustifyContent::Center),
+        "center" | "anchor-center" => Some(JustifyContent::Center),
         "space-between" => Some(JustifyContent::SpaceBetween),
         "space-around" => Some(JustifyContent::SpaceAround),
         "space-evenly" => Some(JustifyContent::SpaceEvenly),

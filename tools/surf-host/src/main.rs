@@ -516,7 +516,7 @@ fn main() {
                         .find(|fc| fc.control_id == ctrl_id)
                         .map(|fc| fc.node_id)
                         .unwrap_or(0);
-                    if let Some((action, method)) = wv.form_action_for_node(node_id) {
+                    if let Some((action, method, _enctype)) = wv.form_action_for_node(node_id) {
                         let data = wv.collect_form_data_for_node(node_id);
                         let query = form_encode(&data);
                         let nav_url = if method == "GET" {
@@ -572,7 +572,7 @@ fn main() {
                 // 2. Hit-test for submit button → collect form data and navigate
                 else if let Some(node_id) = wv.hit_test_submit_viewport(mx, my, scroll_y) {
                     focused_control = None;
-                    if let Some((action, method)) = wv.form_action_for_node(node_id) {
+                    if let Some((action, method, _enctype)) = wv.form_action_for_node(node_id) {
                         let data = wv.collect_form_data_for_node(node_id);
                         let query = form_encode(&data);
                         let base = if action.is_empty() {

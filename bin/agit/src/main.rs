@@ -18,6 +18,11 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args = anyos_std::args::parse(raw, b"mnub");
 
+    // -v flag enables verbose output
+    if args.has(b'v') {
+        libgit::pack::set_verbose(true);
+    }
+
     if args.pos_count == 0 {
         print_usage();
         return;

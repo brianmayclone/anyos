@@ -165,11 +165,8 @@ pub fn build_upload_pack_request(
 ) -> Vec<u8> {
     let mut body = Vec::new();
 
-    // Build capabilities string
-    let mut cap_str = String::from("multi_ack_detailed no-done side-band-64k thin-pack ofs-delta");
-    if caps.no_progress {
-        cap_str.push_str(" no-progress");
-    }
+    // Minimal capabilities for initial clone (no haves)
+    let cap_str = String::from("ofs-delta agent=agit/1.0");
 
     // Want lines
     for (i, oid) in wants.iter().enumerate() {
@@ -236,23 +233,78 @@ pub fn fetch_pack(url: &GitUrl, wants: &[Oid], haves: &[Oid]) -> Result<Vec<u8>>
     let content_type = "application/x-git-upload-pack-request";
 
     libhttp_client::init();
-    let response = libhttp_client::post(&service_url, &request_body, content_type)
-        .ok_or(Error::Other(format!("POST failed: {}", service_url)))?;
 
-    // Step 4: Process response — may contain side-band data
-    if caps.side_band_64k || caps.side_band {
+    if crate::pack::verbose() {
+        anyos_std::println!("[fetch] POST {} ({} bytes body)", service_url, request_body.len());
+        anyos_std::println!("[fetch] request: {:?}", core::str::from_utf8(&request_body).unwrap_or("(binary)"));
+    }
+
+    // Git smart HTTP requires specific Accept header and must not follow
+    // redirects that convert POST to GET. We also resolve the final URL
+    // from the info/refs step to avoid redirect issues.
+    let extra_headers = "Accept: application/x-git-upload-pack-result\r\n";
+
+    if crate::pack::verbose() {
+        anyos_std::println!("[fetch] calling post_with_headers to: {}", service_url);
+        anyos_std::println!("[fetch] content-type: {}", content_type);
+        anyos_std::println!("[fetch] extra-headers: {:?}", extra_headers);
+        anyos_std::println!("[fetch] body size: {} bytes", request_body.len());
+    }
+
+    let response = libhttp_client::post_with_headers(
+        &service_url, &request_body, content_type, extra_headers,
+    ).ok_or_else(|| {
+        let status = libhttp_client::last_status();
+        let err = libhttp_client::last_error();
+        if crate::pack::verbose() {
+            anyos_std::println!("[fetch] POST returned None! http_status={} error={}", status, err);
+        }
+        Error::Other(format!("POST failed: {} (http_status={}, error={})", service_url, status, err))
+    })?;
+
+    if crate::pack::verbose() {
+        anyos_std::println!("[fetch] post_with_headers returned {} bytes", response.len());
+    }
+
+    if crate::pack::verbose() {
+        anyos_std::println!("[fetch] response: {} bytes", response.len());
+        let show = core::cmp::min(response.len(), 128);
+        anyos_std::println!("[fetch] first {} bytes (hex):", show);
+        for i in 0..show {
+            anyos_std::print!("{:02x} ", response[i]);
+            if (i + 1) % 32 == 0 { anyos_std::println!(); }
+        }
+        anyos_std::println!();
+        // Also show as text if possible
+        if let Ok(text) = core::str::from_utf8(&response[..core::cmp::min(256, response.len())]) {
+            anyos_std::println!("[fetch] as text: {}", text);
+        }
+    }
+
+    // Step 4: Process response — check for side-band data
+    // We requested minimal caps (no side-band), but check anyway
+    if false && (caps.side_band_64k || caps.side_band) {
         let (pack_data, progress, errors) = crate::pack::demux_sideband(&response);
+        if crate::pack::verbose() {
+            anyos_std::println!("[fetch] sideband: pack={} progress={} errors={}", pack_data.len(), progress.len(), errors.len());
+        }
         if !errors.is_empty() {
             let err_msg = core::str::from_utf8(&errors).unwrap_or("remote error");
             return Err(Error::Other(String::from(err_msg)));
         }
-        // Progress messages could be printed here
-        let _ = progress; // Suppress for now
+        if crate::pack::verbose() {
+            if let Ok(p) = core::str::from_utf8(&progress) {
+                anyos_std::println!("[fetch] progress: {}", p);
+            }
+        }
         Ok(pack_data)
     } else {
         // No side-band — response is raw pack data
         // Skip any pkt-line NAK/ACK headers
         let pack_start = find_pack_start(&response);
+        if crate::pack::verbose() {
+            anyos_std::println!("[fetch] no sideband, pack starts at offset {}", pack_start);
+        }
         Ok(response[pack_start..].to_vec())
     }
 }

@@ -188,6 +188,10 @@ pub struct Thread {
     pub io_read_bytes: u64,
     /// Cumulative bytes written to disk files (fd >= 3).
     pub io_write_bytes: u64,
+    /// Cumulative bytes sent over the network (TCP + UDP payload).
+    pub net_tx_bytes: u64,
+    /// Cumulative bytes received from the network (TCP + UDP payload).
+    pub net_rx_bytes: u64,
     /// Number of user-space pages mapped for this process (heap, stack, code).
     /// Excludes identity-mapped kernel pages and shared DLL pages.
     pub user_pages: u32,
@@ -347,6 +351,8 @@ impl Thread {
             critical: false,
             io_read_bytes: 0,
             io_write_bytes: 0,
+            net_tx_bytes: 0,
+            net_rx_bytes: 0,
             user_pages: 0,
             mmap_next: 0x7000_0000,
             cwd: {

@@ -15,6 +15,20 @@ use crate::sha1;
 use crate::inflate;
 use crate::deflate;
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Enable verbose pack parsing output.
+static VERBOSE: AtomicBool = AtomicBool::new(false);
+
+/// Set verbose mode for pack operations.
+pub fn set_verbose(v: bool) {
+    VERBOSE.store(v, Ordering::Relaxed);
+}
+
+pub fn verbose() -> bool {
+    VERBOSE.load(Ordering::Relaxed)
+}
+
 /// Pack object types.
 const OBJ_COMMIT: u8 = 1;
 const OBJ_TREE: u8 = 2;
@@ -52,13 +66,22 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
 
     // Header
     if &data[0..4] != b"PACK" {
+        if verbose() {
+            anyos_std::println!("[pack] ERROR: no PACK header, got {:?}", &data[0..4.min(data.len())]);
+        }
         return None;
     }
     let version = read_u32_be(&data[4..8]);
     if version != 2 && version != 3 {
+        if verbose() {
+            anyos_std::println!("[pack] ERROR: unsupported version {}", version);
+        }
         return None;
     }
     let num_objects = read_u32_be(&data[8..12]) as usize;
+    if verbose() {
+        anyos_std::println!("[pack] version={} objects={} total_size={}", version, num_objects, data.len());
+    }
 
     let mut entries = Vec::with_capacity(num_objects);
     let mut pos = 12;
@@ -77,12 +100,22 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
         let entry_start = pos;
         pos += header_len;
 
+        if verbose() {
+            anyos_std::println!("[pack] obj {}/{}: offset={} type={} size={} hdr_len={}",
+                entries.len() + 1, num_objects, entry_start, obj_type_raw, uncompressed_size, header_len);
+        }
+
         match obj_type_raw {
             OBJ_COMMIT | OBJ_TREE | OBJ_BLOB | OBJ_TAG => {
                 // Non-delta object: inflate the data
                 let (inflated, consumed) = match inflate::inflate_counted(&data[pos..]) {
                     Some(r) => r,
-                    None => break,
+                    None => {
+                        if verbose() {
+                            anyos_std::println!("[pack]   inflate FAILED at pos={} remaining={}", pos, data.len() - pos);
+                        }
+                        break;
+                    }
                 };
                 pos += consumed;
 
@@ -95,6 +128,10 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 };
 
                 let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &inflated));
+                if verbose() {
+                    anyos_std::println!("[pack]   OK: {} {} bytes compressed={} oid={}",
+                        obj_type.as_str(), inflated.len(), consumed, oid.short());
+                }
                 resolved.push((oid, inflated.clone(), obj_type_raw));
                 offsets.push(entry_start);
 
@@ -107,6 +144,7 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
             OBJ_REF_DELTA => {
                 // REF_DELTA: 20-byte base object SHA-1 + delta data
                 if pos + 20 > data.len() {
+                    if verbose() { anyos_std::println!("[pack]   REF_DELTA: not enough data for base sha"); }
                     break;
                 }
                 let mut base_sha = [0u8; 20];
@@ -114,9 +152,16 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 let base_oid = Oid::from_bytes(base_sha);
                 pos += 20;
 
+                if verbose() {
+                    anyos_std::println!("[pack]   REF_DELTA base={}", base_oid.short());
+                }
+
                 let (delta_data, consumed) = match inflate::inflate_counted(&data[pos..]) {
                     Some(r) => r,
-                    None => break,
+                    None => {
+                        if verbose() { anyos_std::println!("[pack]   REF_DELTA inflate FAILED"); }
+                        break;
+                    }
                 };
                 pos += consumed;
 

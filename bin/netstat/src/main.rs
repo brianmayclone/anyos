@@ -151,13 +151,13 @@ impl ThreadCache {
     }
 
     fn load(&mut self) {
-        let mut buf = [0u8; 60 * 64];
+        let mut buf = [0u8; 80 * 64];
         let count = sys::sysinfo(1, &mut buf);
         if count == u32::MAX { return; }
         self.count = (count as usize).min(64);
         for i in 0..self.count {
-            let off = i * 60;
-            if off + 60 > buf.len() { break; }
+            let off = i * 80;
+            if off + 80 > buf.len() { break; }
             self.entries[i].tid = u32::from_le_bytes([
                 buf[off], buf[off+1], buf[off+2], buf[off+3]
             ]);

@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    ClearVal, ComputedStyle, Display, FloatVal, FontStyleVal, FontWeight, ListStyle,
+    AlignItems, ClearVal, ComputedStyle, Display, FloatVal, FontStyleVal, FontWeight, ListStyle,
     ListStylePosition, OverflowVal, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
 };
 use crate::ImageCache;
@@ -1061,6 +1061,8 @@ pub fn layout_with_budget(
 
     root.height = height + root.padding.top + root.padding.bottom;
 
+    resolve_absolute_alignment(&mut root, styles, viewport_width, viewport_height);
+
     // Post-pass: compute subtree_bottom for tile rasterizer culling.
     compute_subtree_bottom(&mut root);
 
@@ -1072,6 +1074,214 @@ pub fn layout_with_budget(
         crate::debug_heap_pos()
     );
     root
+}
+
+fn self_alignment_offset(align: AlignItems, available: i32, size: i32) -> i32 {
+    match align {
+        AlignItems::Center => (available - size).max(0) / 2,
+        AlignItems::FlexEnd => (available - size).max(0),
+        _ => 0,
+    }
+}
+
+fn resolve_absolute_alignment(
+    root: &mut LayoutBox,
+    styles: &[ComputedStyle],
+    viewport_w: i32,
+    viewport_h: i32,
+) {
+    let cb_x = root.border_width + root.padding.left;
+    let cb_y = root.border_width + root.padding.top;
+    let cb_w = (root.width - root.padding.left - root.padding.right - root.border_width * 2).max(0);
+    let cb_h =
+        (root.height - root.padding.top - root.padding.bottom - root.border_width * 2).max(0);
+    resolve_absolute_alignment_rec(
+        root,
+        styles,
+        0,
+        0,
+        cb_x,
+        cb_y,
+        cb_w,
+        cb_h,
+        viewport_w,
+        viewport_h,
+    );
+}
+
+fn resolve_absolute_alignment_rec(
+    bx: &mut LayoutBox,
+    styles: &[ComputedStyle],
+    abs_x: i32,
+    abs_y: i32,
+    cb_abs_x: i32,
+    cb_abs_y: i32,
+    cb_w: i32,
+    cb_h: i32,
+    viewport_w: i32,
+    viewport_h: i32,
+) {
+    let mut next_cb_abs_x = cb_abs_x;
+    let mut next_cb_abs_y = cb_abs_y;
+    let mut next_cb_w = cb_w;
+    let mut next_cb_h = cb_h;
+
+    if let Some(node_id) = bx.node_id {
+        if styles[node_id].position != Position::Static {
+            next_cb_abs_x = abs_x + bx.border_width + bx.padding.left;
+            next_cb_abs_y = abs_y + bx.border_width + bx.padding.top;
+            next_cb_w =
+                (bx.width - bx.padding.left - bx.padding.right - bx.border_width * 2).max(0);
+            next_cb_h =
+                (bx.height - bx.padding.top - bx.padding.bottom - bx.border_width * 2).max(0);
+        }
+    }
+
+    let parent_content_abs_x = abs_x + bx.border_width + bx.padding.left;
+    let parent_content_abs_y = abs_y + bx.border_width + bx.padding.top;
+    let parent_border_abs_x = abs_x;
+    let parent_border_abs_y = abs_y;
+    let parent_border_w = bx.width;
+    let parent_border_h = bx.height;
+
+    for child in &mut bx.children {
+        let mut child_abs_x = if child.is_fixed { child.x } else { abs_x + child.x };
+        let mut child_abs_y = if child.is_fixed { child.y } else { abs_y + child.y };
+
+        if !child.is_fixed && child.is_out_of_flow {
+            if let Some(node_id) = child.node_id {
+                let style = &styles[node_id];
+                if style.position == Position::Absolute {
+                    let justify = if style.justify_self_is_normal {
+                        AlignItems::FlexStart
+                    } else {
+                        style.justify_self.unwrap_or(AlignItems::Stretch)
+                    };
+                    let align = if style.align_self_is_normal {
+                        AlignItems::FlexStart
+                    } else {
+                        style.align_self.unwrap_or(AlignItems::Stretch)
+                    };
+
+                    let resolve_axis = |start_auto: bool,
+                                        end_auto: bool,
+                                        start: i32,
+                                        end: i32,
+                                        size: &mut i32,
+                                        margin_start: &mut i32,
+                                        margin_end: &mut i32,
+                                        auto_margin_start: bool,
+                                        auto_margin_end: bool,
+                                        normal_start_align: AlignItems,
+                                        cb_start_abs: i32,
+                                        cb_size: i32,
+                                        static_start_abs: i32,
+                                        static_size: i32,
+                                        allow_stretch: bool|
+                     -> i32 {
+                        if !start_auto && !end_auto {
+                            let available = (cb_size - start - end).max(0);
+                            if allow_stretch
+                                && normal_start_align == AlignItems::Stretch
+                                && !auto_margin_start
+                                && !auto_margin_end
+                            {
+                                *size = (available - *margin_start - *margin_end).max(0);
+                            }
+                            let remaining = (available - *size - *margin_start - *margin_end).max(0);
+                            if auto_margin_start && auto_margin_end {
+                                *margin_start = remaining / 2;
+                                *margin_end = remaining - *margin_start;
+                            } else if auto_margin_start {
+                                *margin_start = remaining;
+                            } else if auto_margin_end {
+                                *margin_end = remaining;
+                            }
+                            cb_start_abs
+                                + start
+                                + *margin_start
+                                + self_alignment_offset(normal_start_align, available, *size + *margin_start + *margin_end)
+                        } else if !start_auto {
+                            cb_start_abs + start + *margin_start
+                        } else if !end_auto {
+                            cb_start_abs + cb_size - end - *size - *margin_end
+                        } else {
+                            let available = static_size.max(0);
+                            static_start_abs
+                                + *margin_start
+                                + self_alignment_offset(normal_start_align, available, *size + *margin_start + *margin_end)
+                        }
+                    };
+
+                    let mut width = child.width;
+                    let mut ml = child.margin.left;
+                    let mut mr = child.margin.right;
+                    let desired_abs_x = resolve_axis(
+                        style.left_offset.is_none(),
+                        style.right_offset.is_none(),
+                        style.left_offset.unwrap_or(0),
+                        style.right_offset.unwrap_or(0),
+                        &mut width,
+                        &mut ml,
+                        &mut mr,
+                        style.margin_left_auto,
+                        style.margin_right_auto,
+                        justify,
+                        next_cb_abs_x,
+                        next_cb_w,
+                        parent_border_abs_x,
+                        parent_border_w,
+                        style.width.is_none() && style.width_pct.is_none() && style.width_calc.is_none(),
+                    );
+                    child.width = width;
+                    child.margin.left = ml;
+                    child.margin.right = mr;
+
+                    let mut height = child.height;
+                    let mut mt = child.margin.top;
+                    let mut mb = child.margin.bottom;
+                    let desired_abs_y = resolve_axis(
+                        style.top.is_none(),
+                        style.bottom_offset.is_none(),
+                        style.top.unwrap_or(0),
+                        style.bottom_offset.unwrap_or(0),
+                        &mut height,
+                        &mut mt,
+                        &mut mb,
+                        style.margin_top_auto,
+                        style.margin_bottom_auto,
+                        align,
+                        next_cb_abs_y,
+                        next_cb_h,
+                        parent_content_abs_y,
+                        bx.border_width.max(0) * 2,
+                        style.height.is_none() && style.height_pct.is_none() && style.height_calc.is_none(),
+                    );
+                    child.height = height;
+                    child.margin.top = mt;
+                    child.margin.bottom = mb;
+
+                    child.x = desired_abs_x - abs_x;
+                    child.y = desired_abs_y - abs_y;
+                    child_abs_x = desired_abs_x;
+                    child_abs_y = desired_abs_y;
+                }
+            }
+        }
+
+        resolve_absolute_alignment_rec(
+            child,
+            styles,
+            child_abs_x,
+            child_abs_y,
+            next_cb_abs_x,
+            next_cb_abs_y,
+            next_cb_w,
+            next_cb_h,
+            viewport_w,
+            viewport_h,
+        );
+    }
 }
 
 /// Compute subtree extents for every node in the tree.
@@ -1345,20 +1555,47 @@ pub(super) fn layout_children_ex_with_budget(
             };
 
             let mut placed = child_box;
-            placed.x = bw + parent.padding.left + placed.margin.left + li;
+            let parent_style = &styles[_parent_node];
+            let child_style = &styles[cid];
+            let justify = if child_style.justify_self_is_normal {
+                AlignItems::FlexStart
+            } else {
+                child_style.justify_self.unwrap_or(parent_style.justify_items)
+            };
+            let stretch_self = justify == AlignItems::Stretch
+                && !child_style.justify_self_is_normal
+                && child_style.width.is_none()
+                && child_style.width_pct.is_none()
+                && child_style.width_calc.is_none()
+                && !child_style.width_max_content
+                && !child_style.width_min_content
+                && !child_style.width_fit_content;
 
-            // Center/right block alignment.
-            let parent_align = styles[_parent_node].text_align;
-            if parent_align == TextAlignVal::Center {
-                let total_child_w = placed.width + placed.margin.left + placed.margin.right;
-                if total_child_w < effective_avail {
-                    placed.x =
-                        bw + parent.padding.left + li + (effective_avail - total_child_w) / 2;
-                }
-            } else if parent_align == TextAlignVal::Right {
-                let total_child_w = placed.width + placed.margin.left + placed.margin.right;
-                if total_child_w < effective_avail {
-                    placed.x = bw + parent.padding.left + li + effective_avail - total_child_w;
+            if stretch_self {
+                placed.width =
+                    (effective_avail - placed.margin.left - placed.margin.right).max(0);
+            }
+
+            let total_child_w = placed.width + placed.margin.left + placed.margin.right;
+            let justify_offset = match justify {
+                AlignItems::Center => (effective_avail - total_child_w).max(0) / 2,
+                AlignItems::FlexEnd => (effective_avail - total_child_w).max(0),
+                _ => 0,
+            };
+            placed.x = bw + parent.padding.left + li + placed.margin.left + justify_offset;
+
+            // Keep legacy `text-align` fallback when self-alignment remains at start.
+            let parent_align = parent_style.text_align;
+            if justify == AlignItems::Stretch || justify == AlignItems::FlexStart {
+                if parent_align == TextAlignVal::Center {
+                    if total_child_w < effective_avail {
+                        placed.x =
+                            bw + parent.padding.left + li + (effective_avail - total_child_w) / 2;
+                    }
+                } else if parent_align == TextAlignVal::Right {
+                    if total_child_w < effective_avail {
+                        placed.x = bw + parent.padding.left + li + effective_avail - total_child_w;
+                    }
                 }
             }
 
@@ -1629,7 +1866,16 @@ pub(super) fn layout_children_ex_with_budget(
             s.position,
             crate::style::Position::Absolute | crate::style::Position::Fixed
         );
-        has_overflow_bfc || has_display_bfc || has_float_bfc || has_pos_bfc
+        let has_align_content_bfc = !s.align_content_is_normal
+            && !matches!(
+                s.display,
+                Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+            );
+        has_overflow_bfc
+            || has_display_bfc
+            || has_float_bfc
+            || has_pos_bfc
+            || has_align_content_bfc
     } else {
         false
     };

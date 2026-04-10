@@ -4,7 +4,7 @@
 anyos_std::entry!(main);
 
 /// Thread entry size from sysinfo(1).
-const ENTRY_SIZE: usize = 64;
+const ENTRY_SIZE: usize = 80;
 /// Max threads we can list.
 const MAX_THREADS: usize = 128;
 

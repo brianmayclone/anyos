@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 pub const MAX_CPUS: usize = 16;
 pub const MAX_TASKS: usize = 64;
-pub const THREAD_ENTRY_SIZE: usize = 64;
+pub const THREAD_ENTRY_SIZE: usize = 80;
 pub const ICON_SIZE: u32 = 16;
 pub const GRAPH_SAMPLES: usize = 60;
 
@@ -20,6 +20,8 @@ pub struct TaskEntry {
     pub io_write_bytes: u64,
     pub parent_tid: u32,
     pub is_child_thread: bool,
+    /// Network rate in kbit/s (tx+rx combined).
+    pub net_kbit: u32,
 }
 
 /// Describes one visible row in the process grid.
@@ -33,12 +35,15 @@ pub struct DisplayRow {
     pub thread_count: u16,
     /// Aggregated CPU% x10 for group headers (sum of all threads).
     pub agg_cpu: u32,
+    /// Aggregated network rate in kbit/s for group headers (sum of all threads).
+    pub agg_net: u32,
     /// Best state among group threads for headers.
     pub agg_state: u8,
 }
 
 pub struct PrevTicks {
     pub entries: [(u32, u32); MAX_TASKS],
+    pub net_entries: [(u32, u64); MAX_TASKS],
     pub count: usize,
     pub prev_total: u32,
 }

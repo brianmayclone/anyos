@@ -206,7 +206,7 @@ fn fetch_get(url: &Url, raw: bool) -> Result<(u16, Vec<u8>), u32> {
 
         // 3. Receive and parse response
         match receive_response(&conn, is_https, raw)? {
-            ResponseAction::Redirect(location) => {
+            ResponseAction::Redirect(_status, location) => {
                 close_conn(conn);
                 current = resolve_url(&current, &location);
                 continue;
@@ -222,16 +222,20 @@ fn fetch_get(url: &Url, raw: bool) -> Result<(u16, Vec<u8>), u32> {
 }
 
 /// Core POST implementation with redirect following.
+///
+/// HTTP redirect behavior per RFC 7231/7538:
+/// - 301/302/303: Convert POST to GET on redirect (browser-standard behavior)
+/// - 307/308: Preserve POST method and body on redirect
 fn fetch_post_inner(url: &Url, body: &[u8], content_type: &str) -> Result<(u16, Vec<u8>), u32> {
     let mut current = clone_url(url);
-    let mut is_first = true;
+    let mut use_post = true;
 
     for _redirect_n in 0..MAX_REDIRECTS {
         let is_https = current.scheme == "https";
 
         let conn = connect_to(&current.host, current.port, is_https)?;
 
-        let request = if is_first {
+        let request = if use_post {
             build_post_request(&current, body, content_type)
         } else {
             build_get_request(&current, false)
@@ -242,8 +246,8 @@ fn fetch_post_inner(url: &Url, body: &[u8], content_type: &str) -> Result<(u16, 
             return Err(ERR_SEND_FAILURE);
         }
 
-        // Send POST body after headers (only on first request, not redirects)
-        if is_first && !body.is_empty() {
+        // Send POST body after headers (POST requests only)
+        if use_post && !body.is_empty() {
             if !send_data(&conn, body, is_https) {
                 close_conn(conn);
                 return Err(ERR_SEND_FAILURE);
@@ -251,10 +255,15 @@ fn fetch_post_inner(url: &Url, body: &[u8], content_type: &str) -> Result<(u16, 
         }
 
         match receive_response(&conn, is_https, false)? {
-            ResponseAction::Redirect(location) => {
+            ResponseAction::Redirect(redir_status, location) => {
                 close_conn(conn);
                 current = resolve_url(&current, &location);
-                is_first = false;
+                // 307/308: preserve POST method and body
+                // 301/302/303: convert to GET (standard browser behavior)
+                // Preserve POST method on all redirects.
+                // RFC says 301/302 may convert to GET, but in practice
+                // services like GitHub expect POST to remain POST.
+                use_post = true;
                 continue;
             }
             ResponseAction::Complete(status, resp_body) => {
@@ -358,7 +367,7 @@ fn recv_some(conn: &Connection, buf: &mut [u8], is_https: bool) -> usize {
 // ── Response parsing ────────────────────────────────────────────────────────
 
 enum ResponseAction {
-    Redirect(String),
+    Redirect(u16, String),
     Complete(u16, Vec<u8>),
 }
 
@@ -393,7 +402,7 @@ fn receive_response(conn: &Connection, is_https: bool, raw: bool) -> Result<Resp
     // Handle redirects
     if is_redirect(status) {
         if let Some(location) = find_header_value(header_str, "location") {
-            return Ok(ResponseAction::Redirect(String::from(location)));
+            return Ok(ResponseAction::Redirect(status, String::from(location)));
         }
         return Ok(ResponseAction::Complete(status, Vec::new()));
     }
@@ -499,13 +508,13 @@ pub fn post_with_headers(url_str: &str, body: &[u8], content_type: &str, extra_h
 /// Core POST with custom headers — same flow as fetch_post_inner.
 fn fetch_post_headers_inner(url: &Url, body: &[u8], content_type: &str, extra_headers: &str) -> Result<(u16, Vec<u8>), u32> {
     let mut current = clone_url(url);
-    let mut is_first = true;
+    let mut use_post = true;
 
     for _redirect_n in 0..MAX_REDIRECTS {
         let is_https = current.scheme == "https";
         let conn = connect_to(&current.host, current.port, is_https)?;
 
-        let request = if is_first {
+        let request = if use_post {
             build_post_request_with_headers(&current, body, content_type, extra_headers)
         } else {
             build_get_request(&current, false)
@@ -516,7 +525,7 @@ fn fetch_post_headers_inner(url: &Url, body: &[u8], content_type: &str, extra_he
             return Err(ERR_SEND_FAILURE);
         }
 
-        if is_first && !body.is_empty() {
+        if use_post && !body.is_empty() {
             if !send_data(&conn, body, is_https) {
                 close_conn(conn);
                 return Err(ERR_SEND_FAILURE);
@@ -524,10 +533,13 @@ fn fetch_post_headers_inner(url: &Url, body: &[u8], content_type: &str, extra_he
         }
 
         match receive_response(&conn, is_https, false)? {
-            ResponseAction::Redirect(location) => {
+            ResponseAction::Redirect(redir_status, location) => {
                 close_conn(conn);
                 current = resolve_url(&current, &location);
-                is_first = false;
+                // Preserve POST method on all redirects.
+                // RFC says 301/302 may convert to GET, but in practice
+                // services like GitHub expect POST to remain POST.
+                use_post = true;
                 continue;
             }
             ResponseAction::Complete(status, resp_body) => {

@@ -9,7 +9,7 @@
 anyos_std::entry!(main);
 
 /// Size of one thread-info entry returned by sysinfo(1).
-const THREAD_ENTRY_SIZE: usize = 60;
+const THREAD_ENTRY_SIZE: usize = 80;
 /// Maximum number of threads we can enumerate in one call.
 const MAX_THREADS: usize = 128;
 /// Offset of the null-terminated name within a thread entry.

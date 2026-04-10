@@ -20,7 +20,7 @@ pub struct ProcessEntry {
 /// Uses `anyos_std::sys::sysinfo(1, buf)` which returns the **count** of
 /// thread entries written into `buf`.  Each entry is 64 bytes.
 pub fn poll_processes() -> Vec<ProcessEntry> {
-    let mut buf = [0u8; 64 * 128]; // room for 128 threads
+    let mut buf = [0u8; 80 * 128]; // room for 128 threads
     let count = anyos_std::sys::sysinfo(1, &mut buf);
     if count == 0 || count == u32::MAX {
         return Vec::new();
@@ -31,7 +31,7 @@ pub fn poll_processes() -> Vec<ProcessEntry> {
 
 /// Parse the sysinfo buffer into process entries.
 ///
-/// Kernel 64-byte entry layout (all LE):
+/// Kernel 80-byte entry layout (all LE):
 ///   +0   u32   tid
 ///   +4   u8    priority
 ///   +5   u8    state  (0=ready, 1=running, 2=blocked, 3=dead)
@@ -46,7 +46,7 @@ pub fn poll_processes() -> Vec<ProcessEntry> {
 ///   +58  u16   pad
 ///   +60  u32   parent_tid
 fn parse_sysinfo(buf: &[u8], count: usize) -> Vec<ProcessEntry> {
-    const ENTRY_SIZE: usize = 64;
+    const ENTRY_SIZE: usize = 80;
     let mut entries = Vec::new();
 
     for i in 0..count {

@@ -161,7 +161,7 @@ fn main() {
     }
 
     // Process/thread count (cmd=1)
-    let mut thread_buf = [0u8; 36 * 64];
+    let mut thread_buf = [0u8; 80 * 64];
     let thread_ret = anyos_std::sys::sysinfo(1, &mut thread_buf);
     let threads = if thread_ret != u32::MAX { thread_ret } else { 0 };
 

@@ -14,6 +14,8 @@ pub struct ThreadInfo {
     pub arch_mode: u8,
     pub io_read_bytes: u64,
     pub io_write_bytes: u64,
+    pub net_tx_bytes: u64,
+    pub net_rx_bytes: u64,
     pub user_pages: u32,
     pub uid: u16,
     pub parent_tid: u32,
@@ -26,12 +28,14 @@ pub fn list_threads() -> Vec<ThreadInfo> {
     struct ThreadSnap {
         tid: u32, priority: u8, state: u8, arch_mode: u8,
         cpu_ticks: u32, io_read_bytes: u64, io_write_bytes: u64,
+        net_tx_bytes: u64, net_rx_bytes: u64,
         user_pages: u32, name: [u8; 32], name_len: u8, uid: u16, parent_tid: u32,
         pd_shared: bool,
     }
     let mut buf = [const {
         ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0,
-            io_read_bytes: 0, io_write_bytes: 0, user_pages: 0, name: [0; 32], name_len: 0, uid: 0, parent_tid: 0,
+            io_read_bytes: 0, io_write_bytes: 0, net_tx_bytes: 0, net_rx_bytes: 0,
+            user_pages: 0, name: [0; 32], name_len: 0, uid: 0, parent_tid: 0,
             pd_shared: false }
     }; MAX_SNAP];
     let mut count = 0;
@@ -59,6 +63,7 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                     tid: thread.tid, priority: thread.priority, state: state_num,
                     arch_mode: thread.arch_mode as u8, cpu_ticks: thread.cpu_ticks,
                     io_read_bytes: thread.io_read_bytes, io_write_bytes: thread.io_write_bytes,
+                    net_tx_bytes: thread.net_tx_bytes, net_rx_bytes: thread.net_rx_bytes,
                     user_pages: thread.user_pages, name: name_buf, name_len: len as u8,
                     uid: thread.uid, parent_tid: thread.parent_tid,
                     pd_shared: thread.pd_shared,
@@ -82,6 +87,8 @@ pub fn list_threads() -> Vec<ThreadInfo> {
             arch_mode: snap.arch_mode,
             io_read_bytes: snap.io_read_bytes,
             io_write_bytes: snap.io_write_bytes,
+            net_tx_bytes: snap.net_tx_bytes,
+            net_rx_bytes: snap.net_rx_bytes,
             user_pages: snap.user_pages,
             uid: snap.uid,
             parent_tid: snap.parent_tid,
@@ -115,6 +122,26 @@ pub fn record_io_read(bytes: u64) {
     if let Some(sched) = guard.as_mut() {
         if let Some(idx) = sched.current_idx(cpu_id) {
             sched.threads[idx].io_read_bytes += bytes;
+        }
+    }
+}
+
+pub fn record_net_tx(bytes: u64) {
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            sched.threads[idx].net_tx_bytes += bytes;
+        }
+    }
+}
+
+pub fn record_net_rx(bytes: u64) {
+    let mut guard = SCHEDULER.lock();
+    let cpu_id = get_cpu_id();
+    if let Some(sched) = guard.as_mut() {
+        if let Some(idx) = sched.current_idx(cpu_id) {
+            sched.threads[idx].net_rx_bytes += bytes;
         }
     }
 }

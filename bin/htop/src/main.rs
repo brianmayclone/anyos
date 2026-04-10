@@ -8,7 +8,7 @@ anyos_std::entry!(main);
 
 pub const MAX_TASKS: usize = 256;
 pub const MAX_CPUS:  usize = 32;
-pub const THREAD_ENTRY_SIZE: usize = 64;
+pub const THREAD_ENTRY_SIZE: usize = 80;
 const REFRESH_MS: u32 = 1500;
 
 fn get_terminal_size() -> (usize, usize) {
@@ -53,12 +53,12 @@ fn main() {
     static mut RAW_BUF: [u8; THREAD_ENTRY_SIZE * MAX_TASKS] =
         [0u8; THREAD_ENTRY_SIZE * MAX_TASKS];
 
-    let mut prev = PrevTicks { entries: [(0, 0); MAX_TASKS], count: 0, prev_total: 0 };
+    let mut prev = PrevTicks { entries: [(0, 0); MAX_TASKS], net_entries: [(0, 0); MAX_TASKS], count: 0, prev_total: 0 };
     let mut cpu  = CpuState::new();
 
     const ET: TaskEntry = TaskEntry {
         tid: 0, name: [0; 24], name_len: 0, state: 0,
-        priority: 0, uid: 0, user_pages: 0, cpu_pct_x10: 0,
+        priority: 0, uid: 0, user_pages: 0, cpu_pct_x10: 0, net_kbit: 0,
     };
     let mut tasks = [ET; MAX_TASKS];
     let mut uid_cache: [(u16, [u8; 16], u8); 32] = [(0, [0u8; 16], 0); 32];

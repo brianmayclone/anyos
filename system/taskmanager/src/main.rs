@@ -86,7 +86,7 @@ fn main() {
     header.add(&mem_row);
 
     let mem_label = ui::Label::new("");
-    mem_label.set_size(300, 18);
+    mem_label.set_size(450, 18);
     mem_label.set_dock(ui::DOCK_LEFT);
     mem_label.set_margin(8, 0, 0, 0);
     mem_row.add(&mem_label);
@@ -172,6 +172,7 @@ fn main() {
         ColumnDef::new(i18n::t("Arch")).width(50),
         ColumnDef::new("CPU%").width(55).align(ALIGN_RIGHT).numeric(),
         ColumnDef::new(i18n::t("Memory")).width(65).align(ALIGN_RIGHT).numeric(),
+        ColumnDef::new("NET").width(75).align(ALIGN_RIGHT).numeric(),
         ColumnDef::new(i18n::t("Priority")).width(50).align(ALIGN_RIGHT).numeric(),
     ]);
     proc_grid.set_row_height(20);
@@ -361,7 +362,7 @@ fn main() {
 
     // ── Allocate state on heap (accessed from callbacks) ──
     let prev_ticks = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(
-        PrevTicks { entries: [(0, 0); MAX_TASKS], count: 0, prev_total: 0 }
+        PrevTicks { entries: [(0, 0); MAX_TASKS], net_entries: [(0, 0); MAX_TASKS], count: 0, prev_total: 0 }
     ));
     let cpu_state = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(CpuState::new()));
     let cpu_history = alloc::boxed::Box::into_raw(alloc::boxed::Box::new(CpuHistory::new()));
@@ -535,7 +536,16 @@ fn main() {
             mem_used_mb = used_kb / 1024;
             mem_total_mb = total_kb / 1024;
 
-            let mut mbuf = [0u8; 80];
+            // Compute total network rate across all tasks
+            let mut total_net_kbit = 0u32;
+            for task in tasks.iter() {
+                total_net_kbit = total_net_kbit.saturating_add(task.net_kbit);
+            }
+            let net_mbit_x10 = (total_net_kbit as u64 * 10 / 1000) as u32;
+            let net_whole = net_mbit_x10 / 10;
+            let net_frac = net_mbit_x10 % 10;
+
+            let mut mbuf = [0u8; 120];
             let mut p = 0;
             let mut t = [0u8; 12];
             mbuf[p..p + 5].copy_from_slice(b"Mem: "); p += 5;
@@ -546,7 +556,11 @@ fn main() {
             let s = fmt_u32(&mut t, heap_kb); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
             mbuf[p] = b'/'; p += 1;
             let s = fmt_u32(&mut t, heap_total_kb); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
-            mbuf[p] = b'K'; p += 1;
+            mbuf[p..p + 7].copy_from_slice(b"K  Net:"); p += 7;
+            let s = fmt_u32(&mut t, net_whole); mbuf[p..p + s.len()].copy_from_slice(s.as_bytes()); p += s.len();
+            mbuf[p] = b'.'; p += 1;
+            mbuf[p] = b'0' + net_frac as u8; p += 1;
+            mbuf[p..p + 5].copy_from_slice(b" Mbit"); p += 5;
             if let Ok(s) = core::str::from_utf8(&mbuf[..p]) {
                 mem_label.set_text(s);
             }
@@ -623,7 +637,7 @@ fn main() {
                 proc_grid.set_row_count(new_count as u32);
             }
 
-            let col_count = 8usize;
+            let col_count = 9usize;
             colors.clear();
             colors.resize(new_count * col_count, 0u32);
 
@@ -693,11 +707,11 @@ fn main() {
                     let arch_str = if task.arch == 1 { "x86" } else { "x86_64" };
                     proc_grid.set_cell(ri as u32, 4, arch_str);
 
-                    // Priority column
+                    // Priority column (index 8)
                     {
                         let mut t = [0u8; 12];
                         let s = fmt_u32(&mut t, task.priority as u32);
-                        proc_grid.set_cell(ri as u32, 7, s);
+                        proc_grid.set_cell(ri as u32, 8, s);
                     }
 
                     // Icon for all row types
@@ -740,6 +754,30 @@ fn main() {
                     let mut mbuf = [0u8; 16];
                     let s = fmt_mem_pages(&mut mbuf, task.user_pages);
                     proc_grid.set_cell(ri as u32, 6, s);
+                }
+
+                // NET column (index 7): network rate in Mbit/s
+                // For group headers use aggregated NET, otherwise individual
+                {
+                    let kbit = if dr.kind == 1 { dr.agg_net } else { task.net_kbit };
+                    if kbit == 0 {
+                        proc_grid.set_cell(ri as u32, 7, "0 Mbit");
+                    } else {
+                        let mbit_x10 = (kbit as u64 * 10 / 1000) as u32;
+                        let whole = mbit_x10 / 10;
+                        let frac = mbit_x10 % 10;
+                        let mut nbuf = [0u8; 16];
+                        let mut t = [0u8; 12];
+                        let ws = fmt_u32(&mut t, whole);
+                        let wl = ws.len();
+                        nbuf[..wl].copy_from_slice(ws.as_bytes());
+                        nbuf[wl] = b'.';
+                        nbuf[wl + 1] = b'0' + frac as u8;
+                        nbuf[wl + 2..wl + 7].copy_from_slice(b" Mbit");
+                        if let Ok(s) = core::str::from_utf8(&nbuf[..wl + 7]) {
+                            proc_grid.set_cell(ri as u32, 7, s);
+                        }
+                    }
                 }
 
                 // Colors

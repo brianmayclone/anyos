@@ -261,7 +261,11 @@ pub fn sys_tcp_connect(params_ptr: u32) -> u32 {
 pub fn sys_tcp_send(socket_id: u32, buf_ptr: u32, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 { return 0; }
     let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
-    crate::net::tcp::send(socket_id, buf, 1000) // 10s timeout
+    let result = crate::net::tcp::send(socket_id, buf, 1000); // 10s timeout
+    if result != u32::MAX && result > 0 {
+        crate::task::scheduler::record_net_tx(result as u64);
+    }
+    result
 }
 
 /// sys_tcp_recv - Receive data from TCP connection.
@@ -270,7 +274,11 @@ pub fn sys_tcp_send(socket_id: u32, buf_ptr: u32, len: u32) -> u32 {
 pub fn sys_tcp_recv(socket_id: u32, buf_ptr: u32, len: u32) -> u32 {
     if buf_ptr == 0 || len == 0 { return u32::MAX; }
     let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, len as usize) };
-    crate::net::tcp::recv(socket_id, buf, 3000) // 30s timeout
+    let result = crate::net::tcp::recv(socket_id, buf, 3000); // 30s timeout
+    if result != u32::MAX && result > 0 {
+        crate::task::scheduler::record_net_rx(result as u64);
+    }
+    result
 }
 
 /// sys_tcp_close - Close TCP connection. arg1=socket_id.
@@ -428,7 +436,10 @@ pub fn sys_udp_sendto(params_ptr: u32) -> u32 {
         crate::net::udp::send(dst_ip, src_port, dst_port, data)
     };
 
-    if ok { data_len } else { u32::MAX }
+    if ok {
+        crate::task::scheduler::record_net_tx(data_len as u64);
+        data_len
+    } else { u32::MAX }
 }
 
 /// sys_udp_recvfrom - Receive a UDP datagram on a bound port.
@@ -467,6 +478,7 @@ pub fn sys_udp_recvfrom(port: u32, buf_ptr: u32, buf_len: u32) -> u32 {
             // Payload
             buf[8..8 + payload_len].copy_from_slice(&d.data[..payload_len]);
 
+            crate::task::scheduler::record_net_rx(payload_len as u64);
             total as u32
         }
         None => 0,

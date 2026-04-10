@@ -116,14 +116,15 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
             0
         }
         1 => {
-            // Thread list: 64 bytes each
+            // Thread list: 80 bytes each
             // [tid:u32, prio:u8, state:u8, arch:u8, flags:u8, name:24bytes,
             //  user_pages:u32, cpu_ticks:u32, io_read_bytes:u64, io_write_bytes:u64,
-            //  uid:u16, pad:u16, parent_tid:u32]
+            //  uid:u16, pad:u16, parent_tid:u32,
+            //  net_tx_bytes:u64, net_rx_bytes:u64]
             // flags byte (offset 7): bit 0 = pd_shared (child thread of same process)
             let threads = crate::task::scheduler::list_threads();
             if buf_ptr != 0 && buf_size > 0 {
-                let entry_size = 64usize;
+                let entry_size = 80usize;
                 let max = (buf_size as usize) / entry_size;
                 let buf = unsafe {
                     core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_size as usize)
@@ -149,12 +150,15 @@ pub fn sys_sysinfo(cmd: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                     // io_read_bytes at offset 40, io_write_bytes at offset 48
                     buf[off + 40..off + 48].copy_from_slice(&t.io_read_bytes.to_le_bytes());
                     buf[off + 48..off + 56].copy_from_slice(&t.io_write_bytes.to_le_bytes());
-                    // uid at offset 56, pad at 58, reserved at 60
+                    // uid at offset 56, pad at 58
                     buf[off + 56..off + 58].copy_from_slice(&t.uid.to_le_bytes());
                     buf[off + 58] = 0;
                     buf[off + 59] = 0;
                     // parent_tid at offset 60
                     buf[off + 60..off + 64].copy_from_slice(&t.parent_tid.to_le_bytes());
+                    // net_tx_bytes at offset 64, net_rx_bytes at offset 72
+                    buf[off + 64..off + 72].copy_from_slice(&t.net_tx_bytes.to_le_bytes());
+                    buf[off + 72..off + 80].copy_from_slice(&t.net_rx_bytes.to_le_bytes());
                 }
             }
             threads.len() as u32

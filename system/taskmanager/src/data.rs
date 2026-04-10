@@ -47,7 +47,26 @@ pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks,
         let parent_tid = u32::from_le_bytes([buf[off + 60], buf[off + 61], buf[off + 62], buf[off + 63]]);
         let is_child_thread = buf[off + 7] != 0; // pd_shared flag from kernel
 
-        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, uid, user_pages, cpu_pct_x10, io_read_bytes, io_write_bytes, parent_tid, is_child_thread });
+        // Network bytes (tx at offset 64, rx at offset 72)
+        let net_tx = u64::from_le_bytes([
+            buf[off+64], buf[off+65], buf[off+66], buf[off+67],
+            buf[off+68], buf[off+69], buf[off+70], buf[off+71],
+        ]);
+        let net_rx = u64::from_le_bytes([
+            buf[off+72], buf[off+73], buf[off+74], buf[off+75],
+            buf[off+76], buf[off+77], buf[off+78], buf[off+79],
+        ]);
+        let net_total = net_tx.wrapping_add(net_rx);
+
+        // Network rate: delta bytes over 1000ms → kbit/s
+        let prev_net = prev.net_entries[..prev.count]
+            .iter().find(|e| e.0 == tid).map(|e| e.1).unwrap_or(net_total);
+        let d_net = net_total.wrapping_sub(prev_net);
+        let net_kbit = if d_net > 0 {
+            (d_net * 8 / 1000).min(u32::MAX as u64) as u32 // 1000ms refresh
+        } else { 0 };
+
+        result.push(TaskEntry { tid, name, name_len, state, priority: prio, arch, uid, user_pages, cpu_pct_x10, io_read_bytes, io_write_bytes, parent_tid, is_child_thread, net_kbit });
     }
 
     prev.count = 0;
@@ -57,7 +76,16 @@ pub fn fetch_tasks(buf: &mut [u8; THREAD_ENTRY_SIZE * 64], prev: &mut PrevTicks,
         if off + THREAD_ENTRY_SIZE > buf.len() { break; }
         let tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
         let cpu_ticks = u32::from_le_bytes([buf[off + 36], buf[off + 37], buf[off + 38], buf[off + 39]]);
+        let net_tx = u64::from_le_bytes([
+            buf[off+64], buf[off+65], buf[off+66], buf[off+67],
+            buf[off+68], buf[off+69], buf[off+70], buf[off+71],
+        ]);
+        let net_rx = u64::from_le_bytes([
+            buf[off+72], buf[off+73], buf[off+74], buf[off+75],
+            buf[off+76], buf[off+77], buf[off+78], buf[off+79],
+        ]);
         prev.entries[prev.count] = (tid, cpu_ticks);
+        prev.net_entries[prev.count] = (tid, net_tx.wrapping_add(net_rx));
         prev.count += 1;
     }
     prev.prev_total = total_sched_ticks;
@@ -122,14 +150,16 @@ pub fn build_display_list(
         let count = member_count[l];
         if count <= 1 {
             // Standalone process (single thread)
-            display.push(DisplayRow { kind: 0, task_idx: l as u16, thread_count: 0, agg_cpu: tasks[l].cpu_pct_x10, agg_state: tasks[l].state });
+            display.push(DisplayRow { kind: 0, task_idx: l as u16, thread_count: 0, agg_cpu: tasks[l].cpu_pct_x10, agg_net: tasks[l].net_kbit, agg_state: tasks[l].state });
         } else {
             // Multi-thread process: compute aggregates
             let mut agg_cpu = 0u32;
+            let mut agg_net = 0u32;
             let mut best_state = 2u8; // default blocked
             for j in 0..n {
                 if leader[j] as usize == l {
                     agg_cpu += tasks[j].cpu_pct_x10;
+                    agg_net += tasks[j].net_kbit;
                     match tasks[j].state {
                         1 => best_state = 1, // Running
                         0 if best_state != 1 => best_state = 0, // Ready
@@ -138,14 +168,14 @@ pub fn build_display_list(
                 }
             }
 
-            display.push(DisplayRow { kind: 1, task_idx: l as u16, thread_count: count, agg_cpu, agg_state: best_state });
+            display.push(DisplayRow { kind: 1, task_idx: l as u16, thread_count: count, agg_cpu, agg_net, agg_state: best_state });
 
             // If expanded, add individual thread rows
             let is_expanded = expanded.iter().any(|&tid| tid == tasks[l].tid);
             if is_expanded {
                 for j in 0..n {
                     if leader[j] as usize == l {
-                        display.push(DisplayRow { kind: 2, task_idx: j as u16, thread_count: 0, agg_cpu: 0, agg_state: 0 });
+                        display.push(DisplayRow { kind: 2, task_idx: j as u16, thread_count: 0, agg_cpu: 0, agg_net: 0, agg_state: 0 });
                     }
                 }
             }

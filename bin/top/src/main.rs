@@ -4,7 +4,7 @@
 anyos_std::entry!(main);
 
 const MAX_TASKS: usize = 64;
-const THREAD_ENTRY_SIZE: usize = 64;
+const THREAD_ENTRY_SIZE: usize = 80;
 /// Refresh interval in milliseconds.
 const REFRESH_MS: u32 = 2000;
 
@@ -12,6 +12,7 @@ const REFRESH_MS: u32 = 2000;
 
 struct PrevTicks {
     entries: [(u32, u32); MAX_TASKS], // (tid, cpu_ticks)
+    net_entries: [(u32, u64); MAX_TASKS], // (tid, net_total_bytes)
     count: usize,
     prev_total: u32,
 }
@@ -32,6 +33,7 @@ struct TaskEntry {
     uid: u16,
     user_pages: u32,
     cpu_pct_x10: u32, // CPU% * 10 (e.g. 123 = 12.3%)
+    net_kbit: u32,    // Network rate in kbit/s (tx+rx)
 }
 
 // ─── Terminal size ───────────────────────────────────────────────────────────
@@ -70,6 +72,31 @@ fn parse_uint(bytes: &[u8]) -> Option<usize> {
 
 use anyos_std::fmt::{fmt_u32, fmt_pct, fmt_mem_pages as fmt_mem};
 
+/// Format kbit/s as "X.X Mbit" string (right-aligned in 9 chars).
+fn fmt_net_mbit<'a>(buf: &'a mut [u8; 16], kbit: u32) -> &'a str {
+    if kbit == 0 {
+        return "   0 Mbit";
+    }
+    let mbit_x10 = (kbit as u64 * 10 / 1000) as u32;
+    let whole = mbit_x10 / 10;
+    let frac = mbit_x10 % 10;
+    let mut pos = 0usize;
+    let mut tmp = [0u8; 10];
+    let mut tpos = 10;
+    if whole == 0 { tpos -= 1; tmp[tpos] = b'0'; } else {
+        let mut v = whole;
+        while v > 0 { tpos -= 1; tmp[tpos] = b'0' + (v % 10) as u8; v /= 10; }
+    }
+    let int_len = 10 - tpos;
+    buf[pos..pos + int_len].copy_from_slice(&tmp[tpos..10]);
+    pos += int_len;
+    buf[pos] = b'.'; pos += 1;
+    buf[pos] = b'0' + frac as u8; pos += 1;
+    buf[pos..pos + 5].copy_from_slice(b" Mbit");
+    pos += 5;
+    core::str::from_utf8(&buf[..pos]).unwrap_or("?")
+}
+
 // ─── Data fetching ───────────────────────────────────────────────────────────
 
 /// Fetch thread list and compute per-thread CPU% delta.
@@ -98,6 +125,17 @@ fn fetch_tasks(
         let cpu_ticks = u32::from_le_bytes([raw[off + 36], raw[off + 37], raw[off + 38], raw[off + 39]]);
         let uid = u16::from_le_bytes([raw[off + 56], raw[off + 57]]);
 
+        // Network bytes (tx at offset 64, rx at offset 72)
+        let net_tx = u64::from_le_bytes([
+            raw[off+64], raw[off+65], raw[off+66], raw[off+67],
+            raw[off+68], raw[off+69], raw[off+70], raw[off+71],
+        ]);
+        let net_rx = u64::from_le_bytes([
+            raw[off+72], raw[off+73], raw[off+74], raw[off+75],
+            raw[off+76], raw[off+77], raw[off+78], raw[off+79],
+        ]);
+        let net_total = net_tx.wrapping_add(net_rx);
+
         let prev_ticks = prev.entries[..prev.count]
             .iter()
             .find(|e| e.0 == tid)
@@ -111,7 +149,15 @@ fn fetch_tasks(
             0
         };
 
-        out[i] = TaskEntry { tid, name, name_len, state, priority: prio, uid, user_pages, cpu_pct_x10 };
+        // Network rate: delta bytes over REFRESH_MS → kbit/s
+        let prev_net = prev.net_entries[..prev.count]
+            .iter().find(|e| e.0 == tid).map(|e| e.1).unwrap_or(net_total);
+        let d_net = net_total.wrapping_sub(prev_net);
+        let net_kbit = if d_net > 0 {
+            (d_net * 8 / REFRESH_MS as u64).min(u32::MAX as u64) as u32
+        } else { 0 };
+
+        out[i] = TaskEntry { tid, name, name_len, state, priority: prio, uid, user_pages, cpu_pct_x10, net_kbit };
     }
 
     // Save current ticks for next delta
@@ -120,7 +166,16 @@ fn fetch_tasks(
         let off = i * THREAD_ENTRY_SIZE;
         let tid = u32::from_le_bytes([raw[off], raw[off + 1], raw[off + 2], raw[off + 3]]);
         let cpu_ticks = u32::from_le_bytes([raw[off + 36], raw[off + 37], raw[off + 38], raw[off + 39]]);
+        let net_tx = u64::from_le_bytes([
+            raw[off+64], raw[off+65], raw[off+66], raw[off+67],
+            raw[off+68], raw[off+69], raw[off+70], raw[off+71],
+        ]);
+        let net_rx = u64::from_le_bytes([
+            raw[off+72], raw[off+73], raw[off+74], raw[off+75],
+            raw[off+76], raw[off+77], raw[off+78], raw[off+79],
+        ]);
         prev.entries[i] = (tid, cpu_ticks);
+        prev.net_entries[i] = (tid, net_tx.wrapping_add(net_rx));
     }
     prev.prev_total = total_sched_ticks;
 
@@ -175,6 +230,7 @@ fn main() {
     let mut raw_buf = [0u8; THREAD_ENTRY_SIZE * MAX_TASKS];
     let mut prev = PrevTicks {
         entries: [(0, 0); MAX_TASKS],
+        net_entries: [(0, 0); MAX_TASKS],
         count: 0,
         prev_total: 0,
     };
@@ -183,7 +239,7 @@ fn main() {
     // Default task entry for array init
     const EMPTY_TASK: TaskEntry = TaskEntry {
         tid: 0, name: [0; 24], name_len: 0, state: 0,
-        priority: 0, uid: 0, user_pages: 0, cpu_pct_x10: 0,
+        priority: 0, uid: 0, user_pages: 0, cpu_pct_x10: 0, net_kbit: 0,
     };
     let mut tasks = [EMPTY_TASK; MAX_TASKS];
 
@@ -290,10 +346,10 @@ fn main() {
         line_count += 1;
 
         // Table header
-        // Fixed columns before NAME: "TID"(5) + " "(1) + "USER"(10) + " "(1) + "PRI"(3) + " "(1)
-        //   + "STATE"(8) + " "(1) + "CPU%"(5) + " "(1) + "MEM"(6) + " "(1) = 43 chars
-        let name_col_width = term_cols.saturating_sub(43).max(4);
-        anyos_std::print!("{:>5} {:<10} {:>3} {:<8} {:>5} {:>6} {}", "TID", "USER", "PRI", "STATE", "CPU%", "MEM", "NAME");
+        // Fixed columns before NAME: "TID"(5) + " "(1) + "USER"(10) + " "(1) + "NET"(9) + " "(1) + "PRI"(3) + " "(1)
+        //   + "STATE"(8) + " "(1) + "CPU%"(5) + " "(1) + "MEM"(6) + " "(1) = 53 chars
+        let name_col_width = term_cols.saturating_sub(53).max(4);
+        anyos_std::print!("{:>5} {:<10} {:>9} {:>3} {:<8} {:>5} {:>6} {}", "TID", "USER", "NET", "PRI", "STATE", "CPU%", "MEM", "NAME");
         anyos_std::println!("\x1B[K");
         line_count += 1;
         // Dynamic separator spanning the terminal width
@@ -342,8 +398,11 @@ fn main() {
             let mut mbuf = [0u8; 16];
             let mem_str = fmt_mem(&mut mbuf, task.user_pages);
 
-            anyos_std::print!("{:>5} {:<10} {:>3} {:<8} {:>5} {:>6} {}",
-                task.tid, username, task.priority, state_str, cpu_str, mem_str, name);
+            let mut nbuf = [0u8; 16];
+            let net_str = fmt_net_mbit(&mut nbuf, task.net_kbit);
+
+            anyos_std::print!("{:>5} {:<10} {:>9} {:>3} {:<8} {:>5} {:>6} {}",
+                task.tid, username, net_str, task.priority, state_str, cpu_str, mem_str, name);
             anyos_std::println!("\x1B[K");
             line_count += 1;
         }

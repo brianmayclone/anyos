@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    BoxSizing, ComputedStyle, Display, FontStyleVal, FontWeight, ListStylePosition, OverflowVal,
-    Position, PseudoStyles, TextDeco, Visibility,
+    AlignContent, BoxSizing, ComputedStyle, Display, FontStyleVal, FontWeight,
+    ListStylePosition, OverflowVal, Position, PseudoStyles, TextDeco, Visibility,
 };
 use crate::ImageCache;
 
@@ -640,7 +640,12 @@ pub fn build_block_with_budget(
                     | Display::InlineGrid
             )
             || style.float != crate::style::FloatVal::None
-            || matches!(style.position, Position::Absolute | Position::Fixed);
+            || matches!(style.position, Position::Absolute | Position::Fixed)
+            || (!style.align_content_is_normal
+                && !matches!(
+                    style.display,
+                    Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+                ));
         if !is_bfc && bx.border_width == 0 && bx.padding.top == 0 && style.border_top.width == 0 {
             // Find first in-flow child — its y == its margin.top (since cursor_y was 0).
             if let Some(first_child) = bx.children.iter().find(|c| !c.is_out_of_flow) {
@@ -730,6 +735,15 @@ pub fn build_block_with_budget(
         }
     }
 
+    if !style.align_content_is_normal
+        && !matches!(
+            style.display,
+            Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
+        )
+    {
+        apply_block_align_content(&mut bx, style, border2);
+    }
+
     // Apply position:relative offset (does not affect child layout).
     if style.position == Position::Relative {
         if let Some(t) = style.top {
@@ -793,6 +807,70 @@ fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
         }
     }
     saw_nonempty_text
+}
+
+fn apply_block_align_content(bx: &mut LayoutBox, style: &ComputedStyle, border2: i32) {
+    let flow_indices: Vec<usize> = bx
+        .children
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, child)| (!child.is_out_of_flow).then_some(idx))
+        .collect();
+    if flow_indices.is_empty() {
+        return;
+    }
+
+    let group_top = flow_indices
+        .iter()
+        .map(|&idx| bx.children[idx].y - bx.children[idx].margin.top)
+        .min()
+        .unwrap_or(0);
+    let group_bottom = flow_indices
+        .iter()
+        .map(|&idx| {
+            let child = &bx.children[idx];
+            child.y + child.height + child.margin.bottom
+        })
+        .max()
+        .unwrap_or(group_top);
+    let group_h = (group_bottom - group_top).max(0);
+    let content_top = bx.border_width + bx.padding.top;
+    let content_h = (bx.height - bx.padding.top - bx.padding.bottom - border2).max(0);
+    let free = content_h - group_h;
+    let unsafe_align = !matches!(style.overflow_y, OverflowVal::Visible);
+    let offset = match style.align_content {
+        AlignContent::FlexEnd => {
+            if unsafe_align {
+                free
+            } else {
+                free.max(0)
+            }
+        }
+        AlignContent::Center => {
+            if unsafe_align {
+                free / 2
+            } else {
+                free.max(0) / 2
+            }
+        }
+        AlignContent::SpaceAround | AlignContent::SpaceEvenly => {
+            if unsafe_align {
+                free / 2
+            } else {
+                free.max(0) / 2
+            }
+        }
+        _ => 0,
+    } + (content_top - group_top);
+
+    if offset == 0 {
+        return;
+    }
+    for child in &mut bx.children {
+        if !child.is_out_of_flow {
+            child.y += offset;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

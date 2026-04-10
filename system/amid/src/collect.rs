@@ -9,7 +9,7 @@ use libdb_client::Database;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const THREAD_ENTRY_SIZE: usize = 60;
+const THREAD_ENTRY_SIZE: usize = 80;
 const MAX_THREADS: usize = 256;
 const MAX_CPUS: usize = 16;
 
@@ -192,7 +192,7 @@ pub fn collect_cpu(db: &Database, state: &mut CpuState) {
 
 // ── Fast: Thread List ────────────────────────────────────────────────────────
 
-/// Collect thread list (sysinfo cmd 1, 60-byte entries).
+/// Collect thread list (sysinfo cmd 1, 80-byte entries).
 pub fn collect_threads(db: &Database) {
     let _ = db.exec("DELETE FROM threads");
 
