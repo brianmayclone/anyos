@@ -6,7 +6,8 @@
 //! - WeakMap/WeakSet use strong references internally (no weak GC integration)
 //!   but provide the correct API surface.
 //! - WeakRef.deref() always returns the held value (never collected).
-//! - FinalizationRegistry is a stub.
+//! - FinalizationRegistry tracks register/unregister entries but never
+//!   invokes its cleanup callback (no GC hook).
 
 use alloc::collections::BTreeMap;
 use alloc::rc::Rc;
@@ -181,24 +182,130 @@ pub fn weakref_deref(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 // ═══════════════════════════════════════════════════════════
-// FinalizationRegistry (stub)
+// FinalizationRegistry
 // ═══════════════════════════════════════════════════════════
+//
+// Without GC integration the cleanup callback can never be invoked, but
+// register/unregister still maintain the registered cell list so that
+// programs which round-trip values through the registry observe consistent
+// behaviour. Each registry stores a `__entries` array of `[target, held,
+// token]` triples on a hidden slot.
 
-/// `new FinalizationRegistry(callback)` — stub
+/// `new FinalizationRegistry(callback)`
+///
+/// ES2023 §26.2.1.1: throws TypeError if `callback` is not callable.
 pub fn ctor_finalization_registry(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if !matches!(callback, JsValue::Function(_)) {
+        let err = vm.make_type_error("FinalizationRegistry callback must be callable");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
     let mut obj = JsObject::new();
     obj.prototype = Some(vm.object_proto.clone());
-    let callback = args.first().cloned().unwrap_or(JsValue::Undefined);
+    obj.internal_tag = Some(String::from("__finalization_registry__"));
     obj.set_hidden(String::from("__callback"), callback);
+    obj.set_hidden(
+        String::from("__entries"),
+        JsValue::Array(Rc::new(RefCell::new(JsArray::new()))),
+    );
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
 
-/// `FinalizationRegistry.prototype.register(target, heldValue)` — no-op
-pub fn fr_register(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+fn fr_entries(this: &JsValue) -> Option<Rc<RefCell<JsArray>>> {
+    if let JsValue::Object(obj) = this {
+        if let JsValue::Array(arr) = obj.borrow().get("__entries") {
+            return Some(arr);
+        }
+    }
+    None
+}
+
+/// `FinalizationRegistry.prototype.register(target, heldValue [, unregisterToken])`
+///
+/// ES2023 §26.2.3.2. Stores the entry; the cleanup callback is never invoked
+/// in this implementation because there is no GC hook, but `unregister` can
+/// still locate and remove the entry by token.
+pub fn fr_register(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let this = vm.current_this.clone();
+    let target = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if !matches!(
+        target,
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)
+    ) {
+        let err = vm.make_type_error("FinalizationRegistry.register target must be an object");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    let held = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let token = args.get(2).cloned().unwrap_or(JsValue::Undefined);
+    if let Some(entries) = fr_entries(&this) {
+        let entry = JsArray::new();
+        let entry_rc = Rc::new(RefCell::new(entry));
+        {
+            let mut e = entry_rc.borrow_mut();
+            e.push(target);
+            e.push(held);
+            e.push(token);
+        }
+        entries.borrow_mut().push(JsValue::Array(entry_rc));
+    }
     JsValue::Undefined
 }
 
-/// `FinalizationRegistry.prototype.unregister(token)` — no-op
-pub fn fr_unregister(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    JsValue::Bool(false)
+/// `FinalizationRegistry.prototype.unregister(token)`
+///
+/// ES2023 §26.2.3.3. Removes every entry with a matching unregister token
+/// using SameValue comparison. Returns `true` if at least one entry was
+/// removed.
+pub fn fr_unregister(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let this = vm.current_this.clone();
+    let token = args.first().cloned().unwrap_or(JsValue::Undefined);
+    if !matches!(
+        token,
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_)
+    ) {
+        let err = vm.make_type_error(
+            "FinalizationRegistry.unregister token must be an object",
+        );
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
+    let Some(entries) = fr_entries(&this) else {
+        return JsValue::Bool(false);
+    };
+    let mut removed = false;
+    let mut arr = entries.borrow_mut();
+    let mut keep: alloc::vec::Vec<JsValue> = alloc::vec::Vec::new();
+    let len = arr.length;
+    for i in 0..len {
+        let entry = arr.get(i);
+        let entry_token = if let JsValue::Array(inner) = &entry {
+            inner.borrow().get(2)
+        } else {
+            JsValue::Undefined
+        };
+        if same_value_object(&entry_token, &token) {
+            removed = true;
+        } else {
+            keep.push(entry);
+        }
+    }
+    arr.elements.clear();
+    arr.length = 0;
+    for v in keep {
+        arr.push(v);
+    }
+    JsValue::Bool(removed)
+}
+
+/// SameValue comparison restricted to object identity (Rc pointer equality).
+/// Sufficient for unregister tokens, which must be objects.
+fn same_value_object(a: &JsValue, b: &JsValue) -> bool {
+    match (a, b) {
+        (JsValue::Object(x), JsValue::Object(y)) => Rc::ptr_eq(x, y),
+        (JsValue::Array(x), JsValue::Array(y)) => Rc::ptr_eq(x, y),
+        (JsValue::Function(x), JsValue::Function(y)) => Rc::ptr_eq(x, y),
+        _ => false,
+    }
 }

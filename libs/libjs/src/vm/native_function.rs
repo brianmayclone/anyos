@@ -49,10 +49,9 @@ pub fn function_bind(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
 
     // Create a new function that wraps the original with bound this + args.
-    // For native function pointers we can't create true closures, so we
-    // clone the original and set this_binding.  Partial application of
-    // bound_args is not supported for bytecode functions in this
-    // simplified implementation but the this binding works correctly.
+    // We clone the original function, install the bound `this` binding, and
+    // store the bound argument list — `invoke_with_this` below prepends them
+    // to the call-site arguments for both native and bytecode functions.
     match &func {
         JsValue::Function(f) => {
             let original = f.borrow();

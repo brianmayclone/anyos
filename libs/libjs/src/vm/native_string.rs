@@ -31,6 +31,51 @@ fn is_regexp_like(vm: &mut Vm, search: &JsValue) -> Option<bool> {
     }
 }
 
+/// Per ECMA: `String.prototype.{split,replace,replaceAll}` must first call
+/// GetMethod on the relevant well-known symbol on their first argument.
+/// If a callable is returned, dispatch to it; otherwise the caller falls
+/// through to the basic string-based implementation. Errors from the getter
+/// or the dispatched call are propagated through `pending_exception`.
+pub(crate) fn dispatch_string_well_known(
+    vm: &mut Vm,
+    args: &[JsValue],
+    sym_key: &str,
+) -> Option<JsValue> {
+    let arg = args.first()?;
+    if matches!(arg, JsValue::Null | JsValue::Undefined) {
+        return None;
+    }
+    let arg_clone = arg.clone();
+    let method = vm.get_property_invoking_getter(&arg_clone, sym_key);
+    if vm.pending_exception.is_some() {
+        return Some(JsValue::Undefined);
+    }
+    if !matches!(method, JsValue::Function(_)) {
+        return None;
+    }
+    let this_str = match this_string_checked(vm) {
+        Some(s) => JsValue::String(s),
+        None => return Some(JsValue::Undefined),
+    };
+    // Forward all original args after the search value (e.g. replacement,
+    // limit) to the user-defined symbol method, with the search value as
+    // `this`.
+    let mut call_args: Vec<JsValue> = Vec::with_capacity(args.len());
+    call_args.push(this_str);
+    for extra in args.iter().skip(1) {
+        call_args.push(extra.clone());
+    }
+    let result = vm.call_value(&method, &call_args, arg_clone);
+    if let Some(exc) = vm.last_exception.take() {
+        vm.pending_exception = Some(exc);
+        return Some(JsValue::Undefined);
+    }
+    if vm.pending_exception.is_some() {
+        return Some(JsValue::Undefined);
+    }
+    Some(result)
+}
+
 fn reject_regexp_search(vm: &mut Vm, args: &[JsValue]) -> bool {
     if let Some(search) = args.first() {
         let Some(is_regexp) = is_regexp_like(vm, search) else {
@@ -62,7 +107,7 @@ fn this_string(vm: &Vm) -> String {
 /// RequireObjectCoercible + ToString. Throws TypeError for null/undefined.
 /// For Objects, calls Symbol.toPrimitive if present, otherwise falls back to basic coercion.
 /// Returns None if an exception was thrown.
-fn this_string_checked(vm: &mut Vm) -> Option<String> {
+pub fn this_string_checked(vm: &mut Vm) -> Option<String> {
     let this = vm.current_this.clone();
     match &this {
         JsValue::Null | JsValue::Undefined => {
@@ -599,6 +644,10 @@ pub fn string_trim_end(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Per ES §22.1.3.21: GetMethod(separator, @@split) — propagates getter exceptions.
+    if let Some(r) = dispatch_string_well_known(vm, args, super::native_symbol::WELL_KNOWN_SPLIT) {
+        return r;
+    }
     // Check if separator is a RegExp
     if let Some(sep) = args.first() {
         if let JsValue::Object(obj) = sep {
@@ -616,13 +665,15 @@ pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         None => return JsValue::Undefined,
     };
     let sep_val = args.first().cloned();
-    let limit = args
-        .get(1)
-        .map(|v| {
-            if matches!(v, JsValue::Undefined) {
-                return usize::MAX;
-            }
-            let n = v.to_number();
+    let limit = match args.get(1) {
+        None | Some(JsValue::Undefined) => usize::MAX,
+        Some(v) => {
+            // ES §22.1.3.21 step 6: Let lim be ToUint32(limit).
+            // Must invoke valueOf()/Symbol.toPrimitive and propagate exceptions.
+            let n = match arg_to_number_checked(vm, v) {
+                Some(n) => n,
+                None => return JsValue::Undefined,
+            };
             if n.is_nan() || n < 0.0 {
                 0
             } else if !n.is_finite() {
@@ -630,8 +681,8 @@ pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             } else {
                 n as usize
             }
-        })
-        .unwrap_or(usize::MAX);
+        }
+    };
 
     // limit === 0 → empty array (ES2023 §22.1.3.21 step 11)
     if limit == 0 {
@@ -682,6 +733,10 @@ pub fn string_split(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Per ES §22.1.3.17: GetMethod(searchValue, @@replace).
+    if let Some(r) = dispatch_string_well_known(vm, args, super::native_symbol::WELL_KNOWN_REPLACE) {
+        return r;
+    }
     // Check if search is a RegExp
     if let Some(search_val) = args.first() {
         if let JsValue::Object(obj) = search_val {
@@ -726,6 +781,10 @@ pub fn string_replace(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn string_replace_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    // Per ES §22.1.3.18: GetMethod(searchValue, @@replace).
+    if let Some(r) = dispatch_string_well_known(vm, args, super::native_symbol::WELL_KNOWN_REPLACE) {
+        return r;
+    }
     // Check if search is a RegExp (must have global flag)
     if let Some(search_val) = args.first() {
         if let JsValue::Object(obj) = search_val {
@@ -749,32 +808,74 @@ pub fn string_replace_all(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         },
         None => String::new(),
     };
-    let replacement = match args.get(1) {
-        Some(v) => match arg_to_string_checked(vm, v) {
+
+    // §22.1.3.18 step 5: functionalReplace = IsCallable(replaceValue).
+    let replace_arg = args.get(1).cloned().unwrap_or(JsValue::Undefined);
+    let functional = matches!(replace_arg, JsValue::Function(_));
+    let static_replacement = if functional {
+        String::new()
+    } else {
+        match arg_to_string_checked(vm, &replace_arg) {
             Some(s) => s,
             None => return JsValue::Undefined,
-        },
-        None => String::new(),
+        }
+    };
+
+    // Helper: produce the replacement string for a match at byte index `pos`.
+    let make_replacement = |vm: &mut Vm, pos: usize| -> Option<String> {
+        if !functional {
+            return Some(static_replacement.clone());
+        }
+        let call_args = [
+            JsValue::String(search.clone()),
+            JsValue::Number(pos as f64),
+            JsValue::String(s.clone()),
+        ];
+        let result = vm.call_value(&replace_arg, &call_args, JsValue::Undefined);
+        if let Some(exc) = vm.last_exception.take() {
+            vm.pending_exception = Some(exc);
+            return None;
+        }
+        if vm.pending_exception.is_some() {
+            return None;
+        }
+        arg_to_string_checked(vm, &result)
     };
 
     if search.is_empty() {
-        // Insert replacement between every character (and at start/end)
+        // Insert replacement between every character (and at start/end).
         let mut result = String::new();
-        result.push_str(&replacement);
+        let first = match make_replacement(vm, 0) {
+            Some(r) => r,
+            None => return JsValue::Undefined,
+        };
+        result.push_str(&first);
+        let mut byte_pos = 0usize;
         for c in s.chars() {
+            byte_pos += c.len_utf8();
             result.push(c);
-            result.push_str(&replacement);
+            let r = match make_replacement(vm, byte_pos) {
+                Some(r) => r,
+                None => return JsValue::Undefined,
+            };
+            result.push_str(&r);
         }
         return JsValue::String(result);
     }
 
     let mut result = String::new();
-    let mut remaining = s.as_str();
+    let mut remaining_offset = 0usize;
     loop {
+        let remaining = &s[remaining_offset..];
         if let Some(idx) = remaining.find(search.as_str()) {
             result.push_str(&remaining[..idx]);
-            result.push_str(&replacement);
-            remaining = &remaining[idx + search.len()..];
+            let match_pos = remaining_offset + idx;
+            let r = match make_replacement(vm, match_pos) {
+                Some(r) => r,
+                None => return JsValue::Undefined,
+            };
+            result.push_str(&r);
+            remaining_offset = match_pos + search.len();
         } else {
             result.push_str(remaining);
             break;
@@ -1001,16 +1102,41 @@ pub fn string_raw(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
     JsValue::String(result)
 }
 
-/// `String.prototype.normalize([form])` — Unicode normalization (stub: returns self).
-pub fn string_normalize(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
+/// `String.prototype.normalize([form])` — ES2023 §22.1.3.14.
+///
+/// We do not bundle the Unicode normalization tables, so for the four valid
+/// `form` values we return the string unchanged (which is correct for any
+/// input that contains no characters affected by normalization, i.e. pure
+/// ASCII and most precomposed text). Invalid forms throw a `RangeError` per
+/// the spec.
+pub fn string_normalize(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = match this_string_checked(vm) {
         Some(s) => s,
         None => return JsValue::Undefined,
     };
+    let form = match args.first() {
+        Some(JsValue::Undefined) | None => String::from("NFC"),
+        Some(v) => match arg_to_string_checked(vm, v) {
+            Some(f) => f,
+            None => return JsValue::Undefined,
+        },
+    };
+    if !matches!(form.as_str(), "NFC" | "NFD" | "NFKC" | "NFKD") {
+        let err = vm.make_range_error("Invalid normalization form");
+        vm.throw_native(err);
+        return JsValue::Undefined;
+    }
     JsValue::String(s)
 }
 
-/// `String.prototype.localeCompare(that)` — simplified: byte comparison.
+/// `String.prototype.localeCompare(that [, locales [, options]])` — ES2023 §22.1.3.10.
+///
+/// Uses UCA Level-1 (primary-weight) comparison via [`super::uca`]. The
+/// embedded Latin/Latin-1/Latin Extended-A table makes western text sort
+/// correctly even without an installed Unicode data file; if
+/// `/System/share/collation/uca.bin` is present at runtime the full BMP is
+/// covered. The optional `locales` and `options` arguments are accepted but
+/// not used (no locale tailorings).
 pub fn string_locale_compare(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let s = match this_string_checked(vm) {
         Some(s) => s,
@@ -1023,7 +1149,7 @@ pub fn string_locale_compare(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         },
         None => String::from("undefined"),
     };
-    let cmp = s.cmp(&that);
+    let cmp = super::uca::compare_primary(&s, &that);
     JsValue::Number(match cmp {
         core::cmp::Ordering::Less => -1.0,
         core::cmp::Ordering::Equal => 0.0,

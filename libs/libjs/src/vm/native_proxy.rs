@@ -167,6 +167,57 @@ pub fn proxy_has(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
     }
 }
 
+/// `handler.getPrototypeOf(target)` trap. Returns Some(value) if the proxy
+/// produced one (either via the trap or by falling through to the target),
+/// or None if an exception is pending.
+pub fn proxy_get_prototype_of(vm: &mut Vm, proxy: &JsValue) -> Option<JsValue> {
+    let (target, handler) = get_target_handler(proxy)?;
+    match invoke_trap(vm, &handler, "getPrototypeOf", &[target.clone()]) {
+        Ok(Some(val)) => Some(val),
+        Ok(None) => {
+            if let JsValue::Object(t) = &target {
+                let o = t.borrow();
+                Some(match &o.prototype {
+                    Some(p) => JsValue::Object(p.clone()),
+                    None => JsValue::Null,
+                })
+            } else {
+                Some(JsValue::Null)
+            }
+        }
+        Err(()) => None,
+    }
+}
+
+/// `handler.setPrototypeOf(target, prototype)` trap.
+/// Returns Some(true) if the trap reported success, Some(false) on rejection,
+/// or None if an exception is pending.
+pub fn proxy_set_prototype_of(vm: &mut Vm, proxy: &JsValue, proto: &JsValue) -> Option<bool> {
+    let (target, handler) = get_target_handler(proxy)?;
+    match invoke_trap(
+        vm,
+        &handler,
+        "setPrototypeOf",
+        &[target.clone(), proto.clone()],
+    ) {
+        Ok(Some(result)) => Some(result.to_boolean()),
+        Ok(None) => {
+            // No trap — fall through to the default [[SetPrototypeOf]] on the target.
+            if let JsValue::Object(t) = &target {
+                let proto_rc = match proto {
+                    JsValue::Object(p) => Some(p.clone()),
+                    JsValue::Null => None,
+                    _ => return Some(false),
+                };
+                Some(native_object::set_prototype_of_internal(vm, t, proto_rc))
+            } else {
+                Some(true)
+            }
+        }
+        Err(()) => None,
+    }
+}
+
 /// `handler.deleteProperty(target, property)` trap.
 pub fn proxy_delete(vm: &mut Vm, proxy: &JsValue, key: &str) -> Option<bool> {
     let (target, handler) = get_target_handler(proxy)?;
@@ -512,14 +563,36 @@ pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     }
 }
 
+/// `Reflect.isExtensible(target)` — ES2023 §28.1.6.
+/// Throws TypeError if target is not an Object (unlike `Object.isExtensible`,
+/// which coerces non-objects to `false`).
 pub fn reflect_is_extensible(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    // All objects are extensible in our simplified model
-    JsValue::Bool(true)
+    match args.first() {
+        Some(v @ (JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_))) => {
+            native_object::object_is_extensible(vm, core::slice::from_ref(v))
+        }
+        _ => {
+            let err = vm.make_type_error("Reflect.isExtensible called on non-object");
+            vm.throw_native(err);
+            JsValue::Undefined
+        }
+    }
 }
 
+/// `Reflect.preventExtensions(target)` — ES2023 §28.1.11.
+/// Throws TypeError on non-objects; returns `true` on success.
 pub fn reflect_prevent_extensions(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    // No-op in simplified model
-    JsValue::Bool(true)
+    match args.first() {
+        Some(v @ (JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_))) => {
+            native_object::object_prevent_extensions(vm, core::slice::from_ref(v));
+            JsValue::Bool(true)
+        }
+        _ => {
+            let err = vm.make_type_error("Reflect.preventExtensions called on non-object");
+            vm.throw_native(err);
+            JsValue::Undefined
+        }
+    }
 }
 
 pub fn reflect_define_metadata(_vm: &mut Vm, args: &[JsValue]) -> JsValue {

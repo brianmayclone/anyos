@@ -36,6 +36,8 @@ pub mod native_promise;
 pub mod native_proxy;
 pub mod native_regexp;
 pub mod native_string;
+pub mod uca;
+mod uca_latin_table;
 pub mod native_symbol;
 pub mod native_timer;
 pub mod native_typed_array;
@@ -1700,34 +1702,55 @@ impl Vm {
                     // `__proto__` assignment updates the actual prototype chain.
                     if key_str == "__proto__" {
                         if let JsValue::Object(obj_rc) = &obj {
-                            match &val {
-                                JsValue::Object(proto_rc) => {
-                                    if !native_object::set_prototype_of_internal(
-                                        self,
-                                        obj_rc,
-                                        Some(proto_rc.clone()),
-                                    ) {
-                                        let exc = self.make_type_error("Cannot set prototype");
-                                        self.stack.push(val);
-                                        if !self.handle_exception(exc) {
-                                            return JsValue::Undefined;
-                                        }
-                                        continue;
+                            // Per ES B.2.2.1: route Proxy receivers through the
+                            // setPrototypeOf trap so handler exceptions propagate.
+                            let is_proxy = obj_rc.borrow().internal_tag.as_deref()
+                                == Some(native_proxy::PROXY_TAG);
+                            if is_proxy
+                                && matches!(val, JsValue::Object(_) | JsValue::Null)
+                            {
+                                let _ = native_proxy::proxy_set_prototype_of(
+                                    self, &obj, &val,
+                                );
+                                if let Some(exc) = self.pending_exception.take() {
+                                    self.stack.push(val);
+                                    if !self.handle_exception(exc) {
+                                        return JsValue::Undefined;
                                     }
+                                    continue;
                                 }
-                                JsValue::Null => {
-                                    if !native_object::set_prototype_of_internal(
-                                        self, obj_rc, None,
-                                    ) {
-                                        let exc = self.make_type_error("Cannot set prototype");
-                                        self.stack.push(val);
-                                        if !self.handle_exception(exc) {
-                                            return JsValue::Undefined;
+                            } else {
+                                match &val {
+                                    JsValue::Object(proto_rc) => {
+                                        if !native_object::set_prototype_of_internal(
+                                            self,
+                                            obj_rc,
+                                            Some(proto_rc.clone()),
+                                        ) {
+                                            let exc =
+                                                self.make_type_error("Cannot set prototype");
+                                            self.stack.push(val);
+                                            if !self.handle_exception(exc) {
+                                                return JsValue::Undefined;
+                                            }
+                                            continue;
                                         }
-                                        continue;
                                     }
+                                    JsValue::Null => {
+                                        if !native_object::set_prototype_of_internal(
+                                            self, obj_rc, None,
+                                        ) {
+                                            let exc =
+                                                self.make_type_error("Cannot set prototype");
+                                            self.stack.push(val);
+                                            if !self.handle_exception(exc) {
+                                                return JsValue::Undefined;
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
                             }
                         }
                     } else if let Some(setter) = self.find_setter(&obj, &key_str) {
@@ -1912,34 +1935,55 @@ impl Vm {
                     // `__proto__` assignment updates the actual prototype chain.
                     if name == "__proto__" {
                         if let JsValue::Object(obj_rc) = &obj {
-                            match &val {
-                                JsValue::Object(proto_rc) => {
-                                    if !native_object::set_prototype_of_internal(
-                                        self,
-                                        obj_rc,
-                                        Some(proto_rc.clone()),
-                                    ) {
-                                        let exc = self.make_type_error("Cannot set prototype");
-                                        self.stack.push(val);
-                                        if !self.handle_exception(exc) {
-                                            return JsValue::Undefined;
-                                        }
-                                        continue;
+                            // Per ES B.2.2.1: route Proxy receivers through the
+                            // setPrototypeOf trap so handler exceptions propagate.
+                            let is_proxy = obj_rc.borrow().internal_tag.as_deref()
+                                == Some(native_proxy::PROXY_TAG);
+                            if is_proxy
+                                && matches!(val, JsValue::Object(_) | JsValue::Null)
+                            {
+                                let _ = native_proxy::proxy_set_prototype_of(
+                                    self, &obj, &val,
+                                );
+                                if let Some(exc) = self.pending_exception.take() {
+                                    self.stack.push(val);
+                                    if !self.handle_exception(exc) {
+                                        return JsValue::Undefined;
                                     }
+                                    continue;
                                 }
-                                JsValue::Null => {
-                                    if !native_object::set_prototype_of_internal(
-                                        self, obj_rc, None,
-                                    ) {
-                                        let exc = self.make_type_error("Cannot set prototype");
-                                        self.stack.push(val);
-                                        if !self.handle_exception(exc) {
-                                            return JsValue::Undefined;
+                            } else {
+                                match &val {
+                                    JsValue::Object(proto_rc) => {
+                                        if !native_object::set_prototype_of_internal(
+                                            self,
+                                            obj_rc,
+                                            Some(proto_rc.clone()),
+                                        ) {
+                                            let exc =
+                                                self.make_type_error("Cannot set prototype");
+                                            self.stack.push(val);
+                                            if !self.handle_exception(exc) {
+                                                return JsValue::Undefined;
+                                            }
+                                            continue;
                                         }
-                                        continue;
                                     }
+                                    JsValue::Null => {
+                                        if !native_object::set_prototype_of_internal(
+                                            self, obj_rc, None,
+                                        ) {
+                                            let exc =
+                                                self.make_type_error("Cannot set prototype");
+                                            self.stack.push(val);
+                                            if !self.handle_exception(exc) {
+                                                return JsValue::Undefined;
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                    _ => {}
                                 }
-                                _ => {}
                             }
                         }
                     } else {

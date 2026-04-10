@@ -655,9 +655,8 @@ impl Vm {
             "Boolean",
             native_ctor_fn("Boolean", native_globals::ctor_boolean),
         );
-        // Function constructor stub — creates an empty no-op function. Full source
-        // evaluation is not implemented; this satisfies `new Function()` being callable
-        // and truthy, and makes Function.prototype.isPrototypeOf(Boolean) work.
+        // `new Function([params], body)` — dynamically compiles JS source via
+        // the parser and compiler (see native_globals::ctor_function).
         self.set_global(
             "Function",
             native_ctor_fn("Function", native_globals::ctor_function),
