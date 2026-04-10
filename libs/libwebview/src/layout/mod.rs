@@ -1091,6 +1091,10 @@ pub fn layout_with_budget(
             &mut root,
             images,
             viewport_width,
+            None,
+            None,
+            None,
+            None,
         )
     } else {
         // Pass body's definite content height (or 0 if auto) so children

@@ -647,7 +647,18 @@ pub fn build_block_with_budget(
         fh
     } else if matches!(style.display, Display::Grid | Display::InlineGrid) {
         layout_grid(
-            dom, styles, pseudo, &children, inner_w, &mut bx, images, viewport_w,
+            dom,
+            styles,
+            pseudo,
+            &children,
+            inner_w,
+            &mut bx,
+            images,
+            viewport_w,
+            None,
+            None,
+            None,
+            None,
         )
     } else {
         // Block containers: block-level pseudo-elements go into flow via layout_children_ex.

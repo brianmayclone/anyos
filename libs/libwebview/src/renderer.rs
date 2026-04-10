@@ -279,6 +279,12 @@ pub(crate) struct DisplayList {
     cull_y_range: Option<(i32, i32)>,
 }
 
+#[derive(Clone, Copy)]
+struct StickyContext {
+    top: i32,
+    height: i32,
+}
+
 impl DisplayList {
     pub fn new() -> Self {
         Self {
@@ -301,7 +307,7 @@ impl DisplayList {
             mask_stack: Vec::new(),
             cull_y_range: None,
         };
-        dl.flatten(root, 0, 0);
+        dl.flatten(root, 0, 0, None);
         dl
     }
 
@@ -317,7 +323,7 @@ impl DisplayList {
             mask_stack: Vec::new(),
             cull_y_range: Some((y_start, y_end)),
         };
-        dl.flatten(root, 0, 0);
+        dl.flatten(root, 0, 0, None);
         dl
     }
 
@@ -386,7 +392,13 @@ impl DisplayList {
     /// Recursively flatten the layout tree into draw commands.
     /// Children are processed in CSS2 Appendix E stacking order when the
     /// parent creates a stacking context.
-    fn flatten(&mut self, bx: &LayoutBox, offset_x: i32, offset_y: i32) {
+    fn flatten(
+        &mut self,
+        bx: &LayoutBox,
+        offset_x: i32,
+        offset_y: i32,
+        sticky_ctx: Option<StickyContext>,
+    ) {
         if bx.visibility_hidden {
             return;
         }
@@ -404,14 +416,17 @@ impl DisplayList {
             }
         }
 
-        // Position: sticky — per CSS spec §6.3, a sticky element behaves like
-        // `position: relative` (no offset applied) UNLESS the user has scrolled
-        // past the sticky threshold within the nearest scrollable ancestor.
-        // Since surf-host doesn't currently track scroll offsets per container,
-        // we don't apply any sticky shift — sticky elements stay at their
-        // natural in-flow position. This matches reference renderings where
-        // no JavaScript scroll has occurred.
-        // (TODO: implement scroll-aware sticky clamping for nested scrollers.)
+        let sticky_abs_y = if bx.is_sticky {
+            if let Some(ctx) = sticky_ctx {
+                let min_y = ctx.top + bx.sticky_top;
+                let max_y = (ctx.top + ctx.height - bx.height).max(min_y);
+                orig_abs_y.max(min_y).min(max_y)
+            } else {
+                orig_abs_y
+            }
+        } else {
+            orig_abs_y
+        };
 
         // Apply CSS transform: scale around the resolved transform origin.
         let (abs_x, abs_y, draw_w, draw_h) = if bx.transform_sx != 1000 || bx.transform_sy != 1000 {
@@ -424,7 +439,7 @@ impl DisplayList {
                 bx.transform_origin_x_is_percent,
             );
             let cy = resolve_axis_origin(
-                orig_abs_y,
+                sticky_abs_y,
                 bx.height,
                 bx.transform_origin_y,
                 bx.transform_origin_y_is_percent,
@@ -432,10 +447,10 @@ impl DisplayList {
             let new_w = (bx.width as f32 * sx) as i32;
             let new_h = (bx.height as f32 * sy) as i32;
             let new_x = cx + ((orig_abs_x - cx) as f32 * sx) as i32;
-            let new_y = cy + ((orig_abs_y - cy) as f32 * sy) as i32;
+            let new_y = cy + ((sticky_abs_y - cy) as f32 * sy) as i32;
             (new_x, new_y, new_w, new_h)
         } else {
-            (orig_abs_x, orig_abs_y, bx.width, bx.height)
+            (orig_abs_x, sticky_abs_y, bx.width, bx.height)
         };
 
         // Check if we have border-radius.
@@ -1010,6 +1025,18 @@ impl DisplayList {
             false
         };
 
+        let next_sticky_ctx = if bx.overflow_hidden {
+            let content_top = abs_y + bx.border_width + bx.padding.top;
+            let content_h =
+                (draw_h - bx.padding.top - bx.padding.bottom - bx.border_width * 2).max(0);
+            Some(StickyContext {
+                top: content_top,
+                height: content_h,
+            })
+        } else {
+            sticky_ctx
+        };
+
         // Process children in stacking order per CSS2 Appendix E.
         // We always partition children that create stacking contexts, even if
         // the current element does not itself create one.  Per spec, positioned
@@ -1050,25 +1077,25 @@ impl DisplayList {
             // Negative z-index stacking contexts (most negative first)
             neg.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
             for &(_, idx) in &neg {
-                self.flatten(&bx.children[idx], cx, cy);
+                self.flatten(&bx.children[idx], cx, cy, next_sticky_ctx);
             }
 
             // Non-stacking-context children in document order
             for child in &bx.children {
                 if !child.creates_stacking_context {
-                    self.flatten(child, cx, cy);
+                    self.flatten(child, cx, cy, next_sticky_ctx);
                 }
             }
 
             // Non-negative z-index stacking contexts (ascending)
             pos.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
             for &(_, idx) in &pos {
-                self.flatten(&bx.children[idx], cx, cy);
+                self.flatten(&bx.children[idx], cx, cy, next_sticky_ctx);
             }
         } else {
             // No children create stacking contexts — document order.
             for child in &bx.children {
-                self.flatten(child, cx, cy);
+                self.flatten(child, cx, cy, next_sticky_ctx);
             }
         }
 
@@ -2207,6 +2234,7 @@ fn rasterize_masked_cmd(
         (cmd.x - cx, draw_y - cy, cmd.w, cmd.h),
     );
     composite_masked_scratch(
+        images,
         buf,
         stride,
         buf_h,
@@ -2221,6 +2249,7 @@ fn rasterize_masked_cmd(
 }
 
 fn composite_masked_scratch(
+    images: &ImageCache,
     dst: *mut u32,
     stride: u32,
     buf_h: u32,
@@ -2251,7 +2280,7 @@ fn composite_masked_scratch(
                 }
                 let doc_x = x + col;
                 let doc_y = tile_y_start + dst_row;
-                let mask_a = combined_mask_alpha(doc_x, doc_y, masks);
+                let mask_a = combined_mask_alpha(images, doc_x, doc_y, masks);
                 if mask_a == 0 {
                     continue;
                 }
@@ -2267,14 +2296,14 @@ fn composite_masked_scratch(
     }
 }
 
-fn combined_mask_alpha(doc_x: i32, doc_y: i32, masks: &[MaskLayer]) -> u32 {
+fn combined_mask_alpha(images: &ImageCache, doc_x: i32, doc_y: i32, masks: &[MaskLayer]) -> u32 {
     let mut alpha = 255u32;
     for mask in masks {
         let (clip_x, clip_y, clip_w, clip_h) = mask.clip_rect;
         if doc_x < clip_x || doc_y < clip_y || doc_x >= clip_x + clip_w || doc_y >= clip_y + clip_h {
             return 0;
         }
-        alpha = alpha * sample_mask_alpha(mask, doc_x, doc_y) / 255;
+        alpha = alpha * sample_mask_alpha(images, mask, doc_x, doc_y) / 255;
         if alpha == 0 {
             return 0;
         }
@@ -2282,12 +2311,41 @@ fn combined_mask_alpha(doc_x: i32, doc_y: i32, masks: &[MaskLayer]) -> u32 {
     alpha
 }
 
-fn sample_mask_alpha(mask: &MaskLayer, doc_x: i32, doc_y: i32) -> u32 {
+fn sample_mask_alpha(images: &ImageCache, mask: &MaskLayer, doc_x: i32, doc_y: i32) -> u32 {
     match &mask.image {
         BackgroundImageVal::None => 255,
-        BackgroundImageVal::Url(_) => 255,
+        BackgroundImageVal::Url(src) => {
+            let Some(entry) = images.get_ref(src) else {
+                return 0;
+            };
+            if !entry.has_pixels() {
+                return 0;
+            }
+            let (mx, my, mw, mh) =
+                resolve_mask_image_rect(mask, Some((entry.width, entry.height)));
+            if mw <= 0 || mh <= 0 {
+                return 0;
+            }
+            let rel_x = doc_x - mx;
+            let rel_y = doc_y - my;
+            if !mask_repeats_at(mask.repeat, rel_x, rel_y, mw, mh) {
+                return 0;
+            }
+            let tiled_x = wrap_repeat(rel_x, mw);
+            let tiled_y = wrap_repeat(rel_y, mh);
+            let sx = ((tiled_x as i64) * entry.width as i64 / mw as i64) as usize;
+            let sy = ((tiled_y as i64) * entry.height as i64 / mh as i64) as usize;
+            if sx >= entry.width as usize || sy >= entry.height as usize {
+                return 0;
+            }
+            let idx = sy * entry.width as usize + sx;
+            if idx >= entry.pixels.len() {
+                return 0;
+            }
+            (entry.pixels[idx] >> 24) & 0xFF
+        }
         BackgroundImageVal::LinearGradient { angle_deg, stops } => {
-            let (mx, my, mw, mh) = resolve_mask_image_rect(mask);
+            let (mx, my, mw, mh) = resolve_mask_image_rect(mask, None);
             if mw <= 0 || mh <= 0 {
                 return 0;
             }
@@ -2304,15 +2362,43 @@ fn sample_mask_alpha(mask: &MaskLayer, doc_x: i32, doc_y: i32) -> u32 {
     }
 }
 
-fn resolve_mask_image_rect(mask: &MaskLayer) -> (i32, i32, i32, i32) {
+fn resolve_mask_image_rect(
+    mask: &MaskLayer,
+    intrinsic: Option<(u32, u32)>,
+) -> (i32, i32, i32, i32) {
     let (ox, oy, ow, oh) = mask.origin_rect;
     let (mw, mh) = match mask.size {
-        BackgroundSizeVal::Auto => (ow.max(1), oh.max(1)),
-        BackgroundSizeVal::Cover => (ow.max(1), oh.max(1)),
-        BackgroundSizeVal::Contain => (ow.max(1), oh.max(1)),
+        BackgroundSizeVal::Auto => intrinsic
+            .map(|(w, h)| (w as i32, h as i32))
+            .unwrap_or((ow.max(1), oh.max(1))),
+        BackgroundSizeVal::Cover => intrinsic
+            .map(|(w, h)| fit_cover_size(ow.max(1), oh.max(1), w, h))
+            .unwrap_or((ow.max(1), oh.max(1))),
+        BackgroundSizeVal::Contain => intrinsic
+            .map(|(w, h)| fit_contain_size(ow.max(1), oh.max(1), w, h))
+            .unwrap_or((ow.max(1), oh.max(1))),
         BackgroundSizeVal::Explicit(w, h) => {
-            let rw = if w < 0 { ow } else { w };
-            let rh = if h < 0 { oh } else { h };
+            let (intr_w, intr_h) = intrinsic
+                .map(|(iw, ih)| (iw as i32, ih as i32))
+                .unwrap_or((ow.max(1), oh.max(1)));
+            let rw = if w < 0 {
+                if h >= 0 && intr_h > 0 {
+                    ((h as i64 * intr_w as i64) / intr_h as i64) as i32
+                } else {
+                    intr_w
+                }
+            } else {
+                w
+            };
+            let rh = if h < 0 {
+                if w >= 0 && intr_w > 0 {
+                    ((w as i64 * intr_h as i64) / intr_w as i64) as i32
+                } else {
+                    intr_h
+                }
+            } else {
+                h
+            };
             (rw.max(1), rh.max(1))
         }
     };

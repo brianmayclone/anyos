@@ -17,7 +17,7 @@
 //!
 //! Known limitations (future work):
 //! - Named grid lines (`[line-name]` syntax) — only area names via Named(String) are resolved
-//! - Subgrid is not handled
+//! - Subgrid still lacks full CSS Grid Level 2 sizing and placement behavior
 //! - `grid-auto-flow: column` dense packing is not implemented
 
 use alloc::vec;
@@ -25,7 +25,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId};
 use crate::style::{
-    AlignItems, ComputedStyle, Display, GridArea, GridLine, GridTrackSize, Position, PseudoStyles,
+    AlignItems, BoxSizing, ComputedStyle, Display, GridArea, GridLine, GridTrackSize, Position,
+    PseudoStyles,
 };
 use crate::ImageCache;
 
@@ -47,12 +48,32 @@ pub fn layout_grid(
     parent: &mut LayoutBox,
     images: &ImageCache,
     viewport_w: i32,
+    inherited_subgrid_cols: Option<&[i32]>,
+    inherited_subgrid_col_gap: Option<i32>,
+    inherited_subgrid_rows: Option<&[i32]>,
+    inherited_subgrid_row_gap: Option<i32>,
 ) -> i32 {
     let parent_idx = parent.node_id.unwrap_or(0);
     let parent_style = &styles[parent_idx];
 
-    let col_gap = parent_style.column_gap;
-    let row_gap = parent_style.row_gap;
+    let uses_subgrid_cols = matches!(
+        parent_style.grid_template_columns.as_slice(),
+        [GridTrackSize::Subgrid]
+    );
+    let col_gap = if uses_subgrid_cols {
+        inherited_subgrid_col_gap.unwrap_or(parent_style.column_gap)
+    } else {
+        parent_style.column_gap
+    };
+    let uses_subgrid_rows = matches!(
+        parent_style.grid_template_rows.as_slice(),
+        [GridTrackSize::Subgrid]
+    );
+    let row_gap = if uses_subgrid_rows {
+        inherited_subgrid_row_gap.unwrap_or(parent_style.row_gap)
+    } else {
+        parent_style.row_gap
+    };
     let container_align = parent_style.align_items;
     let justify_items = parent_style.justify_items;
 
@@ -62,7 +83,9 @@ pub fn layout_grid(
     let resolved_templates: Vec<GridTrackSize>;
     let col_templates: &[GridTrackSize] = {
         let src = &parent_style.grid_template_columns;
-        if src.len() == 1 {
+        if uses_subgrid_cols {
+            &[]
+        } else if src.len() == 1 {
             match src[0] {
                 GridTrackSize::AutoFill { min_px } | GridTrackSize::AutoFit { min_px } => {
                     let min_px = min_px.max(1);
@@ -164,36 +187,68 @@ pub fn layout_grid(
     // (minimum 1).  Items that exceed the explicit grid extend it implicitly.
     // If grid-template-areas defines more columns, use that.
     let areas_max_col = template_areas.iter().map(|a| a.col_end).max().unwrap_or(0) as usize;
-    let explicit_cols = col_templates
-        .len()
-        .max(1)
+    let areas_max_row = template_areas.iter().map(|a| a.row_end).max().unwrap_or(0) as usize;
+    let explicit_cols = inherited_subgrid_cols
+        .map(|cols| cols.len().max(1))
+        .unwrap_or_else(|| col_templates.len().max(1))
         .max(areas_max_col.saturating_sub(1));
+    let explicit_rows = inherited_subgrid_rows
+        .map(|rows| rows.len().max(1))
+        .unwrap_or_else(|| row_templates_len(parent_style).max(1))
+        .max(areas_max_row.saturating_sub(1));
 
     // ── 5. Auto-place all items ──────────────────────────────────────────
-    auto_place(&mut items, explicit_cols);
-
-    // Total column count needed (explicit + implicit).
-    let total_cols = items
-        .iter()
-        .map(|it| it.placed_col + it.span_cols)
-        .max()
-        .unwrap_or(1);
-
-    // ── 5. Resolve column pixel widths ────────────────────────────────────
-    let col_widths = resolve_col_widths(
-        col_templates,
-        auto_col,
-        total_cols,
-        available_width,
-        col_gap,
+    auto_place(
+        &mut items,
+        explicit_cols,
+        if uses_subgrid_cols {
+            Some(explicit_cols)
+        } else {
+            None
+        },
+        if uses_subgrid_rows {
+            Some(explicit_rows)
+        } else {
+            None
+        },
     );
 
+    // Total column count needed (explicit + implicit).
+    let total_cols = if uses_subgrid_cols {
+        inherited_subgrid_cols.map(|cols| cols.len().max(1)).unwrap_or(explicit_cols)
+    } else {
+        items.iter()
+            .map(|it| it.placed_col + it.span_cols)
+            .max()
+            .unwrap_or(1)
+    };
+
+    // ── 5. Resolve column pixel widths ────────────────────────────────────
+    let col_widths = if uses_subgrid_cols {
+        inherited_subgrid_cols
+            .map(|cols| cols.to_vec())
+            .unwrap_or_else(|| vec![available_width.max(0)])
+    } else {
+        resolve_col_widths(
+            col_templates,
+            auto_col,
+            total_cols,
+            available_width,
+            col_gap,
+        )
+    };
+
     // ── 6. Total row count ────────────────────────────────────────────────
-    let total_rows = items
-        .iter()
-        .map(|it| it.placed_row + it.span_rows)
-        .max()
-        .unwrap_or(1);
+    let total_rows = if uses_subgrid_rows {
+        inherited_subgrid_rows
+            .map(|rows| rows.len().max(1))
+            .unwrap_or(1)
+    } else {
+        items.iter()
+            .map(|it| it.placed_row + it.span_rows)
+            .max()
+            .unwrap_or(1)
+    };
 
     let row_templates = &parent_style.grid_template_rows;
     let auto_row = &parent_style.grid_auto_rows;
@@ -201,7 +256,7 @@ pub fn layout_grid(
     // ── 7. Measure each item at its column span width ─────────────────────
     for item in &mut items {
         let col_w = span_width(&col_widths, item.placed_col, item.span_cols, col_gap);
-        let bx = build_block(
+        let mut bx = build_block(
             dom,
             styles,
             pseudo,
@@ -211,11 +266,44 @@ pub fn layout_grid(
             viewport_w,
             0,
         );
+        relayout_subgrid_columns_if_needed(
+            dom,
+            styles,
+            pseudo,
+            &mut bx,
+            images,
+            viewport_w,
+            &col_widths[item.placed_col..(item.placed_col + item.span_cols).min(col_widths.len())],
+            col_gap,
+        );
         item.layout = Some(bx);
     }
 
     // ── 8. Resolve row heights ────────────────────────────────────────────
-    let row_heights = resolve_row_heights(row_templates, auto_row, total_rows, &items);
+    let row_heights = if uses_subgrid_rows {
+        inherited_subgrid_rows
+            .map(|rows| rows.to_vec())
+            .unwrap_or_else(|| vec![0; total_rows])
+    } else {
+        resolve_row_heights(row_templates, auto_row, total_rows, &items)
+    };
+
+    for item in &mut items {
+        if let Some(ref mut bx) = item.layout {
+            relayout_subgrid_rows_if_needed(
+                dom,
+                styles,
+                pseudo,
+                bx,
+                images,
+                viewport_w,
+                &col_widths[item.placed_col..(item.placed_col + item.span_cols).min(col_widths.len())],
+                col_gap,
+                &row_heights[item.placed_row..(item.placed_row + item.span_rows).min(row_heights.len())],
+                row_gap,
+            );
+        }
+    }
 
     // ── 9. Position every item ────────────────────────────────────────────
     let mut cursor_y = 0i32;
@@ -272,6 +360,163 @@ pub fn layout_grid(
     layout_grid_abs_children(dom, styles, pseudo, child_ids, parent, images, viewport_w, available_width, cursor_y);
 
     cursor_y
+}
+
+fn relayout_subgrid_columns_if_needed(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    bx: &mut LayoutBox,
+    images: &ImageCache,
+    viewport_w: i32,
+    inherited_cols: &[i32],
+    inherited_col_gap: i32,
+) {
+    let Some(node_id) = bx.node_id else {
+        return;
+    };
+    let style = &styles[node_id];
+    if !matches!(style.display, Display::Grid | Display::InlineGrid) {
+        return;
+    }
+    if !matches!(style.grid_template_columns.as_slice(), [GridTrackSize::Subgrid]) {
+        return;
+    }
+    if inherited_cols.is_empty() {
+        return;
+    }
+
+    let child_ids: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
+    let border2 = bx.border_width * 2;
+    let inner_w = inherited_cols.iter().sum::<i32>()
+        + inherited_col_gap * (inherited_cols.len().saturating_sub(1) as i32);
+    bx.children.clear();
+    let content_h = layout_grid(
+        dom,
+        styles,
+        pseudo,
+        &child_ids,
+        inner_w.max(0),
+        bx,
+        images,
+        viewport_w,
+        Some(inherited_cols),
+        Some(inherited_col_gap),
+        None,
+        None,
+    );
+
+    if style.height.is_none()
+        && style.height_pct.is_none()
+        && style.height_calc.is_none()
+        && style.aspect_ratio <= 0
+    {
+        bx.height = content_h + bx.padding.bottom + bx.border_width;
+        let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
+        if let Some(max_h) = style.max_height {
+            let max_outer = if is_border_box {
+                max_h
+            } else {
+                max_h + bx.padding.top + bx.padding.bottom + border2
+            };
+            if bx.height > max_outer {
+                bx.height = max_outer;
+            }
+        }
+        if style.min_height > 0 {
+            let min_outer = if is_border_box {
+                style.min_height
+            } else {
+                style.min_height + bx.padding.top + bx.padding.bottom + border2
+            };
+            if bx.height < min_outer {
+                bx.height = min_outer;
+            }
+        }
+    }
+}
+
+fn relayout_subgrid_rows_if_needed(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    bx: &mut LayoutBox,
+    images: &ImageCache,
+    viewport_w: i32,
+    inherited_cols: &[i32],
+    inherited_col_gap: i32,
+    inherited_rows: &[i32],
+    inherited_row_gap: i32,
+) {
+    let Some(node_id) = bx.node_id else {
+        return;
+    };
+    let style = &styles[node_id];
+    if !matches!(style.display, Display::Grid | Display::InlineGrid) {
+        return;
+    }
+    if !matches!(style.grid_template_rows.as_slice(), [GridTrackSize::Subgrid]) {
+        return;
+    }
+    if inherited_rows.is_empty() {
+        return;
+    }
+
+    let child_ids: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
+    let border2 = bx.border_width * 2;
+    let inner_w = (bx.width - bx.padding.left - bx.padding.right - border2).max(0);
+    bx.children.clear();
+    let content_h = layout_grid(
+        dom,
+        styles,
+        pseudo,
+        &child_ids,
+        inner_w,
+        bx,
+        images,
+        viewport_w,
+        if matches!(style.grid_template_columns.as_slice(), [GridTrackSize::Subgrid]) {
+            Some(inherited_cols)
+        } else {
+            None
+        },
+        if matches!(style.grid_template_columns.as_slice(), [GridTrackSize::Subgrid]) {
+            Some(inherited_col_gap)
+        } else {
+            None
+        },
+        Some(inherited_rows),
+        Some(inherited_row_gap),
+    );
+
+    if style.height.is_none()
+        && style.height_pct.is_none()
+        && style.height_calc.is_none()
+        && style.aspect_ratio <= 0
+    {
+        bx.height = content_h + bx.padding.bottom + bx.border_width;
+        let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
+        if let Some(max_h) = style.max_height {
+            let max_outer = if is_border_box {
+                max_h
+            } else {
+                max_h + bx.padding.top + bx.padding.bottom + border2
+            };
+            if bx.height > max_outer {
+                bx.height = max_outer;
+            }
+        }
+        if style.min_height > 0 {
+            let min_outer = if is_border_box {
+                style.min_height
+            } else {
+                style.min_height + bx.padding.top + bx.padding.bottom + border2
+            };
+            if bx.height < min_outer {
+                bx.height = min_outer;
+            }
+        }
+    }
 }
 
 /// Lay out absolutely-positioned children of a grid container.
@@ -422,7 +667,12 @@ fn resolve_named_area(
     }
 }
 
-fn auto_place(items: &mut Vec<GridItem>, explicit_cols: usize) {
+fn auto_place(
+    items: &mut Vec<GridItem>,
+    explicit_cols: usize,
+    max_cols: Option<usize>,
+    max_rows: Option<usize>,
+) {
     // Grid occupancy map: (col, row) → occupied.
     // We use a simple Vec and grow it as needed.
     let mut occupied: Vec<Vec<bool>> = vec![vec![false; explicit_cols.max(1)]]; // [row][col]
@@ -431,13 +681,19 @@ fn auto_place(items: &mut Vec<GridItem>, explicit_cols: usize) {
     for item in items.iter_mut() {
         let (col_start, span_cols) = resolve_span(&item.col_start, &item.col_end, explicit_cols);
         let (row_start, span_rows) = resolve_span(&item.row_start, &item.row_end, explicit_cols);
-        item.span_cols = span_cols.max(1);
-        item.span_rows = span_rows.max(1);
+        item.span_cols = clamp_span(span_cols.max(1), max_cols);
+        item.span_rows = clamp_span(span_rows.max(1), max_rows);
 
         if let (Some(c), Some(r)) = (col_start, row_start) {
-            item.placed_col = c;
-            item.placed_row = r;
-            mark_occupied(&mut occupied, r, c, item.span_rows, item.span_cols);
+            item.placed_col = clamp_start(c, item.span_cols, max_cols);
+            item.placed_row = clamp_start(r, item.span_rows, max_rows);
+            mark_occupied(
+                &mut occupied,
+                item.placed_row,
+                item.placed_col,
+                item.span_rows,
+                item.span_cols,
+            );
         }
     }
 
@@ -447,11 +703,19 @@ fn auto_place(items: &mut Vec<GridItem>, explicit_cols: usize) {
 
     for item in items.iter_mut() {
         let col_start = match item.col_start {
-            GridLine::Index(n) => Some((n - 1).max(0) as usize),
+            GridLine::Index(n) => Some(clamp_start(
+                (n - 1).max(0) as usize,
+                item.span_cols,
+                max_cols,
+            )),
             _ => None,
         };
         let row_start = match item.row_start {
-            GridLine::Index(n) => Some((n - 1).max(0) as usize),
+            GridLine::Index(n) => Some(clamp_start(
+                (n - 1).max(0) as usize,
+                item.span_rows,
+                max_rows,
+            )),
             _ => None,
         };
 
@@ -472,7 +736,9 @@ fn auto_place(items: &mut Vec<GridItem>, explicit_cols: usize) {
             span_r,
             span_c,
             num_cols,
+            max_rows,
             col_start,
+            row_start,
         );
         item.placed_row = placed_r;
         item.placed_col = placed_c;
@@ -527,9 +793,11 @@ fn find_slot(
     span_r: usize,
     span_c: usize,
     num_cols: usize,
+    max_rows: Option<usize>,
     fixed_col: Option<usize>,
+    fixed_row: Option<usize>,
 ) -> (usize, usize) {
-    let mut r = *cursor_row;
+    let mut r = fixed_row.unwrap_or(*cursor_row);
     let mut c = if let Some(fc) = fixed_col {
         fc
     } else {
@@ -544,17 +812,32 @@ fn find_slot(
             } else {
                 0
             };
+            if fixed_row.is_some() {
+                break;
+            }
             r += 1;
+        }
+        if let Some(limit_rows) = max_rows {
+            if r + span_r > limit_rows {
+                break;
+            }
         }
         if fits(occupied, r, c, span_r, span_c) {
             return (r, c);
         }
-        if fixed_col.is_some() {
+        if fixed_row.is_some() {
+            c += 1;
+        } else if fixed_col.is_some() {
             r += 1;
         } else {
             c += 1;
         }
     }
+
+    (
+        clamp_start(fixed_row.unwrap_or(*cursor_row), span_r, max_rows),
+        clamp_start(fixed_col.unwrap_or(*cursor_col), span_c, Some(num_cols)),
+    )
 }
 
 /// Check whether a span fits at (row, col) without overlap.
@@ -571,6 +854,28 @@ fn fits(occupied: &Vec<Vec<bool>>, row: usize, col: usize, span_r: usize, span_c
         }
     }
     true
+}
+
+fn clamp_span(span: usize, limit: Option<usize>) -> usize {
+    if let Some(limit) = limit {
+        span.min(limit.max(1)).max(1)
+    } else {
+        span.max(1)
+    }
+}
+
+fn clamp_start(start: usize, span: usize, limit: Option<usize>) -> usize {
+    if let Some(limit) = limit {
+        let limit = limit.max(1);
+        let max_start = limit.saturating_sub(span.min(limit));
+        start.min(max_start)
+    } else {
+        start
+    }
+}
+
+fn row_templates_len(style: &ComputedStyle) -> usize {
+    style.grid_template_rows.len()
 }
 
 // ────────────────────────────────────────────────────────────
@@ -647,7 +952,8 @@ fn resolve_col_widths(
             | GridTrackSize::MinContent
             | GridTrackSize::MaxContent
             | GridTrackSize::AutoFill { .. }
-            | GridTrackSize::AutoFit { .. } => {
+            | GridTrackSize::AutoFit { .. }
+            | GridTrackSize::Subgrid => {
                 widths.push(0);
             }
         }
@@ -678,7 +984,10 @@ fn resolve_col_widths(
             .filter(|&i| {
                 matches!(
                     track_for(i),
-                    GridTrackSize::Auto | GridTrackSize::MinContent | GridTrackSize::MaxContent
+                    GridTrackSize::Auto
+                        | GridTrackSize::MinContent
+                        | GridTrackSize::MaxContent
+                        | GridTrackSize::Subgrid
                 )
             })
             .count() as i32;
@@ -687,7 +996,10 @@ fn resolve_col_widths(
             for i in 0..total_cols {
                 if matches!(
                     track_for(i),
-                    GridTrackSize::Auto | GridTrackSize::MinContent | GridTrackSize::MaxContent
+                    GridTrackSize::Auto
+                        | GridTrackSize::MinContent
+                        | GridTrackSize::MaxContent
+                        | GridTrackSize::Subgrid
                 ) {
                     widths[i] = share;
                 }
@@ -747,7 +1059,8 @@ fn resolve_row_heights(
                 GridTrackSize::Auto
                 | GridTrackSize::Fr(_)
                 | GridTrackSize::MinContent
-                | GridTrackSize::MaxContent => {
+                | GridTrackSize::MaxContent
+                | GridTrackSize::Subgrid => {
                     if item_h > heights[r] {
                         heights[r] = item_h;
                     }

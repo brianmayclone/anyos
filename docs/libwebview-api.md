@@ -1,6 +1,6 @@
 # anyOS WebView Library (libwebview) API Reference
 
-The **libwebview** library is a complete HTML/CSS/JS rendering engine that parses web content and produces real libanyui controls (Labels, Views, ImageViews, TextFields, etc.) positioned by a CSS layout engine. It is used by the Surf web browser application.
+The **libwebview** library is an HTML/CSS/JS rendering engine that parses web content and produces real libanyui controls (Labels, Views, ImageViews, TextFields, etc.) positioned by a CSS layout engine. It is used by the Surf web browser application.
 
 **Type:** Rust `no_std` library (statically linked, not a DLL)
 **Location:** `libs/libwebview/`
@@ -648,13 +648,14 @@ The layout engine takes a DOM tree and per-node computed styles and produces a t
 
 **Grid layout** (`layout/grid.rs`) -- CSS Grid Layout. Supports:
 - Explicit track sizing via `grid-template-columns` / `grid-template-rows`
-- Track units: `px`, `fr`, `%`, `auto`
+- Track units: `px`, `fr`, `%`, `auto`, `minmax()`, `fit-content()`, `repeat()`
 - Explicit item placement with `grid-column-start/end` and `grid-row-start/end`
 - `span N` for items spanning multiple tracks
 - Auto-placement (row-major scanning)
 - `column-gap` / `row-gap`
 - `justify-items` / `align-items` within cells
-- Limitations: no named grid lines, no `grid-template-areas`, no `minmax()`, no subgrid
+- `grid-template-areas` and `grid-template` shorthands
+- Limitations: no named grid lines; `subgrid` inherits parent row/column tracks in nested grids but is still not fully CSS Grid Level 2 complete
 
 **Table layout** (`layout/table.rs`) -- HTML table layout. Supports:
 - Automatic column width distribution

@@ -192,6 +192,8 @@ pub enum GridTrackSize {
     AutoFill { min_px: i32 },
     /// `repeat(auto-fit, minmax(min_px, 1fr))` — resolved at layout time.
     AutoFit { min_px: i32 },
+    /// `subgrid` — inherit the parent grid tracks on this axis.
+    Subgrid,
 }
 
 /// Resolved line address for `grid-column-start/end` etc.
@@ -5511,6 +5513,9 @@ fn parse_minmax_min(s: &str) -> i32 {
 /// `"minmax(200px, 1fr)"`).
 pub(crate) fn parse_single_track(token: &str) -> GridTrackSize {
     let token = token.trim();
+    if token.eq_ignore_ascii_case("subgrid") {
+        return GridTrackSize::Subgrid;
+    }
     if token == "auto" || token.is_empty() {
         return GridTrackSize::Auto;
     }
