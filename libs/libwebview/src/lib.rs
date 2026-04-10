@@ -81,6 +81,17 @@ enum MutationImpact {
     LayoutRestyle,
 }
 
+#[derive(Clone, Copy)]
+struct PendingSmoothScroll {
+    node_id: usize,
+    start_top: i32,
+    start_left: i32,
+    target_top: i32,
+    target_left: i32,
+    elapsed_ms: u32,
+    duration_ms: u32,
+}
+
 struct IncrementalRelayoutPlan {
     parent_node: usize,
     target_nodes: Vec<usize>,
@@ -209,6 +220,8 @@ pub struct WebView {
     /// Stored as (node_id, scroll_top, scroll_left).  Applied to LayoutBoxes
     /// after layout so overflow containers shift their children.
     scroll_offsets: Vec<(usize, i32, i32)>,
+    /// Pending smooth-scroll animations for overflow containers.
+    smooth_scrolls: Vec<PendingSmoothScroll>,
     /// True when the page was loaded via `set_html_dom_only()` and the first
     /// real render after external CSS arrives should prefer correctness over
     /// aggressive progressive culling.
@@ -270,6 +283,7 @@ impl WebView {
             resolved_pseudo_styles: style::PseudoStyles::empty(0),
             anim_overrides: Vec::new(),
             scroll_offsets: Vec::new(),
+            smooth_scrolls: Vec::new(),
             dom_only_initial_render_pending: false,
             selector_state: style::SelectorState::default(),
         };
@@ -506,6 +520,7 @@ impl WebView {
 
         // Clear per-node scroll offsets from previous page.
         self.scroll_offsets.clear();
+        self.smooth_scrolls.clear();
 
         // Parse HTML → DOM.
         debug_surf!("[webview] html::parse start");
@@ -902,6 +917,11 @@ impl WebView {
             }
         }
 
+        // ── 2.5. Smooth scrolling for overflow containers ───────────────────────
+        if self.advance_smooth_scrolls(delta_ms) {
+            changed = true;
+        }
+
         // ── 3. Scroll-based tile management (compositor-driven). ─────────────────
         // Per-tile canvases are positioned in the content_view.  The compositor
         // handles smooth scrolling natively.  We only need to create tile
@@ -1047,6 +1067,347 @@ impl WebView {
         None
     }
 
+    pub fn canvas_checkbox_hit(&self, control_id: u32) -> Option<usize> {
+        if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) {
+            return self.renderer.hit_test_checkbox_at(mx, doc_y);
+        }
+        None
+    }
+
+    pub fn canvas_select_hit(&self, control_id: u32) -> Option<usize> {
+        if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) {
+            return self.renderer.hit_test_select_at(mx, doc_y);
+        }
+        None
+    }
+
+    pub fn canvas_radio_hit(&self, control_id: u32) -> Option<usize> {
+        if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) {
+            return self.renderer.hit_test_radio_at(mx, doc_y);
+        }
+        None
+    }
+
+    pub fn canvas_range_hit(&self, control_id: u32) -> Option<usize> {
+        if let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) {
+            return self.renderer.hit_test_range_at(mx, doc_y);
+        }
+        None
+    }
+
+    fn select_option_nodes(dom: &dom::Dom, select_node: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let children = dom.get(select_node).children.clone();
+        for cid in children {
+            if dom.tag(cid) == Some(dom::Tag::Option) {
+                out.push(cid);
+            } else if dom.tag(cid) == Some(dom::Tag::Optgroup) {
+                let group_children = dom.get(cid).children.clone();
+                for gcid in group_children {
+                    if dom.tag(gcid) == Some(dom::Tag::Option) {
+                        out.push(gcid);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    pub fn advance_select_for_canvas(&mut self, control_id: u32) -> bool {
+        let Some(node_id) = self.canvas_select_hit(control_id) else {
+            return false;
+        };
+        {
+            let Some(dom) = self.dom_val.as_mut() else {
+                return false;
+            };
+            let option_nodes = Self::select_option_nodes(dom, node_id);
+            if option_nodes.is_empty() {
+                return false;
+            }
+
+            let mut enabled_nodes = Vec::new();
+            let mut selected_enabled_idx = None;
+            for option_id in option_nodes.iter().copied() {
+                if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(option_id).node_type {
+                    if attrs.iter().all(|a| a.name != "data-webview-default-selected") {
+                        attrs.push(dom::Attr {
+                            name: String::from("data-webview-default-selected"),
+                            value: if attrs.iter().any(|a| a.name == "selected") {
+                                String::from("1")
+                            } else {
+                                String::from("0")
+                            },
+                        });
+                    }
+                }
+                if dom.attr(option_id, "disabled").is_some() {
+                    continue;
+                }
+                if dom.attr(option_id, "selected").is_some() {
+                    selected_enabled_idx = Some(enabled_nodes.len());
+                }
+                enabled_nodes.push(option_id);
+            }
+            if enabled_nodes.is_empty() {
+                return false;
+            }
+
+            let next_idx = selected_enabled_idx
+                .map(|idx| (idx + 1) % enabled_nodes.len())
+                .unwrap_or(0);
+            let next_node = enabled_nodes[next_idx];
+
+            for option_id in option_nodes {
+                if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(option_id).node_type {
+                    if option_id == next_node {
+                        if attrs.iter().all(|a| a.name != "selected") {
+                            attrs.push(dom::Attr {
+                                name: String::from("selected"),
+                                value: String::new(),
+                            });
+                        }
+                    } else if let Some(pos) = attrs.iter().position(|a| a.name == "selected") {
+                        attrs.remove(pos);
+                    }
+                }
+            }
+        }
+        self.relayout();
+        true
+    }
+
+    pub fn toggle_checkbox_for_canvas(&mut self, control_id: u32) -> bool {
+        let Some(node_id) = self.canvas_checkbox_hit(control_id) else {
+            return false;
+        };
+        {
+            let Some(dom) = self.dom_val.as_mut() else {
+                return false;
+            };
+            if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(node_id).node_type {
+                if attrs.iter().all(|a| a.name != "data-webview-default-checked") {
+                    attrs.push(dom::Attr {
+                        name: String::from("data-webview-default-checked"),
+                        value: if attrs.iter().any(|a| a.name == "checked") {
+                            String::from("1")
+                        } else {
+                            String::from("0")
+                        },
+                    });
+                }
+                if let Some(pos) = attrs.iter().position(|a| a.name == "checked") {
+                    attrs.remove(pos);
+                } else {
+                    attrs.push(dom::Attr {
+                        name: String::from("checked"),
+                        value: String::new(),
+                    });
+                }
+            }
+        }
+        self.relayout();
+        true
+    }
+
+    pub fn toggle_radio_for_canvas(&mut self, control_id: u32) -> bool {
+        let Some(node_id) = self.canvas_radio_hit(control_id) else {
+            return false;
+        };
+        {
+            let Some(dom) = self.dom_val.as_mut() else {
+                return false;
+            };
+
+            let radio_name = String::from(dom.attr(node_id, "name").unwrap_or(""));
+            let mut form_node = None;
+            let mut cur = dom.get(node_id).parent;
+            while let Some(id) = cur {
+                if dom.tag(id) == Some(dom::Tag::Form) {
+                    form_node = Some(id);
+                    break;
+                }
+                cur = dom.get(id).parent;
+            }
+
+            for other_id in 0..dom.nodes.len() {
+                if dom.tag(other_id) != Some(dom::Tag::Input) || other_id == node_id {
+                    continue;
+                }
+                if !dom
+                    .attr(other_id, "type")
+                    .map(|t| t.eq_ignore_ascii_case("radio"))
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let other_name = dom.attr(other_id, "name").unwrap_or("");
+                if other_name != radio_name {
+                    continue;
+                }
+                let same_form = {
+                    let mut other_form = None;
+                    let mut up = dom.get(other_id).parent;
+                    while let Some(id) = up {
+                        if dom.tag(id) == Some(dom::Tag::Form) {
+                            other_form = Some(id);
+                            break;
+                        }
+                        up = dom.get(id).parent;
+                    }
+                    other_form == form_node
+                };
+                if !same_form {
+                    continue;
+                }
+                if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(other_id).node_type {
+                    if attrs.iter().all(|a| a.name != "data-webview-default-checked") {
+                        attrs.push(dom::Attr {
+                            name: String::from("data-webview-default-checked"),
+                            value: if attrs.iter().any(|a| a.name == "checked") {
+                                String::from("1")
+                            } else {
+                                String::from("0")
+                            },
+                        });
+                    }
+                    if let Some(pos) = attrs.iter().position(|a| a.name == "checked") {
+                        attrs.remove(pos);
+                    }
+                }
+            }
+
+            if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(node_id).node_type {
+                if attrs.iter().all(|a| a.name != "data-webview-default-checked") {
+                    attrs.push(dom::Attr {
+                        name: String::from("data-webview-default-checked"),
+                        value: if attrs.iter().any(|a| a.name == "checked") {
+                            String::from("1")
+                        } else {
+                            String::from("0")
+                        },
+                    });
+                }
+                if attrs.iter().all(|a| a.name != "checked") {
+                    attrs.push(dom::Attr {
+                        name: String::from("checked"),
+                        value: String::new(),
+                    });
+                }
+            }
+        }
+
+        self.relayout();
+        true
+    }
+
+    pub fn set_range_for_canvas(&mut self, control_id: u32) -> bool {
+        let Some(node_id) = self.canvas_range_hit(control_id) else {
+            return false;
+        };
+        let Some((mx, _doc_y)) = self.renderer.tile_hit_coords(control_id) else {
+            return false;
+        };
+        let Some(fc) = self
+            .renderer
+            .form_controls
+            .iter()
+            .find(|fc| fc.node_id == node_id && fc.kind == FormFieldKind::Range)
+        else {
+            return false;
+        };
+        let rel_x = (mx - fc.doc_x).clamp(0, fc.doc_w.max(1));
+        let pct = (rel_x as f32 / fc.doc_w.max(1) as f32).clamp(0.0, 1.0);
+
+        {
+            let Some(dom) = self.dom_val.as_mut() else {
+                return false;
+            };
+            let min_f: f32 = dom
+                .attr(node_id, "min")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0.0);
+            let max_f: f32 = dom
+                .attr(node_id, "max")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(100.0);
+            let default_value = String::from(dom.attr(node_id, "value").unwrap_or(""));
+            let value = min_f + (max_f - min_f).max(0.0) * pct;
+            let nearest_int = if value >= 0.0 {
+                (value + 0.5) as i32
+            } else {
+                (value - 0.5) as i32
+            };
+            let diff = value - nearest_int as f32;
+            let value_str = if diff <= 0.000_001 && diff >= -0.000_001 {
+                alloc::format!("{}", nearest_int)
+            } else {
+                alloc::format!("{}", value)
+            };
+            if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(node_id).node_type {
+                if attrs.iter().all(|a| a.name != "data-webview-default-value") {
+                    attrs.push(dom::Attr {
+                        name: String::from("data-webview-default-value"),
+                        value: default_value,
+                    });
+                }
+                if let Some(attr) = attrs.iter_mut().find(|a| a.name == "value") {
+                    attr.value = value_str;
+                } else {
+                    attrs.push(dom::Attr {
+                        name: String::from("value"),
+                        value: value_str,
+                    });
+                }
+            }
+        }
+        self.relayout();
+        true
+    }
+
+    pub fn set_color_for_canvas(&mut self, control_id: u32) -> bool {
+        let Some(node_id) = self.canvas_color_input_hit(control_id) else {
+            return false;
+        };
+        let Some((mx, doc_y)) = self.renderer.tile_hit_coords(control_id) else {
+            return false;
+        };
+        let Some(fc) = self
+            .renderer
+            .form_controls
+            .iter()
+            .find(|fc| fc.node_id == node_id && fc.kind == FormFieldKind::Color)
+        else {
+            return false;
+        };
+        let rel_x = (mx - fc.doc_x).clamp(0, fc.doc_w.max(1) - 1);
+        let rel_y = (doc_y - fc.doc_y).clamp(0, fc.doc_h.max(1) - 1);
+        let width = fc.doc_w.max(1) as u32;
+        let height = fc.doc_h.max(1) as u32;
+
+        // Map click position onto a simple HSV picker:
+        // horizontal = hue, vertical = value, saturation fixed high.
+        let hue = rel_x as u32 * 360 / width;
+        let value = 255u32.saturating_sub(rel_y as u32 * 155 / height);
+        let saturation = 220u32;
+        let color = hsv_to_rgb_u32(hue.min(359), saturation, value.max(100));
+        let color_hex = color_to_hex(color);
+
+        if let Some(dom) = self.dom_val.as_mut() {
+            let default_value = String::from(dom.attr(node_id, "value").unwrap_or("#000000"));
+            if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(node_id).node_type {
+                if attrs.iter().all(|a| a.name != "data-webview-default-value") {
+                    attrs.push(dom::Attr {
+                        name: String::from("data-webview-default-value"),
+                        value: default_value,
+                    });
+                }
+            }
+        }
+        self.set_color_input_value(node_id, &color_hex);
+        true
+    }
+
     /// Set the selected file path for a file input control.
     /// Updates the DOM value attribute and the control's display text.
     pub fn set_file_input_value(&mut self, node_id: usize, file_path: &str) {
@@ -1104,6 +1465,7 @@ impl WebView {
                 ctrl.set_color(color);
             }
         }
+        self.relayout();
     }
 
     /// Reset all form controls in the form containing the given reset button.
@@ -1113,7 +1475,7 @@ impl WebView {
             Some(n) => n,
             None => return,
         };
-        let dom = match self.dom_val.as_ref() {
+        let dom = match self.dom_val.as_mut() {
             Some(d) => d,
             None => return,
         };
@@ -1157,18 +1519,48 @@ impl WebView {
                     ui::Control::from_id(fc.control_id).set_text(default_val);
                 }
                 FormFieldKind::Checkbox => {
+                    let checked = dom
+                        .attr(fc.node_id, "data-webview-default-checked")
+                        .map(|s| s == "1")
+                        .unwrap_or_else(|| dom.attr(fc.node_id, "checked").is_some());
+                    if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(fc.node_id).node_type {
+                        if checked {
+                            if attrs.iter().all(|a| a.name != "checked") {
+                                attrs.push(dom::Attr {
+                                    name: String::from("checked"),
+                                    value: String::new(),
+                                });
+                            }
+                        } else if let Some(pos) = attrs.iter().position(|a| a.name == "checked") {
+                            attrs.remove(pos);
+                        }
+                    }
                     if fc.control_id == 0 {
                         continue;
                     }
-                    let checked = dom.attr(fc.node_id, "checked").is_some();
                     ui::Control::from_id(fc.control_id)
                         .set_state(if checked { 1 } else { 0 });
                 }
                 FormFieldKind::Radio => {
+                    let checked = dom
+                        .attr(fc.node_id, "data-webview-default-checked")
+                        .map(|s| s == "1")
+                        .unwrap_or_else(|| dom.attr(fc.node_id, "checked").is_some());
+                    if let dom::NodeType::Element { ref mut attrs, .. } = dom.get_mut(fc.node_id).node_type {
+                        if checked {
+                            if attrs.iter().all(|a| a.name != "checked") {
+                                attrs.push(dom::Attr {
+                                    name: String::from("checked"),
+                                    value: String::new(),
+                                });
+                            }
+                        } else if let Some(pos) = attrs.iter().position(|a| a.name == "checked") {
+                            attrs.remove(pos);
+                        }
+                    }
                     if fc.control_id == 0 {
                         continue;
                     }
-                    let checked = dom.attr(fc.node_id, "checked").is_some();
                     ui::Control::from_id(fc.control_id)
                         .set_state(if checked { 1 } else { 0 });
                 }
@@ -1181,6 +1573,28 @@ impl WebView {
                 }
                 FormFieldKind::Select => {
                     if fc.control_id == 0 {
+                        let option_nodes = Self::select_option_nodes(dom, fc.node_id);
+                        for option_id in option_nodes {
+                            if let dom::NodeType::Element { ref mut attrs, .. } =
+                                dom.get_mut(option_id).node_type
+                            {
+                                let selected = attrs
+                                    .iter()
+                                    .find(|a| a.name == "data-webview-default-selected")
+                                    .map(|a| a.value.as_str() == "1")
+                                    .unwrap_or_else(|| attrs.iter().any(|a| a.name == "selected"));
+                                if selected {
+                                    if attrs.iter().all(|a| a.name != "selected") {
+                                        attrs.push(dom::Attr {
+                                            name: String::from("selected"),
+                                            value: String::new(),
+                                        });
+                                    }
+                                } else if let Some(pos) = attrs.iter().position(|a| a.name == "selected") {
+                                    attrs.remove(pos);
+                                }
+                            }
+                        }
                         continue;
                     }
                     // Reset to the initially-selected option (first with `selected` attr).
@@ -1200,9 +1614,30 @@ impl WebView {
                 }
                 FormFieldKind::Range => {
                     if fc.control_id == 0 {
+                        if let dom::NodeType::Element { ref mut attrs, .. } =
+                            dom.get_mut(fc.node_id).node_type
+                        {
+                            let default_val = attrs
+                                .iter()
+                                .find(|a| a.name == "data-webview-default-value")
+                                .map(|a| a.value.clone())
+                                .unwrap_or_else(|| {
+                                    attrs.iter()
+                                        .find(|a| a.name == "value")
+                                        .map(|a| a.value.clone())
+                                        .unwrap_or_default()
+                                });
+                            if let Some(attr) = attrs.iter_mut().find(|a| a.name == "value") {
+                                attr.value = default_val;
+                            } else {
+                                attrs.push(dom::Attr {
+                                    name: String::from("value"),
+                                    value: default_val,
+                                });
+                            }
+                        }
                         continue;
                     }
-                    // Reset to initial value attribute.
                     let min_f: f32 = dom
                         .attr(fc.node_id, "min")
                         .and_then(|s| s.parse().ok())
@@ -1222,9 +1657,62 @@ impl WebView {
                     };
                     ui::Control::from_id(fc.control_id).set_state(pct.min(100));
                 }
+                FormFieldKind::Number => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    let default_val = dom.attr(fc.node_id, "value").unwrap_or("");
+                    ui::Control::from_id(fc.control_id).set_text(default_val);
+                }
+                FormFieldKind::Date
+                | FormFieldKind::Month
+                | FormFieldKind::Week
+                | FormFieldKind::Time
+                | FormFieldKind::DatetimeLocal => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    // Parse the default value attribute and pack into state.
+                    let default_val = dom.attr(fc.node_id, "value").unwrap_or("");
+                    let packed = parse_value_to_packed(default_val, fc.kind);
+                    ui::Control::from_id(fc.control_id).set_state(packed);
+                }
+                FormFieldKind::Color => {
+                    if fc.control_id == 0 {
+                        if let dom::NodeType::Element { ref mut attrs, .. } =
+                            dom.get_mut(fc.node_id).node_type
+                        {
+                            let default_val = attrs
+                                .iter()
+                                .find(|a| a.name == "data-webview-default-value")
+                                .map(|a| a.value.clone())
+                                .unwrap_or_else(|| {
+                                    attrs.iter()
+                                        .find(|a| a.name == "value")
+                                        .map(|a| a.value.clone())
+                                        .unwrap_or_else(|| String::from("#000000"))
+                                });
+                            if let Some(attr) = attrs.iter_mut().find(|a| a.name == "value") {
+                                attr.value = default_val;
+                            } else {
+                                attrs.push(dom::Attr {
+                                    name: String::from("value"),
+                                    value: default_val,
+                                });
+                            }
+                        }
+                        continue;
+                    }
+                    let default_val = dom.attr(fc.node_id, "value").unwrap_or("#000000");
+                    let color = renderer::parse_color_value(default_val);
+                    ui::Control::from_id(fc.control_id).set_state(color);
+                }
                 _ => {}
             }
         }
+
+        let _ = dom;
+        self.relayout();
     }
 
     // ── Viewport-coordinate hit-test helpers (for host/surf-host) ────────────
@@ -1498,12 +1986,7 @@ impl WebView {
             match fc.kind {
                 FormFieldKind::TextInput
                 | FormFieldKind::Password
-                | FormFieldKind::Number
-                | FormFieldKind::Date
-                | FormFieldKind::Time
-                | FormFieldKind::DatetimeLocal
-                | FormFieldKind::Month
-                | FormFieldKind::Week => {
+                | FormFieldKind::Number => {
                     if fc.control_id == 0 {
                         continue;
                     }
@@ -1513,8 +1996,42 @@ impl WebView {
                     let val = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
                     data.push((String::from(name), String::from(val)));
                 }
+                FormFieldKind::Date | FormFieldKind::Month | FormFieldKind::Week => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    // DatePicker stores packed u32: unpack to ISO date string.
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let packed = ctrl.get_state();
+                    let val = format_packed_date(packed, fc.kind);
+                    data.push((String::from(name), val));
+                }
+                FormFieldKind::Time => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let packed = ctrl.get_state();
+                    let val = format_packed_time(packed);
+                    data.push((String::from(name), val));
+                }
+                FormFieldKind::DatetimeLocal => {
+                    if fc.control_id == 0 {
+                        continue;
+                    }
+                    let ctrl = ui::Control::from_id(fc.control_id);
+                    let packed = ctrl.get_state();
+                    let date_part = format_packed_date(packed, FormFieldKind::Date);
+                    let time_part = format_packed_time(packed);
+                    let mut val = date_part;
+                    val.push('T');
+                    val.push_str(&time_part);
+                    data.push((String::from(name), val));
+                }
                 FormFieldKind::Color => {
                     if fc.control_id == 0 {
+                        let val = dom.attr(fc.node_id, "value").unwrap_or("#000000");
+                        data.push((String::from(name), String::from(val)));
                         continue;
                     }
                     // ColorWell stores the color as u32 ARGB via get_state().
@@ -1537,6 +2054,11 @@ impl WebView {
                 }
                 FormFieldKind::Checkbox => {
                     if fc.control_id == 0 {
+                        let checked = dom.attr(fc.node_id, "checked").is_some();
+                        if checked {
+                            let val = dom.attr(fc.node_id, "value").unwrap_or("on");
+                            data.push((String::from(name), String::from(val)));
+                        }
                         continue;
                     }
                     let ctrl = ui::Control::from_id(fc.control_id);
@@ -1547,6 +2069,11 @@ impl WebView {
                 }
                 FormFieldKind::Radio => {
                     if fc.control_id == 0 {
+                        let checked = dom.attr(fc.node_id, "checked").is_some();
+                        if checked {
+                            let val = dom.attr(fc.node_id, "value").unwrap_or("");
+                            data.push((String::from(name), String::from(val)));
+                        }
                         continue;
                     }
                     let ctrl = ui::Control::from_id(fc.control_id);
@@ -1571,6 +2098,18 @@ impl WebView {
                 }
                 FormFieldKind::Select => {
                     if fc.control_id == 0 {
+                        let option_nodes = Self::select_option_nodes(dom, fc.node_id);
+                        let mut selected_value = None;
+                        for option_id in option_nodes {
+                            if dom.attr(option_id, "selected").is_some() {
+                                let txt = dom.text_content(option_id);
+                                let val = dom.attr(option_id, "value").unwrap_or(txt.trim());
+                                selected_value = Some(String::from(val));
+                                break;
+                            }
+                        }
+                        let val = selected_value.unwrap_or_default();
+                        data.push((String::from(name), val));
                         continue;
                     }
                     // Get selected index from the native DropDown widget.
@@ -1581,6 +2120,8 @@ impl WebView {
                 }
                 FormFieldKind::Range => {
                     if fc.control_id == 0 {
+                        let val = dom.attr(fc.node_id, "value").unwrap_or("50");
+                        data.push((String::from(name), String::from(val)));
                         continue;
                     }
                     // Slider state is 0..100. Map back to min..max range.
@@ -1654,35 +2195,137 @@ impl WebView {
         String::new()
     }
 
+    fn current_scroll_offsets_for_node(&self, node_id: usize) -> (i32, i32) {
+        self.scroll_offsets
+            .iter()
+            .find(|(id, _, _)| *id == node_id)
+            .map(|(_, top, left)| (*top, *left))
+            .unwrap_or((0, 0))
+    }
+
+    fn node_uses_smooth_scroll(&self, node_id: usize) -> bool {
+        self.resolved_styles_cache
+            .get(node_id)
+            .map(|style| style.scroll_behavior == style::ScrollBehaviorVal::Smooth)
+            .unwrap_or(false)
+    }
+
+    fn set_scroll_offsets_for_node(&mut self, node_id: usize, top: i32, left: i32) {
+        if let Some(entry) = self
+            .scroll_offsets
+            .iter_mut()
+            .find(|(id, _, _)| *id == node_id)
+        {
+            entry.1 = top.max(0);
+            entry.2 = left.max(0);
+        } else {
+            self.scroll_offsets.push((node_id, top.max(0), left.max(0)));
+        }
+    }
+
+    fn cancel_smooth_scroll(&mut self, node_id: usize) {
+        self.smooth_scrolls.retain(|scroll| scroll.node_id != node_id);
+    }
+
+    fn start_or_update_smooth_scroll(
+        &mut self,
+        node_id: usize,
+        target_top: i32,
+        target_left: i32,
+    ) {
+        let (start_top, start_left) = self.current_scroll_offsets_for_node(node_id);
+        if let Some(existing) = self
+            .smooth_scrolls
+            .iter_mut()
+            .find(|scroll| scroll.node_id == node_id)
+        {
+            existing.start_top = start_top;
+            existing.start_left = start_left;
+            existing.target_top = target_top.max(0);
+            existing.target_left = target_left.max(0);
+            existing.elapsed_ms = 0;
+            return;
+        }
+        self.smooth_scrolls.push(PendingSmoothScroll {
+            node_id,
+            start_top,
+            start_left,
+            target_top: target_top.max(0),
+            target_left: target_left.max(0),
+            elapsed_ms: 0,
+            duration_ms: 220,
+        });
+    }
+
     /// Extract scroll offset mutations from the pending mutation list and merge
-    /// them into `self.scroll_offsets`.  Must be called *before* `apply_mutations`
-    /// which consumes the mutation vec via `mem::take`.
+    /// them into `self.scroll_offsets`, optionally scheduling smooth scrolling.
+    /// Must be called *before* `apply_mutations` which consumes the mutation vec.
     fn extract_scroll_offsets(&mut self) {
+        #[derive(Clone, Copy)]
+        struct ScrollRequest {
+            node_id: usize,
+            top: Option<i32>,
+            left: Option<i32>,
+            smooth: Option<bool>,
+        }
+
+        let mut requests: Vec<ScrollRequest> = Vec::new();
         for m in &self.js_runtime.mutations {
             match m {
-                js::DomMutation::SetScrollTop { node_id, value } => {
-                    if let Some(entry) = self
-                        .scroll_offsets
-                        .iter_mut()
-                        .find(|(id, _, _)| *id == *node_id)
-                    {
-                        entry.1 = *value;
+                js::DomMutation::SetScrollTop {
+                    node_id,
+                    value,
+                    smooth,
+                } => {
+                    if let Some(req) = requests.iter_mut().find(|req| req.node_id == *node_id) {
+                        req.top = Some(*value);
+                        if smooth.is_some() {
+                            req.smooth = *smooth;
+                        }
                     } else {
-                        self.scroll_offsets.push((*node_id, *value, 0));
+                        requests.push(ScrollRequest {
+                            node_id: *node_id,
+                            top: Some(*value),
+                            left: None,
+                            smooth: *smooth,
+                        });
                     }
                 }
-                js::DomMutation::SetScrollLeft { node_id, value } => {
-                    if let Some(entry) = self
-                        .scroll_offsets
-                        .iter_mut()
-                        .find(|(id, _, _)| *id == *node_id)
-                    {
-                        entry.2 = *value;
+                js::DomMutation::SetScrollLeft {
+                    node_id,
+                    value,
+                    smooth,
+                } => {
+                    if let Some(req) = requests.iter_mut().find(|req| req.node_id == *node_id) {
+                        req.left = Some(*value);
+                        if smooth.is_some() {
+                            req.smooth = *smooth;
+                        }
                     } else {
-                        self.scroll_offsets.push((*node_id, 0, *value));
+                        requests.push(ScrollRequest {
+                            node_id: *node_id,
+                            top: None,
+                            left: Some(*value),
+                            smooth: *smooth,
+                        });
                     }
                 }
                 _ => {}
+            }
+        }
+
+        for req in requests {
+            let (current_top, current_left) = self.current_scroll_offsets_for_node(req.node_id);
+            let target_top = req.top.unwrap_or(current_top).max(0);
+            let target_left = req.left.unwrap_or(current_left).max(0);
+            let use_smooth = req
+                .smooth
+                .unwrap_or_else(|| self.node_uses_smooth_scroll(req.node_id));
+            if use_smooth && (target_top != current_top || target_left != current_left) {
+                self.start_or_update_smooth_scroll(req.node_id, target_top, target_left);
+            } else {
+                self.cancel_smooth_scroll(req.node_id);
+                self.set_scroll_offsets_for_node(req.node_id, target_top, target_left);
             }
         }
     }
@@ -1700,6 +2343,45 @@ impl WebView {
         for child in &mut bx.children {
             Self::apply_scroll_offsets_to_layout(offsets, child);
         }
+    }
+
+    fn advance_smooth_scrolls(&mut self, delta_ms: u64) -> bool {
+        if self.smooth_scrolls.is_empty() {
+            return false;
+        }
+
+        let step_ms = delta_ms.min(u32::MAX as u64) as u32;
+        let mut changed = false;
+        let mut updates: Vec<(usize, i32, i32)> = Vec::new();
+        for idx in (0..self.smooth_scrolls.len()).rev() {
+            let scroll = &mut self.smooth_scrolls[idx];
+            scroll.elapsed_ms = scroll.elapsed_ms.saturating_add(step_ms);
+            let duration = scroll.duration_ms.max(1);
+            let t =
+                (scroll.elapsed_ms.min(duration) as i32 * 10000 / duration as i32).clamp(0, 10000);
+            let eased = style::apply_timing(style::TimingFunction::EaseInOut, t);
+            let top = scroll.start_top
+                + (((scroll.target_top - scroll.start_top) as i64 * eased as i64) / 10000) as i32;
+            let left = scroll.start_left
+                + (((scroll.target_left - scroll.start_left) as i64 * eased as i64) / 10000) as i32;
+            updates.push((scroll.node_id, top, left));
+            changed = true;
+            if scroll.elapsed_ms >= duration {
+                updates.push((scroll.node_id, scroll.target_top, scroll.target_left));
+                self.smooth_scrolls.swap_remove(idx);
+            }
+        }
+
+        if changed {
+            for (node_id, top, left) in updates {
+                self.set_scroll_offsets_for_node(node_id, top, left);
+            }
+            if let Some(root) = self.layout_root.as_mut() {
+                Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, root);
+            }
+            self.repaint_from_cached_layout();
+        }
+        changed
     }
 
     fn classify_pending_mutations(&self) -> MutationImpact {
@@ -3217,6 +3899,155 @@ impl WebView {
 }
 
 /// Format a range slider value as a decimal string.
+/// Pack a date/time ISO string into the DateTimePicker u32 format.
+fn pack_datetime(year: u32, month: u32, day: u32, hour: u32, minute: u32) -> u32 {
+    (minute & 0x3F)
+        | ((hour & 0x1F) << 6)
+        | ((day & 0x1F) << 11)
+        | ((month & 0x0F) << 16)
+        | ((year & 0xFFF) << 20)
+}
+
+/// Parse a value attribute string into a packed DateTimePicker u32.
+fn parse_value_to_packed(val: &str, kind: FormFieldKind) -> u32 {
+    match kind {
+        FormFieldKind::Date => {
+            // "YYYY-MM-DD"
+            let b = val.as_bytes();
+            if b.len() >= 10 && b[4] == b'-' && b[7] == b'-' {
+                let y = parse_decimal(&b[0..4]);
+                let m = parse_decimal(&b[5..7]);
+                let d = parse_decimal(&b[8..10]);
+                pack_datetime(y, m, d, 0, 0)
+            } else {
+                0
+            }
+        }
+        FormFieldKind::Time => {
+            // "HH:MM"
+            let b = val.as_bytes();
+            if b.len() >= 5 && b[2] == b':' {
+                let h = parse_decimal(&b[0..2]);
+                let mi = parse_decimal(&b[3..5]);
+                pack_datetime(0, 0, 0, h, mi)
+            } else {
+                0
+            }
+        }
+        FormFieldKind::DatetimeLocal => {
+            // "YYYY-MM-DDThh:mm"
+            let parts: Vec<&str> = val.split('T').collect();
+            if parts.len() >= 2 {
+                let db = parts[0].as_bytes();
+                let tb = parts[1].as_bytes();
+                if db.len() >= 10 && tb.len() >= 5 {
+                    let y = parse_decimal(&db[0..4]);
+                    let mo = parse_decimal(&db[5..7]);
+                    let d = parse_decimal(&db[8..10]);
+                    let h = parse_decimal(&tb[0..2]);
+                    let mi = parse_decimal(&tb[3..5]);
+                    pack_datetime(y, mo, d, h, mi)
+                } else {
+                    0
+                }
+            } else {
+                0
+            }
+        }
+        FormFieldKind::Month => {
+            // "YYYY-MM"
+            let b = val.as_bytes();
+            if b.len() >= 7 && b[4] == b'-' {
+                let y = parse_decimal(&b[0..4]);
+                let m = parse_decimal(&b[5..7]);
+                pack_datetime(y, m, 1, 0, 0)
+            } else {
+                0
+            }
+        }
+        FormFieldKind::Week => {
+            // "YYYY-Www"
+            let b = val.as_bytes();
+            if b.len() >= 8 && b[4] == b'-' && b[5] == b'W' {
+                let y = parse_decimal(&b[0..4]);
+                let w = parse_decimal(&b[6..8]);
+                pack_datetime(y, 1, w, 0, 0) // store week as day
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
+}
+
+fn parse_decimal(b: &[u8]) -> u32 {
+    let mut n: u32 = 0;
+    for &c in b {
+        if c >= b'0' && c <= b'9' {
+            n = n * 10 + (c - b'0') as u32;
+        }
+    }
+    n
+}
+
+/// Unpack DatePicker/DateTimePicker state and format as ISO date string.
+/// Bit layout: minute(0-5), hour(6-10), day(11-15), month(16-19), year(20-31).
+fn unpack_datetime(packed: u32) -> (u32, u32, u32, u32, u32) {
+    let minute = packed & 0x3F;
+    let hour = (packed >> 6) & 0x1F;
+    let day = (packed >> 11) & 0x1F;
+    let month = (packed >> 16) & 0x0F;
+    let year = (packed >> 20) & 0xFFF;
+    (year, month, day, hour, minute)
+}
+
+fn format_packed_date(packed: u32, kind: FormFieldKind) -> String {
+    let (year, month, day, _, _) = unpack_datetime(packed);
+    let mut s = String::new();
+    // YYYY
+    format_u32_padded(&mut s, year, 4);
+    s.push('-');
+    format_u32_padded(&mut s, month, 2);
+    match kind {
+        FormFieldKind::Month => {} // YYYY-MM
+        FormFieldKind::Week => {
+            // YYYY-Www — simplified: use day as week number.
+            s.push_str("-W");
+            format_u32_padded(&mut s, day.max(1), 2);
+        }
+        _ => {
+            // YYYY-MM-DD
+            s.push('-');
+            format_u32_padded(&mut s, day, 2);
+        }
+    }
+    s
+}
+
+fn format_packed_time(packed: u32) -> String {
+    let (_, _, _, hour, minute) = unpack_datetime(packed);
+    let mut s = String::new();
+    format_u32_padded(&mut s, hour, 2);
+    s.push(':');
+    format_u32_padded(&mut s, minute, 2);
+    s
+}
+
+/// Append a u32 as a zero-padded decimal with exactly `width` digits.
+fn format_u32_padded(s: &mut String, n: u32, width: usize) {
+    let mut buf = [b'0'; 8];
+    let mut v = n;
+    let mut i = width;
+    while i > 0 {
+        i -= 1;
+        buf[i] = b'0' + (v % 10) as u8;
+        v /= 10;
+    }
+    for &b in &buf[..width] {
+        s.push(b as char);
+    }
+}
+
 fn format_range_value(v: f32) -> String {
     let mut s = String::new();
     if v < 0.0 {
@@ -3238,6 +4069,45 @@ fn format_range_value(v: f32) -> String {
         }
     }
     s
+}
+
+fn color_to_hex(color: u32) -> String {
+    let r = (color >> 16) & 0xFF;
+    let g = (color >> 8) & 0xFF;
+    let b = color & 0xFF;
+    let mut hex = String::from("#");
+    let hex_digit = |n: u32| -> char {
+        if n < 10 {
+            (b'0' + n as u8) as char
+        } else {
+            (b'a' + (n - 10) as u8) as char
+        }
+    };
+    hex.push(hex_digit(r >> 4));
+    hex.push(hex_digit(r & 0xF));
+    hex.push(hex_digit(g >> 4));
+    hex.push(hex_digit(g & 0xF));
+    hex.push(hex_digit(b >> 4));
+    hex.push(hex_digit(b & 0xF));
+    hex
+}
+
+fn hsv_to_rgb_u32(h_deg: u32, s: u32, v: u32) -> u32 {
+    let h = h_deg % 360;
+    let region = h / 60;
+    let remainder = (h % 60) * 255 / 60;
+    let p = v.saturating_mul(255 - s) / 255;
+    let q = v.saturating_mul(255 - (s.saturating_mul(remainder) / 255)) / 255;
+    let t = v.saturating_mul(255 - (s.saturating_mul(255 - remainder) / 255)) / 255;
+    let (r, g, b) = match region {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    0xFF000000 | (r << 16) | (g << 8) | b
 }
 
 /// Append a u32 as decimal text.

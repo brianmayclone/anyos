@@ -69,6 +69,7 @@ pub fn build_block_with_budget(
     bx.bg_color = style.background_color;
     bx.accent_color = style.accent_color;
     bx.uses_dark_color_scheme = style.color_scheme == crate::style::ColorSchemeVal::Dark;
+    bx.appearance_none = style.appearance == crate::style::AppearanceVal::None;
     bx.border_width = style.border_width;
     bx.border_color = style.border_color;
     bx.border_radius = style.border_radius;
@@ -121,6 +122,7 @@ pub fn build_block_with_budget(
     bx.background_image = style.background_image.clone();
     bx.background_size = style.background_size;
     bx.background_repeat = style.background_repeat;
+    bx.background_clip = style.background_clip;
     // Letter spacing
     bx.letter_spacing = style.letter_spacing;
     // Z-index — only applies to positioned elements (CSS2 §9.9.1).
@@ -758,6 +760,17 @@ pub fn build_block_with_budget(
             0
         };
         Some(px_part + pct_part)
+    } else if matches!(style.position, Position::Absolute | Position::Fixed)
+        && style.top.is_some()
+        && style.bottom_offset.is_some()
+        && parent_height > 0
+    {
+        // CSS §10.6.4: absolute/fixed with both top and bottom and height:auto
+        // → height = cb_height - top - bottom.
+        let t = style.top.unwrap_or(0);
+        let b = style.bottom_offset.unwrap_or(0);
+        let h = (parent_height - t - b).max(0);
+        if h > 0 { Some(h) } else { None }
     } else {
         None
     };
@@ -1130,6 +1143,7 @@ pub(super) fn build_pseudo_element_box(
         pb.font_size = fs;
         pb.bold = bold;
         pb.italic = italic;
+        pb.appearance_none = ps.appearance == crate::style::AppearanceVal::None;
         pb.text_decoration = ps.text_decoration;
         pb.border_width = ps.border_width;
         pb.border_color = ps.border_color;
@@ -1165,6 +1179,7 @@ pub(super) fn build_pseudo_element_box(
         pb.background_image = ps.background_image.clone();
         pb.background_size = ps.background_size;
         pb.background_repeat = ps.background_repeat;
+        pb.background_clip = ps.background_clip;
         pb.opacity = ps.opacity;
         pb.z_index = ps.z_index;
         pb.z_index_auto = ps.z_index_auto;

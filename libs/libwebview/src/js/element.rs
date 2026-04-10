@@ -2256,15 +2256,17 @@ fn el_scroll_to(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if nid < 0 {
         return JsValue::Undefined;
     }
-    let (sx, sy) = parse_scroll_args(args);
+    let (sx, sy, smooth) = parse_scroll_args(args);
     if let Some(bridge) = get_bridge(vm) {
         bridge.mutations.push(DomMutation::SetScrollTop {
             node_id: nid as usize,
             value: sy.max(0.0) as i32,
+            smooth,
         });
         bridge.mutations.push(DomMutation::SetScrollLeft {
             node_id: nid as usize,
             value: sx.max(0.0) as i32,
+            smooth,
         });
     }
     JsValue::Undefined
@@ -2282,7 +2284,7 @@ fn el_scroll_by(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if nid < 0 {
         return JsValue::Undefined;
     }
-    let (dx, dy) = parse_scroll_args(args);
+    let (dx, dy, smooth) = parse_scroll_args(args);
 
     // Read current scrollTop/scrollLeft from the JS object.
     let (cur_top, cur_left) = {
@@ -2317,19 +2319,22 @@ fn el_scroll_by(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         bridge.mutations.push(DomMutation::SetScrollTop {
             node_id: nid as usize,
             value: new_top,
+            smooth,
         });
         bridge.mutations.push(DomMutation::SetScrollLeft {
             node_id: nid as usize,
             value: new_left,
+            smooth,
         });
     }
     JsValue::Undefined
 }
 
-/// Parse scrollTo/scrollBy arguments: either `(x, y)` or `({ top, left })`.
-fn parse_scroll_args(args: &[JsValue]) -> (f64, f64) {
+/// Parse scrollTo/scrollBy arguments: either `(x, y)` or `({ top, left, behavior })`.
+/// Returns `(left, top, Some(true)=smooth, Some(false)=auto, None=use CSS behavior)`.
+fn parse_scroll_args(args: &[JsValue]) -> (f64, f64, Option<bool>) {
     if args.is_empty() {
-        return (0.0, 0.0);
+        return (0.0, 0.0, None);
     }
     match &args[0] {
         JsValue::Object(o) => {
@@ -2342,7 +2347,12 @@ fn parse_scroll_args(args: &[JsValue]) -> (f64, f64) {
                 JsValue::Number(n) => n,
                 _ => 0.0,
             };
-            (left, top)
+            let smooth = match obj.get("behavior") {
+                JsValue::String(s) if s.eq_ignore_ascii_case("smooth") => Some(true),
+                JsValue::String(s) if s.eq_ignore_ascii_case("auto") => Some(false),
+                _ => None,
+            };
+            (left, top, smooth)
         }
         JsValue::Number(x) => {
             let y = if args.len() > 1 {
@@ -2353,9 +2363,9 @@ fn parse_scroll_args(args: &[JsValue]) -> (f64, f64) {
             } else {
                 0.0
             };
-            (*x, y)
+            (*x, y, None)
         }
-        _ => (0.0, 0.0),
+        _ => (0.0, 0.0, None),
     }
 }
 

@@ -11,8 +11,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::css::{
-    AttrOp, CssValue, Declaration, Property, PseudoClass, PseudoElement, Rule, Selector,
-    SimpleSelector, Stylesheet, Unit,
+    AttrOp, ContainerCondition, ContainerQuery, CssValue, Declaration, Property, PseudoClass,
+    PseudoElement, Rule, Selector, SimpleSelector, Stylesheet, Unit,
 };
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 
@@ -245,6 +245,32 @@ pub enum ColorSchemeVal {
     Auto,
     Light,
     Dark,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BackgroundClipVal {
+    BorderBox,
+    PaddingBox,
+    ContentBox,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ScrollBehaviorVal {
+    Auto,
+    Smooth,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AppearanceVal {
+    Auto,
+    None,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ContainerTypeVal {
+    Normal,
+    InlineSize,
+    Size,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -632,6 +658,7 @@ pub struct ComputedStyle {
     pub flex_grow: i32,          // fixed-point * 100
     pub flex_shrink: i32,        // fixed-point * 100
     pub flex_basis: Option<i32>, // None = auto, Some(px)
+    pub flex_basis_pct: Option<i32>, // Some(pct * 100) for percentage flex-basis
     pub row_gap: i32,
     pub column_gap: i32,
     pub align_content: AlignContent,
@@ -677,9 +704,13 @@ pub struct ComputedStyle {
     pub visibility: Visibility,
     pub text_transform: TextTransform,
     pub color_scheme: ColorSchemeVal,
+    pub appearance: AppearanceVal,
+    pub container_type: ContainerTypeVal,
+    pub container_names: Vec<String>,
     // Overflow
     pub overflow_x: OverflowVal,
     pub overflow_y: OverflowVal,
+    pub scroll_behavior: ScrollBehaviorVal,
     // Width/height percentages (stored as fixed-point * 100, None if not percentage)
     pub width_pct: Option<i32>,
     pub height_pct: Option<i32>,
@@ -720,6 +751,7 @@ pub struct ComputedStyle {
     pub background_image: BackgroundImageVal,
     pub background_size: BackgroundSizeVal,
     pub background_repeat: BackgroundRepeatVal,
+    pub background_clip: BackgroundClipVal,
     pub background_position_x: i32, // px or pct*100
     pub background_position_y: i32,
     // Content (for ::before/::after)
@@ -886,6 +918,7 @@ pub fn default_style() -> ComputedStyle {
         flex_grow: 0,
         flex_shrink: 100,         // default 1.0 = 100 in fixed-point
         flex_basis: Option::None, // auto
+        flex_basis_pct: Option::None,
         row_gap: 0,
         column_gap: 0,
         align_content: AlignContent::Stretch,
@@ -920,9 +953,13 @@ pub fn default_style() -> ComputedStyle {
         visibility: Visibility::Visible,
         text_transform: TextTransform::None,
         color_scheme: ColorSchemeVal::Auto,
+        appearance: AppearanceVal::Auto,
+        container_type: ContainerTypeVal::Normal,
+        container_names: Vec::new(),
         // Overflow
         overflow_x: OverflowVal::Visible,
         overflow_y: OverflowVal::Visible,
+        scroll_behavior: ScrollBehaviorVal::Auto,
         // Typography
         font_family: Option::None,
         letter_spacing: 0,
@@ -953,6 +990,7 @@ pub fn default_style() -> ComputedStyle {
         background_image: BackgroundImageVal::None,
         background_size: BackgroundSizeVal::Auto,
         background_repeat: BackgroundRepeatVal::Repeat,
+        background_clip: BackgroundClipVal::BorderBox,
         background_position_x: 0,
         background_position_y: 0,
         // Content
@@ -2391,6 +2429,103 @@ fn has_class(class_str: &str, needle: &str) -> bool {
     false
 }
 
+#[derive(Clone)]
+struct ActiveContainer {
+    node_id: NodeId,
+    names: Vec<String>,
+    inline_size: i32,
+    block_size: i32,
+}
+
+fn is_ancestor_or_self(dom: &Dom, ancestor: NodeId, node_id: NodeId) -> bool {
+    let mut cur = Some(node_id);
+    while let Some(id) = cur {
+        if id == ancestor {
+            return true;
+        }
+        cur = dom.nodes.get(id).and_then(|n| n.parent);
+    }
+    false
+}
+
+fn estimated_content_inline_size(style: &ComputedStyle, available_inline_size: i32) -> i32 {
+    let border_pad =
+        style.padding_left + style.padding_right + style.border_left.width + style.border_right.width;
+    let margin = style.margin_left.max(0) + style.margin_right.max(0);
+    let base = if let Some(width) = style.width {
+        width
+    } else if let Some(pct) = style.width_pct {
+        (available_inline_size.max(0) * pct) / 10000
+    } else if let Some((px, pct)) = style.width_calc {
+        px / 100 + (available_inline_size.max(0) * pct) / 10000
+    } else {
+        (available_inline_size - margin).max(0)
+    };
+    if style.box_sizing == BoxSizing::BorderBox {
+        (base - border_pad).max(0)
+    } else {
+        base.max(0)
+    }
+}
+
+fn estimated_content_block_size(style: &ComputedStyle, available_block_size: i32) -> i32 {
+    let border_pad =
+        style.padding_top + style.padding_bottom + style.border_top.width + style.border_bottom.width;
+    let base = if let Some(height) = style.height {
+        height
+    } else if let Some(pct) = style.height_pct {
+        (available_block_size.max(0) * pct) / 10000
+    } else if let Some((px, pct)) = style.height_calc {
+        px / 100 + (available_block_size.max(0) * pct) / 10000
+    } else {
+        available_block_size.max(0)
+    };
+    if style.box_sizing == BoxSizing::BorderBox {
+        (base - border_pad).max(0)
+    } else {
+        base.max(0)
+    }
+}
+
+fn container_query_matches(
+    query: &ContainerQuery,
+    containers: &[ActiveContainer],
+) -> bool {
+    let container = containers.iter().rev().find(|container| {
+        if let Some(ref wanted_name) = query.name {
+            container
+                .names
+                .iter()
+                .any(|name| eq_ignore_ascii_case(name, wanted_name))
+        } else {
+            true
+        }
+    });
+    let Some(container) = container else {
+        return false;
+    };
+    query.conditions.iter().all(|cond| match cond {
+        ContainerCondition::MinWidth(v) | ContainerCondition::MinInlineSize(v) => {
+            container.inline_size >= *v
+        }
+        ContainerCondition::MaxWidth(v) | ContainerCondition::MaxInlineSize(v) => {
+            container.inline_size <= *v
+        }
+        ContainerCondition::Width(v) | ContainerCondition::InlineSize(v) => {
+            container.inline_size == *v
+        }
+        ContainerCondition::MinHeight(v) | ContainerCondition::MinBlockSize(v) => {
+            container.block_size >= *v
+        }
+        ContainerCondition::MaxHeight(v) | ContainerCondition::MaxBlockSize(v) => {
+            container.block_size <= *v
+        }
+        ContainerCondition::Height(v) | ContainerCondition::BlockSize(v) => {
+            container.block_size == *v
+        }
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Resolve styles for entire DOM
 // ---------------------------------------------------------------------------
@@ -2552,6 +2687,7 @@ fn resolve_styles_prepared_impl(
     // eliminating the per-node clone that caused heap-stack collision on large
     // pages (~54 MiB for chip.de's 6228 nodes).
     let mut custom_props: Vec<Vec<(String, String)>> = vec![Vec::new(); resolved_count];
+    let mut active_containers: Vec<ActiveContainer> = Vec::new();
 
     for id in 0..resolved_count {
         #[cfg(feature = "debug_surf")]
@@ -2568,9 +2704,23 @@ fn resolve_styles_prepared_impl(
         }
 
         let node = &dom.nodes[id];
+        while let Some(container) = active_containers.last() {
+            if is_ancestor_or_self(dom, container.node_id, id) {
+                break;
+            }
+            active_containers.pop();
+        }
         let parent_fs = node
             .parent
             .map_or(16, |pid| if pid < id { styles[pid].font_size } else { 16 });
+        let available_inline_size = active_containers
+            .last()
+            .map(|container| container.inline_size)
+            .unwrap_or(viewport_width);
+        let available_block_size = active_containers
+            .last()
+            .map(|container| container.block_size)
+            .unwrap_or(viewport_height);
 
         // Phase 1: Start from UA defaults (elements) or initial values (text).
         let (mut style, mut set_flags) = match &node.node_type {
@@ -2692,6 +2842,7 @@ fn resolve_styles_prepared_impl(
                 node_cp,
                 ancestors_cp,
                 selector_state,
+                &active_containers,
             );
 
             // Phase 3: Apply inline styles (highest specificity).
@@ -2760,6 +2911,15 @@ fn resolve_styles_prepared_impl(
         }
 
         styles.push(style);
+
+        if matches!(styles[id].container_type, ContainerTypeVal::InlineSize | ContainerTypeVal::Size) {
+            active_containers.push(ActiveContainer {
+                node_id: id,
+                names: styles[id].container_names.clone(),
+                inline_size: estimated_content_inline_size(&styles[id], available_inline_size),
+                block_size: estimated_content_block_size(&styles[id], available_block_size),
+            });
+        }
     }
 
     if budgeted {
@@ -2781,7 +2941,14 @@ fn resolve_styles_prepared_impl(
     let mut pseudo_candidates: Vec<usize> = Vec::with_capacity(128);
     let mut pseudo_seen_bitset: Vec<u64> = Vec::with_capacity((all_rules.len() + 63) / 64);
     let mut pseudo_matches: Vec<((u32, u32, u32), usize)> = Vec::with_capacity(32);
+    let mut pseudo_active_containers: Vec<ActiveContainer> = Vec::new();
     for id in 0..resolved_count {
+        while let Some(container) = pseudo_active_containers.last() {
+            if is_ancestor_or_self(dom, container.node_id, id) {
+                break;
+            }
+            pseudo_active_containers.pop();
+        }
         let node = &dom.nodes[id];
         let (tag, attrs) = match &node.node_type {
             NodeType::Element { tag, attrs } => (*tag, attrs),
@@ -2805,6 +2972,11 @@ fn resolve_styles_prepared_impl(
         pseudo_matches.clear();
         for &rule_idx in pseudo_candidates.iter() {
             let (rule, _order) = all_rules[rule_idx];
+            if let Some(ref query) = rule.container_query {
+                if !container_query_matches(query, &pseudo_active_containers) {
+                    continue;
+                }
+            }
             for sel in &rule.selectors {
                 let pe = sel.pseudo_element();
                 if pe.is_none() {
@@ -2866,6 +3038,22 @@ fn resolve_styles_prepared_impl(
                 pseudo.after[id] = None;
             }
         }
+        if matches!(styles[id].container_type, ContainerTypeVal::InlineSize | ContainerTypeVal::Size) {
+            let available_inline_size = pseudo_active_containers
+                .last()
+                .map(|container| container.inline_size)
+                .unwrap_or(viewport_width);
+            let available_block_size = pseudo_active_containers
+                .last()
+                .map(|container| container.block_size)
+                .unwrap_or(viewport_height);
+            pseudo_active_containers.push(ActiveContainer {
+                node_id: id,
+                names: styles[id].container_names.clone(),
+                inline_size: estimated_content_inline_size(&styles[id], available_inline_size),
+                block_size: estimated_content_block_size(&styles[id], available_block_size),
+            });
+        }
     }
 
     (styles, pseudo)
@@ -2886,6 +3074,7 @@ fn apply_author_rules(
     node_cp: &mut Vec<(String, String)>,
     ancestors_cp: &[Vec<(String, String)>],
     selector_state: &SelectorState,
+    active_containers: &[ActiveContainer],
 ) -> u32 {
     // Reuse the caller's matches buffer (avoids alloc/free per node).
     matches.clear();
@@ -2909,6 +3098,11 @@ fn apply_author_rules(
 
     for &idx in candidates.iter() {
         let (rule, _order) = all_rules[idx];
+        if let Some(ref query) = rule.container_query {
+            if !container_query_matches(query, active_containers) {
+                continue;
+            }
+        }
         for sel in &rule.selectors {
             if selector_matches(sel, dom, node_id, selector_state) {
                 matches.push((sel.specificity(), idx));
@@ -3960,8 +4154,19 @@ pub fn apply_declaration(
         Property::FlexBasis => {
             if matches!(decl.value, CssValue::Auto) {
                 style.flex_basis = Option::None;
+                style.flex_basis_pct = Option::None;
+            } else if let CssValue::Length(v, Unit::Percent) = &decl.value {
+                // Percentage flex-basis: resolved at layout time against container main size.
+                // Stored as percent × 100 (e.g. 100% → 10000), matching width_pct convention.
+                style.flex_basis_pct = Some(*v);
+                style.flex_basis = Option::None;
+            } else if let CssValue::Percentage(v) = &decl.value {
+                // Percentage(v) is also stored as percent × 100, just like Length(_, Percent).
+                style.flex_basis_pct = Some(*v);
+                style.flex_basis = Option::None;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.flex_basis = Some(px);
+                style.flex_basis_pct = Option::None;
             }
         }
         Property::RowGap => {
@@ -4451,6 +4656,15 @@ pub fn apply_declaration(
                 };
             }
         }
+        Property::BackgroundClip => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.background_clip = match kw.as_str() {
+                    "padding-box" => BackgroundClipVal::PaddingBox,
+                    "content-box" => BackgroundClipVal::ContentBox,
+                    _ => BackgroundClipVal::BorderBox,
+                };
+            }
+        }
         Property::BackgroundPosition => {
             // Simplified: just parse keywords or lengths
             if let CssValue::Keyword(ref kw) = decl.value {
@@ -4731,9 +4945,42 @@ pub fn apply_declaration(
                 style.color_scheme = resolved;
             }
         }
+        Property::ContainerType => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.container_type = if kw.contains("inline-size") {
+                    ContainerTypeVal::InlineSize
+                } else if kw.contains("size") {
+                    ContainerTypeVal::Size
+                } else {
+                    ContainerTypeVal::Normal
+                };
+            } else if matches!(decl.value, CssValue::None) {
+                style.container_type = ContainerTypeVal::Normal;
+            }
+        }
+        Property::ContainerName => {
+            if matches!(decl.value, CssValue::None) {
+                style.container_names.clear();
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                style.container_names = kw
+                    .split_whitespace()
+                    .filter(|part| !part.is_empty() && *part != "none")
+                    .map(String::from)
+                    .collect();
+            }
+        }
         Property::TextUnderlineOffset => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.text_underline_offset = px;
+            }
+        }
+        Property::ScrollBehavior => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.scroll_behavior = if kw.eq_ignore_ascii_case("smooth") {
+                    ScrollBehaviorVal::Smooth
+                } else {
+                    ScrollBehaviorVal::Auto
+                };
             }
         }
         // Font variant
@@ -4804,9 +5051,38 @@ pub fn apply_declaration(
         }
         Property::BorderStyle
         | Property::Flex
-        | Property::Gap
         | Property::Cursor
         | Property::Outline => {}
+        Property::Gap => {
+            // gap: <row-gap> <column-gap>?
+            // Single value → both row and column gap
+            // Two values → row then column
+            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                style.row_gap = px;
+                style.column_gap = px;
+            } else if let CssValue::Keyword(ref s) = decl.value {
+                let parts: Vec<&str> = s.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    if let Some(v1) = crate::css::try_parse_dimension_pub(parts[0]) {
+                        if let Some(rg) = resolve_length(&v1, parent_fs, root_fs) {
+                            style.row_gap = rg;
+                        }
+                    }
+                    if let Some(v2) = crate::css::try_parse_dimension_pub(parts[1]) {
+                        if let Some(cg) = resolve_length(&v2, parent_fs, root_fs) {
+                            style.column_gap = cg;
+                        }
+                    }
+                } else if parts.len() == 1 {
+                    if let Some(v) = crate::css::try_parse_dimension_pub(parts[0]) {
+                        if let Some(g) = resolve_length(&v, parent_fs, root_fs) {
+                            style.row_gap = g;
+                            style.column_gap = g;
+                        }
+                    }
+                }
+            }
+        }
         // Grid container properties
         Property::GridTemplateColumns => {
             style.grid_template_columns = decode_track_list(&decl.value);
@@ -4945,6 +5221,17 @@ pub fn apply_declaration(
                 style.backdrop_filter = parse_filter_value(kw, parent_fs, root_fs);
             }
         }
+        Property::Appearance => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.appearance = if kw.eq_ignore_ascii_case("none") {
+                    AppearanceVal::None
+                } else {
+                    AppearanceVal::Auto
+                };
+            } else if matches!(decl.value, CssValue::None) {
+                style.appearance = AppearanceVal::None;
+            }
+        }
         // CSS Logical Properties — expand to physical sides (LTR assumption)
         Property::PaddingInline => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
@@ -4981,10 +5268,7 @@ pub fn apply_declaration(
             }
         }
         // Parsed but not visually applied (accepted to prevent "unknown property" skips)
-        Property::Appearance
-        | Property::BackgroundClip
-        | Property::ScrollBehavior
-        | Property::Resize => {}
+        Property::Resize => {}
     }
 }
 

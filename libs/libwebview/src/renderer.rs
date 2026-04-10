@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use libanyui_client::{self as ui, Widget};
 
 use crate::layout::{FormFieldKind, LayoutBox};
-use crate::style::TextDeco;
+use crate::style::{BackgroundClipVal, TextDeco};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Image cache
@@ -165,6 +165,10 @@ pub enum HitKind {
     Submit(usize),
     /// Reset button — node_id of the reset element.
     Reset(usize),
+    Select(usize),
+    Checkbox(usize),
+    Radio(usize),
+    Range(usize),
     /// File input — node_id of the `<input type="file">` element.
     FileInput(usize),
     /// Color input — node_id of the `<input type="color">` element.
@@ -555,25 +559,35 @@ impl DisplayList {
             }
         }
 
+        let (bg_x, bg_y, bg_w, bg_h) = self.background_paint_rect(abs_x, abs_y, bx);
+        let bg_radii = self.background_clip_radii(bx);
+        let has_bg_radius = bg_radii.iter().any(|&r| r > 0);
+
+        let pushed_bg_clip = if self.should_clip_background(bx) && bg_w > 0 && bg_h > 0 {
+            self.push_clip_rect((bg_x, bg_y, bg_w, bg_h))
+        } else {
+            false
+        };
+
         // Background.
-        if bx.bg_color != 0 && bx.bg_color != 0x00000000 {
-            if has_radius {
+        if bx.bg_color != 0 && bx.bg_color != 0x00000000 && bg_w > 0 && bg_h > 0 {
+            if has_bg_radius {
                 self.push(
-                    abs_x,
-                    abs_y,
-                    draw_w,
-                    draw_h,
+                    bg_x,
+                    bg_y,
+                    bg_w,
+                    bg_h,
                     DrawKind::RoundedRect {
                         color: bx.bg_color,
-                        radii,
+                        radii: bg_radii,
                     },
                 );
             } else {
                 self.push(
-                    abs_x,
-                    abs_y,
-                    draw_w,
-                    draw_h,
+                    bg_x,
+                    bg_y,
+                    bg_w,
+                    bg_h,
                     DrawKind::Rect { color: bx.bg_color },
                 );
             }
@@ -581,6 +595,10 @@ impl DisplayList {
 
         // Background image / gradient.
         self.emit_background_image(abs_x, abs_y, bx);
+
+        if pushed_bg_clip {
+            self.clip_stack.pop();
+        }
 
         // Inset box shadows (inside the background).
         for shadow in &bx.box_shadows {
@@ -886,8 +904,8 @@ impl DisplayList {
         }
 
         // Form control pixel drawing.
-        // Native-widget controls (Select, Range) are rendered by the anyui
-        // toolkit — skip canvas painting for those.
+        // Native-widget controls are generally rendered by the anyui toolkit.
+        // Controls switched to canvas mode via `appearance: none` are painted here.
         if let Some(kind) = bx.form_field {
             match kind {
                 FormFieldKind::Submit | FormFieldKind::ButtonEl | FormFieldKind::Reset => {
@@ -914,8 +932,16 @@ impl DisplayList {
                 FormFieldKind::Color => {
                     self.emit_color_swatch(abs_x, abs_y, bx);
                 }
-                // Select and Range use native widgets now.
-                FormFieldKind::Select | FormFieldKind::Range => {}
+                FormFieldKind::Select => {
+                    if bx.appearance_none && !bx.form_multiple && bx.form_size <= 1 {
+                        self.emit_select_canvas(abs_x, abs_y, bx);
+                    }
+                }
+                FormFieldKind::Range => {
+                    if bx.appearance_none {
+                        self.emit_range(abs_x, abs_y, bx);
+                    }
+                }
                 _ => {}
             }
         }
@@ -1289,9 +1315,10 @@ impl DisplayList {
 
     fn emit_background_image(&mut self, abs_x: i32, abs_y: i32, bx: &LayoutBox) {
         use crate::style::BackgroundImageVal;
+        let (bg_x, bg_y, bg_w, bg_h) = self.background_paint_rect(abs_x, abs_y, bx);
         match &bx.background_image {
             BackgroundImageVal::LinearGradient { angle_deg, stops } => {
-                if stops.len() < 2 || bx.width <= 0 || bx.height <= 0 {
+                if stops.len() < 2 || bg_w <= 0 || bg_h <= 0 {
                     return;
                 }
                 let angle = *angle_deg;
@@ -1300,7 +1327,7 @@ impl DisplayList {
 
                 if is_horizontal || is_vertical {
                     // Fast path: axis-aligned gradients rendered as stripe rects.
-                    let dimension = if is_horizontal { bx.width } else { bx.height };
+                    let dimension = if is_horizontal { bg_w } else { bg_h };
                     let stripe_count = dimension.min(64).max(2);
                     let stripe_size = dimension / stripe_count;
                     if stripe_size <= 0 {
@@ -1314,21 +1341,21 @@ impl DisplayList {
                         let color = interpolate_gradient_color(stops, t);
 
                         if is_horizontal {
-                            let sx = abs_x + i * stripe_size;
+                            let sx = bg_x + i * stripe_size;
                             let sw = if i == stripe_count - 1 {
-                                bx.width - i * stripe_size
+                                bg_w - i * stripe_size
                             } else {
                                 stripe_size
                             };
-                            self.push(sx, abs_y, sw, bx.height, DrawKind::Rect { color });
+                            self.push(sx, bg_y, sw, bg_h, DrawKind::Rect { color });
                         } else {
-                            let sy = abs_y + i * stripe_size;
+                            let sy = bg_y + i * stripe_size;
                             let sh = if i == stripe_count - 1 {
-                                bx.height - i * stripe_size
+                                bg_h - i * stripe_size
                             } else {
                                 stripe_size
                             };
-                            self.push(abs_x, sy, bx.width, sh, DrawKind::Rect { color });
+                            self.push(bg_x, sy, bg_w, sh, DrawKind::Rect { color });
                         }
                     }
                 } else {
@@ -1339,43 +1366,43 @@ impl DisplayList {
                     let dx = cos_approx(rad);
                     let dy = sin_approx(rad);
                     // Gradient length = projection of the rect diagonal onto the direction.
-                    let w_f = bx.width as f32;
-                    let h_f = bx.height as f32;
+                    let w_f = bg_w as f32;
+                    let h_f = bg_h as f32;
                     let half_w = w_f / 2.0;
                     let half_h = h_f / 2.0;
                     let grad_len = (dx.abs() * w_f + dy.abs() * h_f).max(1.0);
 
                     // Render as horizontal scan-line stripes, max 64 for perf.
-                    let stripe_count = bx.height.min(64).max(2);
-                    let stripe_h = bx.height / stripe_count;
+                    let stripe_count = bg_h.min(64).max(2);
+                    let stripe_h = bg_h / stripe_count;
                     if stripe_h <= 0 {
                         return;
                     }
 
                     for i in 0..stripe_count {
                         let cy =
-                            (i * bx.height / stripe_count) as f32 + stripe_h as f32 / 2.0 - half_h;
+                            (i * bg_h / stripe_count) as f32 + stripe_h as f32 / 2.0 - half_h;
                         let cx = 0.0_f32; // center of scanline
                         let proj = (cx * dx + cy * dy) / grad_len + 0.5;
                         let t = (proj * 10000.0).max(0.0).min(10000.0) as i32;
                         let color = interpolate_gradient_color(stops, t);
-                        let sy = abs_y + i * stripe_h;
+                        let sy = bg_y + i * stripe_h;
                         let sh = if i == stripe_count - 1 {
-                            bx.height - i * stripe_h
+                            bg_h - i * stripe_h
                         } else {
                             stripe_h
                         };
-                        self.push(abs_x, sy, bx.width, sh, DrawKind::Rect { color });
+                        self.push(bg_x, sy, bg_w, sh, DrawKind::Rect { color });
                     }
                 }
             }
             BackgroundImageVal::Url(ref src) => {
-                if !src.is_empty() {
+                if !src.is_empty() && bg_w > 0 && bg_h > 0 {
                     self.push(
-                        abs_x,
-                        abs_y,
-                        bx.width,
-                        bx.height,
+                        bg_x,
+                        bg_y,
+                        bg_w,
+                        bg_h,
                         DrawKind::Image {
                             src: src.clone(),
                             object_fit: bx.object_fit,
@@ -1427,6 +1454,80 @@ impl DisplayList {
         } else {
             0xFF767676
         }
+    }
+
+    fn background_paint_rect(&self, abs_x: i32, abs_y: i32, bx: &LayoutBox) -> (i32, i32, i32, i32) {
+        let left_inset = match bx.background_clip {
+            BackgroundClipVal::BorderBox => 0,
+            BackgroundClipVal::PaddingBox => bx.border_left_width.max(0),
+            BackgroundClipVal::ContentBox => (bx.border_left_width + bx.padding.left).max(0),
+        };
+        let right_inset = match bx.background_clip {
+            BackgroundClipVal::BorderBox => 0,
+            BackgroundClipVal::PaddingBox => bx.border_right_width.max(0),
+            BackgroundClipVal::ContentBox => (bx.border_right_width + bx.padding.right).max(0),
+        };
+        let top_inset = match bx.background_clip {
+            BackgroundClipVal::BorderBox => 0,
+            BackgroundClipVal::PaddingBox => bx.border_top_width.max(0),
+            BackgroundClipVal::ContentBox => (bx.border_top_width + bx.padding.top).max(0),
+        };
+        let bottom_inset = match bx.background_clip {
+            BackgroundClipVal::BorderBox => 0,
+            BackgroundClipVal::PaddingBox => bx.border_bottom_width.max(0),
+            BackgroundClipVal::ContentBox => (bx.border_bottom_width + bx.padding.bottom).max(0),
+        };
+        let w = (bx.width - left_inset - right_inset).max(0);
+        let h = (bx.height - top_inset - bottom_inset).max(0);
+        (abs_x + left_inset, abs_y + top_inset, w, h)
+    }
+
+    fn background_clip_radii(&self, bx: &LayoutBox) -> [i32; 4] {
+        let inset_x = match bx.background_clip {
+            BackgroundClipVal::BorderBox => 0,
+            BackgroundClipVal::PaddingBox => bx.border_left_width.max(bx.border_right_width).max(0),
+            BackgroundClipVal::ContentBox => (bx.border_left_width + bx.padding.left)
+                .max(bx.border_right_width + bx.padding.right)
+                .max(0),
+        };
+        let inset_y = match bx.background_clip {
+            BackgroundClipVal::BorderBox => 0,
+            BackgroundClipVal::PaddingBox => bx.border_top_width.max(bx.border_bottom_width).max(0),
+            BackgroundClipVal::ContentBox => (bx.border_top_width + bx.padding.top)
+                .max(bx.border_bottom_width + bx.padding.bottom)
+                .max(0),
+        };
+        [
+            (bx.border_top_left_radius - inset_x.max(inset_y)).max(0),
+            (bx.border_top_right_radius - inset_x.max(inset_y)).max(0),
+            (bx.border_bottom_right_radius - inset_x.max(inset_y)).max(0),
+            (bx.border_bottom_left_radius - inset_x.max(inset_y)).max(0),
+        ]
+    }
+
+    fn should_clip_background(&self, bx: &LayoutBox) -> bool {
+        matches!(
+            bx.background_clip,
+            BackgroundClipVal::PaddingBox | BackgroundClipVal::ContentBox
+        )
+    }
+
+    fn push_clip_rect(&mut self, new_clip: (i32, i32, i32, i32)) -> bool {
+        let clip = if let Some(&(cx, cy, cw, ch)) = self.clip_stack.last() {
+            let x0 = new_clip.0.max(cx);
+            let y0 = new_clip.1.max(cy);
+            let x1 = (new_clip.0 + new_clip.2).min(cx + cw);
+            let y1 = (new_clip.1 + new_clip.3).min(cy + ch);
+            if x1 > x0 && y1 > y0 {
+                (x0, y0, x1 - x0, y1 - y0)
+            } else {
+                (0, 0, 0, 0)
+            }
+        } else {
+            new_clip
+        };
+        self.clip_stack.push(clip);
+        true
     }
 
     /// Emit draw commands for a submit/button element.
@@ -1648,6 +1749,55 @@ impl DisplayList {
                 },
             );
         }
+    }
+
+    /// Draw a simple single-select dropdown for `appearance: none`.
+    fn emit_select_canvas(&mut self, x: i32, y: i32, bx: &LayoutBox) {
+        let bg = self.default_control_bg(bx);
+        let border = self.default_control_border(bx);
+        let fg = self.default_control_fg(bx);
+        self.push(x, y, bx.width, bx.height, DrawKind::Rect { color: bg });
+        self.push(x, y, bx.width, 1, DrawKind::Rect { color: border });
+        self.push(
+            x,
+            y + bx.height - 1,
+            bx.width,
+            1,
+            DrawKind::Rect { color: border },
+        );
+        self.push(x, y, 1, bx.height, DrawKind::Rect { color: border });
+        self.push(
+            x + bx.width - 1,
+            y,
+            1,
+            bx.height,
+            DrawKind::Rect { color: border },
+        );
+
+        if let Some(text) = bx.text.as_deref() {
+            if !text.is_empty() {
+                let font_size = bx.font_size.max(1) as u16;
+                let ty = y + (bx.height - font_size as i32) / 2;
+                self.push(
+                    x + 6,
+                    ty,
+                    (bx.width - 22).max(0),
+                    font_size as i32,
+                    DrawKind::Text {
+                        color: fg,
+                        font_id: 0,
+                        font_size,
+                        text: String::from(text),
+                    },
+                );
+            }
+        }
+
+        let arrow_x = x + bx.width - 12;
+        let arrow_y = y + bx.height / 2 - 1;
+        self.push(arrow_x, arrow_y, 5, 1, DrawKind::Rect { color: fg });
+        self.push(arrow_x + 1, arrow_y + 1, 3, 1, DrawKind::Rect { color: fg });
+        self.push(arrow_x + 2, arrow_y + 2, 1, 1, DrawKind::Rect { color: fg });
     }
 
     /// Draw an `<input type="range">` as a track with a thumb indicator.
@@ -2291,6 +2441,66 @@ impl Renderer {
         None
     }
 
+    pub fn hit_test_checkbox_at(&self, x: i32, doc_y: i32) -> Option<usize> {
+        for region in &self.hit_regions {
+            if x >= region.x
+                && x < region.x + region.w
+                && doc_y >= region.y
+                && doc_y < region.y + region.h
+            {
+                if let HitKind::Checkbox(node_id) = region.kind {
+                    return Some(node_id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn hit_test_select_at(&self, x: i32, doc_y: i32) -> Option<usize> {
+        for region in &self.hit_regions {
+            if x >= region.x
+                && x < region.x + region.w
+                && doc_y >= region.y
+                && doc_y < region.y + region.h
+            {
+                if let HitKind::Select(node_id) = region.kind {
+                    return Some(node_id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn hit_test_radio_at(&self, x: i32, doc_y: i32) -> Option<usize> {
+        for region in &self.hit_regions {
+            if x >= region.x
+                && x < region.x + region.w
+                && doc_y >= region.y
+                && doc_y < region.y + region.h
+            {
+                if let HitKind::Radio(node_id) = region.kind {
+                    return Some(node_id);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn hit_test_range_at(&self, x: i32, doc_y: i32) -> Option<usize> {
+        for region in &self.hit_regions {
+            if x >= region.x
+                && x < region.x + region.w
+                && doc_y >= region.y
+                && doc_y < region.y + region.h
+            {
+                if let HitKind::Range(node_id) = region.kind {
+                    return Some(node_id);
+                }
+            }
+        }
+        None
+    }
+
     pub fn hit_test_file_input_at(&self, x: i32, doc_y: i32) -> Option<usize> {
         for region in &self.hit_regions {
             if x >= region.x
@@ -2740,6 +2950,7 @@ impl Renderer {
             c.on_event_raw(ui::EVENT_MOUSE_MOVE, cb, self.link_cb_ud);
             c.on_event_raw(ui::EVENT_MOUSE_DOWN, cb, self.link_cb_ud);
             c.on_event_raw(ui::EVENT_MOUSE_UP, cb, self.link_cb_ud);
+            #[cfg(not(feature = "host"))]
             c.on_event_raw(ui::EVENT_MOUSE_LEAVE, cb, self.link_cb_ud);
         }
         parent.add(&c);
@@ -2753,10 +2964,13 @@ impl Renderer {
             return;
         };
         let ctrl = ui::Control::from_id(control_id);
-        ctrl.on_focus_raw(cb, self.link_cb_ud);
-        ctrl.on_blur_raw(cb, self.link_cb_ud);
-        ctrl.on_event_raw(ui::EVENT_MOUSE_ENTER, cb, self.link_cb_ud);
-        ctrl.on_event_raw(ui::EVENT_MOUSE_LEAVE, cb, self.link_cb_ud);
+        #[cfg(not(feature = "host"))]
+        {
+            ctrl.on_focus_raw(cb, self.link_cb_ud);
+            ctrl.on_blur_raw(cb, self.link_cb_ud);
+            ctrl.on_event_raw(ui::EVENT_MOUSE_ENTER, cb, self.link_cb_ud);
+            ctrl.on_event_raw(ui::EVENT_MOUSE_LEAVE, cb, self.link_cb_ud);
+        }
         ctrl.on_event_raw(ui::EVENT_MOUSE_DOWN, cb, self.link_cb_ud);
         ctrl.on_event_raw(ui::EVENT_MOUSE_UP, cb, self.link_cb_ud);
     }
@@ -2988,6 +3202,43 @@ impl Renderer {
             }
 
             FormFieldKind::Checkbox => {
+                if bx.appearance_none {
+                    self.hit_regions.push(HitRegion {
+                        x,
+                        y,
+                        w,
+                        h,
+                        kind: HitKind::Checkbox(node_id),
+                    });
+                    if let Some(fc) = self
+                        .form_controls
+                        .iter_mut()
+                        .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                    {
+                        if fc.control_id != 0 {
+                            ui::Control::from_id(fc.control_id).remove();
+                            fc.control_id = 0;
+                        }
+                        fc.seen = true;
+                        fc.doc_x = x;
+                        fc.doc_y = y;
+                        fc.doc_w = w;
+                        fc.doc_h = h;
+                    } else {
+                        self.form_controls.push(FormControl {
+                            control_id: 0,
+                            node_id,
+                            kind,
+                            name: String::new(),
+                            seen: true,
+                            doc_x: x,
+                            doc_y: y,
+                            doc_w: w,
+                            doc_h: h,
+                        });
+                    }
+                    return;
+                }
                 let accent = self.effective_accent_color(bx);
                 if let Some(fc) = self
                     .form_controls
@@ -3030,6 +3281,43 @@ impl Renderer {
             }
 
             FormFieldKind::Radio => {
+                if bx.appearance_none {
+                    self.hit_regions.push(HitRegion {
+                        x,
+                        y,
+                        w,
+                        h,
+                        kind: HitKind::Radio(node_id),
+                    });
+                    if let Some(fc) = self
+                        .form_controls
+                        .iter_mut()
+                        .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                    {
+                        if fc.control_id != 0 {
+                            ui::Control::from_id(fc.control_id).remove();
+                            fc.control_id = 0;
+                        }
+                        fc.seen = true;
+                        fc.doc_x = x;
+                        fc.doc_y = y;
+                        fc.doc_w = w;
+                        fc.doc_h = h;
+                    } else {
+                        self.form_controls.push(FormControl {
+                            control_id: 0,
+                            node_id,
+                            kind,
+                            name: String::new(),
+                            seen: true,
+                            doc_x: x,
+                            doc_y: y,
+                            doc_w: w,
+                            doc_h: h,
+                        });
+                    }
+                    return;
+                }
                 let accent = self.effective_accent_color(bx);
                 if let Some(fc) = self
                     .form_controls
@@ -3143,8 +3431,46 @@ impl Renderer {
             }
 
             FormFieldKind::Select => {
+                if bx.appearance_none && !bx.form_multiple && bx.form_size <= 1 {
+                    self.hit_regions.push(HitRegion {
+                        x,
+                        y,
+                        w,
+                        h,
+                        kind: HitKind::Select(node_id),
+                    });
+                    if let Some(fc) = self
+                        .form_controls
+                        .iter_mut()
+                        .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                    {
+                        if fc.control_id != 0 {
+                            ui::Control::from_id(fc.control_id).remove();
+                            fc.control_id = 0;
+                        }
+                        fc.seen = true;
+                        fc.doc_x = x;
+                        fc.doc_y = y;
+                        fc.doc_w = w;
+                        fc.doc_h = h;
+                    } else {
+                        self.form_controls.push(FormControl {
+                            control_id: 0,
+                            node_id,
+                            kind,
+                            name: String::new(),
+                            seen: true,
+                            doc_x: x,
+                            doc_y: y,
+                            doc_w: w,
+                            doc_h: h,
+                        });
+                    }
+                    return;
+                }
                 let bg = self.default_control_bg(bx);
                 let fg = self.default_control_fg(bx);
+                let use_listbox = bx.form_multiple || bx.form_size > 1;
                 if let Some(fc) = self
                     .form_controls
                     .iter_mut()
@@ -3163,17 +3489,36 @@ impl Renderer {
                     fc.doc_h = h;
                 } else {
                     let items = bx.form_options.as_deref().unwrap_or("");
-                    let dd = ui::DropDown::new(items);
-                    dd.set_position(x, y);
-                    dd.set_size(w as u32, h as u32);
-                    dd.set_color(bg);
-                    dd.set_text_color(fg);
-                    if bx.form_selected_index >= 0 {
-                        dd.set_selected_index(bx.form_selected_index as u32);
-                    }
-                    dd.set_enabled(!bx.form_disabled);
-                    parent.add(&dd);
-                    let id = dd.id();
+                    let id = if use_listbox {
+                        // Multi-select or size>1: use ListBox.
+                        let prefix = if bx.form_multiple { "multi:" } else { "" };
+                        let mut lb_items = String::from(prefix);
+                        lb_items.push_str(items);
+                        let lb = ui::ListBox::new(&lb_items);
+                        lb.set_position(x, y);
+                        lb.set_size(w as u32, h as u32);
+                        lb.set_color(bg);
+                        lb.set_text_color(fg);
+                        if bx.form_selected_index >= 0 {
+                            lb.set_selected_index(bx.form_selected_index as u32);
+                        }
+                        lb.set_enabled(!bx.form_disabled);
+                        parent.add(&lb);
+                        lb.id()
+                    } else {
+                        // Single-select dropdown.
+                        let dd = ui::DropDown::new(items);
+                        dd.set_position(x, y);
+                        dd.set_size(w as u32, h as u32);
+                        dd.set_color(bg);
+                        dd.set_text_color(fg);
+                        if bx.form_selected_index >= 0 {
+                            dd.set_selected_index(bx.form_selected_index as u32);
+                        }
+                        dd.set_enabled(!bx.form_disabled);
+                        parent.add(&dd);
+                        dd.id()
+                    };
 
                     self.form_controls.push(FormControl {
                         control_id: id,
@@ -3190,6 +3535,43 @@ impl Renderer {
             }
 
             FormFieldKind::Range => {
+                if bx.appearance_none {
+                    self.hit_regions.push(HitRegion {
+                        x,
+                        y,
+                        w,
+                        h,
+                        kind: HitKind::Range(node_id),
+                    });
+                    if let Some(fc) = self
+                        .form_controls
+                        .iter_mut()
+                        .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                    {
+                        if fc.control_id != 0 {
+                            ui::Control::from_id(fc.control_id).remove();
+                            fc.control_id = 0;
+                        }
+                        fc.seen = true;
+                        fc.doc_x = x;
+                        fc.doc_y = y;
+                        fc.doc_w = w;
+                        fc.doc_h = h;
+                    } else {
+                        self.form_controls.push(FormControl {
+                            control_id: 0,
+                            node_id,
+                            kind,
+                            name: String::new(),
+                            seen: true,
+                            doc_x: x,
+                            doc_y: y,
+                            doc_w: w,
+                            doc_h: h,
+                        });
+                    }
+                    return;
+                }
                 let accent = self.effective_accent_color(bx);
                 if let Some(fc) = self
                     .form_controls
@@ -3380,6 +3762,43 @@ impl Renderer {
 
             // Color input — native ColorWell with color picker dialog.
             FormFieldKind::Color => {
+                if bx.appearance_none {
+                    self.hit_regions.push(HitRegion {
+                        x,
+                        y,
+                        w,
+                        h,
+                        kind: HitKind::ColorInput(node_id),
+                    });
+                    if let Some(fc) = self
+                        .form_controls
+                        .iter_mut()
+                        .find(|fc| fc.node_id == node_id && fc.kind == kind)
+                    {
+                        if fc.control_id != 0 {
+                            ui::Control::from_id(fc.control_id).remove();
+                            fc.control_id = 0;
+                        }
+                        fc.seen = true;
+                        fc.doc_x = x;
+                        fc.doc_y = y;
+                        fc.doc_w = w;
+                        fc.doc_h = h;
+                    } else {
+                        self.form_controls.push(FormControl {
+                            control_id: 0,
+                            node_id,
+                            kind,
+                            name: String::new(),
+                            seen: true,
+                            doc_x: x,
+                            doc_y: y,
+                            doc_w: w,
+                            doc_h: h,
+                        });
+                    }
+                    return;
+                }
                 if let Some(fc) = self
                     .form_controls
                     .iter_mut()

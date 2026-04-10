@@ -40,6 +40,8 @@ pub fn layout_table(
     let mut bx = LayoutBox::new(Some(node_id), BoxType::Block);
     bx.color = style.color;
     bx.bg_color = style.background_color;
+    bx.background_clip = style.background_clip;
+    bx.appearance_none = style.appearance == crate::style::AppearanceVal::None;
     bx.border_width = style.border_width;
     bx.border_color = style.border_color;
     bx.font_size = font_size_px(style);
@@ -504,6 +506,8 @@ fn layout_cell(
     let mut bx = LayoutBox::new(Some(cell_id), BoxType::Block);
     bx.color = style.color;
     bx.bg_color = style.background_color;
+    bx.background_clip = style.background_clip;
+    bx.appearance_none = style.appearance == crate::style::AppearanceVal::None;
     bx.font_size = font_size_px(style);
     bx.bold = is_bold(style);
     bx.text_align = style.text_align;

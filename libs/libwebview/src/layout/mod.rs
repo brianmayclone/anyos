@@ -56,6 +56,7 @@ pub struct LayoutBox {
     pub bg_color: u32,
     pub accent_color: u32,
     pub uses_dark_color_scheme: bool,
+    pub appearance_none: bool,
     pub border_color: u32,
     pub border_radius: i32,
     pub text_decoration: TextDeco,
@@ -152,6 +153,7 @@ pub struct LayoutBox {
     pub background_image: crate::style::BackgroundImageVal,
     pub background_size: crate::style::BackgroundSizeVal,
     pub background_repeat: crate::style::BackgroundRepeatVal,
+    pub background_clip: crate::style::BackgroundClipVal,
     /// Letter spacing (px).
     pub letter_spacing: i32,
     /// Z-index for stacking context.
@@ -302,6 +304,7 @@ impl LayoutBox {
             bg_color: 0,
             accent_color: 0,
             uses_dark_color_scheme: false,
+            appearance_none: false,
             border_color: 0,
             border_radius: 0,
             text_decoration: TextDeco::None,
@@ -367,6 +370,7 @@ impl LayoutBox {
             background_image: crate::style::BackgroundImageVal::None,
             background_size: crate::style::BackgroundSizeVal::Auto,
             background_repeat: crate::style::BackgroundRepeatVal::Repeat,
+            background_clip: crate::style::BackgroundClipVal::BorderBox,
             // Letter spacing
             letter_spacing: 0,
             z_index: 0,
@@ -996,11 +1000,20 @@ pub fn layout_with_budget(
     let style = &styles[body_id];
 
     let mut root = LayoutBox::new(Some(body_id), BoxType::Block);
-    root.width = viewport_width;
+    // Body width: explicit width if set, else viewport width.
+    root.width = if let Some(w) = style.width {
+        w
+    } else if let Some(pct) = style.width_pct {
+        (viewport_width as i64 * pct as i64 / 10000) as i32
+    } else {
+        viewport_width
+    };
     root.bg_color = style.background_color;
+    root.background_clip = style.background_clip;
     root.color = style.color;
     root.accent_color = style.accent_color;
     root.uses_dark_color_scheme = style.color_scheme == crate::style::ColorSchemeVal::Dark;
+    root.appearance_none = style.appearance == crate::style::AppearanceVal::None;
     root.padding = edges_from(
         style.padding_top,
         style.padding_right,
@@ -1014,7 +1027,7 @@ pub fn layout_with_budget(
         style.margin_left,
     );
 
-    let content_width = viewport_width
+    let content_width = root.width
         - root.padding.left
         - root.padding.right
         - root.margin.left
@@ -1053,6 +1066,9 @@ pub fn layout_with_budget(
             viewport_width,
         )
     } else {
+        // Pass body's definite content height (or 0 if auto) so children
+        // with `height: %` and `position: absolute; top:0; bottom:0` resolve correctly.
+        let body_definite_h = style.height.unwrap_or(0).max(0);
         layout_children(
             dom,
             styles,
@@ -1064,7 +1080,7 @@ pub fn layout_with_budget(
             images,
             viewport_width,
             viewport_height,
-            0,
+            body_definite_h,
             0,
             layout_budget_bottom,
         )
@@ -1539,7 +1555,7 @@ pub(super) fn layout_children_ex_with_budget(
                 let mut placed = if is_table_element(dom, cid) {
                     table::layout_table(dom, styles, pseudo, cid, stf_width, images, viewport_w)
                 } else {
-                    build_block(dom, styles, pseudo, cid, stf_width, images, viewport_w, 0)
+                    build_block(dom, styles, pseudo, cid, stf_width, images, viewport_w, parent_height)
                 };
 
                 let total_w = placed.width + placed.margin.left + placed.margin.right;
@@ -1895,11 +1911,23 @@ pub(super) fn layout_children_ex_with_budget(
         let abs_style = &styles[abs_id];
         let is_fixed_pos = abs_style.position == Position::Fixed;
 
-        // Fixed elements are sized against the viewport; absolute elements against the container.
-        let sizing_width = if is_fixed_pos {
-            viewport_w
+        // Containing block size for the absolute element.
+        let cb_width = if is_fixed_pos { viewport_w } else { available_width };
+        let cb_height = if is_fixed_pos { viewport_h } else { parent_height };
+
+        // CSS §10.3.7: For absolute elements with width:auto and BOTH left and right
+        // specified, width = cb_width - left - right (- margins, treated as 0).
+        // This pre-computes the width to pass into build_block.
+        let sizing_width = if abs_style.width.is_none()
+            && abs_style.width_pct.is_none()
+            && abs_style.left_offset.is_some()
+            && abs_style.right_offset.is_some()
+        {
+            let l = abs_style.left_offset.unwrap_or(0);
+            let r = abs_style.right_offset.unwrap_or(0);
+            (cb_width - l - r).max(0)
         } else {
-            available_width
+            cb_width
         };
 
         let mut abs_box = if is_table_element(dom, abs_id) {
@@ -1921,9 +1949,12 @@ pub(super) fn layout_children_ex_with_budget(
                 sizing_width,
                 images,
                 viewport_w,
-                0,
+                cb_height,
             )
         };
+
+        // Note: height for abs elements with top+bottom is now computed inside
+        // build_block (CSS §10.6.4), so children can be laid out correctly.
 
         if is_fixed_pos {
             // position:fixed — coordinates are viewport-relative.
@@ -2083,6 +2114,13 @@ pub(super) fn apply_text_transform(text: &str, transform: TextTransform) -> Stri
 
 /// Determine whether a node should generate a block-level box.
 fn is_block_level(dom: &Dom, node_id: NodeId, style: &ComputedStyle) -> bool {
+    // CSS §9.7: If `float` has a value other than `none`, the computed `display`
+    // is forced to block-level (`inline`/`inline-block` → `block`).
+    if style.float != crate::style::FloatVal::None
+        && !matches!(style.position, crate::style::Position::Absolute | crate::style::Position::Fixed)
+    {
+        return true;
+    }
     if matches!(
         style.display,
         Display::Block | Display::FlowRoot | Display::Flex | Display::Grid | Display::ListItem

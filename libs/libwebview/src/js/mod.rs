@@ -116,6 +116,7 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                 mutations.push(DomMutation::SetScrollTop {
                     node_id: node_id as usize,
                     value: n.max(0),
+                    smooth: None,
                 });
             }
         }
@@ -128,6 +129,7 @@ fn dom_property_hook(data: *mut u8, key: &str, value: &JsValue) {
                 mutations.push(DomMutation::SetScrollLeft {
                     node_id: node_id as usize,
                     value: n.max(0),
+                    smooth: None,
                 });
             }
         }
@@ -282,11 +284,13 @@ pub enum DomMutation {
     SetScrollTop {
         node_id: usize,
         value: i32,
+        smooth: Option<bool>,
     },
     /// Set the horizontal scroll offset on an overflow container (JS `element.scrollLeft = n`).
     SetScrollLeft {
         node_id: usize,
         value: i32,
+        smooth: Option<bool>,
     },
     /// JS `form.submit()` — programmatic form submission.
     FormSubmit {

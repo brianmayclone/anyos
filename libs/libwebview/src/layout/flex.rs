@@ -21,17 +21,55 @@ struct FlexItem {
     main_base: i32,
     cross_base: i32,
     layout: Option<LayoutBox>,
+    /// True when the item has `flex-basis: auto`, `width: auto`, and its content
+    /// (or a descendant) uses a percentage main-axis size (e.g. a table with
+    /// `width: 100%`). Per the CSS Flexbox interop quirk (Mozilla bug 1469649),
+    /// such items need a "definite post-flexing main size" so the percentage can
+    /// resolve. We achieve this by treating them as `flex-grow: 1` when no other
+    /// item in the line has explicit grow.
+    needs_definite_main: bool,
 }
 
 struct FlexLine {
     start: usize,
     end: usize,
     total_main: i32,
+    cross_size: i32, // resolved cross size of this line
 }
 
 /// Resolve the effective align-items for a child (considering align-self).
 fn resolve_align(container_align: AlignItems, child_style: &ComputedStyle) -> AlignItems {
     child_style.align_self.unwrap_or(container_align)
+}
+
+/// Check whether a DOM subtree contains a descendant with a percentage main-axis
+/// size (`width: %` for row direction, `height: %` for column).
+/// Used to detect flex items that need a "definite post-flexing main size"
+/// (CSS Flexbox interop quirk for percentage-sized table descendants).
+fn has_percent_main_descendant(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    node_id: NodeId,
+    is_row: bool,
+) -> bool {
+    // Check this node's children (we don't check the node itself — the caller
+    // already verified the flex item has auto main-axis size).
+    for &cid in &dom.get(node_id).children {
+        let cst = &styles[cid];
+        let has_pct = if is_row {
+            cst.width_pct.is_some()
+        } else {
+            cst.height_pct.is_some()
+        };
+        if has_pct {
+            return true;
+        }
+        // Recurse into descendants.
+        if has_percent_main_descendant(dom, styles, cid, is_row) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Compute the max-content width of a DOM node by recursively measuring
@@ -216,6 +254,16 @@ pub fn layout_flex(
             0
         };
         Some(px_part + pct_part)
+    } else if matches!(parent_style.position, Position::Absolute | Position::Fixed)
+        && parent_style.top.is_some()
+        && parent_style.bottom_offset.is_some()
+        && parent_height > 0
+    {
+        // CSS §10.6.4: absolute with top+bottom and height:auto → cb_height - top - bottom.
+        let t = parent_style.top.unwrap_or(0);
+        let b = parent_style.bottom_offset.unwrap_or(0);
+        let h = (parent_height - t - b).max(0);
+        if h > 0 { Some(h) } else { None }
     } else {
         None
     };
@@ -244,12 +292,33 @@ pub fn layout_flex(
         if matches!(st.position, Position::Absolute | Position::Fixed) {
             continue;
         }
+        // CSS Flexbox §4: text nodes containing only whitespace do NOT generate
+        // anonymous flex items (they are treated as `display: none`).
+        if let NodeType::Text(ref s) = dom.get(cid).node_type {
+            if s.chars().all(|c| c.is_whitespace()) {
+                continue;
+            }
+        }
         // Skip <input type="hidden"> — generates no box.
         if dom.tag(cid) == Some(Tag::Input) {
             if dom.attr(cid, "type").unwrap_or("") == "hidden" {
                 continue;
             }
         }
+        // Detect "needs definite main size" quirk: flex item with auto basis,
+        // auto main-axis size, no explicit grow, but contains a descendant with
+        // a percentage main-axis size. Per CSS Flexbox interop, such items
+        // should be sized so the percentage can resolve (Mozilla bug 1469649).
+        let needs_definite_main = st.flex_basis.is_none()
+            && st.flex_basis_pct.is_none()
+            && (if is_row {
+                st.width.is_none() && st.width_pct.is_none() && st.width_calc.is_none()
+            } else {
+                st.height.is_none() && st.height_pct.is_none() && st.height_calc.is_none()
+            })
+            && st.flex_grow == 0
+            && has_percent_main_descendant(dom, styles, cid, is_row);
+
         items.push(FlexItem {
             node_id: cid,
             grow: st.flex_grow,
@@ -258,6 +327,7 @@ pub fn layout_flex(
             main_base: 0,
             cross_base: 0,
             layout: None,
+            needs_definite_main,
         });
     }
 
@@ -313,8 +383,30 @@ pub fn layout_flex(
 
         let st = &styles[item.node_id];
         if let Some(basis) = st.flex_basis {
-            // Case A: definite flex-basis.
+            // Case A: definite flex-basis (absolute length).
             item.main_base = basis;
+        } else if let Some(pct) = st.flex_basis_pct {
+            // Case A: definite flex-basis (percentage of container main size).
+            // If container main size is indefinite, fall through to auto handling below.
+            let container_main = if is_row {
+                available_width
+            } else {
+                definite_container_height.unwrap_or(-1)
+            };
+            if container_main > 0 {
+                item.main_base = (container_main as i64 * pct as i64 / 10000) as i32;
+            } else {
+                // Indefinite container — fall back to max-content
+                if is_row {
+                    let mc_w = measure_max_content(dom, styles, pseudo, item.node_id, images, viewport_w);
+                    item.main_base = mc_w.max(1).min(available_width.max(1)) + st.margin_left + st.margin_right;
+                } else {
+                    let child_box = build_block(dom, styles, pseudo, item.node_id, available_width, images, viewport_w, 0);
+                    item.main_base = child_box.height + child_box.margin.top + child_box.margin.bottom;
+                    item.cross_base = child_box.width + child_box.margin.left + child_box.margin.right;
+                    item.layout = Some(child_box);
+                }
+            }
         } else if is_row {
             if let Some(w) = st.width {
                 // Case A: definite width.
@@ -385,6 +477,7 @@ pub fn layout_flex(
                 start: line_start,
                 end: i,
                 total_main: line_main,
+                cross_size: 0,
             });
             line_start = i;
             line_main = item_main;
@@ -397,6 +490,7 @@ pub fn layout_flex(
             start: line_start,
             end: items.len(),
             total_main: line_main,
+            cross_size: 0,
         });
     }
 
@@ -409,7 +503,17 @@ pub fn layout_flex(
     // The container height = bw + padding.top + max_col_main_extent.
     let mut max_col_main: i32 = 0;
 
-    for line in &lines {
+    // CSS §9.4: For single-line flex containers with a definite cross-axis size,
+    // the line cross size IS the container's inner cross size.
+    let single_line = lines.len() == 1 && wrap == FlexWrap::Nowrap;
+    let definite_cross: Option<i32> = if is_row {
+        // For row flex, cross axis is vertical. Use the resolved definite container height.
+        definite_container_height.map(|h| h - parent.padding.top - parent.padding.bottom - 2 * bw).filter(|&h| h > 0)
+    } else {
+        Some(available_width - parent.padding.left - parent.padding.right - 2 * bw).filter(|&w| w > 0)
+    };
+
+    for line in &mut lines {
         let count = line.end - line.start;
         if count == 0 {
             continue;
@@ -422,11 +526,28 @@ pub fn layout_flex(
         let total_grow: i32 = items[line.start..line.end].iter().map(|it| it.grow).sum();
         let total_shrink: i32 = items[line.start..line.end].iter().map(|it| it.shrink).sum();
 
+        // CSS Flexbox interop quirk: when no item has explicit grow but some
+        // items contain percentage-sized descendants (and thus need a "definite
+        // post-flexing main size"), distribute free space equally among them.
+        // See Mozilla bug 1469649 — required for tests like
+        // fixed-table-layout-with-percentage-width-in-flex-item.html.
+        let definite_count = items[line.start..line.end]
+            .iter()
+            .filter(|it| it.needs_definite_main)
+            .count() as i32;
+        let auto_grow_each = if total_grow == 0 && free_space > 0 && definite_count > 0 {
+            free_space / definite_count
+        } else {
+            0
+        };
+
         // Compute final main sizes.
         let mut main_sizes: Vec<i32> = Vec::with_capacity(count);
         for i in line.start..line.end {
             let base = items[i].main_base;
-            let final_size = if free_space > 0 && total_grow > 0 {
+            let final_size = if auto_grow_each > 0 && items[i].needs_definite_main {
+                base + auto_grow_each
+            } else if free_space > 0 && total_grow > 0 {
                 base + (free_space as i64 * items[i].grow as i64 / total_grow as i64) as i32
             } else if free_space < 0 && total_shrink > 0 {
                 (base + (free_space as i64 * items[i].shrink as i64 / total_shrink as i64) as i32)
@@ -434,11 +555,38 @@ pub fn layout_flex(
             } else {
                 base
             };
-            main_sizes.push(final_size);
+            // §9.7: Clamp to min/max constraints.
+            // Note: main_base is content-box in most code paths (only the
+            // auto/max-content case adds margins), so clamp without margins.
+            let st = &styles[items[i].node_id];
+            let clamped = if is_row {
+                let mut s = final_size;
+                if st.min_width > 0 {
+                    s = s.max(st.min_width);
+                }
+                if let Some(mw) = st.max_width {
+                    s = s.min(mw);
+                }
+                s
+            } else {
+                let mut s = final_size;
+                if st.min_height > 0 {
+                    s = s.max(st.min_height);
+                }
+                if let Some(mh) = st.max_height {
+                    s = s.min(mh);
+                }
+                s
+            };
+            main_sizes.push(clamped);
         }
 
         // Re-layout items with resolved sizes.
-        let mut cross_max: i32 = 0;
+        let mut cross_max: i32 = if single_line {
+            definite_cross.unwrap_or(0)
+        } else {
+            0
+        };
         for (idx, i) in (line.start..line.end).enumerate() {
             let item_main = main_sizes[idx];
             let st = &styles[items[i].node_id];
@@ -668,6 +816,7 @@ pub fn layout_flex(
             }
         }
 
+        line.cross_size = cross_max;
         cross_cursor += cross_max + cross_gap;
         // For flex-col: track max height (used_main) across all flex columns.
         if !is_row {
@@ -676,52 +825,103 @@ pub fn layout_flex(
     }
 
     // Apply align-content: redistribute cross-axis space between flex lines.
-    // Only meaningful when wrapping and there's a definite container height.
-    if lines.len() > 1 && align_content != AlignContent::Stretch {
-        let total_cross = cross_cursor;
-        // If the parent has an explicit height, use that for free space calculation.
-        let container_cross = if let Some(h) = parent_style.height {
-            h
-        } else {
-            total_cross // no free space if height is auto
-        };
-        let free = container_cross - total_cross;
+    // Only meaningful when wrapping AND there's a definite container height
+    // with extra space to distribute. If height is auto, lines keep natural sizes.
+    if lines.len() > 1 && is_row && parent_style.height.is_some() {
+        let total_lines_cross: i32 = lines.iter().map(|l| l.cross_size).sum();
+        let total_gaps_cross = cross_gap * (lines.len() as i32 - 1).max(0);
+        let total_cross_used = total_lines_cross + total_gaps_cross;
+        let container_cross = parent_style.height.unwrap();
+        let content_cross = container_cross - parent.padding.top - parent.padding.bottom - 2 * bw;
+        let free = content_cross - total_cross_used;
+
         if free > 0 {
             let line_count = lines.len() as i32;
-            let shift = match align_content {
-                AlignContent::FlexEnd => free,
-                AlignContent::Center => free / 2,
-                AlignContent::SpaceBetween => 0, // handled below
-                AlignContent::SpaceAround => 0,  // handled below
-                AlignContent::SpaceEvenly => 0,  // handled below
-                _ => 0,
-            };
-            // For space-between/around/evenly, calculate per-gap extra.
-            let (initial_offset, gap_extra) = match align_content {
-                AlignContent::SpaceBetween if line_count > 1 => (0, free / (line_count - 1)),
-                AlignContent::SpaceAround if line_count > 0 => {
-                    let per = free / line_count;
-                    (per / 2, per)
-                }
-                AlignContent::SpaceEvenly if line_count > 0 => {
-                    let per = free / (line_count + 1);
-                    (per, per)
-                }
-                _ => (shift, 0),
-            };
-            // Apply offsets to all children.
-            if initial_offset > 0 || gap_extra > 0 {
-                let mut cumulative = initial_offset;
-                let mut line_idx = 0;
-                for child in &mut parent.children {
-                    child.y += cumulative;
-                    // Advance to next line's offset after each line boundary.
-                    // This is approximate — we shift all children by increasing amounts.
-                    line_idx += 1;
-                    if gap_extra > 0 && line_idx > 0 {
-                        cumulative =
-                            initial_offset + gap_extra * (line_idx as i32).min(line_count - 1);
+
+            // Compute per-line offsets based on align-content.
+            let mut line_offsets: Vec<i32> = Vec::with_capacity(lines.len());
+            match align_content {
+                AlignContent::FlexStart => {
+                    for _ in 0..lines.len() {
+                        line_offsets.push(0);
                     }
+                }
+                AlignContent::FlexEnd => {
+                    let shift = free.max(0);
+                    for _ in 0..lines.len() {
+                        line_offsets.push(shift);
+                    }
+                }
+                AlignContent::Center => {
+                    let shift = free.max(0) / 2;
+                    for _ in 0..lines.len() {
+                        line_offsets.push(shift);
+                    }
+                }
+                AlignContent::SpaceBetween => {
+                    let gap_extra = if line_count > 1 { free.max(0) / (line_count - 1) } else { 0 };
+                    for li in 0..lines.len() {
+                        line_offsets.push(gap_extra * li as i32);
+                    }
+                }
+                AlignContent::SpaceAround => {
+                    let per = free.max(0) / line_count.max(1);
+                    for li in 0..lines.len() {
+                        line_offsets.push(per / 2 + per * li as i32);
+                    }
+                }
+                AlignContent::SpaceEvenly => {
+                    let per = free.max(0) / (line_count + 1).max(1);
+                    for li in 0..lines.len() {
+                        line_offsets.push(per * (li as i32 + 1));
+                    }
+                }
+                AlignContent::Stretch => {
+                    // Distribute extra space equally to each line.
+                    let extra_per_line = if line_count > 0 { free.max(0) / line_count } else { 0 };
+                    // Each line grows, so subsequent lines shift by accumulated growth.
+                    for li in 0..lines.len() {
+                        line_offsets.push(extra_per_line * li as i32);
+                    }
+                    // Also grow each line's items to the new cross size,
+                    // BUT only items WITHOUT a definite height (per CSS spec).
+                    if extra_per_line > 0 {
+                        let mut child_idx = 0;
+                        for li in 0..lines.len() {
+                            let item_count = lines[li].end - lines[li].start;
+                            let new_cross = lines[li].cross_size + extra_per_line;
+                            for ii in lines[li].start..lines[li].end {
+                                let item_node = items[ii].node_id;
+                                let item_st = &styles[item_node];
+                                // Skip items with definite height — they keep their size.
+                                if item_st.height.is_none() && child_idx < parent.children.len() {
+                                    let child = &mut parent.children[child_idx];
+                                    let item_h = child.height + child.margin.top + child.margin.bottom;
+                                    if item_h < new_cross {
+                                        child.height = new_cross - child.margin.top - child.margin.bottom;
+                                    }
+                                }
+                                child_idx += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Apply the computed offsets to children, grouped by line.
+            let mut child_idx = 0;
+            for (li, line) in lines.iter().enumerate() {
+                let item_count = line.end - line.start;
+                let offset = if li < line_offsets.len() { line_offsets[li] } else { 0 };
+                if offset != 0 {
+                    for _ in 0..item_count {
+                        if child_idx < parent.children.len() {
+                            parent.children[child_idx].y += offset;
+                        }
+                        child_idx += 1;
+                    }
+                } else {
+                    child_idx += item_count;
                 }
             }
         }

@@ -95,6 +95,26 @@ pub(crate) extern "C" fn on_link_click(ctrl_id: u32, _event_type: u32, _userdata
         return;
     }
 
+    if tab.webview.toggle_checkbox_for_canvas(ctrl_id) {
+        return;
+    }
+
+    if tab.webview.advance_select_for_canvas(ctrl_id) {
+        return;
+    }
+
+    if tab.webview.toggle_radio_for_canvas(ctrl_id) {
+        return;
+    }
+
+    if tab.webview.set_range_for_canvas(ctrl_id) {
+        return;
+    }
+
+    if tab.webview.set_color_for_canvas(ctrl_id) {
+        return;
+    }
+
     // Try color input hit — open a simple color entry.
     // anyOS doesn't have a native color picker dialog, so we allow editing
     // the hex value directly in the text field (already a TextField control).
