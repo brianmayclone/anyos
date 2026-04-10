@@ -162,6 +162,14 @@ impl GitUrl {
             })
         };
 
+        // Normalize host: strip www. prefix for known git hosts
+        // to avoid 301 redirects that break POST requests
+        let host = if host.starts_with("www.") {
+            String::from(&host[4..])
+        } else {
+            host
+        };
+
         // Ensure path ends with .git for GitHub-style hosting
         let path = String::from(path);
         let path = if !path.ends_with(".git") && !path.ends_with(".git/") {

@@ -516,6 +516,41 @@ pub fn build_block_with_budget(
     // Inner (content) width for child layout.
     let inner_w = bx.width - bx.padding.left - bx.padding.right - border2;
     let inner_w = inner_w.max(0);
+    let definite_parent_content_h = if let Some(h) = style.height {
+        let content_h = if is_border_box {
+            h - bx.padding.top - bx.padding.bottom - border2
+        } else {
+            h
+        };
+        Some(content_h.max(0))
+    } else if let Some(pct) = style.height_pct {
+        if pct > 0 && parent_height > 0 {
+            let resolved_h = (parent_height as i64 * pct as i64 / 10000) as i32;
+            let content_h = if is_border_box {
+                resolved_h - bx.padding.top - bx.padding.bottom - border2
+            } else {
+                resolved_h
+            };
+            Some(content_h.max(0))
+        } else {
+            None
+        }
+    } else if let Some((px100, pct100)) = style.height_calc {
+        let resolved_h = px100 / 100
+            + if parent_height > 0 {
+                (parent_height as i64 * pct100 as i64 / 10000) as i32
+            } else {
+                0
+            };
+        let content_h = if is_border_box {
+            resolved_h - bx.padding.top - bx.padding.bottom - border2
+        } else {
+            resolved_h
+        };
+        Some(content_h.max(0))
+    } else {
+        None
+    };
 
     // Lay out children — dispatch to flex, grid, or block flow.
     // Inject ::before / ::after block-level pseudo-element boxes.
@@ -608,6 +643,7 @@ pub fn build_block_with_budget(
             images,
             viewport_w,
             parent_height,
+            definite_parent_content_h.unwrap_or(0),
             before_box,
             after_box,
             abs_y,

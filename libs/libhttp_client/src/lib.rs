@@ -131,7 +131,7 @@ pub fn post(url: &str, body: &[u8], content_type: &str) -> Option<Vec<u8>> {
 ///
 /// Returns `Some(response_body)` on success, `None` on error.
 pub fn post_with_headers(url: &str, body: &[u8], content_type: &str, extra_headers: &str) -> Option<Vec<u8>> {
-    let mut buf = vec![0u8; 16 * 1024 * 1024]; // 16 MiB for large responses (git pack files)
+    let mut buf = vec![0u8; 4 * 1024 * 1024]; // 4 MiB for large responses (git pack files)
     let n = (lib().libhttp_post_with_headers)(
         url.as_ptr(), url.len() as u32,
         body.as_ptr(), body.len() as u32,

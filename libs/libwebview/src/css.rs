@@ -243,6 +243,7 @@ pub enum Property {
     FontSize,
     FontWeight,
     FontStyle,
+    Direction,
     TextAlign,
     TextDecoration,
     TextIndent,
@@ -674,9 +675,27 @@ const MAX_CSS_RULES: usize = 100_000;
 /// Maximum total bytes of CSS property values to prevent memory explosion.
 const MAX_CSS_MEMORY: usize = 128 * 1024 * 1024; // 128 MB
 
+fn normalize_stylesheet_input(css: &str) -> String {
+    let mut text = css.trim();
+    if let Some(stripped) = text.strip_prefix("<!--") {
+        text = stripped.trim_start();
+    }
+    if let Some(stripped) = text.strip_suffix("-->") {
+        text = stripped.trim_end();
+    }
+    if let Some(stripped) = text.strip_prefix("<![CDATA[") {
+        text = stripped.trim_start();
+    }
+    if let Some(stripped) = text.strip_suffix("]]>") {
+        text = stripped.trim_end();
+    }
+    String::from(text)
+}
+
 pub fn parse_stylesheet(css: &str) -> Stylesheet {
     crate::debug_surf!("[css] parse_stylesheet: {} bytes", css.len());
-    let mut p = Parser::new(css);
+    let css_text = normalize_stylesheet_input(css);
+    let mut p = Parser::new(&css_text);
     let mut rules = Vec::new();
     let mut media_rules = Vec::new();
     let mut keyframes = Vec::new();
@@ -2667,6 +2686,7 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "font-size" => Some(Property::FontSize),
         "font-weight" => Some(Property::FontWeight),
         "font-style" => Some(Property::FontStyle),
+        "direction" => Some(Property::Direction),
         "text-align" => Some(Property::TextAlign),
         "text-decoration" => Some(Property::TextDecoration),
         "text-indent" => Some(Property::TextIndent),

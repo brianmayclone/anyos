@@ -324,10 +324,28 @@ fn resolve_host(host: &str) -> Option<[u8; 4]> {
 /// Send data over plain TCP or TLS.
 fn send_data(conn: &Connection, data: &[u8], is_https: bool) -> bool {
     if let Some(handle) = conn.tls_handle {
-        tls::send(handle, data) >= 0
+        // Must send ALL data — TLS may do partial writes
+        let mut offset = 0;
+        while offset < data.len() {
+            let n = tls::send(handle, &data[offset..]);
+            if n <= 0 {
+                return false;
+            }
+            offset += n as usize;
+        }
+        true
     } else {
         debug_assert!(!is_https);
-        syscall::tcp_send(conn.sock, data) != u32::MAX
+        // TCP send — also handle partial writes
+        let mut offset = 0;
+        while offset < data.len() {
+            let n = syscall::tcp_send(conn.sock, &data[offset..]);
+            if n == u32::MAX {
+                return false;
+            }
+            offset += n as usize;
+        }
+        true
     }
 }
 

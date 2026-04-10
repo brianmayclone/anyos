@@ -307,6 +307,24 @@ pub enum AlignContent {
     Stretch,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Ltr,
+    Rtl,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InlineAxisAlignment {
+    Start,
+    End,
+    Left,
+    Right,
+    Center,
+    Stretch,
+    FirstBaseline,
+    LastBaseline,
+}
+
 #[derive(Clone, Copy, Default)]
 pub struct SelectorState {
     pub hovered_node: Option<NodeId>,
@@ -558,6 +576,7 @@ pub struct ComputedStyle {
     pub font_size: i32,        // pixels
     pub font_weight: FontWeight,
     pub font_style: FontStyleVal,
+    pub direction: Direction,
     pub text_align: TextAlignVal,
     pub text_decoration: TextDeco,
     pub line_height: i32, // pixels (0 = auto -> 1.2 * font_size)
@@ -609,6 +628,7 @@ pub struct ComputedStyle {
     pub align_self_is_normal: bool,
     pub justify_self: Option<AlignItems>,
     pub justify_self_is_normal: bool,
+    pub justify_self_inline: Option<InlineAxisAlignment>,
     pub flex_grow: i32,          // fixed-point * 100
     pub flex_shrink: i32,        // fixed-point * 100
     pub flex_basis: Option<i32>, // None = auto, Some(px)
@@ -636,6 +656,8 @@ pub struct ComputedStyle {
     pub grid_auto_flow_column: bool,
     /// `justify-items` alignment for grid items along the inline axis.
     pub justify_items: AlignItems,
+    pub justify_items_specified: bool,
+    pub justify_items_inline: Option<InlineAxisAlignment>,
     // Grid item placement
     pub grid_column_start: GridLine,
     pub grid_column_end: GridLine,
@@ -785,20 +807,21 @@ const SET_COLOR: u32 = 1 << 0;
 const SET_FONT_SIZE: u32 = 1 << 1;
 const SET_FONT_WEIGHT: u32 = 1 << 2;
 const SET_FONT_STYLE: u32 = 1 << 3;
-const SET_TEXT_ALIGN: u32 = 1 << 4;
-const SET_LINE_HEIGHT: u32 = 1 << 5;
-const SET_WHITE_SPACE: u32 = 1 << 6;
-const SET_LIST_STYLE: u32 = 1 << 7;
-const SET_TEXT_DECO: u32 = 1 << 8;
-const SET_VISIBILITY: u32 = 1 << 9;
-const SET_TEXT_TRANSFORM: u32 = 1 << 10;
-const SET_LETTER_SPACING: u32 = 1 << 11;
-const SET_WORD_SPACING: u32 = 1 << 12;
-const SET_WORD_BREAK: u32 = 1 << 13;
-const SET_OVERFLOW_WRAP: u32 = 1 << 14;
-const SET_LIST_STYLE_POS: u32 = 1 << 15;
-const SET_ACCENT_COLOR: u32 = 1 << 16;
-const SET_COLOR_SCHEME: u32 = 1 << 17;
+const SET_DIRECTION: u32 = 1 << 4;
+const SET_TEXT_ALIGN: u32 = 1 << 5;
+const SET_LINE_HEIGHT: u32 = 1 << 6;
+const SET_WHITE_SPACE: u32 = 1 << 7;
+const SET_LIST_STYLE: u32 = 1 << 8;
+const SET_TEXT_DECO: u32 = 1 << 9;
+const SET_VISIBILITY: u32 = 1 << 10;
+const SET_TEXT_TRANSFORM: u32 = 1 << 11;
+const SET_LETTER_SPACING: u32 = 1 << 12;
+const SET_WORD_SPACING: u32 = 1 << 13;
+const SET_WORD_BREAK: u32 = 1 << 14;
+const SET_OVERFLOW_WRAP: u32 = 1 << 15;
+const SET_LIST_STYLE_POS: u32 = 1 << 16;
+const SET_ACCENT_COLOR: u32 = 1 << 17;
+const SET_COLOR_SCHEME: u32 = 1 << 18;
 
 // ---------------------------------------------------------------------------
 // Defaults
@@ -814,6 +837,7 @@ pub fn default_style() -> ComputedStyle {
         font_size: 16,
         font_weight: FontWeight::Normal,
         font_style: FontStyleVal::Normal,
+        direction: Direction::Ltr,
         text_align: TextAlignVal::Left,
         text_decoration: TextDeco::None,
         line_height: 0,
@@ -858,6 +882,7 @@ pub fn default_style() -> ComputedStyle {
         align_self_is_normal: false,
         justify_self: Option::None,
         justify_self_is_normal: false,
+        justify_self_inline: Option::None,
         flex_grow: 0,
         flex_shrink: 100,         // default 1.0 = 100 in fixed-point
         flex_basis: Option::None, // auto
@@ -874,6 +899,8 @@ pub fn default_style() -> ComputedStyle {
         grid_auto_rows: GridTrackSize::Auto,
         grid_auto_flow_column: false,
         justify_items: AlignItems::Stretch,
+        justify_items_specified: false,
+        justify_items_inline: Option::None,
         // Grid item placement
         grid_column_start: GridLine::Auto,
         grid_column_end: GridLine::Auto,
@@ -3126,6 +3153,9 @@ fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u32) {
     if set & SET_FONT_STYLE == 0 {
         child.font_style = parent.font_style;
     }
+    if set & SET_DIRECTION == 0 {
+        child.direction = parent.direction;
+    }
     if set & SET_TEXT_ALIGN == 0 {
         child.text_align = parent.text_align;
     }
@@ -3179,6 +3209,7 @@ fn decl_set_flag(prop: &Property) -> u32 {
         Property::FontSize => SET_FONT_SIZE,
         Property::FontWeight => SET_FONT_WEIGHT,
         Property::FontStyle => SET_FONT_STYLE,
+        Property::Direction => SET_DIRECTION,
         Property::TextAlign => SET_TEXT_ALIGN,
         Property::LineHeight => SET_LINE_HEIGHT,
         Property::WhiteSpace => SET_WHITE_SPACE,
@@ -3412,6 +3443,14 @@ pub fn apply_declaration(
                 style.font_style = match kw.as_str() {
                     "italic" | "oblique" => FontStyleVal::Italic,
                     _ => FontStyleVal::Normal,
+                };
+            }
+        }
+        Property::Direction => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.direction = match kw.as_str() {
+                    "rtl" => Direction::Rtl,
+                    _ => Direction::Ltr,
                 };
             }
         }
@@ -3871,6 +3910,7 @@ pub fn apply_declaration(
                 if let Some(v) = parse_self_alignment_kw(kw) {
                     style.justify_self = v;
                     style.justify_self_is_normal = kw.trim() == "normal";
+                    style.justify_self_inline = parse_inline_axis_alignment_kw(kw);
                 }
             }
         }
@@ -3879,6 +3919,8 @@ pub fn apply_declaration(
                 let (align, justify) = parse_place_items_value(kw);
                 style.align_items = align;
                 style.justify_items = justify;
+                style.justify_items_specified = true;
+                style.justify_items_inline = parse_place_items_inline_value(kw).1;
             }
         }
         Property::PlaceSelf => {
@@ -3890,6 +3932,7 @@ pub fn apply_declaration(
                 style.justify_self_is_normal = kw.split_whitespace().nth(1) == Some("normal")
                     || (kw.split_whitespace().nth(1).is_none()
                         && kw.split_whitespace().next() == Some("normal"));
+                style.justify_self_inline = parse_place_self_inline_value(kw).1;
             }
         }
         Property::PlaceContent => {
@@ -4792,6 +4835,8 @@ pub fn apply_declaration(
         Property::JustifyItems => {
             if let CssValue::Keyword(ref kw) = decl.value {
                 style.justify_items = parse_align_items_kw(kw);
+                style.justify_items_specified = true;
+                style.justify_items_inline = parse_inline_axis_alignment_kw(kw);
             }
         }
         // Grid item placement
@@ -5251,6 +5296,26 @@ fn parse_align_items_kw(kw: &str) -> AlignItems {
     }
 }
 
+fn parse_inline_axis_alignment_kw(kw: &str) -> Option<InlineAxisAlignment> {
+    let kw = kw.trim();
+    let kw = kw
+        .strip_prefix("safe ")
+        .or_else(|| kw.strip_prefix("unsafe "))
+        .unwrap_or(kw)
+        .trim();
+    match kw {
+        "flex-start" | "start" | "self-start" => Some(InlineAxisAlignment::Start),
+        "flex-end" | "end" | "self-end" => Some(InlineAxisAlignment::End),
+        "left" | "legacy" => Some(InlineAxisAlignment::Left),
+        "right" => Some(InlineAxisAlignment::Right),
+        "center" | "anchor-center" => Some(InlineAxisAlignment::Center),
+        "stretch" | "normal" => Some(InlineAxisAlignment::Stretch),
+        "baseline" | "first baseline" => Some(InlineAxisAlignment::FirstBaseline),
+        "last baseline" => Some(InlineAxisAlignment::LastBaseline),
+        _ => None,
+    }
+}
+
 fn parse_self_alignment_kw(kw: &str) -> Option<Option<AlignItems>> {
     let kw = kw.trim();
     let kw = kw
@@ -5272,6 +5337,25 @@ fn parse_self_alignment_kw(kw: &str) -> Option<Option<AlignItems>> {
         "legacy" => Some(Some(AlignItems::FlexStart)),
         _ => None,
     }
+}
+
+fn parse_place_items_inline_value(
+    kw: &str,
+) -> (Option<InlineAxisAlignment>, Option<InlineAxisAlignment>) {
+    let mut it = kw.split_whitespace();
+    let first = it.next();
+    let second = it.next();
+    let align = first.and_then(parse_inline_axis_alignment_kw);
+    let justify = second
+        .and_then(parse_inline_axis_alignment_kw)
+        .or_else(|| first.and_then(parse_inline_axis_alignment_kw));
+    (align, justify)
+}
+
+fn parse_place_self_inline_value(
+    kw: &str,
+) -> (Option<InlineAxisAlignment>, Option<InlineAxisAlignment>) {
+    parse_place_items_inline_value(kw)
 }
 
 fn parse_align_content_kw(kw: &str) -> Option<AlignContent> {

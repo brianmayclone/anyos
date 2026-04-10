@@ -21,8 +21,9 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    AlignItems, ClearVal, ComputedStyle, Display, FloatVal, FontStyleVal, FontWeight, ListStyle,
-    ListStylePosition, OverflowVal, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
+    AlignItems, ClearVal, ComputedStyle, Direction, Display, FloatVal, FontStyleVal, FontWeight,
+    InlineAxisAlignment, ListStyle, ListStylePosition, OverflowVal, Position, PseudoStyles,
+    TextAlignVal, TextDeco, TextTransform,
 };
 use crate::ImageCache;
 
@@ -117,6 +118,11 @@ pub struct LayoutBox {
     /// If true, this box is `position:absolute` or `position:fixed` — out of
     /// normal flow.  Used by `intrinsic_width()` to skip these children.
     pub is_out_of_flow: bool,
+    /// Hypothetical in-flow static-position rectangle for abs/fixed alignment.
+    pub static_position_x: Option<i32>,
+    pub static_position_y: Option<i32>,
+    pub static_position_width: Option<i32>,
+    pub static_position_height: Option<i32>,
     /// Per-side border widths (litehtml-style).
     pub border_top_width: i32,
     pub border_right_width: i32,
@@ -331,6 +337,10 @@ impl LayoutBox {
             opacity: 255,
             is_fixed: false,
             is_out_of_flow: false,
+            static_position_x: None,
+            static_position_y: None,
+            static_position_width: None,
+            static_position_height: None,
             // Per-side borders
             border_top_width: 0,
             border_right_width: 0,
@@ -1055,6 +1065,7 @@ pub fn layout_with_budget(
             viewport_width,
             viewport_height,
             0,
+            0,
             layout_budget_bottom,
         )
     };
@@ -1081,6 +1092,32 @@ fn self_alignment_offset(align: AlignItems, available: i32, size: i32) -> i32 {
         AlignItems::Center => (available - size).max(0) / 2,
         AlignItems::FlexEnd => (available - size).max(0),
         _ => 0,
+    }
+}
+
+fn resolve_inline_alignment(
+    keyword: Option<InlineAxisAlignment>,
+    fallback_keyword: Option<InlineAxisAlignment>,
+    explicit: Option<AlignItems>,
+    fallback: AlignItems,
+    direction: Direction,
+) -> AlignItems {
+    match keyword.or(fallback_keyword) {
+        Some(InlineAxisAlignment::Start) | Some(InlineAxisAlignment::FirstBaseline) => match direction {
+            Direction::Ltr => AlignItems::FlexStart,
+            Direction::Rtl => AlignItems::FlexEnd,
+        },
+        Some(InlineAxisAlignment::End) | Some(InlineAxisAlignment::LastBaseline) => {
+            match direction {
+                Direction::Ltr => AlignItems::FlexEnd,
+                Direction::Rtl => AlignItems::FlexStart,
+            }
+        }
+        Some(InlineAxisAlignment::Left) => AlignItems::FlexStart,
+        Some(InlineAxisAlignment::Right) => AlignItems::FlexEnd,
+        Some(InlineAxisAlignment::Center) => AlignItems::Center,
+        Some(InlineAxisAlignment::Stretch) => AlignItems::Stretch,
+        None => explicit.unwrap_or(fallback),
     }
 }
 
@@ -1147,6 +1184,18 @@ fn resolve_absolute_alignment_rec(
     for child in &mut bx.children {
         let mut child_abs_x = if child.is_fixed { child.x } else { abs_x + child.x };
         let mut child_abs_y = if child.is_fixed { child.y } else { abs_y + child.y };
+        let static_start_abs_x = child
+            .static_position_x
+            .map(|x| if child.is_fixed { x } else { abs_x + x })
+            .unwrap_or(parent_border_abs_x);
+        let static_start_abs_y = child
+            .static_position_y
+            .map(|y| if child.is_fixed { y } else { abs_y + y })
+            .unwrap_or(parent_content_abs_y);
+        let static_size_x = child.static_position_width.unwrap_or(parent_border_w);
+        let static_size_y = child
+            .static_position_height
+            .unwrap_or(bx.border_width.max(0) * 2);
 
         if !child.is_fixed && child.is_out_of_flow {
             if let Some(node_id) = child.node_id {
@@ -1155,7 +1204,13 @@ fn resolve_absolute_alignment_rec(
                     let justify = if style.justify_self_is_normal {
                         AlignItems::FlexStart
                     } else {
-                        style.justify_self.unwrap_or(AlignItems::Stretch)
+                        resolve_inline_alignment(
+                            style.justify_self_inline,
+                            None,
+                            style.justify_self,
+                            AlignItems::Stretch,
+                            style.direction,
+                        )
                     };
                     let align = if style.align_self_is_normal {
                         AlignItems::FlexStart
@@ -1200,7 +1255,11 @@ fn resolve_absolute_alignment_rec(
                             cb_start_abs
                                 + start
                                 + *margin_start
-                                + self_alignment_offset(normal_start_align, available, *size + *margin_start + *margin_end)
+                                + self_alignment_offset(
+                                    normal_start_align,
+                                    available,
+                                    *size + *margin_start + *margin_end,
+                                )
                         } else if !start_auto {
                             cb_start_abs + start + *margin_start
                         } else if !end_auto {
@@ -1209,7 +1268,11 @@ fn resolve_absolute_alignment_rec(
                             let available = static_size.max(0);
                             static_start_abs
                                 + *margin_start
-                                + self_alignment_offset(normal_start_align, available, *size + *margin_start + *margin_end)
+                                + self_alignment_offset(
+                                    normal_start_align,
+                                    available,
+                                    *size + *margin_start + *margin_end,
+                                )
                         }
                     };
 
@@ -1229,8 +1292,8 @@ fn resolve_absolute_alignment_rec(
                         justify,
                         next_cb_abs_x,
                         next_cb_w,
-                        parent_border_abs_x,
-                        parent_border_w,
+                        static_start_abs_x,
+                        static_size_x,
                         style.width.is_none() && style.width_pct.is_none() && style.width_calc.is_none(),
                     );
                     child.width = width;
@@ -1253,8 +1316,8 @@ fn resolve_absolute_alignment_rec(
                         align,
                         next_cb_abs_y,
                         next_cb_h,
-                        parent_content_abs_y,
-                        bx.border_width.max(0) * 2,
+                        static_start_abs_y,
+                        static_size_y,
                         style.height.is_none() && style.height_pct.is_none() && style.height_calc.is_none(),
                     );
                     child.height = height;
@@ -1335,6 +1398,7 @@ pub(super) fn layout_children(
     images: &ImageCache,
     viewport_w: i32,
     viewport_h: i32,
+    parent_height: i32,
     abs_y: i32,
     layout_budget_bottom: Option<i32>,
 ) -> i32 {
@@ -1349,6 +1413,7 @@ pub(super) fn layout_children(
         images,
         viewport_w,
         viewport_h,
+        parent_height,
         None,
         None,
         abs_y,
@@ -1369,6 +1434,7 @@ pub(super) fn layout_children_ex_with_budget(
     images: &ImageCache,
     viewport_w: i32,
     viewport_h: i32,
+    parent_height: i32,
     before_block: Option<LayoutBox>,
     after_block: Option<LayoutBox>,
     abs_y: i32,
@@ -1392,7 +1458,7 @@ pub(super) fn layout_children_ex_with_budget(
     }
 
     // Collect absolutely/fixed-positioned children to lay out after normal flow.
-    let mut deferred_abs: Vec<NodeId> = Vec::new();
+    let mut deferred_abs: Vec<(NodeId, i32, i32, i32, i32)> = Vec::new();
 
     let mut i = 0;
     while i < child_ids.len() {
@@ -1428,6 +1494,7 @@ pub(super) fn layout_children_ex_with_budget(
                 images,
                 viewport_w,
                 viewport_h,
+                parent_height,
                 abs_y + cursor_y,
                 layout_budget_bottom,
             );
@@ -1438,7 +1505,21 @@ pub(super) fn layout_children_ex_with_budget(
 
         // Skip absolute/fixed from normal flow — position them after.
         if matches!(style.position, Position::Absolute | Position::Fixed) {
-            deferred_abs.push(cid);
+            let li = float_ctx.left_intrusion_at(cursor_y, 1);
+            let ri = float_ctx.right_intrusion_at(cursor_y, 1);
+            let static_width = (available_width - li - ri).max(0);
+            let collapsed = if prev_margin_bottom > style.margin_top {
+                prev_margin_bottom
+            } else {
+                style.margin_top
+            };
+            let static_y = if cursor_y == bw + parent.padding.top {
+                cursor_y + style.margin_top
+            } else {
+                cursor_y + collapsed - prev_margin_bottom
+            };
+            let static_x = bw + parent.padding.left + li;
+            deferred_abs.push((cid, static_x, static_y, static_width, 0));
             i += 1;
             continue;
         }
@@ -1506,6 +1587,47 @@ pub(super) fn layout_children_ex_with_budget(
             let li = float_ctx.left_intrusion_at(cursor_y, 1);
             let ri = float_ctx.right_intrusion_at(cursor_y, 1);
             let effective_avail = (available_width - li - ri).max(0);
+            let parent_style = &styles[_parent_node];
+            let child_style = &styles[cid];
+            let parent_justify = if parent_style.justify_items_specified {
+                resolve_inline_alignment(
+                    parent_style.justify_items_inline,
+                    None,
+                    Some(parent_style.justify_items),
+                    AlignItems::Stretch,
+                    child_style.direction,
+                )
+            } else {
+                AlignItems::FlexStart
+            };
+            let justify = if child_style.justify_self_is_normal {
+                AlignItems::FlexStart
+            } else {
+                resolve_inline_alignment(
+                    child_style.justify_self_inline,
+                    parent_style.justify_items_inline,
+                    child_style.justify_self,
+                    parent_justify,
+                    child_style.direction,
+                )
+            };
+            let is_widget_like = matches!(
+                dom.tag(cid),
+                Some(Tag::Input | Tag::Select | Tag::Textarea | Tag::Button)
+            );
+            let use_fit_content_width = justify != AlignItems::Stretch
+                && child_style.width.is_none()
+                && child_style.width_pct.is_none()
+                && child_style.width_calc.is_none()
+                && !child_style.width_max_content
+                && !child_style.width_min_content
+                && !child_style.width_fit_content
+                && (!child_style.justify_self_is_normal || is_widget_like);
+            let child_avail = if use_fit_content_width {
+                shrink_to_fit_width(dom, styles, pseudo, cid, effective_avail, images, viewport_w)
+            } else {
+                effective_avail
+            };
 
             let child_box = if is_table_element(dom, cid) {
                 table::layout_table(
@@ -1513,7 +1635,7 @@ pub(super) fn layout_children_ex_with_budget(
                     styles,
                     pseudo,
                     cid,
-                    effective_avail,
+                    child_avail,
                     images,
                     viewport_w,
                 )
@@ -1534,10 +1656,10 @@ pub(super) fn layout_children_ex_with_budget(
                     styles,
                     pseudo,
                     cid,
-                    effective_avail,
+                    child_avail,
                     images,
                     viewport_w,
-                    0,
+                    parent_height,
                     abs_y + child_y,
                     layout_budget_bottom,
                 )
@@ -1555,13 +1677,33 @@ pub(super) fn layout_children_ex_with_budget(
             };
 
             let mut placed = child_box;
-            let parent_style = &styles[_parent_node];
-            let child_style = &styles[cid];
-            let justify = if child_style.justify_self_is_normal {
-                AlignItems::FlexStart
-            } else {
-                child_style.justify_self.unwrap_or(parent_style.justify_items)
-            };
+            if let Some(explicit_width) = child_style.width {
+                let border2 = placed.border_width * 2;
+                let explicit_outer_width = if matches!(
+                    child_style.box_sizing,
+                    crate::style::BoxSizing::BorderBox
+                ) {
+                    explicit_width
+                } else {
+                    explicit_width + placed.padding.left + placed.padding.right + border2
+                };
+                if explicit_outer_width > placed.width {
+                    placed.width = explicit_outer_width;
+                }
+            }
+            if use_fit_content_width {
+                let remaining =
+                    (effective_avail - placed.width - placed.margin.left - placed.margin.right)
+                        .max(0);
+                if child_style.margin_left_auto && child_style.margin_right_auto {
+                    placed.margin.left = remaining / 2;
+                    placed.margin.right = remaining - placed.margin.left;
+                } else if child_style.margin_left_auto {
+                    placed.margin.left += remaining;
+                } else if child_style.margin_right_auto {
+                    placed.margin.right += remaining;
+                }
+            }
             let stretch_self = justify == AlignItems::Stretch
                 && !child_style.justify_self_is_normal
                 && child_style.width.is_none()
@@ -1749,7 +1891,7 @@ pub(super) fn layout_children_ex_with_budget(
     }
 
     // Position absolutely/fixed elements out of flow.
-    for &abs_id in &deferred_abs {
+    for &(abs_id, static_x, static_y, static_w, static_h) in &deferred_abs {
         let abs_style = &styles[abs_id];
         let is_fixed_pos = abs_style.position == Position::Fixed;
 
@@ -1829,6 +1971,10 @@ pub(super) fn layout_children_ex_with_budget(
         }
 
         abs_box.is_out_of_flow = true;
+        abs_box.static_position_x = Some(static_x);
+        abs_box.static_position_y = Some(static_y);
+        abs_box.static_position_width = Some(static_w);
+        abs_box.static_position_height = Some(static_h);
         parent.children.push(abs_box);
     }
 
