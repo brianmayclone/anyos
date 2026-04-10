@@ -1089,8 +1089,8 @@ pub fn layout_with_budget(
 
 fn self_alignment_offset(align: AlignItems, available: i32, size: i32) -> i32 {
     match align {
-        AlignItems::Center => (available - size).max(0) / 2,
-        AlignItems::FlexEnd => (available - size).max(0),
+        AlignItems::Center => (available - size) / 2,
+        AlignItems::FlexEnd => available - size,
         _ => 0,
     }
 }
@@ -1247,14 +1247,7 @@ fn resolve_absolute_alignment_rec(
                             } else if auto_margin_end {
                                 *margin_end = remaining;
                             }
-                            cb_start_abs
-                                + start
-                                + *margin_start
-                                + self_alignment_offset(
-                                    normal_start_align,
-                                    available,
-                                    *size + *margin_start + *margin_end,
-                                )
+                            cb_start_abs + start + *margin_start
                         } else if !start_auto {
                             cb_start_abs + start + *margin_start
                         } else if !end_auto {
@@ -1552,18 +1545,21 @@ pub(super) fn layout_children_ex_with_budget(
                 let total_w = placed.width + placed.margin.left + placed.margin.right;
                 let total_h = placed.height + placed.margin.top + placed.margin.bottom;
                 let place_y = float_ctx.find_y_for_float(float_val, total_w, total_h, cursor_y);
+                let relative_x = placed.x;
+                let relative_y = placed.y;
 
                 let li = float_ctx.left_intrusion_at(place_y, total_h);
                 let ri = float_ctx.right_intrusion_at(place_y, total_h);
 
                 if float_val == FloatVal::Left {
-                    placed.x = bw + parent.padding.left + li + placed.margin.left;
+                    placed.x = bw + parent.padding.left + li + placed.margin.left + relative_x;
                 } else {
                     let right_edge = available_width - ri;
                     placed.x =
-                        bw + parent.padding.left + right_edge - placed.width - placed.margin.right;
+                        bw + parent.padding.left + right_edge - placed.width - placed.margin.right
+                            + relative_x;
                 }
-                placed.y = place_y + placed.margin.top;
+                placed.y = place_y + placed.margin.top + relative_y;
 
                 float_ctx.add(PlacedFloat {
                     side: float_val,
@@ -1672,6 +1668,8 @@ pub(super) fn layout_children_ex_with_budget(
             };
 
             let mut placed = child_box;
+            let relative_x = placed.x;
+            let relative_y = placed.y;
             if let Some(explicit_width) = child_style.width {
                 let border2 = placed.border_width * 2;
                 let explicit_outer_width = if matches!(
@@ -1719,7 +1717,7 @@ pub(super) fn layout_children_ex_with_budget(
                 AlignItems::FlexEnd => (effective_avail - total_child_w).max(0),
                 _ => 0,
             };
-            placed.x = bw + parent.padding.left + li + placed.margin.left + justify_offset;
+            placed.x = bw + parent.padding.left + li + placed.margin.left + justify_offset + relative_x;
 
             // Keep legacy `text-align` fallback when self-alignment remains at start.
             let parent_align = parent_style.text_align;
@@ -1727,16 +1725,23 @@ pub(super) fn layout_children_ex_with_budget(
                 if parent_align == TextAlignVal::Center {
                     if total_child_w < effective_avail {
                         placed.x =
-                            bw + parent.padding.left + li + (effective_avail - total_child_w) / 2;
+                            bw + parent.padding.left
+                                + li
+                                + (effective_avail - total_child_w) / 2
+                                + relative_x;
                     }
                 } else if parent_align == TextAlignVal::Right {
                     if total_child_w < effective_avail {
-                        placed.x = bw + parent.padding.left + li + effective_avail - total_child_w;
+                        placed.x = bw + parent.padding.left
+                            + li
+                            + effective_avail
+                            - total_child_w
+                            + relative_x;
                     }
                 }
             }
 
-            placed.y = placed_y;
+            placed.y = placed_y + relative_y;
             cursor_y = placed_y + placed.height + placed.margin.bottom;
             prev_margin_bottom = placed.margin.bottom;
 

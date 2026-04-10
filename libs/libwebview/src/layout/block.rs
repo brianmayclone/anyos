@@ -170,6 +170,25 @@ pub fn build_block_with_budget(
     // ---- Width resolution ----
     let border2 = bx.border_width * 2;
     let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
+    let definite_h_for_aspect = if let Some(h) = style.height {
+        Some(h)
+    } else if let Some(pct) = style.height_pct {
+        if pct > 0 && parent_height > 0 {
+            Some((parent_height as i64 * pct as i64 / 10000) as i32)
+        } else {
+            None
+        }
+    } else if let Some((px100, pct100)) = style.height_calc {
+        let px_part = px100 / 100;
+        let pct_part = if parent_height > 0 {
+            (parent_height as i64 * pct100 as i64 / 10000) as i32
+        } else {
+            0
+        };
+        Some(px_part + pct_part)
+    } else {
+        None
+    };
 
     // max-content / min-content / fit-content: measure intrinsic width.
     let intrinsic_w: Option<i32> = if style.width_max_content {
@@ -225,6 +244,16 @@ pub fn build_block_with_budget(
         let px_part = px100 / 100;
         let pct_part = (available_width as i64 * pct100 as i64 / 10000) as i32;
         Some(px_part + pct_part)
+    } else if style.aspect_ratio > 0 {
+        definite_h_for_aspect.map(|h| {
+            let content_h = if is_border_box {
+                (h - bx.padding.top - bx.padding.bottom - border2).max(0)
+            } else {
+                h.max(0)
+            };
+            let content_w = content_h * style.aspect_ratio / 100;
+            content_w + bx.padding.left + bx.padding.right + border2
+        })
     } else {
         None
     };
@@ -855,6 +884,7 @@ fn append_out_of_flow_children(
     viewport_w: i32,
 ) {
     let child_ids: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
+    let parent_style = &styles[node_id];
     for abs_id in child_ids {
         let abs_style = &styles[abs_id];
         if !matches!(abs_style.position, Position::Absolute | Position::Fixed) {
@@ -874,9 +904,46 @@ fn append_out_of_flow_children(
 
         let content_x = parent.border_width + parent.padding.left;
         let content_y = parent.border_width + parent.padding.top;
+        let content_w = available_width.max(0);
         let content_h =
             (parent.height - parent.padding.top - parent.padding.bottom - parent.border_width * 2)
                 .max(0);
+        let mut static_x = content_x;
+        let mut static_y = content_y;
+
+        match parent_style.display {
+            Display::Flex | Display::InlineFlex => {
+                if matches!(
+                    parent_style.flex_direction,
+                    crate::style::FlexDirection::Row | crate::style::FlexDirection::RowReverse
+                ) {
+                    static_y += match abs_style.align_self.unwrap_or(parent_style.align_items) {
+                        crate::style::AlignItems::Center => (content_h - abs_box.height).max(0) / 2,
+                        crate::style::AlignItems::FlexEnd => (content_h - abs_box.height).max(0),
+                        _ => 0,
+                    };
+                } else {
+                    static_x += match abs_style.align_self.unwrap_or(parent_style.align_items) {
+                        crate::style::AlignItems::Center => (content_w - abs_box.width).max(0) / 2,
+                        crate::style::AlignItems::FlexEnd => (content_w - abs_box.width).max(0),
+                        _ => 0,
+                    };
+                }
+            }
+            Display::Grid | Display::InlineGrid => {
+                static_x += match abs_style.justify_self.unwrap_or(parent_style.justify_items) {
+                    crate::style::AlignItems::Center => (content_w - abs_box.width).max(0) / 2,
+                    crate::style::AlignItems::FlexEnd => (content_w - abs_box.width).max(0),
+                    _ => 0,
+                };
+                static_y += match abs_style.align_self.unwrap_or(parent_style.align_items) {
+                    crate::style::AlignItems::Center => (content_h - abs_box.height).max(0) / 2,
+                    crate::style::AlignItems::FlexEnd => (content_h - abs_box.height).max(0),
+                    _ => 0,
+                };
+            }
+            _ => {}
+        }
 
         abs_box.x = content_x + abs_style.left_offset.unwrap_or(0) + abs_box.margin.left;
         abs_box.y = content_y + abs_style.top.unwrap_or(0) + abs_box.margin.top;
@@ -894,9 +961,9 @@ fn append_out_of_flow_children(
 
         abs_box.is_fixed = abs_style.position == Position::Fixed;
         abs_box.is_out_of_flow = true;
-        abs_box.static_position_x = Some(content_x);
-        abs_box.static_position_y = Some(content_y);
-        abs_box.static_position_width = Some(available_width);
+        abs_box.static_position_x = Some(static_x);
+        abs_box.static_position_y = Some(static_y);
+        abs_box.static_position_width = Some(content_w);
         abs_box.static_position_height = Some(content_h);
         parent.children.push(abs_box);
     }
