@@ -3745,10 +3745,18 @@ impl Compiler {
             }
             Expr::New { callee, arguments } => {
                 self.compile_expr(callee);
-                for arg in arguments {
-                    self.compile_expr(arg);
+                if Self::args_have_spread(arguments) {
+                    // Build the argument list as an array (which iterates any
+                    // spread expressions via the Symbol.iterator protocol),
+                    // then call Op::NewSpread to construct.
+                    self.compile_args_as_array(arguments);
+                    self.emit(Op::NewSpread);
+                } else {
+                    for arg in arguments {
+                        self.compile_expr(arg);
+                    }
+                    self.emit(Op::New(arguments.len() as u8));
                 }
-                self.emit(Op::New(arguments.len() as u8));
             }
             Expr::Unary { op, argument, .. } => {
                 self.compile_expr(argument);

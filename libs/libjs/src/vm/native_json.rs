@@ -200,8 +200,19 @@ fn serialize_json_property(
                 Some(Some(format_number(n)))
             }
         }
-        JsValue::Array(_) => serialize_json_array(vm, state, &value, depth + 1),
-        JsValue::Object(_) => serialize_json_object(vm, state, &value, depth + 1),
+        JsValue::Array(_) | JsValue::Object(_) => {
+            // Per spec: dispatch via IsArray so Proxy([]) is handled as an
+            // array (the trap may throw on the length read).
+            let is_arr = match super::native_array::is_array_value(vm, &value) {
+                Some(b) => b,
+                None => return None,
+            };
+            if is_arr {
+                serialize_json_array(vm, state, &value, depth + 1)
+            } else {
+                serialize_json_object(vm, state, &value, depth + 1)
+            }
+        }
         // Functions, Undefined, BigInt → omit (caller decides).
         _ => Some(None),
     }
@@ -490,8 +501,11 @@ fn internalize_json_property(
     if vm.pending_exception.is_some() {
         return None;
     }
-    match &val {
-        JsValue::Array(_) => {
+    if matches!(val, JsValue::Object(_) | JsValue::Array(_)) {
+        // §25.5.1.1.1 step 2.a: IsArray(val). Proxies must dispatch to their
+        // target so a Proxy([]) is treated as an array.
+        let is_arr = super::native_array::is_array_value(vm, &val)?;
+        if is_arr {
             let len_val = vm.get_property_invoking_getter(&val, "length");
             if vm.pending_exception.is_some() {
                 return None;
@@ -519,7 +533,7 @@ fn internalize_json_property(
                         return None;
                     }
                 } else {
-                    if !vm.set_property_or_throw(&val, &key, new_element) {
+                    if !vm.create_data_property_or_throw(&val, &key, new_element) {
                         return None;
                     }
                     if vm.pending_exception.is_some() {
@@ -527,13 +541,11 @@ fn internalize_json_property(
                     }
                 }
             }
-        }
-        JsValue::Object(_) => {
-            let keys: alloc::vec::Vec<String> = if let JsValue::Object(o) = &val {
-                o.borrow().keys()
-            } else {
-                alloc::vec::Vec::new()
-            };
+        } else {
+            let keys = vm.own_property_keys(&val);
+            if vm.pending_exception.is_some() {
+                return None;
+            }
             for key in keys {
                 let new_element =
                     internalize_json_property(vm, &val, &key, reviver)?;
@@ -545,7 +557,7 @@ fn internalize_json_property(
                         return None;
                     }
                 } else {
-                    if !vm.set_property_or_throw(&val, &key, new_element) {
+                    if !vm.create_data_property_or_throw(&val, &key, new_element) {
                         return None;
                     }
                     if vm.pending_exception.is_some() {
@@ -554,7 +566,6 @@ fn internalize_json_property(
                 }
             }
         }
-        _ => {}
     }
     let result = vm.call_value(
         reviver,

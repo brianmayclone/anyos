@@ -432,6 +432,32 @@ impl fmt::Debug for JsValue {
     }
 }
 
+/// Global counter used to allocate unique [`JsObject::shape_id`] values.
+///
+/// This is the foundation of the inline cache system: every JsObject starts
+/// with a fresh `shape_id`, and any *structural* change (adding or removing
+/// a property, swapping the prototype) re-allocates a new id from this
+/// counter.  Sites that read the same property repeatedly can cache the
+/// previously observed `shape_id` and skip re-doing the prototype walk on
+/// subsequent matching reads.
+///
+/// Pure value updates (overwriting an existing property with a new value)
+/// do **not** bump `shape_id`; they bump [`JsObject::value_version`] instead,
+/// so that an inline cache holding a *cloned* value can detect staleness
+/// independently of the structural shape.
+pub(crate) fn next_shape_id() -> u32 {
+    use core::sync::atomic::{AtomicU32, Ordering};
+    // Start at 1 — `0` is reserved as the "invalid / empty cache" sentinel.
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    if id == 0 {
+        // Wrapped around — skip the sentinel.
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    } else {
+        id
+    }
+}
+
 /// A JavaScript object (property map).
 #[derive(Clone, Debug)]
 pub struct JsObject {
@@ -445,6 +471,23 @@ pub struct JsObject {
     /// Optional hook called when a property is set. Args: (userdata, key, value).
     pub set_hook: Option<fn(*mut u8, &str, &JsValue)>,
     pub set_hook_data: *mut u8,
+    /// Inline-cache shape identifier.
+    ///
+    /// Bumped to a fresh value whenever the object's structural layout
+    /// *might* change in a way that affects property resolution: a new
+    /// own key is observed via [`JsObject::set`]/[`JsObject::set_hidden`],
+    /// a key is removed via [`JsObject::delete`], or a property
+    /// descriptor is rewritten.  Stays stable across pure value updates
+    /// of an existing key.
+    ///
+    /// Inline caches at `GetPropNamed` sites compare this against a
+    /// previously observed value to skip the prototype walk on hit.
+    /// Caches that bypass `set`/`delete` and mutate `properties`
+    /// directly do **not** invalidate the shape_id; safety in that case
+    /// is preserved by the IC re-fetching the value from the cached
+    /// holder via a fresh `BTreeMap::get` lookup on every hit, rather
+    /// than trusting a snapshotted value clone.
+    pub shape_id: u32,
 }
 
 /// A property descriptor.
@@ -526,6 +569,7 @@ impl JsObject {
             primitive_value: None,
             set_hook: None,
             set_hook_data: core::ptr::null_mut(),
+            shape_id: next_shape_id(),
         }
     }
 
@@ -537,6 +581,7 @@ impl JsObject {
             primitive_value: None,
             set_hook: None,
             set_hook_data: core::ptr::null_mut(),
+            shape_id: next_shape_id(),
         }
     }
 
@@ -589,16 +634,26 @@ impl JsObject {
                 return;
             }
             // Preserve the existing descriptor flags, only update the value.
+            // Pure value update on an existing key — does NOT change the
+            // structural shape, so inline caches that match on `shape_id`
+            // stay valid.  The IC re-reads the value from the holder on
+            // every hit, so the new value is observed automatically.
             let mut updated = existing.clone();
             updated.value = value;
             self.properties.insert(key, updated);
             return;
         }
+        // New own key — structural change.  Invalidate inline caches.
         self.properties.insert(key, Property::data(value));
+        self.shape_id = next_shape_id();
     }
 
     pub fn set_hidden(&mut self, key: String, value: JsValue) {
+        let is_new = !self.properties.contains_key(&key);
         self.properties.insert(key, Property::hidden(value));
+        if is_new {
+            self.shape_id = next_shape_id();
+        }
     }
 
     pub fn has(&self, key: &str) -> bool {
@@ -615,13 +670,28 @@ impl JsObject {
         self.properties.contains_key(key)
     }
 
+    /// Invalidate inline caches that may have observed this object's
+    /// previous structural shape.
+    ///
+    /// Internal helpers that mutate `properties` directly (rather than
+    /// going through `set` / `delete`) must call this after the
+    /// mutation so that `GetPropNamed` inline caches stop returning
+    /// stale prototype-walk results.
+    #[inline]
+    pub fn invalidate_shape(&mut self) {
+        self.shape_id = next_shape_id();
+    }
+
     pub fn delete(&mut self, key: &str) -> bool {
         if let Some(prop) = self.properties.get(key) {
             if !prop.configurable {
                 return false;
             }
         }
-        self.properties.remove(key);
+        if self.properties.remove(key).is_some() {
+            // Structural change — invalidate inline caches.
+            self.shape_id = next_shape_id();
+        }
         true
     }
 

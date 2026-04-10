@@ -151,9 +151,18 @@ pub struct LayoutBox {
     pub text_overflow_ellipsis: bool,
     /// Background image / gradient.
     pub background_image: crate::style::BackgroundImageVal,
+    pub mask_image: crate::style::BackgroundImageVal,
     pub background_size: crate::style::BackgroundSizeVal,
     pub background_repeat: crate::style::BackgroundRepeatVal,
     pub background_clip: crate::style::BackgroundClipVal,
+    pub mask_size: crate::style::BackgroundSizeVal,
+    pub mask_repeat: crate::style::BackgroundRepeatVal,
+    pub mask_clip: crate::style::BackgroundClipVal,
+    pub mask_origin: crate::style::BackgroundClipVal,
+    pub mask_position_x: i32,
+    pub mask_position_x_is_percent: bool,
+    pub mask_position_y: i32,
+    pub mask_position_y_is_percent: bool,
     /// Letter spacing (px).
     pub letter_spacing: i32,
     /// Z-index for stacking context.
@@ -368,9 +377,18 @@ impl LayoutBox {
             text_overflow_ellipsis: false,
             // Background image
             background_image: crate::style::BackgroundImageVal::None,
+            mask_image: crate::style::BackgroundImageVal::None,
             background_size: crate::style::BackgroundSizeVal::Auto,
             background_repeat: crate::style::BackgroundRepeatVal::Repeat,
             background_clip: crate::style::BackgroundClipVal::BorderBox,
+            mask_size: crate::style::BackgroundSizeVal::Auto,
+            mask_repeat: crate::style::BackgroundRepeatVal::Repeat,
+            mask_clip: crate::style::BackgroundClipVal::BorderBox,
+            mask_origin: crate::style::BackgroundClipVal::BorderBox,
+            mask_position_x: 0,
+            mask_position_x_is_percent: true,
+            mask_position_y: 0,
+            mask_position_y_is_percent: true,
             // Letter spacing
             letter_spacing: 0,
             z_index: 0,
@@ -1009,7 +1027,16 @@ pub fn layout_with_budget(
         viewport_width
     };
     root.bg_color = style.background_color;
+    root.mask_image = style.mask_image.clone();
     root.background_clip = style.background_clip;
+    root.mask_size = style.mask_size;
+    root.mask_repeat = style.mask_repeat;
+    root.mask_clip = style.mask_clip;
+    root.mask_origin = style.mask_origin;
+    root.mask_position_x = style.mask_position_x;
+    root.mask_position_x_is_percent = style.mask_position_x_is_percent;
+    root.mask_position_y = style.mask_position_y;
+    root.mask_position_y_is_percent = style.mask_position_y_is_percent;
     root.color = style.color;
     root.accent_color = style.accent_color;
     root.uses_dark_color_scheme = style.color_scheme == crate::style::ColorSchemeVal::Dark;

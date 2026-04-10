@@ -120,9 +120,18 @@ pub fn build_block_with_budget(
         matches!(style.text_overflow, crate::style::TextOverflowVal::Ellipsis);
     // Background image
     bx.background_image = style.background_image.clone();
+    bx.mask_image = style.mask_image.clone();
     bx.background_size = style.background_size;
     bx.background_repeat = style.background_repeat;
     bx.background_clip = style.background_clip;
+    bx.mask_size = style.mask_size;
+    bx.mask_repeat = style.mask_repeat;
+    bx.mask_clip = style.mask_clip;
+    bx.mask_origin = style.mask_origin;
+    bx.mask_position_x = style.mask_position_x;
+    bx.mask_position_x_is_percent = style.mask_position_x_is_percent;
+    bx.mask_position_y = style.mask_position_y;
+    bx.mask_position_y_is_percent = style.mask_position_y_is_percent;
     // Letter spacing
     bx.letter_spacing = style.letter_spacing;
     // Z-index — only applies to positioned elements (CSS2 §9.9.1).
@@ -1177,9 +1186,18 @@ pub(super) fn build_pseudo_element_box(
             ps.margin_left,
         );
         pb.background_image = ps.background_image.clone();
+        pb.mask_image = ps.mask_image.clone();
         pb.background_size = ps.background_size;
         pb.background_repeat = ps.background_repeat;
         pb.background_clip = ps.background_clip;
+        pb.mask_size = ps.mask_size;
+        pb.mask_repeat = ps.mask_repeat;
+        pb.mask_clip = ps.mask_clip;
+        pb.mask_origin = ps.mask_origin;
+        pb.mask_position_x = ps.mask_position_x;
+        pb.mask_position_x_is_percent = ps.mask_position_x_is_percent;
+        pb.mask_position_y = ps.mask_position_y;
+        pb.mask_position_y_is_percent = ps.mask_position_y_is_percent;
         pb.opacity = ps.opacity;
         pb.z_index = ps.z_index;
         pb.z_index_auto = ps.z_index_auto;

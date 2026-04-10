@@ -2,8 +2,51 @@
 //!
 //! Opcodes for a stack-based virtual machine.
 
+use alloc::rc::{Rc, Weak};
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::RefCell;
+
+use crate::value::JsObject;
+
+/// Per-bytecode inline cache slot used by `GetPropNamed`.
+///
+/// Caches the *holder* (the object on which the named property was last
+/// found, which may be the receiver itself or one of its prototypes) so
+/// that subsequent reads from receivers with the same `shape_id` can
+/// skip the prototype walk and look the property up directly on the
+/// cached holder.
+///
+/// The cache deliberately does **not** snapshot the property *value* —
+/// it re-reads `holder.properties.get(name)` on every hit.  That keeps
+/// the cache safe against direct `holder.properties.insert(...)` calls
+/// elsewhere in the engine that update an existing property's value
+/// without going through `JsObject::set` (and therefore without bumping
+/// `shape_id`).
+///
+/// Invariants:
+/// - `recv_shape == 0` means "empty / never populated".
+/// - `holder` is held as a `Weak` so the cache never keeps an object
+///   alive past its natural lifetime.
+/// - `holder_shape` snapshots the holder's `shape_id` at cache time so
+///   structural changes to the holder (e.g. someone deleted the cached
+///   key from it) invalidate the cache.
+#[derive(Clone, Debug, Default)]
+pub struct PropCache {
+    pub recv_shape: u32,
+    pub holder_shape: u32,
+    pub holder: Option<Weak<RefCell<JsObject>>>,
+}
+
+impl PropCache {
+    pub const fn empty() -> Self {
+        PropCache {
+            recv_shape: 0,
+            holder_shape: 0,
+            holder: None,
+        }
+    }
+}
 
 /// A single bytecode instruction.
 #[derive(Debug, Clone)]
@@ -130,6 +173,9 @@ pub enum Op {
     // ── Constructors ──
     /// new Constructor(args): New(arg_count). Constructor is below args.
     New(u8),
+    /// `new Constructor(...iterable)` — stack: [..., callee, args_array].
+    /// Pops both, expands the argument array, and constructs.
+    NewSpread,
 
     // ── Special ──
     /// typeof operator. Pops value, pushes type string.
@@ -329,6 +375,13 @@ pub struct UpvalueRef {
 pub struct Chunk {
     /// Bytecode instructions.
     pub code: Vec<Op>,
+    /// Per-instruction inline cache slots, one entry per opcode in `code`.
+    ///
+    /// Currently only consulted by `Op::GetPropNamed`; other opcodes leave
+    /// their slot in the default empty state.  Stored behind a `RefCell`
+    /// because the VM mutates entries during execution while the chunk
+    /// itself is borrowed immutably from the call frame.
+    pub inline_caches: Rc<RefCell<Vec<PropCache>>>,
     /// Constant pool (strings, numbers, nested functions).
     pub constants: Vec<Constant>,
     /// Number of local variable slots needed.
@@ -383,6 +436,7 @@ impl Chunk {
     pub fn new() -> Self {
         Chunk {
             code: Vec::new(),
+            inline_caches: Rc::new(RefCell::new(Vec::new())),
             constants: Vec::new(),
             local_count: 0,
             param_count: 0,
@@ -424,6 +478,7 @@ impl Chunk {
         let idx = self.code.len();
         self.code.push(op);
         self.line_map.push(self.current_line);
+        self.inline_caches.borrow_mut().push(PropCache::empty());
         idx
     }
 

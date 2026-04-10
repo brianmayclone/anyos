@@ -249,13 +249,10 @@ impl Vm {
                     let ctor_proto = self
                         .constructor_prototype_from_value(new_target)
                         .or(Some(self.object_proto.clone()));
-                    let new_obj = JsValue::Object(Rc::new(RefCell::new(JsObject {
-                        properties: alloc::collections::BTreeMap::new(),
-                        prototype: ctor_proto,
-                        internal_tag: None,
-                        primitive_value: None,
-                        set_hook: None,
-                        set_hook_data: core::ptr::null_mut(),
+                    let new_obj = JsValue::Object(Rc::new(RefCell::new({
+                        let mut o = JsObject::new();
+                        o.prototype = ctor_proto;
+                        o
                     })));
 
                     self.current_this = new_obj.clone();
@@ -336,6 +333,13 @@ impl Vm {
 
         self.current_this = JsValue::Undefined;
         self.invoke_function(&callee, &args, JsValue::Undefined);
+        // `control_flow_restored` is a one-shot signal that pertains to a
+        // single call_value invocation. Bytecode-level Op::Call is not
+        // consumed by call_value, so reset the flag here to prevent it from
+        // bleeding into the next, unrelated `call_value` (which would
+        // otherwise see a phantom control-flow restoration and return
+        // JsValue::Empty for an unrelated native call).
+        self.control_flow_restored = false;
     }
 
     /// Method call: Stack = [..., this_obj, method_fn, arg1..argN]
@@ -355,6 +359,7 @@ impl Vm {
 
         self.current_this = this_val.clone();
         self.invoke_function(&callee, &args, this_val);
+        self.control_flow_restored = false;
     }
 
     /// Maximum call depth to prevent stack overflow (Rust stack).

@@ -29,9 +29,15 @@ use super::uca_latin_table::LATIN_PRIMARY_WEIGHTS;
 const UCA_FILE_PATH: &str = "/System/share/collation/uca.bin";
 const MAGIC: &[u8; 4] = b"UCA1";
 
-#[cfg(not(feature = "host"))]
+#[cfg(all(not(feature = "host"), target_os = "none"))]
 fn read_file(path: &str) -> Option<Vec<u8>> {
     anyos_std::fs::read_to_vec(path).ok()
+}
+
+#[cfg(all(not(feature = "host"), not(target_os = "none")))]
+fn read_file(_path: &str) -> Option<Vec<u8>> {
+    // Host test build without the `host` feature: no UCA data file available.
+    None
 }
 
 #[cfg(feature = "host")]

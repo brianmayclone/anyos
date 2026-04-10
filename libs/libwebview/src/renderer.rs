@@ -7,12 +7,15 @@
 //! k = commands visible in the tile, compared to O(n) for a full tree walk.
 
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use libanyui_client::{self as ui, Widget};
 
 use crate::layout::{FormFieldKind, LayoutBox};
-use crate::style::{BackgroundClipVal, TextDeco};
+use crate::style::{
+    BackgroundClipVal, BackgroundImageVal, BackgroundRepeatVal, BackgroundSizeVal, TextDeco,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Image cache
@@ -211,6 +214,21 @@ struct DrawCmd {
     /// Optional clip rect (from parent with overflow:hidden).
     /// (clip_x, clip_y, clip_w, clip_h) — commands are clipped to this rect.
     clip: Option<(i32, i32, i32, i32)>,
+    /// Active CSS mask layers inherited from ancestors and this element.
+    masks: Vec<MaskLayer>,
+}
+
+#[derive(Clone)]
+struct MaskLayer {
+    clip_rect: (i32, i32, i32, i32),
+    origin_rect: (i32, i32, i32, i32),
+    image: BackgroundImageVal,
+    size: BackgroundSizeVal,
+    repeat: BackgroundRepeatVal,
+    position_x: i32,
+    position_x_is_percent: bool,
+    position_y: i32,
+    position_y_is_percent: bool,
 }
 
 enum DrawKind {
@@ -253,6 +271,8 @@ pub(crate) struct DisplayList {
     cmds: Vec<DrawCmd>,
     /// Current clip rect during flatten (None = no clipping).
     clip_stack: Vec<(i32, i32, i32, i32)>,
+    /// Current CSS mask layers during flatten.
+    mask_stack: Vec<MaskLayer>,
     /// Maximum command height seen — used as search margin for binary search.
     max_h: i32,
     /// Optional document-space Y cull range for fast initial paints.
@@ -265,6 +285,7 @@ impl DisplayList {
             cmds: Vec::new(),
             max_h: 0,
             clip_stack: Vec::new(),
+            mask_stack: Vec::new(),
             cull_y_range: None,
         }
     }
@@ -277,6 +298,7 @@ impl DisplayList {
             cmds: Vec::new(),
             max_h: 0,
             clip_stack: Vec::new(),
+            mask_stack: Vec::new(),
             cull_y_range: None,
         };
         dl.flatten(root, 0, 0);
@@ -292,6 +314,7 @@ impl DisplayList {
             cmds: Vec::new(),
             max_h: 0,
             clip_stack: Vec::new(),
+            mask_stack: Vec::new(),
             cull_y_range: Some((y_start, y_end)),
         };
         dl.flatten(root, 0, 0);
@@ -343,67 +366,19 @@ impl DisplayList {
                 (cmd.x, draw_y, cmd.w, cmd.h)
             };
 
-            match &cmd.kind {
-                DrawKind::Rect { color } => {
-                    fill_rect_buf(buf, stride, buf_h, cx, cy, cw, ch, *color);
-                }
-                DrawKind::RoundedRect { color, radii } => {
-                    fill_rounded_rect_buf(buf, stride, buf_h, cx, cy, cw, ch, *color, *radii);
-                }
-                DrawKind::DashedLine {
-                    color,
-                    dash_len,
-                    gap_len,
-                    vertical,
-                } => {
-                    fill_dashed_buf(
-                        buf, stride, buf_h, cx, cy, cw, ch, *color, *dash_len, *gap_len, *vertical,
-                    );
-                }
-                DrawKind::Text {
-                    color,
-                    font_id,
-                    font_size,
-                    text,
-                } => {
-                    // Text clipping is harder — for now, draw at original position
-                    // (the fill_rect clipping handles most visual cases).
-                    libfont_client::draw_string_buf(
-                        buf, stride, buf_h, cmd.x, draw_y, *color, *font_id, *font_size, text,
-                    );
-                }
-                DrawKind::Image {
-                    src,
-                    object_fit,
-                    object_position_x,
-                    object_position_x_is_percent,
-                    object_position_y,
-                    object_position_y_is_percent,
-                } => {
-                    if let Some(entry) = images.get_ref(src) {
-                        if !entry.has_pixels() {
-                            continue;
-                        }
-                        blit_image_scaled(
-                            buf,
-                            stride,
-                            buf_h,
-                            cmd.x,
-                            draw_y,
-                            cmd.w,
-                            cmd.h,
-                            (cx, cy, cw, ch),
-                            &entry.pixels,
-                            entry.width,
-                            entry.height,
-                            *object_fit,
-                            *object_position_x,
-                            *object_position_x_is_percent,
-                            *object_position_y,
-                            *object_position_y_is_percent,
-                        );
-                    }
-                }
+            if cmd.masks.is_empty() {
+                rasterize_draw_cmd(images, cmd, buf, stride, buf_h, draw_y, (cx, cy, cw, ch));
+            } else {
+                rasterize_masked_cmd(
+                    images,
+                    cmd,
+                    buf,
+                    stride,
+                    buf_h,
+                    draw_y,
+                    tile_y_start,
+                    (cx, cy, cw, ch),
+                );
             }
         }
     }
@@ -591,6 +566,26 @@ impl DisplayList {
 
         if pushed_bg_clip {
             self.clip_stack.pop();
+        }
+
+        let mut pushed_mask = false;
+        if !matches!(bx.mask_image, BackgroundImageVal::None) {
+            let clip_rect = self.box_area_rect(abs_x, abs_y, bx, bx.mask_clip);
+            if clip_rect.2 > 0 && clip_rect.3 > 0 {
+                let origin_rect = self.box_area_rect(abs_x, abs_y, bx, bx.mask_origin);
+                self.mask_stack.push(MaskLayer {
+                    clip_rect,
+                    origin_rect,
+                    image: bx.mask_image.clone(),
+                    size: bx.mask_size,
+                    repeat: bx.mask_repeat,
+                    position_x: bx.mask_position_x,
+                    position_x_is_percent: bx.mask_position_x_is_percent,
+                    position_y: bx.mask_position_y,
+                    position_y_is_percent: bx.mask_position_y_is_percent,
+                });
+                pushed_mask = true;
+            }
         }
 
         // Inset box shadows (inside the background).
@@ -1080,6 +1075,9 @@ impl DisplayList {
         if pushed_clip {
             self.clip_stack.pop();
         }
+        if pushed_mask {
+            self.mask_stack.pop();
+        }
     }
 
     /// Emit a border edge with the given style (solid/dashed/dotted).
@@ -1450,22 +1448,32 @@ impl DisplayList {
     }
 
     fn background_paint_rect(&self, abs_x: i32, abs_y: i32, bx: &LayoutBox) -> (i32, i32, i32, i32) {
-        let left_inset = match bx.background_clip {
+        self.box_area_rect(abs_x, abs_y, bx, bx.background_clip)
+    }
+
+    fn box_area_rect(
+        &self,
+        abs_x: i32,
+        abs_y: i32,
+        bx: &LayoutBox,
+        area: BackgroundClipVal,
+    ) -> (i32, i32, i32, i32) {
+        let left_inset = match area {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_left_width.max(0),
             BackgroundClipVal::ContentBox => (bx.border_left_width + bx.padding.left).max(0),
         };
-        let right_inset = match bx.background_clip {
+        let right_inset = match area {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_right_width.max(0),
             BackgroundClipVal::ContentBox => (bx.border_right_width + bx.padding.right).max(0),
         };
-        let top_inset = match bx.background_clip {
+        let top_inset = match area {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_top_width.max(0),
             BackgroundClipVal::ContentBox => (bx.border_top_width + bx.padding.top).max(0),
         };
-        let bottom_inset = match bx.background_clip {
+        let bottom_inset = match area {
             BackgroundClipVal::BorderBox => 0,
             BackgroundClipVal::PaddingBox => bx.border_bottom_width.max(0),
             BackgroundClipVal::ContentBox => (bx.border_bottom_width + bx.padding.bottom).max(0),
@@ -2098,8 +2106,276 @@ impl DisplayList {
             h,
             kind,
             clip,
+            masks: self.mask_stack.clone(),
         });
     }
+}
+
+fn rasterize_draw_cmd(
+    images: &ImageCache,
+    cmd: &DrawCmd,
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    draw_y: i32,
+    clip: (i32, i32, i32, i32),
+) {
+    match &cmd.kind {
+        DrawKind::Rect { color } => {
+            fill_rect_buf(buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color);
+        }
+        DrawKind::RoundedRect { color, radii } => {
+            fill_rounded_rect_buf(buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color, *radii);
+        }
+        DrawKind::DashedLine {
+            color,
+            dash_len,
+            gap_len,
+            vertical,
+        } => {
+            fill_dashed_buf(
+                buf, stride, buf_h, clip.0, clip.1, clip.2, clip.3, *color, *dash_len, *gap_len, *vertical,
+            );
+        }
+        DrawKind::Text {
+            color,
+            font_id,
+            font_size,
+            text,
+        } => {
+            libfont_client::draw_string_buf(
+                buf, stride, buf_h, cmd.x, draw_y, *color, *font_id, *font_size, text,
+            );
+        }
+        DrawKind::Image {
+            src,
+            object_fit,
+            object_position_x,
+            object_position_x_is_percent,
+            object_position_y,
+            object_position_y_is_percent,
+        } => {
+            if let Some(entry) = images.get_ref(src) {
+                if !entry.has_pixels() {
+                    return;
+                }
+                blit_image_scaled(
+                    buf,
+                    stride,
+                    buf_h,
+                    cmd.x,
+                    draw_y,
+                    cmd.w,
+                    cmd.h,
+                    clip,
+                    &entry.pixels,
+                    entry.width,
+                    entry.height,
+                    *object_fit,
+                    *object_position_x,
+                    *object_position_x_is_percent,
+                    *object_position_y,
+                    *object_position_y_is_percent,
+                );
+            }
+        }
+    }
+}
+
+fn rasterize_masked_cmd(
+    images: &ImageCache,
+    cmd: &DrawCmd,
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    draw_y: i32,
+    tile_y_start: i32,
+    clip: (i32, i32, i32, i32),
+) {
+    let (cx, cy, cw, ch) = clip;
+    if cw <= 0 || ch <= 0 {
+        return;
+    }
+    let mut scratch = vec![0u32; (cw as usize).saturating_mul(ch as usize)];
+    rasterize_draw_cmd(
+        images,
+        cmd,
+        scratch.as_mut_ptr(),
+        cw as u32,
+        ch as u32,
+        draw_y - cy,
+        (cmd.x - cx, draw_y - cy, cmd.w, cmd.h),
+    );
+    composite_masked_scratch(
+        buf,
+        stride,
+        buf_h,
+        cx,
+        cy,
+        cw,
+        ch,
+        tile_y_start,
+        &scratch,
+        &cmd.masks,
+    );
+}
+
+fn composite_masked_scratch(
+    dst: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    tile_y_start: i32,
+    scratch: &[u32],
+    masks: &[MaskLayer],
+) {
+    if dst.is_null() || w <= 0 || h <= 0 {
+        return;
+    }
+    unsafe {
+        for row in 0..h {
+            let dst_row = y + row;
+            if dst_row < 0 || dst_row >= buf_h as i32 {
+                continue;
+            }
+            let base = row as usize * w as usize;
+            let dst_offset = dst_row as usize * stride as usize;
+            for col in 0..w {
+                let src = scratch[base + col as usize];
+                let src_a = (src >> 24) & 0xFF;
+                if src_a == 0 {
+                    continue;
+                }
+                let doc_x = x + col;
+                let doc_y = tile_y_start + dst_row;
+                let mask_a = combined_mask_alpha(doc_x, doc_y, masks);
+                if mask_a == 0 {
+                    continue;
+                }
+                let masked = apply_alpha_to_argb(src, mask_a);
+                if (masked >> 24) & 0xFF == 0 {
+                    continue;
+                }
+                let idx = dst_offset + (x + col) as usize;
+                let prev = *dst.add(idx);
+                *dst.add(idx) = src_over(masked, prev);
+            }
+        }
+    }
+}
+
+fn combined_mask_alpha(doc_x: i32, doc_y: i32, masks: &[MaskLayer]) -> u32 {
+    let mut alpha = 255u32;
+    for mask in masks {
+        let (clip_x, clip_y, clip_w, clip_h) = mask.clip_rect;
+        if doc_x < clip_x || doc_y < clip_y || doc_x >= clip_x + clip_w || doc_y >= clip_y + clip_h {
+            return 0;
+        }
+        alpha = alpha * sample_mask_alpha(mask, doc_x, doc_y) / 255;
+        if alpha == 0 {
+            return 0;
+        }
+    }
+    alpha
+}
+
+fn sample_mask_alpha(mask: &MaskLayer, doc_x: i32, doc_y: i32) -> u32 {
+    match &mask.image {
+        BackgroundImageVal::None => 255,
+        BackgroundImageVal::Url(_) => 255,
+        BackgroundImageVal::LinearGradient { angle_deg, stops } => {
+            let (mx, my, mw, mh) = resolve_mask_image_rect(mask);
+            if mw <= 0 || mh <= 0 {
+                return 0;
+            }
+            let rel_x = doc_x - mx;
+            let rel_y = doc_y - my;
+            if !mask_repeats_at(mask.repeat, rel_x, rel_y, mw, mh) {
+                return 0;
+            }
+            let tiled_x = wrap_repeat(rel_x, mw);
+            let tiled_y = wrap_repeat(rel_y, mh);
+            let t = gradient_position(angle_deg, tiled_x, tiled_y, mw, mh);
+            (interpolate_gradient_color(stops, t) >> 24) & 0xFF
+        }
+    }
+}
+
+fn resolve_mask_image_rect(mask: &MaskLayer) -> (i32, i32, i32, i32) {
+    let (ox, oy, ow, oh) = mask.origin_rect;
+    let (mw, mh) = match mask.size {
+        BackgroundSizeVal::Auto => (ow.max(1), oh.max(1)),
+        BackgroundSizeVal::Cover => (ow.max(1), oh.max(1)),
+        BackgroundSizeVal::Contain => (ow.max(1), oh.max(1)),
+        BackgroundSizeVal::Explicit(w, h) => {
+            let rw = if w < 0 { ow } else { w };
+            let rh = if h < 0 { oh } else { h };
+            (rw.max(1), rh.max(1))
+        }
+    };
+    let free_x = (ow - mw).max(0);
+    let free_y = (oh - mh).max(0);
+    let px = ox + resolve_object_position_offset(free_x, mask.position_x, mask.position_x_is_percent);
+    let py = oy + resolve_object_position_offset(free_y, mask.position_y, mask.position_y_is_percent);
+    (px, py, mw, mh)
+}
+
+fn mask_repeats_at(repeat: BackgroundRepeatVal, rel_x: i32, rel_y: i32, w: i32, h: i32) -> bool {
+    let repeat_x = matches!(repeat, BackgroundRepeatVal::Repeat | BackgroundRepeatVal::RepeatX);
+    let repeat_y = matches!(repeat, BackgroundRepeatVal::Repeat | BackgroundRepeatVal::RepeatY);
+    (repeat_x || (rel_x >= 0 && rel_x < w)) && (repeat_y || (rel_y >= 0 && rel_y < h))
+}
+
+fn wrap_repeat(pos: i32, len: i32) -> i32 {
+    if len <= 0 {
+        return 0;
+    }
+    let mut out = pos % len;
+    if out < 0 {
+        out += len;
+    }
+    out
+}
+
+fn gradient_position(angle_deg: &i32, x: i32, y: i32, w: i32, h: i32) -> i32 {
+    let angle = (*angle_deg as f32).to_radians();
+    let dir_x = cos_approx(angle);
+    let dir_y = -sin_approx(angle);
+    let nx = if w > 1 { x as f32 / (w - 1) as f32 } else { 0.0 };
+    let ny = if h > 1 { y as f32 / (h - 1) as f32 } else { 0.0 };
+    let proj = (nx - 0.5) * dir_x + (ny - 0.5) * dir_y;
+    (((proj + 0.70710677) / 1.41421354) * 10000.0) as i32
+}
+
+fn apply_alpha_to_argb(color: u32, alpha: u32) -> u32 {
+    let a = ((color >> 24) & 0xFF) * alpha / 255;
+    (color & 0x00FFFFFF) | (a << 24)
+}
+
+fn src_over(src: u32, dst: u32) -> u32 {
+    let sa = (src >> 24) & 0xFF;
+    if sa == 0 {
+        return dst;
+    }
+    if sa >= 255 {
+        return src;
+    }
+    let da = (dst >> 24) & 0xFF;
+    let inv_sa = 255 - sa;
+    let out_a = sa + (da * inv_sa) / 255;
+    let sr = (src >> 16) & 0xFF;
+    let sg = (src >> 8) & 0xFF;
+    let sb = src & 0xFF;
+    let dr = (dst >> 16) & 0xFF;
+    let dg = (dst >> 8) & 0xFF;
+    let db = dst & 0xFF;
+    let out_r = sr + (dr * inv_sa) / 255;
+    let out_g = sg + (dg * inv_sa) / 255;
+    let out_b = sb + (db * inv_sa) / 255;
+    (out_a << 24) | (out_r.min(255) << 16) | (out_g.min(255) << 8) | out_b.min(255)
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

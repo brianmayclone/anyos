@@ -442,8 +442,13 @@ pub enum Property {
     GridRowStart,
     GridRowEnd,
     GridArea,
-    // Mask (parsed but not visually applied — makes @supports queries work)
+    // Mask
     MaskImage,
+    MaskPosition,
+    MaskRepeat,
+    MaskSize,
+    MaskClip,
+    MaskOrigin,
     // Pointer events
     PointerEvents,
     // User interaction
@@ -3163,8 +3168,13 @@ pub fn parse_property(name: &str) -> Option<Property> {
         "grid-row-start" => Some(Property::GridRowStart),
         "grid-row-end" => Some(Property::GridRowEnd),
         "grid-area" => Some(Property::GridArea),
-        // Mask (parsed for @supports evaluation, not visually applied)
+        // Mask
         "mask-image" | "-webkit-mask-image" | "mask" | "-webkit-mask" => Some(Property::MaskImage),
+        "mask-position" | "-webkit-mask-position" => Some(Property::MaskPosition),
+        "mask-repeat" | "-webkit-mask-repeat" => Some(Property::MaskRepeat),
+        "mask-size" | "-webkit-mask-size" => Some(Property::MaskSize),
+        "mask-clip" | "-webkit-mask-clip" => Some(Property::MaskClip),
+        "mask-origin" | "-webkit-mask-origin" => Some(Property::MaskOrigin),
         // Pointer events
         "pointer-events" => Some(Property::PointerEvents),
         // User interaction

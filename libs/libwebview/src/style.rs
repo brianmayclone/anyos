@@ -749,11 +749,20 @@ pub struct ComputedStyle {
     pub text_shadows: Vec<TextShadowVal>,
     // Background extensions (litehtml-inspired)
     pub background_image: BackgroundImageVal,
+    pub mask_image: BackgroundImageVal,
     pub background_size: BackgroundSizeVal,
     pub background_repeat: BackgroundRepeatVal,
     pub background_clip: BackgroundClipVal,
     pub background_position_x: i32, // px or pct*100
     pub background_position_y: i32,
+    pub mask_size: BackgroundSizeVal,
+    pub mask_repeat: BackgroundRepeatVal,
+    pub mask_clip: BackgroundClipVal,
+    pub mask_origin: BackgroundClipVal,
+    pub mask_position_x: i32,
+    pub mask_position_x_is_percent: bool,
+    pub mask_position_y: i32,
+    pub mask_position_y_is_percent: bool,
     // Content (for ::before/::after)
     pub content: Option<String>,
     /// URL for `content: url("...")` in pseudo-elements.
@@ -988,11 +997,20 @@ pub fn default_style() -> ComputedStyle {
         text_shadows: Vec::new(),
         // Background extensions
         background_image: BackgroundImageVal::None,
+        mask_image: BackgroundImageVal::None,
         background_size: BackgroundSizeVal::Auto,
         background_repeat: BackgroundRepeatVal::Repeat,
         background_clip: BackgroundClipVal::BorderBox,
         background_position_x: 0,
         background_position_y: 0,
+        mask_size: BackgroundSizeVal::Auto,
+        mask_repeat: BackgroundRepeatVal::Repeat,
+        mask_clip: BackgroundClipVal::BorderBox,
+        mask_origin: BackgroundClipVal::BorderBox,
+        mask_position_x: 0,
+        mask_position_x_is_percent: true,
+        mask_position_y: 0,
+        mask_position_y_is_percent: true,
         // Content
         content: Option::None,
         object_fit: ObjectFit::Fill,
@@ -5203,7 +5221,74 @@ pub fn apply_declaration(
             // Custom properties stored separately in resolve_styles; no-op here.
         }
         Property::MaskImage => {
-            // Recognized for @supports evaluation but not visually applied.
+            if matches!(decl.value, CssValue::None) {
+                style.mask_image = BackgroundImageVal::None;
+            } else if let CssValue::Keyword(ref kw) = decl.value {
+                style.mask_image = parse_background_image_val(kw);
+            }
+        }
+        Property::MaskSize => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.mask_size = match kw.as_str() {
+                    "cover" => BackgroundSizeVal::Cover,
+                    "contain" => BackgroundSizeVal::Contain,
+                    "auto" => BackgroundSizeVal::Auto,
+                    _ => {
+                        let parts: Vec<&str> = kw.split_whitespace().collect();
+                        if parts.len() >= 2 {
+                            let w = parse_bg_size_dim(parts[0], parent_fs, root_fs);
+                            let h = parse_bg_size_dim(parts[1], parent_fs, root_fs);
+                            BackgroundSizeVal::Explicit(w, h)
+                        } else if parts.len() == 1 {
+                            let w = parse_bg_size_dim(parts[0], parent_fs, root_fs);
+                            BackgroundSizeVal::Explicit(w, -1)
+                        } else {
+                            BackgroundSizeVal::Auto
+                        }
+                    }
+                };
+            }
+            if matches!(decl.value, CssValue::Auto) {
+                style.mask_size = BackgroundSizeVal::Auto;
+            }
+        }
+        Property::MaskRepeat => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.mask_repeat = match kw.as_str() {
+                    "repeat-x" => BackgroundRepeatVal::RepeatX,
+                    "repeat-y" => BackgroundRepeatVal::RepeatY,
+                    "no-repeat" => BackgroundRepeatVal::NoRepeat,
+                    _ => BackgroundRepeatVal::Repeat,
+                };
+            }
+        }
+        Property::MaskClip => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.mask_clip = match kw.as_str() {
+                    "padding-box" => BackgroundClipVal::PaddingBox,
+                    "content-box" => BackgroundClipVal::ContentBox,
+                    _ => BackgroundClipVal::BorderBox,
+                };
+            }
+        }
+        Property::MaskOrigin => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.mask_origin = match kw.as_str() {
+                    "padding-box" => BackgroundClipVal::PaddingBox,
+                    "content-box" => BackgroundClipVal::ContentBox,
+                    _ => BackgroundClipVal::BorderBox,
+                };
+            }
+        }
+        Property::MaskPosition => {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                let (x, x_is_percent, y, y_is_percent) =
+                    parse_position_pair(kw, parent_fs, root_fs, 0, true, 0, true);
+                style.mask_position_x = x;
+                style.mask_position_x_is_percent = x_is_percent;
+                style.mask_position_y = y;
+                style.mask_position_y_is_percent = y_is_percent;
+            }
         }
         Property::PointerEvents => {
             if let CssValue::Keyword(ref kw) = decl.value {

@@ -65,72 +65,23 @@ pub fn to_number_vm(vm: &mut Vm, val: &JsValue) -> f64 {
         JsValue::Bool(false) => 0.0,
         JsValue::Null => 0.0,
         JsValue::Undefined => f64::NAN,
-        JsValue::Object(obj) => {
-            let o = obj.borrow();
-            if o.internal_tag.as_deref() == Some("__symbol__") {
-                drop(o);
-                let err = vm.make_type_error("Cannot convert a Symbol value to a number");
-                vm.throw_native(err);
+        JsValue::Object(_) => {
+            // §7.1.4 ToNumber for Object: ToPrimitive(value, hint number) and
+            // recurse on the resulting primitive. Exceptions thrown by
+            // valueOf/toString/Symbol.toPrimitive propagate via pending_exception.
+            let prim = vm.to_primitive_for_op(val.clone(), "number");
+            if vm.pending_exception.is_some() {
                 return f64::NAN;
             }
-            if let Some(prim) = &o.primitive_value {
-                let p = prim.clone();
-                drop(o);
-                return to_number_vm(vm, &p);
-            }
-            // ToPrimitive: try valueOf first, then toString
-            let value_of = o.get("valueOf");
-            let to_string_fn = o.get("toString");
-            drop(o);
-            let mut tried_valueof = false;
-            let mut tried_tostring = false;
-            if let JsValue::Function(_) = &value_of {
-                tried_valueof = true;
-                let result = vm.call_value(&value_of, &[], val.clone());
-                if let Some(exc) = vm.last_exception.take() {
-                    vm.pending_exception = Some(exc);
-                    return f64::NAN;
-                }
-                if vm.pending_exception.is_some() {
-                    return f64::NAN;
-                }
-                // If result is a primitive, convert to number
-                match &result {
-                    JsValue::Number(n) => return *n,
-                    JsValue::String(s) => return crate::value::parse_js_float(s),
-                    JsValue::Bool(true) => return 1.0,
-                    JsValue::Bool(false) => return 0.0,
-                    JsValue::Null => return 0.0,
-                    JsValue::Undefined => return f64::NAN,
-                    _ => {} // Non-primitive: fall through to toString
-                }
-            }
-            if let JsValue::Function(_) = &to_string_fn {
-                tried_tostring = true;
-                let result = vm.call_value(&to_string_fn, &[], val.clone());
-                if let Some(exc) = vm.last_exception.take() {
-                    vm.pending_exception = Some(exc);
-                    return f64::NAN;
-                }
-                if vm.pending_exception.is_some() {
-                    return f64::NAN;
-                }
-                match &result {
-                    JsValue::String(s) => return crate::value::parse_js_float(s),
-                    JsValue::Number(n) => return *n,
-                    JsValue::Bool(true) => return 1.0,
-                    JsValue::Bool(false) => return 0.0,
-                    JsValue::Null => return 0.0,
-                    JsValue::Undefined => return f64::NAN,
-                    _ => {} // Non-primitive: TypeError
-                }
-            }
-            // OrdinaryToPrimitive failed to produce a primitive.
-            let err = vm.make_type_error("Cannot convert object to primitive value");
-            vm.throw_native(err);
-            f64::NAN
+            to_number_vm(vm, &prim)
         }
-        JsValue::Array(_) | JsValue::Function(_) => f64::NAN,
+        JsValue::Array(_) | JsValue::Function(_) => {
+            let prim = vm.to_primitive_for_op(val.clone(), "number");
+            if vm.pending_exception.is_some() {
+                return f64::NAN;
+            }
+            to_number_vm(vm, &prim)
+        }
         JsValue::BigInt(bi) => bi.to_f64(),
     }
 }
@@ -170,7 +121,11 @@ fn array_like_length(vm: &mut Vm, this_obj: &JsValue) -> Option<usize> {
     if vm.pending_exception.is_some() {
         return None;
     }
-    Some(to_length_vm(vm, &len_val))
+    let n = to_length_vm(vm, &len_val);
+    if vm.pending_exception.is_some() {
+        return None;
+    }
+    Some(n)
 }
 
 fn array_like_has_index(vm: &mut Vm, this_obj: &JsValue, idx: usize) -> Option<bool> {
@@ -480,17 +435,35 @@ pub fn array_splice(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         return JsValue::Undefined;
     }
     if let Some(arr) = this_array(vm) {
-        let mut a = arr.borrow_mut();
-        let len = a.length;
-        let start_raw = args.first().map(|v| v.to_number()).unwrap_or(0.0);
+        // ES §22.1.3.29 step 4–7: compute start, then deleteCount with proper
+        // ToInteger semantics. We then call ArraySpeciesCreate, which may
+        // dispatch user-defined constructor / @@species accessors that throw.
+        let len = arr.borrow().length;
+        let start_raw = match args.first() {
+            Some(v) => to_number_vm(vm, v),
+            None => 0.0,
+        };
+        if vm.pending_exception.is_some() {
+            return JsValue::Undefined;
+        }
         let start = resolve_index(start_raw, len);
         let delete_count = if args.len() > 1 {
-            let dc = args[1].to_number() as usize;
-            dc.min(len.saturating_sub(start))
+            let dc = to_number_vm(vm, &args[1]);
+            if vm.pending_exception.is_some() {
+                return JsValue::Undefined;
+            }
+            (dc as usize).min(len.saturating_sub(start))
         } else {
             len.saturating_sub(start)
         };
 
+        let this_value = JsValue::Array(arr.clone());
+        let _species = match array_species_create(vm, &this_value, delete_count) {
+            Some(v) => v,
+            None => return JsValue::Undefined,
+        };
+
+        let mut a = arr.borrow_mut();
         // Collect removed elements.
         let mut removed = Vec::new();
         for i in start..start + delete_count {
@@ -828,28 +801,72 @@ pub fn array_join(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_object_coercible(vm) {
         return JsValue::Undefined;
     }
+    // §22.1.3.15: ToString(separator). If separator is undefined → ",".
+    let sep = match args.first() {
+        Some(JsValue::Undefined) | None => String::from(","),
+        Some(v) => match to_string_vm(vm, v) {
+            Some(s) => s,
+            None => return JsValue::Undefined,
+        },
+    };
+
     if let Some(arr) = this_array(vm) {
-        let a = arr.borrow();
-        let sep = match args.first() {
-            Some(JsValue::Undefined) | None => String::from(","),
-            Some(v) => v.to_js_string(),
+        let entries: alloc::vec::Vec<(usize, JsValue)> = {
+            let a = arr.borrow();
+            let len = a.length;
+            (0..len)
+                .map(|i| (i, a.elements.get(&i).cloned().unwrap_or(JsValue::Undefined)))
+                .collect()
         };
-        let len = a.length;
+        let len = entries.len();
         let mut out = String::new();
-        for i in 0..len {
+        for (i, el) in entries.into_iter() {
             if i > 0 {
                 out.push_str(&sep);
             }
-            if let Some(el) = a.elements.get(&i) {
-                match el {
-                    JsValue::Undefined | JsValue::Null => {}
-                    _ => out.push_str(&el.to_js_string()),
+            match el {
+                JsValue::Undefined | JsValue::Null => {}
+                other => {
+                    // ToString(element) — must invoke Symbol.toPrimitive /
+                    // toString / valueOf and propagate any exceptions.
+                    let s = match to_string_vm(vm, &other) {
+                        Some(s) => s,
+                        None => return JsValue::Undefined,
+                    };
+                    out.push_str(&s);
                 }
             }
         }
+        let _ = len; // silence unused if compiled out
         JsValue::String(out)
     } else {
         JsValue::String(String::new())
+    }
+}
+
+/// `ToString(value)` abstract operation that invokes Symbol.toPrimitive,
+/// toString and valueOf as needed and propagates exceptions through
+/// `pending_exception`. Returns `None` if an exception is pending.
+fn to_string_vm(vm: &mut Vm, value: &JsValue) -> Option<String> {
+    if super::is_symbol_value(value) {
+        let err = vm.make_type_error("Cannot convert a Symbol value to a string");
+        vm.throw_native(err);
+        return None;
+    }
+    match value {
+        JsValue::Object(_) | JsValue::Array(_) | JsValue::Function(_) => {
+            let prim = vm.to_primitive_for_op(value.clone(), "string");
+            if vm.pending_exception.is_some() {
+                return None;
+            }
+            if super::is_symbol_value(&prim) {
+                let err = vm.make_type_error("Cannot convert a Symbol value to a string");
+                vm.throw_native(err);
+                return None;
+            }
+            Some(prim.to_js_string())
+        }
+        _ => Some(value.to_js_string()),
     }
 }
 
@@ -913,7 +930,7 @@ fn observe_array_species_create(vm: &mut Vm, original: &JsValue) -> bool {
     true
 }
 
-fn is_array_value(vm: &mut Vm, value: &JsValue) -> Option<bool> {
+pub(crate) fn is_array_value(vm: &mut Vm, value: &JsValue) -> Option<bool> {
     match value {
         JsValue::Array(_) => Some(true),
         JsValue::Object(obj) => {
@@ -1906,6 +1923,12 @@ pub fn array_flat_map(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     if !require_callable(vm, &callback) {
         return JsValue::Undefined;
     }
+    // §22.1.3.10 step 5: ArraySpeciesCreate(O, 0). The species lookup may
+    // call user-defined getters or constructors that throw — propagate.
+    let _species = match array_species_create(vm, &this_obj, 0) {
+        Some(v) => v,
+        None => return JsValue::Undefined,
+    };
     let mut result = Vec::new();
     for (idx, el) in entries {
         let val = call_callback_with_this(

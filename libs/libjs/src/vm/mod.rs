@@ -1769,6 +1769,34 @@ impl Vm {
                 Op::GetPropNamed(name_idx) => {
                     let name = self.get_const_string(frame_idx, name_idx);
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
+
+                    // ── Inline Cache fast path ──────────────────────────────
+                    // Only attempt IC for plain `JsValue::Object` receivers
+                    // and non-private property names. Proxies, primitives,
+                    // arrays, strings and the like always fall through.
+                    if !name.starts_with('#') {
+                        if let JsValue::Object(ref obj_rc) = obj {
+                            let is_proxy = obj_rc.borrow().internal_tag.as_deref()
+                                == Some(native_proxy::PROXY_TAG);
+                            if !is_proxy {
+                                let ic_table =
+                                    self.frames[frame_idx].chunk.inline_caches.clone();
+                                let cached = {
+                                    let ics = ic_table.borrow();
+                                    ics.get(ip).cloned()
+                                };
+                                if let Some(cache) = cached {
+                                    if let Some(val) =
+                                        ic_get_prop_named(&cache, obj_rc, name.as_str())
+                                    {
+                                        self.stack.push(val);
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     if matches!(obj, JsValue::Null | JsValue::Undefined) {
                         let msg = alloc::format!(
                             "Cannot read properties of {} (reading '{}')",
@@ -1823,8 +1851,31 @@ impl Vm {
                         } else if let Some(getter) = self.find_getter(&obj, &name) {
                             self.invoke_function(&getter, &[], obj.clone());
                         } else {
-                            let val = self.get_property_with_proto(&obj, &name);
-                            self.stack.push(val);
+                            // Slow-path lookup that also walks the prototype
+                            // chain so the IC slot can be repopulated for
+                            // future iterations of the same call site.
+                            let (val, holder_opt) =
+                                lookup_property_with_holder(o, name.as_str());
+                            if let Some(holder) = holder_opt {
+                                let recv_shape = o.borrow().shape_id;
+                                let holder_shape = holder.borrow().shape_id;
+                                let ic_table =
+                                    self.frames[frame_idx].chunk.inline_caches.clone();
+                                if let Some(slot) = ic_table.borrow_mut().get_mut(ip) {
+                                    slot.recv_shape = recv_shape;
+                                    slot.holder_shape = holder_shape;
+                                    slot.holder = Some(Rc::downgrade(&holder));
+                                }
+                                self.stack.push(val);
+                            } else {
+                                // Fall back to the full slow path for the
+                                // edge cases (`primitive_value` String wrapper,
+                                // typed-array index access, etc.) that the IC
+                                // helper does not understand.
+                                let val =
+                                    self.get_property_with_proto(&obj, name.as_str());
+                                self.stack.push(val);
+                            }
                         }
                     } else if let Some(getter) = self.find_getter(&obj, &name) {
                         self.invoke_function(&getter, &[], obj.clone());
@@ -2040,13 +2091,10 @@ impl Vm {
                     self.stack.push(val);
                 }
                 Op::NewObject => {
-                    let obj = JsObject {
-                        properties: BTreeMap::new(),
-                        prototype: Some(self.object_proto.clone()),
-                        internal_tag: None,
-                        primitive_value: None,
-                        set_hook: None,
-                        set_hook_data: core::ptr::null_mut(),
+                    let obj = {
+                        let mut o = JsObject::new();
+                        o.prototype = Some(self.object_proto.clone());
+                        o
                     };
                     self.stack.push(JsValue::Object(Rc::new(RefCell::new(obj))));
                 }
@@ -2060,6 +2108,20 @@ impl Vm {
                 // ── Constructors ──
                 Op::New(argc) => {
                     self.new_object(argc as usize);
+                }
+                Op::NewSpread => {
+                    // Stack: [..., callee, args_array]
+                    let args_val = self.stack.pop().unwrap_or(JsValue::Undefined);
+                    let args: Vec<JsValue> = match &args_val {
+                        JsValue::Array(arr) => arr.borrow().to_dense_vec(),
+                        _ => Vec::new(),
+                    };
+                    // Push expanded args back onto the stack and dispatch as
+                    // a normal `new` call. The callee is already in place.
+                    for arg in &args {
+                        self.stack.push(arg.clone());
+                    }
+                    self.new_object(args.len());
                 }
                 Op::SuperCall(argc) => {
                     self.super_call(argc as usize);
@@ -3269,6 +3331,67 @@ impl Vm {
         true
     }
 
+    /// Implements the `CreateDataPropertyOrThrow(O, P, V)` abstract operation.
+    /// For Proxy receivers this dispatches the `defineProperty` trap so that
+    /// rejections from user-defined handlers propagate.
+    pub fn create_data_property_or_throw(
+        &mut self,
+        obj: &JsValue,
+        key: &str,
+        value: JsValue,
+    ) -> bool {
+        if let JsValue::Object(o) = obj {
+            if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                // Build a minimal data descriptor object for the trap.
+                let desc = JsValue::new_object();
+                desc.set_property(alloc::string::String::from("value"), value);
+                desc.set_property(alloc::string::String::from("writable"), JsValue::Bool(true));
+                desc.set_property(alloc::string::String::from("enumerable"), JsValue::Bool(true));
+                desc.set_property(
+                    alloc::string::String::from("configurable"),
+                    JsValue::Bool(true),
+                );
+                return match native_proxy::proxy_define_property(self, obj, key, &desc) {
+                    Some(true) => true,
+                    Some(false) => {
+                        let err = self.make_type_error("Cannot define property");
+                        self.throw_native(err);
+                        false
+                    }
+                    None => false,
+                };
+            }
+        }
+        // Non-proxy: defining a brand-new own data property is equivalent to a
+        // simple set for our model.
+        obj.set_property(alloc::string::String::from(key), value);
+        true
+    }
+
+    /// Implements the `?O.[[OwnPropertyKeys]]()` operation, dispatching to
+    /// the `ownKeys` proxy trap when applicable. Propagates trap exceptions.
+    pub fn own_property_keys(&mut self, obj: &JsValue) -> alloc::vec::Vec<alloc::string::String> {
+        if let JsValue::Object(o) = obj {
+            if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
+                return native_proxy::proxy_own_keys(self, obj).unwrap_or_default();
+            }
+            return o.borrow().keys();
+        }
+        if let JsValue::Array(arr) = obj {
+            let a = arr.borrow();
+            let mut keys: alloc::vec::Vec<alloc::string::String> = (0..a.length)
+                .map(|i| alloc::format!("{}", i))
+                .collect();
+            for k in a.properties.keys() {
+                if !keys.contains(k) {
+                    keys.push(k.clone());
+                }
+            }
+            return keys;
+        }
+        alloc::vec::Vec::new()
+    }
+
     pub fn delete_property_or_throw(&mut self, obj: &JsValue, key: &str) -> bool {
         if let JsValue::Object(o) = obj {
             if o.borrow().internal_tag.as_deref() == Some(native_proxy::PROXY_TAG) {
@@ -3952,6 +4075,114 @@ impl Vm {
 /// Returns true if the value is a JavaScript Symbol (stored as a special prefixed string).
 pub fn is_symbol_value(val: &JsValue) -> bool {
     matches!(val, JsValue::String(s) if s.starts_with("__symbol__") || s.starts_with("__symbol_global__"))
+}
+
+/// Inline-cache support: walk an object's prototype chain looking for `key`,
+/// returning both the resolved value and the holder object on which the
+/// non-accessor data property was found.
+///
+/// Returns `(value, Some(holder))` on a plain data-property hit anywhere on
+/// the prototype chain, including the receiver itself.  Returns
+/// `(Undefined, None)` if the key is not present, or if it resolves to an
+/// accessor (the IC machinery never caches accessors — getters must be
+/// invoked through the slow path so they get a `&mut Vm`).
+pub fn lookup_property_with_holder(
+    obj: &Rc<RefCell<JsObject>>,
+    key: &str,
+) -> (JsValue, Option<Rc<RefCell<JsObject>>>) {
+    let mut cur: Rc<RefCell<JsObject>> = Rc::clone(obj);
+    loop {
+        let cur_b = cur.borrow();
+        if let Some(prop) = cur_b.properties.get(key) {
+            if prop.is_accessor() {
+                return (JsValue::Undefined, None);
+            }
+            let v = prop.value.clone();
+            drop(cur_b);
+            return (v, Some(cur));
+        }
+        let next = cur_b.prototype.clone();
+        drop(cur_b);
+        match next {
+            Some(p) => cur = p,
+            None => return (JsValue::Undefined, None),
+        }
+    }
+}
+
+/// Inline-cache fast-path lookup for `Op::GetPropNamed`.
+///
+/// Given a previously populated [`crate::bytecode::PropCache`] entry, attempts
+/// to satisfy the property read without walking the prototype chain or
+/// invoking VM-level slow-path machinery.
+///
+/// Safety / correctness rules:
+///
+/// 1. The cache only stores plain `JsValue::Object` receivers — proxies and
+///    primitives are never cached and never hit this path.
+///
+/// 2. The receiver's `shape_id` must still match the cached `recv_shape`.
+///    Any structural mutation that goes through `JsObject::set` /
+///    `JsObject::delete` (the normal write paths) bumps the receiver's
+///    `shape_id` and forces a miss.
+///
+/// 3. Even on a shape match, the receiver's *own* `properties` are checked
+///    before consulting the cached holder.  This catches the (rare) case
+///    where some internal helper added an own property to the receiver via
+///    a direct `properties.insert` call that bypassed `set`, ensuring an
+///    own data property always shadows the cached prototype-chain value.
+///
+/// 4. The cached holder's `shape_id` is also checked, so a structural
+///    mutation of the holder (e.g. someone deleted the cached key from it)
+///    invalidates the cache.
+///
+/// 5. Accessor properties are never served from the cache — falling back to
+///    the slow path lets the VM invoke the getter with a proper `&mut Vm`.
+///
+/// Known limitation: a direct `properties.insert` on a *midway* prototype
+/// (one that is neither the receiver nor the cached holder) is not
+/// invalidated.  All major engines handle this with a more elaborate
+/// validity-cell scheme that this first-pass IC does not implement.  In
+/// practice this only manifests when internal helpers mutate prototype
+/// objects after instances exist, which is exceedingly rare.
+#[inline]
+pub fn ic_get_prop_named(
+    cache: &crate::bytecode::PropCache,
+    recv: &Rc<RefCell<JsObject>>,
+    name: &str,
+) -> Option<JsValue> {
+    if cache.recv_shape == 0 {
+        return None;
+    }
+    let recv_b = recv.borrow();
+    if recv_b.shape_id != cache.recv_shape {
+        return None;
+    }
+    // Always favour an own data property on the receiver — protects against
+    // direct `.properties.insert` calls that bypassed shape invalidation.
+    if let Some(prop) = recv_b.properties.get(name) {
+        if prop.is_accessor() {
+            return None;
+        }
+        return Some(prop.value.clone());
+    }
+    // Receiver does not own the key — fall through to the cached holder.
+    let holder_weak = cache.holder.as_ref()?;
+    let holder = holder_weak.upgrade()?;
+    if Rc::ptr_eq(recv, &holder) {
+        // Cached holder was the receiver itself, but we already checked the
+        // receiver's own properties above and they no longer contain the key.
+        return None;
+    }
+    let holder_b = holder.borrow();
+    if holder_b.shape_id != cache.holder_shape {
+        return None;
+    }
+    let prop = holder_b.properties.get(name)?;
+    if prop.is_accessor() {
+        return None;
+    }
+    Some(prop.value.clone())
 }
 
 /// Walk prototype chain (free function to avoid borrow conflicts on Vm).

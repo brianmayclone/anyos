@@ -577,13 +577,10 @@ pub fn object_create(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         Some(JsValue::Null) => None,
         _ => None,
     };
-    let obj = JsObject {
-        properties: alloc::collections::BTreeMap::new(),
-        prototype: proto,
-        internal_tag: None,
-        primitive_value: None,
-        set_hook: None,
-        set_hook_data: core::ptr::null_mut(),
+    let obj = {
+        let mut o = JsObject::new();
+        o.prototype = proto;
+        o
     };
     JsValue::Object(Rc::new(RefCell::new(obj)))
 }
@@ -879,7 +876,13 @@ pub(crate) fn set_prototype_of_internal(
     if would_create_prototype_cycle(obj, &new_proto) {
         return false;
     }
-    obj.borrow_mut().prototype = new_proto;
+    {
+        let mut o = obj.borrow_mut();
+        o.prototype = new_proto;
+        // Prototype change reshapes the property-resolution chain — any
+        // inline cache that observed the old prototype must be invalidated.
+        o.invalidate_shape();
+    }
     true
 }
 
