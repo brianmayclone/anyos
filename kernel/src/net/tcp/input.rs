@@ -301,12 +301,18 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
         match_result
     }; // lock dropped here
 
-    // Wake blocked threads outside lock
+    // Wake blocked threads outside lock.
+    // Retry once if try_lock fails — the 10ms sleep fallback in tcp::recv
+    // is too costly for throughput if the wake is missed.
     if wake_tid != 0 {
-        crate::task::scheduler::try_wake_thread(wake_tid);
+        if !crate::task::scheduler::try_wake_thread(wake_tid) {
+            crate::task::scheduler::try_wake_thread(wake_tid);
+        }
     }
     if wake_listener_tid != 0 {
-        crate::task::scheduler::try_wake_thread(wake_listener_tid);
+        if !crate::task::scheduler::try_wake_thread(wake_listener_tid) {
+            crate::task::scheduler::try_wake_thread(wake_listener_tid);
+        }
     }
 
     // Send deferred segment outside lock
@@ -671,10 +677,14 @@ pub fn handle_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) {
     };
 
     if wake_tid != 0 {
-        crate::task::scheduler::try_wake_thread(wake_tid);
+        if !crate::task::scheduler::try_wake_thread(wake_tid) {
+            crate::task::scheduler::try_wake_thread(wake_tid);
+        }
     }
     if wake_listener_tid != 0 {
-        crate::task::scheduler::try_wake_thread(wake_listener_tid);
+        if !crate::task::scheduler::try_wake_thread(wake_listener_tid) {
+            crate::task::scheduler::try_wake_thread(wake_listener_tid);
+        }
     }
 
     if let Some((lip6, lp, rip6, rp, seq, ack, flags, window)) = deferred_v6 {

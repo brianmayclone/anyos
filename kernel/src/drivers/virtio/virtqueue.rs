@@ -145,6 +145,15 @@ impl VirtQueue {
     /// Physical address of the used ring (for device config).
     pub fn used_phys(&self) -> u64 { self.used_phys }
 
+    /// Enable device-to-driver notifications (interrupts) on this queue.
+    /// Clears the VIRTQ_AVAIL_F_NO_INTERRUPT flag so the device will
+    /// raise an interrupt when new entries appear in the used ring.
+    pub fn enable_interrupts(&mut self) {
+        unsafe {
+            core::ptr::write_volatile(self.avail, 0u16);
+        }
+    }
+
     // ── Internal: available ring access ──
 
     /// Read available ring flags.

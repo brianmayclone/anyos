@@ -1482,6 +1482,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "speedtest"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libhttp_client",
+]
+
+[[package]]
 name = "sstore"
 version = "0.1.0"
 dependencies = [

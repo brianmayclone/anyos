@@ -3,6 +3,10 @@
 //! Provides Ethernet connectivity in QEMU/KVM VMs using the VirtIO modern
 //! transport. Registers as a [`NetworkDriver`] for the kernel network stack.
 //!
+//! Uses interrupt-driven RX via the VirtIO ISR status register for low-latency
+//! packet reception. Packets are processed directly in the IRQ handler and
+//! fed into the TCP/IP stack.
+//!
 //! VirtIO device IDs:
 //! - 0x1000 (transitional) / 0x1041 (modern) — virtio-net
 
@@ -19,7 +23,7 @@ use crate::sync::spinlock::Spinlock;
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /// Number of RX/TX buffers.
-const NUM_BUFFERS: usize = 32;
+const NUM_BUFFERS: usize = 128;
 
 /// Max Ethernet frame size + VirtIO net header.
 const RX_BUF_SIZE: usize = 1526 + 12; // MTU 1500 + Ethernet overhead + virtio-net header
@@ -84,7 +88,7 @@ impl VirtioNet {
                         frame_len,
                     );
                 }
-                if self.rx_queue.len() < 1024 {
+                if self.rx_queue.len() < 2048 {
                     self.rx_queue.push_back(packet);
                 }
             }
@@ -160,6 +164,43 @@ pub fn recv_packet() -> Option<Vec<u8>> {
     net.rx_queue.pop_front()
 }
 
+// ── IRQ Handler ─────────────────────────────────────────────────────────────
+
+/// ISR address for the VirtIO-Net device (set during probe).
+static ISR_ADDR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn virtio_net_irq_handler(_irq: u8) {
+    // Read and acknowledge the ISR status register.
+    // Reading this register automatically clears the interrupt.
+    let isr_addr = ISR_ADDR.load(core::sync::atomic::Ordering::Relaxed);
+    if isr_addr == 0 {
+        return;
+    }
+    let isr_status = virtio::mmio_read8(isr_addr);
+
+    if isr_status & 1 == 0 {
+        return; // Not our interrupt (shared IRQ line)
+    }
+
+    // Queue interrupt: drain received packets from the used ring.
+    // Use try_lock to avoid deadlock if we're already holding the lock.
+    let mut has_rx = false;
+    if let Some(mut state) = STATE.try_lock() {
+        if let Some(net) = state.as_mut() {
+            net.poll_rx();
+            has_rx = !net.rx_queue.is_empty();
+        }
+    }
+
+    // Process received packets through the network stack outside the lock.
+    // This feeds them into Ethernet → IP → TCP and wakes blocked threads.
+    if has_rx {
+        while let Some(packet) = recv_packet() {
+            crate::net::ethernet::handle_frame(&packet);
+        }
+    }
+}
+
 // ── NetworkDriver Trait ─────────────────────────────────────────────────────
 
 pub struct VirtioNetDriver;
@@ -184,7 +225,10 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
     // 2. Create device handle.
     let vdev = VirtioDevice::new(pci, &caps);
 
-    // 3. Negotiate features.
+    // 3. Store ISR address for the IRQ handler.
+    ISR_ADDR.store(vdev.isr_addr, core::sync::atomic::Ordering::Relaxed);
+
+    // 4. Negotiate features.
     let desired_features = VIRTIO_F_VERSION_1 | VIRTIO_NET_F_MAC;
     let negotiated = match vdev.init_device(desired_features) {
         Ok(f) => f,
@@ -194,7 +238,7 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
         }
     };
 
-    // 4. Read MAC address from device config.
+    // 5. Read MAC address from device config.
     let mac = if negotiated & VIRTIO_NET_F_MAC != 0 && vdev.device_cfg != 0 {
         let mut m = [0u8; 6];
         for i in 0..6 {
@@ -209,14 +253,19 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
     crate::serial_verbose_println!("VirtIO Net: MAC = {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    // 5. Set up virtqueues: receiveq (0) and transmitq (1).
-    let receiveq = vdev.setup_queue(0)?;
+    // 6. Set up virtqueues: receiveq (0) and transmitq (1).
+    let mut receiveq = vdev.setup_queue(0)?;
     let transmitq = vdev.setup_queue(1)?;
 
-    // 6. Mark device ready.
+    // 7. Enable interrupts on the RX queue.
+    // This clears VIRTQ_AVAIL_F_NO_INTERRUPT so the device will raise
+    // an interrupt when packets arrive, instead of requiring polling.
+    receiveq.enable_interrupts();
+
+    // 8. Mark device ready.
     vdev.set_driver_ok();
 
-    // 7. Allocate RX buffers (one page per buffer).
+    // 9. Allocate RX buffers (one page per buffer).
     let mut rx_bufs_phys = [0u64; NUM_BUFFERS];
     for i in 0..NUM_BUFFERS {
         let phys = physical::alloc_contiguous(1)?.as_u64();
@@ -224,11 +273,11 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
         rx_bufs_phys[i] = phys;
     }
 
-    // 8. Allocate TX buffer (one page).
+    // 10. Allocate TX buffer (one page).
     let tx_buf_phys = physical::alloc_contiguous(1)?.as_u64();
     unsafe { core::ptr::write_bytes(tx_buf_phys as *mut u8, 0, 4096); }
 
-    // 9. Initialize state.
+    // 11. Initialize state.
     let mut net = VirtioNet {
         vdev,
         receiveq,
@@ -245,10 +294,20 @@ pub fn probe(pci: &PciDevice) -> Option<Box<dyn crate::drivers::hal::Driver>> {
 
     *STATE.lock() = Some(net);
 
+    // 12. Register IRQ handler for interrupt-driven RX.
+    let irq = pci.interrupt_line;
+    crate::serial_verbose_println!("VirtIO Net: IRQ = {}", irq);
+    crate::arch::x86::irq::register_irq(irq, virtio_net_irq_handler);
+    if crate::arch::x86::apic::is_initialized() {
+        crate::arch::x86::ioapic::unmask_irq(irq);
+    } else {
+        crate::arch::x86::pic::unmask(irq);
+    }
+
     // Register with the network subsystem.
     super::register(Box::new(VirtioNetDriver));
 
-    crate::serial_verbose_println!("VirtIO Net: initialized");
+    crate::serial_verbose_println!("VirtIO Net: initialized (IRQ-driven RX, {} buffers)", NUM_BUFFERS);
 
     super::create_hal_driver("VirtIO Net")
 }

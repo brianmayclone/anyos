@@ -102,11 +102,11 @@ static LAST_RETRANSMIT_CHECK: AtomicU32 = AtomicU32::new(0);
 pub fn poll() {
     poll_rx();
 
-    // Rate-limit retransmission checks (every 10 ticks = 100ms).
-    // This avoids expensive TCP_CONNECTIONS lock acquisition on every poll.
+    // Rate-limit retransmission checks (every 2 ticks = 20ms).
+    // Must match DELAYED_ACK_TICKS so delayed ACKs are flushed on time.
     let now = crate::arch::hal::timer_current_ticks();
     let last = LAST_RETRANSMIT_CHECK.load(Ordering::Relaxed);
-    if now.wrapping_sub(last) >= 10 {
+    if now.wrapping_sub(last) >= 2 {
         LAST_RETRANSMIT_CHECK.store(now, Ordering::Relaxed);
         tcp::check_retransmissions();
     }
