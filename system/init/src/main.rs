@@ -6,11 +6,12 @@ use anyos_std::sys;
 use anyos_std::fs;
 use anyos_std::ipc;
 use anyos_std::println;
+use anyos_std::Box;
 
 use libanyui_client as ui;
 use ui::Widget;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 anyos_std::entry!(main);
 
@@ -23,9 +24,17 @@ const PAD: i32 = 30;
 
 // ── Shared state between worker thread and UI ───────────────────────────────
 
-/// Current status message (fixed buffer, length in STATUS_LEN).
-static mut STATUS_BUF: [u8; 128] = [0u8; 128];
-static STATUS_LEN: AtomicU32 = AtomicU32::new(0);
+/// Immutable status snapshot published from the worker thread to the UI thread.
+///
+/// We intentionally publish whole snapshots instead of mutating a shared
+/// `static mut` buffer. The previous approach was UB across threads and was
+/// especially brittle on ARM64.
+struct StatusMessage {
+    len: usize,
+    bytes: [u8; 128],
+}
+
+static STATUS_PTR: AtomicUsize = AtomicUsize::new(0);
 
 /// Progress: 0..100
 static PROGRESS: AtomicU32 = AtomicU32::new(0);
@@ -35,18 +44,23 @@ static WORKER_DONE: AtomicBool = AtomicBool::new(false);
 
 fn set_status(msg: &str) {
     let len = msg.len().min(128);
-    unsafe {
-        STATUS_BUF[..len].copy_from_slice(&msg.as_bytes()[..len]);
-    }
-    STATUS_LEN.store(len as u32, Ordering::Release);
+    let mut status = Box::new(StatusMessage {
+        len,
+        bytes: [0u8; 128],
+    });
+    status.bytes[..len].copy_from_slice(&msg.as_bytes()[..len]);
+    let ptr = Box::into_raw(status) as usize;
+    let _old = STATUS_PTR.swap(ptr, Ordering::AcqRel);
 }
 
 fn get_status(buf: &mut [u8; 128]) -> usize {
-    let len = STATUS_LEN.load(Ordering::Acquire) as usize;
-    unsafe {
-        buf[..len].copy_from_slice(&STATUS_BUF[..len]);
+    let ptr = STATUS_PTR.load(Ordering::Acquire) as *const StatusMessage;
+    if ptr.is_null() {
+        return 0;
     }
-    len
+    let status = unsafe { &*ptr };
+    buf[..status.len].copy_from_slice(&status.bytes[..status.len]);
+    status.len
 }
 
 // ── CPU Benchmark ───────────────────────────────────────────────────────────

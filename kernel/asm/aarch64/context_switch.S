@@ -6,14 +6,15 @@
  * CpuContext layout (must match Rust struct in arch::arm64::context):
  *   Offset  Field
  *   0       x[0..31]   (31 × 8 = 248 bytes)
- *   248     sp
- *   256     pc         (ELR_EL1)
- *   264     pstate     (SPSR_EL1)
- *   272     ttbr0      (TTBR0_EL1)
- *   280     tpidr      (TPIDR_EL0)
- *   288     save_complete
- *   296     canary
- *   304     checksum
+ *   248     d[0..7]    (D8-D15 low 64-bit lanes)
+ *   312     sp
+ *   320     pc         (ELR_EL1)
+ *   328     pstate     (SPSR_EL1)
+ *   336     ttbr0      (TTBR0_EL1)
+ *   344     tpidr      (TPIDR_EL0)
+ *   352     save_complete
+ *   360     canary
+ *   368     checksum
  */
 
 .section .text
@@ -33,46 +34,50 @@ context_switch:
     stp     x25, x26, [x0, #(25 * 8)]
     stp     x27, x28, [x0, #(27 * 8)]
     stp     x29, x30, [x0, #(29 * 8)]
+    stp     d8,  d9,  [x0, #248]
+    stp     d10, d11, [x0, #264]
+    stp     d12, d13, [x0, #280]
+    stp     d14, d15, [x0, #296]
 
     /* Save SP */
     mov     x9, sp
-    str     x9, [x0, #248]
+    str     x9, [x0, #312]
 
     /* Save return address as PC (LR = x30, already saved above) */
     /* For cooperative switch, PC = LR (return address) */
-    str     x30, [x0, #256]
+    str     x30, [x0, #320]
 
     /* Save TTBR0_EL1 */
     mrs     x9, ttbr0_el1
-    str     x9, [x0, #272]
+    str     x9, [x0, #336]
 
     /* Save TPIDR_EL0 */
     mrs     x9, tpidr_el0
-    str     x9, [x0, #280]
+    str     x9, [x0, #344]
 
     /* Set save_complete = 1 */
     mov     x9, #1
-    str     x9, [x0, #288]
+    str     x9, [x0, #352]
 
     /* Write canary */
     ldr     x9, =0xCAFEBABEDEADBEEF
-    str     x9, [x0, #296]
+    str     x9, [x0, #360]
 
-    /* Compute checksum (XOR of first 36 u64 fields) */
+    /* Compute checksum (XOR of first 44 u64 fields) */
     mov     x9, xzr             /* accumulator */
     mov     x10, x0             /* pointer */
-    mov     x11, #36            /* field count */
+    mov     x11, #44            /* field count */
 .save_checksum:
     ldr     x12, [x10], #8
     eor     x9, x9, x12
     sub     x11, x11, #1
     cbnz    x11, .save_checksum
-    str     x9, [x0, #304]      /* store checksum */
+    str     x9, [x0, #368]      /* store checksum */
 
     /* ---- Restore new context ---- */
 
     /* Switch TTBR0_EL1 if different */
-    ldr     x9, [x1, #272]
+    ldr     x9, [x1, #336]
     mrs     x10, ttbr0_el1
     cmp     x9, x10
     b.eq    .skip_ttbr
@@ -84,16 +89,16 @@ context_switch:
 .skip_ttbr:
 
     /* Restore TPIDR_EL0 */
-    ldr     x9, [x1, #280]
+    ldr     x9, [x1, #344]
     msr     tpidr_el0, x9
 
     /* Restore SP */
-    ldr     x9, [x1, #248]
+    ldr     x9, [x1, #312]
     mov     sp, x9
 
     /* Load the target PC from the saved context.
      * Use a dedicated register so the UART diagnostics below don't clobber it. */
-    ldr     x11, [x1, #256]
+    ldr     x11, [x1, #320]
 
     /* Restore callee-saved registers plus x18. */
     ldr     x18,      [x1, #(18 * 8)]
@@ -103,6 +108,10 @@ context_switch:
     ldp     x25, x26, [x1, #(25 * 8)]
     ldp     x27, x28, [x1, #(27 * 8)]
     ldp     x29, x30, [x1, #(29 * 8)]
+    ldp     d8,  d9,  [x1, #248]
+    ldp     d10, d11, [x1, #264]
+    ldp     d12, d13, [x1, #280]
+    ldp     d14, d15, [x1, #296]
 
     /* Branch to the saved PC. */
     br      x11

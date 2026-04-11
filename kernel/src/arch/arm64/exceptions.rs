@@ -251,12 +251,23 @@ fn handle_fault(ec: u32, far: u64, elr: u64) {
                     "              x23={:#018x} x24={:#018x} x25={:#018x} x26={:#018x} sp_el0={:#018x} spsr={:#018x}",
                     frame.x[23], frame.x[24], frame.x[25], frame.x[26], frame.sp_el0, frame.spsr_el1,
                 );
+                crate::serial_verbose_println!(
+                    "              x27={:#018x} x28={:#018x} x29={:#018x} x30={:#018x} x8={:#018x} elr={:#018x}",
+                    frame.x[27], frame.x[28], frame.x[29], frame.x[30], frame.x[8], frame.elr_el1,
+                );
             }
         }
         let tid = crate::task::scheduler::current_tid();
+        let last_sc = crate::task::scheduler::get_last_syscall(cpu);
+        let sc_name = crate::syscall::table::syscall_name(last_sc);
         let name_raw = crate::task::scheduler::current_thread_name();
         let name_len = name_raw.iter().position(|&b| b == 0).unwrap_or(name_raw.len());
         let name = core::str::from_utf8(&name_raw[..name_len]).unwrap_or("?");
+        crate::serial_verbose_println!(
+            "  LastSC: {} ({})",
+            last_sc,
+            sc_name,
+        );
         crate::serial_verbose_println!(
             "  Killing user thread due to fault (CPU={} TID={} '{}' EC={:#04x}, FAR={:#018x}, ELR={:#018x})",
             cpu, tid, name, ec, far, elr,

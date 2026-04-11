@@ -98,6 +98,32 @@ pub(super) fn copy_user_bytes(ptr: u32, len: usize, max_len: usize) -> Option<Ve
     Some(out)
 }
 
+/// Copy a bounded kernel byte slice into user memory.
+///
+/// Returns `false` if the destination is invalid, unmapped, or the requested
+/// length exceeds `max_len`. Every crossed page is validated before write.
+pub(super) fn copy_to_user_bytes(ptr: u32, data: &[u8], max_len: usize) -> bool {
+    let len = data.len();
+    if len == 0 || len > max_len || !is_valid_user_ptr(ptr as u64, len as u64) {
+        return false;
+    }
+    if !is_user_page_accessible(ptr as u64) {
+        return false;
+    }
+
+    let p = ptr as *mut u8;
+    unsafe {
+        for (i, &byte) in data.iter().enumerate() {
+            let addr = ptr as u64 + i as u64;
+            if i > 0 && (addr & 0xFFF) == 0 && !is_user_page_accessible(addr) {
+                return false;
+            }
+            *p.add(i) = byte;
+        }
+    }
+    true
+}
+
 /// Read a null-terminated string from user memory (max 4096 bytes).
 /// Returns None if the pointer is invalid or the page is not mapped.
 ///

@@ -10,40 +10,49 @@
 pub struct CpuContext {
     /// General-purpose registers X0-X30 (X30 = LR).
     pub x: [u64; 31],       // offset 0   (248 bytes)
+    /// Callee-saved SIMD/FP lanes D8-D15.
+    ///
+    /// Under the AArch64 PCS, V8-V15 are callee-saved, but only their low
+    /// 64-bit D lanes must survive a call. `context_switch()` is an external
+    /// function from the compiler's point of view, so failing to preserve
+    /// these breaks kernel continuations that block and later resume.
+    pub d: [u64; 8],        // offset 248 (64 bytes)
     /// Stack Pointer (SP_EL0 for user threads, SP_EL1 for kernel).
-    pub sp: u64,             // offset 248
+    pub sp: u64,             // offset 312
     /// Program Counter (saved ELR_EL1).
-    pub pc: u64,             // offset 256
+    pub pc: u64,             // offset 320
     /// Saved processor state (SPSR_EL1).
-    pub pstate: u64,         // offset 264
+    pub pstate: u64,         // offset 328
     /// User page table base (TTBR0_EL1).
-    pub ttbr0: u64,          // offset 272
+    pub ttbr0: u64,          // offset 336
     /// Thread pointer (TPIDR_EL0, used for TLS).
-    pub tpidr: u64,          // offset 280
+    pub tpidr: u64,          // offset 344
     /// Set to 1 by context_switch.S after saving all registers.
     /// Set to 0 by schedule_inner before releasing the lock.
     /// pick_next skips threads with save_complete == 0 to prevent
     /// another CPU from restoring a partially-saved context.
-    pub save_complete: u64,  // offset 288
+    pub save_complete: u64,  // offset 352
     /// Magic canary written by context_switch.S after saving.
     /// Verified before loading. If wrong, the CpuContext memory was
     /// externally overwritten (heap corruption, buffer overflow, etc.).
-    pub canary: u64,         // offset 296
+    pub canary: u64,         // offset 360
     /// XOR checksum of register fields. Excludes save_complete and canary.
     /// Computed after save, verified before load.
-    pub checksum: u64,       // offset 304
+    pub checksum: u64,       // offset 368
 }
 
 /// Magic value for the CpuContext integrity canary.
 pub const CANARY_MAGIC: u64 = 0xCAFE_BABE_DEAD_BEEF;
 
-/// Number of u64 fields to include in checksum (x[31] + sp + pc + pstate + ttbr0 + tpidr = 36).
-const CHECKSUM_FIELDS: usize = 36;
+/// Number of u64 fields to include in checksum.
+/// x[31] + d[8] + sp + pc + pstate + ttbr0 + tpidr = 44.
+const CHECKSUM_FIELDS: usize = 44;
 
 impl Default for CpuContext {
     fn default() -> Self {
         let mut ctx = CpuContext {
             x: [0; 31],
+            d: [0; 8],
             sp: 0,
             pc: 0,
             pstate: 0,

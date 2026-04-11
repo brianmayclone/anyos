@@ -3,7 +3,7 @@
 //! Covers named pipes, the event bus (system + channel events),
 //! shared memory, and compositor wake helper.
 
-use super::helpers::{copy_user_bytes, is_valid_user_ptr, read_user_str};
+use super::helpers::{copy_to_user_bytes, copy_user_bytes, is_valid_user_ptr, read_user_str};
 
 use crate::ipc::event_bus::{self, EventData};
 use core::sync::atomic::Ordering;
@@ -91,9 +91,15 @@ pub fn sys_evt_sys_subscribe(filter: u32) -> u32 {
 /// Poll system event. ebx=sub_id, ecx=buf_ptr (20 bytes). Returns 1 if event, 0 if empty.
 pub fn sys_evt_sys_poll(sub_id: u32, buf_ptr: u32) -> u32 {
     if let Some(evt) = event_bus::system_poll(sub_id) {
-        if buf_ptr != 0 && is_valid_user_ptr(buf_ptr as u64, 20) {
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u32, 5) };
-            buf.copy_from_slice(&evt.words);
+        if buf_ptr != 0 {
+            let mut bytes = [0u8; 20];
+            for (i, word) in evt.words.iter().enumerate() {
+                let off = i * 4;
+                bytes[off..off + 4].copy_from_slice(&word.to_ne_bytes());
+            }
+            if !copy_to_user_bytes(buf_ptr, &bytes, 20) {
+                return u32::MAX;
+            }
         }
         1
     } else {
@@ -142,9 +148,15 @@ pub fn sys_evt_chan_emit(chan_id: u32, event_ptr: u32) -> u32 {
 /// Poll module channel. ebx=chan_id, ecx=sub_id, edx=buf_ptr. Returns 1/0.
 pub fn sys_evt_chan_poll(chan_id: u32, sub_id: u32, buf_ptr: u32) -> u32 {
     if let Some(evt) = event_bus::channel_poll(chan_id, sub_id) {
-        if buf_ptr != 0 && is_valid_user_ptr(buf_ptr as u64, 20) {
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u32, 5) };
-            buf.copy_from_slice(&evt.words);
+        if buf_ptr != 0 {
+            let mut bytes = [0u8; 20];
+            for (i, word) in evt.words.iter().enumerate() {
+                let off = i * 4;
+                bytes[off..off + 4].copy_from_slice(&word.to_ne_bytes());
+            }
+            if !copy_to_user_bytes(buf_ptr, &bytes, 20) {
+                return u32::MAX;
+            }
         }
         1
     } else {

@@ -212,6 +212,7 @@ static mut SCRATCH_CTX: [CpuContext; MAX_CPUS] = {
     #[cfg(target_arch = "aarch64")]
     const INIT: CpuContext = CpuContext {
         x: [0; 31],
+        d: [0; 8],
         sp: 0, pc: 0, pstate: 0, ttbr0: 0, tpidr: 0,
         save_complete: 1,
         canary: 0,

@@ -155,11 +155,13 @@ macro_rules! dll_allocator {
     ($sbrk:path, $mmap:path, $munmap:path) => {
         mod _dll_heap {
             use core::alloc::{GlobalAlloc, Layout};
+            use core::sync::atomic::{AtomicBool, Ordering};
             use core::ptr;
 
             struct DllFreeListAlloc;
 
             static mut FREE_LIST: *mut $crate::FreeBlock = ptr::null_mut();
+            static HEAP_LOCK: AtomicBool = AtomicBool::new(false);
 
             /// Allocations >= this size bypass sbrk and go directly through mmap.
             const MMAP_THRESHOLD: usize = 64 * 1024;
@@ -197,6 +199,21 @@ macro_rules! dll_allocator {
                 addr as *mut u8
             }
 
+            #[inline]
+            fn lock() {
+                while HEAP_LOCK
+                    .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+                    .is_err()
+                {
+                    core::hint::spin_loop();
+                }
+            }
+
+            #[inline]
+            fn unlock() {
+                HEAP_LOCK.store(false, Ordering::Release);
+            }
+
             unsafe impl GlobalAlloc for DllFreeListAlloc {
                 unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
                     let size = $crate::block_size(layout);
@@ -206,9 +223,14 @@ macro_rules! dll_allocator {
                         return mmap_alloc(size);
                     }
 
+                    lock();
+
                     // 1) Search free list for first fit.
                     let ptr = $crate::free_list_alloc(&mut FREE_LIST, size);
-                    if !ptr.is_null() { return ptr; }
+                    if !ptr.is_null() {
+                        unlock();
+                        return ptr;
+                    }
 
                     // 2) Try sbrk.
                     let sbrk_fn: fn(u32) -> u64 = $sbrk;
@@ -219,11 +241,13 @@ macro_rules! dll_allocator {
                         let needed = (aligned - brk + size as u64) as u32;
                         let result = sbrk_fn(needed);
                         if !$crate::is_syscall_error_u64(result) {
+                            unlock();
                             return aligned as *mut u8;
                         }
                     }
 
                     // 3) sbrk failed — fall back to mmap.
+                    unlock();
                     mmap_alloc(size)
                 }
 
@@ -241,11 +265,13 @@ macro_rules! dll_allocator {
                     }
 
                     // sbrk allocations go back to the free list.
+                    lock();
                     $crate::free_list_dealloc(
                         &mut FREE_LIST,
                         ptr,
                         size,
                     );
+                    unlock();
                 }
             }
 

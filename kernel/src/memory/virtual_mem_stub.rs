@@ -320,7 +320,11 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
     }
     let ttbr0 = current_cr3();
     if ttbr0 != 0 {
-        return map_page_in_pd(PhysAddr::new(ttbr0), virt, phys, flags);
+        let ok = map_page_in_pd(PhysAddr::new(ttbr0), virt, phys, flags);
+        if ok {
+            crate::arch::arm64::mmu::flush_tlb_va(va);
+        }
+        return ok;
     }
     false
 }
@@ -389,6 +393,9 @@ pub fn map_page_in_pd(
     let attrs = flags_to_arm64_attrs(flags);
     let desc = (phys.as_u64() & ADDR_MASK) | attrs | DESC_VALID | DESC_PAGE;
     unsafe { write_entry(l3_phys, l3_index(va), desc); }
+    if pd_phys.as_u64() == current_cr3() {
+        crate::arch::arm64::mmu::flush_tlb_va(va);
+    }
     true
 }
 
