@@ -184,6 +184,10 @@ _user_sync_handler:
     bl      arm64_syscall_dispatch
     /* Store return value in saved x0 position */
     str     x0, [sp, #(0 * 8)]
+    /* Advance ELR past the trapping `svc` instruction before returning. */
+    ldr     x9, [sp, #(32 * 8)]
+    add     x9, x9, #4
+    str     x9, [sp, #(32 * 8)]
     RESTORE_REGS
     eret
 

@@ -1,13 +1,13 @@
-//! PL011 UART driver for QEMU virt machine (MMIO at 0x0900_0000).
+//! PL011 UART driver for QEMU virt machine.
 //!
-//! Provides early serial output before the memory subsystem is initialized.
-//! The UART is identity-mapped by boot.S so we can use physical addresses directly.
+//! The kernel uses a fixed higher-half MMIO mapping for the PL011 so the UART
+//! remains accessible after switching user TTBR0/page tables.
 
 use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-/// PL011 UART base address on QEMU virt machine.
-const PL011_BASE: usize = 0x0900_0000;
+/// Higher-half virtual base of the PL011 UART on the QEMU virt machine.
+const PL011_BASE: usize = 0xFFFF_0000_C900_0000;
 
 /// PL011 register offsets.
 const UARTDR: usize = 0x000;   // Data Register

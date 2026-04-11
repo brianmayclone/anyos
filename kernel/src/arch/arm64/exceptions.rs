@@ -99,11 +99,14 @@ pub extern "C" fn arm64_user_irq_handler(frame: *mut ExceptionFrame) {
         crate::serial_verbose_println!("  [IRQ] intid={} count={}", intid, count);
     }
     if intid < 1020 {
-        super::gic::eoi(intid);
         if intid == 30 {
+            // Re-arm the generic timer before EOI so EL0 does not get trapped
+            // in an immediate re-pend loop right after `eret`.
             super::generic_timer::irq_handler();
+            super::gic::eoi(intid);
             crate::task::scheduler::schedule_tick_from_user_irq(frame);
         } else {
+            super::gic::eoi(intid);
             let handler = unsafe { IRQ_HANDLERS[intid as usize] };
             if let Some(h) = handler {
                 h();

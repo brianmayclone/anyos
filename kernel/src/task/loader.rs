@@ -140,6 +140,20 @@ static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING]> =
         PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
     ]);
 
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+fn arm64_diag_char(ch: u8) {
+    unsafe {
+        core::arch::asm!(
+            "ldr {tmp}, =0xFFFF0000C9000000",
+            "strb {val:w}, [{tmp}]",
+            tmp = out(reg) _,
+            val = in(reg) ch as u32,
+            options(nostack),
+        );
+    }
+}
+
 // =========================================================================
 // fork() child state — saved parent registers for child to resume from
 // =========================================================================
@@ -1306,10 +1320,17 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
             .expect("Too many pending programs");
         slot.tid = tid;
         slot.entry = entry_point;
-        // aslr_stack_top - 8: the -8 satisfies the x86-64 ABI requirement
-        // RSP % 16 == 8 at function entry (simulates a `call` push).
-        // aslr_stack_top already incorporates the random ASLR offset.
-        slot.user_stack = aslr_stack_top - 8;
+        // x86_64 enters userspace via `iretq` into a call-like ABI state and
+        // therefore wants RSP % 16 == 8. AArch64 enters EL0 via `eret` and
+        // requires SP to remain 16-byte aligned.
+        #[cfg(target_arch = "x86_64")]
+        {
+            slot.user_stack = aslr_stack_top - 8;
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            slot.user_stack = aslr_stack_top;
+        }
         slot.is_compat32 = is_compat32;
         slot.used = true;
     }
@@ -1392,19 +1413,15 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 extern "C" fn user_thread_trampoline() {
     // DIAG: write 'D' to PL011 UART immediately (before any Rust runtime)
     #[cfg(target_arch = "aarch64")]
-    unsafe {
-        core::arch::asm!(
-            "ldr {tmp}, =0xFFFF0000C9000000",
-            "mov {ch:w}, #68",
-            "strb {ch:w}, [{tmp}]",
-            tmp = out(reg) _,
-            ch = out(reg) _,
-            options(nostack),
-        );
-    }
+    arm64_diag_char(b'D');
     enable_irqs_before_user_entry();
+    #[cfg(target_arch = "aarch64")]
+    arm64_diag_char(b'E');
+    #[cfg(target_arch = "x86_64")]
     crate::serial_verbose_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
     let tid = crate::task::scheduler::current_tid();
+    #[cfg(target_arch = "aarch64")]
+    arm64_diag_char(b'F');
     let (entry, user_stack, compat32) = {
         let mut slots = PENDING_PROGRAMS.lock();
         let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
@@ -1415,7 +1432,10 @@ extern "C" fn user_thread_trampoline() {
         slot.used = false; // Free the slot
         (e, s, c)
     };
+    #[cfg(target_arch = "aarch64")]
+    arm64_diag_char(b'G');
 
+    #[cfg(target_arch = "x86_64")]
     crate::serial_verbose_println!("  [TRAMPOLINE] tid={} entry={:#x} stack={:#x} compat32={}",
         tid, entry, user_stack, compat32);
     if compat32 {
@@ -1529,12 +1549,18 @@ fn enable_irqs_before_user_entry() {}
 /// issues `eret`.
 #[cfg(target_arch = "aarch64")]
 unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
+    arm64_diag_char(b'H');
     core::arch::asm!(
         // Set the return address (ELR_EL1) and user stack (SP_EL0)
         "msr elr_el1, {entry}",
         "msr sp_el0, {sp}",
         // SPSR_EL1 = 0x0: EL0t (AArch64, EL0, SP_EL0), all DAIF unmasked
         "msr spsr_el1, xzr",
+        // Ensure the updated exception return state is visible to `eret`.
+        "isb",
+        "ldr x9, =0xFFFF0000C9000000",
+        "mov w10, #73",
+        "strb w10, [x9]",
         // Clear all general-purpose registers to prevent kernel leaks
         "mov x0, #0",
         "mov x1, #0",
