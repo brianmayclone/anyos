@@ -141,20 +141,6 @@ static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING]> =
         PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
     ]);
 
-#[cfg(target_arch = "aarch64")]
-#[inline(always)]
-fn arm64_diag_char(ch: u8) {
-    unsafe {
-        core::arch::asm!(
-            "ldr {tmp}, =0xFFFF0000C9000000",
-            "strb {val:w}, [{tmp}]",
-            tmp = out(reg) _,
-            val = in(reg) ch as u32,
-            options(nostack),
-        );
-    }
-}
-
 // =========================================================================
 // fork() child state — saved parent registers for child to resume from
 // =========================================================================
@@ -1415,17 +1401,10 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 /// Trampoline: runs as a kernel thread, then transitions to user mode.
 /// At this point, context_switch.asm has already loaded our CR3 (user PD).
 extern "C" fn user_thread_trampoline() {
-    // DIAG: write 'D' to PL011 UART immediately (before any Rust runtime)
-    #[cfg(target_arch = "aarch64")]
-    arm64_diag_char(b'D');
     enable_irqs_before_user_entry();
-    #[cfg(target_arch = "aarch64")]
-    arm64_diag_char(b'E');
     #[cfg(target_arch = "x86_64")]
     crate::serial_verbose_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
     let tid = crate::task::scheduler::current_tid();
-    #[cfg(target_arch = "aarch64")]
-    arm64_diag_char(b'F');
     let (entry, user_stack, user_lr, compat32) = {
         let mut slots = PENDING_PROGRAMS.lock();
         let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
@@ -1437,8 +1416,6 @@ extern "C" fn user_thread_trampoline() {
         slot.used = false; // Free the slot
         (e, s, lr, c)
     };
-    #[cfg(target_arch = "aarch64")]
-    arm64_diag_char(b'G');
 
     #[cfg(target_arch = "x86_64")]
     crate::serial_verbose_println!("  [TRAMPOLINE] tid={} entry={:#x} stack={:#x} compat32={}",
@@ -1562,7 +1539,6 @@ fn enable_irqs_before_user_entry() {}
 /// issues `eret`.
 #[cfg(target_arch = "aarch64")]
 unsafe fn jump_to_user_mode(entry: u64, user_stack: u64, user_lr: u64) -> ! {
-    arm64_diag_char(b'H');
     core::arch::asm!(
         // Set the return address (ELR_EL1) and user stack (SP_EL0)
         "msr elr_el1, {entry}",
@@ -1571,9 +1547,6 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64, user_lr: u64) -> ! {
         "msr spsr_el1, xzr",
         // Ensure the updated exception return state is visible to `eret`.
         "isb",
-        "ldr x9, =0xFFFF0000C9000000",
-        "mov w10, #73",
-        "strb w10, [x9]",
         // Clear all general-purpose registers to prevent kernel leaks
         "mov x0, #0",
         "mov x1, #0",

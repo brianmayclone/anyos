@@ -521,6 +521,7 @@ if [ "$ARM64_MODE" = true ]; then
     qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu cortex-a72 \
         -m 512M \
+        -smp cpus=4 \
         -kernel "$KERNEL_ELF" \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \

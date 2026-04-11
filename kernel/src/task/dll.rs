@@ -123,6 +123,36 @@ fn dll_temp_virt() -> u64 {
     #[cfg(target_arch = "aarch64")]
     { 0xFFFF_0000_81F1_0000 }
 }
+
+#[cfg(target_arch = "aarch64")]
+#[inline]
+fn frame_ptr(frame: PhysAddr) -> *mut u8 {
+    (frame.as_u64() + crate::memory::virtual_mem::PHYS_TO_VIRT_OFFSET) as *mut u8
+}
+
+#[inline]
+fn with_frame_mut<R>(frame: PhysAddr, temp_virt: VirtAddr, f: impl FnOnce(*mut u8) -> R) -> R {
+    #[cfg(target_arch = "x86_64")]
+    {
+        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
+        let ptr = temp_virt.as_u64() as *mut u8;
+        let result = f(ptr);
+        virtual_mem::unmap_page(temp_virt);
+        result
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = temp_virt;
+        f(frame_ptr(frame))
+    }
+}
+
+#[inline]
+fn with_frame_read<R>(frame: PhysAddr, temp_virt: VirtAddr, f: impl FnOnce(*const u8) -> R) -> R {
+    with_frame_mut(frame, temp_virt, |ptr| f(ptr as *const u8))
+}
+
 const PT_DYNAMIC: u32 = 2;
 const PF_W: u32 = 2;
 
@@ -207,15 +237,10 @@ fn alloc_and_copy_pages(
     let mut pages = Vec::with_capacity(count);
     for i in 0..count {
         let frame = physical::alloc_frame().ok_or("Out of memory allocating DLIB frame")?;
-        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
-
         let offset = file_offset + i * PAGE_SIZE as usize;
-        unsafe {
-            let dest = temp_virt.as_u64() as *mut u8;
+        with_frame_mut(frame, temp_virt, |dest| unsafe {
             core::ptr::copy_nonoverlapping(data.as_ptr().add(offset), dest, PAGE_SIZE as usize);
-        }
-
-        virtual_mem::unmap_page(temp_virt);
+        });
         pages.push(frame);
     }
     Ok(pages)
@@ -257,12 +282,10 @@ fn patch_bytes_in_page(
         let to_write = core::cmp::min(bytes.len() - offset, page_remain);
 
         if let Some(frame) = get_page_frame(cur_va, rw_start_va, ro_pages, data_template_pages) {
-            virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
-            unsafe {
-                let dest = (temp_virt.as_u64() as *mut u8).add(page_off);
+            with_frame_mut(frame, temp_virt, |base| unsafe {
+                let dest = base.add(page_off);
                 core::ptr::copy_nonoverlapping(bytes.as_ptr().add(offset), dest, to_write);
-            }
-            virtual_mem::unmap_page(temp_virt);
+            });
         }
         offset += to_write;
     }
@@ -286,12 +309,10 @@ fn patch_u64_in_page(
     }
 
     if let Some(frame) = get_page_frame(va, rw_start_va, ro_pages, data_template_pages) {
-        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
-        unsafe {
-            let ptr = (temp_virt.as_u64() as *mut u8).add(page_offset) as *mut u64;
+        with_frame_mut(frame, temp_virt, |base| unsafe {
+            let ptr = base.add(page_offset) as *mut u64;
             core::ptr::write(ptr, value);
-        }
-        virtual_mem::unmap_page(temp_virt);
+        });
     }
 }
 
@@ -313,12 +334,10 @@ fn patch_u32_in_page(
     }
 
     if let Some(frame) = get_page_frame(va, rw_start_va, ro_pages, data_template_pages) {
-        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
-        unsafe {
-            let ptr = (temp_virt.as_u64() as *mut u8).add(page_offset) as *mut u32;
+        with_frame_mut(frame, temp_virt, |base| unsafe {
+            let ptr = base.add(page_offset) as *mut u32;
             core::ptr::write(ptr, value);
-        }
-        virtual_mem::unmap_page(temp_virt);
+        });
     }
 }
 
@@ -656,8 +675,6 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
 
     for i in 0..ro_page_count as usize {
         let frame = physical::alloc_frame().expect("OOM in .so RO page");
-        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
-
         let file_off = ro_offset as usize + i * PAGE_SIZE as usize;
         let byte_offset = i * PAGE_SIZE as usize;
         let copy_len = if byte_offset >= ro_filesz as usize {
@@ -665,16 +682,13 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         } else {
             core::cmp::min(PAGE_SIZE as usize, ro_filesz as usize - byte_offset)
         };
-        unsafe {
-            let dest = temp_virt.as_u64() as *mut u8;
+        with_frame_mut(frame, temp_virt, |dest| unsafe {
             // Zero the page first (handles partial last page)
             core::ptr::write_bytes(dest, 0, PAGE_SIZE as usize);
             if copy_len > 0 && file_off + copy_len <= data.len() {
                 core::ptr::copy_nonoverlapping(data.as_ptr().add(file_off), dest, copy_len);
             }
-        }
-
-        virtual_mem::unmap_page(temp_virt);
+        });
         ro_pages.push(frame);
     }
 
@@ -683,20 +697,15 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
 
     for i in 0..data_page_count as usize {
         let frame = physical::alloc_frame().expect("OOM in .so data template page");
-        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
-
         let file_off = rw_offset as usize + i * PAGE_SIZE as usize;
         let copy_len = core::cmp::min(PAGE_SIZE as usize, rw_filesz as usize - i * PAGE_SIZE as usize);
-        unsafe {
-            let dest = temp_virt.as_u64() as *mut u8;
+        with_frame_mut(frame, temp_virt, |dest| unsafe {
             // Zero the page first (handles .dynamic padding and partial pages)
             core::ptr::write_bytes(dest, 0, PAGE_SIZE as usize);
             if copy_len > 0 && file_off + copy_len <= data.len() {
                 core::ptr::copy_nonoverlapping(data.as_ptr().add(file_off), dest, copy_len);
             }
-        }
-
-        virtual_mem::unmap_page(temp_virt);
+        });
         data_template_pages.push(frame);
     }
 
@@ -911,21 +920,17 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
                 let template_phys = dll.data_template_pages[template_idx];
                 let new_frame = physical::alloc_frame().expect("OOM in DLIB .data demand page");
 
-                // Copy template → new frame via temp kernel mappings.
-                // Safe: LOADED_DLLS lock serializes access to these temp addresses.
                 let src = VirtAddr::new(TEMP_COPY_SRC);
                 let dst = VirtAddr::new(TEMP_COPY_DST);
-                virtual_mem::map_page(src, template_phys, 0); // read-only
-                virtual_mem::map_page(dst, new_frame, PAGE_WRITABLE);
-                unsafe {
-                    core::ptr::copy_nonoverlapping(
-                        src.as_u64() as *const u8,
-                        dst.as_u64() as *mut u8,
+                with_frame_read(template_phys, src, |src_ptr| {
+                    with_frame_mut(new_frame, dst, |dst_ptr| unsafe {
+                        core::ptr::copy_nonoverlapping(
+                        src_ptr,
+                        dst_ptr,
                         PAGE_SIZE as usize,
-                    );
-                }
-                virtual_mem::unmap_page(src);
-                virtual_mem::unmap_page(dst);
+                        );
+                    });
+                });
 
                 virtual_mem::map_page(
                     VirtAddr::new(page_base),
@@ -937,11 +942,9 @@ pub fn handle_dll_demand_page(vaddr: u64) -> bool {
                 let new_frame = physical::alloc_frame().expect("OOM in DLIB .bss demand page");
 
                 let tmp = VirtAddr::new(TEMP_COPY_SRC);
-                virtual_mem::map_page(tmp, new_frame, PAGE_WRITABLE);
-                unsafe {
-                    core::ptr::write_bytes(tmp.as_u64() as *mut u8, 0, PAGE_SIZE as usize);
-                }
-                virtual_mem::unmap_page(tmp);
+                with_frame_mut(new_frame, tmp, |ptr| unsafe {
+                    core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
+                });
 
                 virtual_mem::map_page(
                     VirtAddr::new(page_base),
@@ -1112,12 +1115,10 @@ pub fn set_dll_u32(dll_base: u64, offset: u64, value: u32) -> bool {
 
             // Temporarily map the shared frame and write the value
             let tmp = VirtAddr::new(TEMP_COPY_SRC);
-            virtual_mem::map_page(tmp, phys, PAGE_WRITABLE);
-            unsafe {
-                let ptr = (tmp.as_u64() as *mut u8).add(page_offset) as *mut u32;
+            with_frame_mut(phys, tmp, |base| unsafe {
+                let ptr = base.add(page_offset) as *mut u32;
                 core::ptr::write_volatile(ptr, value);
-            }
-            virtual_mem::unmap_page(tmp);
+            });
             return true;
         }
     }

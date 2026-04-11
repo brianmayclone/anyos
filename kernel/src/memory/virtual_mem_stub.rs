@@ -519,6 +519,8 @@ pub fn destroy_user_page_directory(pd: PhysAddr) {
         return;
     }
 
+    let shm_frames = crate::ipc::shared_memory::collect_sorted_shm_frames();
+
     for i0 in 0..ENTRIES_PER_TABLE {
         let e0 = unsafe { read_entry(l0, i0) };
         if !is_valid(e0) || !is_table(e0) {
@@ -536,12 +538,25 @@ pub fn destroy_user_page_directory(pd: PhysAddr) {
                 if !is_valid(e2) || !is_table(e2) {
                     continue;
                 }
+                let is_dll = i0 == 0 && i1 == 0 && (32..=63).contains(&i2);
+                let is_identity_map = i0 == 0 && i1 == 0 && i2 < 32;
+
+                if is_identity_map {
+                    continue;
+                }
+
                 let l3 = desc_addr(e2);
                 // Free all mapped pages
                 for i3 in 0..ENTRIES_PER_TABLE {
                     let e3 = unsafe { read_entry(l3, i3) };
                     if is_valid(e3) {
-                        physical::free_frame(PhysAddr::new(desc_addr(e3)));
+                        let frame = PhysAddr::new(desc_addr(e3));
+                        if crate::ipc::shared_memory::is_shm_frame_sorted(&shm_frames, frame) {
+                            continue;
+                        }
+                        if !is_dll || (e3 & PAGE_WRITABLE != 0) {
+                            physical::free_frame(frame);
+                        }
                     }
                 }
                 physical::free_frame(PhysAddr::new(l3));

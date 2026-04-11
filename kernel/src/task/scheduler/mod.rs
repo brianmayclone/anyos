@@ -1050,7 +1050,7 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
     guard.release_no_irq_restore();
     drop(reaped_threads);
 
-    if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, next_tid)) = switch_info {
+    if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, _next_tid)) = switch_info {
         let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
         if fpu_owner != 0 && fpu_owner == outgoing_tid {
             crate::arch::hal::fpu_save(old_fpu);
@@ -1058,12 +1058,6 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
         }
         crate::arch::hal::fpu_set_trap();
         PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
-        let next_pc = unsafe { (*new_ctx).get_pc() };
-        let next_sp = unsafe { (*new_ctx).get_sp() };
-        crate::serial_verbose_println!(
-            "  [SCHED] user-irq switch: T{} -> T{} pc={:#x} sp={:#x}",
-            outgoing_tid, next_tid, next_pc, next_sp,
-        );
         unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }
 
@@ -1720,18 +1714,6 @@ fn schedule_inner(from_timer: bool) {
         // it will never reach the post-switch cleanup code below.
         PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
 
-        #[cfg(target_arch = "aarch64")]
-        {
-            let next_pc = unsafe { (*new_ctx).get_pc() };
-            let next_sp = unsafe { (*new_ctx).get_sp() };
-            let next_lr = unsafe { (*new_ctx).x[30] };
-            let next_ttbr0 = unsafe { (*new_ctx).get_page_table() };
-            let next_save = unsafe { (*new_ctx).save_complete };
-            crate::serial_verbose_println!(
-                "  [SCHED] ctx_switch: from T{} -> T{} pc={:#x} lr={:#x} sp={:#x} ttbr0={:#x} save={}",
-                outgoing_tid, _next_tid, next_pc, next_lr, next_sp, next_ttbr0, next_save,
-            );
-        }
         unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
     }
 

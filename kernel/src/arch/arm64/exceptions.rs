@@ -148,6 +148,9 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
                 0x20 => "alignment fault",
                 _    => "unknown",
             };
+            if ec == EC_DATA_ABORT_LOWER && crate::task::dll::handle_dll_demand_page(far) {
+                return;
+            }
             crate::serial_verbose_println!(
                 "DATA ABORT ({}{}): FAR={:#018x} ELR={:#018x} ESR={:#018x}",
                 if write_fault { "write " } else { "read " },
@@ -166,6 +169,9 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
                 0x10 => "synchronous external abort",
                 _    => "unknown",
             };
+            if ec == EC_INST_ABORT_LOWER && crate::task::dll::handle_dll_demand_page(far) {
+                return;
+            }
             crate::serial_verbose_println!(
                 "INSTRUCTION ABORT ({}): FAR={:#018x} ELR={:#018x} ESR={:#018x}",
                 fault_type, far, elr, esr,
@@ -203,13 +209,18 @@ pub extern "C" fn arm64_sync_handler(esr: u64, far: u64, elr: u64) {
 
 /// Handle a fatal fault — kill the current thread or panic.
 fn handle_fault(ec: u32, far: u64, elr: u64) {
-    // If from EL0 (user mode), kill the thread
-    let is_user = ec == EC_DATA_ABORT_LOWER || ec == EC_INST_ABORT_LOWER;
+    // If the current CPU is running a user thread, never let a synchronous
+    // user exception take the whole kernel down. ARM64 can report some
+    // user-space failures (for example unknown/illegal state) with EC values
+    // outside the simple data/instruction abort cases.
+    let is_user = ec == EC_DATA_ABORT_LOWER
+        || ec == EC_INST_ABORT_LOWER
+        || crate::task::scheduler::is_current_thread_user();
     if is_user {
-        if crate::task::dll::handle_dll_demand_page(far) {
-            return;
-        }
-        crate::serial_verbose_println!("  Killing user thread due to fault");
+        crate::serial_verbose_println!(
+            "  Killing user thread due to fault (EC={:#04x}, FAR={:#018x}, ELR={:#018x})",
+            ec, far, elr,
+        );
         if !crate::task::scheduler::try_exit_current(139) {
             crate::task::scheduler::fault_kill_and_idle(139);
         }
