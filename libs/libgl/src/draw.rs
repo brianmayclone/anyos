@@ -291,6 +291,11 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
 
     // Fallback: if all attribs come from the same VBO with interleaved layout,
     // pass the raw VBO data directly (no per-vertex copy). Much faster.
+    //
+    // Keep this path restricted to vec4-only attributes for now. Virgl has
+    // been reliable with the packed vec4 fallback used by indexed draws, but
+    // has shown rendering corruption with mixed FLOAT3/FLOAT2 vertex element
+    // layouts on glDrawArrays() callers such as the GL demo floor plane.
     let first_loc = if attrib_count > 0 { program.attributes[0].location as usize } else { 0 };
     let vbo_id = if first_loc < ctx.attribs.len() && ctx.attribs[first_loc].enabled {
         ctx.attribs[first_loc].buffer_id
@@ -303,8 +308,12 @@ fn draw_arrays_hw(ctx: &mut GlContext, mode: GLenum, first: GLint, count: GLsize
             loc < ctx.attribs.len() && ctx.attribs[loc].enabled
                 && ctx.attribs[loc].buffer_id == vbo_id
         });
+    let all_vec4_attribs = attrib_count > 0 && program.attributes.iter().all(|a| {
+        let loc = a.location as usize;
+        loc < ctx.attribs.len() && ctx.attribs[loc].size == 4 && ctx.attribs[loc].typ == GL_FLOAT
+    });
 
-    if all_same_vbo {
+    if all_same_vbo && all_vec4_attribs {
         // Fast path: pass raw interleaved VBO data with real offsets
         let buf = ctx.buffers.get(vbo_id);
         if let Some(buf) = buf {

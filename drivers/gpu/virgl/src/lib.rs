@@ -1134,9 +1134,17 @@ pub extern "C" fn drv_upload_texture(
         return 0;
     }
 
-    // Upload texture data via DMA transfer
-    let tex_data = unsafe { slice::from_raw_parts(data, len as usize) };
-    let r = libsyscall::gpu_3d_surface_dma(res, tex_data, width, height);
+    // libgl stores texture uploads as RGBA8. Virgl samples these resources as
+    // BGRA8, so swizzle once on upload to keep shader-visible colors correct.
+    let src = unsafe { slice::from_raw_parts(data, len as usize) };
+    let mut tex_data = Vec::with_capacity(src.len());
+    for px in src.chunks_exact(4) {
+        tex_data.push(px[2]); // B
+        tex_data.push(px[1]); // G
+        tex_data.push(px[0]); // R
+        tex_data.push(px[3]); // A
+    }
+    let r = libsyscall::gpu_3d_surface_dma(res, &tex_data, width, height);
     if r != 0 {
         libsyscall::serial_println!("[virgl] drv_upload_texture: DMA failed: {}", r);
         libsyscall::gpu_3d_resource_destroy(res);
