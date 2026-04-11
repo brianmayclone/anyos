@@ -147,4 +147,12 @@ pub fn poll_rx() {
             ethernet::handle_frame(&packet);
         }
     }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::drivers::network::poll_rx();
+        while let Some(packet) = crate::drivers::network::recv_packet() {
+            ethernet::handle_frame(&packet);
+        }
+    }
 }

@@ -289,10 +289,10 @@ pub fn run() {
         let desktop = unsafe { desktop_ref() };
         desktop.set_menubar_visible(false);
         release_lock();
-        if init_pending {
-            println!("compositor: waiting for init to complete before showing login...");
-        } else if login_pending {
+        if login_pending {
             println!("compositor: login window spawned, waiting for authentication...");
+        } else if init_pending {
+            println!("compositor: waiting for init to complete before showing login...");
         } else {
             println!("compositor: WARNING — neither init nor login could be spawned");
         }

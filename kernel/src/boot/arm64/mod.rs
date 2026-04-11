@@ -63,6 +63,7 @@ fn init_devices() {
 
     for dev in drivers::arm::probe_all() {
         match dev.device_id() {
+            1 => drivers::network::init_mmio(&dev),
             2 => drivers::arm::blk::init(&dev),
             16 => drivers::arm::gpu::init(&dev),
             18 => drivers::arm::input::init(&dev),

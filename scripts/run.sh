@@ -504,6 +504,8 @@ if [ "$ARM64_MODE" = true ]; then
     ARM64_BUILD_DIR="${SCRIPT_DIR}/../build/arm64"
     KERNEL_ELF="${ARM64_BUILD_DIR}/kernel/aarch64-anyos/release/anyos_kernel.elf"
     ARM64_DISK="${ARM64_BUILD_DIR}/anyos-arm64.img"
+    ARM64_NET_ARGS="-netdev user,id=net0 -device virtio-net-device,netdev=net0,mac=52:54:00:12:34:56"
+    ARM64_WIFI_ARGS=""
     if [ ! -f "$KERNEL_ELF" ]; then
         echo "Error: ARM64 kernel not found at $KERNEL_ELF"
         echo "Run: ./scripts/build.sh --arm64"
@@ -518,11 +520,16 @@ if [ "$ARM64_MODE" = true ]; then
         echo "  Warning: No ARM64 disk image found at $ARM64_DISK"
         echo "  Running kernel-only (no filesystem). Build with: ./scripts/build.sh --arm64"
     fi
+    if [ "$WIFI" = true ]; then
+        ARM64_WIFI_ARGS="-netdev user,id=wifi0 -device virtio-net-device,netdev=wifi0,mac=52:54:00:12:34:57"
+    fi
     qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu cortex-a72 \
         -m 512M \
         -smp cpus=4 \
         -kernel "$KERNEL_ELF" \
+        $ARM64_NET_ARGS \
+        $ARM64_WIFI_ARGS \
         -device virtio-gpu-device \
         -device virtio-keyboard-device \
         -device virtio-mouse-device \

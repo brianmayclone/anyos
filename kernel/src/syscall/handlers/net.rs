@@ -93,24 +93,18 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
             // Get NIC driver name. buf_ptr = output buffer (up to 64 bytes).
             // Returns name length, or 0 if no NIC.
             if buf_ptr == 0 { return 0; }
-            #[cfg(target_arch = "x86_64")]
             {
-                if let Some(name) = crate::drivers::network::with_net(|d| {
-                    let n = d.name();
-                    let bytes = n.as_bytes();
+                if let Some(name) = crate::drivers::network::driver_name() {
+                    let bytes = name.as_bytes();
                     let len = bytes.len().min(64);
                     unsafe {
                         core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf_ptr as *mut u8, len);
                     }
                     len as u32
-                }) {
-                    name
                 } else {
                     0
                 }
             }
-            #[cfg(target_arch = "aarch64")]
-            { 0 }
         }
         10 => {
             // Get IPv6 config. buf_ptr = output buffer (80 bytes):
