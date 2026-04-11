@@ -30,6 +30,7 @@ static mut IRQ_HANDLERS: [Option<fn()>; 1024] = [None; 1024];
 
 /// Fault counter for diagnostics.
 static FAULT_COUNT: AtomicU64 = AtomicU64::new(0);
+static ACTIVE_USER_FRAME: [AtomicU64; 16] = [const { AtomicU64::new(0) }; 16];
 
 /// Initialize the exception vector table.
 ///
@@ -84,6 +85,14 @@ pub extern "C" fn arm64_irq_handler() {
         }
     } else if count < 3 {
         crate::serial_verbose_println!("  [IRQ] spurious intid={}", intid);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn arm64_set_active_user_frame(frame: *mut ExceptionFrame) {
+    let cpu = crate::arch::hal::cpu_id();
+    if cpu < ACTIVE_USER_FRAME.len() {
+        ACTIVE_USER_FRAME[cpu].store(frame as u64, Ordering::Relaxed);
     }
 }
 
@@ -219,6 +228,20 @@ fn handle_fault(ec: u32, far: u64, elr: u64) {
         || crate::task::scheduler::is_current_thread_user();
     if is_user {
         let cpu = crate::arch::hal::cpu_id();
+        if ec == 0x00 && cpu < ACTIVE_USER_FRAME.len() {
+            let frame_ptr = ACTIVE_USER_FRAME[cpu].load(Ordering::Relaxed) as *const ExceptionFrame;
+            if !frame_ptr.is_null() {
+                let frame = unsafe { &*frame_ptr };
+                crate::serial_verbose_println!(
+                    "  User frame: x0={:#018x} x1={:#018x} x19={:#018x} x20={:#018x} x21={:#018x} x22={:#018x}",
+                    frame.x[0], frame.x[1], frame.x[19], frame.x[20], frame.x[21], frame.x[22],
+                );
+                crate::serial_verbose_println!(
+                    "              x23={:#018x} x24={:#018x} x25={:#018x} x26={:#018x} sp_el0={:#018x} spsr={:#018x}",
+                    frame.x[23], frame.x[24], frame.x[25], frame.x[26], frame.sp_el0, frame.spsr_el1,
+                );
+            }
+        }
         let tid = crate::task::scheduler::current_tid();
         let name_raw = crate::task::scheduler::current_thread_name();
         let name_len = name_raw.iter().position(|&b| b == 0).unwrap_or(name_raw.len());

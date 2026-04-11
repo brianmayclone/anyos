@@ -573,6 +573,9 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
     let mut flush_x1 = 0u32;
     let mut flush_y1 = 0u32;
     let mut executed = 0u32;
+    let mut update_count = 0u32;
+    let mut sync_count = 0u32;
+    let mut cursor_count = 0u32;
 
     for cmd in cmds {
         match cmd[0] {
@@ -584,14 +587,17 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
                     flush_x1 = flush_x1.max(x + w);
                     flush_y1 = flush_y1.max(y + h);
                 }
+                update_count += 1;
                 executed += 1;
             }
             4 => {
                 crate::drivers::arm::gpu::move_cursor(cmd[1], cmd[2]);
+                cursor_count += 1;
                 executed += 1;
             }
             5 => {
                 crate::drivers::arm::gpu::show_cursor(cmd[1] != 0);
+                cursor_count += 1;
                 executed += 1;
             }
             6 => {
@@ -617,6 +623,7 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
             7 | 8 => {
                 if let Some((_fb_virt, w, h)) = crate::drivers::arm::gpu::framebuffer_info() {
                     crate::drivers::arm::gpu::flush(0, 0, w, h);
+                    sync_count += 1;
                     executed += 1;
                 }
             }
@@ -625,11 +632,26 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
     }
 
     if flush_x0 < flush_x1 && flush_y0 < flush_y1 {
+        crate::serial_println!(
+            "[ARM64][gpu] update batch: count={} bbox=({},{} {}x{}) syncs={} cursor={}",
+            update_count,
+            flush_x0,
+            flush_y0,
+            flush_x1 - flush_x0,
+            flush_y1 - flush_y0,
+            sync_count,
+            cursor_count
+        );
         crate::drivers::arm::gpu::flush(
             flush_x0,
             flush_y0,
             flush_x1 - flush_x0,
             flush_y1 - flush_y0,
+        );
+    } else if sync_count != 0 || cursor_count != 0 {
+        crate::serial_println!(
+            "[ARM64][gpu] non-update batch: syncs={} cursor={} executed={}",
+            sync_count, cursor_count, executed
         );
     }
 

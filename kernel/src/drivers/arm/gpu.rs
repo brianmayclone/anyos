@@ -184,6 +184,39 @@ struct VirtioGpu {
 
 static GPU_DEVICE: Spinlock<Option<VirtioGpu>> = Spinlock::new(None);
 
+#[inline]
+fn dcache_line_size() -> usize {
+    let ctr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr, options(nomem, nostack, preserves_flags));
+    }
+    let log2_words = ((ctr >> 16) & 0xF) as usize;
+    4usize << log2_words
+}
+
+fn clean_dcache_range(virt: usize, len: usize) {
+    if len == 0 {
+        return;
+    }
+    let line = dcache_line_size().max(16);
+    let start = virt & !(line - 1);
+    let end = (virt + len + line - 1) & !(line - 1);
+
+    unsafe {
+        let mut addr = start;
+        while addr < end {
+            core::arch::asm!("dc cvac, {}", in(reg) addr, options(nostack, preserves_flags));
+            addr += line;
+        }
+        core::arch::asm!("dsb ish", options(nostack, preserves_flags));
+    }
+}
+
+#[inline]
+fn fb_offset_bytes(gpu: &VirtioGpu, x: u32, y: u32) -> u64 {
+    ((y as u64 * gpu.width as u64) + x as u64) * 4
+}
+
 /// Convert RAM physical to kernel virtual.
 #[inline]
 fn phys_to_virt(phys: u64) -> usize {
@@ -528,7 +561,7 @@ fn flush_region(gpu: &mut VirtioGpu, dev: &VirtioMmioDevice, x: u32, y: u32, w: 
     let transfer = TransferToHost2d {
         hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
         r_x: x, r_y: y, r_width: w, r_height: h,
-        offset: 0,
+        offset: fb_offset_bytes(gpu, x, y),
         resource_id: rid,
         padding: 0,
     };
@@ -559,13 +592,25 @@ pub fn flush(x: u32, y: u32, w: u32, h: u32) {
         Some(g) => g,
         None => return,
     };
+    if w == 0 || h == 0 {
+        return;
+    }
     let rid = gpu.resource_id;
+
+    let pitch = gpu.width as usize * 4;
+    let x_bytes = x as usize * 4;
+    let rows = h as usize;
+    let row_bytes = w as usize * 4;
+    for row in 0..rows {
+        let row_off = (y as usize + row) * pitch + x_bytes;
+        clean_dcache_range(gpu.fb_virt + row_off, row_bytes);
+    }
 
     // TRANSFER_TO_HOST_2D
     let transfer = TransferToHost2d {
         hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
         r_x: x, r_y: y, r_width: w, r_height: h,
-        offset: 0,
+        offset: fb_offset_bytes(gpu, x, y),
         resource_id: rid,
         padding: 0,
     };

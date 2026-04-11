@@ -1001,6 +1001,12 @@ impl Desktop {
         if had_damage {
             for win in &mut self.windows {
                 if win.needs_frame_ack && win.owner_tid != 0 {
+                    if win.owner_tid == 21 || win.id == 1 {
+                        anyos_std::println!(
+                            "compositor: frame_ack queued tid={} win={}",
+                            win.owner_tid, win.id
+                        );
+                    }
                     if let Some((_, sub_id)) = self.app_subs.iter().find(|(t, _)| *t == win.owner_tid) {
                         self.frame_ack_queue.push((*sub_id, win.id));
                     }

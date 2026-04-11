@@ -601,12 +601,9 @@ impl ExFatFs {
     // =================================================================
 
     fn read_sectors(&self, abs_lba: u32, count: u32, buf: &mut [u8]) -> Result<(), FsError> {
-        crate::debug_println!("  [exFAT] read_sectors: disk={} lba={} count={} buf_len={}", self.device_id, abs_lba, count, buf.len());
         if !disk_read_sectors(self.device_id, abs_lba, count, buf) {
-            crate::debug_println!("  [exFAT] read_sectors: FAILED disk={} lba={} count={}", self.device_id, abs_lba, count);
             Err(FsError::IoError)
         } else {
-            crate::debug_println!("  [exFAT] read_sectors: OK disk={} lba={} count={}", self.device_id, abs_lba, count);
             Ok(())
         }
     }

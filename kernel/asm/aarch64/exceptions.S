@@ -211,6 +211,8 @@ _kernel_irq_handler:
 /* --- User synchronous exception (syscall or fault) --- */
 _user_sync_handler:
     SAVE_REGS
+    mov     x0, sp
+    bl      arm64_set_active_user_frame
     mrs     x0, esr_el1
     /* Check if this is an SVC (syscall) */
     lsr     x1, x0, #26        /* Extract EC (Exception Class) */
@@ -229,6 +231,8 @@ _user_sync_handler:
     bl      arm64_syscall_dispatch
     /* Store return value in saved x0 position */
     str     x0, [sp, #(0 * 8)]
+    mov     x0, xzr
+    bl      arm64_set_active_user_frame
     RESTORE_REGS
     eret
 
@@ -236,6 +240,8 @@ _user_sync_handler:
     mov     x0, sp
     bl      arm64_syscall_fork
     str     x0, [sp, #(0 * 8)]
+    mov     x0, xzr
+    bl      arm64_set_active_user_frame
     RESTORE_REGS
     eret
 
@@ -245,6 +251,8 @@ _user_sync_handler:
     mrs     x1, far_el1
     mrs     x2, elr_el1
     bl      arm64_sync_handler
+    mov     x0, xzr
+    bl      arm64_set_active_user_frame
     RESTORE_REGS
     eret
 

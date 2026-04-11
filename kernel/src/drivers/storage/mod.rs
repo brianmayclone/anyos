@@ -155,7 +155,6 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
 /// by `disk_id` so mounted secondary volumes benefit from the same fast path.
 pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
     if count == 0 { return true; }
-    crate::debug_println!("  [storage] read_sectors: disk={} lba={} count={}", disk_id, lba, count);
     IO_OPS_TOTAL.fetch_add(1, Ordering::Relaxed);
 
     // ── Check if block cache is available ──────────────────────────────
@@ -166,7 +165,6 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         crate::fs::blockcache::cached_read(disk_id, lba, count, buf)
     } else { 0 };
     if cached == count {
-        crate::debug_println!("  [storage] read_sectors: fully cached disk={} lba={} count={}", disk_id, lba, count);
         return true;
     }
 
@@ -232,7 +230,6 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         ok
     };
 
-    crate::debug_println!("  [storage] read_sectors: done result={}", result);
     result
 }
 

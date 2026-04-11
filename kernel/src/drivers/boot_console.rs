@@ -73,6 +73,31 @@ fn put_pixel(x: u32, y: u32, color: u32) {
     unsafe { ptr.write_volatile(color); }
 }
 
+#[inline]
+fn flush_region(x: u32, y: u32, w: u32, h: u32) {
+    #[cfg(target_arch = "aarch64")]
+    {
+        crate::drivers::arm::gpu::flush(x, y, w, h);
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    {
+        crate::drivers::gpu::with_gpu(|gpu| {
+            gpu.transfer_rect(x, y, w, h);
+            gpu.flush_display(x, y, w, h);
+        });
+    }
+}
+
+#[inline]
+fn flush_fullscreen() {
+    let width = FB_WIDTH.load(Ordering::Relaxed);
+    let height = FB_HEIGHT.load(Ordering::Relaxed);
+    if width != 0 && height != 0 {
+        flush_region(0, 0, width, height);
+    }
+}
+
 fn clear_screen(color: u32) {
     let addr = FB_ADDR.load(Ordering::Relaxed);
     let pitch = FB_PITCH.load(Ordering::Relaxed);
@@ -192,6 +217,8 @@ pub fn show_splash() {
     SPINNER_CX.store(fb_w / 2, Ordering::Relaxed);
     SPINNER_CY.store(logo_bottom + SPINNER_Y_BELOW_LOGO, Ordering::Relaxed);
     SPINNER_ACTIVE.store(true, Ordering::Relaxed);
+    SPINNER_LAST_PHASE.store(u32::MAX, Ordering::Relaxed);
+    flush_fullscreen();
 }
 
 // --- Spinning loading indicator (Windows 11 style) ---
@@ -241,6 +268,42 @@ pub fn tick_spinner() {
     if phase == prev { return; }
 
     draw_spinner(phase);
+    let clear_r = (SPINNER_RING_RADIUS + SPINNER_DOT_RADIUS + 2) as u32;
+    let cx = SPINNER_CX.load(Ordering::Relaxed);
+    let cy = SPINNER_CY.load(Ordering::Relaxed);
+    flush_region(
+        cx.saturating_sub(clear_r),
+        cy.saturating_sub(clear_r),
+        clear_r.saturating_mul(2).saturating_add(1),
+        clear_r.saturating_mul(2).saturating_add(1),
+    );
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn tick_spinner() {
+    if !SPINNER_ACTIVE.load(Ordering::Relaxed) { return; }
+    if ERROR_MODE.load(Ordering::Relaxed) {
+        SPINNER_ACTIVE.store(false, Ordering::Relaxed);
+        return;
+    }
+
+    let tick = crate::arch::arm64::generic_timer::get_ticks();
+    let step_ticks = (crate::arch::arm64::generic_timer::TICK_HZ / SPINNER_NUM_DOTS as u32).max(1);
+    let phase = (tick / step_ticks) % SPINNER_NUM_DOTS as u32;
+
+    let prev = SPINNER_LAST_PHASE.swap(phase, Ordering::Relaxed);
+    if phase == prev { return; }
+
+    draw_spinner(phase);
+    let clear_r = (SPINNER_RING_RADIUS + SPINNER_DOT_RADIUS + 2) as u32;
+    let cx = SPINNER_CX.load(Ordering::Relaxed);
+    let cy = SPINNER_CY.load(Ordering::Relaxed);
+    flush_region(
+        cx.saturating_sub(clear_r),
+        cy.saturating_sub(clear_r),
+        clear_r.saturating_mul(2).saturating_add(1),
+        clear_r.saturating_mul(2).saturating_add(1),
+    );
 }
 
 /// Stop the spinner animation (called when compositor takes over).
@@ -255,6 +318,12 @@ pub fn stop_spinner() {
     let fb_h = FB_HEIGHT.load(Ordering::Relaxed);
     let clear_r = SPINNER_RING_RADIUS + SPINNER_DOT_RADIUS + 2;
     clear_rect(cx - clear_r, cy - clear_r, clear_r * 2 + 1, clear_r * 2 + 1, fb_w, fb_h);
+    flush_region(
+        (cx - clear_r).max(0) as u32,
+        (cy - clear_r).max(0) as u32,
+        (clear_r * 2 + 1).max(0) as u32,
+        (clear_r * 2 + 1).max(0) as u32,
+    );
 }
 
 fn draw_spinner(phase: u32) {

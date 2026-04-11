@@ -43,6 +43,8 @@ pub fn irq_handler() {
     // Increment tick counter
     let tick = TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
 
+    crate::drivers::boot_console::tick_spinner();
+
     // Reprogram timer for next tick
     let freq = TIMER_FREQ.load(Ordering::Relaxed) as u64;
     let tval = freq / TICK_HZ as u64;

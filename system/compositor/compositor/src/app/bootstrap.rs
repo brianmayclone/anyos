@@ -235,23 +235,31 @@ pub fn run() {
 
     if !setup_mode {
         // Step 3: Load wallpaper (synchronous — must complete before init)
-        acquire_lock();
-        let desktop = unsafe { desktop_ref() };
-        desktop.load_default_wallpaper_pub();
-        desktop.compositor.damage_all();
-        release_lock();
-        signal_render();
-        println!("compositor: wallpaper loaded");
-
-        // Process deferred wallpaper immediately so it's visible before init
-        acquire_lock();
-        let desktop = unsafe { desktop_ref() };
-        if desktop.wallpaper_pending {
-            desktop.process_deferred_wallpaper();
+        #[cfg(target_arch = "aarch64")]
+        {
+            println!("compositor: ARM64 wallpaper temporarily disabled for color-path diagnosis");
         }
-        desktop.compositor.damage_all();
-        release_lock();
-        signal_render();
+
+        #[cfg(not(target_arch = "aarch64"))]
+        {
+            acquire_lock();
+            let desktop = unsafe { desktop_ref() };
+            desktop.load_default_wallpaper_pub();
+            desktop.compositor.damage_all();
+            release_lock();
+            signal_render();
+            println!("compositor: wallpaper loaded");
+
+            // Process deferred wallpaper immediately so it's visible before init
+            acquire_lock();
+            let desktop = unsafe { desktop_ref() };
+            if desktop.wallpaper_pending {
+                desktop.process_deferred_wallpaper();
+            }
+            desktop.compositor.damage_all();
+            release_lock();
+            signal_render();
+        }
 
         // Step 4: Start init process (login will be deferred until init completes)
         config::launch_login_services();
