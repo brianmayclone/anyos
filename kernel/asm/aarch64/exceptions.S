@@ -147,6 +147,44 @@ arm64_resume_from_exception:
     eret
 .size arm64_resume_from_exception, . - arm64_resume_from_exception
 
+.global arm64_fork_return_to_user
+.type arm64_fork_return_to_user, %function
+arm64_fork_return_to_user:
+    /* x0 = ForkChildRegs* */
+    mov     x13, x0
+
+    /* Restore exception return state first. */
+    ldr     x9,  [x13, #(31 * 8)]     /* sp_el0 */
+    ldr     x10, [x13, #(32 * 8)]     /* elr_el1 */
+    ldr     x11, [x13, #(33 * 8)]     /* spsr_el1 */
+    ldr     x12, [x13, #(34 * 8)]     /* tpidr_el0 */
+    msr     sp_el0, x9
+    msr     elr_el1, x10
+    msr     spsr_el1, x11
+    msr     tpidr_el0, x12
+    isb
+
+    /* Restore X1-X30 from the saved child frame. X0 becomes fork()'s 0 return. */
+    ldp     x1,  x2,  [x13, #(1  * 8)]
+    ldp     x3,  x4,  [x13, #(3  * 8)]
+    ldp     x5,  x6,  [x13, #(5  * 8)]
+    ldp     x7,  x8,  [x13, #(7  * 8)]
+    ldp     x9,  x10, [x13, #(9  * 8)]
+    ldp     x11, x12, [x13, #(11 * 8)]
+    ldp     x14, x15, [x13, #(14 * 8)]
+    ldp     x16, x17, [x13, #(16 * 8)]
+    ldp     x18, x19, [x13, #(18 * 8)]
+    ldp     x20, x21, [x13, #(20 * 8)]
+    ldp     x22, x23, [x13, #(22 * 8)]
+    ldp     x24, x25, [x13, #(24 * 8)]
+    ldp     x26, x27, [x13, #(26 * 8)]
+    ldp     x28, x29, [x13, #(28 * 8)]
+    ldr     x30,      [x13, #(30 * 8)]
+    ldr     x13,      [x13, #(13 * 8)]
+    mov     x0, xzr
+    eret
+.size arm64_fork_return_to_user, . - arm64_fork_return_to_user
+
 
 /* --- Kernel synchronous exception --- */
 _kernel_sync_handler:
@@ -180,9 +218,18 @@ _user_sync_handler:
     ldp     x3, x4, [sp, #(2 * 8)]   /* saved x2, x3 → arg2, arg3 */
     ldp     x5, x6, [sp, #(4 * 8)]   /* saved x4, x5 → arg4, arg5 */
     ldr     x0, [sp, #(8 * 8)]       /* saved x8 → syscall nr */
+    cmp     x0, #10                  /* SYS_FORK */
+    b.eq    .user_sync_fork
     /* x0=nr, x1=arg0, x2=arg1, x3=arg2, x4=arg3, x5=arg4, x6=arg5 */
     bl      arm64_syscall_dispatch
     /* Store return value in saved x0 position */
+    str     x0, [sp, #(0 * 8)]
+    RESTORE_REGS
+    eret
+
+.user_sync_fork:
+    mov     x0, sp
+    bl      arm64_syscall_fork
     str     x0, [sp, #(0 * 8)]
     RESTORE_REGS
     eret

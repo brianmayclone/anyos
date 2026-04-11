@@ -26,10 +26,14 @@ const VIRTIO_GPU_CMD_SET_SCANOUT: u32          = 0x0103;
 const VIRTIO_GPU_CMD_RESOURCE_FLUSH: u32       = 0x0104;
 const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D: u32  = 0x0105;
 const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING: u32 = 0x0106;
+const VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING: u32 = 0x0107;
+const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32        = 0x0300;
+const VIRTIO_GPU_CMD_MOVE_CURSOR: u32          = 0x0301;
 
 const VIRTIO_GPU_RESP_OK_NODATA: u32           = 0x1100;
 const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32     = 0x1101;
 
+const VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM: u32    = 1;
 const VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM: u32    = 2;
 
 // ---------------------------------------------------------------------------
@@ -101,6 +105,14 @@ struct ResourceAttachBacking {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct ResourceDetachBacking {
+    hdr: GpuCtrlHdr,
+    resource_id: u32,
+    padding: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct MemEntry {
     addr: u64,
     length: u32,
@@ -122,6 +134,26 @@ struct RespDisplayInfo {
     pmodes: [DisplayOne; 16],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CursorPos {
+    scanout_id: u32,
+    x: u32,
+    y: u32,
+    padding: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UpdateCursor {
+    hdr: GpuCtrlHdr,
+    pos: CursorPos,
+    resource_id: u32,
+    hot_x: u32,
+    hot_y: u32,
+    padding: u32,
+}
+
 // ---------------------------------------------------------------------------
 // GPU State
 // ---------------------------------------------------------------------------
@@ -129,6 +161,7 @@ struct RespDisplayInfo {
 struct VirtioGpu {
     base: usize,
     controlq: VirtQueue,
+    cursorq: VirtQueue,
     /// Physical address of the command/response buffer (one page).
     cmd_phys: u64,
     cmd_virt: usize,
@@ -140,6 +173,13 @@ struct VirtioGpu {
     width: u32,
     height: u32,
     resource_id: u32,
+    cursor_resource_id: u32,
+    next_resource_id: u32,
+    cursor_buf_phys: u64,
+    cursor_hot_x: u32,
+    cursor_hot_y: u32,
+    cursor_x: u32,
+    cursor_y: u32,
 }
 
 static GPU_DEVICE: Spinlock<Option<VirtioGpu>> = Spinlock::new(None);
@@ -182,6 +222,20 @@ pub fn init(dev: &VirtioMmioDevice) {
         return;
     }
 
+    let cursorq = match VirtQueue::new(1, DEFAULT_QUEUE_SIZE) {
+        Some(q) => q,
+        None => {
+            crate::serial_verbose_println!("  virtio-gpu: failed to allocate cursorq");
+            return;
+        }
+    };
+
+    let (desc_phys, avail_phys, used_phys) = cursorq.phys_addrs();
+    if !dev.setup_queue_raw(1, DEFAULT_QUEUE_SIZE, desc_phys, avail_phys, used_phys) {
+        crate::serial_verbose_println!("  virtio-gpu: failed to setup cursorq");
+        return;
+    }
+
     // Allocate command buffer (one 4K page for commands + responses)
     let cmd_frame = match physical::alloc_frame() {
         Some(f) => f,
@@ -194,11 +248,22 @@ pub fn init(dev: &VirtioMmioDevice) {
     let cmd_virt = phys_to_virt(cmd_phys);
     unsafe { ptr::write_bytes(cmd_virt as *mut u8, 0, FRAME_SIZE); }
 
+    let cursor_frame = match physical::alloc_contiguous(4) {
+        Some(f) => f,
+        None => {
+            crate::serial_verbose_println!("  virtio-gpu: failed to allocate cursor buffer");
+            return;
+        }
+    };
+    let cursor_buf_phys = cursor_frame.0;
+    unsafe { ptr::write_bytes(phys_to_virt(cursor_buf_phys) as *mut u8, 0, 4 * FRAME_SIZE); }
+
     dev.driver_ok();
 
     let mut gpu = VirtioGpu {
         base: dev.base(),
         controlq,
+        cursorq,
         cmd_phys,
         cmd_virt,
         fb_virt: 0,
@@ -206,6 +271,13 @@ pub fn init(dev: &VirtioMmioDevice) {
         width: 0,
         height: 0,
         resource_id: 1,
+        cursor_resource_id: 0,
+        next_resource_id: 2,
+        cursor_buf_phys,
+        cursor_hot_x: 0,
+        cursor_hot_y: 0,
+        cursor_x: 0,
+        cursor_y: 0,
     };
 
     // Get display info
@@ -273,6 +345,41 @@ fn send_cmd_raw(gpu: &mut VirtioGpu, cmd_size: usize, resp_size: usize) -> bool 
     }
 
     gpu.controlq.pop_used();
+    true
+}
+
+fn send_cursor_cmd_raw(gpu: &mut VirtioGpu, cmd_size: usize, resp_size: usize) -> bool {
+    let cmd_phys = gpu.cmd_phys + 1024;
+    let cmd_virt = gpu.cmd_virt + 1024;
+    let resp_phys = gpu.cmd_phys + 3072;
+    let resp_virt = gpu.cmd_virt + 3072;
+
+    unsafe { ptr::write_bytes(resp_virt as *mut u8, 0, resp_size.max(64)); }
+
+    let chain = [
+        (cmd_phys, cmd_size as u32, 0u16),
+        (resp_phys, resp_size as u32, VRING_DESC_F_WRITE),
+    ];
+
+    if gpu.cursorq.push_chain(&chain).is_none() {
+        return false;
+    }
+
+    unsafe {
+        core::arch::asm!("dsb sy", options(nostack, preserves_flags));
+        ptr::write_volatile((gpu.base + 0x050) as *mut u32, 1);
+    }
+
+    let mut timeout = 5_000_000u32;
+    while !gpu.cursorq.has_used() {
+        core::hint::spin_loop();
+        timeout -= 1;
+        if timeout == 0 {
+            return false;
+        }
+    }
+
+    gpu.cursorq.pop_used();
     true
 }
 
@@ -493,4 +600,170 @@ pub fn framebuffer_mapping_info() -> Option<(u64, usize, u32, u32, u32)> {
 /// Check if VirtIO GPU is available.
 pub fn is_available() -> bool {
     GPU_DEVICE.lock().is_some()
+}
+
+pub fn has_hw_cursor() -> bool {
+    GPU_DEVICE.lock().is_some()
+}
+
+pub fn move_cursor(x: u32, y: u32) {
+    let mut guard = GPU_DEVICE.lock();
+    let gpu = match guard.as_mut() {
+        Some(g) => g,
+        None => return,
+    };
+
+    gpu.cursor_x = x;
+    gpu.cursor_y = y;
+    let cmd = UpdateCursor {
+        hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_MOVE_CURSOR),
+        pos: CursorPos { scanout_id: 0, x, y, padding: 0 },
+        resource_id: gpu.cursor_resource_id,
+        hot_x: gpu.cursor_hot_x,
+        hot_y: gpu.cursor_hot_y,
+        padding: 0,
+    };
+    unsafe {
+        ptr::write((gpu.cmd_virt + 1024) as *mut UpdateCursor, cmd);
+    }
+    let _ = send_cursor_cmd_raw(gpu, core::mem::size_of::<UpdateCursor>(), core::mem::size_of::<GpuCtrlHdr>());
+}
+
+pub fn show_cursor(visible: bool) {
+    let mut guard = GPU_DEVICE.lock();
+    let gpu = match guard.as_mut() {
+        Some(g) => g,
+        None => return,
+    };
+
+    let cmd = UpdateCursor {
+        hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_UPDATE_CURSOR),
+        pos: CursorPos { scanout_id: 0, x: gpu.cursor_x, y: gpu.cursor_y, padding: 0 },
+        resource_id: if visible { gpu.cursor_resource_id } else { 0 },
+        hot_x: gpu.cursor_hot_x,
+        hot_y: gpu.cursor_hot_y,
+        padding: 0,
+    };
+    unsafe {
+        ptr::write((gpu.cmd_virt + 1024) as *mut UpdateCursor, cmd);
+    }
+    let _ = send_cursor_cmd_raw(gpu, core::mem::size_of::<UpdateCursor>(), core::mem::size_of::<GpuCtrlHdr>());
+}
+
+pub fn define_cursor(w: u32, h: u32, hotx: u32, hoty: u32, pixels: &[u32]) {
+    let mut guard = GPU_DEVICE.lock();
+    let gpu = match guard.as_mut() {
+        Some(g) => g,
+        None => return,
+    };
+
+    const CURSOR_W: u32 = 64;
+    const CURSOR_H: u32 = 64;
+    const CURSOR_PAGES: usize = 4;
+
+    if gpu.cursor_resource_id != 0 {
+        let detach = ResourceDetachBacking {
+            hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING),
+            resource_id: gpu.cursor_resource_id,
+            padding: 0,
+        };
+        unsafe {
+            ptr::write(gpu.cmd_virt as *mut ResourceDetachBacking, detach);
+        }
+        let _ = send_cmd_raw(gpu, core::mem::size_of::<ResourceDetachBacking>(), core::mem::size_of::<GpuCtrlHdr>());
+
+        let unref = GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_UNREF);
+        unsafe {
+            ptr::write(gpu.cmd_virt as *mut GpuCtrlHdr, unref);
+            ptr::write((gpu.cmd_virt + core::mem::size_of::<GpuCtrlHdr>()) as *mut u32, gpu.cursor_resource_id);
+            ptr::write((gpu.cmd_virt + core::mem::size_of::<GpuCtrlHdr>() + 4) as *mut u32, 0u32);
+        }
+        let _ = send_cmd_raw(gpu, core::mem::size_of::<GpuCtrlHdr>() + 8, core::mem::size_of::<GpuCtrlHdr>());
+        gpu.cursor_resource_id = 0;
+    }
+
+    let cursor_res = gpu.next_resource_id;
+    gpu.next_resource_id += 1;
+
+    let create = ResourceCreate2d {
+        hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
+        resource_id: cursor_res,
+        format: VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM,
+        width: CURSOR_W,
+        height: CURSOR_H,
+    };
+    unsafe {
+        ptr::write(gpu.cmd_virt as *mut ResourceCreate2d, create);
+    }
+    if !send_cmd_raw(gpu, core::mem::size_of::<ResourceCreate2d>(), core::mem::size_of::<GpuCtrlHdr>()) {
+        return;
+    }
+
+    let cursor_virt = phys_to_virt(gpu.cursor_buf_phys);
+    unsafe { ptr::write_bytes(cursor_virt as *mut u8, 0, CURSOR_PAGES * FRAME_SIZE); }
+    unsafe {
+        let dst = cursor_virt as *mut u32;
+        for row in 0..(h.min(CURSOR_H) as usize) {
+            for col in 0..(w.min(CURSOR_W) as usize) {
+                let src_idx = row * w as usize + col;
+                let dst_idx = row * CURSOR_W as usize + col;
+                let pixel = pixels.get(src_idx).copied().unwrap_or(0);
+                ptr::write(dst.add(dst_idx), pixel);
+            }
+        }
+    }
+
+    let attach = ResourceAttachBacking {
+        hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING),
+        resource_id: cursor_res,
+        nr_entries: 1,
+    };
+    let entry = MemEntry {
+        addr: gpu.cursor_buf_phys,
+        length: (CURSOR_PAGES * FRAME_SIZE) as u32,
+        padding: 0,
+    };
+    unsafe {
+        ptr::write(gpu.cmd_virt as *mut ResourceAttachBacking, attach);
+        ptr::write((gpu.cmd_virt + core::mem::size_of::<ResourceAttachBacking>()) as *mut MemEntry, entry);
+    }
+    if !send_cmd_raw(
+        gpu,
+        core::mem::size_of::<ResourceAttachBacking>() + core::mem::size_of::<MemEntry>(),
+        core::mem::size_of::<GpuCtrlHdr>(),
+    ) {
+        return;
+    }
+
+    let transfer = TransferToHost2d {
+        hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
+        r_x: 0,
+        r_y: 0,
+        r_width: CURSOR_W,
+        r_height: CURSOR_H,
+        offset: 0,
+        resource_id: cursor_res,
+        padding: 0,
+    };
+    unsafe {
+        ptr::write(gpu.cmd_virt as *mut TransferToHost2d, transfer);
+    }
+    let _ = send_cmd_raw(gpu, core::mem::size_of::<TransferToHost2d>(), core::mem::size_of::<GpuCtrlHdr>());
+
+    gpu.cursor_resource_id = cursor_res;
+    gpu.cursor_hot_x = hotx;
+    gpu.cursor_hot_y = hoty;
+
+    let update = UpdateCursor {
+        hdr: GpuCtrlHdr::new(VIRTIO_GPU_CMD_UPDATE_CURSOR),
+        pos: CursorPos { scanout_id: 0, x: gpu.cursor_x, y: gpu.cursor_y, padding: 0 },
+        resource_id: cursor_res,
+        hot_x: hotx,
+        hot_y: hoty,
+        padding: 0,
+    };
+    unsafe {
+        ptr::write((gpu.cmd_virt + 1024) as *mut UpdateCursor, update);
+    }
+    let _ = send_cursor_cmd_raw(gpu, core::mem::size_of::<UpdateCursor>(), core::mem::size_of::<GpuCtrlHdr>());
 }

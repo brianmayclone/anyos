@@ -3,6 +3,7 @@
 use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
+use anyos_std::println;
 
 use crate::compositor::Rect;
 
@@ -1565,6 +1566,10 @@ impl Desktop {
         self.windows.push(win);
         self.assign_fkey_slot(id);
         self.focus_window_no_render(id);
+        println!(
+            "compositor: create_window tid={} win={} size={}x{} flags={:#x} shm={}",
+            app_tid, id, content_w, content_h, flags, shm_id
+        );
 
         id
     }
@@ -1652,6 +1657,16 @@ impl Desktop {
         // before the app has rendered its first frame.
         if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
             layer.visible = true;
+        }
+
+        if was_hidden {
+            println!(
+                "compositor: first_present tid={} win={} size={}x{}",
+                self.windows[win_idx].owner_tid,
+                window_id,
+                self.windows[win_idx].content_width,
+                self.windows[win_idx].content_height
+            );
         }
 
         if let Some(pixels) = self.compositor.layer_pixels(layer_id) {

@@ -770,6 +770,126 @@ pub fn sys_fork(regs: &super::super::SyscallRegs) -> u32 {
     child_tid
 }
 
+/// sys_fork - Create a child process that is a copy of the parent on AArch64.
+///
+/// The child returns via `eret` using the saved EL0 exception frame, with X0=0.
+#[cfg(target_arch = "aarch64")]
+pub fn sys_fork(frame: &crate::arch::arm64::exceptions::ExceptionFrame) -> u32 {
+    use crate::memory::virtual_mem;
+    use crate::task::dll;
+    use crate::task::env;
+    use crate::task::loader::{fork_child_trampoline, store_pending_fork, ForkChildRegs};
+    use crate::task::scheduler;
+
+    let snap = match scheduler::current_thread_fork_snapshot() {
+        Some(s) => s,
+        None => {
+            crate::serial_verbose_println!("sys_fork: failed to snapshot current thread");
+            return u32::MAX;
+        }
+    };
+
+    let t_fork0 = crate::arch::hal::timer_current_ticks();
+    let parent_tid = scheduler::current_tid();
+
+    let child_pd = match virtual_mem::clone_user_page_directory(snap.pd) {
+        Some(pd) => pd,
+        None => {
+            crate::serial_verbose_println!("sys_fork: clone_user_page_directory failed (OOM)");
+            return u32::MAX;
+        }
+    };
+    let t_fork_cloned = crate::arch::hal::timer_current_ticks();
+
+    crate::memory::vma::clone_for_fork(snap.pd, child_pd);
+
+    let name_len = snap.name.iter().position(|&b| b == 0).unwrap_or(snap.name.len());
+    let parent_name = core::str::from_utf8(&snap.name[..name_len]).unwrap_or("?");
+
+    let child_tid = scheduler::spawn_blocked(fork_child_trampoline, snap.priority, parent_name);
+
+    scheduler::set_thread_user_info(child_tid, child_pd, snap.brk);
+
+    let cwd_len = snap.cwd.iter().position(|&b| b == 0).unwrap_or(0);
+    if cwd_len > 0 {
+        if let Ok(cwd) = core::str::from_utf8(&snap.cwd[..cwd_len]) {
+            scheduler::set_thread_cwd(child_tid, cwd);
+        }
+    }
+
+    let args_len = snap.args.iter().position(|&b| b == 0).unwrap_or(0);
+    if args_len > 0 {
+        if let Ok(args) = core::str::from_utf8(&snap.args[..args_len]) {
+            scheduler::set_thread_args(child_tid, args);
+        }
+    }
+
+    scheduler::set_thread_capabilities(child_tid, snap.capabilities);
+    scheduler::set_thread_identity(child_tid, snap.uid, snap.gid);
+
+    if snap.stdout_pipe != 0 {
+        scheduler::set_thread_stdout_pipe(child_tid, snap.stdout_pipe);
+    }
+    if snap.stdin_pipe != 0 {
+        scheduler::set_thread_stdin_pipe(child_tid, snap.stdin_pipe);
+    }
+
+    scheduler::set_thread_fpu_state(child_tid, &snap.fpu_data);
+    scheduler::set_thread_mmap_next(child_tid, snap.mmap_next);
+    scheduler::set_thread_user_pages(child_tid, snap.user_pages);
+    scheduler::set_thread_arch_mode(child_tid, snap.arch_mode);
+
+    {
+        use crate::fs::fd_table::FdKind;
+        let fd_table = snap.fd_table.clone();
+        for entry in fd_table.iter_open() {
+            match entry.kind {
+                FdKind::File { global_id } => crate::fs::vfs::incref(global_id),
+                FdKind::PipeRead { pipe_id } => crate::ipc::anon_pipe::incref_read(pipe_id),
+                FdKind::PipeWrite { pipe_id } => crate::ipc::anon_pipe::incref_write(pipe_id),
+                FdKind::Tty | FdKind::None => {}
+            }
+        }
+        scheduler::set_thread_fd_table(child_tid, fd_table);
+    }
+
+    scheduler::set_thread_parent_tid(child_tid, scheduler::current_tid());
+    scheduler::set_thread_signals(child_tid, snap.signals.clone());
+
+    env::clone_env(snap.pd.0, child_pd.0);
+    dll::map_all_dlls_into(child_pd);
+
+    let tpidr_el0: u64;
+    unsafe {
+        core::arch::asm!(
+            "mrs {}, tpidr_el0",
+            out(reg) tpidr_el0,
+            options(nomem, nostack),
+        );
+    }
+
+    let child_regs = ForkChildRegs {
+        x: frame.x,
+        sp_el0: frame.sp_el0,
+        elr_el1: frame.elr_el1,
+        spsr_el1: frame.spsr_el1,
+        tpidr_el0,
+    };
+    store_pending_fork(child_tid, child_regs);
+
+    scheduler::wake_thread(child_tid);
+    let t_fork_total = crate::arch::hal::timer_current_ticks();
+    crate::serial_verbose_println!(
+        "sys_fork: T{} -> T{} clone={}ms total={}ms",
+        parent_tid,
+        child_tid,
+        t_fork_cloned.wrapping_sub(t_fork0),
+        t_fork_total.wrapping_sub(t_fork0),
+    );
+
+    child_tid
+}
+
 /// sys_exec - Replace the current process with a new program.
 /// arg1 = path_ptr (null-terminated), arg2 = args_ptr (null-terminated, 0=none).
 /// On success, never returns (process is replaced).

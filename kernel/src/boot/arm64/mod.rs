@@ -159,7 +159,7 @@ fn init_userspace() -> ! {
 
     if drivers::framebuffer::is_available() && !NOGUI.load(Ordering::Relaxed) {
         GPU_ACCEL.store(false, Ordering::Relaxed);
-        GPU_HW_CURSOR.store(false, Ordering::Relaxed);
+        GPU_HW_CURSOR.store(drivers::arm::gpu::has_hw_cursor(), Ordering::Relaxed);
         spawn_compositor(SETUP_MODE.load(Ordering::Relaxed));
     } else {
         spawn_init();

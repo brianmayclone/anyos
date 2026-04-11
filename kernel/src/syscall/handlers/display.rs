@@ -323,6 +323,14 @@ pub fn sys_cursor_takeover() -> u32 {
 
 #[cfg(target_arch = "aarch64")]
 pub fn sys_cursor_takeover() -> u32 {
+    if !is_compositor() {
+        return 0;
+    }
+    if let Some((_fb_virt, w, h)) = crate::drivers::arm::gpu::framebuffer_info() {
+        let x = (w / 2) as u16 as u32;
+        let y = (h / 2) as u16 as u32;
+        return (x << 16) | y;
+    }
     0
 }
 
@@ -577,6 +585,34 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
                     flush_y1 = flush_y1.max(y + h);
                 }
                 executed += 1;
+            }
+            4 => {
+                crate::drivers::arm::gpu::move_cursor(cmd[1], cmd[2]);
+                executed += 1;
+            }
+            5 => {
+                crate::drivers::arm::gpu::show_cursor(cmd[1] != 0);
+                executed += 1;
+            }
+            6 => {
+                let w = cmd[1];
+                let h = cmd[2];
+                let hotx = cmd[3];
+                let hoty = cmd[4];
+                let ptr = (cmd[5] as u64) | ((cmd[6] as u64) << 32);
+                let count = cmd[7] as usize;
+                if w > 0
+                    && h > 0
+                    && ptr != 0
+                    && count == (w * h) as usize
+                    && is_valid_user_ptr(ptr, (count * 4) as u64)
+                {
+                    let pixels = unsafe {
+                        core::slice::from_raw_parts(ptr as *const u32, count)
+                    };
+                    crate::drivers::arm::gpu::define_cursor(w, h, hotx, hoty, pixels);
+                    executed += 1;
+                }
             }
             7 | 8 => {
                 if let Some((_fb_virt, w, h)) = crate::drivers::arm::gpu::framebuffer_info() {

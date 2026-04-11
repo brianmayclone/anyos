@@ -8,6 +8,9 @@
 //! The SVC exception handler in exceptions.S saves the user context,
 //! extracts the syscall number from X8, and calls `arm64_syscall_dispatch`.
 
+use crate::arch::arm64::exceptions::ExceptionFrame;
+use crate::syscall::SYS_FORK;
+
 /// Dispatch a syscall from user space.
 ///
 /// Called from exceptions.S after saving the user context.
@@ -25,6 +28,20 @@ pub extern "C" fn arm64_syscall_dispatch(
         arg0 as u32, arg1 as u32, arg2 as u32,
         arg3 as u32, arg4 as u32,
     ) as u64
+}
+
+/// Dispatch `fork()` from the ARM64 SVC path.
+///
+/// `fork()` needs the full saved EL0 register frame so the child can resume
+/// with an `eret`-based return path and X0=0.
+#[no_mangle]
+pub extern "C" fn arm64_syscall_fork(frame: *const ExceptionFrame) -> u64 {
+    let cpu_id = crate::arch::hal::cpu_id();
+    crate::task::scheduler::set_last_syscall(cpu_id, SYS_FORK);
+    let frame = unsafe { &*frame };
+    let result = crate::syscall::handlers::sys_fork(frame);
+    crate::task::scheduler::check_current_stack_canary(SYS_FORK);
+    result as u64
 }
 
 /// Initialize syscall handling for the BSP.

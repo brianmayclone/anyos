@@ -177,7 +177,25 @@ pub struct ForkChildRegs {
     pub ss: u64,
 }
 
+/// User-mode register state saved by fork() for the child process on AArch64.
+#[cfg(target_arch = "aarch64")]
+#[repr(C)]
+pub struct ForkChildRegs {
+    pub x: [u64; 31],
+    pub sp_el0: u64,
+    pub elr_el1: u64,
+    pub spsr_el1: u64,
+    pub tpidr_el0: u64,
+}
+
 #[cfg(target_arch = "x86_64")]
+struct ForkPendingSlot {
+    tid: u32,
+    used: bool,
+    regs: ForkChildRegs,
+}
+
+#[cfg(target_arch = "aarch64")]
 struct ForkPendingSlot {
     tid: u32,
     used: bool,
@@ -199,7 +217,37 @@ impl ForkPendingSlot {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+impl ForkPendingSlot {
+    const fn empty() -> Self {
+        ForkPendingSlot {
+            tid: 0,
+            used: false,
+            regs: ForkChildRegs {
+                x: [0; 31],
+                sp_el0: 0,
+                elr_el1: 0,
+                spsr_el1: 0,
+                tpidr_el0: 0,
+            },
+        }
+    }
+}
+
 #[cfg(target_arch = "x86_64")]
+static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
+    Spinlock::new([
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+    ]);
+
+#[cfg(target_arch = "aarch64")]
 static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
     Spinlock::new([
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
@@ -214,6 +262,17 @@ static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
 
 /// Store the parent's register state for a fork() child to pick up.
 #[cfg(target_arch = "x86_64")]
+pub fn store_pending_fork(tid: u32, regs: ForkChildRegs) {
+    let mut slots = PENDING_FORKS.lock();
+    let slot = slots.iter_mut().find(|s| !s.used)
+        .expect("Too many pending forks");
+    slot.tid = tid;
+    slot.regs = regs;
+    slot.used = true;
+}
+
+/// Store the parent's register state for a fork() child to pick up.
+#[cfg(target_arch = "aarch64")]
 pub fn store_pending_fork(tid: u32, regs: ForkChildRegs) {
     let mut slots = PENDING_FORKS.lock();
     let slot = slots.iter_mut().find(|s| !s.used)
@@ -250,6 +309,29 @@ pub extern "C" fn fork_child_trampoline() {
     };
 
     unsafe { fork_return_to_user(&regs); }
+}
+
+/// Trampoline for fork() child threads on AArch64.
+#[cfg(target_arch = "aarch64")]
+pub extern "C" fn fork_child_trampoline() {
+    let tid = crate::task::scheduler::current_tid();
+
+    let regs = {
+        let mut slots = PENDING_FORKS.lock();
+        let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
+            .expect("No pending fork state for child trampoline");
+        let r = ForkChildRegs {
+            x: slot.regs.x,
+            sp_el0: slot.regs.sp_el0,
+            elr_el1: slot.regs.elr_el1,
+            spsr_el1: slot.regs.spsr_el1,
+            tpidr_el0: slot.regs.tpidr_el0,
+        };
+        slot.used = false;
+        r
+    };
+
+    unsafe { arm64_fork_return_to_user(&regs); }
 }
 
 /// Restore all user-mode registers from a ForkChildRegs struct and IRETQ.
@@ -299,6 +381,11 @@ unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
         seg = in(reg) 0x23u64,
         options(noreturn)
     );
+}
+
+#[cfg(target_arch = "aarch64")]
+extern "C" {
+    fn arm64_fork_return_to_user(regs: *const ForkChildRegs) -> !;
 }
 
 // =========================================================================
