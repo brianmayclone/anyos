@@ -362,9 +362,13 @@ impl Desktop {
 
     /// Init without loading any wallpaper (for setup mode — wallpaper set later).
     pub fn init_no_wallpaper(&mut self) {
+        anyos_std::println!("compositor: init_no_wallpaper -> load_menu_logos");
         self.load_menu_logos();
+        anyos_std::println!("compositor: init_no_wallpaper -> draw_gradient_background");
         self.draw_gradient_background();
+        anyos_std::println!("compositor: init_no_wallpaper -> draw_menubar");
         self.draw_menubar();
+        anyos_std::println!("compositor: init_no_wallpaper -> damage_all");
         self.compositor.damage_all();
     }
 
@@ -393,13 +397,16 @@ impl Desktop {
 
     /// Load menu logo PNGs from /System/media/ and scale to fit the menubar.
     fn load_menu_logos(&mut self) {
+        anyos_std::println!("compositor: load_menu_logos begin");
         self.load_one_logo("/System/media/menulogo_white.png", true);
         self.load_one_logo("/System/media/menulogo_black.png", false);
+        anyos_std::println!("compositor: load_menu_logos done");
     }
 
     fn load_one_logo(&mut self, path: &str, is_white: bool) {
         use anyos_std::fs;
 
+        anyos_std::println!("compositor: load_logo open '{}'", path);
         let fd = fs::open(path, 0);
         if fd == u32::MAX { return; }
         let mut stat_buf = [0u32; 4];
@@ -418,6 +425,17 @@ impl Desktop {
         fs::close(fd);
         if n == 0 { return; }
 
+        let exports = libimage_client::raw::exports();
+        anyos_std::println!(
+            "compositor: libimage exports magic={:02x}{:02x}{:02x}{:02x} ver={} num={} probe={:#x} decode={:#x} scale={:#x}",
+            exports.magic[0], exports.magic[1], exports.magic[2], exports.magic[3],
+            exports.version,
+            exports.num_exports,
+            exports.image_probe as usize,
+            exports.image_decode as usize,
+            exports.scale_image as usize,
+        );
+        anyos_std::println!("compositor: load_logo probe '{}' ({} bytes)", path, n);
         let info = match libimage_client::probe(&data[..n]) {
             Some(i) => i,
             None => return,
@@ -429,6 +447,10 @@ impl Desktop {
 
         let mut pixels = vec![0u32; pixel_count];
         let mut scratch = vec![0u8; info.scratch_needed as usize];
+        anyos_std::println!(
+            "compositor: load_logo decode '{}' ({}x{}, scratch={})",
+            path, src_w, src_h, info.scratch_needed
+        );
         if libimage_client::decode(&data[..n], &mut pixels, &mut scratch).is_err() {
             return;
         }
@@ -440,6 +462,10 @@ impl Desktop {
 
         let mut scaled = vec![0u32; (target_w * target_h) as usize];
         // Use libimage's area-averaging scaler for proper antialiasing
+        anyos_std::println!(
+            "compositor: load_logo scale '{}' -> {}x{}",
+            path, target_w, target_h
+        );
         if !libimage_client::scale_image(
             &pixels, src_w, src_h,
             &mut scaled, target_w, target_h,
