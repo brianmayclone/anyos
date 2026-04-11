@@ -478,6 +478,20 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         if frame.err_code != 0 && frame.int_no != 14 {
             crate::serial_println!("  Error:  {:#x}", frame.err_code);
         }
+        if frame.cs == 0x08 {
+            let cpu = crate::arch::x86::smp::current_cpu_id() as usize;
+            let (stack_bottom, stack_top) = crate::task::scheduler::get_stack_bounds(cpu);
+            let in_bounds = stack_bottom != 0 && frame.rsp >= stack_bottom && frame.rsp <= stack_top;
+            crate::serial_println!(
+                "  KStack: [{:#018x}..{:#018x}] rsp_in_bounds={}",
+                stack_bottom, stack_top, in_bounds as u8
+            );
+            if stack_bottom != 0 {
+                let used = stack_top.saturating_sub(frame.rsp);
+                let total = stack_top.saturating_sub(stack_bottom);
+                crate::serial_println!("  KStack used: {} / {}", used, total);
+            }
+        }
         // User-space stack trace (walk RBP chain)
         crate::serial_println!("  Stack trace:");
         let mut bp = frame.rbp;

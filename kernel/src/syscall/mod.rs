@@ -17,6 +17,93 @@ pub mod handlers;
 pub mod table;
 pub use defs::*;
 
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn syscall_diag_putc(b: u8) {
+    unsafe {
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") 0x3F8u16,
+            in("al") b,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn syscall_diag_puts(s: &str) {
+    for &b in s.as_bytes() {
+        syscall_diag_putc(b);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn syscall_diag_hex(mut n: u64) {
+    let mut buf = [0u8; 16];
+    let mut i = 0usize;
+    if n == 0 {
+        syscall_diag_putc(b'0');
+        return;
+    }
+    while n > 0 && i < buf.len() {
+        let d = (n & 0xF) as u8;
+        buf[i] = if d < 10 { b'0' + d } else { b'a' + (d - 10) };
+        n >>= 4;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        syscall_diag_putc(buf[i]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn syscall_diag_dec(mut n: u64) {
+    let mut buf = [0u8; 20];
+    let mut i = 0usize;
+    if n == 0 {
+        syscall_diag_putc(b'0');
+        return;
+    }
+    while n > 0 && i < buf.len() {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        syscall_diag_putc(buf[i]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn syscall_diag_dump_return_frame(tag: &str, regs: &SyscallRegs, result: u64) {
+    let cpu = crate::arch::hal::cpu_id() as u64;
+    let tid = crate::task::scheduler::current_tid() as u64;
+    syscall_diag_puts(tag);
+    syscall_diag_puts(" cpu=");
+    syscall_diag_dec(cpu);
+    syscall_diag_puts(" tid=");
+    syscall_diag_dec(tid);
+    syscall_diag_puts(" ret=0x");
+    syscall_diag_hex(result);
+    syscall_diag_puts(" rip=0x");
+    syscall_diag_hex(regs.rip);
+    syscall_diag_puts(" cs=0x");
+    syscall_diag_hex(regs.cs);
+    syscall_diag_puts(" rflags=0x");
+    syscall_diag_hex(regs.rflags);
+    syscall_diag_puts(" rsp=0x");
+    syscall_diag_hex(regs.rsp);
+    syscall_diag_puts(" ss=0x");
+    syscall_diag_hex(regs.ss);
+    syscall_diag_putc(b'\n');
+}
+
 /// Register the `int 0x80` syscall trap gate and log readiness.
 pub fn init() {
     crate::serial_println!("[OK] Syscall interface initialized (int 0x80 + SYSCALL)");
@@ -601,5 +688,9 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
 
     let result = dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5);
     handlers::deliver_pending_signal_default();
+    #[cfg(target_arch = "x86_64")]
+    if syscall_num == SYS_MMAP {
+        syscall_diag_dump_return_frame("+sc-ret", regs, result as u64);
+    }
     result as u64
 }

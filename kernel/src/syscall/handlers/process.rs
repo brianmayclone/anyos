@@ -9,6 +9,102 @@ use alloc::string::String;
 #[allow(unused_imports)]
 use super::helpers::{is_valid_user_ptr, read_user_str, read_user_str_safe, resolve_path};
 
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn mmap_diag_putc(c: u8) {
+    unsafe {
+        while crate::arch::x86::port::inb(0x3FD) & 0x20 == 0 {
+            core::hint::spin_loop();
+        }
+        crate::arch::x86::port::outb(0x3F8, c);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn mmap_diag_puts(s: &[u8]) {
+    for &c in s {
+        if c == b'\n' {
+            mmap_diag_putc(b'\r');
+        }
+        mmap_diag_putc(c);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn mmap_diag_hex(mut n: u64) {
+    mmap_diag_puts(b"0x");
+    if n == 0 {
+        mmap_diag_putc(b'0');
+        return;
+    }
+    let mut buf = [0u8; 16];
+    let mut i = 0usize;
+    while n > 0 {
+        let d = (n & 0xF) as u8;
+        buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
+        n >>= 4;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        mmap_diag_putc(buf[i]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn mmap_diag_dec(mut n: u32) {
+    if n == 0 {
+        mmap_diag_putc(b'0');
+        return;
+    }
+    let mut buf = [0u8; 10];
+    let mut i = 0usize;
+    while n > 0 {
+        buf[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        mmap_diag_putc(buf[i]);
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn mmap_diag_mark(mark: u8) {
+    mmap_diag_putc(b'[');
+    mmap_diag_putc(b'm');
+    mmap_diag_putc(b'm');
+    mmap_diag_putc(b':');
+    mmap_diag_putc(mark);
+    mmap_diag_putc(b']');
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+fn mmap_diag_mark(_mark: u8) {}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn mmap_diag_log(label: &[u8], tid: u32, size: u32, pd: u64, addr: u32) {
+    mmap_diag_putc(b'\n');
+    mmap_diag_puts(label);
+    mmap_diag_puts(b" tid=");
+    mmap_diag_dec(tid);
+    mmap_diag_puts(b" size=");
+    mmap_diag_dec(size);
+    mmap_diag_puts(b" pd=");
+    mmap_diag_hex(pd);
+    mmap_diag_puts(b" addr=");
+    mmap_diag_hex(addr as u64);
+    mmap_diag_putc(b'\n');
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+fn mmap_diag_log(_label: &[u8], _tid: u32, _size: u32, _pd: u64, _addr: u32) {}
+
 /// sys_exit - Terminate the current process
 pub fn sys_exit(status: u32) -> u32 {
     // Single atomic lock acquisition — no TOCTOU gaps between reads
@@ -287,7 +383,10 @@ pub fn sys_mmap(size: u32) -> u32 {
     use crate::memory::physical;
     use crate::memory::virtual_mem;
 
+    mmap_diag_mark(b'A');
+
     if size == 0 {
+        mmap_diag_mark(b'Z');
         return u32::MAX;
     }
 
@@ -295,22 +394,28 @@ pub fn sys_mmap(size: u32) -> u32 {
 
     let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
     let num_pages = aligned_size / PAGE_SIZE;
+    let tid = crate::task::scheduler::debug_current_tid();
+    mmap_diag_mark(b'B');
 
     // Find a free gap in the mmap virtual address space via the VMA registry.
     let pd = match crate::task::scheduler::current_thread_page_directory() {
         Some(pd) => pd,
         None => {
             crate::serial_verbose_println!("sys_mmap: no page directory for current thread");
+            mmap_diag_log(b"!mm-no-pd", tid, aligned_size, 0, u32::MAX);
             return u32::MAX;
         }
     };
+    mmap_diag_mark(b'C');
     let base = match crate::memory::vma::alloc_region(pd, aligned_size) {
         Some(addr) => addr,
         None => {
             crate::serial_verbose_println!("sys_mmap: out of mmap virtual address space");
+            mmap_diag_log(b"!mm-vma-full", tid, aligned_size, pd.as_u64(), u32::MAX);
             return u32::MAX;
         }
     };
+    mmap_diag_mark(b'D');
     if base < 0x7000_0000 || base.checked_add(aligned_size).map_or(true, |end| end > 0xBF00_0000) {
         crate::serial_println!(
             "sys_mmap: BUG: VMA returned invalid range base={:#x} size={:#x} pd={:#x}",
@@ -319,6 +424,7 @@ pub fn sys_mmap(size: u32) -> u32 {
             pd.as_u64()
         );
         crate::memory::vma::free_region(pd, base, aligned_size);
+        mmap_diag_log(b"!mm-vma-bad", tid, aligned_size, pd.as_u64(), base);
         return u32::MAX;
     }
 
@@ -352,6 +458,7 @@ pub fn sys_mmap(size: u32) -> u32 {
                     aligned_size,
                     pd.as_u64()
                 );
+                mmap_diag_log(b"!mm-map-fail", tid, aligned_size, pd.as_u64(), addr);
                 return u32::MAX;
             }
         } else {
@@ -368,14 +475,18 @@ pub fn sys_mmap(size: u32) -> u32 {
             }
             crate::memory::vma::free_region(pd, base, aligned_size);
             crate::serial_verbose_println!("sys_mmap: out of physical memory");
+            mmap_diag_log(b"!mm-phys-oom", tid, aligned_size, pd.as_u64(), addr);
             return u32::MAX;
         }
         addr += PAGE_SIZE;
     }
 
+    mmap_diag_mark(b'E');
     crate::task::scheduler::adjust_current_user_pages(num_pages as i32);
     // Keep mmap_next in sync (threads sharing this PD read it).
     crate::task::scheduler::set_current_thread_mmap_next(base + aligned_size);
+    mmap_diag_mark(b'F');
+    mmap_diag_log(b"+mm-ok", tid, aligned_size, pd.as_u64(), base);
 
     // No TLB shootdown needed for mmap: x86-64 does not cache non-present
     // TLB entries (Intel SDM Vol. 3A §4.10.2.1).  When a sibling thread on
