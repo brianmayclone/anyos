@@ -1828,16 +1828,17 @@ fn schedule_inner(from_timer: bool) {
         PER_CPU_IN_SCHEDULER[cpu_id_exit].store(false, Ordering::Release);
     }
 
-    // Re-enable interrupts ONLY for the voluntary path.  In the timer path
-    // (from_timer=true), IF is already saved in the interrupt frame and will
-    // be restored by IRET.  Calling `sti` here in the timer path allows a
-    // pending timer to fire immediately — while the old interrupt frame is
-    // still on the stack.  If schedule_inner then context-switches the idle
-    // thread, its RSP is saved at the deeper (nested) position.  Each such
-    // cycle accumulates one extra interrupt frame (~770 bytes) that is never
-    // unwound, eventually overflowing the 512 KiB kernel stack.  This was
-    // the root cause of the VirtualBox double-fault on CPU 3 (TID 4).
-    if !from_timer {
+    // Re-enable interrupts only when we are returning to a pure kernel thread.
+    //
+    // If the current thread is a user thread, we may be resuming into a blocked
+    // syscall on top of an EL0 exception frame that is still parked on this
+    // thread's kernel stack. In that case IRQs must stay masked until the
+    // exception epilogue executes `eret`; otherwise a nested IRQ can land on
+    // the same stack before the saved EL0 frame has been unwound.
+    //
+    // Timer-path scheduling already relies on the exception frame to restore the
+    // original interrupt state, so we never unmask here for `from_timer=true`.
+    if !from_timer && !PER_CPU_IS_USER[cpu_id_exit].load(Ordering::Relaxed) {
         crate::arch::hal::enable_interrupts();
     }
 }

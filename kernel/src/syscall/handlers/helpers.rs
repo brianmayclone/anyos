@@ -4,6 +4,7 @@
 //! but not exported outside it.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use crate::memory::address::VirtAddr;
 
 /// Make a relative path absolute using the current thread's working directory.
@@ -69,6 +70,32 @@ fn is_user_page_accessible(addr: u64) -> bool {
         return false;
     }
     crate::memory::virtual_mem::virt_to_phys(VirtAddr(addr)).is_some()
+}
+
+/// Copy a bounded byte slice from user memory into kernel-owned storage.
+///
+/// Returns `None` if the pointer is invalid, unmapped, or the requested length
+/// exceeds `max_len`. Every crossed page is validated before dereference.
+pub(super) fn copy_user_bytes(ptr: u32, len: usize, max_len: usize) -> Option<Vec<u8>> {
+    if len == 0 || len > max_len || !is_valid_user_ptr(ptr as u64, len as u64) {
+        return None;
+    }
+    if !is_user_page_accessible(ptr as u64) {
+        return None;
+    }
+
+    let p = ptr as *const u8;
+    let mut out = Vec::with_capacity(len);
+    unsafe {
+        for i in 0..len {
+            let addr = ptr as u64 + i as u64;
+            if i > 0 && (addr & 0xFFF) == 0 && !is_user_page_accessible(addr) {
+                return None;
+            }
+            out.push(*p.add(i));
+        }
+    }
+    Some(out)
 }
 
 /// Read a null-terminated string from user memory (max 4096 bytes).

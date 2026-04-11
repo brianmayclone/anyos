@@ -3,7 +3,7 @@
 //! Covers named pipes, the event bus (system + channel events),
 //! shared memory, and compositor wake helper.
 
-use super::helpers::{is_valid_user_ptr, read_user_str};
+use super::helpers::{copy_user_bytes, is_valid_user_ptr, read_user_str};
 
 use crate::ipc::event_bus::{self, EventData};
 use core::sync::atomic::Ordering;
@@ -110,8 +110,10 @@ pub fn sys_evt_sys_unsubscribe(sub_id: u32) -> u32 {
 /// Create a module channel. ebx=name_ptr, ecx=name_len. Returns channel_id.
 pub fn sys_evt_chan_create(name_ptr: u32, name_len: u32) -> u32 {
     let len = (name_len as usize).min(256);
-    let name_bytes = unsafe { core::slice::from_raw_parts(name_ptr as *const u8, len) };
-    event_bus::channel_create(name_bytes)
+    let Some(name_bytes) = copy_user_bytes(name_ptr, len, 256) else {
+        return 0;
+    };
+    event_bus::channel_create(&name_bytes)
 }
 
 /// Subscribe to module channel. ebx=chan_id, ecx=filter. Returns sub_id.
@@ -121,9 +123,18 @@ pub fn sys_evt_chan_subscribe(chan_id: u32, filter: u32) -> u32 {
 
 /// Emit to module channel. ebx=chan_id, ecx=event_ptr (20 bytes). Returns 0.
 pub fn sys_evt_chan_emit(chan_id: u32, event_ptr: u32) -> u32 {
-    if event_ptr == 0 || !is_valid_user_ptr(event_ptr as u64, 20) { return u32::MAX; }
-    let words = unsafe { core::slice::from_raw_parts(event_ptr as *const u32, 5) };
-    let evt = EventData { words: [words[0], words[1], words[2], words[3], words[4]] };
+    let Some(words) = copy_user_bytes(event_ptr, 20, 20) else {
+        return u32::MAX;
+    };
+    let evt = EventData {
+        words: [
+            u32::from_ne_bytes([words[0], words[1], words[2], words[3]]),
+            u32::from_ne_bytes([words[4], words[5], words[6], words[7]]),
+            u32::from_ne_bytes([words[8], words[9], words[10], words[11]]),
+            u32::from_ne_bytes([words[12], words[13], words[14], words[15]]),
+            u32::from_ne_bytes([words[16], words[17], words[18], words[19]]),
+        ],
+    };
     event_bus::channel_emit(chan_id, evt);
     0
 }
@@ -155,9 +166,18 @@ pub fn sys_evt_chan_destroy(chan_id: u32) -> u32 {
 
 /// Emit to a specific subscriber (unicast). ebx=chan_id, r10=sub_id, rdx=event_ptr.
 pub fn sys_evt_chan_emit_to(chan_id: u32, sub_id: u32, event_ptr: u32) -> u32 {
-    if event_ptr == 0 { return u32::MAX; }
-    let words = unsafe { core::slice::from_raw_parts(event_ptr as *const u32, 5) };
-    let evt = EventData { words: [words[0], words[1], words[2], words[3], words[4]] };
+    let Some(words) = copy_user_bytes(event_ptr, 20, 20) else {
+        return u32::MAX;
+    };
+    let evt = EventData {
+        words: [
+            u32::from_ne_bytes([words[0], words[1], words[2], words[3]]),
+            u32::from_ne_bytes([words[4], words[5], words[6], words[7]]),
+            u32::from_ne_bytes([words[8], words[9], words[10], words[11]]),
+            u32::from_ne_bytes([words[12], words[13], words[14], words[15]]),
+            u32::from_ne_bytes([words[16], words[17], words[18], words[19]]),
+        ],
+    };
     event_bus::channel_emit_to(chan_id, sub_id, evt);
     0
 }

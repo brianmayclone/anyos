@@ -6,7 +6,6 @@
 
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-
 use crate::ttf::TtfFont;
 use crate::ttf_rasterizer;
 use crate::png_decode;

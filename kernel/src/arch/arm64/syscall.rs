@@ -23,11 +23,16 @@ pub extern "C" fn arm64_syscall_dispatch(
 ) -> u64 {
     // Forward to the common syscall dispatcher (5 args max)
     let _ = arg5; // reserved for future use
-    crate::syscall::dispatch_inner(
+    let ret = crate::syscall::dispatch_inner(
         nr as u32,
         arg0 as u32, arg1 as u32, arg2 as u32,
         arg3 as u32, arg4 as u32,
-    ) as u64
+    );
+    if ret == u32::MAX {
+        u64::MAX
+    } else {
+        ret as u64
+    }
 }
 
 /// Dispatch `fork()` from the ARM64 SVC path.
@@ -41,7 +46,11 @@ pub extern "C" fn arm64_syscall_fork(frame: *const ExceptionFrame) -> u64 {
     let frame = unsafe { &*frame };
     let result = crate::syscall::handlers::sys_fork(frame);
     crate::task::scheduler::check_current_stack_canary(SYS_FORK);
-    result as u64
+    if result == u32::MAX {
+        u64::MAX
+    } else {
+        result as u64
+    }
 }
 
 /// Initialize syscall handling for the BSP.

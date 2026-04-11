@@ -3,7 +3,7 @@
 //! Covers FD-based operations: read, write, open, close, lseek, fstat,
 //! isatty, ftruncate, and POSIX FD duplication (pipe2, dup, dup2, fcntl).
 
-use super::helpers::{fs_err, is_valid_user_ptr, read_user_str_safe, resolve_path};
+use super::helpers::{copy_user_bytes, fs_err, is_valid_user_ptr, read_user_str_safe, resolve_path};
 use crate::fs::permissions::{check_permission, PERM_CREATE};
 
 /// sys_write - Write to a file descriptor
@@ -15,16 +15,18 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
     if len > 0x1000_0000 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
         return u32::MAX;
     }
+    let Some(buf) = copy_user_bytes(buf_ptr, len as usize, 0x1000_0000usize) else {
+        return u32::MAX;
+    };
 
     use crate::fs::fd_table::FdKind;
 
     // Look up the FD in the per-process table
     match crate::task::scheduler::current_fd_get(fd) {
         Some(entry) => {
-            let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
             match entry.kind {
                 FdKind::File { global_id } => {
-                    match crate::fs::vfs::write(global_id, buf) {
+                    match crate::fs::vfs::write(global_id, &buf) {
                         Ok(n) => {
                             crate::task::scheduler::record_io_write(n as u64);
                             n as u32
@@ -41,17 +43,17 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                             return u32::MAX - 10; // EAGAIN sentinel
                         }
                     }
-                    crate::ipc::anon_pipe::write(pipe_id, buf)
+                    crate::ipc::anon_pipe::write(pipe_id, &buf)
                 }
                 FdKind::Tty => {
                     // Terminal I/O: write to named stdout pipe + serial (if verbose)
                     let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
                     if pipe_id != 0 {
-                        crate::ipc::pipe::write(pipe_id, buf);
+                        crate::ipc::pipe::write(pipe_id, &buf);
                     }
                     if crate::drivers::serial::is_verbose() {
                         let lock_state = crate::drivers::serial::output_lock_acquire();
-                        for &byte in buf {
+                        for &byte in &buf {
                             crate::drivers::serial::write_byte(byte);
                         }
                         crate::drivers::serial::output_lock_release(lock_state);
@@ -64,14 +66,13 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
         None => {
             // Backward compat for kernel threads (no FdTable setup)
             if fd == 1 || fd == 2 {
-                let buf = unsafe { core::slice::from_raw_parts(buf_ptr as *const u8, len as usize) };
                 let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
                 if pipe_id != 0 {
-                    crate::ipc::pipe::write(pipe_id, buf);
+                    crate::ipc::pipe::write(pipe_id, &buf);
                 }
                 if crate::drivers::serial::is_verbose() {
                     let lock_state = crate::drivers::serial::output_lock_acquire();
-                    for &byte in buf {
+                    for &byte in &buf {
                         crate::drivers::serial::write_byte(byte);
                     }
                     crate::drivers::serial::output_lock_release(lock_state);
