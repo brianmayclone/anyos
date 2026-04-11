@@ -3,6 +3,22 @@
 use core::arch::asm;
 use crate::raw::*;
 
+#[cfg(target_arch = "aarch64")]
+core::arch::global_asm!(
+    ".global anyos_thread_entry_trampoline",
+    "anyos_thread_entry_trampoline:",
+    "ldr x19, [sp]",
+    "ldr x20, [sp, #8]",
+    "add sp, sp, #16",
+    "blr x19",
+    "br x20",
+);
+
+#[cfg(target_arch = "aarch64")]
+unsafe extern "C" {
+    fn anyos_thread_entry_trampoline();
+}
+
 pub fn exit(code: u32) -> ! {
     unsafe {
         #[cfg(target_arch = "x86_64")]
@@ -291,8 +307,9 @@ pub fn spawn_piped_full(path: &str, args: &str, stdout_pipe: u32, stdin_pipe: u3
 /// `stack_top` is the initial user stack pointer.
 /// On x86_64 it must be 8-byte aligned and conventionally points at a
 /// synthetic return address slot (`top - 8`).
-/// On AArch64 it must remain 16-byte aligned; the kernel reads the synthetic
-/// return address from `stack_top - 8` and installs it into LR/X30.
+/// On AArch64 it must remain 16-byte aligned. The stdlib places a small
+/// start context at `stack_top - 16` and uses a trampoline so returning from
+/// the thread entry always branches into the exit stub explicitly.
 /// `name` is a human-readable thread name (max 31 chars, shown in task manager/logs).
 ///
 /// Returns the TID of the new thread, or 0 on error.
@@ -304,6 +321,23 @@ pub fn thread_create(entry: fn(), stack_top: usize, name: &str) -> u32 {
 /// Create a new thread with an explicit priority (1-255, higher = more CPU time).
 /// Priority 0 inherits from the parent thread.
 pub fn thread_create_with_priority(entry: fn(), stack_top: usize, name: &str, priority: u8) -> u32 {
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        let trampoline_sp = stack_top.saturating_sub(16) & !0xF;
+        let kernel_lr_slot = trampoline_sp.saturating_sub(8);
+        (kernel_lr_slot as *mut usize).write(thread_exit_stub_addr());
+        (trampoline_sp as *mut usize).write(entry as usize);
+        (trampoline_sp as *mut usize).add(1).write(thread_exit_stub_addr());
+        return syscall5(
+            SYS_THREAD_CREATE,
+            anyos_thread_entry_trampoline as usize as u64,
+            trampoline_sp as u64,
+            name.as_ptr() as u64,
+            name.len() as u64,
+            priority as u64,
+        );
+    }
+
     syscall5(
         SYS_THREAD_CREATE,
         entry as u64,

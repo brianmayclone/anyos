@@ -43,6 +43,41 @@ const ASLR_STACK_MAX_PAGES: u32 = 256;
 /// 4096 pages = 16 MiB of entropy within the 1.25 GiB mmap region.
 pub const ASLR_MMAP_MAX_PAGES: u32 = 4096;
 
+#[cfg(target_arch = "aarch64")]
+unsafe fn sync_user_text_range_for_exec(start: u64, len: usize) {
+    if len == 0 {
+        return;
+    }
+
+    let ctr_el0: u64;
+    core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr_el0, options(nomem, nostack));
+
+    let dline = 4usize << ((ctr_el0 >> 16) & 0xF);
+    let iline = 4usize << (ctr_el0 & 0xF);
+    let dline = dline.max(16);
+    let iline = iline.max(16);
+
+    let start = start as usize;
+    let end = start.saturating_add(len);
+    let dstart = start & !(dline - 1);
+    let istart = start & !(iline - 1);
+
+    let mut addr = dstart;
+    while addr < end {
+        core::arch::asm!("dc cvau, {}", in(reg) addr, options(nostack, preserves_flags));
+        addr += dline;
+    }
+    core::arch::asm!("dsb ish", options(nomem, nostack));
+
+    let mut addr = istart;
+    while addr < end {
+        core::arch::asm!("ic ivau, {}", in(reg) addr, options(nostack, preserves_flags));
+        addr += iline;
+    }
+    core::arch::asm!("dsb ish", options(nomem, nostack));
+    core::arch::asm!("isb", options(nomem, nostack));
+}
+
 /// Generate a random page offset in `[0, max_pages)` using hardware RNG
 /// with a counter-based fallback.
 ///
@@ -625,6 +660,11 @@ fn load_elf64(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
                     filesz,
                 );
             }
+
+            #[cfg(target_arch = "aarch64")]
+            if (phdr.p_flags & PF_X) != 0 {
+                sync_user_text_range_for_exec(page_start as u64, page_end - page_start);
+            }
         }
 
         #[cfg(target_arch = "x86_64")]
@@ -781,6 +821,11 @@ fn load_elf32(data: &[u8], pd_phys: crate::memory::address::PhysAddr) -> Result<
                     vaddr as *mut u8,
                     filesz,
                 );
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            if (phdr.p_flags & PF_X) != 0 {
+                sync_user_text_range_for_exec(page_start as u64, page_end - page_start);
             }
         }
 
@@ -982,6 +1027,9 @@ pub fn load_binary_into_pd(
 
             let dest = PROGRAM_LOAD_ADDR as *mut u8;
             core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
+
+            #[cfg(target_arch = "aarch64")]
+            sync_user_text_range_for_exec(PROGRAM_LOAD_ADDR, data.len());
 
             #[cfg(target_arch = "x86_64")]
             {
@@ -1347,6 +1395,9 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 
             let dest = PROGRAM_LOAD_ADDR as *mut u8;
             core::ptr::copy_nonoverlapping(data.as_ptr(), dest, data.len());
+
+            #[cfg(target_arch = "aarch64")]
+            sync_user_text_range_for_exec(PROGRAM_LOAD_ADDR, data.len());
 
             #[cfg(target_arch = "x86_64")]
             {

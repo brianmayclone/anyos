@@ -148,6 +148,7 @@ _exception_vector_table:
 .global arm64_resume_from_exception
 .type arm64_resume_from_exception, %function
 arm64_resume_from_exception:
+    bl      arm64_user_exception_exit
     RESTORE_REGS
     eret
 .size arm64_resume_from_exception, . - arm64_resume_from_exception
@@ -156,36 +157,37 @@ arm64_resume_from_exception:
 .type arm64_fork_return_to_user, %function
 arm64_fork_return_to_user:
     /* x0 = ForkChildRegs* */
-    mov     x13, x0
+    mov     x29, x0
 
     /* Restore exception return state first. */
-    ldr     x9,  [x13, #(31 * 8)]     /* sp_el0 */
-    ldr     x10, [x13, #(32 * 8)]     /* elr_el1 */
-    ldr     x11, [x13, #(33 * 8)]     /* spsr_el1 */
-    ldr     x12, [x13, #(34 * 8)]     /* tpidr_el0 */
+    ldr     x9,  [x29, #(31 * 8)]     /* sp_el0 */
+    ldr     x10, [x29, #(32 * 8)]     /* elr_el1 */
+    ldr     x11, [x29, #(33 * 8)]     /* spsr_el1 */
+    ldr     x12, [x29, #(34 * 8)]     /* tpidr_el0 */
     msr     sp_el0, x9
     msr     elr_el1, x10
     msr     spsr_el1, x11
     msr     tpidr_el0, x12
     isb
 
+    bl      arm64_user_exception_exit
+
     /* Restore X1-X30 from the saved child frame. X0 becomes fork()'s 0 return. */
-    ldp     x1,  x2,  [x13, #(1  * 8)]
-    ldp     x3,  x4,  [x13, #(3  * 8)]
-    ldp     x5,  x6,  [x13, #(5  * 8)]
-    ldp     x7,  x8,  [x13, #(7  * 8)]
-    ldp     x9,  x10, [x13, #(9  * 8)]
-    ldp     x11, x12, [x13, #(11 * 8)]
-    ldp     x14, x15, [x13, #(14 * 8)]
-    ldp     x16, x17, [x13, #(16 * 8)]
-    ldp     x18, x19, [x13, #(18 * 8)]
-    ldp     x20, x21, [x13, #(20 * 8)]
-    ldp     x22, x23, [x13, #(22 * 8)]
-    ldp     x24, x25, [x13, #(24 * 8)]
-    ldp     x26, x27, [x13, #(26 * 8)]
-    ldp     x28, x29, [x13, #(28 * 8)]
-    ldr     x30,      [x13, #(30 * 8)]
-    ldr     x13,      [x13, #(13 * 8)]
+    ldp     x1,  x2,  [x29, #(1  * 8)]
+    ldp     x3,  x4,  [x29, #(3  * 8)]
+    ldp     x5,  x6,  [x29, #(5  * 8)]
+    ldp     x7,  x8,  [x29, #(7  * 8)]
+    ldp     x9,  x10, [x29, #(9  * 8)]
+    ldp     x11, x12, [x29, #(11 * 8)]
+    ldp     x13, x14, [x29, #(13 * 8)]
+    ldp     x15, x16, [x29, #(15 * 8)]
+    ldp     x17, x18, [x29, #(17 * 8)]
+    ldp     x19, x20, [x29, #(19 * 8)]
+    ldp     x21, x22, [x29, #(21 * 8)]
+    ldp     x23, x24, [x29, #(23 * 8)]
+    ldp     x25, x26, [x29, #(25 * 8)]
+    ldp     x27, x28, [x29, #(27 * 8)]
+    ldp     x29, x30, [x29, #(29 * 8)]
     mov     x0, xzr
     eret
 .size arm64_fork_return_to_user, . - arm64_fork_return_to_user
@@ -211,6 +213,7 @@ _kernel_irq_handler:
 /* --- User synchronous exception (syscall or fault) --- */
 _user_sync_handler:
     SAVE_REGS
+    bl      arm64_user_exception_enter
     mov     x0, sp
     bl      arm64_set_active_user_frame
     mrs     x0, esr_el1
@@ -233,6 +236,7 @@ _user_sync_handler:
     str     x0, [sp, #(0 * 8)]
     mov     x0, xzr
     bl      arm64_set_active_user_frame
+    bl      arm64_user_exception_exit
     RESTORE_REGS
     eret
 
@@ -242,6 +246,7 @@ _user_sync_handler:
     str     x0, [sp, #(0 * 8)]
     mov     x0, xzr
     bl      arm64_set_active_user_frame
+    bl      arm64_user_exception_exit
     RESTORE_REGS
     eret
 
@@ -253,14 +258,17 @@ _user_sync_handler:
     bl      arm64_sync_handler
     mov     x0, xzr
     bl      arm64_set_active_user_frame
+    bl      arm64_user_exception_exit
     RESTORE_REGS
     eret
 
 /* --- User IRQ --- */
 _user_irq_handler:
     SAVE_REGS
+    bl      arm64_user_exception_enter
     mov     x0, sp
     bl      arm64_user_irq_handler
+    bl      arm64_user_exception_exit
     RESTORE_REGS
     eret
 

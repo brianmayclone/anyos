@@ -632,26 +632,11 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
     }
 
     if flush_x0 < flush_x1 && flush_y0 < flush_y1 {
-        crate::serial_println!(
-            "[ARM64][gpu] update batch: count={} bbox=({},{} {}x{}) syncs={} cursor={}",
-            update_count,
-            flush_x0,
-            flush_y0,
-            flush_x1 - flush_x0,
-            flush_y1 - flush_y0,
-            sync_count,
-            cursor_count
-        );
         crate::drivers::arm::gpu::flush(
             flush_x0,
             flush_y0,
             flush_x1 - flush_x0,
             flush_y1 - flush_y0,
-        );
-    } else if sync_count != 0 || cursor_count != 0 {
-        crate::serial_println!(
-            "[ARM64][gpu] non-update batch: syncs={} cursor={} executed={}",
-            sync_count, cursor_count, executed
         );
     }
 

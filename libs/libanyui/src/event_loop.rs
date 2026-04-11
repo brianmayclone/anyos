@@ -1725,9 +1725,6 @@ pub fn run_once() -> u32 {
                     // VSync callback: compositor has composited our frame to screen.
                     // Clear back-pressure so we can present the next frame.
                     if wi < st.comp_windows.len() {
-                        if win_id == 1 {
-                            crate::log!("anyui: frame_ack win={}", win_id);
-                        }
                         st.comp_windows[wi].frame_presented = false;
                     }
                 }
@@ -1917,12 +1914,6 @@ pub fn run_once() -> u32 {
         }
 
         if let Some((dx, dy, dw, dh)) = pending_rect {
-            if win_id == 1 {
-                crate::log!(
-                    "anyui: present_rect win={} rect=({},{} {}x{})",
-                    win_id, dx, dy, dw, dh
-                );
-            }
             compositor::present_rect(
                 channel_id,
                 comp_window_id,
@@ -1933,9 +1924,6 @@ pub fn run_once() -> u32 {
                 dh,
             );
         } else {
-            if win_id == 1 {
-                crate::log!("anyui: present_full win={}", win_id);
-            }
             compositor::present(channel_id, comp_window_id, shm_id);
         }
         st.comp_windows[wi].present_pending = false;

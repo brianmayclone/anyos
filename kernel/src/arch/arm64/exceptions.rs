@@ -96,6 +96,16 @@ pub extern "C" fn arm64_set_active_user_frame(frame: *mut ExceptionFrame) {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn arm64_user_exception_enter() {
+    crate::task::scheduler::save_live_user_fpu_on_exception_entry();
+}
+
+#[no_mangle]
+pub extern "C" fn arm64_user_exception_exit() {
+    crate::task::scheduler::prepare_user_fpu_return();
+}
+
 /// IRQ dispatch for interrupts taken while a user thread was running in EL0.
 ///
 /// The timer IRQ can preempt the current thread, so we pass the saved
