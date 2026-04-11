@@ -130,6 +130,32 @@ fn frame_ptr(frame: PhysAddr) -> *mut u8 {
     (frame.as_u64() + crate::memory::virtual_mem::PHYS_TO_VIRT_OFFSET) as *mut u8
 }
 
+#[cfg(target_arch = "aarch64")]
+unsafe fn sync_executable_frame_icache(frame: PhysAddr) {
+    let ctr_el0: u64;
+    core::arch::asm!("mrs {}, ctr_el0", out(reg) ctr_el0, options(nomem, nostack));
+
+    let dline = (4usize << ((ctr_el0 >> 16) & 0xF)).max(16);
+    let iline = (4usize << (ctr_el0 & 0xF)).max(16);
+    let start = frame_ptr(frame) as usize;
+    let end = start + PAGE_SIZE as usize;
+
+    let mut addr = start & !(dline - 1);
+    while addr < end {
+        core::arch::asm!("dc cvau, {}", in(reg) addr, options(nostack, preserves_flags));
+        addr += dline;
+    }
+    core::arch::asm!("dsb ish", options(nomem, nostack));
+
+    let mut addr = start & !(iline - 1);
+    while addr < end {
+        core::arch::asm!("ic ivau, {}", in(reg) addr, options(nostack, preserves_flags));
+        addr += iline;
+    }
+    core::arch::asm!("dsb ish", options(nomem, nostack));
+    core::arch::asm!("isb", options(nomem, nostack));
+}
+
 #[inline]
 fn with_frame_mut<R>(frame: PhysAddr, temp_virt: VirtAddr, f: impl FnOnce(*mut u8) -> R) -> R {
     #[cfg(target_arch = "x86_64")]
@@ -725,6 +751,11 @@ fn load_elf64_so(data: &[u8], path: &str) -> Option<u64> {
         0
     };
 
+    #[cfg(target_arch = "aarch64")]
+    for &frame in &ro_pages {
+        unsafe { sync_executable_frame_icache(frame); }
+    }
+
     // ── Update NEXT_DYNAMIC_BASE if this fixed-base .so consumed the space ──
     loop {
         let current = NEXT_DYNAMIC_BASE.load(Ordering::SeqCst);
@@ -815,6 +846,11 @@ pub fn load_dll(path: &str, expected_base: u64) -> Result<u32, &'static str> {
 
     // Allocate shared RO pages (.rodata + .text)
     let ro_pages = alloc_and_copy_pages(&data, content_base, ro_count as usize, temp_virt)?;
+
+    #[cfg(target_arch = "aarch64")]
+    for &frame in &ro_pages {
+        unsafe { sync_executable_frame_icache(frame); }
+    }
 
     // Allocate .data template pages (kernel-private, used for per-process copy on demand)
     let data_offset = content_base + ro_count as usize * PAGE_SIZE as usize;

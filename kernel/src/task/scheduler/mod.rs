@@ -576,6 +576,15 @@ impl Scheduler {
         true
     }
 
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn arm64_needs_inflight_continuation_pin(&self, idx: usize) -> bool {
+        let t = &self.threads[idx];
+        t.is_user
+            && t.state == ThreadState::Blocked
+            && t.context.save_complete == 0
+    }
+
     fn new() -> Self {
         let mut per_cpu = Vec::with_capacity(MAX_CPUS);
         for _ in 0..MAX_CPUS {
@@ -884,6 +893,23 @@ impl Scheduler {
                 None => return None,
             };
             if let Some(idx) = self.find_idx(tid) {
+                #[cfg(target_arch = "aarch64")]
+                {
+                    let mut pinned_cpu: Option<usize> = None;
+                    if self.arm64_has_pinned_kernel_continuation(idx) {
+                        pinned_cpu = Some(self.threads[idx].last_cpu);
+                    } else if self.arm64_needs_inflight_continuation_pin(idx) {
+                        pinned_cpu = Some(self.threads[idx].last_cpu);
+                    }
+                    if let Some(cpu) = pinned_cpu {
+                        let target_cpu = if cpu < self.num_cpus() { cpu } else { 0 };
+                        if target_cpu != queue_cpu {
+                            let pri = self.threads[idx].priority;
+                            self.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
+                            continue;
+                        }
+                    }
+                }
                 if self.threads[idx].state == ThreadState::Ready
                     && self.threads[idx].context.save_complete != 0
                 {
@@ -930,6 +956,8 @@ impl Scheduler {
                 #[cfg(target_arch = "aarch64")]
                 {
                     if self.arm64_has_pinned_kernel_continuation(idx) {
+                        cpu = self.threads[idx].last_cpu;
+                    } else if self.arm64_needs_inflight_continuation_pin(idx) {
                         cpu = self.threads[idx].last_cpu;
                     }
                 }
@@ -1132,6 +1160,8 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                         #[cfg(target_arch = "aarch64")]
                         {
                             if sched.arm64_has_pinned_kernel_continuation(i) {
+                                cpu = sched.threads[i].last_cpu;
+                            } else if sched.arm64_needs_inflight_continuation_pin(i) {
                                 cpu = sched.threads[i].last_cpu;
                             }
                         }
@@ -1508,6 +1538,8 @@ fn schedule_inner(from_timer: bool) {
                         #[cfg(target_arch = "aarch64")]
                         {
                             if sched.arm64_has_pinned_kernel_continuation(i) {
+                                cpu = sched.threads[i].last_cpu;
+                            } else if sched.arm64_needs_inflight_continuation_pin(i) {
                                 cpu = sched.threads[i].last_cpu;
                             }
                         }

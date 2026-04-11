@@ -25,7 +25,8 @@ context_switch:
 
     /* ---- Save current context to old ---- */
 
-    /* Save callee-saved registers x19-x30 */
+    /* Save callee-saved registers x19-x30 plus x18 (platform register). */
+    str     x18,      [x0, #(18 * 8)]
     stp     x19, x20, [x0, #(19 * 8)]
     stp     x21, x22, [x0, #(21 * 8)]
     stp     x23, x24, [x0, #(23 * 8)]
@@ -94,7 +95,8 @@ context_switch:
      * Use a dedicated register so the UART diagnostics below don't clobber it. */
     ldr     x11, [x1, #256]
 
-    /* Restore callee-saved registers */
+    /* Restore callee-saved registers plus x18. */
+    ldr     x18,      [x1, #(18 * 8)]
     ldp     x19, x20, [x1, #(19 * 8)]
     ldp     x21, x22, [x1, #(21 * 8)]
     ldp     x23, x24, [x1, #(23 * 8)]

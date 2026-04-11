@@ -13,6 +13,7 @@ pub struct ExceptionFrame {
     pub elr_el1: u64,
     pub spsr_el1: u64,
     pub tpidr_el0: u64,
+    pub _reserved: u64,
 }
 
 /// Exception Syndrome Register (ESR_EL1) exception class values.

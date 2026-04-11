@@ -87,7 +87,8 @@ _exception_vector_table:
  * After this macro, SP points to the saved register frame.
  */
 .macro SAVE_REGS
-    sub     sp, sp, #(35 * 8)   /* 35 registers: x0-x30, sp_el0, elr, spsr, tpidr */
+    /* Reserve 36 u64 slots so SP stays 16-byte aligned across BL calls. */
+    sub     sp, sp, #(36 * 8)
     stp     x0,  x1,  [sp, #(0  * 8)]
     stp     x2,  x3,  [sp, #(2  * 8)]
     stp     x4,  x5,  [sp, #(4  * 8)]
@@ -142,7 +143,7 @@ _exception_vector_table:
     ldp     x4,  x5,  [sp, #(4  * 8)]
     ldp     x2,  x3,  [sp, #(2  * 8)]
     ldp     x0,  x1,  [sp, #(0  * 8)]
-    add     sp, sp, #(35 * 8)
+    add     sp, sp, #(36 * 8)
 .endm
 
 .global arm64_resume_from_exception
