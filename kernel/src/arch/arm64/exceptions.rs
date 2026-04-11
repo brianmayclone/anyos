@@ -206,6 +206,9 @@ fn handle_fault(ec: u32, far: u64, elr: u64) {
     // If from EL0 (user mode), kill the thread
     let is_user = ec == EC_DATA_ABORT_LOWER || ec == EC_INST_ABORT_LOWER;
     if is_user {
+        if crate::task::dll::handle_dll_demand_page(far) {
+            return;
+        }
         crate::serial_verbose_println!("  Killing user thread due to fault");
         if !crate::task::scheduler::try_exit_current(139) {
             crate::task::scheduler::fault_kill_and_idle(139);

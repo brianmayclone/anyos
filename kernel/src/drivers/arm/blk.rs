@@ -5,6 +5,7 @@
 
 use core::ptr;
 
+use crate::memory::address::VirtAddr;
 use crate::memory::physical;
 use crate::sync::spinlock::Spinlock;
 
@@ -48,13 +49,6 @@ struct VirtioBlk {
 }
 
 static BLK_DEVICE: Spinlock<Option<VirtioBlk>> = Spinlock::new(None);
-
-/// Physical address helper: convert RAM virtual to physical.
-#[inline]
-fn virt_to_phys(virt: usize) -> u64 {
-    // Inverse of phys_to_virt: VA - 0xFFFF_0000_4000_0000 = PA
-    (virt as u64).wrapping_sub(0xFFFF_0000_4000_0000)
-}
 
 // ---------------------------------------------------------------------------
 // Initialization
@@ -169,8 +163,15 @@ fn do_io(req_type: u32, sector: u64, count: u32, buf: &mut [u8]) -> bool {
     let status_phys = hdr_phys + 16;
 
     // For the data buffer, we need a physical address.
-    // The buf is in kernel virtual space (stack or heap), convert to physical.
-    let buf_phys = virt_to_phys(buf.as_ptr() as usize);
+    // Translate through the active page tables so both kernel buffers and
+    // user-space buffers work on ARM64.
+    let buf_phys = match crate::memory::virtual_mem::virt_to_phys(VirtAddr::new(buf.as_ptr() as u64)) {
+        Some(pa) => pa,
+        None => {
+            physical::free_frame(hdr_frame);
+            return false;
+        }
+    };
 
     // Build 3-descriptor chain: header(R) → data(R or W) → status(W)
     let data_flags = if req_type == VIRTIO_BLK_T_IN {
@@ -200,13 +201,20 @@ fn do_io(req_type: u32, sector: u64, count: u32, buf: &mut [u8]) -> bool {
         ptr::write_volatile((dev_base + 0x050) as *mut u32, 0);
     }
 
-    // Poll for completion (busy-wait; interrupts handled separately)
-    let mut timeout = 1_000_000u32;
+    // Poll for completion using a tick-based timeout.
+    // A fixed spin count is too sensitive to QEMU/host speed and ARM64 timer
+    // preemption, which can make healthy I/O look like a timeout.
+    let start_tick = crate::arch::hal::timer_current_ticks();
+    let max_wait_ticks = (crate::arch::hal::timer_frequency_hz() / 2).max(1) as u32;
     while !blk.queue.has_used() {
         core::hint::spin_loop();
-        timeout -= 1;
-        if timeout == 0 {
-            crate::serial_verbose_println!("  virtio-blk: I/O timeout");
+        let now = crate::arch::hal::timer_current_ticks();
+        if now.wrapping_sub(start_tick) >= max_wait_ticks {
+            crate::serial_verbose_println!(
+                "  virtio-blk: I/O timeout sector={} count={}",
+                sector,
+                count,
+            );
             physical::free_frame(hdr_frame);
             return false;
         }

@@ -68,7 +68,7 @@ fn emit_spawn_event(tid: u32, name: &str) {
 }
 
 /// Create a new thread within the same address space as the currently running thread.
-pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &str, priority: u8) -> u32 {
+pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, user_lr: u64, name: &str, priority: u8) -> u32 {
     let (pd, arch_mode, brk, parent_pri, parent_cwd, parent_caps, parent_uid, parent_gid, parent_pcid, parent_mmap_next) = {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_CREATE_THREAD);
         let guard = SCHEDULER.lock();
@@ -109,7 +109,7 @@ pub fn create_thread_in_current_process(entry_rip: u64, user_rsp: u64, name: &st
         }
     }
 
-    crate::task::loader::store_pending_thread(tid, entry_rip, user_rsp);
+    crate::task::loader::store_pending_thread(tid, entry_rip, user_rsp, user_lr);
     super::wake_thread(tid);
     tid
 }

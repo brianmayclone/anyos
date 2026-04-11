@@ -288,8 +288,11 @@ pub fn spawn_piped_full(path: &str, args: &str, stdout_pipe: u32, stdin_pipe: u3
 /// Create a new thread in the current process, sharing the same address space.
 ///
 /// `entry` is a function pointer for the new thread's entry point.
-/// `stack_top` is the top of a user-allocated stack (must be 8-byte aligned,
-/// and the caller should subtract 8 from the true top for ABI alignment).
+/// `stack_top` is the initial user stack pointer.
+/// On x86_64 it must be 8-byte aligned and conventionally points at a
+/// synthetic return address slot (`top - 8`).
+/// On AArch64 it must remain 16-byte aligned; the kernel reads the synthetic
+/// return address from `stack_top - 8` and installs it into LR/X30.
 /// `name` is a human-readable thread name (max 31 chars, shown in task manager/logs).
 ///
 /// Returns the TID of the new thread, or 0 on error.
@@ -416,12 +419,16 @@ impl Thread {
         if stack_ptr.is_null() {
             return Err(error::Error::OutOfMemory);
         }
-        // x86_64 ABI: RSP must be STACK_TOP - 8 at function entry.
-        // Place a return address that cleanly kills the thread when entry()
-        // returns, instead of jumping to RIP=0 (mmap zeroes the stack).
-        let ret_slot = (stack_ptr as usize) + stack_size - 8;
+        let stack_end = (stack_ptr as usize) + stack_size;
+        #[cfg(target_arch = "x86_64")]
+        let user_sp = stack_end - 8;
+        #[cfg(target_arch = "aarch64")]
+        let user_sp = stack_end & !0xF;
+        // Place a synthetic return address that cleanly kills the thread when
+        // entry() returns, instead of falling through to address 0.
+        let ret_slot = user_sp - 8;
         unsafe { *(ret_slot as *mut usize) = thread_exit_stub as usize; }
-        let tid = thread_create(entry, ret_slot, name);
+        let tid = thread_create(entry, user_sp, name);
         if tid == 0 {
             munmap(stack_ptr, stack_size);
             return Err(error::Error::Other(0));

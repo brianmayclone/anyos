@@ -122,13 +122,14 @@ struct PendingSlot {
     tid: u32,
     entry: u64,
     user_stack: u64,
+    user_lr: u64,
     is_compat32: bool,
     used: bool,
 }
 
 impl PendingSlot {
     const fn empty() -> Self {
-        PendingSlot { tid: 0, entry: 0, user_stack: 0, is_compat32: false, used: false }
+        PendingSlot { tid: 0, entry: 0, user_stack: 0, user_lr: 0, is_compat32: false, used: false }
     }
 }
 
@@ -1014,7 +1015,10 @@ pub fn exec_current_process(data: &[u8], args: &str) -> &'static str {
     if result.is_compat32 {
         unsafe { jump_to_user_mode_compat32(result.entry, user_stack); }
     } else {
+        #[cfg(target_arch = "x86_64")]
         unsafe { jump_to_user_mode(result.entry, user_stack); }
+        #[cfg(target_arch = "aarch64")]
+        unsafe { jump_to_user_mode(result.entry, user_stack, 0); }
     }
 }
 
@@ -1422,15 +1426,16 @@ extern "C" fn user_thread_trampoline() {
     let tid = crate::task::scheduler::current_tid();
     #[cfg(target_arch = "aarch64")]
     arm64_diag_char(b'F');
-    let (entry, user_stack, compat32) = {
+    let (entry, user_stack, user_lr, compat32) = {
         let mut slots = PENDING_PROGRAMS.lock();
         let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
             .expect("No pending program for trampoline");
         let e = slot.entry;
         let s = slot.user_stack;
+        let lr = slot.user_lr;
         let c = slot.is_compat32;
         slot.used = false; // Free the slot
-        (e, s, c)
+        (e, s, lr, c)
     };
     #[cfg(target_arch = "aarch64")]
     arm64_diag_char(b'G');
@@ -1441,19 +1446,23 @@ extern "C" fn user_thread_trampoline() {
     if compat32 {
         unsafe { jump_to_user_mode_compat32(entry, user_stack); }
     } else {
+        #[cfg(target_arch = "x86_64")]
         unsafe { jump_to_user_mode(entry, user_stack); }
+        #[cfg(target_arch = "aarch64")]
+        unsafe { jump_to_user_mode(entry, user_stack, user_lr); }
     }
 }
 
 /// Store a pending entry point and user stack for a new intra-process thread.
 /// Called by `scheduler::create_thread_in_current_process()`.
-pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64) {
+pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64, user_lr: u64) {
     let mut slots = PENDING_PROGRAMS.lock();
     let slot = slots.iter_mut().find(|s| !s.used)
         .expect("Too many pending programs");
     slot.tid = tid;
     slot.entry = entry;
     slot.user_stack = user_stack;
+    slot.user_lr = user_lr;
     slot.is_compat32 = false;
     slot.used = true;
 }
@@ -1463,21 +1472,25 @@ pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64) {
 pub extern "C" fn thread_create_trampoline() {
     enable_irqs_before_user_entry();
     let tid = crate::task::scheduler::current_tid();
-    let (entry, user_stack, compat32) = {
+    let (entry, user_stack, user_lr, compat32) = {
         let mut slots = PENDING_PROGRAMS.lock();
         let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
             .expect("No pending program for thread_create trampoline");
         let e = slot.entry;
         let s = slot.user_stack;
+        let lr = slot.user_lr;
         let c = slot.is_compat32;
         slot.used = false;
-        (e, s, c)
+        (e, s, lr, c)
     };
 
     if compat32 {
         unsafe { jump_to_user_mode_compat32(entry, user_stack); }
     } else {
+        #[cfg(target_arch = "x86_64")]
         unsafe { jump_to_user_mode(entry, user_stack); }
+        #[cfg(target_arch = "aarch64")]
+        unsafe { jump_to_user_mode(entry, user_stack, user_lr); }
     }
 }
 
@@ -1548,7 +1561,7 @@ fn enable_irqs_before_user_entry() {}
 /// all general-purpose registers to prevent kernel address leaks and
 /// issues `eret`.
 #[cfg(target_arch = "aarch64")]
-unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
+unsafe fn jump_to_user_mode(entry: u64, user_stack: u64, user_lr: u64) -> ! {
     arm64_diag_char(b'H');
     core::arch::asm!(
         // Set the return address (ELR_EL1) and user stack (SP_EL0)
@@ -1592,10 +1605,11 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
         "mov x27, #0",
         "mov x28, #0",
         "mov x29, #0",
-        "mov x30, #0",
+        "mov x30, {lr}",
         "eret",
         entry = in(reg) entry,
         sp = in(reg) user_stack,
+        lr = in(reg) user_lr,
         options(noreturn)
     );
 }

@@ -810,13 +810,32 @@ pub fn sys_exec(path_ptr: u32, args_ptr: u32) -> u32 {
 pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len: u32, priority: u32) -> u32 {
     let entry = entry_rip as u64;
     let rsp = user_rsp as u64;
+    let mut user_lr = 0u64;
 
     // Basic validation: entry must be in user space, rsp must be in user space and aligned
     if entry == 0 || entry >= 0x0000_8000_0000_0000 {
         return 0;
     }
-    if rsp == 0 || rsp >= 0x0000_8000_0000_0000 || rsp & 7 != 0 {
+    #[cfg(target_arch = "x86_64")]
+    let stack_ok = rsp != 0 && rsp < 0x0000_8000_0000_0000 && (rsp & 7) == 0;
+    #[cfg(target_arch = "aarch64")]
+    let stack_ok = rsp != 0 && rsp < 0x0000_8000_0000_0000 && (rsp & 0xF) == 0;
+    if !stack_ok {
         return 0;
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    {
+        let lr_ptr = rsp.wrapping_sub(8);
+        if !is_valid_user_ptr(lr_ptr, 8) {
+            return 0;
+        }
+        unsafe {
+            user_lr = core::ptr::read_unaligned(lr_ptr as *const u64);
+        }
+        if user_lr == 0 || user_lr >= 0x0000_8000_0000_0000 {
+            return 0;
+        }
     }
 
     // Read thread name from user space (max 31 chars)
@@ -836,7 +855,7 @@ pub fn sys_thread_create(entry_rip: u32, user_rsp: u32, name_ptr: u32, name_len:
     // Priority: 0 means inherit from parent (handled by scheduler), 1-255 = explicit
     let pri = if priority > 0 && priority <= 255 { priority as u8 } else { 0 };
 
-    let tid = crate::task::scheduler::create_thread_in_current_process(entry, rsp, name, pri);
+    let tid = crate::task::scheduler::create_thread_in_current_process(entry, rsp, user_lr, name, pri);
     crate::debug_println!("sys_thread_create: entry={:#x} rsp={:#x} name={} pri={} -> TID={}", entry, rsp, name, pri, tid);
     tid
 }

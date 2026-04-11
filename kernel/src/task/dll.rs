@@ -133,9 +133,18 @@ const DT_SYMTAB: i64 = 6;
 const DT_RELA: i64 = 7;
 const DT_RELASZ: i64 = 8;
 
-const R_X86_64_RELATIVE: u32 = 8;
-const R_X86_64_32: u32 = 10;
-const R_X86_64_32S: u32 = 11;
+#[cfg(target_arch = "x86_64")]
+const R_RELATIVE: u32 = 8;
+#[cfg(target_arch = "x86_64")]
+const R_ABS32: u32 = 10;
+#[cfg(target_arch = "x86_64")]
+const R_ABS32_SIGNED: u32 = 11;
+
+// anyld currently emits AArch64 base-0 shared objects with R_AARCH64_COPY
+// relocations carrying the target offset in r_addend. Treat them as
+// load-bias-relative fixups when mapping ET_DYN objects.
+#[cfg(target_arch = "aarch64")]
+const R_RELATIVE: u32 = 1024;
 
 // ELF64 header offsets
 const EI_CLASS: usize = 4;
@@ -354,7 +363,7 @@ fn apply_elf_relocations(
 
     let mut reloc_count: u32 = 0;
 
-    // 1. Apply R_X86_64_RELATIVE relocations from .rela.dyn
+    // 1. Apply base-relocations from .rela.dyn
     // For base-0 .so files, VA == file offset, so we read from file_data at rela_va.
     if rela_va > 0 && rela_sz > 0 {
         let entry_size: u64 = 24; // sizeof(Elf64_Rela)
@@ -374,18 +383,32 @@ fn apply_elf_relocations(
             // Compute patched value: load_bias + r_addend
             let value = load_bias.wrapping_add(r_addend);
 
+            #[cfg(target_arch = "x86_64")]
             match r_type {
-                R_X86_64_RELATIVE => {
+                R_RELATIVE => {
                     // 64-bit absolute patch
                     patch_u64_in_page(
                         r_offset, value, rw_start_va,
                         ro_pages, data_template_pages, temp_virt,
                     );
                 }
-                R_X86_64_32 | R_X86_64_32S => {
+                R_ABS32 | R_ABS32_SIGNED => {
                     // 32-bit absolute patch (text relocations)
                     patch_u32_in_page(
                         r_offset, value as u32, rw_start_va,
+                        ro_pages, data_template_pages, temp_virt,
+                    );
+                }
+                _ => {
+                    continue;
+                }
+            }
+
+            #[cfg(target_arch = "aarch64")]
+            match r_type {
+                R_RELATIVE => {
+                    patch_u64_in_page(
+                        r_offset, value, rw_start_va,
                         ro_pages, data_template_pages, temp_virt,
                     );
                 }
