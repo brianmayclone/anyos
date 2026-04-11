@@ -501,8 +501,9 @@ fi
 # ARM64 mode: launch QEMU aarch64 and exit
 # ============================================================
 if [ "$ARM64_MODE" = true ]; then
-    KERNEL_ELF="${SCRIPT_DIR}/../build/kernel/aarch64-anyos/release/anyos_kernel.elf"
-    ARM64_DISK="${SCRIPT_DIR}/../build/anyos-arm64.img"
+    ARM64_BUILD_DIR="${SCRIPT_DIR}/../build/arm64"
+    KERNEL_ELF="${ARM64_BUILD_DIR}/kernel/aarch64-anyos/release/anyos_kernel.elf"
+    ARM64_DISK="${ARM64_BUILD_DIR}/anyos-arm64.img"
     if [ ! -f "$KERNEL_ELF" ]; then
         echo "Error: ARM64 kernel not found at $KERNEL_ELF"
         echo "Run: ./scripts/build.sh --arm64"

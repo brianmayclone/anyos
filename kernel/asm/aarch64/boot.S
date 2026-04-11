@@ -234,8 +234,12 @@ _in_virtual:
 .in_virtual:
 
     /* Set up boot stack (virtual address) */
+    /* Ensure SP refers to SP_EL1 (kernel stack) */
+    msr     spsel, #1
     ldr     x0, =_boot_stack_top
     mov     sp, x0
+    /* Clear user stack pointer for safety */
+    msr     sp_el0, xzr
 
     /* Zero BSS (virtual addresses, mapped via TTBR1) */
     ldr     x0, =_bss_start

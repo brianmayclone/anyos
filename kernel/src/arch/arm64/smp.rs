@@ -78,7 +78,13 @@ pub fn start_aps(num_cpus: usize) {
 
         crate::serial_verbose_println!("  Starting CPU {}...", cpu);
 
-        // PSCI CPU_ON: SMC #0 with x0=fn_id, x1=target_cpu, x2=entry_point, x3=context_id
+        // PSCI CPU_ON: use MPIDR affinity for the target CPU (aff0 = cpu id).
+        let base_mpidr: u64;
+        unsafe {
+            core::arch::asm!("mrs {}, mpidr_el1", out(reg) base_mpidr, options(nomem, nostack));
+        }
+        let target_mpidr = (base_mpidr & !0xFF) | (cpu as u64);
+
         let result: i64;
         unsafe {
             core::arch::asm!(
@@ -89,7 +95,7 @@ pub fn start_aps(num_cpus: usize) {
                 "hvc #0",
                 "mov {result}, x0",
                 fn_id = in(reg) PSCI_CPU_ON_64,
-                target = in(reg) cpu as u64,
+                target = in(reg) target_mpidr,
                 entry = in(reg) entry_addr,
                 ctx = in(reg) cpu as u64,
                 result = out(reg) result,
@@ -97,6 +103,8 @@ pub fn start_aps(num_cpus: usize) {
                 options(nostack),
             );
         }
+
+        let result = result;
 
         if result == 0 {
             ONLINE_CPUS.fetch_add(1, Ordering::Relaxed);

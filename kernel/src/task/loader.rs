@@ -17,10 +17,8 @@ const PROGRAM_LOAD_ADDR: u64 = 0x0800_0000;
 const USER_STACK_TOP: u64 = 0xC000_0000;
 
 /// Fixed virtual address for the per-process signal return trampoline page.
-/// Placed just above USER_STACK_TOP in an otherwise unused region.
-/// Contains a small code stub: `mov eax, SYS_SIGRETURN; int 0x80; nop`.
-/// Mapped as USER|EXECUTABLE (no NX, not writable) so signal handlers can
-/// return here without needing executable code on the NX-protected stack.
+/// This is currently only used by the x86 compat signal-return path.
+/// ARM64 keeps the native 64-bit signal path trampoline-free for now.
 pub const SIGRETURN_TRAMPOLINE_ADDR: u64 = 0xC000_0000;
 
 /// Number of pages for the user stack (8 MiB = 2048 pages).
@@ -764,49 +762,44 @@ pub fn load_binary_into_pd(
     // Stack is data — writable but never executed.
     let stack_flags = PAGE_WRITABLE | PAGE_USER | virtual_mem::page_nx_flag();
 
-    // Map a signal-return trampoline page (USER | EXECUTABLE, no NX).
-    // Contains `mov eax, SYS_SIGRETURN; int 0x80; nop` so signal handlers
-    // can return without executing code on the NX-protected stack.
-    let tramp_mapped = virtual_mem::map_pages_range_in_pd(
-        pd_phys,
-        VirtAddr::new(SIGRETURN_TRAMPOLINE_ADDR),
-        1,
-        PAGE_USER, // readable + executable (no PAGE_WRITABLE, no NX)
-        true,
-    )?;
-    // Write the trampoline code into the page (switch to new PD temporarily)
-    unsafe {
-        #[cfg(target_arch = "x86_64")]
-        let saved_flags: u64;
-        #[cfg(target_arch = "x86_64")]
-        {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Map a signal-return trampoline page (USER | EXECUTABLE, no NX).
+        // Contains `mov eax, SYS_SIGRETURN; int 0x80; nop` so signal handlers
+        // can return without executing code on the NX-protected stack.
+        let tramp_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(SIGRETURN_TRAMPOLINE_ADDR),
+            1,
+            PAGE_USER, // readable + executable (no PAGE_WRITABLE, no NX)
+            true,
+        )?;
+        // Write the trampoline code into the page (switch to new PD temporarily)
+        unsafe {
+            let saved_flags: u64;
             core::arch::asm!("pushfq; pop {}", out(reg) saved_flags, options(nomem));
             core::arch::asm!("cli", options(nomem, nostack));
-        }
-        let old_pt = virtual_mem::current_cr3();
-        #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+            let old_pt = virtual_mem::current_cr3();
+            core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
 
-        let tramp = SIGRETURN_TRAMPOLINE_ADDR as *mut u8;
-        // mov eax, 246 (SYS_SIGRETURN)
-        tramp.offset(0).write_volatile(0xB8);
-        tramp.offset(1).write_volatile(246); // SYS_SIGRETURN
-        tramp.offset(2).write_volatile(0x00);
-        tramp.offset(3).write_volatile(0x00);
-        tramp.offset(4).write_volatile(0x00);
-        // int 0x80
-        tramp.offset(5).write_volatile(0xCD);
-        tramp.offset(6).write_volatile(0x80);
-        // nop (padding)
-        tramp.offset(7).write_volatile(0x90);
+            let tramp = SIGRETURN_TRAMPOLINE_ADDR as *mut u8;
+            // mov eax, 246 (SYS_SIGRETURN)
+            tramp.offset(0).write_volatile(0xB8);
+            tramp.offset(1).write_volatile(246); // SYS_SIGRETURN
+            tramp.offset(2).write_volatile(0x00);
+            tramp.offset(3).write_volatile(0x00);
+            tramp.offset(4).write_volatile(0x00);
+            // int 0x80
+            tramp.offset(5).write_volatile(0xCD);
+            tramp.offset(6).write_volatile(0x80);
+            // nop (padding)
+            tramp.offset(7).write_volatile(0x90);
 
-        #[cfg(target_arch = "x86_64")]
-        {
             core::arch::asm!("mov cr3, {}", in(reg) old_pt);
             core::arch::asm!("push {}; popfq", in(reg) saved_flags, options(nomem));
         }
+        total_user_pages += tramp_mapped;
     }
-    total_user_pages += tramp_mapped;
 
     // Guard page: leave the bottom-most page of the stack region UNMAPPED.
     // If user code overflows the stack, it touches this unmapped page and
@@ -1132,41 +1125,36 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     // Stack is data — writable but never executed.
     let stack_flags = PAGE_WRITABLE | PAGE_USER | virtual_mem::page_nx_flag();
 
-    // Map signal-return trampoline page (same as load_binary_into_pd)
-    let tramp_mapped = virtual_mem::map_pages_range_in_pd(
-        pd_phys,
-        VirtAddr::new(SIGRETURN_TRAMPOLINE_ADDR),
-        1,
-        PAGE_USER,
-        true,
-    )?;
-    unsafe {
-        #[cfg(target_arch = "x86_64")]
-        let saved_flags_t: u64;
-        #[cfg(target_arch = "x86_64")]
-        {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // Map signal-return trampoline page (same as load_binary_into_pd).
+        let tramp_mapped = virtual_mem::map_pages_range_in_pd(
+            pd_phys,
+            VirtAddr::new(SIGRETURN_TRAMPOLINE_ADDR),
+            1,
+            PAGE_USER,
+            true,
+        )?;
+        unsafe {
+            let saved_flags_t: u64;
             core::arch::asm!("pushfq; pop {}", out(reg) saved_flags_t, options(nomem));
             core::arch::asm!("cli", options(nomem, nostack));
-        }
-        let old_pt_t = virtual_mem::current_cr3();
-        #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
-        let tramp = SIGRETURN_TRAMPOLINE_ADDR as *mut u8;
-        tramp.offset(0).write_volatile(0xB8);
-        tramp.offset(1).write_volatile(246);
-        tramp.offset(2).write_volatile(0x00);
-        tramp.offset(3).write_volatile(0x00);
-        tramp.offset(4).write_volatile(0x00);
-        tramp.offset(5).write_volatile(0xCD);
-        tramp.offset(6).write_volatile(0x80);
-        tramp.offset(7).write_volatile(0x90);
-        #[cfg(target_arch = "x86_64")]
-        {
+            let old_pt_t = virtual_mem::current_cr3();
+            core::arch::asm!("mov cr3, {}", in(reg) pd_phys.as_u64());
+            let tramp = SIGRETURN_TRAMPOLINE_ADDR as *mut u8;
+            tramp.offset(0).write_volatile(0xB8);
+            tramp.offset(1).write_volatile(246);
+            tramp.offset(2).write_volatile(0x00);
+            tramp.offset(3).write_volatile(0x00);
+            tramp.offset(4).write_volatile(0x00);
+            tramp.offset(5).write_volatile(0xCD);
+            tramp.offset(6).write_volatile(0x80);
+            tramp.offset(7).write_volatile(0x90);
             core::arch::asm!("mov cr3, {}", in(reg) old_pt_t);
             core::arch::asm!("push {}; popfq", in(reg) saved_flags_t, options(nomem));
         }
+        total_user_pages += tramp_mapped;
     }
-    total_user_pages += tramp_mapped;
 
     let class = elf_class(&data);
     if class == ELFCLASS64 {

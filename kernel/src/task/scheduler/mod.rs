@@ -68,6 +68,14 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use run_queue::RunQueue;
 use deferred::{DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP, process_deferred_thread_cleanup};
 
+#[cfg(target_arch = "aarch64")]
+use crate::arch::arm64::exceptions::ExceptionFrame;
+
+#[cfg(target_arch = "aarch64")]
+extern "C" {
+    fn arm64_resume_from_exception() -> !;
+}
+
 /// Number of discrete priority levels (Mach-style, like macOS).
 const NUM_PRIORITIES: usize = 128;
 const MAX_PRIORITY: u8 = (NUM_PRIORITIES - 1) as u8; // 127
@@ -788,6 +796,280 @@ pub fn schedule_tick() -> bool {
     true
 }
 
+#[cfg(target_arch = "aarch64")]
+fn save_user_irq_context(thread: &mut Thread, frame_ptr: *mut ExceptionFrame) {
+    let frame = unsafe { &*frame_ptr };
+    thread.context.x = frame.x;
+    thread.context.sp = frame_ptr as u64;
+    thread.context.pc = arm64_resume_from_exception as usize as u64;
+    thread.context.pstate = frame.spsr_el1;
+    thread.context.ttbr0 = crate::arch::hal::current_page_table();
+    unsafe {
+        core::arch::asm!(
+            "mrs {}, tpidr_el0",
+            out(reg) thread.context.tpidr,
+            options(nomem, nostack),
+        );
+    }
+    thread.context.x[30] = arm64_resume_from_exception as usize as u64;
+    thread.context.save_complete = 1;
+    thread.context.canary = crate::task::context::CANARY_MAGIC;
+    thread.context.checksum = thread.context.compute_checksum();
+}
+
+/// ARM64 timer preemption for EL0 threads.
+///
+/// The interrupted user register state lives in the exception frame on the
+/// current kernel stack, so we must preserve that frame and resume it later via
+/// `arm64_resume_from_exception` instead of saving the live EL1 scheduler stack
+/// into the thread's CpuContext.
+#[cfg(target_arch = "aarch64")]
+pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
+    let cpu_id = crate::arch::hal::cpu_id();
+    if cpu_id < MAX_CPUS && PER_CPU_IN_SCHEDULER[cpu_id].load(Ordering::Acquire) {
+        TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+        PER_CPU_TOTAL[cpu_id].fetch_add(1, Ordering::Relaxed);
+        if !PER_CPU_HAS_THREAD[cpu_id].load(Ordering::Relaxed) {
+            IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+            PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
+        } else {
+            PER_CPU_CONTENDED_BUSY[cpu_id].fetch_add(1, Ordering::Relaxed);
+        }
+        return;
+    }
+
+    if cpu_id < MAX_CPUS {
+        PER_CPU_IN_SCHEDULER[cpu_id].store(true, Ordering::Release);
+    }
+
+    if cpu_id == 0 {
+        let pds = DEFERRED_PD_DESTROY.lock().drain();
+        for entry in pds.iter().flatten() {
+            let (pd, tid) = *entry;
+            if tid != 0 {
+                let old_ttbr0 = crate::arch::hal::current_page_table();
+                crate::arch::hal::switch_page_table(pd.as_u64());
+                crate::ipc::shared_memory::cleanup_process(tid);
+                crate::arch::hal::switch_page_table(old_ttbr0);
+            }
+            crate::memory::virtual_mem::destroy_user_page_directory(pd);
+            crate::memory::vma::destroy_process(pd);
+        }
+
+        let deferred_cleanup = DEFERRED_THREAD_CLEANUP.lock().drain();
+        for entry in deferred_cleanup.iter().flatten() {
+            process_deferred_thread_cleanup(*entry);
+        }
+    }
+
+    TOTAL_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+    PER_CPU_TOTAL[cpu_id].fetch_add(1, Ordering::Relaxed);
+
+    let mut guard = match SCHEDULER.try_lock() {
+        Some(s) => s,
+        None => {
+            if !PER_CPU_HAS_THREAD[cpu_id].load(Ordering::Relaxed) {
+                IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+                PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
+            } else {
+                PER_CPU_CONTENDED_BUSY[cpu_id].fetch_add(1, Ordering::Relaxed);
+            }
+            PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
+            return;
+        }
+    };
+
+    let mut switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8, u32, u32)> = None;
+    let mut reaped_threads: [Option<Box<Thread>>; 8] = Default::default();
+
+    {
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => {
+                PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
+                return;
+            }
+        };
+
+        reaped_threads = sched.reap_terminated();
+
+        if DEFERRED_WAKE_PENDING.load(Ordering::Relaxed) > 0 {
+            for slot in &DEFERRED_WAKE_TIDS {
+                let tid = slot.swap(0, Ordering::Acquire);
+                if tid != 0 {
+                    DEFERRED_WAKE_PENDING.fetch_sub(1, Ordering::Relaxed);
+                    sched.wake_thread_inner(tid);
+                }
+            }
+        }
+
+        let current_tick = crate::arch::hal::timer_current_ticks();
+        let n_cpus = sched.num_cpus();
+        for i in 0..sched.threads.len() {
+            if sched.threads[i].state == ThreadState::Blocked {
+                if let Some(wake_tick) = sched.threads[i].wake_at_tick {
+                    if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
+                        let tid = sched.threads[i].tid;
+                        let pri = sched.threads[i].priority;
+                        let aff = sched.threads[i].affinity_cpu;
+                        let target_cpu = if aff < n_cpus { aff } else { 0 };
+                        sched.threads[i].state = ThreadState::Ready;
+                        sched.threads[i].wake_at_tick = None;
+                        sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
+                    }
+                }
+            }
+        }
+
+        let idle_tid = sched.idle_tid[cpu_id];
+        let idle_idx = match sched.find_idx(idle_tid) {
+            Some(i) => i,
+            None => {
+                PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
+                return;
+            }
+        };
+        let outgoing_tid = sched.per_cpu[cpu_id].current_tid;
+        let outgoing_idx = outgoing_tid.and_then(|t| sched.find_idx(t));
+        let outgoing_is_idle = outgoing_tid == Some(idle_tid);
+
+        let missed = PER_CPU_CONTENDED_BUSY[cpu_id].swap(0, Ordering::Relaxed);
+        if missed > 0 && !outgoing_is_idle {
+            if let Some(idx) = outgoing_idx {
+                sched.threads[idx].cpu_ticks += missed;
+            }
+        }
+
+        if outgoing_is_idle {
+            IDLE_SCHED_TICKS.fetch_add(1, Ordering::Relaxed);
+            PER_CPU_IDLE[cpu_id].fetch_add(1, Ordering::Relaxed);
+        } else if let Some(idx) = outgoing_idx {
+            if sched.threads[idx].state == ThreadState::Running {
+                sched.threads[idx].cpu_ticks += 1;
+                save_user_irq_context(&mut sched.threads[idx], frame_ptr);
+                sched.threads[idx].state = ThreadState::Ready;
+                sched.threads[idx].last_cpu = cpu_id;
+                let pri = sched.threads[idx].priority;
+                sched.per_cpu[cpu_id].run_queue.enqueue(outgoing_tid.unwrap_or(0), pri);
+            }
+        }
+
+        if let Some(next_tid) = sched.pick_next(cpu_id) {
+            if next_tid == outgoing_tid.unwrap_or(0) {
+                if let Some(idx) = sched.find_idx(next_tid) {
+                    sched.threads[idx].state = ThreadState::Running;
+                    sched.per_cpu[cpu_id].current_tid = Some(next_tid);
+                    sched.per_cpu[cpu_id].current_idx = Some(idx);
+                    PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
+                    PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
+                    PER_CPU_IS_USER[cpu_id].store(sched.threads[idx].is_user, Ordering::Relaxed);
+                    update_per_cpu_name(cpu_id, &sched.threads[idx].name);
+                    let kstack_top = sched.threads[idx].kernel_stack_top();
+                    crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
+                    PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idx].kernel_stack_bottom(), Ordering::Relaxed);
+                    PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+                    PER_CPU_FPU_PTR[cpu_id].store(
+                        sched.threads[idx].fpu_state.data.as_ptr() as u64,
+                        Ordering::Relaxed,
+                    );
+                }
+            } else if let Some(next_idx) = sched.find_idx(next_tid) {
+                let kstack_top = sched.threads[next_idx].kernel_stack_top();
+                let kstack_bottom = sched.threads[next_idx].kernel_stack_bottom();
+                sched.per_cpu[cpu_id].current_tid = Some(next_tid);
+                sched.per_cpu[cpu_id].current_idx = Some(next_idx);
+                sched.threads[next_idx].state = ThreadState::Running;
+                sched.threads[next_idx].last_cpu = cpu_id;
+                PER_CPU_HAS_THREAD[cpu_id].store(!sched.threads[next_idx].is_idle, Ordering::Relaxed);
+                PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
+                PER_CPU_IS_USER[cpu_id].store(sched.threads[next_idx].is_user, Ordering::Relaxed);
+                update_per_cpu_name(cpu_id, &sched.threads[next_idx].name);
+                crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
+                PER_CPU_STACK_BOTTOM[cpu_id].store(kstack_bottom, Ordering::Relaxed);
+                PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
+                PER_CPU_FPU_PTR[cpu_id].store(
+                    sched.threads[next_idx].fpu_state.data.as_ptr() as u64,
+                    Ordering::Relaxed,
+                );
+
+                let old_ctx = unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
+                let old_fpu = if let Some(idx) = outgoing_idx {
+                    sched.threads[idx].fpu_state.data.as_mut_ptr()
+                } else {
+                    unsafe { SCRATCH_FPU[cpu_id].0.as_mut_ptr() }
+                };
+                let new_ctx = &sched.threads[next_idx].context as *const CpuContext;
+                let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
+                switch_info = Some((
+                    old_ctx,
+                    new_ctx,
+                    old_fpu,
+                    new_fpu,
+                    outgoing_tid.unwrap_or(idle_tid),
+                    next_tid,
+                ));
+            }
+        } else {
+            let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
+            sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
+            sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
+            sched.threads[idle_idx].state = ThreadState::Running;
+            PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
+            PER_CPU_IS_USER[cpu_id].store(false, Ordering::Relaxed);
+            PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
+            update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
+            crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
+            PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_idx].kernel_stack_bottom(), Ordering::Relaxed);
+            PER_CPU_STACK_TOP[cpu_id].store(idle_kstack_top, Ordering::Relaxed);
+            PER_CPU_FPU_PTR[cpu_id].store(
+                sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
+                Ordering::Relaxed,
+            );
+
+            if outgoing_tid != Some(idle_tid) {
+                let old_ctx = unsafe { &mut SCRATCH_CTX[cpu_id] as *mut CpuContext };
+                let idle_ctx = &sched.threads[idle_idx].context as *const CpuContext;
+                let old_fpu = if let Some(idx) = outgoing_idx {
+                    sched.threads[idx].fpu_state.data.as_mut_ptr()
+                } else {
+                    unsafe { SCRATCH_FPU[cpu_id].0.as_mut_ptr() }
+                };
+                let new_fpu = sched.threads[idle_idx].fpu_state.data.as_ptr();
+                switch_info = Some((
+                    old_ctx,
+                    idle_ctx,
+                    old_fpu,
+                    new_fpu,
+                    outgoing_tid.unwrap_or(idle_tid),
+                    idle_tid,
+                ));
+            }
+        }
+    }
+
+    guard.release_no_irq_restore();
+    drop(reaped_threads);
+
+    if let Some((old_ctx, new_ctx, old_fpu, _new_fpu, outgoing_tid, next_tid)) = switch_info {
+        let fpu_owner = PER_CPU_FPU_OWNER[cpu_id].load(Ordering::Relaxed);
+        if fpu_owner != 0 && fpu_owner == outgoing_tid {
+            crate::arch::hal::fpu_save(old_fpu);
+            PER_CPU_FPU_OWNER[cpu_id].store(0, Ordering::Relaxed);
+        }
+        crate::arch::hal::fpu_set_trap();
+        PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
+        let next_pc = unsafe { (*new_ctx).get_pc() };
+        let next_sp = unsafe { (*new_ctx).get_sp() };
+        crate::serial_verbose_println!(
+            "  [SCHED] user-irq switch: T{} -> T{} pc={:#x} sp={:#x}",
+            outgoing_tid, next_tid, next_pc, next_sp,
+        );
+        unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
+    }
+
+    PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
+}
+
 /// Voluntary yield: reschedule without incrementing CPU accounting counters.
 pub fn schedule() { schedule_inner(false); }
 
@@ -904,7 +1186,16 @@ fn schedule_inner(from_timer: bool) {
             // STI + HLT is atomic on x86: enables interrupts and halts in one
             // step, so no interrupt can be missed between STI and HLT.
             // The timer IRQ (or any IRQ) will wake us, and we retry.
-            unsafe { core::arch::asm!("sti; hlt; cli", options(nomem, nostack)); }
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                core::arch::asm!("sti; hlt; cli", options(nomem, nostack));
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                crate::arch::hal::enable_interrupts();
+                crate::arch::hal::halt();
+                crate::arch::hal::disable_interrupts();
+            }
         }
     };
 

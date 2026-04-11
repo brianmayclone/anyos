@@ -6,6 +6,9 @@
 // x86-only hardware drivers
 #[cfg(target_arch = "x86_64")]
 pub mod audio;
+#[cfg(target_arch = "aarch64")]
+#[path = "audio_arm64.rs"]
+pub mod audio;
 #[cfg(target_arch = "x86_64")]
 pub mod bluetooth;
 pub mod boot_console;
@@ -18,6 +21,9 @@ pub mod input;
 #[cfg(target_arch = "x86_64")]
 pub mod kdrv;
 #[cfg(target_arch = "x86_64")]
+pub mod network;
+#[cfg(target_arch = "aarch64")]
+#[path = "network_arm64.rs"]
 pub mod network;
 #[cfg(target_arch = "x86_64")]
 pub mod pci;
@@ -32,6 +38,9 @@ pub mod shutdown_screen;
 pub mod rtc;
 pub mod serial;
 #[cfg(target_arch = "x86_64")]
+pub mod storage;
+#[cfg(target_arch = "aarch64")]
+#[path = "storage_arm64.rs"]
 pub mod storage;
 #[cfg(target_arch = "x86_64")]
 pub mod usb;

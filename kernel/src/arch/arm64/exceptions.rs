@@ -5,6 +5,15 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+/// Saved register frame built by `exceptions.S` on entry from an exception.
+#[repr(C)]
+pub struct ExceptionFrame {
+    pub x: [u64; 31],
+    pub sp_el0: u64,
+    pub elr_el1: u64,
+    pub spsr_el1: u64,
+}
+
 /// Exception Syndrome Register (ESR_EL1) exception class values.
 pub const EC_SVC_AARCH64: u32 = 0x15; // SVC in AArch64 state
 pub const EC_DATA_ABORT_LOWER: u32 = 0x24; // Data abort from EL0
@@ -71,6 +80,36 @@ pub extern "C" fn arm64_irq_handler() {
             h();
         } else if count < 3 {
             crate::serial_verbose_println!("  [IRQ] no handler for intid={}", intid);
+        }
+    } else if count < 3 {
+        crate::serial_verbose_println!("  [IRQ] spurious intid={}", intid);
+    }
+}
+
+/// IRQ dispatch for interrupts taken while a user thread was running in EL0.
+///
+/// The timer IRQ can preempt the current thread, so we pass the saved
+/// exception frame to the scheduler instead of trying to reuse the generic
+/// EL1 context-switch path.
+#[no_mangle]
+pub extern "C" fn arm64_user_irq_handler(frame: *mut ExceptionFrame) {
+    let intid = super::gic::acknowledge();
+    let count = IRQ_DIAG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count < 3 {
+        crate::serial_verbose_println!("  [IRQ] intid={} count={}", intid, count);
+    }
+    if intid < 1020 {
+        super::gic::eoi(intid);
+        if intid == 30 {
+            super::generic_timer::irq_handler();
+            crate::task::scheduler::schedule_tick_from_user_irq(frame);
+        } else {
+            let handler = unsafe { IRQ_HANDLERS[intid as usize] };
+            if let Some(h) = handler {
+                h();
+            } else if count < 3 {
+                crate::serial_verbose_println!("  [IRQ] no handler for intid={}", intid);
+            }
         }
     } else if count < 3 {
         crate::serial_verbose_println!("  [IRQ] spurious intid={}", intid);

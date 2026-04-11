@@ -29,10 +29,14 @@ _ap_entry:
      * Stack base = _ap_stacks + (cpu_id + 1) * 16384
      * (cpu_id 0 is BSP, APs start from 1)
      */
+    /* Ensure SP refers to SP_EL1 (kernel stack) */
+    msr     spsel, #1
     ldr     x1, =_ap_stacks
     add     x2, x19, #1
     lsl     x2, x2, #14        /* × 16384 */
     add     sp, x1, x2
+    /* Clear user stack pointer for safety */
+    msr     sp_el0, xzr
 
     /* Enable FP/NEON (may be trapped by default) */
     mrs     x1, cpacr_el1

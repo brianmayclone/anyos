@@ -100,6 +100,10 @@ context_switch:
     ldr     x9, [x1, #248]
     mov     sp, x9
 
+    /* Load the target PC from the saved context.
+     * Use a dedicated register so the UART diagnostics below don't clobber it. */
+    ldr     x11, [x1, #256]
+
     /* Restore callee-saved registers */
     ldp     x19, x20, [x1, #(19 * 8)]
     ldp     x21, x22, [x1, #(21 * 8)]
@@ -113,7 +117,7 @@ context_switch:
     mov     x10, #67             /* 'C' */
     strb    w10, [x9]
 
-    /* Return to saved PC (which is in x30/LR for cooperative switch) */
-    ret
+    /* Branch to the saved PC. */
+    br      x11
 
 .size context_switch, . - context_switch

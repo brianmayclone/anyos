@@ -140,6 +140,13 @@ _exception_vector_table:
     add     sp, sp, #(34 * 8)
 .endm
 
+.global arm64_resume_from_exception
+.type arm64_resume_from_exception, %function
+arm64_resume_from_exception:
+    RESTORE_REGS
+    eret
+.size arm64_resume_from_exception, . - arm64_resume_from_exception
+
 
 /* --- Kernel synchronous exception --- */
 _kernel_sync_handler:
@@ -192,7 +199,8 @@ _user_sync_handler:
 /* --- User IRQ --- */
 _user_irq_handler:
     SAVE_REGS
-    bl      arm64_irq_handler
+    mov     x0, sp
+    bl      arm64_user_irq_handler
     RESTORE_REGS
     eret
 

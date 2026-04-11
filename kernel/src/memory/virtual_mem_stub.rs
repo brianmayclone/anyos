@@ -118,7 +118,7 @@ fn phys_to_virt_ptr(phys: u64) -> *mut u64 {
 
 /// Convert a kernel virtual address to a physical address.
 #[inline]
-fn virt_to_phys(virt: u64) -> u64 {
+fn virt_to_phys_raw(virt: u64) -> u64 {
     virt - PHYS_TO_VIRT_OFFSET
 }
 
@@ -309,19 +309,20 @@ pub fn is_page_mapped(virt: VirtAddr) -> bool {
 /// For kernel addresses (within the 1 GiB block): reserves the backing
 /// physical frame in the allocator but does not modify page tables.
 /// For user addresses: maps in the current TTBR0.
-pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) {
+pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
     let va = virt.as_u64();
     if is_kernel_addr(va) {
         // 1 GiB block already maps this VA to a fixed PA.
         // Reserve the backing frame so the allocator won't hand it out.
-        let backing = virt_to_phys(va);
+        let backing = virt_to_phys_raw(va);
         physical::reserve_frame(PhysAddr::new(backing));
-        return;
+        return true;
     }
     let ttbr0 = current_cr3();
     if ttbr0 != 0 {
-        map_page_in_pd(PhysAddr::new(ttbr0), virt, phys, flags);
+        return map_page_in_pd(PhysAddr::new(ttbr0), virt, phys, flags);
     }
+    false
 }
 
 /// Unmap a single 4 KiB page.
@@ -372,7 +373,7 @@ pub fn map_page_in_pd(
     virt: VirtAddr,
     phys: PhysAddr,
     flags: u64,
-) {
+) -> bool {
     let va = virt.as_u64();
     let l3_phys = match walk_to_l3(pd_phys.as_u64(), va, true) {
         Some(l3) => l3,
@@ -381,13 +382,14 @@ pub fn map_page_in_pd(
                 "map_page_in_pd: alloc failed for VA {:#018x}",
                 va
             );
-            return;
+            return false;
         }
     };
 
     let attrs = flags_to_arm64_attrs(flags);
     let desc = (phys.as_u64() & ADDR_MASK) | attrs | DESC_VALID | DESC_PAGE;
     unsafe { write_entry(l3_phys, l3_index(va), desc); }
+    true
 }
 
 /// Unmap a single 4K page in a specific user page directory.
@@ -421,6 +423,27 @@ pub fn map_pages_range_in_pd(
         mapped += 1;
     }
     Ok(mapped)
+}
+
+/// Translate a virtual address to its physical address using the active page
+/// tables. Mirrors the x86_64 API used by shared syscall validation code.
+pub fn virt_to_phys(virt: VirtAddr) -> Option<u64> {
+    let va = virt.as_u64();
+    if is_kernel_addr(va) {
+        return Some(virt_to_phys_raw(va));
+    }
+
+    let ttbr0 = current_cr3();
+    if ttbr0 == 0 {
+        return None;
+    }
+
+    let l3_phys = walk_to_l3(ttbr0, va, false)?;
+    let entry = unsafe { read_entry(l3_phys, l3_index(va)) };
+    if !is_valid(entry) {
+        return None;
+    }
+    Some((desc_addr(entry)) | (va & 0xFFF))
 }
 
 /// Create a new (empty) user page directory (L0 table).

@@ -484,6 +484,12 @@ pub fn framebuffer_info() -> Option<(usize, u32, u32)> {
     guard.as_ref().map(|g| (g.fb_virt, g.width, g.height))
 }
 
+/// Get the framebuffer mapping details needed by userspace.
+pub fn framebuffer_mapping_info() -> Option<(u64, usize, u32, u32, u32)> {
+    let guard = GPU_DEVICE.lock();
+    guard.as_ref().map(|g| (g.fb_phys, g.fb_virt, g.width, g.height, g.width * 4))
+}
+
 /// Check if VirtIO GPU is available.
 pub fn is_available() -> bool {
     GPU_DEVICE.lock().is_some()

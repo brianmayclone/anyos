@@ -45,8 +45,21 @@ pub fn sys_screen_size(buf_ptr: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_screen_size(_buf_ptr: u32) -> u32 {
-    u32::MAX
+pub fn sys_screen_size(buf_ptr: u32) -> u32 {
+    if buf_ptr == 0 {
+        return u32::MAX;
+    }
+    match crate::drivers::framebuffer::info() {
+        Some(fb) => {
+            unsafe {
+                let buf = buf_ptr as *mut u32;
+                *buf = fb.width;
+                *buf.add(1) = fb.height;
+            }
+            0
+        }
+        None => u32::MAX,
+    }
 }
 
 /// sys_set_resolution - Change display resolution via GPU driver.
@@ -140,8 +153,18 @@ pub fn sys_list_resolutions(buf_ptr: u32, buf_len: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_list_resolutions(_buf_ptr: u32, _buf_len: u32) -> u32 {
-    0
+pub fn sys_list_resolutions(buf_ptr: u32, buf_len: u32) -> u32 {
+    let Some(fb) = crate::drivers::framebuffer::info() else {
+        return 0;
+    };
+    if buf_ptr != 0 && buf_len >= 8 {
+        unsafe {
+            let buf = buf_ptr as *mut u32;
+            *buf = fb.width;
+            *buf.add(1) = fb.height;
+        }
+    }
+    1
 }
 
 /// sys_gpu_info - Get GPU driver info. Writes driver name to buf. Returns name length.
@@ -171,8 +194,25 @@ pub fn sys_gpu_info(buf_ptr: u32, buf_len: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_info(_buf_ptr: u32, _buf_len: u32) -> u32 {
-    0
+pub fn sys_gpu_info(buf_ptr: u32, buf_len: u32) -> u32 {
+    let name = if crate::drivers::arm::gpu::is_available() {
+        "virtio-gpu-mmio"
+    } else if crate::drivers::framebuffer::is_available() {
+        "framebuffer"
+    } else {
+        return 0;
+    };
+
+    if buf_ptr != 0 && buf_len > 0 {
+        let bytes = name.as_bytes();
+        let copy_len = bytes.len().min(buf_len as usize - 1);
+        unsafe {
+            let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy_len + 1);
+            buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+            buf[copy_len] = 0;
+        }
+    }
+    name.len() as u32
 }
 
 // =========================================================================
@@ -337,8 +377,40 @@ pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_map_framebuffer(_out_info_ptr: u32) -> u32 {
-    u32::MAX
+pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+
+    let (fb_phys, _fb_virt, width, height, pitch) =
+        match crate::drivers::arm::gpu::framebuffer_mapping_info() {
+            Some(info) => info,
+            None => return u32::MAX,
+        };
+
+    let fb_user_base: u64 = 0x2000_0000;
+    let fb_map_size = ((pitch as usize * height as usize) + 0xFFF) & !0xFFF;
+    let pages = fb_map_size / crate::memory::FRAME_SIZE;
+
+    for i in 0..pages {
+        let phys_addr = crate::memory::address::PhysAddr::new(
+            fb_phys + (i * crate::memory::FRAME_SIZE) as u64,
+        );
+        let virt_addr = crate::memory::address::VirtAddr::new(
+            fb_user_base + (i * crate::memory::FRAME_SIZE) as u64,
+        );
+        let _ = crate::memory::virtual_mem::map_page(virt_addr, phys_addr, 0x0F);
+    }
+
+    if out_info_ptr != 0 {
+        let info = unsafe { &mut *(out_info_ptr as *mut [u32; 4]) };
+        info[0] = fb_user_base as u32;
+        info[1] = width;
+        info[2] = height;
+        info[3] = pitch;
+    }
+
+    0
 }
 
 /// Submit GPU acceleration commands from the compositor.
@@ -473,8 +545,59 @@ pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_command(_cmd_buf_ptr: u32, _cmd_count: u32) -> u32 {
-    u32::MAX
+pub fn sys_gpu_command(cmd_buf_ptr: u32, cmd_count: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+    if cmd_count == 0 || cmd_buf_ptr == 0 {
+        return 0;
+    }
+
+    let count = cmd_count.min(256) as usize;
+    let byte_size = count * 36;
+    if !is_valid_user_ptr(cmd_buf_ptr as u64, byte_size as u64) {
+        return 0;
+    }
+
+    let cmds = unsafe { core::slice::from_raw_parts(cmd_buf_ptr as *const [u32; 9], count) };
+    let mut flush_x0 = u32::MAX;
+    let mut flush_y0 = u32::MAX;
+    let mut flush_x1 = 0u32;
+    let mut flush_y1 = 0u32;
+    let mut executed = 0u32;
+
+    for cmd in cmds {
+        match cmd[0] {
+            1 => {
+                let (x, y, w, h) = (cmd[1], cmd[2], cmd[3], cmd[4]);
+                if w > 0 && h > 0 {
+                    flush_x0 = flush_x0.min(x);
+                    flush_y0 = flush_y0.min(y);
+                    flush_x1 = flush_x1.max(x + w);
+                    flush_y1 = flush_y1.max(y + h);
+                }
+                executed += 1;
+            }
+            7 | 8 => {
+                if let Some((_fb_virt, w, h)) = crate::drivers::arm::gpu::framebuffer_info() {
+                    crate::drivers::arm::gpu::flush(0, 0, w, h);
+                    executed += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if flush_x0 < flush_x1 && flush_y0 < flush_y1 {
+        crate::drivers::arm::gpu::flush(
+            flush_x0,
+            flush_y0,
+            flush_x1 - flush_x0,
+            flush_y1 - flush_y0,
+        );
+    }
+
+    executed
 }
 
 /// Poll raw input events for the compositor.
@@ -599,8 +722,50 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_input_poll(_buf_ptr: u32, _max_events: u32) -> u32 {
-    0
+pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+    if buf_ptr == 0 || max_events == 0 {
+        return 0;
+    }
+
+    let max = max_events.min(256) as usize;
+    let byte_size = max * 20;
+    if !is_valid_user_ptr(buf_ptr as u64, byte_size as u64) {
+        return 0;
+    }
+
+    let events = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut [u32; 5], max) };
+    let mut count = 0usize;
+
+    while count < max {
+        match crate::drivers::arm::input::pop_key_event() {
+            Some(key_evt) => {
+                let event_type = if key_evt.pressed { 1 } else { 2 };
+                events[count] = [event_type, key_evt.code as u32, 0, 0, 0];
+                count += 1;
+            }
+            None => break,
+        }
+    }
+
+    while count < max {
+        match crate::drivers::arm::input::pop_mouse_event() {
+            Some(mouse_evt) => {
+                if mouse_evt.is_move {
+                    events[count] = [3, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0];
+                } else {
+                    let pressed = if mouse_evt.buttons != 0 { 1 } else { 0 };
+                    events[count] = [4, mouse_evt.buttons as u32, pressed, 0, 0];
+                }
+                count += 1;
+            }
+            None => break,
+        }
+    }
+
+    count as u32
 }
 
 // =========================================================================
@@ -678,8 +843,31 @@ pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_capture_screen(_buf_ptr: u32, _buf_size: u32, _info_ptr: u32) -> u32 {
-    1 // no GPU
+pub fn sys_capture_screen(buf_ptr: u32, buf_size: u32, info_ptr: u32) -> u32 {
+    let Some(fb) = crate::drivers::framebuffer::info() else {
+        return 1;
+    };
+
+    let bytes = (fb.pitch as usize) * (fb.height as usize);
+    if (buf_size as usize) < bytes {
+        return 2;
+    }
+
+    if info_ptr != 0 {
+        unsafe {
+            let info = info_ptr as *mut u32;
+            *info = fb.width;
+            *info.add(1) = fb.height;
+        }
+    }
+
+    if buf_ptr != 0 {
+        unsafe {
+            core::ptr::copy_nonoverlapping(fb.addr as *const u8, buf_ptr as *mut u8, bytes);
+        }
+    }
+
+    0
 }
 
 // =========================================================================
@@ -698,7 +886,9 @@ pub fn sys_gpu_vram_size() -> u32 {
 
 #[cfg(target_arch = "aarch64")]
 pub fn sys_gpu_vram_size() -> u32 {
-    0
+    crate::drivers::framebuffer::info()
+        .map(|fb| fb.pitch.saturating_mul(fb.height))
+        .unwrap_or(0)
 }
 
 /// SYS_VRAM_MAP (257): Map VRAM pages into a target app's address space.

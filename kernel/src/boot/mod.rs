@@ -7,6 +7,8 @@
 
 #[cfg(target_arch = "x86_64")]
 mod x86;
+#[cfg(target_arch = "aarch64")]
+mod arm64;
 
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
@@ -43,11 +45,8 @@ pub fn kernel_main(boot_info_addr: u64) -> ! {
         x86::kernel_main(boot_info_addr)
     }
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
     {
-        let _ = boot_info_addr;
-        loop {
-            crate::arch::hal::halt();
-        }
+        arm64::kernel_main(boot_info_addr)
     }
 }

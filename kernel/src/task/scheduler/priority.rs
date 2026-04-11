@@ -26,7 +26,10 @@ pub fn wake_thread(tid: u32) {
         }
     };
     if let Some(cpu) = kick_cpu {
+        #[cfg(target_arch = "x86_64")]
         crate::arch::x86::smp::resched_cpu(cpu);
+        #[cfg(target_arch = "aarch64")]
+        crate::arch::hal::send_ipi(cpu, 1);
     }
 }
 
@@ -46,7 +49,10 @@ pub fn try_wake_thread(tid: u32) -> bool {
         };
         drop(guard);
         if let Some(cpu) = kick_cpu {
+            #[cfg(target_arch = "x86_64")]
             crate::arch::x86::smp::resched_cpu(cpu);
+            #[cfg(target_arch = "aarch64")]
+            crate::arch::hal::send_ipi(cpu, 1);
         }
         true
     } else {

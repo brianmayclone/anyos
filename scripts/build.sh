@@ -14,7 +14,7 @@
 BUILD_START=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="${SCRIPT_DIR}/.."
-BUILD_DIR="${PROJECT_DIR}/build"
+BUILD_ROOT="${PROJECT_DIR}/build"
 
 CLEAN=0
 RESET=0
@@ -86,6 +86,12 @@ for arg in "$@"; do
     esac
 done
 
+if [ "$ANYOS_ARCH" = "arm64" ]; then
+    BUILD_DIR="${BUILD_ROOT}/arm64"
+else
+    BUILD_DIR="${BUILD_ROOT}"
+fi
+
 # ── Version management ──────────────────────────────────────────────────
 VERSION_FILE="${PROJECT_DIR}/VERSION"
 if [ ! -f "$VERSION_FILE" ]; then
@@ -150,7 +156,7 @@ fi
 # Force full rebuild if --clean
 if [ "$CLEAN" -eq 1 ]; then
     echo "Cleaning build..."
-    "${SCRIPT_DIR}/clean.sh" --all
+    rm -rf "$BUILD_DIR"
     # Re-configure CMake after clean (entire build dir was removed)
     echo "Configuring build..."
     cmake -B "$BUILD_DIR" -G Ninja $CMAKE_EXTRA_FLAGS "$PROJECT_DIR"

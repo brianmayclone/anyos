@@ -298,14 +298,17 @@ impl Thread {
         #[cfg(target_arch = "aarch64")]
         {
             context.set_pc(entry as *const () as u64);
-            // x30 (LR) = entry: context_switch.S restores x30 and uses `ret`,
-            // so for a brand-new thread the entry point must be in x30.
-            context.x[30] = entry as *const () as u64;
-            // SP aligned to 16 bytes for AArch64 ABI, with -8 for return address slot.
-            context.set_sp(stack_top - 8);
-            // x29 (FP) = stack_top (frame pointer base, equivalent to RBP on x86)
-            context.x[29] = stack_top;
-            // PSTATE: 0x0 for EL0 (no DAIF mask bits set — interrupts enabled)
+            // ARM64 enters the thread body via `br pc`, not `ret`.
+            // LR must therefore point at the kernel exit trampoline so a plain
+            // `ret` from the entry function terminates the thread cleanly.
+            context.x[30] = kernel_thread_exit as *const () as u64;
+            // The AArch64 ABI requires SP to stay 16-byte aligned at public
+            // function boundaries. Unlike x86_64 there is no synthetic
+            // "return-address-on-stack" convention to emulate here.
+            context.set_sp(stack_top);
+            // Start with an empty frame chain.
+            context.x[29] = 0;
+            // PSTATE: EL1h with interrupts unmasked for kernel threads.
             context.set_flags(0x0);
             // Use the current page table base (kernel TTBR0_EL1)
             let ttbr0: u64;

@@ -221,11 +221,14 @@ pub fn set_kernel_stack_for_cpu(cpu: usize, stack_top: u64) {
 #[inline]
 pub fn set_kernel_stack_for_cpu(cpu: usize, stack_top: u64) {
     crate::arch::arm64::smp::set_kernel_stack(cpu, stack_top);
-    // Also update SP_EL1 directly if this is the current CPU
+    // Also update the live EL1 stack pointer if this is the current CPU.
+    // On ARM64, exceptions from EL0 enter EL1 using SP_EL1/SP_ELx, not SP_EL0.
+    // Writing SP_EL0 here corrupts the user stack slot and leaves the kernel
+    // entry stack stale, which breaks IRQ/syscall entry after a reschedule.
     let cur = cpu_id();
     if cpu == cur {
         unsafe {
-            core::arch::asm!("msr sp_el0, {}", in(reg) stack_top, options(nostack));
+            core::arch::asm!("mov sp, {}", in(reg) stack_top, options(nostack));
         }
     }
 }

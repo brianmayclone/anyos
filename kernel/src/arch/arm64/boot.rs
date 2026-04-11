@@ -198,3 +198,72 @@ pub fn detect_memory() -> (u64, u64) {
     );
     (base, size)
 }
+
+/// Detect the number of CPUs described by the DTB.
+///
+/// Counts `cpu@...` child nodes under `/cpus`. Falls back to 4 on QEMU/RPi
+/// style systems when the DTB is unavailable.
+pub fn detect_cpu_count() -> usize {
+    let dtb_phys = dtb_addr();
+    if dtb_phys == 0 {
+        return 4;
+    }
+
+    let base = dtb_phys as *const u8;
+    if be32(base) != FDT_MAGIC {
+        return 4;
+    }
+
+    let off_struct = be32(unsafe { base.add(8) }) as usize;
+    let mut ptr = unsafe { base.add(off_struct) };
+
+    let mut depth: i32 = 0;
+    let mut in_cpus = false;
+    let mut cpu_count = 0usize;
+
+    loop {
+        let align = ptr as usize % 4;
+        if align != 0 {
+            ptr = unsafe { ptr.add(4 - align) };
+        }
+
+        let token = be32(ptr);
+        ptr = unsafe { ptr.add(4) };
+
+        match token {
+            FDT_BEGIN_NODE => {
+                let name_ptr = ptr;
+                let mut len = 0usize;
+                while unsafe { *name_ptr.add(len) } != 0 {
+                    len += 1;
+                }
+                let name = unsafe { core::slice::from_raw_parts(name_ptr, len) };
+                let padded = (len + 1 + 3) & !3;
+                ptr = unsafe { ptr.add(padded) };
+
+                depth += 1;
+                if depth == 1 {
+                    in_cpus = name == b"cpus";
+                } else if in_cpus && depth == 2 && name.starts_with(b"cpu@") {
+                    cpu_count += 1;
+                }
+            }
+            FDT_END_NODE => {
+                if depth == 1 {
+                    in_cpus = false;
+                }
+                depth -= 1;
+            }
+            FDT_PROP | FDT_NOP => {
+                if token == FDT_PROP {
+                    let prop_len = be32(ptr) as usize;
+                    ptr = unsafe { ptr.add(8) };
+                    ptr = unsafe { ptr.add((prop_len + 3) & !3) };
+                }
+            }
+            FDT_END | _ => break,
+        }
+    }
+
+    cpu_count.max(1)
+}
