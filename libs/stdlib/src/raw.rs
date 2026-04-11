@@ -444,6 +444,7 @@ pub(crate) fn syscall0(num: u32) -> u32 {
         asm!("svc #0",
             inlateout("x0") 0u64 => ret,
             in("x8") num as u64,
+            clobber_abi("C"),
             options(nostack),
         );
     }
@@ -458,6 +459,7 @@ pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
         asm!("svc #0",
             inlateout("x0") a1 => ret,
             in("x8") num as u64,
+            clobber_abi("C"),
             options(nostack),
         );
     }
@@ -473,6 +475,7 @@ pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
             inlateout("x0") a1 => ret,
             in("x1") a2,
             in("x8") num as u64,
+            clobber_abi("C"),
             options(nostack),
         );
     }
@@ -489,6 +492,7 @@ pub(crate) fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 {
             in("x1") a2,
             in("x2") a3,
             in("x8") num as u64,
+            clobber_abi("C"),
             options(nostack),
         );
     }
@@ -506,6 +510,7 @@ pub(crate) fn syscall4(num: u32, a1: u64, a2: u64, a3: u64, a4: u64) -> u32 {
             in("x2") a3,
             in("x3") a4,
             in("x8") num as u64,
+            clobber_abi("C"),
             options(nostack),
         );
     }
@@ -524,6 +529,7 @@ pub(crate) fn syscall5(num: u32, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) ->
             in("x3") a4,
             in("x4") a5,
             in("x8") num as u64,
+            clobber_abi("C"),
             options(nostack),
         );
     }

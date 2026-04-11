@@ -854,31 +854,85 @@ pub fn load_dll(path: &str, expected_base: u64) -> Result<u32, &'static str> {
 /// Per-process .data/.bss pages are NOT pre-mapped — they are demand-paged
 /// via handle_dll_demand_page() on first access.
 pub fn map_all_dlls_into(pd_phys: PhysAddr) {
-    // Phase 1: Under lock — collect (virt, phys) pairs for RO pages only
-    let page_maps: Vec<(VirtAddr, PhysAddr)> = {
+    struct DllMapPlan {
+        base_vaddr: u64,
+        ro_pages: Vec<PhysAddr>,
+        data_template_pages: Vec<PhysAddr>,
+        bss_page_count: u32,
+    }
+
+    // Snapshot DLL metadata under lock, then perform all mapping/allocation work
+    // outside the registry lock.
+    let plans: Vec<DllMapPlan> = {
         let dlls = LOADED_DLLS.lock();
         let mut v = Vec::new();
         for dll in dlls.iter() {
-            for (i, &frame) in dll.ro_pages.iter().enumerate() {
-                v.push((
-                    VirtAddr::new(dll.base_vaddr + (i as u64) * PAGE_SIZE),
-                    frame,
-                ));
-            }
+            v.push(DllMapPlan {
+                base_vaddr: dll.base_vaddr,
+                ro_pages: dll.ro_pages.clone(),
+                data_template_pages: dll.data_template_pages.clone(),
+                bss_page_count: dll.bss_page_count,
+            });
         }
         v
     }; // Lock dropped — interrupts re-enabled
 
-    // Phase 2: Map RO pages without holding the lock
-    for &(virt, phys) in &page_maps {
-        if !virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_USER) {
-            crate::serial_println!(
-                "map_all_dlls_into: failed to map RO page virt={:#x} phys={:#x} pd={:#x}",
-                virt.as_u64(),
-                phys.as_u64(),
-                pd_phys.as_u64()
-            );
-            return;
+    let src = VirtAddr::new(TEMP_COPY_SRC);
+    let dst = VirtAddr::new(TEMP_COPY_DST);
+
+    for plan in plans {
+        for (i, &phys) in plan.ro_pages.iter().enumerate() {
+            let virt = VirtAddr::new(plan.base_vaddr + (i as u64) * PAGE_SIZE);
+            if !virtual_mem::map_page_in_pd(pd_phys, virt, phys, PAGE_USER) {
+                crate::serial_println!(
+                    "map_all_dlls_into: failed to map RO page virt={:#x} phys={:#x} pd={:#x}",
+                    virt.as_u64(),
+                    phys.as_u64(),
+                    pd_phys.as_u64()
+                );
+                return;
+            }
+        }
+
+        let writable_base = plan.base_vaddr + (plan.ro_pages.len() as u64) * PAGE_SIZE;
+
+        for (i, &template_phys) in plan.data_template_pages.iter().enumerate() {
+            let new_frame = physical::alloc_frame().expect("OOM mapping DLL .data page");
+            with_frame_read(template_phys, src, |src_ptr| {
+                with_frame_mut(new_frame, dst, |dst_ptr| unsafe {
+                    core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
+                });
+            });
+
+            let virt = VirtAddr::new(writable_base + (i as u64) * PAGE_SIZE);
+            if !virtual_mem::map_page_in_pd(pd_phys, virt, new_frame, PAGE_USER | PAGE_WRITABLE) {
+                crate::serial_println!(
+                    "map_all_dlls_into: failed to map .data page virt={:#x} phys={:#x} pd={:#x}",
+                    virt.as_u64(),
+                    new_frame.as_u64(),
+                    pd_phys.as_u64()
+                );
+                return;
+            }
+        }
+
+        let bss_base = writable_base + (plan.data_template_pages.len() as u64) * PAGE_SIZE;
+        for i in 0..plan.bss_page_count as usize {
+            let new_frame = physical::alloc_frame().expect("OOM mapping DLL .bss page");
+            with_frame_mut(new_frame, dst, |ptr| unsafe {
+                core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
+            });
+
+            let virt = VirtAddr::new(bss_base + (i as u64) * PAGE_SIZE);
+            if !virtual_mem::map_page_in_pd(pd_phys, virt, new_frame, PAGE_USER | PAGE_WRITABLE) {
+                crate::serial_println!(
+                    "map_all_dlls_into: failed to map .bss page virt={:#x} phys={:#x} pd={:#x}",
+                    virt.as_u64(),
+                    new_frame.as_u64(),
+                    pd_phys.as_u64()
+                );
+                return;
+            }
         }
     }
 }

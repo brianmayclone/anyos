@@ -87,7 +87,7 @@ _exception_vector_table:
  * After this macro, SP points to the saved register frame.
  */
 .macro SAVE_REGS
-    sub     sp, sp, #(34 * 8)   /* 34 registers: x0-x30, sp_el0, elr, spsr */
+    sub     sp, sp, #(35 * 8)   /* 35 registers: x0-x30, sp_el0, elr, spsr, tpidr */
     stp     x0,  x1,  [sp, #(0  * 8)]
     stp     x2,  x3,  [sp, #(2  * 8)]
     stp     x4,  x5,  [sp, #(4  * 8)]
@@ -103,24 +103,29 @@ _exception_vector_table:
     stp     x24, x25, [sp, #(24 * 8)]
     stp     x26, x27, [sp, #(26 * 8)]
     stp     x28, x29, [sp, #(28 * 8)]
-    /* Save x30 (LR), SP_EL0, ELR_EL1, SPSR_EL1 */
+    /* Save x30 (LR), SP_EL0, ELR_EL1, SPSR_EL1, TPIDR_EL0 */
     mrs     x10, sp_el0
     mrs     x11, elr_el1
     mrs     x12, spsr_el1
+    mrs     x13, tpidr_el0
     stp     x30, x10, [sp, #(30 * 8)]
     stp     x11, x12, [sp, #(32 * 8)]
+    str     x13, [sp, #(34 * 8)]
 .endm
 
 /*
  * Restore all general-purpose registers from the stack.
  */
 .macro RESTORE_REGS
-    /* Restore ELR_EL1, SPSR_EL1, SP_EL0, x30 */
+    /* Restore ELR_EL1, SPSR_EL1, SP_EL0, TPIDR_EL0, x30 */
     ldp     x11, x12, [sp, #(32 * 8)]
     ldp     x30, x10, [sp, #(30 * 8)]
+    ldr     x13, [sp, #(34 * 8)]
     msr     elr_el1, x11
     msr     spsr_el1, x12
     msr     sp_el0, x10
+    msr     tpidr_el0, x13
+    isb
     /* Restore x0-x29 */
     ldp     x28, x29, [sp, #(28 * 8)]
     ldp     x26, x27, [sp, #(26 * 8)]
@@ -137,7 +142,7 @@ _exception_vector_table:
     ldp     x4,  x5,  [sp, #(4  * 8)]
     ldp     x2,  x3,  [sp, #(2  * 8)]
     ldp     x0,  x1,  [sp, #(0  * 8)]
-    add     sp, sp, #(34 * 8)
+    add     sp, sp, #(35 * 8)
 .endm
 
 .global arm64_resume_from_exception

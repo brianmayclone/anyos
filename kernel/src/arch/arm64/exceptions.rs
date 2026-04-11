@@ -12,6 +12,7 @@ pub struct ExceptionFrame {
     pub sp_el0: u64,
     pub elr_el1: u64,
     pub spsr_el1: u64,
+    pub tpidr_el0: u64,
 }
 
 /// Exception Syndrome Register (ESR_EL1) exception class values.
@@ -217,9 +218,14 @@ fn handle_fault(ec: u32, far: u64, elr: u64) {
         || ec == EC_INST_ABORT_LOWER
         || crate::task::scheduler::is_current_thread_user();
     if is_user {
+        let cpu = crate::arch::hal::cpu_id();
+        let tid = crate::task::scheduler::current_tid();
+        let name_raw = crate::task::scheduler::current_thread_name();
+        let name_len = name_raw.iter().position(|&b| b == 0).unwrap_or(name_raw.len());
+        let name = core::str::from_utf8(&name_raw[..name_len]).unwrap_or("?");
         crate::serial_verbose_println!(
-            "  Killing user thread due to fault (EC={:#04x}, FAR={:#018x}, ELR={:#018x})",
-            ec, far, elr,
+            "  Killing user thread due to fault (CPU={} TID={} '{}' EC={:#04x}, FAR={:#018x}, ELR={:#018x})",
+            cpu, tid, name, ec, far, elr,
         );
         if !crate::task::scheduler::try_exit_current(139) {
             crate::task::scheduler::fault_kill_and_idle(139);

@@ -171,6 +171,13 @@ static PER_CPU_LAST_SYSCALL: [AtomicU32; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
+#[cfg(target_arch = "aarch64")]
+static ARM64_FIRST_USER_SWITCH_LOGGED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static ARM64_FIRST_USER_WAKE_LOGGED: AtomicBool = AtomicBool::new(false);
+#[cfg(target_arch = "aarch64")]
+static ARM64_FIRST_USER_PICK_LOGGED: AtomicBool = AtomicBool::new(false);
+
 // --- Lazy FPU per-CPU state ---
 
 /// TID whose FPU/SSE/AVX state is currently loaded in this CPU's registers.
@@ -396,6 +403,26 @@ extern "C" fn idle_thread_entry() {
 }
 
 impl Scheduler {
+    #[cfg(target_arch = "aarch64")]
+    #[inline]
+    fn arm64_has_pinned_kernel_continuation(&self, idx: usize) -> bool {
+        let t = &self.threads[idx];
+        let pc = t.context.get_pc();
+        let sp = t.context.get_sp();
+        if !(pc >= KERNEL_PC_MIN && pc < KERNEL_PC_MAX && sp >= KERNEL_ADDR_MIN) {
+            return false;
+        }
+        if t.is_user {
+            let user_start = crate::task::loader::user_thread_trampoline as *const () as usize as u64;
+            let thread_start = crate::task::loader::thread_create_trampoline as *const () as usize as u64;
+            let fork_start = crate::task::loader::fork_child_trampoline as *const () as usize as u64;
+            if pc == user_start || pc == thread_start || pc == fork_start {
+                return false;
+            }
+        }
+        true
+    }
+
     fn new() -> Self {
         let mut per_cpu = Vec::with_capacity(MAX_CPUS);
         for _ in 0..MAX_CPUS {
@@ -677,7 +704,16 @@ impl Scheduler {
         // keeps its currently running thread; we only consume pending ready
         // work that would otherwise wait for future timer ticks or rebalancing.
         if max_count >= 1 {
-            self.pick_eligible(victim)
+            let tid = self.pick_eligible(victim)?;
+            #[cfg(target_arch = "aarch64")]
+            if let Some(idx) = self.find_idx(tid) {
+                if self.arm64_has_pinned_kernel_continuation(idx) {
+                    let pri = self.threads[idx].priority;
+                    self.per_cpu[victim].run_queue.enqueue(tid, pri);
+                    return None;
+                }
+            }
+            Some(tid)
         } else {
             None
         }
@@ -698,6 +734,20 @@ impl Scheduler {
                 if self.threads[idx].state == ThreadState::Ready
                     && self.threads[idx].context.save_complete != 0
                 {
+                    #[cfg(target_arch = "aarch64")]
+                    if self.threads[idx].is_user
+                        && !ARM64_FIRST_USER_PICK_LOGGED.swap(true, Ordering::Relaxed)
+                    {
+                        crate::serial_verbose_println!(
+                            "[ARM64] pick tid={} '{}' from_cpu={} pc={:#x} sp={:#x} save_complete={}",
+                            tid,
+                            self.threads[idx].name_str(),
+                            queue_cpu,
+                            self.threads[idx].context.get_pc(),
+                            self.threads[idx].context.get_sp(),
+                            self.threads[idx].context.save_complete,
+                        );
+                    }
                     return Some(tid);
                 }
                 // Stopped/Terminated threads should not be re-enqueued
@@ -723,11 +773,31 @@ impl Scheduler {
         if let Some(idx) = self.find_idx(tid) {
             if self.threads[idx].state == ThreadState::Blocked {
                 self.threads[idx].state = ThreadState::Ready;
-                let cpu = self.threads[idx].affinity_cpu;
+                let mut cpu = self.threads[idx].affinity_cpu;
+                #[cfg(target_arch = "aarch64")]
+                {
+                    if self.arm64_has_pinned_kernel_continuation(idx) {
+                        cpu = self.threads[idx].last_cpu;
+                    }
+                }
                 let n = self.num_cpus();
                 let target = if cpu < n { cpu } else { 0 };
                 let needs_kick = self.per_cpu[target].run_queue.is_empty();
                 self.per_cpu[target].run_queue.enqueue(tid, self.threads[idx].priority);
+                #[cfg(target_arch = "aarch64")]
+                if self.threads[idx].is_user
+                    && !ARM64_FIRST_USER_WAKE_LOGGED.swap(true, Ordering::Relaxed)
+                {
+                    crate::serial_verbose_println!(
+                        "[ARM64] wake tid={} '{}' target_cpu={} pc={:#x} sp={:#x} state={:?}",
+                        tid,
+                        self.threads[idx].name_str(),
+                        target,
+                        self.threads[idx].context.get_pc(),
+                        self.threads[idx].context.get_sp(),
+                        self.threads[idx].state,
+                    );
+                }
                 return if needs_kick { Some(target) } else { None };
             }
         }
@@ -804,13 +874,7 @@ fn save_user_irq_context(thread: &mut Thread, frame_ptr: *mut ExceptionFrame) {
     thread.context.pc = arm64_resume_from_exception as usize as u64;
     thread.context.pstate = frame.spsr_el1;
     thread.context.ttbr0 = crate::arch::hal::current_page_table();
-    unsafe {
-        core::arch::asm!(
-            "mrs {}, tpidr_el0",
-            out(reg) thread.context.tpidr,
-            options(nomem, nostack),
-        );
-    }
+    thread.context.tpidr = frame.tpidr_el0;
     thread.context.x[30] = arm64_resume_from_exception as usize as u64;
     thread.context.save_complete = 1;
     thread.context.canary = crate::task::context::CANARY_MAGIC;
@@ -911,8 +975,14 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                     if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
                         let tid = sched.threads[i].tid;
                         let pri = sched.threads[i].priority;
-                        let aff = sched.threads[i].affinity_cpu;
-                        let target_cpu = if aff < n_cpus { aff } else { 0 };
+                        let mut cpu = sched.threads[i].affinity_cpu;
+                        #[cfg(target_arch = "aarch64")]
+                        {
+                            if sched.arm64_has_pinned_kernel_continuation(i) {
+                                cpu = sched.threads[i].last_cpu;
+                            }
+                        }
+                        let target_cpu = if cpu < n_cpus { cpu } else { 0 };
                         sched.threads[i].state = ThreadState::Ready;
                         sched.threads[i].wake_at_tick = None;
                         sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
@@ -1275,17 +1345,23 @@ fn schedule_inner(from_timer: bool) {
             let current_tick = crate::arch::hal::timer_current_ticks();
             for i in 0..sched.threads.len() {
                 if sched.threads[i].state == ThreadState::Blocked {
-                    if let Some(wake_tick) = sched.threads[i].wake_at_tick {
-                        if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
-                            let tid = sched.threads[i].tid;
-                            let pri = sched.threads[i].priority;
-                            let aff = sched.threads[i].affinity_cpu;
-                            let target_cpu = if aff < n_cpus { aff } else { 0 };
-                            sched.threads[i].state = ThreadState::Ready;
-                            sched.threads[i].wake_at_tick = None;
-                            sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
+                if let Some(wake_tick) = sched.threads[i].wake_at_tick {
+                    if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
+                        let tid = sched.threads[i].tid;
+                        let pri = sched.threads[i].priority;
+                        let mut cpu = sched.threads[i].affinity_cpu;
+                        #[cfg(target_arch = "aarch64")]
+                        {
+                            if sched.arm64_has_pinned_kernel_continuation(i) {
+                                cpu = sched.threads[i].last_cpu;
+                            }
                         }
+                        let target_cpu = if cpu < n_cpus { cpu } else { 0 };
+                        sched.threads[i].state = ThreadState::Ready;
+                        sched.threads[i].wake_at_tick = None;
+                        sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
                     }
+                }
                 }
             }
         }
@@ -1457,6 +1533,21 @@ fn schedule_inner(from_timer: bool) {
                         sched.threads[next_idx].context.save_complete = 1;
                         None
                     } else if let Some(prev_idx) = outgoing_idx {
+                        #[cfg(target_arch = "aarch64")]
+                        if sched.threads[next_idx].is_user
+                            && !ARM64_FIRST_USER_SWITCH_LOGGED.swap(true, Ordering::Relaxed)
+                        {
+                            crate::serial_verbose_println!(
+                                "[ARM64] switch {}:{} -> {}:{} pc={:#x} sp={:#x} ttbr0={:#x}",
+                                sched.threads[prev_idx].tid,
+                                sched.threads[prev_idx].name_str(),
+                                sched.threads[next_idx].tid,
+                                sched.threads[next_idx].name_str(),
+                                sched.threads[next_idx].context.get_pc(),
+                                sched.threads[next_idx].context.get_sp(),
+                                sched.threads[next_idx].context.get_page_table(),
+                            );
+                        }
                         // Use cached outgoing_idx (same thread, avoids redundant find_idx)
                         let prev_tid = outgoing_tid.unwrap_or(0);
                         let old_ctx = &mut sched.threads[prev_idx].context as *mut CpuContext;
@@ -1465,6 +1556,19 @@ fn schedule_inner(from_timer: bool) {
                         let new_fpu = sched.threads[next_idx].fpu_state.data.as_ptr();
                         Some((old_ctx, new_ctx, old_fpu, new_fpu, prev_tid, next_tid))
                     } else {
+                        #[cfg(target_arch = "aarch64")]
+                        if sched.threads[next_idx].is_user
+                            && !ARM64_FIRST_USER_SWITCH_LOGGED.swap(true, Ordering::Relaxed)
+                        {
+                            crate::serial_verbose_println!(
+                                "[ARM64] switch idle -> {}:{} pc={:#x} sp={:#x} ttbr0={:#x}",
+                                sched.threads[next_idx].tid,
+                                sched.threads[next_idx].name_str(),
+                                sched.threads[next_idx].context.get_pc(),
+                                sched.threads[next_idx].context.get_sp(),
+                                sched.threads[next_idx].context.get_page_table(),
+                            );
+                        }
                         // Previous thread reaped or no previous — switch from idle
                         let old_ctx = &mut sched.threads[idle_idx].context as *mut CpuContext;
                         let new_ctx = &sched.threads[next_idx].context as *const CpuContext;

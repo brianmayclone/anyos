@@ -1487,7 +1487,7 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
 
 /// Trampoline: runs as a kernel thread, then transitions to user mode.
 /// At this point, context_switch.asm has already loaded our CR3 (user PD).
-extern "C" fn user_thread_trampoline() {
+pub(crate) extern "C" fn user_thread_trampoline() {
     enable_irqs_before_user_entry();
     #[cfg(target_arch = "x86_64")]
     crate::serial_verbose_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
