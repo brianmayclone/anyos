@@ -32,7 +32,7 @@ pub fn cpu_id() -> usize {
 pub fn cpu_id() -> usize {
     let mpidr: u64;
     unsafe { core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack)); }
-    (mpidr & 0xFF) as usize
+    crate::arch::arm64::psci::logical_cpu_id_from_mpidr(mpidr)
 }
 
 /// Number of online CPUs (at least 1).

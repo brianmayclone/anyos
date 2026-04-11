@@ -7,6 +7,7 @@ pub mod exceptions;
 pub mod gic;
 pub mod generic_timer;
 pub mod mmu;
+pub mod psci;
 pub mod power;
 pub mod serial;
 pub mod smp;

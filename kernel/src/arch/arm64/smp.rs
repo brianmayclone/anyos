@@ -3,6 +3,7 @@
 //! Uses PSCI CPU_ON to start secondary processors on QEMU virt.
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use crate::memory::address::VirtAddr;
 
 /// Maximum number of CPUs supported.
 pub const MAX_CPUS: usize = 16;
@@ -50,7 +51,7 @@ pub fn current_cpu_id() -> usize {
     unsafe {
         core::arch::asm!("mrs {}, mpidr_el1", out(reg) mpidr, options(nomem, nostack));
     }
-    (mpidr & 0xFF) as usize
+    super::psci::logical_cpu_id_from_mpidr(mpidr)
 }
 
 /// Initialize BSP SMP state.
@@ -68,47 +69,64 @@ pub fn start_aps(num_cpus: usize) {
         fn _ap_entry();
     }
 
-    let entry_addr = _ap_entry as *const () as u64;
+    let entry_virt = _ap_entry as *const () as u64;
+    let entry_addr = crate::memory::virtual_mem::virt_to_phys(VirtAddr::new(entry_virt))
+        .unwrap_or(entry_virt);
     let bsp_id = current_cpu_id();
+
+    let bsp_mpidr: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, mpidr_el1", out(reg) bsp_mpidr, options(nomem, nostack));
+    }
 
     for cpu in 0..num_cpus {
         if cpu == bsp_id {
             continue;
         }
 
-        crate::serial_verbose_println!("  Starting CPU {}...", cpu);
+        let mut candidates = [
+            super::psci::cpu_target_mpidr(cpu),
+            (bsp_mpidr & !0xFF) | cpu as u64,
+            cpu as u64,
+            0x8000_0000 | cpu as u64,
+        ];
+        let mut result = -2i64;
+        let mut used_target = candidates[0];
+        let used_hvc = super::psci::prefers_hvc();
 
-        // PSCI CPU_ON: use MPIDR affinity for the target CPU (aff0 = cpu id).
-        let base_mpidr: u64;
-        unsafe {
-            core::arch::asm!("mrs {}, mpidr_el1", out(reg) base_mpidr, options(nomem, nostack));
-        }
-        let target_mpidr = (base_mpidr & !0xFF) | (cpu as u64);
+        'try_targets: for i in 0..candidates.len() {
+            let target_mpidr = candidates[i];
+            if candidates[..i].contains(&target_mpidr) {
+                continue;
+            }
 
-        let result: i64;
-        unsafe {
-            core::arch::asm!(
-                "mov x0, {fn_id}",
-                "mov x1, {target}",
-                "mov x2, {entry}",
-                "mov x3, {ctx}",
-                "hvc #0",
-                "mov {result}, x0",
-                fn_id = in(reg) PSCI_CPU_ON_64,
-                target = in(reg) target_mpidr,
-                entry = in(reg) entry_addr,
-                ctx = in(reg) cpu as u64,
-                result = out(reg) result,
-                out("x0") _, out("x1") _, out("x2") _, out("x3") _,
-                options(nostack),
+            crate::serial_verbose_println!(
+                "  Starting CPU {} (mpidr={:#x}, conduit={})...",
+                cpu,
+                target_mpidr,
+                if super::psci::prefers_hvc() { "hvc" } else { "smc" },
             );
-        }
 
-        let result = result;
+            let primary = if super::psci::prefers_hvc() {
+                super::psci::call_hvc(PSCI_CPU_ON_64, target_mpidr, entry_addr, cpu as u64)
+            } else {
+                super::psci::call_smc(PSCI_CPU_ON_64, target_mpidr, entry_addr, cpu as u64)
+            };
+            result = primary;
+            used_target = target_mpidr;
+            if result == 0 {
+                break 'try_targets;
+            }
+        }
 
         if result == 0 {
             ONLINE_CPUS.fetch_add(1, Ordering::Relaxed);
-            crate::serial_verbose_println!("  CPU {} started successfully", cpu);
+            crate::serial_verbose_println!(
+                "  CPU {} started successfully (mpidr={:#x}, conduit={})",
+                cpu,
+                used_target,
+                if used_hvc { "hvc" } else { "smc" },
+            );
         } else {
             crate::serial_verbose_println!("  CPU {} failed to start: PSCI error {}", cpu, result);
         }

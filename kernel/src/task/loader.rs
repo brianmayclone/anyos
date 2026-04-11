@@ -1402,10 +1402,7 @@ extern "C" fn user_thread_trampoline() {
             options(nostack),
         );
     }
-    // New threads are first context-switched in from a timer IRQ handler,
-    // which runs with PSTATE.I=1 (interrupts masked). Re-enable interrupts
-    // so timer ticks continue firing while this thread runs.
-    crate::arch::hal::enable_interrupts();
+    enable_irqs_before_user_entry();
     crate::serial_verbose_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
     let tid = crate::task::scheduler::current_tid();
     let (entry, user_stack, compat32) = {
@@ -1444,7 +1441,7 @@ pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64) {
 /// Trampoline for intra-process threads created via SYS_THREAD_CREATE.
 /// Identical to `user_thread_trampoline` — looks up the pending slot and jumps to user mode.
 pub extern "C" fn thread_create_trampoline() {
-    crate::arch::hal::enable_interrupts();
+    enable_irqs_before_user_entry();
     let tid = crate::task::scheduler::current_tid();
     let (entry, user_stack, compat32) = {
         let mut slots = PENDING_PROGRAMS.lock();
@@ -1513,6 +1510,16 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
         options(noreturn)
     );
 }
+
+#[cfg(target_arch = "x86_64")]
+#[inline(never)]
+fn enable_irqs_before_user_entry() {
+    crate::arch::hal::enable_interrupts();
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+fn enable_irqs_before_user_entry() {}
 
 /// Transition to EL0 (user mode) for 64-bit AArch64 programs.
 ///
