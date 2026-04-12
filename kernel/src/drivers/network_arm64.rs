@@ -19,7 +19,11 @@ use crate::drivers::arm::virtqueue::{VirtQueue, VRING_DESC_F_WRITE, DEFAULT_QUEU
 const RX_QUEUE_SIZE: usize = DEFAULT_QUEUE_SIZE as usize;
 const RX_BUF_SIZE: usize = 2048;
 const TX_BUF_SIZE: usize = 4096;
-const VIRTIO_NET_HDR_SIZE: usize = 12;
+// VirtIO net uses a 10-byte base header on TX/RX.
+// The 2-byte `num_buffers` suffix is present on RX only when
+// VIRTIO_NET_F_MRG_RXBUF was negotiated.
+const VIRTIO_NET_HDR_SIZE_TX: usize = 10;
+const VIRTIO_NET_HDR_SIZE_RX: usize = 10;
 const VIRTIO_NET_F_MAC: u32 = 1 << 5;
 
 #[inline]
@@ -144,14 +148,14 @@ impl VirtioNet {
             let buf_idx = id as usize;
             if buf_idx < RX_QUEUE_SIZE {
                 let bytes = len as usize;
-                if bytes > VIRTIO_NET_HDR_SIZE && bytes <= RX_BUF_SIZE {
-                    let payload_len = bytes - VIRTIO_NET_HDR_SIZE;
+                if bytes > VIRTIO_NET_HDR_SIZE_RX && bytes <= RX_BUF_SIZE {
+                    let payload_len = bytes - VIRTIO_NET_HDR_SIZE_RX;
                     let buf_virt = phys_to_virt(self.rx_bufs_phys[buf_idx]);
                     let mut packet = Vec::with_capacity(payload_len);
                     unsafe {
                         packet.set_len(payload_len);
                         ptr::copy_nonoverlapping(
-                            (buf_virt + VIRTIO_NET_HDR_SIZE) as *const u8,
+                            (buf_virt + VIRTIO_NET_HDR_SIZE_RX) as *const u8,
                             packet.as_mut_ptr(),
                             payload_len,
                         );
@@ -170,21 +174,21 @@ impl VirtioNet {
     }
 
     fn transmit(&mut self, data: &[u8]) -> bool {
-        if !self.enabled || data.len() + VIRTIO_NET_HDR_SIZE > TX_BUF_SIZE {
+        if !self.enabled || data.len() + VIRTIO_NET_HDR_SIZE_TX > TX_BUF_SIZE {
             return false;
         }
 
         let tx_virt = phys_to_virt(self.tx_buf_phys);
         unsafe {
-            ptr::write_bytes(tx_virt as *mut u8, 0, VIRTIO_NET_HDR_SIZE);
+            ptr::write_bytes(tx_virt as *mut u8, 0, VIRTIO_NET_HDR_SIZE_TX);
             ptr::copy_nonoverlapping(
                 data.as_ptr(),
-                (tx_virt + VIRTIO_NET_HDR_SIZE) as *mut u8,
+                (tx_virt + VIRTIO_NET_HDR_SIZE_TX) as *mut u8,
                 data.len(),
             );
         }
 
-        let total_len = (VIRTIO_NET_HDR_SIZE + data.len()) as u32;
+        let total_len = (VIRTIO_NET_HDR_SIZE_TX + data.len()) as u32;
         if self.transmitq.push_buf(self.tx_buf_phys, total_len, 0).is_none() {
             return false;
         }
