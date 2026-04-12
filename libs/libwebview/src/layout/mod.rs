@@ -1735,20 +1735,6 @@ pub(super) fn layout_children_ex_with_budget(
             let mut placed = child_box;
             let relative_x = placed.x;
             let relative_y = placed.y;
-            if let Some(explicit_width) = child_style.width {
-                let border2 = placed.border_width * 2;
-                let explicit_outer_width = if matches!(
-                    child_style.box_sizing,
-                    crate::style::BoxSizing::BorderBox
-                ) {
-                    explicit_width
-                } else {
-                    explicit_width + placed.padding.left + placed.padding.right + border2
-                };
-                if explicit_outer_width > placed.width {
-                    placed.width = explicit_outer_width;
-                }
-            }
             if use_fit_content_width {
                 let remaining =
                     (effective_avail - placed.width - placed.margin.left - placed.margin.right)

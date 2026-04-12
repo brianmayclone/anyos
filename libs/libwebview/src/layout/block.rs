@@ -181,6 +181,7 @@ pub fn build_block_with_budget(
     // ---- Width resolution ----
     let border2 = bx.border_width * 2;
     let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
+    let vertical_non_content = bx.padding.top + bx.padding.bottom + border2;
     let definite_h_for_aspect = if let Some(h) = style.height {
         Some(h)
     } else if let Some(pct) = style.height_pct {
@@ -566,41 +567,68 @@ pub fn build_block_with_budget(
     // Inner (content) width for child layout.
     let inner_w = bx.width - bx.padding.left - bx.padding.right - border2;
     let inner_w = inner_w.max(0);
-    let definite_parent_content_h = if let Some(h) = style.height {
-        let content_h = if is_border_box {
-            h - bx.padding.top - bx.padding.bottom - border2
-        } else {
+    let resolve_height_calc = |calc: (i32, i32)| -> i32 {
+        calc.0 / 100 + (parent_height.max(0) as i64 * calc.1 as i64 / 10000) as i32
+    };
+    let explicit_outer_height_hint = if let Some(h) = style.height {
+        Some(if is_border_box {
             h
-        };
-        Some(content_h.max(0))
+        } else {
+            h + vertical_non_content
+        })
     } else if let Some(pct) = style.height_pct {
         if pct > 0 && parent_height > 0 {
             let resolved_h = (parent_height as i64 * pct as i64 / 10000) as i32;
-            let content_h = if is_border_box {
-                resolved_h - bx.padding.top - bx.padding.bottom - border2
-            } else {
+            Some(if is_border_box {
                 resolved_h
-            };
-            Some(content_h.max(0))
+            } else {
+                resolved_h + vertical_non_content
+            })
         } else {
             None
         }
-    } else if let Some((px100, pct100)) = style.height_calc {
-        let resolved_h = px100 / 100
-            + if parent_height > 0 {
-                (parent_height as i64 * pct100 as i64 / 10000) as i32
-            } else {
-                0
-            };
-        let content_h = if is_border_box {
-            resolved_h - bx.padding.top - bx.padding.bottom - border2
-        } else {
+    } else if let Some(calc) = style.height_calc {
+        let resolved_h = resolve_height_calc(calc);
+        Some(if is_border_box {
             resolved_h
-        };
-        Some(content_h.max(0))
+        } else {
+            resolved_h + vertical_non_content
+        })
     } else {
         None
     };
+    let definite_parent_content_h = explicit_outer_height_hint.map(|mut outer_h| {
+        if let Some(mh) = style.max_height.or_else(|| style.max_height_calc.map(resolve_height_calc)) {
+            let max_outer = if is_border_box {
+                mh
+            } else {
+                mh + vertical_non_content
+            };
+            if outer_h > max_outer {
+                outer_h = max_outer;
+            }
+        }
+        let min_height_val = if let Some(calc) = style.min_height_calc {
+            resolve_height_calc(calc)
+        } else {
+            style.min_height
+        };
+        if min_height_val > 0 {
+            let min_outer = if is_border_box {
+                min_height_val
+            } else {
+                min_height_val + vertical_non_content
+            };
+            if outer_h < min_outer {
+                outer_h = min_outer;
+            }
+        }
+        if is_border_box {
+            (outer_h - vertical_non_content).max(0)
+        } else {
+            outer_h.max(0)
+        }
+    });
 
     // Lay out children — dispatch to flex, grid, or block flow.
     // Inject ::before / ::after block-level pseudo-element boxes.
@@ -822,9 +850,6 @@ pub fn build_block_with_budget(
     }
 
     // Apply min-height / max-height.
-    let resolve_height_calc = |calc: (i32, i32)| -> i32 {
-        calc.0 / 100 + (parent_height.max(0) as i64 * calc.1 as i64 / 10000) as i32
-    };
     if let Some(mh) = style.max_height.or_else(|| style.max_height_calc.map(resolve_height_calc)) {
         let max_h = if is_border_box {
             mh

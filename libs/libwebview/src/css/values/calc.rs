@@ -71,12 +71,16 @@ fn eval_calc_components(s: &str) -> (i32, i32) {
         if split_op == b'*' {
             if lpct == 0 && rpct == 0 {
                 return (lpx * rpx / 100, 0);
-            } else if lpct == 0 {
+            } else if lpct == 0 && rpct != 0 {
                 let mul = lpx;
-                return (0, lpct * mul / 100);
-            } else {
+                return (rpx * mul / 100, rpct * mul / 100);
+            } else if rpct == 0 {
                 let mul = rpx;
                 return (lpx * mul / 100, lpct * mul / 100);
+            } else {
+                // Invalid CSS math: dimensions/percentages cannot be multiplied
+                // by another percentage-bearing term into a length-percentage.
+                return (0, 0);
             }
         } else {
             let div = rpx;
