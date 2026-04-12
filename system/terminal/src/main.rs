@@ -2656,6 +2656,17 @@ fn resolve_from_path(cmd: &str) -> Option<String> {
     anyos_std::shell::resolve_from_path(cmd)
 }
 
+/// Resolve a bare command name to a GUI app bundle if one exists under
+/// /Applications/ (case-insensitive stem match).
+fn resolve_from_applications(cmd: &str) -> Option<String> {
+    anyos_std::shell::resolve_from_applications(cmd)
+}
+
+/// Full command resolution: PATH → /Applications/ → /System/bin/ fallback.
+fn resolve_cmd(cmd: &str, cwd: &str) -> String {
+    anyos_std::shell::resolve_cmd_path(cmd, cwd)
+}
+
 // ─── Shell ───────────────────────────────────────────────────────────────────
 
 // ─── Logical Operators for Command Chaining ──────────────────────────────────
@@ -3101,10 +3112,7 @@ impl Shell {
                         format!("{}/{}", self.cwd, rel)
                     }
                 } else {
-                    match resolve_from_path(bg_cmd) {
-                        Some(p) => p,
-                        None => format!("/System/bin/{}", bg_cmd),
-                    }
+                    resolve_cmd(bg_cmd, &self.cwd.clone())
                 };
 
                 // Build full args string with program name as argv[0],
@@ -3120,7 +3128,11 @@ impl Shell {
 
                 if background {
                     // Background: spawn without pipe or waiting
-                    let tid = process::spawn(&path, full_args);
+                    let tid = if path.starts_with("/Applications/") {
+                        process::launch_app(&path, full_args)
+                    } else {
+                        process::spawn(&path, full_args)
+                    };
                     if tid == u32::MAX {
                         buf.current_fg = COLOR_FG;
                         buf.write_str("Unknown command: ");
@@ -3143,6 +3155,15 @@ impl Shell {
                         buf.current_fg = COLOR_DIM;
                         let msg = format!("[{}] {}\n", job_id, tid);
                         buf.write_str(&msg);
+                    }
+                } else if path.starts_with("/Applications/") {
+                    // GUI app: launch via sessionhost, return prompt immediately (fire-and-forget)
+                    let tid = process::launch_app(&path, full_args);
+                    if tid == u32::MAX {
+                        buf.current_fg = COLOR_FG;
+                        buf.write_str("Unknown command: ");
+                        buf.write_str(bg_cmd);
+                        buf.write_str("\nType 'help' for available commands.\n");
                     }
                 } else {
                     // Foreground: capture output via pipe, poll in main loop
@@ -3615,20 +3636,7 @@ impl Shell {
                     }
 
                     // External command — resolve path, spawn, and wait
-                    let resolved = if cmd.starts_with('/') {
-                        String::from(cmd)
-                    } else if cmd.starts_with("./") || cmd.starts_with("../") {
-                        if self.cwd == "/" {
-                            format!("/{}", cmd.trim_start_matches("./"))
-                        } else {
-                            format!("{}/{}", self.cwd, cmd)
-                        }
-                    } else {
-                        match resolve_from_path(cmd) {
-                            Some(p) => p,
-                            None => format!("/System/bin/{}", cmd),
-                        }
-                    };
+                    let resolved = resolve_cmd(cmd, &self.cwd.clone());
 
                     let full_args = if cmd_args.is_empty() {
                         String::from(cmd)
@@ -3636,9 +3644,13 @@ impl Shell {
                         format!("{} {}", cmd, cmd_args)
                     };
 
-                    let tid = process::spawn(&resolved, &full_args);
-                    if tid != u32::MAX {
-                        process::waitpid(tid);
+                    if resolved.starts_with("/Applications/") {
+                        process::launch_app(&resolved, &full_args);
+                    } else {
+                        let tid = process::spawn(&resolved, &full_args);
+                        if tid != u32::MAX {
+                            process::waitpid(tid);
+                        }
                     }
                 }
             }
@@ -4733,10 +4745,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                         let path = if prog.starts_with('/') {
                             String::from(prog)
                         } else {
-                            match resolve_from_path(prog) {
-                                Some(p) => p,
-                                None => format!("/System/bin/{}", prog),
-                            }
+                            resolve_cmd(prog, &sess.shell.cwd.clone())
                         };
                         let full_args = if args_str.is_empty() {
                             String::from(prog)

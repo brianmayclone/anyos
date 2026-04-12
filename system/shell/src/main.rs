@@ -1058,12 +1058,24 @@ fn main() {
                                                     ipc::pipe_write(stdin_pipe, input.as_bytes());
                                                 }
 
-                                                let tid = process::spawn_piped_full(&path, &args, stdout_pipe, stdin_pipe);
+                                                let tid = if path.starts_with("/Applications/") {
+                                                    ipc::pipe_close(stdout_pipe);
+                                                    ipc::pipe_close(stdin_pipe);
+                                                    process::launch_app(&path, &args)
+                                                } else {
+                                                    process::spawn_piped_full(&path, &args, stdout_pipe, stdin_pipe)
+                                                };
                                                 if tid == u32::MAX {
                                                     let msg = format!("shell: {}: command not found\n", command);
                                                     buf.feed(msg.as_bytes());
-                                                    ipc::pipe_close(stdout_pipe);
-                                                    ipc::pipe_close(stdin_pipe);
+                                                    if !path.starts_with("/Applications/") {
+                                                        ipc::pipe_close(stdout_pipe);
+                                                        ipc::pipe_close(stdin_pipe);
+                                                    }
+                                                    show_prompt = true;
+                                                } else if path.starts_with("/Applications/") {
+                                                    // GUI app launched via launch_app — fire and forget,
+                                                    // pipes are already closed; return prompt immediately.
                                                     show_prompt = true;
                                                 } else {
                                                     // Handle output redirect: if redirect is set,
@@ -1106,12 +1118,20 @@ fn main() {
                                             shell.pipe_counter += 1;
                                             let stdin_pipe = ipc::pipe_create(&stdin_name);
 
-                                            let tid = process::spawn_piped_full(&path, &args, stdout_pipe, stdin_pipe);
+                                            let tid = if path.starts_with("/Applications/") {
+                                                ipc::pipe_close(stdout_pipe);
+                                                ipc::pipe_close(stdin_pipe);
+                                                process::launch_app(&path, &args)
+                                            } else {
+                                                process::spawn_piped_full(&path, &args, stdout_pipe, stdin_pipe)
+                                            };
                                             if tid == u32::MAX {
                                                 let msg = format!("shell: {}: command not found\n", command);
                                                 buf.feed(msg.as_bytes());
-                                                ipc::pipe_close(stdout_pipe);
-                                                ipc::pipe_close(stdin_pipe);
+                                                if !path.starts_with("/Applications/") {
+                                                    ipc::pipe_close(stdout_pipe);
+                                                    ipc::pipe_close(stdin_pipe);
+                                                }
                                             } else {
                                                 shell.add_bg_job(tid, &command);
                                                 let job_id = shell.next_job_id - 1;

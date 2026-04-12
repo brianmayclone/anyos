@@ -231,6 +231,41 @@ pub fn resolve_from_path(cmd: &str) -> Option<String> {
     None
 }
 
+/// Search /Applications/ for an app bundle matching `cmd` (case-insensitive).
+/// Returns the full path to the executable inside the bundle, e.g.
+/// `/Applications/Notepad.app/Notepad`, or None if not found.
+pub fn resolve_from_applications(cmd: &str) -> Option<String> {
+    // Each readdir entry is 64 bytes: [type:u8, name_len:u8, flags:u8, pad:u8, size:u32, name:56bytes]
+    const ENTRY_SIZE: usize = 64;
+    const NAME_OFFSET: usize = 8;
+    const NAME_MAX: usize = 56;
+    let mut buf = [0u8; 64 * 128];
+    let count = fs::readdir("/Applications", &mut buf);
+    if count == 0 || count == u32::MAX {
+        return None;
+    }
+    let cmd_lower = cmd.to_lowercase();
+    for i in 0..count as usize {
+        let base = i * ENTRY_SIZE;
+        if base + ENTRY_SIZE > buf.len() { break; }
+        let name_len = buf[base + 1] as usize;
+        if name_len == 0 || name_len > NAME_MAX { continue; }
+        let name_bytes = &buf[base + NAME_OFFSET..base + NAME_OFFSET + name_len];
+        let Ok(entry_name) = core::str::from_utf8(name_bytes) else { continue };
+        // Entry must be an .app bundle directory
+        if !entry_name.ends_with(".app") { continue; }
+        let stem = &entry_name[..entry_name.len() - 4]; // strip ".app"
+        if stem.to_lowercase() != cmd_lower { continue; }
+        // Candidate executable: /Applications/{entry_name}/{stem}
+        let candidate = format!("/Applications/{}/{}", entry_name, stem);
+        let mut stat_buf = [0u32; 7];
+        if fs::stat(&candidate, &mut stat_buf) == 0 && stat_buf[0] == 0 {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Resolve command to full path (absolute, relative ./, or PATH search).
 pub fn resolve_cmd_path(cmd: &str, cwd: &str) -> String {
     if cmd.starts_with('/') {
@@ -239,10 +274,13 @@ pub fn resolve_cmd_path(cmd: &str, cwd: &str) -> String {
         let rel = cmd.strip_prefix("./").unwrap_or(cmd);
         if cwd == "/" { format!("/{}", rel) } else { format!("{}/{}", cwd, rel) }
     } else {
-        match resolve_from_path(cmd) {
-            Some(p) => p,
-            None => format!("/System/bin/{}", cmd),
+        if let Some(p) = resolve_from_path(cmd) {
+            return p;
         }
+        if let Some(p) = resolve_from_applications(cmd) {
+            return p;
+        }
+        format!("/System/bin/{}", cmd)
     }
 }
 
