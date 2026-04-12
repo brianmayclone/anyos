@@ -123,8 +123,8 @@ pub(super) fn measure_max_content(
         if super::is_inside_svg(dom, node_id) {
             return 0;
         }
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
+        let measured = super::trim_leading_ascii_ws(text);
+        if measured.trim().is_empty() {
             return 0;
         }
         let fs = st.font_size.max(1);
@@ -136,7 +136,7 @@ pub(super) fn measure_max_content(
             .and_then(|family| crate::lookup_web_font(family))
             .unwrap_or(0);
         let tw = super::measure_collapsed_text_width(
-            trimmed,
+            measured,
             fs,
             custom_font_id,
             bold,

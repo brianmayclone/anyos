@@ -791,6 +791,15 @@ pub(super) fn measure_collapsed_text_width(
     width
 }
 
+pub(super) fn trim_leading_ascii_ws(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    let mut start = 0usize;
+    while start < bytes.len() && is_ascii_ws(bytes[start]) {
+        start += 1;
+    }
+    &text[start..]
+}
+
 pub(super) fn ascii_lower_str<'a>(s: &str, buf: &'a mut [u8; 16]) -> &'a str {
     let len = s.len().min(16);
     for i in 0..len {
@@ -2599,8 +2608,8 @@ fn measure_abs_auto_width(
 
     match &dom.get(node_id).node_type {
         crate::dom::NodeType::Text(text) => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
+            let measured = trim_leading_ascii_ws(text);
+            if measured.trim().is_empty() {
                 return pad_border.max(1);
             }
             let bold = matches!(style.font_weight, crate::style::FontWeight::Bold);
@@ -2611,7 +2620,7 @@ fn measure_abs_auto_width(
                 .and_then(|family| crate::lookup_web_font(family))
                 .unwrap_or(0);
             let tw = measure_collapsed_text_width(
-                trimmed,
+                measured,
                 style.font_size.max(1),
                 font_id,
                 bold,
