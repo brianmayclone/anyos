@@ -111,6 +111,13 @@ impl Renderer {
         self.form_controls.len()
     }
 
+    pub fn tile_canvas_ids(&self) -> Vec<u32> {
+        self.tile_canvases
+            .iter()
+            .map(|tc| tc.canvas.id())
+            .collect()
+    }
+
     /// Soft clear: reset hit regions, invalidate tile cache, destroy canvases.
     pub fn clear(&mut self) {
         self.hit_regions.clear();

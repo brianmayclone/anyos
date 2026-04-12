@@ -772,6 +772,10 @@ impl WebView {
         self.resolved_styles_cache.get(node_id)
     }
 
+    pub fn tile_canvas_ids(&self) -> Vec<u32> {
+        self.renderer.tile_canvas_ids()
+    }
+
     /// Render tiles for the given scroll position (public wrapper).
     /// Returns `true` if there are pending tiles not yet rasterized.
     pub fn render_viewport_at(&mut self, scroll_y: i32) -> bool {
