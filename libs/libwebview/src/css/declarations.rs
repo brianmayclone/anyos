@@ -379,6 +379,27 @@ pub fn parse_property(name: &str) -> Option<Property> {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::parse_inline_style;
+    use crate::css::types::{CssValue, Property};
+
+    #[test]
+    fn inline_font_shorthand_expands_family_size_and_line_height() {
+        let decls = parse_inline_style("font: 5px/1 Ahem");
+        assert!(decls.iter().any(|d| {
+            d.property == Property::FontSize && matches!(d.value, CssValue::Length(_, _))
+        }));
+        assert!(decls.iter().any(|d| {
+            d.property == Property::LineHeight && matches!(d.value, CssValue::Number(100))
+        }));
+        assert!(decls.iter().any(|d| {
+            d.property == Property::FontFamily
+                && matches!(d.value, CssValue::Keyword(ref kw) if kw == "Ahem")
+        }));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Value parser
 // ---------------------------------------------------------------------------
