@@ -1733,6 +1733,15 @@ fn decode_svg(data: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
         (w, h)
     };
     let mut pixmap = resvg::tiny_skia::Pixmap::new(rw, rh)?;
+    if let Some(bg) = parse_svg_root_background(data) {
+        let color = resvg::tiny_skia::Color::from_rgba8(
+            ((bg >> 16) & 0xFF) as u8,
+            ((bg >> 8) & 0xFF) as u8,
+            (bg & 0xFF) as u8,
+            ((bg >> 24) & 0xFF) as u8,
+        );
+        pixmap.fill(color);
+    }
     let transform = resvg::tiny_skia::Transform::from_scale(
         rw as f32 / size.width() as f32,
         rh as f32 / size.height() as f32,
@@ -1746,6 +1755,46 @@ fn decode_svg(data: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
         })
         .collect();
     Some((pixels, rw, rh))
+}
+
+fn parse_svg_root_background(data: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(data).ok()?;
+    let svg_start = text.find("<svg")?;
+    let after = &text[svg_start..];
+    let tag_end = after.find('>')?;
+    let svg_tag = &after[..tag_end];
+    let style_attr = extract_attr_value(svg_tag, "style")?;
+    parse_background_style(style_attr)
+}
+
+fn extract_attr_value<'a>(tag_text: &'a str, name: &str) -> Option<&'a str> {
+    let needle = format!("{name}=");
+    let start = tag_text.find(&needle)? + needle.len();
+    let rest = &tag_text[start..];
+    let quote = rest.as_bytes().first().copied()?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    let rest = &rest[1..];
+    let end = rest.find(quote as char)?;
+    Some(&rest[..end])
+}
+
+fn parse_background_style(style_attr: &str) -> Option<u32> {
+    for decl in style_attr.split(';') {
+        let mut parts = decl.splitn(2, ':');
+        let name = parts.next()?.trim().to_ascii_lowercase();
+        let value = parts.next()?.trim();
+        if name == "background" || name == "background-color" {
+            if let Some(color) = libwebview::css::try_parse_color_pub(value) {
+                return Some(color);
+            }
+            if let Some(color) = libwebview::css::named_color_pub(&value.to_ascii_lowercase()) {
+                return Some(color);
+            }
+        }
+    }
+    None
 }
 
 // ── Pixel extraction ─────────────────────────────────────────────────────────
