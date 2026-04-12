@@ -10,6 +10,8 @@
 //!   uictl get-state <pid> <id>          Get state of a control (0/1 etc.)
 //!   uictl set-state <pid> <id> <val>    Set state of a control
 //!   uictl find-text <pid> <text>        Find controls whose text contains <text>
+//!   uictl submit <pid> <id>             Fire Enter/submit on a focused control
+//!   uictl type-text <pid> <text>        Send text as keystrokes to focused control
 //!   uictl resize <pid> <w> <h>          Resize window to w×h (logical pixels)
 //!   uictl move <pid> <x> <y>            Move window to screen position x,y
 //!   uictl focus <pid>                   Bring window to foreground
@@ -250,6 +252,24 @@ fn main() {
                 None => { anyos_std::println!("Invalid pid"); return; }
             };
             cmd_send_recv_one(pid, "FOCUS\n");
+        }
+        "type-text" => {
+            // Usage: uictl type-text <pid> <text>
+            // Sends <text> as individual keystrokes to the currently focused
+            // control in the target window.
+            // Escape sequences: \n = Enter, \b = Backspace, \t = Tab, \\ = backslash
+            if args.pos_count < 3 {
+                anyos_std::println!("Usage: uictl type-text <pid> <text>");
+                anyos_std::println!("Escape sequences: \\n=Enter  \\b=Backspace  \\t=Tab");
+                return;
+            }
+            let pid = match parse_u32(args.positional[1]) {
+                Some(p) => p,
+                None => { anyos_std::println!("Invalid pid"); return; }
+            };
+            let text = args.positional[2];
+            let req = format!("TYPE_TEXT\t{}\n", text);
+            cmd_send_recv_one(pid, &req);
         }
         _ => {
             anyos_std::println!("Unknown command: {}", cmd);
@@ -560,6 +580,7 @@ fn print_usage() {
     anyos_std::println!("  uictl set-state <pid> <id> <val>     Set state of a control");
     anyos_std::println!("  uictl find-text <pid> <text>         Find controls by text");
     anyos_std::println!("  uictl submit <pid> <id>              Fire Enter/submit on a control");
+    anyos_std::println!("  uictl type-text <pid> <text>         Type text as keystrokes (\\n=Enter \\b=Bksp \\t=Tab)");
     anyos_std::println!("  uictl resize <pid> <w> <h>           Resize window");
     anyos_std::println!("  uictl move <pid> <x> <y>             Move window on screen");
     anyos_std::println!("  uictl focus <pid>                    Focus/raise window");

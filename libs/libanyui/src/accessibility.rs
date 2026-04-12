@@ -17,6 +17,8 @@
 //! GET_TEXT <id>                  get text content  → TEXT <text>
 //! SET_STATE <id> <value>         set state (checkbox 0/1, slider 0-100, …)
 //! GET_STATE <id>                 get state value   → STATE <value>
+//! SUBMIT <id>                    fire Enter/submit event on a control
+//! TYPE_TEXT <text>               inject text as keystrokes into focused control
 //! RESIZE <w> <h>                 resize window
 //! MOVE <x> <y>                   move window on screen
 //! FOCUS                          bring window to foreground
@@ -315,6 +317,18 @@ fn handle_line(
             find_by_text(acc, st, needle);
         }
 
+        "TYPE_TEXT" => {
+            // Inject each character of <text> as a key-down event into the
+            // currently focused control.  Escape sequences in the text:
+            //   \n  →  KEY_ENTER (0x100)
+            //   \b  →  KEY_BACKSPACE (0x101)
+            //   \t  →  KEY_TAB (0x102)
+            //   \\  →  literal backslash
+            // Regular bytes are sent as char_code = byte, keycode = 0.
+            type_text_into_focused(st, rest, pending_events);
+            send(acc, "OK\n");
+        }
+
         "BYE" => {
             if acc.rsp_pipe_id != 0 {
                 ipc::pipe_close(acc.rsp_pipe_id);
@@ -558,6 +572,62 @@ fn kind_name(k: ControlKind) -> &'static str {
         ControlKind::PlainButton => "PlainButton",
         ControlKind::DateTimePicker => "DateTimePicker",
         ControlKind::ListBox => "ListBox",
+    }
+}
+
+// ── Type-text injection ───────────────────────────────────────────────────────
+
+/// Inject `text` as individual key-down events into `st.focused`.
+///
+/// Escape sequences: `\n` → KEY_ENTER, `\b` → KEY_BACKSPACE, `\t` → KEY_TAB,
+/// `\\` → literal `\`.  All other bytes are sent as regular character input
+/// (keycode = 0, char_code = byte value).
+fn type_text_into_focused(
+    st: &mut crate::AnyuiState,
+    text: &str,
+    pending_events: &mut Vec<(ControlId, u32)>,
+) {
+    let focus_id = match st.focused {
+        Some(id) => id,
+        None => return,
+    };
+    let idx = match crate::control::find_idx(&st.controls, focus_id) {
+        Some(i) => i,
+        None => return,
+    };
+
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let (keycode, char_code) = if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            i += 1;
+            match bytes[i] {
+                b'n' => (crate::control::KEY_ENTER, 0u32),
+                b'b' => (crate::control::KEY_BACKSPACE, 0u32),
+                b't' => (crate::control::KEY_TAB, 0u32),
+                b'\\' => (0u32, b'\\' as u32),
+                other => (0u32, other as u32),
+            }
+        } else {
+            (0u32, bytes[i] as u32)
+        };
+        i += 1;
+
+        let resp = st.controls[idx].handle_key_down(keycode, char_code, 0);
+        st.controls[idx].base_mut().mark_dirty();
+
+        if resp.consumed {
+            pending_events.push((focus_id, crate::control::EVENT_KEY));
+        }
+        if resp.fire_change {
+            pending_events.push((focus_id, crate::control::EVENT_CHANGE));
+        }
+        if resp.fire_click {
+            pending_events.push((focus_id, crate::control::EVENT_CLICK));
+        }
+        if resp.fire_submit {
+            pending_events.push((focus_id, crate::control::EVENT_SUBMIT));
+        }
     }
 }
 
