@@ -633,6 +633,10 @@ pub struct ComputedStyle {
     pub min_width: i32,
     pub max_height: Option<i32>,
     pub min_height: i32,
+    pub max_width_calc: Option<(i32, i32)>,
+    pub min_width_calc: Option<(i32, i32)>,
+    pub max_height_calc: Option<(i32, i32)>,
+    pub min_height_calc: Option<(i32, i32)>,
     pub list_style: ListStyle,
     pub list_style_position: ListStylePosition,
     pub white_space: WhiteSpace,
@@ -905,6 +909,10 @@ pub fn default_style() -> ComputedStyle {
         min_width: 0,
         max_height: Option::None,
         min_height: 0,
+        max_width_calc: Option::None,
+        min_width_calc: Option::None,
+        max_height_calc: Option::None,
+        min_height_calc: Option::None,
         list_style: ListStyle::None,
         list_style_position: ListStylePosition::Outside,
         white_space: WhiteSpace::Normal,
@@ -3784,14 +3792,23 @@ pub fn apply_declaration(
         },
         Property::MaxWidth => {
             match decl.value {
-                CssValue::None => style.max_width = Option::None,
+                CssValue::None => {
+                    style.max_width = Option::None;
+                    style.max_width_calc = Option::None;
+                }
                 CssValue::Percentage(v) => {
                     // Store percentage as negative marker; layout resolves against container.
                     style.max_width = Some(-(v.max(1)));
+                    style.max_width_calc = Option::None;
+                }
+                CssValue::Calc(px, pct) => {
+                    style.max_width = Option::None;
+                    style.max_width_calc = Some((px, pct));
                 }
                 _ => {
                     if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                         style.max_width = Some(px);
+                        style.max_width_calc = Option::None;
                     }
                 }
             }
@@ -3799,21 +3816,38 @@ pub fn apply_declaration(
         Property::MinWidth => {
             if let CssValue::Percentage(v) = decl.value {
                 style.min_width = -(v.max(1));
+                style.min_width_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                style.min_width = 0;
+                style.min_width_calc = Some((px, pct));
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.min_width = px;
+                style.min_width_calc = Option::None;
             }
         }
         Property::MaxHeight => match decl.value {
-            CssValue::None => style.max_height = Option::None,
+            CssValue::None => {
+                style.max_height = Option::None;
+                style.max_height_calc = Option::None;
+            }
+            CssValue::Calc(px, pct) => {
+                style.max_height = Option::None;
+                style.max_height_calc = Some((px, pct));
+            }
             _ => {
                 if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                     style.max_height = Some(px);
+                    style.max_height_calc = Option::None;
                 }
             }
         },
         Property::MinHeight => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if let CssValue::Calc(px, pct) = decl.value {
+                style.min_height = 0;
+                style.min_height_calc = Some((px, pct));
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.min_height = px;
+                style.min_height_calc = Option::None;
             }
         }
         // Margin properties — track `auto` for centering.
@@ -4637,7 +4671,9 @@ pub fn apply_declaration(
             if matches!(decl.value, CssValue::None) {
                 style.background_image = BackgroundImageVal::None;
             } else if let CssValue::Keyword(ref kw) = decl.value {
-                style.background_image = parse_background_image_val(kw);
+                if let Some(parsed) = parse_background_image_val(kw) {
+                    style.background_image = parsed;
+                }
             }
         }
         Property::BackgroundSize => {
@@ -5226,7 +5262,9 @@ pub fn apply_declaration(
             if matches!(decl.value, CssValue::None) {
                 style.mask_image = BackgroundImageVal::None;
             } else if let CssValue::Keyword(ref kw) = decl.value {
-                style.mask_image = parse_background_image_val(kw);
+                if let Some(parsed) = parse_background_image_val(kw) {
+                    style.mask_image = parsed;
+                }
             }
         }
         Property::MaskSize => {
@@ -6197,15 +6235,15 @@ fn tokenize_respecting_parens(s: &str) -> Vec<&str> {
 // ---------------------------------------------------------------------------
 
 /// Parse `background-image` value: `url(...)` or `linear-gradient(...)`.
-fn parse_background_image_val(s: &str) -> BackgroundImageVal {
+fn parse_background_image_val(s: &str) -> Option<BackgroundImageVal> {
     let lower = s.trim().to_ascii_lowercase();
     if lower == "none" {
-        return BackgroundImageVal::None;
+        return Some(BackgroundImageVal::None);
     }
     if lower.starts_with("url(") {
         let inner = lower.trim_start_matches("url(").trim_end_matches(')');
         let inner = inner.trim_matches('"').trim_matches('\'');
-        return BackgroundImageVal::Url(String::from(inner));
+        return Some(BackgroundImageVal::Url(String::from(inner)));
     }
     if lower.starts_with("linear-gradient(") {
         let inner = lower
@@ -6213,14 +6251,14 @@ fn parse_background_image_val(s: &str) -> BackgroundImageVal {
             .trim_end_matches(')');
         return parse_linear_gradient(inner);
     }
-    BackgroundImageVal::None
+    None
 }
 
 /// Parse the interior of `linear-gradient(...)`.
-fn parse_linear_gradient(inner: &str) -> BackgroundImageVal {
+fn parse_linear_gradient(inner: &str) -> Option<BackgroundImageVal> {
     let parts: Vec<&str> = split_comma_respecting_parens(inner);
     if parts.is_empty() {
-        return BackgroundImageVal::None;
+        return None;
     }
 
     let mut angle_deg: i32 = 180; // default top-to-bottom
@@ -6229,10 +6267,8 @@ fn parse_linear_gradient(inner: &str) -> BackgroundImageVal {
 
     // Check if first part is an angle or direction
     let first = parts[0].trim();
-    if first.ends_with("deg") {
-        if let Ok(a) = first.trim_end_matches("deg").trim().parse::<f32>() {
-            angle_deg = a as i32;
-        }
+    if let Some(a) = parse_gradient_angle(first) {
+        angle_deg = a;
         start_idx = 1;
     } else if first.starts_with("to ") {
         angle_deg = match first {
@@ -6244,9 +6280,11 @@ fn parse_linear_gradient(inner: &str) -> BackgroundImageVal {
             "to bottom right" | "to right bottom" => 135,
             "to bottom left" | "to left bottom" => 225,
             "to top left" | "to left top" => 315,
-            _ => 180,
+            _ => return None,
         };
         start_idx = 1;
+    } else if looks_like_invalid_gradient_angle(first) {
+        return None;
     }
 
     for i in start_idx..parts.len() {
@@ -6255,8 +6293,7 @@ fn parse_linear_gradient(inner: &str) -> BackgroundImageVal {
         let tokens: Vec<&str> = part.split_whitespace().collect();
         let color_str = if tokens.len() >= 1 { tokens[0] } else { part };
         let color = crate::css::try_parse_color_pub(color_str)
-            .or_else(|| crate::css::named_color_pub(&color_str.to_ascii_lowercase()))
-            .unwrap_or(0xFF000000);
+            .or_else(|| crate::css::named_color_pub(&color_str.to_ascii_lowercase()))?;
         let position = if tokens.len() >= 2 {
             parse_gradient_position(tokens[1])
         } else {
@@ -6299,7 +6336,48 @@ fn parse_linear_gradient(inner: &str) -> BackgroundImageVal {
         }
     }
 
-    BackgroundImageVal::LinearGradient { angle_deg, stops }
+    Some(BackgroundImageVal::LinearGradient { angle_deg, stops })
+}
+
+fn parse_gradient_angle(s: &str) -> Option<i32> {
+    if s.ends_with("deg") {
+        return s.trim_end_matches("deg").trim().parse::<f32>().ok().map(|a| a as i32);
+    }
+    if s.ends_with("grad") {
+        return s
+            .trim_end_matches("grad")
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|g| (g * 0.9) as i32);
+    }
+    if s.ends_with("rad") {
+        return s
+            .trim_end_matches("rad")
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|r| (r * 180.0 / core::f32::consts::PI) as i32);
+    }
+    if s.ends_with("turn") {
+        return s
+            .trim_end_matches("turn")
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|t| (t * 360.0) as i32);
+    }
+    None
+}
+
+fn looks_like_invalid_gradient_angle(s: &str) -> bool {
+    let trimmed = s.trim();
+    let starts_numeric = trimmed
+        .as_bytes()
+        .first()
+        .map(|b| b.is_ascii_digit() || *b == b'+' || *b == b'-' || *b == b'.')
+        .unwrap_or(false);
+    starts_numeric && trimmed.as_bytes().iter().any(|b| b.is_ascii_alphabetic())
 }
 
 fn parse_gradient_position(s: &str) -> i32 {
@@ -6335,6 +6413,31 @@ fn split_comma_respecting_parens(s: &str) -> Vec<&str> {
         parts.push(&s[start..]);
     }
     parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_style_applies_max_width_calc() {
+        let decls = crate::css::parse_inline_style("max-width: calc(50% - 3px)");
+        assert_eq!(decls.len(), 1);
+        let mut style = default_style();
+        for decl in &decls {
+            apply_declaration(&mut style, decl, 16, 16);
+        }
+        assert_eq!(style.max_width, None);
+        assert_eq!(style.max_width_calc, Some((-300, 5000)));
+    }
+
+    #[test]
+    fn invalid_gradient_angle_is_rejected() {
+        assert!(parse_background_image_val("linear-gradient(90degree, red, red)").is_none());
+        assert!(parse_background_image_val("linear-gradient(100gradian, red, red)").is_none());
+        assert!(parse_background_image_val("linear-gradient(1.57radian, red, red)").is_none());
+        assert!(parse_background_image_val("linear-gradient(0.25turns, red, red)").is_none());
+    }
 }
 
 fn parse_bg_size_dim(s: &str, parent_fs: i32, root_fs: i32) -> i32 {

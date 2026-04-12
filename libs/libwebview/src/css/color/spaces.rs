@@ -177,6 +177,60 @@ fn parse_color_func(args: &str) -> Option<u32> {
             let z = 0.0000000000 * rl + 0.0451133819 * gl + 0.1043944934 * bl;
             xyz_to_srgb(x, y, z)
         }
+        "a98-rgb" => {
+            let degamma = |c: f64| -> f64 {
+                powf_approx(if c < 0.0 { -c } else { c }, 563.0 / 256.0)
+                    * if c < 0.0 { -1.0 } else { 1.0 }
+            };
+            let rl = degamma(r_f);
+            let gl = degamma(g_f);
+            let bl = degamma(b_f);
+            let x = 0.5766690429 * rl + 0.1855582379 * gl + 0.1882286462 * bl;
+            let y = 0.2973449753 * rl + 0.6273635663 * gl + 0.0752914585 * bl;
+            let z = 0.0270313614 * rl + 0.0706888525 * gl + 0.9913375368 * bl;
+            xyz_to_srgb(x, y, z)
+        }
+        "prophoto-rgb" => {
+            let degamma = |c: f64| -> f64 {
+                if (if c < 0.0 { -c } else { c }) <= 16.0 / 512.0 {
+                    c / 16.0
+                } else {
+                    powf_approx(if c < 0.0 { -c } else { c }, 1.8)
+                        * if c < 0.0 { -1.0 } else { 1.0 }
+                }
+            };
+            let rl = degamma(r_f);
+            let gl = degamma(g_f);
+            let bl = degamma(b_f);
+            let x = 0.7977604896 * rl + 0.1351917082 * gl + 0.0313493429 * bl;
+            let y = 0.2880711282 * rl + 0.7118432178 * gl + 0.0000856540 * bl;
+            let z = 0.0000000000 * rl + 0.0000000000 * gl + 0.8251046026 * bl;
+            let xd = 0.9555766 * x - 0.0230393 * y + 0.0631636 * z;
+            let yd = -0.0282895 * x + 1.0099416 * y + 0.0210077 * z;
+            let zd = 0.0122982 * x - 0.0204830 * y + 1.3299098 * z;
+            xyz_to_srgb(xd, yd, zd)
+        }
+        "rec2020" => {
+            let alpha_rc = 1.09929682680944;
+            let beta_rc = 0.018053968510807;
+            let degamma = |c: f64| -> f64 {
+                if (if c < 0.0 { -c } else { c }) < beta_rc * 4.5 {
+                    c / 4.5
+                } else {
+                    powf_approx(
+                        ((if c < 0.0 { -c } else { c }) + alpha_rc - 1.0) / alpha_rc,
+                        1.0 / 0.45,
+                    ) * if c < 0.0 { -1.0 } else { 1.0 }
+                }
+            };
+            let rl = degamma(r_f);
+            let gl = degamma(g_f);
+            let bl = degamma(b_f);
+            let x = 0.6369580483 * rl + 0.1446169036 * gl + 0.1688809752 * bl;
+            let y = 0.2627002120 * rl + 0.6779980715 * gl + 0.0593017165 * bl;
+            let z = 0.0000000000 * rl + 0.0280726930 * gl + 1.0609850577 * bl;
+            xyz_to_srgb(x, y, z)
+        }
         "xyz" | "xyz-d65" => xyz_to_srgb(r_f, g_f, b_f),
         "xyz-d50" => {
             let xd = 0.9555766 * r_f - 0.0230393 * g_f + 0.0631636 * b_f;

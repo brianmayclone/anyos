@@ -295,7 +295,10 @@ pub fn build_block_with_budget(
             val
         }
     };
-    if let Some(mw) = style.max_width {
+    let resolve_min_max_calc = |calc: (i32, i32)| -> i32 {
+        calc.0 / 100 + (available_width as i64 * calc.1 as i64 / 10000) as i32
+    };
+    if let Some(mw) = style.max_width.or_else(|| style.max_width_calc.map(resolve_min_max_calc)) {
         let max = resolve_min_max(mw);
         let max_outer = if is_border_box {
             max
@@ -306,8 +309,13 @@ pub fn build_block_with_budget(
             bx.width = max_outer;
         }
     }
-    if style.min_width > 0 || style.min_width < 0 {
-        let min = resolve_min_max(style.min_width);
+    let min_width_val = if let Some(calc) = style.min_width_calc {
+        resolve_min_max_calc(calc)
+    } else {
+        style.min_width
+    };
+    if min_width_val > 0 || min_width_val < 0 {
+        let min = resolve_min_max(min_width_val);
         let min_outer = if is_border_box {
             min
         } else {
@@ -814,7 +822,10 @@ pub fn build_block_with_budget(
     }
 
     // Apply min-height / max-height.
-    if let Some(mh) = style.max_height {
+    let resolve_height_calc = |calc: (i32, i32)| -> i32 {
+        calc.0 / 100 + (parent_height.max(0) as i64 * calc.1 as i64 / 10000) as i32
+    };
+    if let Some(mh) = style.max_height.or_else(|| style.max_height_calc.map(resolve_height_calc)) {
         let max_h = if is_border_box {
             mh
         } else {
@@ -824,11 +835,16 @@ pub fn build_block_with_budget(
             bx.height = max_h;
         }
     }
-    if style.min_height > 0 {
+    let min_height_val = if let Some(calc) = style.min_height_calc {
+        resolve_height_calc(calc)
+    } else {
+        style.min_height
+    };
+    if min_height_val > 0 {
         let min_h = if is_border_box {
-            style.min_height
+            min_height_val
         } else {
-            style.min_height + bx.padding.top + bx.padding.bottom + border2
+            min_height_val + bx.padding.top + bx.padding.bottom + border2
         };
         if bx.height < min_h {
             bx.height = min_h;
@@ -1242,9 +1258,21 @@ pub(super) fn build_pseudo_element_box(
             if pb.height > mh {
                 pb.height = mh;
             }
+        } else if let Some((px100, pct100)) = ps.max_height_calc {
+            let _ = pct100;
+            let mh = px100 / 100;
+            if pb.height > mh {
+                pb.height = mh;
+            }
         }
-        if ps.min_height > 0 && pb.height < ps.min_height {
-            pb.height = ps.min_height;
+        let min_h = if let Some((px100, pct100)) = ps.min_height_calc {
+            let _ = pct100;
+            px100 / 100
+        } else {
+            ps.min_height
+        };
+        if min_h > 0 && pb.height < min_h {
+            pb.height = min_h;
         }
 
         // Add text content as inline child
