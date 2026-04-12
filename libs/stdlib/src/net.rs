@@ -178,7 +178,7 @@ pub fn tcp_listen(port: u16, backlog: u16) -> u32 {
 pub fn tcp_accept(listener_id: u32) -> (u32, [u8; 4], u16) {
     let mut result = [0u8; 12];
     let rc = syscall2(SYS_TCP_ACCEPT, listener_id as u64, result.as_mut_ptr() as u64);
-    if rc == u32::MAX {
+    if rc != 0 {
         return (u32::MAX, [0; 4], 0);
     }
     let sock_id = u32::from_le_bytes([result[0], result[1], result[2], result[3]]);
@@ -192,7 +192,7 @@ pub fn tcp_accept(listener_id: u32) -> (u32, [u8; 4], u16) {
 pub fn tcp_accept_nowait(listener_id: u32) -> (u32, [u8; 4], u16) {
     let mut result = [0u8; 12];
     let rc = syscall2(SYS_TCP_ACCEPT_NOWAIT, listener_id as u64, result.as_mut_ptr() as u64);
-    if rc == u32::MAX {
+    if rc != 0 {
         return (u32::MAX, [0; 4], 0);
     }
     let sock_id = u32::from_le_bytes([result[0], result[1], result[2], result[3]]);

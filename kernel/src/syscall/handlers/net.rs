@@ -303,7 +303,7 @@ pub fn sys_tcp_accept(listener_id: u32, result_ptr: u32) -> u32 {
     let timeout_ticks = 30 * pit_hz; // 30 second timeout
     let (sock_id, remote_ip, remote_port) = crate::net::tcp::accept(listener_id, timeout_ticks);
     if sock_id == u32::MAX {
-        return u32::MAX;
+        return u32::MAX - 1; // timeout / no pending connection
     }
     // Write result to user buffer
     let result = unsafe { core::slice::from_raw_parts_mut(result_ptr as *mut u8, 12) };
@@ -325,7 +325,7 @@ pub fn sys_tcp_accept_nowait(listener_id: u32, result_ptr: u32) -> u32 {
     // Use a 0-tick timeout so the accept loop returns immediately if nothing is ready.
     let (sock_id, remote_ip, remote_port) = crate::net::tcp::accept(listener_id, 0);
     if sock_id == u32::MAX {
-        return u32::MAX;
+        return u32::MAX - 1; // no pending connection
     }
     let result = unsafe { core::slice::from_raw_parts_mut(result_ptr as *mut u8, 12) };
     result[0..4].copy_from_slice(&sock_id.to_le_bytes());
