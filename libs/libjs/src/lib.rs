@@ -148,3 +148,30 @@ impl JsEngine {
             .insert(String::from(specifier), namespace);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::JsEngine;
+
+    #[test]
+    fn array_iterators_expose_a_real_prototype_with_next() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var it = [1].values(); \
+             Object.getPrototypeOf(it) !== null && \
+             typeof Object.getPrototypeOf(it).next === 'function'",
+        );
+        assert!(result.to_boolean());
+    }
+
+    #[test]
+    fn map_iterators_expose_a_real_prototype_with_next() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "var it = new Map([[1, 2]]).entries(); \
+             Object.getPrototypeOf(it) !== null && \
+             typeof Object.getPrototypeOf(it).next === 'function'",
+        );
+        assert!(result.to_boolean());
+    }
+}

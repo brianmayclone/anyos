@@ -11,9 +11,9 @@ use alloc::vec::Vec;
 use alloc::collections::BTreeSet;
 use core::cell::RefCell;
 
+use super::native_fn;
 use super::native_symbol::WELL_KNOWN_ITERATOR;
 use super::Vm;
-use super::native_fn;
 use crate::value::*;
 
 impl Vm {
@@ -181,28 +181,12 @@ impl Vm {
     /// Used as fallback when Symbol.iterator is not available.
     pub fn make_internal_iterator(&self, items: Vec<JsValue>) -> JsValue {
         let mut iter_obj = JsObject::with_tag("__iterator__");
+        iter_obj.prototype = Some(self.iterator_proto.clone());
         iter_obj.set(
             String::from("__items__"),
             JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(items)))),
         );
         iter_obj.set(String::from("__index__"), JsValue::Number(0.0));
-        iter_obj.set(String::from("next"), native_fn("next", iterator_next));
-        iter_obj.set(
-            String::from(WELL_KNOWN_ITERATOR),
-            native_fn("[Symbol.iterator]", iterator_self),
-        );
-        // ES2025 Iterator Helper methods
-        iter_obj.set(String::from("toArray"), native_fn("toArray", iterator_to_array));
-        iter_obj.set(String::from("forEach"), native_fn("forEach", iterator_for_each));
-        iter_obj.set(String::from("map"), native_fn("map", iterator_map));
-        iter_obj.set(String::from("filter"), native_fn("filter", iterator_filter));
-        iter_obj.set(String::from("take"), native_fn("take", iterator_take));
-        iter_obj.set(String::from("drop"), native_fn("drop", iterator_drop));
-        iter_obj.set(String::from("some"), native_fn("some", iterator_some));
-        iter_obj.set(String::from("every"), native_fn("every", iterator_every));
-        iter_obj.set(String::from("find"), native_fn("find", iterator_find));
-        iter_obj.set(String::from("reduce"), native_fn("reduce", iterator_reduce));
-        iter_obj.set(String::from("flatMap"), native_fn("flatMap", iterator_flat_map));
         JsValue::Object(Rc::new(RefCell::new(iter_obj)))
     }
 
@@ -418,6 +402,27 @@ impl Vm {
             _ => (JsValue::Undefined, false),
         }
     }
+}
+
+pub(crate) fn init_iterator_proto(vm: &mut Vm) {
+    let mut p = vm.iterator_proto.borrow_mut();
+    p.prototype = Some(vm.object_proto.clone());
+    p.set(
+        String::from(WELL_KNOWN_ITERATOR),
+        native_fn("[Symbol.iterator]", iterator_self),
+    );
+    p.set(String::from("next"), native_fn("next", iterator_next));
+    p.set(String::from("toArray"), native_fn("toArray", iterator_to_array));
+    p.set(String::from("forEach"), native_fn("forEach", iterator_for_each));
+    p.set(String::from("map"), native_fn("map", iterator_map));
+    p.set(String::from("filter"), native_fn("filter", iterator_filter));
+    p.set(String::from("take"), native_fn("take", iterator_take));
+    p.set(String::from("drop"), native_fn("drop", iterator_drop));
+    p.set(String::from("some"), native_fn("some", iterator_some));
+    p.set(String::from("every"), native_fn("every", iterator_every));
+    p.set(String::from("find"), native_fn("find", iterator_find));
+    p.set(String::from("reduce"), native_fn("reduce", iterator_reduce));
+    p.set(String::from("flatMap"), native_fn("flatMap", iterator_flat_map));
 }
 
 // ═══════════════════════════════════════════════════════════

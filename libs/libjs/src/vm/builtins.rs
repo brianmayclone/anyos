@@ -26,6 +26,7 @@ use super::native_symbol;
 use super::native_timer;
 use super::native_typed_array;
 use super::native_weakref;
+use super::iter;
 use super::{native_ctor_fn, native_fn, native_fn_with_length, Vm};
 use crate::value::*;
 
@@ -70,6 +71,9 @@ impl Vm {
                 native_fn("keys", native_object::object_keys_method),
             );
         }
+
+        // ── Iterator.prototype ──
+        iter::init_iterator_proto(self);
 
         // ── Array.prototype ──
         {
@@ -551,7 +555,7 @@ impl Vm {
         // ── Generator.prototype ──
         {
             let mut p = self.generator_proto.borrow_mut();
-            p.prototype = Some(self.object_proto.clone());
+            p.prototype = Some(self.iterator_proto.clone());
             p.set(
                 String::from("next"),
                 native_fn("next", native_generator::generator_next),
@@ -1877,23 +1881,14 @@ fn string_symbol_iterator(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 /// The iterator yields `{ value, done }` result objects.
 fn make_value_iterator(vm: &Vm, items: alloc::vec::Vec<JsValue>) -> JsValue {
     let items_arr = JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(items))));
-    let iter_obj = JsValue::new_object();
-    iter_obj.set_property(alloc::string::String::from("__items__"), items_arr);
-    iter_obj.set_property(
+    let mut iter = JsObject::with_tag("__iterator__");
+    iter.prototype = Some(vm.iterator_proto.clone());
+    iter.set(alloc::string::String::from("__items__"), items_arr);
+    iter.set(
         alloc::string::String::from("__index__"),
         JsValue::Number(0.0),
     );
-    // Add .next() method
-    iter_obj.set_property(
-        alloc::string::String::from("next"),
-        native_fn("next", iterator_next),
-    );
-    // Generators return `this` for Symbol.iterator (so for-of can re-iterate)
-    iter_obj.set_property(
-        alloc::string::String::from(native_symbol::WELL_KNOWN_ITERATOR),
-        native_fn("[Symbol.iterator]", iterator_self),
-    );
-    iter_obj
+    JsValue::Object(Rc::new(RefCell::new(iter)))
 }
 
 /// `Iterator.prototype.next()` — advances the iterator.

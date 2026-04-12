@@ -11,62 +11,13 @@ use crate::value::*;
 const MAP_TAG: &str = "Map";
 const SET_TAG: &str = "Set";
 
-fn make_iterator(items: Vec<JsValue>) -> JsValue {
+fn make_iterator(vm: &Vm, items: Vec<JsValue>) -> JsValue {
     let items_arr = JsValue::Array(Rc::new(RefCell::new(JsArray::from_vec(items))));
-    let iter_obj = JsValue::new_object();
-    iter_obj.set_property(String::from("__items__"), items_arr);
-    iter_obj.set_property(String::from("__index__"), JsValue::Number(0.0));
-    iter_obj.set_property(String::from("next"), native_fn("next", iterator_next));
-    iter_obj.set_property(
-        String::from(super::native_symbol::WELL_KNOWN_ITERATOR),
-        native_fn("[Symbol.iterator]", iterator_self),
-    );
-    // ES2025 Iterator Helper methods
-    use super::iter::*;
-    iter_obj.set_property(String::from("toArray"), native_fn("toArray", iterator_to_array));
-    iter_obj.set_property(String::from("forEach"), native_fn("forEach", iterator_for_each));
-    iter_obj.set_property(String::from("map"), native_fn("map", iterator_map));
-    iter_obj.set_property(String::from("filter"), native_fn("filter", iterator_filter));
-    iter_obj.set_property(String::from("take"), native_fn("take", iterator_take));
-    iter_obj.set_property(String::from("drop"), native_fn("drop", iterator_drop));
-    iter_obj.set_property(String::from("some"), native_fn("some", iterator_some));
-    iter_obj.set_property(String::from("every"), native_fn("every", iterator_every));
-    iter_obj.set_property(String::from("find"), native_fn("find", iterator_find));
-    iter_obj.set_property(String::from("reduce"), native_fn("reduce", iterator_reduce));
-    iter_obj.set_property(String::from("flatMap"), native_fn("flatMap", iterator_flat_map));
-    iter_obj
-}
-
-fn iterator_next(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    let this = vm.current_this.clone();
-    if let JsValue::Object(obj) = &this {
-        let mut o = obj.borrow_mut();
-        let index = o.get("__index__").to_number() as usize;
-        let items = o.get("__items__");
-        if let JsValue::Array(arr) = &items {
-            let a = arr.borrow();
-            if index < a.length {
-                let val = a.get(index);
-                o.properties.insert(
-                    String::from("__index__"),
-                    Property::data(JsValue::Number((index + 1) as f64)),
-                );
-                drop(o);
-                let result = JsValue::new_object();
-                result.set_property(String::from("value"), val);
-                result.set_property(String::from("done"), JsValue::Bool(false));
-                return result;
-            }
-        }
-    }
-    let result = JsValue::new_object();
-    result.set_property(String::from("value"), JsValue::Undefined);
-    result.set_property(String::from("done"), JsValue::Bool(true));
-    result
-}
-
-fn iterator_self(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
-    vm.current_this.clone()
+    let mut iter_obj = JsObject::with_tag("__iterator__");
+    iter_obj.prototype = Some(vm.iterator_proto.clone());
+    iter_obj.set(String::from("__items__"), items_arr);
+    iter_obj.set(String::from("__index__"), JsValue::Number(0.0));
+    JsValue::Object(Rc::new(RefCell::new(iter_obj)))
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -292,20 +243,20 @@ pub fn map_keys(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if let Some(obj_rc) = expect_map_this(vm) {
         let o = obj_rc.borrow();
         if let JsValue::Array(keys) = o.get("__keys") {
-            return make_iterator(keys.borrow().values_vec());
+            return make_iterator(vm, keys.borrow().values_vec());
         }
     }
-    make_iterator(Vec::new())
+    make_iterator(vm, Vec::new())
 }
 
 pub fn map_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if let Some(obj_rc) = expect_map_this(vm) {
         let o = obj_rc.borrow();
         if let JsValue::Array(vals) = o.get("__values") {
-            return make_iterator(vals.borrow().values_vec());
+            return make_iterator(vm, vals.borrow().values_vec());
         }
     }
-    make_iterator(Vec::new())
+    make_iterator(vm, Vec::new())
 }
 
 pub fn map_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -321,10 +272,10 @@ pub fn map_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
                 .zip(vv.into_iter())
                 .map(|(key, val)| JsValue::new_array(alloc::vec![key, val]))
                 .collect();
-            return make_iterator(entries);
+            return make_iterator(vm, entries);
         }
     }
-    make_iterator(Vec::new())
+    make_iterator(vm, Vec::new())
 }
 
 pub fn map_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -501,10 +452,10 @@ pub fn set_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     if let Some(obj_rc) = expect_set_this(vm) {
         let o = obj_rc.borrow();
         if let JsValue::Array(items) = o.get("__items") {
-            return make_iterator(items.borrow().values_vec());
+            return make_iterator(vm, items.borrow().values_vec());
         }
     }
-    make_iterator(Vec::new())
+    make_iterator(vm, Vec::new())
 }
 
 pub fn set_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
@@ -517,10 +468,10 @@ pub fn set_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
                 .values()
                 .map(|v| JsValue::new_array(alloc::vec![v.clone(), v.clone()]))
                 .collect();
-            return make_iterator(entries);
+            return make_iterator(vm, entries);
         }
     }
-    make_iterator(Vec::new())
+    make_iterator(vm, Vec::new())
 }
 
 pub fn set_for_each(vm: &mut Vm, args: &[JsValue]) -> JsValue {
