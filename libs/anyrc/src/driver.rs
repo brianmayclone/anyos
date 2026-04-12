@@ -132,7 +132,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     drop(lower_ctx);
 
     // 4. Resolve names
-    let mut resolver = Resolver::new(&interner);
+    let mut resolver = Resolver::new(&mut interner);
     let resolve_result = resolver.resolve_crate(&hir);
     if !resolve_result.errors.is_empty() {
         return Err(resolve_result.errors);

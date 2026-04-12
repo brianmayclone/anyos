@@ -81,6 +81,35 @@ fn byte_char_literals_in_conditions_compile() {
 }
 
 #[test]
+fn implicit_core_prelude_types_and_variants_compile() {
+    compile_ok(
+        "implicit_core_prelude_types_and_variants_compile",
+        r#"
+        fn maybe(flag: bool) -> Option<u8> {
+            if flag { Some(1) } else { None }
+        }
+
+        fn resulty(flag: bool) -> Result<u8, u8> {
+            if flag { Ok(7) } else { Err(9) }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn println_and_exit_intrinsics_compile() {
+    compile_ok(
+        "println_and_exit_intrinsics_compile",
+        r#"
+        fn main() {
+            __anyrc_println("hello");
+            exit(0);
+        }
+        "#,
+    );
+}
+
+#[test]
 fn raw_ptr_is_null_in_while_condition_compiles() {
     compile_ok(
         "raw_ptr_is_null_in_while_condition",

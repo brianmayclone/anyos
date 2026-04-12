@@ -40,7 +40,7 @@ pub struct Resolver<'a> {
     current_scope: usize,
     resolutions: HashMap<HirId, DefId>,
     errors: Vec<Diagnostic>,
-    interner: &'a Interner,
+    interner: &'a mut Interner,
     /// Enum DefId -> variant info
     enum_variants: HashMap<DefId, EnumInfo>,
     /// Next synthetic DefId for things without one (e.g. variants)
@@ -60,8 +60,8 @@ pub struct Resolver<'a> {
 }
 
 impl<'a> Resolver<'a> {
-    pub fn new(interner: &'a Interner) -> Self {
-        Self {
+    pub fn new(interner: &'a mut Interner) -> Self {
+        let mut this = Self {
             scopes: vec![Scope { parent: None, bindings: HashMap::new() }],
             current_scope: 0,
             resolutions: HashMap::new(),
@@ -79,7 +79,41 @@ impl<'a> Resolver<'a> {
             root_scope: 0,
             module_stack: vec![0],
             intrinsic_fns: HashMap::new(),
-        }
+        };
+        this.bootstrap_prelude_intrinsics();
+        this
+    }
+
+    fn bootstrap_prelude_intrinsics(&mut self) {
+        self.define_intrinsic_type("Option", "Option");
+        self.define_intrinsic_type("Result", "Result");
+        self.define_intrinsic_type("Vec", "Vec");
+        self.define_intrinsic_type("String", "String");
+        self.define_intrinsic_type("Box", "Box");
+
+        self.define_intrinsic_value("Some", "Option::Some");
+        self.define_intrinsic_value("None", "Option::None");
+        self.define_intrinsic_value("Ok", "Result::Ok");
+        self.define_intrinsic_value("Err", "Result::Err");
+
+        self.define_intrinsic_value("__anyrc_println", "__anyrc_println");
+        self.define_intrinsic_value("__anyrc_format", "__anyrc_format");
+        self.define_intrinsic_value("Vec::new", "Vec::new");
+        self.define_intrinsic_value("exit", "exit");
+    }
+
+    fn define_intrinsic_type(&mut self, local_name: &str, full_path: &str) {
+        let name = self.find_symbol(local_name).unwrap_or_else(|| self.interner.intern(local_name));
+        let def_id = self.alloc_synthetic_def_id();
+        self.intrinsic_fns.insert(def_id, full_path.to_string());
+        self.define(name, Namespace::Type, def_id);
+    }
+
+    fn define_intrinsic_value(&mut self, local_name: &str, full_path: &str) {
+        let name = self.find_symbol(local_name).unwrap_or_else(|| self.interner.intern(local_name));
+        let def_id = self.alloc_synthetic_def_id();
+        self.intrinsic_fns.insert(def_id, full_path.to_string());
+        self.define(name, Namespace::Value, def_id);
     }
 
     fn alloc_synthetic_def_id(&mut self) -> DefId {
@@ -802,7 +836,7 @@ impl<'a> Resolver<'a> {
 
         let first_seg = &path.segments[0];
         let name = first_seg.ident;
-        let name_str = self.interner.resolve(name);
+        let name_str = self.interner.resolve(name).to_string();
 
         // Check for primitive types in type namespace
         if ns == Namespace::Type && path.segments.len() == 1 {
@@ -873,7 +907,7 @@ impl<'a> Resolver<'a> {
                 } else {
                     self.errors.push(Diagnostic::new(
                         Level::Error,
-                        &format!("`{}` not found in this scope", name_str),
+                    &format!("`{}` not found in this scope", name_str),
                         path.span,
                     ));
                 }
@@ -931,7 +965,7 @@ impl<'a> Resolver<'a> {
                 if self.primitives.iter().any(|&p| p == name_str) {
                     let second_str = self.interner.resolve(second_name);
                     let is_assoc_const = matches!(
-                        (name_str, second_str),
+                        (name_str.as_str(), second_str),
                         ("u8", "MAX") | ("u16", "MAX") | ("u32", "MAX") | ("u64", "MAX") | ("u128", "MAX") | ("usize", "MAX")
                         | ("i8", "MAX") | ("i16", "MAX") | ("i32", "MAX") | ("i64", "MAX") | ("i128", "MAX") | ("isize", "MAX")
                         | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")

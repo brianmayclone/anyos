@@ -15,7 +15,7 @@ fn build_and_check(src: &str) -> Vec<BorrowckResult> {
     expand_macros(&mut krate, &mut interner);
     let mut lower_ctx = LoweringContext::new(&mut interner);
     let hir = lower_ctx.lower_crate(&krate);
-    let mut resolver = Resolver::new(&interner);
+    let mut resolver = Resolver::new(&mut interner);
     let resolve_result = resolver.resolve_crate(&hir);
     let mut checker = TypeChecker::new(&interner, &resolve_result);
     let typeck_result = checker.check_crate(&hir);

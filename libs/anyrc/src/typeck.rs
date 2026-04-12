@@ -197,6 +197,7 @@ impl<'a> TypeChecker<'a> {
                     name.starts_with("Atomic") || name == "Ordering"
                         || name == "UnsafeCell"
                         || name == "Vec" || name == "Box" || name == "String"
+                        || name == "Option" || name == "Result"
                 })
                 .map(|(&d, p)| (d, p.clone()))
                 .collect();
@@ -674,6 +675,9 @@ impl<'a> TypeChecker<'a> {
                         // Intrinsic functions: accept any args
                         if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(&def_id).cloned() {
                             for a in args { self.check_expr(a); }
+                            if let Some(ty) = self.intrinsic_constructor_type(&intrinsic_path) {
+                                return ty;
+                            }
                             // For Type::new() constructors, return the type as Adt
                             if intrinsic_path.ends_with("::new") {
                                 let type_name = intrinsic_path.rsplit("::").nth(1).unwrap_or("");
@@ -1106,11 +1110,14 @@ impl<'a> TypeChecker<'a> {
 
     // ── Path type inference ──
 
-    fn infer_path_type(&self, path: &HirPath, expr_id: HirId) -> TyKind {
+    fn infer_path_type(&mut self, path: &HirPath, expr_id: HirId) -> TyKind {
         if let Some(&def_id) = self.resolve.resolutions.get(&expr_id) {
             // Intrinsic function from core/alloc, or primitive associated constant?
             if let Some(path_str) = self.resolve.intrinsic_fns.get(&def_id) {
                 if let Some(ty) = Self::primitive_assoc_const_type(path_str) {
+                    return ty;
+                }
+                if let Some(ty) = self.intrinsic_constructor_type(path_str) {
                     return ty;
                 }
                 return TyKind::FnDef(def_id, vec![]);
@@ -1148,6 +1155,28 @@ impl<'a> TypeChecker<'a> {
             return TyKind::Error;
         }
         TyKind::Error
+    }
+
+    fn intrinsic_constructor_type(&mut self, path_str: &str) -> Option<TyKind> {
+        match path_str {
+            "Option::Some" | "Option::None" => {
+                let sym = self.interner.lookup("Option")?;
+                let def_id = *self.type_name_to_def.get(&sym)?;
+                Some(TyKind::Adt(def_id, vec![self.fresh_infer(InferKind::General)]))
+            }
+            "Result::Ok" | "Result::Err" => {
+                let sym = self.interner.lookup("Result")?;
+                let def_id = *self.type_name_to_def.get(&sym)?;
+                Some(TyKind::Adt(
+                    def_id,
+                    vec![
+                        self.fresh_infer(InferKind::General),
+                        self.fresh_infer(InferKind::General),
+                    ],
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// Check if a path string like "u32::MAX" is a primitive associated constant.

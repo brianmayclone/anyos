@@ -99,7 +99,7 @@ fn typecheck_dyn_trait() {
     let mut lower_ctx = LoweringContext::new(&mut interner);
     let hir = lower_ctx.lower_crate(&krate);
     drop(lower_ctx);
-    let mut resolver = Resolver::new(&interner);
+    let mut resolver = Resolver::new(&mut interner);
     let resolve_result = resolver.resolve_crate(&hir);
     assert!(resolve_result.errors.is_empty(), "resolve errors: {:?}", resolve_result.errors);
     let mut checker = TypeChecker::new(&interner, &resolve_result);

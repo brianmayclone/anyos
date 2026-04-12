@@ -11,7 +11,7 @@ fn resolve_src(src: &str) -> (anyrc::resolve::ResolveResult, Interner) {
     expand_macros(&mut krate, &mut interner);
     let mut ctx = LoweringContext::new(&mut interner);
     let hir = ctx.lower_crate(&krate);
-    let mut resolver = Resolver::new(&interner);
+    let mut resolver = Resolver::new(&mut interner);
     let result = resolver.resolve_crate(&hir);
     (result, interner)
 }
