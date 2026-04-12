@@ -31,8 +31,30 @@ struct CssBlockNode {
 #[derive(Clone, Debug)]
 struct CssDeclarationAst {
     name: String,
-    value: String,
+    value: CssValueAst,
     important: bool,
+}
+
+#[derive(Clone, Debug)]
+struct CssValueAst {
+    raw: String,
+    components: Vec<CssValueComponentAst>,
+}
+
+#[derive(Clone, Debug)]
+enum CssValueComponentAst {
+    Ident(String),
+    Number(String),
+    Dimension(String),
+    String(String),
+    Hash(String),
+    Delim(char),
+    Comma,
+    Slash,
+    Function {
+        name: String,
+        args: Vec<CssValueAst>,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]

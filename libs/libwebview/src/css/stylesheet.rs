@@ -412,46 +412,38 @@ fn parse_font_face_block(block: &str) -> Option<FontFaceRule> {
             "font-family" => {
                 family = decl
                     .value
+                    .raw
                     .trim()
                     .trim_matches('"')
                     .trim_matches('\'')
                     .into();
             }
             "src" => {
-                let v = decl.value.trim();
                 let mut best_url = String::new();
                 let mut best_is_woff2 = true;
-                let mut search = v;
-                while let Some(url_start) = search.find("url(") {
-                    let after = &search[url_start + 4..];
-                    let url_end = after.find(')').unwrap_or(after.len());
-                    let url = after[..url_end]
-                        .trim()
-                        .trim_matches('"')
-                        .trim_matches('\'');
-                    let rest = &after[url_end..];
-                    let is_woff2 = rest.contains("format('woff2')")
-                        || rest.contains("format(\"woff2\")")
-                        || url.ends_with(".woff2");
-                    if best_url.is_empty() || (best_is_woff2 && !is_woff2) {
-                        best_url = String::from(url);
-                        best_is_woff2 = is_woff2;
-                    }
-                    let consumed = url_start + 4 + url_end;
-                    if consumed >= search.len() {
-                        break;
-                    }
-                    search = &search[consumed..];
-                    if let Some(comma) = search.find(',') {
-                        search = &search[comma + 1..];
-                    } else {
-                        break;
+                for component in &decl.value.components {
+                    if let CssValueComponentAst::Function { name, args } = component {
+                        if !name.eq_ignore_ascii_case("url") || args.is_empty() {
+                            continue;
+                        }
+                        let url = args[0]
+                            .raw
+                            .trim()
+                            .trim_matches('"')
+                            .trim_matches('\'');
+                        let is_woff2 = decl.value.raw.contains("format('woff2')")
+                            || decl.value.raw.contains("format(\"woff2\")")
+                            || url.ends_with(".woff2");
+                        if best_url.is_empty() || (best_is_woff2 && !is_woff2) {
+                            best_url = String::from(url);
+                            best_is_woff2 = is_woff2;
+                        }
                     }
                 }
                 src_url = best_url;
             }
             "font-weight" => {
-                weight = match decl.value.trim() {
+                weight = match decl.value.raw.trim() {
                     "bold" | "700" => 700,
                     "normal" | "400" => 400,
                     "100" => 100,
@@ -464,9 +456,9 @@ fn parse_font_face_block(block: &str) -> Option<FontFaceRule> {
                     _ => 400,
                 };
             }
-            "font-style" => italic = decl.value.trim() == "italic",
+            "font-style" => italic = decl.value.raw.trim() == "italic",
             "font-display" => {
-                display = match decl.value.trim() {
+                display = match decl.value.raw.trim() {
                     "block" => FontDisplay::Block,
                     "swap" => FontDisplay::Swap,
                     "fallback" => FontDisplay::Fallback,
@@ -497,14 +489,14 @@ fn lower_declaration_list_ast(ast: &[CssDeclarationAst]) -> Vec<Declaration> {
         if decl.name.starts_with("--") {
             decls.push(Declaration {
                 property: Property::CustomProperty(String::from(&decl.name)),
-                value: CssValue::Keyword(decl.value.clone()),
+                value: lower_custom_property_value_ast(&decl.value),
                 important: decl.important,
             });
             continue;
         }
 
         if decl.name.eq_ignore_ascii_case("font") {
-            let mut expanded = expand_font_shorthand(&decl.value);
+            let mut expanded = expand_font_shorthand(&decl.value.raw);
             if decl.important {
                 for d in &mut expanded {
                     d.important = true;
@@ -519,7 +511,7 @@ fn lower_declaration_list_ast(ast: &[CssDeclarationAst]) -> Vec<Declaration> {
         };
 
         if is_expandable_shorthand(&property) {
-            let mut expanded = expand_shorthand(property, &decl.value);
+            let mut expanded = expand_shorthand(property, &decl.value.raw);
             if decl.important {
                 for d in &mut expanded {
                     d.important = true;
@@ -527,7 +519,7 @@ fn lower_declaration_list_ast(ast: &[CssDeclarationAst]) -> Vec<Declaration> {
             }
             decls.extend(expanded);
         } else {
-            let value = parse_value(&property, &decl.value);
+            let value = lower_property_value_ast(&property, &decl.value);
             decls.push(Declaration {
                 property,
                 value,
@@ -536,6 +528,79 @@ fn lower_declaration_list_ast(ast: &[CssDeclarationAst]) -> Vec<Declaration> {
         }
     }
     decls
+}
+
+fn lower_property_value_ast(property: &Property, value: &CssValueAst) -> CssValue {
+    if value.components.len() == 1 {
+        match &value.components[0] {
+            CssValueComponentAst::Ident(ident) => {
+                let lower = to_ascii_lower(ident.trim());
+                match lower.as_str() {
+                    "auto" => return CssValue::Auto,
+                    "none" => return CssValue::None,
+                    "inherit" => return CssValue::Inherit,
+                    "currentcolor" => return CssValue::CurrentColor,
+                    "transparent" => return CssValue::Color(0x00000000),
+                    _ => {
+                        if is_color_property(property) {
+                            if let Some(color) = named_color(&lower) {
+                                return CssValue::Color(color);
+                            }
+                        }
+                    }
+                }
+            }
+            CssValueComponentAst::Hash(hash) => {
+                if let Some(color) = try_parse_color(hash) {
+                    return CssValue::Color(color);
+                }
+            }
+            CssValueComponentAst::Number(number) | CssValueComponentAst::Dimension(number) => {
+                if let Some(value) = try_parse_dimension(number) {
+                    return value;
+                }
+            }
+            CssValueComponentAst::Function { name, args } => {
+                let lower = to_ascii_lower(name);
+                match lower.as_str() {
+                    "var" => {
+                        if let Some(var_name) = args.first() {
+                            let fallback = args
+                                .get(1)
+                                .map(|fallback| Box::new(lower_property_value_ast(property, fallback)));
+                            return CssValue::Var(var_name.raw.trim().into(), fallback);
+                        }
+                    }
+                    "calc" => {
+                        return parse_calc_value(&value.raw);
+                    }
+                    "min" => return parse_min_max_clamp_value(&value.raw, CssMathFunc::Min),
+                    "max" => return parse_min_max_clamp_value(&value.raw, CssMathFunc::Max),
+                    "clamp" => return parse_min_max_clamp_value(&value.raw, CssMathFunc::Clamp),
+                    "rgb" | "rgba" | "hsl" | "hsla" | "hwb" | "lab" | "lch" | "oklab"
+                    | "oklch" | "color" | "color-mix" | "light-dark" => {
+                        if let Some(color) = try_parse_color(&value.raw) {
+                            return CssValue::Color(color);
+                        }
+                    }
+                    "url" => {
+                        return CssValue::Keyword(value.raw.clone());
+                    }
+                    _ => {}
+                }
+            }
+            CssValueComponentAst::String(text) => {
+                return CssValue::Keyword(text.clone());
+            }
+            CssValueComponentAst::Comma | CssValueComponentAst::Slash | CssValueComponentAst::Delim(_) => {}
+        }
+    }
+
+    parse_value(property, &value.raw)
+}
+
+fn lower_custom_property_value_ast(value: &CssValueAst) -> CssValue {
+    CssValue::Keyword(value.raw.clone())
 }
 
 /// Parse a @media rule: query { rules }.
