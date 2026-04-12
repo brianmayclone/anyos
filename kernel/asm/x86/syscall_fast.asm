@@ -145,6 +145,7 @@ syscall_fast_entry:
     ; if DPL < new CPL, leaving DS/ES=0. While null segments work in
     ; 64-bit mode, explicit 0x23 is required for 32-bit compat processes
     ; and avoids subtle segment-state issues across context switches.
+    cli
     push rbx
     mov bx, 0x23
     mov ds, bx
@@ -270,6 +271,7 @@ syscall_fast_entry:
     ; Restore DS/ES to user data segment before IRETQ.
     ; IRETQ does NOT restore DS/ES; the CPU nullifies them on CPL 0→3
     ; transition if DPL < new CPL, causing #GP on first user memory access.
+    cli
     push rbx
     mov bx, 0x23
     mov ds, bx

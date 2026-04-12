@@ -1619,6 +1619,7 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
     // (MEMORY.md: hardcoded AX in asm! corrupts any in(reg) that the compiler
     //  allocates to RAX — and `pop rax` would clobber it too)
     core::arch::asm!(
+        "cli",
         // Set data segment registers to user data segment
         "mov ax, 0x23",
         "mov ds, ax",
@@ -1737,6 +1738,7 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64, user_lr: u64) -> ! {
 #[cfg(target_arch = "x86_64")]
 unsafe fn jump_to_user_mode_compat32(entry: u64, user_stack: u64) -> ! {
     core::arch::asm!(
+        "cli",
         // Set data segment registers to user data segment
         "mov ax, 0x23",
         "mov ds, ax",

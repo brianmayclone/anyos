@@ -455,7 +455,7 @@ impl Thread {
         }
         let stack_end = (stack_ptr as usize) + stack_size;
         #[cfg(target_arch = "x86_64")]
-        let user_sp = stack_end - 16;
+        let user_sp = stack_end - 8;
         #[cfg(target_arch = "aarch64")]
         let user_sp = stack_end & !0xF;
         // Place a synthetic return address exactly at [RSP]. The kernel enters

@@ -195,6 +195,7 @@ isr_common_stub:
     ; Also fix SS.RPL for VirtualBox NEM/Hyper-V (see irq_common_stub comment).
     test qword [rsp + 8], 3        ; check CS.RPL (bits 0-1)
     jz .isr_iret_done              ; kernel return (RPL=0) — no fix needed
+    cli
     push rax
     mov ax, 0x23                   ; user data segment (GDT entry 4 | RPL=3)
     mov ds, ax
@@ -309,6 +310,7 @@ irq_common_stub:
     ; Restore user data segment and sanitise SS before IRETQ (same fix as isr_common_stub).
     test qword [rsp + 8], 3        ; check CS.RPL
     jz .irq_iret_done
+    cli
     push rax
     mov ax, 0x23                   ; user data segment (GDT entry 4 | RPL=3)
     mov ds, ax

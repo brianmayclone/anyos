@@ -73,6 +73,7 @@ syscall_entry:
     ; causing #GP(0) on the first user-mode memory access.
     test qword [rsp + 8], 3       ; check CS.RPL on stack — returning to ring 3?
     jz .int80_iret_done
+    cli
     push rax
     mov ax, 0x23                  ; user data segment (GDT entry 4 | RPL=3)
     mov ds, ax
