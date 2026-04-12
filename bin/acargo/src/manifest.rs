@@ -207,3 +207,24 @@ pub fn source_file(manifest: &Manifest, manifest_dir: &str) -> String {
         format!("{}/src/main.rs", manifest_dir)
     }
 }
+
+pub fn infer_crate_layout(manifest: &mut Manifest, manifest_dir: &str) {
+    let lib_rs = format!("{}/src/lib.rs", manifest_dir);
+    let main_rs = format!("{}/src/main.rs", manifest_dir);
+    let has_lib = crate::fs::file_exists(&lib_rs);
+    let has_main = crate::fs::file_exists(&main_rs);
+
+    if manifest.lib_name.is_some() {
+        manifest.crate_type = CrateKind::Lib;
+        return;
+    }
+
+    if has_lib && !has_main {
+        manifest.crate_type = CrateKind::Lib;
+        if manifest.lib_name.is_none() {
+            manifest.lib_name = Some(manifest.name.replace('-', "_"));
+        }
+    } else if has_main {
+        manifest.crate_type = CrateKind::Bin;
+    }
+}

@@ -52,7 +52,8 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
             }
         };
         let toml_table = toml::parse(&toml_src);
-        let mf = manifest::parse(&toml_table);
+        let mut mf = manifest::parse(&toml_table);
+        manifest::infer_crate_layout(&mut mf, &dir);
 
         // Skip if already processed
         if name_to_idx.contains_key(&mf.name) {
