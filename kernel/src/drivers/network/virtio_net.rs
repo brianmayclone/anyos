@@ -30,10 +30,10 @@ const TX_DESC_MAP_SIZE: usize = NUM_BUFFERS;
 const INVALID_TX_SLOT: u16 = u16::MAX;
 
 /// Max Ethernet frame size + VirtIO net header.
-const RX_BUF_SIZE: usize = 1526 + 10; // MTU 1500 + Ethernet overhead + virtio-net header
+const RX_BUF_SIZE: usize = 1526 + 12; // MTU 1500 + Ethernet overhead + virtio-net header
 
-/// VirtIO net header size without VIRTIO_NET_F_MRG_RXBUF.
-const VIRTIO_NET_HDR_SIZE: usize = 10;
+/// VirtIO net header size.
+const VIRTIO_NET_HDR_SIZE: usize = 12;
 
 /// Feature: device has given MAC address.
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;

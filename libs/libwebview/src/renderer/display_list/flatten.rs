@@ -637,9 +637,11 @@ impl DisplayList {
         if let Some(ref src) = bx.image_src {
             let dw = bx.image_width.unwrap_or(draw_w);
             let dh = bx.image_height.unwrap_or(draw_h);
+            let image_x = abs_x + bx.border_left_width + bx.padding.left;
+            let image_y = abs_y + bx.border_top_width + bx.padding.top;
             self.push(
-                abs_x,
-                abs_y,
+                image_x,
+                image_y,
                 dw,
                 dh,
                 DrawKind::Image {

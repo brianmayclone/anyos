@@ -393,17 +393,119 @@ pub fn build_block_with_budget(
 
     // Handle <img> as block/inline-block replaced element.
     if tag == Some(Tag::Img) || dom.has_tag_name(node_id, "a-img") {
-        let (iw, ih) = image_dimensions(dom, node_id, bx.width, images);
+        let (natural_w, natural_h) = image_dimensions(dom, node_id, available_width, images);
+        let mut content_w = natural_w.max(1);
+        let mut content_h = natural_h.max(1);
+        let horizontal_non_content = bx.padding.left + bx.padding.right + horizontal_border;
+        let vertical_non_content = bx.padding.top + bx.padding.bottom + vertical_border;
+
+        let resolve_specified_width = |w: i32| {
+            if is_border_box {
+                (w - horizontal_non_content).max(0)
+            } else {
+                w.max(0)
+            }
+        };
+        let resolve_specified_height = |h: i32| {
+            if is_border_box {
+                (h - vertical_non_content).max(0)
+            } else {
+                h.max(0)
+            }
+        };
+
+        let specified_w = style
+            .width
+            .map(resolve_specified_width)
+            .or_else(|| {
+                style.width_pct.map(|pct| {
+                    let border_box = (available_width as i64 * pct as i64 / 10000) as i32;
+                    resolve_specified_width(border_box)
+                })
+            })
+            .or_else(|| {
+                style.width_calc.map(|(px100, pct100)| {
+                    let border_box =
+                        px100 / 100 + (available_width as i64 * pct100 as i64 / 10000) as i32;
+                    resolve_specified_width(border_box)
+                })
+            });
+        let specified_h = style
+            .height
+            .map(resolve_specified_height)
+            .or_else(|| {
+                if parent_height > 0 {
+                    style.height_pct.map(|pct| {
+                        let border_box = (parent_height as i64 * pct as i64 / 10000) as i32;
+                        resolve_specified_height(border_box)
+                    })
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if parent_height > 0 {
+                    style.height_calc.map(|(px100, pct100)| {
+                        let border_box =
+                            px100 / 100 + (parent_height as i64 * pct100 as i64 / 10000) as i32;
+                        resolve_specified_height(border_box)
+                    })
+                } else {
+                    None
+                }
+            });
+
+        match (specified_w, specified_h) {
+            (Some(w), Some(h)) => {
+                content_w = w.max(1);
+                content_h = h.max(1);
+            }
+            (Some(w), None) => {
+                content_w = w.max(1);
+                if natural_w > 0 {
+                    content_h = ((natural_h as i64 * content_w as i64) / natural_w as i64)
+                        .max(1) as i32;
+                }
+            }
+            (None, Some(h)) => {
+                content_h = h.max(1);
+                if natural_h > 0 {
+                    content_w = ((natural_w as i64 * content_h as i64) / natural_h as i64)
+                        .max(1) as i32;
+                }
+            }
+            (None, None) => {}
+        }
+
+        if let Some(max_h) = style.max_height.map(resolve_specified_height) {
+            if content_h > max_h.max(0) {
+                content_h = max_h.max(0);
+                if natural_h > 0 {
+                    content_w = ((natural_w as i64 * content_h as i64) / natural_h as i64)
+                        .max(1) as i32;
+                }
+            }
+        }
+        if let Some(max_w) = style.max_width.map(resolve_specified_width) {
+            if content_w > max_w.max(0) {
+                content_w = max_w.max(0);
+                if natural_w > 0 {
+                    content_h = ((natural_h as i64 * content_w as i64) / natural_w as i64)
+                        .max(1) as i32;
+                }
+            }
+        }
+
         bx.image_src = dom.image_url(node_id);
-        bx.image_width = Some(iw);
-        bx.image_height = Some(ih);
+        bx.image_width = Some(content_w);
+        bx.image_height = Some(content_h);
         bx.object_fit = style.object_fit;
         bx.object_position_x = style.object_position_x;
         bx.object_position_x_is_percent = style.object_position_x_is_percent;
         bx.object_position_y = style.object_position_y;
         bx.object_position_y_is_percent = style.object_position_y_is_percent;
-        bx.height = ih + bx.padding.top + bx.padding.bottom + vertical_border;
-        bx.width = iw + bx.padding.left + bx.padding.right + horizontal_border;
+        bx.height = content_h + bx.padding.top + bx.padding.bottom + vertical_border;
+        bx.width = content_w + bx.padding.left + bx.padding.right + horizontal_border;
         return bx;
     }
 
@@ -424,17 +526,37 @@ pub fn build_block_with_budget(
             .and_then(parse_attr_int)
             .or(natural.map(|(_, h)| h))
             .unwrap_or(100);
-        let w = w.min(bx.width.max(1));
+        let mut content_w = w.min(available_width.max(1));
+        let mut content_h = h.max(1);
+        let horizontal_non_content = bx.padding.left + bx.padding.right + horizontal_border;
+        let vertical_non_content = bx.padding.top + bx.padding.bottom + vertical_border;
+        if let Some(spec_w) = style.width {
+            content_w = if is_border_box {
+                (spec_w - horizontal_non_content).max(0)
+            } else {
+                spec_w.max(0)
+            };
+            if natural.is_some() && w > 0 {
+                content_h = ((h as i64 * content_w as i64) / w as i64).max(1) as i32;
+            }
+        }
+        if let Some(spec_h) = style.height {
+            content_h = if is_border_box {
+                (spec_h - vertical_non_content).max(0)
+            } else {
+                spec_h.max(0)
+            };
+        }
         bx.image_src = Some(key);
-        bx.image_width = Some(w);
-        bx.image_height = Some(h);
+        bx.image_width = Some(content_w);
+        bx.image_height = Some(content_h);
         bx.object_fit = style.object_fit;
         bx.object_position_x = style.object_position_x;
         bx.object_position_x_is_percent = style.object_position_x_is_percent;
         bx.object_position_y = style.object_position_y;
         bx.object_position_y_is_percent = style.object_position_y_is_percent;
-        bx.height = h + bx.padding.top + bx.padding.bottom + vertical_border;
-        bx.width = w + bx.padding.left + bx.padding.right + horizontal_border;
+        bx.height = content_h + bx.padding.top + bx.padding.bottom + vertical_border;
+        bx.width = content_w + bx.padding.left + bx.padding.right + horizontal_border;
         return bx;
     }
 
