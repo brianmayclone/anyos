@@ -35,6 +35,78 @@ struct CssDeclarationAst {
     important: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CssAttrOpAst {
+    Exists,
+    Exact,
+    Contains,
+    Prefix,
+    Suffix,
+    Substring,
+    DashMatch,
+}
+
+#[derive(Clone, Debug)]
+struct CssAttrSelectorAst {
+    name: String,
+    op: CssAttrOpAst,
+    value: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CssPseudoElementAst {
+    Before,
+    After,
+    Unknown,
+}
+
+#[derive(Clone, Debug)]
+enum CssPseudoClassAst {
+    Hover,
+    Active,
+    Focus,
+    Visited,
+    FirstChild,
+    LastChild,
+    NthChild(i32),
+    NthLastChild(i32),
+    FirstOfType,
+    LastOfType,
+    Not(Vec<CssSimpleSelectorAst>),
+    Is(Vec<CssSimpleSelectorAst>),
+    Where(Vec<CssSimpleSelectorAst>),
+    Has(Box<CssSimpleSelectorAst>),
+    Empty,
+    Checked,
+    Disabled,
+    Enabled,
+    Root,
+    FocusVisible,
+    FocusWithin,
+    PlaceholderShown,
+    Required,
+    Optional,
+    ReadOnly,
+    ReadWrite,
+    Valid,
+    Invalid,
+    InRange,
+    OutOfRange,
+    Default,
+    Indeterminate,
+}
+
+#[derive(Clone, Debug)]
+struct CssSimpleSelectorAst {
+    explicit_universal: bool,
+    tag_name: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
+    attrs: Vec<CssAttrSelectorAst>,
+    pseudo_classes: Vec<CssPseudoClassAst>,
+    pseudo_element: Option<CssPseudoElementAst>,
+}
+
 #[derive(Clone, Debug)]
 enum CssCombinatorAst {
     Descendant,
@@ -45,6 +117,6 @@ enum CssCombinatorAst {
 
 #[derive(Clone, Debug)]
 struct CssSelectorAst {
-    first: String,
-    rest: Vec<(CssCombinatorAst, String)>,
+    first: CssSimpleSelectorAst,
+    rest: Vec<(CssCombinatorAst, CssSimpleSelectorAst)>,
 }
