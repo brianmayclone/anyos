@@ -208,16 +208,6 @@ pub fn layout_table(
         (table_width - bx.padding.left - bx.padding.right - cellspacing * (max_cols as i32 + 1))
             .max(0);
 
-    let cell_pad = cellpadding * 2;
-    let cell_border_overhead = if is_collapsed {
-        1i32
-    } else if table_border > 0 {
-        2i32
-    } else {
-        0i32
-    };
-    let cell_overhead = cell_pad + cell_border_overhead;
-
     // Phase 1: Compute column widths.
     //
     // `table-layout: fixed` (CSS Table §17.5.2.1):
@@ -250,6 +240,23 @@ pub fn layout_table(
         }
 
         let cell_style = &styles[cell_id];
+        let cell_padding_h = cell_style.padding_left.max(cellpadding)
+            + cell_style.padding_right.max(cellpadding);
+        let cell_border_h = if is_collapsed {
+            let bw = if cell_style.border_top.width > 0 || cell_style.border_left.width > 0 {
+                1i32
+            } else if table_border > 0 || cell_style.border_width > 0 {
+                1i32
+            } else {
+                0i32
+            };
+            bw * 2
+        } else if table_border > 0 {
+            2
+        } else {
+            cell_style.border_width * 2
+        };
+        let cell_overhead = cell_padding_h + cell_border_h;
 
         // Check for explicit CSS or HTML width on cell.
         let explicit_w = if let Some(w) = cell_style.width {
@@ -280,9 +287,13 @@ pub fn layout_table(
         } else {
             // Auto layout: measure content for preferred/minimum widths.
             // Max-content width for this cell (natural width without line-breaking).
-            let pref_w =
+            let has_children = !dom.get(cell_id).children.is_empty();
+            let pref_w = if has_children {
                 flex::measure_max_content(dom, styles, pseudo, cell_id, images, viewport_w)
-                    + cell_overhead;
+                    + cell_overhead
+            } else {
+                cell_overhead
+            };
 
             if colspan == 1 {
                 if let Some(ew) = explicit_w {
@@ -290,9 +301,12 @@ pub fn layout_table(
                     col_fixed_widths[col_idx] = ew.max(col_fixed_widths[col_idx]);
                     col_has_fixed[col_idx] = true;
                 }
-                let min_w =
+                let min_w = if has_children {
                     super::intrinsic_min_width(dom, styles, pseudo, cell_id, images, viewport_w)
-                        + cell_overhead;
+                        + cell_overhead
+                } else {
+                    cell_overhead
+                };
                 col_min_widths[col_idx] = col_min_widths[col_idx].max(min_w.max(10));
                 col_pref_widths[col_idx] =
                     col_pref_widths[col_idx].max(pref_w.max(col_min_widths[col_idx]));

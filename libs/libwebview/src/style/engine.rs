@@ -3980,6 +3980,17 @@ pub fn apply_declaration(
         Property::BorderSpacing => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.border_spacing = px;
+            } else if let CssValue::Keyword(ref raw) = decl.value {
+                let mut parts = raw.split_ascii_whitespace();
+                if let Some(first) = parts.next() {
+                    if let Some(px) = resolve_length(
+                        &crate::css::parse_value(&Property::BorderSpacing, first),
+                        parent_fs,
+                        root_fs,
+                    ) {
+                        style.border_spacing = px;
+                    }
+                }
             }
         }
         Property::TableLayout => {
