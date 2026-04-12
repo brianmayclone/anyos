@@ -737,9 +737,11 @@ impl<'a> TypeChecker<'a> {
             HirExprKind::Field(base, field_name) => {
                 let base_ty = self.check_expr(base);
                 let resolved = self.shallow_resolve(base_ty);
-                // Auto-deref references for field access
+                // Auto-deref references and raw pointers for field access.
                 let resolved = match &resolved {
-                    TyKind::Ref(inner, _) => self.shallow_resolve(inner.as_ref().clone()),
+                    TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
+                        self.shallow_resolve(inner.as_ref().clone())
+                    }
                     other => other.clone(),
                 };
                 match resolved {

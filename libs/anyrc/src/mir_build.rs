@@ -1704,7 +1704,7 @@ impl<'a> MirBuilder<'a> {
             HirExprKind::Field(base, field_name) => {
                 let mut place = self.try_lower_to_place(base)?;
                 let base_ty = self.get_expr_ty(base);
-                if matches!(&base_ty, TyKind::Ref(_, _)) {
+                if matches!(&base_ty, TyKind::Ref(_, _) | TyKind::RawPtr(_, _)) {
                     place.projections.push(Projection::Deref);
                 }
                 let idx = self.resolve_field_index(base, *field_name);
@@ -1756,7 +1756,7 @@ impl<'a> MirBuilder<'a> {
             HirExprKind::Field(base, field_name) => {
                 let mut place = self.lower_place(base);
                 let base_ty = self.get_expr_ty(base);
-                if matches!(&base_ty, TyKind::Ref(_, _)) {
+                if matches!(&base_ty, TyKind::Ref(_, _) | TyKind::RawPtr(_, _)) {
                     place.projections.push(Projection::Deref);
                 }
                 let idx = self.resolve_field_index(base, *field_name);
@@ -1964,7 +1964,7 @@ impl<'a> MirBuilder<'a> {
         // Look up field order from struct definition
         let base_ty = self.get_expr_ty(base_expr);
         let base_ty = match &base_ty {
-            TyKind::Ref(inner, _) => inner.as_ref(),
+            TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => inner.as_ref(),
             other => other,
         };
         if let TyKind::Adt(def_id, _) = base_ty {
@@ -2012,7 +2012,7 @@ impl<'a> MirBuilder<'a> {
     /// Get the field list for a struct type.
     fn resolve_struct_fields(&self, ty: &TyKind) -> Vec<(Symbol, TyKind)> {
         let inner = match ty {
-            TyKind::Ref(inner, _) => inner.as_ref(),
+            TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => inner.as_ref(),
             other => other,
         };
         if let TyKind::Adt(def_id, _) = inner {
