@@ -203,8 +203,7 @@ fn lower_qualified_rule_ast(node: &CssQualifiedRuleNode, current_layer: Option<&
     if selectors.is_empty() {
         return None;
     }
-    let mut decl_parser = Parser::new(&node.block.source);
-    let declarations = parse_declarations(&mut decl_parser);
+    let declarations = lower_declaration_list_ast(&parse_declaration_list_ast(&node.block.source));
     Some(Rule {
         selectors,
         declarations,
@@ -279,42 +278,24 @@ fn parse_import_prelude(prelude: &str) -> Option<String> {
 }
 
 fn parse_font_face_block(block: &str) -> Option<FontFaceRule> {
-    let mut p = Parser::new(block);
     let mut family = String::new();
     let mut src_url = String::new();
     let mut weight = 400u32;
     let mut italic = false;
     let mut display = FontDisplay::Auto;
 
-    while !p.eof() {
-        p.skip_whitespace();
-        if p.eof() || p.peek() == b'}' {
-            break;
-        }
-        let prop_name = p.read_ident();
-        if prop_name.is_empty() {
-            p.pos += 1;
-            continue;
-        }
-        p.skip_whitespace();
-        if p.peek() == b':' {
-            p.pos += 1;
-        }
-        p.skip_whitespace();
-        let val_start = p.pos;
-        while !p.eof() && p.peek() != b';' && p.peek() != b'}' {
-            p.pos += 1;
-        }
-        let val = String::from_utf8_lossy(&p.input[val_start..p.pos]).into_owned();
-        if p.peek() == b';' {
-            p.pos += 1;
-        }
-        match prop_name.to_ascii_lowercase().as_str() {
+    for decl in parse_declaration_list_ast(block) {
+        match decl.name.to_ascii_lowercase().as_str() {
             "font-family" => {
-                family = val.trim().trim_matches('"').trim_matches('\'').into();
+                family = decl
+                    .value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .into();
             }
             "src" => {
-                let v = val.trim();
+                let v = decl.value.trim();
                 let mut best_url = String::new();
                 let mut best_is_woff2 = true;
                 let mut search = v;
@@ -347,7 +328,7 @@ fn parse_font_face_block(block: &str) -> Option<FontFaceRule> {
                 src_url = best_url;
             }
             "font-weight" => {
-                weight = match val.trim() {
+                weight = match decl.value.trim() {
                     "bold" | "700" => 700,
                     "normal" | "400" => 400,
                     "100" => 100,
@@ -360,9 +341,9 @@ fn parse_font_face_block(block: &str) -> Option<FontFaceRule> {
                     _ => 400,
                 };
             }
-            "font-style" => italic = val.trim() == "italic",
+            "font-style" => italic = decl.value.trim() == "italic",
             "font-display" => {
-                display = match val.trim() {
+                display = match decl.value.trim() {
                     "block" => FontDisplay::Block,
                     "swap" => FontDisplay::Swap,
                     "fallback" => FontDisplay::Fallback,
@@ -385,6 +366,53 @@ fn parse_font_face_block(block: &str) -> Option<FontFaceRule> {
             display,
         })
     }
+}
+
+fn lower_declaration_list_ast(ast: &[CssDeclarationAst]) -> Vec<Declaration> {
+    let mut decls = Vec::new();
+    for decl in ast {
+        if decl.name.starts_with("--") {
+            decls.push(Declaration {
+                property: Property::CustomProperty(String::from(&decl.name)),
+                value: CssValue::Keyword(decl.value.clone()),
+                important: decl.important,
+            });
+            continue;
+        }
+
+        if decl.name.eq_ignore_ascii_case("font") {
+            let mut expanded = expand_font_shorthand(&decl.value);
+            if decl.important {
+                for d in &mut expanded {
+                    d.important = true;
+                }
+            }
+            decls.extend(expanded);
+            continue;
+        }
+
+        let Some(property) = parse_property(&decl.name) else {
+            continue;
+        };
+
+        if is_expandable_shorthand(&property) {
+            let mut expanded = expand_shorthand(property, &decl.value);
+            if decl.important {
+                for d in &mut expanded {
+                    d.important = true;
+                }
+            }
+            decls.extend(expanded);
+        } else {
+            let value = parse_value(&property, &decl.value);
+            decls.push(Declaration {
+                property,
+                value,
+                important: decl.important,
+            });
+        }
+    }
+    decls
 }
 
 /// Parse a @media rule: query { rules }.
