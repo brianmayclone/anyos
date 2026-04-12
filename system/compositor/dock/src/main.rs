@@ -23,7 +23,7 @@ use config::{
     ensure_finder, is_finder, load_dock_config, load_ico_icon, load_icons, load_icons_hires,
     save_dock_config,
 };
-use events::{unpack_event_name, SYSTEM_NAMES};
+use events::{should_hide_from_dock, unpack_event_name};
 use framebuffer::Framebuffer;
 use render::{dock_hit_test, render_dock, DragInfo, RenderState};
 use settings::{DockSettings, POS_BOTTOM, POS_LEFT};
@@ -1145,8 +1145,7 @@ fn handle_window_opened(app_tid: u32) {
         None => return, // Unknown process, skip
     };
 
-    // Skip system threads
-    if SYSTEM_NAMES.iter().any(|&s| s == name.as_str()) {
+    if should_hide_from_dock(name.as_str()) {
         return;
     }
 
@@ -1345,8 +1344,7 @@ fn process_system_events() {
                     a.tid_names.push((spawned_tid, name.clone()));
                 }
 
-                // Skip system threads
-                if SYSTEM_NAMES.iter().any(|&s| s == name.as_str()) {
+                if should_hide_from_dock(name.as_str()) {
                     continue;
                 }
 
@@ -1451,8 +1449,7 @@ fn reconcile_window_list() {
             }
         };
 
-        // Skip system threads
-        if SYSTEM_NAMES.iter().any(|&s| s == name.as_str()) {
+        if should_hide_from_dock(name.as_str()) {
             continue;
         }
 

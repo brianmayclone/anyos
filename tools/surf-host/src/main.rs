@@ -1051,9 +1051,13 @@ fn debug_dump_text_runs(bx: &libwebview::LayoutBox, depth: usize) {
     if let Some(text) = &bx.text {
         if !text.is_empty() {
             eprintln!(
-                "[surf-host] text-run depth={} node={:?} font_id={} size={} text={:?}",
+                "[surf-host] text-run depth={} node={:?} x={} y={} w={} h={} font_id={} size={} text={:?}",
                 depth,
                 bx.node_id,
+                bx.x,
+                bx.y,
+                bx.width,
+                bx.height,
                 bx.custom_font_id,
                 bx.font_size,
                 text

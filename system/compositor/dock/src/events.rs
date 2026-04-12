@@ -7,6 +7,12 @@ pub const SYSTEM_NAMES: &[&str] = &[
     "compositor", "dock", "cpu_monitor", "init", "netmon", "audiomon", "inputmon", "compositor/gpu",
 ];
 
+/// Processes that should never be shown in the dock, even if they open a window.
+pub fn should_hide_from_dock(name: &str) -> bool {
+    SYSTEM_NAMES.iter().any(|&s| s == name)
+        || matches!(name, "notifyd" | "crashdialog" | "CrashDialog")
+}
+
 /// Unpack a process name from EVT_PROCESS_SPAWNED words[2..5] (3 u32 LE packed).
 pub fn unpack_event_name(w2: u32, w3: u32, w4: u32) -> String {
     let mut buf = [0u8; 12];
