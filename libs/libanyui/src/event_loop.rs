@@ -1763,17 +1763,16 @@ pub fn run_once() -> u32 {
     // ── Phase 2.9: Accessibility pipe — poll & inject ──────────────
     {
         let st = crate::state();
-        let mut acc_clicks: alloc::vec::Vec<crate::control::ControlId> = alloc::vec::Vec::new();
+        let mut acc_events: alloc::vec::Vec<(crate::control::ControlId, u32)> = alloc::vec::Vec::new();
         // Temporarily take `acc` out of `st` to satisfy the borrow checker:
         // poll_and_handle needs &mut AccState (from st.acc) AND &mut AnyuiState.
         if let Some(mut acc) = st.acc.take() {
-            crate::accessibility::poll_and_handle(&mut acc, st, &mut acc_clicks);
+            crate::accessibility::poll_and_handle(&mut acc, st, &mut acc_events);
             st.acc = Some(acc);
         }
-        // Resolve click callbacks and push into pending_cbs so they fire in
-        // the normal callback phase below.
-        for id in acc_clicks {
-            fire_event_callback(&st.controls, id, crate::control::EVENT_CLICK, &mut pending_cbs);
+        // Fire each queued event (CLICK, SUBMIT, …) through the normal callback path.
+        for (id, event_type) in acc_events {
+            fire_event_callback(&st.controls, id, event_type, &mut pending_cbs);
         }
     }
 

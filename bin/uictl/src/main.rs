@@ -113,16 +113,39 @@ fn main() {
             });
         }
         "set-text" => {
+            // Usage: uictl set-text <pid> <id> [--enter] <text>
+            // --enter fires EVENT_SUBMIT after setting the text (simulates Enter key)
             if args.pos_count < 4 {
-                anyos_std::println!("Usage: uictl set-text <pid> <id> <text>");
+                anyos_std::println!("Usage: uictl set-text <pid> <id> [--enter] <text>");
                 return;
             }
             let (pid, id) = match (parse_u32(args.positional[1]), parse_u32(args.positional[2])) {
                 (Some(p), Some(i)) => (p, i),
                 _ => { anyos_std::println!("Invalid args"); return; }
             };
-            let text = args.positional[3];
+            // Check for optional --enter flag before the text argument
+            let (press_enter, text) = if args.pos_count >= 5 && args.positional[3] == "--enter" {
+                (true, args.positional[4])
+            } else {
+                (false, args.positional[3])
+            };
             let req = format!("SET_TEXT\t{}\t{}\n", id, text);
+            cmd_send_recv_one(pid, &req);
+            if press_enter {
+                let submit_req = format!("SUBMIT\t{}\n", id);
+                cmd_send_recv_one(pid, &submit_req);
+            }
+        }
+        "submit" => {
+            if args.pos_count < 3 {
+                anyos_std::println!("Usage: uictl submit <pid> <id>");
+                return;
+            }
+            let (pid, id) = match (parse_u32(args.positional[1]), parse_u32(args.positional[2])) {
+                (Some(p), Some(i)) => (p, i),
+                _ => { anyos_std::println!("Invalid args"); return; }
+            };
+            let req = format!("SUBMIT\t{}\n", id);
             cmd_send_recv_one(pid, &req);
         }
         "get-state" => {
@@ -532,10 +555,11 @@ fn print_usage() {
     anyos_std::println!("  uictl props <pid> <id>               Show control properties");
     anyos_std::println!("  uictl click <pid> <id>               Click a control");
     anyos_std::println!("  uictl get-text <pid> <id>            Get text of a control");
-    anyos_std::println!("  uictl set-text <pid> <id> <text>     Set text of a control");
+    anyos_std::println!("  uictl set-text <pid> <id> [--enter] <text>  Set text; optionally trigger Enter");
     anyos_std::println!("  uictl get-state <pid> <id>           Get state of a control");
     anyos_std::println!("  uictl set-state <pid> <id> <val>     Set state of a control");
     anyos_std::println!("  uictl find-text <pid> <text>         Find controls by text");
+    anyos_std::println!("  uictl submit <pid> <id>              Fire Enter/submit on a control");
     anyos_std::println!("  uictl resize <pid> <w> <h>           Resize window");
     anyos_std::println!("  uictl move <pid> <x> <y>             Move window on screen");
     anyos_std::println!("  uictl focus <pid>                    Focus/raise window");

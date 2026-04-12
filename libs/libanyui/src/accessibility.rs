@@ -112,11 +112,11 @@ impl AccState {
 /// Called once per event-loop frame.  Reads all available command lines from
 /// the accessibility request pipe and executes them.  Returns a list of
 /// `(control_id, event_type)` pairs that the event loop should fire as
-/// normal callbacks (e.g. CLICK → EVENT_CLICK).
+/// normal callbacks (e.g. CLICK → EVENT_CLICK, SUBMIT → EVENT_SUBMIT).
 pub fn poll_and_handle(
     acc: &mut AccState,
     st: &mut crate::AnyuiState,
-    pending_clicks: &mut Vec<ControlId>,
+    pending_events: &mut Vec<(ControlId, u32)>,
 ) {
     if acc.req_pipe_id == 0 {
         return;
@@ -150,7 +150,7 @@ pub fn poll_and_handle(
         if data[i] == b'\n' {
             let line = core::str::from_utf8(&data[start..i]).unwrap_or("").trim_end_matches('\r');
             if !line.is_empty() {
-                handle_line(acc, st, line, pending_clicks);
+                handle_line(acc, st, line, pending_events);
             }
             start = i + 1;
         }
@@ -162,7 +162,7 @@ fn handle_line(
     acc: &mut AccState,
     st: &mut crate::AnyuiState,
     line: &str,
-    pending_clicks: &mut Vec<ControlId>,
+    pending_events: &mut Vec<(ControlId, u32)>,
 ) {
     let (cmd, rest) = split_first(line);
 
@@ -204,7 +204,20 @@ fn handle_line(
         "CLICK" => {
             if let Ok(id) = rest.trim().parse::<u32>() {
                 if control::find_idx(&st.controls, id).is_some() {
-                    pending_clicks.push(id);
+                    pending_events.push((id, crate::control::EVENT_CLICK));
+                    send(acc, "OK\n");
+                } else {
+                    send(acc, "ERR\tnot found\n");
+                }
+            } else {
+                send(acc, "ERR\tbad id\n");
+            }
+        }
+
+        "SUBMIT" => {
+            if let Ok(id) = rest.trim().parse::<u32>() {
+                if control::find_idx(&st.controls, id).is_some() {
+                    pending_events.push((id, crate::control::EVENT_SUBMIT));
                     send(acc, "OK\n");
                 } else {
                     send(acc, "ERR\tnot found\n");
