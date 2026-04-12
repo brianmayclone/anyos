@@ -6,5 +6,8 @@ edition = "2021"
 [lib]
 name = "anyrc"
 
+[features]
+host = ["anyos_std/host"]
+
 [dependencies]
 anyos_std = { path = "../stdlib" }
