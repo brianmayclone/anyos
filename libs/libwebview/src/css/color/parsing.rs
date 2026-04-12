@@ -300,13 +300,13 @@ fn parse_hue(s: &str) -> Option<i32> {
         let scaled = parse_decimal_scaled(&t[..t.len() - 4])?;
         return Some(div_round_i64(scaled * 360, 1_000_000) as i32);
     }
-    if t.ends_with("rad") {
-        let scaled = parse_decimal_scaled(&t[..t.len() - 3])?;
-        return Some(div_round_i64(scaled * 180, 3_141_593) as i32);
-    }
     if t.ends_with("grad") {
         let scaled = parse_decimal_scaled(&t[..t.len() - 4])?;
         return Some(div_round_i64(scaled * 9, 10_000_000) as i32);
+    }
+    if t.ends_with("rad") {
+        let scaled = parse_decimal_scaled(&t[..t.len() - 3])?;
+        return Some(div_round_i64(scaled * 180, 3_141_593) as i32);
     }
     parse_hue_number(t)
 }
