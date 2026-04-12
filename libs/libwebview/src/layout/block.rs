@@ -629,6 +629,39 @@ pub fn build_block_with_budget(
             outer_h.max(0)
         }
     });
+    let parent_id_attr = dom
+        .nodes
+        .get(node_id)
+        .and_then(|n| n.parent)
+        .and_then(|pid| dom.attr(pid, "id"));
+    if let Some(id_attr) = dom.attr(node_id, "id") {
+        crate::debug_surf!(
+            "[layout:block] id={} width={} inner_w={} explicit_outer_h_hint={:?} definite_content_h={:?} parent_h={} borders=({}, {}, {}, {})",
+            id_attr,
+            bx.width,
+            inner_w,
+            explicit_outer_height_hint,
+            definite_parent_content_h,
+            parent_height,
+            bx.border_top_width,
+            bx.border_right_width,
+            bx.border_bottom_width,
+            bx.border_left_width
+        );
+    } else if parent_id_attr == Some("item") {
+        crate::debug_surf!(
+            "[layout:block] parent_id=item anon width={} inner_w={} explicit_outer_h_hint={:?} definite_content_h={:?} parent_h={} borders=({}, {}, {}, {})",
+            bx.width,
+            inner_w,
+            explicit_outer_height_hint,
+            definite_parent_content_h,
+            parent_height,
+            bx.border_top_width,
+            bx.border_right_width,
+            bx.border_bottom_width,
+            bx.border_left_width
+        );
+    }
 
     // Lay out children — dispatch to flex, grid, or block flow.
     // Inject ::before / ::after block-level pseudo-element boxes.
@@ -943,6 +976,26 @@ pub fn build_block_with_budget(
     bx.transform_origin_y = style.transform_origin_y;
     bx.transform_origin_y_is_percent = style.transform_origin_y_is_percent;
     bx.transform_rotate = style.transform_rotate;
+    if let Some(id_attr) = dom.attr(node_id, "id") {
+        crate::debug_surf!(
+            "[layout:block:final] id={} x={} y={} width={} height={} children={}",
+            id_attr,
+            bx.x,
+            bx.y,
+            bx.width,
+            bx.height,
+            bx.children.len()
+        );
+    } else if parent_id_attr == Some("item") {
+        crate::debug_surf!(
+            "[layout:block:final] parent_id=item anon x={} y={} width={} height={} children={}",
+            bx.x,
+            bx.y,
+            bx.width,
+            bx.height,
+            bx.children.len()
+        );
+    }
 
     bx
 }

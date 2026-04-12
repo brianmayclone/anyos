@@ -1529,6 +1529,14 @@ pub(super) fn layout_children_ex_with_budget(
             i += 1;
             continue;
         }
+        if dom.attr(_parent_node, "id") == Some("item") {
+            crate::debug_surf!(
+                "[layout:children] parent=item child={} has_tag={} display={:?}",
+                cid,
+                dom.tag(cid).is_some(),
+                style.display
+            );
+        }
 
         // display: contents — skip the element box, promote children.
         // Exception: SVG elements must NOT promote their children, because the
@@ -1586,6 +1594,13 @@ pub(super) fn layout_children_ex_with_budget(
         }
 
         let is_block = is_block_level(dom, cid, style);
+        if dom.attr(_parent_node, "id") == Some("item") {
+            crate::debug_surf!(
+                "[layout:children] parent=item child={} is_block={}",
+                cid,
+                is_block
+            );
+        }
 
         if is_block {
             let float_val = style.float;
@@ -1667,6 +1682,10 @@ pub(super) fn layout_children_ex_with_budget(
                     child_style.direction,
                 )
             };
+            let has_explicit_self_alignment = parent_style.justify_items_specified
+                || child_style.justify_self_is_normal
+                || child_style.justify_self.is_some()
+                || child_style.justify_self_inline.is_some();
             let is_widget_like = matches!(
                 dom.tag(cid),
                 Some(Tag::Input | Tag::Select | Tag::Textarea | Tag::Button)
@@ -1678,7 +1697,7 @@ pub(super) fn layout_children_ex_with_budget(
                 && !child_style.width_max_content
                 && !child_style.width_min_content
                 && !child_style.width_fit_content
-                && (!child_style.justify_self_is_normal || is_widget_like);
+                && (has_explicit_self_alignment || is_widget_like);
             let child_avail = if use_fit_content_width {
                 shrink_to_fit_width(dom, styles, pseudo, cid, effective_avail, images, viewport_w)
             } else {
@@ -1749,7 +1768,7 @@ pub(super) fn layout_children_ex_with_budget(
                 }
             }
             let stretch_self = justify == AlignItems::Stretch
-                && !child_style.justify_self_is_normal
+                && has_explicit_self_alignment
                 && child_style.width.is_none()
                 && child_style.width_pct.is_none()
                 && child_style.width_calc.is_none()
