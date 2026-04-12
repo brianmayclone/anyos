@@ -1060,7 +1060,7 @@ pub fn load_dll_dynamic(path: &str) -> Option<u64> {
 
     // Check if already loaded (by filename)
     if let Some(base) = get_dll_base(path) {
-        return Some(base);
+        return ensure_dll_mapped_current(path).or(Some(base));
     }
 
     // Read file from VFS
@@ -1177,6 +1177,96 @@ pub fn get_dll_base(path: &str) -> Option<u64> {
         }
     }
     None
+}
+
+/// Ensure an already-loaded DLL is mapped into the current process.
+///
+/// This is needed for shared objects loaded after a process was created:
+/// they are present in the global DLL registry, but their pages are not yet
+/// mapped into that older process address space.
+pub fn ensure_dll_mapped_current(path: &str) -> Option<u64> {
+    struct MapPlan {
+        base_vaddr: u64,
+        ro_pages: Vec<PhysAddr>,
+        data_template_pages: Vec<PhysAddr>,
+        bss_page_count: u32,
+    }
+
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let plan = {
+        let dlls = LOADED_DLLS.lock();
+        let dll = dlls.iter().find(|dll| {
+            let dll_name_len = dll.name.iter().position(|&b| b == 0).unwrap_or(32);
+            match core::str::from_utf8(&dll.name[..dll_name_len]) {
+                Ok(dll_name) => dll_name == name,
+                Err(_) => false,
+            }
+        })?;
+
+        MapPlan {
+            base_vaddr: dll.base_vaddr,
+            ro_pages: dll.ro_pages.clone(),
+            data_template_pages: dll.data_template_pages.clone(),
+            bss_page_count: dll.bss_page_count,
+        }
+    };
+
+    let src = VirtAddr::new(TEMP_COPY_SRC);
+    let dst = VirtAddr::new(TEMP_COPY_DST);
+
+    for (i, &phys) in plan.ro_pages.iter().enumerate() {
+        let virt = VirtAddr::new(plan.base_vaddr + (i as u64) * PAGE_SIZE);
+        if let Some(cur_phys) = virtual_mem::virt_to_phys(virt).map(|p| p & !0xFFF) {
+            if cur_phys == phys.as_u64() {
+                continue;
+            }
+            virtual_mem::unmap_page(virt);
+        } else if virtual_mem::is_page_mapped(virt) {
+            virtual_mem::unmap_page(virt);
+        }
+        if !virtual_mem::map_page(virt, phys, PAGE_USER) {
+            return None;
+        }
+    }
+
+    let writable_base = plan.base_vaddr + (plan.ro_pages.len() as u64) * PAGE_SIZE;
+
+    for (i, &template_phys) in plan.data_template_pages.iter().enumerate() {
+        let virt = VirtAddr::new(writable_base + (i as u64) * PAGE_SIZE);
+        if virtual_mem::is_page_mapped(virt) {
+            continue;
+        }
+
+        let new_frame = physical::alloc_frame()?;
+        with_frame_read(template_phys, src, |src_ptr| {
+            with_frame_mut(new_frame, dst, |dst_ptr| unsafe {
+                core::ptr::copy_nonoverlapping(src_ptr, dst_ptr, PAGE_SIZE as usize);
+            });
+        });
+
+        if !virtual_mem::map_page(virt, new_frame, PAGE_USER | PAGE_WRITABLE) {
+            return None;
+        }
+    }
+
+    let bss_base = writable_base + (plan.data_template_pages.len() as u64) * PAGE_SIZE;
+    for i in 0..plan.bss_page_count as usize {
+        let virt = VirtAddr::new(bss_base + (i as u64) * PAGE_SIZE);
+        if virtual_mem::is_page_mapped(virt) {
+            continue;
+        }
+
+        let new_frame = physical::alloc_frame()?;
+        with_frame_mut(new_frame, dst, |ptr| unsafe {
+            core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
+        });
+
+        if !virtual_mem::map_page(virt, new_frame, PAGE_USER | PAGE_WRITABLE) {
+            return None;
+        }
+    }
+
+    Some(plan.base_vaddr)
 }
 
 /// Check if a PD index (within PML4[0]/PDPT[0]) falls in the DLIB region.

@@ -437,7 +437,7 @@ pub(crate) fn syscall5(num: u32, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) ->
 // --------------- AArch64 ---------------
 
 #[cfg(target_arch = "aarch64")]
-#[inline(always)]
+#[inline(never)]
 pub(crate) fn syscall0(num: u32) -> u32 {
     let ret: u64;
     unsafe {
@@ -452,7 +452,7 @@ pub(crate) fn syscall0(num: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[inline(always)]
+#[inline(never)]
 pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
     let ret: u64;
     unsafe {
@@ -467,7 +467,7 @@ pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[inline(always)]
+#[inline(never)]
 pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
     let ret: u64;
     unsafe {
@@ -483,7 +483,7 @@ pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[inline(always)]
+#[inline(never)]
 pub(crate) fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 {
     let ret: u64;
     unsafe {
@@ -500,7 +500,7 @@ pub(crate) fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[inline(always)]
+#[inline(never)]
 pub(crate) fn syscall4(num: u32, a1: u64, a2: u64, a3: u64, a4: u64) -> u32 {
     let ret: u64;
     unsafe {
@@ -518,7 +518,7 @@ pub(crate) fn syscall4(num: u32, a1: u64, a2: u64, a3: u64, a4: u64) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-#[inline(always)]
+#[inline(never)]
 pub(crate) fn syscall5(num: u32, a1: u64, a2: u64, a3: u64, a4: u64, a5: u64) -> u32 {
     let ret: u64;
     unsafe {

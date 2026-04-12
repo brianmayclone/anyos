@@ -54,6 +54,24 @@ unsafe impl Send for DlHandle {}
 unsafe impl Sync for DlHandle {}
 
 #[cfg(not(feature = "host"))]
+#[inline]
+pub fn log_open_failed(path: &str) {
+    anyos_std::println!("[dynlink] open failed: {}", path);
+}
+
+#[cfg(not(feature = "host"))]
+#[inline]
+pub fn log_missing_symbol(path: &str, sym: &str) {
+    anyos_std::println!("[dynlink] missing symbol '{}' in {}", sym, path);
+}
+
+#[cfg(not(feature = "host"))]
+#[inline]
+pub fn log_missing_init_symbol(path: &str, sym: &str) {
+    anyos_std::println!("[dynlink] missing init symbol '{}' in {}", sym, path);
+}
+
+#[cfg(not(feature = "host"))]
 /// Load a shared library by path.
 ///
 /// Calls `SYS_DLL_LOAD` to map the .so into the process, then parses the
@@ -61,6 +79,7 @@ unsafe impl Sync for DlHandle {}
 pub fn dl_open(path: &str) -> Option<DlHandle> {
     let base = anyos_std::dll::dll_load(path) as u64;
     if base == 0 {
+        anyos_std::println!("[dynlink] dl_open failed: {}", path);
         return None;
     }
 
@@ -73,12 +92,23 @@ pub fn dl_open(path: &str) -> Option<DlHandle> {
         || ehdr.e_ident[2] != b'L'
         || ehdr.e_ident[3] != b'F'
     {
+        anyos_std::println!(
+            "[dynlink] invalid ELF magic: {} @ {:#x} bytes={:02x} {:02x} {:02x} {:02x}",
+            path,
+            base,
+            ehdr.e_ident[0],
+            ehdr.e_ident[1],
+            ehdr.e_ident[2],
+            ehdr.e_ident[3]
+        );
         return None;
     }
     if ehdr.e_ident[4] != 2 {
+        anyos_std::println!("[dynlink] not ELF64: {} @ {:#x}", path, base);
         return None; // Not ELF64
     }
     if ehdr.e_type != 3 {
+        anyos_std::println!("[dynlink] not ET_DYN: {} @ {:#x}", path, base);
         return None; // Not ET_DYN
     }
 
@@ -105,6 +135,7 @@ pub fn dl_open(path: &str) -> Option<DlHandle> {
     }
 
     if dynamic_va == 0 {
+        anyos_std::println!("[dynlink] missing PT_DYNAMIC: {} @ {:#x}", path, base);
         return None; // No .dynamic section
     }
 
@@ -134,6 +165,13 @@ pub fn dl_open(path: &str) -> Option<DlHandle> {
     }
 
     if symtab_va == 0 || strtab_va == 0 || hash_va == 0 {
+        anyos_std::println!(
+            "[dynlink] missing dynamic tables: {} sym={:#x} str={:#x} hash={:#x}",
+            path,
+            symtab_va,
+            strtab_va,
+            hash_va
+        );
         return None;
     }
 
@@ -235,7 +273,10 @@ macro_rules! dll_exports {
         pub fn init() -> bool {
             let handle = match $crate::dl_open($path) {
                 Some(h) => h,
-                None => return false,
+                None => {
+                    $crate::log_open_failed($path);
+                    return false;
+                }
             };
 
             unsafe {
@@ -244,7 +285,10 @@ macro_rules! dll_exports {
                         $sym: {
                             let ptr = match $crate::dl_sym(&handle, stringify!($sym)) {
                                 Some(p) => p,
-                                None => return false,
+                                None => {
+                                    $crate::log_missing_symbol($path, stringify!($sym));
+                                    return false;
+                                }
                             };
                             core::mem::transmute_copy::<*const (), extern "C" fn( $($pty),* ) -> $ret>(&ptr)
                         },
@@ -255,6 +299,7 @@ macro_rules! dll_exports {
                 let init_ptr = match $crate::dl_sym(&lib._handle, $init_sym) {
                     Some(p) => p,
                     None => {
+                        $crate::log_missing_init_symbol($path, $init_sym);
                         LIB = Some(lib);
                         return true;
                     }
@@ -290,7 +335,10 @@ macro_rules! dll_exports {
         pub fn init() -> bool {
             let handle = match $crate::dl_open($path) {
                 Some(h) => h,
-                None => return false,
+                None => {
+                    $crate::log_open_failed($path);
+                    return false;
+                }
             };
 
             unsafe {
@@ -299,7 +347,10 @@ macro_rules! dll_exports {
                         $sym: {
                             let ptr = match $crate::dl_sym(&handle, stringify!($sym)) {
                                 Some(p) => p,
-                                None => return false,
+                                None => {
+                                    $crate::log_missing_symbol($path, stringify!($sym));
+                                    return false;
+                                }
                             };
                             core::mem::transmute_copy::<*const (), extern "C" fn( $($pty),* ) -> $ret>(&ptr)
                         },

@@ -95,11 +95,23 @@ pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
     let path = unsafe { read_user_str(path_ptr) };
     // Try existing loaded DLLs first
     if let Some(base) = crate::task::dll::get_dll_base(path) {
-        return base as u32;
+        let mapped = crate::task::dll::ensure_dll_mapped_current(path).unwrap_or(base);
+        if path == "/Libraries/libfont.so" {
+            let phys = crate::memory::virtual_mem::virt_to_phys(crate::memory::address::VirtAddr::new(mapped))
+                .unwrap_or(0);
+            crate::serial_println!(
+                "[dll] existing {} -> base={:#x} phys={:#x}",
+                path,
+                mapped,
+                phys
+            );
+        }
+        return mapped as u32;
     }
     // Try loading from filesystem (dload)
     match crate::task::dll::load_dll_dynamic(path) {
-        Some(base) => base as u32,
+        Some(base) => crate::task::dll::ensure_dll_mapped_current(path)
+            .unwrap_or(base) as u32,
         None => 0,
     }
 }
