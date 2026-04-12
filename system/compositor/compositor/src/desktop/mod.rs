@@ -727,29 +727,73 @@ impl Desktop {
         fs::close(fd);
         if bytes_read == 0 { return false; }
 
-        let info = match libimage_client::probe(&data[..bytes_read]) {
-            Some(i) => i,
-            None => return false,
+        let (src_w, src_h, pixels, format_name) = {
+            #[cfg(target_arch = "aarch64")]
+            {
+                const PNG_MAGIC: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+                if data.len() >= PNG_MAGIC.len() && &data[..PNG_MAGIC.len()] == PNG_MAGIC {
+                    if let Some((pixels, w, h)) = minipng::decode_png_argb32(&data[..bytes_read]) {
+                        (w, h, pixels, "PNG")
+                    } else {
+                        let info = match libimage_client::probe(&data[..bytes_read]) {
+                            Some(i) => i,
+                            None => return false,
+                        };
+                        let pixel_count = (info.width * info.height) as usize;
+                        if pixel_count > 4 * 1024 * 1024 {
+                            return false;
+                        }
+                        let mut pixels = vec![0u32; pixel_count];
+                        let mut scratch = vec![0u8; info.scratch_needed as usize];
+                        if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
+                            return false;
+                        }
+                        (info.width, info.height, pixels, libimage_client::format_name(info.format))
+                    }
+                } else {
+                    let info = match libimage_client::probe(&data[..bytes_read]) {
+                        Some(i) => i,
+                        None => return false,
+                    };
+                    let pixel_count = (info.width * info.height) as usize;
+                    if pixel_count > 4 * 1024 * 1024 {
+                        return false;
+                    }
+                    let mut pixels = vec![0u32; pixel_count];
+                    let mut scratch = vec![0u8; info.scratch_needed as usize];
+                    if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
+                        return false;
+                    }
+                    (info.width, info.height, pixels, libimage_client::format_name(info.format))
+                }
+            }
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                let info = match libimage_client::probe(&data[..bytes_read]) {
+                    Some(i) => i,
+                    None => return false,
+                };
+                let pixel_count = (info.width * info.height) as usize;
+                if pixel_count > 4 * 1024 * 1024 {
+                    return false;
+                }
+                let mut pixels = vec![0u32; pixel_count];
+                let mut scratch = vec![0u8; info.scratch_needed as usize];
+                if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
+                    return false;
+                }
+                (info.width, info.height, pixels, libimage_client::format_name(info.format))
+            }
         };
 
-        let pixel_count = (info.width * info.height) as usize;
-        if pixel_count > 4 * 1024 * 1024 { return false; }
-
-        let mut pixels = vec![0u32; pixel_count];
-        let mut scratch = vec![0u8; info.scratch_needed as usize];
-        if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
-            return false;
-        }
-
-        drop(scratch);
         drop(data);
 
         let sw = self.screen_width;
         let sh = self.screen_height;
 
-        if info.width == sw && info.height == sh {
+        if src_w == sw && src_h == sh {
             if let Some(bg_pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
-                let copy_len = bg_pixels.len().min(pixel_count);
+                let copy_len = bg_pixels.len().min(pixels.len());
                 bg_pixels[..copy_len].copy_from_slice(&pixels[..copy_len]);
             }
             self.wallpaper_pixel_cache = pixels;
@@ -757,7 +801,7 @@ impl Desktop {
             let dst_count = (sw * sh) as usize;
             let mut dst = vec![0u32; dst_count];
             if !libimage_client::scale_image(
-                &pixels, info.width, info.height,
+                &pixels, src_w, src_h,
                 &mut dst, sw, sh,
                 libimage_client::MODE_COVER,
             ) {
@@ -772,8 +816,7 @@ impl Desktop {
         }
 
         anyos_std::println!("compositor: wallpaper loaded ({}x{} {})",
-            info.width, info.height,
-            libimage_client::format_name(info.format));
+            src_w, src_h, format_name);
         true
     }
 

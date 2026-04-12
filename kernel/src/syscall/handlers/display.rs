@@ -789,10 +789,33 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
     let mut count = 0usize;
 
     while count < max {
-        match crate::drivers::arm::input::pop_key_event() {
+        match crate::drivers::input::keyboard::read_event() {
             Some(key_evt) => {
-                let event_type = if key_evt.pressed { 1 } else { 2 };
-                events[count] = [event_type, key_evt.code as u32, 0, 0, 0];
+                let event_type: u32 = if key_evt.pressed { 1 } else { 2 };
+                let char_val = match key_evt.key {
+                    crate::drivers::input::keyboard::Key::Char(c) => c as u32,
+                    crate::drivers::input::keyboard::Key::Enter => 0x0D,
+                    crate::drivers::input::keyboard::Key::Backspace => 0x08,
+                    crate::drivers::input::keyboard::Key::Tab => 0x09,
+                    crate::drivers::input::keyboard::Key::Escape => 0x1B,
+                    crate::drivers::input::keyboard::Key::Space => 0x20,
+                    crate::drivers::input::keyboard::Key::Delete => 0x7F,
+                    _ => 0,
+                };
+                let mods = (key_evt.modifiers.shift as u32)
+                    | ((key_evt.modifiers.ctrl as u32) << 1)
+                    | ((key_evt.modifiers.alt as u32) << 2)
+                    | ((key_evt.modifiers.caps_lock as u32) << 3)
+                    | ((key_evt.modifiers.altgr as u32) << 4);
+                let scancode_out = match key_evt.key {
+                    crate::drivers::input::keyboard::Key::VolumeUp => 0x130u32,
+                    crate::drivers::input::keyboard::Key::VolumeDown => 0x12E,
+                    crate::drivers::input::keyboard::Key::VolumeMute => 0x120,
+                    crate::drivers::input::keyboard::Key::LeftSuper => 0x15B,
+                    crate::drivers::input::keyboard::Key::RightSuper => 0x15C,
+                    _ => key_evt.scancode as u32,
+                };
+                events[count] = [event_type, scancode_out, char_val, mods, 0];
                 count += 1;
             }
             None => break,
@@ -802,12 +825,14 @@ pub fn sys_input_poll(buf_ptr: u32, max_events: u32) -> u32 {
     while count < max {
         match crate::drivers::arm::input::pop_mouse_event() {
             Some(mouse_evt) => {
-                if mouse_evt.is_move {
-                    events[count] = [3, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0];
-                } else {
-                    let pressed = if mouse_evt.buttons != 0 { 1 } else { 0 };
-                    events[count] = [4, mouse_evt.buttons as u32, pressed, 0, 0];
-                }
+                use crate::drivers::arm::input::MouseEventType;
+                events[count] = match mouse_evt.event_type {
+                    MouseEventType::Move => [3, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0],
+                    MouseEventType::MoveAbsolute => [6, mouse_evt.dx as u32, mouse_evt.dy as u32, 0, 0],
+                    MouseEventType::ButtonDown => [4, mouse_evt.buttons as u32, 1, mouse_evt.dx as u32, mouse_evt.dy as u32],
+                    MouseEventType::ButtonUp => [4, mouse_evt.buttons as u32, 0, mouse_evt.dx as u32, mouse_evt.dy as u32],
+                    MouseEventType::Scroll => [5, mouse_evt.dz as u32, 0, 0, 0],
+                };
                 count += 1;
             }
             None => break,

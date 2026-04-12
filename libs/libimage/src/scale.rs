@@ -122,9 +122,9 @@ pub fn scale_image(
                 // Accumulate weighted sum of all source pixels in the box.
                 // Weights account for partial pixel coverage at edges.
                 let mut sum_a: u64 = 0;
-                let mut sum_r: u64 = 0;
-                let mut sum_g: u64 = 0;
-                let mut sum_b: u64 = 0;
+                let mut sum_r_pm: u64 = 0;
+                let mut sum_g_pm: u64 = 0;
+                let mut sum_b_pm: u64 = 0;
                 let mut weight_total: u64 = 0;
 
                 for sy in sy0..sy1 {
@@ -160,10 +160,11 @@ pub fn scale_image(
                         // Combined weight (reduce to 16-bit range to avoid overflow)
                         let w = (wy >> 12) * (wx >> 12);
                         let px = src_slice[row_off + sx];
-                        sum_a += ((px >> 24) & 0xFF) as u64 * w;
-                        sum_r += ((px >> 16) & 0xFF) as u64 * w;
-                        sum_g += ((px >> 8) & 0xFF) as u64 * w;
-                        sum_b += (px & 0xFF) as u64 * w;
+                        let a = ((px >> 24) & 0xFF) as u64;
+                        sum_a += a * w;
+                        sum_r_pm += ((px >> 16) & 0xFF) as u64 * a * w;
+                        sum_g_pm += ((px >> 8) & 0xFF) as u64 * a * w;
+                        sum_b_pm += (px & 0xFF) as u64 * a * w;
                         weight_total += w;
                     }
                 }
@@ -173,10 +174,15 @@ pub fn scale_image(
                 } else {
                     let half = weight_total >> 1;
                     let a = ((sum_a + half) / weight_total).min(255) as u32;
-                    let r = ((sum_r + half) / weight_total).min(255) as u32;
-                    let g = ((sum_g + half) / weight_total).min(255) as u32;
-                    let b = ((sum_b + half) / weight_total).min(255) as u32;
-                    (a << 24) | (r << 16) | (g << 8) | b
+                    if a == 0 {
+                        0
+                    } else {
+                        let sum_a_half = sum_a >> 1;
+                        let r = ((sum_r_pm + sum_a_half) / sum_a).min(255) as u32;
+                        let g = ((sum_g_pm + sum_a_half) / sum_a).min(255) as u32;
+                        let b = ((sum_b_pm + sum_a_half) / sum_a).min(255) as u32;
+                        (a << 24) | (r << 16) | (g << 8) | b
+                    }
                 };
 
                 dst_slice[dst_row + dx as usize] = pixel;
@@ -252,16 +258,28 @@ fn bilinear(c00: u32, c10: u32, c01: u32, c11: u32, fx: u32, fy: u32) -> u32 {
         return c00;
     }
 
-    let blend = |shift: u32| -> u32 {
+    let a00 = (c00 >> 24) & 0xFF;
+    let a10 = (c10 >> 24) & 0xFF;
+    let a01 = (c01 >> 24) & 0xFF;
+    let a11 = (c11 >> 24) & 0xFF;
+
+    let sum_a = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
+    let a = (sum_a + (w_sum >> 1)) / w_sum;
+    if a == 0 {
+        return 0;
+    }
+
+    let blend_pm = |shift: u32| -> u32 {
         let v00 = (c00 >> shift) & 0xFF;
         let v10 = (c10 >> shift) & 0xFF;
         let v01 = (c01 >> shift) & 0xFF;
         let v11 = (c11 >> shift) & 0xFF;
-        let sum = v00 * w00 + v10 * w10 + v01 * w01 + v11 * w11;
-        (sum + (w_sum >> 1)) / w_sum
+        let sum = v00 * a00 * w00 + v10 * a10 * w10 + v01 * a01 * w01 + v11 * a11 * w11;
+        let rounded = (sum + (sum_a >> 1)) / sum_a;
+        rounded.min(255)
     };
 
-    (blend(24) << 24) | (blend(16) << 16) | (blend(8) << 8) | blend(0)
+    (a << 24) | (blend_pm(16) << 16) | (blend_pm(8) << 8) | blend_pm(0)
 }
 
 /// Fixed-point division: `a / b` (both 16.16) -> 16.16 result.

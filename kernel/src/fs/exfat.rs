@@ -621,14 +621,11 @@ impl ExFatFs {
         // guaranteeing single-threaded access to the cache.
         let cache = unsafe { &mut *self.cluster_cache.get() };
         if cache.lookup(cluster, buf) {
-            crate::debug_println!("  [exFAT] read_cluster: CACHE HIT cluster={}", cluster);
             return Ok(());
         }
         let lba = self.cluster_to_lba(cluster);
         let spc = self.sectors_per_cluster();
         let cs = self.cluster_size() as usize;
-        crate::debug_println!("  [exFAT] read_cluster: cluster={} -> lba={} (disk read)", cluster, lba);
-
         // Read-ahead: if the next few clusters are sequential, read them all
         // in one I/O and cache each one. This dramatically improves sequential
         // read performance (directory scans, file loads).

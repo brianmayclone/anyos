@@ -21,22 +21,6 @@ pub fn wake_thread(tid: u32) {
         let mut guard = SCHEDULER.lock();
         if let Some(sched) = guard.as_mut() {
             let kick = sched.wake_thread_inner(tid);
-            #[cfg(target_arch = "aarch64")]
-            if let Some(idx) = sched.find_idx(tid) {
-                let t = &sched.threads[idx];
-                crate::serial_verbose_println!(
-                    "[ARM64] wake_call tid={} '{}' state={:?} aff={} last={} pc={:#x} sp={:#x} save_complete={} kick={:?}",
-                    tid,
-                    t.name_str(),
-                    t.state,
-                    t.affinity_cpu,
-                    t.last_cpu,
-                    t.context.get_pc(),
-                    t.context.get_sp(),
-                    t.context.save_complete,
-                    kick,
-                );
-            }
             kick
         } else {
             None

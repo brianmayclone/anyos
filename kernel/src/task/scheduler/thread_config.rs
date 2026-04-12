@@ -32,18 +32,6 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
         thread.fd_table.alloc_at(0, FdKind::Tty);
         thread.fd_table.alloc_at(1, FdKind::Tty);
         thread.fd_table.alloc_at(2, FdKind::Tty);
-        #[cfg(target_arch = "aarch64")]
-        crate::serial_verbose_println!(
-            "[ARM64] set_user tid={} '{}' state={:?} aff={} last={} pc={:#x} sp={:#x} save_complete={}",
-            tid,
-            thread.name_str(),
-            thread.state,
-            thread.affinity_cpu,
-            thread.last_cpu,
-            thread.context.get_pc(),
-            thread.context.get_sp(),
-            thread.context.save_complete,
-        );
     }
 }
 

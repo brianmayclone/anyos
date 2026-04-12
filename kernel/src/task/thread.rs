@@ -428,7 +428,9 @@ impl Thread {
         } else {
             0
         };
-        crate::serial_verbose_println!("  Gap between fpu_state and context: {} bytes", gap);
+        if gap == 0 {
+            crate::serial_verbose_println!("  WARNING: no gap between fpu_state and context");
+        }
     }
 }
 

@@ -1001,20 +1001,6 @@ impl Scheduler {
                 if self.threads[idx].state == ThreadState::Ready
                     && self.threads[idx].context.save_complete != 0
                 {
-                    #[cfg(target_arch = "aarch64")]
-                    if self.threads[idx].is_user
-                        && !ARM64_FIRST_USER_PICK_LOGGED.swap(true, Ordering::Relaxed)
-                    {
-                        crate::serial_verbose_println!(
-                            "[ARM64] pick tid={} '{}' from_cpu={} pc={:#x} sp={:#x} save_complete={}",
-                            tid,
-                            self.threads[idx].name_str(),
-                            queue_cpu,
-                            self.threads[idx].context.get_pc(),
-                            self.threads[idx].context.get_sp(),
-                            self.threads[idx].context.save_complete,
-                        );
-                    }
                     return Some(tid);
                 }
                 // Stopped/Terminated threads should not be re-enqueued
