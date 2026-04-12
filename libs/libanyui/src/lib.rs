@@ -59,6 +59,7 @@ impl core::fmt::Write for LogBuf {
     }
 }
 
+pub(crate) mod accessibility;
 mod compositor;
 mod control;
 mod controls;
@@ -262,6 +263,10 @@ pub(crate) struct AnyuiState {
     /// Registered menu item callbacks: (window_control_id, callback, userdata).
     /// Callback receives (item_id, EVT_MENU_ITEM, userdata).
     pub menu_callbacks: Vec<(u32, Callback, u64)>,
+
+    // ── Accessibility / UI-Automation ───────────────────────────────
+    /// Accessibility pipe server state (None on host build / before init).
+    pub acc: Option<crate::accessibility::AccState>,
 }
 
 /// Signal that at least one control needs repainting.
@@ -376,6 +381,14 @@ pub extern "C" fn anyui_init() -> u32 {
             modal_stack: Vec::new(),
             tray_callbacks: Vec::new(),
             menu_callbacks: Vec::new(),
+            acc: {
+                let pid = libsyscall::get_tid();
+                if pid != 0 {
+                    Some(crate::accessibility::AccState::new(pid))
+                } else {
+                    None
+                }
+            },
         });
     }
     1
@@ -2669,7 +2682,30 @@ pub extern "C" fn anyui_set_tooltip(id: ControlId, text: *const u8, len: u32) {
         Vec::new()
     };
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        ctrl.base_mut().tooltip_text = bytes;
+        ctrl.base_mut().tooltip_text = bytes.clone();
+    }
+    // If the control is currently hovered, update the tooltip display immediately
+    // instead of waiting for the next MouseEnter (which will never fire while
+    // the cursor stays on the same control).
+    if st.hovered == Some(id) {
+        if bytes.is_empty() {
+            // Remove pending schedule and hide any visible tooltip.
+            st.tooltip_pending_id = None;
+            if let Some(tip_id) = st.active_tooltip {
+                if let Some(ti) = crate::control::find_idx(&st.controls, tip_id) {
+                    if st.controls[ti].base().visible {
+                        st.controls[ti].base_mut().visible = false;
+                        st.controls[ti].base_mut().mark_dirty();
+                    }
+                }
+            }
+        } else {
+            // Schedule a quick re-show (50 ms) so the tooltip text updates
+            // as the cursor moves over different segments / items.
+            st.tooltip_pending_id = Some(id);
+            // Pretend hover started 450 ms ago so the 500 ms delay fires in ~50 ms.
+            st.tooltip_hover_start = crate::syscall::uptime_ms().wrapping_sub(450);
+        }
     }
 }
 

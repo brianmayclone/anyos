@@ -1760,6 +1760,23 @@ pub fn run_once() -> u32 {
         remove_subtree(&mut st.controls, *win_id);
     }
 
+    // ── Phase 2.9: Accessibility pipe — poll & inject ──────────────
+    {
+        let st = crate::state();
+        let mut acc_clicks: alloc::vec::Vec<crate::control::ControlId> = alloc::vec::Vec::new();
+        // Temporarily take `acc` out of `st` to satisfy the borrow checker:
+        // poll_and_handle needs &mut AccState (from st.acc) AND &mut AnyuiState.
+        if let Some(mut acc) = st.acc.take() {
+            crate::accessibility::poll_and_handle(&mut acc, st, &mut acc_clicks);
+            st.acc = Some(acc);
+        }
+        // Resolve click callbacks and push into pending_cbs so they fire in
+        // the normal callback phase below.
+        for id in acc_clicks {
+            fire_event_callback(&st.controls, id, crate::control::EVENT_CLICK, &mut pending_cbs);
+        }
+    }
+
     // ── Phase 3: Invoke callbacks (no borrows held) ────────────────
     for pcb in pending_cbs {
         (pcb.cb)(pcb.id, pcb.event_type, pcb.userdata);
@@ -1984,6 +2001,49 @@ pub fn run_once() -> u32 {
     1
 }
 
+// ── External resize (triggered programmatically, e.g. from uictl) ────
+
+/// Programmatically resize a window. `window_id` is the compositor window ID,
+/// `logical_w` / `logical_h` are in logical (unscaled) pixels.
+/// Mirrors the EVT_RESIZE path in run_once() but without a compositor event.
+pub(crate) fn external_resize(
+    st: &mut crate::AnyuiState,
+    comp_window_id: u32,
+    logical_w: u32,
+    logical_h: u32,
+) {
+    let phys_w = crate::theme::scale(logical_w);
+    let phys_h = crate::theme::scale(logical_h);
+
+    // Find the comp_window index.
+    let wi = match st.comp_windows.iter().position(|cw| cw.window_id == comp_window_id) {
+        Some(i) => i,
+        None => return,
+    };
+
+    if let Some((new_shm_id, new_surface)) =
+        compositor::resize_shm(st.channel_id, comp_window_id, st.comp_windows[wi].shm_id, phys_w, phys_h)
+    {
+        st.comp_windows[wi].shm_id = new_shm_id;
+        st.comp_windows[wi].surface = new_surface;
+    }
+    st.comp_windows[wi].width = phys_w;
+    st.comp_windows[wi].height = phys_h;
+    st.comp_windows[wi].logical_width = logical_w;
+    st.comp_windows[wi].logical_height = logical_h;
+    st.comp_windows[wi].back_buffer.resize((phys_w as usize) * (phys_h as usize), 0);
+    st.comp_windows[wi].dirty = true;
+    st.comp_windows[wi].dirty_rect = None;
+
+    // Update the Window control and re-layout.
+    let win_id = if wi < st.windows.len() { st.windows[wi] } else { return };
+    if let Some(idx) = control::find_idx(&st.controls, win_id) {
+        st.controls[idx].set_size(logical_w, logical_h);
+        crate::layout::perform_layout(&mut st.controls, win_id);
+    }
+    st.needs_layout = true;
+}
+
 // ── Helper functions ────────────────────────────────────────────────
 
 fn fire_event_callback(
@@ -2121,7 +2181,7 @@ fn is_point_in_control(controls: &[Box<dyn Control>], id: ControlId, px: i32, py
 }
 
 /// Show the tooltip for the given control (called after hover delay).
-fn show_tooltip(st: &mut crate::AnyuiState, ctrl_id: ControlId) {
+pub(crate) fn show_tooltip(st: &mut crate::AnyuiState, ctrl_id: ControlId) {
     let idx2 = match control::find_idx(&st.controls, ctrl_id) {
         Some(i) => i,
         None => return,
@@ -2167,8 +2227,15 @@ fn show_tooltip(st: &mut crate::AnyuiState, ctrl_id: ControlId) {
         if let Some(tb) = st.controls[ti].text_base_mut() {
             tb.text = text;
         }
-        // Position below the hovered control
-        st.controls[ti].set_position(ax, ay + ctrl_h as i32 + 4);
+        // Position near mouse cursor for large controls (Canvas, etc.) so the
+        // tooltip stays visible and close to the point of interest.  For small
+        // controls (e.g. buttons) fall back to just below the widget.
+        let (tx, ty) = if ctrl_h > 50 {
+            (st.last_mouse_x + 16, st.last_mouse_y + 16)
+        } else {
+            (ax, ay + ctrl_h as i32 + 4)
+        };
+        st.controls[ti].set_position(tx, ty);
         st.controls[ti].base_mut().w = tip_w;
         st.controls[ti].base_mut().h = 28;
         st.controls[ti].base_mut().visible = true;

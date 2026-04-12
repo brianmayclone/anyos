@@ -1,24 +1,34 @@
-use crate::control::{Control, ControlBase, ControlKind};
+use crate::control::{Control, ControlBase, ControlKind, TextControlBase};
 
 pub struct Window {
-    pub(crate) base: ControlBase,
+    pub(crate) tb: TextControlBase,
 }
 
 impl Window {
     pub fn new(base: ControlBase) -> Self {
-        Self { base }
+        Self { tb: TextControlBase::new(base) }
+    }
+
+    pub fn new_with_title(base: ControlBase, title: &[u8]) -> Self {
+        Self { tb: TextControlBase::new(base).with_text(title) }
     }
 }
 
 impl Control for Window {
     fn base(&self) -> &ControlBase {
-        &self.base
+        &self.tb.base
     }
     fn base_mut(&mut self) -> &mut ControlBase {
-        &mut self.base
+        &mut self.tb.base
     }
     fn kind(&self) -> ControlKind {
         ControlKind::Window
+    }
+    fn text_base(&self) -> Option<&TextControlBase> {
+        Some(&self.tb)
+    }
+    fn text_base_mut(&mut self) -> Option<&mut TextControlBase> {
+        Some(&mut self.tb)
     }
 
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {

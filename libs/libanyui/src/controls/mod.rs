@@ -77,7 +77,7 @@ pub fn create_control(
 
     match kind {
         // Non-text controls — take ControlBase directly (text param ignored)
-        ControlKind::Window => Box::new(window::Window::new(base)),
+        ControlKind::Window => Box::new(window::Window::new_with_title(base, text)),
         ControlKind::View => Box::new(view::View::new(base)),
         ControlKind::Slider => Box::new(slider::Slider::new(base)),
         ControlKind::ProgressBar => Box::new(progress_bar::ProgressBar::new(base)),
