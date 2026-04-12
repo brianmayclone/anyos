@@ -9,6 +9,26 @@ use super::raster_utils::{
 };
 use crate::style::{BackgroundImageVal, BackgroundRepeatVal, BackgroundSizeVal};
 
+fn draw_ahem_string_buf(
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    x: i32,
+    y: i32,
+    color: u32,
+    font_size: u16,
+    text: &str,
+) {
+    let cell = font_size.max(1) as i32;
+    let mut cursor_x = x;
+    for ch in text.chars() {
+        if !ch.is_whitespace() {
+            fill_rect_buf(buf, stride, buf_h, cursor_x, y, cell, cell, color);
+        }
+        cursor_x += cell;
+    }
+}
+
 fn rasterize_draw_cmd_basic(
     images: &ImageCache,
     cmd: &DrawCmd,
@@ -54,9 +74,13 @@ fn rasterize_draw_cmd_basic(
             font_size,
             text,
         } => {
-            libfont_client::draw_string_buf(
-                buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_id, *font_size, text,
-            );
+            if crate::is_ahem_font_id(*font_id) {
+                draw_ahem_string_buf(buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_size, text);
+            } else {
+                libfont_client::draw_string_buf(
+                    buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_id, *font_size, text,
+                );
+            }
         }
         DrawKind::Image {
             src,

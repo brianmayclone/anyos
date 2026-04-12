@@ -24,6 +24,61 @@ struct InlineFragment {
     breaks_after: bool,
 }
 
+fn inline_box_has_visuals(style: &ComputedStyle) -> bool {
+    style.background_color != 0
+        || style.background_color_is_current
+        || style.padding_left != 0
+        || style.padding_right != 0
+        || style.padding_top != 0
+        || style.padding_bottom != 0
+        || style.border_top.width > 0
+        || style.border_right.width > 0
+        || style.border_bottom.width > 0
+        || style.border_left.width > 0
+}
+
+fn build_empty_inline_visual_box(node_id: NodeId, style: &ComputedStyle) -> LayoutBox {
+    let mut bx = LayoutBox::new(Some(node_id), BoxType::Inline);
+    bx.color = style.color;
+    bx.bg_color = if style.background_color_is_current {
+        style.color
+    } else {
+        style.background_color
+    };
+    bx.font_size = font_size_px(style);
+    bx.bold = is_bold(style);
+    bx.italic = is_italic(style);
+    bx.text_decoration = style.text_decoration;
+    bx.padding.left = style.padding_left.max(0);
+    bx.padding.right = style.padding_right.max(0);
+    bx.padding.top = style.padding_top.max(0);
+    bx.padding.bottom = style.padding_bottom.max(0);
+    bx.border_width = style.border_width;
+    bx.border_color = style.border_color;
+    bx.border_top_width = style.border_top.width;
+    bx.border_right_width = style.border_right.width;
+    bx.border_bottom_width = style.border_bottom.width;
+    bx.border_left_width = style.border_left.width;
+    bx.border_top_color = style.border_top.color;
+    bx.border_right_color = style.border_right.color;
+    bx.border_bottom_color = style.border_bottom.color;
+    bx.border_left_color = style.border_left.color;
+    bx.border_top_style = style.border_top.style;
+    bx.border_right_style = style.border_right.style;
+    bx.border_bottom_style = style.border_bottom.style;
+    bx.border_left_style = style.border_left.style;
+    bx.border_top_left_radius = style.border_top_left_radius;
+    bx.border_top_right_radius = style.border_top_right_radius;
+    bx.border_bottom_right_radius = style.border_bottom_right_radius;
+    bx.border_bottom_left_radius = style.border_bottom_left_radius;
+    if let Some(ref family) = style.font_family {
+        if let Some(wf_id) = crate::lookup_web_font(family) {
+            bx.custom_font_id = wf_id;
+        }
+    }
+    bx
+}
+
 /// Lay out a run of inline child nodes, performing word wrapping.
 /// Returns a list of line boxes positioned at x = `start_x`.
 pub fn layout_inline_content(
@@ -933,14 +988,14 @@ fn collect_inline_fragments(
             }
 
             // Recurse into inline children, applying inline margin/padding.
-            let ml = style.margin_left.max(0);
-            let mr = style.margin_right.max(0);
+            let ml = style.margin_left;
+            let mr = style.margin_right;
             let pl = style.padding_left.max(0);
             let pr = style.padding_right.max(0);
 
             // Left margin + padding → insert spacer.
             let left_space = ml + pl;
-            if left_space > 0 {
+            if left_space != 0 {
                 let spacer = LayoutBox::new(None, BoxType::Inline);
                 out.push(InlineFragment {
                     width: left_space,
@@ -1003,6 +1058,23 @@ fn collect_inline_fragments(
                             | Display::ListItem
                     )
             });
+            let has_non_block_inline_content = children.iter().any(|&cid| {
+                let cs = &styles[cid];
+                if cs.display == Display::None {
+                    return false;
+                }
+                match &dom.get(cid).node_type {
+                    NodeType::Text(t) => !t.trim().is_empty(),
+                    NodeType::Element { .. } => !matches!(
+                        cs.display,
+                        Display::Block
+                            | Display::FlowRoot
+                            | Display::Flex
+                            | Display::Grid
+                            | Display::ListItem
+                    ),
+                }
+            });
 
             for &cid in &children {
                 let cs = &styles[cid];
@@ -1028,6 +1100,31 @@ fn collect_inline_fragments(
                     child_bg,
                     viewport_w,
                 );
+            }
+
+            if has_block_child && !has_non_block_inline_content && inline_box_has_visuals(style) {
+                let mut continuation = build_empty_inline_visual_box(node_id, style);
+                let continuation_w = continuation.padding.left
+                    + continuation.padding.right
+                    + continuation.border_left_width
+                    + continuation.border_right_width;
+                let continuation_h = style
+                    .line_height
+                    .max(font_size_px(style))
+                    .max(
+                        continuation.padding.top
+                            + continuation.padding.bottom
+                            + continuation.border_top_width
+                            + continuation.border_bottom_width,
+                    );
+                continuation.width = continuation_w.max(0);
+                continuation.height = continuation_h.max(0);
+                out.push(InlineFragment {
+                    width: continuation.width,
+                    height: continuation.height,
+                    layout_box: continuation,
+                    breaks_after: false,
+                });
             }
 
             // Inject ::after pseudo-element content.
@@ -1063,7 +1160,7 @@ fn collect_inline_fragments(
 
             // Right padding + margin → insert spacer.
             let right_space = pr + mr;
-            if right_space > 0 {
+            if right_space != 0 {
                 let spacer = LayoutBox::new(None, BoxType::Inline);
                 out.push(InlineFragment {
                     width: right_space,

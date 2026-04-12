@@ -1009,6 +1009,15 @@ pub fn resolve_url(base: &str, relative: &str) -> String {
         return format!("{}{}", base, relative);
     }
     if relative.starts_with('/') {
+        if base.starts_with("file://") {
+            if let Ok(root) = std::env::var("SURF_WEB_ROOT") {
+                let mut root = root.trim_end_matches('/').to_string();
+                if !root.starts_with('/') {
+                    root.insert(0, '/');
+                }
+                return format!("file://{}{}", root, relative);
+            }
+        }
         if let Some(idx) = base.find("://") {
             let rest = &base[idx + 3..];
             let host_end = rest.find('/').map(|i| idx + 3 + i).unwrap_or(base.len());

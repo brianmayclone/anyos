@@ -144,6 +144,20 @@ pub fn lookup_web_font(family: &str) -> Option<u32> {
     }
 }
 
+pub fn is_ahem_font_id(font_id: u32) -> bool {
+    if font_id == 0 {
+        return false;
+    }
+    unsafe {
+        if WEB_FONT_MAP.is_null() {
+            return false;
+        }
+        let map = &*WEB_FONT_MAP;
+        map.iter()
+            .any(|(family, id)| *id == font_id && family.trim_matches('\'').trim_matches('"') == "ahem")
+    }
+}
+
 fn resolve_root_background_color(dom: &dom::Dom, styles: &[style::ComputedStyle]) -> u32 {
     let body_id = dom.find_body().unwrap_or(0);
     let body_bg = styles.get(body_id).map(|s| s.background_color).unwrap_or(0);

@@ -470,6 +470,11 @@ pub(super) fn measure_text(
     italic: bool,
 ) -> (i32, i32) {
     let font_id = resolve_font_id(custom_font_id, bold, italic);
+    if crate::is_ahem_font_id(font_id) {
+        let glyph_count = text.chars().count() as i32;
+        let size = font_size.max(1);
+        return (glyph_count * size, size);
+    }
     let (w, h) = libfont_client::measure(font_id, font_size.max(1) as u16, text);
     (w as i32, h as i32)
 }

@@ -151,7 +151,7 @@ render() {
     local vw="${VIEWPORT%x*}"
     local vh="${VIEWPORT#*x}"
 
-    timeout $((TIMEOUT / 1000 + 5)) "$SURF_HOST" \
+    SURF_WEB_ROOT="$WPT_DIR" timeout $((TIMEOUT / 1000 + 5)) "$SURF_HOST" \
         "file://$html_file" \
         --screenshot "$output_png" \
         --width "$vw" --height "$vh" \
