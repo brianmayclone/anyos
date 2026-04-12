@@ -2814,17 +2814,6 @@ impl Compiler {
         let ci = self.add_const(Constant::Function(func_chunk));
         self.emit(Op::Closure(ci));
 
-        // For named function expressions: also make the function accessible by its
-        // name as a global (simplified — avoids needing a scope wrapper object).
-        if named_expr {
-            if let Some(n) = name {
-                let ni = self.add_const(Constant::String(n.clone()));
-                self.emit(Op::Dup);
-                self.emit(Op::StoreGlobal(ni));
-                self.emit(Op::Pop);
-            }
-        }
-
         // Restore binding_is_global to the value before entering this function.
         self.binding_is_global = prev_binding_is_global;
     }

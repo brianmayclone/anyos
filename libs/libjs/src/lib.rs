@@ -174,4 +174,16 @@ mod tests {
         );
         assert!(result.to_boolean());
     }
+
+    #[test]
+    fn named_function_expression_does_not_create_a_global_binding() {
+        let mut engine = JsEngine::new();
+        let result = engine.eval(
+            "'use strict'; \
+             var outer = typeof e; \
+             var f = function e(n) { return n <= 1 ? 1 : n * e(n - 1); }; \
+             [outer, typeof e, f(4)].join(',')",
+        );
+        assert_eq!(result.to_string(), "undefined,undefined,24");
+    }
 }

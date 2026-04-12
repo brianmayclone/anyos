@@ -908,6 +908,17 @@ impl Vm {
                         let val = self.globals.borrow().get(&name);
                         self.stack.push(val);
                     } else {
+                        if name == "e" {
+                            let chunk = &self.frames[frame_idx].chunk;
+                            self.log_engine(&format!(
+                                "[libjs] DEBUG undefined '{}' via LoadName in chunk {:?} locals={:?} upvalues={:?} ip={}",
+                                name,
+                                chunk.name,
+                                chunk.local_names,
+                                chunk.upvalue_names,
+                                self.frames[frame_idx].ip
+                            ));
+                        }
                         let msg = format!("{} is not defined", name);
                         let err = self.make_reference_error(&msg);
                         if !self.handle_exception(err) {
@@ -928,6 +939,17 @@ impl Vm {
                         let val = self.globals.borrow().get(&name);
                         self.stack.push(val);
                     } else {
+                        if name == "e" {
+                            let chunk = &self.frames[frame_idx].chunk;
+                            self.log_engine(&format!(
+                                "[libjs] DEBUG undefined '{}' via LoadGlobal in chunk {:?} locals={:?} upvalues={:?} ip={}",
+                                name,
+                                chunk.name,
+                                chunk.local_names,
+                                chunk.upvalue_names,
+                                self.frames[frame_idx].ip
+                            ));
+                        }
                         let msg = format!("{} is not defined", name);
                         let err = self.make_reference_error(&msg);
                         if !self.handle_exception(err) {
@@ -1023,6 +1045,17 @@ impl Vm {
                             .iter()
                             .any(|g| g == &name)
                     {
+                        if name == "e" {
+                            let chunk = &self.frames[frame_idx].chunk;
+                            self.log_engine(&format!(
+                                "[libjs] DEBUG undefined '{}' via StoreGlobal in chunk {:?} locals={:?} upvalues={:?} ip={}",
+                                name,
+                                chunk.name,
+                                chunk.local_names,
+                                chunk.upvalue_names,
+                                self.frames[frame_idx].ip
+                            ));
+                        }
                         let msg = format!("{} is not defined", name);
                         let err = self.make_reference_error(&msg);
                         if !self.handle_exception(err) {
@@ -1043,6 +1076,17 @@ impl Vm {
                             .iter()
                             .any(|g| g == &name)
                     {
+                        if name == "e" {
+                            let chunk = &self.frames[frame_idx].chunk;
+                            self.log_engine(&format!(
+                                "[libjs] DEBUG undefined '{}' via StoreGlobalDirect in chunk {:?} locals={:?} upvalues={:?} ip={}",
+                                name,
+                                chunk.name,
+                                chunk.local_names,
+                                chunk.upvalue_names,
+                                self.frames[frame_idx].ip
+                            ));
+                        }
                         let msg = format!("{} is not defined", name);
                         let err = self.make_reference_error(&msg);
                         if !self.handle_exception(err) {
@@ -1141,6 +1185,17 @@ impl Vm {
                             .iter()
                             .any(|g| g == &name)
                     {
+                        if name == "e" {
+                            let chunk = &self.frames[frame_idx].chunk;
+                            self.log_engine(&format!(
+                                "[libjs] DEBUG undefined '{}' via StoreName in chunk {:?} locals={:?} upvalues={:?} ip={}",
+                                name,
+                                chunk.name,
+                                chunk.local_names,
+                                chunk.upvalue_names,
+                                self.frames[frame_idx].ip
+                            ));
+                        }
                         let msg = format!("{} is not defined", name);
                         let err = self.make_reference_error(&msg);
                         if !self.handle_exception(err) {
@@ -1619,6 +1674,16 @@ impl Vm {
                     let obj = self.stack.pop().unwrap_or(JsValue::Undefined);
                     if matches!(obj, JsValue::Null | JsValue::Undefined) {
                         let key_str = Self::property_key_error_hint(&key);
+                        if key_str == native_symbol::WELL_KNOWN_TO_PRIMITIVE {
+                            let chunk = &self.frames[frame_idx].chunk;
+                            self.log_engine(&format!(
+                                "[libjs] DEBUG get undefined @@toPrimitive via GetProp in chunk {:?} locals={:?} upvalues={:?} ip={}",
+                                chunk.name,
+                                chunk.local_names,
+                                chunk.upvalue_names,
+                                self.frames[frame_idx].ip
+                            ));
+                        }
                         let msg = alloc::format!(
                             "Cannot read properties of {} (reading '{}')",
                             if matches!(obj, JsValue::Null) {
@@ -1802,6 +1867,16 @@ impl Vm {
                     }
 
                     if matches!(obj, JsValue::Null | JsValue::Undefined) {
+                        if name == native_symbol::WELL_KNOWN_TO_PRIMITIVE {
+                            let chunk = &self.frames[frame_idx].chunk;
+                            self.log_engine(&format!(
+                                "[libjs] DEBUG get undefined @@toPrimitive via GetPropNamed in chunk {:?} locals={:?} upvalues={:?} ip={}",
+                                chunk.name,
+                                chunk.local_names,
+                                chunk.upvalue_names,
+                                self.frames[frame_idx].ip
+                            ));
+                        }
                         let msg = alloc::format!(
                             "Cannot read properties of {} (reading '{}')",
                             if matches!(obj, JsValue::Null) {
