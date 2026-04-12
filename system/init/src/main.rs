@@ -361,7 +361,7 @@ fn main() {
     let stack_top = ((stack_base + stack_size) & !0xF) - 8;
     #[cfg(target_arch = "aarch64")]
     let stack_top = (stack_base + stack_size) & !0xF;
-    unsafe { *((stack_top - 8) as *mut usize) = process::thread_exit_stub_addr(); }
+    unsafe { *(stack_top as *mut usize) = process::thread_exit_stub_addr(); }
     process::thread_create_with_priority(worker_entry, stack_top, "init/worker", 100);
 
     // ── Timer: update status label from worker state ──

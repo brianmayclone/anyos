@@ -56,7 +56,7 @@ fn spawn_init_waiter(init_tid: u32) {
     #[cfg(target_arch = "aarch64")]
     let stack_top = (stack_base + stack_size) & !0xF;
     // Install a synthetic return target for thread functions that return.
-    unsafe { *((stack_top - 8) as *mut usize) = process::thread_exit_stub_addr(); }
+    unsafe { *(stack_top as *mut usize) = process::thread_exit_stub_addr(); }
     process::thread_create_with_priority(
         init_waiter_entry,
         stack_top,
@@ -337,7 +337,7 @@ fn spawn_render_thread() {
     let render_stack_top = ((render_stack_base + render_stack_size) & !0xF) - 8;
     #[cfg(target_arch = "aarch64")]
     let render_stack_top = (render_stack_base + render_stack_size) & !0xF;
-    unsafe { *((render_stack_top - 8) as *mut usize) = process::thread_exit_stub_addr(); }
+    unsafe { *(render_stack_top as *mut usize) = process::thread_exit_stub_addr(); }
     let render_tid = process::thread_create_with_priority(
         render::render_thread_entry,
         render_stack_top,
