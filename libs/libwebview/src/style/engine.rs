@@ -27,21 +27,22 @@ const SET_COLOR: u32 = 1 << 0;
 const SET_FONT_SIZE: u32 = 1 << 1;
 const SET_FONT_WEIGHT: u32 = 1 << 2;
 const SET_FONT_STYLE: u32 = 1 << 3;
-const SET_DIRECTION: u32 = 1 << 4;
-const SET_TEXT_ALIGN: u32 = 1 << 5;
-const SET_LINE_HEIGHT: u32 = 1 << 6;
-const SET_WHITE_SPACE: u32 = 1 << 7;
-const SET_LIST_STYLE: u32 = 1 << 8;
-const SET_TEXT_DECO: u32 = 1 << 9;
-const SET_VISIBILITY: u32 = 1 << 10;
-const SET_TEXT_TRANSFORM: u32 = 1 << 11;
-const SET_LETTER_SPACING: u32 = 1 << 12;
-const SET_WORD_SPACING: u32 = 1 << 13;
-const SET_WORD_BREAK: u32 = 1 << 14;
-const SET_OVERFLOW_WRAP: u32 = 1 << 15;
-const SET_LIST_STYLE_POS: u32 = 1 << 16;
-const SET_ACCENT_COLOR: u32 = 1 << 17;
-const SET_COLOR_SCHEME: u32 = 1 << 18;
+const SET_FONT_FAMILY: u32 = 1 << 4;
+const SET_DIRECTION: u32 = 1 << 5;
+const SET_TEXT_ALIGN: u32 = 1 << 6;
+const SET_LINE_HEIGHT: u32 = 1 << 7;
+const SET_WHITE_SPACE: u32 = 1 << 8;
+const SET_LIST_STYLE: u32 = 1 << 9;
+const SET_TEXT_DECO: u32 = 1 << 10;
+const SET_VISIBILITY: u32 = 1 << 11;
+const SET_TEXT_TRANSFORM: u32 = 1 << 12;
+const SET_LETTER_SPACING: u32 = 1 << 13;
+const SET_WORD_SPACING: u32 = 1 << 14;
+const SET_WORD_BREAK: u32 = 1 << 15;
+const SET_OVERFLOW_WRAP: u32 = 1 << 16;
+const SET_LIST_STYLE_POS: u32 = 1 << 17;
+const SET_ACCENT_COLOR: u32 = 1 << 18;
+const SET_COLOR_SCHEME: u32 = 1 << 19;
 
 /// User-agent stylesheet: hardcoded browser defaults per HTML tag.
 /// Returns the base style AND a bitfield indicating which inheritable
@@ -2425,6 +2426,9 @@ fn inherit_unset(child: &mut ComputedStyle, parent: &ComputedStyle, set: u32) {
     if set & SET_FONT_STYLE == 0 {
         child.font_style = parent.font_style;
     }
+    if set & SET_FONT_FAMILY == 0 {
+        child.font_family = parent.font_family.clone();
+    }
     if set & SET_DIRECTION == 0 {
         child.direction = parent.direction;
     }
@@ -2481,6 +2485,7 @@ fn decl_set_flag(prop: &Property) -> u32 {
         Property::FontSize => SET_FONT_SIZE,
         Property::FontWeight => SET_FONT_WEIGHT,
         Property::FontStyle => SET_FONT_STYLE,
+        Property::FontFamily => SET_FONT_FAMILY,
         Property::Direction => SET_DIRECTION,
         Property::TextAlign => SET_TEXT_ALIGN,
         Property::LineHeight => SET_LINE_HEIGHT,

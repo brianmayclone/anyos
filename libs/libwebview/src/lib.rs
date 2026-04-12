@@ -763,6 +763,10 @@ impl WebView {
             .and_then(|root| find_node_bounds(root, 0, 0, node_id))
     }
 
+    pub fn layout_root_ref(&self) -> Option<&LayoutBox> {
+        self.layout_root.as_ref()
+    }
+
     /// Render tiles for the given scroll position (public wrapper).
     /// Returns `true` if there are pending tiles not yet rasterized.
     pub fn render_viewport_at(&mut self, scroll_y: i32) -> bool {

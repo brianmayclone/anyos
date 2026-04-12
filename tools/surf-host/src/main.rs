@@ -1047,6 +1047,24 @@ pub fn resolve_url(base: &str, relative: &str) -> String {
 
 use libwebview::dom::{NodeType, Tag};
 
+fn debug_dump_text_runs(bx: &libwebview::LayoutBox, depth: usize) {
+    if let Some(text) = &bx.text {
+        if !text.is_empty() {
+            eprintln!(
+                "[surf-host] text-run depth={} node={:?} font_id={} size={} text={:?}",
+                depth,
+                bx.node_id,
+                bx.custom_font_id,
+                bx.font_size,
+                text
+            );
+        }
+    }
+    for child in &bx.children {
+        debug_dump_text_runs(child, depth + 1);
+    }
+}
+
 /// Load all external resources by walking the parsed DOM tree.
 /// This mirrors the logic in apps/surf/src/resources.rs.
 fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
@@ -1105,6 +1123,14 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
                 }
             }
         }
+    }
+
+    if std::env::var_os("SURF_DEBUG_WEBFONTS").is_some() {
+        eprintln!(
+            "[surf-host] debug webfonts: Ahem={:?} ahem={:?}",
+            wv.web_font_id("Ahem"),
+            wv.web_font_id("ahem")
+        );
     }
 
     // 2. @font-face from inline <style> blocks
@@ -1183,6 +1209,11 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
 
     // Re-layout with all resources loaded (images not yet available — placeholders used)
     wv.relayout();
+    if std::env::var_os("SURF_DEBUG_LAYOUT_TEXT").is_some() {
+        if let Some(root) = wv.layout_root_ref() {
+            debug_dump_text_runs(root, 0);
+        }
+    }
 }
 
 // ── Parallel image loading ──────────────────────────────────────────────────
