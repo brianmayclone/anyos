@@ -674,6 +674,14 @@ impl<'a> CodeEmitter<'a> {
                 self.store_place(dest, Reg::RAX);
                 true
             }
+            "is_null" => {
+                // (ptr: *const T) -> bool
+                self.asm.emit_raw(&[0x48, 0x83, 0xFF, 0x00]); // cmp rdi, 0
+                self.asm.emit_raw(&[0x0F, 0x94, 0xC0]);       // sete al
+                self.asm.emit_raw(&[0x48, 0x0F, 0xB6, 0xC0]); // movzx rax, al
+                self.store_place(dest, Reg::RAX);
+                true
+            }
             "write_bytes" => {
                 // (dst: *mut T, val: u8, count: usize)
                 // Args in RDI, RSI, RDX (already loaded by caller setup)
