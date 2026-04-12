@@ -244,6 +244,23 @@ impl<'a> Lexer<'a> {
         v
     }
 
+    fn lex_byte_char(&mut self) -> u8 {
+        self.pos += 1; // skip opening '
+        if self.pos >= self.src.len() {
+            return 0;
+        }
+        let value = if self.peek() == b'\\' {
+            self.pos += 1; // skip backslash
+            self.lex_char_escape() as u8
+        } else {
+            self.advance()
+        };
+        if self.peek() == b'\'' {
+            self.pos += 1; // skip closing '
+        }
+        value
+    }
+
     fn lex_number(&mut self, start: usize) -> TokenKind {
         let first = self.src[start];
         if first == b'0' && self.pos < self.src.len() {
@@ -379,9 +396,24 @@ impl<'a> Lexer<'a> {
                 if b == b'r' && (self.peek() == b'"' || self.peek() == b'#') {
                     let s = self.lex_raw_string();
                     TokenKind::StringLit(s)
-                } else if b == b'b' && self.peek() == b'"' {
-                    let v = self.lex_byte_string();
-                    TokenKind::ByteStringLit(v)
+                } else if b == b'b' {
+                    if self.peek() == b'"' {
+                        let v = self.lex_byte_string();
+                        TokenKind::ByteStringLit(v)
+                    } else if self.peek() == b'\'' {
+                        TokenKind::IntLit(self.lex_byte_char() as u128)
+                    } else {
+                        while self.pos < self.src.len() && Self::is_ident_cont(self.peek()) {
+                            self.pos += 1;
+                        }
+                        let text = core::str::from_utf8(&self.src[start..self.pos]).unwrap();
+                        if let Some(kw) = keyword_from_str(text) {
+                            TokenKind::Kw(kw)
+                        } else {
+                            let sym = self.interner.intern(text);
+                            TokenKind::Ident(sym)
+                        }
+                    }
                 } else {
                     while self.pos < self.src.len() && Self::is_ident_cont(self.peek()) {
                         self.pos += 1;

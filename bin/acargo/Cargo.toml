@@ -3,6 +3,18 @@ name = "acargo"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+host = [
+  "anyos_std/host",
+  "dynlink/host",
+  "libhttp_client/host",
+  "libzip_client/host",
+]
+
+[lib]
+name = "acargo"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ccargo"
 path = "src/main.rs"

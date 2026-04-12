@@ -20,6 +20,61 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec;
 
+#[cfg(feature = "host")]
+mod host {
+    use super::*;
+
+    pub struct ZipReader;
+    impl ZipReader {
+        pub fn open(_path: &str) -> Option<ZipReader> { None }
+        pub fn entry_count(&self) -> u32 { 0 }
+        pub fn entry_name(&self, _index: u32) -> String { String::new() }
+        pub fn entry_size(&self, _index: u32) -> u32 { 0 }
+        pub fn entry_compressed_size(&self, _index: u32) -> u32 { 0 }
+        pub fn entry_method(&self, _index: u32) -> u32 { 0 }
+        pub fn entry_is_dir(&self, _index: u32) -> bool { false }
+        pub fn extract(&self, _index: u32) -> Option<alloc::vec::Vec<u8>> { None }
+        pub fn extract_to_file(&self, _index: u32, _path: &str) -> bool { false }
+    }
+
+    pub struct ZipWriter;
+    impl ZipWriter {
+        pub fn new() -> Option<ZipWriter> { None }
+        pub fn add_file(&self, _name: &str, _data: &[u8], _compress: bool) -> bool { false }
+        pub fn add_dir(&self, _name: &str) -> bool { false }
+        pub fn write_to_file(self, _path: &str) -> bool { false }
+    }
+
+    pub fn gzip_compress_file(_in_path: &str, _out_path: &str) -> bool { false }
+    pub fn gzip_decompress_file(_in_path: &str, _out_path: &str) -> bool { false }
+
+    pub struct TarReader;
+    impl TarReader {
+        pub fn open(_path: &str) -> Option<TarReader> { None }
+        pub fn entry_count(&self) -> u32 { 0 }
+        pub fn entry_name(&self, _index: u32) -> String { String::new() }
+        pub fn entry_size(&self, _index: u32) -> u32 { 0 }
+        pub fn entry_is_dir(&self, _index: u32) -> bool { false }
+        pub fn extract(&self, _index: u32) -> Option<alloc::vec::Vec<u8>> { None }
+        pub fn extract_to_file(&self, _index: u32, _path: &str) -> bool { false }
+    }
+
+    pub struct TarWriter;
+    impl TarWriter {
+        pub fn new() -> Option<TarWriter> { None }
+        pub fn add_file(&self, _name: &str, _data: &[u8]) -> bool { false }
+        pub fn add_dir(&self, _name: &str) -> bool { false }
+        pub fn write_to_file(self, _path: &str, _compress: bool) -> bool { false }
+    }
+}
+
+#[cfg(feature = "host")]
+pub use host::*;
+
+#[cfg(not(feature = "host"))]
+mod imp {
+use super::*;
+
 dynlink::dll_exports! {
     lib_path: "/Libraries/libzip.so",
     lib_struct: LibZip,
@@ -304,3 +359,7 @@ impl Drop for TarWriter {
         }
     }
 }
+}
+
+#[cfg(not(feature = "host"))]
+pub use imp::*;

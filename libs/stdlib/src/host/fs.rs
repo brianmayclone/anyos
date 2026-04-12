@@ -4,6 +4,11 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read as IoRead, Seek as IoSeek, SeekFrom, Write as IoWrite};
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 /// Open flags (compatible with anyOS API).
 pub const O_WRITE: u32 = 1;
@@ -12,20 +17,71 @@ pub const O_CREATE: u32 = 4;
 pub const O_TRUNC: u32 = 8;
 pub const O_SYNC: u32 = 0x20;
 
-pub fn open(_path: &str, _flags: u32) -> u32 {
-    u32::MAX // Not implemented for host — use high-level functions
+enum HostHandle {
+    File(File),
 }
 
-pub fn close(_fd: u32) -> u32 { 0 }
+fn handles() -> &'static Mutex<HashMap<u32, HostHandle>> {
+    static HANDLES: OnceLock<Mutex<HashMap<u32, HostHandle>>> = OnceLock::new();
+    HANDLES.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
-pub fn read(_fd: u32, _buf: &mut [u8]) -> u32 { 0 }
+fn next_fd() -> u32 {
+    static NEXT_FD: AtomicU32 = AtomicU32::new(3);
+    NEXT_FD.fetch_add(1, Ordering::Relaxed)
+}
+
+pub fn open(path: &str, flags: u32) -> u32 {
+    let mut options = OpenOptions::new();
+    let wants_write = (flags & (O_WRITE | O_APPEND | O_CREATE | O_TRUNC | O_SYNC)) != 0;
+    options.read(!wants_write || (flags & O_WRITE) == 0);
+    options.write(wants_write);
+    options.append((flags & O_APPEND) != 0);
+    options.create((flags & O_CREATE) != 0);
+    options.truncate((flags & O_TRUNC) != 0);
+
+    match options.open(path) {
+        Ok(mut file) => {
+            if (flags & O_APPEND) != 0 {
+                let _ = file.seek(SeekFrom::End(0));
+            }
+            let fd = next_fd();
+            handles().lock().unwrap().insert(fd, HostHandle::File(file));
+            fd
+        }
+        Err(_) => u32::MAX,
+    }
+}
+
+pub fn close(fd: u32) -> u32 {
+    handles().lock().unwrap().remove(&fd);
+    0
+}
+
+pub fn read(fd: u32, buf: &mut [u8]) -> u32 {
+    let mut guard = handles().lock().unwrap();
+    let Some(HostHandle::File(file)) = guard.get_mut(&fd) else {
+        return u32::MAX;
+    };
+    match file.read(buf) {
+        Ok(n) => n as u32,
+        Err(_) => u32::MAX,
+    }
+}
 
 pub fn write(fd: u32, buf: &[u8]) -> u32 {
-    use std::io::Write as IoWrite;
     if fd == 1 {
         let _ = std::io::stdout().write_all(buf);
     } else if fd == 2 {
         let _ = std::io::stderr().write_all(buf);
+    } else {
+        let mut guard = handles().lock().unwrap();
+        let Some(HostHandle::File(file)) = guard.get_mut(&fd) else {
+            return u32::MAX;
+        };
+        if file.write_all(buf).is_err() {
+            return u32::MAX;
+        }
     }
     buf.len() as u32
 }
@@ -51,7 +107,41 @@ pub fn fstat(_fd: u32, _stat_buf: &mut [u32; 4]) -> u32 {
 }
 
 pub fn readdir(_path: &str, _buf: &mut [u8]) -> u32 {
-    0
+    let path = _path;
+    let buf = _buf;
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(_) => return u32::MAX,
+    };
+
+    let entry_size = 64usize;
+    let max_entries = buf.len() / entry_size;
+    let mut written = 0usize;
+
+    for entry in entries.flatten().take(max_entries) {
+        let file_type = match entry.file_type() {
+            Ok(ft) => {
+                if ft.is_dir() { 1u8 } else { 0u8 }
+            }
+            Err(_) => 0u8,
+        };
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let name_bytes = name.as_bytes();
+        let name_len = name_bytes.len().min(56);
+        let off = written * entry_size;
+        buf[off] = file_type;
+        buf[off + 1] = name_len as u8;
+        buf[off + 2] = 0;
+        buf[off + 3] = 0;
+        for b in &mut buf[off + 4..off + entry_size] {
+            *b = 0;
+        }
+        buf[off + 8..off + 8 + name_len].copy_from_slice(&name_bytes[..name_len]);
+        written += 1;
+    }
+
+    written as u32
 }
 
 pub fn mkdir(path: &str) -> u32 {
@@ -59,7 +149,11 @@ pub fn mkdir(path: &str) -> u32 {
 }
 
 pub fn unlink(path: &str) -> u32 {
-    if std::fs::remove_file(path).is_ok() { 0 } else { u32::MAX }
+    if std::fs::remove_file(path).is_ok() || std::fs::remove_dir(path).is_ok() {
+        0
+    } else {
+        u32::MAX
+    }
 }
 
 pub fn getcwd(buf: &mut [u8]) -> u32 {

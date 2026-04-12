@@ -1,0 +1,9 @@
+[package]
+name = "acargo-hosttests"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+acargo = { path = "../../bin/acargo", features = ["host"] }

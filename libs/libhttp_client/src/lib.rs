@@ -21,6 +21,38 @@ use alloc::vec::Vec;
 /// `total_bytes` is 0 if the server did not provide Content-Length.
 pub type ProgressCallback = extern "C" fn(u32, u32, u64);
 
+#[cfg(feature = "host")]
+mod host {
+    use super::*;
+
+    pub fn init() -> bool { true }
+    pub fn get(_url: &str) -> Option<Vec<u8>> { None }
+    pub fn get_into(_url: &str, _buf: &mut [u8]) -> Option<usize> { None }
+    pub fn download(_url: &str, _path: &str) -> bool { false }
+    pub fn download_progress(
+        _url: &str,
+        _path: &str,
+        _callback: ProgressCallback,
+        _userdata: u64,
+    ) -> bool { false }
+    pub fn post(_url: &str, _body: &[u8], _content_type: &str) -> Option<Vec<u8>> { None }
+    pub fn post_with_headers(
+        _url: &str,
+        _body: &[u8],
+        _content_type: &str,
+        _extra_headers: &str,
+    ) -> Option<Vec<u8>> { None }
+    pub fn last_status() -> u32 { 0 }
+    pub fn last_error() -> u32 { 0 }
+}
+
+#[cfg(feature = "host")]
+pub use host::*;
+
+#[cfg(not(feature = "host"))]
+mod imp {
+use super::*;
+
 dynlink::dll_exports! {
     lib_path: "/Libraries/libhttp.so",
     lib_struct: LibHttp,
@@ -165,3 +197,7 @@ pub fn last_status() -> u32 {
 pub fn last_error() -> u32 {
     (lib().libhttp_last_error)()
 }
+}
+
+#[cfg(not(feature = "host"))]
+pub use imp::*;

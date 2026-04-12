@@ -169,6 +169,12 @@ impl<'a> Parser<'a> {
         loop {
             // Postfix operators
             if let Some(post_bp) = self.postfix_bp() {
+                if matches!(self.current().kind, TokenKind::LParen)
+                    && self.expr_can_end_stmt_without_semicolon(&lhs)
+                    && self.current().span.start() > self.prev_span.end()
+                {
+                    break;
+                }
                 if post_bp < min_bp {
                     break;
                 }
@@ -978,10 +984,32 @@ impl<'a> Parser<'a> {
         let expr = self.parse_expr();
         if self.eat_exact(&TokenKind::Semi) {
             Stmt::Semi(expr, self.span_from(start))
+        } else if self.expr_can_end_stmt_without_semicolon(&expr) && !self.at_exact(&TokenKind::RBrace) {
+            // Block-like expressions such as `while { ... }` and `if { ... }`
+            // may omit the semicolon in statement position. Without this split,
+            // the Pratt parser can accidentally continue into the following line
+            // and parse e.g. `while { ... } (*ptr).field = value;` as one giant
+            // assignment/call expression.
+            Stmt::Semi(expr, self.span_from(start))
         } else {
             // Trailing expression (no semi) - only valid as last stmt in block
             Stmt::Expr(expr)
         }
+    }
+
+    fn expr_can_end_stmt_without_semicolon(&self, expr: &Expr) -> bool {
+        matches!(
+            expr,
+            Expr::Block(_)
+                | Expr::If(_, _, _, _)
+                | Expr::IfLet(_, _, _, _, _)
+                | Expr::Match(_, _, _)
+                | Expr::Loop(_, _, _)
+                | Expr::While(_, _, _, _)
+                | Expr::WhileLet(_, _, _, _, _)
+                | Expr::For(_, _, _, _, _)
+                | Expr::Unsafe(_, _)
+        )
     }
 
     fn at_item_start(&self) -> bool {
