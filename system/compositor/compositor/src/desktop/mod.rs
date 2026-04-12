@@ -159,9 +159,6 @@ pub struct Desktop {
     pub(crate) clipboard_format: u32,
     /// Volume HUD overlay (centered-bottom).
     pub(crate) volume_hud: volume_hud::VolumeHud,
-    /// Cascading auto-placement state for new windows.
-    pub(crate) cascade_x: i32,
-    pub(crate) cascade_y: i32,
     /// Frame ACK queue: (sub_id, window_id) pairs to emit after compose.
     /// Populated during compose(), drained by render thread via evt_chan_emit_to.
     pub(crate) frame_ack_queue: Vec<(u32, u32)>,
@@ -273,8 +270,6 @@ impl Desktop {
             clipboard_data: Vec::new(),
             clipboard_format: 0,
             volume_hud: volume_hud::VolumeHud::new(),
-            cascade_x: 120,
-            cascade_y: menubar_height() as i32 + 50,
             frame_ack_queue: Vec::new(),
             logout_requested: false,
             shutdown_mode: 0,

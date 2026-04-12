@@ -699,17 +699,11 @@ impl Desktop {
                 if drag.moved {
                     let snap_margin = 20i32;
                     let mx = self.mouse_x;
-                    let my = self.mouse_y;
                     let sw = self.screen_width as i32;
-                    let sh = self.screen_height as i32;
                     if mx <= snap_margin {
                         self.snap_window_to_half(win_id, 0); // left half
                     } else if mx >= sw - snap_margin - 1 {
                         self.snap_window_to_half(win_id, 1); // right half
-                    } else if my <= menubar_height() as i32 + snap_margin + 1 {
-                        self.snap_window_to_half(win_id, 2); // top half
-                    } else if my >= sh - snap_margin - 1 {
-                        self.snap_window_to_half(win_id, 3); // bottom half
                     }
                 }
                 self.set_cursor_shape(CursorShape::Arrow);

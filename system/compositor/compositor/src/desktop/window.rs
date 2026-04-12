@@ -1269,25 +1269,35 @@ impl Desktop {
 
     // ── IPC Window Operations ──────────────────────────────────────────
 
-    /// Compute the next auto-placement position (cascading).
-    fn next_auto_position(&mut self, win_w: u32, win_h: u32) -> (i32, i32) {
-        let x = self.cascade_x;
-        let y = self.cascade_y;
+    /// Resolve the initial window position.
+    /// Missing coordinates are centered on the usable desktop area per axis.
+    fn resolve_initial_window_position(
+        &self,
+        raw_x: u16,
+        raw_y: u16,
+        win_w: u32,
+        win_h: u32,
+        clamp_explicit_y: bool,
+    ) -> (i32, i32) {
+        let min_y = menubar_height() as i32 + 1;
+        let area_w = self.screen_width as i32;
+        let area_h = (self.screen_height as i32 - min_y).max(0);
 
-        // Advance cascade for next window
-        self.cascade_x += 30;
-        self.cascade_y += 30;
+        let centered_x = ((area_w - win_w as i32) / 2).max(0);
+        let centered_y = min_y + ((area_h - win_h as i32) / 2).max(0);
 
-        // Wrap horizontally
-        if self.cascade_x + win_w as i32 > self.screen_width as i32 - 60 {
-            self.cascade_x = 120;
-            self.cascade_y += 30;
-        }
-        // Wrap vertically
-        if self.cascade_y + win_h as i32 > self.screen_height as i32 - 80 {
-            self.cascade_x = 120;
-            self.cascade_y = menubar_height() as i32 + 50;
-        }
+        let x = if raw_x == crate::ipc_protocol::CW_USEDEFAULT {
+            centered_x
+        } else {
+            raw_x as i32
+        };
+        let y = if raw_y == crate::ipc_protocol::CW_USEDEFAULT {
+            centered_y
+        } else if clamp_explicit_y {
+            (raw_y as i32).max(min_y)
+        } else {
+            raw_y as i32
+        };
 
         (x, y)
     }
@@ -1315,16 +1325,8 @@ impl Desktop {
             content_h + title_bar_height()
         };
 
-        // Determine position: explicit or auto-placed.
-        // Clamp Y so windows never overlap the menubar.
-        let min_y = menubar_height() as i32 + 1;
-        let (x, y) = if raw_x == crate::ipc_protocol::CW_USEDEFAULT
-            || raw_y == crate::ipc_protocol::CW_USEDEFAULT
-        {
-            self.next_auto_position(content_w, full_h)
-        } else {
-            (raw_x as i32, (raw_y as i32).max(min_y))
-        };
+        let (x, y) =
+            self.resolve_initial_window_position(raw_x, raw_y, content_w, full_h, true);
 
         let layer_id = self.compositor.add_layer(
             x,
@@ -1394,14 +1396,8 @@ impl Desktop {
         raw_x: u16,
         raw_y: u16,
     ) -> Option<[u32; 5]> {
-        // Determine position: explicit or auto-placed
-        let (x, y) = if raw_x == crate::ipc_protocol::CW_USEDEFAULT
-            || raw_y == crate::ipc_protocol::CW_USEDEFAULT
-        {
-            self.next_auto_position(content_w, content_h)
-        } else {
-            (raw_x as i32, raw_y as i32)
-        };
+        let (x, y) =
+            self.resolve_initial_window_position(raw_x, raw_y, content_w, content_h, false);
 
         // VRAM windows are always borderless + opaque (no title bar chrome)
         let layer_id = self.compositor.add_vram_layer(
@@ -1499,16 +1495,8 @@ impl Desktop {
             content_h + title_bar_height()
         };
 
-        // Determine position: explicit or auto-placed.
-        // Clamp Y so windows never overlap the menubar.
-        let min_y = menubar_height() as i32 + 1;
-        let (x, y) = if raw_x == crate::ipc_protocol::CW_USEDEFAULT
-            || raw_y == crate::ipc_protocol::CW_USEDEFAULT
-        {
-            self.next_auto_position(content_w, full_h)
-        } else {
-            (raw_x as i32, (raw_y as i32).max(min_y))
-        };
+        let (x, y) =
+            self.resolve_initial_window_position(raw_x, raw_y, content_w, full_h, true);
 
         let layer_id = self.compositor.add_layer_with_pixels(
             x,
