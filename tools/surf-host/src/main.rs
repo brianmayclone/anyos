@@ -1723,8 +1723,9 @@ fn is_svg(data: &[u8]) -> bool {
 fn decode_svg(data: &[u8]) -> Option<(Vec<u32>, u32, u32)> {
     let tree = resvg::usvg::Tree::from_data(data, &resvg::usvg::Options::default()).ok()?;
     let size = tree.size();
-    let w = size.width() as u32;
-    let h = size.height() as u32;
+    let fallback_w = size.width() as u32;
+    let fallback_h = size.height() as u32;
+    let (w, h) = svg_intrinsic_raster_size(data).unwrap_or((fallback_w, fallback_h));
     if w == 0 || h == 0 { return None; }
     let (rw, rh) = if w > 1024 || h > 1024 {
         let scale = 1024.0 / (w.max(h) as f32);
@@ -1765,6 +1766,72 @@ fn parse_svg_root_background(data: &[u8]) -> Option<u32> {
     let svg_tag = &after[..tag_end];
     let style_attr = extract_attr_value(svg_tag, "style")?;
     parse_background_style(style_attr)
+}
+
+fn svg_intrinsic_raster_size(data: &[u8]) -> Option<(u32, u32)> {
+    let text = std::str::from_utf8(data).ok()?;
+    let svg_start = text.find("<svg")?;
+    let after = &text[svg_start..];
+    let tag_end = after.find('>')?;
+    let svg_tag = &after[..tag_end];
+
+    let width = extract_attr_value(svg_tag, "width").and_then(parse_svg_length_px);
+    let height = extract_attr_value(svg_tag, "height").and_then(parse_svg_length_px);
+    let ratio = extract_attr_value(svg_tag, "viewBox")
+        .or_else(|| extract_attr_value(svg_tag, "viewbox"))
+        .and_then(parse_viewbox_ratio);
+
+    let (w, h) = match (width, height, ratio) {
+        (Some(w), Some(h), _) => (w, h),
+        (Some(w), None, Some(r)) if r > 0.0 => (w, ((w as f32) / r).round() as u32),
+        (None, Some(h), Some(r)) if r > 0.0 => (((h as f32) * r).round() as u32, h),
+        (Some(w), None, None) => (w, 150),
+        (None, Some(h), None) => (300, h),
+        (None, None, Some(r)) if r > 0.0 => {
+            let default_w = 300u32;
+            let default_h = 150u32;
+            let default_ratio = default_w as f32 / default_h as f32;
+            if r >= default_ratio {
+                (default_w, ((default_w as f32) / r).round() as u32)
+            } else {
+                (((default_h as f32) * r).round() as u32, default_h)
+            }
+        }
+        _ => return None,
+    };
+
+    Some((w.clamp(1, 4096), h.clamp(1, 4096)))
+}
+
+fn parse_svg_length_px(value: &str) -> Option<u32> {
+    let value = value.trim();
+    if value.is_empty() || value.ends_with('%') {
+        return None;
+    }
+    let value = value.strip_suffix("px").unwrap_or(value).trim();
+    let int_part = value.split('.').next()?.trim();
+    let parsed = int_part.parse::<u32>().ok()?;
+    (parsed > 0).then_some(parsed)
+}
+
+fn parse_viewbox_ratio(value: &str) -> Option<f32> {
+    let mut nums = [0f32; 4];
+    let mut count = 0usize;
+    for part in value
+        .split(|c: char| c.is_ascii_whitespace() || c == ',')
+        .filter(|s| !s.is_empty())
+    {
+        if count >= 4 {
+            break;
+        }
+        nums[count] = part.parse::<f32>().ok()?;
+        count += 1;
+    }
+    if count == 4 && nums[2] > 0.0 && nums[3] > 0.0 {
+        Some(nums[2] / nums[3])
+    } else {
+        None
+    }
 }
 
 fn extract_attr_value<'a>(tag_text: &'a str, name: &str) -> Option<&'a str> {
