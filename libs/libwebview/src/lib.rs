@@ -159,6 +159,10 @@ fn resolve_root_background_color(dom: &dom::Dom, styles: &[style::ComputedStyle]
     if html_bg != 0 { html_bg } else { 0xFFFFFFFF }
 }
 
+fn normalize_document_height(content_height: i32, viewport_height: u32) -> i32 {
+    content_height.max(viewport_height.max(1) as i32)
+}
+
 pub struct WebView {
     scroll_view: ui::ScrollView,
     content_view: ui::View,
@@ -3166,7 +3170,7 @@ impl WebView {
         }
 
         layout::compute_subtree_bottom(&mut root);
-        self.total_height_val = calc_total_height(&root);
+        self.total_height_val = normalize_document_height(calc_total_height(&root), self.viewport_height);
         self.layout_root = Some(root);
         self.refresh_render_surface_for_layout(dom, styles);
         true
@@ -3197,7 +3201,7 @@ impl WebView {
         }
 
         layout::compute_subtree_bottom(&mut root);
-        self.total_height_val = calc_total_height(&root);
+        self.total_height_val = normalize_document_height(calc_total_height(&root), self.viewport_height);
         self.layout_root = Some(root);
         self.refresh_render_surface_for_layout(dom, styles);
         true
@@ -3423,7 +3427,7 @@ impl WebView {
         if !self.scroll_offsets.is_empty() {
             Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
         }
-        self.total_height_val = calc_total_height(&root);
+        self.total_height_val = normalize_document_height(calc_total_height(&root), self.viewport_height);
         self.layout_root = Some(root);
         self.deferred_full_layout_pending = layout_budget.is_some();
         if !self.deferred_full_layout_pending {
@@ -3729,7 +3733,7 @@ impl WebView {
         if !self.scroll_offsets.is_empty() {
             Self::apply_scroll_offsets_to_layout(&self.scroll_offsets, &mut root);
         }
-        self.total_height_val = calc_total_height(&root);
+        self.total_height_val = normalize_document_height(calc_total_height(&root), self.viewport_height);
         self.deferred_full_layout_pending = layout_budget.is_some() || style_budget.is_some();
         if !self.deferred_full_layout_pending {
             self.clear_deferred_layout_state();
