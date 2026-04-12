@@ -69,6 +69,7 @@ file(GLOB_RECURSE ANYOS_SELFHOST_ANYRC_SRCS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/libs/libstd/*"
   "${CMAKE_SOURCE_DIR}/libs/libheap/*"
   "${CMAKE_SOURCE_DIR}/libs/dynlink/*"
+  "${CMAKE_SOURCE_DIR}/libs/libcorevm_client/*"
   "${CMAKE_SOURCE_DIR}/libs/libhttp_client/*"
   "${CMAKE_SOURCE_DIR}/libs/libzip_client/*"
   "${CMAKE_SOURCE_DIR}/bin/acargo/*"
@@ -107,6 +108,9 @@ add_custom_command(
     ${CMAKE_SOURCE_DIR}/libs/dynlink
     ${ANYOS_SELFHOST_ROOT}/libs/dynlink
   COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libcorevm_client
+    ${ANYOS_SELFHOST_ROOT}/libs/libcorevm_client
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_SOURCE_DIR}/libs/libhttp_client
     ${ANYOS_SELFHOST_ROOT}/libs/libhttp_client
   COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -126,6 +130,7 @@ add_custom_command(
     ${ANYOS_SELFHOST_ROOT}/libs/libstd/target
     ${ANYOS_SELFHOST_ROOT}/libs/libheap/target
     ${ANYOS_SELFHOST_ROOT}/libs/dynlink/target
+    ${ANYOS_SELFHOST_ROOT}/libs/libcorevm_client/target
     ${ANYOS_SELFHOST_ROOT}/libs/libhttp_client/target
     ${ANYOS_SELFHOST_ROOT}/libs/libzip_client/target
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -154,6 +159,7 @@ file(GLOB_RECURSE ANYOS_SOURCE_MIRROR_DEPS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/libs/libstd/src/*"
   "${CMAKE_SOURCE_DIR}/libs/libheap/*"
   "${CMAKE_SOURCE_DIR}/libs/dynlink/*"
+  "${CMAKE_SOURCE_DIR}/libs/libcorevm_client/*"
   "${CMAKE_SOURCE_DIR}/libs/libhttp_client/*"
   "${CMAKE_SOURCE_DIR}/libs/libzip_client/*"
   "${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md"
@@ -192,6 +198,9 @@ add_custom_command(
     ${CMAKE_SOURCE_DIR}/libs/dynlink
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/dynlink
   COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libcorevm_client
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libcorevm_client
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
     ${CMAKE_SOURCE_DIR}/libs/libhttp_client
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libhttp_client
   COMMAND ${CMAKE_COMMAND} -E copy_directory
@@ -205,6 +214,7 @@ add_custom_command(
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libstd/target
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libheap/target
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/dynlink/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libcorevm_client/target
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libhttp_client/target
     ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libzip_client/target
   COMMAND ${CMAKE_COMMAND} -E remove -f

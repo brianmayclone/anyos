@@ -30,15 +30,17 @@ pub struct BuildNode {
 /// Walks all path-based dependencies recursively, and fetches registry
 /// dependencies from crates.io when no path is specified.
 pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
+    let root_dir = fs::absolutize(root_dir);
+
     // Load existing Cargo.lock for version pinning
-    let lockfile = lockfile::read(root_dir);
+    let lockfile = lockfile::read(&root_dir);
 
     let mut nodes: Vec<BuildNode> = Vec::new();
     let mut name_to_idx: HashMap<String, usize> = HashMap::new();
 
     // BFS queue: (directory, from_registry)
     let mut queue: Vec<(String, bool)> = Vec::new();
-    queue.push((String::from(root_dir), false));
+    queue.push((root_dir.clone(), false));
 
     while let Some((dir, from_registry)) = queue.pop() {
         let manifest_path = format!("{}/Cargo.toml", dir);
@@ -123,7 +125,7 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
     // Write updated Cargo.lock if we resolved any registry dependencies
     let has_registry_deps = nodes.iter().any(|n| n.from_registry);
     if has_registry_deps {
-        update_lockfile(root_dir, &nodes);
+        update_lockfile(&root_dir, &nodes);
     }
 
     nodes

@@ -146,3 +146,26 @@ pub fn resolve_path(base: &str, relative: &str) -> String {
         components.join("/").into()
     }
 }
+
+/// Return the current working directory as an absolute path.
+pub fn current_dir() -> String {
+    let mut buf = [0u8; 256];
+    let len = anyos_std::fs::getcwd(&mut buf);
+    if len != u32::MAX && (len as usize) < buf.len() {
+        if let Ok(s) = core::str::from_utf8(&buf[..len as usize]) {
+            return String::from(s);
+        }
+    }
+    String::from("/")
+}
+
+/// Convert a path to an absolute path using the current working directory.
+pub fn absolutize(path: &str) -> String {
+    if path.is_empty() {
+        return current_dir();
+    }
+    if path.starts_with('/') {
+        return String::from(path);
+    }
+    resolve_path(&current_dir(), path)
+}

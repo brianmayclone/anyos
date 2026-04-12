@@ -43,7 +43,8 @@ pub struct BuildResult {
 
 /// Build all crates in a project.
 pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
-    let nodes = resolve::resolve(root_dir);
+    let root_dir = fs::absolutize(root_dir);
+    let nodes = resolve::resolve(&root_dir);
     if nodes.is_empty() {
         println!("ccargo: error: no packages found");
         return BuildResult { success: false, bin_path: None, compiled: 0 };
