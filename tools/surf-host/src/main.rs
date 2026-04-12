@@ -255,6 +255,24 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
     }
     rows.sort_by_key(|(y, _, _, _, _)| *y);
     for (_, node_id, raw, bounds, src) in rows.into_iter().take(40) {
+        let style_info = wv
+            .resolved_style_ref(node_id)
+            .map(|style| {
+                format!(
+                    " style=mt:{} mr:{} mb:{} ml:{} pt:{} pr:{} pb:{} pl:{} w:{:?} h:{:?}",
+                    style.margin_top,
+                    style.margin_right,
+                    style.margin_bottom,
+                    style.margin_left,
+                    style.padding_top,
+                    style.padding_right,
+                    style.padding_bottom,
+                    style.padding_left,
+                    style.width,
+                    style.height,
+                )
+            })
+            .unwrap_or_default();
         let cache_info = wv.images.get_ref(&src).map(|entry| {
             let mut sample = String::new();
             for &idx in &[0usize, entry.pixels.len() / 2, entry.pixels.len().saturating_sub(1)] {
@@ -268,8 +286,8 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
             format!(" cache={}x{} sample=[{}]", entry.width, entry.height, sample)
         }).unwrap_or_else(|| String::from(" cache=missing"));
         eprintln!(
-            "[surf-host]   node={} raw={:?} bounds={:?} src={}{}",
-            node_id, raw, bounds, src, cache_info
+            "[surf-host]   node={} raw={:?} bounds={:?} src={}{}{}",
+            node_id, raw, bounds, src, cache_info, style_info
         );
     }
     eprintln!("[surf-host] debug image bounds end");
@@ -350,6 +368,10 @@ fn main() {
             wv.add_image(&r.src_attr, r.pixels, r.width, r.height);
         }
         wv.relayout();
+        let mut pending_tiles = true;
+        while pending_tiles {
+            pending_tiles = wv.render_viewport_at(0);
+        }
         debug_log_image_bounds(&mut wv);
     }
 
@@ -376,6 +398,10 @@ fn main() {
             }
             // Final relayout after timers
             wv.relayout();
+            let mut pending_tiles = true;
+            while pending_tiles {
+                pending_tiles = wv.render_viewport_at(0);
+            }
             debug_log_image_bounds(&mut wv);
             // Print any console output from timer callbacks
             for line in wv.js_console() {

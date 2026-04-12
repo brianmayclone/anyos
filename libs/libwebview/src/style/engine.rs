@@ -6271,3 +6271,39 @@ fn parse_grid_template_areas_value(s: &str) -> Vec<GridArea> {
     }
     areas
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_negative_margins_for_replaced_elements() {
+        let dom = crate::html::parse(r#"<img id="t1" src="x">"#);
+        let stylesheet = crate::css::parse_stylesheet(
+            r#"
+            img { margin: 10px; }
+            #t1 {
+                padding-left: 20px;
+                margin-left: -10px;
+                padding-bottom: 20px;
+                margin-bottom: -10px;
+            }
+            "#,
+        );
+        let mut inline_style_cache = Vec::new();
+        let (styles, _) = resolve_styles(&dom, &[&stylesheet], 800, 600, &mut inline_style_cache);
+        let img_id = dom
+            .nodes
+            .iter()
+            .position(|node| matches!(node.node_type, NodeType::Element { tag: Tag::Img, .. }))
+            .expect("img node");
+        let style = &styles[img_id];
+
+        assert_eq!(style.margin_top, 10);
+        assert_eq!(style.margin_right, 10);
+        assert_eq!(style.margin_bottom, -10);
+        assert_eq!(style.margin_left, -10);
+        assert_eq!(style.padding_left, 20);
+        assert_eq!(style.padding_bottom, 20);
+    }
+}

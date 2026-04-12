@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
     BoxSizing, ComputedStyle, Display, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
-    VerticalAlign, WhiteSpace, resolve_inset,
+    VerticalAlign, WhiteSpace, resolve_inset, resolve_margins,
 };
 use crate::ImageCache;
 
@@ -99,8 +99,8 @@ fn inline_replaced_fragment_metrics(bx: &LayoutBox) -> (i32, i32) {
 }
 
 fn inline_baseline_height(bx: &LayoutBox) -> i32 {
-    if let Some(image_h) = bx.image_height {
-        return (bx.border_top_width + bx.padding.top + image_h).max(0);
+    if bx.image_src.is_some() || bx.form_field.is_some() {
+        return (bx.margin.top + bx.height + bx.margin.bottom).max(0);
     }
     bx.height.max(0)
 }
@@ -603,11 +603,13 @@ fn collect_inline_fragments(
             if *tag == Tag::Img || dom.has_tag_name(node_id, "a-img") {
                 let (iw, ih) = image_dimensions(dom, node_id, available_width, images);
                 let mut img = build_empty_inline_visual_box(node_id, style);
+                let (margin_top, margin_right, margin_bottom, margin_left) =
+                    resolve_margins(style, available_width);
                 img.box_type = BoxType::Inline;
-                img.margin.left = style.margin_left;
-                img.margin.right = style.margin_right;
-                img.margin.top = style.margin_top;
-                img.margin.bottom = style.margin_bottom;
+                img.margin.left = margin_left;
+                img.margin.right = margin_right;
+                img.margin.top = margin_top;
+                img.margin.bottom = margin_bottom;
                 img.x = img.margin.left;
                 img.y = img.margin.top;
                 let horizontal_border = img.border_left_width + img.border_right_width;
@@ -744,11 +746,13 @@ fn collect_inline_fragments(
                     .or(natural.map(|(_, h)| h))
                     .unwrap_or(100);
                 let mut img = build_empty_inline_visual_box(node_id, style);
+                let (margin_top, margin_right, margin_bottom, margin_left) =
+                    resolve_margins(style, available_width);
                 img.box_type = BoxType::Inline;
-                img.margin.left = style.margin_left;
-                img.margin.right = style.margin_right;
-                img.margin.top = style.margin_top;
-                img.margin.bottom = style.margin_bottom;
+                img.margin.left = margin_left;
+                img.margin.right = margin_right;
+                img.margin.top = margin_top;
+                img.margin.bottom = margin_bottom;
                 img.x = img.margin.left;
                 img.y = img.margin.top;
                 let horizontal_border = img.border_left_width + img.border_right_width;
@@ -1234,8 +1238,7 @@ fn collect_inline_fragments(
             }
 
             // Recurse into inline children, applying inline margin/padding.
-            let ml = style.margin_left;
-            let mr = style.margin_right;
+            let (_mt, mr, _mb, ml) = resolve_margins(style, available_width);
             let pl = style.padding_left.max(0);
             let pr = style.padding_right.max(0);
 
