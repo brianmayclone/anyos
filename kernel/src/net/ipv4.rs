@@ -35,9 +35,10 @@ pub fn parse(data: &[u8]) -> Option<Ipv4Packet<'_>> {
 
     let ihl = (data[0] & 0x0F) as usize;
     let header_len = ihl * 4;
-    if data.len() < header_len { return None; }
+    if header_len < IPV4_HEADER_LEN || data.len() < header_len { return None; }
 
     let total_len = ((data[2] as u16) << 8) | data[3] as u16;
+    if (total_len as usize) < header_len { return None; }
     if (total_len as usize) > data.len() { return None; }
 
     let ttl = data[8];
