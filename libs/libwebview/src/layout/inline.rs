@@ -1199,6 +1199,8 @@ fn collect_inline_fragments(
                     return;
                 }
                 block_box.box_type = BoxType::InlineBlock;
+                block_box.x = block_box.margin.left;
+                block_box.y = block_box.margin.top;
                 out.push(InlineFragment {
                     width: w,
                     height: h,
@@ -1226,6 +1228,8 @@ fn collect_inline_fragments(
                 let mut block_box =
                     build_block(dom, styles, pseudo, node_id, stf_w, images, viewport_w, 0);
                 block_box.box_type = BoxType::InlineBlock;
+                block_box.x = block_box.margin.left;
+                block_box.y = block_box.margin.top;
                 let w = block_box.width + block_box.margin.left + block_box.margin.right;
                 let h = block_box.height + block_box.margin.top + block_box.margin.bottom;
                 out.push(InlineFragment {

@@ -3209,8 +3209,8 @@ pub fn apply_declaration(
         Property::JustifyContent => {
             if let CssValue::Keyword(ref kw) = decl.value {
                 style.justify_content = match kw.as_str() {
-                    "flex-start" | "start" => JustifyContent::FlexStart,
-                    "flex-end" | "end" => JustifyContent::FlexEnd,
+                    "flex-start" | "start" | "left" => JustifyContent::FlexStart,
+                    "flex-end" | "end" | "right" => JustifyContent::FlexEnd,
                     "center" => JustifyContent::Center,
                     "space-between" => JustifyContent::SpaceBetween,
                     "space-around" => JustifyContent::SpaceAround,
