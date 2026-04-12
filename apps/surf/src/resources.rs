@@ -569,6 +569,59 @@ pub(crate) fn queue_images(
         }
     }
 
+    {
+        let st = crate::state();
+        if tab_index < st.tabs.len() {
+            let webview = &st.tabs[tab_index].webview;
+            for i in 0..dom.nodes.len() {
+                let Some(style) = webview.resolved_style_ref(i) else {
+                    continue;
+                };
+                let bg_src = match &style.background_image {
+                    libwebview::style::BackgroundImageVal::Url(src) if !src.is_empty() => src,
+                    _ => continue,
+                };
+                if bg_src.starts_with("data:") {
+                    if let Some((bytes, is_svg)) = decode_data_uri(bg_src) {
+                        if is_svg {
+                            decode_svg_no_relayout(&bytes, bg_src, tab_index);
+                        } else {
+                            decode_raster_no_relayout(&bytes, bg_src, tab_index);
+                        }
+                    }
+                    continue;
+                }
+                if tab_index < st.tabs.len()
+                    && st.tabs[tab_index].webview.has_decoded_image(bg_src)
+                {
+                    continue;
+                }
+                if deferred.iter().any(|(_, req)| req.src == *bg_src) {
+                    continue;
+                }
+                let img_url = crate::http::resolve_url(base_url, bg_src);
+                let priority = crate::net_worker::ImagePriority::Viewport;
+                let rank = deferred_image_rank(i, None, None, false, true);
+                deferred.push((
+                    rank,
+                    crate::tab::DeferredImageRequest {
+                        node_id: i,
+                        dom_index: i,
+                        src: bg_src.clone(),
+                        url: img_url,
+                        priority,
+                        width: None,
+                        height: None,
+                        lazy_requested: false,
+                        high_priority: true,
+                        generation,
+                    },
+                ));
+                count += 1;
+            }
+        }
+    }
+
     deferred.sort_by(|a, b| b.0.cmp(&a.0));
 
     let st = crate::state();
@@ -920,12 +973,55 @@ pub(crate) fn decode_svg_no_relayout(data: &[u8], src: &str, tab_idx: usize) {
     };
 
     let mut pixels = vec![0u32; (rw * rh) as usize];
-    if libsvg_client::render_to_size(data, &mut pixels, rw, rh, 0x00000000) {
+    let background = parse_svg_root_background(data).unwrap_or(0x00000000);
+    if libsvg_client::render_to_size(data, &mut pixels, rw, rh, background) {
         let st = crate::state();
         if tab_idx < st.tabs.len() {
             st.tabs[tab_idx].webview.add_image(src, pixels, rw, rh);
         }
     }
+}
+
+fn parse_svg_root_background(data: &[u8]) -> Option<u32> {
+    let text = core::str::from_utf8(data).ok()?;
+    let svg_start = text.find("<svg")?;
+    let after = &text[svg_start..];
+    let tag_end = after.find('>')?;
+    let svg_tag = &after[..tag_end];
+    let style_attr = extract_attr_value(svg_tag, "style")?;
+    parse_background_style(style_attr)
+}
+
+fn extract_attr_value<'a>(tag_text: &'a str, name: &str) -> Option<&'a str> {
+    let mut needle = String::with_capacity(name.len() + 1);
+    needle.push_str(name);
+    needle.push('=');
+    let start = tag_text.find(&needle)? + needle.len();
+    let rest = &tag_text[start..];
+    let quote = rest.as_bytes().first().copied()?;
+    if quote != b'"' && quote != b'\'' {
+        return None;
+    }
+    let rest = &rest[1..];
+    let end = rest.find(quote as char)?;
+    Some(&rest[..end])
+}
+
+fn parse_background_style(style_attr: &str) -> Option<u32> {
+    for decl in style_attr.split(';') {
+        let mut parts = decl.splitn(2, ':');
+        let name = parts.next()?.trim().to_ascii_lowercase();
+        let value = parts.next()?.trim();
+        if name == "background" || name == "background-color" {
+            if let Some(color) = libwebview::css::try_parse_color_pub(value) {
+                return Some(color);
+            }
+            if let Some(color) = libwebview::css::named_color_pub(&value.to_ascii_lowercase()) {
+                return Some(color);
+            }
+        }
+    }
+    None
 }
 
 fn decoded_image_looks_suspiciously_black(pixels: &[u32]) -> Option<u32> {
