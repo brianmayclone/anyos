@@ -542,10 +542,14 @@ pub fn reflect_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 pub fn reflect_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     match args.first() {
-        Some(JsValue::Object(obj)) => match &obj.borrow().prototype {
-            Some(proto) => JsValue::Object(proto.clone()),
-            None => JsValue::Null,
-        },
+        Some(JsValue::Object(obj)) => {
+            super::native_object::object_get_prototype_of(vm, &[JsValue::Object(obj.clone())])
+        }
+        Some(JsValue::Function(func)) => func
+            .borrow()
+            .object_proto
+            .clone()
+            .unwrap_or_else(|| JsValue::Object(vm.function_proto.clone())),
         _ => JsValue::Null,
     }
 }
@@ -566,16 +570,12 @@ pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
     match &target {
         JsValue::Object(obj) => {
-            let proto_obj = match &new_proto {
-                Some(JsValue::Object(p)) => Some(p.clone()),
-                Some(_) => {
-                    let err = vm.make_type_error("Object prototype may only be an Object or null");
-                    vm.throw_native(err);
-                    return JsValue::Undefined;
-                }
-                None => None,
-            };
-            JsValue::Bool(native_object::set_prototype_of_internal(vm, obj, proto_obj))
+            super::native_object::object_set_prototype_of(vm, &[target.clone(), proto.clone()]);
+            if vm.pending_exception.is_some() {
+                JsValue::Undefined
+            } else {
+                JsValue::Bool(true)
+            }
         }
         JsValue::Array(arr) => {
             let mut a = arr.borrow_mut();
@@ -589,6 +589,10 @@ pub fn reflect_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                         .insert(String::from("__proto__"), Property::hidden(JsValue::Null));
                 }
             }
+            JsValue::Bool(true)
+        }
+        JsValue::Function(func) => {
+            func.borrow_mut().object_proto = new_proto;
             JsValue::Bool(true)
         }
         _ => {
@@ -693,6 +697,7 @@ pub fn reflect_metadata(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
         name: Some(String::from("metadata")),
         params: Vec::new(),
         kind: FnKind::Native(reflect_metadata_decorator),
+        object_proto: None,
         this_binding: None,
         bound_args,
         upvalues: Vec::new(),

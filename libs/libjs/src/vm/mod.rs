@@ -680,6 +680,7 @@ impl Vm {
             name: Some(String::from(name)),
             params: Vec::new(),
             kind: FnKind::Native(func),
+            object_proto: None,
             this_binding: None,
             bound_args: Vec::new(),
             upvalues: Vec::new(),
@@ -1588,6 +1589,7 @@ impl Vm {
                         name: chunk.name.clone(),
                         params: param_stubs,
                         kind: FnKind::Bytecode(chunk),
+                        object_proto: None,
                         this_binding,
                         bound_args: Vec::new(),
                         upvalues: upvalue_cells,
@@ -3136,6 +3138,7 @@ impl Vm {
                     name: chunk.name.clone(),
                     params: param_stubs,
                     kind: FnKind::Bytecode(chunk.clone()),
+                    object_proto: None,
                     this_binding: None,
                     bound_args: Vec::new(),
                     upvalues: Vec::new(),
@@ -3582,13 +3585,28 @@ impl Vm {
                         }
                     }
                 }
-                if let Some(ref proto) = o.prototype {
-                    let proto_rc = proto.clone();
-                    drop(o);
+                let proto_override = o.properties.get("__proto__").map(|p| p.value.clone());
+                let proto_obj = o.prototype.clone();
+                let has_null_proto = matches!(
+                    o.properties.get("__null_proto__").map(|p| &p.value),
+                    Some(JsValue::Bool(true))
+                );
+                drop(o);
+                if let Some(proto) = proto_override {
+                    return if proto.is_null() {
+                        JsValue::Undefined
+                    } else {
+                        self.get_property_with_proto(&proto, key)
+                    };
+                }
+                if let Some(proto_rc) = proto_obj {
                     return get_proto_prop_rc(&proto_rc, key);
                 }
-                drop(o);
-                get_proto_prop_rc(&self.object_proto, key)
+                if has_null_proto {
+                    JsValue::Undefined
+                } else {
+                    get_proto_prop_rc(&self.object_proto, key)
+                }
             }
             JsValue::Array(arr) => {
                 let a = arr.borrow();
@@ -3701,7 +3719,11 @@ impl Vm {
                     return JsValue::Object(proto);
                 }
                 drop(func);
-                get_proto_prop_rc(&self.function_proto, key)
+                if let Some(proto) = f.borrow().object_proto.clone() {
+                    self.get_property_with_proto(&proto, key)
+                } else {
+                    get_proto_prop_rc(&self.function_proto, key)
+                }
             }
             JsValue::BigInt(_) => val.get_property(key),
             _ => JsValue::Undefined,
@@ -4224,6 +4246,7 @@ pub fn native_fn(name: &str, f: fn(&mut Vm, &[JsValue]) -> JsValue) -> JsValue {
         name: Some(String::from(name)),
         params: Vec::new(),
         kind: FnKind::Native(f),
+        object_proto: None,
         this_binding: None,
         bound_args: Vec::new(),
         upvalues: Vec::new(),
@@ -4256,6 +4279,7 @@ pub fn native_fn_with_length(
         name: Some(String::from(name)),
         params: Vec::new(),
         kind: FnKind::Native(f),
+        object_proto: None,
         this_binding: None,
         bound_args: Vec::new(),
         upvalues: Vec::new(),

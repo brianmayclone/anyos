@@ -8,6 +8,22 @@ use core::cell::RefCell;
 use super::Vm;
 use crate::value::*;
 
+const HIDDEN_PROTO_OVERRIDE: &str = "__proto__";
+const HIDDEN_NULL_PROTO: &str = "__null_proto__";
+
+fn object_prototype_value(vm: &Vm, obj: &JsObject) -> JsValue {
+    if let Some(prop) = obj.properties.get(HIDDEN_PROTO_OVERRIDE) {
+        return prop.value.clone();
+    }
+    if let Some(proto) = &obj.prototype {
+        return JsValue::Object(proto.clone());
+    }
+    if matches!(obj.properties.get(HIDDEN_NULL_PROTO).map(|p| &p.value), Some(JsValue::Bool(true))) {
+        return JsValue::Null;
+    }
+    JsValue::Object(vm.object_proto.clone())
+}
+
 fn string_exotic_own_property_descriptor(s: &str, key: &str) -> Option<Property> {
     if key == "length" {
         return Some(Property {
@@ -572,17 +588,19 @@ pub fn object_freeze(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
 }
 
 pub fn object_create(_vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    let proto = match args.first() {
-        Some(JsValue::Object(obj)) => Some(obj.clone()),
-        Some(JsValue::Null) => None,
-        _ => None,
-    };
-    let obj = {
-        let mut o = JsObject::new();
-        o.prototype = proto;
-        o
-    };
-    JsValue::Object(Rc::new(RefCell::new(obj)))
+    let proto = args.first().cloned().unwrap_or(JsValue::Undefined);
+    let mut o = JsObject::new();
+    match proto {
+        JsValue::Object(obj) => o.prototype = Some(obj),
+        JsValue::Null => {
+            o.properties.insert(
+                String::from(HIDDEN_NULL_PROTO),
+                Property::hidden(JsValue::Bool(true)),
+            );
+        }
+        _ => {}
+    }
+    JsValue::Object(Rc::new(RefCell::new(o)))
 }
 
 pub fn object_define_property(vm: &mut Vm, args: &[JsValue]) -> JsValue {
@@ -757,10 +775,7 @@ pub fn object_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                     .unwrap_or(JsValue::Undefined);
             }
             let o = obj.borrow();
-            match &o.prototype {
-                Some(proto) => JsValue::Object(proto.clone()),
-                None => JsValue::Null,
-            }
+            object_prototype_value(vm, &o)
         }
         Some(JsValue::Array(arr)) => {
             let a = arr.borrow();
@@ -769,10 +784,11 @@ pub fn object_get_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 None => JsValue::Object(vm.array_proto.clone()),
             }
         }
-        Some(JsValue::Function(_)) => {
-            // Functions inherit from Function.prototype
-            JsValue::Object(vm.function_proto.clone())
-        }
+        Some(JsValue::Function(func)) => func
+            .borrow()
+            .object_proto
+            .clone()
+            .unwrap_or_else(|| JsValue::Object(vm.function_proto.clone())),
         Some(JsValue::String(_)) => JsValue::Object(vm.string_proto.clone()),
         Some(JsValue::Number(_)) => JsValue::Object(vm.number_proto.clone()),
         Some(JsValue::Bool(_)) => JsValue::Object(vm.boolean_proto.clone()),
@@ -903,19 +919,41 @@ pub fn object_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     };
     match &obj {
         JsValue::Object(o) => {
-            let proto_obj = match &new_proto {
-                Some(JsValue::Object(p)) => Some(p.clone()),
-                Some(_) => {
-                    let err = vm.make_type_error("Object prototype may only be an Object or null");
-                    vm.throw_native(err);
-                    return JsValue::Undefined;
+            match &new_proto {
+                Some(JsValue::Object(p)) => {
+                    if !set_prototype_of_internal(vm, o, Some(p.clone())) {
+                        let err = vm.make_type_error("Cannot set prototype");
+                        vm.throw_native(err);
+                        return JsValue::Undefined;
+                    }
+                    let mut obj = o.borrow_mut();
+                    obj.properties.remove(HIDDEN_PROTO_OVERRIDE);
+                    obj.properties.remove(HIDDEN_NULL_PROTO);
+                    obj.invalidate_shape();
                 }
-                None => None,
-            };
-            if !set_prototype_of_internal(vm, o, proto_obj) {
-                let err = vm.make_type_error("Cannot set prototype");
-                vm.throw_native(err);
-                return JsValue::Undefined;
+                Some(proto) => {
+                    let mut obj = o.borrow_mut();
+                    obj.prototype = None;
+                    obj.properties.insert(
+                        String::from(HIDDEN_PROTO_OVERRIDE),
+                        Property::hidden(proto.clone()),
+                    );
+                    obj.properties.remove(HIDDEN_NULL_PROTO);
+                    obj.invalidate_shape();
+                }
+                None => {
+                    let mut obj = o.borrow_mut();
+                    obj.prototype = None;
+                    obj.properties.insert(
+                        String::from(HIDDEN_PROTO_OVERRIDE),
+                        Property::hidden(JsValue::Null),
+                    );
+                    obj.properties.insert(
+                        String::from(HIDDEN_NULL_PROTO),
+                        Property::hidden(JsValue::Bool(true)),
+                    );
+                    obj.invalidate_shape();
+                }
             }
             obj
         }
@@ -939,13 +977,8 @@ pub fn object_set_prototype_of(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         }
         JsValue::Function(f) => {
             match new_proto {
-                Some(JsValue::Object(proto)) => f.borrow_mut().prototype = Some(proto),
-                Some(JsValue::Array(_)) | Some(JsValue::Function(_)) => {
-                    let err = vm.make_type_error("Object prototype may only be an Object or null");
-                    vm.throw_native(err);
-                    return JsValue::Undefined;
-                }
-                None => f.borrow_mut().prototype = None,
+                Some(proto) => f.borrow_mut().object_proto = Some(proto),
+                None => f.borrow_mut().object_proto = None,
                 Some(_) => unreachable!(),
             }
             obj

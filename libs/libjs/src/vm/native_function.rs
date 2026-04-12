@@ -63,6 +63,7 @@ pub fn function_bind(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 }),
                 params: original.params.clone(),
                 kind: original.kind.clone(),
+                object_proto: original.object_proto.clone(),
                 this_binding: Some(bound_this),
                 bound_args: bound_args,
                 upvalues: original.upvalues.clone(),

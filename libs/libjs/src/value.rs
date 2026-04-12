@@ -957,6 +957,9 @@ pub struct JsFunction {
     pub name: Option<String>,
     pub params: Vec<String>,
     pub kind: FnKind,
+    /// The function object's own `[[Prototype]]` for static inheritance
+    /// (`Object.setPrototypeOf(SubClass, SuperClass)`).
+    pub object_proto: Option<JsValue>,
     pub this_binding: Option<JsValue>,
     /// Arguments pre-bound via `Function.prototype.bind()` — prepended to
     /// the actual call arguments (ES2023 §10.4.1.1 [[Call]]).
@@ -1293,6 +1296,7 @@ impl JsValue {
                         name: Some(String::from("toString")),
                         params: Vec::new(),
                         kind: FnKind::Native(crate::vm::native_globals::boolean_to_string),
+                        object_proto: None,
                         this_binding: Some(self.clone()),
                         bound_args: Vec::new(),
                         upvalues: Vec::new(),
@@ -1308,6 +1312,7 @@ impl JsValue {
                         name: Some(String::from("valueOf")),
                         params: Vec::new(),
                         kind: FnKind::Native(crate::vm::native_globals::boolean_value_of),
+                        object_proto: None,
                         this_binding: Some(self.clone()),
                         bound_args: Vec::new(),
                         upvalues: Vec::new(),
@@ -1327,6 +1332,7 @@ impl JsValue {
                         name: Some(String::from("toString")),
                         params: Vec::new(),
                         kind: FnKind::Native(bigint_to_string_native),
+                        object_proto: None,
                         this_binding: Some(self.clone()),
                         bound_args: Vec::new(),
                         upvalues: Vec::new(),
@@ -1342,6 +1348,7 @@ impl JsValue {
                         name: Some(String::from("valueOf")),
                         params: Vec::new(),
                         kind: FnKind::Native(bigint_value_of_native),
+                        object_proto: None,
                         this_binding: Some(self.clone()),
                         bound_args: Vec::new(),
                         upvalues: Vec::new(),
