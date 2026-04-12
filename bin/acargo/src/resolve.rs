@@ -45,7 +45,7 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
         let toml_src = match fs::read_file(&manifest_path) {
             Some(s) => s,
             None => {
-                println!("acargo: warning: cannot read {}", manifest_path);
+                println!("ccargo: warning: cannot read {}", manifest_path);
                 continue;
             }
         };
@@ -93,7 +93,7 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
                         queue.push((src_dir, true));
                     }
                     None => {
-                        println!("acargo: error: failed to resolve `{}` {}", actual_name, version_req);
+                        println!("ccargo: error: failed to resolve `{}` {}", actual_name, version_req);
                     }
                 }
             }
@@ -200,7 +200,7 @@ pub fn topological_sort(nodes: &[BuildNode]) -> Vec<usize> {
     }
 
     if order.len() != n {
-        println!("acargo: error: circular dependency detected ({} of {} resolved)", order.len(), n);
+        println!("ccargo: error: circular dependency detected ({} of {} resolved)", order.len(), n);
     }
 
     order

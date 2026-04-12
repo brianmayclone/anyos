@@ -9,7 +9,7 @@ use crate::logic::build::ToolStatus;
 //  Splash screen — borderless, centered, auto-closes after 3s
 // ════════════════════════════════════════════════════════════════
 
-const ESSENTIAL_TOOLS: &[&str] = &["anyrc", "acargo", "cc", "make"];
+const ESSENTIAL_TOOLS: &[&str] = &["crust", "ccargo", "cc", "make"];
 const SPLASH_W: u32 = 520;
 const SPLASH_H: u32 = 300;
 const SPLASH_DURATION_MS: u32 = 3000;

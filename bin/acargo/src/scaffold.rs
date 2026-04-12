@@ -1,13 +1,16 @@
-//! Project scaffolding: `acargo new` and `acargo init`.
+//! Project scaffolding: `ccargo new` and `ccargo init`.
 
 use crate::prelude::*;
 use anyos_std::println;
 use crate::fs;
 
+const ANYOS_STD_PATH: &str = "/Libraries/system/src/anyos/libs/stdlib";
+const LIBSTD_PATH: &str = "/Libraries/system/src/anyos/libs/libstd";
+
 /// Create a new project directory with standard layout.
 pub fn new_project(name: &str, is_lib: bool) {
     if fs::dir_exists(name) {
-        println!("acargo: error: directory `{}` already exists", name);
+        println!("ccargo: error: directory `{}` already exists", name);
         return;
     }
 
@@ -28,7 +31,9 @@ pub fn new_project(name: &str, is_lib: bool) {
                 "name = \"{lib_name}\"\n",
                 "\n",
                 "[dependencies]\n",
-                "anyos_std = {{ path = \"../../libs/stdlib\" }}\n",
+                "anyos_std = {{ path = \"{anyos_std_path}\" }}\n",
+                "# Optional std shim for std-like crates:\n",
+                "# libstd = {{ path = \"{libstd_path}\" }}\n",
                 "\n",
                 "[profile.dev]\n",
                 "panic = \"abort\"\n",
@@ -39,6 +44,8 @@ pub fn new_project(name: &str, is_lib: bool) {
             ),
             name = name,
             lib_name = name.replace('-', "_"),
+            anyos_std_path = ANYOS_STD_PATH,
+            libstd_path = LIBSTD_PATH,
         )
     } else {
         format!(
@@ -49,7 +56,9 @@ pub fn new_project(name: &str, is_lib: bool) {
                 "edition = \"2021\"\n",
                 "\n",
                 "[dependencies]\n",
-                "anyos_std = {{ path = \"../../libs/stdlib\" }}\n",
+                "anyos_std = {{ path = \"{anyos_std_path}\" }}\n",
+                "# Optional std shim for std-like crates:\n",
+                "# libstd = {{ path = \"{libstd_path}\" }}\n",
                 "\n",
                 "[profile.dev]\n",
                 "panic = \"abort\"\n",
@@ -59,6 +68,8 @@ pub fn new_project(name: &str, is_lib: bool) {
                 "panic = \"abort\"\n",
             ),
             name = name,
+            anyos_std_path = ANYOS_STD_PATH,
+            libstd_path = LIBSTD_PATH,
         )
     };
 
@@ -95,7 +106,7 @@ pub fn new_project(name: &str, is_lib: bool) {
 pub fn init_project(dir: &str, is_lib: bool) {
     let cargo_path = format!("{}/Cargo.toml", dir);
     if fs::file_exists(&cargo_path) {
-        println!("acargo: error: `Cargo.toml` already exists in {}", dir);
+        println!("ccargo: error: `Cargo.toml` already exists in {}", dir);
         return;
     }
 
@@ -117,7 +128,9 @@ pub fn init_project(dir: &str, is_lib: bool) {
             "edition = \"2021\"\n",
             "\n",
             "[dependencies]\n",
-            "anyos_std = {{ path = \"../../libs/stdlib\" }}\n",
+            "anyos_std = {{ path = \"{anyos_std_path}\" }}\n",
+            "# Optional std shim for std-like crates:\n",
+            "# libstd = {{ path = \"{libstd_path}\" }}\n",
             "\n",
             "[profile.dev]\n",
             "panic = \"abort\"\n",
@@ -127,6 +140,8 @@ pub fn init_project(dir: &str, is_lib: bool) {
             "panic = \"abort\"\n",
         ),
         name = name,
+        anyos_std_path = ANYOS_STD_PATH,
+        libstd_path = LIBSTD_PATH,
     );
 
     fs::write_file(&cargo_path, cargo_toml.as_bytes());

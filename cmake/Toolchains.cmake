@@ -199,12 +199,12 @@ add_custom_command(
   COMMENT "Building mini git CLI for anyOS"
 )
 
-# Copy git to sysroot
+# Copy legacy C git to sysroot under a non-conflicting name
 add_custom_command(
-  OUTPUT ${SYSROOT_DIR}/System/bin/git
-  COMMAND ${CMAKE_COMMAND} -E copy ${GIT_ELF} ${SYSROOT_DIR}/System/bin/git
+  OUTPUT ${SYSROOT_DIR}/System/bin/git-classic
+  COMMAND ${CMAKE_COMMAND} -E copy ${GIT_ELF} ${SYSROOT_DIR}/System/bin/git-classic
   DEPENDS ${GIT_ELF}
-  COMMENT "Installing git as /System/bin/git"
+  COMMENT "Installing legacy git as /System/bin/git-classic"
 )
 
 # ============================================================
@@ -580,7 +580,7 @@ set(C_TOOLCHAIN_DEPS
   ${SYSROOT_DIR}/System/bin/make
   ${SYSROOT_DIR}/Libraries/libc/lib/tcc/include/.stamp
   ${SYSROOT_DIR}/System/bin/curl
-  ${SYSROOT_DIR}/System/bin/git
+  ${SYSROOT_DIR}/System/bin/git-classic
   ${SYSROOT_DIR}/System/bin/sh
   ${SYSROOT_DIR}/System/bin/ssh
   ${SYSROOT_DIR}/System/bin/sshd

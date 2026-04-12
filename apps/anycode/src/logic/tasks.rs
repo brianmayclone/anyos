@@ -125,34 +125,34 @@ impl TaskManager {
 
     fn detect_cargo_tasks(&mut self, project: &Project) {
         let root = &project.root;
-        let acargo = find_tool_path("acargo");
-        if acargo.is_empty() {
+        let ccargo = find_first_tool_path(&["ccargo", "cargo", "acargo"]);
+        if ccargo.is_empty() {
             return;
         }
 
         // Build
-        let mut build = Task::new("Build", TaskCategory::Build, &acargo, "build", root);
-        build.display_label = String::from("acargo build");
+        let mut build = Task::new("Build", TaskCategory::Build, &ccargo, "build", root);
+        build.display_label = String::from("ccargo build");
         self.tasks.push(build);
 
         // Build --release
-        let mut build_rel = Task::new("Build (Release)", TaskCategory::Build, &acargo, "build --release", root);
-        build_rel.display_label = String::from("acargo build --release");
+        let mut build_rel = Task::new("Build (Release)", TaskCategory::Build, &ccargo, "build --release", root);
+        build_rel.display_label = String::from("ccargo build --release");
         self.tasks.push(build_rel);
 
         // Check
-        let mut check = Task::new("Check", TaskCategory::Check, &acargo, "check", root);
-        check.display_label = String::from("acargo check");
+        let mut check = Task::new("Check", TaskCategory::Check, &ccargo, "check", root);
+        check.display_label = String::from("ccargo check");
         self.tasks.push(check);
 
         // Clean
-        let mut clean = Task::new("Clean", TaskCategory::Clean, &acargo, "clean", root);
-        clean.display_label = String::from("acargo clean");
+        let mut clean = Task::new("Clean", TaskCategory::Clean, &ccargo, "clean", root);
+        clean.display_label = String::from("ccargo clean");
         self.tasks.push(clean);
 
         // Test
-        let mut test = Task::new("Test", TaskCategory::Test, &acargo, "test", root);
-        test.display_label = String::from("acargo test");
+        let mut test = Task::new("Test", TaskCategory::Test, &ccargo, "test", root);
+        test.display_label = String::from("ccargo test");
         self.tasks.push(test);
 
         // Run targets — one per binary
@@ -161,33 +161,33 @@ impl TaskManager {
                 TargetKind::Binary => {
                     let args = format!("run --bin {}", target.name);
                     let label = format!("Run: {}", target.name);
-                    let mut task = Task::new(&label, TaskCategory::Run, &acargo, &args, root);
+                    let mut task = Task::new(&label, TaskCategory::Run, &ccargo, &args, root);
                     task.target_name = Some(target.name.clone());
-                    task.display_label = format!("acargo run --bin {}", target.name);
+                    task.display_label = format!("ccargo run --bin {}", target.name);
                     self.tasks.push(task);
                 }
                 TargetKind::Example => {
                     let args = format!("run --example {}", target.name);
                     let label = format!("Example: {}", target.name);
-                    let mut task = Task::new(&label, TaskCategory::Run, &acargo, &args, root);
+                    let mut task = Task::new(&label, TaskCategory::Run, &ccargo, &args, root);
                     task.target_name = Some(target.name.clone());
-                    task.display_label = format!("acargo run --example {}", target.name);
+                    task.display_label = format!("ccargo run --example {}", target.name);
                     self.tasks.push(task);
                 }
                 TargetKind::Test => {
                     let args = format!("test --test {}", target.name);
                     let label = format!("Test: {}", target.name);
-                    let mut task = Task::new(&label, TaskCategory::Test, &acargo, &args, root);
+                    let mut task = Task::new(&label, TaskCategory::Test, &ccargo, &args, root);
                     task.target_name = Some(target.name.clone());
-                    task.display_label = format!("acargo test --test {}", target.name);
+                    task.display_label = format!("ccargo test --test {}", target.name);
                     self.tasks.push(task);
                 }
                 TargetKind::Bench => {
                     let args = format!("bench --bench {}", target.name);
                     let label = format!("Bench: {}", target.name);
-                    let mut task = Task::new(&label, TaskCategory::Run, &acargo, &args, root);
+                    let mut task = Task::new(&label, TaskCategory::Run, &ccargo, &args, root);
                     task.target_name = Some(target.name.clone());
-                    task.display_label = format!("acargo bench --bench {}", target.name);
+                    task.display_label = format!("ccargo bench --bench {}", target.name);
                     self.tasks.push(task);
                 }
                 _ => {}
@@ -198,17 +198,17 @@ impl TaskManager {
         for member in &project.workspace_members {
             let args = format!("build -p {}", member.name);
             let label = format!("Build: {}", member.name);
-            let mut task = Task::new(&label, TaskCategory::Build, &acargo, &args, root);
-            task.display_label = format!("acargo build -p {}", member.name);
+            let mut task = Task::new(&label, TaskCategory::Build, &ccargo, &args, root);
+            task.display_label = format!("ccargo build -p {}", member.name);
             self.tasks.push(task);
 
             for target in &member.targets {
                 if target.kind == TargetKind::Binary {
                     let args = format!("run -p {} --bin {}", member.name, target.name);
                     let label = format!("Run: {} ({})", target.name, member.name);
-                    let mut task = Task::new(&label, TaskCategory::Run, &acargo, &args, root);
+                    let mut task = Task::new(&label, TaskCategory::Run, &ccargo, &args, root);
                     task.target_name = Some(target.name.clone());
-                    task.display_label = format!("acargo run -p {} --bin {}", member.name, target.name);
+                    task.display_label = format!("ccargo run -p {} --bin {}", member.name, target.name);
                     self.tasks.push(task);
                 }
             }
@@ -239,15 +239,15 @@ impl TaskManager {
         }
 
         // ninja/make build
-        let ninja = find_tool_path("ninja");
+        let ninja = find_first_tool_path(&["cninja", "ninja"]);
         if !ninja.is_empty() {
             let mut build = Task::new("Build", TaskCategory::Build, &ninja, "", root);
-            build.display_label = String::from("ninja");
+            build.display_label = String::from(command_basename(&ninja));
             build.working_dir = format!("{}/build", root);
             self.tasks.push(build);
 
             let mut clean = Task::new("Clean", TaskCategory::Clean, &ninja, "-t clean", root);
-            clean.display_label = String::from("ninja -t clean");
+            clean.display_label = format!("{} -t clean", command_basename(&ninja));
             clean.working_dir = format!("{}/build", root);
             self.tasks.push(clean);
         } else if !make.is_empty() {
@@ -369,10 +369,10 @@ impl TaskManager {
         }
 
         // Rust single file
-        let anyrc = find_tool_path("anyrc");
-        if !anyrc.is_empty() {
-            let mut build = Task::new("Build (Rust)", TaskCategory::Build, &anyrc, "main.rs -o main", root);
-            build.display_label = String::from("anyrc main.rs -o main");
+        let crust = find_first_tool_path(&["crust", "rustc", "anyrc"]);
+        if !crust.is_empty() {
+            let mut build = Task::new("Build (Rust)", TaskCategory::Build, &crust, "main.rs -o main", root);
+            build.display_label = format!("{} main.rs -o main", command_basename(&crust));
             self.tasks.push(build);
         }
     }
@@ -440,6 +440,16 @@ impl TaskManager {
 /// Find a tool by name, searching PATH and system directories.
 fn find_tool_path(name: &str) -> String {
     crate::logic::config::find_tool(name)
+}
+
+fn find_first_tool_path(names: &[&str]) -> String {
+    for name in names {
+        let path = find_tool_path(name);
+        if !path.is_empty() {
+            return path;
+        }
+    }
+    String::new()
 }
 
 fn command_basename(cmd: &str) -> &str {

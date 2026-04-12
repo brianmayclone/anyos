@@ -1,6 +1,6 @@
-# anyrc — Self-Hosted Rust Compiler for anyOS
+# crust / ccargo — Self-Hosted Rust Toolchain for anyOS
 
-anyrc is a native Rust subset compiler that runs within anyOS, enabling self-hosted development. It compiles Rust source code directly to x86_64 machine code without external dependencies like LLVM or Cranelift.
+crust is a native Rust subset compiler that runs within anyOS, enabling self-hosted development. It compiles Rust source code directly to x86_64 machine code without external dependencies like LLVM or Cranelift.
 
 ## Overview
 
@@ -43,7 +43,7 @@ libs/anyrc/           Compiler library (14,812 lines)
 │   ├── runtime.rs    Runtime stubs (alloc, Vec, memcpy, memset, etc.)
 │   ├── diagnostics.rs Error reporting with source spans
 │   └── intern.rs     Symbol interning
-bin/anyrc/            CLI frontend
+bin/anyrc/            CLI frontend for the `crust` binary
 └── src/main.rs
 libs/anyrc_tests/     Test suite (34 test modules)
 ```
@@ -71,7 +71,7 @@ Source (.rs)
 ## CLI Usage
 
 ```
-anyrc [OPTIONS] <INPUT>
+crust [OPTIONS] <INPUT>
 
   -o <OUTPUT>              Output file (default: a.out)
   --emit <TYPE>            exe | obj | rlib | mir | hir | asm
@@ -91,7 +91,7 @@ anyrc [OPTIONS] <INPUT>
 
 ### Conditional Compilation
 
-anyrc supports `#[cfg(...)]` attributes with the following predicates:
+crust supports `#[cfg(...)]` attributes with the following predicates:
 
 - `#[cfg(name)]` — true if `name` flag is set
 - `#[cfg(name = "value")]` — true if `name` equals `value`
@@ -102,7 +102,7 @@ anyrc supports `#[cfg(...)]` attributes with the following predicates:
 Cfg flags are passed via `--cfg`:
 
 ```bash
-anyrc --cfg 'target_arch="x86_64"' --cfg 'feature="kunit"' src/main.rs
+crust --cfg 'target_arch="x86_64"' --cfg 'feature="kunit"' src/main.rs
 ```
 
 ### Linker Script Support
@@ -110,7 +110,7 @@ anyrc --cfg 'target_arch="x86_64"' --cfg 'feature="kunit"' src/main.rs
 For kernel-level linking with custom memory layouts:
 
 ```bash
-anyrc -T kernel/link.ld --link-arg kernel/asm/boot.o src/lib.rs -o kernel.elf
+crust -T kernel/link.ld --link-arg kernel/asm/boot.o src/lib.rs -o kernel.elf
 ```
 
 The linker script parser extracts:
@@ -138,7 +138,7 @@ The linker script parser extracts:
 
 ### Runtime Intrinsics
 
-anyrc links the following runtime stubs into executables:
+crust links the following runtime stubs into executables:
 
 | Symbol | Purpose |
 |--------|---------|
@@ -204,13 +204,13 @@ anyrc links the following runtime stubs into executables:
 `.rlib` files are binary archives: `[obj_size:4][obj_bytes][metadata_bytes]`
 
 Metadata contains: crate name, version, exported symbols, dependency list.
-Format header: `ARCM` (anyrc metadata).
+Format header: `ARCM` (crust metadata).
 
 ---
 
-# acargo — Rust Build System for anyOS
+# ccargo — Rust Build System for anyOS
 
-acargo is a Cargo-compatible build tool for anyOS that wraps the anyrc compiler, providing dependency resolution, build scripts, feature management, incremental compilation, and project scaffolding.
+ccargo is a Cargo-compatible build tool for anyOS that wraps the crust compiler, providing dependency resolution, build scripts, feature management, incremental compilation, and project scaffolding.
 
 ## Project Structure
 
@@ -232,7 +232,7 @@ bin/acargo/src/
 ## CLI Usage
 
 ```
-acargo <COMMAND> [OPTIONS]
+ccargo <COMMAND> [OPTIONS]
 
 Commands:
   build, b              Compile the current package
@@ -265,7 +265,7 @@ Options:
 
 ## Package Registry (crates.io)
 
-acargo downloads dependencies from crates.io when no `path` is specified:
+ccargo downloads dependencies from crates.io when no `path` is specified:
 
 ```toml
 [dependencies]
@@ -276,11 +276,11 @@ anyos_std = { path = "../../libs/stdlib" }  # Local path (preferred)
 
 ### How it works
 
-1. **Sparse Index**: acargo fetches crate metadata from `https://index.crates.io/` using the RFC 2789 sparse index protocol
+1. **Sparse Index**: ccargo fetches crate metadata from `https://index.crates.io/` using the RFC 2789 sparse index protocol
 2. **SemVer Resolution**: Finds the newest non-yanked version matching the requirement (`^1.0` → latest `1.x.y`)
 3. **Download**: Fetches `.crate` files from `https://static.crates.io/crates/{name}/{name}-{version}.crate`
 4. **Extract**: Decompresses gzip tar archives using libzip
-5. **Cache**: All files cached in `/System/var/acargo/registry/`
+5. **Cache**: All files cached in `/System/var/ccargo/registry/`
 6. **Lock**: Resolved versions written to `Cargo.lock` for reproducible builds
 
 ### Version Requirements (Cargo-compatible)
@@ -297,15 +297,15 @@ anyos_std = { path = "../../libs/stdlib" }  # Local path (preferred)
 ### Commands
 
 ```bash
-acargo fetch          # Download all registry dependencies
-acargo update         # Re-resolve to latest compatible versions
-acargo search serde   # Search crates.io
+ccargo fetch          # Download all registry dependencies
+ccargo update         # Re-resolve to latest compatible versions
+ccargo search serde   # Search crates.io
 ```
 
 ### Cache Layout
 
 ```
-/System/var/acargo/registry/
+/System/var/ccargo/registry/
 ├── index/            # Sparse index cache (NDJSON per crate)
 │   ├── se/rd/serde
 │   └── to/ki/tokio
@@ -321,7 +321,7 @@ acargo search serde   # Search crates.io
 
 ### Cargo.lock
 
-acargo generates and respects `Cargo.lock` for version pinning:
+ccargo generates and respects `Cargo.lock` for version pinning:
 
 ```toml
 version = 3
@@ -333,11 +333,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "abcdef..."
 ```
 
-Use `acargo update` to refresh locked versions.
+Use `ccargo update` to refresh locked versions.
 
 ## Feature Resolution
 
-acargo resolves features from `[features]` in Cargo.toml:
+ccargo resolves features from `[features]` in Cargo.toml:
 
 ```toml
 [features]
@@ -348,16 +348,16 @@ debug_verbose = []
 ```
 
 ```bash
-acargo build --features kunit,debug_verbose
-acargo build --all-features
-acargo build --no-default-features --features kunit
+ccargo build --features kunit,debug_verbose
+ccargo build --all-features
+ccargo build --no-default-features --features kunit
 ```
 
-Features are translated to `--cfg feature="name"` flags for anyrc.
+Features are translated to `--cfg feature="name"` flags for crust.
 
 ## Build Scripts
 
-acargo executes `build.rs` files, parsing `cargo:` directives:
+ccargo executes `build.rs` files, parsing `cargo:` directives:
 
 | Directive | Effect |
 |-----------|--------|
@@ -380,7 +380,7 @@ Build scripts receive these environment variables:
 
 ## Incremental Compilation
 
-acargo uses mtime-based fingerprinting to skip unchanged crates:
+ccargo uses mtime-based fingerprinting to skip unchanged crates:
 
 1. Before compiling, checks if output artifact exists and is newer than all source files
 2. Computes a hash of compile options (opt level, cfg flags, features)
@@ -391,7 +391,7 @@ Fingerprint files are stored in `target/{profile}/.fingerprint/`.
 
 ## Conditional Compilation
 
-acargo automatically generates cfg flags:
+ccargo automatically generates cfg flags:
 - `target_arch="x86_64"` (or `"aarch64"` with `--target`)
 - `target_pointer_width="64"`
 - `target_endian="little"`
@@ -400,7 +400,7 @@ acargo automatically generates cfg flags:
 
 ## Workspace Support
 
-acargo discovers workspace roots by walking up from the current directory:
+ccargo discovers workspace roots by walking up from the current directory:
 
 ```toml
 [workspace]
@@ -413,7 +413,7 @@ Member directories are resolved via glob patterns (`*` expansion).
 ## Dependency Tree
 
 ```bash
-acargo tree
+ccargo tree
 ```
 
 Output:
@@ -427,16 +427,16 @@ my_project v0.1.0
 
 ## Building the Kernel
 
-To build the anyOS kernel with acargo from within anyOS:
+To build the anyOS kernel with ccargo from within anyOS:
 
 ```bash
 cd /System/src/kernel
-acargo build --release --target x86_64-anyos \
+ccargo build --release --target x86_64-anyos \
   --features debug_verbose
 ```
 
 The kernel build process:
-1. acargo resolves the kernel's Cargo.toml (no external dependencies)
+1. ccargo resolves the kernel's Cargo.toml (no external dependencies)
 2. Executes `build.rs` which emits:
    - `cargo:rustc-link-arg=<asm_object>` for assembly objects
    - `cargo:rustc-link-arg=-T<linker_script>` for the linker script
@@ -446,7 +446,7 @@ The kernel build process:
 
 ## Self-Hosting
 
-anyrc is designed to eventually compile itself and the anyOS kernel within anyOS:
+crust is designed to eventually compile itself and the anyOS kernel within anyOS:
 
 | Milestone | Description | Status |
 |-----------|-------------|--------|

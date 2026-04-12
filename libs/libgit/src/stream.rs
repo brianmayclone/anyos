@@ -64,7 +64,7 @@ impl HttpStream {
              Content-Type: {}\r\n\
              {}\
              Content-Length: {}\r\n\
-             User-Agent: agit/1.0\r\n\
+             User-Agent: cgit/1.0\r\n\
              Connection: close\r\n\
              \r\n",
             path, host, content_type, extra_headers, body.len()

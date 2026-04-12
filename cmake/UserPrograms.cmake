@@ -37,6 +37,7 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libcxx/include")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/libcxx/lib")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/Applications")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/src")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Libraries/system/src")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/gpu")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/storage")
@@ -59,6 +60,173 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E touch ${SYSROOT_DIR}/Libraries/system/buildsystem/.stamp
   DEPENDS ${ANYELF_SRCS} ${MKIMAGE_SRCS} ${ANYLD_SRCS}
   COMMENT "Installing buildsystem tool sources to sysroot"
+)
+
+set(ANYOS_SELFHOST_ROOT "${SYSROOT_DIR}/Libraries/system/src/anyos")
+file(GLOB_RECURSE ANYOS_SELFHOST_ANYRC_SRCS CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/libs/anyrc/*"
+  "${CMAKE_SOURCE_DIR}/libs/stdlib/*"
+  "${CMAKE_SOURCE_DIR}/libs/libstd/*"
+  "${CMAKE_SOURCE_DIR}/libs/libheap/*"
+  "${CMAKE_SOURCE_DIR}/libs/dynlink/*"
+  "${CMAKE_SOURCE_DIR}/libs/libhttp_client/*"
+  "${CMAKE_SOURCE_DIR}/libs/libzip_client/*"
+  "${CMAKE_SOURCE_DIR}/bin/acargo/*"
+  "${CMAKE_SOURCE_DIR}/bin/anyrc/*"
+  "${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md"
+)
+
+add_custom_command(
+  OUTPUT ${ANYOS_SELFHOST_ROOT}/.stamp
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ANYOS_SELFHOST_ROOT}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ANYOS_SELFHOST_ROOT}/bin
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ANYOS_SELFHOST_ROOT}/libs
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ANYOS_SELFHOST_ROOT}/docs
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_SOURCE_DIR}/Cargo.toml
+    ${ANYOS_SELFHOST_ROOT}/Cargo.toml
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_SOURCE_DIR}/Cargo.lock
+    ${ANYOS_SELFHOST_ROOT}/Cargo.lock
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_SOURCE_DIR}/VERSION
+    ${ANYOS_SELFHOST_ROOT}/VERSION
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/anyrc
+    ${ANYOS_SELFHOST_ROOT}/libs/anyrc
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/stdlib
+    ${ANYOS_SELFHOST_ROOT}/libs/stdlib
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libstd
+    ${ANYOS_SELFHOST_ROOT}/libs/libstd
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libheap
+    ${ANYOS_SELFHOST_ROOT}/libs/libheap
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/dynlink
+    ${ANYOS_SELFHOST_ROOT}/libs/dynlink
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libhttp_client
+    ${ANYOS_SELFHOST_ROOT}/libs/libhttp_client
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libzip_client
+    ${ANYOS_SELFHOST_ROOT}/libs/libzip_client
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/bin/acargo
+    ${ANYOS_SELFHOST_ROOT}/bin/acargo
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/bin/anyrc
+    ${ANYOS_SELFHOST_ROOT}/bin/anyrc
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+    ${ANYOS_SELFHOST_ROOT}/bin/acargo/target
+    ${ANYOS_SELFHOST_ROOT}/bin/anyrc/target
+    ${ANYOS_SELFHOST_ROOT}/libs/anyrc/target
+    ${ANYOS_SELFHOST_ROOT}/libs/stdlib/target
+    ${ANYOS_SELFHOST_ROOT}/libs/libstd/target
+    ${ANYOS_SELFHOST_ROOT}/libs/libheap/target
+    ${ANYOS_SELFHOST_ROOT}/libs/dynlink/target
+    ${ANYOS_SELFHOST_ROOT}/libs/libhttp_client/target
+    ${ANYOS_SELFHOST_ROOT}/libs/libzip_client/target
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md
+    ${ANYOS_SELFHOST_ROOT}/docs/crust-ccargo-api.md
+  COMMAND ${CMAKE_COMMAND} -E touch ${ANYOS_SELFHOST_ROOT}/.stamp
+  DEPENDS
+    ${CMAKE_SOURCE_DIR}/Cargo.toml
+    ${CMAKE_SOURCE_DIR}/Cargo.lock
+    ${CMAKE_SOURCE_DIR}/VERSION
+    ${ANYOS_SELFHOST_ANYRC_SRCS}
+  COMMENT "Installing Rust self-hosting sources to sysroot"
+)
+set(SELFHOST_SYSROOT_DEPS ${ANYOS_SELFHOST_ROOT}/.stamp)
+
+set(ANYOS_SOURCE_MIRROR_ROOT "${SYSROOT_DIR}/Libraries/sources/anyos")
+file(GLOB_RECURSE ANYOS_SOURCE_MIRROR_DEPS CONFIGURE_DEPENDS
+  "${CMAKE_SOURCE_DIR}/bin/*/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/bin/*/Cargo.lock"
+  "${CMAKE_SOURCE_DIR}/bin/*/build.rs"
+  "${CMAKE_SOURCE_DIR}/bin/*/src/*"
+  "${CMAKE_SOURCE_DIR}/libs/anyrc/*"
+  "${CMAKE_SOURCE_DIR}/libs/stdlib/*"
+  "${CMAKE_SOURCE_DIR}/libs/libstd/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/libs/libstd/Cargo.lock"
+  "${CMAKE_SOURCE_DIR}/libs/libstd/src/*"
+  "${CMAKE_SOURCE_DIR}/libs/libheap/*"
+  "${CMAKE_SOURCE_DIR}/libs/dynlink/*"
+  "${CMAKE_SOURCE_DIR}/libs/libhttp_client/*"
+  "${CMAKE_SOURCE_DIR}/libs/libzip_client/*"
+  "${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md"
+)
+
+add_custom_command(
+  OUTPUT ${ANYOS_SOURCE_MIRROR_ROOT}/.stamp
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ANYOS_SOURCE_MIRROR_ROOT}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ANYOS_SOURCE_MIRROR_ROOT}/libs
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${ANYOS_SOURCE_MIRROR_ROOT}/docs
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_SOURCE_DIR}/Cargo.toml
+    ${ANYOS_SOURCE_MIRROR_ROOT}/Cargo.toml
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_SOURCE_DIR}/Cargo.lock
+    ${ANYOS_SOURCE_MIRROR_ROOT}/Cargo.lock
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_SOURCE_DIR}/VERSION
+    ${ANYOS_SOURCE_MIRROR_ROOT}/VERSION
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/bin
+    ${ANYOS_SOURCE_MIRROR_ROOT}/bin
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/anyrc
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/anyrc
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/stdlib
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/stdlib
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libstd
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libstd
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libheap
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libheap
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/dynlink
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/dynlink
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libhttp_client
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libhttp_client
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    ${CMAKE_SOURCE_DIR}/libs/libzip_client
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libzip_client
+  COMMAND ${CMAKE_COMMAND} -E rm -rf
+    ${ANYOS_SOURCE_MIRROR_ROOT}/bin/acargo/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/bin/anyrc/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/anyrc/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/stdlib/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libstd/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libheap/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/dynlink/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libhttp_client/target
+    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libzip_client/target
+  COMMAND ${CMAKE_COMMAND} -E remove -f
+    ${ANYOS_SOURCE_MIRROR_ROOT}/bin/git/bearssl_stream.o
+    ${ANYOS_SOURCE_MIRROR_ROOT}/bin/git/main.o
+    ${ANYOS_SOURCE_MIRROR_ROOT}/bin/git/git.elf
+    ${ANYOS_SOURCE_MIRROR_ROOT}/bin/make/make.o
+    ${ANYOS_SOURCE_MIRROR_ROOT}/bin/make/make.elf
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${CMAKE_SOURCE_DIR}/docs/crust-ccargo-api.md
+    ${ANYOS_SOURCE_MIRROR_ROOT}/docs/crust-ccargo-api.md
+  COMMAND ${CMAKE_COMMAND} -E touch ${ANYOS_SOURCE_MIRROR_ROOT}/.stamp
+  DEPENDS
+    ${CMAKE_SOURCE_DIR}/Cargo.toml
+    ${CMAKE_SOURCE_DIR}/Cargo.lock
+    ${CMAKE_SOURCE_DIR}/VERSION
+    ${ANYOS_SOURCE_MIRROR_DEPS}
+  COMMENT "Installing anyOS sample sources to /Libraries/sources/anyos"
+)
+set(SELFHOST_SYSROOT_DEPS
+  ${SELFHOST_SYSROOT_DEPS}
+  ${ANYOS_SOURCE_MIRROR_ROOT}/.stamp
 )
 
 # Shared target directory for all user-space Rust programs.
@@ -657,9 +825,63 @@ add_rust_user_program(ntp)
 add_rust_user_program(ntpd)
 add_rust_user_program(neofetch)
 add_rust_user_program(nvi)
-add_rust_user_program(anyrc)
-add_rust_user_program(acargo)
-add_rust_user_program(agit)
+add_rust_user_program(crust)
+add_rust_user_program(ccargo)
+add_rust_user_program(cgit)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/cargo
+  COMMAND ${CMAKE_COMMAND} -E remove -f ${SYSROOT_DIR}/System/bin/cargo
+  COMMAND ${CMAKE_COMMAND} -E create_symlink ccargo ${SYSROOT_DIR}/System/bin/cargo
+  DEPENDS ${SYSROOT_DIR}/System/bin/ccargo
+  COMMENT "Linking cargo -> ccargo"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/cargo)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/rustc
+  COMMAND ${CMAKE_COMMAND} -E remove -f ${SYSROOT_DIR}/System/bin/rustc
+  COMMAND ${CMAKE_COMMAND} -E create_symlink crust ${SYSROOT_DIR}/System/bin/rustc
+  DEPENDS ${SYSROOT_DIR}/System/bin/crust
+  COMMENT "Linking rustc -> crust"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/rustc)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/git
+  COMMAND ${CMAKE_COMMAND} -E remove -f ${SYSROOT_DIR}/System/bin/git
+  COMMAND ${CMAKE_COMMAND} -E create_symlink cgit ${SYSROOT_DIR}/System/bin/git
+  DEPENDS ${SYSROOT_DIR}/System/bin/cgit
+  COMMENT "Linking git -> cgit"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/git)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/anyrc
+  COMMAND ${CMAKE_COMMAND} -E remove -f ${SYSROOT_DIR}/System/bin/anyrc
+  COMMAND ${CMAKE_COMMAND} -E create_symlink crust ${SYSROOT_DIR}/System/bin/anyrc
+  DEPENDS ${SYSROOT_DIR}/System/bin/crust
+  COMMENT "Linking anyrc -> crust"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/anyrc)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/acargo
+  COMMAND ${CMAKE_COMMAND} -E remove -f ${SYSROOT_DIR}/System/bin/acargo
+  COMMAND ${CMAKE_COMMAND} -E create_symlink ccargo ${SYSROOT_DIR}/System/bin/acargo
+  DEPENDS ${SYSROOT_DIR}/System/bin/ccargo
+  COMMENT "Linking acargo -> ccargo"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/acargo)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/bin/agit
+  COMMAND ${CMAKE_COMMAND} -E remove -f ${SYSROOT_DIR}/System/bin/agit
+  COMMAND ${CMAKE_COMMAND} -E create_symlink cgit ${SYSROOT_DIR}/System/bin/agit
+  DEPENDS ${SYSROOT_DIR}/System/bin/cgit
+  COMMENT "Linking agit -> cgit"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/agit)
 # Privileged sbin programs
 add_rust_sbin_program(adduser)
 add_rust_sbin_program(deluser)

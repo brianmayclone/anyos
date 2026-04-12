@@ -167,7 +167,7 @@ pub fn build_upload_pack_request(
     let mut body = Vec::new();
 
     // Minimal capabilities for initial clone (no haves)
-    let cap_str = String::from("ofs-delta agent=agit/1.0");
+    let cap_str = String::from("ofs-delta agent=cgit/1.0");
 
     // Want lines
     for (i, oid) in wants.iter().enumerate() {

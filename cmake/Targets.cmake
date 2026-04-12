@@ -8,6 +8,7 @@ add_custom_target(programs DEPENDS
   ${DLL_BINS}
   ${DRIVER_BINS}
   ${SYSROOT_DIR}/.stamp
+  ${SELFHOST_SYSROOT_DEPS}
   ${SYSROOT_DIR}/Libraries/system/buildsystem/.stamp
   ${C_TOOLCHAIN_DEPS}
   ${CXX_TOOLCHAIN_DEPS}
@@ -59,6 +60,7 @@ add_custom_command(
     ${DLL_BINS}
     ${DRIVER_BINS}
     ${SYSROOT_DIR}/.stamp
+    ${SELFHOST_SYSROOT_DEPS}
     ${C_TOOLCHAIN_DEPS}
     ${MKIMAGE_EXECUTABLE}
     ${PROVISION_DEPS}
@@ -291,6 +293,7 @@ add_custom_command(
     ${SYSTEM_BINS}
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
+    ${SELFHOST_SYSROOT_DEPS}
     ${C_TOOLCHAIN_DEPS}
     ${MKIMAGE_EXECUTABLE}
   COMMENT "Creating UEFI bootable disk image (GPT + ESP + exFAT)"
@@ -356,6 +359,7 @@ add_custom_command(
     ${SYSTEM_BINS}
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
+    ${SELFHOST_SYSROOT_DEPS}
     ${C_TOOLCHAIN_DEPS}
     ${MKIMAGE_EXECUTABLE}
   COMMENT "Creating bootable ISO 9660 image (El Torito, BIOS boot)"
@@ -431,6 +435,7 @@ add_custom_command(
     ${APP_BINS}
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
+    ${SELFHOST_SYSROOT_DEPS}
     ${MKIMAGE_EXECUTABLE}
   COMMENT "Creating ARM64 disk image (256 MiB, GPT + exFAT)"
 )

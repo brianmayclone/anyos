@@ -3,6 +3,10 @@ name = "agit"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "cgit"
+path = "src/main.rs"
+
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 std = { package = "libstd", path = "../../libs/libstd" }

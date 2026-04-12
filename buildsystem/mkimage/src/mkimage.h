@@ -47,6 +47,7 @@
 #define EXFAT_ENTRY_FILENAME 0xC1
 #define EXFAT_ATTR_DIR       0x0010
 #define EXFAT_ATTR_ARCHIVE   0x0020
+#define EXFAT_ATTR_SYMLINK   0x0400
 #define EXFAT_FLAG_CONTIGUOUS 0x02
 
 /* GPT */
@@ -189,7 +190,7 @@ void     fat16_populate_sysroot(Fat16 *fs, const char *sysroot_path);
 
 typedef struct ExFatNode {
     char          name[256];       /* UTF-8 filename */
-    uint16_t      attrs;           /* EXFAT_ATTR_DIR or EXFAT_ATTR_ARCHIVE */
+    uint16_t      attrs;           /* EXFAT_ATTR_* (dir/archive/symlink) */
     uint32_t      first_cluster;
     uint64_t      data_length;
     uint16_t      uid, gid, mode;  /* VFS permissions */

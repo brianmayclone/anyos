@@ -1,4 +1,4 @@
-//! File system helpers for acargo.
+//! File system helpers for ccargo.
 //! Wraps anyos_std::fs with higher-level operations.
 
 use crate::prelude::*;
@@ -48,7 +48,7 @@ pub fn write_file(path: &str, data: &[u8]) {
         anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC,
     );
     if fd == u32::MAX {
-        anyos_std::println!("acargo: error: cannot write {}", path);
+        anyos_std::println!("ccargo: error: cannot write {}", path);
         return;
     }
     anyos_std::fs::write(fd, data);

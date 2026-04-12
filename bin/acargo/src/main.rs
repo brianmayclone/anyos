@@ -1,10 +1,10 @@
 #![no_std]
 #![no_main]
 
-//! acargo — Rust build system for anyOS
+//! ccargo — Rust build system for anyOS
 //!
 //! Compatible subset of Cargo functionality for building Rust projects
-//! natively on anyOS using the anyrc compiler.
+//! natively on anyOS using the crust compiler.
 
 anyos_std::entry!(main);
 
@@ -101,7 +101,7 @@ fn main() {
         } else if !args[i].starts_with('-') {
             positional.push(args[i]);
         } else {
-            println!("acargo: unknown option: {}", args[i]);
+            println!("ccargo: unknown option: {}", args[i]);
             return;
         }
         i += 1;
@@ -142,7 +142,7 @@ fn main() {
             cmd_search(&positional);
         }
         "doc" => {
-            println!("acargo: doc generation not yet implemented");
+            println!("ccargo: doc generation not yet implemented");
         }
         "tree" => {
             cmd_tree(&positional);
@@ -151,13 +151,13 @@ fn main() {
             cmd_metadata(&positional);
         }
         "--version" | "-V" => {
-            println!("acargo 0.2.0 (anyOS)");
+            println!("ccargo 0.2.0 (anyOS)");
         }
         "--help" | "-h" | "help" => {
             print_usage();
         }
         other => {
-            println!("acargo: unknown command `{}`", other);
+            println!("ccargo: unknown command `{}`", other);
             println!();
             print_usage();
         }
@@ -205,15 +205,15 @@ fn cmd_run(positional: &[&str], run_args: &[&str], release: bool, verbose: bool,
         let status = anyos_std::process::exec(bin_path, &cmd);
         anyos_std::process::exit(status);
     } else {
-        println!("acargo: error: no binary target found");
+        println!("ccargo: error: no binary target found");
         anyos_std::process::exit(1);
     }
 }
 
 fn cmd_new(positional: &[&str], is_lib: bool) {
     if positional.is_empty() {
-        println!("acargo: error: missing project name");
-        println!("Usage: acargo new <name> [--lib]");
+        println!("ccargo: error: missing project name");
+        println!("Usage: ccargo new <name> [--lib]");
         return;
     }
     scaffold::new_project(positional[0], is_lib);
@@ -260,19 +260,19 @@ fn cmd_test(positional: &[&str], release: bool, features: &[String], target: Opt
         let status = anyos_std::process::exec(bin_path, bin_path);
         anyos_std::process::exit(status);
     } else {
-        println!("acargo: no test binary found");
+        println!("ccargo: no test binary found");
     }
 }
 
 fn cmd_bench(positional: &[&str], features: &[String], target: Option<String>) {
-    println!("acargo: bench not yet implemented");
+    println!("ccargo: bench not yet implemented");
 }
 
 fn cmd_tree(positional: &[&str]) {
     let dir = if positional.is_empty() { "." } else { positional[0] };
     let nodes = resolve::resolve(dir);
     if nodes.is_empty() {
-        println!("acargo: no packages found");
+        println!("ccargo: no packages found");
         return;
     }
     let root = &nodes[nodes.len() - 1];
@@ -342,7 +342,7 @@ fn cmd_update(positional: &[&str]) {
 
 fn cmd_search(positional: &[&str]) {
     if positional.is_empty() {
-        println!("Usage: acargo search <query>");
+        println!("Usage: ccargo search <query>");
         return;
     }
     let query = positional[0];
@@ -358,7 +358,7 @@ fn cmd_search(positional: &[&str]) {
             print_search_results(&text);
         }
     } else {
-        println!("acargo: error: could not reach crates.io");
+        println!("ccargo: error: could not reach crates.io");
     }
 }
 
@@ -453,7 +453,7 @@ fn cmd_metadata(positional: &[&str]) {
         println!("  }}");
         println!("}}");
     } else {
-        println!("acargo: cannot read {}", manifest_path);
+        println!("ccargo: cannot read {}", manifest_path);
     }
 }
 
@@ -468,9 +468,9 @@ fn parse_u32_simple(s: &str) -> u32 {
 }
 
 fn print_usage() {
-    println!("acargo — Rust build system for anyOS");
+    println!("ccargo — Rust build system for anyOS");
     println!();
-    println!("Usage: acargo <COMMAND> [OPTIONS]");
+    println!("Usage: ccargo <COMMAND> [OPTIONS]");
     println!();
     println!("Commands:");
     println!("  build, b       Compile the current package");

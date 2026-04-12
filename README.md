@@ -203,16 +203,16 @@ and a self-hosted Rust compiler — all running bare-metal on x86_64.
 
 > **Note:** CoreVM has been spun off into its own standalone product — a full x86 KVM hypervisor platform. It is no longer bundled with anyOS. Visit the [CoreVM repository](https://github.com/nicosommelier/corevm) for more information.
 
-### anyrc — Self-Hosted Rust Compiler
+### crust — Self-Hosted Rust Compiler
 
-- **anyrc** — native Rust subset compiler running on anyOS itself
+- **crust** — native Rust subset compiler running on anyOS itself
 - Custom x86_64 machine code backend (no LLVM/Cranelift dependency)
 - Full compiler pipeline: Lexer → Parser → HIR → MIR → Borrow Checker → Codegen → ELF
 - Supports structs, enums, generics, traits, closures, `unsafe`, inline assembly, modules
 - NLL-style borrow checker and Hindley-Milner type inference
-- Goal: self-hosting (anyrc compiles itself and the anyOS kernel on anyOS)
+- Goal: self-hosting (crust compiles itself and the anyOS kernel on anyOS)
 
-See **[anyrc Documentation](docs/anyrc-api.md)** for the full reference.
+See **[crust/ccargo Documentation](docs/crust-ccargo-api.md)** for the full reference.
 
 ### C Toolchain & Shell
 
@@ -284,7 +284,7 @@ All tools support `ONE_SOURCE` single-file compilation for TCC compatibility, en
 | Settings Store | `sget` `sstore` `sdel` `ac` |
 | Binary/Hex | `hexdump` `xxd` |
 | Multimedia | `play` `pipes` `jp2a` |
-| Dev Tools | `cc` (TCC) `nasm` `make` `git` `anyrc` `open` `vi` `nvi` `nano` `jscript` |
+| Dev Tools | `cc` (TCC) `nasm` `make` `git` `cgit` `crust` `ccargo` `open` `vi` `nvi` `nano` `jscript` |
 | System | `vdagent` |
 
 ---
@@ -628,7 +628,7 @@ DLIB programs link against lightweight client stub crates (e.g. `libimage_client
 - **[libjs API](docs/libjs-api.md)** — JavaScript engine
 - **[libwebview API](docs/libwebview-api.md)** — HTML/CSS/JS rendering engine
 - **[Services](docs/services.md)** — System services documentation
-- **[anyrc Compiler](docs/anyrc-api.md)** — Self-hosted Rust subset compiler (pipeline, CLI, supported features)
+- **[crust Compiler](docs/crust-ccargo-api.md)** — Self-hosted Rust subset compiler and ccargo toolchain reference
 - **[Package Manager](docs/ami.md)** — AMI package manager / system info daemon
 
 ---

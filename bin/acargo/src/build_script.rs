@@ -73,7 +73,7 @@ pub fn run_build_script(
                 build_rs.clone(),
                 source,
             );
-            println!("acargo: error compiling build script for `{}`", crate_name);
+            println!("ccargo: error compiling build script for `{}`", crate_name);
             for err in &errors {
                 println!("{}", err.render(&source_map));
             }
@@ -98,7 +98,7 @@ pub fn run_build_script(
     let status = anyos_std::process::exec(&build_bin, &cmd);
 
     if status != 0 {
-        println!("acargo: warning: build script for `{}` exited with {}", crate_name, status);
+        println!("ccargo: warning: build script for `{}` exited with {}", crate_name, status);
     }
 
     // Parse the output

@@ -47,7 +47,7 @@ fn main() {
                         "hir" => EmitKind::Hir,
                         "asm" => EmitKind::Asm,
                         other => {
-                            anyos_std::println!("anyrc: unknown emit type: {}", other);
+                            anyos_std::println!("crust: unknown emit type: {}", other);
                             anyos_std::process::exit(1);
                         }
                     };
@@ -67,7 +67,7 @@ fn main() {
                         "lib" => CrateType::Lib,
                         "staticlib" => CrateType::StaticLib,
                         other => {
-                            anyos_std::println!("anyrc: unknown crate type: {}", other);
+                            anyos_std::println!("crust: unknown crate type: {}", other);
                             anyos_std::process::exit(1);
                         }
                     };
@@ -97,7 +97,7 @@ fn main() {
                             rlib_path: String::from(path),
                         });
                     } else {
-                        anyos_std::println!("anyrc: --extern expects name=path.rlib");
+                        anyos_std::println!("crust: --extern expects name=path.rlib");
                         anyos_std::process::exit(1);
                     }
                 }
@@ -139,11 +139,11 @@ fn main() {
                 }
             }
             "--version" => {
-                anyos_std::println!("anyrc 0.3.0");
+                anyos_std::println!("crust 0.3.0");
                 return;
             }
             "--help" | "-h" => {
-                anyos_std::println!("Usage: anyrc [OPTIONS] <INPUT>");
+                anyos_std::println!("Usage: crust [OPTIONS] <INPUT>");
                 anyos_std::println!();
                 anyos_std::println!("Options:");
                 anyos_std::println!("  -o <FILE>              Output file (default: a.out)");
@@ -166,7 +166,7 @@ fn main() {
                 input = Some(arg);
             }
             other => {
-                anyos_std::println!("anyrc: unknown option: {}", other);
+                anyos_std::println!("crust: unknown option: {}", other);
                 anyos_std::process::exit(1);
             }
         }
@@ -176,7 +176,7 @@ fn main() {
     let input_file = match input {
         Some(f) => f,
         None => {
-            anyos_std::println!("anyrc: error: no input file");
+            anyos_std::println!("crust: error: no input file");
             anyos_std::process::exit(1);
         }
     };
@@ -185,7 +185,7 @@ fn main() {
     let source = match read_file_to_string(input_file) {
         Some(s) => s,
         None => {
-            anyos_std::println!("anyrc: error: cannot read {}", input_file);
+            anyos_std::println!("crust: error: cannot read {}", input_file);
             anyos_std::process::exit(1);
         }
     };
@@ -244,7 +244,7 @@ fn read_file_to_string(path: &str) -> Option<String> {
 fn write_file(path: &str, data: &[u8]) {
     let fd = anyos_std::fs::open(path, anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC);
     if fd == u32::MAX {
-        anyos_std::println!("anyrc: error: cannot create {}", path);
+        anyos_std::println!("crust: error: cannot create {}", path);
         anyos_std::process::exit(1);
     }
     anyos_std::fs::write(fd, data);

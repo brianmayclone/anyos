@@ -241,18 +241,18 @@ pub struct ToolStatus {
 
 /// Check which development tools are installed.
 pub fn check_prerequisites() -> Vec<ToolStatus> {
-    let tools = [
-        ("anyrc", "Rust Compiler"),
-        ("acargo", "Cargo Build System"),
-        ("cc", "C Compiler"),
-        ("make", "Make Build Tool"),
-        ("git", "Git Version Control"),
-        ("nasm", "NASM Assembler"),
+    let mut results = Vec::new();
+    let tools: [(&str, &str, &[&str]); 6] = [
+        ("crust", "Rust Compiler", &["crust", "rustc", "anyrc"]),
+        ("ccargo", "Cargo Build System", &["ccargo", "cargo", "acargo"]),
+        ("cc", "C Compiler", &["cc"]),
+        ("make", "Make Build Tool", &["make"]),
+        ("git", "Git Version Control", &["git", "cgit", "agit"]),
+        ("nasm", "NASM Assembler", &["nasm"]),
     ];
 
-    let mut results = Vec::new();
-    for (name, desc) in tools {
-        let path = crate::logic::config::find_tool(name);
+    for (name, desc, aliases) in tools {
+        let path = find_first_available_tool(aliases);
         let available = !path.is_empty();
         results.push(ToolStatus {
             name,
@@ -264,10 +264,20 @@ pub fn check_prerequisites() -> Vec<ToolStatus> {
     results
 }
 
-/// Check if the essential tools (anyrc, acargo, cc, make) are all available.
+/// Check if the essential tools (crust, ccargo, cc, make) are all available.
 pub fn has_essential_tools(statuses: &[ToolStatus]) -> bool {
-    let essential = ["anyrc", "acargo", "cc", "make"];
+    let essential = ["crust", "ccargo", "cc", "make"];
     essential.iter().all(|name| {
         statuses.iter().any(|s| s.name == *name && s.available)
     })
+}
+
+fn find_first_available_tool(names: &[&str]) -> String {
+    for name in names {
+        let path = crate::logic::config::find_tool(name);
+        if !path.is_empty() {
+            return path;
+        }
+    }
+    String::new()
 }

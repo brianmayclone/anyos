@@ -52,12 +52,12 @@ fn main() {
         "rev-parse" => cmd_rev_parse(&args),
         "hash-object" => cmd_hash_object(&args),
         "cat-file"  => cmd_cat_file(&args),
-        _ => anyos_std::println!("agit: '{}' is not a git command. See 'agit --help'.", cmd),
+        _ => anyos_std::println!("cgit: '{}' is not a git command. See 'cgit --help'.", cmd),
     }
 }
 
 fn print_usage() {
-    anyos_std::println!("usage: agit <command> [<args>]");
+    anyos_std::println!("usage: cgit <command> [<args>]");
     anyos_std::println!();
     anyos_std::println!("Repository commands:");
     anyos_std::println!("   init          Create an empty Git repository");
@@ -109,7 +109,7 @@ fn cmd_init(args: &anyos_std::args::ParsedArgs) {
 
 fn cmd_clone(args: &anyos_std::args::ParsedArgs) {
     if args.pos_count < 2 {
-        anyos_std::println!("usage: agit clone <url> [<directory>]");
+        anyos_std::println!("usage: cgit clone <url> [<directory>]");
         return;
     }
 
@@ -218,7 +218,7 @@ fn cmd_clone(args: &anyos_std::args::ParsedArgs) {
 
 fn cmd_add(args: &anyos_std::args::ParsedArgs) {
     if args.pos_count < 2 {
-        anyos_std::println!("usage: agit add <file>...");
+        anyos_std::println!("usage: cgit add <file>...");
         return;
     }
 
@@ -336,7 +336,7 @@ fn cmd_status() {
 
     if !staged_new.is_empty() || !staged_modified.is_empty() || !staged_deleted.is_empty() {
         anyos_std::println!("\nChanges to be committed:");
-        anyos_std::println!("  (use \"agit reset HEAD <file>...\" to unstage)");
+        anyos_std::println!("  (use \"cgit reset HEAD <file>...\" to unstage)");
         for f in &staged_new { anyos_std::println!("\tnew file:   {}", f); }
         for f in &staged_modified { anyos_std::println!("\tmodified:   {}", f); }
         for f in &staged_deleted { anyos_std::println!("\tdeleted:    {}", f); }
@@ -358,7 +358,7 @@ fn cmd_status() {
 
     if !modified.is_empty() || !deleted.is_empty() {
         anyos_std::println!("\nChanges not staged for commit:");
-        anyos_std::println!("  (use \"agit add <file>...\" to update what will be committed)");
+        anyos_std::println!("  (use \"cgit add <file>...\" to update what will be committed)");
         for f in &modified { anyos_std::println!("\tmodified:   {}", f); }
         for f in &deleted { anyos_std::println!("\tdeleted:    {}", f); }
     }
@@ -367,7 +367,7 @@ fn cmd_status() {
     collect_untracked(&repo, &index, ".", &mut untracked, &gitignore);
     if !untracked.is_empty() {
         anyos_std::println!("\nUntracked files:");
-        anyos_std::println!("  (use \"agit add <file>...\" to include in what will be committed)");
+        anyos_std::println!("  (use \"cgit add <file>...\" to include in what will be committed)");
         for f in &untracked { anyos_std::println!("\t{}", f); }
     }
 
@@ -560,7 +560,7 @@ fn cmd_branch(args: &anyos_std::args::ParsedArgs) {
 
 fn cmd_checkout(args: &anyos_std::args::ParsedArgs) {
     if args.pos_count < 2 {
-        anyos_std::println!("usage: agit checkout <branch>");
+        anyos_std::println!("usage: cgit checkout <branch>");
         return;
     }
 
@@ -629,7 +629,7 @@ fn cmd_remote(args: &anyos_std::args::ParsedArgs) {
         }
         "add" => {
             if args.pos_count < 4 {
-                anyos_std::println!("usage: agit remote add <name> <url>");
+                anyos_std::println!("usage: cgit remote add <name> <url>");
                 return;
             }
             let name = args.positional[2];
@@ -640,7 +640,7 @@ fn cmd_remote(args: &anyos_std::args::ParsedArgs) {
         }
         "remove" | "rm" => {
             if args.pos_count < 3 {
-                anyos_std::println!("usage: agit remote remove <name>");
+                anyos_std::println!("usage: cgit remote remove <name>");
                 return;
             }
             if let Err(e) = libgit::remote::remove_remote(&repo, args.positional[2]) {
@@ -649,7 +649,7 @@ fn cmd_remote(args: &anyos_std::args::ParsedArgs) {
         }
         "set-url" => {
             if args.pos_count < 4 {
-                anyos_std::println!("usage: agit remote set-url <name> <url>");
+                anyos_std::println!("usage: cgit remote set-url <name> <url>");
                 return;
             }
             if let Err(e) = libgit::remote::set_url(&repo, args.positional[2], args.positional[3]) {
@@ -923,7 +923,7 @@ fn cmd_tag(args: &anyos_std::args::ParsedArgs) {
 
 fn cmd_rm(args: &anyos_std::args::ParsedArgs) {
     if args.pos_count < 2 {
-        anyos_std::println!("usage: agit rm <file>...");
+        anyos_std::println!("usage: cgit rm <file>...");
         return;
     }
 
@@ -1068,7 +1068,7 @@ fn cmd_hash_object(args: &anyos_std::args::ParsedArgs) {
 
 fn cmd_cat_file(args: &anyos_std::args::ParsedArgs) {
     if args.pos_count < 3 {
-        anyos_std::println!("usage: agit cat-file (-t | -s | -p) <object>");
+        anyos_std::println!("usage: cgit cat-file (-t | -s | -p) <object>");
         return;
     }
 

@@ -1,4 +1,4 @@
-//! Build engine: compiles crates in dependency order using anyrc.
+//! Build engine: compiles crates in dependency order using crust.
 //!
 //! Supports build scripts (build.rs), feature resolution, incremental
 //! compilation via mtime fingerprinting, and dependency-ordered compilation.
@@ -45,7 +45,7 @@ pub struct BuildResult {
 pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
     let nodes = resolve::resolve(root_dir);
     if nodes.is_empty() {
-        println!("acargo: error: no packages found");
+        println!("ccargo: error: no packages found");
         return BuildResult { success: false, bin_path: None, compiled: 0 };
     }
 

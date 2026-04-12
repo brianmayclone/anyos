@@ -2,7 +2,7 @@
 //!
 //! Fetches crate metadata from the crates.io sparse index (RFC 2789),
 //! downloads `.crate` archives, extracts them, and caches everything
-//! locally under `/System/var/acargo/registry/`.
+//! locally under `/System/var/ccargo/registry/`.
 //!
 //! ## Index URL scheme
 //!
@@ -29,10 +29,10 @@ const INDEX_BASE: &str = "https://index.crates.io";
 const DOWNLOAD_BASE: &str = "https://static.crates.io/crates";
 
 /// Local cache directory.
-const CACHE_DIR: &str = "/System/var/acargo/registry";
-const SRC_CACHE_DIR: &str = "/System/var/acargo/registry/src";
-const INDEX_CACHE_DIR: &str = "/System/var/acargo/registry/index";
-const CRATE_CACHE_DIR: &str = "/System/var/acargo/registry/cache";
+const CACHE_DIR: &str = "/System/var/ccargo/registry";
+const SRC_CACHE_DIR: &str = "/System/var/ccargo/registry/src";
+const INDEX_CACHE_DIR: &str = "/System/var/ccargo/registry/index";
+const CRATE_CACHE_DIR: &str = "/System/var/ccargo/registry/cache";
 
 /// A single version entry from the crates.io index.
 #[derive(Debug, Clone)]
@@ -175,7 +175,7 @@ pub fn fetch_crate(name: &str, version: &Version) -> Option<String> {
         if !libhttp_client::download(&url, &crate_path) {
             let status = libhttp_client::last_status();
             let err = libhttp_client::last_error();
-            println!("acargo: error downloading {}: HTTP {} (err {})", name, status, err);
+            println!("ccargo: error downloading {}: HTTP {} (err {})", name, status, err);
             return None;
         }
     }
@@ -219,7 +219,7 @@ pub fn fetch_crate(name: &str, version: &Version) -> Option<String> {
     if fs::file_exists(&cargo_toml) {
         Some(src_dir)
     } else {
-        println!("acargo: warning: no Cargo.toml found in {}", name);
+        println!("ccargo: warning: no Cargo.toml found in {}", name);
         None
     }
 }
