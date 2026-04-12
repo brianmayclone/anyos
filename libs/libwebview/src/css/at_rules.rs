@@ -495,11 +495,6 @@ fn evaluate_supports_depth(cond: &str, depth: u32) -> bool {
     // Simple `property: value` — check if property is known.
     let inner = cond.trim();
     if let Some(colon) = inner.find(':') {
-        let prop_name = inner[..colon]
-            .trim()
-            .trim_start_matches('-')
-            .trim_start_matches("webkit-")
-            .trim_start_matches("moz-");
         return parse_property(inner[..colon].trim()).is_some();
     }
 
@@ -526,4 +521,3 @@ fn find_top_level(s: &str, needle: &str) -> Option<usize> {
     }
     None
 }
-

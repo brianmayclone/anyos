@@ -102,7 +102,7 @@ fn expand_shorthand(property: Property, value_str: &str) -> Vec<Declaration> {
         Property::GridTemplate => expand_grid_template_shorthand(value_str),
         Property::GridTemplateAreas => expand_grid_template_areas(value_str),
         _ => {
-            let value = parse_value(&property, value_str);
+            let value = parse_property_value_ast(&property, value_str);
             let mut v = Vec::new();
             v.push(Declaration {
                 property: property.clone(),
@@ -133,25 +133,25 @@ fn expand_box_shorthand(
         _ => (parts[0], parts[1], parts[2], parts[3]),
     };
     let mut v = Vec::with_capacity(4);
-    let v_t = parse_value(&top, t);
+    let v_t = parse_property_value_ast(&top, t);
     v.push(Declaration {
         property: top,
         value: v_t,
         important: false,
     });
-    let v_r = parse_value(&right, r);
+    let v_r = parse_property_value_ast(&right, r);
     v.push(Declaration {
         property: right,
         value: v_r,
         important: false,
     });
-    let v_b = parse_value(&bottom, b);
+    let v_b = parse_property_value_ast(&bottom, b);
     v.push(Declaration {
         property: bottom,
         value: v_b,
         important: false,
     });
-    let v_l = parse_value(&left, l);
+    let v_l = parse_property_value_ast(&left, l);
     v.push(Declaration {
         property: left,
         value: v_l,
@@ -350,7 +350,7 @@ fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
 
     decls.push(Declaration {
         property: Property::FlexGrow,
-        value: parse_value(&Property::FlexGrow, parts[0]),
+        value: parse_property_value_ast(&Property::FlexGrow, parts[0]),
         important: false,
     });
 
@@ -393,7 +393,7 @@ fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
         } else {
             decls.push(Declaration {
                 property: Property::FlexShrink,
-                value: parse_value(&Property::FlexShrink, parts[1]),
+                value: parse_property_value_ast(&Property::FlexShrink, parts[1]),
                 important: false,
             });
         }
@@ -402,7 +402,7 @@ fn expand_flex_shorthand(value_str: &str) -> Vec<Declaration> {
     if parts.len() >= 3 {
         decls.push(Declaration {
             property: Property::FlexBasis,
-            value: parse_value(&Property::FlexBasis, parts[2]),
+            value: parse_property_value_ast(&Property::FlexBasis, parts[2]),
             important: false,
         });
     }
@@ -419,13 +419,13 @@ fn expand_gap_shorthand(value_str: &str) -> Vec<Declaration> {
     }
     decls.push(Declaration {
         property: Property::RowGap,
-        value: parse_value(&Property::RowGap, parts[0]),
+        value: parse_property_value_ast(&Property::RowGap, parts[0]),
         important: false,
     });
     let col = if parts.len() >= 2 { parts[1] } else { parts[0] };
     decls.push(Declaration {
         property: Property::ColumnGap,
-        value: parse_value(&Property::ColumnGap, col),
+        value: parse_property_value_ast(&Property::ColumnGap, col),
         important: false,
     });
     decls
@@ -440,13 +440,13 @@ fn expand_overflow_shorthand(value_str: &str) -> Vec<Declaration> {
     }
     decls.push(Declaration {
         property: Property::OverflowX,
-        value: parse_value(&Property::OverflowX, parts[0]),
+        value: parse_property_value_ast(&Property::OverflowX, parts[0]),
         important: false,
     });
     let y = if parts.len() >= 2 { parts[1] } else { parts[0] };
     decls.push(Declaration {
         property: Property::OverflowY,
-        value: parse_value(&Property::OverflowY, y),
+        value: parse_property_value_ast(&Property::OverflowY, y),
         important: false,
     });
     decls
@@ -709,22 +709,22 @@ fn expand_border_radius_shorthand(value_str: &str) -> Vec<Declaration> {
     let mut v = Vec::with_capacity(4);
     v.push(Declaration {
         property: Property::BorderTopLeftRadius,
-        value: parse_value(&Property::BorderTopLeftRadius, tl),
+        value: parse_property_value_ast(&Property::BorderTopLeftRadius, tl),
         important: false,
     });
     v.push(Declaration {
         property: Property::BorderTopRightRadius,
-        value: parse_value(&Property::BorderTopRightRadius, tr),
+        value: parse_property_value_ast(&Property::BorderTopRightRadius, tr),
         important: false,
     });
     v.push(Declaration {
         property: Property::BorderBottomRightRadius,
-        value: parse_value(&Property::BorderBottomRightRadius, br),
+        value: parse_property_value_ast(&Property::BorderBottomRightRadius, br),
         important: false,
     });
     v.push(Declaration {
         property: Property::BorderBottomLeftRadius,
-        value: parse_value(&Property::BorderBottomLeftRadius, bl),
+        value: parse_property_value_ast(&Property::BorderBottomLeftRadius, bl),
         important: false,
     });
     v

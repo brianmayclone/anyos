@@ -61,48 +61,15 @@ fn parse_declarations(p: &mut Parser) -> Vec<Declaration> {
             p.pos += 1;
         }
 
-        // Custom properties (--*) — store raw value as Keyword.
-        if prop_name.starts_with("--") {
-            let trimmed = value_str.trim();
-            let (trimmed, important) = strip_important(trimmed);
-            decls.push(Declaration {
-                property: Property::CustomProperty(String::from(&prop_name)),
-                value: CssValue::Keyword(String::from(trimmed)),
-                important,
-            });
-        } else if prop_name == "font" || prop_name == "Font" {
-            // `font` shorthand: [style] [variant] [weight] size[/line-height] family
-            // Extract font-size and font-family from the shorthand.
-            let trimmed = value_str.trim();
-            let (trimmed, important) = strip_important(trimmed);
-            let expanded = expand_font_shorthand(trimmed);
-            for mut d in expanded {
-                d.important = important;
-                decls.push(d);
-            }
-        } else if let Some(property) = parse_property(&prop_name) {
-            let trimmed = value_str.trim();
-            // Detect and strip !important
-            let (trimmed, important) = strip_important(trimmed);
-            // Expand shorthand properties into individual declarations.
-            if is_expandable_shorthand(&property) {
-                let mut expanded = expand_shorthand(property, trimmed);
-                if important {
-                    for d in &mut expanded {
-                        d.important = true;
-                    }
-                }
-                for d in expanded {
-                    decls.push(d);
-                }
-            } else {
-                let value = parse_value(&property, trimmed);
-                decls.push(Declaration {
-                    property,
-                    value,
-                    important,
-                });
-            }
+        let trimmed = value_str.trim();
+        let (trimmed, important) = strip_important(trimmed);
+        let decl_ast = CssDeclarationAst {
+            name: prop_name,
+            value: parse_value_ast(trimmed),
+            important,
+        };
+        for decl in lower_declaration_ast(&decl_ast) {
+            decls.push(decl);
         }
     }
 

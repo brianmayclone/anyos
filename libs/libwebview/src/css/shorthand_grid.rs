@@ -243,7 +243,7 @@ fn expand_font_shorthand(value_str: &str) -> Vec<Declaration> {
             (size_part, None)
         };
 
-        let size_val = parse_value(&Property::FontSize, size_str);
+        let size_val = parse_property_value_ast(&Property::FontSize, size_str);
         decls.push(Declaration {
             property: Property::FontSize,
             value: size_val,
@@ -251,7 +251,7 @@ fn expand_font_shorthand(value_str: &str) -> Vec<Declaration> {
         });
 
         if let Some(lh) = lh_str {
-            let lh_val = parse_value(&Property::LineHeight, lh);
+            let lh_val = parse_property_value_ast(&Property::LineHeight, lh);
             decls.push(Declaration {
                 property: Property::LineHeight,
                 value: lh_val,
