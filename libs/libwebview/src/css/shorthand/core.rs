@@ -117,7 +117,7 @@ fn expand_box_shorthand(
     bottom: Property,
     left: Property,
 ) -> Vec<Declaration> {
-    let parts: Vec<&str> = value_str.split_whitespace().collect();
+    let parts = split_top_level_whitespace(value_str);
     if parts.is_empty() {
         return Vec::new();
     }
@@ -137,6 +137,55 @@ fn expand_box_shorthand(
     let v_l = parse_property_value_ast(&left, l);
     v.push(Declaration { property: left, value: v_l, important: false });
     v
+}
+
+fn split_top_level_whitespace(value_str: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut depth = 0u32;
+    let mut in_quote: Option<u8> = None;
+    let bytes = value_str.as_bytes();
+
+    for (i, &b) in bytes.iter().enumerate() {
+        match in_quote {
+            Some(q) => {
+                if b == q {
+                    in_quote = None;
+                }
+            }
+            None => match b {
+                b'"' | b'\'' => {
+                    if start.is_none() {
+                        start = Some(i);
+                    }
+                    in_quote = Some(b);
+                }
+                b'(' => {
+                    if start.is_none() {
+                        start = Some(i);
+                    }
+                    depth += 1;
+                }
+                b')' => depth = depth.saturating_sub(1),
+                _ if b.is_ascii_whitespace() && depth == 0 => {
+                    if let Some(token_start) = start.take() {
+                        parts.push(&value_str[token_start..i]);
+                    }
+                }
+                _ => {
+                    if start.is_none() {
+                        start = Some(i);
+                    }
+                }
+            },
+        }
+    }
+
+    if let Some(token_start) = start {
+        parts.push(&value_str[token_start..]);
+    }
+
+    parts
 }
 
 fn reassemble_var_parts(parts: &[&str]) -> Vec<String> {

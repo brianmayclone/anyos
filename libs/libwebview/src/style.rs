@@ -612,6 +612,10 @@ pub struct ComputedStyle {
     pub margin_right: i32,
     pub margin_bottom: i32,
     pub margin_left: i32,
+    pub margin_top_calc: Option<(i32, i32)>,
+    pub margin_right_calc: Option<(i32, i32)>,
+    pub margin_bottom_calc: Option<(i32, i32)>,
+    pub margin_left_calc: Option<(i32, i32)>,
     /// true if margin-top was explicitly `auto`
     pub margin_top_auto: bool,
     /// true if margin-left was explicitly `auto`
@@ -892,6 +896,10 @@ pub fn default_style() -> ComputedStyle {
         margin_right: 0,
         margin_bottom: 0,
         margin_left: 0,
+        margin_top_calc: Option::None,
+        margin_right_calc: Option::None,
+        margin_bottom_calc: Option::None,
+        margin_left_calc: Option::None,
         margin_top_auto: false,
         margin_left_auto: false,
         margin_bottom_auto: false,
@@ -3499,6 +3507,30 @@ fn resolve_length(val: &CssValue, parent_fs: i32, root_fs: i32) -> Option<i32> {
     }
 }
 
+fn resolve_margin_calc(calc: (i32, i32), containing_width: i32) -> i32 {
+    calc.0 / 100 + (containing_width as i64 * calc.1 as i64 / 10000) as i32
+}
+
+pub fn resolve_margins(style: &ComputedStyle, containing_width: i32) -> (i32, i32, i32, i32) {
+    let mt = style
+        .margin_top_calc
+        .map(|calc| resolve_margin_calc(calc, containing_width))
+        .unwrap_or(style.margin_top);
+    let mr = style
+        .margin_right_calc
+        .map(|calc| resolve_margin_calc(calc, containing_width))
+        .unwrap_or(style.margin_right);
+    let mb = style
+        .margin_bottom_calc
+        .map(|calc| resolve_margin_calc(calc, containing_width))
+        .unwrap_or(style.margin_bottom);
+    let ml = style
+        .margin_left_calc
+        .map(|calc| resolve_margin_calc(calc, containing_width))
+        .unwrap_or(style.margin_left);
+    (mt, mr, mb, ml)
+}
+
 /// Apply a single CSS declaration to a computed style.
 /// Parse a CSS length value from a transform function argument.
 /// Supports: px, em, rem, %, and bare numbers (treated as px).
@@ -3857,11 +3889,33 @@ pub fn apply_declaration(
                 style.margin_left_auto = true;
                 style.margin_bottom_auto = true;
                 style.margin_right_auto = true;
+                style.margin_top_calc = Option::None;
+                style.margin_right_calc = Option::None;
+                style.margin_bottom_calc = Option::None;
+                style.margin_left_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                let calc = Some((px, pct));
+                style.margin_top = 0;
+                style.margin_right = 0;
+                style.margin_bottom = 0;
+                style.margin_left = 0;
+                style.margin_top_calc = calc;
+                style.margin_right_calc = calc;
+                style.margin_bottom_calc = calc;
+                style.margin_left_calc = calc;
+                style.margin_top_auto = false;
+                style.margin_left_auto = false;
+                style.margin_bottom_auto = false;
+                style.margin_right_auto = false;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_top = px;
                 style.margin_right = px;
                 style.margin_bottom = px;
                 style.margin_left = px;
+                style.margin_top_calc = Option::None;
+                style.margin_right_calc = Option::None;
+                style.margin_bottom_calc = Option::None;
+                style.margin_left_calc = Option::None;
                 style.margin_top_auto = false;
                 style.margin_left_auto = false;
                 style.margin_bottom_auto = false;
@@ -3871,32 +3925,56 @@ pub fn apply_declaration(
         Property::MarginTop => {
             if matches!(decl.value, CssValue::Auto) {
                 style.margin_top_auto = true;
+                style.margin_top_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                style.margin_top = 0;
+                style.margin_top_calc = Some((px, pct));
+                style.margin_top_auto = false;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_top = px;
+                style.margin_top_calc = Option::None;
                 style.margin_top_auto = false;
             }
         }
         Property::MarginRight => {
             if matches!(decl.value, CssValue::Auto) {
                 style.margin_right_auto = true;
+                style.margin_right_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                style.margin_right = 0;
+                style.margin_right_calc = Some((px, pct));
+                style.margin_right_auto = false;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_right = px;
+                style.margin_right_calc = Option::None;
                 style.margin_right_auto = false;
             }
         }
         Property::MarginBottom => {
             if matches!(decl.value, CssValue::Auto) {
                 style.margin_bottom_auto = true;
+                style.margin_bottom_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                style.margin_bottom = 0;
+                style.margin_bottom_calc = Some((px, pct));
+                style.margin_bottom_auto = false;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_bottom = px;
+                style.margin_bottom_calc = Option::None;
                 style.margin_bottom_auto = false;
             }
         }
         Property::MarginLeft => {
             if matches!(decl.value, CssValue::Auto) {
                 style.margin_left_auto = true;
+                style.margin_left_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                style.margin_left = 0;
+                style.margin_left_calc = Some((px, pct));
+                style.margin_left_auto = false;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_left = px;
+                style.margin_left_calc = Option::None;
                 style.margin_left_auto = false;
             }
         }
@@ -5383,9 +5461,21 @@ pub fn apply_declaration(
             if matches!(decl.value, CssValue::Auto) {
                 style.margin_left_auto = true;
                 style.margin_right_auto = true;
+                style.margin_left_calc = Option::None;
+                style.margin_right_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                let calc = Some((px, pct));
+                style.margin_left = 0;
+                style.margin_right = 0;
+                style.margin_left_calc = calc;
+                style.margin_right_calc = calc;
+                style.margin_left_auto = false;
+                style.margin_right_auto = false;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_left = px;
                 style.margin_right = px;
+                style.margin_left_calc = Option::None;
+                style.margin_right_calc = Option::None;
                 style.margin_left_auto = false;
                 style.margin_right_auto = false;
             }
@@ -5394,9 +5484,21 @@ pub fn apply_declaration(
             if matches!(decl.value, CssValue::Auto) {
                 style.margin_top_auto = true;
                 style.margin_bottom_auto = true;
+                style.margin_top_calc = Option::None;
+                style.margin_bottom_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                let calc = Some((px, pct));
+                style.margin_top = 0;
+                style.margin_bottom = 0;
+                style.margin_top_calc = calc;
+                style.margin_bottom_calc = calc;
+                style.margin_top_auto = false;
+                style.margin_bottom_auto = false;
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.margin_top = px;
                 style.margin_bottom = px;
+                style.margin_top_calc = Option::None;
+                style.margin_bottom_calc = Option::None;
                 style.margin_top_auto = false;
                 style.margin_bottom_auto = false;
             }

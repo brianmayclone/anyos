@@ -1065,12 +1065,9 @@ pub fn layout_with_budget(
         style.padding_bottom,
         style.padding_left,
     );
-    root.margin = edges_from(
-        style.margin_top,
-        style.margin_right,
-        style.margin_bottom,
-        style.margin_left,
-    );
+    let (margin_top, margin_right, margin_bottom, margin_left) =
+        crate::style::resolve_margins(style, viewport_width);
+    root.margin = edges_from(margin_top, margin_right, margin_bottom, margin_left);
 
     let content_width = root.width
         - root.padding.left
@@ -1529,14 +1526,6 @@ pub(super) fn layout_children_ex_with_budget(
             i += 1;
             continue;
         }
-        if dom.attr(_parent_node, "id") == Some("item") {
-            crate::debug_surf!(
-                "[layout:children] parent=item child={} has_tag={} display={:?}",
-                cid,
-                dom.tag(cid).is_some(),
-                style.display
-            );
-        }
 
         // display: contents — skip the element box, promote children.
         // Exception: SVG elements must NOT promote their children, because the
@@ -1594,14 +1583,6 @@ pub(super) fn layout_children_ex_with_budget(
         }
 
         let is_block = is_block_level(dom, cid, style);
-        if dom.attr(_parent_node, "id") == Some("item") {
-            crate::debug_surf!(
-                "[layout:children] parent=item child={} is_block={}",
-                cid,
-                is_block
-            );
-        }
-
         if is_block {
             let float_val = style.float;
 

@@ -17,7 +17,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
-use crate::style::{ComputedStyle, Display, PseudoStyles, TextAlignVal, VerticalAlign};
+use crate::style::{
+    ComputedStyle, Display, PseudoStyles, TextAlignVal, VerticalAlign, resolve_margins,
+};
 use crate::ImageCache;
 
 use super::block::build_block;
@@ -47,12 +49,9 @@ pub fn layout_table(
     bx.font_size = font_size_px(style);
     bx.bold = is_bold(style);
     bx.text_align = style.text_align;
-    bx.margin = edges_from(
-        style.margin_top,
-        style.margin_right,
-        style.margin_bottom,
-        style.margin_left,
-    );
+    let (margin_top, margin_right, margin_bottom, margin_left) =
+        resolve_margins(style, available_width);
+    bx.margin = edges_from(margin_top, margin_right, margin_bottom, margin_left);
     bx.padding = edges_from(
         style.padding_top,
         style.padding_right,

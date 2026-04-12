@@ -210,8 +210,13 @@ fn strip_css_comments(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
+    let mut inserted_sep = false;
     while i < bytes.len() {
         if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            if !out.is_empty() && !out.ends_with(char::is_whitespace) {
+                out.push(' ');
+                inserted_sep = true;
+            }
             i += 2;
             while i + 1 < bytes.len() {
                 if bytes[i] == b'*' && bytes[i + 1] == b'/' {
@@ -221,7 +226,12 @@ fn strip_css_comments(s: &str) -> String {
                 i += 1;
             }
         } else {
+            if inserted_sep && bytes[i].is_ascii_whitespace() {
+                i += 1;
+                continue;
+            }
             out.push(bytes[i] as char);
+            inserted_sep = false;
             i += 1;
         }
     }
@@ -237,6 +247,8 @@ fn split_args(s: &str) -> Vec<&str> {
 }
 
 fn parse_hsl_func(args: &str) -> Option<u32> {
+    let clean;
+    let args = if args.contains("/*") { clean = strip_css_comments(args); clean.as_str() } else { args };
     let (color_part, alpha_part) = split_color_alpha(args);
     let parts = split_args(color_part);
     if parts.len() < 3 {
@@ -258,6 +270,8 @@ fn parse_hsl_func(args: &str) -> Option<u32> {
 }
 
 fn parse_hsla_func(args: &str) -> Option<u32> {
+    let clean;
+    let args = if args.contains("/*") { clean = strip_css_comments(args); clean.as_str() } else { args };
     let (color_part, alpha_part) = split_color_alpha(args);
     let parts = split_args(color_part);
     if parts.len() < 3 {
@@ -283,28 +297,113 @@ fn parse_hue(s: &str) -> Option<i32> {
         return parse_hue_number(&t[..t.len() - 3]);
     }
     if t.ends_with("turn") {
-        let fp = parse_fixed_point(&t[..t.len() - 4])?;
-        return Some((fp as i64 * 360 / 100) as i32);
+        let scaled = parse_decimal_scaled(&t[..t.len() - 4])?;
+        return Some(div_round_i64(scaled * 360, 1_000_000) as i32);
     }
     if t.ends_with("rad") {
-        let fp = parse_fixed_point(&t[..t.len() - 3])?;
-        return Some((fp as i64 * 18000 / 31416) as i32);
+        let scaled = parse_decimal_scaled(&t[..t.len() - 3])?;
+        return Some(div_round_i64(scaled * 180, 3_141_593) as i32);
     }
     if t.ends_with("grad") {
-        let fp = parse_fixed_point(&t[..t.len() - 4])?;
-        return Some((fp as i64 * 9 / 1000) as i32);
+        let scaled = parse_decimal_scaled(&t[..t.len() - 4])?;
+        return Some(div_round_i64(scaled * 9, 10_000_000) as i32);
     }
     parse_hue_number(t)
 }
 
-fn parse_hue_number(s: &str) -> Option<i32> {
-    let t = s.trim();
-    if t.contains('.') {
-        let fp = parse_fixed_point(t)?;
-        Some(fp / 100)
-    } else {
-        parse_int(t)
+fn parse_decimal_scaled(s: &str) -> Option<i64> {
+    let bytes = s.trim().as_bytes();
+    if bytes.is_empty() {
+        return Option::None;
     }
+
+    let mut i = 0usize;
+    let negative = if bytes[i] == b'-' {
+        i += 1;
+        true
+    } else if bytes[i] == b'+' {
+        i += 1;
+        false
+    } else {
+        false
+    };
+    if i >= bytes.len() {
+        return Option::None;
+    }
+
+    let mut integer_part: i64 = 0;
+    let mut saw_digit = false;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        integer_part = integer_part * 10 + (bytes[i] - b'0') as i64;
+        i += 1;
+        saw_digit = true;
+    }
+
+    let mut frac: i64 = 0;
+    let mut frac_scale: i64 = 1_000_000;
+    if i < bytes.len() && bytes[i] == b'.' {
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            if frac_scale > 1 {
+                frac_scale /= 10;
+                frac += (bytes[i] - b'0') as i64 * frac_scale;
+            }
+            i += 1;
+            saw_digit = true;
+        }
+    }
+
+    if !saw_digit {
+        return Option::None;
+    }
+
+    let mut value = integer_part * 1_000_000 + frac;
+    if i < bytes.len() && (bytes[i] == b'e' || bytes[i] == b'E') {
+        i += 1;
+        if i >= bytes.len() {
+            return Option::None;
+        }
+        let exp_negative = if bytes[i] == b'-' {
+            i += 1;
+            true
+        } else if bytes[i] == b'+' {
+            i += 1;
+            false
+        } else {
+            false
+        };
+        if i >= bytes.len() || !bytes[i].is_ascii_digit() {
+            return Option::None;
+        }
+        let mut exponent: u32 = 0;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            exponent = exponent.saturating_mul(10).saturating_add((bytes[i] - b'0') as u32);
+            i += 1;
+        }
+        let pow10 = 10_i64.saturating_pow(exponent.min(9));
+        value = if exp_negative {
+            value / pow10.max(1)
+        } else {
+            value.saturating_mul(pow10)
+        };
+    }
+    if i != bytes.len() {
+        return Option::None;
+    }
+    Some(if negative { -value } else { value })
+}
+
+fn div_round_i64(value: i64, divisor: i64) -> i64 {
+    if value >= 0 {
+        (value + divisor / 2) / divisor
+    } else {
+        (value - divisor / 2) / divisor
+    }
+}
+
+fn parse_hue_number(s: &str) -> Option<i32> {
+    let scaled = parse_decimal_scaled(s.trim())?;
+    Some(div_round_i64(scaled, 1_000_000) as i32)
 }
 
 fn parse_percent_val(s: &str) -> Option<i32> {

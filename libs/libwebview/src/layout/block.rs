@@ -7,6 +7,7 @@ use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
     AlignContent, BoxSizing, ComputedStyle, Display, FontStyleVal, FontWeight,
     ListStylePosition, OverflowVal, Position, PseudoStyles, TextDeco, Visibility,
+    resolve_margins,
 };
 use crate::ImageCache;
 
@@ -165,12 +166,9 @@ pub fn build_block_with_budget(
     bx.text_decoration_style = style.text_decoration_style;
     bx.text_decoration_thickness = style.text_decoration_thickness;
     bx.text_underline_offset = style.text_underline_offset;
-    bx.margin = edges_from(
-        style.margin_top,
-        style.margin_right,
-        style.margin_bottom,
-        style.margin_left,
-    );
+    let (margin_top, margin_right, margin_bottom, margin_left) =
+        resolve_margins(style, available_width);
+    bx.margin = edges_from(margin_top, margin_right, margin_bottom, margin_left);
     bx.padding = edges_from(
         style.padding_top,
         style.padding_right,
@@ -275,7 +273,7 @@ pub fn build_block_with_budget(
         // Intrinsic widths are already full outer widths (content + padding + border).
         if intrinsic_w.is_some() {
             bx.width = w.max(0);
-        } else if w > 0 {
+        } else if w >= 0 {
             if is_border_box {
                 bx.width = w;
             } else {
@@ -629,40 +627,6 @@ pub fn build_block_with_budget(
             outer_h.max(0)
         }
     });
-    let parent_id_attr = dom
-        .nodes
-        .get(node_id)
-        .and_then(|n| n.parent)
-        .and_then(|pid| dom.attr(pid, "id"));
-    if let Some(id_attr) = dom.attr(node_id, "id") {
-        crate::debug_surf!(
-            "[layout:block] id={} width={} inner_w={} explicit_outer_h_hint={:?} definite_content_h={:?} parent_h={} borders=({}, {}, {}, {})",
-            id_attr,
-            bx.width,
-            inner_w,
-            explicit_outer_height_hint,
-            definite_parent_content_h,
-            parent_height,
-            bx.border_top_width,
-            bx.border_right_width,
-            bx.border_bottom_width,
-            bx.border_left_width
-        );
-    } else if parent_id_attr == Some("item") {
-        crate::debug_surf!(
-            "[layout:block] parent_id=item anon width={} inner_w={} explicit_outer_h_hint={:?} definite_content_h={:?} parent_h={} borders=({}, {}, {}, {})",
-            bx.width,
-            inner_w,
-            explicit_outer_height_hint,
-            definite_parent_content_h,
-            parent_height,
-            bx.border_top_width,
-            bx.border_right_width,
-            bx.border_bottom_width,
-            bx.border_left_width
-        );
-    }
-
     // Lay out children — dispatch to flex, grid, or block flow.
     // Inject ::before / ::after block-level pseudo-element boxes.
     // Inline pseudo-elements are injected into the inline run by layout_children / layout_inline_content.
@@ -976,27 +940,6 @@ pub fn build_block_with_budget(
     bx.transform_origin_y = style.transform_origin_y;
     bx.transform_origin_y_is_percent = style.transform_origin_y_is_percent;
     bx.transform_rotate = style.transform_rotate;
-    if let Some(id_attr) = dom.attr(node_id, "id") {
-        crate::debug_surf!(
-            "[layout:block:final] id={} x={} y={} width={} height={} children={}",
-            id_attr,
-            bx.x,
-            bx.y,
-            bx.width,
-            bx.height,
-            bx.children.len()
-        );
-    } else if parent_id_attr == Some("item") {
-        crate::debug_surf!(
-            "[layout:block:final] parent_id=item anon x={} y={} width={} height={} children={}",
-            bx.x,
-            bx.y,
-            bx.width,
-            bx.height,
-            bx.children.len()
-        );
-    }
-
     bx
 }
 
@@ -1284,11 +1227,13 @@ pub(super) fn build_pseudo_element_box(
             ps.padding_bottom,
             ps.padding_left,
         );
+        let (pmargin_top, pmargin_right, pmargin_bottom, pmargin_left) =
+            resolve_margins(ps, available_w);
         pb.margin = super::edges_from(
-            ps.margin_top,
-            ps.margin_right,
-            ps.margin_bottom,
-            ps.margin_left,
+            pmargin_top,
+            pmargin_right,
+            pmargin_bottom,
+            pmargin_left,
         );
         pb.background_image = ps.background_image.clone();
         pb.mask_image = ps.mask_image.clone();
