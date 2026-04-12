@@ -27,3 +27,10 @@ struct CssBlockNode {
     source: String,
     items: Vec<CssSyntaxNode>,
 }
+
+#[derive(Clone, Debug)]
+struct CssDeclarationAst {
+    name: String,
+    value: String,
+    important: bool,
+}

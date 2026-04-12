@@ -563,8 +563,10 @@ impl Selector {
 // Low-level parser helpers
 // ---------------------------------------------------------------------------
 
-
+include!("ast.rs");
+include!("lexer.rs");
 include!("parser_core.rs");
+include!("parser_ast.rs");
 include!("stylesheet.rs");
 include!("at_rules_media.rs");
 include!("at_rules.rs");
