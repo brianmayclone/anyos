@@ -455,13 +455,14 @@ impl Thread {
         }
         let stack_end = (stack_ptr as usize) + stack_size;
         #[cfg(target_arch = "x86_64")]
-        let user_sp = stack_end - 8;
+        let user_sp = stack_end - 16;
         #[cfg(target_arch = "aarch64")]
         let user_sp = stack_end & !0xF;
-        // Place a synthetic return address that cleanly kills the thread when
-        // entry() returns, instead of falling through to address 0.
-        let ret_slot = user_sp - 8;
-        unsafe { *(ret_slot as *mut usize) = thread_exit_stub as usize; }
+        // Place a synthetic return address exactly at [RSP]. The kernel enters
+        // the thread via iretq rather than a CALL, so returning from entry()
+        // reads the word currently at RSP as the return PC.
+        #[cfg(target_arch = "x86_64")]
+        unsafe { *(user_sp as *mut usize) = thread_exit_stub as usize; }
         let tid = thread_create(entry, user_sp, name);
         if tid == 0 {
             munmap(stack_ptr, stack_size);
