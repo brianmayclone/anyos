@@ -8,7 +8,7 @@ use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use libjs::value::JsObject;
-use libjs::vm::native_fn;
+use libjs::vm::{native_ctor_fn, native_fn};
 use libjs::JsValue;
 use libjs::Vm;
 
@@ -60,7 +60,7 @@ fn make_native_constructor(
     native: fn(&mut Vm, &[JsValue]) -> JsValue,
     parent_proto: Option<Rc<RefCell<JsObject>>>,
 ) -> JsValue {
-    let ctor = native_fn(name, native);
+    let ctor = native_ctor_fn(name, native);
     if let JsValue::Function(func) = &ctor {
         let mut proto = JsObject::new();
         proto.prototype = Some(parent_proto.unwrap_or_else(|| vm.object_proto.clone()));
@@ -350,71 +350,71 @@ pub fn make_window(
     // Observer stubs.
     obj.set(
         String::from("ResizeObserver"),
-        native_fn("ResizeObserver", win_observer_ctor),
+        native_ctor_fn("ResizeObserver", win_observer_ctor),
     );
     obj.set(
         String::from("MutationObserver"),
-        native_fn("MutationObserver", win_mutation_observer_ctor),
+        native_ctor_fn("MutationObserver", win_mutation_observer_ctor),
     );
     obj.set(
         String::from("IntersectionObserver"),
-        native_fn("IntersectionObserver", win_observer_ctor),
+        native_ctor_fn("IntersectionObserver", win_observer_ctor),
     );
 
     // Event constructors (W3C DOM Events Level 3 / UIEvents / Pointer Events).
-    obj.set(String::from("Event"), native_fn("Event", win_event));
+    obj.set(String::from("Event"), native_ctor_fn("Event", win_event));
     obj.set(
         String::from("CustomEvent"),
-        native_fn("CustomEvent", win_custom_event),
+        native_ctor_fn("CustomEvent", win_custom_event),
     );
     obj.set(
         String::from("MouseEvent"),
-        native_fn("MouseEvent", win_mouse_event),
+        native_ctor_fn("MouseEvent", win_mouse_event),
     );
     obj.set(
         String::from("KeyboardEvent"),
-        native_fn("KeyboardEvent", win_keyboard_event),
+        native_ctor_fn("KeyboardEvent", win_keyboard_event),
     );
     obj.set(
         String::from("InputEvent"),
-        native_fn("InputEvent", win_input_event),
+        native_ctor_fn("InputEvent", win_input_event),
     );
     obj.set(
         String::from("FocusEvent"),
-        native_fn("FocusEvent", win_focus_event),
+        native_ctor_fn("FocusEvent", win_focus_event),
     );
     obj.set(
         String::from("WheelEvent"),
-        native_fn("WheelEvent", win_wheel_event),
+        native_ctor_fn("WheelEvent", win_wheel_event),
     );
     obj.set(
         String::from("PointerEvent"),
-        native_fn("PointerEvent", win_pointer_event),
+        native_ctor_fn("PointerEvent", win_pointer_event),
     );
 
     // MessageChannel (W3C HTML §9.4 — used by React Scheduler for task deferral).
     obj.set(
         String::from("MessageChannel"),
-        native_fn("MessageChannel", win_message_channel),
+        native_ctor_fn("MessageChannel", win_message_channel),
     );
 
     // URL / misc.
-    obj.set(String::from("URL"), native_fn("URL", win_url_ctor));
+    obj.set(String::from("URL"), native_ctor_fn("URL", win_url_ctor));
     obj.set(
         String::from("URLSearchParams"),
-        native_fn("URLSearchParams", win_url_search_params),
+        native_ctor_fn("URLSearchParams", win_url_search_params),
     );
     obj.set(
         String::from("TextEncoder"),
-        native_fn("TextEncoder", win_text_encoder),
+        native_ctor_fn("TextEncoder", win_text_encoder),
     );
     obj.set(
         String::from("TextDecoder"),
-        native_fn("TextDecoder", win_text_decoder),
+        native_ctor_fn("TextDecoder", win_text_decoder),
     );
     obj.set(
         String::from("AbortController"),
-        native_fn("AbortController", win_abort_controller),
+        native_ctor_fn("AbortController", win_abort_controller),
     );
     obj.set(
         String::from("queueMicrotask"),
@@ -424,7 +424,10 @@ pub fn make_window(
         String::from("structuredClone"),
         native_fn("structuredClone", win_structured_clone),
     );
-    obj.set(String::from("getCookie"), native_fn("getCookie", win_get_cookie));
+    obj.set(
+        String::from("getCookie"),
+        native_fn("getCookie", win_get_cookie),
+    );
     obj.set(
         String::from("getParameterByName"),
         native_fn("getParameterByName", win_get_parameter_by_name),
@@ -439,7 +442,7 @@ pub fn make_window(
     );
     obj.set(
         String::from("DOMParser"),
-        native_fn("DOMParser", win_dom_parser),
+        native_ctor_fn("DOMParser", win_dom_parser),
     );
     let crypto = JsValue::new_object();
     crypto.set_property(
@@ -449,7 +452,7 @@ pub fn make_window(
     obj.set(String::from("crypto"), crypto);
     obj.set(
         String::from("Image"),
-        native_fn("Image", super::document::native_image_ctor),
+        native_ctor_fn("Image", super::document::native_image_ctor),
     );
     let node_ctor = make_native_constructor(vm, "Node", win_dom_ctor, None);
     let node_proto = match &node_ctor {
@@ -1915,7 +1918,9 @@ fn win_performance_now(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 }
 
 fn document_cookie_string(vm: &mut Vm) -> String {
-    vm.get_global("document").get_property("cookie").to_js_string()
+    vm.get_global("document")
+        .get_property("cookie")
+        .to_js_string()
 }
 
 fn parse_cookie_value(cookie_string: &str, name: &str) -> Option<String> {
@@ -1962,7 +1967,11 @@ fn win_get_parameter_by_name(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         .get(1)
         .map(|v| v.to_js_string())
         .filter(|s| !s.is_empty() && s != "undefined")
-        .unwrap_or_else(|| vm.get_global("location").get_property("href").to_js_string());
+        .unwrap_or_else(|| {
+            vm.get_global("location")
+                .get_property("href")
+                .to_js_string()
+        });
     let query = extract_query_string(&url);
     for pair in query.split('&').filter(|s| !s.is_empty()) {
         let mut parts = pair.splitn(2, '=');

@@ -26,7 +26,11 @@ impl RunQueue {
         for _ in 0..NUM_PRIORITIES {
             levels.push(VecDeque::new());
         }
-        RunQueue { levels, bits: [0; 2], count: 0 }
+        RunQueue {
+            levels,
+            bits: [0; 2],
+            count: 0,
+        }
     }
 
     /// Enqueue a TID at the given priority level (back of FIFO).

@@ -151,7 +151,10 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     obj.set(String::from("title"), JsValue::String(title));
     obj.properties.insert(
         String::from("documentElement"),
-        Property::accessor(Some(native_fn("get documentElement", doc_get_document_element)), None),
+        Property::accessor(
+            Some(native_fn("get documentElement", doc_get_document_element)),
+            None,
+        ),
     );
     obj.properties.insert(
         String::from("body"),
@@ -285,7 +288,10 @@ pub fn make_document(vm: &mut Vm, dom: &Dom, url: &str, cookies: &str) -> JsValu
     // W3C DOM: activeElement defaults to <body>.
     obj.properties.insert(
         String::from("activeElement"),
-        Property::accessor(Some(native_fn("get activeElement", doc_get_active_element)), None),
+        Property::accessor(
+            Some(native_fn("get activeElement", doc_get_active_element)),
+            None,
+        ),
     );
     // createTreeWalker / createRange stubs (used by React hydration).
     obj.set(

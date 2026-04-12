@@ -1,12 +1,12 @@
 //! Thread lifecycle: exit, kill, fault recovery.
 
-use super::{get_cpu_id, SCHEDULER, schedule, close_all_fds_for_thread,
-            is_scheduler_locked_by_cpu, force_unlock_scheduler,
-            PER_CPU_CURRENT_TID, PER_CPU_FPU_OWNER, PER_CPU_FPU_PTR,
-            PER_CPU_HAS_THREAD, PER_CPU_IS_USER, PER_CPU_IDLE_STACK_TOP,
-            PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP,
-            clear_per_cpu_name, update_per_cpu_name};
-use super::deferred::{DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP, DeferredThreadCleanup};
+use super::deferred::{DeferredThreadCleanup, DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP};
+use super::{
+    clear_per_cpu_name, close_all_fds_for_thread, force_unlock_scheduler, get_cpu_id,
+    is_scheduler_locked_by_cpu, schedule, update_per_cpu_name, PER_CPU_CURRENT_TID,
+    PER_CPU_FPU_OWNER, PER_CPU_FPU_PTR, PER_CPU_HAS_THREAD, PER_CPU_IDLE_STACK_TOP,
+    PER_CPU_IS_USER, PER_CPU_STACK_BOTTOM, PER_CPU_STACK_TOP, SCHEDULER,
+};
 use crate::memory::address::PhysAddr;
 use crate::task::context::CpuContext;
 use crate::task::thread::ThreadState;
@@ -38,7 +38,10 @@ fn try_exit_diag_mark(mark: u8) {
 #[inline(always)]
 fn try_exit_diag_mark(_mark: u8) {}
 
-fn prepare_idle_recovery_context<F>(cpu_id: usize, mut update_sched: F) -> (u64, Option<*const CpuContext>)
+fn prepare_idle_recovery_context<F>(
+    cpu_id: usize,
+    mut update_sched: F,
+) -> (u64, Option<*const CpuContext>)
 where
     F: FnMut(&mut super::Scheduler),
 {
@@ -81,7 +84,11 @@ where
     (idle_stack_top, idle_ctx)
 }
 
-fn enter_idle_recovery(cpu_id: usize, idle_stack_top: u64, idle_ctx: Option<*const CpuContext>) -> ! {
+fn enter_idle_recovery(
+    cpu_id: usize,
+    idle_stack_top: u64,
+    idle_ctx: Option<*const CpuContext>,
+) -> ! {
     try_exit_diag_mark(b'S');
     if idle_ctx.is_none() {
         PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
@@ -123,7 +130,9 @@ fn enter_idle_recovery(cpu_id: usize, idle_stack_top: u64, idle_ctx: Option<*con
         }
     } else {
         crate::arch::hal::enable_interrupts();
-        loop { crate::arch::hal::halt(); }
+        loop {
+            crate::arch::hal::halt();
+        }
     }
 }
 
@@ -253,7 +262,10 @@ pub fn exit_current(code: u32) {
     {
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
-        let sched = match guard.as_mut() { Some(s) => s, None => return };
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
         let current_tid = match sched.per_cpu[cpu_id].current_tid {
             Some(t) => t,
             None => return,
@@ -270,8 +282,11 @@ pub fn exit_current(code: u32) {
         // ── Cascade kill: terminate all child threads ──────────────
         killed_children = collect_and_terminate_children(sched, current_tid, tick);
         if !killed_children.is_empty() {
-            crate::serial_println!("  exit_current(tid={}): cascade-killed {} child thread(s)",
-                current_tid, killed_children.len());
+            crate::serial_println!(
+                "  exit_current(tid={}): cascade-killed {} child thread(s)",
+                current_tid,
+                killed_children.len()
+            );
         }
 
         // ── Mark self as Terminated ───────────────────────────────
@@ -283,7 +298,8 @@ pub fn exit_current(code: u32) {
         if let Some(pd) = sched.threads[idx].page_directory {
             if !sched.threads[idx].pd_shared {
                 let has_live_siblings = sched.threads.iter().any(|t| {
-                    t.tid != current_tid && t.page_directory == Some(pd)
+                    t.tid != current_tid
+                        && t.page_directory == Some(pd)
                         && t.state != ThreadState::Terminated
                 });
                 if !has_live_siblings {
@@ -300,7 +316,9 @@ pub fn exit_current(code: u32) {
         // Send SIGCHLD to parent
         if parent_tid != 0 {
             if let Some(parent_idx) = sched.find_idx(parent_tid) {
-                sched.threads[parent_idx].signals.send(crate::ipc::signal::SIGCHLD);
+                sched.threads[parent_idx]
+                    .signals
+                    .send(crate::ipc::signal::SIGCHLD);
             }
         }
     } // SCHEDULER lock released here
@@ -314,10 +332,16 @@ pub fn exit_current(code: u32) {
         DEFERRED_PD_DESTROY.lock().push(pd, 0);
     }
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, code, 0, 0,
+        crate::ipc::event_bus::EVT_PROCESS_EXITED,
+        tid,
+        code,
+        0,
+        0,
     ));
     schedule();
-    loop { crate::arch::hal::halt(); }
+    loop {
+        crate::arch::hal::halt();
+    }
 }
 
 /// Try to terminate the current thread (non-blocking lock acquisition).
@@ -342,7 +366,10 @@ pub fn try_exit_current(code: u32) -> bool {
         try_exit_diag_mark(b'C');
         let cpu_id = get_cpu_id();
         try_exit_diag_mark(b'D');
-        let sched = match guard.as_mut() { Some(s) => s, None => return false };
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return false,
+        };
         try_exit_diag_mark(b'E');
         let current_tid = match sched.per_cpu[cpu_id].current_tid {
             Some(t) => t,
@@ -430,13 +457,15 @@ pub static mut BAD_RSP_SAVED: u64 = 0;
 pub extern "C" fn bad_rsp_recovery() -> ! {
     let cpu_id = crate::arch::hal::cpu_id();
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
-    crate::serial_verbose_println!("!RSP RECOVERY on CPU {} — killing TID={}, entering idle", cpu_id, tid);
+    crate::serial_verbose_println!(
+        "!RSP RECOVERY on CPU {} — killing TID={}, entering idle",
+        cpu_id,
+        tid
+    );
 
     let bad_rsp = unsafe { BAD_RSP_SAVED };
     let tss_rsp0 = crate::arch::hal::get_kernel_stack_for_cpu(cpu_id);
-    crate::serial_verbose_println!(
-        "  bad_rsp={:#018x} TSS.RSP0={:#018x}", bad_rsp, tss_rsp0,
-    );
+    crate::serial_verbose_println!("  bad_rsp={:#018x} TSS.RSP0={:#018x}", bad_rsp, tss_rsp0,);
 
     crate::arch::hal::irq_eoi();
 
@@ -446,7 +475,8 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
                 if sched.threads[idx].critical {
                     crate::serial_verbose_println!(
                         "  CRITICAL thread '{}' (TID={}) spared",
-                        sched.threads[idx].name_str(), current_tid,
+                        sched.threads[idx].name_str(),
+                        current_tid,
                     );
                     sched.threads[idx].state = ThreadState::Ready;
                     sched.threads[idx].context.save_complete = 1;
@@ -476,18 +506,29 @@ pub extern "C" fn bad_rsp_recovery() -> ! {
 pub fn fault_kill_and_idle(signal: u32) -> ! {
     let cpu_id = crate::arch::hal::cpu_id();
     let tid = PER_CPU_CURRENT_TID[cpu_id].load(Ordering::Relaxed);
-    crate::serial_verbose_println!("  FALLBACK: manual kill TID={} signal={} on CPU {}", tid, signal, cpu_id);
+    crate::serial_verbose_println!(
+        "  FALLBACK: manual kill TID={} signal={} on CPU {}",
+        tid,
+        signal,
+        cpu_id
+    );
 
     let cpu = cpu_id as u32;
     if is_scheduler_locked_by_cpu(cpu) {
-        unsafe { force_unlock_scheduler(); }
+        unsafe {
+            force_unlock_scheduler();
+        }
     }
     if crate::memory::physical::is_allocator_locked_by_cpu(cpu) {
-        unsafe { crate::memory::physical::force_unlock_allocator(); }
+        unsafe {
+            crate::memory::physical::force_unlock_allocator();
+        }
         crate::serial_verbose_println!("  RECOVERED: force-released physical allocator lock");
     }
     if crate::task::dll::is_dll_locked_by_cpu(cpu) {
-        unsafe { crate::task::dll::force_unlock_dlls(); }
+        unsafe {
+            crate::task::dll::force_unlock_dlls();
+        }
         crate::serial_verbose_println!("  RECOVERED: force-released LOADED_DLLS lock");
     }
 
@@ -515,7 +556,9 @@ pub fn fault_kill_and_idle(signal: u32) -> ! {
 /// Kill a thread by TID. Returns 0 on success, u32::MAX on error.
 /// Also cascade-kills all child threads of the target.
 pub fn kill_thread(tid: u32) -> u32 {
-    if tid == 0 { return u32::MAX; }
+    if tid == 0 {
+        return u32::MAX;
+    }
 
     let mut pd_to_destroy: Option<PhysAddr> = None;
     let is_current;
@@ -526,26 +569,37 @@ pub fn kill_thread(tid: u32) -> u32 {
     let mut guard = SCHEDULER.lock();
     {
         let cpu_id = get_cpu_id();
-        let sched = match guard.as_mut() { Some(s) => s, None => return u32::MAX };
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return u32::MAX,
+        };
 
         let target_idx = match sched.find_idx(tid) {
             Some(idx) => idx,
             None => return u32::MAX,
         };
-        if sched.threads[target_idx].is_idle { return u32::MAX; }
+        if sched.threads[target_idx].is_idle {
+            return u32::MAX;
+        }
 
         is_current = sched.per_cpu[cpu_id].current_tid == Some(tid);
-        running_on_other_cpu = !is_current && sched.per_cpu.iter().enumerate().any(|(i, cpu)| {
-            i != cpu_id && cpu.current_tid == Some(tid)
-        });
+        running_on_other_cpu = !is_current
+            && sched
+                .per_cpu
+                .iter()
+                .enumerate()
+                .any(|(i, cpu)| i != cpu_id && cpu.current_tid == Some(tid));
 
         let tick = crate::arch::hal::timer_current_ticks();
 
         // ── Cascade kill: terminate all child threads ──────────────
         killed_children = collect_and_terminate_children(sched, tid, tick);
         if !killed_children.is_empty() {
-            crate::serial_println!("  kill_thread(tid={}): cascade-killed {} child thread(s)",
-                tid, killed_children.len());
+            crate::serial_println!(
+                "  kill_thread(tid={}): cascade-killed {} child thread(s)",
+                tid,
+                killed_children.len()
+            );
         }
 
         sched.threads[target_idx].state = ThreadState::Terminated;
@@ -558,7 +612,9 @@ pub fn kill_thread(tid: u32) -> u32 {
                 sched.threads[target_idx].page_directory = None;
             } else {
                 let has_live_siblings = sched.threads.iter().any(|t| {
-                    t.tid != tid && t.page_directory == Some(pd) && t.state != ThreadState::Terminated
+                    t.tid != tid
+                        && t.page_directory == Some(pd)
+                        && t.state != ThreadState::Terminated
                 });
                 if has_live_siblings {
                     sched.threads[target_idx].page_directory = None;
@@ -636,12 +692,18 @@ pub fn kill_thread(tid: u32) -> u32 {
     }
 
     crate::ipc::event_bus::system_emit(crate::ipc::event_bus::EventData::new(
-        crate::ipc::event_bus::EVT_PROCESS_EXITED, tid, u32::MAX - 1, 0, 0,
+        crate::ipc::event_bus::EVT_PROCESS_EXITED,
+        tid,
+        u32::MAX - 1,
+        0,
+        0,
     ));
 
     if is_current {
         schedule();
-        loop { crate::arch::hal::halt(); }
+        loop {
+            crate::arch::hal::halt();
+        }
     }
     0
 }

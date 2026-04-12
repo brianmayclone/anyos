@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use libjs::value::JsObject;
-use libjs::vm::native_fn;
+use libjs::vm::{native_ctor_fn, native_fn};
 use libjs::JsValue;
 use libjs::Vm;
 
@@ -43,7 +43,7 @@ fn alloc_ws_id() -> u64 {
 
 /// Create the `WebSocket` global constructor.
 pub fn make_ws_constructor() -> JsValue {
-    native_fn("WebSocket", ws_ctor)
+    native_ctor_fn("WebSocket", ws_ctor)
 }
 
 /// `new WebSocket(url[, protocols])` constructor body.

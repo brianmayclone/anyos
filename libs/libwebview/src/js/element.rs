@@ -385,14 +385,26 @@ fn make_element_impl(vm: &mut Vm, node_id: i64, include_siblings: bool) -> JsVal
         String::from("placeholder"),
         JsValue::String(attr_or_empty(vm, "placeholder")),
     );
-    obj.set(String::from("min"), JsValue::String(attr_or_empty(vm, "min")));
-    obj.set(String::from("max"), JsValue::String(attr_or_empty(vm, "max")));
-    obj.set(String::from("step"), JsValue::String(attr_or_empty(vm, "step")));
+    obj.set(
+        String::from("min"),
+        JsValue::String(attr_or_empty(vm, "min")),
+    );
+    obj.set(
+        String::from("max"),
+        JsValue::String(attr_or_empty(vm, "max")),
+    );
+    obj.set(
+        String::from("step"),
+        JsValue::String(attr_or_empty(vm, "step")),
+    );
     obj.set(
         String::from("pattern"),
         JsValue::String(attr_or_empty(vm, "pattern")),
     );
-    obj.set(String::from("accept"), JsValue::String(attr_or_empty(vm, "accept")));
+    obj.set(
+        String::from("accept"),
+        JsValue::String(attr_or_empty(vm, "accept")),
+    );
     obj.set(
         String::from("autocomplete"),
         JsValue::String(attr_or_empty(vm, "autocomplete")),
@@ -2174,7 +2186,12 @@ fn el_form_check_validity(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
         // Walk all nodes in the DOM and validate those that are children of this form.
         for i in 0..dom.nodes.len() {
             let tag = dom.tag(i);
-            if !matches!(tag, Some(crate::dom::Tag::Input) | Some(crate::dom::Tag::Select) | Some(crate::dom::Tag::Textarea)) {
+            if !matches!(
+                tag,
+                Some(crate::dom::Tag::Input)
+                    | Some(crate::dom::Tag::Select)
+                    | Some(crate::dom::Tag::Textarea)
+            ) {
                 continue;
             }
             // Check if this node is a descendant of the form.
@@ -2238,11 +2255,20 @@ fn el_get_validity(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     obj.set(String::from("valid"), JsValue::Bool(r.is_valid()));
     obj.set(String::from("valueMissing"), JsValue::Bool(r.value_missing));
     obj.set(String::from("typeMismatch"), JsValue::Bool(r.type_mismatch));
-    obj.set(String::from("patternMismatch"), JsValue::Bool(r.pattern_mismatch));
+    obj.set(
+        String::from("patternMismatch"),
+        JsValue::Bool(r.pattern_mismatch),
+    );
     obj.set(String::from("tooLong"), JsValue::Bool(r.too_long));
     obj.set(String::from("tooShort"), JsValue::Bool(r.too_short));
-    obj.set(String::from("rangeUnderflow"), JsValue::Bool(r.range_underflow));
-    obj.set(String::from("rangeOverflow"), JsValue::Bool(r.range_overflow));
+    obj.set(
+        String::from("rangeUnderflow"),
+        JsValue::Bool(r.range_underflow),
+    );
+    obj.set(
+        String::from("rangeOverflow"),
+        JsValue::Bool(r.range_overflow),
+    );
     obj.set(String::from("stepMismatch"), JsValue::Bool(r.step_mismatch));
     obj.set(String::from("badInput"), JsValue::Bool(r.bad_input));
     obj.set(String::from("customError"), JsValue::Bool(false));

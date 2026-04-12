@@ -35,27 +35,45 @@ pub fn current_fd_get(fd: u32) -> Option<FdEntry> {
 /// Caller must handle closing new_fd first and incrementing refcounts.
 pub fn current_fd_dup2(old_fd: u32, new_fd: u32) -> bool {
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return false };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return false,
+    };
     let cpu = get_cpu_id();
-    let idx = match sched.current_idx(cpu) { Some(i) => i, None => return false };
+    let idx = match sched.current_idx(cpu) {
+        Some(i) => i,
+        None => return false,
+    };
     sched.threads[idx].fd_table.dup2(old_fd, new_fd)
 }
 
 /// Allocate the lowest FD >= min_fd in the current thread's FD table.
 pub fn current_fd_alloc_above(min_fd: u32, kind: FdKind) -> Option<u32> {
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return None };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return None,
+    };
     let cpu = get_cpu_id();
-    let idx = match sched.current_idx(cpu) { Some(i) => i, None => return None };
+    let idx = match sched.current_idx(cpu) {
+        Some(i) => i,
+        None => return None,
+    };
     sched.threads[idx].fd_table.alloc_above(min_fd, kind)
 }
 
 /// Allocate an FD at a specific slot in the current thread's FD table.
 pub fn current_fd_alloc_at(fd: u32, kind: FdKind) -> bool {
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return false };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return false,
+    };
     let cpu = get_cpu_id();
-    let idx = match sched.current_idx(cpu) { Some(i) => i, None => return false };
+    let idx = match sched.current_idx(cpu) {
+        Some(i) => i,
+        None => return false,
+    };
     sched.threads[idx].fd_table.alloc_at(fd, kind)
 }
 
@@ -85,7 +103,10 @@ pub fn current_fd_set_nonblock(fd: u32, nonblock: bool) {
 pub fn set_thread_fd_table(tid: u32, table: FdTable) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.fd_table = table;
     }

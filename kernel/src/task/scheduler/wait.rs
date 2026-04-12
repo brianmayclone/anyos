@@ -1,6 +1,6 @@
 //! Waiting / sleeping: waitpid, sleep_until, block_current_thread.
 
-use super::{get_cpu_id, SCHEDULER, schedule};
+use super::{get_cpu_id, schedule, SCHEDULER};
 use crate::task::thread::ThreadState;
 
 #[inline]
@@ -18,12 +18,17 @@ pub fn waitpid(tid: u32) -> u32 {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID);
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
-        let sched = match guard.as_mut() { Some(s) => s, None => return u32::MAX };
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return u32::MAX,
+        };
         if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
             if target.state == ThreadState::Terminated {
                 return consume_exit_status(target);
             }
-        } else { return u32::MAX; }
+        } else {
+            return u32::MAX;
+        }
         if let Some(current_tid) = sched.per_cpu[cpu_id].current_tid {
             if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
                 target.exit_waiter_tid = Some(current_tid);
@@ -46,7 +51,10 @@ pub fn waitpid(tid: u32) -> u32 {
     // Yield immediately instead of waiting up to 1ms for timer preemption.
     schedule();
     loop {
-        { crate::arch::hal::enable_interrupts(); crate::arch::hal::halt(); }
+        {
+            crate::arch::hal::enable_interrupts();
+            crate::arch::hal::halt();
+        }
         {
             crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID);
             let mut guard = SCHEDULER.lock();
@@ -55,7 +63,9 @@ pub fn waitpid(tid: u32) -> u32 {
                     if target.state == ThreadState::Terminated {
                         return consume_exit_status(target);
                     }
-                } else { return u32::MAX; }
+                } else {
+                    return u32::MAX;
+                }
             }
         }
     }
@@ -69,17 +79,21 @@ pub fn waitpid_any() -> (u32, u32) {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID_ANY);
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
-        let sched = match guard.as_mut() { Some(s) => s, None => return (u32::MAX, u32::MAX) };
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return (u32::MAX, u32::MAX),
+        };
         current_tid = match sched.per_cpu[cpu_id].current_tid {
             Some(t) => t,
             None => return (u32::MAX, u32::MAX),
         };
 
         // Check for already-terminated children
-        if let Some(child_idx) = sched.threads.iter().position(|t|
-            t.parent_tid == current_tid && t.state == ThreadState::Terminated
+        if let Some(child_idx) = sched.threads.iter().position(|t| {
+            t.parent_tid == current_tid
+                && t.state == ThreadState::Terminated
                 && t.exit_code.is_some()
-        ) {
+        }) {
             let child_tid = sched.threads[child_idx].tid;
             let code = consume_exit_status(&mut sched.threads[child_idx]);
             return (child_tid, code);
@@ -109,15 +123,19 @@ pub fn waitpid_any() -> (u32, u32) {
     // Yield immediately instead of waiting up to 1ms for timer preemption.
     schedule();
     loop {
-        { crate::arch::hal::enable_interrupts(); crate::arch::hal::halt(); }
+        {
+            crate::arch::hal::enable_interrupts();
+            crate::arch::hal::halt();
+        }
         {
             crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_WAITPID_ANY);
             let mut guard = SCHEDULER.lock();
             if let Some(sched) = guard.as_mut() {
-                if let Some(child_idx) = sched.threads.iter().position(|t|
-                    t.parent_tid == current_tid && t.state == ThreadState::Terminated
+                if let Some(child_idx) = sched.threads.iter().position(|t| {
+                    t.parent_tid == current_tid
+                        && t.state == ThreadState::Terminated
                         && t.exit_code.is_some()
-                ) {
+                }) {
                     let child_tid = sched.threads[child_idx].tid;
                     let code = consume_exit_status(&mut sched.threads[child_idx]);
                     return (child_tid, code);
@@ -137,15 +155,17 @@ pub fn waitpid_any() -> (u32, u32) {
 pub fn try_waitpid_any() -> (u32, u32) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_TRY_WAITPID_ANY);
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return (u32::MAX, u32::MAX) };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return (u32::MAX, u32::MAX),
+    };
     let current_tid = match sched.per_cpu[get_cpu_id()].current_tid {
         Some(t) => t,
         None => return (u32::MAX, u32::MAX),
     };
-    if let Some(child_idx) = sched.threads.iter().position(|t|
-        t.parent_tid == current_tid && t.state == ThreadState::Terminated
-            && t.exit_code.is_some()
-    ) {
+    if let Some(child_idx) = sched.threads.iter().position(|t| {
+        t.parent_tid == current_tid && t.state == ThreadState::Terminated && t.exit_code.is_some()
+    }) {
         let child_tid = sched.threads[child_idx].tid;
         let code = consume_exit_status(&mut sched.threads[child_idx]);
         return (child_tid, code);
@@ -169,7 +189,10 @@ pub fn try_waitpid_any() -> (u32, u32) {
 pub fn try_waitpid(tid: u32) -> u32 {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_TRY_WAITPID);
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return u32::MAX };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return u32::MAX,
+    };
     if let Some(target) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         if target.state == ThreadState::Terminated {
             return consume_exit_status(target);
@@ -189,7 +212,10 @@ pub fn sleep_until(wake_at: u32) {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SLEEP_UNTIL);
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
-        let sched = match guard.as_mut() { Some(s) => s, None => return };
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
         if let Some(idx) = sched.current_idx(cpu_id) {
             // CRITICAL: Set Blocked first, then clear save_complete
             // (same rationale as waitpid — no window where state==Ready
@@ -209,7 +235,10 @@ pub fn block_current_thread() {
         crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_BLOCK_CURRENT);
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
-        let sched = match guard.as_mut() { Some(s) => s, None => return };
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
         if let Some(idx) = sched.current_idx(cpu_id) {
             // CRITICAL: Set Blocked first, then clear save_complete
             // (same rationale as waitpid).

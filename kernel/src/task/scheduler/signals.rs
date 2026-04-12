@@ -1,12 +1,12 @@
 //! Signal helpers, parent/child TID management, thread existence checks.
 
-use super::{get_cpu_id, SCHEDULER, schedule};
+use super::{get_cpu_id, schedule, SCHEDULER};
 use crate::task::thread::ThreadState;
 use alloc::vec::Vec;
 
 /// Send a signal to a thread by TID. Returns true if the thread exists.
 pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
-    use crate::ipc::signal::{SIGTSTP, SIGSTOP, SIGCONT, SIG_DFL};
+    use crate::ipc::signal::{SIGCONT, SIGSTOP, SIGTSTP, SIG_DFL};
 
     let mut guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_mut() {
@@ -20,7 +20,10 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
         // SIGTSTP/SIGSTOP: stop the thread (default action)
         if (sig == SIGTSTP || sig == SIGSTOP) && handler == SIG_DFL {
             let state = sched.threads[idx].state;
-            if state == ThreadState::Ready || state == ThreadState::Running || state == ThreadState::Blocked {
+            if state == ThreadState::Ready
+                || state == ThreadState::Running
+                || state == ThreadState::Blocked
+            {
                 // If the thread was sleeping (Blocked with wake_at_tick), save the
                 // remaining ticks so SIGCONT can resume the sleep correctly.
                 if state == ThreadState::Blocked {
@@ -37,7 +40,12 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
                     }
                 }
                 sched.threads[idx].state = ThreadState::Stopped;
-                crate::serial_verbose_println!("Signal {}: stopped T{} (was {:?})", sig, tid, state);
+                crate::serial_verbose_println!(
+                    "Signal {}: stopped T{} (was {:?})",
+                    sig,
+                    tid,
+                    state
+                );
                 // Wake any waitpid waiter so it can see the stopped state
                 if let Some(waiter_tid) = sched.threads[idx].exit_waiter_tid {
                     sched.wake_thread_inner(waiter_tid);
@@ -53,10 +61,15 @@ pub fn send_signal_to_thread(tid: u32, sig: u32) -> bool {
                 // with a new wake_at_tick instead of making it immediately Ready.
                 if sched.threads[idx].sleep_remaining > 0 {
                     let now = crate::arch::hal::timer_current_ticks();
-                    sched.threads[idx].wake_at_tick = Some(now.wrapping_add(sched.threads[idx].sleep_remaining));
+                    sched.threads[idx].wake_at_tick =
+                        Some(now.wrapping_add(sched.threads[idx].sleep_remaining));
                     sched.threads[idx].sleep_remaining = 0;
                     sched.threads[idx].state = ThreadState::Blocked;
-                    crate::serial_verbose_println!("Signal {}: continued T{} (re-sleeping)", sig, tid);
+                    crate::serial_verbose_println!(
+                        "Signal {}: continued T{} (re-sleeping)",
+                        sig,
+                        tid
+                    );
                 } else {
                     sched.threads[idx].state = ThreadState::Ready;
                     let cpu = sched.threads[idx].affinity_cpu;
@@ -208,7 +221,10 @@ pub fn set_thread_signals(tid: u32, signals: crate::ipc::signal::SignalState) {
 pub fn thread_exists(tid: u32) -> bool {
     let guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_ref() {
-        return sched.threads.iter().any(|t| t.tid == tid && t.state != ThreadState::Terminated);
+        return sched
+            .threads
+            .iter()
+            .any(|t| t.tid == tid && t.state != ThreadState::Terminated);
     }
     false
 }
@@ -231,9 +247,16 @@ pub fn stop_current_thread(sig: u32) {
     {
         let mut guard = SCHEDULER.lock();
         let cpu_id = get_cpu_id();
-        let sched = match guard.as_mut() { Some(s) => s, None => return };
+        let sched = match guard.as_mut() {
+            Some(s) => s,
+            None => return,
+        };
         if let Some(idx) = sched.current_idx(cpu_id) {
-            crate::serial_verbose_println!("Signal {}: stopping current T{}", sig, sched.threads[idx].tid);
+            crate::serial_verbose_println!(
+                "Signal {}: stopping current T{}",
+                sig,
+                sched.threads[idx].tid
+            );
             sched.threads[idx].state = ThreadState::Stopped;
             sched.threads[idx].context.save_complete = 0;
             // Wake any waitpid waiter so it can see the stopped state
@@ -262,7 +285,9 @@ pub fn is_thread_stopped(tid: u32) -> bool {
 pub fn all_live_tids() -> Vec<u32> {
     let guard = SCHEDULER.lock();
     if let Some(sched) = guard.as_ref() {
-        sched.threads.iter()
+        sched
+            .threads
+            .iter()
             .filter(|t| !t.is_idle && t.state != ThreadState::Terminated)
             .map(|t| t.tid)
             .collect()

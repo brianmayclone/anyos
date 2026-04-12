@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use libjs::value::JsObject;
-use libjs::vm::native_fn;
+use libjs::vm::{native_ctor_fn, native_fn};
 use libjs::JsValue;
 use libjs::Vm;
 
@@ -19,7 +19,7 @@ use super::http;
 
 /// Create the XMLHttpRequest constructor function.
 pub fn make_xhr_constructor() -> JsValue {
-    native_fn("XMLHttpRequest", xhr_ctor)
+    native_ctor_fn("XMLHttpRequest", xhr_ctor)
 }
 
 fn xhr_ctor(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {

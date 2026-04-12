@@ -16,29 +16,46 @@ struct PendingPermSlot {
 
 impl PendingPermSlot {
     const fn empty() -> Self {
-        PendingPermSlot { tid: 0, data: [0u8; 512], len: 0, used: false }
+        PendingPermSlot {
+            tid: 0,
+            data: [0u8; 512],
+            len: 0,
+            used: false,
+        }
     }
 }
 
 static PENDING_PERM_INFO: Spinlock<[PendingPermSlot; MAX_PENDING_PERM]> = Spinlock::new([
-    PendingPermSlot::empty(), PendingPermSlot::empty(),
-    PendingPermSlot::empty(), PendingPermSlot::empty(),
-    PendingPermSlot::empty(), PendingPermSlot::empty(),
-    PendingPermSlot::empty(), PendingPermSlot::empty(),
-    PendingPermSlot::empty(), PendingPermSlot::empty(),
-    PendingPermSlot::empty(), PendingPermSlot::empty(),
-    PendingPermSlot::empty(), PendingPermSlot::empty(),
-    PendingPermSlot::empty(), PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
+    PendingPermSlot::empty(),
 ]);
 
 /// Store pending permission info for the current thread.
 /// Data is a UTF-8 byte slice: "app_id\x1Fapp_name\x1Fcaps_hex\x1Fbundle_path".
 pub fn set_current_perm_pending(data: &[u8]) {
     let tid = super::current_tid();
-    if tid == 0 { return; }
+    if tid == 0 {
+        return;
+    }
     let mut slots = PENDING_PERM_INFO.lock();
     // Overwrite existing slot for this TID, or allocate a new one
-    let idx = slots.iter().position(|s| s.used && s.tid == tid)
+    let idx = slots
+        .iter()
+        .position(|s| s.used && s.tid == tid)
         .or_else(|| slots.iter().position(|s| !s.used));
     if let Some(i) = idx {
         let len = data.len().min(512);
@@ -54,7 +71,9 @@ pub fn set_current_perm_pending(data: &[u8]) {
 /// Returns the number of bytes copied (0 if none).
 pub fn current_perm_pending(buf: &mut [u8]) -> usize {
     let tid = super::current_tid();
-    if tid == 0 { return 0; }
+    if tid == 0 {
+        return 0;
+    }
     let mut slots = PENDING_PERM_INFO.lock();
     if let Some(slot) = slots.iter_mut().find(|s| s.used && s.tid == tid) {
         let len = slot.len as usize;

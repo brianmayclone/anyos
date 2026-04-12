@@ -24,7 +24,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use libjs::value::{JsArray, JsObject};
-use libjs::vm::native_fn;
+use libjs::vm::{native_ctor_fn, native_fn};
 use libjs::{JsEngine, JsValue, Vm};
 
 use crate::css::{Declaration, KeyframeSet};
@@ -608,7 +608,10 @@ impl JsRuntime {
         if self.native_api_initialized {
             let doc = self.engine.vm().get_global("document");
             if !doc.is_undefined() {
-                doc.set_property(String::from("cookie"), JsValue::String(self.cookies.clone()));
+                doc.set_property(
+                    String::from("cookie"),
+                    JsValue::String(self.cookies.clone()),
+                );
             }
         }
     }
@@ -754,7 +757,10 @@ impl JsRuntime {
             anyos_std::println!("[js] setup native api reuse: url={}", url);
             let doc = self.engine.vm().get_global("document");
             if !doc.is_undefined() {
-                doc.set_property(String::from("cookie"), JsValue::String(self.cookies.clone()));
+                doc.set_property(
+                    String::from("cookie"),
+                    JsValue::String(self.cookies.clone()),
+                );
             }
         }
 
@@ -1038,9 +1044,15 @@ impl JsRuntime {
         vm.set_global("fetch", native_fn("fetch", fetch::native_fetch));
         vm.set_global("XMLHttpRequest", xhr::make_xhr_constructor());
         vm.set_global("WebSocket", websocket::make_ws_constructor());
-        vm.set_global("Headers", native_fn("Headers", fetch::native_headers_ctor));
-        vm.set_global("Image", native_fn("Image", document::native_image_ctor));
-        vm.set_global("FormData", native_fn("FormData", native_formdata_ctor));
+        vm.set_global(
+            "Headers",
+            native_ctor_fn("Headers", fetch::native_headers_ctor),
+        );
+        vm.set_global(
+            "Image",
+            native_ctor_fn("Image", document::native_image_ctor),
+        );
+        vm.set_global("FormData", native_ctor_fn("FormData", native_formdata_ctor));
         anyos_std::println!("[js] setup native api: top-level globals done");
 
         // Timer globals.
@@ -2579,14 +2591,88 @@ fn native_formdata_ctor(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     obj.set(String::from("append"), native_fn("append", formdata_append));
     obj.set(String::from("set"), native_fn("set", formdata_set));
     obj.set(String::from("get"), native_fn("get", formdata_get));
-    obj.set(String::from("getAll"), native_fn("getAll", formdata_get_all));
+    obj.set(
+        String::from("getAll"),
+        native_fn("getAll", formdata_get_all),
+    );
     obj.set(String::from("has"), native_fn("has", formdata_has));
     obj.set(String::from("delete"), native_fn("delete", formdata_delete));
-    obj.set(String::from("entries"), native_fn("entries", formdata_entries));
+    obj.set(
+        String::from("entries"),
+        native_fn("entries", formdata_entries),
+    );
     obj.set(String::from("keys"), native_fn("keys", formdata_keys));
     obj.set(String::from("values"), native_fn("values", formdata_values));
-    obj.set(String::from("forEach"), native_fn("forEach", formdata_foreach));
+    obj.set(
+        String::from("forEach"),
+        native_fn("forEach", formdata_foreach),
+    );
     JsValue::Object(Rc::new(RefCell::new(obj)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::JsRuntime;
+    use crate::html;
+    use libjs::JsValue;
+
+    #[test]
+    fn browser_native_constructors_are_constructable() {
+        let dom = html::parse("<html><body></body></html>");
+        let mut runtime = JsRuntime::new();
+        let script = r#"
+            const smoke = {
+              event: new Event('x').type === 'x',
+              customEvent: new CustomEvent('y', { detail: 7 }).detail === 7,
+              mouseEvent: new MouseEvent('click').type === 'click',
+              keyboardEvent: new KeyboardEvent('keydown').type === 'keydown',
+              inputEvent: new InputEvent('input').type === 'input',
+              focusEvent: new FocusEvent('focus').type === 'focus',
+              wheelEvent: new WheelEvent('wheel').type === 'wheel',
+              pointerEvent: new PointerEvent('pointerdown').type === 'pointerdown',
+              mutationObserver: typeof new MutationObserver(function(){}).observe === 'function',
+              resizeObserver: typeof new ResizeObserver(function(){}).observe === 'function',
+              intersectionObserver: typeof new IntersectionObserver(function(){}).observe === 'function',
+              messageChannel: !!new MessageChannel().port1,
+              url: new URL('https://example.com/path').href === 'https://example.com/path',
+              searchParams: new URLSearchParams('a=1').get('a') === '1',
+              textEncoder: typeof new TextEncoder().encode === 'function',
+              textDecoder: typeof new TextDecoder().decode === 'function',
+              abortController: !!new AbortController().signal,
+              domParser: typeof new DOMParser().parseFromString === 'function',
+              xhr: typeof new XMLHttpRequest().open === 'function',
+              headers: new Headers({ Foo: 'Bar' }).get('foo') === 'Bar',
+              image: typeof new Image().addEventListener === 'function',
+              formData: typeof new FormData().append === 'function',
+            };
+            globalThis.__ctor_smoke_ok = Object.values(smoke).every(Boolean);
+            globalThis.__ctor_smoke_count = Object.keys(smoke).length;
+            globalThis.__ws_ctor_ok = new WebSocket('wss://example.com/socket').url === 'wss://example.com/socket';
+        "#;
+
+        runtime.execute_script_sources(&dom, "https://example.com/", &[script.to_string()]);
+
+        assert!(
+            runtime.engine.vm().last_exception.is_none(),
+            "unexpected JS exception: {:?}",
+            runtime.engine.vm().last_exception
+        );
+        assert!(
+            matches!(
+                runtime.engine.vm().get_global("__ctor_smoke_ok"),
+                JsValue::Bool(true)
+            ),
+            "constructor smoke test failed"
+        );
+        assert!(
+            matches!(
+                runtime.engine.vm().get_global("__ws_ctor_ok"),
+                JsValue::Bool(true)
+            ),
+            "websocket constructor smoke test failed"
+        );
+        assert_eq!(runtime.pending_ws_connects.len(), 1);
+    }
 }
 
 /// Helper: read all [name, value] pairs from FormData's __entries.
@@ -2601,8 +2687,16 @@ fn formdata_read_entries(vm: &Vm) -> Vec<(String, String)> {
                     if let Some(elem) = arr.elements.get(&i) {
                         if let JsValue::Array(ref pair_rc) = elem {
                             let pair = pair_rc.borrow();
-                            let name = pair.elements.get(&0).map(|v| v.to_js_string()).unwrap_or_default();
-                            let value = pair.elements.get(&1).map(|v| v.to_js_string()).unwrap_or_default();
+                            let name = pair
+                                .elements
+                                .get(&0)
+                                .map(|v| v.to_js_string())
+                                .unwrap_or_default();
+                            let value = pair
+                                .elements
+                                .get(&1)
+                                .map(|v| v.to_js_string())
+                                .unwrap_or_default();
                             entries.push((name, value));
                         }
                     }
@@ -2627,7 +2721,9 @@ fn formdata_write_entries(vm: &Vm, entries: &[(String, String)]) {
                 ])
             })
             .collect();
-        obj_rc.borrow_mut().set(String::from("__entries"), JsValue::new_array(pairs));
+        obj_rc
+            .borrow_mut()
+            .set(String::from("__entries"), JsValue::new_array(pairs));
     }
 }
 
@@ -2702,13 +2798,19 @@ fn formdata_entries(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 fn formdata_keys(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let entries = formdata_read_entries(vm);
-    let keys: Vec<JsValue> = entries.iter().map(|(n, _)| JsValue::String(n.clone())).collect();
+    let keys: Vec<JsValue> = entries
+        .iter()
+        .map(|(n, _)| JsValue::String(n.clone()))
+        .collect();
     JsValue::new_array(keys)
 }
 
 fn formdata_values(vm: &mut Vm, _args: &[JsValue]) -> JsValue {
     let entries = formdata_read_entries(vm);
-    let vals: Vec<JsValue> = entries.iter().map(|(_, v)| JsValue::String(v.clone())).collect();
+    let vals: Vec<JsValue> = entries
+        .iter()
+        .map(|(_, v)| JsValue::String(v.clone()))
+        .collect();
     JsValue::new_array(vals)
 }
 

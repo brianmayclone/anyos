@@ -10,13 +10,18 @@ use crate::task::thread::ThreadState;
 pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_GET_THREAD_INFO);
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.page_directory = Some(pd);
         #[cfg(target_arch = "x86_64")]
         {
             thread.pcid = crate::memory::virtual_mem::allocate_pcid();
-            thread.context.set_page_table(pd.as_u64() | thread.pcid as u64);
+            thread
+                .context
+                .set_page_table(pd.as_u64() | thread.pcid as u64);
         }
         #[cfg(target_arch = "aarch64")]
         thread.context.set_page_table(pd.as_u64());
@@ -45,7 +50,10 @@ pub fn set_thread_user_info(tid: u32, pd: PhysAddr, brk: u32) {
 /// Set the architecture mode for a thread.
 pub fn set_thread_arch_mode(tid: u32, mode: crate::task::thread::ArchMode) {
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.arch_mode = mode;
     }
@@ -117,12 +125,15 @@ pub fn current_exit_info() -> (u32, Option<PhysAddr>, bool) {
             let pd = sched.threads[idx].page_directory;
             let pd_shared = sched.threads[idx].pd_shared;
             let has_siblings = if let Some(pd_addr) = pd {
-                pd_shared || sched.threads.iter().any(|t| {
-                    t.tid != tid
-                        && t.page_directory == Some(pd_addr)
-                        && t.state != ThreadState::Terminated
-                })
-            } else { false };
+                pd_shared
+                    || sched.threads.iter().any(|t| {
+                        t.tid != tid
+                            && t.page_directory == Some(pd_addr)
+                            && t.state != ThreadState::Terminated
+                    })
+            } else {
+                false
+            };
             let can_destroy = pd.is_some() && !pd_shared && !has_siblings;
             return (tid, pd, can_destroy);
         }
@@ -200,7 +211,10 @@ pub fn set_current_thread_mmap_next(val: u32) {
 pub fn set_thread_args(tid: u32, args: &str) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_ARGS);
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         let bytes = args.as_bytes();
         let len = bytes.len().min(255);
@@ -230,7 +244,10 @@ pub fn current_thread_args(buf: &mut [u8]) -> usize {
 pub fn set_thread_cwd(tid: u32, cwd: &str) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_CWD);
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         let bytes = cwd.as_bytes();
         let len = bytes.len().min(511);
@@ -260,7 +277,10 @@ pub fn current_thread_cwd(buf: &mut [u8]) -> usize {
 pub fn set_thread_stdout_pipe(tid: u32, pipe_id: u32) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_PIPE);
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.stdout_pipe = pipe_id;
     }
@@ -283,7 +303,10 @@ pub fn current_thread_stdout_pipe() -> u32 {
 pub fn set_thread_stdin_pipe(tid: u32, pipe_id: u32) {
     crate::sched_diag::set(get_cpu_id(), crate::sched_diag::PHASE_SET_THREAD_PIPE);
     let mut guard = SCHEDULER.lock();
-    let sched = match guard.as_mut() { Some(s) => s, None => return };
+    let sched = match guard.as_mut() {
+        Some(s) => s,
+        None => return,
+    };
     if let Some(thread) = sched.threads.iter_mut().find(|t| t.tid == tid) {
         thread.stdin_pipe = pipe_id;
     }

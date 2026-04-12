@@ -27,46 +27,46 @@
 //!   SCHEDULER (use deferred_pd_destroy queue).
 
 // --- Submodules ---
-mod run_queue;
-mod deferred;
-mod fpu;
-mod perm;
-mod spawn;
 mod accessors;
-mod priority;
-mod thread_config;
-mod wait;
-mod fork;
+mod debug_trace;
+mod deferred;
 mod diagnostics;
 mod fd_table;
-mod signals;
+mod fork;
+mod fpu;
 mod lifecycle;
-mod debug_trace;
+mod perm;
+mod priority;
+mod run_queue;
+mod signals;
+mod spawn;
+mod thread_config;
+mod wait;
 
 // Re-export all public API functions from submodules.
-pub use fpu::*;
-pub use perm::*;
-pub use spawn::*;
 pub use accessors::*;
-pub use priority::*;
-pub use thread_config::*;
-pub use wait::*;
-pub use fork::*;
+pub use debug_trace::*;
 pub use diagnostics::*;
 pub use fd_table::*;
-pub use signals::*;
+pub use fork::*;
+pub use fpu::*;
 pub use lifecycle::*;
-pub use debug_trace::*;
+pub use perm::*;
+pub use priority::*;
+pub use signals::*;
+pub use spawn::*;
+pub use thread_config::*;
+pub use wait::*;
 
+use crate::arch::hal::MAX_CPUS;
 use crate::sync::spinlock::Spinlock;
 use crate::task::context::CpuContext;
 use crate::task::thread::{Thread, ThreadState};
-use crate::arch::hal::MAX_CPUS;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use deferred::{process_deferred_thread_cleanup, DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP};
 use run_queue::RunQueue;
-use deferred::{DEFERRED_PD_DESTROY, DEFERRED_THREAD_CLEANUP, process_deferred_thread_cleanup};
 
 #[cfg(target_arch = "aarch64")]
 use crate::arch::arm64::exceptions::ExceptionFrame;
@@ -102,7 +102,10 @@ fn clamp_priority(priority: u8, context: &str) -> u8 {
     if priority > MAX_PRIORITY {
         crate::serial_verbose_println!(
             "  WARN: priority {} > {} clamped to {} ({})",
-            priority, MAX_PRIORITY, MAX_PRIORITY, context
+            priority,
+            MAX_PRIORITY,
+            MAX_PRIORITY,
+            context
         );
         MAX_PRIORITY
     } else {
@@ -200,11 +203,25 @@ static PER_CPU_FPU_PTR: [AtomicU64; MAX_CPUS] = {
 static mut SCRATCH_CTX: [CpuContext; MAX_CPUS] = {
     #[cfg(target_arch = "x86_64")]
     const INIT: CpuContext = CpuContext {
-        rax: 0, rbx: 0, rcx: 0, rdx: 0,
-        rsi: 0, rdi: 0, rbp: 0,
-        r8: 0, r9: 0, r10: 0, r11: 0,
-        r12: 0, r13: 0, r14: 0, r15: 0,
-        rsp: 0, rip: 0, rflags: 0, cr3: 0,
+        rax: 0,
+        rbx: 0,
+        rcx: 0,
+        rdx: 0,
+        rsi: 0,
+        rdi: 0,
+        rbp: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+        rsp: 0,
+        rip: 0,
+        rflags: 0,
+        cr3: 0,
         save_complete: 1,
         canary: 0,
         checksum: 0,
@@ -213,7 +230,11 @@ static mut SCRATCH_CTX: [CpuContext; MAX_CPUS] = {
     const INIT: CpuContext = CpuContext {
         x: [0; 31],
         d: [0; 8],
-        sp: 0, pc: 0, pstate: 0, ttbr0: 0, tpidr: 0,
+        sp: 0,
+        pc: 0,
+        pstate: 0,
+        ttbr0: 0,
+        tpidr: 0,
         save_complete: 1,
         canary: 0,
         checksum: 0,
@@ -323,9 +344,10 @@ fn sched_diag_dump_sleep_switch(diag: SleepSwitchDiag) {
     }
     let mut acquired = false;
     for _ in 0..1024u32 {
-        if SLEEP_SWITCH_DIAG_LOCK.compare_exchange(
-            false, true, Ordering::Acquire, Ordering::Relaxed,
-        ).is_ok() {
+        if SLEEP_SWITCH_DIAG_LOCK
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
             acquired = true;
             break;
         }
@@ -416,7 +438,10 @@ static DEFERRED_WAKE_PENDING: AtomicU32 = AtomicU32::new(0);
 pub fn deferred_wake(tid: u32) {
     for slot in &DEFERRED_WAKE_TIDS {
         // Try to claim an empty slot (0 → tid).
-        if slot.compare_exchange(0, tid, Ordering::Release, Ordering::Relaxed).is_ok() {
+        if slot
+            .compare_exchange(0, tid, Ordering::Release, Ordering::Relaxed)
+            .is_ok()
+        {
             DEFERRED_WAKE_PENDING.fetch_add(1, Ordering::Relaxed);
             return;
         }
@@ -483,7 +508,11 @@ fn clear_per_cpu_name(cpu_id: usize) {
 /// Read CPU ID (always accurate, even after migration).
 fn get_cpu_id() -> usize {
     let c = crate::arch::hal::cpu_id();
-    if c < MAX_CPUS { c } else { 0 }
+    if c < MAX_CPUS {
+        c
+    } else {
+        0
+    }
 }
 
 // =============================================================================
@@ -542,7 +571,9 @@ extern "C" fn idle_thread_entry() {
             }
         } else {
             loop {
-                unsafe { core::arch::asm!("sti; hlt"); }
+                unsafe {
+                    core::arch::asm!("sti; hlt");
+                }
             }
         }
     }
@@ -567,9 +598,12 @@ impl Scheduler {
             return false;
         }
         if t.is_user {
-            let user_start = crate::task::loader::user_thread_trampoline as *const () as usize as u64;
-            let thread_start = crate::task::loader::thread_create_trampoline as *const () as usize as u64;
-            let fork_start = crate::task::loader::fork_child_trampoline as *const () as usize as u64;
+            let user_start =
+                crate::task::loader::user_thread_trampoline as *const () as usize as u64;
+            let thread_start =
+                crate::task::loader::thread_create_trampoline as *const () as usize as u64;
+            let fork_start =
+                crate::task::loader::fork_child_trampoline as *const () as usize as u64;
             if pc == user_start || pc == thread_start || pc == fork_start {
                 return false;
             }
@@ -581,9 +615,7 @@ impl Scheduler {
     #[inline]
     fn arm64_needs_inflight_continuation_pin(&self, idx: usize) -> bool {
         let t = &self.threads[idx];
-        t.is_user
-            && t.state == ThreadState::Blocked
-            && t.context.save_complete == 0
+        t.is_user && t.state == ThreadState::Blocked && t.context.save_complete == 0
     }
 
     fn new() -> Self {
@@ -605,10 +637,22 @@ impl Scheduler {
         // Create per-CPU idle threads (priority 0 = lowest).
         for cpu in 0..MAX_CPUS {
             let name: &str = match cpu {
-                0 => "idle/0",   1 => "idle/1",   2 => "idle/2",   3 => "idle/3",
-                4 => "idle/4",   5 => "idle/5",   6 => "idle/6",   7 => "idle/7",
-                8 => "idle/8",   9 => "idle/9",  10 => "idle/10", 11 => "idle/11",
-               12 => "idle/12", 13 => "idle/13", 14 => "idle/14", 15 => "idle/15",
+                0 => "idle/0",
+                1 => "idle/1",
+                2 => "idle/2",
+                3 => "idle/3",
+                4 => "idle/4",
+                5 => "idle/5",
+                6 => "idle/6",
+                7 => "idle/7",
+                8 => "idle/8",
+                9 => "idle/9",
+                10 => "idle/10",
+                11 => "idle/11",
+                12 => "idle/12",
+                13 => "idle/13",
+                14 => "idle/14",
+                15 => "idle/15",
                 _ => "idle/?",
             };
             let mut thread = Thread::new(idle_thread_entry, 0, name);
@@ -632,7 +676,8 @@ impl Scheduler {
         for probe in 0..4 {
             let slot = (base_slot + probe) & (TID_CACHE_SIZE - 1);
             let (cached_tid, cached_idx) = unsafe { TID_INDEX_CACHE[slot] };
-            if cached_tid == tid && cached_idx < self.threads.len()
+            if cached_tid == tid
+                && cached_idx < self.threads.len()
                 && self.threads[cached_idx].tid == tid
             {
                 return Some(cached_idx);
@@ -647,7 +692,9 @@ impl Scheduler {
             for probe in 0..4 {
                 let slot = (base_slot + probe) & (TID_CACHE_SIZE - 1);
                 if unsafe { TID_INDEX_CACHE[slot] }.0 == 0 || probe == 3 {
-                    unsafe { TID_INDEX_CACHE[slot] = (tid, idx); }
+                    unsafe {
+                        TID_INDEX_CACHE[slot] = (tid, idx);
+                    }
                     break;
                 }
             }
@@ -702,7 +749,9 @@ impl Scheduler {
                 tie_count = 1;
             } else if len == best_len {
                 tie_count += 1;
-                if rr % tie_count == 0 { best_cpu = cpu; }
+                if rr % tie_count == 0 {
+                    best_cpu = cpu;
+                }
             }
         }
         best_cpu
@@ -748,6 +797,47 @@ impl Scheduler {
         }
     }
 
+    /// True if any CPU still appears to reference the given kernel stack.
+    ///
+    /// We intentionally check more than `current_tid`:
+    /// - per-CPU cached stack bounds used by fault diagnostics
+    /// - the active TSS/SYSCALL kernel stack pointer programmed for that CPU
+    ///
+    /// Crashes in the browser path strongly suggest we sometimes reap a thread
+    /// after it is no longer "current" in scheduler bookkeeping but while some
+    /// CPU still has stack metadata or a return path pointing at that stack.
+    #[inline]
+    fn stack_still_referenced_on_any_cpu(
+        &self,
+        tid: u32,
+        stack_bottom: u64,
+        stack_top: u64,
+    ) -> bool {
+        for cpu in 0..MAX_CPUS {
+            if self.per_cpu[cpu].current_tid == Some(tid) {
+                return true;
+            }
+
+            let cached_bottom = PER_CPU_STACK_BOTTOM[cpu].load(Ordering::Relaxed);
+            let cached_top = PER_CPU_STACK_TOP[cpu].load(Ordering::Relaxed);
+            if cached_bottom == stack_bottom || cached_top == stack_top {
+                return true;
+            }
+            if cached_top >= stack_bottom && cached_top <= stack_top {
+                return true;
+            }
+            if cached_bottom >= stack_bottom && cached_bottom <= stack_top {
+                return true;
+            }
+
+            let tss_rsp0 = crate::arch::hal::get_kernel_stack_for_cpu(cpu);
+            if tss_rsp0 >= stack_bottom && tss_rsp0 <= stack_top {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Reap terminated threads whose exit code has been consumed or auto-reaped.
     ///
     /// Returns up to 8 reaped `Box<Thread>` objects so the caller can drop
@@ -772,7 +862,8 @@ impl Scheduler {
                     continue;
                 }
                 // Grace period: 50ms for any in-flight context_switch
-                let min_elapsed = self.threads[i].terminated_at_tick
+                let min_elapsed = self.threads[i]
+                    .terminated_at_tick
                     .map(|t| current_tick.wrapping_sub(t) > 50)
                     .unwrap_or(false);
                 if !min_elapsed {
@@ -780,27 +871,21 @@ impl Scheduler {
                     continue;
                 }
                 let consumed = self.threads[i].exit_code.is_none();
+                let auto_reap_delay_ms = if self.threads[i].is_user { 5_000 } else { 200 };
                 let auto_reap = self.threads[i].exit_waiter_tid.is_none()
                     && !self.threads[i].retain_exit_status
-                    && self.threads[i].terminated_at_tick
-                        .map(|t| current_tick.wrapping_sub(t) > 200)
+                    && self.threads[i]
+                        .terminated_at_tick
+                        .map(|t| current_tick.wrapping_sub(t) > auto_reap_delay_ms)
                         .unwrap_or(false);
                 if consumed || auto_reap {
                     let tid = self.threads[i].tid;
+                    let stack_bottom = self.threads[i].kernel_stack_bottom();
+                    let stack_top = self.threads[i].kernel_stack_top();
 
-                    // SAFETY: Do NOT reap if any CPU still has this thread as
-                    // current_tid.  The timer path uses try_lock — if a vCPU was
-                    // paused by the hypervisor (VirtualBox NEM, Hyper-V) it may
-                    // not have entered schedule_inner yet.  Its interrupt handler
-                    // stack frames are still on this thread's kernel stack.
-                    // Freeing the stack now would cause IRETQ to load garbage
-                    // (RIP/RSP from zeroed or reused heap memory → #UD / #DF).
-                    // Skip now; the CPU will switch away on its next tick, then
-                    // the NEXT reap pass will find no CPU referencing this TID.
-                    let still_current_on_cpu = (0..MAX_CPUS).any(|cpu| {
-                        self.per_cpu[cpu].current_tid == Some(tid)
-                    });
-                    if still_current_on_cpu {
+                    // Be conservative: if any CPU still appears to have this
+                    // stack installed or cached, keep the zombie around.
+                    if self.stack_still_referenced_on_any_cpu(tid, stack_bottom, stack_top) {
                         i += 1;
                         continue;
                     }
@@ -888,7 +973,9 @@ impl Scheduler {
         let mut attempts = 0;
         loop {
             attempts += 1;
-            if attempts > 8 { return None; }
+            if attempts > 8 {
+                return None;
+            }
             let tid = match self.per_cpu[queue_cpu].run_queue.dequeue_highest() {
                 Some(t) => t,
                 None => return None,
@@ -965,7 +1052,9 @@ impl Scheduler {
                 let n = self.num_cpus();
                 let target = if cpu < n { cpu } else { 0 };
                 let needs_kick = self.per_cpu[target].run_queue.is_empty();
-                self.per_cpu[target].run_queue.enqueue(tid, self.threads[idx].priority);
+                self.per_cpu[target]
+                    .run_queue
+                    .enqueue(tid, self.threads[idx].priority);
                 #[cfg(target_arch = "aarch64")]
                 if self.threads[idx].is_user
                     && !ARM64_FIRST_USER_WAKE_LOGGED.swap(true, Ordering::Relaxed)
@@ -1004,7 +1093,8 @@ pub fn init() {
     }
     crate::serial_verbose_println!(
         "[OK] Mach scheduler initialized ({} priority levels, {} CPUs max, lazy FPU)",
-        NUM_PRIORITIES, MAX_CPUS,
+        NUM_PRIORITIES,
+        MAX_CPUS,
     );
 }
 
@@ -1012,15 +1102,27 @@ pub fn init() {
 // Public API — Tick counters
 // =============================================================================
 
-pub fn total_sched_ticks() -> u32 { TOTAL_SCHED_TICKS.load(Ordering::Relaxed) }
-pub fn idle_sched_ticks() -> u32 { IDLE_SCHED_TICKS.load(Ordering::Relaxed) }
+pub fn total_sched_ticks() -> u32 {
+    TOTAL_SCHED_TICKS.load(Ordering::Relaxed)
+}
+pub fn idle_sched_ticks() -> u32 {
+    IDLE_SCHED_TICKS.load(Ordering::Relaxed)
+}
 
 pub fn per_cpu_total_ticks(cpu: usize) -> u32 {
-    if cpu < MAX_CPUS { PER_CPU_TOTAL[cpu].load(Ordering::Relaxed) } else { 0 }
+    if cpu < MAX_CPUS {
+        PER_CPU_TOTAL[cpu].load(Ordering::Relaxed)
+    } else {
+        0
+    }
 }
 
 pub fn per_cpu_idle_ticks(cpu: usize) -> u32 {
-    if cpu < MAX_CPUS { PER_CPU_IDLE[cpu].load(Ordering::Relaxed) } else { 0 }
+    if cpu < MAX_CPUS {
+        PER_CPU_IDLE[cpu].load(Ordering::Relaxed)
+    } else {
+        0
+    }
 }
 
 // =============================================================================
@@ -1125,7 +1227,14 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
         }
     };
 
-    let mut switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8, u32, u32)> = None;
+    let mut switch_info: Option<(
+        *mut CpuContext,
+        *const CpuContext,
+        *mut u8,
+        *const u8,
+        u32,
+        u32,
+    )> = None;
     let mut reaped_threads: [Option<Box<Thread>>; 8] = Default::default();
 
     {
@@ -1204,7 +1313,9 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 sched.threads[idx].state = ThreadState::Ready;
                 sched.threads[idx].last_cpu = cpu_id;
                 let pri = sched.threads[idx].priority;
-                sched.per_cpu[cpu_id].run_queue.enqueue(outgoing_tid.unwrap_or(0), pri);
+                sched.per_cpu[cpu_id]
+                    .run_queue
+                    .enqueue(outgoing_tid.unwrap_or(0), pri);
             }
         }
 
@@ -1220,7 +1331,8 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                     update_per_cpu_name(cpu_id, &sched.threads[idx].name);
                     let kstack_top = sched.threads[idx].kernel_stack_top();
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
-                    PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idx].kernel_stack_bottom(), Ordering::Relaxed);
+                    PER_CPU_STACK_BOTTOM[cpu_id]
+                        .store(sched.threads[idx].kernel_stack_bottom(), Ordering::Relaxed);
                     PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
                     PER_CPU_FPU_PTR[cpu_id].store(
                         sched.threads[idx].fpu_state.data.as_ptr() as u64,
@@ -1234,7 +1346,8 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                 sched.per_cpu[cpu_id].current_idx = Some(next_idx);
                 sched.threads[next_idx].state = ThreadState::Running;
                 sched.threads[next_idx].last_cpu = cpu_id;
-                PER_CPU_HAS_THREAD[cpu_id].store(!sched.threads[next_idx].is_idle, Ordering::Relaxed);
+                PER_CPU_HAS_THREAD[cpu_id]
+                    .store(!sched.threads[next_idx].is_idle, Ordering::Relaxed);
                 PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
                 PER_CPU_IS_USER[cpu_id].store(sched.threads[next_idx].is_user, Ordering::Relaxed);
                 update_per_cpu_name(cpu_id, &sched.threads[next_idx].name);
@@ -1273,7 +1386,10 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
             PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
             update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
             crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
-            PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_idx].kernel_stack_bottom(), Ordering::Relaxed);
+            PER_CPU_STACK_BOTTOM[cpu_id].store(
+                sched.threads[idle_idx].kernel_stack_bottom(),
+                Ordering::Relaxed,
+            );
             PER_CPU_STACK_TOP[cpu_id].store(idle_kstack_top, Ordering::Relaxed);
             PER_CPU_FPU_PTR[cpu_id].store(
                 sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
@@ -1312,14 +1428,18 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
         }
         crate::arch::hal::fpu_set_trap();
         PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
-        unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
+        unsafe {
+            crate::task::context::context_switch(old_ctx, new_ctx);
+        }
     }
 
     PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
 }
 
 /// Voluntary yield: reschedule without incrementing CPU accounting counters.
-pub fn schedule() { schedule_inner(false); }
+pub fn schedule() {
+    schedule_inner(false);
+}
 
 fn schedule_inner(from_timer: bool) {
     // Read CPU ID and set in-scheduler flag atomically w.r.t. timer interrupts.
@@ -1396,11 +1516,14 @@ fn schedule_inner(from_timer: bool) {
     }
 
     // Lock acquisition: try_lock for timer (non-blocking), spin for voluntary
-    crate::sched_diag::set(cpu_id_early, if from_timer {
-        crate::sched_diag::PHASE_SCHEDULE_TIMER
-    } else {
-        crate::sched_diag::PHASE_SCHEDULE_VOLUNTARY
-    });
+    crate::sched_diag::set(
+        cpu_id_early,
+        if from_timer {
+            crate::sched_diag::PHASE_SCHEDULE_TIMER
+        } else {
+            crate::sched_diag::PHASE_SCHEDULE_VOLUNTARY
+        },
+    );
     let mut guard = if from_timer {
         match SCHEDULER.try_lock() {
             Some(s) => s,
@@ -1451,7 +1574,14 @@ fn schedule_inner(from_timer: bool) {
     let cpu_id = get_cpu_id();
 
     // Extract context switch parameters under the lock
-    let mut switch_info: Option<(*mut CpuContext, *const CpuContext, *mut u8, *const u8, u32, u32)>;
+    let mut switch_info: Option<(
+        *mut CpuContext,
+        *const CpuContext,
+        *mut u8,
+        *const u8,
+        u32,
+        u32,
+    )>;
     let mut corrupt_diag: Option<(&'static str, u32, *const CpuContext)> = None;
     #[cfg(target_arch = "x86_64")]
     let mut sleep_switch_diag: Option<SleepSwitchDiag> = None;
@@ -1501,22 +1631,24 @@ fn schedule_inner(from_timer: bool) {
                 use crate::task::context::CANARY_MAGIC;
                 for i in 0..sched.threads.len() {
                     let t = &sched.threads[i];
-                    if t.context.save_complete == 1
-                        && t.state != ThreadState::Running
-                        && !t.is_idle
+                    if t.context.save_complete == 1 && t.state != ThreadState::Running && !t.is_idle
                     {
                         if t.context.canary != CANARY_MAGIC {
                             crate::serial_verbose_println!(
                                 "!CANARY DEAD: TID={} '{}' canary={:#018x} ctx={:#x}",
-                                t.tid, t.name_str(),
-                                t.context.canary, &t.context as *const _ as u64,
+                                t.tid,
+                                t.name_str(),
+                                t.context.canary,
+                                &t.context as *const _ as u64,
                             );
                             break; // Only report first — keep critical section short
                         } else if t.context.checksum != t.context.compute_checksum() {
                             crate::serial_verbose_println!(
                                 "!CHECKSUM FAIL: TID={} '{}' chk={:#018x} expect={:#018x}",
-                                t.tid, t.name_str(),
-                                t.context.checksum, t.context.compute_checksum(),
+                                t.tid,
+                                t.name_str(),
+                                t.context.checksum,
+                                t.context.compute_checksum(),
                             );
                             break;
                         }
@@ -1531,25 +1663,25 @@ fn schedule_inner(from_timer: bool) {
             let current_tick = crate::arch::hal::timer_current_ticks();
             for i in 0..sched.threads.len() {
                 if sched.threads[i].state == ThreadState::Blocked {
-                if let Some(wake_tick) = sched.threads[i].wake_at_tick {
-                    if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
-                        let tid = sched.threads[i].tid;
-                        let pri = sched.threads[i].priority;
-                        let mut cpu = sched.threads[i].affinity_cpu;
-                        #[cfg(target_arch = "aarch64")]
-                        {
-                            if sched.arm64_has_pinned_kernel_continuation(i) {
-                                cpu = sched.threads[i].last_cpu;
-                            } else if sched.arm64_needs_inflight_continuation_pin(i) {
-                                cpu = sched.threads[i].last_cpu;
+                    if let Some(wake_tick) = sched.threads[i].wake_at_tick {
+                        if current_tick.wrapping_sub(wake_tick) < 0x8000_0000 {
+                            let tid = sched.threads[i].tid;
+                            let pri = sched.threads[i].priority;
+                            let mut cpu = sched.threads[i].affinity_cpu;
+                            #[cfg(target_arch = "aarch64")]
+                            {
+                                if sched.arm64_has_pinned_kernel_continuation(i) {
+                                    cpu = sched.threads[i].last_cpu;
+                                } else if sched.arm64_needs_inflight_continuation_pin(i) {
+                                    cpu = sched.threads[i].last_cpu;
+                                }
                             }
+                            let target_cpu = if cpu < n_cpus { cpu } else { 0 };
+                            sched.threads[i].state = ThreadState::Ready;
+                            sched.threads[i].wake_at_tick = None;
+                            sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
                         }
-                        let target_cpu = if cpu < n_cpus { cpu } else { 0 };
-                        sched.threads[i].state = ThreadState::Ready;
-                        sched.threads[i].wake_at_tick = None;
-                        sched.per_cpu[target_cpu].run_queue.enqueue(tid, pri);
                     }
-                }
                 }
             }
         }
@@ -1565,11 +1697,15 @@ fn schedule_inner(from_timer: bool) {
             if ctr % 1000 == 0 {
                 let mut aff_count = [0u32; MAX_CPUS];
                 for t in sched.threads.iter() {
-                    if t.is_idle { continue; }
+                    if t.is_idle {
+                        continue;
+                    }
                     match t.state {
                         ThreadState::Ready | ThreadState::Running => {
                             let c = t.affinity_cpu;
-                            if c < n_cpus { aff_count[c] += 1; }
+                            if c < n_cpus {
+                                aff_count[c] += 1;
+                            }
                         }
                         _ => {}
                     }
@@ -1595,7 +1731,9 @@ fn schedule_inner(from_timer: bool) {
                     let mut victim_idx: Option<usize> = None;
                     let mut victim_pri = 128u8; // start above max so first candidate always wins
                     for (i, t) in sched.threads.iter().enumerate() {
-                        if t.is_idle || t.critical { continue; }
+                        if t.is_idle || t.critical {
+                            continue;
+                        }
                         if t.affinity_cpu == busiest_cpu {
                             match t.state {
                                 ThreadState::Ready | ThreadState::Running => {
@@ -1620,7 +1758,11 @@ fn schedule_inner(from_timer: bool) {
         let idle_idx = match sched.find_idx(idle_tid) {
             Some(i) => i,
             None => {
-                crate::serial_verbose_println!("FATAL: idle thread TID {} missing on CPU {}", idle_tid, cpu_id);
+                crate::serial_verbose_println!(
+                    "FATAL: idle thread TID {} missing on CPU {}",
+                    idle_tid,
+                    cpu_id
+                );
                 drop(guard);
                 PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
                 return;
@@ -1663,8 +1805,9 @@ fn schedule_inner(from_timer: bool) {
                     sched.threads[idx].state = ThreadState::Ready;
                     sched.threads[idx].last_cpu = cpu_id;
                     let pri = sched.threads[idx].priority;
-                    sched.per_cpu[cpu_id].run_queue.enqueue(
-                        outgoing_tid.unwrap_or(0), pri);
+                    sched.per_cpu[cpu_id]
+                        .run_queue
+                        .enqueue(outgoing_tid.unwrap_or(0), pri);
                 }
             }
         }
@@ -1680,7 +1823,9 @@ fn schedule_inner(from_timer: bool) {
                 if !kstack_valid {
                     crate::serial_verbose_println!(
                         "BUG: thread '{}' (TID={}) invalid kstack_top={:#x} — killing",
-                        sched.threads[next_idx].name_str(), next_tid, kstack_top,
+                        sched.threads[next_idx].name_str(),
+                        next_tid,
+                        kstack_top,
                     );
                     sched.threads[next_idx].state = ThreadState::Terminated;
                     sched.threads[next_idx].exit_code = Some(139);
@@ -1702,7 +1847,8 @@ fn schedule_inner(from_timer: bool) {
 
                     PER_CPU_HAS_THREAD[cpu_id].store(true, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(next_tid, Ordering::Relaxed);
-                    PER_CPU_IS_USER[cpu_id].store(sched.threads[next_idx].is_user, Ordering::Relaxed);
+                    PER_CPU_IS_USER[cpu_id]
+                        .store(sched.threads[next_idx].is_user, Ordering::Relaxed);
                     update_per_cpu_name(cpu_id, &sched.threads[next_idx].name);
 
                     // Update TSS.RSP0 and SYSCALL kernel RSP
@@ -1811,7 +1957,10 @@ fn schedule_inner(from_timer: bool) {
                         update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
                         let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                         crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
-                        PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_idx].kernel_stack_bottom(), Ordering::Relaxed);
+                        PER_CPU_STACK_BOTTOM[cpu_id].store(
+                            sched.threads[idle_idx].kernel_stack_bottom(),
+                            Ordering::Relaxed,
+                        );
                         PER_CPU_STACK_TOP[cpu_id].store(idle_kstack_top, Ordering::Relaxed);
                         PER_CPU_FPU_PTR[cpu_id].store(
                             sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
@@ -1832,7 +1981,8 @@ fn schedule_inner(from_timer: bool) {
                     // Current thread reaped — MUST context_switch to idle.
                     crate::serial_verbose_println!(
                         "!REAPED-CURRENT: CPU{} tid={} → idle, switching via scratch ctx",
-                        cpu_id, current_tid,
+                        cpu_id,
+                        current_tid,
                     );
                     sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
                     sched.per_cpu[cpu_id].current_idx = Some(idle_idx);
@@ -1842,7 +1992,10 @@ fn schedule_inner(from_timer: bool) {
                     update_per_cpu_name(cpu_id, &sched.threads[idle_idx].name);
                     let idle_kstack_top = sched.threads[idle_idx].kernel_stack_top();
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, idle_kstack_top);
-                    PER_CPU_STACK_BOTTOM[cpu_id].store(sched.threads[idle_idx].kernel_stack_bottom(), Ordering::Relaxed);
+                    PER_CPU_STACK_BOTTOM[cpu_id].store(
+                        sched.threads[idle_idx].kernel_stack_bottom(),
+                        Ordering::Relaxed,
+                    );
                     PER_CPU_STACK_TOP[cpu_id].store(idle_kstack_top, Ordering::Relaxed);
                     PER_CPU_FPU_PTR[cpu_id].store(
                         sched.threads[idle_idx].fpu_state.data.as_ptr() as u64,
@@ -1852,7 +2005,14 @@ fn schedule_inner(from_timer: bool) {
                     let idle_ctx = &sched.threads[idle_idx].context as *const CpuContext;
                     let scratch_fpu = unsafe { SCRATCH_FPU[cpu_id].0.as_mut_ptr() };
                     let new_fpu = sched.threads[idle_idx].fpu_state.data.as_ptr();
-                    Some((scratch_ctx, idle_ctx, scratch_fpu, new_fpu, idle_tid, idle_tid))
+                    Some((
+                        scratch_ctx,
+                        idle_ctx,
+                        scratch_fpu,
+                        new_fpu,
+                        idle_tid,
+                        idle_tid,
+                    ))
                 }
             } else {
                 sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
@@ -1885,9 +2045,13 @@ fn schedule_inner(from_timer: bool) {
             if is_corrupt {
                 let reason = unsafe {
                     let ctx = &*new_ctx;
-                    if ctx.canary != CANARY_MAGIC { "CANARY_DEAD" }
-                    else if ctx.checksum != ctx.compute_checksum() { "CHECKSUM_FAIL" }
-                    else { "RANGE_BAD" }
+                    if ctx.canary != CANARY_MAGIC {
+                        "CANARY_DEAD"
+                    } else if ctx.checksum != ctx.compute_checksum() {
+                        "CHECKSUM_FAIL"
+                    } else {
+                        "RANGE_BAD"
+                    }
                 };
                 corrupt_diag = Some((reason, next_tid, new_ctx));
 
@@ -1930,23 +2094,20 @@ fn schedule_inner(from_timer: bool) {
                     if restore_tid != out_tid {
                         sched.threads[ri].state = ThreadState::Running;
                     }
-                    PER_CPU_HAS_THREAD[cpu_id].store(
-                        !sched.threads[ri].is_idle, Ordering::Relaxed);
+                    PER_CPU_HAS_THREAD[cpu_id].store(!sched.threads[ri].is_idle, Ordering::Relaxed);
                     PER_CPU_CURRENT_TID[cpu_id].store(restore_tid, Ordering::Relaxed);
-                    PER_CPU_IS_USER[cpu_id].store(
-                        sched.threads[ri].is_user, Ordering::Relaxed);
+                    PER_CPU_IS_USER[cpu_id].store(sched.threads[ri].is_user, Ordering::Relaxed);
                     update_per_cpu_name(cpu_id, &sched.threads[ri].name);
                     let kstack_top = sched.threads[ri].kernel_stack_top();
                     crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
-                    PER_CPU_STACK_BOTTOM[cpu_id].store(
-                        sched.threads[ri].kernel_stack_bottom(), Ordering::Relaxed);
+                    PER_CPU_STACK_BOTTOM[cpu_id]
+                        .store(sched.threads[ri].kernel_stack_bottom(), Ordering::Relaxed);
                     PER_CPU_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
                 }
 
                 switch_info = None;
             }
         }
-
     } // sched borrow ends here
 
     // Release lock WITHOUT restoring IF — keeps interrupts disabled through context_switch
@@ -1958,19 +2119,27 @@ fn schedule_inner(from_timer: bool) {
             let ctx = &*ctx_ptr;
             crate::serial_verbose_println!(
                 "!{}: TID={} ctx={:#x} canary={:#018x} chk={:#018x} expect={:#018x}",
-                reason, next_tid, ctx_ptr as u64,
-                ctx.canary, ctx.checksum, ctx.compute_checksum(),
+                reason,
+                next_tid,
+                ctx_ptr as u64,
+                ctx.canary,
+                ctx.checksum,
+                ctx.compute_checksum(),
             );
             let p = ctx_ptr as *const u64;
             #[cfg(target_arch = "x86_64")]
             {
                 let names = [
-                    "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp",
-                    "r8 ", "r9 ", "r10", "r11", "r12", "r13", "r14", "r15",
-                    "rsp", "rip", "rfl", "cr3", "sav", "can", "chk",
+                    "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "r8 ", "r9 ", "r10", "r11",
+                    "r12", "r13", "r14", "r15", "rsp", "rip", "rfl", "cr3", "sav", "can", "chk",
                 ];
                 for i in 0..22 {
-                    crate::serial_verbose_println!("  [{}] {} = {:#018x}", i * 8, names[i], *p.add(i));
+                    crate::serial_verbose_println!(
+                        "  [{}] {} = {:#018x}",
+                        i * 8,
+                        names[i],
+                        *p.add(i)
+                    );
                 }
             }
             #[cfg(target_arch = "aarch64")]
@@ -1981,7 +2150,12 @@ fn schedule_inner(from_timer: bool) {
                 }
                 let names = ["sp ", "pc ", "pst", "tt0", "tpi", "sav", "can", "chk"];
                 for i in 0..8 {
-                    crate::serial_verbose_println!("  [{}] {} = {:#018x}", (31 + i) * 8, names[i], *p.add(31 + i));
+                    crate::serial_verbose_println!(
+                        "  [{}] {} = {:#018x}",
+                        (31 + i) * 8,
+                        names[i],
+                        *p.add(31 + i)
+                    );
                 }
             }
         }
@@ -2025,7 +2199,9 @@ fn schedule_inner(from_timer: bool) {
         // it will never reach the post-switch cleanup code below.
         PER_CPU_IN_SCHEDULER[cpu_id].store(false, Ordering::Release);
 
-        unsafe { crate::task::context::context_switch(old_ctx, new_ctx); }
+        unsafe {
+            crate::task::context::context_switch(old_ctx, new_ctx);
+        }
     }
 
     // Also clear after context_switch for the no-switch path (switch_info was None).
@@ -2082,25 +2258,38 @@ pub fn run() -> ! {
         }
     }
     crate::arch::hal::enable_interrupts();
-    loop { crate::arch::hal::halt(); }
+    loop {
+        crate::arch::hal::halt();
+    }
 }
 
 /// Register the idle thread for an AP.
 pub fn register_ap_idle(cpu_id: usize) {
-    crate::debug_println!("  [Sched] register_ap_idle: cpu={} acquiring scheduler lock", cpu_id);
+    crate::debug_println!(
+        "  [Sched] register_ap_idle: cpu={} acquiring scheduler lock",
+        cpu_id
+    );
     let mut guard = SCHEDULER.lock();
     crate::debug_println!("  [Sched] register_ap_idle: cpu={} lock acquired", cpu_id);
     if let Some(sched) = guard.as_mut() {
         let idle_tid = sched.idle_tid[cpu_id];
-        crate::debug_println!("  [Sched] register_ap_idle: cpu={} idle_tid={}", cpu_id, idle_tid);
+        crate::debug_println!(
+            "  [Sched] register_ap_idle: cpu={} idle_tid={}",
+            cpu_id,
+            idle_tid
+        );
         sched.per_cpu[cpu_id].current_tid = Some(idle_tid);
         if let Some(idx) = sched.find_idx(idle_tid) {
             sched.per_cpu[cpu_id].current_idx = Some(idx);
             sched.threads[idx].state = ThreadState::Running;
             let kstack_top = sched.threads[idx].kernel_stack_top();
             let kstack_bottom = sched.threads[idx].kernel_stack_bottom();
-            crate::debug_println!("  [Sched] register_ap_idle: cpu={} kstack=[{:#x}..{:#x}]",
-                cpu_id, kstack_bottom, kstack_top);
+            crate::debug_println!(
+                "  [Sched] register_ap_idle: cpu={} kstack=[{:#x}..{:#x}]",
+                cpu_id,
+                kstack_bottom,
+                kstack_top
+            );
             crate::arch::hal::set_kernel_stack_for_cpu(cpu_id, kstack_top);
             PER_CPU_CURRENT_TID[cpu_id].store(idle_tid, Ordering::Relaxed);
             PER_CPU_HAS_THREAD[cpu_id].store(false, Ordering::Relaxed);
@@ -2109,11 +2298,21 @@ pub fn register_ap_idle(cpu_id: usize) {
             PER_CPU_IDLE_STACK_TOP[cpu_id].store(kstack_top, Ordering::Relaxed);
             update_per_cpu_name(cpu_id, &sched.threads[idx].name);
         } else {
-            crate::debug_println!("  [Sched] register_ap_idle: cpu={} ERROR: idle_tid={} not found!", cpu_id, idle_tid);
+            crate::debug_println!(
+                "  [Sched] register_ap_idle: cpu={} ERROR: idle_tid={} not found!",
+                cpu_id,
+                idle_tid
+            );
         }
     } else {
-        crate::debug_println!("  [Sched] register_ap_idle: cpu={} ERROR: scheduler not initialized!", cpu_id);
+        crate::debug_println!(
+            "  [Sched] register_ap_idle: cpu={} ERROR: scheduler not initialized!",
+            cpu_id
+        );
     }
     crate::serial_verbose_println!("  SMP: CPU{} idle thread registered", cpu_id);
-    crate::debug_println!("  [Sched] register_ap_idle: cpu={} done, releasing lock", cpu_id);
+    crate::debug_println!(
+        "  [Sched] register_ap_idle: cpu={} done, releasing lock",
+        cpu_id
+    );
 }

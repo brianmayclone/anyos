@@ -1,10 +1,10 @@
 //! Debug / Trace API (anyTrace) — debugger attach, breakpoints, single-step,
 //! memory read/write via CR3-switch, page table walking.
 
-use super::{SCHEDULER, PER_CPU_CURRENT_TID};
+use super::{PER_CPU_CURRENT_TID, SCHEDULER};
+use crate::arch::hal::MAX_CPUS;
 use crate::task::context::CpuContext;
 use crate::task::thread::ThreadState;
-use crate::arch::hal::MAX_CPUS;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
@@ -114,7 +114,9 @@ pub fn debug_detach(debugger_tid: u32, target_tid: u32) -> u32 {
             let cpu = sched.threads[idx].affinity_cpu;
             let n = sched.num_cpus();
             let target_cpu = if cpu < n { cpu } else { 0 };
-            sched.per_cpu[target_cpu].run_queue.enqueue(target_tid, sched.threads[idx].priority);
+            sched.per_cpu[target_cpu]
+                .run_queue
+                .enqueue(target_tid, sched.threads[idx].priority);
         }
     }
 
@@ -199,7 +201,9 @@ pub fn debug_resume(debugger_tid: u32, target_tid: u32) -> u32 {
         let cpu = sched.threads[idx].affinity_cpu;
         let n = sched.num_cpus();
         let target_cpu = if cpu < n { cpu } else { 0 };
-        sched.per_cpu[target_cpu].run_queue.enqueue(target_tid, sched.threads[idx].priority);
+        sched.per_cpu[target_cpu]
+            .run_queue
+            .enqueue(target_tid, sched.threads[idx].priority);
     }
 
     0
@@ -257,10 +261,10 @@ pub fn debug_get_regs(debugger_tid: u32, target_tid: u32, buf_ptr: u64, size: u3
     let cr3 = thread.context.get_page_table();
 
     // Read IRET frame (always at fixed position from kernel_stack_top)
-    let user_rip    = unsafe { *((ktop - 40) as *const u64) };
-    let user_cs     = unsafe { *((ktop - 32) as *const u64) };
+    let user_rip = unsafe { *((ktop - 40) as *const u64) };
+    let user_cs = unsafe { *((ktop - 32) as *const u64) };
     let user_rflags = unsafe { *((ktop - 24) as *const u64) };
-    let user_rsp    = unsafe { *((ktop - 16) as *const u64) };
+    let user_rsp = unsafe { *((ktop - 16) as *const u64) };
 
     // Verify this looks like a user-mode IRET frame (CS has RPL=3)
     let is_user_frame = (user_cs & 3) == 3 && user_rip < 0x0000_8000_0000_0000;
@@ -288,28 +292,45 @@ pub fn debug_get_regs(debugger_tid: u32, target_tid: u32, buf_ptr: u64, size: u3
     let gpr_base = if is_isr_path { ktop - 176 } else { ktop - 160 };
 
     // Read GPRs from the frame (order: r15,r14,...,r8,rbp,rdi,rsi,rdx,rcx,rbx,rax)
-    let r15 = unsafe { *((gpr_base +   0) as *const u64) };
-    let r14 = unsafe { *((gpr_base +   8) as *const u64) };
-    let r13 = unsafe { *((gpr_base +  16) as *const u64) };
-    let r12 = unsafe { *((gpr_base +  24) as *const u64) };
-    let r11 = unsafe { *((gpr_base +  32) as *const u64) };
-    let r10 = unsafe { *((gpr_base +  40) as *const u64) };
-    let r9  = unsafe { *((gpr_base +  48) as *const u64) };
-    let r8  = unsafe { *((gpr_base +  56) as *const u64) };
-    let rbp = unsafe { *((gpr_base +  64) as *const u64) };
-    let rdi = unsafe { *((gpr_base +  72) as *const u64) };
-    let rsi = unsafe { *((gpr_base +  80) as *const u64) };
-    let rdx = unsafe { *((gpr_base +  88) as *const u64) };
-    let rcx = unsafe { *((gpr_base +  96) as *const u64) };
+    let r15 = unsafe { *((gpr_base + 0) as *const u64) };
+    let r14 = unsafe { *((gpr_base + 8) as *const u64) };
+    let r13 = unsafe { *((gpr_base + 16) as *const u64) };
+    let r12 = unsafe { *((gpr_base + 24) as *const u64) };
+    let r11 = unsafe { *((gpr_base + 32) as *const u64) };
+    let r10 = unsafe { *((gpr_base + 40) as *const u64) };
+    let r9 = unsafe { *((gpr_base + 48) as *const u64) };
+    let r8 = unsafe { *((gpr_base + 56) as *const u64) };
+    let rbp = unsafe { *((gpr_base + 64) as *const u64) };
+    let rdi = unsafe { *((gpr_base + 72) as *const u64) };
+    let rsi = unsafe { *((gpr_base + 80) as *const u64) };
+    let rdx = unsafe { *((gpr_base + 88) as *const u64) };
+    let rcx = unsafe { *((gpr_base + 96) as *const u64) };
     let rbx = unsafe { *((gpr_base + 104) as *const u64) };
     let rax = unsafe { *((gpr_base + 112) as *const u64) };
 
     // Build CpuContext-compatible buffer for the debugger
     // Layout: rax,rbx,rcx,rdx,rsi,rdi,rbp,r8,r9,r10,r11,r12,r13,r14,r15,rsp,rip,rflags,cr3,reserved
     let user_ctx: [u64; 20] = [
-        rax, rbx, rcx, rdx, rsi, rdi, rbp,
-        r8, r9, r10, r11, r12, r13, r14, r15,
-        user_rsp, user_rip, user_rflags, cr3, 0,
+        rax,
+        rbx,
+        rcx,
+        rdx,
+        rsi,
+        rdi,
+        rbp,
+        r8,
+        r9,
+        r10,
+        r11,
+        r12,
+        r13,
+        r14,
+        r15,
+        user_rsp,
+        user_rip,
+        user_rflags,
+        cr3,
+        0,
     ];
 
     let copy_len = (size as usize).min(160);
@@ -387,7 +408,13 @@ pub fn debug_set_regs(debugger_tid: u32, target_tid: u32, buf_ptr: u64, size: u3
 /// Read memory from the target thread's address space using CR3-switch.
 ///
 /// Returns number of bytes read, or u32::MAX on error.
-pub fn debug_read_mem(debugger_tid: u32, target_tid: u32, addr: u64, buf_ptr: u64, size: u32) -> u32 {
+pub fn debug_read_mem(
+    debugger_tid: u32,
+    target_tid: u32,
+    addr: u64,
+    buf_ptr: u64,
+    size: u32,
+) -> u32 {
     let target_cr3;
     {
         let guard = SCHEDULER.lock();
@@ -420,7 +447,13 @@ pub fn debug_read_mem(debugger_tid: u32, target_tid: u32, addr: u64, buf_ptr: u6
 /// Write memory into the target thread's address space using CR3-switch.
 ///
 /// Returns number of bytes written, or u32::MAX on error.
-pub fn debug_write_mem(debugger_tid: u32, target_tid: u32, addr: u64, buf_ptr: u64, size: u32) -> u32 {
+pub fn debug_write_mem(
+    debugger_tid: u32,
+    target_tid: u32,
+    addr: u64,
+    buf_ptr: u64,
+    size: u32,
+) -> u32 {
     let target_cr3;
     {
         let guard = SCHEDULER.lock();
@@ -549,8 +582,7 @@ pub fn debug_clr_breakpoint(debugger_tid: u32, target_tid: u32, addr: u64) -> u3
 
         // Find the breakpoint
         let bp_count = sched.threads[idx].debug_sw_bp_count as usize;
-        let bp_pos = (0..bp_count)
-            .find(|&i| sched.threads[idx].debug_sw_breakpoints[i].0 == addr);
+        let bp_pos = (0..bp_count).find(|&i| sched.threads[idx].debug_sw_breakpoints[i].0 == addr);
 
         let bp_pos = match bp_pos {
             Some(p) => p,
@@ -613,7 +645,9 @@ pub fn debug_single_step(debugger_tid: u32, target_tid: u32) -> u32 {
         let cpu = sched.threads[idx].affinity_cpu;
         let n = sched.num_cpus();
         let target_cpu = if cpu < n { cpu } else { 0 };
-        sched.per_cpu[target_cpu].run_queue.enqueue(target_tid, sched.threads[idx].priority);
+        sched.per_cpu[target_cpu]
+            .run_queue
+            .enqueue(target_tid, sched.threads[idx].priority);
     }
 
     0
@@ -783,7 +817,7 @@ pub fn thread_info_ex(target_tid: u32, buf_ptr: u64, size: u32) -> u32 {
     // context.rip/rsp contain kernel-internal addresses from context_switch.
     let ktop = thread.kernel_stack_top();
     let user_rip = unsafe { *((ktop - 40) as *const u64) };
-    let user_cs  = unsafe { *((ktop - 32) as *const u64) };
+    let user_cs = unsafe { *((ktop - 32) as *const u64) };
     let user_rsp = unsafe { *((ktop - 16) as *const u64) };
     // Use user-space values if the IRET frame looks valid (CS has RPL=3)
     let (rip_val, rsp_val) = if (user_cs & 3) == 3 && user_rip < 0x0000_8000_0000_0000 {
@@ -976,20 +1010,28 @@ unsafe fn is_page_present_recursive(vaddr: u64) -> bool {
     // PML4 — recursive_pml4_base = ri<<39 | ri<<30 | ri<<21 | ri<<12
     let pml4_ptr = 0xFFFF_FF7F_BFDF_E000u64 as *const u64;
     let pml4e = pml4_ptr.add(v.pml4_index()).read_volatile();
-    if pml4e & 1 == 0 { return false; }
+    if pml4e & 1 == 0 {
+        return false;
+    }
 
     // PDPT — recursive_pdpt_base = ri<<39 | ri<<30 | ri<<21 | pml4i<<12
     let pdpt_ptr = sign_extend_addr(ri << 39 | ri << 30 | ri << 21 | pml4i << 12) as *const u64;
     let pdpte = pdpt_ptr.add(v.pdpt_index()).read_volatile();
-    if pdpte & 1 == 0 { return false; }
+    if pdpte & 1 == 0 {
+        return false;
+    }
 
     // PD — recursive_pd_base = ri<<39 | ri<<30 | pml4i<<21 | pdpti<<12
     let pd_ptr = sign_extend_addr(ri << 39 | ri << 30 | pml4i << 21 | pdpti << 12) as *const u64;
     let pde = pd_ptr.add(v.pd_index()).read_volatile();
-    if pde & 1 == 0 { return false; }
+    if pde & 1 == 0 {
+        return false;
+    }
 
     // Check for 2 MiB huge page (PS bit)
-    if pde & (1 << 7) != 0 { return true; }
+    if pde & (1 << 7) != 0 {
+        return true;
+    }
 
     // PT — recursive_pt_base = ri<<39 | pml4i<<30 | pdpti<<21 | pdi<<12
     let pt_ptr = sign_extend_addr(ri << 39 | pml4i << 30 | pdpti << 21 | pdi << 12) as *const u64;
@@ -1111,11 +1153,14 @@ fn cr3_switch_walk_pages(target_cr3: u64, max_regions: usize) -> Vec<(u64, u64, 
 
         'outer: for pml4i in 0..256usize {
             let pml4e = pml4.add(pml4i).read_volatile();
-            if pml4e & 1 == 0 { // PAGE_PRESENT
+            if pml4e & 1 == 0 {
+                // PAGE_PRESENT
                 if in_region {
                     regions.push((cur_start, cur_end, cur_flags));
                     in_region = false;
-                    if regions.len() >= max_regions { break 'outer; }
+                    if regions.len() >= max_regions {
+                        break 'outer;
+                    }
                 }
                 continue;
             }
@@ -1130,15 +1175,16 @@ fn cr3_switch_walk_pages(target_cr3: u64, max_regions: usize) -> Vec<(u64, u64, 
                     if in_region {
                         regions.push((cur_start, cur_end, cur_flags));
                         in_region = false;
-                        if regions.len() >= max_regions { break 'outer; }
+                        if regions.len() >= max_regions {
+                            break 'outer;
+                        }
                     }
                     continue;
                 }
 
                 // PD entries
-                let pd_base = 0xFFFF_FF7F_8000_0000u64
-                    + (pml4i as u64) * 0x20_0000
-                    + (pdpti as u64) * 0x1000;
+                let pd_base =
+                    0xFFFF_FF7F_8000_0000u64 + (pml4i as u64) * 0x20_0000 + (pdpti as u64) * 0x1000;
                 let pd = pd_base as *const u64;
 
                 for pdi in 0..512usize {
@@ -1147,16 +1193,17 @@ fn cr3_switch_walk_pages(target_cr3: u64, max_regions: usize) -> Vec<(u64, u64, 
                         if in_region {
                             regions.push((cur_start, cur_end, cur_flags));
                             in_region = false;
-                            if regions.len() >= max_regions { break 'outer; }
+                            if regions.len() >= max_regions {
+                                break 'outer;
+                            }
                         }
                         continue;
                     }
 
                     // Check for 2 MiB huge page (PS bit)
                     if pde & 0x80 != 0 {
-                        let page_start = ((pml4i as u64) << 39)
-                            | ((pdpti as u64) << 30)
-                            | ((pdi as u64) << 21);
+                        let page_start =
+                            ((pml4i as u64) << 39) | ((pdpti as u64) << 30) | ((pdi as u64) << 21);
                         let page_end = page_start + 0x20_0000; // 2 MiB
                         let page_flags = pde & 0x8000_0000_0000_001F; // P|RW|US|PWT|PCD + NX
 
@@ -1165,7 +1212,9 @@ fn cr3_switch_walk_pages(target_cr3: u64, max_regions: usize) -> Vec<(u64, u64, 
                         } else {
                             if in_region {
                                 regions.push((cur_start, cur_end, cur_flags));
-                                if regions.len() >= max_regions { break 'outer; }
+                                if regions.len() >= max_regions {
+                                    break 'outer;
+                                }
                             }
                             cur_start = page_start;
                             cur_end = page_end;
@@ -1188,7 +1237,9 @@ fn cr3_switch_walk_pages(target_cr3: u64, max_regions: usize) -> Vec<(u64, u64, 
                             if in_region {
                                 regions.push((cur_start, cur_end, cur_flags));
                                 in_region = false;
-                                if regions.len() >= max_regions { break 'outer; }
+                                if regions.len() >= max_regions {
+                                    break 'outer;
+                                }
                             }
                             continue;
                         }
@@ -1205,7 +1256,9 @@ fn cr3_switch_walk_pages(target_cr3: u64, max_regions: usize) -> Vec<(u64, u64, 
                         } else {
                             if in_region {
                                 regions.push((cur_start, cur_end, cur_flags));
-                                if regions.len() >= max_regions { break 'outer; }
+                                if regions.len() >= max_regions {
+                                    break 'outer;
+                                }
                             }
                             cur_start = page_start;
                             cur_end = page_end;

@@ -26,17 +26,40 @@ pub struct ThreadInfo {
 pub fn list_threads() -> Vec<ThreadInfo> {
     const MAX_SNAP: usize = 64;
     struct ThreadSnap {
-        tid: u32, priority: u8, state: u8, arch_mode: u8,
-        cpu_ticks: u32, io_read_bytes: u64, io_write_bytes: u64,
-        net_tx_bytes: u64, net_rx_bytes: u64,
-        user_pages: u32, name: [u8; 32], name_len: u8, uid: u16, parent_tid: u32,
+        tid: u32,
+        priority: u8,
+        state: u8,
+        arch_mode: u8,
+        cpu_ticks: u32,
+        io_read_bytes: u64,
+        io_write_bytes: u64,
+        net_tx_bytes: u64,
+        net_rx_bytes: u64,
+        user_pages: u32,
+        name: [u8; 32],
+        name_len: u8,
+        uid: u16,
+        parent_tid: u32,
         pd_shared: bool,
     }
     let mut buf = [const {
-        ThreadSnap { tid: 0, priority: 0, state: 0, arch_mode: 0, cpu_ticks: 0,
-            io_read_bytes: 0, io_write_bytes: 0, net_tx_bytes: 0, net_rx_bytes: 0,
-            user_pages: 0, name: [0; 32], name_len: 0, uid: 0, parent_tid: 0,
-            pd_shared: false }
+        ThreadSnap {
+            tid: 0,
+            priority: 0,
+            state: 0,
+            arch_mode: 0,
+            cpu_ticks: 0,
+            io_read_bytes: 0,
+            io_write_bytes: 0,
+            net_tx_bytes: 0,
+            net_rx_bytes: 0,
+            user_pages: 0,
+            name: [0; 32],
+            name_len: 0,
+            uid: 0,
+            parent_tid: 0,
+            pd_shared: false,
+        }
     }; MAX_SNAP];
     let mut count = 0;
 
@@ -45,9 +68,15 @@ pub fn list_threads() -> Vec<ThreadInfo> {
         if let Some(sched) = guard.as_ref() {
             let online_cpus = crate::arch::hal::cpu_count();
             for thread in &sched.threads {
-                if thread.state == ThreadState::Terminated { continue; }
-                if thread.is_idle && !sched.idle_tid[..online_cpus].contains(&thread.tid) { continue; }
-                if count >= MAX_SNAP { break; }
+                if thread.state == ThreadState::Terminated {
+                    continue;
+                }
+                if thread.is_idle && !sched.idle_tid[..online_cpus].contains(&thread.tid) {
+                    continue;
+                }
+                if count >= MAX_SNAP {
+                    break;
+                }
                 let state_num = match thread.state {
                     ThreadState::Ready => 0u8,
                     ThreadState::Running => 1,
@@ -60,12 +89,20 @@ pub fn list_threads() -> Vec<ThreadInfo> {
                 let mut name_buf = [0u8; 32];
                 name_buf[..len].copy_from_slice(&name_str.as_bytes()[..len]);
                 buf[count] = ThreadSnap {
-                    tid: thread.tid, priority: thread.priority, state: state_num,
-                    arch_mode: thread.arch_mode as u8, cpu_ticks: thread.cpu_ticks,
-                    io_read_bytes: thread.io_read_bytes, io_write_bytes: thread.io_write_bytes,
-                    net_tx_bytes: thread.net_tx_bytes, net_rx_bytes: thread.net_rx_bytes,
-                    user_pages: thread.user_pages, name: name_buf, name_len: len as u8,
-                    uid: thread.uid, parent_tid: thread.parent_tid,
+                    tid: thread.tid,
+                    priority: thread.priority,
+                    state: state_num,
+                    arch_mode: thread.arch_mode as u8,
+                    cpu_ticks: thread.cpu_ticks,
+                    io_read_bytes: thread.io_read_bytes,
+                    io_write_bytes: thread.io_write_bytes,
+                    net_tx_bytes: thread.net_tx_bytes,
+                    net_rx_bytes: thread.net_rx_bytes,
+                    user_pages: thread.user_pages,
+                    name: name_buf,
+                    name_len: len as u8,
+                    uid: thread.uid,
+                    parent_tid: thread.parent_tid,
                     pd_shared: thread.pd_shared,
                 };
                 count += 1;
@@ -79,9 +116,15 @@ pub fn list_threads() -> Vec<ThreadInfo> {
         result.push(ThreadInfo {
             tid: snap.tid,
             priority: snap.priority,
-            state: match snap.state { 0 => "ready", 1 => "running", 2 => "blocked", 4 => "stopped", _ => "blocked" },
+            state: match snap.state {
+                0 => "ready",
+                1 => "running",
+                2 => "blocked",
+                4 => "stopped",
+                _ => "blocked",
+            },
             name: alloc::string::String::from(
-                core::str::from_utf8(&snap.name[..snap.name_len as usize]).unwrap_or("?")
+                core::str::from_utf8(&snap.name[..snap.name_len as usize]).unwrap_or("?"),
             ),
             cpu_ticks: snap.cpu_ticks,
             arch_mode: snap.arch_mode,
@@ -102,8 +145,12 @@ pub fn list_threads() -> Vec<ThreadInfo> {
 // Lock management
 // =============================================================================
 
-pub fn is_scheduler_locked_by_cpu(cpu: u32) -> bool { SCHEDULER.is_held_by_cpu(cpu) }
-pub fn is_scheduler_locked() -> bool { SCHEDULER.is_locked() }
+pub fn is_scheduler_locked_by_cpu(cpu: u32) -> bool {
+    SCHEDULER.is_held_by_cpu(cpu)
+}
+pub fn is_scheduler_locked() -> bool {
+    SCHEDULER.is_locked()
+}
 
 /// # Safety
 /// Must only be called when `is_scheduler_locked_by_cpu(cpu)` returns true.
@@ -175,9 +222,12 @@ pub fn adjust_current_user_pages(delta: i32) {
     if let Some(sched) = guard.as_mut() {
         if let Some(idx) = sched.current_idx(cpu_id) {
             if delta >= 0 {
-                sched.threads[idx].user_pages = sched.threads[idx].user_pages.saturating_add(delta as u32);
+                sched.threads[idx].user_pages =
+                    sched.threads[idx].user_pages.saturating_add(delta as u32);
             } else {
-                sched.threads[idx].user_pages = sched.threads[idx].user_pages.saturating_sub((-delta) as u32);
+                sched.threads[idx].user_pages = sched.threads[idx]
+                    .user_pages
+                    .saturating_sub((-delta) as u32);
             }
         }
     }

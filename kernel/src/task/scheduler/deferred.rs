@@ -4,9 +4,9 @@
 //! the scheduler lock — page-table walks and hundreds of `free_frame` calls
 //! take milliseconds, causing SPIN TIMEOUT on other CPUs.
 
+use crate::fs::fd_table::FdKind;
 use crate::memory::address::PhysAddr;
 use crate::sync::spinlock::Spinlock;
-use crate::fs::fd_table::FdKind;
 
 /// Deferred page-directory destruction queue.
 ///
@@ -19,16 +19,30 @@ pub(super) struct DeferredPdQueue {
 }
 
 impl DeferredPdQueue {
-    pub(super) const fn new() -> Self { Self { entries: [None; 64] } }
+    pub(super) const fn new() -> Self {
+        Self {
+            entries: [None; 64],
+        }
+    }
 
     pub(super) fn push(&mut self, pd: PhysAddr, tid: u32) {
         for slot in self.entries.iter_mut() {
-            if slot.is_none() { *slot = Some((pd, tid)); return; }
+            if slot.is_none() {
+                *slot = Some((pd, tid));
+                return;
+            }
         }
         // Queue full (64 pending PDs) — drain one slot synchronously.
         // This is a last-resort fallback for pathological fork storms.
-        crate::serial_verbose_println!("WARNING: deferred PD queue full, destroying one synchronously");
-        if let Some(Some((old_pd, old_tid))) = self.entries.iter_mut().find(|s| s.is_some()).map(|s| s.take()) {
+        crate::serial_verbose_println!(
+            "WARNING: deferred PD queue full, destroying one synchronously"
+        );
+        if let Some(Some((old_pd, old_tid))) = self
+            .entries
+            .iter_mut()
+            .find(|s| s.is_some())
+            .map(|s| s.take())
+        {
             if old_tid != 0 {
                 let rflags = crate::arch::hal::save_and_disable_interrupts();
                 let saved_cr3 = crate::arch::hal::current_page_table();
@@ -42,7 +56,10 @@ impl DeferredPdQueue {
         }
         // Now there is a free slot — insert the new entry.
         for slot in self.entries.iter_mut() {
-            if slot.is_none() { *slot = Some((pd, tid)); return; }
+            if slot.is_none() {
+                *slot = Some((pd, tid));
+                return;
+            }
         }
     }
 
@@ -53,7 +70,8 @@ impl DeferredPdQueue {
     }
 }
 
-pub(super) static DEFERRED_PD_DESTROY: Spinlock<DeferredPdQueue> = Spinlock::new(DeferredPdQueue::new());
+pub(super) static DEFERRED_PD_DESTROY: Spinlock<DeferredPdQueue> =
+    Spinlock::new(DeferredPdQueue::new());
 
 /// Deferred thread resource cleanup requested by fault-exit paths.
 ///
@@ -75,7 +93,10 @@ pub(super) struct DeferredThreadCleanupQueue {
 
 impl DeferredThreadCleanupQueue {
     pub(super) const fn new() -> Self {
-        Self { entries: [None; 128], next_overwrite: 0 }
+        Self {
+            entries: [None; 128],
+            next_overwrite: 0,
+        }
     }
 
     pub(super) fn push(&mut self, entry: DeferredThreadCleanup) {
