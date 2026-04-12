@@ -144,6 +144,21 @@ pub fn lookup_web_font(family: &str) -> Option<u32> {
     }
 }
 
+fn resolve_root_background_color(dom: &dom::Dom, styles: &[style::ComputedStyle]) -> u32 {
+    let body_id = dom.find_body().unwrap_or(0);
+    let body_bg = styles.get(body_id).map(|s| s.background_color).unwrap_or(0);
+    if body_bg != 0 {
+        return body_bg;
+    }
+
+    let html_bg = dom
+        .find_html()
+        .and_then(|html_id| styles.get(html_id))
+        .map(|s| s.background_color)
+        .unwrap_or(0);
+    if html_bg != 0 { html_bg } else { 0xFFFFFFFF }
+}
+
 pub struct WebView {
     scroll_view: ui::ScrollView,
     content_view: ui::View,
@@ -3193,9 +3208,7 @@ impl WebView {
         dom: &dom::Dom,
         styles: &[style::ComputedStyle],
     ) {
-        let body_id = dom.find_body().unwrap_or(0);
-        let body_bg = styles.get(body_id).map(|s| s.background_color).unwrap_or(0);
-        let bg_color = if body_bg != 0 { body_bg } else { 0xFFFFFFFF };
+        let bg_color = resolve_root_background_color(dom, styles);
         self.content_view.set_color(bg_color);
         self.bg_color_cached = bg_color;
         self.content_view.set_size(
@@ -3748,9 +3761,8 @@ impl WebView {
         // Canvas and form controls persist across relayouts.
         self.renderer.clear();
 
-        // Sync content view background to the body element's CSS background-color.
-        let body_bg = styles.get(body_id).map(|s| s.background_color).unwrap_or(0);
-        let bg_color = if body_bg != 0 { body_bg } else { 0xFFFFFFFF };
+        // Sync content view background to the propagated root/html background.
+        let bg_color = resolve_root_background_color(d, &styles);
         self.content_view.set_color(bg_color);
 
         // Set content view height to document height.
@@ -3758,7 +3770,7 @@ impl WebView {
         let doc_h = (self.total_height_val as u32).max(1);
         self.content_view.set_size(doc_w, doc_h);
 
-        // Cache body background for scroll re-renders.
+        // Cache the resolved root background for scroll re-renders.
         self.bg_color_cached = bg_color;
 
         // Render into canvas + update form controls.

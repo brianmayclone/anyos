@@ -721,6 +721,16 @@ impl Dom {
         None
     }
 
+    /// Find the first `<html>` element in the tree (breadth-first).
+    pub fn find_html(&self) -> Option<NodeId> {
+        for (i, node) in self.nodes.iter().enumerate() {
+            if let NodeType::Element { tag: Tag::Html, .. } = &node.node_type {
+                return Some(i);
+            }
+        }
+        None
+    }
+
     /// Find the first `<title>` element and return its text content.
     pub fn find_title(&self) -> Option<String> {
         for (i, node) in self.nodes.iter().enumerate() {

@@ -1033,6 +1033,7 @@ pub fn layout_with_budget(
     }
 
     let body_id = dom.find_body().unwrap_or(0);
+    let html_style = dom.find_html().and_then(|html_id| styles.get(html_id));
     let style = &styles[body_id];
 
     let mut root = LayoutBox::new(Some(body_id), BoxType::Block);
@@ -1044,10 +1045,26 @@ pub fn layout_with_budget(
     } else {
         viewport_width
     };
-    root.bg_color = if style.background_color_is_current {
+    let body_bg_color = if style.background_color_is_current {
         style.color
     } else {
         style.background_color
+    };
+    let html_bg_color = html_style
+        .map(|style| {
+            if style.background_color_is_current {
+                style.color
+            } else {
+                style.background_color
+            }
+        })
+        .unwrap_or(0);
+    // The canvas/background of the initial containing block comes from the
+    // root element when body itself does not paint an opaque background.
+    root.bg_color = if body_bg_color != 0 {
+        body_bg_color
+    } else {
+        html_bg_color
     };
     root.mask_image = style.mask_image.clone();
     root.background_clip = style.background_clip;
