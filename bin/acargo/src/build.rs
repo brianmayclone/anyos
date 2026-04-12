@@ -51,6 +51,10 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
     }
 
     let order = resolve::topological_sort(&nodes);
+    if order.len() != nodes.len() {
+        println!("ccargo: error: dependency graph is not acyclic");
+        return BuildResult { success: false, bin_path: None, compiled: 0 };
+    }
 
     // Setup output directories
     let target_dir = format!("{}/target", root_dir);

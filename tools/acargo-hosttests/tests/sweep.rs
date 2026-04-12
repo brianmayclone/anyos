@@ -65,6 +65,10 @@ fn build_ok(dir: &Path, target: Option<&str>) -> Result<(), String> {
     }
 }
 
+fn build_repo_lib(rel: &str, target: Option<&str>) -> Result<(), String> {
+    build_ok(&repo_root().join(rel), target)
+}
+
 #[test]
 fn compile_all_bin_packages_with_ccargo() {
     let mut failures = Vec::new();
@@ -82,6 +86,20 @@ fn compile_all_bin_packages_with_ccargo() {
 fn compile_kernel_with_ccargo() {
     let kernel_dir = repo_root().join("kernel");
     if let Err(err) = build_ok(&kernel_dir, Some("x86_64-anyos")) {
+        panic!("{err}");
+    }
+}
+
+#[test]
+fn compile_anyos_std_with_ccargo() {
+    if let Err(err) = build_repo_lib("libs/stdlib", None) {
+        panic!("{err}");
+    }
+}
+
+#[test]
+fn compile_libstd_with_ccargo() {
+    if let Err(err) = build_repo_lib("libs/libstd", None) {
         panic!("{err}");
     }
 }

@@ -54,6 +54,9 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
         let toml_table = toml::parse(&toml_src);
         let mut mf = manifest::parse(&toml_table);
         manifest::infer_crate_layout(&mut mf, &dir);
+        if dir == root_dir {
+            inject_implicit_anyos_stdlibs(&mut mf, &dir);
+        }
 
         // Skip if already processed
         if name_to_idx.contains_key(&mf.name) {
@@ -130,6 +133,59 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
     }
 
     nodes
+}
+
+fn inject_implicit_anyos_stdlibs(manifest: &mut Manifest, manifest_dir: &str) {
+    if manifest.name != "anyos_std" && !has_dep(manifest, "anyos_std") {
+        if let Some(stdlib_dir) = find_repo_library_dir(manifest_dir, "stdlib") {
+            manifest.dependencies.push(manifest::Dependency {
+                name: String::from("anyos_std"),
+                path: Some(stdlib_dir),
+                version: None,
+                optional: false,
+                features: Vec::new(),
+            });
+        }
+    }
+
+    if manifest.name != "libstd"
+        && manifest.name != "anyos_std"
+        && !has_dep(manifest, "libstd")
+    {
+        if let Some(libstd_dir) = find_repo_library_dir(manifest_dir, "libstd") {
+            manifest.dependencies.push(manifest::Dependency {
+                name: String::from("libstd"),
+                path: Some(libstd_dir),
+                version: None,
+                optional: true,
+                features: Vec::new(),
+            });
+        }
+    }
+}
+
+fn has_dep(manifest: &Manifest, name: &str) -> bool {
+    manifest.dependencies.iter().any(|dep| dep.name == name)
+}
+
+fn find_repo_library_dir(start_dir: &str, lib_name: &str) -> Option<String> {
+    let mut current = fs::absolutize(start_dir);
+    loop {
+        let candidate = format!("{}/libs/{}/Cargo.toml", current, lib_name);
+        if fs::file_exists(&candidate) {
+            return Some(format!("{}/libs/{}", current, lib_name));
+        }
+
+        if current == "/" || current.is_empty() {
+            return None;
+        }
+
+        current = match current.rfind('/') {
+            Some(0) => String::from("/"),
+            Some(pos) => String::from(&current[..pos]),
+            None => return None,
+        };
+    }
 }
 
 /// Update or create Cargo.lock with resolved versions.
