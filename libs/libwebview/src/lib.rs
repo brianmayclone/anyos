@@ -3242,11 +3242,34 @@ impl WebView {
         let bg_color = resolve_root_background_color(dom, styles);
         self.content_view.set_color(bg_color);
         self.bg_color_cached = bg_color;
-        self.content_view.set_size(
-            self.viewport_width.max(1) as u32,
-            (self.total_height_val as u32).max(1),
+        let doc_w = self.viewport_width.max(1) as u32;
+        let doc_h = (self.total_height_val as u32).max(1);
+        self.content_view.set_size(doc_w, doc_h);
+
+        let Some(root) = self.layout_root.as_ref() else {
+            return;
+        };
+
+        // Cached-style relayouts can change geometry, so a paint-only refresh
+        // would reuse a stale display list and stale tile commands. Rebuild the
+        // render surface from the new layout tree instead.
+        self.renderer.clear();
+        self.pending_tiles = self.renderer.render(
+            root,
+            &self.content_view,
+            &self.images,
+            doc_w,
+            doc_h,
+            self.viewport_height,
+            0,
+            bg_color,
+            self.link_cb,
+            self.link_cb_ud,
+            self.submit_cb,
+            self.submit_cb_ud,
+            true,
         );
-        self.repaint_from_cached_layout();
+        self.last_render_scroll_y = 0;
     }
 
     fn resolved_style_cache_matches_dom(&self, dom: &dom::Dom) -> bool {
