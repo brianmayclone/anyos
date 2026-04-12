@@ -6,7 +6,7 @@ use crate::hir::*;
 use crate::intern::{Interner, Symbol};
 use crate::mir::*;
 use crate::resolve::ResolveResult;
-use crate::typeck::{TyKind, TypeckResult, IntTy, FloatTy};
+use crate::typeck::{TyKind, TypeckResult, IntTy, UintTy, FloatTy};
 use crate::diagnostics::Span;
 
 pub struct MirBuilder<'a> {

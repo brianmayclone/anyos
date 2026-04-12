@@ -37,7 +37,13 @@ use anyos_std::println;
 fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
-    let args: Vec<&str> = raw.split_whitespace().collect();
+    let mut args: Vec<&str> = raw.split_whitespace().collect();
+
+    if let Some(first) = args.first().copied() {
+        if matches!(first, "ccargo" | "cargo" | "acargo") {
+            args.remove(0);
+        }
+    }
 
     if args.is_empty() {
         print_usage();

@@ -11,7 +11,12 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
 
     // Split raw argument string into individual args
-    let args: Vec<&str> = raw.split_whitespace().collect();
+    let mut args: Vec<&str> = raw.split_whitespace().collect();
+    if let Some(first) = args.first().copied() {
+        if matches!(first, "crust" | "rustc" | "anyrc") {
+            args.remove(0);
+        }
+    }
 
     let mut input = None;
     let mut output = "a.out";
