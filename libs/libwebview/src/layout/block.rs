@@ -454,6 +454,38 @@ pub fn build_block_with_budget(
                     None
                 }
             });
+        let resolved_max_h = style
+            .max_height
+            .map(resolve_specified_height)
+            .or_else(|| {
+                if parent_height > 0 {
+                    style.max_height_calc.map(|(px100, pct100)| {
+                        let border_box =
+                            px100 / 100 + (parent_height as i64 * pct100 as i64 / 10000) as i32;
+                        resolve_specified_height(border_box)
+                    })
+                } else {
+                    style.max_height_calc
+                        .map(|(px100, _)| resolve_specified_height(px100 / 100))
+                }
+            });
+        let resolved_max_w = style
+            .max_width
+            .map(|value| {
+                let border_box = if value < 0 {
+                    (available_width.max(0) as i64 * (-value) as i64 / 10000) as i32
+                } else {
+                    value
+                };
+                resolve_specified_width(border_box)
+            })
+            .or_else(|| {
+                style.max_width_calc.map(|(px100, pct100)| {
+                    let border_box =
+                        px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                    resolve_specified_width(border_box)
+                })
+            });
 
         match (specified_w, specified_h) {
             (Some(w), Some(h)) => {
@@ -477,7 +509,7 @@ pub fn build_block_with_budget(
             (None, None) => {}
         }
 
-        if let Some(max_h) = style.max_height.map(resolve_specified_height) {
+        if let Some(max_h) = resolved_max_h {
             if content_h > max_h.max(0) {
                 content_h = max_h.max(0);
                 if natural_h > 0 {
@@ -486,7 +518,7 @@ pub fn build_block_with_budget(
                 }
             }
         }
-        if let Some(max_w) = style.max_width.map(resolve_specified_width) {
+        if let Some(max_w) = resolved_max_w {
             if content_w > max_w.max(0) {
                 content_w = max_w.max(0);
                 if natural_w > 0 {
@@ -530,22 +562,65 @@ pub fn build_block_with_budget(
         let mut content_h = h.max(1);
         let horizontal_non_content = bx.padding.left + bx.padding.right + horizontal_border;
         let vertical_non_content = bx.padding.top + bx.padding.bottom + vertical_border;
-        if let Some(spec_w) = style.width {
-            content_w = if is_border_box {
-                (spec_w - horizontal_non_content).max(0)
+        let resolve_specified_width = |value: i32| {
+            if is_border_box {
+                (value - horizontal_non_content).max(0)
             } else {
-                spec_w.max(0)
-            };
+                value.max(0)
+            }
+        };
+        let resolve_specified_height = |value: i32| {
+            if is_border_box {
+                (value - vertical_non_content).max(0)
+            } else {
+                value.max(0)
+            }
+        };
+        if let Some(spec_w) = style.width {
+            content_w = resolve_specified_width(spec_w);
             if natural.is_some() && w > 0 {
                 content_h = ((h as i64 * content_w as i64) / w as i64).max(1) as i32;
             }
         }
         if let Some(spec_h) = style.height {
-            content_h = if is_border_box {
-                (spec_h - vertical_non_content).max(0)
-            } else {
-                spec_h.max(0)
-            };
+            content_h = resolve_specified_height(spec_h);
+        }
+        let resolved_max_h = style
+            .max_height
+            .map(resolve_specified_height)
+            .or_else(|| style.max_height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
+        let resolved_max_w = style
+            .max_width
+            .map(|value| {
+                let border_box = if value < 0 {
+                    (available_width.max(0) as i64 * (-value) as i64 / 10000) as i32
+                } else {
+                    value
+                };
+                resolve_specified_width(border_box)
+            })
+            .or_else(|| {
+                style.max_width_calc.map(|(px100, pct100)| {
+                    let border_box =
+                        px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                    resolve_specified_width(border_box)
+                })
+            });
+        if let Some(max_h) = resolved_max_h {
+            if content_h > max_h.max(0) {
+                content_h = max_h.max(0);
+                if h > 0 {
+                    content_w = ((w as i64 * content_h as i64) / h as i64).max(1) as i32;
+                }
+            }
+        }
+        if let Some(max_w) = resolved_max_w {
+            if content_w > max_w.max(0) {
+                content_w = max_w.max(0);
+                if w > 0 {
+                    content_h = ((h as i64 * content_w as i64) / w as i64).max(1) as i32;
+                }
+            }
         }
         bx.image_src = Some(key);
         bx.image_width = Some(content_w);

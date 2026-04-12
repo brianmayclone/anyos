@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
-    ComputedStyle, Display, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
+    BoxSizing, ComputedStyle, Display, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
     VerticalAlign, WhiteSpace, resolve_inset,
 };
 use crate::ImageCache;
@@ -89,6 +89,13 @@ fn build_empty_inline_visual_box(node_id: NodeId, style: &ComputedStyle) -> Layo
         }
     }
     bx
+}
+
+fn inline_replaced_fragment_metrics(bx: &LayoutBox) -> (i32, i32) {
+    (
+        (bx.margin.left + bx.width + bx.margin.right).max(0),
+        (bx.margin.top + bx.height + bx.margin.bottom).max(0),
+    )
 }
 
 /// Lay out a run of inline child nodes, performing word wrapping.
@@ -298,8 +305,12 @@ pub fn layout_inline_content_with_pseudo(
         child.x = start_x + line_x + child.x;
         child.y = child.y;
         if !child.is_out_of_flow {
-            child.width = fw;
-            child.height = fh;
+            if child.width <= 0 {
+                child.width = fw;
+            }
+            if child.height <= 0 {
+                child.height = fh;
+            }
         }
         if child.is_out_of_flow {
             child.static_position_x = Some(child.x);
@@ -581,20 +592,125 @@ fn collect_inline_fragments(
             // Handle inline <img> — use available_width instead of hardcoded 300
             if *tag == Tag::Img || dom.has_tag_name(node_id, "a-img") {
                 let (iw, ih) = image_dimensions(dom, node_id, available_width, images);
-                let mut img = LayoutBox::new(Some(node_id), BoxType::Inline);
+                let mut img = build_empty_inline_visual_box(node_id, style);
+                img.box_type = BoxType::Inline;
+                img.margin.left = style.margin_left;
+                img.margin.right = style.margin_right;
+                img.margin.top = style.margin_top;
+                img.margin.bottom = style.margin_bottom;
+                img.x = img.margin.left;
+                img.y = img.margin.top;
+                let horizontal_border = img.border_left_width + img.border_right_width;
+                let vertical_border = img.border_top_width + img.border_bottom_width;
+                let horizontal_non_content = img.padding.left + img.padding.right + horizontal_border;
+                let vertical_non_content = img.padding.top + img.padding.bottom + vertical_border;
+                let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
+                let resolve_specified_width = |w: i32| {
+                    if is_border_box {
+                        (w - horizontal_non_content).max(0)
+                    } else {
+                        w.max(0)
+                    }
+                };
+                let resolve_specified_height = |h: i32| {
+                    if is_border_box {
+                        (h - vertical_non_content).max(0)
+                    } else {
+                        h.max(0)
+                    }
+                };
+                let mut content_w = iw.max(1);
+                let mut content_h = ih.max(1);
+                let specified_w = style
+                    .width
+                    .map(resolve_specified_width)
+                    .or_else(|| {
+                        style.width_pct.map(|pct| {
+                            let border_box = (available_width.max(0) as i64 * pct as i64 / 10000) as i32;
+                            resolve_specified_width(border_box)
+                        })
+                    })
+                    .or_else(|| {
+                        style.width_calc.map(|(px100, pct100)| {
+                            let border_box =
+                                px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                            resolve_specified_width(border_box)
+                        })
+                    });
+                let specified_h = style
+                    .height
+                    .map(resolve_specified_height)
+                    .or_else(|| style.height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
+                let resolved_max_h = style
+                    .max_height
+                    .map(resolve_specified_height)
+                    .or_else(|| style.max_height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
+                let resolved_max_w = style
+                    .max_width
+                    .map(|value| {
+                        let border_box = if value < 0 {
+                            (available_width.max(0) as i64 * (-value) as i64 / 10000) as i32
+                        } else {
+                            value
+                        };
+                        resolve_specified_width(border_box)
+                    })
+                    .or_else(|| {
+                        style.max_width_calc.map(|(px100, pct100)| {
+                            let border_box =
+                                px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                            resolve_specified_width(border_box)
+                        })
+                    });
+                match (specified_w, specified_h) {
+                    (Some(w), Some(h)) => {
+                        content_w = w.max(1);
+                        content_h = h.max(1);
+                    }
+                    (Some(w), None) => {
+                        content_w = w.max(1);
+                        if iw > 0 {
+                            content_h = ((ih as i64 * content_w as i64) / iw as i64).max(1) as i32;
+                        }
+                    }
+                    (None, Some(h)) => {
+                        content_h = h.max(1);
+                        if ih > 0 {
+                            content_w = ((iw as i64 * content_h as i64) / ih as i64).max(1) as i32;
+                        }
+                    }
+                    (None, None) => {}
+                }
+                if let Some(max_h) = resolved_max_h {
+                    if content_h > max_h.max(0) {
+                        content_h = max_h.max(0);
+                        if ih > 0 {
+                            content_w = ((iw as i64 * content_h as i64) / ih as i64).max(1) as i32;
+                        }
+                    }
+                }
+                if let Some(max_w) = resolved_max_w {
+                    if content_w > max_w.max(0) {
+                        content_w = max_w.max(0);
+                        if iw > 0 {
+                            content_h = ((ih as i64 * content_w as i64) / iw as i64).max(1) as i32;
+                        }
+                    }
+                }
                 img.image_src = dom.image_url(node_id);
-                img.image_width = Some(iw);
-                img.image_height = Some(ih);
+                img.image_width = Some(content_w);
+                img.image_height = Some(content_h);
                 img.object_fit = style.object_fit;
                 img.object_position_x = style.object_position_x;
                 img.object_position_x_is_percent = style.object_position_x_is_percent;
                 img.object_position_y = style.object_position_y;
                 img.object_position_y_is_percent = style.object_position_y_is_percent;
-                img.width = iw;
-                img.height = ih;
+                img.width = content_w + img.padding.left + img.padding.right + horizontal_border;
+                img.height = content_h + img.padding.top + img.padding.bottom + vertical_border;
+                let (frag_w, frag_h) = inline_replaced_fragment_metrics(&img);
                 out.push(InlineFragment {
-                    width: iw,
-                    height: ih,
+                    width: frag_w,
+                    height: frag_h,
                     layout_box: img,
                     breaks_after: false,
                 });
@@ -617,21 +733,125 @@ fn collect_inline_fragments(
                     .and_then(parse_attr_int)
                     .or(natural.map(|(_, h)| h))
                     .unwrap_or(100);
-                let iw = iw.min(available_width.max(1));
-                let mut img = LayoutBox::new(Some(node_id), BoxType::Inline);
+                let mut img = build_empty_inline_visual_box(node_id, style);
+                img.box_type = BoxType::Inline;
+                img.margin.left = style.margin_left;
+                img.margin.right = style.margin_right;
+                img.margin.top = style.margin_top;
+                img.margin.bottom = style.margin_bottom;
+                img.x = img.margin.left;
+                img.y = img.margin.top;
+                let horizontal_border = img.border_left_width + img.border_right_width;
+                let vertical_border = img.border_top_width + img.border_bottom_width;
+                let horizontal_non_content = img.padding.left + img.padding.right + horizontal_border;
+                let vertical_non_content = img.padding.top + img.padding.bottom + vertical_border;
+                let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
+                let resolve_specified_width = |w: i32| {
+                    if is_border_box {
+                        (w - horizontal_non_content).max(0)
+                    } else {
+                        w.max(0)
+                    }
+                };
+                let resolve_specified_height = |h: i32| {
+                    if is_border_box {
+                        (h - vertical_non_content).max(0)
+                    } else {
+                        h.max(0)
+                    }
+                };
+                let mut content_w = iw.min(available_width.max(1));
+                let mut content_h = ih.max(1);
+                let specified_w = style
+                    .width
+                    .map(resolve_specified_width)
+                    .or_else(|| {
+                        style.width_pct.map(|pct| {
+                            let border_box = (available_width.max(0) as i64 * pct as i64 / 10000) as i32;
+                            resolve_specified_width(border_box)
+                        })
+                    })
+                    .or_else(|| {
+                        style.width_calc.map(|(px100, pct100)| {
+                            let border_box =
+                                px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                            resolve_specified_width(border_box)
+                        })
+                    });
+                let specified_h = style
+                    .height
+                    .map(resolve_specified_height)
+                    .or_else(|| style.height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
+                let resolved_max_h = style
+                    .max_height
+                    .map(resolve_specified_height)
+                    .or_else(|| style.max_height_calc.map(|(px100, _)| resolve_specified_height(px100 / 100)));
+                let resolved_max_w = style
+                    .max_width
+                    .map(|value| {
+                        let border_box = if value < 0 {
+                            (available_width.max(0) as i64 * (-value) as i64 / 10000) as i32
+                        } else {
+                            value
+                        };
+                        resolve_specified_width(border_box)
+                    })
+                    .or_else(|| {
+                        style.max_width_calc.map(|(px100, pct100)| {
+                            let border_box =
+                                px100 / 100 + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32;
+                            resolve_specified_width(border_box)
+                        })
+                    });
+                match (specified_w, specified_h) {
+                    (Some(w), Some(h)) => {
+                        content_w = w.max(1);
+                        content_h = h.max(1);
+                    }
+                    (Some(w), None) => {
+                        content_w = w.max(1);
+                        if iw > 0 {
+                            content_h = ((ih as i64 * content_w as i64) / iw as i64).max(1) as i32;
+                        }
+                    }
+                    (None, Some(h)) => {
+                        content_h = h.max(1);
+                        if ih > 0 {
+                            content_w = ((iw as i64 * content_h as i64) / ih as i64).max(1) as i32;
+                        }
+                    }
+                    (None, None) => {}
+                }
+                if let Some(max_h) = resolved_max_h {
+                    if content_h > max_h.max(0) {
+                        content_h = max_h.max(0);
+                        if ih > 0 {
+                            content_w = ((iw as i64 * content_h as i64) / ih as i64).max(1) as i32;
+                        }
+                    }
+                }
+                if let Some(max_w) = resolved_max_w {
+                    if content_w > max_w.max(0) {
+                        content_w = max_w.max(0);
+                        if iw > 0 {
+                            content_h = ((ih as i64 * content_w as i64) / iw as i64).max(1) as i32;
+                        }
+                    }
+                }
                 img.image_src = Some(key);
-                img.image_width = Some(iw);
-                img.image_height = Some(ih);
+                img.image_width = Some(content_w);
+                img.image_height = Some(content_h);
                 img.object_fit = style.object_fit;
                 img.object_position_x = style.object_position_x;
                 img.object_position_x_is_percent = style.object_position_x_is_percent;
                 img.object_position_y = style.object_position_y;
                 img.object_position_y_is_percent = style.object_position_y_is_percent;
-                img.width = iw;
-                img.height = ih;
+                img.width = content_w + img.padding.left + img.padding.right + horizontal_border;
+                img.height = content_h + img.padding.top + img.padding.bottom + vertical_border;
+                let (frag_w, frag_h) = inline_replaced_fragment_metrics(&img);
                 out.push(InlineFragment {
-                    width: iw,
-                    height: ih,
+                    width: frag_w,
+                    height: frag_h,
                     layout_box: img,
                     breaks_after: false,
                 });

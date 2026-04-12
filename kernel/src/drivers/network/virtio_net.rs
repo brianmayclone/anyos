@@ -28,6 +28,7 @@ const NUM_BUFFERS: usize = 128;
 const NUM_TX_BUFFERS: usize = 64;
 const TX_DESC_MAP_SIZE: usize = NUM_BUFFERS;
 const INVALID_TX_SLOT: u16 = u16::MAX;
+const TX_WAIT_SPINS: u32 = 100_000;
 
 /// Max Ethernet frame size + VirtIO net header.
 const RX_BUF_SIZE: usize = 1526 + 12; // MTU 1500 + Ethernet overhead + virtio-net header
@@ -132,6 +133,17 @@ impl VirtioNet {
             self.vdev.notify_queue(0);
         }
     }
+
+    fn wait_for_tx_slot(&mut self) -> Option<usize> {
+        for _ in 0..TX_WAIT_SPINS {
+            self.reap_tx_completions();
+            if let Some(slot) = self.tx_free_slots.pop_front() {
+                return Some(slot as usize);
+            }
+            core::hint::spin_loop();
+        }
+        None
+    }
 }
 
 // ── Public API ──────────────────────────────────────────────────────────────
@@ -150,8 +162,8 @@ pub fn transmit(data: &[u8]) -> bool {
 
     net.reap_tx_completions();
 
-    let slot = match net.tx_free_slots.pop_front() {
-        Some(slot) => slot as usize,
+    let slot = match net.wait_for_tx_slot() {
+        Some(slot) => slot,
         None => return false,
     };
     let buf_phys = net.tx_bufs_phys[slot];
