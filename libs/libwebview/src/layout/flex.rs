@@ -129,7 +129,7 @@ pub(super) fn measure_max_content(
         }
         let fs = st.font_size.max(1);
         let bold = matches!(st.font_weight, crate::style::FontWeight::Bold);
-        let (tw, _) = super::measure_text(trimmed, fs, bold);
+        let (tw, _) = super::measure_text(trimmed, fs, 0, bold, false);
         return tw;
     }
 
@@ -369,7 +369,7 @@ pub fn layout_flex(
                 item.cross_base = 0;
                 continue;
             }
-            let (tw, th) = super::measure_text(trimmed, parent_font_size, parent_bold);
+            let (tw, th) = super::measure_text(trimmed, parent_font_size, 0, parent_bold, false);
             let mut text_box = super::LayoutBox::new_text(
                 String::from(trimmed),
                 parent_font_size,

@@ -450,9 +450,27 @@ impl LayoutBox {
 // Shared helpers (pub(super) for sub-modules)
 // ---------------------------------------------------------------------------
 
-pub(super) fn measure_text(text: &str, font_size: i32, bold: bool) -> (i32, i32) {
-    let font_id: u16 = if bold { 1 } else { 0 };
-    let (w, h) = libanyui_client::measure_text(text, font_id, font_size as u16);
+pub(crate) fn resolve_font_id(custom_font_id: u32, bold: bool, italic: bool) -> u32 {
+    if custom_font_id != 0 {
+        custom_font_id
+    } else if bold {
+        1
+    } else if italic {
+        3
+    } else {
+        0
+    }
+}
+
+pub(super) fn measure_text(
+    text: &str,
+    font_size: i32,
+    custom_font_id: u32,
+    bold: bool,
+    italic: bool,
+) -> (i32, i32) {
+    let font_id = resolve_font_id(custom_font_id, bold, italic);
+    let (w, h) = libfont_client::measure(font_id, font_size.max(1) as u16, text);
     (w as i32, h as i32)
 }
 
@@ -2364,7 +2382,13 @@ fn measure_min_content(
         let bold = matches!(st.font_weight, crate::style::FontWeight::Bold);
         let mut max_w = 0i32;
         for word in text.split_whitespace() {
-            let (w, _) = measure_text(word, fs, bold);
+            let custom_font_id = st
+                .font_family
+                .as_ref()
+                .and_then(|family| crate::lookup_web_font(family))
+                .unwrap_or(0);
+            let italic = matches!(st.font_style, crate::style::FontStyleVal::Italic);
+            let (w, _) = measure_text(word, fs, custom_font_id, bold, italic);
             if w > max_w {
                 max_w = w;
             }

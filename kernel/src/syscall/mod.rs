@@ -688,9 +688,5 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
 
     let result = dispatch_inner(syscall_num, arg1, arg2, arg3, arg4, arg5);
     handlers::deliver_pending_signal_default();
-    #[cfg(target_arch = "x86_64")]
-    if syscall_num == SYS_MMAP {
-        syscall_diag_dump_return_frame("+sc-ret", regs, result as u64);
-    }
     result as u64
 }

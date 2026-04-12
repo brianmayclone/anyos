@@ -9,99 +9,9 @@ use alloc::string::String;
 #[allow(unused_imports)]
 use super::helpers::{is_valid_user_ptr, read_user_str, read_user_str_safe, resolve_path};
 
-#[cfg(target_arch = "x86_64")]
-#[inline(never)]
-fn mmap_diag_putc(c: u8) {
-    unsafe {
-        while crate::arch::x86::port::inb(0x3FD) & 0x20 == 0 {
-            core::hint::spin_loop();
-        }
-        crate::arch::x86::port::outb(0x3F8, c);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn mmap_diag_puts(s: &[u8]) {
-    for &c in s {
-        if c == b'\n' {
-            mmap_diag_putc(b'\r');
-        }
-        mmap_diag_putc(c);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn mmap_diag_hex(mut n: u64) {
-    mmap_diag_puts(b"0x");
-    if n == 0 {
-        mmap_diag_putc(b'0');
-        return;
-    }
-    let mut buf = [0u8; 16];
-    let mut i = 0usize;
-    while n > 0 {
-        let d = (n & 0xF) as u8;
-        buf[i] = if d < 10 { b'0' + d } else { b'a' + d - 10 };
-        n >>= 4;
-        i += 1;
-    }
-    while i > 0 {
-        i -= 1;
-        mmap_diag_putc(buf[i]);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-fn mmap_diag_dec(mut n: u32) {
-    if n == 0 {
-        mmap_diag_putc(b'0');
-        return;
-    }
-    let mut buf = [0u8; 10];
-    let mut i = 0usize;
-    while n > 0 {
-        buf[i] = b'0' + (n % 10) as u8;
-        n /= 10;
-        i += 1;
-    }
-    while i > 0 {
-        i -= 1;
-        mmap_diag_putc(buf[i]);
-    }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[inline(never)]
-fn mmap_diag_mark(mark: u8) {
-    mmap_diag_putc(b'[');
-    mmap_diag_putc(b'm');
-    mmap_diag_putc(b'm');
-    mmap_diag_putc(b':');
-    mmap_diag_putc(mark);
-    mmap_diag_putc(b']');
-}
-
-#[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
 fn mmap_diag_mark(_mark: u8) {}
 
-#[cfg(target_arch = "x86_64")]
-#[inline(never)]
-fn mmap_diag_log(label: &[u8], tid: u32, size: u32, pd: u64, addr: u32) {
-    mmap_diag_putc(b'\n');
-    mmap_diag_puts(label);
-    mmap_diag_puts(b" tid=");
-    mmap_diag_dec(tid);
-    mmap_diag_puts(b" size=");
-    mmap_diag_dec(size);
-    mmap_diag_puts(b" pd=");
-    mmap_diag_hex(pd);
-    mmap_diag_puts(b" addr=");
-    mmap_diag_hex(addr as u64);
-    mmap_diag_putc(b'\n');
-}
-
-#[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
 fn mmap_diag_log(_label: &[u8], _tid: u32, _size: u32, _pd: u64, _addr: u32) {}
 

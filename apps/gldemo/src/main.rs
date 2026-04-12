@@ -72,15 +72,20 @@ uniform sampler2D uShadowMap;
 uniform vec4 uMatColor;
 uniform vec3 uLightPos0;
 uniform vec2 uShadowTexelSize;
+uniform float uShadowFlipY;
 void main() {
     vec4 texColor = texture2D(uTexture, vTexCoord);
     vec3 shadowNdc = vShadowCoord.xyz / max(vShadowCoord.w, 0.0001);
-    // anyOS/libgl uses a top-left framebuffer/texture convention for both the
-    // software rasterizer and the HW shadow FBO path, so the projected shadow
-    // lookup must mirror Y when converting NDC to texture UVs.
+    // The software shadow buffer uses a top-left convention, while the virgl
+    // hardware path samples the shadow texture in the usual GL orientation.
+    float shadowY = mix(
+        shadowNdc.y * 0.5 + 0.5,
+        0.5 - shadowNdc.y * 0.5,
+        clamp(uShadowFlipY, 0.0, 1.0)
+    );
     vec2 shadowUv = vec2(
         shadowNdc.x * 0.5 + 0.5,
-        0.5 - shadowNdc.y * 0.5
+        shadowY
     );
     float shadowDepth = shadowNdc.z * 0.5 + 0.5;
     float visibility = 1.0;
@@ -597,6 +602,7 @@ struct RenderState {
     loc_main_mat_color: i32,
     loc_main_shadow_map: i32,
     loc_main_shadow_texel_size: i32,
+    loc_main_shadow_flip_y: i32,
     loc_main_light_mvp: i32,
     loc_shadow_model: i32,
     loc_shadow_light_mvp: i32,
@@ -744,6 +750,10 @@ fn render_frame() {
         s.loc_main_shadow_texel_size,
         1.0 / shadow_map_size,
         1.0 / shadow_map_size,
+    );
+    gl::uniform1f(
+        s.loc_main_shadow_flip_y,
+        if gl::get_hw_backend() { 0.0 } else { 1.0 },
     );
     gl::active_texture(gl::GL_TEXTURE0 + gl::shadow_get_unit());
     gl::bind_texture(
@@ -1090,6 +1100,7 @@ fn main() {
     let loc_main_mat_color = gl::get_uniform_location(main_program, "uMatColor");
     let loc_main_shadow_map = gl::get_uniform_location(main_program, "uShadowMap");
     let loc_main_shadow_texel_size = gl::get_uniform_location(main_program, "uShadowTexelSize");
+    let loc_main_shadow_flip_y = gl::get_uniform_location(main_program, "uShadowFlipY");
     let loc_main_light_mvp = gl::get_uniform_location(main_program, "uLightMVP");
     let loc_shadow_model = gl::get_uniform_location(shadow_program, "uModel");
     let loc_shadow_light_mvp = gl::get_uniform_location(shadow_program, "uLightMVP");
@@ -1325,6 +1336,7 @@ fn main() {
             loc_main_mat_color,
             loc_main_shadow_map,
             loc_main_shadow_texel_size,
+            loc_main_shadow_flip_y,
             loc_main_light_mvp,
             loc_shadow_model,
             loc_shadow_light_mvp,

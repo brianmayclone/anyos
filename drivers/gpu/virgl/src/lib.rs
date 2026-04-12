@@ -202,6 +202,8 @@ struct VirglState {
     sampler_view_res: [u32; 8],
 
     // Shadow mapping state
+    shadow_color_res_id: u32,
+    shadow_color_surface_h: u32,
     shadow_depth_res_id: u32,
     shadow_depth_surface_h: u32,
     shadow_sampler_view_h: u32,
@@ -376,6 +378,8 @@ pub extern "C" fn drv_init(width: u32, height: u32) -> u32 {
             sampler_state_handle: samp_state_h,
             sampler_views: [0u32; 8],
             sampler_view_res: [0u32; 8],
+            shadow_color_res_id: 0,
+            shadow_color_surface_h: 0,
             shadow_depth_res_id: 0,
             shadow_depth_surface_h: 0,
             shadow_sampler_view_h: 0,
@@ -483,7 +487,7 @@ pub extern "C" fn drv_resize(width: u32, height: u32) -> u32 {
     s.cmd.push_cmd(VIRGL_CCMD_SET_VIEWPORT_STATE, 0, 7);
     s.cmd.push(0);
     s.cmd.push_f32(half_w);
-    s.cmd.push_f32(-half_h);
+    s.cmd.push_f32(half_h);
     s.cmd.push_f32(0.5);
     s.cmd.push_f32(half_w);
     s.cmd.push_f32(half_h);
@@ -1223,6 +1227,11 @@ pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
     if s.shadow_depth_res_id == 0 || s.shadow_width != width || s.shadow_height != height {
         // Destroy old resources
         if s.shadow_depth_res_id != 0 {
+            if s.shadow_color_surface_h != 0 {
+                s.cmd.push_cmd(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_SURFACE, 1);
+                s.cmd.push(s.shadow_color_surface_h);
+                s.shadow_color_surface_h = 0;
+            }
             if s.shadow_depth_surface_h != 0 {
                 s.cmd.push_cmd(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_SURFACE, 1);
                 s.cmd.push(s.shadow_depth_surface_h);
@@ -1233,8 +1242,21 @@ pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
                 s.shadow_sampler_view_h = 0;
             }
             s.cmd.submit();
+            if s.shadow_color_res_id != 0 {
+                libsyscall::gpu_3d_resource_destroy(s.shadow_color_res_id);
+                s.shadow_color_res_id = 0;
+            }
             libsyscall::gpu_3d_resource_destroy(s.shadow_depth_res_id);
         }
+
+        // Create a tiny color attachment as well. Some virgl hosts do not
+        // produce reliable depth output for a strictly depth-only framebuffer.
+        let color_res = libsyscall::gpu_3d_resource_create(
+            PIPE_TEXTURE_2D, PIPE_FORMAT_B8G8R8A8_UNORM,
+            VIRGL_BIND_RENDER_TARGET,
+            width, height,
+        );
+        if color_res == u32::MAX { return 0; }
 
         // Create depth texture resource: PIPE_TEXTURE_2D, Z32F, bindable as sampler
         let res = libsyscall::gpu_3d_resource_create(
@@ -1242,7 +1264,18 @@ pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
             VIRGL_BIND_DEPTH_STENCIL | VIRGL_BIND_SAMPLER_VIEW,
             width, height,
         );
-        if res == u32::MAX { return 0; }
+        if res == u32::MAX {
+            libsyscall::gpu_3d_resource_destroy(color_res);
+            return 0;
+        }
+
+        let color_surf_h = alloc_handle();
+        s.cmd.push_cmd(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SURFACE, 5);
+        s.cmd.push(color_surf_h);
+        s.cmd.push(color_res);
+        s.cmd.push(PIPE_FORMAT_B8G8R8A8_UNORM);
+        s.cmd.push(0); // level
+        s.cmd.push(0); // first_layer | last_layer
 
         // Create surface object for depth attachment
         let surf_h = alloc_handle();
@@ -1277,6 +1310,8 @@ pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
             s.shadow_sampler_state_h = ssh;
         }
 
+        s.shadow_color_res_id = color_res;
+        s.shadow_color_surface_h = color_surf_h;
         s.shadow_depth_res_id = res;
         s.shadow_depth_surface_h = surf_h;
         s.shadow_width = width;
@@ -1285,10 +1320,12 @@ pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
         s.cmd.submit();
     }
 
-    // Switch framebuffer to depth-only: nr_cbufs=0, zsurf=shadow
-    s.cmd.push_cmd(VIRGL_CCMD_SET_FRAMEBUFFER_STATE, 0, 2);
-    s.cmd.push(0); // nr_cbufs = 0
+    // Switch framebuffer to shadow RT + depth. Keeping a color attachment
+    // avoids depth-only FBO issues on some virgl hosts.
+    s.cmd.push_cmd(VIRGL_CCMD_SET_FRAMEBUFFER_STATE, 0, 3);
+    s.cmd.push(1); // nr_cbufs = 1
     s.cmd.push(s.shadow_depth_surface_h); // zsurf
+    s.cmd.push(s.shadow_color_surface_h); // cbuf[0]
 
     // Set viewport to shadow map dimensions
     let half_w = width as f32 / 2.0;
@@ -1304,7 +1341,7 @@ pub extern "C" fn drv_shadow_begin(width: u32, height: u32) -> u32 {
 
     // Clear depth to 1.0
     s.cmd.push_cmd(VIRGL_CCMD_CLEAR, 0, 8);
-    s.cmd.push(PIPE_CLEAR_DEPTH);
+    s.cmd.push(PIPE_CLEAR_COLOR | PIPE_CLEAR_DEPTH);
     s.cmd.push_f32(0.0); // color r (unused)
     s.cmd.push_f32(0.0); // color g
     s.cmd.push_f32(0.0); // color b

@@ -65,6 +65,12 @@ struct TgsiCtx<'a> {
 }
 
 impl<'a> TgsiCtx<'a> {
+    fn emit_broadcast_x(&mut self, reg: Reg) {
+        let dst = self.dst(reg);
+        let src = swz(&dst, "xxxx");
+        self.emit(&fmt2("MOV", &dst, &src));
+    }
+
     fn new(prog: &'a Program, is_vertex: bool, num_samplers: u32, const_base: u32) -> Self {
         // Collect immediates from LoadConst instructions
         let mut immediates = Vec::new();
@@ -307,10 +313,12 @@ impl<'a> TgsiCtx<'a> {
             Inst::Dp3(d, a, b) => {
                 let line = fmt3("DP3", &self.dst(*d), &self.src(*a), &self.src(*b));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
             Inst::Dp4(d, a, b) => {
                 let line = fmt3("DP4", &self.dst(*d), &self.src(*a), &self.src(*b));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
 
             Inst::Cross(d, a, b) => {
@@ -337,6 +345,7 @@ impl<'a> TgsiCtx<'a> {
                 self.emit(&line);
                 let line = fmt2("RSQ", &dst, &swz(&dst, "xxxx"));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
                 let line = fmt3("MUL", &dst, &src, &dst);
                 self.emit(&line);
             }
@@ -348,6 +357,7 @@ impl<'a> TgsiCtx<'a> {
                 self.emit(&line);
                 let line = fmt2("SQRT", &dst, &swz(&dst, "xxxx"));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
 
             Inst::Min(d, a, b) => {
@@ -388,23 +398,28 @@ impl<'a> TgsiCtx<'a> {
             Inst::Pow(d, base, exp) => {
                 let line = fmt3("POW", &self.dst(*d), &swz(&self.src(*base), "xxxx"), &swz(&self.src(*exp), "xxxx"));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
             Inst::Sqrt(d, s) => {
                 let line = fmt2("SQRT", &self.dst(*d), &self.src(*s));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
             Inst::Rsqrt(d, s) => {
                 let line = fmt2("RSQ", &self.dst(*d), &self.src(*s));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
 
             Inst::Sin(d, s) => {
                 let line = fmt2("SIN", &self.dst(*d), &swz(&self.src(*s), "xxxx"));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
             Inst::Cos(d, s) => {
                 let line = fmt2("COS", &self.dst(*d), &swz(&self.src(*s), "xxxx"));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
 
             Inst::Reflect(d, i, n) => {
@@ -481,11 +496,13 @@ impl<'a> TgsiCtx<'a> {
                 // SLT dst, a, b  (dst = a < b ? 1.0 : 0.0)
                 let line = fmt3("SLT", &self.dst(*d), &self.src(*a), &self.src(*b));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
             Inst::CmpEq(d, a, b) => {
                 // SEQ dst, a, b
                 let line = fmt3("SEQ", &self.dst(*d), &self.src(*a), &self.src(*b));
                 self.emit(&line);
+                self.emit_broadcast_x(*d);
             }
 
             Inst::Select(d, cond, a, b) => {

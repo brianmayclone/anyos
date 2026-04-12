@@ -92,8 +92,14 @@ pub fn layout_inline_content_with_pseudo(
                 let fs = if bps.font_size > 0 { bps.font_size } else { 16 };
                 let bold = matches!(bps.font_weight, crate::style::FontWeight::Bold);
                 let italic = matches!(bps.font_style, crate::style::FontStyleVal::Italic);
-                let (tw, th) = measure_text(text, fs, bold);
+                let custom_font_id = bps
+                    .font_family
+                    .as_ref()
+                    .and_then(|family| crate::lookup_web_font(family))
+                    .unwrap_or(0);
+                let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                 let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, bps.color);
+                tb.custom_font_id = custom_font_id;
                 tb.bg_color = bps.background_color;
                 tb.text_decoration = bps.text_decoration;
                 tb.letter_spacing = bps.letter_spacing;
@@ -132,8 +138,14 @@ pub fn layout_inline_content_with_pseudo(
                 let fs = if aps.font_size > 0 { aps.font_size } else { 16 };
                 let bold = matches!(aps.font_weight, crate::style::FontWeight::Bold);
                 let italic = matches!(aps.font_style, crate::style::FontStyleVal::Italic);
-                let (tw, th) = measure_text(text, fs, bold);
+                let custom_font_id = aps
+                    .font_family
+                    .as_ref()
+                    .and_then(|family| crate::lookup_web_font(family))
+                    .unwrap_or(0);
+                let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                 let mut tb = LayoutBox::new_text(text.clone(), fs, bold, italic, aps.color);
+                tb.custom_font_id = custom_font_id;
                 tb.bg_color = aps.background_color;
                 tb.text_decoration = aps.text_decoration;
                 tb.letter_spacing = aps.letter_spacing;
@@ -362,15 +374,41 @@ fn collect_inline_fragments(
                 String::from(text.as_str())
             };
 
+            let custom_font_id = style
+                .font_family
+                .as_ref()
+                .and_then(|family| crate::lookup_web_font(family))
+                .unwrap_or(0);
             let start_idx = out.len();
             if style.white_space == WhiteSpace::Pre || style.white_space == WhiteSpace::PreWrap {
-                emit_preformatted_fragments(&transformed, fs, bold, italic, color, link, deco, out);
+                emit_preformatted_fragments(
+                    &transformed,
+                    fs,
+                    custom_font_id,
+                    bold,
+                    italic,
+                    color,
+                    link,
+                    deco,
+                    out,
+                );
             } else if style.white_space == WhiteSpace::Nowrap {
-                emit_nowrap_fragments(&transformed, fs, bold, italic, color, link, deco, out);
+                emit_nowrap_fragments(
+                    &transformed,
+                    fs,
+                    custom_font_id,
+                    bold,
+                    italic,
+                    color,
+                    link,
+                    deco,
+                    out,
+                );
             } else {
                 emit_word_fragments(
                     &transformed,
                     fs,
+                    custom_font_id,
                     bold,
                     italic,
                     color,
@@ -390,11 +428,9 @@ fn collect_inline_fragments(
                 }
             }
             // Resolve web font ID from font-family.
-            if let Some(ref family) = style.font_family {
-                if let Some(wf_id) = crate::lookup_web_font(family) {
-                    for frag in &mut out[start_idx..] {
-                        frag.layout_box.custom_font_id = wf_id;
-                    }
+            if custom_font_id != 0 {
+                for frag in &mut out[start_idx..] {
+                    frag.layout_box.custom_font_id = custom_font_id;
                 }
             }
         }
@@ -609,11 +645,17 @@ fn collect_inline_fragments(
 
                 let fs = font_size_px(style);
                 let bold = is_bold(style);
-                let (tw, _) = measure_text(selected_text, fs, bold);
+                let italic = is_italic(style);
+                let custom_font_id = style
+                    .font_family
+                    .as_ref()
+                    .and_then(|family| crate::lookup_web_font(family))
+                    .unwrap_or(0);
+                let (tw, _) = measure_text(selected_text, fs, custom_font_id, bold, italic);
                 // Width: max of all option widths + padding for arrow
                 let mut max_w = tw;
                 for opt_label in labels.split('|') {
-                    let (ow, _) = measure_text(opt_label, fs, bold);
+                    let (ow, _) = measure_text(opt_label, fs, custom_font_id, bold, italic);
                     if ow > max_w {
                         max_w = ow;
                     }
@@ -858,9 +900,15 @@ fn collect_inline_fragments(
                             let bold = matches!(ps.font_weight, crate::style::FontWeight::Bold);
                             let italic =
                                 matches!(ps.font_style, crate::style::FontStyleVal::Italic);
-                            let (tw, th) = measure_text(text, fs, bold);
+                            let custom_font_id = ps
+                                .font_family
+                                .as_ref()
+                                .and_then(|family| crate::lookup_web_font(family))
+                                .unwrap_or(0);
+                            let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                             let mut tb =
                                 LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
+                            tb.custom_font_id = custom_font_id;
                             tb.bg_color = ps.background_color;
                             tb.text_decoration = ps.text_decoration;
                             out.push(InlineFragment {
@@ -932,9 +980,15 @@ fn collect_inline_fragments(
                             let bold = matches!(ps.font_weight, crate::style::FontWeight::Bold);
                             let italic =
                                 matches!(ps.font_style, crate::style::FontStyleVal::Italic);
-                            let (tw, th) = measure_text(text, fs, bold);
+                            let custom_font_id = ps
+                                .font_family
+                                .as_ref()
+                                .and_then(|family| crate::lookup_web_font(family))
+                                .unwrap_or(0);
+                            let (tw, th) = measure_text(text, fs, custom_font_id, bold, italic);
                             let mut tb =
                                 LayoutBox::new_text(text.clone(), fs, bold, italic, ps.color);
+                            tb.custom_font_id = custom_font_id;
                             tb.bg_color = ps.background_color;
                             tb.text_decoration = ps.text_decoration;
                             out.push(InlineFragment {
@@ -967,6 +1021,7 @@ fn collect_inline_fragments(
 fn emit_nowrap_fragments(
     text: &str,
     font_size: i32,
+    custom_font_id: u32,
     bold: bool,
     italic: bool,
     color: u32,
@@ -978,8 +1033,9 @@ fn emit_nowrap_fragments(
     if collapsed.is_empty() {
         return;
     }
-    let (w, h) = measure_text(&collapsed, font_size, bold);
+    let (w, h) = measure_text(&collapsed, font_size, custom_font_id, bold, italic);
     let mut wbox = LayoutBox::new_text(collapsed, font_size, bold, italic, color);
+    wbox.custom_font_id = custom_font_id;
     wbox.link_url = link;
     wbox.text_decoration = deco;
     out.push(InlineFragment {
@@ -1079,7 +1135,7 @@ fn emit_input_fragment(
         }
         "submit" | "button" => {
             let label = dom.attr(node_id, "value").unwrap_or("Submit");
-            let (bw, _) = measure_text(label, 14, false);
+            let (bw, _) = measure_text(label, 14, 0, false, false);
             let w = (bw + 24).max(60);
             let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
             btn.form_field = Some(FormFieldKind::Submit);
@@ -1097,7 +1153,7 @@ fn emit_input_fragment(
         }
         "reset" => {
             let label = dom.attr(node_id, "value").unwrap_or("Reset");
-            let (bw, _) = measure_text(label, 14, false);
+            let (bw, _) = measure_text(label, 14, 0, false, false);
             let w = (bw + 24).max(60);
             let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
             btn.form_field = Some(FormFieldKind::Reset);
@@ -1223,7 +1279,7 @@ fn emit_input_fragment(
         }
         "file" => {
             let label = "Choose File";
-            let (bw, _) = measure_text(label, 14, false);
+            let (bw, _) = measure_text(label, 14, 0, false, false);
             let w = (bw + 24).max(120);
             let mut fb = LayoutBox::new(Some(node_id), BoxType::Inline);
             fb.form_field = Some(FormFieldKind::File);
@@ -1415,7 +1471,19 @@ fn emit_button_fragment(
     let text = dom.text_content(node_id);
     let label = text.trim();
     let label = if label.is_empty() { "Button" } else { label };
-    let (bw, _) = measure_text(label, 14, false);
+    let style = &styles[node_id];
+    let custom_font_id = style
+        .font_family
+        .as_ref()
+        .and_then(|family| crate::lookup_web_font(family))
+        .unwrap_or(0);
+    let (bw, _) = measure_text(
+        label,
+        font_size_px(style),
+        custom_font_id,
+        is_bold(style),
+        is_italic(style),
+    );
     let w = (bw + 24).max(60);
     let btn_type = dom.attr(node_id, "type").unwrap_or("submit");
     let kind = match btn_type {
@@ -1462,6 +1530,7 @@ fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
 fn emit_word_fragments(
     text: &str,
     font_size: i32,
+    custom_font_id: u32,
     bold: bool,
     italic: bool,
     color: u32,
@@ -1510,9 +1579,10 @@ fn emit_word_fragments(
         // We emit a zero-height space so the word-spacing gap is preserved without
         // affecting the line box height calculation.
         if has_leading_space {
-            let (sw, _sh) = measure_text(" ", font_size, bold);
+            let (sw, _sh) = measure_text(" ", font_size, custom_font_id, bold, italic);
             let mut space_box =
                 LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
+            space_box.custom_font_id = custom_font_id;
             space_box.link_url = link.clone();
             space_box.text_decoration = deco;
             out.push(InlineFragment {
@@ -1526,8 +1596,9 @@ fn emit_word_fragments(
     }
 
     if has_leading_space {
-        let (sw, sh) = measure_text(" ", font_size, bold);
+        let (sw, sh) = measure_text(" ", font_size, custom_font_id, bold, italic);
         let mut space_box = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
+        space_box.custom_font_id = custom_font_id;
         space_box.link_url = link.clone();
         space_box.text_decoration = deco;
         out.push(InlineFragment {
@@ -1539,10 +1610,11 @@ fn emit_word_fragments(
     }
 
     for (wi, word) in words.iter().enumerate() {
-        let (ww, wh) = measure_text(word, font_size, bold);
+        let (ww, wh) = measure_text(word, font_size, custom_font_id, bold, italic);
         // Apply letter-spacing: add extra pixels per character.
         let letter_extra = letter_spacing * (word.len().max(1) as i32 - 1).max(0);
         let mut wbox = LayoutBox::new_text(String::from(*word), font_size, bold, italic, color);
+        wbox.custom_font_id = custom_font_id;
         wbox.link_url = link.clone();
         wbox.text_decoration = deco;
         out.push(InlineFragment {
@@ -1554,9 +1626,10 @@ fn emit_word_fragments(
 
         let need_space = wi + 1 < words.len() || has_trailing_space;
         if need_space {
-            let (sw, sh) = measure_text(" ", font_size, bold);
+            let (sw, sh) = measure_text(" ", font_size, custom_font_id, bold, italic);
             // Apply word-spacing: add extra pixels to space between words.
             let mut sbox = LayoutBox::new_text(String::from(" "), font_size, bold, italic, color);
+            sbox.custom_font_id = custom_font_id;
             sbox.link_url = link.clone();
             sbox.text_decoration = deco;
             out.push(InlineFragment {
@@ -1573,6 +1646,7 @@ fn emit_word_fragments(
 fn emit_preformatted_fragments(
     text: &str,
     font_size: i32,
+    custom_font_id: u32,
     bold: bool,
     italic: bool,
     color: u32,
@@ -1592,9 +1666,10 @@ fn emit_preformatted_fragments(
 
         if start < i {
             if let Ok(seg) = core::str::from_utf8(&bytes[start..i]) {
-                let (sw, sh) = measure_text(seg, font_size, bold);
+                let (sw, sh) = measure_text(seg, font_size, custom_font_id, bold, italic);
                 let mut sbox =
                     LayoutBox::new_text(String::from(seg), font_size, bold, italic, color);
+                sbox.custom_font_id = custom_font_id;
                 sbox.link_url = link.clone();
                 sbox.text_decoration = deco;
                 out.push(InlineFragment {

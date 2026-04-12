@@ -1251,12 +1251,18 @@ pub(super) fn build_pseudo_element_box(
         if has_text {
             let mut tb =
                 LayoutBox::new_text(String::from(content_text), fs, bold, italic, ps.color);
+            tb.custom_font_id = ps
+                .font_family
+                .as_ref()
+                .and_then(|family| crate::lookup_web_font(family))
+                .unwrap_or(0);
             tb.bg_color = 0;
             tb.text_decoration = ps.text_decoration;
             tb.x = pb.padding.left + pb.border_left_width;
             tb.y = pb.padding.top + pb.border_top_width;
             // Estimate text width/height
-            let (tw, th) = super::measure_text(content_text, fs, bold);
+            let (tw, th) =
+                super::measure_text(content_text, fs, tb.custom_font_id, bold, italic);
             tb.width = tw.min(inner_for_text);
             tb.height = th.max(fs + 2);
             pb.height = pb
@@ -1285,6 +1291,11 @@ pub(super) fn build_pseudo_element_box(
             return None;
         }
         let mut tb = LayoutBox::new_text(String::from(content_text), fs, bold, italic, ps.color);
+        tb.custom_font_id = ps
+            .font_family
+            .as_ref()
+            .and_then(|family| crate::lookup_web_font(family))
+            .unwrap_or(0);
         tb.bg_color = ps.background_color;
         tb.text_decoration = ps.text_decoration;
         tb.letter_spacing = ps.letter_spacing;

@@ -201,14 +201,16 @@ pub struct FormControl {
 
 /// A single draw command in absolute document coordinates.
 struct DrawCmd {
-    /// Absolute document X.
+    /// Document-space paint bounds used for culling and clip intersection.
     x: i32,
-    /// Absolute document Y.
     y: i32,
-    /// Width of the drawn element.
     w: i32,
-    /// Height of the drawn element.
     h: i32,
+    /// Untransformed source rect in document coordinates.
+    src_x: i32,
+    src_y: i32,
+    src_w: i32,
+    src_h: i32,
     /// The drawing operation.
     kind: DrawKind,
     /// Optional clip rect (from parent with overflow:hidden).
@@ -216,6 +218,15 @@ struct DrawCmd {
     clip: Option<(i32, i32, i32, i32)>,
     /// Active CSS mask layers inherited from ancestors and this element.
     masks: Vec<MaskLayer>,
+    /// Active rotation transforms inherited from ancestors and this element.
+    rotations: Vec<DrawRotation>,
+}
+
+#[derive(Clone, Copy)]
+struct DrawRotation {
+    origin_x: i32,
+    origin_y: i32,
+    angle_deg100: i32,
 }
 
 #[derive(Clone)]
@@ -273,6 +284,8 @@ pub(crate) struct DisplayList {
     clip_stack: Vec<(i32, i32, i32, i32)>,
     /// Current CSS mask layers during flatten.
     mask_stack: Vec<MaskLayer>,
+    /// Active rotation transforms during flatten.
+    rotation_stack: Vec<DrawRotation>,
     /// Maximum command height seen — used as search margin for binary search.
     max_h: i32,
     /// Optional document-space Y cull range for fast initial paints.
@@ -292,6 +305,7 @@ impl DisplayList {
             max_h: 0,
             clip_stack: Vec::new(),
             mask_stack: Vec::new(),
+            rotation_stack: Vec::new(),
             cull_y_range: None,
         }
     }
@@ -305,6 +319,7 @@ impl DisplayList {
             max_h: 0,
             clip_stack: Vec::new(),
             mask_stack: Vec::new(),
+            rotation_stack: Vec::new(),
             cull_y_range: None,
         };
         dl.flatten(root, 0, 0, None);
@@ -321,6 +336,7 @@ impl DisplayList {
             max_h: 0,
             clip_stack: Vec::new(),
             mask_stack: Vec::new(),
+            rotation_stack: Vec::new(),
             cull_y_range: Some((y_start, y_end)),
         };
         dl.flatten(root, 0, 0, None);
@@ -373,7 +389,16 @@ impl DisplayList {
             };
 
             if cmd.masks.is_empty() {
-                rasterize_draw_cmd(images, cmd, buf, stride, buf_h, draw_y, (cx, cy, cw, ch));
+                rasterize_draw_cmd(
+                    images,
+                    cmd,
+                    buf,
+                    stride,
+                    buf_h,
+                    tile_y_start,
+                    draw_y,
+                    (cx, cy, cw, ch),
+                );
             } else {
                 rasterize_masked_cmd(
                     images,
@@ -451,6 +476,29 @@ impl DisplayList {
             (new_x, new_y, new_w, new_h)
         } else {
             (orig_abs_x, sticky_abs_y, bx.width, bx.height)
+        };
+
+        let pushed_rotation = if bx.transform_rotate != 0 {
+            let origin_x = resolve_axis_origin(
+                abs_x,
+                draw_w,
+                bx.transform_origin_x,
+                bx.transform_origin_x_is_percent,
+            );
+            let origin_y = resolve_axis_origin(
+                abs_y,
+                draw_h,
+                bx.transform_origin_y,
+                bx.transform_origin_y_is_percent,
+            );
+            self.rotation_stack.push(DrawRotation {
+                origin_x,
+                origin_y,
+                angle_deg100: bx.transform_rotate,
+            });
+            true
+        } else {
+            false
         };
 
         // Check if we have border-radius.
@@ -792,15 +840,7 @@ impl DisplayList {
         // Text fragment.
         if let Some(ref text) = bx.text {
             if !text.is_empty() && bx.form_field.is_none() {
-                let font_id = if bx.custom_font_id != 0 {
-                    bx.custom_font_id
-                } else if bx.bold {
-                    1u32
-                } else if bx.italic {
-                    3u32
-                } else {
-                    0u32
-                };
+                let font_id = crate::layout::resolve_font_id(bx.custom_font_id, bx.bold, bx.italic);
                 let font_size = bx.font_size.max(1) as u16;
                 let color = if bx.color != 0 { bx.color } else { 0xFF000000 };
 
@@ -1104,6 +1144,9 @@ impl DisplayList {
         }
         if pushed_mask {
             self.mask_stack.pop();
+        }
+        if pushed_rotation {
+            self.rotation_stack.pop();
         }
     }
 
@@ -1602,7 +1645,8 @@ impl DisplayList {
         // Center text in button.
         let font_size = bx.font_size.max(1) as u16;
         let text_color = self.default_control_fg(bx);
-        let (tw, _) = libfont_client::measure(0, font_size, &label_text);
+        let font_id = crate::layout::resolve_font_id(bx.custom_font_id, bx.bold, bx.italic);
+        let (tw, _) = libfont_client::measure(font_id, font_size, &label_text);
         let tx = x + (bx.width - tw as i32) / 2;
         let ty = y + (bx.height - font_size as i32) / 2;
         self.push(
@@ -1612,7 +1656,7 @@ impl DisplayList {
             font_size as i32,
             DrawKind::Text {
                 color: text_color,
-                font_id: 0,
+                font_id,
                 font_size,
                 text: label_text,
             },
@@ -2117,28 +2161,87 @@ impl DisplayList {
 
     #[inline]
     fn push(&mut self, x: i32, y: i32, w: i32, h: i32, kind: DrawKind) {
+        let (draw_x, draw_y, draw_w, draw_h) = transformed_bounds(x, y, w, h, &self.rotation_stack);
         if let Some((y_start, y_end)) = self.cull_y_range {
-            if y + h <= y_start || y >= y_end {
+            if draw_y + draw_h <= y_start || draw_y >= y_end {
                 return;
             }
         }
-        if h > self.max_h {
-            self.max_h = h;
+        if draw_h > self.max_h {
+            self.max_h = draw_h;
         }
         let clip = self.clip_stack.last().copied();
         self.cmds.push(DrawCmd {
-            x,
-            y,
-            w,
-            h,
+            x: draw_x,
+            y: draw_y,
+            w: draw_w,
+            h: draw_h,
+            src_x: x,
+            src_y: y,
+            src_w: w,
+            src_h: h,
             kind,
             clip,
             masks: self.mask_stack.clone(),
+            rotations: self.rotation_stack.clone(),
         });
     }
 }
 
-fn rasterize_draw_cmd(
+fn transformed_bounds(x: i32, y: i32, w: i32, h: i32, rotations: &[DrawRotation]) -> (i32, i32, i32, i32) {
+    if w <= 0 || h <= 0 || rotations.is_empty() {
+        return (x, y, w, h);
+    }
+
+    let mut points = [
+        (x as f32, y as f32),
+        ((x + w) as f32, y as f32),
+        ((x + w) as f32, (y + h) as f32),
+        (x as f32, (y + h) as f32),
+    ];
+    for rot in rotations {
+        let rad = rot.angle_deg100 as f32 / 100.0 * core::f32::consts::PI / 180.0;
+        let sin = sin_approx(rad);
+        let cos = cos_approx(rad);
+        for pt in &mut points {
+            let dx = pt.0 - rot.origin_x as f32;
+            let dy = pt.1 - rot.origin_y as f32;
+            pt.0 = rot.origin_x as f32 + dx * cos - dy * sin;
+            pt.1 = rot.origin_y as f32 + dx * sin + dy * cos;
+        }
+    }
+
+    let mut min_x = points[0].0;
+    let mut max_x = points[0].0;
+    let mut min_y = points[0].1;
+    let mut max_y = points[0].1;
+    for (px, py) in points.iter().skip(1) {
+        min_x = min_x.min(*px);
+        max_x = max_x.max(*px);
+        min_y = min_y.min(*py);
+        max_y = max_y.max(*py);
+    }
+
+    let bx = floor_f32(min_x);
+    let by = floor_f32(min_y);
+    let bw = (ceil_f32(max_x) - bx).max(0);
+    let bh = (ceil_f32(max_y) - by).max(0);
+    (bx, by, bw, bh)
+}
+
+#[inline]
+fn floor_f32(v: f32) -> i32 {
+    let i = v as i32;
+    if v < i as f32 { i - 1 } else { i }
+}
+
+#[inline]
+fn ceil_f32(v: f32) -> i32 {
+    let i = v as i32;
+    if v > i as f32 { i + 1 } else { i }
+}
+
+fn rasterize_draw_cmd_basic(
     images: &ImageCache,
     cmd: &DrawCmd,
     buf: *mut u32,
@@ -2171,7 +2274,7 @@ fn rasterize_draw_cmd(
             text,
         } => {
             libfont_client::draw_string_buf(
-                buf, stride, buf_h, cmd.x, draw_y, *color, *font_id, *font_size, text,
+                buf, stride, buf_h, cmd.src_x, draw_y, *color, *font_id, *font_size, text,
             );
         }
         DrawKind::Image {
@@ -2190,10 +2293,10 @@ fn rasterize_draw_cmd(
                     buf,
                     stride,
                     buf_h,
-                    cmd.x,
+                    cmd.src_x,
                     draw_y,
-                    cmd.w,
-                    cmd.h,
+                    cmd.src_w,
+                    cmd.src_h,
                     clip,
                     &entry.pixels,
                     entry.width,
@@ -2204,6 +2307,139 @@ fn rasterize_draw_cmd(
                     *object_position_y,
                     *object_position_y_is_percent,
                 );
+            }
+        }
+    }
+}
+
+fn rasterize_draw_cmd(
+    images: &ImageCache,
+    cmd: &DrawCmd,
+    buf: *mut u32,
+    stride: u32,
+    buf_h: u32,
+    tile_y_start: i32,
+    draw_y: i32,
+    clip: (i32, i32, i32, i32),
+) {
+    if cmd.rotations.is_empty() {
+        rasterize_draw_cmd_basic(images, cmd, buf, stride, buf_h, draw_y, clip);
+        return;
+    }
+
+    let sw = cmd.src_w.max(0);
+    let sh = cmd.src_h.max(0);
+    if sw == 0 || sh == 0 {
+        return;
+    }
+
+    let mut scratch = vec![0u32; (sw as usize).saturating_mul(sh as usize)];
+    let scratch_cmd = DrawCmd {
+        x: 0,
+        y: 0,
+        w: sw,
+        h: sh,
+        src_x: 0,
+        src_y: 0,
+        src_w: sw,
+        src_h: sh,
+        kind: match &cmd.kind {
+            DrawKind::Rect { color } => DrawKind::Rect { color: *color },
+            DrawKind::RoundedRect { color, radii } => DrawKind::RoundedRect {
+                color: *color,
+                radii: *radii,
+            },
+            DrawKind::DashedLine {
+                color,
+                dash_len,
+                gap_len,
+                vertical,
+            } => DrawKind::DashedLine {
+                color: *color,
+                dash_len: *dash_len,
+                gap_len: *gap_len,
+                vertical: *vertical,
+            },
+            DrawKind::Text {
+                color,
+                font_id,
+                font_size,
+                text,
+            } => DrawKind::Text {
+                color: *color,
+                font_id: *font_id,
+                font_size: *font_size,
+                text: text.clone(),
+            },
+            DrawKind::Image {
+                src,
+                object_fit,
+                object_position_x,
+                object_position_x_is_percent,
+                object_position_y,
+                object_position_y_is_percent,
+            } => DrawKind::Image {
+                src: src.clone(),
+                object_fit: *object_fit,
+                object_position_x: *object_position_x,
+                object_position_x_is_percent: *object_position_x_is_percent,
+                object_position_y: *object_position_y,
+                object_position_y_is_percent: *object_position_y_is_percent,
+            },
+        },
+        clip: None,
+        masks: Vec::new(),
+        rotations: Vec::new(),
+    };
+    rasterize_draw_cmd_basic(
+        images,
+        &scratch_cmd,
+        scratch.as_mut_ptr(),
+        sw as u32,
+        sh as u32,
+        0,
+        (0, 0, sw, sh),
+    );
+
+    let (cx, cy, cw, ch) = clip;
+    if cw <= 0 || ch <= 0 || buf.is_null() {
+        return;
+    }
+
+    unsafe {
+        for row in 0..ch {
+            let dst_row = cy + row;
+            if dst_row < 0 || dst_row >= buf_h as i32 {
+                continue;
+            }
+            let doc_y = tile_y_start + dst_row;
+            let dst_offset = dst_row as usize * stride as usize;
+            for col in 0..cw {
+                let doc_x = cx + col;
+                let mut sx = doc_x as f32 + 0.5;
+                let mut sy = doc_y as f32 + 0.5;
+                for rot in cmd.rotations.iter().rev() {
+                    let rad = rot.angle_deg100 as f32 / 100.0 * core::f32::consts::PI / 180.0;
+                    let sin = sin_approx(rad);
+                    let cos = cos_approx(rad);
+                    let dx = sx - rot.origin_x as f32;
+                    let dy = sy - rot.origin_y as f32;
+                    sx = rot.origin_x as f32 + dx * cos + dy * sin;
+                    sy = rot.origin_y as f32 - dx * sin + dy * cos;
+                }
+
+                let src_x = floor_f32(sx) - cmd.src_x;
+                let src_y = floor_f32(sy) - cmd.src_y;
+                if src_x < 0 || src_y < 0 || src_x >= sw || src_y >= sh {
+                    continue;
+                }
+                let src = scratch[src_y as usize * sw as usize + src_x as usize];
+                if (src >> 24) == 0 {
+                    continue;
+                }
+                let idx = dst_offset + doc_x as usize;
+                let prev = *buf.add(idx);
+                *buf.add(idx) = src_over(src, prev);
             }
         }
     }
@@ -2230,6 +2466,7 @@ fn rasterize_masked_cmd(
         scratch.as_mut_ptr(),
         cw as u32,
         ch as u32,
+        tile_y_start + cy,
         draw_y - cy,
         (cmd.x - cx, draw_y - cy, cmd.w, cmd.h),
     );
