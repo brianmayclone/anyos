@@ -98,6 +98,13 @@ fn inline_replaced_fragment_metrics(bx: &LayoutBox) -> (i32, i32) {
     )
 }
 
+fn inline_baseline_height(bx: &LayoutBox) -> i32 {
+    if let Some(image_h) = bx.image_height {
+        return (bx.border_top_width + bx.padding.top + image_h).max(0);
+    }
+    bx.height.max(0)
+}
+
 /// Lay out a run of inline child nodes, performing word wrapping.
 /// Returns a list of line boxes positioned at x = `start_x`.
 pub fn layout_inline_content(
@@ -413,8 +420,11 @@ pub fn layout_inline_content_with_pseudo(
     for ln in &mut lines {
         let lh = ln.height;
         for child in &mut ln.children {
-            // Default: align to bottom (baseline approximation).
-            let base_y = lh - child.height;
+            // Default: align to the inline baseline. Replaced elements use the
+            // bottom of their content box as baseline, not the bottom of the
+            // border box, so padding/border below the content does not pull the
+            // visible image upward.
+            let base_y = lh - inline_baseline_height(child);
             child.y = base_y;
 
             // Apply vertical-align from the node's style if available.

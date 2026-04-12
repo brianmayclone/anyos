@@ -36,6 +36,9 @@ impl Renderer {
 
         // 1. Invalidate tile cache (layout has changed).
         self.tile_cache.invalidate_all();
+        for tc in self.tile_canvases.drain(..) {
+            ui::Control::from_id(tc.canvas.id()).remove();
+        }
 
         // 4. Compute visible tile rows.
         let render_y_start = (scroll_y - BUFFER_ZONE).max(0);
