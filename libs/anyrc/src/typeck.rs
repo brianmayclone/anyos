@@ -1187,6 +1187,11 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
 
+            (TyKind::RawPtr(a, am), TyKind::RawPtr(b, bm)) if am == bm => {
+                self.unify(a, b, span);
+                return;
+            }
+
             (TyKind::Tuple(a), TyKind::Tuple(b)) if a.len() == b.len() => {
                 for (x, y) in a.clone().iter().zip(b.clone().iter()) {
                     self.unify(x, y, span);
@@ -1244,6 +1249,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             TyKind::Ref(inner, m) => TyKind::Ref(Box::new(self.resolve_ty_full(*inner)), m),
+            TyKind::RawPtr(inner, m) => TyKind::RawPtr(Box::new(self.resolve_ty_full(*inner)), m),
             TyKind::Tuple(tys) => TyKind::Tuple(tys.into_iter().map(|t| self.resolve_ty_full(t)).collect()),
             TyKind::Array(inner, n) => TyKind::Array(Box::new(self.resolve_ty_full(*inner)), n),
             TyKind::Slice(inner) => TyKind::Slice(Box::new(self.resolve_ty_full(*inner))),

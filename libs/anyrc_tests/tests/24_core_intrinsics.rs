@@ -93,6 +93,26 @@ fn compile_use_import() {
     "#);
 }
 
+#[test]
+fn compile_null_mut_with_typed_raw_ptr_field_access() {
+    assert_compiles(r#"
+        struct Node {
+            next: *mut Node,
+        }
+
+        fn main() -> i32 {
+            let mut prev: *mut Node = core::ptr::null_mut();
+            let curr: *mut Node = core::ptr::null_mut();
+            if prev.is_null() {
+                prev = curr;
+            } else {
+                unsafe { (*prev).next = curr; }
+            }
+            0
+        }
+    "#);
+}
+
 // ── Runtime tests ──
 
 #[test]
