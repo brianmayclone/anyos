@@ -2000,7 +2000,9 @@ fn resolve_styles_prepared_impl(
         }
 
         // Phase 6: Resolve auto line_height.
-        if style.line_height == 0 {
+        // Important: an explicitly specified `line-height: 0` is valid CSS and
+        // must not be treated as "unset/auto".
+        if set_flags & SET_LINE_HEIGHT == 0 && style.line_height == 0 {
             style.line_height = (style.font_size * 6 + 2) / 5;
         }
 

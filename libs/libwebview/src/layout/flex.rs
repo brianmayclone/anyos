@@ -37,6 +37,48 @@ struct FlexLine {
     cross_size: i32, // resolved cross size of this line
 }
 
+fn round_div_i64(num: i64, den: i64) -> i32 {
+    if den == 0 {
+        return 0;
+    }
+    if num >= 0 {
+        ((num + den / 2) / den) as i32
+    } else {
+        ((num - den / 2) / den) as i32
+    }
+}
+
+fn justify_offset_before_item(
+    justify: JustifyContent,
+    idx: usize,
+    count: usize,
+    remaining: i32,
+) -> i32 {
+    let idx = idx as i64;
+    let count = count as i64;
+    let remaining = remaining.max(0) as i64;
+    match justify {
+        JustifyContent::FlexStart => 0,
+        JustifyContent::FlexEnd => remaining as i32,
+        JustifyContent::Center => round_div_i64(remaining, 2),
+        JustifyContent::SpaceBetween => {
+            if count > 1 {
+                round_div_i64(idx * remaining, count - 1)
+            } else {
+                0
+            }
+        }
+        JustifyContent::SpaceAround => {
+            if count > 0 {
+                round_div_i64((2 * idx + 1) * remaining, 2 * count)
+            } else {
+                0
+            }
+        }
+        JustifyContent::SpaceEvenly => round_div_i64((idx + 1) * remaining, count + 1),
+    }
+}
+
 /// Resolve the effective align-items for a child (considering align-self).
 fn resolve_align(container_align: AlignItems, child_style: &ComputedStyle) -> AlignItems {
     child_style.align_self.unwrap_or(container_align)
@@ -716,30 +758,7 @@ pub fn layout_flex(
         let effective_main = if main_size > 0 { main_size } else { used_main };
         let remaining = effective_main - used_main;
 
-        let (mut main_cursor, main_gap_extra) = match justify {
-            JustifyContent::FlexStart => (0, 0),
-            JustifyContent::FlexEnd => (remaining.max(0), 0),
-            JustifyContent::Center => (remaining.max(0) / 2, 0),
-            JustifyContent::SpaceBetween => {
-                if count > 1 {
-                    (0, remaining.max(0) / (count as i32 - 1))
-                } else {
-                    (0, 0)
-                }
-            }
-            JustifyContent::SpaceAround => {
-                let space = remaining.max(0) / (count as i32 * 2).max(1);
-                (space, space * 2)
-            }
-            JustifyContent::SpaceEvenly => {
-                let space = remaining.max(0) / (count as i32 + 1).max(1);
-                (space, space)
-            }
-        };
-
-        if is_reverse {
-            main_cursor = main_size;
-        }
+        let mut running_main = 0i32;
 
         for (idx, i) in (line.start..line.end).enumerate() {
             let item_node = items[i].node_id;
@@ -749,20 +768,14 @@ pub fn layout_flex(
             let item_main = main_sizes[idx];
 
             let child_box = items[i].layout.as_mut().unwrap();
+            let lead_offset = justify_offset_before_item(justify, idx, count, remaining);
 
             if is_row {
                 if is_reverse {
-                    main_cursor -= item_main;
-                    child_box.x = bw + parent.padding.left + main_cursor + child_box.margin.left;
-                    if idx > 0 {
-                        main_cursor -= gap + main_gap_extra;
-                    }
+                    let x_pos = effective_main - lead_offset - running_main - item_main;
+                    child_box.x = bw + parent.padding.left + x_pos + child_box.margin.left;
                 } else {
-                    child_box.x = bw + parent.padding.left + main_cursor + child_box.margin.left;
-                    main_cursor += item_main + gap;
-                    if idx < count - 1 {
-                        main_cursor += main_gap_extra;
-                    }
+                    child_box.x = bw + parent.padding.left + lead_offset + running_main + child_box.margin.left;
                 }
 
                 let item_h = child_box.height + child_box.margin.top + child_box.margin.bottom;
@@ -782,17 +795,10 @@ pub fn layout_flex(
                 child_box.y = cross_cursor + cross_offset + child_box.margin.top;
             } else {
                 if is_reverse {
-                    main_cursor -= item_main;
-                    child_box.y = cross_cursor + main_cursor + child_box.margin.top;
-                    if idx > 0 {
-                        main_cursor -= gap + main_gap_extra;
-                    }
+                    let y_pos = effective_main - lead_offset - running_main - item_main;
+                    child_box.y = cross_cursor + y_pos + child_box.margin.top;
                 } else {
-                    child_box.y = cross_cursor + main_cursor + child_box.margin.top;
-                    main_cursor += item_main + gap;
-                    if idx < count - 1 {
-                        main_cursor += main_gap_extra;
-                    }
+                    child_box.y = cross_cursor + lead_offset + running_main + child_box.margin.top;
                 }
 
                 let item_w = child_box.width + child_box.margin.left + child_box.margin.right;
@@ -830,6 +836,8 @@ pub fn layout_flex(
                 }; // close match + else
                 child_box.x = bw + parent.padding.left + cross_offset + child_box.margin.left;
             }
+
+            running_main += item_main + gap;
         }
 
         // Move items into parent.
