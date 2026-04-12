@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    AlignItems, ClearVal, ComputedStyle, Direction, Display, FloatVal, FontStyleVal, FontWeight,
+    AlignItems, ClearVal, ComputedStyle, Direction, Display, FlexDirection, FloatVal, FontStyleVal, FontWeight,
     InlineAxisAlignment, ListStyle, ListStylePosition, OverflowVal, Position, PseudoStyles,
     TextAlignVal, TextDeco, TextTransform, resolve_inset,
 };
@@ -2019,7 +2019,7 @@ pub(super) fn layout_children_ex_with_budget(
             && abs_style.width_pct.is_none()
             && abs_style.width_calc.is_none()
         {
-            shrink_to_fit_width(dom, styles, pseudo, abs_id, cb_width, images, viewport_w)
+            measure_abs_auto_width(dom, styles, pseudo, abs_id, images, viewport_w, cb_width)
         } else {
             cb_width
         };
@@ -2046,6 +2046,14 @@ pub(super) fn layout_children_ex_with_budget(
                 cb_height,
             )
         };
+
+        if abs_style.width.is_none()
+            && abs_style.width_pct.is_none()
+            && abs_style.width_calc.is_none()
+            && !(abs_style.left_offset.is_some() && abs_style.right_offset.is_some())
+        {
+            shrink_abs_box_to_contents(&mut abs_box);
+        }
 
         // Note: height for abs elements with top+bottom is now computed inside
         // build_block (CSS §10.6.4), so children can be laid out correctly.
@@ -2502,4 +2510,94 @@ fn shrink_to_fit_width(
         + style.border_right.width
         + style.border_width * 2;
     (mc + pad_border).max(1).min(max_width)
+}
+
+fn shrink_abs_box_to_contents(abs_box: &mut LayoutBox) {
+    if abs_box.children.is_empty() {
+        return;
+    }
+
+    let horizontal_non_content = abs_box.padding.left
+        + abs_box.padding.right
+        + abs_box.border_left_width
+        + abs_box.border_right_width;
+    let mut max_right = horizontal_non_content;
+    for child in &abs_box.children {
+        if child.is_out_of_flow {
+            continue;
+        }
+        let right_edge = child.x + child.width + child.margin.right;
+        if right_edge > max_right {
+            max_right = right_edge;
+        }
+    }
+    abs_box.width = abs_box.width.min(max_right.max(horizontal_non_content));
+}
+
+fn measure_abs_auto_width(
+    dom: &Dom,
+    styles: &[ComputedStyle],
+    pseudo: &PseudoStyles,
+    node_id: NodeId,
+    images: &ImageCache,
+    viewport_w: i32,
+    max_width: i32,
+) -> i32 {
+    let style = &styles[node_id];
+    let pad_border = style.padding_left
+        + style.padding_right
+        + style.border_left.width
+        + style.border_right.width
+        + style.border_width * 2;
+
+    match &dom.get(node_id).node_type {
+        crate::dom::NodeType::Text(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return pad_border.max(1);
+            }
+            let bold = matches!(style.font_weight, crate::style::FontWeight::Bold);
+            let italic = matches!(style.font_style, crate::style::FontStyleVal::Italic);
+            let font_id = style
+                .font_family
+                .as_ref()
+                .and_then(|family| crate::lookup_web_font(family))
+                .unwrap_or(0);
+            let (tw, _) = measure_text(trimmed, style.font_size.max(1), font_id, bold, italic);
+            return (tw + pad_border).min(max_width).max(1);
+        }
+        crate::dom::NodeType::Element { .. } => {}
+    }
+
+    let children: Vec<NodeId> = dom.get(node_id).children.iter().copied().collect();
+    let is_row_flex = matches!(style.display, Display::Flex | Display::InlineFlex)
+        && matches!(style.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
+    let mut content_w = 0;
+    let mut count = 0;
+
+    for cid in children {
+        let child_style = &styles[cid];
+        if child_style.display == Display::None
+            || matches!(child_style.position, Position::Absolute | Position::Fixed)
+        {
+            continue;
+        }
+
+        let child_w = flex::measure_max_content(dom, styles, pseudo, cid, images, viewport_w)
+            + child_style.margin_left
+            + child_style.margin_right;
+        if is_row_flex {
+            if child_w > 0 {
+                if count > 0 {
+                    content_w += style.column_gap;
+                }
+                content_w += child_w;
+                count += 1;
+            }
+        } else if child_w > content_w {
+            content_w = child_w;
+        }
+    }
+
+    (content_w + pad_border).min(max_width).max(1)
 }

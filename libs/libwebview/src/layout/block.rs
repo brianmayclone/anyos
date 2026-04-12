@@ -338,22 +338,25 @@ pub fn build_block_with_budget(
         bx.width = max_allowed;
     }
 
-    // Handle margin:auto centering.
-    if style.margin_left_auto && style.margin_right_auto {
-        let remaining = available_width - bx.width;
-        if remaining > 0 {
-            bx.margin.left = remaining / 2;
-            bx.margin.right = remaining - bx.margin.left;
-        }
-    } else if style.margin_left_auto {
-        let remaining = available_width - bx.width - bx.margin.right;
-        if remaining > 0 {
-            bx.margin.left = remaining;
-        }
-    } else if style.margin_right_auto {
-        let remaining = available_width - bx.width - bx.margin.left;
-        if remaining > 0 {
-            bx.margin.right = remaining;
+    // Handle margin:auto for in-flow boxes. Absolutely/fixed positioned boxes
+    // resolve auto margins later together with inset constraints.
+    if !matches!(style.position, Position::Absolute | Position::Fixed) {
+        if style.margin_left_auto && style.margin_right_auto {
+            let remaining = available_width - bx.width;
+            if remaining > 0 {
+                bx.margin.left = remaining / 2;
+                bx.margin.right = remaining - bx.margin.left;
+            }
+        } else if style.margin_left_auto {
+            let remaining = available_width - bx.width - bx.margin.right;
+            if remaining > 0 {
+                bx.margin.left = remaining;
+            }
+        } else if style.margin_right_auto {
+            let remaining = available_width - bx.width - bx.margin.left;
+            if remaining > 0 {
+                bx.margin.right = remaining;
+            }
         }
     }
 

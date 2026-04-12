@@ -172,11 +172,27 @@ pub fn layout_inline_content_with_pseudo(
     for frag in fragments {
         let fw = frag.width;
         let fh = frag.height;
+        let is_oof_block_like =
+            frag.layout_box.is_out_of_flow && !matches!(frag.layout_box.box_type, BoxType::Inline);
         let _cur_avail = if lines.is_empty() {
             first_line_width
         } else {
             available_width
         };
+
+        if is_oof_block_like && !line.children.is_empty() {
+            line.height = if line_h > 0 {
+                line_h.max(line_height)
+            } else {
+                0
+            };
+            lines.push(line);
+            line = LayoutBox::new(None, BoxType::LineBox);
+            line.x = start_x;
+            line.width = available_width;
+            line_x = 0;
+            line_h = 0;
+        }
 
         // Check if we need to wrap.
         if line_x > 0
