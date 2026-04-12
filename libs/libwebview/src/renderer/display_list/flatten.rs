@@ -806,10 +806,13 @@ impl DisplayList {
         if has_sc_children {
             // Partition children into three groups:
             // 1. Child stacking contexts with negative z-index (sorted ascending)
-            // 2. Non-stacking-context children in document order
-            // 3. Child stacking contexts with z-index >= 0 (sorted ascending)
+            // 2. Non-stacking-context in-flow children in document order
+            // 3. Non-stacking-context positioned out-of-flow children in document order
+            // 4. Child stacking contexts with z-index >= 0 (sorted ascending)
             let mut neg: Vec<(i32, usize)> = Vec::new();
             let mut pos: Vec<(i32, usize)> = Vec::new();
+            let mut normal: Vec<usize> = Vec::new();
+            let mut positioned_auto: Vec<usize> = Vec::new();
 
             for (i, child) in bx.children.iter().enumerate() {
                 if child.creates_stacking_context {
@@ -818,6 +821,10 @@ impl DisplayList {
                     } else {
                         pos.push((child.z_index, i));
                     }
+                } else if child.is_out_of_flow || child.is_fixed {
+                    positioned_auto.push(i);
+                } else {
+                    normal.push(i);
                 }
             }
 
@@ -827,11 +834,15 @@ impl DisplayList {
                 self.flatten(&bx.children[idx], cx, cy, next_sticky_ctx);
             }
 
-            // Non-stacking-context children in document order
-            for child in &bx.children {
-                if !child.creates_stacking_context {
-                    self.flatten(child, cx, cy, next_sticky_ctx);
-                }
+            // Non-stacking-context in-flow children in document order
+            for idx in normal {
+                self.flatten(&bx.children[idx], cx, cy, next_sticky_ctx);
+            }
+
+            // Positioned out-of-flow children with auto z-index paint after
+            // normal in-flow content/floats but before positive stacking contexts.
+            for idx in positioned_auto {
+                self.flatten(&bx.children[idx], cx, cy, next_sticky_ctx);
             }
 
             // Non-negative z-index stacking contexts (ascending)

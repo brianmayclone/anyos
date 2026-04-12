@@ -174,6 +174,7 @@ pub fn layout_inline_content_with_pseudo(
         let fh = frag.height;
         let is_oof_block_like =
             frag.layout_box.is_out_of_flow && !matches!(frag.layout_box.box_type, BoxType::Inline);
+        let is_collapsible_space = matches!(frag.layout_box.text.as_deref(), Some(" "));
         let _cur_avail = if lines.is_empty() {
             first_line_width
         } else {
@@ -192,6 +193,13 @@ pub fn layout_inline_content_with_pseudo(
             line.width = available_width;
             line_x = 0;
             line_h = 0;
+        }
+
+        // Collapsed whitespace must not generate visible advance at the start
+        // of a line. This keeps line layout aligned with CSS whitespace
+        // collapsing and prevents shrink-to-fit width mismatches.
+        if is_collapsible_space && line.children.is_empty() {
+            continue;
         }
 
         // Check if we need to wrap.
