@@ -1193,11 +1193,23 @@ fn resolve_absolute_alignment(
     viewport_w: i32,
     viewport_h: i32,
 ) {
-    let cb_x = root.border_width + root.padding.left;
-    let cb_y = root.border_width + root.padding.top;
-    let cb_w = (root.width - root.padding.left - root.padding.right - root.border_width * 2).max(0);
-    let cb_h =
-        (root.height - root.padding.top - root.padding.bottom - root.border_width * 2).max(0);
+    let root_style = root.node_id.and_then(|node_id| styles.get(node_id));
+    let root_establishes_abs_cb = root_style
+        .map(|style| style.position != Position::Static)
+        .unwrap_or(false);
+
+    // The layout tree root is the <body> box, but the initial containing block
+    // for abspos descendants without a positioned ancestor is still the viewport.
+    let (cb_x, cb_y, cb_w, cb_h) = if root_establishes_abs_cb {
+        (
+            root.border_width + root.padding.left,
+            root.border_width + root.padding.top,
+            (root.width - root.padding.left - root.padding.right - root.border_width * 2).max(0),
+            (root.height - root.padding.top - root.padding.bottom - root.border_width * 2).max(0),
+        )
+    } else {
+        (0, 0, viewport_w.max(0), viewport_h.max(0))
+    };
     resolve_absolute_alignment_rec(
         root,
         styles,
@@ -1379,8 +1391,16 @@ fn resolve_absolute_alignment_rec(
                     child.margin.top = mt;
                     child.margin.bottom = mb;
 
-                    child.x = desired_abs_x - abs_x;
-                    child.y = desired_abs_y - abs_y;
+                    child.x = if is_fixed {
+                        desired_abs_x
+                    } else {
+                        desired_abs_x - abs_x
+                    };
+                    child.y = if is_fixed {
+                        desired_abs_y
+                    } else {
+                        desired_abs_y - abs_y
+                    };
                     child_abs_x = desired_abs_x;
                     child_abs_y = desired_abs_y;
                 }
@@ -1950,10 +1970,21 @@ pub(super) fn layout_children_ex_with_budget(
     for &(abs_id, static_x, static_y, static_w, static_h) in &deferred_abs {
         let abs_style = &styles[abs_id];
         let is_fixed_pos = abs_style.position == Position::Fixed;
+        let uses_initial_abs_cb = !is_fixed_pos
+            && parent.node_id == Some(dom.find_body().unwrap_or(0))
+            && styles[_parent_node].position == Position::Static;
 
         // Containing block size for the absolute element.
-        let cb_width = if is_fixed_pos { viewport_w } else { available_width };
-        let cb_height = if is_fixed_pos { viewport_h } else { parent_height };
+        let cb_width = if is_fixed_pos || uses_initial_abs_cb {
+            viewport_w
+        } else {
+            available_width
+        };
+        let cb_height = if is_fixed_pos || uses_initial_abs_cb {
+            viewport_h
+        } else {
+            parent_height
+        };
 
         // CSS §10.3.7: For absolute elements with width:auto and BOTH left and right
         // specified, width = cb_width - left - right (- margins, treated as 0).
@@ -2025,26 +2056,22 @@ pub(super) fn layout_children_ex_with_budget(
         } else {
             // position:absolute — coordinates relative to the direct containing block (parent box).
             let top = resolve_inset(abs_style.top, abs_style.top_calc, cb_height, cb_height > 0);
-            let left =
-                resolve_inset(abs_style.left_offset, abs_style.left_calc, available_width, true);
-            let right = resolve_inset(
-                abs_style.right_offset,
-                abs_style.right_calc,
-                available_width,
-                true,
-            );
+            let left = resolve_inset(abs_style.left_offset, abs_style.left_calc, cb_width, true);
+            let right = resolve_inset(abs_style.right_offset, abs_style.right_calc, cb_width, true);
             let bottom =
                 resolve_inset(abs_style.bottom_offset, abs_style.bottom_calc, cb_height, cb_height > 0);
-            let content_x = bw + parent.padding.left;
-            let content_y = bw + parent.padding.top;
+            let (content_x, content_y) = if uses_initial_abs_cb {
+                (0, 0)
+            } else {
+                (bw + parent.padding.left, bw + parent.padding.top)
+            };
 
             abs_box.x = content_x + left.unwrap_or(0) + abs_box.margin.left;
             abs_box.y = content_y + top.unwrap_or(0) + abs_box.margin.top;
 
             if left.is_none() {
                 if let Some(r) = right {
-                    abs_box.x =
-                        content_x + available_width - r - abs_box.width - abs_box.margin.right;
+                    abs_box.x = content_x + cb_width - r - abs_box.width - abs_box.margin.right;
                 }
             }
             if top.is_none() {
