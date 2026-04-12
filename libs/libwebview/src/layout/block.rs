@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
-    AlignContent, BoxSizing, ComputedStyle, Display, FontStyleVal, FontWeight,
+    AlignContent, BoxSizing, ComputedStyle, Direction, Display, FontStyleVal, FontWeight,
     ListStylePosition, OverflowVal, Position, PseudoStyles, TextDeco, Visibility, resolve_inset,
     resolve_margins,
 };
@@ -332,29 +332,47 @@ pub fn build_block_with_budget(
 
     // Clamp to available space.
     let max_allowed = available_width - bx.margin.left - bx.margin.right;
-    let preserve_explicit_abs_width = explicit_w.is_some()
-        && matches!(style.position, Position::Absolute | Position::Fixed);
-    if bx.width > max_allowed && max_allowed > 0 && !preserve_explicit_abs_width {
+    let preserve_explicit_width = explicit_w.is_some();
+    if bx.width > max_allowed && max_allowed > 0 && !preserve_explicit_width {
         bx.width = max_allowed;
     }
 
     // Handle margin:auto for in-flow boxes. Absolutely/fixed positioned boxes
     // resolve auto margins later together with inset constraints.
     if !matches!(style.position, Position::Absolute | Position::Fixed) {
+        let remaining = available_width - bx.width - bx.margin.left - bx.margin.right;
         if style.margin_left_auto && style.margin_right_auto {
-            let remaining = available_width - bx.width;
-            if remaining > 0 {
+            if remaining >= 0 {
                 bx.margin.left = remaining / 2;
                 bx.margin.right = remaining - bx.margin.left;
+            } else if matches!(style.direction, Direction::Rtl) {
+                // CSS2.1 §10.3.3: in over-constrained RTL blocks, keep the
+                // inline-end auto margin at 0 and push the inline-start side.
+                bx.margin.right = 0;
+                bx.margin.left = remaining;
+            } else {
+                // CSS2.1 §10.3.3: in over-constrained LTR blocks, keep the
+                // inline-start auto margin at 0 and let the end side go negative.
+                bx.margin.left = 0;
+                bx.margin.right = remaining;
             }
         } else if style.margin_left_auto {
-            let remaining = available_width - bx.width - bx.margin.right;
-            if remaining > 0 {
+            if remaining >= 0 {
                 bx.margin.left = remaining;
+            } else if matches!(style.direction, Direction::Rtl) {
+                bx.margin.left = remaining;
+                bx.margin.right = 0;
+            } else {
+                bx.margin.left = 0;
+                bx.margin.right += remaining;
             }
         } else if style.margin_right_auto {
-            let remaining = available_width - bx.width - bx.margin.left;
-            if remaining > 0 {
+            if remaining >= 0 {
+                bx.margin.right = remaining;
+            } else if matches!(style.direction, Direction::Rtl) {
+                bx.margin.right = 0;
+                bx.margin.left += remaining;
+            } else {
                 bx.margin.right = remaining;
             }
         }

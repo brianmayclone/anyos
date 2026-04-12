@@ -1793,7 +1793,7 @@ pub(super) fn layout_children_ex_with_budget(
                     viewport_w,
                 )
             } else {
-                let child_margin_top = style.margin_top;
+                let child_margin_top = child_style.margin_top;
                 let collapsed = if prev_margin_bottom > child_margin_top {
                     prev_margin_bottom
                 } else {
@@ -1949,7 +1949,6 @@ pub(super) fn layout_children_ex_with_budget(
                     }
                 });
                 if all_whitespace && has_no_pseudo {
-                    prev_margin_bottom = 0;
                     continue;
                 }
             }
