@@ -102,7 +102,9 @@ SURF_HOST="$SURF_HOST_DIR/target/x86_64-unknown-linux-gnu/release/surf-host"
 if [ $LIST_ONLY -eq 0 ]; then
     echo -e "${CYAN}[wpt] Building surf-host...${NC}"
     cd "$SURF_HOST_DIR"
-    cargo +stable build --release --target x86_64-unknown-linux-gnu 2>&1 | tail -3
+    cargo +stable build --release --target x86_64-unknown-linux-gnu \
+        --config 'unstable.build-std=[]' \
+        --config 'unstable.build-std-features=[]' 2>&1 | tail -3
     cd "$SCRIPT_DIR"
 fi
 

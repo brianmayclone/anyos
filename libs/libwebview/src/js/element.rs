@@ -1384,12 +1384,7 @@ fn el_append_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
         if let JsValue::Array(arr) = &children_arr {
             arr.borrow_mut().push(child.clone());
         }
-        // Update firstChild/lastChild.
-        let (first, last) = get_first_last(&children_arr);
-        let mut o = obj.borrow_mut();
-        o.set(String::from("firstChild"), first);
-        o.set(String::from("lastChild"), last);
-        o.set(String::from("childNodes"), children_arr);
+        refresh_element_children_metadata(&vm.current_this);
     }
 
     // Set child.parentNode = this.
@@ -1428,11 +1423,7 @@ fn el_remove_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 .elements
                 .retain(|_k, el| extract_node_id(el) != child_id);
         }
-        let (first, last) = get_first_last(&children_arr);
-        let mut o = obj.borrow_mut();
-        o.set(String::from("firstChild"), first);
-        o.set(String::from("lastChild"), last);
-        o.set(String::from("childNodes"), children_arr);
+        refresh_element_children_metadata(&vm.current_this);
     }
 
     // Clear child.parentNode.
@@ -1476,11 +1467,7 @@ fn el_insert_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 a.push(new_node.clone());
             }
         }
-        let (first, last) = get_first_last(&children_arr);
-        let mut o = obj.borrow_mut();
-        o.set(String::from("firstChild"), first);
-        o.set(String::from("lastChild"), last);
-        o.set(String::from("childNodes"), children_arr);
+        refresh_element_children_metadata(&vm.current_this);
     }
 
     // Set parentNode.
@@ -1523,10 +1510,7 @@ fn el_replace_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 a.elements.insert(idx, new_node.clone());
             }
         }
-        let (first, last) = get_first_last(&children_arr);
-        let mut o = obj.borrow_mut();
-        o.set(String::from("firstChild"), first);
-        o.set(String::from("lastChild"), last);
+        refresh_element_children_metadata(&vm.current_this);
     }
 
     old_node
@@ -1690,6 +1674,7 @@ fn el_to_string(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 fn el_prepend(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let parent_id = this_node_id(vm);
+    let parent_js = vm.current_this.clone();
     for arg in args {
         let child_id = extract_node_id(arg);
         if let Some(bridge) = get_bridge(vm) {
@@ -1720,12 +1705,14 @@ fn el_prepend(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 });
             }
         }
+        js_prepend_child(&parent_js, arg.clone());
     }
     JsValue::Undefined
 }
 
 fn el_append(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let parent_id = this_node_id(vm);
+    let parent_js = vm.current_this.clone();
     for arg in args {
         let child_id = extract_node_id(arg);
         if let Some(bridge) = get_bridge(vm) {
@@ -1739,6 +1726,7 @@ fn el_append(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 }
             }
         }
+        js_append_child(&parent_js, arg.clone());
     }
     JsValue::Undefined
 }
@@ -1775,6 +1763,7 @@ fn el_replace_children(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             });
         }
     }
+    js_replace_children(&vm.current_this, args);
     JsValue::Undefined
 }
 
@@ -1782,6 +1771,7 @@ fn el_replace_children(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 
 fn el_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let nid = this_node_id(vm);
+    let this_js = vm.current_this.clone();
     if let Some(bridge) = get_bridge(vm) {
         let parent_id = if nid >= 0 {
             bridge
@@ -1804,11 +1794,18 @@ fn el_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             }
         }
     }
+    let parent_js = this_js.get_property("parentNode");
+    if !parent_js.is_null() && !parent_js.is_undefined() {
+        for arg in args {
+            js_insert_before(&parent_js, arg.clone(), &this_js);
+        }
+    }
     JsValue::Undefined
 }
 
 fn el_after(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let nid = this_node_id(vm);
+    let this_js = vm.current_this.clone();
     if let Some(bridge) = get_bridge(vm) {
         let parent_id = if nid >= 0 {
             bridge
@@ -1851,11 +1848,23 @@ fn el_after(vm: &mut Vm, args: &[JsValue]) -> JsValue {
             }
         }
     }
+    let parent_js = this_js.get_property("parentNode");
+    if !parent_js.is_null() && !parent_js.is_undefined() {
+        let next_js = this_js.get_property("nextSibling");
+        for arg in args {
+            if next_js.is_null() || next_js.is_undefined() {
+                js_append_child(&parent_js, arg.clone());
+            } else {
+                js_insert_before(&parent_js, arg.clone(), &next_js);
+            }
+        }
+    }
     JsValue::Undefined
 }
 
 fn el_replace_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let nid = this_node_id(vm);
+    let this_js = vm.current_this.clone();
     if let Some(bridge) = get_bridge(vm) {
         let parent_id = if nid >= 0 {
             bridge
@@ -1882,6 +1891,14 @@ fn el_replace_with(vm: &mut Vm, args: &[JsValue]) -> JsValue {
                 child_id: nid,
             });
         }
+    }
+    let parent_js = this_js.get_property("parentNode");
+    if !parent_js.is_null() && !parent_js.is_undefined() {
+        for arg in args {
+            js_insert_before(&parent_js, arg.clone(), &this_js);
+        }
+        js_remove_child(&parent_js, extract_node_id(&this_js));
+        clear_js_parent_links(&this_js);
     }
     JsValue::Undefined
 }
@@ -2640,6 +2657,146 @@ fn get_first_last(children: &JsValue) -> (JsValue, JsValue) {
         }
     }
     (JsValue::Null, JsValue::Null)
+}
+
+pub(super) fn refresh_element_children_metadata(parent: &JsValue) {
+    let children = parent.get_property("children");
+    let ordered_children = match &children {
+        JsValue::Array(arr) => arr.borrow().values_vec(),
+        _ => Vec::new(),
+    };
+
+    let (first, last) = get_first_last(&children);
+    if let JsValue::Object(obj) = parent {
+        let mut o = obj.borrow_mut();
+        o.set(String::from("firstChild"), first);
+        o.set(String::from("lastChild"), last);
+        o.set(String::from("childNodes"), children.clone());
+        let child_element_count = ordered_children
+            .iter()
+            .filter(|child| child.get_property("nodeType").to_number() == 1.0)
+            .count() as f64;
+        o.set(
+            String::from("childElementCount"),
+            JsValue::Number(child_element_count),
+        );
+    }
+
+    for (idx, child) in ordered_children.iter().enumerate() {
+        if let JsValue::Object(cobj) = child {
+            let prev = if idx > 0 {
+                ordered_children[idx - 1].clone()
+            } else {
+                JsValue::Null
+            };
+            let next = if idx + 1 < ordered_children.len() {
+                ordered_children[idx + 1].clone()
+            } else {
+                JsValue::Null
+            };
+            let mut c = cobj.borrow_mut();
+            c.set(String::from("parentNode"), parent.clone());
+            c.set(String::from("parentElement"), parent.clone());
+            c.set(String::from("previousSibling"), prev.clone());
+            c.set(String::from("nextSibling"), next.clone());
+            c.set(String::from("previousElementSibling"), prev);
+            c.set(String::from("nextElementSibling"), next);
+        }
+    }
+}
+
+pub(super) fn clear_js_parent_links(child: &JsValue) {
+    if let JsValue::Object(cobj) = child {
+        let mut c = cobj.borrow_mut();
+        c.set(String::from("parentNode"), JsValue::Null);
+        c.set(String::from("parentElement"), JsValue::Null);
+        c.set(String::from("previousSibling"), JsValue::Null);
+        c.set(String::from("nextSibling"), JsValue::Null);
+        c.set(String::from("previousElementSibling"), JsValue::Null);
+        c.set(String::from("nextElementSibling"), JsValue::Null);
+    }
+}
+
+pub(super) fn js_remove_child(parent: &JsValue, child_id: i64) {
+    if child_id == -9999 {
+        return;
+    }
+    let children = parent.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        arr.borrow_mut()
+            .elements
+            .retain(|_k, el| extract_node_id(el) != child_id);
+        refresh_element_children_metadata(parent);
+    }
+}
+
+fn js_detach_from_old_parent(child: &JsValue) {
+    let old_parent = child.get_property("parentNode");
+    let child_id = extract_node_id(child);
+    if !old_parent.is_null() && !old_parent.is_undefined() {
+        js_remove_child(&old_parent, child_id);
+    }
+    clear_js_parent_links(child);
+}
+
+fn js_append_child(parent: &JsValue, child: JsValue) {
+    js_detach_from_old_parent(&child);
+    let children = parent.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        arr.borrow_mut().push(child);
+        refresh_element_children_metadata(parent);
+    }
+}
+
+fn js_prepend_child(parent: &JsValue, child: JsValue) {
+    js_detach_from_old_parent(&child);
+    let children = parent.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        arr.borrow_mut().insert_and_shift(0, child);
+        refresh_element_children_metadata(parent);
+    }
+}
+
+fn js_insert_before(parent: &JsValue, child: JsValue, ref_child: &JsValue) {
+    js_detach_from_old_parent(&child);
+    let ref_id = extract_node_id(ref_child);
+    let children = parent.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        let mut arr_mut = arr.borrow_mut();
+        if ref_id == -9999 {
+            arr_mut.push(child);
+        } else if let Some(idx) = arr_mut
+            .elements
+            .iter()
+            .find(|(_k, el)| extract_node_id(el) == ref_id)
+            .map(|(k, _)| *k)
+        {
+            arr_mut.insert_and_shift(idx, child);
+        } else {
+            arr_mut.push(child);
+        }
+        refresh_element_children_metadata(parent);
+    }
+}
+
+fn js_replace_children(parent: &JsValue, new_children: &[JsValue]) {
+    let old_children = match parent.get_property("children") {
+        JsValue::Array(arr) => arr.borrow().values_vec(),
+        _ => Vec::new(),
+    };
+    for child in &old_children {
+        clear_js_parent_links(child);
+    }
+    let children = parent.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        let mut arr_mut = arr.borrow_mut();
+        arr_mut.elements.clear();
+        arr_mut.length = 0;
+    }
+    refresh_element_children_metadata(parent);
+    for child in new_children {
+        js_append_child(parent, child.clone());
+    }
 }
 
 fn parse_dimension_attr(vm: &mut Vm, node_id: i64, name: &str) -> Option<u32> {

@@ -391,6 +391,28 @@ impl TextField {
     pub fn on_submit(&self, _f: impl FnMut(&SubmitEvent) + 'static) {}
 }
 
+// ── SearchField ──────────────────────────────────────────────────────────────
+
+pub struct SearchField {
+    ctrl: Control,
+}
+
+impl core::ops::Deref for SearchField {
+    type Target = Control;
+    fn deref(&self) -> &Control { &self.ctrl }
+}
+
+impl Widget for SearchField {
+    fn id(&self) -> u32 { self.ctrl.id }
+}
+
+impl SearchField {
+    pub fn new() -> Self { SearchField { ctrl: Control { id: next_id() } } }
+    pub fn set_placeholder(&self, _text: &str) {}
+    pub fn on_text_changed(&self, _f: impl FnMut(&TextChangedEvent) + 'static) {}
+    pub fn on_submit(&self, _f: impl FnMut(&SubmitEvent) + 'static) {}
+}
+
 // ── Checkbox ─────────────────────────────────────────────────────────────────
 
 pub struct Checkbox {

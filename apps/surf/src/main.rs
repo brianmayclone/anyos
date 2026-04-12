@@ -1225,6 +1225,18 @@ fn handle_nav_done(
     st.tabs[tab_idx].load_state.begin_parse();
     log_tab_load_state(tab_idx, "begin_parse");
     st.tabs[tab_idx].webview.set_html_dom_only(&body_text);
+    // Always allow an initial fallback first paint from raw DOM, even while
+    // stylesheets and scripts are still in flight. Without this, pages with
+    // slow/broken subresources can remain visually blank for far too long.
+    //
+    // Use an immediate flush for the active tab so navigation never sits on a
+    // white page waiting for the debounce timer or stylesheet gate.
+    let first_paint_schedule = if st.active_tab == tab_idx {
+        RenderSchedule::Immediate
+    } else {
+        RenderSchedule::Debounced
+    };
+    request_render(tab_idx, RenderWork::Layout, first_paint_schedule);
     crate::surf_log!(
         "[surf] html parsed: tab={} title_present={} dom_present={}",
         tab_idx,

@@ -55,6 +55,24 @@ impl Renderer {
             }
             parent.add(&atf);
             atf.id()
+        } else if kind == FormFieldKind::TextInput && bx.form_is_search {
+            let sf = ui::SearchField::new();
+            sf.set_position(x, y);
+            sf.set_size(w as u32, h as u32);
+            sf.set_color(bg);
+            sf.set_text_color(fg);
+            sf.set_enabled(!bx.form_disabled);
+            if let Some(ref ph) = bx.form_placeholder {
+                sf.set_placeholder(ph);
+            }
+            if let Some(ref val) = bx.form_value {
+                sf.set_text(val);
+            }
+            if let Some(cb) = submit_cb {
+                sf.on_submit_raw(cb, submit_cb_ud);
+            }
+            parent.add(&sf);
+            sf.id()
         } else {
             let tf = ui::TextField::new();
             if kind == FormFieldKind::Password {

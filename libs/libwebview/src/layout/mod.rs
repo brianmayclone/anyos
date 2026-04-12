@@ -73,6 +73,8 @@ pub struct LayoutBox {
     pub form_field: Option<FormFieldKind>,
     /// Placeholder text for form text inputs.
     pub form_placeholder: Option<String>,
+    /// True when this text-like input originated from `<input type="search">`.
+    pub form_is_search: bool,
     /// Default value for form text inputs.
     pub form_value: Option<String>,
     /// Pipe-separated option labels for `<select>` (used by native DropDown).
@@ -329,6 +331,7 @@ impl LayoutBox {
             image_height: None,
             form_field: None,
             form_placeholder: None,
+            form_is_search: false,
             form_value: None,
             form_options: None,
             form_selected_index: -1,

@@ -13,6 +13,7 @@ use libjs::Vm;
 use crate::dom::{Dom, NodeType, Tag};
 
 use super::element;
+use super::element::refresh_element_children_metadata;
 use super::selector;
 use super::{arg_string, dom_property_hook, get_bridge, make_array, DomMutation, VirtualNode};
 
@@ -884,38 +885,13 @@ fn doc_create_range(_vm: &mut Vm, _args: &[JsValue]) -> JsValue {
 
 fn frag_append_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let child = args.first().cloned().unwrap_or(JsValue::Null);
-    if let JsValue::Object(obj) = &vm.current_this {
-        let o = obj.borrow();
-        if let Some(p) = o.properties.get("children") {
-            if let JsValue::Array(arr) = &p.value {
-                arr.borrow_mut().push(child.clone());
-            }
-        }
-    }
+    frag_append_js_child(&vm.current_this, child.clone());
     child
 }
 
 fn frag_remove_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let child = args.first().cloned().unwrap_or(JsValue::Null);
-    if let JsValue::Object(obj) = &vm.current_this {
-        let o = obj.borrow();
-        if let Some(p) = o.properties.get("children") {
-            if let JsValue::Array(arr) = &p.value {
-                let child_id = if let JsValue::Object(cobj) = &child {
-                    cobj.borrow().get("__nodeId").to_number() as i64
-                } else {
-                    -9999
-                };
-                arr.borrow_mut().elements.retain(|_k, el| {
-                    if let JsValue::Object(eobj) = el {
-                        eobj.borrow().get("__nodeId").to_number() as i64 != child_id
-                    } else {
-                        true
-                    }
-                });
-            }
-        }
-    }
+    frag_remove_js_child(&vm.current_this, element::extract_node_id_pub(&child));
     child
 }
 
@@ -923,29 +899,7 @@ fn frag_remove_child(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 fn frag_insert_before(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let new_child = args.first().cloned().unwrap_or(JsValue::Null);
     let ref_child = args.get(1).cloned().unwrap_or(JsValue::Null);
-    if let JsValue::Object(obj) = &vm.current_this {
-        let o = obj.borrow();
-        if let Some(p) = o.properties.get("children") {
-            if let JsValue::Array(arr) = &p.value {
-                let mut arr_mut = arr.borrow_mut();
-                if ref_child.is_null() || ref_child.is_undefined() {
-                    arr_mut.push(new_child.clone());
-                } else {
-                    let ref_id = ref_child.get_property("__nodeId").to_number() as i64;
-                    let pos = arr_mut
-                        .elements
-                        .iter()
-                        .find(|(_k, el)| el.get_property("__nodeId").to_number() as i64 == ref_id)
-                        .map(|(k, _)| *k);
-                    if let Some(idx) = pos {
-                        arr_mut.insert_and_shift(idx, new_child.clone());
-                    } else {
-                        arr_mut.push(new_child.clone());
-                    }
-                }
-            }
-        }
-    }
+    frag_insert_js_before(&vm.current_this, new_child.clone(), &ref_child);
     new_child
 }
 
@@ -1017,33 +971,126 @@ fn frag_get_element_by_id(vm: &mut Vm, args: &[JsValue]) -> JsValue {
 /// prepend(child) on a DocumentFragment — inserts at the beginning.
 fn frag_prepend(vm: &mut Vm, args: &[JsValue]) -> JsValue {
     let child = args.first().cloned().unwrap_or(JsValue::Null);
-    if let JsValue::Object(obj) = &vm.current_this {
-        let o = obj.borrow();
-        if let Some(p) = o.properties.get("children") {
-            if let JsValue::Array(arr) = &p.value {
-                arr.borrow_mut().insert_and_shift(0, child.clone());
-            }
-        }
-    }
+    frag_prepend_js_child(&vm.current_this, child.clone());
     JsValue::Undefined
 }
 
 /// replaceChildren(...nodes) on a DocumentFragment — removes all children then appends args.
 fn frag_replace_children(vm: &mut Vm, args: &[JsValue]) -> JsValue {
-    if let JsValue::Object(obj) = &vm.current_this {
-        let o = obj.borrow();
-        if let Some(p) = o.properties.get("children") {
-            if let JsValue::Array(arr) = &p.value {
-                let mut arr_mut = arr.borrow_mut();
-                arr_mut.elements.clear();
-                arr_mut.length = 0;
-                for arg in args {
-                    arr_mut.push(arg.clone());
-                }
-            }
+    frag_replace_js_children(&vm.current_this, args);
+    JsValue::Undefined
+}
+
+fn refresh_fragment_children_metadata(fragment: &JsValue) {
+    refresh_element_children_metadata(fragment);
+    let ordered_children = match fragment.get_property("children") {
+        JsValue::Array(arr) => arr.borrow().values_vec(),
+        _ => Vec::new(),
+    };
+    for child in &ordered_children {
+        if let JsValue::Object(cobj) = child {
+            cobj.borrow_mut()
+                .set(String::from("parentElement"), JsValue::Null);
         }
     }
-    JsValue::Undefined
+}
+
+fn frag_clear_parent_links(child: &JsValue) {
+    if let JsValue::Object(cobj) = child {
+        let mut c = cobj.borrow_mut();
+        c.set(String::from("parentNode"), JsValue::Null);
+        c.set(String::from("parentElement"), JsValue::Null);
+        c.set(String::from("previousSibling"), JsValue::Null);
+        c.set(String::from("nextSibling"), JsValue::Null);
+        c.set(String::from("previousElementSibling"), JsValue::Null);
+        c.set(String::from("nextElementSibling"), JsValue::Null);
+    }
+}
+
+fn frag_remove_js_child(fragment: &JsValue, child_id: i64) {
+    if child_id == -9999 {
+        return;
+    }
+    let children = fragment.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        arr.borrow_mut()
+            .elements
+            .retain(|_k, el| element::extract_node_id_pub(el) != child_id);
+        refresh_fragment_children_metadata(fragment);
+    }
+}
+
+fn frag_detach_from_old_parent(child: &JsValue) {
+    let old_parent = child.get_property("parentNode");
+    let child_id = element::extract_node_id_pub(child);
+    if !old_parent.is_null() && !old_parent.is_undefined() {
+        if old_parent.get_property("nodeType").to_number() == 11.0 {
+            frag_remove_js_child(&old_parent, child_id);
+        } else {
+            element::js_remove_child(&old_parent, child_id);
+        }
+    }
+    element::clear_js_parent_links(child);
+}
+
+fn frag_append_js_child(fragment: &JsValue, child: JsValue) {
+    frag_detach_from_old_parent(&child);
+    let children = fragment.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        arr.borrow_mut().push(child);
+        refresh_fragment_children_metadata(fragment);
+    }
+}
+
+fn frag_prepend_js_child(fragment: &JsValue, child: JsValue) {
+    frag_detach_from_old_parent(&child);
+    let children = fragment.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        arr.borrow_mut().insert_and_shift(0, child);
+        refresh_fragment_children_metadata(fragment);
+    }
+}
+
+fn frag_insert_js_before(fragment: &JsValue, child: JsValue, ref_child: &JsValue) {
+    frag_detach_from_old_parent(&child);
+    let ref_id = element::extract_node_id_pub(ref_child);
+    let children = fragment.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        let mut arr_mut = arr.borrow_mut();
+        if ref_id == -9999 {
+            arr_mut.push(child);
+        } else if let Some(idx) = arr_mut
+            .elements
+            .iter()
+            .find(|(_k, el)| element::extract_node_id_pub(el) == ref_id)
+            .map(|(k, _)| *k)
+        {
+            arr_mut.insert_and_shift(idx, child);
+        } else {
+            arr_mut.push(child);
+        }
+        refresh_fragment_children_metadata(fragment);
+    }
+}
+
+fn frag_replace_js_children(fragment: &JsValue, args: &[JsValue]) {
+    let old_children = match fragment.get_property("children") {
+        JsValue::Array(arr) => arr.borrow().values_vec(),
+        _ => Vec::new(),
+    };
+    for child in &old_children {
+        frag_clear_parent_links(child);
+    }
+    let children = fragment.get_property("children");
+    if let JsValue::Array(arr) = &children {
+        let mut arr_mut = arr.borrow_mut();
+        arr_mut.elements.clear();
+        arr_mut.length = 0;
+    }
+    refresh_fragment_children_metadata(fragment);
+    for arg in args {
+        frag_append_js_child(fragment, arg.clone());
+    }
 }
 
 /// Simple selector matching for DocumentFragment children.

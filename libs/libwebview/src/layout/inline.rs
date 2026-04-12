@@ -425,22 +425,23 @@ pub fn layout_inline_content_with_pseudo(
             // border box, so padding/border below the content does not pull the
             // visible image upward.
             let base_y = lh - inline_baseline_height(child);
-            child.y = base_y;
+            let inline_offset_y = child.y;
+            child.y = inline_offset_y + base_y;
 
             // Apply vertical-align from the node's style if available.
             if let Some(nid) = child.node_id {
                 if nid < styles.len() {
                     let va = &styles[nid].vertical_align;
                     child.y = match va {
-                        VerticalAlign::Baseline => base_y,
-                        VerticalAlign::Top => 0,
-                        VerticalAlign::Middle => (lh - child.height) / 2,
-                        VerticalAlign::Bottom => lh - child.height,
-                        VerticalAlign::TextTop => 0,
-                        VerticalAlign::TextBottom => lh - child.height,
-                        VerticalAlign::Sub => base_y + child.height / 4,
-                        VerticalAlign::Super => base_y - child.height / 4,
-                        VerticalAlign::Length(offset) => base_y - *offset,
+                        VerticalAlign::Baseline => inline_offset_y + base_y,
+                        VerticalAlign::Top => inline_offset_y,
+                        VerticalAlign::Middle => inline_offset_y + (lh - child.height) / 2,
+                        VerticalAlign::Bottom => inline_offset_y + lh - child.height,
+                        VerticalAlign::TextTop => inline_offset_y,
+                        VerticalAlign::TextBottom => inline_offset_y + lh - child.height,
+                        VerticalAlign::Sub => inline_offset_y + base_y + child.height / 4,
+                        VerticalAlign::Super => inline_offset_y + base_y - child.height / 4,
+                        VerticalAlign::Length(offset) => inline_offset_y + base_y - *offset,
                     };
                 }
             }
@@ -874,7 +875,7 @@ fn collect_inline_fragments(
 
             // Handle <input>
             if *tag == Tag::Input {
-                emit_input_fragment(dom, styles, node_id, out);
+                emit_input_fragment(dom, styles, node_id, out, available_width);
                 return;
             }
 
@@ -1500,10 +1501,41 @@ fn emit_input_fragment(
     styles: &[ComputedStyle],
     node_id: NodeId,
     out: &mut Vec<InlineFragment>,
+    available_width: i32,
 ) {
     let input_type = dom.attr(node_id, "type").unwrap_or("text");
     let mut lower_buf = [0u8; 16];
     let lower = ascii_lower_str(input_type, &mut lower_buf);
+    let style = styles.get(node_id);
+
+    let resolve_control_width = |fallback: i32| -> i32 {
+        if let Some(style) = style {
+            if let Some(w) = style.width {
+                return w.max(1);
+            }
+            if let Some(pct) = style.width_pct {
+                return ((available_width.max(0) as i64 * pct as i64) / 10000).max(1) as i32;
+            }
+            if let Some((px100, pct100)) = style.width_calc {
+                return (px100 / 100
+                    + (available_width.max(0) as i64 * pct100 as i64 / 10000) as i32)
+                    .max(1);
+            }
+        }
+        fallback.max(1)
+    };
+
+    let resolve_control_height = |fallback: i32| -> i32 {
+        if let Some(style) = style {
+            if let Some(h) = style.height {
+                return h.max(1);
+            }
+            if let Some((px100, _pct100)) = style.height_calc {
+                return (px100 / 100).max(1);
+            }
+        }
+        fallback.max(1)
+    };
 
     // Propagate CSS-declared background and text colors to the fragment so the
     // renderer can apply them to the native widget instead of its theme default.
@@ -1543,8 +1575,8 @@ fn emit_input_fragment(
             cb.accent_color = css_accent;
             cb.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
-                width: 20,
-                height: 20,
+                width: resolve_control_width(20),
+                height: resolve_control_height(20),
                 layout_box: cb,
                 breaks_after: false,
             });
@@ -1557,8 +1589,8 @@ fn emit_input_fragment(
             rb.accent_color = css_accent;
             rb.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
-                width: 20,
-                height: 20,
+                width: resolve_control_width(20),
+                height: resolve_control_height(20),
                 layout_box: rb,
                 breaks_after: false,
             });
@@ -1566,7 +1598,7 @@ fn emit_input_fragment(
         "submit" | "button" => {
             let label = dom.attr(node_id, "value").unwrap_or("Submit");
             let (bw, _) = measure_text(label, 14, 0, false, false);
-            let w = (bw + 24).max(60);
+            let w = resolve_control_width((bw + 24).max(60));
             let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
             btn.form_field = Some(FormFieldKind::Submit);
             btn.text = Some(String::from(label));
@@ -1576,7 +1608,7 @@ fn emit_input_fragment(
             btn.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
-                height: 28,
+                height: resolve_control_height(28),
                 layout_box: btn,
                 breaks_after: false,
             });
@@ -1584,7 +1616,7 @@ fn emit_input_fragment(
         "reset" => {
             let label = dom.attr(node_id, "value").unwrap_or("Reset");
             let (bw, _) = measure_text(label, 14, 0, false, false);
-            let w = (bw + 24).max(60);
+            let w = resolve_control_width((bw + 24).max(60));
             let mut btn = LayoutBox::new(Some(node_id), BoxType::Inline);
             btn.form_field = Some(FormFieldKind::Reset);
             btn.text = Some(String::from(label));
@@ -1594,13 +1626,13 @@ fn emit_input_fragment(
             btn.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
-                height: 28,
+                height: resolve_control_height(28),
                 layout_box: btn,
                 breaks_after: false,
             });
         }
         "password" => {
-            let w = size_attr_width(dom, node_id, 200);
+            let w = resolve_control_width(size_attr_width(dom, node_id, 200));
             let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
             tf.form_field = Some(FormFieldKind::Password);
             tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
@@ -1611,7 +1643,7 @@ fn emit_input_fragment(
             tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
-                height: 28,
+                height: resolve_control_height(28),
                 layout_box: tf,
                 breaks_after: false,
             });
@@ -1638,8 +1670,8 @@ fn emit_input_fragment(
                 0.5
             };
 
-            let w = 200;
-            let h = 28;
+            let w = resolve_control_width(200);
+            let h = resolve_control_height(28);
             // Encode percentage as integer 0..1000 in form_value.
             let pct_i = (pct * 1000.0) as i32;
             let mut val_str = String::new();
@@ -1670,7 +1702,7 @@ fn emit_input_fragment(
             });
         }
         "number" => {
-            let w = size_attr_width(dom, node_id, 150);
+            let w = resolve_control_width(size_attr_width(dom, node_id, 150));
             let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
             tf.form_field = Some(FormFieldKind::Number);
             tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
@@ -1687,7 +1719,7 @@ fn emit_input_fragment(
             tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
-                height: 28,
+                height: resolve_control_height(28),
                 layout_box: tf,
                 breaks_after: false,
             });
@@ -1701,8 +1733,8 @@ fn emit_input_fragment(
             cb.accent_color = css_accent;
             cb.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
-                width: 44,
-                height: 28,
+                width: resolve_control_width(44),
+                height: resolve_control_height(28),
                 layout_box: cb,
                 breaks_after: false,
             });
@@ -1710,7 +1742,7 @@ fn emit_input_fragment(
         "file" => {
             let label = "Choose File";
             let (bw, _) = measure_text(label, 14, 0, false, false);
-            let w = (bw + 24).max(120);
+            let w = resolve_control_width((bw + 24).max(120));
             let mut fb = LayoutBox::new(Some(node_id), BoxType::Inline);
             fb.form_field = Some(FormFieldKind::File);
             fb.text = Some(String::from(label));
@@ -1721,7 +1753,7 @@ fn emit_input_fragment(
             fb.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
-                height: 28,
+                height: resolve_control_height(28),
                 layout_box: fb,
                 breaks_after: false,
             });
@@ -1740,8 +1772,8 @@ fn emit_input_fragment(
             tf.accent_color = css_accent;
             tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
-                width: 160,
-                height: 28,
+                width: resolve_control_width(160),
+                height: resolve_control_height(28),
                 layout_box: tf,
                 breaks_after: false,
             });
@@ -1760,8 +1792,8 @@ fn emit_input_fragment(
             tf.accent_color = css_accent;
             tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
-                width: 120,
-                height: 28,
+                width: resolve_control_width(120),
+                height: resolve_control_height(28),
                 layout_box: tf,
                 breaks_after: false,
             });
@@ -1780,8 +1812,8 @@ fn emit_input_fragment(
             tf.accent_color = css_accent;
             tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
-                width: 230,
-                height: 28,
+                width: resolve_control_width(230),
+                height: resolve_control_height(28),
                 layout_box: tf,
                 breaks_after: false,
             });
@@ -1798,8 +1830,8 @@ fn emit_input_fragment(
             tf.accent_color = css_accent;
             tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
-                width: 140,
-                height: 28,
+                width: resolve_control_width(140),
+                height: resolve_control_height(28),
                 layout_box: tf,
                 breaks_after: false,
             });
@@ -1816,16 +1848,17 @@ fn emit_input_fragment(
             tf.accent_color = css_accent;
             tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
-                width: 140,
-                height: 28,
+                width: resolve_control_width(140),
+                height: resolve_control_height(28),
                 layout_box: tf,
                 breaks_after: false,
             });
         }
         _ => {
-            let w = size_attr_width(dom, node_id, 200);
+            let w = resolve_control_width(size_attr_width(dom, node_id, 200));
             let mut tf = LayoutBox::new(Some(node_id), BoxType::Inline);
             tf.form_field = Some(FormFieldKind::TextInput);
+            tf.form_is_search = lower == "search";
             tf.form_placeholder = dom.attr(node_id, "placeholder").map(String::from);
             tf.form_value = dom.attr(node_id, "value").map(String::from);
             tf.form_disabled = dom.attr(node_id, "disabled").is_some();
@@ -1847,7 +1880,7 @@ fn emit_input_fragment(
             tf.uses_dark_color_scheme = uses_dark_color_scheme;
             out.push(InlineFragment {
                 width: w,
-                height: 28,
+                height: resolve_control_height(28),
                 layout_box: tf,
                 breaks_after: false,
             });

@@ -731,6 +731,7 @@ pub fn build_block_with_budget(
                     _ => FormFieldKind::TextInput,
                 };
                 bx.form_field = Some(kind);
+                bx.form_is_search = input_type == "search";
                 bx.form_placeholder = dom.attr(node_id, "placeholder").map(|s| String::from(s));
                 bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
                 bx.form_disabled = dom.attr(node_id, "disabled").is_some();
