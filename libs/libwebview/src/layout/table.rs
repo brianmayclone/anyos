@@ -59,6 +59,10 @@ pub fn layout_table(
         style.padding_bottom,
         style.padding_left,
     );
+    let table_border_left = style.border_left.width.max(bx.border_width);
+    let table_border_right = style.border_right.width.max(bx.border_width);
+    let table_border_top = style.border_top.width.max(bx.border_width);
+    let table_border_bottom = style.border_bottom.width.max(bx.border_width);
 
     // Parse table attributes, respecting CSS border-collapse / border-spacing.
     let css_spacing = style.border_spacing;
@@ -204,9 +208,15 @@ pub fn layout_table(
     }
 
     // Calculate content width available for cells.
-    let content_width =
-        (table_width - bx.padding.left - bx.padding.right - cellspacing * (max_cols as i32 + 1))
-            .max(0);
+    let content_width = (
+        table_width
+            - table_border_left
+            - table_border_right
+            - bx.padding.left
+            - bx.padding.right
+            - cellspacing * (max_cols as i32 + 1)
+    )
+    .max(0);
 
     // Phase 1: Compute column widths.
     //
@@ -373,6 +383,8 @@ pub fn layout_table(
 
     if !has_explicit_table_width {
         let used_width = bx.padding.left
+            + table_border_left
+            + table_border_right
             + bx.padding.right
             + cellspacing * (max_cols as i32 + 1)
             + col_widths.iter().copied().sum::<i32>();
@@ -380,7 +392,7 @@ pub fn layout_table(
     }
 
     // Phase 3: Layout each row.
-    let mut cursor_y = bx.padding.top;
+    let mut cursor_y = table_border_top + bx.padding.top;
 
     // Layout caption if present.
     if let Some(cap_id) = caption_id {
@@ -389,13 +401,13 @@ pub fn layout_table(
             styles,
             pseudo,
             cap_id,
-            table_width - bx.padding.left - bx.padding.right,
+            table_width - table_border_left - table_border_right - bx.padding.left - bx.padding.right,
             images,
             viewport_w,
             0,
         );
         let mut placed = cap_box;
-        placed.x = bx.padding.left;
+        placed.x = table_border_left + bx.padding.left;
         placed.y = cursor_y;
         cursor_y += placed.height + placed.margin.top + placed.margin.bottom;
         bx.children.push(placed);
@@ -519,7 +531,7 @@ pub fn layout_table(
             0
         };
         for (mut cell_box, col_start, _colspan, content_h) in cell_boxes {
-            let mut cell_x = bx.padding.left + cellspacing;
+            let mut cell_x = table_border_left + bx.padding.left + cellspacing;
             for c in 0..col_start {
                 cell_x += col_widths[c] + cellspacing;
             }
@@ -563,7 +575,7 @@ pub fn layout_table(
         cursor_y += row_height + cellspacing;
     }
 
-    bx.height = cursor_y + bx.padding.bottom;
+    bx.height = cursor_y + bx.padding.bottom + table_border_bottom;
     bx
 }
 
@@ -667,7 +679,7 @@ fn layout_cell(
     let inner_w = (cell_width - bx.padding.left - bx.padding.right - v_border).max(0);
 
     let child_ids: Vec<NodeId> = dom.get(cell_id).children.iter().copied().collect();
-    let height = layout_children(
+    let laid_out_height = layout_children(
         dom,
         styles,
         pseudo,
@@ -682,8 +694,10 @@ fn layout_cell(
         0,
         None,
     );
+    let content_start_y = bx.border_width + bx.padding.top;
+    let content_height = laid_out_height.saturating_sub(content_start_y);
 
-    bx.height = height + bx.padding.top + bx.padding.bottom + h_border;
+    bx.height = content_height + bx.padding.top + bx.padding.bottom + h_border;
     bx
 }
 

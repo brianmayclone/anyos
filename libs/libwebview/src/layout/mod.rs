@@ -2580,16 +2580,17 @@ fn shrink_abs_box_to_contents(abs_box: &mut LayoutBox) {
         return;
     }
 
-    let horizontal_non_content = abs_box.padding.left
-        + abs_box.padding.right
-        + abs_box.border_left_width
-        + abs_box.border_right_width;
+    let left_border = abs_box.border_left_width.max(abs_box.border_width);
+    let right_border = abs_box.border_right_width.max(abs_box.border_width);
+    let trailing_non_content = abs_box.padding.right + right_border;
+    let horizontal_non_content =
+        left_border + abs_box.padding.left + abs_box.padding.right + right_border;
     let mut max_right = horizontal_non_content;
     for child in &abs_box.children {
         if child.is_out_of_flow {
             continue;
         }
-        let right_edge = child.x + child.width + child.margin.right;
+        let right_edge = child.x + child.width + child.margin.right + trailing_non_content;
         if right_edge > max_right {
             max_right = right_edge;
         }

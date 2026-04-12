@@ -2926,22 +2926,38 @@ pub fn apply_declaration(
             }
         }
         Property::PaddingTop => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.padding_top = parent.padding_top;
+                }
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.padding_top = px;
             }
         }
         Property::PaddingRight => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.padding_right = parent.padding_right;
+                }
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.padding_right = px;
             }
         }
         Property::PaddingBottom => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.padding_bottom = parent.padding_bottom;
+                }
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.padding_bottom = px;
             }
         }
         Property::PaddingLeft => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.padding_left = parent.padding_left;
+                }
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.padding_left = px;
             }
         }

@@ -1128,6 +1128,45 @@ fn debug_dump_pre_text(dom: &libwebview::dom::Dom) {
     }
 }
 
+fn debug_dump_table_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom) {
+    for (node_id, _) in dom.nodes.iter().enumerate() {
+        let Some(tag) = dom.tag(node_id) else { continue; };
+        if !matches!(tag, Tag::Table | Tag::Td | Tag::Tr | Tag::Tbody) {
+            continue;
+        }
+        let Some(style) = wv.resolved_style_ref(node_id) else { continue; };
+        let bounds = wv.node_bounds(node_id);
+        let tag_name = dom
+            .raw_tag_name(node_id)
+            .map(str::to_string)
+            .unwrap_or_else(|| String::from("tag"));
+        eprintln!(
+            "[surf-host] table-style node={} tag={} bounds={:?} display={:?} width={:?} height={:?} padding=({}, {}, {}, {}) border_width={} border_sides=({}, {}, {}, {}) border_spacing={} border_collapse={} margin=({}, {}, {}, {})",
+            node_id,
+            tag_name,
+            bounds,
+            style.display,
+            style.width,
+            style.height,
+            style.padding_top,
+            style.padding_right,
+            style.padding_bottom,
+            style.padding_left,
+            style.border_width,
+            style.border_top.width,
+            style.border_right.width,
+            style.border_bottom.width,
+            style.border_left.width,
+            style.border_spacing,
+            style.border_collapse,
+            style.margin_top,
+            style.margin_right,
+            style.margin_bottom,
+            style.margin_left
+        );
+    }
+}
+
 /// Load all external resources by walking the parsed DOM tree.
 /// This mirrors the logic in apps/surf/src/resources.rs.
 fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
@@ -1285,6 +1324,11 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
     if std::env::var_os("SURF_DEBUG_PRE_TEXT").is_some() {
         if let Some(dom) = wv.dom() {
             debug_dump_pre_text(dom);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_TABLE_STYLES").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_table_styles(wv, dom);
         }
     }
 }

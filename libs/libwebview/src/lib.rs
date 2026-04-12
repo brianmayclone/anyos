@@ -767,6 +767,11 @@ impl WebView {
         self.layout_root.as_ref()
     }
 
+    /// Return the last fully resolved computed style for a DOM node.
+    pub fn resolved_style_ref(&self, node_id: usize) -> Option<&style::ComputedStyle> {
+        self.resolved_styles_cache.get(node_id)
+    }
+
     /// Render tiles for the given scroll position (public wrapper).
     /// Returns `true` if there are pending tiles not yet rasterized.
     pub fn render_viewport_at(&mut self, scroll_y: i32) -> bool {
@@ -4274,7 +4279,6 @@ pre, code { font-family: monospace; }
 pre { margin: 0; }
 blockquote { margin: 16px 0; padding-left: 16px; border-left: 4px solid #ddd; }
 hr { margin: 16px 0; border: none; border-top: 1px solid #ccc; }
-table { border-collapse: collapse; }
 td, th { padding: 4px 8px; }
 img { max-width: 100%; }
 strong, b { font-weight: bold; }
