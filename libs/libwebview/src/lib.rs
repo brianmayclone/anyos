@@ -3269,6 +3269,12 @@ impl WebView {
         };
         for (node_id, decls) in &self.anim_overrides {
             if *node_id < styles.len() {
+                let parent_style = d
+                    .nodes
+                    .get(*node_id)
+                    .and_then(|n| n.parent)
+                    .and_then(|pid| styles.get(pid))
+                    .cloned();
                 let parent_fs = {
                     let pid = d.nodes.get(*node_id).and_then(|n| n.parent).unwrap_or(0);
                     if pid < styles.len() {
@@ -3278,7 +3284,13 @@ impl WebView {
                     }
                 };
                 for decl in decls {
-                    style::apply_declaration(&mut styles[*node_id], decl, parent_fs, root_fs);
+                    style::apply_declaration(
+                        &mut styles[*node_id],
+                        decl,
+                        parent_style.as_ref(),
+                        parent_fs,
+                        root_fs,
+                    );
                 }
             }
         }
@@ -3437,9 +3449,19 @@ impl WebView {
                 .and_then(|pid| styles.get(pid))
                 .map(|s| s.font_size)
                 .unwrap_or(root_fs);
+            let parent_style = dom.nodes[node_id]
+                .parent
+                .and_then(|pid| styles.get(pid))
+                .cloned();
             let decls = crate::css::parse_inline_style(&alloc::format!("{}: {}", property, value));
             for decl in &decls {
-                style::apply_declaration(&mut styles[node_id], decl, parent_fs, root_fs);
+                style::apply_declaration(
+                    &mut styles[node_id],
+                    decl,
+                    parent_style.as_ref(),
+                    parent_fs,
+                    root_fs,
+                );
             }
         }
     }

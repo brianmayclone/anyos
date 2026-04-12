@@ -97,12 +97,12 @@ if [ ! -d "$WPT_DIR/css" ]; then
     exit 1
 fi
 
-# Build surf-host if needed
+# Build surf-host before every test run so results always use the latest code.
 SURF_HOST="$SURF_HOST_DIR/target/x86_64-unknown-linux-gnu/release/surf-host"
-if [ ! -f "$SURF_HOST" ]; then
+if [ $LIST_ONLY -eq 0 ]; then
     echo -e "${CYAN}[wpt] Building surf-host...${NC}"
     cd "$SURF_HOST_DIR"
-    cargo +stable build --release 2>&1 | tail -3
+    cargo +stable build --release --target x86_64-unknown-linux-gnu 2>&1 | tail -3
     cd "$SCRIPT_DIR"
 fi
 

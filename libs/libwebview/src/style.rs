@@ -648,9 +648,13 @@ pub struct ComputedStyle {
     // Positioning
     pub position: Position,
     pub top: Option<i32>,
+    pub top_calc: Option<(i32, i32)>,
     pub right_offset: Option<i32>,
+    pub right_calc: Option<(i32, i32)>,
     pub bottom_offset: Option<i32>,
+    pub bottom_calc: Option<(i32, i32)>,
     pub left_offset: Option<i32>,
+    pub left_calc: Option<(i32, i32)>,
     pub z_index: i32,
     /// Whether z-index is `auto` (true) or an explicit integer (false).
     /// Per CSS2 §9.9.1, positioned elements with explicit z-index (including 0)
@@ -929,9 +933,13 @@ pub fn default_style() -> ComputedStyle {
         // Positioning
         position: Position::Static,
         top: Option::None,
+        top_calc: Option::None,
         right_offset: Option::None,
+        right_calc: Option::None,
         bottom_offset: Option::None,
+        bottom_calc: Option::None,
         left_offset: Option::None,
+        left_calc: Option::None,
         z_index: 0,
         z_index_auto: true,
         // Flexbox
@@ -1687,7 +1695,7 @@ fn apply_pseudo_rule_matches(
             };
             for decl in &rule.declarations {
                 if decl.important == important {
-                    apply_declaration(ps, decl, parent_fs, root_fs);
+                    apply_declaration(ps, decl, Some(&styles[node_id]), parent_fs, root_fs);
                 }
             }
         }
@@ -1697,6 +1705,7 @@ fn apply_pseudo_rule_matches(
 fn apply_decl_with_vars(
     style: &mut ComputedStyle,
     decl: &Declaration,
+    parent_style: Option<&ComputedStyle>,
     dom: &Dom,
     node_id: usize,
     node_cp: &mut Vec<(String, String)>,
@@ -1712,14 +1721,14 @@ fn apply_decl_with_vars(
     } else if let CssValue::Var(_, _) = &decl.value {
         let resolved = resolve_var_in_decl(decl, dom, node_id, node_cp, ancestors_cp);
         *set_flags |= decl_set_flag(&resolved.property);
-        apply_declaration(style, &resolved, parent_fs, root_fs);
+        apply_declaration(style, &resolved, parent_style, parent_fs, root_fs);
     } else if has_nested_var(decl) {
         let resolved = resolve_nested_var_decl(decl, dom, node_id, node_cp, ancestors_cp);
         *set_flags |= decl_set_flag(&resolved.property);
-        apply_declaration(style, &resolved, parent_fs, root_fs);
+        apply_declaration(style, &resolved, parent_style, parent_fs, root_fs);
     } else {
         *set_flags |= decl_set_flag(&decl.property);
-        apply_declaration(style, decl, parent_fs, root_fs);
+        apply_declaration(style, decl, parent_style, parent_fs, root_fs);
     }
 }
 
@@ -1727,6 +1736,7 @@ fn apply_decls_two_pass(
     style: &mut ComputedStyle,
     declarations: &[Declaration],
     important: bool,
+    parent_style: Option<&ComputedStyle>,
     dom: &Dom,
     node_id: usize,
     node_cp: &mut Vec<(String, String)>,
@@ -1740,6 +1750,7 @@ fn apply_decls_two_pass(
             apply_decl_with_vars(
                 style,
                 decl,
+                parent_style,
                 dom,
                 node_id,
                 node_cp,
@@ -1755,6 +1766,7 @@ fn apply_decls_two_pass(
             apply_decl_with_vars(
                 style,
                 decl,
+                parent_style,
                 dom,
                 node_id,
                 node_cp,
@@ -2832,6 +2844,7 @@ fn resolve_styles_prepared_impl(
             .last()
             .map(|container| container.block_size)
             .unwrap_or(viewport_height);
+        let parent_style = node.parent.and_then(|pid| styles.get(pid));
 
         // Phase 1: Start from UA defaults (elements) or initial values (text).
         let (mut style, mut set_flags) = match &node.node_type {
@@ -2842,6 +2855,24 @@ fn resolve_styles_prepared_impl(
                 (s, 0u32)
             }
         };
+
+        // Seed inheritable runtime-critical values early so relative units and
+        // currentColor-dependent properties see the same baseline that later
+        // inheritance will preserve.
+        if let Some(parent) = parent_style {
+            style.font_size = parent.font_size;
+            style.color = parent.color;
+            style.font_weight = parent.font_weight;
+            style.font_style = parent.font_style;
+            style.direction = parent.direction;
+            style.text_align = parent.text_align;
+            style.white_space = parent.white_space;
+            style.text_transform = parent.text_transform;
+            style.letter_spacing = parent.letter_spacing;
+            style.word_spacing = parent.word_spacing;
+            style.word_break = parent.word_break;
+            style.overflow_wrap = parent.overflow_wrap;
+        }
 
         // UA override: [hidden] → display:none (per HTML spec).
         if let NodeType::Element { attrs, .. } = &node.node_type {
@@ -2940,6 +2971,7 @@ fn resolve_styles_prepared_impl(
 
             set_flags |= apply_author_rules(
                 &mut style,
+                parent_style,
                 dom,
                 id,
                 &all_rules,
@@ -2971,6 +3003,7 @@ fn resolve_styles_prepared_impl(
                             &mut style,
                             inline_decls,
                             false,
+                            parent_style,
                             dom,
                             id,
                             node_cp,
@@ -2983,6 +3016,7 @@ fn resolve_styles_prepared_impl(
                             &mut style,
                             inline_decls,
                             true,
+                            parent_style,
                             dom,
                             id,
                             node_cp,
@@ -3175,6 +3209,7 @@ fn resolve_styles_prepared_impl(
 
 fn apply_author_rules(
     style: &mut ComputedStyle,
+    parent_style: Option<&ComputedStyle>,
     dom: &Dom,
     node_id: NodeId,
     all_rules: &[(&Rule, usize)],
@@ -3235,6 +3270,7 @@ fn apply_author_rules(
             style,
             &rule.declarations,
             false,
+            parent_style,
             dom,
             node_id,
             node_cp,
@@ -3253,6 +3289,7 @@ fn apply_author_rules(
             style,
             &rule.declarations,
             true,
+            parent_style,
             dom,
             node_id,
             node_cp,
@@ -3571,6 +3608,21 @@ fn resolve_margin_calc(calc: (i32, i32), containing_width: i32) -> i32 {
     calc.0 / 100 + (containing_width as i64 * calc.1 as i64 / 10000) as i32
 }
 
+pub fn resolve_inset(
+    value: Option<i32>,
+    calc: Option<(i32, i32)>,
+    containing_size: i32,
+    has_definite_size: bool,
+) -> Option<i32> {
+    if let Some((px, pct)) = calc {
+        if pct != 0 && !has_definite_size {
+            return None;
+        }
+        return Some(px / 100 + (containing_size as i64 * pct as i64 / 10000) as i32);
+    }
+    value
+}
+
 pub fn resolve_margins(style: &ComputedStyle, containing_width: i32) -> (i32, i32, i32, i32) {
     let mt = style
         .margin_top_calc
@@ -3652,6 +3704,7 @@ fn parse_simple_float(s: &str) -> i32 {
 pub fn apply_declaration(
     style: &mut ComputedStyle,
     decl: &Declaration,
+    parent_style: Option<&ComputedStyle>,
     parent_fs: i32,
     root_fs: i32,
 ) {
@@ -3697,6 +3750,12 @@ pub fn apply_declaration(
                 CssValue::CurrentColor => {
                     style.background_color_is_current = true;
                     style.background_color = style.color;
+                }
+                CssValue::Inherit => {
+                    if let Some(parent) = parent_style {
+                        style.background_color = parent.background_color;
+                        style.background_color_is_current = parent.background_color_is_current;
+                    }
                 }
                 _ => {}
             }
@@ -4199,29 +4258,61 @@ pub fn apply_declaration(
         Property::Top => {
             if matches!(decl.value, CssValue::Auto) {
                 style.top = Option::None;
+                style.top_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                style.top = if pct == 0 { Some(px / 100) } else { Option::None };
+                style.top_calc = Some((px, pct));
+            } else if let CssValue::Percentage(v) = decl.value {
+                style.top = Option::None;
+                style.top_calc = Some((0, v));
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.top = Some(px);
+                style.top_calc = Option::None;
             }
         }
         Property::Right => {
             if matches!(decl.value, CssValue::Auto) {
                 style.right_offset = Option::None;
+                style.right_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                style.right_offset = if pct == 0 { Some(px / 100) } else { Option::None };
+                style.right_calc = Some((px, pct));
+            } else if let CssValue::Percentage(v) = decl.value {
+                style.right_offset = Option::None;
+                style.right_calc = Some((0, v));
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.right_offset = Some(px);
+                style.right_calc = Option::None;
             }
         }
         Property::Bottom => {
             if matches!(decl.value, CssValue::Auto) {
                 style.bottom_offset = Option::None;
+                style.bottom_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                style.bottom_offset = if pct == 0 { Some(px / 100) } else { Option::None };
+                style.bottom_calc = Some((px, pct));
+            } else if let CssValue::Percentage(v) = decl.value {
+                style.bottom_offset = Option::None;
+                style.bottom_calc = Some((0, v));
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.bottom_offset = Some(px);
+                style.bottom_calc = Option::None;
             }
         }
         Property::Left => {
             if matches!(decl.value, CssValue::Auto) {
                 style.left_offset = Option::None;
+                style.left_calc = Option::None;
+            } else if let CssValue::Calc(px, pct) = decl.value {
+                style.left_offset = if pct == 0 { Some(px / 100) } else { Option::None };
+                style.left_calc = Some((px, pct));
+            } else if let CssValue::Percentage(v) = decl.value {
+                style.left_offset = Option::None;
+                style.left_calc = Some((0, v));
             } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 style.left_offset = Some(px);
+                style.left_calc = Option::None;
             }
         }
         Property::ZIndex => match decl.value {
@@ -6590,7 +6681,7 @@ mod tests {
         assert_eq!(decls.len(), 1);
         let mut style = default_style();
         for decl in &decls {
-            apply_declaration(&mut style, decl, 16, 16);
+            apply_declaration(&mut style, decl, None, 16, 16);
         }
         assert_eq!(style.max_width, None);
         assert_eq!(style.max_width_calc, Some((-300, 5000)));

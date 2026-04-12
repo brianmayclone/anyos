@@ -23,7 +23,7 @@ use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
     AlignItems, ClearVal, ComputedStyle, Direction, Display, FloatVal, FontStyleVal, FontWeight,
     InlineAxisAlignment, ListStyle, ListStylePosition, OverflowVal, Position, PseudoStyles,
-    TextAlignVal, TextDeco, TextTransform,
+    TextAlignVal, TextDeco, TextTransform, resolve_inset,
 };
 use crate::ImageCache;
 
@@ -1251,21 +1251,22 @@ fn resolve_absolute_alignment_rec(
         let mut child_abs_y = if child.is_fixed { child.y } else { abs_y + child.y };
         let static_start_abs_x = child
             .static_position_x
-            .map(|x| if child.is_fixed { x } else { abs_x + x })
+            .map(|x| abs_x + x)
             .unwrap_or(parent_border_abs_x);
         let static_start_abs_y = child
             .static_position_y
-            .map(|y| if child.is_fixed { y } else { abs_y + y })
+            .map(|y| abs_y + y)
             .unwrap_or(parent_content_abs_y);
         let static_size_x = child.static_position_width.unwrap_or(parent_border_w);
         let static_size_y = child
             .static_position_height
             .unwrap_or(bx.border_width.max(0) * 2);
 
-        if !child.is_fixed && child.is_out_of_flow {
+        if child.is_out_of_flow {
             if let Some(node_id) = child.node_id {
                 let style = &styles[node_id];
-                if style.position == Position::Absolute {
+                if style.position == Position::Absolute || style.position == Position::Fixed {
+                    let is_fixed = style.position == Position::Fixed;
                     let justify = if style.justify_self_is_normal {
                         AlignItems::FlexStart
                     } else {
@@ -1344,8 +1345,8 @@ fn resolve_absolute_alignment_rec(
                         style.margin_left_auto,
                         style.margin_right_auto,
                         justify,
-                        next_cb_abs_x,
-                        next_cb_w,
+                        if is_fixed { 0 } else { next_cb_abs_x },
+                        if is_fixed { viewport_w } else { next_cb_w },
                         static_start_abs_x,
                         static_size_x,
                         style.width.is_none() && style.width_pct.is_none() && style.width_calc.is_none(),
@@ -1368,8 +1369,8 @@ fn resolve_absolute_alignment_rec(
                         style.margin_top_auto,
                         style.margin_bottom_auto,
                         align,
-                        next_cb_abs_y,
-                        next_cb_h,
+                        if is_fixed { 0 } else { next_cb_abs_y },
+                        if is_fixed { viewport_h } else { next_cb_h },
                         static_start_abs_y,
                         static_size_y,
                         style.height.is_none() && style.height_pct.is_none() && style.height_calc.is_none(),
@@ -1998,19 +1999,23 @@ pub(super) fn layout_children_ex_with_budget(
         if is_fixed_pos {
             // position:fixed — coordinates are viewport-relative.
             // The renderer honours `is_fixed = true` by ignoring accumulated parent offsets.
-            let t = abs_style.top.unwrap_or(0);
-            let l = abs_style.left_offset.unwrap_or(0);
+            let top = resolve_inset(abs_style.top, abs_style.top_calc, viewport_h, true);
+            let left = resolve_inset(abs_style.left_offset, abs_style.left_calc, viewport_w, true);
+            let right =
+                resolve_inset(abs_style.right_offset, abs_style.right_calc, viewport_w, true);
+            let bottom =
+                resolve_inset(abs_style.bottom_offset, abs_style.bottom_calc, viewport_h, true);
 
-            abs_box.x = l + abs_box.margin.left;
-            abs_box.y = t + abs_box.margin.top;
+            abs_box.x = left.unwrap_or(0) + abs_box.margin.left;
+            abs_box.y = top.unwrap_or(0) + abs_box.margin.top;
 
-            if abs_style.left_offset.is_none() {
-                if let Some(r) = abs_style.right_offset {
+            if left.is_none() {
+                if let Some(r) = right {
                     abs_box.x = (viewport_w - r - abs_box.width - abs_box.margin.right).max(0);
                 }
             }
-            if abs_style.top.is_none() {
-                if let Some(b) = abs_style.bottom_offset {
+            if top.is_none() {
+                if let Some(b) = bottom {
                     abs_box.y = (viewport_h - b - abs_box.height - abs_box.margin.bottom).max(0);
                 }
             }
@@ -2019,22 +2024,31 @@ pub(super) fn layout_children_ex_with_budget(
             abs_box.is_out_of_flow = true;
         } else {
             // position:absolute — coordinates relative to the direct containing block (parent box).
-            let t = abs_style.top.unwrap_or(0);
-            let l = abs_style.left_offset.unwrap_or(0);
+            let top = resolve_inset(abs_style.top, abs_style.top_calc, cb_height, cb_height > 0);
+            let left =
+                resolve_inset(abs_style.left_offset, abs_style.left_calc, available_width, true);
+            let right = resolve_inset(
+                abs_style.right_offset,
+                abs_style.right_calc,
+                available_width,
+                true,
+            );
+            let bottom =
+                resolve_inset(abs_style.bottom_offset, abs_style.bottom_calc, cb_height, cb_height > 0);
             let content_x = bw + parent.padding.left;
             let content_y = bw + parent.padding.top;
 
-            abs_box.x = content_x + l + abs_box.margin.left;
-            abs_box.y = content_y + t + abs_box.margin.top;
+            abs_box.x = content_x + left.unwrap_or(0) + abs_box.margin.left;
+            abs_box.y = content_y + top.unwrap_or(0) + abs_box.margin.top;
 
-            if abs_style.left_offset.is_none() {
-                if let Some(r) = abs_style.right_offset {
+            if left.is_none() {
+                if let Some(r) = right {
                     abs_box.x =
                         content_x + available_width - r - abs_box.width - abs_box.margin.right;
                 }
             }
-            if abs_style.top.is_none() {
-                if let Some(b) = abs_style.bottom_offset {
+            if top.is_none() {
+                if let Some(b) = bottom {
                     abs_box.y = cursor_y - b - abs_box.height - abs_box.margin.bottom;
                 }
             }

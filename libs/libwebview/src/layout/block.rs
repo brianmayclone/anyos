@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::dom::{Dom, NodeId, Tag};
 use crate::style::{
     AlignContent, BoxSizing, ComputedStyle, Display, FontStyleVal, FontWeight,
-    ListStylePosition, OverflowVal, Position, PseudoStyles, TextDeco, Visibility,
+    ListStylePosition, OverflowVal, Position, PseudoStyles, TextDeco, Visibility, resolve_inset,
     resolve_margins,
 };
 use crate::ImageCache;
@@ -904,19 +904,38 @@ pub fn build_block_with_budget(
 
     // Apply position:relative offset (does not affect child layout).
     if style.position == Position::Relative {
-        if let Some(t) = style.top {
+        let top = resolve_inset(style.top, style.top_calc, parent_height, parent_height > 0);
+        let left = resolve_inset(
+            style.left_offset,
+            style.left_calc,
+            available_width,
+            true,
+        );
+        let bottom = resolve_inset(
+            style.bottom_offset,
+            style.bottom_calc,
+            parent_height,
+            parent_height > 0,
+        );
+        let right = resolve_inset(
+            style.right_offset,
+            style.right_calc,
+            available_width,
+            true,
+        );
+        if let Some(t) = top {
             bx.y += t;
         }
-        if let Some(l) = style.left_offset {
+        if let Some(l) = left {
             bx.x += l;
         }
-        if style.top.is_none() {
-            if let Some(b) = style.bottom_offset {
+        if top.is_none() {
+            if let Some(b) = bottom {
                 bx.y -= b;
             }
         }
-        if style.left_offset.is_none() {
-            if let Some(r) = style.right_offset {
+        if left.is_none() {
+            if let Some(r) = right {
                 bx.x -= r;
             }
         }
@@ -1019,16 +1038,31 @@ fn append_out_of_flow_children(
             _ => {}
         }
 
-        abs_box.x = content_x + abs_style.left_offset.unwrap_or(0) + abs_box.margin.left;
-        abs_box.y = content_y + abs_style.top.unwrap_or(0) + abs_box.margin.top;
+        let abs_left = resolve_inset(abs_style.left_offset, abs_style.left_calc, available_width, true);
+        let abs_top = resolve_inset(abs_style.top, abs_style.top_calc, content_h, content_h > 0);
+        let abs_right = resolve_inset(
+            abs_style.right_offset,
+            abs_style.right_calc,
+            available_width,
+            true,
+        );
+        let abs_bottom = resolve_inset(
+            abs_style.bottom_offset,
+            abs_style.bottom_calc,
+            content_h,
+            content_h > 0,
+        );
 
-        if abs_style.left_offset.is_none() {
-            if let Some(r) = abs_style.right_offset {
+        abs_box.x = content_x + abs_left.unwrap_or(0) + abs_box.margin.left;
+        abs_box.y = content_y + abs_top.unwrap_or(0) + abs_box.margin.top;
+
+        if abs_left.is_none() {
+            if let Some(r) = abs_right {
                 abs_box.x = content_x + available_width - r - abs_box.width - abs_box.margin.right;
             }
         }
-        if abs_style.top.is_none() {
-            if let Some(b) = abs_style.bottom_offset {
+        if abs_top.is_none() {
+            if let Some(b) = abs_bottom {
                 abs_box.y = content_y + content_h - b - abs_box.height - abs_box.margin.bottom;
             }
         }

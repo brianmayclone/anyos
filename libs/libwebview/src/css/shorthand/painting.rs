@@ -9,6 +9,8 @@ fn expand_border_shorthand(value_str: &str) -> Vec<Declaration> {
         let lower = to_ascii_lower(part);
         if matches!(lower.as_str(), "solid" | "dashed" | "dotted" | "double" | "groove" | "ridge" | "inset" | "outset" | "hidden") {
             style_val = Some(CssValue::Keyword(lower));
+        } else if lower == "currentcolor" {
+            color_val = Some(CssValue::CurrentColor);
         } else if lower.starts_with("var(") {
             color_val = Some(parse_var_value(part));
         } else if let Some(c) = try_parse_color(part) {
@@ -98,6 +100,11 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
             found_color = Some(0x00000000);
             continue;
         }
+        if pl == "currentcolor" {
+            let mut v = Vec::new();
+            v.push(Declaration { property: Property::BackgroundColor, value: CssValue::CurrentColor, important: false });
+            return v;
+        }
         if let Some(c) = try_parse_color(part) {
             found_color = Some(c);
             continue;
@@ -163,6 +170,8 @@ fn expand_border_side_shorthand(value_str: &str, width_prop: Property, style_pro
         } else if lower == "none" {
             decls.push(Declaration { property: style_prop.clone(), value: CssValue::None, important: false });
             decls.push(Declaration { property: width_prop.clone(), value: CssValue::Length(0, Unit::Px), important: false });
+        } else if lower == "currentcolor" {
+            decls.push(Declaration { property: color_prop.clone(), value: CssValue::CurrentColor, important: false });
         } else if lower.starts_with("var(") {
             decls.push(Declaration { property: color_prop.clone(), value: parse_var_value(part), important: false });
         } else if let Some(c) = try_parse_color(part) {

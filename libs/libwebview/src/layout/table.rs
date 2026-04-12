@@ -18,7 +18,8 @@ use alloc::vec::Vec;
 
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
-    ComputedStyle, Display, PseudoStyles, TextAlignVal, VerticalAlign, resolve_margins,
+    ComputedStyle, Display, PseudoStyles, TextAlignVal, VerticalAlign, resolve_inset,
+    resolve_margins,
 };
 use crate::ImageCache;
 
@@ -73,6 +74,8 @@ pub fn layout_table(
     let table_border = parse_int_attr(dom, node_id, "border").unwrap_or(0);
 
     // Resolve table width.
+    let has_explicit_table_width =
+        style.width.is_some() || style.width_pct.is_some() || style.width_calc.is_some();
     let table_width = if let Some(w) = style.width {
         w
     } else if let Some(pct) = style.width_pct {
@@ -85,6 +88,7 @@ pub fn layout_table(
     };
 
     bx.width = table_width;
+    let table_definite_height = style.height.unwrap_or(0);
 
     // Handle margin:auto centering for tables.
     if style.margin_left_auto && style.margin_right_auto {
@@ -353,6 +357,14 @@ pub fn layout_table(
         }
     }
 
+    if !has_explicit_table_width {
+        let used_width = bx.padding.left
+            + bx.padding.right
+            + cellspacing * (max_cols as i32 + 1)
+            + col_widths.iter().copied().sum::<i32>();
+        bx.width = used_width.min(table_width).max(0);
+    }
+
     // Phase 3: Layout each row.
     let mut cursor_y = bx.padding.top;
 
@@ -382,6 +394,16 @@ pub fn layout_table(
     for row_num in 0..num_rows {
         let row_id = rows[row_num];
         let row_style = &styles[row_id];
+        let section_style = dom
+            .get(row_id)
+            .parent
+            .and_then(|pid| styles.get(pid))
+            .filter(|section_style| {
+                matches!(
+                    dom.tag(dom.get(row_id).parent.unwrap_or(node_id)),
+                    Some(Tag::Thead | Tag::Tbody | Tag::Tfoot)
+                )
+            });
         let mut row_height = 0i32;
         // (box, col_start, colspan, content_height) — content_height before row-stretch.
         let mut cell_boxes: Vec<(LayoutBox, usize, usize, i32)> = Vec::new();
@@ -431,14 +453,65 @@ pub fn layout_table(
 
         // Position cells in the row.
         let row_y = cursor_y;
+        let row_dx = {
+            let left = resolve_inset(row_style.left_offset, row_style.left_calc, table_width, true);
+            let right =
+                resolve_inset(row_style.right_offset, row_style.right_calc, table_width, true);
+            left.unwrap_or_else(|| right.map(|v| -v).unwrap_or(0))
+        };
+        let row_dy = {
+            let top = resolve_inset(
+                row_style.top,
+                row_style.top_calc,
+                table_definite_height,
+                table_definite_height > 0,
+            );
+            let bottom = resolve_inset(
+                row_style.bottom_offset,
+                row_style.bottom_calc,
+                table_definite_height,
+                table_definite_height > 0,
+            );
+            top.unwrap_or_else(|| bottom.map(|v| -v).unwrap_or(0))
+        };
+        let section_dx = if let Some(section_style) = section_style {
+            let left =
+                resolve_inset(section_style.left_offset, section_style.left_calc, table_width, true);
+            let right = resolve_inset(
+                section_style.right_offset,
+                section_style.right_calc,
+                table_width,
+                true,
+            );
+            left.unwrap_or_else(|| right.map(|v| -v).unwrap_or(0))
+        } else {
+            0
+        };
+        let section_dy = if let Some(section_style) = section_style {
+            let top = resolve_inset(
+                section_style.top,
+                section_style.top_calc,
+                table_definite_height,
+                table_definite_height > 0,
+            );
+            let bottom = resolve_inset(
+                section_style.bottom_offset,
+                section_style.bottom_calc,
+                table_definite_height,
+                table_definite_height > 0,
+            );
+            top.unwrap_or_else(|| bottom.map(|v| -v).unwrap_or(0))
+        } else {
+            0
+        };
         for (mut cell_box, col_start, _colspan, content_h) in cell_boxes {
             let mut cell_x = bx.padding.left + cellspacing;
             for c in 0..col_start {
                 cell_x += col_widths[c] + cellspacing;
             }
 
-            cell_box.x = cell_x;
-            cell_box.y = row_y;
+            cell_box.x = cell_x + row_dx + section_dx;
+            cell_box.y = row_y + row_dy + section_dy;
             // Stretch cell height to match row height.
             cell_box.height = row_height;
 

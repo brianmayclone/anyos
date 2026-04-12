@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use crate::dom::{Dom, NodeId, NodeType, Tag};
 use crate::style::{
     ComputedStyle, Display, Position, PseudoStyles, TextAlignVal, TextDeco, TextTransform,
-    VerticalAlign, WhiteSpace,
+    VerticalAlign, WhiteSpace, resolve_inset,
 };
 use crate::ImageCache;
 
@@ -202,10 +202,16 @@ pub fn layout_inline_content_with_pseudo(
         }
 
         let mut child = frag.layout_box;
-        child.x = start_x + line_x;
-        child.y = 0;
-        child.width = fw;
-        child.height = fh;
+        child.x = start_x + line_x + child.x;
+        child.y = child.y;
+        if !child.is_out_of_flow {
+            child.width = fw;
+            child.height = fh;
+        }
+        if child.is_out_of_flow {
+            child.static_position_x = Some(child.x);
+            child.static_position_y = Some(child.y);
+        }
 
         line_x += fw;
         if fh > line_h {
@@ -343,9 +349,33 @@ fn collect_inline_fragments(
     let node = dom.get(node_id);
     let style = &styles[node_id];
 
-    // Absolutely/fixed-positioned elements are removed from inline flow.
-    // They are handled as deferred boxes in layout_children instead.
     if matches!(style.position, Position::Absolute | Position::Fixed) {
+        let mut oof_box = if matches!(
+            style.display,
+            Display::Block
+                | Display::FlowRoot
+                | Display::Flex
+                | Display::Grid
+                | Display::ListItem
+                | Display::InlineBlock
+                | Display::InlineFlex
+                | Display::InlineGrid
+        ) {
+            super::block::build_block(dom, styles, pseudo, node_id, available_width, images, viewport_w, 0)
+        } else {
+            let mut bx = LayoutBox::new(Some(node_id), BoxType::Inline);
+            bx.width = 0;
+            bx.height = 0;
+            bx
+        };
+        oof_box.is_out_of_flow = true;
+        oof_box.is_fixed = style.position == Position::Fixed;
+        out.push(InlineFragment {
+            width: 0,
+            height: 0,
+            layout_box: oof_box,
+            breaks_after: false,
+        });
         return;
     }
 
@@ -435,6 +465,7 @@ fn collect_inline_fragments(
             }
         }
         NodeType::Element { tag, .. } => {
+            let fragment_start = out.len();
             // Handle <br>
             if *tag == Tag::Br {
                 let mut brk = LayoutBox::new(Some(node_id), BoxType::Inline);
@@ -1012,6 +1043,27 @@ fn collect_inline_fragments(
                     layout_box: spacer,
                     breaks_after: false,
                 });
+            }
+
+            if style.position == Position::Relative {
+                let dx = {
+                    let left = resolve_inset(style.left_offset, style.left_calc, available_width, true);
+                    let right =
+                        resolve_inset(style.right_offset, style.right_calc, available_width, true);
+                    left.unwrap_or_else(|| right.map(|v| -v).unwrap_or(0))
+                };
+                let dy = {
+                    let top = resolve_inset(style.top, style.top_calc, available_width, true);
+                    let bottom =
+                        resolve_inset(style.bottom_offset, style.bottom_calc, available_width, true);
+                    top.unwrap_or_else(|| bottom.map(|v| -v).unwrap_or(0))
+                };
+                if dx != 0 || dy != 0 {
+                    for frag in out.iter_mut().skip(fragment_start) {
+                        frag.layout_box.x += dx;
+                        frag.layout_box.y += dy;
+                    }
+                }
             }
         }
     }
