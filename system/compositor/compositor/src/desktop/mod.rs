@@ -415,6 +415,19 @@ impl Desktop {
     /// Load menu logo PNGs from /System/media/ and scale to fit the menubar.
     fn load_menu_logos(&mut self) {
         anyos_std::println!("compositor: load_menu_logos begin");
+        #[cfg(target_arch = "aarch64")]
+        {
+            // ARM64 still hits intermittent memory corruption on the libimage decode
+            // path for these tiny decorative logos during early compositor bootstrap.
+            // The menubar already has a text fallback, so skip logo decoding here
+            // until the ARM64 libimage path is fully hardened.
+            self.logo_white.clear();
+            self.logo_black.clear();
+            self.logo_w = 0;
+            self.logo_h = 0;
+            anyos_std::println!("compositor: load_menu_logos skipped on ARM64");
+            return;
+        }
         self.load_one_logo("/System/media/menulogo_white.png", true);
         self.load_one_logo("/System/media/menulogo_black.png", false);
         anyos_std::println!("compositor: load_menu_logos done");
@@ -728,6 +741,7 @@ impl Desktop {
         if libimage_client::decode(&data[..bytes_read], &mut pixels, &mut scratch).is_err() {
             return false;
         }
+
         drop(scratch);
         drop(data);
 
@@ -739,6 +753,7 @@ impl Desktop {
                 let copy_len = bg_pixels.len().min(pixel_count);
                 bg_pixels[..copy_len].copy_from_slice(&pixels[..copy_len]);
             }
+            self.wallpaper_pixel_cache = pixels;
         } else {
             let dst_count = (sw * sh) as usize;
             let mut dst = vec![0u32; dst_count];
@@ -749,17 +764,12 @@ impl Desktop {
             ) {
                 return false;
             }
-            drop(pixels);
 
             if let Some(bg_pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
                 let copy_len = bg_pixels.len().min(dst_count);
                 bg_pixels[..copy_len].copy_from_slice(&dst[..copy_len]);
             }
-        }
-
-        // Cache the clean wallpaper pixels (without icons) for fast restore
-        if let Some(bg_pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
-            self.wallpaper_pixel_cache = bg_pixels.to_vec();
+            self.wallpaper_pixel_cache = dst;
         }
 
         anyos_std::println!("compositor: wallpaper loaded ({}x{} {})",
@@ -772,20 +782,22 @@ impl Desktop {
     fn draw_gradient_background(&mut self) {
         let w = self.screen_width;
         let h = self.screen_height;
-        if let Some(pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
-            for y in 0..h {
-                let t = y * 255 / h.max(1);
-                let r = 25 - (t * 10 / 255).min(10);
-                let g = 25 - (t * 10 / 255).min(10);
-                let b = 35 - (t * 10 / 255).min(10);
-                let color = 0xFF000000 | (r << 16) | (g << 8) | b;
-                for x in 0..w {
-                    pixels[(y * w + x) as usize] = color;
-                }
-            }
-            // Cache the clean gradient pixels
-            self.wallpaper_pixel_cache = pixels.to_vec();
+        let mut gradient = vec![0u32; (w * h) as usize];
+        for y in 0..h {
+            let t = y * 255 / h.max(1);
+            let r = 25 - (t * 10 / 255).min(10);
+            let g = 25 - (t * 10 / 255).min(10);
+            let b = 35 - (t * 10 / 255).min(10);
+            let color = 0xFF000000 | (r << 16) | (g << 8) | b;
+            let row_start = (y * w) as usize;
+            let row_end = row_start + w as usize;
+            gradient[row_start..row_end].fill(color);
         }
+        if let Some(pixels) = self.compositor.layer_pixels(self.bg_layer_id) {
+            let copy_len = pixels.len().min(gradient.len());
+            pixels[..copy_len].copy_from_slice(&gradient[..copy_len]);
+        }
+        self.wallpaper_pixel_cache = gradient;
     }
 
     // ── Menubar ────────────────────────────────────────────────────────

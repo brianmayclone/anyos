@@ -970,6 +970,9 @@ add_custom_target(bootloader_sysroot DEPENDS
 # Install service config files only if they don't already exist in the build
 # sysroot. This preserves user-edited settings across rebuilds.
 # The defaults live in defaults/ (not sysroot/) so copy_directory doesn't touch them.
+if(ANYOS_ARCH STREQUAL "arm64")
+  file(REMOVE "${SYSROOT_DIR}/System/etc/svc/sshd")
+endif()
 if(NOT EXISTS "${SYSROOT_DIR}/System/etc/searchd.conf")
   file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/searchd.conf"
        DESTINATION "${SYSROOT_DIR}/System/etc")

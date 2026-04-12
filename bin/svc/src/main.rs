@@ -94,6 +94,16 @@ fn start_service(name: &str, extra_args: &str) {
         }
     };
 
+    let mut stat_buf = [0u32; 7];
+    if anyos_std::fs::stat(&config.exec, &mut stat_buf) != 0 {
+        anyos_std::println!(
+            "svc: cannot start '{}' - executable missing: {}",
+            name,
+            config.exec
+        );
+        return;
+    }
+
     // Build args: binary path + config args + command-line extra args
     let mut args = String::from(config.exec.as_str());
     if !config.args.is_empty() {
