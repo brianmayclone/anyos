@@ -129,7 +129,21 @@ pub(super) fn measure_max_content(
         }
         let fs = st.font_size.max(1);
         let bold = matches!(st.font_weight, crate::style::FontWeight::Bold);
-        let (tw, _) = super::measure_text(trimmed, fs, 0, bold, false);
+        let italic = matches!(st.font_style, crate::style::FontStyleVal::Italic);
+        let custom_font_id = st
+            .font_family
+            .as_ref()
+            .and_then(|family| crate::lookup_web_font(family))
+            .unwrap_or(0);
+        let tw = super::measure_collapsed_text_width(
+            trimmed,
+            fs,
+            custom_font_id,
+            bold,
+            italic,
+            st.letter_spacing,
+            st.word_spacing,
+        );
         return tw;
     }
 

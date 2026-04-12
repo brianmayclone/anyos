@@ -182,6 +182,7 @@ pub fn layout_inline_content_with_pseudo(
         };
 
         if is_oof_block_like && !line.children.is_empty() {
+            line_h = trim_trailing_collapsible_spaces(&mut line);
             line.height = if line_h > 0 {
                 line_h.max(line_height)
             } else {
@@ -212,6 +213,7 @@ pub fn layout_inline_content_with_pseudo(
                 })
             && !line.children.is_empty()
         {
+            line_h = trim_trailing_collapsible_spaces(&mut line);
             line.height = if line_h > 0 {
                 line_h.max(line_height)
             } else {
@@ -249,6 +251,7 @@ pub fn layout_inline_content_with_pseudo(
             // consist entirely of zero-height content (e.g. a collapsed
             // overflow:hidden block).  Applying line_height.max(16) here would
             // give phantom height to every collapsed dropdown in the page.
+            line_h = trim_trailing_collapsible_spaces(&mut line);
             line.height = if line_h > 0 {
                 line_h.max(line_height)
             } else {
@@ -267,6 +270,7 @@ pub fn layout_inline_content_with_pseudo(
     if !line.children.is_empty() {
         // Same rule as in breaks_after: zero-height-only content produces a 0-height
         // line box (e.g. a trailing whitespace-only text node inside an inline element).
+        line_h = trim_trailing_collapsible_spaces(&mut line);
         line.height = if line_h > 0 {
             line_h.max(line_height)
         } else {
@@ -1626,6 +1630,7 @@ fn emit_word_fragments(
     let len = bytes.len();
 
     let has_leading_space = len > 0 && is_ascii_ws(bytes[0]);
+    let has_trailing_space = len > 1 && is_ascii_ws(bytes[len - 1]);
 
     let mut words: Vec<&str> = Vec::new();
     while i < len {
@@ -1643,8 +1648,6 @@ fn emit_word_fragments(
             words.push(word);
         }
     }
-
-    let has_trailing_space = len > 1 && is_ascii_ws(bytes[len - 1]);
 
     if words.is_empty() {
         // Whitespace-only text node (e.g. "\n  " between block siblings).
@@ -1716,6 +1719,19 @@ fn emit_word_fragments(
             });
         }
     }
+}
+
+fn trim_trailing_collapsible_spaces(line: &mut LayoutBox) -> i32 {
+    while matches!(line.children.last().and_then(|child| child.text.as_deref()), Some(" ")) {
+        line.children.pop();
+    }
+
+    line.children
+        .iter()
+        .filter(|child| !child.is_out_of_flow)
+        .map(|child| child.height)
+        .max()
+        .unwrap_or(0)
 }
 
 /// Emit fragments for preformatted text (preserve whitespace, break on \n).

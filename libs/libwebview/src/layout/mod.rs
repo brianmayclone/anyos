@@ -744,6 +744,53 @@ pub(super) fn is_ascii_ws(b: u8) -> bool {
     matches!(b, b' ' | b'\t' | b'\n' | b'\r')
 }
 
+pub(super) fn measure_collapsed_text_width(
+    text: &str,
+    font_size: i32,
+    custom_font_id: u32,
+    bold: bool,
+    italic: bool,
+    letter_spacing: i32,
+    word_spacing: i32,
+) -> i32 {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() {
+        return 0;
+    }
+
+    let mut i = 0;
+    let len = bytes.len();
+    let mut words = 0usize;
+    let mut width = 0i32;
+
+    while i < len {
+        while i < len && is_ascii_ws(bytes[i]) {
+            i += 1;
+        }
+        if i >= len {
+            break;
+        }
+
+        let start = i;
+        while i < len && !is_ascii_ws(bytes[i]) {
+            i += 1;
+        }
+
+        if let Ok(word) = core::str::from_utf8(&bytes[start..i]) {
+            let (ww, _) = measure_text(word, font_size, custom_font_id, bold, italic);
+            let letter_extra = letter_spacing * (word.len().max(1) as i32 - 1).max(0);
+            if words > 0 {
+                let (sw, _) = measure_text(" ", font_size, custom_font_id, bold, italic);
+                width += sw + word_spacing;
+            }
+            width += ww + letter_extra;
+            words += 1;
+        }
+    }
+
+    width
+}
+
 pub(super) fn ascii_lower_str<'a>(s: &str, buf: &'a mut [u8; 16]) -> &'a str {
     let len = s.len().min(16);
     for i in 0..len {
@@ -2563,7 +2610,15 @@ fn measure_abs_auto_width(
                 .as_ref()
                 .and_then(|family| crate::lookup_web_font(family))
                 .unwrap_or(0);
-            let (tw, _) = measure_text(trimmed, style.font_size.max(1), font_id, bold, italic);
+            let tw = measure_collapsed_text_width(
+                trimmed,
+                style.font_size.max(1),
+                font_id,
+                bold,
+                italic,
+                style.letter_spacing,
+                style.word_spacing,
+            );
             return (tw + pad_border).min(max_width).max(1);
         }
         crate::dom::NodeType::Element { .. } => {}
