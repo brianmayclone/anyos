@@ -927,22 +927,10 @@ pub fn build_block_with_budget(
             available_width,
             true,
         );
-        if let Some(t) = top {
-            bx.y += t;
-        }
-        if let Some(l) = left {
-            bx.x += l;
-        }
-        if top.is_none() {
-            if let Some(b) = bottom {
-                bx.y -= b;
-            }
-        }
-        if left.is_none() {
-            if let Some(r) = right {
-                bx.x -= r;
-            }
-        }
+        let dy = top.unwrap_or_else(|| bottom.map(|v| -v).unwrap_or(0));
+        let dx = left.unwrap_or_else(|| right.map(|v| -v).unwrap_or(0));
+        bx.y += dy;
+        bx.x += dx;
     }
 
     // position:sticky — behaves like position:relative in layout (in-flow),
@@ -1063,11 +1051,15 @@ fn append_out_of_flow_children(
         if abs_left.is_none() {
             if let Some(r) = abs_right {
                 abs_box.x = content_x + available_width - r - abs_box.width - abs_box.margin.right;
+            } else {
+                abs_box.x = static_x;
             }
         }
         if abs_top.is_none() {
             if let Some(b) = abs_bottom {
                 abs_box.y = content_y + content_h - b - abs_box.height - abs_box.margin.bottom;
+            } else {
+                abs_box.y = static_y;
             }
         }
 

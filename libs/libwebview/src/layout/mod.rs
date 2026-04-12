@@ -1407,7 +1407,6 @@ fn resolve_absolute_alignment_rec(
                         } else {
                             let available = static_size.max(0);
                             static_start_abs
-                                + *margin_start
                                 + self_alignment_offset(
                                     normal_start_align,
                                     available,
@@ -2159,11 +2158,15 @@ pub(super) fn layout_children_ex_with_budget(
             if left.is_none() {
                 if let Some(r) = right {
                     abs_box.x = content_x + cb_width - r - abs_box.width - abs_box.margin.right;
+                } else {
+                    abs_box.x = static_x;
                 }
             }
             if top.is_none() {
                 if let Some(b) = bottom {
                     abs_box.y = cursor_y - b - abs_box.height - abs_box.margin.bottom;
+                } else {
+                    abs_box.y = static_y;
                 }
             }
         }

@@ -3572,7 +3572,12 @@ fn resolve_length(val: &CssValue, parent_fs: i32, root_fs: i32) -> Option<i32> {
         CssValue::Length(v, Unit::Px) => Some(v / 100),
         CssValue::Length(v, Unit::Em) => Some(v * parent_fs / 100),
         CssValue::Length(v, Unit::Rem) => Some(v * root_fs / 100),
-        CssValue::Length(v, Unit::Pt) => Some(v * 4 / 300),
+        CssValue::Length(v, Unit::In) => Some(v * 96 / 100),
+        CssValue::Length(v, Unit::Cm) => Some(v * 9600 / 25400),
+        CssValue::Length(v, Unit::Mm) => Some(v * 960 / 2540),
+        CssValue::Length(v, Unit::Pt) => Some(v * 96 / 7200),
+        CssValue::Length(v, Unit::Pc) => Some(v * 16 / 100),
+        CssValue::Length(v, Unit::Q) => Some(v * 96 / 10160),
         CssValue::Length(_, Unit::Percent) => Option::None,
         // fr units are meaningful only inside a grid container; cannot resolve here.
         CssValue::Length(_, Unit::Fr) => Option::None,
@@ -4259,6 +4264,11 @@ pub fn apply_declaration(
             if matches!(decl.value, CssValue::Auto) {
                 style.top = Option::None;
                 style.top_calc = Option::None;
+            } else if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.top = parent.top;
+                    style.top_calc = parent.top_calc;
+                }
             } else if let CssValue::Calc(px, pct) = decl.value {
                 style.top = if pct == 0 { Some(px / 100) } else { Option::None };
                 style.top_calc = Some((px, pct));
@@ -4274,6 +4284,11 @@ pub fn apply_declaration(
             if matches!(decl.value, CssValue::Auto) {
                 style.right_offset = Option::None;
                 style.right_calc = Option::None;
+            } else if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.right_offset = parent.right_offset;
+                    style.right_calc = parent.right_calc;
+                }
             } else if let CssValue::Calc(px, pct) = decl.value {
                 style.right_offset = if pct == 0 { Some(px / 100) } else { Option::None };
                 style.right_calc = Some((px, pct));
@@ -4289,6 +4304,11 @@ pub fn apply_declaration(
             if matches!(decl.value, CssValue::Auto) {
                 style.bottom_offset = Option::None;
                 style.bottom_calc = Option::None;
+            } else if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.bottom_offset = parent.bottom_offset;
+                    style.bottom_calc = parent.bottom_calc;
+                }
             } else if let CssValue::Calc(px, pct) = decl.value {
                 style.bottom_offset = if pct == 0 { Some(px / 100) } else { Option::None };
                 style.bottom_calc = Some((px, pct));
@@ -4304,6 +4324,11 @@ pub fn apply_declaration(
             if matches!(decl.value, CssValue::Auto) {
                 style.left_offset = Option::None;
                 style.left_calc = Option::None;
+            } else if matches!(decl.value, CssValue::Inherit) {
+                if let Some(parent) = parent_style {
+                    style.left_offset = parent.left_offset;
+                    style.left_calc = parent.left_calc;
+                }
             } else if let CssValue::Calc(px, pct) = decl.value {
                 style.left_offset = if pct == 0 { Some(px / 100) } else { Option::None };
                 style.left_calc = Some((px, pct));
