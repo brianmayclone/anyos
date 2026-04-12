@@ -147,7 +147,10 @@ fn counter_entropy() -> u64 {
 }
 
 /// Max concurrent pending programs (no heap allocation needed).
-const MAX_PENDING: usize = 16;
+///
+/// This must comfortably exceed bursty thread/process creation patterns such as
+/// kstress, browser worker fan-out, and parallel child spawns at boot.
+const MAX_PENDING: usize = 64;
 
 /// Slot holding the entry point and stack pointer for a newly spawned user thread.
 ///
@@ -174,7 +177,39 @@ static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING]> =
         PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
         PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
         PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
+        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
     ]);
+
+fn try_store_pending_program(
+    tid: u32,
+    entry: u64,
+    user_stack: u64,
+    user_lr: u64,
+    is_compat32: bool,
+) -> bool {
+    let mut slots = PENDING_PROGRAMS.lock();
+    let Some(slot) = slots.iter_mut().find(|s| !s.used) else {
+        return false;
+    };
+    slot.tid = tid;
+    slot.entry = entry;
+    slot.user_stack = user_stack;
+    slot.user_lr = user_lr;
+    slot.is_compat32 = is_compat32;
+    slot.used = true;
+    true
+}
 
 // =========================================================================
 // fork() child state — saved parent registers for child to resume from
@@ -280,11 +315,59 @@ static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
     ]);
 
 #[cfg(target_arch = "aarch64")]
 static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
     Spinlock::new([
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
+        ForkPendingSlot::empty(), ForkPendingSlot::empty(),
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
@@ -1442,25 +1525,22 @@ pub fn load_and_run_with_args(path: &str, name: &str, args: &str) -> Result<u32,
     }
 
     // Store pending program info keyed by TID (after spawn so we know the TID).
-    {
-        let mut slots = PENDING_PROGRAMS.lock();
-        let slot = slots.iter_mut().find(|s| !s.used)
-            .expect("Too many pending programs");
-        slot.tid = tid;
-        slot.entry = entry_point;
-        // x86_64 enters userspace via `iretq` into a call-like ABI state and
-        // therefore wants RSP % 16 == 8. AArch64 enters EL0 via `eret` and
-        // requires SP to remain 16-byte aligned.
-        #[cfg(target_arch = "x86_64")]
-        {
-            slot.user_stack = aslr_stack_top - 8;
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            slot.user_stack = aslr_stack_top;
-        }
-        slot.is_compat32 = is_compat32;
-        slot.used = true;
+    // x86_64 enters userspace via `iretq` into a call-like ABI state and
+    // therefore wants RSP % 16 == 8. AArch64 enters EL0 via `eret` and
+    // requires SP to remain 16-byte aligned.
+    #[cfg(target_arch = "x86_64")]
+    let pending_user_stack = aslr_stack_top - 8;
+    #[cfg(target_arch = "aarch64")]
+    let pending_user_stack = aslr_stack_top;
+
+    if !try_store_pending_program(tid, entry_point, pending_user_stack, 0, is_compat32) {
+        crate::serial_println!(
+            "load_and_run: pending-program table full for '{}' (tid={})",
+            path,
+            tid
+        );
+        crate::task::scheduler::kill_thread(tid);
+        return Err("Too many pending programs");
     }
     if !args.is_empty() {
         crate::task::scheduler::set_thread_args(tid, args);
@@ -1570,16 +1650,8 @@ pub(crate) extern "C" fn user_thread_trampoline() {
 
 /// Store a pending entry point and user stack for a new intra-process thread.
 /// Called by `scheduler::create_thread_in_current_process()`.
-pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64, user_lr: u64) {
-    let mut slots = PENDING_PROGRAMS.lock();
-    let slot = slots.iter_mut().find(|s| !s.used)
-        .expect("Too many pending programs");
-    slot.tid = tid;
-    slot.entry = entry;
-    slot.user_stack = user_stack;
-    slot.user_lr = user_lr;
-    slot.is_compat32 = false;
-    slot.used = true;
+pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64, user_lr: u64) -> bool {
+    try_store_pending_program(tid, entry, user_stack, user_lr, false)
 }
 
 /// Trampoline for intra-process threads created via SYS_THREAD_CREATE.

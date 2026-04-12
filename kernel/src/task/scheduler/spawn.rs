@@ -172,7 +172,14 @@ pub fn create_thread_in_current_process(
         }
     }
 
-    crate::task::loader::store_pending_thread(tid, entry_rip, user_rsp, user_lr);
+    if !crate::task::loader::store_pending_thread(tid, entry_rip, user_rsp, user_lr) {
+        crate::serial_println!(
+            "create_thread_in_current_process: pending-program table full for tid={}",
+            tid
+        );
+        super::kill_thread(tid);
+        return 0;
+    }
     super::wake_thread(tid);
     tid
 }
