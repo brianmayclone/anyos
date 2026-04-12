@@ -4,6 +4,7 @@ pub mod cursors;
 pub mod drawing;
 pub mod input;
 pub mod ipc;
+mod minipng;
 pub mod theme;
 pub mod volume_hud;
 pub mod window;
@@ -415,19 +416,6 @@ impl Desktop {
     /// Load menu logo PNGs from /System/media/ and scale to fit the menubar.
     fn load_menu_logos(&mut self) {
         anyos_std::println!("compositor: load_menu_logos begin");
-        #[cfg(target_arch = "aarch64")]
-        {
-            // ARM64 still hits intermittent memory corruption on the libimage decode
-            // path for these tiny decorative logos during early compositor bootstrap.
-            // The menubar already has a text fallback, so skip logo decoding here
-            // until the ARM64 libimage path is fully hardened.
-            self.logo_white.clear();
-            self.logo_black.clear();
-            self.logo_w = 0;
-            self.logo_h = 0;
-            anyos_std::println!("compositor: load_menu_logos skipped on ARM64");
-            return;
-        }
         self.load_one_logo("/System/media/menulogo_white.png", true);
         self.load_one_logo("/System/media/menulogo_black.png", false);
         anyos_std::println!("compositor: load_menu_logos done");
@@ -455,33 +443,49 @@ impl Desktop {
         fs::close(fd);
         if n == 0 { return; }
 
-        let exports = libimage_client::raw::exports();
-        anyos_std::println!(
-            "compositor: libimage exports magic={:02x}{:02x}{:02x}{:02x} ver={} num={} probe={:#x} decode={:#x} scale={:#x}",
-            exports.magic[0], exports.magic[1], exports.magic[2], exports.magic[3],
-            exports.version,
-            exports.num_exports,
-            exports.image_probe as usize,
-            exports.image_decode as usize,
-            exports.scale_image as usize,
-        );
-        anyos_std::println!("compositor: load_logo probe '{}' ({} bytes)", path, n);
-        let info = match libimage_client::probe(&data[..n]) {
-            Some(i) => i,
+        anyos_std::println!("compositor: load_logo decode '{}' ({} bytes)", path, n);
+        #[cfg(target_arch = "aarch64")]
+        let (pixels, src_w, src_h) = match minipng::decode_png_argb32(&data[..n]) {
+            Some(decoded) => decoded,
             None => return,
         };
-        let src_w = info.width;
-        let src_h = info.height;
-        let pixel_count = (src_w * src_h) as usize;
-        if pixel_count == 0 || pixel_count > 4096 { return; }
+        #[cfg(not(target_arch = "aarch64"))]
+        let (pixels, src_w, src_h) = {
+            let exports = libimage_client::raw::exports();
+            anyos_std::println!(
+                "compositor: libimage exports magic={:02x}{:02x}{:02x}{:02x} ver={} num={} probe={:#x} decode={:#x} scale={:#x}",
+                exports.magic[0], exports.magic[1], exports.magic[2], exports.magic[3],
+                exports.version,
+                exports.num_exports,
+                exports.image_probe as usize,
+                exports.image_decode as usize,
+                exports.scale_image as usize,
+            );
+            anyos_std::println!("compositor: load_logo probe '{}' ({} bytes)", path, n);
+            let info = match libimage_client::probe(&data[..n]) {
+                Some(i) => i,
+                None => return,
+            };
+            let src_w = info.width;
+            let src_h = info.height;
+            let pixel_count = (src_w * src_h) as usize;
+            if pixel_count == 0 || pixel_count > 4096 {
+                return;
+            }
 
-        let mut pixels = vec![0u32; pixel_count];
-        let mut scratch = vec![0u8; info.scratch_needed as usize];
-        anyos_std::println!(
-            "compositor: load_logo decode '{}' ({}x{}, scratch={})",
-            path, src_w, src_h, info.scratch_needed
-        );
-        if libimage_client::decode(&data[..n], &mut pixels, &mut scratch).is_err() {
+            let mut pixels = vec![0u32; pixel_count];
+            let mut scratch = vec![0u8; info.scratch_needed as usize];
+            anyos_std::println!(
+                "compositor: load_logo decode '{}' ({}x{}, scratch={})",
+                path, src_w, src_h, info.scratch_needed
+            );
+            if libimage_client::decode(&data[..n], &mut pixels, &mut scratch).is_err() {
+                return;
+            }
+            (pixels, src_w, src_h)
+        };
+        let pixel_count = (src_w * src_h) as usize;
+        if pixel_count == 0 || pixel_count > 4096 {
             return;
         }
 
@@ -490,9 +494,9 @@ impl Desktop {
         let target_w = (src_w * target_h + src_h / 2) / src_h.max(1);
         if target_w == 0 { return; }
 
-        // Use a local scaler for the tiny menubar logos. This avoids the ARM64
-        // corruption we see on the libimage scaling path during early bootstrap,
-        // while keeping the logo loading path deterministic and fully in-process.
+        // Use a local scaler for the tiny menubar logos to keep this path
+        // deterministic and avoid depending on the general image scaler for a
+        // very small fixed-size asset.
         anyos_std::println!(
             "compositor: load_logo scale '{}' -> {}x{}",
             path, target_w, target_h
