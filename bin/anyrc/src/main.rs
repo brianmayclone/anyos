@@ -27,7 +27,7 @@ fn main() {
     let mut env_vars: Vec<(String, String)> = Vec::new();
     let mut features: Vec<String> = Vec::new();
 
-    let mut i = 1;
+    let mut i = 0;
     while i < args.len() {
         match args[i] {
             "-o" => {

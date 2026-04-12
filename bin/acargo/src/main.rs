@@ -39,12 +39,12 @@ fn main() {
     let raw = anyos_std::process::args(&mut args_buf);
     let args: Vec<&str> = raw.split_whitespace().collect();
 
-    if args.len() < 2 {
+    if args.is_empty() {
         print_usage();
         return;
     }
 
-    let command = args[1];
+    let command = args[0];
 
     // Parse global flags
     let mut release = false;
@@ -57,7 +57,7 @@ fn main() {
     let mut target: Option<String> = None;
     let mut jobs: u32 = 1;
 
-    let mut i = 2;
+    let mut i = 1;
     while i < args.len() {
         if after_dashdash {
             run_args.push(args[i]);

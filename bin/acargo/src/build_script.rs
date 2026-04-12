@@ -1,8 +1,14 @@
-//! Build script (build.rs) execution and output parsing.
+//! Build script (build.rs) handling for ccargo.
 //!
-//! Compiles and runs build.rs scripts, parsing their `cargo:` output directives
-//! to extract linker arguments, cfg flags, environment variables, and other
-//! build-time configuration.
+//! The current anyOS tree uses a small set of Cargo-style `build.rs` patterns:
+//! - emit `cargo:rustc-link-arg=-T<.../libs/stdlib/link.ld>`
+//! - emit `cargo:rerun-if-changed=<.../libs/stdlib/link.ld>`
+//! - emit `cargo:rerun-if-env-changed=ANYOS_VERSION`
+//! - optionally emit `cargo:rustc-env=ANYOS_VERSION=<value>`
+//!
+//! Rather than compiling those helper scripts with the in-system compiler,
+//! we emulate the directives directly here. That keeps self-hosted builds
+//! reliable while still respecting the information the scripts carry.
 
 use crate::prelude::*;
 use crate::fs;
@@ -44,66 +50,15 @@ pub fn run_build_script(
 
     // Read build.rs source
     let source = fs::read_file(&build_rs)?;
-
-    // Compile build.rs as a host binary
-    let build_bin = format!("{}/build-script-{}", target_dir, crate_name);
-
-    let options = anyrc::driver::CompileOptions {
-        input: build_rs.clone(),
-        output: build_bin.clone(),
-        emit: anyrc::driver::EmitKind::Exe,
-        opt_level: 0,
-        crate_type: anyrc::driver::CrateType::Bin,
-        crate_name: Some(format!("build_script_{}", crate_name)),
-        src_dir: Some(manifest_dir.to_string()),
-        extern_crates: Vec::new(),
-        cfg_flags: Vec::new(),
-        linker_script: None,
-        link_args: Vec::new(),
-        env_vars: Vec::new(),
-        features: Vec::new(),
-    };
-
-    match anyrc::driver::compile(&source, &build_rs, &options) {
-        Ok(bytes) => {
-            fs::write_file(&build_bin, &bytes);
-        }
-        Err(errors) => {
-            let source_map = anyrc::diagnostics::SourceMap::new(
-                build_rs.clone(),
-                source,
-            );
-            println!("ccargo: error compiling build script for `{}`", crate_name);
-            for err in &errors {
-                println!("{}", err.render(&source_map));
-            }
-            return None;
-        }
-    }
-
-    // Set up environment variables for the build script
     anyos_std::env::set("CARGO_MANIFEST_DIR", manifest_dir);
     anyos_std::env::set("OUT_DIR", &format!("{}/out", target_dir));
     anyos_std::env::set("TARGET", "x86_64-anyos");
     anyos_std::env::set("HOST", "x86_64-anyos");
     anyos_std::env::set("PROFILE", if release { "release" } else { "debug" });
     anyos_std::env::set("OPT_LEVEL", if release { "2" } else { "0" });
-
-    // Create OUT_DIR
     fs::mkdir_p(&format!("{}/out", target_dir));
 
-    // Execute the build script and capture output
-    let output_file = format!("{}/build-script-output-{}", target_dir, crate_name);
-    let cmd = format!("{} > {}", build_bin, output_file);
-    let status = anyos_std::process::exec(&build_bin, &cmd);
-
-    if status != 0 {
-        println!("ccargo: warning: build script for `{}` exited with {}", crate_name, status);
-    }
-
-    // Parse the output
-    let output_str = fs::read_file(&output_file).unwrap_or_default();
-    Some(parse_build_script_output(&output_str))
+    Some(emulate_build_script_output(&source, manifest_dir, crate_name))
 }
 
 /// Parse cargo: directives from build script stdout.
@@ -149,4 +104,84 @@ pub fn parse_build_script_output(output: &str) -> BuildScriptOutput {
     }
 
     result
+}
+
+fn emulate_build_script_output(
+    source: &str,
+    manifest_dir: &str,
+    crate_name: &str,
+) -> BuildScriptOutput {
+    let mut result = BuildScriptOutput::default();
+
+    if source.contains("cargo:rerun-if-env-changed=ANYOS_VERSION") {
+        result.rerun_if_env_changed.push(String::from("ANYOS_VERSION"));
+        if let Some(ver) = env_value("ANYOS_VERSION") {
+            result.env_vars.push((String::from("ANYOS_VERSION"), ver));
+        }
+    }
+
+    if source.contains("cargo:rustc-link-arg=-T") {
+        if let Some(link_ld) = find_stdlib_linker_script(manifest_dir) {
+            result.link_args.push(format!("-T{}", link_ld));
+            result.rerun_if_changed.push(link_ld);
+        } else {
+            println!(
+                "ccargo: warning: could not resolve libs/stdlib/link.ld for `{}`",
+                crate_name
+            );
+        }
+    }
+
+    if result.cfg_flags.is_empty()
+        && result.link_args.is_empty()
+        && result.env_vars.is_empty()
+        && result.rerun_if_changed.is_empty()
+        && result.rerun_if_env_changed.is_empty()
+    {
+        println!(
+            "ccargo: warning: build script for `{}` uses unsupported patterns; ignoring it",
+            crate_name
+        );
+    }
+
+    result
+}
+
+fn find_stdlib_linker_script(manifest_dir: &str) -> Option<String> {
+    let mut current = String::from(manifest_dir);
+    loop {
+        let candidate = format!("{}/libs/stdlib/link.ld", current);
+        if fs::file_exists(&candidate) {
+            return Some(candidate);
+        }
+
+        let parent = parent_dir(&current);
+        if parent == current {
+            break;
+        }
+        current = parent;
+    }
+    None
+}
+
+fn parent_dir(path: &str) -> String {
+    if path == "/" {
+        return String::from("/");
+    }
+
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rfind('/') {
+        Some(0) => String::from("/"),
+        Some(idx) => String::from(&trimmed[..idx]),
+        None => String::from("."),
+    }
+}
+
+fn env_value(key: &str) -> Option<String> {
+    let mut buf = [0u8; 257];
+    let len = anyos_std::env::get(key, &mut buf);
+    if len == u32::MAX {
+        return None;
+    }
+    core::str::from_utf8(&buf[..len as usize]).ok().map(String::from)
 }
