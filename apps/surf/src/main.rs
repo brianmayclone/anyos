@@ -34,6 +34,19 @@ pub(crate) fn surf_log_print(args: fmt::Arguments<'_>) {
     anyos_std::println!("[surf +{}ms @{}ms] {}", elapsed_ms, now_ms, args);
 }
 
+extern "C" fn deferred_kill_timer_cb(userdata: u64) {
+    let timer_id = userdata as u32;
+    if timer_id != 0 {
+        ui_lib::kill_timer(timer_id);
+    }
+}
+
+fn defer_kill_timer(timer_id: u32) {
+    if timer_id != 0 {
+        ui_lib::marshal_dispatch(deferred_kill_timer_cb, timer_id as u64);
+    }
+}
+
 #[macro_export]
 macro_rules! surf_log {
     ($($arg:tt)*) => {{
@@ -203,6 +216,7 @@ pub(crate) fn debug_heap() -> u64 {
 struct AppState {
     win: ui_lib::Window,
     toolbar: ui_lib::View,
+    nav_group: ui_lib::View,
     btn_back: ui_lib::IconButton,
     btn_forward: ui_lib::IconButton,
     btn_reload: ui_lib::IconButton,
@@ -243,6 +257,10 @@ struct AppState {
     resize_timer: u32,
     /// A resize was requested while the active page was still in a heavy load phase.
     deferred_resize_pending: bool,
+    /// Timer ID for theme refresh polling (0 = not running).
+    theme_timer: u32,
+    /// Last observed compositor theme state.
+    last_theme_light: bool,
     /// User settings (homepage, etc.).
     config: config::SurfConfig,
     /// Bookmark store (hierarchical folders and bookmarks).
@@ -342,7 +360,7 @@ fn ws_start_poll_timer() {
         }
 
         if st.ws_connections.is_empty() {
-            ui_lib::kill_timer(st.ws_poll_timer);
+            defer_kill_timer(st.ws_poll_timer);
             st.ws_poll_timer = 0;
         }
     });
@@ -395,7 +413,7 @@ pub(crate) fn start_anim_timer() {
                     IDLE_TICKS = 0;
                 }
                 if st.anim_timer != 0 {
-                    ui_lib::kill_timer(st.anim_timer);
+                    defer_kill_timer(st.anim_timer);
                     st.anim_timer = 0;
                 }
             }
@@ -625,6 +643,19 @@ fn resize_active_webview_now() {
     st.tabs[st.active_tab].webview.resize(w, h);
 }
 
+fn active_tab_has_viewport_size_mismatch() -> bool {
+    let st = state();
+    if st.active_tab >= st.tabs.len() {
+        return false;
+    }
+    let (w, h) = st.content_view.get_size();
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let webview = &st.tabs[st.active_tab].webview;
+    webview.viewport_width() != w || webview.viewport_height() != h
+}
+
 fn active_tab_allows_expensive_resize() -> bool {
     let st = state();
     if st.active_tab >= st.tabs.len() {
@@ -660,10 +691,8 @@ fn schedule_active_webview_resize(delay_ms: u32) {
         let st = state();
         let timer_id = st.resize_timer;
         st.resize_timer = 0;
-        if timer_id != 0 {
-            ui_lib::kill_timer(timer_id);
-        }
-        if !active_tab_allows_expensive_resize() {
+        defer_kill_timer(timer_id);
+        if !active_tab_allows_expensive_resize() && !active_tab_has_viewport_size_mismatch() {
             crate::surf_log!("[surf] deferring resize until active load settles");
             let st = state();
             st.deferred_resize_pending = true;
@@ -736,7 +765,7 @@ fn start_net_poll_timer() {
                 let st = state();
                 if st.net_poll_timer != 0 {
                     crate::surf_log!("[surf] net-poll timer stop after idle");
-                    ui_lib::kill_timer(st.net_poll_timer);
+                    defer_kill_timer(st.net_poll_timer);
                     st.net_poll_timer = 0;
                 }
             }
@@ -1858,12 +1887,13 @@ fn main() {
 
     // ── Window ──────────────────────────────────────────────────────────────
     let win = ui_lib::Window::new(i18n::t("Surf"), -1, -1, 900, 700);
+    let tc = ui_lib::theme::colors();
 
     // ── Toolbar (DOCK_TOP, 40 px) ────────────────────────────────────────────
     let toolbar = ui_lib::View::new();
     toolbar.set_dock(ui_lib::DOCK_TOP);
     toolbar.set_size(0, 40);
-    toolbar.set_color(0xFF2A2A2C);
+    toolbar.set_color(tc.toolbar_bg);
     toolbar.set_padding(6, 6, 6, 6);
     win.add(&toolbar);
 
@@ -1871,32 +1901,32 @@ fn main() {
     let nav_group = ui_lib::View::new();
     nav_group.set_dock(ui_lib::DOCK_LEFT);
     nav_group.set_size(104, 28);
-    nav_group.set_color(0xFF2A2A2C);
+    nav_group.set_color(tc.toolbar_bg);
     toolbar.add(&nav_group);
 
     let btn_back = ui_lib::IconButton::new("");
     btn_back.set_position(0, 0);
     btn_back.set_size(32, 28);
-    btn_back.set_system_icon("chevron-left", ui_lib::IconType::Outline, 0xFFCCCCCC, 20);
+    btn_back.set_system_icon("chevron-left", ui_lib::IconType::Outline, tc.text_secondary, 20);
     nav_group.add(&btn_back);
 
     let btn_forward = ui_lib::IconButton::new("");
     btn_forward.set_position(34, 0);
     btn_forward.set_size(32, 28);
-    btn_forward.set_system_icon("chevron-right", ui_lib::IconType::Outline, 0xFFCCCCCC, 20);
+    btn_forward.set_system_icon("chevron-right", ui_lib::IconType::Outline, tc.text_secondary, 20);
     nav_group.add(&btn_forward);
 
     let btn_reload = ui_lib::IconButton::new("");
     btn_reload.set_position(68, 0);
     btn_reload.set_size(32, 28);
-    btn_reload.set_system_icon("refresh", ui_lib::IconType::Outline, 0xFFCCCCCC, 20);
+    btn_reload.set_system_icon("refresh", ui_lib::IconType::Outline, tc.text_secondary, 20);
     nav_group.add(&btn_reload);
 
     // Hamburger menu button (DOCK_RIGHT).
     let btn_menu = ui_lib::IconButton::new("");
     btn_menu.set_dock(ui_lib::DOCK_RIGHT);
     btn_menu.set_size(36, 28);
-    btn_menu.set_system_icon("menu-2", ui_lib::IconType::Outline, 0xFFCCCCCC, 20);
+    btn_menu.set_system_icon("menu-2", ui_lib::IconType::Outline, tc.text_secondary, 20);
     toolbar.add(&btn_menu);
 
     // URL field (DOCK_FILL — takes all remaining width).
@@ -1913,7 +1943,7 @@ fn main() {
     let url_progress = ui_lib::ProgressBar::new(0);
     url_progress.set_dock(ui_lib::DOCK_TOP);
     url_progress.set_size(0, 3);
-    url_progress.set_color(0xFF0A84FF); // blue accent
+    url_progress.set_color(tc.accent);
     url_progress.set_visible(false);
     win.add(&url_progress);
 
@@ -1949,8 +1979,8 @@ fn main() {
 
     let devtools_label = ui_lib::Label::new("");
     devtools_label.set_dock(ui_lib::DOCK_FILL);
-    devtools_label.set_color(0xFF1C1C1E);
-    devtools_label.set_text_color(0xFF30D158); // green console text
+    devtools_label.set_color(tc.input_bg);
+    devtools_label.set_text_color(tc.success);
     devtools_label.set_font_size(12);
     devtools_label.set_padding(8, 8, 8, 8);
     devtools_win.add(&devtools_label);
@@ -1959,8 +1989,8 @@ fn main() {
     let status_label = ui_lib::Label::new(i18n::t("Ready"));
     status_label.set_dock(ui_lib::DOCK_BOTTOM);
     status_label.set_size(0, 24);
-    status_label.set_color(0xFF252525);
-    status_label.set_text_color(0xFF969696);
+    status_label.set_color(tc.toolbar_bg);
+    status_label.set_text_color(tc.text_secondary);
     status_label.set_font_size(12);
     status_label.set_padding(8, 4, 0, 0);
     win.add(&status_label);
@@ -1968,7 +1998,7 @@ fn main() {
     // ── Content area (DOCK_FILL) ─────────────────────────────────────────────
     let content_view = ui_lib::View::new();
     content_view.set_dock(ui_lib::DOCK_FILL);
-    content_view.set_color(0xFFFFFFFF);
+    content_view.set_color(tc.window_bg);
     win.add(&content_view);
 
     // ── Initial tab ──────────────────────────────────────────────────────────
@@ -1993,6 +2023,7 @@ fn main() {
         STATE = Some(AppState {
             win,
             toolbar,
+            nav_group,
             btn_back,
             btn_forward,
             btn_reload,
@@ -2020,10 +2051,15 @@ fn main() {
             relayout_due_ms: 0,
             resize_timer: 0,
             deferred_resize_pending: false,
+            theme_timer: 0,
+            last_theme_light: ui_lib::theme::is_light(),
             config: surf_config,
             bookmarks: surf_bookmarks,
         });
     }
+
+    ui::apply_theme();
+    ui::ensure_theme_timer();
 
     // Initialize background network worker queues.
     net_worker::init();

@@ -934,11 +934,21 @@ impl WebView {
         // ── 1. Advance JS timers (setTimeout / setInterval / requestAnimationFrame). ──
         // Short-circuits internally when no timers exist (zero allocation).
         if !self.js_runtime.timers.is_empty() {
-            let dom_opt = self.dom_val.take();
-            if let Some(ref d) = dom_opt {
-                self.js_runtime.tick(d, delta_ms);
+            let mut dom = match self.dom_val.take() {
+                Some(d) => d,
+                None => return false,
+            };
+            let fired = self.js_runtime.tick(&dom, delta_ms);
+            if !self.js_runtime.mutations.is_empty() {
+                self.flush_pending_mutations(&mut dom);
+                self.relayout();
+                changed = true;
+            } else if fired > 0 {
+                // Keep the tick loop alive for timer-driven async work
+                // even when the callbacks produced no immediate DOM mutations.
+                changed = true;
             }
-            self.dom_val = dom_opt;
+            self.dom_val = Some(dom);
         }
 
         // ── 2. CSS animations & transitions ──────────────────────────────────────

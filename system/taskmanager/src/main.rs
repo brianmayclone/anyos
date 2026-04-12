@@ -147,17 +147,20 @@ fn main() {
     let proc_toolbar = ui::View::new();
     proc_toolbar.set_size(0, 32);
     proc_toolbar.set_dock(ui::DOCK_TOP);
+    proc_toolbar.set_color(tc.toolbar_bg);
     panel_procs.add(&proc_toolbar);
 
     let kill_btn = ui::Button::new(i18n::t("Kill Process"));
     kill_btn.set_position(8, 4);
     kill_btn.set_size(100, 24);
+    kill_btn.set_color(tc.control_bg);
     kill_btn.set_enabled(false); // enabled only when a process is selected
     proc_toolbar.add(&kill_btn);
 
     let proc_info_label = ui::Label::new("");
     proc_info_label.set_position(120, 6);
     proc_info_label.set_size(440, 20);
+    proc_info_label.set_text_color(tc.text_secondary);
     proc_toolbar.add(&proc_info_label);
 
     // Process grid (DOCK_FILL)
@@ -475,6 +478,9 @@ fn main() {
     // All controls are Copy — captured directly by value.
     ui::set_timer(1000, move || {
         let tc = ui::theme::colors();
+        proc_toolbar.set_color(tc.toolbar_bg);
+        kill_btn.set_color(tc.control_bg);
+        proc_info_label.set_text_color(tc.text_secondary);
         let cpu_st = unsafe { &mut *CPU_STATE.unwrap() };
         let hist = unsafe { &mut *CPU_HISTORY.unwrap() };
         let prev = unsafe { &mut *PREV_TICKS.unwrap() };

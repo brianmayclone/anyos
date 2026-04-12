@@ -93,6 +93,39 @@ fn format_items(files: u32, dirs: u32) -> String {
     else { format!("{} files", files) }
 }
 
+fn chart_background() -> u32 {
+    anyui::theme::colors().window_bg
+}
+
+fn chart_center_background() -> u32 {
+    anyui::theme::colors().card_bg
+}
+
+fn chart_separator_color() -> u32 {
+    anyui::theme::colors().window_bg
+}
+
+fn chart_primary_text() -> u32 {
+    anyui::theme::colors().text
+}
+
+fn chart_secondary_text() -> u32 {
+    anyui::theme::colors().text_secondary
+}
+
+fn usage_heat_color(pct: u64) -> u32 {
+    let tc = anyui::theme::colors();
+    if pct >= 50 {
+        tc.destructive
+    } else if pct >= 25 {
+        tc.warning
+    } else if pct >= 10 {
+        tc.accent
+    } else {
+        0
+    }
+}
+
 // ── Mount info ──────────────────────────────────────────────────────────────
 
 #[allow(dead_code)]
@@ -313,22 +346,22 @@ fn draw_ring_chart(canvas: &anyui::Canvas, tree: &DirTree, view_node: usize,
     let cy = chart_h as i32 / 2;
     let mut segments = Vec::new();
 
-    canvas.clear(0xFF1E1E1E);
+    canvas.clear(chart_background());
 
     let node = tree.node(view_node);
     let total = node.total_size;
     let children = tree.children_of(view_node);
 
     if total == 0 || children.is_empty() {
-        canvas.draw_text(cx - 40, cy - 8, 0xFF888888, 0, 13, "No data");
+        canvas.draw_text(cx - 40, cy - 8, chart_secondary_text(), 0, 13, "No data");
         return segments;
     }
 
     // Center circle with total size
-    canvas.fill_circle(cx, cy, R_CENTER - 2, 0xFF2D2D30);
+    canvas.fill_circle(cx, cy, R_CENTER - 2, chart_center_background());
     let size_text = format_size(total);
     let text_x = cx - (size_text.len() as i32 * 4);
-    canvas.draw_text(text_x, cy - 6, 0xFFCCCCCC, 1, 12, &size_text);
+    canvas.draw_text(text_x, cy - 6, chart_primary_text(), 1, 12, &size_text);
 
     // Ring 1: direct children
     let r_inner = R_CENTER + RING_GAP;
@@ -361,7 +394,7 @@ fn draw_ring_chart(canvas: &anyui::Canvas, tree: &DirTree, view_node: usize,
     // Ring separator circles
     for ring in 0..=MAX_RINGS {
         let r = R_CENTER + (ring as i32) * (RING_WIDTH + RING_GAP);
-        canvas.draw_circle(cx, cy, r, 0xFF1E1E1E);
+        canvas.draw_circle(cx, cy, r, chart_separator_color());
     }
 
     segments
@@ -449,9 +482,13 @@ struct AppState {
     // UI
     win: anyui::Window,
     toolbar: anyui::Toolbar,
+    path_panel: anyui::View,
+    info_panel: anyui::View,
+    status_bar: anyui::View,
     btn_back: anyui::IconButton,
     btn_up: anyui::IconButton,
     btn_refresh: anyui::IconButton,
+    btn_home: anyui::IconButton,
     lbl_path: anyui::Label,
     lbl_info: anyui::Label,
     status_label: anyui::Label,
@@ -460,9 +497,47 @@ struct AppState {
     chart: anyui::Canvas,
     split: anyui::SplitView,
     progress: anyui::ProgressBar,
+    theme_timer: u32,
+    last_theme_light: bool,
 }
 
 anyos_std::global_app_state!(AppState);
+
+fn apply_theme() {
+    let a = app();
+    let tc = anyui::theme::colors();
+    a.toolbar.set_color(tc.toolbar_bg);
+    a.path_panel.set_color(tc.window_bg);
+    a.lbl_path.set_text_color(tc.text);
+    a.info_panel.set_color(tc.card_bg);
+    a.lbl_info.set_text_color(tc.text_secondary);
+    a.status_bar.set_color(tc.toolbar_bg);
+    a.status_label.set_text_color(tc.text);
+    a.progress.set_color(tc.accent);
+    if a.mode == Mode::Browsing {
+        let cw = a.chart.get_stride().max(450);
+        let ch = a.chart.get_height().max(450);
+        a.chart_segments = draw_ring_chart(&a.chart, &a.tree, a.current_node, a.selected_row, cw, ch);
+    } else {
+        a.chart.clear(chart_background());
+    }
+}
+
+fn ensure_theme_timer() {
+    let a = app();
+    if a.theme_timer != 0 {
+        return;
+    }
+    a.theme_timer = anyui::set_timer(500, || {
+        let a = app();
+        let is_light = anyui::theme::is_light();
+        if is_light == a.last_theme_light {
+            return;
+        }
+        a.last_theme_light = is_light;
+        apply_theme();
+    });
+}
 
 // ── Show mount selection ────────────────────────────────────────────────────
 
@@ -574,10 +649,7 @@ fn show_view() {
         }
         a.grid.set_cell(row, 4, "");
 
-        let color = if pct >= 50 { 0xFFFF4444 }
-            else if pct >= 25 { 0xFFFF8800 }
-            else if pct >= 10 { 0xFFFFCC00 }
-            else { 0 };
+        let color = usage_heat_color(pct);
         for _ in 0..5 { text_colors.push(color); }
     }
     a.grid.set_cell_colors(&text_colors);
@@ -683,12 +755,13 @@ fn main() {
     init_trig();
 
     let win = anyui::Window::new("Disk Usage", -1, -1, WIN_W, WIN_H);
+    let tc = anyui::theme::colors();
 
     // Toolbar
     let toolbar = anyui::Toolbar::new();
     toolbar.set_dock(anyui::DOCK_TOP);
     toolbar.set_size(WIN_W, 36);
-    toolbar.set_color(0xFF252526);
+    toolbar.set_color(tc.toolbar_bg);
     toolbar.set_padding(4, 4, 4, 4);
 
     let btn_back = toolbar.add_icon_button("Back");
@@ -708,10 +781,10 @@ fn main() {
     let path_panel = anyui::View::new();
     path_panel.set_dock(anyui::DOCK_TOP);
     path_panel.set_size(WIN_W, 28);
-    path_panel.set_color(0xFF1E1E1E);
+    path_panel.set_color(tc.window_bg);
     let lbl_path = anyui::Label::new("");
     lbl_path.set_dock(anyui::DOCK_FILL);
-    lbl_path.set_text_color(0xFFCCCCCC);
+    lbl_path.set_text_color(tc.text);
     lbl_path.set_font_size(13);
     path_panel.add(&lbl_path);
     win.add(&path_panel);
@@ -720,10 +793,10 @@ fn main() {
     let info_panel = anyui::View::new();
     info_panel.set_dock(anyui::DOCK_TOP);
     info_panel.set_size(WIN_W, 22);
-    info_panel.set_color(0xFF2D2D30);
+    info_panel.set_color(tc.card_bg);
     let lbl_info = anyui::Label::new("");
     lbl_info.set_dock(anyui::DOCK_FILL);
-    lbl_info.set_text_color(0xFF888888);
+    lbl_info.set_text_color(tc.text_secondary);
     lbl_info.set_font_size(11);
     info_panel.add(&lbl_info);
     win.add(&info_panel);
@@ -732,10 +805,10 @@ fn main() {
     let status_bar = anyui::View::new();
     status_bar.set_dock(anyui::DOCK_BOTTOM);
     status_bar.set_size(WIN_W, 24);
-    status_bar.set_color(0xFF007ACC);
+    status_bar.set_color(tc.toolbar_bg);
     let status_label = anyui::Label::new("Ready");
     status_label.set_dock(anyui::DOCK_FILL);
-    status_label.set_text_color(0xFFFFFFFF);
+    status_label.set_text_color(tc.text);
     status_label.set_font_size(11);
     status_bar.add(&status_label);
     win.add(&status_bar);
@@ -744,6 +817,7 @@ fn main() {
     let progress = anyui::ProgressBar::new(0);
     progress.set_dock(anyui::DOCK_TOP);
     progress.set_size(WIN_W, 6);
+    progress.set_color(tc.accent);
     progress.set_visible(false);
     win.add(&progress);
 
@@ -785,7 +859,7 @@ fn main() {
     let chart = anyui::Canvas::new(450, 450);
     chart.set_dock(anyui::DOCK_FILL);
     chart.set_interactive(true);
-    chart.clear(0xFF1E1E1E);
+    chart.clear(chart_background());
     split.add(&chart);
 
     win.add(&split);
@@ -801,12 +875,16 @@ fn main() {
             chart_segments: Vec::new(),
             selected_row: -1,
             last_tooltip_node: -1,
-            win, toolbar, btn_back, btn_up, btn_refresh,
+            win, toolbar, path_panel, info_panel, status_bar, btn_back, btn_up, btn_refresh, btn_home,
             lbl_path, lbl_info, status_label,
             grid, mount_grid, chart, split, progress,
+            theme_timer: 0,
+            last_theme_light: anyui::theme::is_light(),
         });
     }
 
+    apply_theme();
+    ensure_theme_timer();
     show_mount_selection();
 
     // ── Callbacks ───────────────────────────────────────────────────────

@@ -93,6 +93,49 @@ pub(crate) fn update_tab_labels() {
     st.tab_bar_view.set_state(st.active_tab as u32);
 }
 
+/// Apply the current theme palette to Surf's chrome controls.
+pub(crate) fn apply_theme() {
+    let st = crate::state();
+    let tc = ui::theme::colors();
+
+    st.toolbar.set_color(tc.toolbar_bg);
+    st.nav_group.set_color(tc.toolbar_bg);
+    st.btn_back
+        .set_system_icon("chevron-left", ui::IconType::Outline, tc.text_secondary, 20);
+    st.btn_forward
+        .set_system_icon("chevron-right", ui::IconType::Outline, tc.text_secondary, 20);
+    st.btn_reload
+        .set_system_icon("refresh", ui::IconType::Outline, tc.text_secondary, 20);
+    st.btn_menu
+        .set_system_icon("menu-2", ui::IconType::Outline, tc.text_secondary, 20);
+    st.url_progress.set_color(tc.accent);
+    st.status_label.set_color(tc.toolbar_bg);
+    st.status_label.set_text_color(tc.text_secondary);
+    st.content_view.set_color(tc.window_bg);
+    st.devtools_label.set_color(tc.input_bg);
+    st.devtools_label.set_text_color(tc.success);
+}
+
+/// Poll for compositor theme changes and re-apply Surf chrome colors.
+pub(crate) fn ensure_theme_timer() {
+    let st = crate::state();
+    if st.theme_timer != 0 {
+        return;
+    }
+
+    st.theme_timer = ui::set_timer(500, || {
+        let st = crate::state();
+        let is_light = ui::theme::is_light();
+        if st.last_theme_light != is_light {
+            st.last_theme_light = is_light;
+            apply_theme();
+            update_tab_labels();
+            update_status();
+            update_devtools();
+        }
+    });
+}
+
 // ═══════════════════════════════════════════════════════════
 // Tab lifecycle
 // ═══════════════════════════════════════════════════════════
