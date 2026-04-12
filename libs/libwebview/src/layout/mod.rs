@@ -2008,12 +2008,18 @@ pub(super) fn layout_children_ex_with_budget(
         // This pre-computes the width to pass into build_block.
         let sizing_width = if abs_style.width.is_none()
             && abs_style.width_pct.is_none()
+            && abs_style.width_calc.is_none()
             && abs_style.left_offset.is_some()
             && abs_style.right_offset.is_some()
         {
             let l = abs_style.left_offset.unwrap_or(0);
             let r = abs_style.right_offset.unwrap_or(0);
             (cb_width - l - r).max(0)
+        } else if abs_style.width.is_none()
+            && abs_style.width_pct.is_none()
+            && abs_style.width_calc.is_none()
+        {
+            shrink_to_fit_width(dom, styles, pseudo, abs_id, cb_width, images, viewport_w)
         } else {
             cb_width
         };

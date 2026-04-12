@@ -181,9 +181,10 @@ pub fn build_block_with_budget(
     );
 
     // ---- Width resolution ----
-    let border2 = bx.border_width * 2;
+    let horizontal_border = bx.border_left_width + bx.border_right_width;
+    let vertical_border = bx.border_top_width + bx.border_bottom_width;
     let is_border_box = matches!(style.box_sizing, BoxSizing::BorderBox);
-    let vertical_non_content = bx.padding.top + bx.padding.bottom + border2;
+    let vertical_non_content = bx.padding.top + bx.padding.bottom + vertical_border;
     let definite_h_for_aspect = if let Some(h) = style.height {
         Some(h)
     } else if let Some(pct) = style.height_pct {
@@ -215,7 +216,7 @@ pub fn build_block_with_budget(
             images,
             viewport_w,
         );
-        let pad_border = bx.padding.left + bx.padding.right + border2;
+        let pad_border = bx.padding.left + bx.padding.right + horizontal_border;
         Some(if is_border_box {
             content_w + pad_border
         } else {
@@ -225,7 +226,7 @@ pub fn build_block_with_budget(
         // min-content: use the minimum (longest unbreakable word).
         let content_w =
             super::intrinsic_min_width(dom, styles, pseudo, node_id, images, viewport_w);
-        let pad_border = bx.padding.left + bx.padding.right + border2;
+        let pad_border = bx.padding.left + bx.padding.right + horizontal_border;
         Some(content_w + pad_border)
     } else if style.width_fit_content {
         // fit-content: min(max-content, max(min-content, available)).
@@ -240,7 +241,7 @@ pub fn build_block_with_budget(
         );
         let min_w = super::intrinsic_min_width(dom, styles, pseudo, node_id, images, viewport_w);
         let avail = available_width - bx.margin.left - bx.margin.right;
-        let pad_border = bx.padding.left + bx.padding.right + border2;
+        let pad_border = bx.padding.left + bx.padding.right + horizontal_border;
         Some(max_w.min(avail - pad_border).max(min_w) + pad_border)
     } else {
         None
@@ -261,12 +262,12 @@ pub fn build_block_with_budget(
     } else if style.aspect_ratio > 0 {
         definite_h_for_aspect.map(|h| {
             let content_h = if is_border_box {
-                (h - bx.padding.top - bx.padding.bottom - border2).max(0)
+                (h - bx.padding.top - bx.padding.bottom - vertical_border).max(0)
             } else {
                 h.max(0)
             };
             let content_w = content_h * style.aspect_ratio / 100;
-            content_w + bx.padding.left + bx.padding.right + border2
+            content_w + bx.padding.left + bx.padding.right + horizontal_border
         })
     } else {
         None
@@ -281,7 +282,7 @@ pub fn build_block_with_budget(
             if is_border_box {
                 bx.width = w;
             } else {
-                bx.width = w + bx.padding.left + bx.padding.right + border2;
+                bx.width = w + bx.padding.left + bx.padding.right + horizontal_border;
             }
         } else {
             bx.width = available_width - bx.margin.left - bx.margin.right;
@@ -306,7 +307,7 @@ pub fn build_block_with_budget(
         let max_outer = if is_border_box {
             max
         } else {
-            max + bx.padding.left + bx.padding.right + border2
+            max + bx.padding.left + bx.padding.right + horizontal_border
         };
         if bx.width > max_outer {
             bx.width = max_outer;
@@ -322,7 +323,7 @@ pub fn build_block_with_budget(
         let min_outer = if is_border_box {
             min
         } else {
-            min + bx.padding.left + bx.padding.right + border2
+            min + bx.padding.left + bx.padding.right + horizontal_border
         };
         if bx.width < min_outer {
             bx.width = min_outer;
@@ -359,7 +360,7 @@ pub fn build_block_with_budget(
     // Handle <hr> specifically.
     if tag == Some(Tag::Hr) {
         bx.is_hr = true;
-        bx.height = 1 + bx.padding.top + bx.padding.bottom + border2;
+        bx.height = 1 + bx.padding.top + bx.padding.bottom + vertical_border;
         if bx.margin.top == 0 && bx.margin.bottom == 0 {
             bx.margin.top = 8;
             bx.margin.bottom = 8;
@@ -378,8 +379,8 @@ pub fn build_block_with_budget(
         bx.object_position_x_is_percent = style.object_position_x_is_percent;
         bx.object_position_y = style.object_position_y;
         bx.object_position_y_is_percent = style.object_position_y_is_percent;
-        bx.height = ih + bx.padding.top + bx.padding.bottom + border2;
-        bx.width = iw + bx.padding.left + bx.padding.right + border2;
+        bx.height = ih + bx.padding.top + bx.padding.bottom + vertical_border;
+        bx.width = iw + bx.padding.left + bx.padding.right + horizontal_border;
         return bx;
     }
 
@@ -409,8 +410,8 @@ pub fn build_block_with_budget(
         bx.object_position_x_is_percent = style.object_position_x_is_percent;
         bx.object_position_y = style.object_position_y;
         bx.object_position_y_is_percent = style.object_position_y_is_percent;
-        bx.height = h + bx.padding.top + bx.padding.bottom + border2;
-        bx.width = w + bx.padding.left + bx.padding.right + border2;
+        bx.height = h + bx.padding.top + bx.padding.bottom + vertical_border;
+        bx.width = w + bx.padding.left + bx.padding.right + horizontal_border;
         return bx;
     }
 
@@ -427,7 +428,7 @@ pub fn build_block_with_budget(
             "checkbox" => {
                 let sz = if let Some(h) = style.height { h } else { 16 };
                 bx.width = if let Some(w) = style.width { w } else { sz };
-                bx.height = sz + bx.padding.top + bx.padding.bottom + border2;
+                bx.height = sz + bx.padding.top + bx.padding.bottom + vertical_border;
                 bx.form_field = Some(FormFieldKind::Checkbox);
                 bx.form_checked = dom.attr(node_id, "checked").is_some();
                 bx.form_disabled = dom.attr(node_id, "disabled").is_some();
@@ -435,35 +436,35 @@ pub fn build_block_with_budget(
             "radio" => {
                 let sz = if let Some(h) = style.height { h } else { 16 };
                 bx.width = if let Some(w) = style.width { w } else { sz };
-                bx.height = sz + bx.padding.top + bx.padding.bottom + border2;
+                bx.height = sz + bx.padding.top + bx.padding.bottom + vertical_border;
                 bx.form_field = Some(FormFieldKind::Radio);
                 bx.form_checked = dom.attr(node_id, "checked").is_some();
                 bx.form_disabled = dom.attr(node_id, "disabled").is_some();
             }
             "submit" | "button" => {
                 let input_h = if let Some(h) = style.height { h } else { 30 };
-                bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
+                bx.height = input_h + bx.padding.top + bx.padding.bottom + vertical_border;
                 bx.form_field = Some(FormFieldKind::Submit);
                 bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
                 bx.text = bx.form_value.clone().or_else(|| Some(String::from("Submit")));
             }
             "reset" => {
                 let input_h = if let Some(h) = style.height { h } else { 30 };
-                bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
+                bx.height = input_h + bx.padding.top + bx.padding.bottom + vertical_border;
                 bx.form_field = Some(FormFieldKind::Reset);
                 bx.form_value = dom.attr(node_id, "value").map(|s| String::from(s));
                 bx.text = bx.form_value.clone().or_else(|| Some(String::from("Reset")));
             }
             "password" => {
                 let input_h = if let Some(h) = style.height { h } else { 28 };
-                bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
+                bx.height = input_h + bx.padding.top + bx.padding.bottom + vertical_border;
                 bx.form_field = Some(FormFieldKind::Password);
                 bx.form_placeholder = dom.attr(node_id, "placeholder").map(|s| String::from(s));
             }
             "range" => {
                 let input_h = if let Some(h) = style.height { h } else { 28 };
                 bx.width = if let Some(w) = style.width { w } else { 200 };
-                bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
+                bx.height = input_h + bx.padding.top + bx.padding.bottom + vertical_border;
                 bx.form_field = Some(FormFieldKind::Range);
                 bx.form_disabled = dom.attr(node_id, "disabled").is_some();
                 // Compute percentage and encode as 0..1000 in form_value.
@@ -497,7 +498,7 @@ pub fn build_block_with_budget(
             }
             _ => {
                 let input_h = if let Some(h) = style.height { h } else { 28 };
-                bx.height = input_h + bx.padding.top + bx.padding.bottom + border2;
+                bx.height = input_h + bx.padding.top + bx.padding.bottom + vertical_border;
                 let kind = match input_type {
                     "number" => FormFieldKind::Number,
                     "color" => FormFieldKind::Color,
@@ -521,7 +522,7 @@ pub fn build_block_with_budget(
     }
     if tag == Some(Tag::Button) && button_uses_native_control(dom, node_id) {
         let btn_h = if let Some(h) = style.height { h } else { 45 };
-        bx.height = btn_h + bx.padding.top + bx.padding.bottom + border2;
+        bx.height = btn_h + bx.padding.top + bx.padding.bottom + vertical_border;
         // Extract button text from children.
         let children = &dom.get(node_id).children;
         for &cid in children {
@@ -552,8 +553,8 @@ pub fn build_block_with_budget(
         } else {
             (rows * 18).max(28)
         };
-        bx.width = ta_w + bx.padding.left + bx.padding.right + border2;
-        bx.height = ta_h + bx.padding.top + bx.padding.bottom + border2;
+        bx.width = ta_w + bx.padding.left + bx.padding.right + horizontal_border;
+        bx.height = ta_h + bx.padding.top + bx.padding.bottom + vertical_border;
         bx.form_field = Some(FormFieldKind::Textarea);
         return bx;
     }
@@ -567,7 +568,7 @@ pub fn build_block_with_budget(
     }
 
     // Inner (content) width for child layout.
-    let inner_w = bx.width - bx.padding.left - bx.padding.right - border2;
+    let inner_w = bx.width - bx.padding.left - bx.padding.right - horizontal_border;
     let inner_w = inner_w.max(0);
     let resolve_height_calc = |calc: (i32, i32)| -> i32 {
         calc.0 / 100 + (parent_height.max(0) as i64 * calc.1 as i64 / 10000) as i32
@@ -836,14 +837,14 @@ pub fn build_block_with_budget(
         if is_border_box {
             bx.height = h;
         } else {
-            bx.height = h + bx.padding.top + bx.padding.bottom + border2;
+            bx.height = h + bx.padding.top + bx.padding.bottom + vertical_border;
         }
     } else if style.aspect_ratio > 0 && bx.width > 0 {
         // aspect-ratio: width / height — compute height from width.
         // aspect_ratio is stored as (w/h) * 100, so height = width * 100 / aspect_ratio.
-        let content_w = bx.width - bx.padding.left - bx.padding.right - border2;
+        let content_w = bx.width - bx.padding.left - bx.padding.right - horizontal_border;
         let ar_h = content_w * 100 / style.aspect_ratio;
-        bx.height = ar_h + bx.padding.top + bx.padding.bottom + border2;
+        bx.height = ar_h + bx.padding.top + bx.padding.bottom + vertical_border;
     } else {
         // content_h from layout_children already includes border_width (top) + padding.top.
         // Add padding.bottom + border_width (bottom) to get the full outer height.
@@ -855,7 +856,7 @@ pub fn build_block_with_budget(
         let max_h = if is_border_box {
             mh
         } else {
-            mh + bx.padding.top + bx.padding.bottom + border2
+            mh + bx.padding.top + bx.padding.bottom + vertical_border
         };
         if bx.height > max_h {
             bx.height = max_h;
@@ -870,7 +871,7 @@ pub fn build_block_with_budget(
         let min_h = if is_border_box {
             min_height_val
         } else {
-            min_height_val + bx.padding.top + bx.padding.bottom + border2
+            min_height_val + bx.padding.top + bx.padding.bottom + vertical_border
         };
         if bx.height < min_h {
             bx.height = min_h;
@@ -883,7 +884,7 @@ pub fn build_block_with_budget(
             Display::Flex | Display::InlineFlex | Display::Grid | Display::InlineGrid
         )
     {
-        apply_block_align_content(&mut bx, style, border2);
+        apply_block_align_content(&mut bx, style, vertical_border);
     }
 
     if matches!(
@@ -1096,7 +1097,7 @@ fn button_uses_native_control(dom: &Dom, node_id: NodeId) -> bool {
     saw_nonempty_text
 }
 
-fn apply_block_align_content(bx: &mut LayoutBox, style: &ComputedStyle, border2: i32) {
+fn apply_block_align_content(bx: &mut LayoutBox, style: &ComputedStyle, vertical_border: i32) {
     let flow_indices: Vec<usize> = bx
         .children
         .iter()
@@ -1122,7 +1123,7 @@ fn apply_block_align_content(bx: &mut LayoutBox, style: &ComputedStyle, border2:
         .unwrap_or(group_top);
     let group_h = (group_bottom - group_top).max(0);
     let content_top = bx.border_width + bx.padding.top;
-    let content_h = (bx.height - bx.padding.top - bx.padding.bottom - border2).max(0);
+    let content_h = (bx.height - bx.padding.top - bx.padding.bottom - vertical_border).max(0);
     let free = content_h - group_h;
     let unsafe_align = !matches!(style.overflow_y, OverflowVal::Visible);
     let offset = match style.align_content {
