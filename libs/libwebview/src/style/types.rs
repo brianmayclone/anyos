@@ -1,6 +1,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::dom::NodeId;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Display {
     Block,
@@ -202,8 +204,8 @@ pub enum AppearanceVal {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ContainerTypeVal {
     Normal,
-    Size,
     InlineSize,
+    Size,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -260,10 +262,10 @@ pub enum AlignContent {
     FlexStart,
     FlexEnd,
     Center,
-    Stretch,
     SpaceBetween,
     SpaceAround,
     SpaceEvenly,
+    Stretch,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -286,13 +288,13 @@ pub enum InlineAxisAlignment {
 
 #[derive(Clone, Copy, Default)]
 pub struct SelectorState {
-    pub hover: bool,
-    pub active: bool,
-    pub focus: bool,
-    pub visited: bool,
+    pub hovered_node: Option<NodeId>,
+    pub active_node: Option<NodeId>,
+    pub focused_node: Option<NodeId>,
+    pub focus_visible_node: Option<NodeId>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum OverflowVal {
     Visible,
     Hidden,
@@ -345,6 +347,8 @@ pub enum ListStyle {
     Decimal,
     LowerAlpha,
     UpperAlpha,
+    LowerLatin,
+    UpperLatin,
     LowerRoman,
     UpperRoman,
 }
@@ -421,19 +425,19 @@ pub enum VerticalAlign {
 
 #[derive(Clone, PartialEq)]
 pub struct BoxShadowVal {
-    pub inset: bool,
     pub offset_x: i32,
     pub offset_y: i32,
-    pub blur_radius: i32,
-    pub spread_radius: i32,
+    pub blur: i32,
+    pub spread: i32,
     pub color: u32,
+    pub inset: bool,
 }
 
 #[derive(Clone, PartialEq)]
 pub struct TextShadowVal {
     pub offset_x: i32,
     pub offset_y: i32,
-    pub blur_radius: i32,
+    pub blur: i32,
     pub color: u32,
 }
 
@@ -467,8 +471,7 @@ pub enum BackgroundImageVal {
 #[derive(Clone, PartialEq)]
 pub struct GradientStop {
     pub color: u32,
-    pub pos: i32,
-    pub has_pos: bool,
+    pub position: i32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -482,9 +485,9 @@ pub enum BackgroundSizeVal {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundRepeatVal {
     Repeat,
+    RepeatX,
+    RepeatY,
     NoRepeat,
-    Round,
-    Space,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -605,6 +608,13 @@ pub struct ComputedStyle {
     pub overflow_x: OverflowVal,
     pub overflow_y: OverflowVal,
     pub scroll_behavior: ScrollBehaviorVal,
+    pub width_pct: Option<i32>,
+    pub height_pct: Option<i32>,
+    pub width_calc: Option<(i32, i32)>,
+    pub height_calc: Option<(i32, i32)>,
+    pub width_max_content: bool,
+    pub width_min_content: bool,
+    pub width_fit_content: bool,
     pub font_family: Option<String>,
     pub letter_spacing: i32,
     pub word_spacing: i32,
@@ -643,6 +653,7 @@ pub struct ComputedStyle {
     pub mask_position_y: i32,
     pub mask_position_y_is_percent: bool,
     pub content: Option<String>,
+    pub content_url: Option<String>,
     pub object_fit: ObjectFit,
     pub object_position_x: i32,
     pub object_position_x_is_percent: bool,
@@ -664,16 +675,8 @@ pub struct ComputedStyle {
     pub tab_size: i32,
     pub clip_path: ClipPathVal,
     pub clip_rect: Option<[i32; 4]>,
-    pub content_url: Option<String>,
     pub counter_reset: Option<String>,
     pub counter_increment: Option<String>,
-    pub width_pct: Option<i32>,
-    pub height_pct: Option<i32>,
-    pub width_max_content: bool,
-    pub width_min_content: bool,
-    pub width_fit_content: bool,
-    pub width_calc: Option<(i32, i32)>,
-    pub height_calc: Option<(i32, i32)>,
     pub transitions: Vec<TransitionDef>,
     pub animations: Vec<AnimationDef>,
     pub pointer_events: PointerEventsVal,
