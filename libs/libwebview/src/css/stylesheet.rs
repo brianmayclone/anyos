@@ -198,8 +198,7 @@ fn lower_at_rule_ast(
 }
 
 fn lower_qualified_rule_ast(node: &CssQualifiedRuleNode, current_layer: Option<&str>) -> Option<Rule> {
-    let mut selector_parser = Parser::new(&node.prelude);
-    let selectors = parse_selector_list(&mut selector_parser);
+    let selectors = lower_selector_list_ast(&parse_selector_list_ast(&node.prelude));
     if selectors.is_empty() {
         return None;
     }
@@ -211,6 +210,45 @@ fn lower_qualified_rule_ast(node: &CssQualifiedRuleNode, current_layer: Option<&
         layer_index: None,
         container_query: None,
     })
+}
+
+fn lower_selector_list_ast(ast: &[CssSelectorAst]) -> Vec<Selector> {
+    let mut out = Vec::new();
+    for sel in ast {
+        if let Some(lowered) = lower_selector_ast(sel) {
+            out.push(lowered);
+        }
+    }
+    out
+}
+
+fn lower_selector_ast(ast: &CssSelectorAst) -> Option<Selector> {
+    let first = lower_simple_selector_ast(&ast.first)?;
+    let mut result = if is_universal(&first) {
+        Selector::Universal
+    } else {
+        Selector::Simple(first)
+    };
+    for (comb, raw) in &ast.rest {
+        let next = lower_simple_selector_ast(raw)?;
+        result = match comb {
+            CssCombinatorAst::Descendant => Selector::Descendant(Box::new(result), next),
+            CssCombinatorAst::Child => Selector::Child(Box::new(result), next),
+            CssCombinatorAst::AdjacentSibling => Selector::AdjacentSibling(Box::new(result), next),
+            CssCombinatorAst::GeneralSibling => Selector::GeneralSibling(Box::new(result), next),
+        };
+    }
+    Some(result)
+}
+
+fn lower_simple_selector_ast(raw: &str) -> Option<SimpleSelector> {
+    let mut p = Parser::new(raw);
+    let simple = parse_simple_selector(&mut p);
+    if raw.trim().is_empty() {
+        None
+    } else {
+        Some(simple)
+    }
 }
 
 fn lower_media_at_rule(

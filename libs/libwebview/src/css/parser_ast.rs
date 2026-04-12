@@ -327,3 +327,205 @@ fn parse_declaration_list_ast(input: &str) -> Vec<CssDeclarationAst> {
 
     decls
 }
+
+fn parse_selector_list_ast(input: &str) -> Vec<CssSelectorAst> {
+    let mut out = Vec::new();
+    let bytes = input.as_bytes();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut paren_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut string_quote = 0u8;
+
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if string_quote != 0 {
+            if ch == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            i += 1;
+            if ch == string_quote {
+                string_quote = 0;
+            }
+            continue;
+        }
+        match ch {
+            b'"' | b'\'' => {
+                string_quote = ch;
+                i += 1;
+            }
+            b'(' => {
+                paren_depth += 1;
+                i += 1;
+            }
+            b')' => {
+                if paren_depth > 0 {
+                    paren_depth -= 1;
+                }
+                i += 1;
+            }
+            b'[' => {
+                bracket_depth += 1;
+                i += 1;
+            }
+            b']' => {
+                if bracket_depth > 0 {
+                    bracket_depth -= 1;
+                }
+                i += 1;
+            }
+            b',' if paren_depth == 0 && bracket_depth == 0 => {
+                if let Some(sel) = parse_selector_ast(input[start..i].trim()) {
+                    out.push(sel);
+                }
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+
+    if start < bytes.len() {
+        if let Some(sel) = parse_selector_ast(input[start..].trim()) {
+            out.push(sel);
+        }
+    }
+
+    out
+}
+
+fn parse_selector_ast(input: &str) -> Option<CssSelectorAst> {
+    if input.is_empty() {
+        return None;
+    }
+    let bytes = input.as_bytes();
+    let mut parts: Vec<(Option<CssCombinatorAst>, String)> = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut paren_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut string_quote = 0u8;
+    let mut pending_space = false;
+
+    while i < bytes.len() {
+        let ch = bytes[i];
+        if string_quote != 0 {
+            if ch == b'\\' {
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            i += 1;
+            if ch == string_quote {
+                string_quote = 0;
+            }
+            continue;
+        }
+
+        match ch {
+            b'"' | b'\'' => {
+                string_quote = ch;
+                i += 1;
+            }
+            b'(' => {
+                paren_depth += 1;
+                i += 1;
+            }
+            b')' => {
+                if paren_depth > 0 {
+                    paren_depth -= 1;
+                }
+                i += 1;
+            }
+            b'[' => {
+                bracket_depth += 1;
+                i += 1;
+            }
+            b']' => {
+                if bracket_depth > 0 {
+                    bracket_depth -= 1;
+                }
+                i += 1;
+            }
+            b'>' | b'+' | b'~' if paren_depth == 0 && bracket_depth == 0 => {
+                let raw = input[start..i].trim();
+                if !raw.is_empty() {
+                    let combinator = if parts.is_empty() {
+                        None
+                    } else if pending_space {
+                        Some(CssCombinatorAst::Descendant)
+                    } else {
+                        None
+                    };
+                    parts.push((combinator, String::from(raw)));
+                }
+                let comb = match ch {
+                    b'>' => CssCombinatorAst::Child,
+                    b'+' => CssCombinatorAst::AdjacentSibling,
+                    _ => CssCombinatorAst::GeneralSibling,
+                };
+                i += 1;
+                while i < bytes.len()
+                    && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r')
+                {
+                    i += 1;
+                }
+                start = i;
+                pending_space = false;
+                if !parts.is_empty() {
+                    parts.push((Some(comb), String::new()));
+                }
+            }
+            b' ' | b'\t' | b'\n' | b'\r' if paren_depth == 0 && bracket_depth == 0 => {
+                let raw = input[start..i].trim();
+                if !raw.is_empty() {
+                    let combinator = if parts.is_empty() { None } else { Some(CssCombinatorAst::Descendant) };
+                    parts.push((combinator, String::from(raw)));
+                }
+                i += 1;
+                while i < bytes.len()
+                    && (bytes[i] == b' ' || bytes[i] == b'\t' || bytes[i] == b'\n' || bytes[i] == b'\r')
+                {
+                    i += 1;
+                }
+                start = i;
+                pending_space = true;
+            }
+            _ => i += 1,
+        }
+    }
+
+    let raw = input[start..].trim();
+    if !raw.is_empty() {
+        let combinator = if parts.is_empty() {
+            None
+        } else if let Some((Some(comb), last)) = parts.last() {
+            if last.is_empty() { Some(comb.clone()) } else { Some(CssCombinatorAst::Descendant) }
+        } else if pending_space {
+            Some(CssCombinatorAst::Descendant)
+        } else {
+            None
+        };
+
+        if let Some((_, last)) = parts.last_mut() {
+            if last.is_empty() {
+                *last = String::from(raw);
+            } else {
+                parts.push((combinator, String::from(raw)));
+            }
+        } else {
+            parts.push((None, String::from(raw)));
+        }
+    }
+
+    let mut iter = parts.into_iter();
+    let (_, first) = iter.next()?;
+    let mut rest = Vec::new();
+    for (comb, raw) in iter {
+        if raw.is_empty() {
+            continue;
+        }
+        rest.push((comb.unwrap_or(CssCombinatorAst::Descendant), raw));
+    }
+    Some(CssSelectorAst { first, rest })
+}

@@ -34,3 +34,17 @@ struct CssDeclarationAst {
     value: String,
     important: bool,
 }
+
+#[derive(Clone, Debug)]
+enum CssCombinatorAst {
+    Descendant,
+    Child,
+    AdjacentSibling,
+    GeneralSibling,
+}
+
+#[derive(Clone, Debug)]
+struct CssSelectorAst {
+    first: String,
+    rest: Vec<(CssCombinatorAst, String)>,
+}
