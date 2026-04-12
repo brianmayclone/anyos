@@ -50,6 +50,8 @@ pub enum UintTy { U8, U16, U32, U64, U128, Usize }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FloatTy { F32, F64 }
 
+const SYNTH_PARSED_ARGS_DEF_ID: DefId = DefId(0x7000_0001);
+
 pub struct TypeckResult {
     pub expr_types: HashMap<HirId, TyKind>,
     pub struct_defs: HashMap<DefId, Vec<(Symbol, TyKind)>>,
@@ -187,6 +189,55 @@ impl<'a> TypeChecker<'a> {
         self.errors.push(Diagnostic::new(Level::Error, msg, span));
     }
 
+    fn bootstrap_stdlib_shims(&mut self) {
+        if let Some(sym) = self.interner.lookup("ParsedArgs") {
+            self.type_name_to_def.insert(sym, SYNTH_PARSED_ARGS_DEF_ID);
+        }
+
+        let mut fields = Vec::new();
+        if let Some(sym) = self.interner.lookup("positional") {
+            fields.push((
+                sym,
+                TyKind::Array(
+                    Box::new(TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable)),
+                    32,
+                ),
+            ));
+        }
+        if let Some(sym) = self.interner.lookup("pos_count") {
+            fields.push((sym, TyKind::Uint(UintTy::Usize)));
+        }
+        if !fields.is_empty() {
+            self.struct_defs.insert(SYNTH_PARSED_ARGS_DEF_ID, fields);
+        }
+    }
+
+    fn parsed_args_ty(&self) -> TyKind {
+        TyKind::Adt(SYNTH_PARSED_ARGS_DEF_ID, vec![])
+    }
+
+    fn intrinsic_call_return_type(&mut self, path_str: &str) -> Option<TyKind> {
+        match path_str {
+            "anyos_std::process::args" | "args" => {
+                Some(TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable))
+            }
+            "anyos_std::args::parse" => Some(self.parsed_args_ty()),
+            "u8::from_le_bytes" => Some(TyKind::Uint(UintTy::U8)),
+            "u16::from_le_bytes" => Some(TyKind::Uint(UintTy::U16)),
+            "u32::from_le_bytes" => Some(TyKind::Uint(UintTy::U32)),
+            "u64::from_le_bytes" => Some(TyKind::Uint(UintTy::U64)),
+            "u128::from_le_bytes" => Some(TyKind::Uint(UintTy::U128)),
+            "usize::from_le_bytes" => Some(TyKind::Uint(UintTy::Usize)),
+            "i8::from_le_bytes" => Some(TyKind::Int(IntTy::I8)),
+            "i16::from_le_bytes" => Some(TyKind::Int(IntTy::I16)),
+            "i32::from_le_bytes" => Some(TyKind::Int(IntTy::I32)),
+            "i64::from_le_bytes" => Some(TyKind::Int(IntTy::I64)),
+            "i128::from_le_bytes" => Some(TyKind::Int(IntTy::I128)),
+            "isize::from_le_bytes" => Some(TyKind::Int(IntTy::Isize)),
+            _ => self.intrinsic_constructor_type(path_str),
+        }
+    }
+
     pub fn check_crate(&mut self, krate: &HirCrate) -> TypeckResult {
         // Register intrinsic types (AtomicBool, etc.) so they can be used as type annotations.
         // We find symbols by scanning resolutions that point to intrinsic type DefIds.
@@ -215,6 +266,8 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+
+        self.bootstrap_stdlib_shims();
 
         // Pass 1: collect signatures
         for item in &krate.items {
@@ -675,7 +728,7 @@ impl<'a> TypeChecker<'a> {
                         // Intrinsic functions: accept any args
                         if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(&def_id).cloned() {
                             for a in args { self.check_expr(a); }
-                            if let Some(ty) = self.intrinsic_constructor_type(&intrinsic_path) {
+                            if let Some(ty) = self.intrinsic_call_return_type(&intrinsic_path) {
                                 return ty;
                             }
                             // For Type::new() constructors, return the type as Adt
@@ -889,9 +942,32 @@ impl<'a> TypeChecker<'a> {
 
             HirExprKind::Index(base, idx) => {
                 let base_ty = self.check_expr(base);
-                self.check_expr(idx);
-                match self.shallow_resolve(base_ty) {
-                    TyKind::Array(elem, _) | TyKind::Slice(elem) => *elem,
+                let idx_ty = self.check_expr(idx);
+                let resolved = self.shallow_resolve(base_ty);
+                let resolved = match resolved {
+                    TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
+                    other => other,
+                };
+                let is_range = matches!(idx.kind, HirExprKind::Range(_, _, _));
+                if !is_range {
+                    self.unify(&TyKind::Uint(UintTy::Usize), &idx_ty, idx.span);
+                }
+                match resolved {
+                    TyKind::Array(elem, _) | TyKind::Slice(elem) => {
+                        if is_range {
+                            TyKind::Slice(elem)
+                        } else {
+                            *elem
+                        }
+                    }
+                    TyKind::Str => {
+                        if is_range {
+                            TyKind::Str
+                        } else {
+                            self.error(expr.span, "cannot index this type");
+                            TyKind::Error
+                        }
+                    }
                     _ => {
                         self.error(expr.span, "cannot index this type");
                         TyKind::Error
@@ -946,6 +1022,41 @@ impl<'a> TypeChecker<'a> {
                 if method_str == "len" && args.is_empty() {
                     if matches!(&inner_ty, TyKind::Array(_, _) | TyKind::Slice(_)) {
                         return TyKind::Uint(UintTy::Usize);
+                    }
+                }
+
+                if matches!(&inner_ty, TyKind::Adt(def_id, _) if *def_id == SYNTH_PARSED_ARGS_DEF_ID) {
+                    match method_str {
+                        "has" if args.len() == 1 => return TyKind::Bool,
+                        "opt" if args.len() == 1 => {
+                            let opt_sym = self.interner.lookup("Option");
+                            if let Some(sym) = opt_sym {
+                                if let Some(&def_id) = self.type_name_to_def.get(&sym) {
+                                    return TyKind::Adt(
+                                        def_id,
+                                        vec![TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable)],
+                                    );
+                                }
+                            }
+                            return self.fresh_infer(InferKind::General);
+                        }
+                        "first_or" if args.len() == 1 => {
+                            return TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable);
+                        }
+                        "pos" if args.len() == 1 => {
+                            let opt_sym = self.interner.lookup("Option");
+                            if let Some(sym) = opt_sym {
+                                if let Some(&def_id) = self.type_name_to_def.get(&sym) {
+                                    return TyKind::Adt(
+                                        def_id,
+                                        vec![TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable)],
+                                    );
+                                }
+                            }
+                            return self.fresh_infer(InferKind::General);
+                        }
+                        "opt_u32" if args.len() == 2 => return TyKind::Uint(UintTy::U32),
+                        _ => {}
                     }
                 }
 

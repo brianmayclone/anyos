@@ -239,6 +239,46 @@ fn loop_with_prev_and_post_loop_store_compiles() {
 }
 
 #[test]
+fn anyos_std_args_parse_fields_and_methods_compile() {
+    compile_ok(
+        "anyos_std_args_parse_fields_and_methods",
+        r#"
+        fn main() {
+            let mut buf = [0u8; 256];
+            let raw = anyos_std::process::args(&mut buf);
+            let args = anyos_std::args::parse(raw, b"n");
+
+            if args.pos_count > 0 {
+                let _first = args.positional[0];
+            }
+
+            let _ = args.has(b'h');
+            let _ = args.opt(b'n');
+            let _ = args.opt_u32(b'n', 10);
+            let _ = args.first_or("");
+            let _ = args.pos(0);
+        }
+        "#,
+    );
+}
+
+#[test]
+fn integer_indexing_and_from_le_bytes_compile() {
+    compile_ok(
+        "integer_indexing_and_from_le_bytes",
+        r#"
+        fn read_u32(buf: &[u8; 4]) -> u32 {
+            u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
+        }
+
+        fn pick(slice: &[u8]) -> u8 {
+            slice[0]
+        }
+        "#,
+    );
+}
+
+#[test]
 fn raw_ptr_prev_assignment_then_field_store_compiles() {
     compile_ok(
         "raw_ptr_prev_assignment_then_field_store",
