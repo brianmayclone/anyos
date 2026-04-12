@@ -4271,7 +4271,7 @@ ul, ol { margin: 16px 0; padding-left: 40px; }
 li { margin: 4px 0; }
 a { color: #0066cc; text-decoration: underline; }
 pre, code { font-family: monospace; }
-pre { margin: 16px 0; padding: 8px; background: #f5f5f5; }
+pre { margin: 0; }
 blockquote { margin: 16px 0; padding-left: 16px; border-left: 4px solid #ddd; }
 hr { margin: 16px 0; border: none; border-top: 1px solid #ccc; }
 table { border-collapse: collapse; }

@@ -40,6 +40,8 @@ pub(crate) fn management_loop(
     let mut mgmt_sys: u32 = 0;
     let mut mgmt_idle: u32 = 0;
     let mut mgmt_last_report: u32 = sys::uptime_ms();
+    let mut last_reap_ms: u32 = 0;
+    const REAP_INTERVAL_MS: u32 = 250;
 
     loop {
         let now_ms = sys::uptime_ms();
@@ -180,6 +182,17 @@ pub(crate) fn management_loop(
 
         let had_ipc = handle_ipc_commands(compositor_channel, compositor_sub, &mut ipc_buf);
         let had_sys = handle_system_events(compositor_channel, sys_sub);
+        let should_reap = now_ms.wrapping_sub(last_reap_ms) >= REAP_INTERVAL_MS;
+        let reaped_tids = if should_reap {
+            last_reap_ms = now_ms;
+            acquire_lock();
+            let desktop = unsafe { desktop_ref() };
+            let exited = desktop.reap_exited_processes();
+            release_lock();
+            exited
+        } else {
+            Vec::new()
+        };
 
         if had_ipc {
             mgmt_ipc += 1;
@@ -187,11 +200,20 @@ pub(crate) fn management_loop(
         if had_sys {
             mgmt_sys += 1;
         }
-        if event_count == 0 && !had_ipc && !had_sys {
+        if !reaped_tids.is_empty() {
+            mgmt_sys += 1;
+            for tid in &reaped_tids {
+                ipc::evt_chan_emit(
+                    compositor_channel,
+                    &[crate::ipc_protocol::EVT_WINDOW_CLOSED, *tid, 0, 0, 0],
+                );
+            }
+        }
+        if event_count == 0 && !had_ipc && !had_sys && reaped_tids.is_empty() {
             mgmt_idle += 1;
         }
 
-        if had_ipc || had_sys {
+        if had_ipc || had_sys || !reaped_tids.is_empty() {
             signal_render();
         }
 
@@ -212,7 +234,7 @@ pub(crate) fn management_loop(
             }
         }
 
-        let had_work = event_count > 0 || had_ipc || had_sys;
+        let had_work = event_count > 0 || had_ipc || had_sys || !reaped_tids.is_empty();
         if had_work {
             let ipc_events = {
                 acquire_lock();

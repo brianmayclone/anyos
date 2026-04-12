@@ -1069,6 +1069,65 @@ fn debug_dump_text_runs(bx: &libwebview::LayoutBox, depth: usize) {
     }
 }
 
+fn debug_dump_boxes(
+    dom: &libwebview::dom::Dom,
+    bx: &libwebview::LayoutBox,
+    depth: usize,
+    abs_x: i32,
+    abs_y: i32,
+) {
+    let cur_abs_x = if bx.is_fixed { bx.x } else { abs_x + bx.x };
+    let cur_abs_y = if bx.is_fixed { bx.y } else { abs_y + bx.y };
+    if bx.bg_color != 0 || bx.node_id.is_some() {
+        let (tag, class_attr) = if let Some(node_id) = bx.node_id {
+            let node = dom.get(node_id);
+            let tag = match &node.node_type {
+                NodeType::Element { .. } => String::from("Element"),
+                NodeType::Text(_) => String::from("#text"),
+                _ => String::from("?"),
+            };
+            let class_attr = dom.attr(node_id, "class").unwrap_or("");
+            (tag, class_attr.to_string())
+        } else {
+            (String::from("-"), String::new())
+        };
+        eprintln!(
+            "[surf-host] box depth={} node={:?} tag={} class={:?} rel=({}, {}) abs=({}, {}) size=({}, {}) margin=({}, {}, {}, {}) bg=0x{:08x}",
+            depth,
+            bx.node_id,
+            tag,
+            class_attr,
+            bx.x,
+            bx.y,
+            cur_abs_x,
+            cur_abs_y,
+            bx.width,
+            bx.height,
+            bx.margin.top,
+            bx.margin.right,
+            bx.margin.bottom,
+            bx.margin.left,
+            bx.bg_color
+        );
+    }
+    for child in &bx.children {
+        debug_dump_boxes(dom, child, depth + 1, cur_abs_x, cur_abs_y);
+    }
+}
+
+fn debug_dump_pre_text(dom: &libwebview::dom::Dom) {
+    for (node_id, node) in dom.nodes.iter().enumerate() {
+        if matches!(node.node_type, NodeType::Element { tag: Tag::Pre, .. }) {
+            eprintln!("[surf-host] pre node {}", node_id);
+            for &child_id in &node.children {
+                if let NodeType::Text(text) = &dom.get(child_id).node_type {
+                    eprintln!("[surf-host] pre text child {} {:?}", child_id, text);
+                }
+            }
+        }
+    }
+}
+
 /// Load all external resources by walking the parsed DOM tree.
 /// This mirrors the logic in apps/surf/src/resources.rs.
 fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
@@ -1216,6 +1275,16 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
     if std::env::var_os("SURF_DEBUG_LAYOUT_TEXT").is_some() {
         if let Some(root) = wv.layout_root_ref() {
             debug_dump_text_runs(root, 0);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_LAYOUT_BOXES").is_some() {
+        if let (Some(root), Some(dom)) = (wv.layout_root_ref(), wv.dom()) {
+            debug_dump_boxes(dom, root, 0, 0, 0);
+        }
+    }
+    if std::env::var_os("SURF_DEBUG_PRE_TEXT").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_pre_text(dom);
         }
     }
 }

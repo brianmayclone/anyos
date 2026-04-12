@@ -37,6 +37,18 @@ fn inline_box_has_visuals(style: &ComputedStyle) -> bool {
         || style.border_left.width > 0
 }
 
+fn is_inside_pre(dom: &Dom, node_id: NodeId) -> bool {
+    let mut cur = Some(node_id);
+    while let Some(id) = cur {
+        let node = dom.get(id);
+        if matches!(&node.node_type, NodeType::Element { tag: Tag::Pre, .. }) {
+            return true;
+        }
+        cur = node.parent;
+    }
+    false
+}
+
 fn build_empty_inline_visual_box(node_id: NodeId, style: &ComputedStyle) -> LayoutBox {
     let mut bx = LayoutBox::new(Some(node_id), BoxType::Inline);
     bx.color = style.color;
@@ -493,7 +505,11 @@ fn collect_inline_fragments(
                 .and_then(|family| crate::lookup_web_font(family))
                 .unwrap_or(0);
             let start_idx = out.len();
-            if style.white_space == WhiteSpace::Pre || style.white_space == WhiteSpace::PreWrap {
+            let preserve_pre_ws =
+                style.white_space == WhiteSpace::Pre
+                    || style.white_space == WhiteSpace::PreWrap
+                    || is_inside_pre(dom, node_id);
+            if preserve_pre_ws {
                 emit_preformatted_fragments(
                     &transformed,
                     fs,

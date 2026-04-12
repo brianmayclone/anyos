@@ -4,6 +4,7 @@ use alloc::collections::VecDeque;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::println;
+use anyos_std::process;
 
 use crate::compositor::Rect;
 
@@ -635,6 +636,36 @@ impl Desktop {
             self.destroy_window(id);
         }
         self.app_subs.retain(|(t, _)| *t != tid);
+    }
+
+    /// Safety net for crashed apps: remove windows/subscriptions whose owner TID no longer exists.
+    pub fn reap_exited_processes(&mut self) -> Vec<u32> {
+        let mut candidate_tids: Vec<u32> = Vec::new();
+        for win in &self.windows {
+            if win.owner_tid != 0 && !candidate_tids.contains(&win.owner_tid) {
+                candidate_tids.push(win.owner_tid);
+            }
+        }
+        for &(tid, _) in &self.app_subs {
+            if tid != 0 && !candidate_tids.contains(&tid) {
+                candidate_tids.push(tid);
+            }
+        }
+
+        let mut exited_tids: Vec<u32> = Vec::new();
+        for tid in candidate_tids {
+            let status = process::try_waitpid(tid);
+            if status != process::STILL_RUNNING && status != process::STOPPED {
+                exited_tids.push(tid);
+            }
+        }
+
+        for &tid in &exited_tids {
+            println!("compositor: reaping dead app tid={}", tid);
+            self.on_process_exit(tid);
+        }
+
+        exited_tids
     }
 
     /// Called when system theme changes — re-render all window chrome and menubar.

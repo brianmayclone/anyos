@@ -812,6 +812,22 @@ fn in_pre(dom: &Dom, stack: &[NodeId]) -> bool {
         || stack_has(dom, stack, Tag::Style)
 }
 
+fn strip_initial_pre_newline(dom: &Dom, parent: NodeId, text: String) -> String {
+    if !matches!(&dom.get(parent).node_type, NodeType::Element { tag: Tag::Pre, .. }) {
+        return text;
+    }
+    if !dom.get(parent).children.is_empty() {
+        return text;
+    }
+    if let Some(stripped) = text.strip_prefix("\r\n") {
+        return String::from(stripped);
+    }
+    if let Some(stripped) = text.strip_prefix('\n') {
+        return String::from(stripped);
+    }
+    text
+}
+
 pub fn parse(html: &str) -> Dom {
     let tokens = tokenize(html);
     crate::debug_surf!("[html] tree build start: {} tokens", tokens.len());
@@ -1134,17 +1150,20 @@ pub fn parse(html: &str) -> Dom {
                     continue;
                 }
 
-                let processed = if in_pre(&dom, &stack) {
+                let mut processed = if in_pre(&dom, &stack) {
                     text
                 } else {
                     collapse_whitespace(&text)
                 };
-
                 if processed.is_empty() {
                     continue;
                 }
 
                 let parent = stack.last().copied().unwrap_or(root);
+                processed = strip_initial_pre_newline(&dom, parent, processed);
+                if processed.is_empty() {
+                    continue;
+                }
                 let is_ws =
                     processed.bytes().all(|b| b == b' ' || b == b'\t' || b == b'\n' || b == b'\r');
 
@@ -1304,7 +1323,7 @@ pub fn parse_fragment(html: &str) -> Dom {
                 if text.is_empty() {
                     continue;
                 }
-                let processed = if in_pre(&dom, &stack) {
+                let mut processed = if in_pre(&dom, &stack) {
                     text
                 } else {
                     collapse_whitespace(&text)
@@ -1313,6 +1332,10 @@ pub fn parse_fragment(html: &str) -> Dom {
                     continue;
                 }
                 let parent = stack.last().copied().unwrap_or(root);
+                processed = strip_initial_pre_newline(&dom, parent, processed);
+                if processed.is_empty() {
+                    continue;
+                }
                 dom.add_node(NodeType::Text(processed), Some(parent));
             }
         }
