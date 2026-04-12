@@ -30,10 +30,10 @@ const TX_DESC_MAP_SIZE: usize = NUM_BUFFERS;
 const INVALID_TX_SLOT: u16 = u16::MAX;
 
 /// Max Ethernet frame size + VirtIO net header.
-const RX_BUF_SIZE: usize = 1526 + 12; // MTU 1500 + Ethernet overhead + virtio-net header
+const RX_BUF_SIZE: usize = 1526 + 10; // MTU 1500 + Ethernet overhead + virtio-net header
 
-/// VirtIO net header size (without mergeable buffers).
-const VIRTIO_NET_HDR_SIZE: usize = 12;
+/// VirtIO net header size without VIRTIO_NET_F_MRG_RXBUF.
+const VIRTIO_NET_HDR_SIZE: usize = 10;
 
 /// Feature: device has given MAC address.
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;
@@ -236,6 +236,7 @@ fn virtio_net_irq_handler(_irq: u8) {
     let mut has_rx = false;
     if let Some(mut state) = STATE.try_lock() {
         if let Some(net) = state.as_mut() {
+            net.reap_tx_completions();
             net.poll_rx();
             has_rx = !net.rx_queue.is_empty();
         }
