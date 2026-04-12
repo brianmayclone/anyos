@@ -67,7 +67,11 @@ pub fn build_block_with_budget(
 
     let mut bx = LayoutBox::new(Some(node_id), BoxType::Block);
     bx.color = style.color;
-    bx.bg_color = style.background_color;
+    bx.bg_color = if style.background_color_is_current {
+        style.color
+    } else {
+        style.background_color
+    };
     bx.accent_color = style.accent_color;
     bx.uses_dark_color_scheme = style.color_scheme == crate::style::ColorSchemeVal::Dark;
     bx.appearance_none = style.appearance == crate::style::AppearanceVal::None;
@@ -1196,7 +1200,11 @@ pub(super) fn build_pseudo_element_box(
         // Build a block-level pseudo-element box.
         let mut pb = LayoutBox::new(None, BoxType::Block);
         pb.color = ps.color;
-        pb.bg_color = ps.background_color;
+        pb.bg_color = if ps.background_color_is_current {
+            ps.color
+        } else {
+            ps.background_color
+        };
         pb.font_size = fs;
         pb.bold = bold;
         pb.italic = italic;

@@ -600,6 +600,7 @@ pub struct ComputedStyle {
     pub display: Display,
     pub color: u32,            // 0xAARRGGBB
     pub background_color: u32, // 0xAARRGGBB (0 = transparent)
+    pub background_color_is_current: bool,
     pub accent_color: u32,     // 0 = auto/current platform accent
     pub font_size: i32,        // pixels
     pub font_weight: FontWeight,
@@ -884,6 +885,7 @@ pub fn default_style() -> ComputedStyle {
         display: Display::Block,
         color: 0xFF000000,
         background_color: 0,
+        background_color_is_current: false,
         accent_color: 0,
         font_size: 16,
         font_weight: FontWeight::Normal,
@@ -1688,6 +1690,79 @@ fn apply_pseudo_rule_matches(
                     apply_declaration(ps, decl, parent_fs, root_fs);
                 }
             }
+        }
+    }
+}
+
+fn apply_decl_with_vars(
+    style: &mut ComputedStyle,
+    decl: &Declaration,
+    dom: &Dom,
+    node_id: usize,
+    node_cp: &mut Vec<(String, String)>,
+    ancestors_cp: &[Vec<(String, String)>],
+    parent_fs: i32,
+    root_fs: i32,
+    set_flags: &mut u32,
+) {
+    if let Property::CustomProperty(ref name) = decl.property {
+        if let CssValue::Keyword(ref val) = decl.value {
+            store_custom_prop(node_cp, name, val);
+        }
+    } else if let CssValue::Var(_, _) = &decl.value {
+        let resolved = resolve_var_in_decl(decl, dom, node_id, node_cp, ancestors_cp);
+        *set_flags |= decl_set_flag(&resolved.property);
+        apply_declaration(style, &resolved, parent_fs, root_fs);
+    } else if has_nested_var(decl) {
+        let resolved = resolve_nested_var_decl(decl, dom, node_id, node_cp, ancestors_cp);
+        *set_flags |= decl_set_flag(&resolved.property);
+        apply_declaration(style, &resolved, parent_fs, root_fs);
+    } else {
+        *set_flags |= decl_set_flag(&decl.property);
+        apply_declaration(style, decl, parent_fs, root_fs);
+    }
+}
+
+fn apply_decls_two_pass(
+    style: &mut ComputedStyle,
+    declarations: &[Declaration],
+    important: bool,
+    dom: &Dom,
+    node_id: usize,
+    node_cp: &mut Vec<(String, String)>,
+    ancestors_cp: &[Vec<(String, String)>],
+    parent_fs: i32,
+    root_fs: i32,
+    set_flags: &mut u32,
+) {
+    for decl in declarations {
+        if decl.important == important && matches!(decl.property, Property::FontSize) {
+            apply_decl_with_vars(
+                style,
+                decl,
+                dom,
+                node_id,
+                node_cp,
+                ancestors_cp,
+                parent_fs,
+                root_fs,
+                set_flags,
+            );
+        }
+    }
+    for decl in declarations {
+        if decl.important == important && !matches!(decl.property, Property::FontSize) {
+            apply_decl_with_vars(
+                style,
+                decl,
+                dom,
+                node_id,
+                node_cp,
+                ancestors_cp,
+                parent_fs,
+                root_fs,
+                set_flags,
+            );
         }
     }
 }
@@ -2892,27 +2967,30 @@ fn resolve_styles_prepared_impl(
                                 Some(crate::css::parse_inline_style(&a.value));
                         }
                         let inline_decls = inline_style_cache[id].as_ref().unwrap();
-
-                        for decl in inline_decls {
-                            if let Property::CustomProperty(ref name) = decl.property {
-                                if let CssValue::Keyword(ref val) = decl.value {
-                                    store_custom_prop(node_cp, name, val);
-                                }
-                            } else if let CssValue::Var(_, _) = &decl.value {
-                                let resolved =
-                                    resolve_var_in_decl(decl, dom, id, node_cp, ancestors_cp);
-                                set_flags |= decl_set_flag(&resolved.property);
-                                apply_declaration(&mut style, &resolved, parent_fs, root_font_size);
-                            } else if has_nested_var(decl) {
-                                let resolved =
-                                    resolve_nested_var_decl(decl, dom, id, node_cp, ancestors_cp);
-                                set_flags |= decl_set_flag(&resolved.property);
-                                apply_declaration(&mut style, &resolved, parent_fs, root_font_size);
-                            } else {
-                                set_flags |= decl_set_flag(&decl.property);
-                                apply_declaration(&mut style, decl, parent_fs, root_font_size);
-                            }
-                        }
+                        apply_decls_two_pass(
+                            &mut style,
+                            inline_decls,
+                            false,
+                            dom,
+                            id,
+                            node_cp,
+                            ancestors_cp,
+                            parent_fs,
+                            root_font_size,
+                            &mut set_flags,
+                        );
+                        apply_decls_two_pass(
+                            &mut style,
+                            inline_decls,
+                            true,
+                            dom,
+                            id,
+                            node_cp,
+                            ancestors_cp,
+                            parent_fs,
+                            root_font_size,
+                            &mut set_flags,
+                        );
                         break;
                     }
                 }
@@ -3153,54 +3231,36 @@ fn apply_author_rules(
     sort_matches_for_phase(matches, all_rules, false, layer_count);
     for &(_, idx) in matches.iter() {
         let (rule, _) = all_rules[idx];
-        for decl in &rule.declarations {
-            if !decl.important {
-                if let Property::CustomProperty(ref name) = decl.property {
-                    if let CssValue::Keyword(ref val) = decl.value {
-                        store_custom_prop(node_cp, name, val);
-                    }
-                } else if let CssValue::Var(_, _) = &decl.value {
-                    let resolved = resolve_var_in_decl(decl, dom, node_id, node_cp, ancestors_cp);
-                    set_flags |= decl_set_flag(&resolved.property);
-                    apply_declaration(style, &resolved, parent_fs, root_fs);
-                } else if has_nested_var(decl) {
-                    let resolved =
-                        resolve_nested_var_decl(decl, dom, node_id, node_cp, ancestors_cp);
-                    set_flags |= decl_set_flag(&resolved.property);
-                    apply_declaration(style, &resolved, parent_fs, root_fs);
-                } else {
-                    set_flags |= decl_set_flag(&decl.property);
-                    apply_declaration(style, decl, parent_fs, root_fs);
-                }
-            }
-        }
+        apply_decls_two_pass(
+            style,
+            &rule.declarations,
+            false,
+            dom,
+            node_id,
+            node_cp,
+            ancestors_cp,
+            parent_fs,
+            root_fs,
+            &mut set_flags,
+        );
     }
 
     // Phase 2: Apply !important declarations (override normal ones).
     sort_matches_for_phase(matches, all_rules, true, layer_count);
     for &(_, idx) in matches.iter() {
         let (rule, _) = all_rules[idx];
-        for decl in &rule.declarations {
-            if decl.important {
-                if let Property::CustomProperty(ref name) = decl.property {
-                    if let CssValue::Keyword(ref val) = decl.value {
-                        store_custom_prop(node_cp, name, val);
-                    }
-                } else if let CssValue::Var(_, _) = &decl.value {
-                    let resolved = resolve_var_in_decl(decl, dom, node_id, node_cp, ancestors_cp);
-                    set_flags |= decl_set_flag(&resolved.property);
-                    apply_declaration(style, &resolved, parent_fs, root_fs);
-                } else if has_nested_var(decl) {
-                    let resolved =
-                        resolve_nested_var_decl(decl, dom, node_id, node_cp, ancestors_cp);
-                    set_flags |= decl_set_flag(&resolved.property);
-                    apply_declaration(style, &resolved, parent_fs, root_fs);
-                } else {
-                    set_flags |= decl_set_flag(&decl.property);
-                    apply_declaration(style, decl, parent_fs, root_fs);
-                }
-            }
-        }
+        apply_decls_two_pass(
+            style,
+            &rule.declarations,
+            true,
+            dom,
+            node_id,
+            node_cp,
+            ancestors_cp,
+            parent_fs,
+            root_fs,
+            &mut set_flags,
+        );
     }
 
     set_flags
@@ -3628,17 +3688,15 @@ pub fn apply_declaration(
             match decl.value {
                 CssValue::Color(c) => {
                     style.background_color = c;
+                    style.background_color_is_current = false;
                 }
                 CssValue::None => {
                     style.background_color = 0x00000000;
+                    style.background_color_is_current = false;
                 }
                 CssValue::CurrentColor => {
-                    // currentColor → use this element's computed color property.
-                    style.background_color = if style.color != 0 {
-                        style.color
-                    } else {
-                        0xFF000000
-                    };
+                    style.background_color_is_current = true;
+                    style.background_color = style.color;
                 }
                 _ => {}
             }
@@ -3656,7 +3714,12 @@ pub fn apply_declaration(
             _ => {}
         },
         Property::FontSize => {
-            if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+            if let CssValue::Percentage(v) = decl.value {
+                let px = (parent_fs as i64 * v as i64 / 10000) as i32;
+                if px > 0 {
+                    style.font_size = px;
+                }
+            } else if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
                 if px > 0 {
                     style.font_size = px;
                 }
@@ -3782,7 +3845,7 @@ pub fn apply_declaration(
                         style.width_calc = Option::None;
                     }
                     _ => {
-                        if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                        if let Some(px) = resolve_length(&decl.value, style.font_size, root_fs) {
                             style.width = Some(px);
                             style.width_pct = Option::None;
                             style.width_calc = Option::None;
@@ -3790,7 +3853,7 @@ pub fn apply_declaration(
                     }
                 },
                 _ => {
-                    if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                    if let Some(px) = resolve_length(&decl.value, style.font_size, root_fs) {
                         style.width = Some(px);
                         style.width_pct = Option::None;
                         style.width_calc = Option::None;
@@ -3815,7 +3878,7 @@ pub fn apply_declaration(
                 style.height_pct = Option::None;
             }
             _ => {
-                if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
+                if let Some(px) = resolve_length(&decl.value, style.font_size, root_fs) {
                     style.height = Some(px);
                     style.height_pct = Option::None;
                     style.height_calc = Option::None;

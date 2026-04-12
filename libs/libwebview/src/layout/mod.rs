@@ -1044,7 +1044,11 @@ pub fn layout_with_budget(
     } else {
         viewport_width
     };
-    root.bg_color = style.background_color;
+    root.bg_color = if style.background_color_is_current {
+        style.color
+    } else {
+        style.background_color
+    };
     root.mask_image = style.mask_image.clone();
     root.background_clip = style.background_clip;
     root.mask_size = style.mask_size;
