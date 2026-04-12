@@ -129,6 +129,8 @@ pub fn build_block_with_budget(
     bx.background_size = style.background_size;
     bx.background_repeat = style.background_repeat;
     bx.background_clip = style.background_clip;
+    bx.background_position_x = style.background_position_x;
+    bx.background_position_y = style.background_position_y;
     bx.mask_size = style.mask_size;
     bx.mask_repeat = style.mask_repeat;
     bx.mask_clip = style.mask_clip;
@@ -1005,8 +1007,10 @@ fn append_out_of_flow_children(
             0,
         );
 
-        let content_x = parent.border_width + parent.padding.left;
-        let content_y = parent.border_width + parent.padding.top;
+        // Absolute descendants are positioned relative to the parent's
+        // padding box, whose origin is directly after the border.
+        let content_x = parent.border_width;
+        let content_y = parent.border_width;
         let content_w = available_width.max(0);
         let content_h =
             (parent.height - parent.padding.top - parent.padding.bottom - parent.border_width * 2)
@@ -1296,6 +1300,8 @@ pub(super) fn build_pseudo_element_box(
         pb.background_size = ps.background_size;
         pb.background_repeat = ps.background_repeat;
         pb.background_clip = ps.background_clip;
+        pb.background_position_x = ps.background_position_x;
+        pb.background_position_y = ps.background_position_y;
         pb.mask_size = ps.mask_size;
         pb.mask_repeat = ps.mask_repeat;
         pb.mask_clip = ps.mask_clip;

@@ -155,6 +155,8 @@ pub struct LayoutBox {
     pub background_size: crate::style::BackgroundSizeVal,
     pub background_repeat: crate::style::BackgroundRepeatVal,
     pub background_clip: crate::style::BackgroundClipVal,
+    pub background_position_x: i32,
+    pub background_position_y: i32,
     pub mask_size: crate::style::BackgroundSizeVal,
     pub mask_repeat: crate::style::BackgroundRepeatVal,
     pub mask_clip: crate::style::BackgroundClipVal,
@@ -381,6 +383,8 @@ impl LayoutBox {
             background_size: crate::style::BackgroundSizeVal::Auto,
             background_repeat: crate::style::BackgroundRepeatVal::Repeat,
             background_clip: crate::style::BackgroundClipVal::BorderBox,
+            background_position_x: 0,
+            background_position_y: 0,
             mask_size: crate::style::BackgroundSizeVal::Auto,
             mask_repeat: crate::style::BackgroundRepeatVal::Repeat,
             mask_clip: crate::style::BackgroundClipVal::BorderBox,
@@ -1129,6 +1133,8 @@ pub fn layout_with_budget(
     };
     root.mask_image = style.mask_image.clone();
     root.background_clip = style.background_clip;
+    root.background_position_x = style.background_position_x;
+    root.background_position_y = style.background_position_y;
     root.mask_size = style.mask_size;
     root.mask_repeat = style.mask_repeat;
     root.mask_clip = style.mask_clip;
@@ -1321,12 +1327,10 @@ fn resolve_absolute_alignment_rec(
 
     if let Some(node_id) = bx.node_id {
         if styles[node_id].position != Position::Static {
-            next_cb_abs_x = abs_x + bx.border_width + bx.padding.left;
-            next_cb_abs_y = abs_y + bx.border_width + bx.padding.top;
-            next_cb_w =
-                (bx.width - bx.padding.left - bx.padding.right - bx.border_width * 2).max(0);
-            next_cb_h =
-                (bx.height - bx.padding.top - bx.padding.bottom - bx.border_width * 2).max(0);
+            next_cb_abs_x = abs_x + bx.border_width;
+            next_cb_abs_y = abs_y + bx.border_width;
+            next_cb_w = (bx.width - bx.border_width * 2).max(0);
+            next_cb_h = (bx.height - bx.border_width * 2).max(0);
         }
     }
 
@@ -2153,7 +2157,9 @@ pub(super) fn layout_children_ex_with_budget(
             let (content_x, content_y) = if uses_initial_abs_cb {
                 (0, 0)
             } else {
-                (bw + parent.padding.left, bw + parent.padding.top)
+                // Absolute containing blocks are established by the padding box,
+                // so the origin is after the border, not after border+padding.
+                (bw, bw)
             };
 
             abs_box.x = content_x + left.unwrap_or(0) + abs_box.margin.left;

@@ -1141,7 +1141,7 @@ fn debug_dump_table_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom)
             .map(str::to_string)
             .unwrap_or_else(|| String::from("tag"));
         eprintln!(
-            "[surf-host] table-style node={} tag={} bounds={:?} display={:?} width={:?} height={:?} padding=({}, {}, {}, {}) border_width={} border_sides=({}, {}, {}, {}) border_spacing={} border_collapse={} margin=({}, {}, {}, {})",
+            "[surf-host] table-style node={} tag={} bounds={:?} display={:?} width={:?} height={:?} padding=({}, {}, {}, {}) border_width={} border_sides=({}, {}, {}, {}) border_spacing=({}, {}) border_collapse={} margin=({}, {}, {}, {})",
             node_id,
             tag_name,
             bounds,
@@ -1157,12 +1157,53 @@ fn debug_dump_table_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom)
             style.border_right.width,
             style.border_bottom.width,
             style.border_left.width,
-            style.border_spacing,
+            style.border_spacing_x,
+            style.border_spacing_y,
             style.border_collapse,
             style.margin_top,
             style.margin_right,
             style.margin_bottom,
             style.margin_left
+        );
+    }
+}
+
+fn debug_dump_named_styles(wv: &libwebview::WebView, dom: &libwebview::dom::Dom) {
+    for (node_id, _) in dom.nodes.iter().enumerate() {
+        let Some(id_attr) = dom.attr(node_id, "id") else { continue; };
+        if !matches!(id_attr, "wrapper" | "div1" | "div2" | "reference" | "inner") {
+            continue;
+        }
+        let Some(style) = wv.resolved_style_ref(node_id) else { continue; };
+        let bg_image = match &style.background_image {
+            libwebview::style::BackgroundImageVal::None => "none",
+            libwebview::style::BackgroundImageVal::Url(_) => "url",
+            libwebview::style::BackgroundImageVal::LinearGradient { .. } => "linear-gradient",
+        };
+        eprintln!(
+            "[surf-host] named-style node={} id={} bounds={:?} top={:?}/{:?} left={:?}/{:?} right={:?}/{:?} bottom={:?}/{:?} padding=({}, {}, {}, {}) margin=({}, {}, {}, {}) bg_pos=({}, {}) bg_image={}",
+            node_id,
+            id_attr,
+            wv.node_bounds(node_id),
+            style.top,
+            style.top_calc,
+            style.left_offset,
+            style.left_calc,
+            style.right_offset,
+            style.right_calc,
+            style.bottom_offset,
+            style.bottom_calc,
+            style.padding_top,
+            style.padding_right,
+            style.padding_bottom,
+            style.padding_left,
+            style.margin_top,
+            style.margin_right,
+            style.margin_bottom,
+            style.margin_left,
+            style.background_position_x,
+            style.background_position_y,
+            bg_image,
         );
     }
 }
@@ -1331,6 +1372,11 @@ fn load_resources(wv: &mut libwebview::WebView, base_url: &str) {
             debug_dump_table_styles(wv, dom);
         }
     }
+    if std::env::var_os("SURF_DEBUG_NAMED_STYLES").is_some() {
+        if let Some(dom) = wv.dom() {
+            debug_dump_named_styles(wv, dom);
+        }
+    }
 }
 
 // ── Parallel image loading ──────────────────────────────────────────────────
@@ -1418,6 +1464,21 @@ fn start_image_loading(wv: &libwebview::WebView, base_url: &str) -> PendingImage
                     .or_else(|| dom.attr(i, "height").and_then(|s| s.trim().trim_end_matches("px").parse().ok()));
                 infos.push((abs_url, src, target_w, target_h));
             }
+        }
+        for (i, _) in dom.nodes.iter().enumerate() {
+            let Some(style) = wv.resolved_style_ref(i) else { continue; };
+            let bg_src = match &style.background_image {
+                libwebview::style::BackgroundImageVal::Url(src) if !src.is_empty() => src,
+                _ => continue,
+            };
+            if bg_src.starts_with("data:") {
+                continue;
+            }
+            if !seen.insert(bg_src.clone()) {
+                continue;
+            }
+            let abs_url = resolve_url(base_url, bg_src);
+            infos.push((abs_url, bg_src.clone(), None, None));
         }
         infos
     };

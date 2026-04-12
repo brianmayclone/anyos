@@ -14,6 +14,11 @@ import struct
 import zlib
 import os
 
+try:
+    from PIL import Image
+except Exception:
+    Image = None
+
 
 def read_png(path):
     """Minimal PNG reader - returns (width, height, pixels) where pixels is list of (r,g,b,a)."""
@@ -114,8 +119,16 @@ def read_png(path):
 def compare(test_path, ref_path, threshold=1.0, tolerance=2):
     """Compare two PNGs. Returns (match, diff_pct, total_pixels, diff_pixels)."""
     try:
-        tw, th, tp = read_png(test_path)
-        rw, rh, rp = read_png(ref_path)
+        if Image is not None:
+            test_img = Image.open(test_path).convert("RGBA")
+            ref_img = Image.open(ref_path).convert("RGBA")
+            tw, th = test_img.size
+            rw, rh = ref_img.size
+            tp = list(test_img.getdata())
+            rp = list(ref_img.getdata())
+        else:
+            tw, th, tp = read_png(test_path)
+            rw, rh, rp = read_png(ref_path)
     except Exception as e:
         return False, 100.0, 0, 0, str(e)
 

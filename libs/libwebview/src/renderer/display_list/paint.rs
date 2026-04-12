@@ -328,9 +328,12 @@ impl DisplayList {
     fn emit_background_image(&mut self, abs_x: i32, abs_y: i32, bx: &LayoutBox) {
         use crate::style::BackgroundImageVal;
         let (bg_x, bg_y, bg_w, bg_h) = self.background_paint_rect(abs_x, abs_y, bx);
+        if bg_w <= 0 || bg_h <= 0 {
+            return;
+        }
         match &bx.background_image {
             BackgroundImageVal::LinearGradient { angle_deg, stops } => {
-                if stops.len() < 2 || bg_w <= 0 || bg_h <= 0 {
+                if stops.len() < 2 {
                     return;
                 }
                 let angle = *angle_deg;
@@ -409,21 +412,33 @@ impl DisplayList {
                 }
             }
             BackgroundImageVal::Url(ref src) => {
-                if !src.is_empty() && bg_w > 0 && bg_h > 0 {
+                if !src.is_empty() {
+                    let img_x = match bx.background_position_x {
+                        5000 | 10000 => bg_x,
+                        px => bg_x + px,
+                    };
+                    let img_y = match bx.background_position_y {
+                        5000 | 10000 => bg_y,
+                        px => bg_y + px,
+                    };
+                    let pushed_clip = self.push_clip_rect((bg_x, bg_y, bg_w, bg_h));
                     self.push(
-                        bg_x,
-                        bg_y,
+                        img_x,
+                        img_y,
                         bg_w,
                         bg_h,
                         DrawKind::Image {
                             src: src.clone(),
-                            object_fit: bx.object_fit,
-                            object_position_x: 5000,
-                            object_position_x_is_percent: true,
-                            object_position_y: 5000,
-                            object_position_y_is_percent: true,
+                            object_fit: crate::style::ObjectFit::None,
+                            object_position_x: 0,
+                            object_position_x_is_percent: false,
+                            object_position_y: 0,
+                            object_position_y_is_percent: false,
                         },
                     );
+                    if pushed_clip {
+                        self.clip_stack.pop();
+                    }
                 }
             }
             _ => {}

@@ -3816,6 +3816,10 @@ pub fn apply_declaration(
                 if parts.len() >= 2 {
                     style.background_position_y =
                         parse_bg_position_part(parts[1], parent_fs, root_fs);
+                } else if parts.len() == 1 {
+                    // CSS Backgrounds: one-value background-position means
+                    // horizontal position plus vertical center.
+                    style.background_position_y = 5000;
                 }
             }
         }
@@ -3995,7 +3999,8 @@ pub fn apply_declaration(
         }
         Property::BorderSpacing => {
             if let Some(px) = resolve_length(&decl.value, parent_fs, root_fs) {
-                style.border_spacing = px;
+                style.border_spacing_x = px;
+                style.border_spacing_y = px;
             } else if let CssValue::Keyword(ref raw) = decl.value {
                 let mut parts = raw.split_ascii_whitespace();
                 if let Some(first) = parts.next() {
@@ -4004,7 +4009,17 @@ pub fn apply_declaration(
                         parent_fs,
                         root_fs,
                     ) {
-                        style.border_spacing = px;
+                        style.border_spacing_x = px;
+                        style.border_spacing_y = parts
+                            .next()
+                            .and_then(|second| {
+                                resolve_length(
+                                    &crate::css::parse_value(&Property::BorderSpacing, second),
+                                    parent_fs,
+                                    root_fs,
+                                )
+                            })
+                            .unwrap_or(px);
                     }
                 }
             }

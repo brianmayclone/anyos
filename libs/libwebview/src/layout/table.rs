@@ -44,6 +44,8 @@ pub fn layout_table(
     bx.color = style.color;
     bx.bg_color = style.background_color;
     bx.background_clip = style.background_clip;
+    bx.background_position_x = style.background_position_x;
+    bx.background_position_y = style.background_position_y;
     bx.appearance_none = style.appearance == crate::style::AppearanceVal::None;
     bx.border_width = style.border_width;
     bx.border_color = style.border_color;
@@ -65,12 +67,20 @@ pub fn layout_table(
     let table_border_bottom = style.border_bottom.width.max(bx.border_width);
 
     // Parse table attributes, respecting CSS border-collapse / border-spacing.
-    let css_spacing = style.border_spacing;
+    let css_spacing_x = style.border_spacing_x;
+    let css_spacing_y = style.border_spacing_y;
     let is_collapsed = style.border_collapse;
-    let cellspacing = if is_collapsed {
+    let cellspacing_x = if is_collapsed {
         0 // border-collapse: collapse → no spacing between cells
-    } else if css_spacing > 0 {
-        css_spacing // CSS border-spacing overrides HTML attribute
+    } else if css_spacing_x > 0 || css_spacing_y > 0 {
+        css_spacing_x // CSS border-spacing overrides HTML attribute
+    } else {
+        parse_int_attr(dom, node_id, "cellspacing").unwrap_or(2)
+    };
+    let cellspacing_y = if is_collapsed {
+        0
+    } else if css_spacing_x > 0 || css_spacing_y > 0 {
+        css_spacing_y
     } else {
         parse_int_attr(dom, node_id, "cellspacing").unwrap_or(2)
     };
@@ -214,7 +224,7 @@ pub fn layout_table(
             - table_border_right
             - bx.padding.left
             - bx.padding.right
-            - cellspacing * (max_cols as i32 + 1)
+            - cellspacing_x * (max_cols as i32 + 1)
     )
     .max(0);
 
@@ -386,7 +396,7 @@ pub fn layout_table(
             + table_border_left
             + table_border_right
             + bx.padding.right
-            + cellspacing * (max_cols as i32 + 1)
+            + cellspacing_x * (max_cols as i32 + 1)
             + col_widths.iter().copied().sum::<i32>();
         bx.width = used_width.min(table_width).max(0);
     }
@@ -413,7 +423,7 @@ pub fn layout_table(
         bx.children.push(placed);
     }
 
-    cursor_y += cellspacing;
+    cursor_y += cellspacing_y;
 
     // Build per-row cell lists from grid_cells (only first-row of multi-row spans get laid out).
     let num_rows = rows.len();
@@ -450,7 +460,7 @@ pub fn layout_table(
             for c in col_idx..col_idx + colspan {
                 cell_w += col_widths[c];
                 if c > col_idx {
-                    cell_w += cellspacing;
+                    cell_w += cellspacing_x;
                 }
             }
 
@@ -531,9 +541,9 @@ pub fn layout_table(
             0
         };
         for (mut cell_box, col_start, _colspan, content_h) in cell_boxes {
-            let mut cell_x = table_border_left + bx.padding.left + cellspacing;
+            let mut cell_x = table_border_left + bx.padding.left + cellspacing_x;
             for c in 0..col_start {
-                cell_x += col_widths[c] + cellspacing;
+                cell_x += col_widths[c] + cellspacing_x;
             }
 
             cell_box.x = cell_x + row_dx + section_dx;
@@ -572,7 +582,7 @@ pub fn layout_table(
             bx.children.push(cell_box);
         }
 
-        cursor_y += row_height + cellspacing;
+        cursor_y += row_height + cellspacing_y;
     }
 
     bx.height = cursor_y + bx.padding.bottom + table_border_bottom;
@@ -605,6 +615,8 @@ fn layout_cell(
     bx.color = style.color;
     bx.bg_color = style.background_color;
     bx.background_clip = style.background_clip;
+    bx.background_position_x = style.background_position_x;
+    bx.background_position_y = style.background_position_y;
     bx.appearance_none = style.appearance == crate::style::AppearanceVal::None;
     bx.font_size = font_size_px(style);
     bx.bold = is_bold(style);

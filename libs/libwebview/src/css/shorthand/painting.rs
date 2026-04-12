@@ -74,6 +74,9 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
     }
     let mut found_color: Option<u32> = None;
     let mut found_var: Option<CssValue> = None;
+    let mut found_image: Option<String> = None;
+    let mut found_repeat: Option<String> = None;
+    let mut position_parts: Vec<String> = Vec::new();
     let raw_parts: Vec<&str> = split_background_tokens(s);
     let parts = reassemble_var_parts(&raw_parts.iter().map(|s| *s).collect::<Vec<&str>>());
     for part in &parts {
@@ -88,12 +91,27 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
             || pl.starts_with("conic-gradient(")
             || pl.starts_with("repeating-")
         {
+            found_image = Some((*part).to_string());
             continue;
         }
-        if matches!(pl.as_str(), "no-repeat" | "repeat" | "repeat-x" | "repeat-y" | "center" | "left" | "right" | "top" | "bottom" | "cover" | "contain" | "fixed" | "scroll" | "local" | "border-box" | "padding-box" | "content-box") {
+        if matches!(pl.as_str(), "no-repeat" | "repeat" | "repeat-x" | "repeat-y") {
+            found_repeat = Some(pl);
             continue;
         }
-        if pl.ends_with('%') || pl.ends_with("px") || pl.ends_with("em") || pl.ends_with("rem") || pl.ends_with("vw") || pl.ends_with("vh") {
+        if matches!(pl.as_str(), "center" | "left" | "right" | "top" | "bottom")
+            || pl.ends_with('%')
+            || pl.ends_with("px")
+            || pl.ends_with("em")
+            || pl.ends_with("rem")
+            || pl.ends_with("vw")
+            || pl.ends_with("vh")
+        {
+            if position_parts.len() < 2 {
+                position_parts.push((*part).to_string());
+            }
+            continue;
+        }
+        if matches!(pl.as_str(), "cover" | "contain" | "fixed" | "scroll" | "local" | "border-box" | "padding-box" | "content-box") {
             continue;
         }
         if pl == "transparent" {
@@ -115,6 +133,19 @@ fn expand_background_shorthand(value_str: &str) -> Vec<Declaration> {
         }
     }
     let mut v = Vec::new();
+    if let Some(image) = found_image {
+        v.push(Declaration { property: Property::BackgroundImage, value: CssValue::Keyword(image), important: false });
+    }
+    if let Some(repeat) = found_repeat {
+        v.push(Declaration { property: Property::BackgroundRepeat, value: CssValue::Keyword(repeat), important: false });
+    }
+    if !position_parts.is_empty() {
+        v.push(Declaration {
+            property: Property::BackgroundPosition,
+            value: CssValue::Keyword(position_parts.join(" ")),
+            important: false,
+        });
+    }
     if let Some(c) = found_color {
         v.push(Declaration { property: Property::BackgroundColor, value: CssValue::Color(c), important: false });
     } else if let Some(var_val) = found_var {
