@@ -214,6 +214,13 @@ pub fn sys_open(path_ptr: u32, flags: u32, _arg3: u32) -> u32 {
 
 /// sys_close - Close a file descriptor (local FD from per-process table).
 pub fn sys_close(fd: u32) -> u32 {
+    // Some userspace libraries still propagate negative errno-style sentinels
+    // through `u32`-typed FDs. Treat those as inert invalid handles instead of
+    // surfacing noisy EBADF failures during startup.
+    if (fd as i32) < 0 {
+        return 0;
+    }
+
     use crate::fs::fd_table::FdKind;
     // Close the local FD entry — returns the old FdKind for resource cleanup
     match crate::task::scheduler::current_fd_close(fd) {

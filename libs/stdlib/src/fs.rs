@@ -112,6 +112,9 @@ pub fn open(path: &str, flags: u32) -> u32 {
 }
 
 pub fn close(fd: u32) -> u32 {
+    if (fd as i32) < 0 || fd == u32::MAX {
+        return 0;
+    }
     sys_err(syscall1(SYS_CLOSE, fd as u64))
 }
 

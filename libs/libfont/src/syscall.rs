@@ -24,17 +24,20 @@ pub fn open(path: &[u8], flags: u32) -> u32 {
     let len = path.len().min(256);
     buf[..len].copy_from_slice(&path[..len]);
     buf[len] = 0;
-    libsyscall::syscall2(libsyscall::SYS_OPEN, buf.as_ptr() as u64, flags as u64) as u32
+    let ret = libsyscall::syscall2(libsyscall::SYS_OPEN, buf.as_ptr() as u64, flags as u64);
+    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
 }
 
 /// Read from a file descriptor into buffer. Returns bytes read.
 pub fn read(fd: u32, buf: *mut u8, count: u32) -> u32 {
-    libsyscall::syscall3(libsyscall::SYS_READ, fd as u64, buf as u64, count as u64) as u32
+    let ret = libsyscall::syscall3(libsyscall::SYS_READ, fd as u64, buf as u64, count as u64);
+    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
 }
 
 /// Get file status. Returns 0 on success.
 pub fn fstat(fd: u32, stat_buf: *mut u8) -> u32 {
-    libsyscall::syscall2(libsyscall::SYS_FSTAT, fd as u64, stat_buf as u64) as u32
+    let ret = libsyscall::syscall2(libsyscall::SYS_FSTAT, fd as u64, stat_buf as u64);
+    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
 }
 
 /// Read an entire file into a Vec<u8>. Returns None on error.

@@ -2,6 +2,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use anyos_std::env;
+use anyos_std::fs;
 use anyos_std::ipc;
 use anyos_std::println;
 use anyos_std::process;
@@ -21,6 +23,18 @@ use super::management::management_loop;
 static INIT_WAIT_TID: AtomicU32 = AtomicU32::new(u32::MAX);
 static INIT_DONE: AtomicBool = AtomicBool::new(false);
 static INIT_EXIT_CODE: AtomicU32 = AtomicU32::new(0);
+
+fn ensure_bootstrap_env() {
+    if let Ok(content) = fs::read_to_string("/System/settings/language.conf") {
+        let lang = content.trim();
+        if !lang.is_empty() {
+            env::set("LANG", lang);
+            return;
+        }
+    }
+
+    env::set("LANG", "en");
+}
 
 fn init_waiter_entry() {
     let tid = INIT_WAIT_TID.load(Ordering::Acquire);
@@ -61,6 +75,7 @@ pub fn init_exit_code() -> u32 {
 
 pub fn run() {
     println!("compositor: starting userspace compositor...");
+    ensure_bootstrap_env();
 
     let mut setup_mode = false;
     {

@@ -379,11 +379,14 @@ pub fn open_bytes(path: &[u8]) -> u32 {
     buf[..len].copy_from_slice(&path[..len]);
     buf[len] = 0;
     let ret = syscall3(SYS_OPEN, buf.as_ptr() as u64, 0, 0);
-    ret as u32
+    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
 }
 
 /// Close a file descriptor.
 pub fn close(fd: u32) {
+    if (fd as i32) < 0 || fd == u32::MAX {
+        return;
+    }
     syscall1(SYS_CLOSE, fd as u64);
 }
 
@@ -403,7 +406,7 @@ pub fn file_size(fd: u32) -> u32 {
 /// Get file stats. Returns 0 on success.
 pub fn fstat(fd: u32, stat_buf: &mut [u32; 4]) -> u32 {
     let ret = syscall2(SYS_FSTAT, fd as u64, stat_buf.as_mut_ptr() as u64);
-    ret as u32
+    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
 }
 
 /// Sleep for `ms` milliseconds.
