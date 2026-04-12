@@ -752,6 +752,82 @@ impl<'a> MirBuilder<'a> {
 
                 // Handle .len() on arrays
                 let method_str = self.interner.resolve(*method_name);
+                if let TyKind::RawPtr(inner, _) = &inner_ty {
+                    if method_str == "is_null" && args.is_empty() {
+                        let recv_op = self.lower_expr(recv);
+                        let ty = self.get_expr_ty(expr);
+                        let dest = self.alloc_temp(ty, expr.span);
+                        let next_block = self.push_block();
+                        let sym = self.interner.intern("is_null");
+                        self.terminate(Terminator::Call {
+                            func: Operand::Constant(Constant {
+                                ty: TyKind::FnDef(DefId(0), vec![]),
+                                value: ConstValue::FnItem(sym),
+                            }),
+                            args: vec![recv_op],
+                            dest: Place::local(dest),
+                            target: next_block,
+                        });
+                        self.current_block = next_block;
+                        return Operand::Copy(Place::local(dest));
+                    }
+
+                    if method_str == "add" && args.len() == 1 {
+                        let ptr_op = self.lower_expr(recv);
+                        let count_op = self.lower_expr(&args[0]);
+                        let usize_ty = TyKind::Uint(UintTy::Usize);
+
+                        let ptr_usize = self.alloc_temp(usize_ty.clone(), expr.span);
+                        self.emit_assign(
+                            Place::local(ptr_usize),
+                            Rvalue::Cast(ptr_op, usize_ty.clone()),
+                            expr.span,
+                        );
+
+                        let elem_size = self.estimate_ty_size(inner.as_ref()) as u128;
+                        let scaled_local = if elem_size > 1 {
+                            let count_scaled = self.alloc_temp(usize_ty.clone(), expr.span);
+                            self.emit_assign(
+                                Place::local(count_scaled),
+                                Rvalue::BinaryOp(
+                                    BinOp::Mul,
+                                    count_op,
+                                    Operand::Constant(Constant {
+                                        ty: usize_ty.clone(),
+                                        value: ConstValue::Uint(elem_size),
+                                    }),
+                                ),
+                                expr.span,
+                            );
+                            count_scaled
+                        } else {
+                            let count_local = self.alloc_temp(usize_ty.clone(), expr.span);
+                            self.emit_assign(Place::local(count_local), Rvalue::Use(count_op), expr.span);
+                            count_local
+                        };
+
+                        let sum_local = self.alloc_temp(usize_ty.clone(), expr.span);
+                        self.emit_assign(
+                            Place::local(sum_local),
+                            Rvalue::BinaryOp(
+                                BinOp::Add,
+                                Operand::Copy(Place::local(ptr_usize)),
+                                Operand::Copy(Place::local(scaled_local)),
+                            ),
+                            expr.span,
+                        );
+
+                        let result_ty = self.get_expr_ty(expr);
+                        let result = self.alloc_temp(result_ty.clone(), expr.span);
+                        self.emit_assign(
+                            Place::local(result),
+                            Rvalue::Cast(Operand::Copy(Place::local(sum_local)), result_ty),
+                            expr.span,
+                        );
+                        return Operand::Copy(Place::local(result));
+                    }
+                }
+
                 if method_str == "len" && args.is_empty() {
                     if let TyKind::Array(_, n) = &inner_ty {
                         let ty = self.get_expr_ty(expr);
@@ -1901,6 +1977,36 @@ impl<'a> MirBuilder<'a> {
             }
         }
         0
+    }
+
+    fn estimate_ty_size(&self, ty: &TyKind) -> usize {
+        match ty {
+            TyKind::Bool => 1,
+            TyKind::Char => 4,
+            TyKind::Int(IntTy::I8) | TyKind::Uint(UintTy::U8) => 1,
+            TyKind::Int(IntTy::I16) | TyKind::Uint(UintTy::U16) => 2,
+            TyKind::Int(IntTy::I32) | TyKind::Uint(UintTy::U32) | TyKind::Float(FloatTy::F32) => 4,
+            TyKind::Int(IntTy::I64)
+            | TyKind::Int(IntTy::Isize)
+            | TyKind::Uint(UintTy::U64)
+            | TyKind::Uint(UintTy::Usize)
+            | TyKind::Float(FloatTy::F64)
+            | TyKind::Ref(_, _)
+            | TyKind::RawPtr(_, _)
+            | TyKind::FnDef(_, _)
+            | TyKind::FnPtr(_, _)
+            | TyKind::DynTrait(_) => 8,
+            TyKind::Int(IntTy::I128) | TyKind::Uint(UintTy::U128) => 16,
+            TyKind::Array(inner, n) => self.estimate_ty_size(inner.as_ref()) * *n,
+            TyKind::Slice(_) | TyKind::Str => 16,
+            TyKind::Tuple(tys) => tys.iter().map(|ty| self.estimate_ty_size(ty)).sum(),
+            TyKind::Adt(def_id, _) => self.typeck
+                .struct_defs
+                .get(def_id)
+                .map(|fields| fields.iter().map(|(_, ty)| self.estimate_ty_size(ty)).sum())
+                .unwrap_or(8),
+            TyKind::Unit | TyKind::Never | TyKind::Error | TyKind::Infer(_) | TyKind::Param(_) => 0,
+        }
     }
 
     /// Get the field list for a struct type.

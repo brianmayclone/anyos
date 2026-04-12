@@ -924,8 +924,19 @@ impl<'a> TypeChecker<'a> {
                     other => other.clone(),
                 };
 
-                // Handle .len() on arrays and slices
                 let method_str = self.interner.resolve(*method_name);
+                if matches!(&inner_ty, TyKind::RawPtr(_, _)) {
+                    if method_str == "is_null" && args.is_empty() {
+                        return TyKind::Bool;
+                    }
+                    if method_str == "add" && args.len() == 1 {
+                        let aty = self.get_expr_ty_cached(&args[0]);
+                        self.unify(&TyKind::Uint(UintTy::Usize), &aty, args[0].span);
+                        return inner_ty.clone();
+                    }
+                }
+
+                // Handle .len() on arrays and slices
                 if method_str == "len" && args.is_empty() {
                     if matches!(&inner_ty, TyKind::Array(_, _) | TyKind::Slice(_)) {
                         return TyKind::Uint(UintTy::Usize);
