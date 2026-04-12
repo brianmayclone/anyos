@@ -195,6 +195,13 @@ fn is_valid(desc: u64) -> bool {
     desc & DESC_VALID != 0
 }
 
+/// Return true if a page descriptor grants write access.
+#[inline]
+fn desc_is_writable(desc: u64) -> bool {
+    let ap = (desc >> 6) & 0b11;
+    ap == 0b00 || ap == 0b01
+}
+
 /// Is this descriptor a table pointer (bits [1:0] == 0b11)?
 /// At L0-L2 this means "next-level table"; at L3 it means "page".
 #[inline]
@@ -561,7 +568,7 @@ pub fn destroy_user_page_directory(pd: PhysAddr) {
                         if crate::ipc::shared_memory::is_shm_frame_sorted(&shm_frames, frame) {
                             continue;
                         }
-                        if !is_dll || (e3 & PAGE_WRITABLE != 0) {
+                        if !is_dll || desc_is_writable(e3) {
                             physical::free_frame(frame);
                         }
                     }

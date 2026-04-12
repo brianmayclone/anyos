@@ -359,28 +359,20 @@ pub fn sys_listenv(buf_ptr: u32, buf_size: u32) -> u32 {
 
 /// SYS_KBD_GET_LAYOUT (200): Returns the currently active keyboard layout ID.
 pub fn sys_kbd_get_layout() -> u32 {
-    #[cfg(target_arch = "x86_64")]
-    { crate::drivers::input::layout::get_layout() as u32 }
-    #[cfg(target_arch = "aarch64")]
-    { 0 } // ARM64: TODO — keyboard layout
+    crate::drivers::layout::get_layout() as u32
 }
 
 /// SYS_KBD_SET_LAYOUT (201): Set the active keyboard layout by ID.
 /// Returns 0 on success, u32::MAX if the layout ID is invalid.
 pub fn sys_kbd_set_layout(layout_id: u32) -> u32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        match crate::drivers::input::layout::layout_id_from_u32(layout_id) {
-            Some(id) => {
-                crate::drivers::input::layout::set_layout(id);
-                crate::serial_println!("Keyboard layout changed to {:?}", id);
-                0
-            }
-            None => u32::MAX,
+    match crate::drivers::layout::layout_id_from_u32(layout_id) {
+        Some(id) => {
+            crate::drivers::layout::set_layout(id);
+            crate::serial_println!("Keyboard layout changed to {:?}", id);
+            0
         }
+        None => u32::MAX,
     }
-    #[cfg(target_arch = "aarch64")]
-    { let _ = layout_id; u32::MAX }
 }
 
 /// SYS_RANDOM (210): Fill a user buffer with random bytes.
@@ -404,7 +396,7 @@ pub fn sys_random(buf_ptr: u32, len: u32) -> u32 {
 pub fn sys_kbd_list_layouts(buf_ptr: u32, max_entries: u32) -> u32 {
     #[cfg(target_arch = "x86_64")]
     {
-        use crate::drivers::input::layout::{LAYOUT_INFOS, LAYOUT_COUNT, LayoutInfo};
+        use crate::drivers::layout::{LAYOUT_INFOS, LAYOUT_COUNT, LayoutInfo};
 
         let count = (max_entries as usize).min(LAYOUT_COUNT);
         let byte_size = count * core::mem::size_of::<LayoutInfo>();

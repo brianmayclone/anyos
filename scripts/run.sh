@@ -102,6 +102,8 @@ WIFI_LABEL=""
 TEMPDISK=false
 VMWARE_WS=false
 ARM64_MODE=false
+HEADLESS=false
+SNAPSHOT=false
 MIN_RES_W=1024
 MIN_RES_H=768
 
@@ -304,8 +306,14 @@ for arg in "$@"; do
         --arm64)
             ARM64_MODE=true
             ;;
+        --headless)
+            HEADLESS=true
+            ;;
+        --snapshot)
+            SNAPSHOT=true
+            ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--arm64]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--arm64] [--headless] [--snapshot]"
             exit 1
             ;;
     esac
@@ -506,6 +514,12 @@ if [ "$ARM64_MODE" = true ]; then
     ARM64_DISK="${ARM64_BUILD_DIR}/anyos-arm64.img"
     ARM64_NET_ARGS="-netdev user,id=net0 -device virtio-net-device,netdev=net0,mac=52:54:00:12:34:56"
     ARM64_WIFI_ARGS=""
+    echo "Refreshing ARM64 artifacts..."
+    if ! ninja -C "$ARM64_BUILD_DIR" kernel-arm64 arm64-image; then
+        echo "Error: ARM64 build refresh failed."
+        echo "Run: ./scripts/build.sh --arm64"
+        exit 1
+    fi
     if [ ! -f "$KERNEL_ELF" ]; then
         echo "Error: ARM64 kernel not found at $KERNEL_ELF"
         echo "Run: ./scripts/build.sh --arm64"
@@ -513,9 +527,18 @@ if [ "$ARM64_MODE" = true ]; then
     fi
     echo "Starting anyOS (ARM64) on QEMU virt machine..."
     DISK_ARGS=""
+    ARM64_TMP_DISK=""
     if [ -f "$ARM64_DISK" ]; then
         echo "  Disk image: $ARM64_DISK"
-        DISK_ARGS="-drive if=none,format=raw,file=$ARM64_DISK,id=hd0 -device virtio-blk-device,drive=hd0"
+        if [ "$SNAPSHOT" = true ]; then
+            # QEMU snapshot temp files are not writable in the sandbox; use a temp copy instead.
+            ARM64_TMP_DISK="$(mktemp /tmp/anyos-arm64-XXXXXX.img)"
+            cp -f "$ARM64_DISK" "$ARM64_TMP_DISK"
+            trap 'rm -f "$ARM64_TMP_DISK"' EXIT
+            DISK_ARGS="-drive if=none,format=raw,file=$ARM64_TMP_DISK,id=hd0,cache=unsafe -device virtio-blk-device,drive=hd0"
+        else
+            DISK_ARGS="-drive if=none,format=raw,file=$ARM64_DISK,id=hd0 -device virtio-blk-device,drive=hd0"
+        fi
     else
         echo "  Warning: No ARM64 disk image found at $ARM64_DISK"
         echo "  Running kernel-only (no filesystem). Build with: ./scripts/build.sh --arm64"
@@ -523,6 +546,12 @@ if [ "$ARM64_MODE" = true ]; then
     if [ "$WIFI" = true ]; then
         ARM64_WIFI_ARGS="-netdev user,id=wifi0 -device virtio-net-device,netdev=wifi0,mac=52:54:00:12:34:57"
     fi
+    ARM64_DISPLAY_ARGS=""
+    if [ "$HEADLESS" = true ]; then
+        ARM64_DISPLAY_ARGS="-display none"
+    fi
+    # QEMU uses TMPDIR for snapshot temp files; force a writable location in sandbox.
+    TMPDIR="/tmp" \
     qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu cortex-a72 \
         -m 512M \
@@ -534,6 +563,7 @@ if [ "$ARM64_MODE" = true ]; then
         -device virtio-keyboard-device \
         -device virtio-mouse-device \
         -serial stdio \
+        $ARM64_DISPLAY_ARGS \
         $DISK_ARGS \
         -no-reboot -no-shutdown
     exit 0
@@ -694,13 +724,21 @@ KBD_LABEL=""
 if [ -n "$KBD_LAYOUT" ]; then
     CONF_FILE="${SCRIPT_DIR}/../sysroot/System/etc/inputmon.conf"
     printf '[keyboard]\nlayout=%s\n' "$KBD_LAYOUT" > "$CONF_FILE"
-    # Also update the build sysroot so mkimage picks it up
+    # Also update the build sysroots so mkimage picks it up.
     BUILD_CONF="${SCRIPT_DIR}/../build/sysroot/System/etc/inputmon.conf"
     if [ -d "$(dirname "$BUILD_CONF")" ]; then
         cp "$CONF_FILE" "$BUILD_CONF"
     fi
-    # Re-run mkimage to update the disk image with the new config
-    ninja -C "${SCRIPT_DIR}/../build" 2>/dev/null
+    ARM64_BUILD_CONF="${SCRIPT_DIR}/../build/arm64/sysroot/System/etc/inputmon.conf"
+    if [ -d "$(dirname "$ARM64_BUILD_CONF")" ]; then
+        cp "$CONF_FILE" "$ARM64_BUILD_CONF"
+    fi
+    # Re-run mkimage to update the disk image with the new config.
+    if [ "$ARM64_MODE" = true ]; then
+        ninja -C "${SCRIPT_DIR}/../build/arm64" arm64-image 2>/dev/null
+    else
+        ninja -C "${SCRIPT_DIR}/../build" 2>/dev/null
+    fi
     LAYOUT_NAMES=("US" "DE" "CH" "FR" "PL")
     KBD_LABEL=", kbd: ${LAYOUT_NAMES[$KBD_LAYOUT]}"
 fi
@@ -727,7 +765,9 @@ fi
 # Do NOT use zoom-to-fit — it prevents the GTK window from resizing when
 # the guest changes resolution via SET_SCANOUT. Without zoom-to-fit,
 # QEMU auto-resizes the window to match the guest framebuffer dimensions.
-if [ "$(uname)" = "Darwin" ]; then
+if [ "$HEADLESS" = true ]; then
+    DISPLAY_FLAGS="-display none -nographic"
+elif [ "$(uname)" = "Darwin" ]; then
     DISPLAY_FLAGS="-display cocoa"
 elif [ "$VGA" = "virgl" ]; then
     DISPLAY_FLAGS="-display gtk,gl=on"

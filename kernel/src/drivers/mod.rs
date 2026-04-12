@@ -16,6 +16,8 @@ pub mod framebuffer;
 #[cfg(target_arch = "x86_64")]
 pub mod gpu;
 pub mod hal;
+#[path = "input/layout/mod.rs"]
+pub mod layout;
 #[cfg(target_arch = "x86_64")]
 pub mod input;
 #[cfg(target_arch = "x86_64")]

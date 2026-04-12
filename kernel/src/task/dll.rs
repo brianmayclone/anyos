@@ -1227,6 +1227,19 @@ pub fn ensure_dll_mapped_current(path: &str) -> Option<u64> {
         if !virtual_mem::map_page(virt, phys, PAGE_USER) {
             return None;
         }
+        if i == 0 && name == "libfont.so" {
+            let mut bytes = [0u8; 4];
+            with_frame_read(phys, src, |src_ptr| unsafe {
+                bytes.copy_from_slice(core::slice::from_raw_parts(src_ptr, 4));
+            });
+            crate::serial_println!(
+                "[dll] mapped {} base={:#x} phys={:#x} bytes={:02x} {:02x} {:02x} {:02x}",
+                name,
+                plan.base_vaddr,
+                phys.as_u64(),
+                bytes[0], bytes[1], bytes[2], bytes[3]
+            );
+        }
     }
 
     let writable_base = plan.base_vaddr + (plan.ro_pages.len() as u64) * PAGE_SIZE;

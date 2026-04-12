@@ -115,8 +115,14 @@ pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_set_resolution(_width: u32, _height: u32) -> u32 {
-    u32::MAX
+pub fn sys_set_resolution(width: u32, height: u32) -> u32 {
+    if width == 0 || height == 0 {
+        return u32::MAX;
+    }
+    match crate::drivers::framebuffer::info() {
+        Some(fb) if fb.width == width && fb.height == height => 0,
+        _ => u32::MAX,
+    }
 }
 
 /// sys_list_resolutions - List supported display resolutions.
@@ -993,8 +999,44 @@ pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_vram_map(_target_tid: u32, _vram_offset: u32, _num_bytes: u32) -> u32 {
-    0
+pub fn sys_vram_map(target_tid: u32, vram_offset: u32, num_bytes: u32) -> u32 {
+    if !is_compositor() {
+        return 0;
+    }
+    if num_bytes == 0 || (vram_offset & 0xFFF) != 0 {
+        return 0;
+    }
+
+    let (fb_phys, _fb_virt, _width, height, pitch) =
+        match crate::drivers::arm::gpu::framebuffer_mapping_info() {
+            Some(info) => info,
+            None => return 0,
+        };
+    let fb_total_bytes = (height as usize).saturating_mul(pitch as usize);
+    let map_offset = vram_offset as usize;
+    let map_bytes = ((num_bytes as usize) + 4095) & !4095usize;
+    if map_offset >= fb_total_bytes || map_offset.saturating_add(map_bytes) > fb_total_bytes {
+        return 0;
+    }
+
+    let pd_phys = match crate::task::scheduler::thread_page_directory(target_tid) {
+        Some(pd) => pd,
+        None => return 0,
+    };
+
+    let user_va_base: u64 = 0x1800_0000;
+    let pages = map_bytes / 4096;
+    for i in 0..pages {
+        let phys = crate::memory::address::PhysAddr::new(
+            fb_phys + map_offset as u64 + (i * 4096) as u64,
+        );
+        let virt = crate::memory::address::VirtAddr::new(user_va_base + (i * 4096) as u64);
+        if !crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, 0x0F) {
+            return 0;
+        }
+    }
+
+    user_va_base as u32
 }
 
 /// SYS_GPU_REGISTER_BACKBUFFER (258): Register a userspace back buffer for GPU DMA.
@@ -1133,8 +1175,45 @@ pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_grant_framebuffer(_target_tid: u32, _out_info_ptr: u32) -> u32 {
-    u32::MAX
+pub fn sys_grant_framebuffer(target_tid: u32, out_info_ptr: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+
+    let (fb_phys, _fb_virt, width, height, pitch) =
+        match crate::drivers::arm::gpu::framebuffer_mapping_info() {
+            Some(info) => info,
+            None => return u32::MAX,
+        };
+
+    let pd_phys = match crate::task::scheduler::thread_page_directory(target_tid) {
+        Some(pd) => pd,
+        None => return u32::MAX,
+    };
+
+    let fb_user_base: u64 = 0x1900_0000;
+    let fb_total_bytes = (height as usize).saturating_mul(pitch as usize);
+    let pages = (fb_total_bytes + 4095) / 4096;
+
+    for i in 0..pages {
+        let phys = crate::memory::address::PhysAddr::new(fb_phys + (i * 4096) as u64);
+        let virt = crate::memory::address::VirtAddr::new(fb_user_base + (i * 4096) as u64);
+        if !crate::memory::virtual_mem::map_page_in_pd(pd_phys, virt, phys, 0x0F) {
+            return u32::MAX;
+        }
+    }
+
+    if out_info_ptr != 0 {
+        unsafe {
+            let info = out_info_ptr as *mut u32;
+            *info = fb_user_base as u32;
+            *info.add(1) = width;
+            *info.add(2) = height;
+            *info.add(3) = pitch;
+        }
+    }
+
+    0
 }
 
 /// SYS_REVOKE_FRAMEBUFFER (261): Unmap the framebuffer from a target app's address space.
@@ -1180,8 +1259,32 @@ pub fn sys_revoke_framebuffer(target_tid: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_revoke_framebuffer(_target_tid: u32) -> u32 {
-    u32::MAX
+pub fn sys_revoke_framebuffer(target_tid: u32) -> u32 {
+    if !is_compositor() {
+        return u32::MAX;
+    }
+
+    let (_fb_phys, _fb_virt, _width, height, pitch) =
+        match crate::drivers::arm::gpu::framebuffer_mapping_info() {
+            Some(info) => info,
+            None => return u32::MAX,
+        };
+
+    let pd_phys = match crate::task::scheduler::thread_page_directory(target_tid) {
+        Some(pd) => pd,
+        None => return u32::MAX,
+    };
+
+    let fb_user_base: u64 = 0x1900_0000;
+    let fb_total_bytes = (height as usize).saturating_mul(pitch as usize);
+    let pages = (fb_total_bytes + 4095) / 4096;
+
+    for i in 0..pages {
+        let virt = crate::memory::address::VirtAddr::new(fb_user_base + (i * 4096) as u64);
+        crate::memory::virtual_mem::unmap_page_in_pd(pd_phys, virt);
+    }
+
+    0
 }
 
 // =========================================================================
@@ -1367,8 +1470,19 @@ pub fn sys_gpu_query_type(buf_ptr: u32, buf_len: u32) -> u32 {
 }
 
 #[cfg(target_arch = "aarch64")]
-pub fn sys_gpu_query_type(_buf_ptr: u32, _buf_len: u32) -> u32 {
-    0
+pub fn sys_gpu_query_type(buf_ptr: u32, buf_len: u32) -> u32 {
+    let name = "none";
+
+    if buf_ptr != 0 && buf_len > 0 {
+        let bytes = name.as_bytes();
+        let copy_len = bytes.len().min(buf_len as usize - 1);
+        unsafe {
+            let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, copy_len + 1);
+            buf[..copy_len].copy_from_slice(&bytes[..copy_len]);
+            buf[copy_len] = 0;
+        }
+    }
+    name.len() as u32
 }
 
 // =========================================================================

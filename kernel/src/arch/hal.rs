@@ -374,6 +374,7 @@ pub fn flush_tlb(vaddr: u64) {
 pub fn flush_tlb(vaddr: u64) {
     unsafe {
         core::arch::asm!(
+            "dsb ishst",
             "tlbi vale1is, {}",
             "dsb ish",
             "isb",

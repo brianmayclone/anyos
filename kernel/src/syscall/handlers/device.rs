@@ -3,7 +3,7 @@
 //! Covers device listing, open/close/read/write/ioctl, IRQ waiting,
 //! and dynamic library loading.
 
-use super::helpers::{is_valid_user_ptr, read_user_str};
+use super::helpers::{copy_user_bytes, is_valid_user_ptr, read_user_str};
 
 /// sys_devlist - List devices. Each entry is 64 bytes:
 ///   [0..32]  path (null-terminated)
@@ -99,19 +99,46 @@ pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
         if path == "/Libraries/libfont.so" {
             let phys = crate::memory::virtual_mem::virt_to_phys(crate::memory::address::VirtAddr::new(mapped))
                 .unwrap_or(0);
+            let pte = crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(mapped));
+            let user_bytes = copy_user_bytes(mapped as u32, 4, 4);
             crate::serial_println!(
-                "[dll] existing {} -> base={:#x} phys={:#x}",
+                "[dll] existing {} -> base={:#x} phys={:#x} pte={:#x} user={}",
                 path,
                 mapped,
-                phys
+                phys,
+                pte,
+                match user_bytes {
+                    Some(b) if b.len() == 4 => alloc::format!("{:02x} {:02x} {:02x} {:02x}", b[0], b[1], b[2], b[3]),
+                    _ => alloc::format!("(unreadable)"),
+                }
             );
         }
         return mapped as u32;
     }
     // Try loading from filesystem (dload)
     match crate::task::dll::load_dll_dynamic(path) {
-        Some(base) => crate::task::dll::ensure_dll_mapped_current(path)
-            .unwrap_or(base) as u32,
+        Some(base) => {
+            let mapped = crate::task::dll::ensure_dll_mapped_current(path).unwrap_or(base);
+            if path == "/Libraries/libfont.so" {
+                let phys = crate::memory::virtual_mem::virt_to_phys(
+                    crate::memory::address::VirtAddr::new(mapped)
+                ).unwrap_or(0);
+                let pte = crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(mapped));
+                let user_bytes = copy_user_bytes(mapped as u32, 4, 4);
+                crate::serial_println!(
+                    "[dll] fresh {} -> base={:#x} phys={:#x} pte={:#x} user={}",
+                    path,
+                    mapped,
+                    phys,
+                    pte,
+                    match user_bytes {
+                        Some(b) if b.len() == 4 => alloc::format!("{:02x} {:02x} {:02x} {:02x}", b[0], b[1], b[2], b[3]),
+                        _ => alloc::format!("(unreadable)"),
+                    }
+                );
+            }
+            mapped as u32
+        }
         None => 0,
     }
 }

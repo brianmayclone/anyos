@@ -71,6 +71,23 @@ fn format_wallpaper_entry(uid: u32, path: &[u8]) -> ([u8; 160], usize) {
     (buf, pos)
 }
 
+fn scale_logo_rgba(src: &[u32], src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> Vec<u32> {
+    if src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0 {
+        return Vec::new();
+    }
+    let mut dst = vec![0u32; (dst_w * dst_h) as usize];
+    for dy in 0..dst_h {
+        let sy = ((dy as u64) * (src_h as u64) / (dst_h as u64)).min((src_h - 1) as u64) as u32;
+        let src_row = (sy * src_w) as usize;
+        let dst_row = (dy * dst_w) as usize;
+        for dx in 0..dst_w {
+            let sx = ((dx as u64) * (src_w as u64) / (dst_w as u64)).min((src_w - 1) as u64) as u32;
+            dst[dst_row + dx as usize] = src[src_row + sx as usize];
+        }
+    }
+    dst
+}
+
 // ── Desktop ────────────────────────────────────────────────────────────────
 
 pub struct Desktop {
@@ -460,17 +477,15 @@ impl Desktop {
         let target_w = (src_w * target_h + src_h / 2) / src_h.max(1);
         if target_w == 0 { return; }
 
-        let mut scaled = vec![0u32; (target_w * target_h) as usize];
-        // Use libimage's area-averaging scaler for proper antialiasing
+        // Use a local scaler for the tiny menubar logos. This avoids the ARM64
+        // corruption we see on the libimage scaling path during early bootstrap,
+        // while keeping the logo loading path deterministic and fully in-process.
         anyos_std::println!(
             "compositor: load_logo scale '{}' -> {}x{}",
             path, target_w, target_h
         );
-        if !libimage_client::scale_image(
-            &pixels, src_w, src_h,
-            &mut scaled, target_w, target_h,
-            libimage_client::MODE_SCALE,
-        ) {
+        let scaled = scale_logo_rgba(&pixels, src_w, src_h, target_w, target_h);
+        if scaled.len() != (target_w * target_h) as usize {
             return;
         }
 

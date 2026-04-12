@@ -35,3 +35,13 @@ corevm/vmmanager/windows
 corevm/vmmanager/Test2
 x
 .codex
+*.log
+*.cache
+*.bak
+*.swp
+*.swo
+*.tmp
+*.temp
+*.backup
+*.old
+*.orig
