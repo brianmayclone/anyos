@@ -1875,6 +1875,132 @@ impl<'a> TypeChecker<'a> {
         TyKind::Error
     }
 
+    fn path_segments_to_ty(&self, segments: &[HirPathSegment]) -> TyKind {
+        if segments.is_empty() {
+            return TyKind::Error;
+        }
+        let last_segment = &segments[segments.len() - 1];
+
+        if segments.len() >= 2 {
+            let first_sym = segments[0].ident;
+            let assoc_name = segments[1].ident;
+            let first_str = self.interner.resolve(first_sym);
+
+            if first_str == "Self" {
+                for (&(_trait_def_id, type_name), concrete_ty) in &self.assoc_types {
+                    if type_name == assoc_name {
+                        return concrete_ty.clone();
+                    }
+                }
+            }
+
+            if let Some(&param_idx) = self.current_generic_params.get(&first_sym) {
+                if let Some(bounds) = self.current_generic_bounds.get(&param_idx) {
+                    for trait_def_id in bounds {
+                        if let Some(ty) = self.assoc_types.get(&(*trait_def_id, assoc_name)) {
+                            return ty.clone();
+                        }
+                    }
+                }
+                return TyKind::Param(param_idx);
+            }
+        }
+
+        if segments.len() >= 2 {
+            let full_path = segments
+                .iter()
+                .map(|seg| self.interner.resolve(seg.ident))
+                .collect::<Vec<_>>()
+                .join("::");
+            if let Some(def_id) = self.lookup_intrinsic_def_by_path(&full_path) {
+                let type_args = if let Some(ref args) = last_segment.args {
+                    args.args
+                        .iter()
+                        .filter_map(|a| {
+                            if let HirGenericArg::Type(ty) = a {
+                                Some(self.hir_ty_to_ty(ty))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                } else {
+                    vec![]
+                };
+                return TyKind::Adt(def_id, type_args);
+            }
+            match full_path.as_str() {
+                "core::cmp::Ordering" => return self.comparison_ordering_ty(),
+                "core::sync::atomic::Ordering" => return self.atomic_ordering_ty(),
+                _ => {}
+            }
+        }
+
+        let name = self.interner.resolve(last_segment.ident);
+        match name {
+            "i8" => TyKind::Int(IntTy::I8),
+            "i16" => TyKind::Int(IntTy::I16),
+            "i32" => TyKind::Int(IntTy::I32),
+            "i64" => TyKind::Int(IntTy::I64),
+            "i128" => TyKind::Int(IntTy::I128),
+            "isize" => TyKind::Int(IntTy::Isize),
+            "u8" => TyKind::Uint(UintTy::U8),
+            "u16" => TyKind::Uint(UintTy::U16),
+            "u32" => TyKind::Uint(UintTy::U32),
+            "u64" => TyKind::Uint(UintTy::U64),
+            "u128" => TyKind::Uint(UintTy::U128),
+            "usize" => TyKind::Uint(UintTy::Usize),
+            "f32" => TyKind::Float(FloatTy::F32),
+            "f64" => TyKind::Float(FloatTy::F64),
+            "bool" => TyKind::Bool,
+            "char" => TyKind::Char,
+            "str" => TyKind::Str,
+            "Self" => self.current_self_ty.clone().unwrap_or(TyKind::Error),
+            _ => {
+                let sym = last_segment.ident;
+                if let Some(&idx) = self.current_generic_params.get(&sym) {
+                    return TyKind::Param(idx);
+                }
+                if let Some(alias_ty) = self.type_aliases.get(&sym) {
+                    let type_args = if let Some(ref args) = last_segment.args {
+                        args.args
+                            .iter()
+                            .filter_map(|a| {
+                                if let HirGenericArg::Type(ty) = a {
+                                    Some(self.hir_ty_to_ty(ty))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        vec![]
+                    };
+                    return self.substitute_params(alias_ty, &type_args);
+                }
+                if let Some(&def_id) = self.type_name_to_def.get(&sym) {
+                    let type_args = if let Some(ref args) = last_segment.args {
+                        args.args
+                            .iter()
+                            .filter_map(|a| {
+                                if let HirGenericArg::Type(ty) = a {
+                                    Some(self.hir_ty_to_ty(ty))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    } else {
+                        vec![]
+                    };
+                    TyKind::Adt(def_id, type_args)
+                } else {
+                    TyKind::Error
+                }
+            }
+        }
+    }
+
     fn lookup_intrinsic_def_by_path(&self, full_path: &str) -> Option<DefId> {
         self.resolve
             .intrinsic_fns
@@ -1903,12 +2029,15 @@ impl<'a> TypeChecker<'a> {
         if path.segments.len() < 2 {
             return None;
         }
-        let enum_name = path.segments[path.segments.len() - 2].ident;
         let variant_name = path.segments.last()?.ident;
-        let &enum_def_id = self.type_name_to_def.get(&enum_name)?;
+        let parent_ty = self.path_segments_to_ty(&path.segments[..path.segments.len() - 1]);
+        let resolved_parent = self.shallow_resolve(parent_ty);
+        let TyKind::Adt(enum_def_id, substs) = resolved_parent else {
+            return None;
+        };
         let variants = self.enum_variant_fields.get(&enum_def_id)?;
         if variants.iter().any(|(name, _)| *name == variant_name) {
-            Some(TyKind::Adt(enum_def_id, vec![]))
+            Some(TyKind::Adt(enum_def_id, substs))
         } else {
             None
         }
@@ -1916,12 +2045,18 @@ impl<'a> TypeChecker<'a> {
 
     fn intrinsic_constructor_type(&mut self, path_str: &str) -> Option<TyKind> {
         match path_str {
-            "Option::Some" | "Option::None" => {
+            "Option::Some"
+            | "Option::None"
+            | "core::option::Option::Some"
+            | "core::option::Option::None" => {
                 let sym = self.interner.lookup("Option")?;
                 let def_id = *self.type_name_to_def.get(&sym)?;
                 Some(TyKind::Adt(def_id, vec![self.fresh_infer(InferKind::General)]))
             }
-            "Result::Ok" | "Result::Err" => {
+            "Result::Ok"
+            | "Result::Err"
+            | "core::result::Result::Ok"
+            | "core::result::Result::Err" => {
                 let sym = self.interner.lookup("Result")?;
                 let def_id = *self.type_name_to_def.get(&sym)?;
                 Some(TyKind::Adt(

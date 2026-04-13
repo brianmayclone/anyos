@@ -2090,3 +2090,221 @@ fn vec_slice_after_mut_slice_coercion_keeps_byte_element_type() {
         "#,
     );
 }
+
+#[test]
+fn std_result_alias_if_let_binds_fixed_array_payload() {
+    compile_ok(
+        "std_result_alias_if_let_binds_fixed_array_payload",
+        r#"
+        mod error {
+            pub type Result<T> = core::result::Result<T, u32>;
+        }
+
+        struct File;
+
+        impl File {
+            fn metadata(&self) -> error::Result<[u32; 4]> {
+                Ok([0u32, 7u32, 0u32, 0u32])
+            }
+        }
+
+        fn read_to_vec(file: &File) -> usize {
+            let mut size = 0usize;
+            if let Ok(meta) = file.metadata() {
+                size = meta[1] as usize;
+            }
+            size
+        }
+        "#,
+    );
+}
+
+#[test]
+fn std_option_as_mut_expect_returns_mut_ref() {
+    compile_ok(
+        "std_option_as_mut_expect_returns_mut_ref",
+        r#"
+        static mut APP: Option<u32> = None;
+
+        fn app() -> &'static mut u32 {
+            unsafe { APP.as_mut().expect(concat!(stringify!(u32), " not initialized")) }
+        }
+
+        fn touch() -> u32 {
+            *app()
+        }
+        "#,
+    );
+}
+
+#[test]
+fn std_from_utf8_unwrap_or_supports_suffix_slice() {
+    compile_ok(
+        "std_from_utf8_unwrap_or_supports_suffix_slice",
+        r#"
+        fn parse_value(bytes: &[u8; 64], val_start: usize) -> &str {
+            core::str::from_utf8(&bytes[val_start..]).unwrap_or("")
+        }
+        "#,
+    );
+}
+
+#[test]
+fn std_try_into_unwrap_from_slice_compiles() {
+    compile_ok(
+        "std_try_into_unwrap_from_slice_compiles",
+        r#"
+        fn statfs_like(out: &[u8; 24]) -> u64 {
+            u64::from_le_bytes(out[0..8].try_into().unwrap())
+        }
+        "#,
+    );
+}
+
+#[test]
+fn byte_string_copy_from_slice_and_from_utf8_unchecked_compile() {
+    compile_ok(
+        "byte_string_copy_from_slice_and_from_utf8_unchecked_compile",
+        r#"
+        fn fmt_bytes<'a>(buf: &'a mut [u8; 20], bytes: u64) -> &'a str {
+            let mut t = [0u8; 12];
+            let mut p = 0usize;
+            if bytes >= 1024 {
+                let kib = bytes / 1024;
+                let s = if kib > 0 { "1" } else { "0" };
+                buf[p..p + s.len()].copy_from_slice(s.as_bytes());
+                p += s.len();
+                buf[p..p + 4].copy_from_slice(b" KiB");
+                p += 4;
+            } else {
+                buf[p] = b'0';
+                p += 1;
+                buf[p..p + 2].copy_from_slice(b" B");
+                p += 2;
+            }
+            unsafe { core::str::from_utf8_unchecked(&buf[..p]) }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn indexed_byte_arrays_in_struct_and_tuple_returns_compile() {
+    compile_ok(
+        "indexed_byte_arrays_in_struct_and_tuple_returns_compile",
+        r#"
+        struct TcpConnInfo {
+            local_ip: [u8; 4],
+            local_port: u16,
+            remote_ip: [u8; 4],
+            remote_port: u16,
+            state: u8,
+            owner_tid: u8,
+            recv_buf_len: u16,
+        }
+
+        struct UdpBindInfo {
+            port: u16,
+            owner_tid: u16,
+            recv_queue_len: u16,
+        }
+
+        fn tcp_accept_nowait(result: [u8; 12]) -> (u32, [u8; 4], u16) {
+            let sock_id = u32::from_le_bytes([result[0], result[1], result[2], result[3]]);
+            let ip = [result[4], result[5], result[6], result[7]];
+            let port = u16::from_le_bytes([result[8], result[9]]);
+            (sock_id, ip, port)
+        }
+
+        fn tcp_list_entry(buf: [u8; 16], off: usize) -> TcpConnInfo {
+            TcpConnInfo {
+                local_ip: [buf[off], buf[off + 1], buf[off + 2], buf[off + 3]],
+                local_port: u16::from_le_bytes([buf[off + 4], buf[off + 5]]),
+                remote_ip: [buf[off + 6], buf[off + 7], buf[off + 8], buf[off + 9]],
+                remote_port: u16::from_le_bytes([buf[off + 10], buf[off + 11]]),
+                state: buf[off + 12],
+                owner_tid: buf[off + 13],
+                recv_buf_len: u16::from_le_bytes([buf[off + 14], buf[off + 15]]),
+            }
+        }
+
+        fn udp_list_entry(buf: [u8; 8], off: usize) -> UdpBindInfo {
+            UdpBindInfo {
+                port: u16::from_le_bytes([buf[off], buf[off + 1]]),
+                owner_tid: u16::from_le_bytes([buf[off + 2], buf[off + 3]]),
+                recv_queue_len: u16::from_le_bytes([buf[off + 4], buf[off + 5]]),
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn str_as_bytes_indexing_and_slice_splitting_compile() {
+    compile_ok(
+        "str_as_bytes_indexing_and_slice_splitting_compile",
+        r#"
+        fn parse_input_redirect(line: &str) -> usize {
+            let bytes = line.as_bytes();
+            let mut found = 0usize;
+            for i in 0..bytes.len() {
+                if bytes[i] != b'<' { continue; }
+                if i + 1 < bytes.len() && (bytes[i + 1] == b'<' || bytes[i + 1] == b'(') {
+                    continue;
+                }
+                if i > 0 && bytes[i - 1] >= b'0' && bytes[i - 1] <= b'9' {
+                    continue;
+                }
+                let cmd_part = line[..i].trim();
+                let target_part = line[i + 1..].trim();
+                if !cmd_part.is_empty() && !target_part.is_empty() {
+                    found += 1;
+                }
+            }
+            found
+        }
+        "#,
+    );
+}
+
+#[test]
+fn result_alias_impl_with_match_and_format_args_compiles() {
+    compile_ok(
+        "result_alias_impl_with_match_and_format_args_compiles",
+        r#"
+        mod error {
+            pub enum Error {
+                Failed,
+            }
+
+            pub type Result<T> = core::result::Result<T, Error>;
+        }
+
+        mod io {
+            pub struct Stdout;
+
+            pub fn _print_str(_s: &str) {}
+        }
+
+        trait MainReturn {
+            fn to_exit_code(self) -> u32;
+        }
+
+        impl MainReturn for error::Result<()> {
+            fn to_exit_code(self) -> u32 {
+                match self {
+                    Ok(()) => 0,
+                    Err(e) => {
+                        io::_print_str("Error: ");
+                        let _ = core::fmt::Write::write_fmt(
+                            &mut io::Stdout,
+                            format_args!("{}\n", e),
+                        );
+                        1
+                    }
+                }
+            }
+        }
+        "#,
+    );
+}
