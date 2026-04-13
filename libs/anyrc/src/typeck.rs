@@ -1306,7 +1306,7 @@ impl<'a> TypeChecker<'a> {
                 let method_str = self.interner.resolve(*method_name);
                 let defer_closure_args = matches!(
                     method_str,
-                    "sort_by" | "find" | "position" | "any" | "all" | "map"
+                    "sort_by" | "find" | "position" | "any" | "all" | "map" | "filter_map" | "retain"
                 ) && matches!(args.first().map(|arg| &arg.kind), Some(HirExprKind::Closure(..)));
                 if !defer_closure_args {
                     for a in args { self.check_expr(a); }
@@ -1343,6 +1343,13 @@ impl<'a> TypeChecker<'a> {
                 if method_str == "is_empty" && args.is_empty() {
                     if matches!(&inner_ty, TyKind::Array(_, _) | TyKind::Slice(_) | TyKind::Str) {
                         return TyKind::Bool;
+                    }
+                }
+
+                if method_str == "next" && args.is_empty() {
+                    if let TyKind::Slice(elem) = &inner_ty {
+                        return self.option_of(elem.as_ref().clone())
+                            .unwrap_or_else(|| self.fresh_infer(InferKind::General));
                     }
                 }
 
@@ -1486,6 +1493,35 @@ impl<'a> TypeChecker<'a> {
                                 }
                             }
                         }
+                        "map" if args.len() == 1 => {
+                            if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
+                                if params.len() == 1 {
+                                    self.bind_closure_param(&params[0], item_ty.clone());
+                                    let body_ty = self.check_expr(body);
+                                    if let Some(ret_ty) = ret_ty {
+                                        let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
+                                        self.unify(&annotated_ret_ty, &body_ty, expr.span);
+                                    }
+                                    return TyKind::Slice(Box::new(body_ty));
+                                }
+                            }
+                        }
+                        "filter_map" if args.len() == 1 => {
+                            if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
+                                if params.len() == 1 {
+                                    self.bind_closure_param(&params[0], item_ty.clone());
+                                    let body_ty = self.check_expr(body);
+                                    if let Some(ret_ty) = ret_ty {
+                                        let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
+                                        self.unify(&annotated_ret_ty, &body_ty, expr.span);
+                                    }
+                                    if let Some(mapped_ty) = self.option_inner_ty(&body_ty) {
+                                        return TyKind::Slice(Box::new(mapped_ty));
+                                    }
+                                    return TyKind::Slice(Box::new(self.fresh_infer(InferKind::General)));
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -1595,6 +1631,23 @@ impl<'a> TypeChecker<'a> {
                         match method_str {
                             "len" if args.is_empty() => return TyKind::Uint(UintTy::Usize),
                             "is_empty" if args.is_empty() => return TyKind::Bool,
+                            "retain" if args.len() == 1 => {
+                                if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
+                                    if params.len() == 1 {
+                                        self.bind_closure_param(
+                                            &params[0],
+                                            TyKind::Ref(Box::new(elem_ty.clone()), Mutability::Immutable),
+                                        );
+                                        let body_ty = self.check_expr(body);
+                                        self.unify(&TyKind::Bool, &body_ty, body.span);
+                                        if let Some(ret_ty) = ret_ty {
+                                            let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
+                                            self.unify(&TyKind::Bool, &annotated_ret_ty, expr.span);
+                                        }
+                                        return TyKind::Unit;
+                                    }
+                                }
+                            }
                             "as_slice" if args.is_empty() => {
                                 return TyKind::Ref(
                                     Box::new(TyKind::Slice(Box::new(elem_ty))),
@@ -2248,6 +2301,29 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
 
+            (TyKind::Ref(expected_inner, Mutability::Immutable), TyKind::Adt(def_id, substs))
+                if self.is_vec_def(*def_id) && substs.len() == 1 =>
+            {
+                if let TyKind::Slice(expected_elem) = expected_inner.as_ref() {
+                    self.unify(expected_elem, &substs[0], span);
+                    return;
+                }
+            }
+
+            (TyKind::Ref(expected_inner, Mutability::Immutable), TyKind::Adt(def_id, _))
+                if matches!(expected_inner.as_ref(), TyKind::Str)
+                    && self.is_string_def(*def_id) =>
+            {
+                return;
+            }
+
+            (TyKind::Adt(def_id, _), TyKind::Ref(actual_inner, Mutability::Immutable))
+                if self.is_string_def(*def_id)
+                    && matches!(actual_inner.as_ref(), TyKind::Str) =>
+            {
+                return;
+            }
+
             (TyKind::Tuple(a), TyKind::Tuple(b)) if a.len() == b.len() => {
                 for (x, y) in a.clone().iter().zip(b.clone().iter()) {
                     self.unify(x, y, span);
@@ -2364,18 +2440,10 @@ impl<'a> TypeChecker<'a> {
                             self.bind_pattern(p, t.clone());
                         }
                     }
-                    TyKind::Ref(inner, mutability) | TyKind::RawPtr(inner, mutability) => {
+                    TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
                         if let TyKind::Tuple(tys) = self.shallow_resolve(inner.as_ref().clone()) {
                             for (p, t) in pats.iter().zip(tys.iter()) {
-                                let wrapped = self.wrap_pattern_binding_ty(
-                                    &resolved_ty,
-                                    t.clone(),
-                                );
-                                debug_assert!(matches!(
-                                    wrapped,
-                                    TyKind::Ref(_, _) | TyKind::RawPtr(_, _)
-                                ));
-                                let _ = mutability;
+                                let wrapped = self.wrap_pattern_binding_ty(&resolved_ty, t.clone());
                                 self.bind_pattern(p, wrapped);
                             }
                         }
@@ -2391,17 +2459,14 @@ impl<'a> TypeChecker<'a> {
             }
             HirPattern::Struct(path, fields, _, _) => {
                 match &resolved_ty {
-                    TyKind::Ref(inner, mutability) | TyKind::RawPtr(inner, mutability) => {
+                    TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
                         if let Some(field_tys) = self.pattern_fields(path, inner.as_ref()) {
                             for field in fields {
                                 if let Some((_, field_ty)) =
                                     field_tys.iter().find(|(name, _)| *name == field.name)
                                 {
-                                    let wrapped = self.wrap_pattern_binding_ty(
-                                        &resolved_ty,
-                                        field_ty.clone(),
-                                    );
-                                    let _ = mutability;
+                                    let wrapped =
+                                        self.wrap_pattern_binding_ty(&resolved_ty, field_ty.clone());
                                     self.bind_pattern(&field.pat, wrapped);
                                 }
                             }
@@ -2422,14 +2487,11 @@ impl<'a> TypeChecker<'a> {
             }
             HirPattern::TupleStruct(path, pats, _) => {
                 match &resolved_ty {
-                    TyKind::Ref(inner, mutability) | TyKind::RawPtr(inner, mutability) => {
+                    TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
                         if let Some(field_tys) = self.pattern_variant_tys(path, inner.as_ref()) {
                             for (pat, field_ty) in pats.iter().zip(field_tys.iter()) {
-                                let wrapped = self.wrap_pattern_binding_ty(
-                                    &resolved_ty,
-                                    field_ty.clone(),
-                                );
-                                let _ = mutability;
+                                let wrapped =
+                                    self.wrap_pattern_binding_ty(&resolved_ty, field_ty.clone());
                                 self.bind_pattern(pat, wrapped);
                             }
                         }

@@ -2443,9 +2443,25 @@ fn enum_variant_patterns_over_iter_mut_keep_mutable_reference_bindings() {
 
         fn child_mut<'a>(nodes: &'a mut Vec<XmlNode>, name: &str) -> Option<&'a mut Element> {
             nodes.iter_mut().filter_map(|n| match n {
-                XmlNode::Element(e) if e.name == name => Some(e),
+                XmlNode::Element(e) if e.name.as_str() == name => Some(e),
                 _ => None,
             }).next()
+        }
+        "#,
+    );
+}
+
+#[test]
+fn vec_and_string_refs_coerce_to_slice_and_str() {
+    compile_ok(
+        "vec_and_string_refs_coerce_to_slice_and_str",
+        r#"
+        fn bytes<'a>(data: &'a Vec<u8>) -> &'a [u8] {
+            data
+        }
+
+        fn text<'a>(value: &'a String) -> &'a str {
+            value
         }
         "#,
     );
