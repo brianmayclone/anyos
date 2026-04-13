@@ -73,8 +73,11 @@ EXPORTS
     anyui_textfield_get_selection
     anyui_textfield_set_max_length
     anyui_textarea_set_read_only
+    anyui_textarea_select_all
     anyui_textarea_set_cursor
     anyui_textarea_get_cursor
+    anyui_textarea_set_selection
+    anyui_textarea_get_selection
     anyui_textarea_set_max_length
     anyui_autocomplete_set_suggestions
     anyui_marshal_set_text

@@ -1142,6 +1142,16 @@ pub extern "C" fn anyui_textarea_set_read_only(id: ControlId, read_only: u32) {
 }
 
 #[no_mangle]
+pub extern "C" fn anyui_textarea_select_all(id: ControlId) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(ta) = as_textarea(ctrl) {
+            ta.select_all();
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn anyui_textarea_set_cursor(id: ControlId, pos: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
@@ -1157,6 +1167,38 @@ pub extern "C" fn anyui_textarea_get_cursor(id: ControlId) -> u32 {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         if let Some(ta) = as_textarea(ctrl) {
             return ta.cursor_pos() as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textarea_set_selection(id: ControlId, start: u32, end: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(ta) = as_textarea(ctrl) {
+            ta.set_selection(start as usize, end as usize);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textarea_get_selection(
+    id: ControlId,
+    out_start: *mut u32,
+    out_end: *mut u32,
+) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(ta) = as_textarea(ctrl) {
+            let (start, end) = ta.selection();
+            if !out_start.is_null() {
+                unsafe { *out_start = start as u32 };
+            }
+            if !out_end.is_null() {
+                unsafe { *out_end = end as u32 };
+            }
+            return 1;
         }
     }
     0

@@ -189,8 +189,11 @@ struct AnyuiLib {
     textfield_get_selection: extern "C" fn(u32, *mut u32, *mut u32) -> u32,
     textfield_set_max_length: extern "C" fn(u32, u32),
     textarea_set_read_only: extern "C" fn(u32, u32),
+    textarea_select_all: extern "C" fn(u32),
     textarea_set_cursor: extern "C" fn(u32, u32),
     textarea_get_cursor: extern "C" fn(u32) -> u32,
+    textarea_set_selection: extern "C" fn(u32, u32, u32),
+    textarea_get_selection: extern "C" fn(u32, *mut u32, *mut u32) -> u32,
     textarea_set_max_length: extern "C" fn(u32, u32),
     // AutoCompleteTextField
     autocomplete_set_suggestions: extern "C" fn(u32, *const u8, u32),
@@ -468,8 +471,11 @@ pub fn init() -> bool {
             textfield_get_selection: resolve(&handle, "anyui_textfield_get_selection"),
             textfield_set_max_length: resolve(&handle, "anyui_textfield_set_max_length"),
             textarea_set_read_only: resolve(&handle, "anyui_textarea_set_read_only"),
+            textarea_select_all: resolve(&handle, "anyui_textarea_select_all"),
             textarea_set_cursor: resolve(&handle, "anyui_textarea_set_cursor"),
             textarea_get_cursor: resolve(&handle, "anyui_textarea_get_cursor"),
+            textarea_set_selection: resolve(&handle, "anyui_textarea_set_selection"),
+            textarea_get_selection: resolve(&handle, "anyui_textarea_get_selection"),
             textarea_set_max_length: resolve(&handle, "anyui_textarea_set_max_length"),
             // AutoCompleteTextField
             autocomplete_set_suggestions: resolve(&handle, "anyui_autocomplete_set_suggestions"),
