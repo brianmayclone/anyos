@@ -57,8 +57,20 @@ pub mod str {
     pub use core::str::*;
 }
 
+pub mod char {
+    pub use core::char::*;
+}
+
 pub mod slice {
     pub use core::slice::*;
+}
+
+pub mod f32 {
+    pub use core::f32::*;
+}
+
+pub mod f64 {
+    pub use core::f64::*;
 }
 
 pub mod mem {

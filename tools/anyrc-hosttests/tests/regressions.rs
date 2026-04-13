@@ -462,6 +462,99 @@ fn string_range_indexing_inside_split_loop_compiles() {
 }
 
 #[test]
+fn primitive_char_and_float_items_compile() {
+    compile_ok(
+        "primitive_char_and_float_items",
+        r#"
+        fn decode(n: u32) -> Option<char> {
+            char::from_u32(n)
+        }
+
+        fn clamp_hi(x: f64) -> f64 {
+            if x > 700.0 { f64::INFINITY } else { f64::NEG_INFINITY }
+        }
+
+        fn nan32() -> f32 {
+            f32::NAN
+        }
+        "#,
+    );
+}
+
+#[test]
+fn closure_ref_pattern_and_tuple_field_body_parse() {
+    compile_ok(
+        "closure_ref_pattern_and_tuple_field_body",
+        r#"
+        fn find_zero(xs: &[u8]) -> bool {
+            xs.iter().position(|&b| b == 0).is_some()
+        }
+        "#,
+    );
+
+    let src = r#"
+        fn has_pair(xs: &[(u32, u32)], needle: u32) -> bool {
+            xs.iter().any(|e| e.0 == needle)
+        }
+    "#;
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(src, &mut interner);
+    let _ = parser.parse_crate();
+}
+
+#[test]
+fn unit_structs_impl_trait_and_extern_fn_types_parse() {
+    let src = r#"
+        struct Marker;
+
+        type Callback = extern "C" fn(u32) -> u32;
+
+        fn run(mut f: impl FnMut(&str)) {
+            let _m = Marker;
+        }
+    "#;
+
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(src, &mut interner);
+    let _ = parser.parse_crate();
+}
+
+#[test]
+fn callable_trait_bounds_parse() {
+    let src = r#"
+        fn cmd_send_recv<F: FnMut(&str) -> bool>(mut on_line: F) {
+        }
+    "#;
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(src, &mut interner);
+    let _ = parser.parse_crate();
+}
+
+#[test]
+fn string_and_vec_coercions_compile() {
+    compile_ok(
+        "string_and_vec_coercions",
+        r#"
+        use alloc::string::String;
+        use alloc::vec::Vec;
+
+        fn takes_str(s: &str) -> usize { s.len() }
+        fn takes_slice(xs: &[u8]) -> usize { xs.len() }
+        fn takes_words(xs: &[&str]) -> usize { xs.len() }
+
+        fn run(name: String, bytes: Vec<u8>, words: Vec<&str>) {
+            let _ = takes_str(&name);
+            let _ = &name[1..];
+            let _ = takes_slice(&bytes);
+            let _ = &bytes[1..];
+            let _ = takes_words(&words);
+            let _ = words[0];
+        }
+        "#,
+    );
+}
+
+#[test]
 fn raw_ptr_prev_assignment_then_field_store_compiles() {
     compile_ok(
         "raw_ptr_prev_assignment_then_field_store",

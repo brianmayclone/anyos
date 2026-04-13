@@ -90,6 +90,8 @@ impl<'a> Resolver<'a> {
         self.define_intrinsic_type("Vec", "Vec");
         self.define_intrinsic_type("String", "String");
         self.define_intrinsic_type("Box", "Box");
+        self.define_intrinsic_type("Send", "Send");
+        self.define_intrinsic_type("Sync", "Sync");
 
         self.define_intrinsic_value("Some", "Option::Some");
         self.define_intrinsic_value("None", "Option::None");
@@ -973,8 +975,11 @@ impl<'a> Resolver<'a> {
                         | ("i8", "MAX") | ("i16", "MAX") | ("i32", "MAX") | ("i64", "MAX") | ("i128", "MAX") | ("isize", "MAX")
                         | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")
                         | ("u8", "MIN") | ("u16", "MIN") | ("u32", "MIN") | ("u64", "MIN") | ("u128", "MIN") | ("usize", "MIN")
+                        | ("f32", "INFINITY") | ("f32", "NEG_INFINITY") | ("f32", "NAN")
+                        | ("f64", "INFINITY") | ("f64", "NEG_INFINITY") | ("f64", "NAN")
                     );
-                    let is_assoc_fn = matches!(second_str, "from_le_bytes" | "from_str_radix");
+                    let is_assoc_fn = matches!(second_str, "from_le_bytes" | "from_str_radix")
+                        || (name_str == "char" && second_str == "from_u32");
                     if is_assoc_const || is_assoc_fn {
                         let full_path = format!("{}::{}", name_str, second_str);
                         let def_id = self.alloc_synthetic_def_id();

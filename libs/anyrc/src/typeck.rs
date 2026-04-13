@@ -236,6 +236,9 @@ impl<'a> TypeChecker<'a> {
         match resolved {
             TyKind::Array(elem, _) | TyKind::Slice(elem) => *elem,
             TyKind::Str => TyKind::Uint(UintTy::U8),
+            TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.len() == 1 => {
+                substs[0].clone()
+            }
             other => {
                 if let HirExprKind::MethodCall(recv, method_name, _, _) = &iter.kind {
                     let recv_ty = self.get_expr_ty_cached(recv);
@@ -244,7 +247,9 @@ impl<'a> TypeChecker<'a> {
                         other => other,
                     };
                     let method_str = self.interner.resolve(*method_name);
-                    if matches!(recv_resolved, TyKind::Str) {
+                    let recv_is_string_like = matches!(recv_resolved, TyKind::Str)
+                        || matches!(recv_resolved, TyKind::Adt(def_id, _) if self.is_string_def(def_id));
+                    if recv_is_string_like {
                         match method_str {
                             "bytes" => return TyKind::Uint(UintTy::U8),
                             "split" | "split_whitespace" | "split_ascii_whitespace" | "lines" => {
@@ -277,6 +282,7 @@ impl<'a> TypeChecker<'a> {
             "i64::from_le_bytes" => Some(TyKind::Int(IntTy::I64)),
             "i128::from_le_bytes" => Some(TyKind::Int(IntTy::I128)),
             "isize::from_le_bytes" => Some(TyKind::Int(IntTy::Isize)),
+            "char::from_u32" => self.option_of(TyKind::Char),
             "u8::from_str_radix" => self.result_of(TyKind::Uint(UintTy::U8)),
             "u16::from_str_radix" => self.result_of(TyKind::Uint(UintTy::U16)),
             "u32::from_str_radix" => self.result_of(TyKind::Uint(UintTy::U32)),
@@ -1030,6 +1036,13 @@ impl<'a> TypeChecker<'a> {
                             } else {
                                 substs[0].clone()
                             }
+                        } else if self.is_string_def(def_id) {
+                            if is_range {
+                                TyKind::Str
+                            } else {
+                                self.error(expr.span, "cannot index this type");
+                                TyKind::Error
+                            }
                         } else {
                             self.error(expr.span, "cannot index this type");
                             TyKind::Error
@@ -1074,6 +1087,8 @@ impl<'a> TypeChecker<'a> {
                 };
 
                 let method_str = self.interner.resolve(*method_name);
+                let inner_is_string_like = matches!(&inner_ty, TyKind::Str)
+                    || matches!(&inner_ty, TyKind::Adt(def_id, _) if self.is_string_def(*def_id));
                 if matches!(&inner_ty, TyKind::RawPtr(_, _)) {
                     if method_str == "is_null" && args.is_empty() {
                         return TyKind::Bool;
@@ -1098,7 +1113,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
-                if matches!(&inner_ty, TyKind::Str) {
+                if inner_is_string_like {
                     match method_str {
                         "contains" | "starts_with" | "ends_with" if args.len() == 1 => {
                             return TyKind::Bool;
@@ -1453,6 +1468,8 @@ impl<'a> TypeChecker<'a> {
             "i64::MAX" | "i64::MIN" => Some(TyKind::Int(IntTy::I64)),
             "i128::MAX" | "i128::MIN" => Some(TyKind::Int(IntTy::I128)),
             "isize::MAX" | "isize::MIN" => Some(TyKind::Int(IntTy::Isize)),
+            "f32::INFINITY" | "f32::NEG_INFINITY" | "f32::NAN" => Some(TyKind::Float(FloatTy::F32)),
+            "f64::INFINITY" | "f64::NEG_INFINITY" | "f64::NAN" => Some(TyKind::Float(FloatTy::F64)),
             "anyos_std::fs::O_READ" | "anyos_std::fs::O_WRITE" | "anyos_std::fs::O_CREATE"
             | "anyos_std::fs::O_TRUNC" | "anyos_std::fs::O_APPEND" | "anyos_std::fs::O_SYNC" => {
                 Some(TyKind::Uint(UintTy::U32))
@@ -1464,6 +1481,13 @@ impl<'a> TypeChecker<'a> {
     fn is_vec_def(&self, def_id: DefId) -> bool {
         self.interner
             .lookup("Vec")
+            .and_then(|sym| self.type_name_to_def.get(&sym).copied())
+            == Some(def_id)
+    }
+
+    fn is_string_def(&self, def_id: DefId) -> bool {
+        self.interner
+            .lookup("String")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
     }
@@ -1501,16 +1525,40 @@ impl<'a> TypeChecker<'a> {
                 if matches!(a.as_ref(), TyKind::DynTrait(_)) && matches!(b.as_ref(), TyKind::Adt(_, _)) {
                     return;
                 }
+                if matches!(a.as_ref(), TyKind::Str)
+                    && matches!(b.as_ref(), TyKind::Adt(def_id, _) if self.is_string_def(*def_id))
+                {
+                    return;
+                }
+                if matches!(b.as_ref(), TyKind::Str)
+                    && matches!(a.as_ref(), TyKind::Adt(def_id, _) if self.is_string_def(*def_id))
+                {
+                    return;
+                }
                 if let TyKind::Slice(slice_elem) = a.as_ref() {
-                    if let TyKind::Array(array_elem, _) = b.as_ref() {
-                        self.unify(slice_elem, array_elem, span);
-                        return;
+                    match b.as_ref() {
+                        TyKind::Array(array_elem, _) => {
+                            self.unify(slice_elem, array_elem, span);
+                            return;
+                        }
+                        TyKind::Adt(def_id, substs) if self.is_vec_def(*def_id) && substs.len() == 1 => {
+                            self.unify(slice_elem, &substs[0], span);
+                            return;
+                        }
+                        _ => {}
                     }
                 }
                 if let TyKind::Slice(slice_elem) = b.as_ref() {
-                    if let TyKind::Array(array_elem, _) = a.as_ref() {
-                        self.unify(slice_elem, array_elem, span);
-                        return;
+                    match a.as_ref() {
+                        TyKind::Array(array_elem, _) => {
+                            self.unify(slice_elem, array_elem, span);
+                            return;
+                        }
+                        TyKind::Adt(def_id, substs) if self.is_vec_def(*def_id) && substs.len() == 1 => {
+                            self.unify(slice_elem, &substs[0], span);
+                            return;
+                        }
+                        _ => {}
                     }
                 }
                 self.unify(a, b, span);
@@ -1536,6 +1584,20 @@ impl<'a> TypeChecker<'a> {
 
             (TyKind::Slice(a), TyKind::Array(b, _)) | (TyKind::Array(b, _), TyKind::Slice(a)) => {
                 self.unify(a, b, span);
+                return;
+            }
+
+            (TyKind::Slice(a), TyKind::Adt(def_id, substs))
+            | (TyKind::Adt(def_id, substs), TyKind::Slice(a))
+                if self.is_vec_def(*def_id) && substs.len() == 1 =>
+            {
+                self.unify(a, &substs[0], span);
+                return;
+            }
+
+            (TyKind::Str, TyKind::Adt(def_id, _)) | (TyKind::Adt(def_id, _), TyKind::Str)
+                if self.is_string_def(*def_id) =>
+            {
                 return;
             }
 
