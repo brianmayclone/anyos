@@ -6,6 +6,7 @@ use alloc::vec::Vec;
 pub struct TextField {
     pub(crate) text_base: TextControlBase,
     pub(crate) cursor_pos: usize,
+    pub(crate) read_only: bool,
     pub(crate) focused: bool,
     pub(crate) password_mode: bool,
     pub(crate) placeholder: Vec<u8>,
@@ -34,6 +35,7 @@ impl TextField {
         Self {
             text_base,
             cursor_pos: 0,
+            read_only: false,
             focused: false,
             password_mode: false,
             placeholder: Vec::new(),
@@ -53,6 +55,30 @@ impl TextField {
         self.cursor_pos = self.text_base.text.len();
         self.ensure_cursor_visible();
         self.text_base.base.mark_dirty();
+    }
+
+    pub(crate) fn set_cursor_pos(&mut self, pos: usize) {
+        let pos = pos.min(self.text_base.text.len());
+        self.cursor_pos = pos;
+        self.sel_anchor = pos;
+        self.ensure_cursor_visible();
+        self.text_base.base.mark_dirty();
+    }
+
+    pub(crate) fn cursor_pos(&self) -> usize {
+        self.cursor_pos.min(self.text_base.text.len())
+    }
+
+    pub(crate) fn set_selection(&mut self, start: usize, end: usize) {
+        let len = self.text_base.text.len();
+        self.sel_anchor = start.min(len);
+        self.cursor_pos = end.min(len);
+        self.ensure_cursor_visible();
+        self.text_base.base.mark_dirty();
+    }
+
+    pub(crate) fn selection(&self) -> (usize, usize) {
+        self.selection_range()
     }
 
     /// Left edge of the text area (after prefix).
@@ -440,6 +466,9 @@ impl Control for TextField {
 
         // Ctrl+X: cut selection.
         if ctrl && (char_code == b'x' as u32 || char_code == b'X' as u32) {
+            if self.read_only {
+                return EventResponse::CONSUMED;
+            }
             if self.has_selection() {
                 let bytes = self.selected_bytes().to_vec();
                 crate::compositor::clipboard_set(&bytes);
@@ -452,6 +481,9 @@ impl Control for TextField {
 
         // Ctrl+V: paste from clipboard.
         if ctrl && (char_code == b'v' as u32 || char_code == b'V' as u32) {
+            if self.read_only {
+                return EventResponse::CONSUMED;
+            }
             if let Some(clip) = crate::compositor::clipboard_get() {
                 // Filter to printable ASCII + valid UTF-8 continuation bytes.
                 let filtered: Vec<u8> = clip
@@ -484,6 +516,9 @@ impl Control for TextField {
 
         // Printable character input.
         if char_code >= 0x20 && char_code < 0x7F && !ctrl {
+            if self.read_only {
+                return EventResponse::CONSUMED;
+            }
             // Enforce max_length.
             if self.max_length > 0
                 && !self.has_selection()
@@ -502,6 +537,9 @@ impl Control for TextField {
         }
 
         if keycode == KEY_BACKSPACE {
+            if self.read_only {
+                return EventResponse::CONSUMED;
+            }
             if self.has_selection() {
                 self.delete_selection();
                 self.ensure_cursor_visible();
@@ -518,6 +556,9 @@ impl Control for TextField {
         }
 
         if keycode == KEY_DELETE {
+            if self.read_only {
+                return EventResponse::CONSUMED;
+            }
             if self.has_selection() {
                 self.delete_selection();
                 self.ensure_cursor_visible();

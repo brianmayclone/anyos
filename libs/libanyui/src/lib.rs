@@ -1038,6 +1038,73 @@ pub extern "C" fn anyui_textfield_select_all(id: ControlId) {
     }
 }
 
+#[no_mangle]
+pub extern "C" fn anyui_textfield_set_read_only(id: ControlId, read_only: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            let new_val = read_only != 0;
+            if tf.read_only != new_val {
+                tf.read_only = new_val;
+                tf.text_base.base.mark_dirty();
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textfield_set_cursor(id: ControlId, pos: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            tf.set_cursor_pos(pos as usize);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textfield_get_cursor(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            return tf.cursor_pos() as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textfield_set_selection(id: ControlId, start: u32, end: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            tf.set_selection(start as usize, end as usize);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textfield_get_selection(
+    id: ControlId,
+    out_start: *mut u32,
+    out_end: *mut u32,
+) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(tf) = as_textfield(ctrl) {
+            let (start, end) = tf.selection();
+            if !out_start.is_null() {
+                unsafe { *out_start = start as u32 };
+            }
+            if !out_end.is_null() {
+                unsafe { *out_end = end as u32 };
+            }
+            return 1;
+        }
+    }
+    0
+}
+
 /// Set the maximum text length for a TextField (0 = unlimited).
 #[no_mangle]
 pub extern "C" fn anyui_textfield_set_max_length(id: ControlId, max_len: u32) {
@@ -1058,6 +1125,41 @@ pub extern "C" fn anyui_textarea_set_max_length(id: ControlId, max_len: u32) {
             ta.max_length = max_len as usize;
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textarea_set_read_only(id: ControlId, read_only: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(ta) = as_textarea(ctrl) {
+            let new_val = read_only != 0;
+            if ta.read_only != new_val {
+                ta.read_only = new_val;
+                ta.text_base.base.mark_dirty();
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textarea_set_cursor(id: ControlId, pos: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(ta) = as_textarea(ctrl) {
+            ta.set_cursor_pos(pos as usize);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_textarea_get_cursor(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(ta) = as_textarea(ctrl) {
+            return ta.cursor_pos() as u32;
+        }
+    }
+    0
 }
 
 #[no_mangle]

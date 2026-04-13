@@ -9,6 +9,18 @@ impl TextArea {
         Self { ctrl: Control { id } }
     }
 
+    pub fn set_read_only(&self, enabled: bool) {
+        (lib().textarea_set_read_only)(self.ctrl.id, enabled as u32);
+    }
+
+    pub fn set_cursor(&self, pos: u32) {
+        (lib().textarea_set_cursor)(self.ctrl.id, pos);
+    }
+
+    pub fn cursor(&self) -> u32 {
+        (lib().textarea_get_cursor)(self.ctrl.id)
+    }
+
     pub fn on_text_changed(&self, mut f: impl FnMut(&TextChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| f(&TextChangedEvent { id }));
         (lib().on_change_fn)(self.ctrl.id, thunk, ud);

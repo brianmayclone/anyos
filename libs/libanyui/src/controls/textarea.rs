@@ -3,6 +3,7 @@ use crate::control::{Control, ControlBase, ControlKind, EventResponse, TextContr
 pub struct TextArea {
     pub(crate) text_base: TextControlBase,
     pub(crate) cursor_pos: usize,
+    pub(crate) read_only: bool,
     pub(crate) focused: bool,
     pub(crate) scroll_y: i32,
     /// Maximum text length in bytes (0 = unlimited).
@@ -14,6 +15,7 @@ impl TextArea {
         Self {
             text_base,
             cursor_pos: 0,
+            read_only: false,
             focused: false,
             scroll_y: 0,
             max_length: 0,
@@ -54,6 +56,15 @@ impl TextArea {
     /// Auto-scroll to bottom (for output append use case).
     pub fn scroll_to_bottom(&mut self) {
         self.scroll_y = self.max_scroll();
+    }
+
+    pub(crate) fn set_cursor_pos(&mut self, pos: usize) {
+        self.cursor_pos = pos.min(self.text_base.text.len());
+        self.text_base.base.mark_dirty();
+    }
+
+    pub(crate) fn cursor_pos(&self) -> usize {
+        self.cursor_pos.min(self.text_base.text.len())
     }
 }
 
@@ -229,11 +240,15 @@ impl Control for TextArea {
 
     fn handle_click(&mut self, _lx: i32, _ly: i32, _button: u32) -> EventResponse {
         self.cursor_pos = self.text_base.text.len();
+        self.text_base.base.mark_dirty();
         EventResponse::CONSUMED
     }
 
     fn handle_key_down(&mut self, keycode: u32, char_code: u32, _modifiers: u32) -> EventResponse {
         if char_code >= 0x20 && char_code < 0x7F {
+            if self.read_only {
+                return EventResponse::CONSUMED;
+            }
             // Enforce max_length.
             if self.max_length > 0 && self.text_base.text.len() >= self.max_length {
                 return EventResponse::CONSUMED;
@@ -246,6 +261,9 @@ impl Control for TextArea {
             self.cursor_pos += 1;
             EventResponse::CHANGED
         } else if keycode == crate::control::KEY_ENTER {
+            if self.read_only {
+                return EventResponse::CONSUMED;
+            }
             // Enforce max_length.
             if self.max_length > 0 && self.text_base.text.len() >= self.max_length {
                 return EventResponse::CONSUMED;
@@ -257,6 +275,9 @@ impl Control for TextArea {
             self.cursor_pos += 1;
             EventResponse::CHANGED
         } else if keycode == crate::control::KEY_BACKSPACE {
+            if self.read_only {
+                return EventResponse::CONSUMED;
+            }
             if self.cursor_pos > 0 && !self.text_base.text.is_empty() {
                 self.cursor_pos -= 1;
                 self.text_base.text.remove(self.cursor_pos);

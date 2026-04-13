@@ -25,6 +25,33 @@ impl TextField {
         (lib().textfield_select_all)(self.ctrl.id);
     }
 
+    pub fn set_read_only(&self, enabled: bool) {
+        (lib().textfield_set_read_only)(self.ctrl.id, enabled as u32);
+    }
+
+    pub fn set_cursor(&self, pos: u32) {
+        (lib().textfield_set_cursor)(self.ctrl.id, pos);
+    }
+
+    pub fn cursor(&self) -> u32 {
+        (lib().textfield_get_cursor)(self.ctrl.id)
+    }
+
+    pub fn set_selection(&self, start: u32, end: u32) {
+        (lib().textfield_set_selection)(self.ctrl.id, start, end);
+    }
+
+    pub fn selection(&self) -> Option<(u32, u32)> {
+        let mut start = 0;
+        let mut end = 0;
+        let ok = (lib().textfield_get_selection)(self.ctrl.id, &mut start, &mut end);
+        if ok != 0 {
+            Some((start, end))
+        } else {
+            None
+        }
+    }
+
     pub fn set_password_mode(&self, enabled: bool) {
         (lib().textfield_set_password)(self.ctrl.id, enabled as u32);
     }
