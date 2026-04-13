@@ -813,18 +813,24 @@ pub extern "C" fn anyui_set_orientation(id: ControlId, orientation: u32) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         match ctrl.kind() {
             ControlKind::StackPanel => {
-                let raw: *mut dyn Control = &mut **ctrl;
-                let sp = unsafe { &mut *(raw as *mut controls::stack_panel::StackPanel) };
-                sp.orientation = Orientation::from_u32(orientation);
+                if let Some(sp) = control::cast_mut::<controls::stack_panel::StackPanel>(
+                    ctrl,
+                    ControlKind::StackPanel,
+                ) {
+                    sp.orientation = Orientation::from_u32(orientation);
+                }
             }
             ControlKind::SplitView => {
-                let raw: *mut dyn Control = &mut **ctrl;
-                let sv = unsafe { &mut *(raw as *mut controls::split_view::SplitView) };
-                let new_orient = Orientation::from_u32(orientation);
-                if sv.orientation != new_orient {
-                    sv.orientation = new_orient;
-                    sv.sync_divider();
-                    sv.base.mark_dirty();
+                if let Some(sv) = control::cast_mut::<controls::split_view::SplitView>(
+                    ctrl,
+                    ControlKind::SplitView,
+                ) {
+                    let new_orient = Orientation::from_u32(orientation);
+                    if sv.orientation != new_orient {
+                        sv.orientation = new_orient;
+                        sv.sync_divider();
+                        sv.base.mark_dirty();
+                    }
                 }
             }
             _ => {}
@@ -838,9 +844,10 @@ pub extern "C" fn anyui_set_orientation(id: ControlId, orientation: u32) {
 pub extern "C" fn anyui_set_columns(id: ControlId, columns: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::TableLayout {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let tl = unsafe { &mut *(raw as *mut controls::table_layout::TableLayout) };
+        if let Some(tl) = control::cast_mut::<controls::table_layout::TableLayout>(
+            ctrl,
+            ControlKind::TableLayout,
+        ) {
             tl.columns = columns;
         }
     }
@@ -850,9 +857,10 @@ pub extern "C" fn anyui_set_columns(id: ControlId, columns: u32) {
 pub extern "C" fn anyui_set_row_height(id: ControlId, row_height: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::TableLayout {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let tl = unsafe { &mut *(raw as *mut controls::table_layout::TableLayout) };
+        if let Some(tl) = control::cast_mut::<controls::table_layout::TableLayout>(
+            ctrl,
+            ControlKind::TableLayout,
+        ) {
             tl.row_height = row_height;
         }
     }
@@ -867,9 +875,10 @@ pub extern "C" fn anyui_set_row_height(id: ControlId, row_height: u32) {
 pub extern "C" fn anyui_set_column_widths(id: ControlId, widths: *const u32, len: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::TableLayout {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let tl = unsafe { &mut *(raw as *mut controls::table_layout::TableLayout) };
+        if let Some(tl) = control::cast_mut::<controls::table_layout::TableLayout>(
+            ctrl,
+            ControlKind::TableLayout,
+        ) {
             if len == 0 || widths.is_null() {
                 tl.col_widths.clear();
             } else {
@@ -884,12 +893,7 @@ pub extern "C" fn anyui_set_column_widths(id: ControlId, widths: *const u32, len
 
 /// Helper to downcast a control to SplitView.
 fn as_split_view(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::split_view::SplitView> {
-    if ctrl.kind() == ControlKind::SplitView {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::split_view::SplitView) })
-    } else {
-        None
-    }
+    control::cast_mut(ctrl, ControlKind::SplitView)
 }
 
 #[no_mangle]
@@ -942,32 +946,17 @@ pub extern "C" fn anyui_splitview_set_resizable(id: ControlId, resizable: u32) {
 
 /// Helper to downcast a control to TextField.
 fn as_textfield(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::textfield::TextField> {
-    if ctrl.kind() == ControlKind::TextField {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::textfield::TextField) })
-    } else {
-        None
-    }
+    control::cast_mut(ctrl, ControlKind::TextField)
 }
 
 fn as_textarea(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::textarea::TextArea> {
-    if ctrl.kind() == ControlKind::TextArea {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::textarea::TextArea) })
-    } else {
-        None
-    }
+    control::cast_mut(ctrl, ControlKind::TextArea)
 }
 
 fn as_autocomplete_textfield(
     ctrl: &mut Box<dyn Control>,
 ) -> Option<&mut controls::autocomplete_textfield::AutoCompleteTextField> {
-    if ctrl.kind() == ControlKind::AutoCompleteTextField {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::autocomplete_textfield::AutoCompleteTextField) })
-    } else {
-        None
-    }
+    control::cast_mut(ctrl, ControlKind::AutoCompleteTextField)
 }
 
 #[no_mangle]
@@ -1094,9 +1083,10 @@ pub extern "C" fn anyui_autocomplete_set_suggestions(id: ControlId, text: *const
 pub extern "C" fn anyui_canvas_set_pixel(id: ControlId, x: i32, y: i32, color: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::Canvas {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
+            ctrl,
+            ControlKind::Canvas,
+        ) {
             canvas.set_pixel(x, y, color);
         }
     }
@@ -1106,9 +1096,10 @@ pub extern "C" fn anyui_canvas_set_pixel(id: ControlId, x: i32, y: i32, color: u
 pub extern "C" fn anyui_canvas_clear(id: ControlId, color: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::Canvas {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
+            ctrl,
+            ControlKind::Canvas,
+        ) {
             canvas.clear(color);
             canvas.base.mark_dirty();
         }
@@ -1126,9 +1117,10 @@ pub extern "C" fn anyui_canvas_fill_rect(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::Canvas {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
+            ctrl,
+            ControlKind::Canvas,
+        ) {
             canvas.fill_rect(x, y, w, h, color);
         }
     }
@@ -1145,9 +1137,10 @@ pub extern "C" fn anyui_canvas_draw_line(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::Canvas {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
+            ctrl,
+            ControlKind::Canvas,
+        ) {
             canvas.draw_line(x0, y0, x1, y1, color);
         }
     }
@@ -1165,9 +1158,10 @@ pub extern "C" fn anyui_canvas_draw_rect(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::Canvas {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
+            ctrl,
+            ControlKind::Canvas,
+        ) {
             canvas.draw_rect(x, y, w, h, color, thickness);
         }
     }
@@ -1183,9 +1177,10 @@ pub extern "C" fn anyui_canvas_draw_circle(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::Canvas {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
+            ctrl,
+            ControlKind::Canvas,
+        ) {
             canvas.draw_circle(cx, cy, radius, color);
         }
     }
@@ -1201,9 +1196,10 @@ pub extern "C" fn anyui_canvas_fill_circle(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::Canvas {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
+            ctrl,
+            ControlKind::Canvas,
+        ) {
             canvas.fill_circle(cx, cy, radius, color);
         }
     }
@@ -1213,9 +1209,10 @@ pub extern "C" fn anyui_canvas_fill_circle(
 pub extern "C" fn anyui_canvas_get_buffer(id: ControlId) -> *mut u32 {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::Canvas {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let canvas = unsafe { &mut *(raw as *mut controls::canvas::Canvas) };
+        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
+            ctrl,
+            ControlKind::Canvas,
+        ) {
             return canvas.pixels.as_mut_ptr();
         }
     }
@@ -1248,21 +1245,11 @@ pub extern "C" fn anyui_canvas_get_height(id: ControlId) -> u32 {
 // ── Canvas extensions (interactive, drawing primitives) ──────────────
 
 fn as_canvas(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::canvas::Canvas> {
-    if ctrl.kind() == ControlKind::Canvas {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::canvas::Canvas) })
-    } else {
-        None
-    }
+    control::cast_mut(ctrl, ControlKind::Canvas)
 }
 
 fn as_canvas_ref(ctrl: &Box<dyn Control>) -> Option<&controls::canvas::Canvas> {
-    if ctrl.kind() == ControlKind::Canvas {
-        let raw: *const dyn Control = &**ctrl;
-        Some(unsafe { &*(raw as *const controls::canvas::Canvas) })
-    } else {
-        None
-    }
+    control::cast_ref(ctrl, ControlKind::Canvas)
 }
 
 /// Enable or disable interactive mode (mouse move fires EVENT_CHANGE).
@@ -1452,12 +1439,13 @@ pub extern "C" fn anyui_canvas_draw_text(
 pub extern "C" fn anyui_imageview_set_pixels(id: ControlId, data: *const u32, w: u32, h: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::ImageView {
+        if let Some(iv) = control::cast_mut::<controls::image_view::ImageView>(
+            ctrl,
+            ControlKind::ImageView,
+        ) {
             let count = (w as usize) * (h as usize);
             if !data.is_null() && count > 0 {
                 let slice = unsafe { core::slice::from_raw_parts(data, count) };
-                let raw: *mut dyn Control = &mut **ctrl;
-                let iv = unsafe { &mut *(raw as *mut controls::image_view::ImageView) };
                 iv.set_pixels(slice, w, h);
             }
         }
@@ -1469,9 +1457,10 @@ pub extern "C" fn anyui_imageview_set_pixels(id: ControlId, data: *const u32, w:
 pub extern "C" fn anyui_imageview_set_scale_mode(id: ControlId, mode: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::ImageView {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let iv = unsafe { &mut *(raw as *mut controls::image_view::ImageView) };
+        if let Some(iv) = control::cast_mut::<controls::image_view::ImageView>(
+            ctrl,
+            ControlKind::ImageView,
+        ) {
             if iv.scale_mode != mode {
                 iv.scale_mode = mode;
                 iv.base.mark_dirty();
@@ -1489,9 +1478,10 @@ pub extern "C" fn anyui_imageview_get_image_size(
 ) -> u32 {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::ImageView {
-            let raw: *const dyn Control = &**ctrl;
-            let iv = unsafe { &*(raw as *const controls::image_view::ImageView) };
+        if let Some(iv) = control::cast_ref::<controls::image_view::ImageView>(
+            ctrl,
+            ControlKind::ImageView,
+        ) {
             if !out_w.is_null() {
                 unsafe {
                     *out_w = iv.img_w;
@@ -1513,9 +1503,10 @@ pub extern "C" fn anyui_imageview_get_image_size(
 pub extern "C" fn anyui_imageview_clear(id: ControlId) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if ctrl.kind() == ControlKind::ImageView {
-            let raw: *mut dyn Control = &mut **ctrl;
-            let iv = unsafe { &mut *(raw as *mut controls::image_view::ImageView) };
+        if let Some(iv) = control::cast_mut::<controls::image_view::ImageView>(
+            ctrl,
+            ControlKind::ImageView,
+        ) {
             iv.clear();
         }
     }
@@ -1533,15 +1524,22 @@ pub extern "C" fn anyui_iconbutton_set_pixels(id: ControlId, data: *const u32, w
             return;
         }
         let slice = unsafe { core::slice::from_raw_parts(data, count) };
-        let raw: *mut dyn Control = &mut **ctrl;
         match ctrl.kind() {
             ControlKind::IconButton => {
-                let ib = unsafe { &mut *(raw as *mut controls::icon_button::IconButton) };
-                ib.set_icon_pixels(slice, w, h);
+                if let Some(ib) = control::cast_mut::<controls::icon_button::IconButton>(
+                    ctrl,
+                    ControlKind::IconButton,
+                ) {
+                    ib.set_icon_pixels(slice, w, h);
+                }
             }
             ControlKind::PlainButton => {
-                let pb = unsafe { &mut *(raw as *mut controls::plain_button::PlainButton) };
-                pb.set_icon_pixels(slice, w, h);
+                if let Some(pb) = control::cast_mut::<controls::plain_button::PlainButton>(
+                    ctrl,
+                    ControlKind::PlainButton,
+                ) {
+                    pb.set_icon_pixels(slice, w, h);
+                }
             }
             _ => {}
         }
@@ -1553,23 +1551,13 @@ pub extern "C" fn anyui_iconbutton_set_pixels(id: ControlId, data: *const u32, w
 fn as_data_grid(
     ctrl: &mut alloc::boxed::Box<dyn Control>,
 ) -> Option<&mut controls::data_grid::DataGrid> {
-    if ctrl.kind() == ControlKind::DataGrid {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::data_grid::DataGrid) })
-    } else {
-        None
-    }
+    control::cast_mut(ctrl, ControlKind::DataGrid)
 }
 
 fn as_data_grid_ref(
     ctrl: &alloc::boxed::Box<dyn Control>,
 ) -> Option<&controls::data_grid::DataGrid> {
-    if ctrl.kind() == ControlKind::DataGrid {
-        let raw: *const dyn Control = &**ctrl;
-        Some(unsafe { &*(raw as *const controls::data_grid::DataGrid) })
-    } else {
-        None
-    }
+    control::cast_ref(ctrl, ControlKind::DataGrid)
 }
 
 #[no_mangle]
@@ -1997,23 +1985,13 @@ pub extern "C" fn anyui_datagrid_set_connector_column(id: ControlId, col: u32) {
 fn as_text_editor(
     ctrl: &mut alloc::boxed::Box<dyn Control>,
 ) -> Option<&mut controls::text_editor::TextEditor> {
-    if ctrl.kind() == ControlKind::TextEditor {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::text_editor::TextEditor) })
-    } else {
-        None
-    }
+    control::cast_mut(ctrl, ControlKind::TextEditor)
 }
 
 fn as_text_editor_ref(
     ctrl: &alloc::boxed::Box<dyn Control>,
 ) -> Option<&controls::text_editor::TextEditor> {
-    if ctrl.kind() == ControlKind::TextEditor {
-        let raw: *const dyn Control = &**ctrl;
-        Some(unsafe { &*(raw as *const controls::text_editor::TextEditor) })
-    } else {
-        None
-    }
+    control::cast_ref(ctrl, ControlKind::TextEditor)
 }
 
 #[no_mangle]
@@ -2284,23 +2262,13 @@ pub extern "C" fn anyui_texteditor_ensure_line_visible(id: ControlId, line: u32)
 fn as_tree_view(
     ctrl: &mut alloc::boxed::Box<dyn Control>,
 ) -> Option<&mut controls::tree_view::TreeView> {
-    if ctrl.kind() == ControlKind::TreeView {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::tree_view::TreeView) })
-    } else {
-        None
-    }
+    control::cast_mut(ctrl, ControlKind::TreeView)
 }
 
 fn as_tree_view_ref(
     ctrl: &alloc::boxed::Box<dyn Control>,
 ) -> Option<&controls::tree_view::TreeView> {
-    if ctrl.kind() == ControlKind::TreeView {
-        let raw: *const dyn Control = &**ctrl;
-        Some(unsafe { &*(raw as *const controls::tree_view::TreeView) })
-    } else {
-        None
-    }
+    control::cast_ref(ctrl, ControlKind::TreeView)
 }
 
 #[no_mangle]
@@ -3884,12 +3852,7 @@ pub extern "C" fn anyui_measure_text(
 // ── TabBar extensions ────────────────────────────────────────────────
 
 fn as_tabbar(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::tabbar::TabBar> {
-    if ctrl.kind() == ControlKind::TabBar {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::tabbar::TabBar) })
-    } else {
-        None
-    }
+    control::cast_mut(ctrl, ControlKind::TabBar)
 }
 
 /// Show or hide the "+" (new-tab) button on a TabBar.

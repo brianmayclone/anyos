@@ -106,6 +106,8 @@ pub struct TypeChecker<'a> {
     struct_defs: HashMap<DefId, Vec<(Symbol, TyKind)>>,
     /// Map type name Symbol -> DefId for structs and enums
     type_name_to_def: HashMap<Symbol, DefId>,
+    /// Generic type aliases lowered to TyKind with Param slots.
+    type_aliases: HashMap<Symbol, TyKind>,
     /// Enum variant field types: enum DefId -> vec of (variant_name, field_types)
     enum_variant_fields: HashMap<DefId, Vec<(Symbol, Vec<TyKind>)>>,
     /// Map resolver variant DefId -> owning enum DefId
@@ -158,6 +160,7 @@ impl<'a> TypeChecker<'a> {
             fn_sigs: HashMap::new(),
             struct_defs: HashMap::new(),
             type_name_to_def: HashMap::new(),
+            type_aliases: HashMap::new(),
             enum_variant_fields: HashMap::new(),
             resolver_variant_to_enum: HashMap::new(),
             current_generic_params: HashMap::new(),
@@ -465,13 +468,57 @@ impl<'a> TypeChecker<'a> {
                 self.current_generic_bounds = old_bounds;
             }
             HirItemKind::Struct(s) => {
+                let old_generics = core::mem::take(&mut self.current_generic_params);
+                let old_bounds = core::mem::take(&mut self.current_generic_bounds);
+                let mut n_type_params = 0u32;
+                for gp in &s.generics.params {
+                    if let HirGenericParam::Type(name, bounds, _, _) = gp {
+                        self.current_generic_params.insert(*name, n_type_params);
+                        let mut bound_def_ids = Vec::new();
+                        for bound in bounds {
+                            if !bound.path.segments.is_empty() {
+                                let trait_name = bound.path.segments[0].ident;
+                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
+                                    bound_def_ids.push(trait_def_id);
+                                }
+                            }
+                        }
+                        if !bound_def_ids.is_empty() {
+                            self.current_generic_bounds.insert(n_type_params, bound_def_ids);
+                        }
+                        n_type_params += 1;
+                    }
+                }
                 let fields: Vec<(Symbol, TyKind)> = s.fields.iter()
                     .map(|f| (f.name, self.hir_ty_to_ty(&f.ty)))
                     .collect();
                 self.struct_defs.insert(s.def_id, fields);
                 self.type_name_to_def.insert(s.name, s.def_id);
+                self.current_generic_params = old_generics;
+                self.current_generic_bounds = old_bounds;
             }
             HirItemKind::Enum(e) => {
+                let old_generics = core::mem::take(&mut self.current_generic_params);
+                let old_bounds = core::mem::take(&mut self.current_generic_bounds);
+                let mut n_type_params = 0u32;
+                for gp in &e.generics.params {
+                    if let HirGenericParam::Type(name, bounds, _, _) = gp {
+                        self.current_generic_params.insert(*name, n_type_params);
+                        let mut bound_def_ids = Vec::new();
+                        for bound in bounds {
+                            if !bound.path.segments.is_empty() {
+                                let trait_name = bound.path.segments[0].ident;
+                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
+                                    bound_def_ids.push(trait_def_id);
+                                }
+                            }
+                        }
+                        if !bound_def_ids.is_empty() {
+                            self.current_generic_bounds.insert(n_type_params, bound_def_ids);
+                        }
+                        n_type_params += 1;
+                    }
+                }
                 self.type_name_to_def.insert(e.name, e.def_id);
                 // Collect variant field types
                 let mut variants = Vec::new();
@@ -488,6 +535,36 @@ impl<'a> TypeChecker<'a> {
                     variants.push((v.name, field_tys));
                 }
                 self.enum_variant_fields.insert(e.def_id, variants);
+                self.current_generic_params = old_generics;
+                self.current_generic_bounds = old_bounds;
+            }
+            HirItemKind::TypeAlias(ta) => {
+                let old_generics = core::mem::take(&mut self.current_generic_params);
+                let old_bounds = core::mem::take(&mut self.current_generic_bounds);
+                let mut n_type_params = 0u32;
+                for gp in &ta.generics.params {
+                    if let HirGenericParam::Type(name, bounds, _, _) = gp {
+                        self.current_generic_params.insert(*name, n_type_params);
+                        let mut bound_def_ids = Vec::new();
+                        for bound in bounds {
+                            if !bound.path.segments.is_empty() {
+                                let trait_name = bound.path.segments[0].ident;
+                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
+                                    bound_def_ids.push(trait_def_id);
+                                }
+                            }
+                        }
+                        if !bound_def_ids.is_empty() {
+                            self.current_generic_bounds.insert(n_type_params, bound_def_ids);
+                        }
+                        n_type_params += 1;
+                    }
+                }
+                if let Some(ty) = &ta.ty {
+                    self.type_aliases.insert(ta.name, self.hir_ty_to_ty(ty));
+                }
+                self.current_generic_params = old_generics;
+                self.current_generic_bounds = old_bounds;
             }
             HirItemKind::Impl(ib) => {
                 let saved_self_ty = self.current_self_ty.clone();
@@ -949,13 +1026,14 @@ impl<'a> TypeChecker<'a> {
             }
 
             HirExprKind::Struct(path, fields, _base) => {
-                // Find struct DefId by name - use last segment for module-qualified paths
-                let def_id = if !path.segments.is_empty() {
-                    let name = path.segments.last().unwrap().ident;
-                    self.type_name_to_def.get(&name).copied()
-                } else {
-                    None
-                };
+                let def_id = self.resolve.resolutions.get(&expr.id).copied().or_else(|| {
+                    if !path.segments.is_empty() {
+                        let name = path.segments.last().unwrap().ident;
+                        self.type_name_to_def.get(&name).copied()
+                    } else {
+                        None
+                    }
+                });
 
                 if let Some(def_id) = def_id {
                     if let Some(expected_fields) = self.struct_defs.get(&def_id).cloned() {
@@ -991,12 +1069,22 @@ impl<'a> TypeChecker<'a> {
             }
 
             HirExprKind::Match(scrutinee, arms) => {
-                let _scr_ty = self.check_expr(scrutinee);
+                let scr_ty = self.check_expr(scrutinee);
                 if arms.is_empty() {
                     return TyKind::Never;
                 }
+                self.bind_pattern(&arms[0].pat, scr_ty.clone());
+                if let Some(guard) = &arms[0].guard {
+                    let guard_ty = self.check_expr(guard);
+                    self.unify(&TyKind::Bool, &guard_ty, guard.span);
+                }
                 let first_ty = self.check_expr(&arms[0].body);
                 for arm in &arms[1..] {
+                    self.bind_pattern(&arm.pat, scr_ty.clone());
+                    if let Some(guard) = &arm.guard {
+                        let guard_ty = self.check_expr(guard);
+                        self.unify(&TyKind::Bool, &guard_ty, guard.span);
+                    }
                     let arm_ty = self.check_expr(&arm.body);
                     self.unify(&first_ty, &arm_ty, arm.span);
                 }
@@ -1942,13 +2030,16 @@ impl<'a> TypeChecker<'a> {
 
     fn bind_pattern(&mut self, pat: &HirPattern, ty: TyKind) {
         match pat {
-            HirPattern::Ident(hir_id, _, _, _, _) => {
+            HirPattern::Ident(hir_id, _, _, sub, _) => {
                 if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
-                    self.local_types.insert(def_id, ty);
+                    self.local_types.insert(def_id, ty.clone());
+                }
+                if let Some(sub) = sub {
+                    self.bind_pattern(sub, ty);
                 }
             }
             HirPattern::Tuple(pats, _) => {
-                if let TyKind::Tuple(tys) = &ty {
+                if let TyKind::Tuple(tys) = &self.shallow_resolve(ty) {
                     for (p, t) in pats.iter().zip(tys.iter()) {
                         self.bind_pattern(p, t.clone());
                     }
@@ -1956,12 +2047,94 @@ impl<'a> TypeChecker<'a> {
             }
             HirPattern::Wildcard(_) => {}
             HirPattern::Ref(inner, _, _) => {
-                if let TyKind::Ref(inner_ty, _) = ty {
+                if let TyKind::Ref(inner_ty, _) = self.shallow_resolve(ty) {
                     self.bind_pattern(inner, *inner_ty);
+                }
+            }
+            HirPattern::Struct(path, fields, _, _) => {
+                if let Some(field_tys) = self.pattern_fields(path, &ty) {
+                    for field in fields {
+                        if let Some((_, field_ty)) = field_tys.iter().find(|(name, _)| *name == field.name) {
+                            self.bind_pattern(&field.pat, field_ty.clone());
+                        }
+                    }
+                }
+            }
+            HirPattern::TupleStruct(path, pats, _) => {
+                if let Some(field_tys) = self.pattern_variant_tys(path, &ty) {
+                    for (pat, field_ty) in pats.iter().zip(field_tys.iter()) {
+                        self.bind_pattern(pat, field_ty.clone());
+                    }
+                }
+            }
+            HirPattern::Or(pats, _) => {
+                for pat in pats {
+                    self.bind_pattern(pat, ty.clone());
                 }
             }
             _ => {}
         }
+    }
+
+    fn pattern_fields(&self, path: &HirPath, ty: &TyKind) -> Option<Vec<(Symbol, TyKind)>> {
+        let resolved = self.shallow_resolve(ty.clone());
+        let TyKind::Adt(def_id, substs) = resolved else {
+            return None;
+        };
+
+        if let Some(fields) = self.struct_defs.get(&def_id) {
+            return Some(fields.iter()
+                .map(|(name, field_ty)| (*name, self.substitute_params(field_ty, &substs)))
+                .collect());
+        }
+
+        let variant_name = path.segments.last()?.ident;
+        let variants = self.enum_variant_fields.get(&def_id)?;
+        let field_tys = variants.iter()
+            .find(|(name, _)| *name == variant_name)?
+            .1
+            .iter()
+            .enumerate()
+            .map(|(idx, field_ty)| {
+                let field_name = self.interner.lookup(&idx.to_string()).unwrap_or(Symbol::from_raw(0));
+                (field_name, self.substitute_params(field_ty, &substs))
+            })
+            .collect();
+        Some(field_tys)
+    }
+
+    fn pattern_variant_tys(&self, path: &HirPath, ty: &TyKind) -> Option<Vec<TyKind>> {
+        let resolved = self.shallow_resolve(ty.clone());
+        let TyKind::Adt(def_id, substs) = resolved else {
+            return None;
+        };
+        let variant_name = path.segments.last()?.ident;
+        let variant_str = self.interner.resolve(variant_name);
+
+        if self.is_result_def(def_id) {
+            return match (variant_str, substs.as_slice()) {
+                ("Ok", [ok_ty, _]) => Some(vec![ok_ty.clone()]),
+                ("Err", [_, err_ty]) => Some(vec![err_ty.clone()]),
+                _ => None,
+            };
+        }
+
+        if self.is_option_def(def_id) {
+            return match (variant_str, substs.as_slice()) {
+                ("Some", [inner_ty]) => Some(vec![inner_ty.clone()]),
+                ("None", _) => Some(vec![]),
+                _ => None,
+            };
+        }
+
+        let variants = self.enum_variant_fields.get(&def_id)?;
+        let field_tys = variants.iter()
+            .find(|(name, _)| *name == variant_name)?
+            .1
+            .iter()
+            .map(|field_ty| self.substitute_params(field_ty, &substs))
+            .collect();
+        Some(field_tys)
     }
 
     // ── Generic substitution ──
@@ -1981,9 +2154,17 @@ impl<'a> TypeChecker<'a> {
             TyKind::Tuple(tys) => TyKind::Tuple(tys.iter().map(|t| self.substitute_params(t, substs)).collect()),
             TyKind::Array(inner, n) => TyKind::Array(Box::new(self.substitute_params(inner, substs)), *n),
             TyKind::Slice(inner) => TyKind::Slice(Box::new(self.substitute_params(inner, substs))),
+            TyKind::FnDef(def_id, fn_substs) => TyKind::FnDef(
+                *def_id,
+                fn_substs.iter().map(|t| self.substitute_params(t, substs)).collect(),
+            ),
             TyKind::FnPtr(params, ret) => TyKind::FnPtr(
                 params.iter().map(|t| self.substitute_params(t, substs)).collect(),
                 Box::new(self.substitute_params(ret, substs)),
+            ),
+            TyKind::Adt(def_id, adt_substs) => TyKind::Adt(
+                *def_id,
+                adt_substs.iter().map(|t| self.substitute_params(t, substs)).collect(),
             ),
             _ => ty.clone(),
         }
@@ -2080,6 +2261,20 @@ impl<'a> TypeChecker<'a> {
                         // Check generic type params first
                         if let Some(&idx) = self.current_generic_params.get(&sym) {
                             return TyKind::Param(idx);
+                        }
+                        if let Some(alias_ty) = self.type_aliases.get(&sym) {
+                            let type_args = if let Some(ref args) = last_segment.args {
+                                args.args.iter().filter_map(|a| {
+                                    if let HirGenericArg::Type(ty) = a {
+                                        Some(self.hir_ty_to_ty(ty))
+                                    } else {
+                                        None
+                                    }
+                                }).collect::<Vec<_>>()
+                            } else {
+                                vec![]
+                            };
+                            return self.substitute_params(alias_ty, &type_args);
                         }
                         // Look up as ADT by name
                         if let Some(&def_id) = self.type_name_to_def.get(&sym) {

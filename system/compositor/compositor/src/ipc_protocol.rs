@@ -16,7 +16,7 @@ pub const CMD_CREATE_WINDOW: u32 = 0x1001;
 /// Sentinel value for x/y: compositor decides the position (cascading auto-placement).
 pub const CW_USEDEFAULT: u16 = 0xFFFF;
 
-/// Destroy a window: [CMD, window_id, 0, 0, 0]
+/// Destroy a window: [CMD, window_id, owner_tid, 0, 0]
 pub const CMD_DESTROY_WINDOW: u32 = 0x1002;
 
 /// Present (window content updated): [CMD, window_id, shm_id, 0, 0]
@@ -27,7 +27,7 @@ pub const CMD_PRESENT: u32 = 0x1003;
 /// Up to 12 ASCII characters, null-terminated.
 pub const CMD_SET_TITLE: u32 = 0x1004;
 
-/// Move a window: [CMD, window_id, x (as i32), y (as i32), 0]
+/// Move a window: [CMD, window_id, owner_tid, x (as i32), y (as i32)]
 pub const CMD_MOVE_WINDOW: u32 = 0x1005;
 
 // ── Compositor → App Responses ───────────────────────────────────────────────
@@ -191,7 +191,7 @@ pub const CMD_GET_WINDOW_POS: u32 = 0x1013;
 pub const CMD_HIDE_BY_TID: u32 = 0x1014;
 
 /// Minimize a single window by window_id (move off-screen with saved bounds).
-/// [CMD, window_id, 0, 0, 0]
+/// [CMD, window_id, owner_tid, 0, 0]
 /// The window is moved to (-10000, -10000). CMD_FOCUS_BY_TID restores it.
 pub const CMD_MINIMIZE_WINDOW: u32 = 0x1015;
 
@@ -230,7 +230,7 @@ pub const CMD_INJECT_KEY: u32 = 0x1022;
 pub const CMD_INJECT_POINTER: u32 = 0x1023;
 
 /// Set a window as a modal child of another window.
-/// [CMD, modal_window_id, owner_window_id, 0, 0]
+/// [CMD, modal_window_id, owner_window_id, requester_tid, 0]
 /// The modal window will stay above its owner and clicking the owner re-focuses the modal.
 /// owner_window_id=0 clears the modal relationship.
 pub const CMD_SET_MODAL_OWNER: u32 = 0x1024;
@@ -238,18 +238,18 @@ pub const CMD_SET_MODAL_OWNER: u32 = 0x1024;
 // ── App → Compositor: Fullscreen Commands ─────────────────────────────
 
 /// Mark a window as fullscreen-capable.
-/// [CMD, window_id, auto_enter (0=no, 1=enter immediately), 0, 0]
+/// [CMD, window_id, owner_tid, auto_enter (0=no, 1=enter immediately), 0]
 /// If auto_enter=1, the compositor enters fullscreen immediately after registration.
 pub const CMD_SET_FULLSCREEN_CAP: u32 = 0x1030;
 
 /// Request fullscreen mode for a window.
-/// [CMD, window_id, want_direct_fb (0=SHM, 1=direct framebuffer), 0, 0]
+/// [CMD, window_id, owner_tid, want_direct_fb (0=SHM, 1=direct framebuffer), 0]
 /// Compositor responds with RESP_FULLSCREEN_ENTERED.
 /// want_direct_fb=1: compositor maps framebuffer into app's address space (for libgl).
 pub const CMD_REQUEST_FULLSCREEN: u32 = 0x1031;
 
 /// Exit fullscreen mode for a window.
-/// [CMD, window_id, 0, 0, 0]
+/// [CMD, window_id, owner_tid, 0, 0]
 /// Compositor restores saved window bounds and responds with RESP_FULLSCREEN_EXITED.
 pub const CMD_EXIT_FULLSCREEN: u32 = 0x1032;
 

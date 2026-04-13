@@ -211,8 +211,12 @@ pub fn update_scroll_bounds(controls: &mut [alloc::boxed::Box<dyn Control>]) {
                     }
                 }
             }
-            let raw: *mut dyn Control = &mut *controls[i];
-            let sv = unsafe { &mut *(raw as *mut ScrollView) };
+            let Some(sv) = crate::control::cast_mut::<ScrollView>(
+                &mut controls[i],
+                ControlKind::ScrollView,
+            ) else {
+                continue;
+            };
             sv.content_height = max_bottom.max(0) as u32;
             let max_scroll = if sv.content_height > sv.base.h {
                 (sv.content_height - sv.base.h) as i32

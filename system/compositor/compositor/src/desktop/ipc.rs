@@ -13,6 +13,14 @@ use super::Desktop;
 // ── Desktop IPC Methods ────────────────────────────────────────────────────
 
 impl Desktop {
+    fn owns_window(&self, owner_tid: u32, window_id: u32) -> bool {
+        owner_tid != 0
+            && self
+                .windows
+                .iter()
+                .any(|w| w.id == window_id && w.owner_tid == owner_tid)
+    }
+
     /// Forward all queued window events to apps via the event channel.
     /// Returns `(target_sub_id, event)` pairs.
     pub fn drain_ipc_events(&mut self) -> Vec<(Option<u32>, [u32; 5])> {
@@ -97,6 +105,15 @@ impl Desktop {
             }
             proto::CMD_DESTROY_WINDOW => {
                 let window_id = cmd[1];
+                let owner_tid = cmd[2];
+                if !self.owns_window(owner_tid, window_id) {
+                    anyos_std::println!(
+                        "[ipc] DESTROY_WINDOW rejected: tid={} win={}",
+                        owner_tid,
+                        window_id
+                    );
+                    return None;
+                }
                 if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
                     let shm_id = self.windows[idx].shm_id;
                     let app_tid = self.windows[idx].owner_tid;
@@ -147,8 +164,17 @@ impl Desktop {
             }
             proto::CMD_MOVE_WINDOW => {
                 let window_id = cmd[1];
-                let x = cmd[2] as i32;
-                let y = cmd[3] as i32;
+                let owner_tid = cmd[2];
+                let x = cmd[3] as i32;
+                let y = cmd[4] as i32;
+                if !self.owns_window(owner_tid, window_id) {
+                    anyos_std::println!(
+                        "[ipc] MOVE_WINDOW rejected: tid={} win={}",
+                        owner_tid,
+                        window_id
+                    );
+                    return None;
+                }
                 if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
                     let layer_id = self.windows[idx].layer_id;
                     self.windows[idx].x = x;
@@ -349,12 +375,30 @@ impl Desktop {
             }
             proto::CMD_MINIMIZE_WINDOW => {
                 let window_id = cmd[1];
+                let owner_tid = cmd[2];
+                if !self.owns_window(owner_tid, window_id) {
+                    anyos_std::println!(
+                        "[ipc] MINIMIZE_WINDOW rejected: tid={} win={}",
+                        owner_tid,
+                        window_id
+                    );
+                    return None;
+                }
                 self.minimize_window(window_id);
                 None
             }
             proto::CMD_SET_BLUR_BEHIND => {
                 let window_id = cmd[1];
-                let radius = cmd[2];
+                let owner_tid = cmd[2];
+                let radius = cmd[3];
+                if !self.owns_window(owner_tid, window_id) {
+                    anyos_std::println!(
+                        "[ipc] SET_BLUR_BEHIND rejected: tid={} win={}",
+                        owner_tid,
+                        window_id
+                    );
+                    return None;
+                }
                 if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
                     let layer_id = self.windows[idx].layer_id;
                     if let Some(layer) = self.compositor.get_layer_mut(layer_id) {
@@ -533,6 +577,18 @@ impl Desktop {
             proto::CMD_SET_MODAL_OWNER => {
                 let modal_id = cmd[1];
                 let owner_id = cmd[2];
+                let owner_tid = cmd[3];
+                if !self.owns_window(owner_tid, modal_id)
+                    || (owner_id != 0 && !self.owns_window(owner_tid, owner_id))
+                {
+                    anyos_std::println!(
+                        "[ipc] SET_MODAL_OWNER rejected: tid={} modal={} owner={}",
+                        owner_tid,
+                        modal_id,
+                        owner_id
+                    );
+                    return None;
+                }
                 if let Some(idx) = self.windows.iter().position(|w| w.id == modal_id) {
                     self.windows[idx].modal_owner = owner_id;
                     // Re-raise modal windows to enforce z-order
@@ -545,7 +601,16 @@ impl Desktop {
 
             proto::CMD_SET_FULLSCREEN_CAP => {
                 let window_id = cmd[1];
-                let auto_enter = cmd[2] != 0;
+                let owner_tid = cmd[2];
+                let auto_enter = cmd[3] != 0;
+                if !self.owns_window(owner_tid, window_id) {
+                    anyos_std::println!(
+                        "[ipc] SET_FULLSCREEN_CAP rejected: tid={} win={}",
+                        owner_tid,
+                        window_id
+                    );
+                    return None;
+                }
                 if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
                     self.windows[idx].fullscreen_capable = true;
                     self.windows[idx].flags |= WIN_FLAG_FULLSCREEN_CAPABLE;
@@ -567,7 +632,16 @@ impl Desktop {
             }
             proto::CMD_REQUEST_FULLSCREEN => {
                 let window_id = cmd[1];
-                let want_direct_fb = cmd[2] != 0;
+                let owner_tid = cmd[2];
+                let want_direct_fb = cmd[3] != 0;
+                if !self.owns_window(owner_tid, window_id) {
+                    anyos_std::println!(
+                        "[ipc] REQUEST_FULLSCREEN rejected: tid={} win={}",
+                        owner_tid,
+                        window_id
+                    );
+                    return None;
+                }
                 if let Some(idx) = self.windows.iter().position(|w| w.id == window_id) {
                     if !self.windows[idx].fullscreen_capable {
                         return None;
@@ -586,6 +660,15 @@ impl Desktop {
             }
             proto::CMD_EXIT_FULLSCREEN => {
                 let window_id = cmd[1];
+                let owner_tid = cmd[2];
+                if !self.owns_window(owner_tid, window_id) {
+                    anyos_std::println!(
+                        "[ipc] EXIT_FULLSCREEN rejected: tid={} win={}",
+                        owner_tid,
+                        window_id
+                    );
+                    return None;
+                }
                 if self.fullscreen_window == Some(window_id) {
                     let tid = self.windows.iter()
                         .find(|w| w.id == window_id)

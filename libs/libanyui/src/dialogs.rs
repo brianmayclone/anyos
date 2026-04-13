@@ -276,23 +276,13 @@ fn write_usize(buf: &mut [u8], val: usize) -> usize {
 fn as_tree_view_mut(
     ctrl: &mut alloc::boxed::Box<dyn Control>,
 ) -> Option<&mut controls::tree_view::TreeView> {
-    if ctrl.kind() == ControlKind::TreeView {
-        let raw: *mut dyn Control = &mut **ctrl;
-        Some(unsafe { &mut *(raw as *mut controls::tree_view::TreeView) })
-    } else {
-        None
-    }
+    crate::control::cast_mut(ctrl, ControlKind::TreeView)
 }
 
 fn as_tree_view_ref(
     ctrl: &alloc::boxed::Box<dyn Control>,
 ) -> Option<&controls::tree_view::TreeView> {
-    if ctrl.kind() == ControlKind::TreeView {
-        let raw: *const dyn Control = &**ctrl;
-        Some(unsafe { &*(raw as *const controls::tree_view::TreeView) })
-    } else {
-        None
-    }
+    crate::control::cast_ref(ctrl, ControlKind::TreeView)
 }
 
 // ── Get selected node's name from tree ───────────────────────────────

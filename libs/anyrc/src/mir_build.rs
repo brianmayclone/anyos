@@ -447,7 +447,93 @@ impl<'a> MirBuilder<'a> {
                 }
 
                 let func_op = self.lower_expr(callee);
-                let mut arg_ops: Vec<Operand> = args.iter().map(|a| self.lower_expr(a)).collect();
+                let expected_param_tys = match &func_op {
+                    Operand::Constant(c) => {
+                        if let TyKind::FnDef(fn_def_id, _) = &c.ty {
+                            self.typeck.fn_sigs.get(fn_def_id).map(|(params, _)| params.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
+                let mut arg_ops: Vec<Operand> = Vec::new();
+                for (i, arg) in args.iter().enumerate() {
+                    let expected_param = expected_param_tys.as_ref().and_then(|params| params.get(i));
+                    let arg_ty = self.get_expr_ty(arg);
+                    let arg_op = match expected_param {
+                        Some(TyKind::Ref(expected_inner, expected_mut)) => {
+                            match &arg_ty {
+                                TyKind::Ref(actual_inner, actual_mut) => {
+                                    let place = self.lower_place(arg);
+                                    if *expected_mut == Mutability::Immutable
+                                        && *actual_mut == Mutability::Mut
+                                    {
+                                        let local = match &place {
+                                            Place { local, projections } if projections.is_empty() => *local,
+                                            _ => {
+                                                let tmp = self.alloc_temp(arg_ty.clone(), arg.span);
+                                                self.emit_assign(
+                                                    Place::local(tmp),
+                                                    Rvalue::Use(Operand::Copy(place)),
+                                                    arg.span,
+                                                );
+                                                tmp
+                                            }
+                                        };
+                                        let deref_place = Place {
+                                            local,
+                                            projections: vec![Projection::Deref],
+                                        };
+                                        let ref_ty = TyKind::Ref(expected_inner.clone(), Mutability::Immutable);
+                                        let tmp = self.alloc_temp(ref_ty, arg.span);
+                                        self.emit_assign(
+                                            Place::local(tmp),
+                                            Rvalue::Ref(BorrowKind::Shared, deref_place),
+                                            arg.span,
+                                        );
+                                        Operand::Copy(Place::local(tmp))
+                                    } else {
+                                        let local = match &place {
+                                            Place { local, projections } if projections.is_empty() => *local,
+                                            _ => {
+                                                let tmp = self.alloc_temp(arg_ty.clone(), arg.span);
+                                                self.emit_assign(
+                                                    Place::local(tmp),
+                                                    Rvalue::Use(Operand::Copy(place)),
+                                                    arg.span,
+                                                );
+                                                tmp
+                                            }
+                                        };
+                                        Operand::Copy(Place::local(local))
+                                    }
+                                }
+                                _ => {
+                                    let place = self.lower_place(arg);
+                                    let borrow_kind = if *expected_mut == Mutability::Mut {
+                                        BorrowKind::Mutable
+                                    } else {
+                                        BorrowKind::Shared
+                                    };
+                                    let tmp = self.alloc_temp(
+                                        TyKind::Ref(expected_inner.clone(), *expected_mut),
+                                        arg.span,
+                                    );
+                                    self.emit_assign(
+                                        Place::local(tmp),
+                                        Rvalue::Ref(borrow_kind, place),
+                                        arg.span,
+                                    );
+                                    Operand::Copy(Place::local(tmp))
+                                }
+                            }
+                        }
+                        _ => self.lower_expr(arg),
+                    };
+                    arg_ops.push(arg_op);
+                }
 
                 // Check for &T -> &dyn Trait coercion at call site
                 if let Operand::Constant(c) = &func_op {

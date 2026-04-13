@@ -352,7 +352,8 @@ extern "C" fn export_create_window(
 }
 
 extern "C" fn export_destroy_window(channel_id: u32, window_id: u32, shm_id: u32) {
-    let cmd: [u32; 5] = [CMD_DESTROY_WINDOW, window_id, 0, 0, 0];
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_DESTROY_WINDOW, window_id, tid, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 
     // Clean up SHM
@@ -460,7 +461,8 @@ extern "C" fn export_set_wallpaper(channel_id: u32, path_ptr: *const u8, path_le
 }
 
 extern "C" fn export_move_window(channel_id: u32, window_id: u32, x: i32, y: i32) {
-    let cmd: [u32; 5] = [CMD_MOVE_WINDOW, window_id, x as u32, y as u32, 0];
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_MOVE_WINDOW, window_id, tid, x as u32, y as u32];
     syscall::evt_chan_emit(channel_id, &cmd);
 }
 
@@ -611,7 +613,8 @@ extern "C" fn export_tray_poll_event(
 }
 
 extern "C" fn export_set_blur_behind(channel_id: u32, window_id: u32, radius: u32) {
-    let cmd: [u32; 5] = [CMD_SET_BLUR_BEHIND, window_id, radius, 0, 0];
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_SET_BLUR_BEHIND, window_id, tid, radius, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 }
 
@@ -877,17 +880,20 @@ extern "C" fn export_get_window_position(
 }
 
 extern "C" fn export_minimize_window(channel_id: u32, window_id: u32) {
-    let cmd: [u32; 5] = [CMD_MINIMIZE_WINDOW, window_id, 0, 0, 0];
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_MINIMIZE_WINDOW, window_id, tid, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 }
 
 extern "C" fn export_set_modal_owner(channel_id: u32, modal_window_id: u32, owner_window_id: u32) {
-    let cmd: [u32; 5] = [CMD_SET_MODAL_OWNER, modal_window_id, owner_window_id, 0, 0];
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_SET_MODAL_OWNER, modal_window_id, owner_window_id, tid, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 }
 
 extern "C" fn export_set_fullscreen_capable(channel_id: u32, window_id: u32, auto_enter: u32) {
-    let cmd: [u32; 5] = [CMD_SET_FULLSCREEN_CAP, window_id, auto_enter, 0, 0];
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_SET_FULLSCREEN_CAP, window_id, tid, auto_enter, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 }
 
@@ -901,7 +907,8 @@ extern "C" fn export_request_fullscreen(
     out_stride: *mut u32,
     out_fb_ptr: *mut usize,
 ) -> u32 {
-    let cmd: [u32; 5] = [CMD_REQUEST_FULLSCREEN, window_id, want_direct_fb, 0, 0];
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_REQUEST_FULLSCREEN, window_id, tid, want_direct_fb, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 
     // Poll for RESP_FULLSCREEN_ENTERED
@@ -929,6 +936,7 @@ extern "C" fn export_request_fullscreen(
 }
 
 extern "C" fn export_exit_fullscreen(channel_id: u32, window_id: u32) {
-    let cmd: [u32; 5] = [CMD_EXIT_FULLSCREEN, window_id, 0, 0, 0];
+    let tid = syscall::get_tid();
+    let cmd: [u32; 5] = [CMD_EXIT_FULLSCREEN, window_id, tid, 0, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 }

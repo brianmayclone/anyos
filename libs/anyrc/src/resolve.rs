@@ -922,7 +922,7 @@ impl<'a> Resolver<'a> {
                 self.resolve_ty(ty);
             }
             HirExprKind::Struct(path, fields, base) => {
-                self.resolve_path(path, Namespace::Type, HirId(u32::MAX));
+                self.resolve_path(path, Namespace::Type, expr.id);
                 for f in fields { self.resolve_expr(&f.value); }
                 if let Some(b) = base { self.resolve_expr(b); }
             }

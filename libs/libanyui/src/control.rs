@@ -937,6 +937,27 @@ pub fn find_idx(controls: &[Box<dyn Control>], id: ControlId) -> Option<usize> {
     controls.iter().position(|c| c.id() == id)
 }
 
+/// Downcast helper for trait-object controls.
+///
+/// The cast only succeeds when the runtime `ControlKind` matches the expected
+/// concrete type, so callers do not have to repeat unchecked pointer casts.
+pub fn cast_mut<T: Control>(ctrl: &mut Box<dyn Control>, kind: ControlKind) -> Option<&mut T> {
+    if ctrl.kind() != kind {
+        return None;
+    }
+    let raw: *mut dyn Control = &mut **ctrl;
+    Some(unsafe { &mut *(raw as *mut T) })
+}
+
+/// Immutable counterpart to `cast_mut`.
+pub fn cast_ref<T: Control>(ctrl: &Box<dyn Control>, kind: ControlKind) -> Option<&T> {
+    if ctrl.kind() != kind {
+        return None;
+    }
+    let raw: *const dyn Control = &**ctrl;
+    Some(unsafe { &*(raw as *const T) })
+}
+
 /// Hit-test: find the deepest visible interactive control under (px, py).
 /// Coordinates are in window-local space.
 pub fn hit_test(

@@ -1391,6 +1391,337 @@ fn filedialog_state_helpers_compile_together() {
 }
 
 #[test]
+fn if_let_ok_binds_array_payload_for_indexing() {
+    compile_ok(
+        "if_let_ok_binds_array_payload_for_indexing",
+        r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        fn meta() -> Result<[u32; 4], u32> {
+            Result::Ok([1, 2, 3, 4])
+        }
+
+        fn main() {
+            if let Result::Ok(meta) = meta() {
+                let _ = meta[1] as usize;
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn type_alias_result_payload_binds_inside_if_let() {
+    compile_ok(
+        "type_alias_result_payload_binds_inside_if_let",
+        r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        type MyResult<T> = Result<T, u32>;
+
+        fn meta() -> MyResult<[u32; 4]> {
+            Result::Ok([1, 2, 3, 4])
+        }
+
+        fn main() {
+            if let Result::Ok(meta) = meta() {
+                let _ = meta[1] as usize;
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn bare_ok_pattern_binds_alias_result_payload() {
+    compile_ok(
+        "bare_ok_pattern_binds_alias_result_payload",
+        r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        type MyResult<T> = Result<T, u32>;
+
+        fn meta() -> MyResult<[u32; 4]> {
+            Result::Ok([1, 2, 3, 4])
+        }
+
+        fn main() {
+            if let Ok(meta) = meta() {
+                let _ = meta[1] as usize;
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn impl_method_returning_alias_result_binds_ok_payload() {
+    compile_ok(
+        "impl_method_returning_alias_result_binds_ok_payload",
+        r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        type MyResult<T> = Result<T, u32>;
+
+        struct File;
+
+        impl File {
+            fn metadata(&self) -> MyResult<[u32; 4]> {
+                Result::Ok([1, 2, 3, 4])
+            }
+        }
+
+        fn main() {
+            let file = File;
+            if let Ok(meta) = file.metadata() {
+                let _ = meta[1] as usize;
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn namespaced_alias_result_from_impl_method_binds_ok_payload() {
+    compile_ok(
+        "namespaced_alias_result_from_impl_method_binds_ok_payload",
+        r#"
+        mod core_result {
+            pub enum Result<T, E> {
+                Ok(T),
+                Err(E),
+            }
+        }
+
+        mod error {
+            pub type Result<T> = crate::core_result::Result<T, u32>;
+        }
+
+        struct File;
+
+        impl File {
+            fn metadata(&self) -> error::Result<[u32; 4]> {
+                crate::core_result::Result::Ok([1, 2, 3, 4])
+            }
+        }
+
+        fn main() {
+            let file = File;
+            if let Ok(meta) = file.metadata() {
+                let _ = meta[1] as usize;
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn match_tuple_variant_binds_generic_payload_fields() {
+    compile_ok(
+        "match_tuple_variant_binds_generic_payload_fields",
+        r#"
+        struct Vec<T> {
+            items: [T; 1],
+        }
+
+        impl<T> Vec<T> {
+            fn set(&mut self, idx: usize, value: T) {
+                self.items[idx] = value;
+            }
+        }
+
+        struct OccupiedEntry<K, V> {
+            key: K,
+            value: V,
+        }
+
+        struct VacantEntry<K, V> {
+            key: K,
+            value: V,
+        }
+
+        enum Entry<K, V> {
+            Occupied(OccupiedEntry<K, V>),
+            Vacant(VacantEntry<K, V>),
+        }
+
+        impl<K, V> Entry<K, V> {
+            fn touch(self) {
+                match self {
+                    Entry::Occupied(e) => {
+                        let _ = e.key;
+                        let _ = e.value;
+                    }
+                    Entry::Vacant(e) => {
+                        let _ = e.key;
+                        let _ = e.value;
+                    }
+                }
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn hash_map_entry_like_match_binds_lifetime_generic_payload_fields() {
+    compile_ok(
+        "hash_map_entry_like_match_binds_lifetime_generic_payload_fields",
+        r#"
+        struct HashMap<K, V> {
+            buckets: [Option<(K, V)>; 1],
+            len: usize,
+        }
+
+        struct OccupiedEntry<'a, K, V> {
+            map: &'a mut HashMap<K, V>,
+            idx: usize,
+        }
+
+        struct VacantEntry<'a, K, V> {
+            map: &'a mut HashMap<K, V>,
+            key: K,
+            idx: usize,
+        }
+
+        enum Entry<'a, K, V> {
+            Occupied(OccupiedEntry<'a, K, V>),
+            Vacant(VacantEntry<'a, K, V>),
+        }
+
+        impl<'a, K, V> Entry<'a, K, V> {
+            fn touch(self, default: V) {
+                match self {
+                    Entry::Occupied(e) => {
+                        let _ = e.map.buckets[e.idx];
+                    }
+                    Entry::Vacant(e) => {
+                        e.map.buckets[e.idx] = Some((e.key, default));
+                        e.map.len += 1;
+                    }
+                }
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn hash_map_entry_like_as_mut_unwrap_chain_compiles() {
+    compile_ok(
+        "hash_map_entry_like_as_mut_unwrap_chain_compiles",
+        r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        impl<T> Option<T> {
+            fn as_mut(&mut self) -> Option<&mut T> {
+                match self {
+                    Option::Some(v) => Option::Some(v),
+                    Option::None => Option::None,
+                }
+            }
+
+            fn unwrap(self) -> T {
+                match self {
+                    Option::Some(v) => v,
+                    Option::None => loop {},
+                }
+            }
+        }
+
+        struct HashMap<K, V> {
+            buckets: [Option<(K, V)>; 1],
+            len: usize,
+        }
+
+        struct OccupiedEntry<'a, K, V> {
+            map: &'a mut HashMap<K, V>,
+            idx: usize,
+        }
+
+        struct VacantEntry<'a, K, V> {
+            map: &'a mut HashMap<K, V>,
+            key: K,
+            idx: usize,
+        }
+
+        enum Entry<'a, K, V> {
+            Occupied(OccupiedEntry<'a, K, V>),
+            Vacant(VacantEntry<'a, K, V>),
+        }
+
+        impl<'a, K, V> Entry<'a, K, V> {
+            fn touch(self, default: V) -> &'a mut V {
+                match self {
+                    Entry::Occupied(e) => {
+                        let (_, v) = e.map.buckets[e.idx].as_mut().unwrap();
+                        v
+                    }
+                    Entry::Vacant(e) => {
+                        e.map.buckets[e.idx] = Option::Some((e.key, default));
+                        e.map.len += 1;
+                        let (_, v) = e.map.buckets[e.idx].as_mut().unwrap();
+                        v
+                    }
+                }
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn struct_literal_prefers_locally_resolved_type_over_global_name_collision() {
+    compile_ok(
+        "struct_literal_prefers_locally_resolved_type_over_global_name_collision",
+        r#"
+        mod fs {
+            pub struct DirEntry {
+                pub name: String,
+                pub file_type: u8,
+                pub size: u32,
+            }
+        }
+
+        mod ui {
+            pub struct DirEntry {
+                pub name: [u8; 56],
+                pub name_len: u8,
+                pub entry_type: u8,
+                pub size: u32,
+            }
+
+            pub fn make() -> DirEntry {
+                let mut name = [0u8; 56];
+                name[0] = b'a';
+                DirEntry {
+                    name,
+                    name_len: 1,
+                    entry_type: 2,
+                    size: 0,
+                }
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
 fn window_utf8_and_slice_writer_patterns_compile() {
     compile_ok(
         "window_utf8_and_slice_writer_patterns_compile",
