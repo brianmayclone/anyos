@@ -621,7 +621,7 @@ impl<'a> Parser<'a> {
             let mut params = Vec::new();
             while !self.at_exact(&TokenKind::Pipe) && !self.at_exact(&TokenKind::Eof) {
                 let p_start = self.current().span;
-                let pat = self.parse_pattern();
+                let pat = self.parse_pattern_no_or();
                 let ty = if self.eat_exact(&TokenKind::Colon) {
                     self.parse_ty()
                 } else {
@@ -2163,6 +2163,10 @@ impl<'a> Parser<'a> {
         } else {
             Pattern::Or(patterns, self.span_from(start))
         }
+    }
+
+    fn parse_pattern_no_or(&mut self) -> Pattern {
+        self.parse_pattern_atom()
     }
 
     fn parse_pattern_atom(&mut self) -> Pattern {

@@ -5,6 +5,7 @@ use anyrc::hir::HirExprKind;
 use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::parser::Parser;
+use std::fs;
 
 fn compile_ok(name: &str, src: &str) {
     let output = format!("/tmp/{}_anyrc_test.o", name);
@@ -33,6 +34,19 @@ fn compile_ok(name: &str, src: &str) {
             rendered.join("\n")
         );
     }
+}
+
+fn parse_file_ok(path: &str) {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root");
+    let full_path = repo_root.join(path);
+    let src = fs::read_to_string(&full_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", full_path.display(), e));
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(&src, &mut interner);
+    let _ = parser.parse_crate();
 }
 
 #[test]
@@ -357,6 +371,90 @@ fn parser_accepts_or_patterns_ref_patterns_and_labels() {
                     }
                 }
                 break;
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn match_arm_guard_with_andand_compiles() {
+    compile_ok(
+        "match_arm_guard_with_andand",
+        r#"
+        enum Key { Char(u8), Escape }
+
+        fn handle(key: Key) -> bool {
+            match key {
+                Key::Char(c) if c >= 32 && c < 127 => true,
+                _ => false,
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn matches_macro_in_if_condition_compiles() {
+    compile_ok(
+        "matches_macro_in_if_condition",
+        r#"
+        fn main() {
+            let first = "ccargo";
+            if matches!(first, "ccargo" | "cargo" | "acargo") {
+                exit(0);
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn typed_vec_collect_from_split_whitespace_compiles() {
+    compile_ok(
+        "typed_vec_collect_from_split_whitespace",
+        r#"
+        fn main() {
+            let raw = "a b";
+            let _args: Vec<&str> = raw.split_whitespace().collect();
+        }
+        "#,
+    );
+}
+
+#[test]
+fn parser_accepts_acargo_main_file() {
+    parse_file_ok("bin/acargo/src/main.rs");
+}
+
+#[test]
+fn parser_accepts_ac_main_file() {
+    parse_file_ok("bin/ac/src/main.rs");
+}
+
+#[test]
+fn parser_accepts_open_main_file() {
+    parse_file_ok("bin/open/src/main.rs");
+}
+
+#[test]
+fn string_range_indexing_inside_split_loop_compiles() {
+    compile_ok(
+        "string_range_indexing_inside_split_loop",
+        r#"
+        fn parse_u16(_: &str) -> Option<u16> { Some(0) }
+
+        fn main() {
+            let data = "12:group\n";
+            for line in data.split('\n') {
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(colon) = line.find(':') {
+                    let _a = &line[..colon];
+                    let _b = &line[colon + 1..];
+                    let _ = parse_u16(&line[..colon]);
+                }
             }
         }
         "#,

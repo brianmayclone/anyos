@@ -798,6 +798,9 @@ impl<'a> Resolver<'a> {
                 HirStmt::Expr(e) | HirStmt::Semi(e, _) => self.resolve_expr(e),
                 HirStmt::Item(item) => {
                     self.register_item(item);
+                    if let HirItemKind::Use(u) = &item.kind {
+                        self.process_use_tree(u);
+                    }
                     self.resolve_item(item);
                 }
             }
@@ -971,7 +974,7 @@ impl<'a> Resolver<'a> {
                         | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")
                         | ("u8", "MIN") | ("u16", "MIN") | ("u32", "MIN") | ("u64", "MIN") | ("u128", "MIN") | ("usize", "MIN")
                     );
-                    let is_assoc_fn = second_str == "from_le_bytes";
+                    let is_assoc_fn = matches!(second_str, "from_le_bytes" | "from_str_radix");
                     if is_assoc_const || is_assoc_fn {
                         let full_path = format!("{}::{}", name_str, second_str);
                         let def_id = self.alloc_synthetic_def_id();
