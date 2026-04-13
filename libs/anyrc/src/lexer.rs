@@ -354,10 +354,13 @@ impl<'a> Lexer<'a> {
 
     fn eat_int_suffix(&mut self) {
         let b = self.peek();
-        if (b == b'u' || b == b'i') && self.peek_at(1).is_ascii_digit() {
-            self.pos += 1;
-            while self.pos < self.src.len() && self.peek().is_ascii_digit() {
+        if b == b'u' || b == b'i' {
+            let next = self.peek_at(1);
+            if next.is_ascii_digit() || next.is_ascii_alphabetic() {
                 self.pos += 1;
+                while self.pos < self.src.len() && self.peek().is_ascii_alphanumeric() {
+                    self.pos += 1;
+                }
             }
         }
     }

@@ -200,17 +200,24 @@ impl<'a> Parser<'a> {
                     break;
                 }
                 self.bump();
-                let rhs = self.parse_expr_bp(r_bp);
                 let span = self.span_from(start);
+                if let InfixOp::Range(inclusive) = op {
+                    let rhs = if self.at_expr_start() {
+                        Some(Box::new(self.parse_expr_bp(r_bp)))
+                    } else {
+                        None
+                    };
+                    lhs = Expr::Range(Some(Box::new(lhs)), rhs, inclusive, span);
+                    continue;
+                }
+                let rhs = self.parse_expr_bp(r_bp);
                 lhs = match op {
                     InfixOp::Binary(binop) => Expr::Binary(binop, Box::new(lhs), Box::new(rhs), span),
                     InfixOp::Assign => Expr::Assign(Box::new(lhs), Box::new(rhs), span),
                     InfixOp::AssignOp(binop) => {
                         Expr::AssignOp(binop, Box::new(lhs), Box::new(rhs), span)
                     }
-                    InfixOp::Range(inclusive) => {
-                        Expr::Range(Some(Box::new(lhs)), Some(Box::new(rhs)), inclusive, span)
-                    }
+                    InfixOp::Range(_) => unreachable!(),
                 };
                 continue;
             }
@@ -301,6 +308,28 @@ impl<'a> Parser<'a> {
                 None
             };
             return Expr::Continue(label, self.span_from(start));
+        }
+
+        // Labelled loop/while/for: 'label: loop { ... }
+        if matches!(self.current().kind, TokenKind::Lifetime(_))
+            && self.peek_kind() == &TokenKind::Colon
+        {
+            let label = if let TokenKind::Lifetime(sym) = self.bump().kind {
+                sym
+            } else {
+                unreachable!()
+            };
+            self.expect_exact(&TokenKind::Colon);
+            let expr = self.parse_prefix_expr();
+            return match expr {
+                Expr::Loop(block, _, span) => Expr::Loop(block, Some(label), span),
+                Expr::While(cond, block, _, span) => Expr::While(cond, block, Some(label), span),
+                Expr::WhileLet(pat, scrutinee, block, _, span) => {
+                    Expr::WhileLet(pat, scrutinee, block, Some(label), span)
+                }
+                Expr::For(pat, iter, block, _, span) => Expr::For(pat, iter, block, Some(label), span),
+                other => other,
+            };
         }
 
         // closure: |params| expr  or  move |params| expr
@@ -574,8 +603,8 @@ impl<'a> Parser<'a> {
             let body = Box::new(self.parse_expr());
             let span = self.span_from(arm_start);
             arms.push(MatchArm { pat, guard, body, span });
-            if !self.eat_exact(&TokenKind::Comma) {
-                break;
+            if self.eat_exact(&TokenKind::Comma) {
+                continue;
             }
         }
         self.expect_exact(&TokenKind::RBrace);
@@ -632,8 +661,14 @@ impl<'a> Parser<'a> {
             }
             let f_start = self.current().span;
             let name = self.expect_ident();
-            self.expect_exact(&TokenKind::Colon);
-            let value = self.parse_expr();
+            let value = if self.eat_exact(&TokenKind::Colon) {
+                self.parse_expr()
+            } else {
+                Expr::Path(Path {
+                    segments: vec![PathSegment { ident: name, args: None }],
+                    span: self.span_from(f_start),
+                })
+            };
             fields.push(FieldExpr {
                 name,
                 value,
@@ -2119,6 +2154,19 @@ impl<'a> Parser<'a> {
 
     fn parse_pattern(&mut self) -> Pattern {
         let start = self.current().span;
+        let mut patterns = vec![self.parse_pattern_atom()];
+        while self.eat_exact(&TokenKind::Pipe) {
+            patterns.push(self.parse_pattern_atom());
+        }
+        if patterns.len() == 1 {
+            patterns.pop().unwrap()
+        } else {
+            Pattern::Or(patterns, self.span_from(start))
+        }
+    }
+
+    fn parse_pattern_atom(&mut self) -> Pattern {
+        let start = self.current().span;
 
         // Wildcard _
         // We need to check for _ which is an identifier with text "_"
@@ -2134,8 +2182,8 @@ impl<'a> Parser<'a> {
             }
         }
 
-        // &pat, &mut pat
-        if self.at_exact(&TokenKind::Amp) {
+        // &pat, &mut pat / ref pat / ref mut pat
+        if self.at_exact(&TokenKind::Amp) || self.at_kw(Keyword::Ref) {
             self.bump();
             let mutability = if self.eat_exact(&TokenKind::Kw(Keyword::Mut)) {
                 Mutability::Mut
@@ -2173,6 +2221,11 @@ impl<'a> Parser<'a> {
             TokenKind::CharLit(_) => {
                 if let TokenKind::CharLit(c) = self.bump().kind {
                     return Pattern::Literal(Literal::Char(c), self.span_from(start));
+                }
+            }
+            TokenKind::ByteStringLit(_) => {
+                if let TokenKind::ByteStringLit(v) = self.bump().kind {
+                    return Pattern::Literal(Literal::ByteString(v), self.span_from(start));
                 }
             }
             TokenKind::Kw(Keyword::True) => {

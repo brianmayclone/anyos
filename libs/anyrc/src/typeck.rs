@@ -216,6 +216,43 @@ impl<'a> TypeChecker<'a> {
         TyKind::Adt(SYNTH_PARSED_ARGS_DEF_ID, vec![])
     }
 
+    fn option_of(&self, inner: TyKind) -> Option<TyKind> {
+        let sym = self.interner.lookup("Option")?;
+        let def_id = *self.type_name_to_def.get(&sym)?;
+        Some(TyKind::Adt(def_id, vec![inner]))
+    }
+
+    fn iterable_elem_ty(&mut self, iter: &HirExpr, iter_ty: TyKind) -> TyKind {
+        let resolved = match self.shallow_resolve(iter_ty) {
+            TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
+            other => other,
+        };
+        match resolved {
+            TyKind::Array(elem, _) | TyKind::Slice(elem) => *elem,
+            TyKind::Str => TyKind::Uint(UintTy::U8),
+            other => {
+                if let HirExprKind::MethodCall(recv, method_name, _, _) = &iter.kind {
+                    let recv_ty = self.get_expr_ty_cached(recv);
+                    let recv_resolved = match self.shallow_resolve(recv_ty) {
+                        TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
+                        other => other,
+                    };
+                    let method_str = self.interner.resolve(*method_name);
+                    if matches!(recv_resolved, TyKind::Str) {
+                        match method_str {
+                            "bytes" => return TyKind::Uint(UintTy::U8),
+                            "split" | "split_whitespace" | "lines" => {
+                                return TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                other
+            }
+        }
+    }
+
     fn intrinsic_call_return_type(&mut self, path_str: &str) -> Option<TyKind> {
         match path_str {
             "anyos_std::process::args" | "args" => {
@@ -1020,8 +1057,57 @@ impl<'a> TypeChecker<'a> {
 
                 // Handle .len() on arrays and slices
                 if method_str == "len" && args.is_empty() {
-                    if matches!(&inner_ty, TyKind::Array(_, _) | TyKind::Slice(_)) {
+                    if matches!(&inner_ty, TyKind::Array(_, _) | TyKind::Slice(_) | TyKind::Str) {
                         return TyKind::Uint(UintTy::Usize);
+                    }
+                }
+
+                if method_str == "is_empty" && args.is_empty() {
+                    if matches!(&inner_ty, TyKind::Array(_, _) | TyKind::Slice(_) | TyKind::Str) {
+                        return TyKind::Bool;
+                    }
+                }
+
+                if matches!(&inner_ty, TyKind::Str) {
+                    match method_str {
+                        "contains" | "starts_with" | "ends_with" if args.len() == 1 => {
+                            return TyKind::Bool;
+                        }
+                        "find" if args.len() == 1 => {
+                            if let Some(ty) = self.option_of(TyKind::Uint(UintTy::Usize)) {
+                                return ty;
+                            }
+                            return self.fresh_infer(InferKind::General);
+                        }
+                        "as_bytes" if args.is_empty() => {
+                            return TyKind::Ref(
+                                Box::new(TyKind::Slice(Box::new(TyKind::Uint(UintTy::U8)))),
+                                Mutability::Immutable,
+                            );
+                        }
+                        "bytes" if args.is_empty() => {
+                            return TyKind::Slice(Box::new(TyKind::Uint(UintTy::U8)));
+                        }
+                        "split" | "split_whitespace" | "lines" if args.len() <= 1 => {
+                            return TyKind::Slice(Box::new(TyKind::Ref(
+                                Box::new(TyKind::Str),
+                                Mutability::Immutable,
+                            )));
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let TyKind::Slice(elem) | TyKind::Array(elem, _) = &inner_ty {
+                    match method_str {
+                        "copy_from_slice" if args.len() == 1 => return TyKind::Unit,
+                        "first" if args.is_empty() => {
+                            if let Some(ty) = self.option_of(TyKind::Ref(elem.clone(), Mutability::Immutable)) {
+                                return ty;
+                            }
+                            return self.fresh_infer(InferKind::General);
+                        }
+                        _ => {}
                     }
                 }
 
@@ -1188,7 +1274,6 @@ impl<'a> TypeChecker<'a> {
 
             HirExprKind::For(pat, iter, body, _) => {
                 let iter_ty = self.check_expr(iter);
-                // Infer the element type from the iterable
                 let elem_ty = match &iter.kind {
                     HirExprKind::Range(start, _end, _) => {
                         if let Some(s) = start {
@@ -1197,7 +1282,7 @@ impl<'a> TypeChecker<'a> {
                             TyKind::Int(IntTy::I64)
                         }
                     }
-                    _ => iter_ty,
+                    _ => self.iterable_elem_ty(iter, iter_ty),
                 };
                 self.bind_pattern(pat, elem_ty);
                 self.check_block(body);

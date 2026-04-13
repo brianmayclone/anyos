@@ -279,6 +279,91 @@ fn integer_indexing_and_from_le_bytes_compile() {
 }
 
 #[test]
+fn parser_accepts_struct_literal_shorthand_and_match_arms_without_commas() {
+    compile_ok(
+        "parser_accepts_struct_literal_shorthand_and_match_arms_without_commas",
+        r#"
+        struct Pair { left: u32, right: u32 }
+
+        fn build(left: u32, right: u32) -> Pair {
+            Pair { left, right }
+        }
+
+        fn label(x: u32) -> &'static str {
+            match x {
+                0 => { "zero" }
+                _ => { "other" }
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn parser_accepts_open_ranges_and_integer_suffixes() {
+    compile_ok(
+        "parser_accepts_open_ranges_and_integer_suffixes",
+        r#"
+        fn main() {
+            let x = 0usize;
+            let s = "hello";
+            let _ = &s[x..];
+            let _ = &s[..x];
+        }
+        "#,
+    );
+}
+
+#[test]
+fn str_and_slice_methods_compile() {
+    compile_ok(
+        "str_and_slice_methods_compile",
+        r#"
+        fn main() {
+            let s = "hello world";
+            let bytes = s.as_bytes();
+            let _ = bytes[0];
+            let _ = s.contains("world");
+            let _ = s.starts_with("he");
+            let _ = s.ends_with("ld");
+            let _ = s.find('o');
+            let _ = s.is_empty();
+
+            let mut buf = [0u8; 16];
+            buf[..5].copy_from_slice(&bytes[..5]);
+
+            for part in s.split(' ') {
+                let _ = part.as_bytes()[0];
+            }
+            for b in s.bytes() {
+                let _ = b;
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn parser_accepts_or_patterns_ref_patterns_and_labels() {
+    compile_ok(
+        "parser_accepts_or_patterns_ref_patterns_and_labels",
+        r#"
+        fn main(xs: &[u8]) {
+            'outer: loop {
+                for &b in xs {
+                    match b {
+                        b'a' | b'b' => break 'outer,
+                        _ => {}
+                    }
+                }
+                break;
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
 fn raw_ptr_prev_assignment_then_field_store_compiles() {
     compile_ok(
         "raw_ptr_prev_assignment_then_field_store",
