@@ -1412,7 +1412,8 @@ impl<'a> MirBuilder<'a> {
 
                 self.blocks = Vec::new();
                 self.locals = Vec::new();
-                self.push_block();
+                let entry_block = self.push_block();
+                self.current_block = entry_block;
 
                 // _0 = return place
                 let ret_ty_resolved = if let Some(def_id) = closure_def_id {

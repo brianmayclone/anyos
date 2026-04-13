@@ -51,6 +51,8 @@ pub enum UintTy { U8, U16, U32, U64, U128, Usize }
 pub enum FloatTy { F32, F64 }
 
 const SYNTH_PARSED_ARGS_DEF_ID: DefId = DefId(0x7000_0001);
+const SYNTH_CMP_ORDERING_DEF_ID: DefId = DefId(0x7000_0002);
+const SYNTH_ATOMIC_ORDERING_DEF_ID: DefId = DefId(0x7000_0003);
 
 pub struct TypeckResult {
     pub expr_types: HashMap<HirId, TyKind>,
@@ -216,6 +218,20 @@ impl<'a> TypeChecker<'a> {
 
     fn parsed_args_ty(&self) -> TyKind {
         TyKind::Adt(SYNTH_PARSED_ARGS_DEF_ID, vec![])
+    }
+
+    fn comparison_ordering_ty(&self) -> TyKind {
+        let def_id = self
+            .lookup_intrinsic_def_by_path("core::cmp::Ordering")
+            .unwrap_or(SYNTH_CMP_ORDERING_DEF_ID);
+        TyKind::Adt(def_id, vec![])
+    }
+
+    fn atomic_ordering_ty(&self) -> TyKind {
+        let def_id = self
+            .lookup_intrinsic_def_by_path("core::sync::atomic::Ordering")
+            .unwrap_or(SYNTH_ATOMIC_ORDERING_DEF_ID);
+        TyKind::Adt(def_id, vec![])
     }
 
     fn option_of(&self, inner: TyKind) -> Option<TyKind> {
@@ -882,14 +898,23 @@ impl<'a> TypeChecker<'a> {
 
             HirExprKind::Field(base, field_name) => {
                 let base_ty = self.check_expr(base);
-                let resolved = self.shallow_resolve(base_ty);
-                // Auto-deref references and raw pointers for field access.
-                let resolved = match &resolved {
-                    TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
-                        self.shallow_resolve(inner.as_ref().clone())
+                let mut resolved = self.shallow_resolve(base_ty);
+                loop {
+                    resolved = match resolved {
+                        TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
+                            self.shallow_resolve(inner.as_ref().clone())
+                        }
+                        TyKind::Adt(def_id, substs) if self.is_box_def(def_id) && substs.len() == 1 => {
+                            self.shallow_resolve(substs[0].clone())
+                        }
+                        other => other,
+                    };
+                    if !matches!(resolved, TyKind::Ref(_, _) | TyKind::RawPtr(_, _))
+                        && !matches!(resolved, TyKind::Adt(def_id, ref substs) if self.is_box_def(def_id) && substs.len() == 1)
+                    {
+                        break;
                     }
-                    other => other.clone(),
-                };
+                }
                 match resolved {
                     TyKind::Adt(def_id, _) => {
                         if let Some(fields) = self.struct_defs.get(&def_id) {
@@ -1005,6 +1030,9 @@ impl<'a> TypeChecker<'a> {
                 let inner_ty = self.check_expr(inner);
                 match self.shallow_resolve(inner_ty) {
                     TyKind::Ref(pointee, _) | TyKind::RawPtr(pointee, _) => *pointee,
+                    TyKind::Adt(def_id, substs) if self.is_box_def(def_id) && substs.len() == 1 => {
+                        substs[0].clone()
+                    }
                     _ => {
                         self.error(expr.span, "cannot dereference this type");
                         TyKind::Error
@@ -1105,8 +1133,10 @@ impl<'a> TypeChecker<'a> {
             HirExprKind::MethodCall(recv, method_name, _, args) => {
                 let recv_ty = self.check_expr(recv);
                 let method_str = self.interner.resolve(*method_name);
-                let defer_closure_args = method_str == "sort_by"
-                    && matches!(args.first().map(|arg| &arg.kind), Some(HirExprKind::Closure(..)));
+                let defer_closure_args = matches!(
+                    method_str,
+                    "sort_by" | "find" | "position" | "any" | "all" | "map"
+                ) && matches!(args.first().map(|arg| &arg.kind), Some(HirExprKind::Closure(..)));
                 if !defer_closure_args {
                     for a in args { self.check_expr(a); }
                 }
@@ -1150,11 +1180,17 @@ impl<'a> TypeChecker<'a> {
                         "contains" | "starts_with" | "ends_with" if args.len() == 1 => {
                             return TyKind::Bool;
                         }
-                        "find" if args.len() == 1 => {
+                        "find" | "rfind" if args.len() == 1 => {
                             if let Some(ty) = self.option_of(TyKind::Uint(UintTy::Usize)) {
                                 return ty;
                             }
                             return self.fresh_infer(InferKind::General);
+                        }
+                        "trim" | "trim_start" | "trim_end" if args.is_empty() => {
+                            return TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable);
+                        }
+                        "trim_matches" | "trim_start_matches" | "trim_end_matches" if args.len() == 1 => {
+                            return TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable);
                         }
                         "as_bytes" if args.is_empty() => {
                             return TyKind::Ref(
@@ -1177,6 +1213,18 @@ impl<'a> TypeChecker<'a> {
 
                 if let TyKind::Slice(elem) | TyKind::Array(elem, _) = &inner_ty {
                     match method_str {
+                        "iter" if args.is_empty() => {
+                            return TyKind::Slice(Box::new(TyKind::Ref(
+                                Box::new(elem.as_ref().clone()),
+                                Mutability::Immutable,
+                            )));
+                        }
+                        "iter_mut" if args.is_empty() => {
+                            return TyKind::Slice(Box::new(TyKind::Ref(
+                                Box::new(elem.as_ref().clone()),
+                                Mutability::Mut,
+                            )));
+                        }
                         "copy_from_slice" if args.len() == 1 => return TyKind::Unit,
                         "to_vec" if args.is_empty() => {
                             if let Some(vec_sym) = self.interner.lookup("Vec") {
@@ -1196,6 +1244,26 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                if let TyKind::Adt(def_id, substs) = &inner_ty {
+                    if self.is_vec_def(*def_id) && substs.len() == 1 {
+                        match method_str {
+                            "iter" if args.is_empty() => {
+                                return TyKind::Slice(Box::new(TyKind::Ref(
+                                    Box::new(substs[0].clone()),
+                                    Mutability::Immutable,
+                                )));
+                            }
+                            "iter_mut" if args.is_empty() => {
+                                return TyKind::Slice(Box::new(TyKind::Ref(
+                                    Box::new(substs[0].clone()),
+                                    Mutability::Mut,
+                                )));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
                 if method_str == "sort_by" && args.len() == 1 {
                     let elem_ty = match &inner_ty {
                         TyKind::Slice(elem) | TyKind::Array(elem, _) => Some(elem.as_ref().clone()),
@@ -1207,29 +1275,54 @@ impl<'a> TypeChecker<'a> {
                             if params.len() == 2 {
                                 let cmp_arg_ty = TyKind::Ref(Box::new(elem_ty), Mutability::Immutable);
                                 for (param, expected_ty) in params.iter().zip([cmp_arg_ty.clone(), cmp_arg_ty]) {
-                                    if !matches!(param.ty, HirTy::Infer(_)) {
-                                        let annotated_ty = self.hir_ty_to_ty(&param.ty);
-                                        self.unify(&expected_ty, &annotated_ty, param.span);
-                                    }
-                                    if let HirPattern::Ident(hir_id, _, _, _, _) = &param.pat {
-                                        if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
-                                            self.local_types.insert(def_id, expected_ty);
-                                        }
-                                    }
+                                    self.bind_closure_param(param, expected_ty);
                                 }
 
                                 let body_ty = self.check_expr(body);
-                                if let Some(ordering_sym) = self.interner.lookup("Ordering") {
-                                    if let Some(&ordering_def_id) = self.type_name_to_def.get(&ordering_sym) {
-                                        let ordering_ty = TyKind::Adt(ordering_def_id, vec![]);
-                                        self.unify(&ordering_ty, &body_ty, body.span);
-                                        if let Some(ret_ty) = ret_ty {
-                                            let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
-                                            self.unify(&ordering_ty, &annotated_ret_ty, expr.span);
-                                        }
-                                    }
+                                let ordering_ty = self.comparison_ordering_ty();
+                                self.unify(&ordering_ty, &body_ty, body.span);
+                                if let Some(ret_ty) = ret_ty {
+                                    let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
+                                    self.unify(&ordering_ty, &annotated_ret_ty, expr.span);
                                 }
                                 return TyKind::Unit;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(item_ty) = self.iter_item_ty(&inner_ty) {
+                    match method_str {
+                        "find" | "position" | "any" | "all" if args.len() == 1 => {
+                            if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
+                                if params.len() == 1 {
+                                    self.bind_closure_param(&params[0], item_ty.clone());
+                                    let body_ty = self.check_expr(body);
+                                    self.unify(&TyKind::Bool, &body_ty, body.span);
+                                    if let Some(ret_ty) = ret_ty {
+                                        let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
+                                        self.unify(&TyKind::Bool, &annotated_ret_ty, expr.span);
+                                    }
+                                    return match method_str {
+                                        "find" => self.option_of(item_ty).unwrap_or_else(|| self.fresh_infer(InferKind::General)),
+                                        "position" => self.option_of(TyKind::Uint(UintTy::Usize)).unwrap_or_else(|| self.fresh_infer(InferKind::General)),
+                                        _ => TyKind::Bool,
+                                    };
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if let Some(inner_option_ty) = self.option_inner_ty(&inner_ty) {
+                    if method_str == "map" && args.len() == 1 {
+                        if let HirExprKind::Closure(params, _, body, _) = &args[0].kind {
+                            if params.len() == 1 {
+                                self.bind_closure_param(&params[0], inner_option_ty);
+                                let body_ty = self.check_expr(body);
+                                return self.option_of(body_ty)
+                                    .unwrap_or_else(|| self.fresh_infer(InferKind::General));
                             }
                         }
                     }
@@ -1492,6 +1585,9 @@ impl<'a> TypeChecker<'a> {
                 if let Some(ty) = self.intrinsic_constructor_type(path_str) {
                     return ty;
                 }
+                if let Some(ty) = self.intrinsic_enum_variant_type(path_str) {
+                    return ty;
+                }
                 return TyKind::FnDef(def_id, vec![]);
             }
             // Function?
@@ -1505,6 +1601,9 @@ impl<'a> TypeChecker<'a> {
             // Struct (unit struct used as value)?
             if self.struct_defs.contains_key(&def_id) {
                 return TyKind::Adt(def_id, vec![]);
+            }
+            if let Some(ty) = self.enum_variant_type_from_path(path) {
+                return ty;
             }
             // Enum variant? The resolver assigned a synthetic DefId.
             // For a path like Color::Red, the resolver resolved to a variant DefId.
@@ -1527,6 +1626,45 @@ impl<'a> TypeChecker<'a> {
             return TyKind::Error;
         }
         TyKind::Error
+    }
+
+    fn lookup_intrinsic_def_by_path(&self, full_path: &str) -> Option<DefId> {
+        self.resolve
+            .intrinsic_fns
+            .iter()
+            .find_map(|(&def_id, path)| if path == full_path { Some(def_id) } else { None })
+    }
+
+    fn intrinsic_enum_variant_type(&self, path_str: &str) -> Option<TyKind> {
+        let (parent_path, variant_name) = path_str.rsplit_once("::")?;
+        match parent_path {
+            "core::cmp::Ordering" if matches!(variant_name, "Less" | "Equal" | "Greater") => {
+                Some(self.comparison_ordering_ty())
+            }
+            "core::sync::atomic::Ordering" => {
+                if matches!(variant_name, "Relaxed" | "Release" | "Acquire" | "AcqRel" | "SeqCst") {
+                    Some(self.atomic_ordering_ty())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn enum_variant_type_from_path(&self, path: &HirPath) -> Option<TyKind> {
+        if path.segments.len() < 2 {
+            return None;
+        }
+        let enum_name = path.segments[path.segments.len() - 2].ident;
+        let variant_name = path.segments.last()?.ident;
+        let &enum_def_id = self.type_name_to_def.get(&enum_name)?;
+        let variants = self.enum_variant_fields.get(&enum_def_id)?;
+        if variants.iter().any(|(name, _)| *name == variant_name) {
+            Some(TyKind::Adt(enum_def_id, vec![]))
+        } else {
+            None
+        }
     }
 
     fn intrinsic_constructor_type(&mut self, path_str: &str) -> Option<TyKind> {
@@ -1596,6 +1734,53 @@ impl<'a> TypeChecker<'a> {
             .lookup("Result")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
+    }
+
+    fn is_option_def(&self, def_id: DefId) -> bool {
+        self.interner
+            .lookup("Option")
+            .and_then(|sym| self.type_name_to_def.get(&sym).copied())
+            == Some(def_id)
+    }
+
+    fn is_box_def(&self, def_id: DefId) -> bool {
+        self.interner
+            .lookup("Box")
+            .and_then(|sym| self.type_name_to_def.get(&sym).copied())
+            == Some(def_id)
+    }
+
+    fn option_inner_ty(&self, ty: &TyKind) -> Option<TyKind> {
+        match ty {
+            TyKind::Adt(def_id, substs) if self.is_option_def(*def_id) && substs.len() == 1 => {
+                Some(substs[0].clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn iter_item_ty(&self, ty: &TyKind) -> Option<TyKind> {
+        match ty {
+            TyKind::Slice(elem) | TyKind::Array(elem, _) => Some(elem.as_ref().clone()),
+            TyKind::Adt(def_id, substs) if self.is_vec_def(*def_id) && substs.len() == 1 => {
+                Some(substs[0].clone())
+            }
+            _ => None,
+        }
+    }
+
+    fn bind_closure_param(&mut self, param: &HirParam, expected_ty: TyKind) {
+        if !matches!(param.ty, HirTy::Infer(_)) {
+            let annotated_ty = self.hir_ty_to_ty(&param.ty);
+            self.unify(&expected_ty, &annotated_ty, param.span);
+        }
+        if let HirPattern::Ident(hir_id, _, _, _, _) = &param.pat {
+            if let Some(&def_id) = self.resolve.resolutions.get(&hir_id) {
+                self.local_types.insert(def_id, expected_ty);
+            }
+        } else {
+            self.bind_pattern(&param.pat, expected_ty);
+        }
     }
 
     // ── Unification ──
@@ -1810,6 +1995,7 @@ impl<'a> TypeChecker<'a> {
         match ty {
             HirTy::Path(path) => {
                 if path.segments.is_empty() { return TyKind::Error; }
+                let last_segment = path.segments.last().unwrap();
 
                 // Handle associated type projections: `Self::Item`, `T::Output`, etc.
                 if path.segments.len() >= 2 {
@@ -1843,7 +2029,33 @@ impl<'a> TypeChecker<'a> {
                     // Enum::Variant or Module::Type — fall through to single-segment handling
                 }
 
-                let name = self.interner.resolve(path.segments[0].ident);
+                if path.segments.len() >= 2 {
+                    let full_path = path.segments.iter()
+                        .map(|seg| self.interner.resolve(seg.ident))
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    if let Some(def_id) = self.lookup_intrinsic_def_by_path(&full_path) {
+                        let type_args = if let Some(ref args) = last_segment.args {
+                            args.args.iter().filter_map(|a| {
+                                if let HirGenericArg::Type(ty) = a {
+                                    Some(self.hir_ty_to_ty(ty))
+                                } else {
+                                    None
+                                }
+                            }).collect()
+                        } else {
+                            vec![]
+                        };
+                        return TyKind::Adt(def_id, type_args);
+                    }
+                    match full_path.as_str() {
+                        "core::cmp::Ordering" => return self.comparison_ordering_ty(),
+                        "core::sync::atomic::Ordering" => return self.atomic_ordering_ty(),
+                        _ => {}
+                    }
+                }
+
+                let name = self.interner.resolve(last_segment.ident);
                 match name {
                     "i8" => TyKind::Int(IntTy::I8),
                     "i16" => TyKind::Int(IntTy::I16),
@@ -1864,7 +2076,7 @@ impl<'a> TypeChecker<'a> {
                 "str" => TyKind::Str,
                 "Self" => self.current_self_ty.clone().unwrap_or(TyKind::Error),
                 _ => {
-                        let sym = path.segments[0].ident;
+                        let sym = last_segment.ident;
                         // Check generic type params first
                         if let Some(&idx) = self.current_generic_params.get(&sym) {
                             return TyKind::Param(idx);
@@ -1872,7 +2084,7 @@ impl<'a> TypeChecker<'a> {
                         // Look up as ADT by name
                         if let Some(&def_id) = self.type_name_to_def.get(&sym) {
                             // Collect generic args if present
-                            let type_args = if let Some(ref args) = path.segments[0].args {
+                            let type_args = if let Some(ref args) = last_segment.args {
                                 args.args.iter().filter_map(|a| {
                                     if let HirGenericArg::Type(ty) = a {
                                         Some(self.hir_ty_to_ty(ty))
@@ -1932,6 +2144,28 @@ impl<'a> TypeChecker<'a> {
     fn eval_const_usize(&self, expr: &HirExpr) -> usize {
         match &expr.kind {
             HirExprKind::Lit(Literal::Int(n)) => *n as usize,
+            HirExprKind::Paren(inner) => self.eval_const_usize(inner),
+            HirExprKind::Cast(inner, _) => self.eval_const_usize(inner),
+            HirExprKind::Unary(crate::ast::UnOp::Neg, inner) => {
+                0usize.wrapping_sub(self.eval_const_usize(inner))
+            }
+            HirExprKind::Binary(op, lhs, rhs) => {
+                let l = self.eval_const_usize(lhs);
+                let r = self.eval_const_usize(rhs);
+                match op {
+                    BinOp::Add => l.wrapping_add(r),
+                    BinOp::Sub => l.wrapping_sub(r),
+                    BinOp::Mul => l.wrapping_mul(r),
+                    BinOp::Div => if r == 0 { 0 } else { l / r },
+                    BinOp::Rem => if r == 0 { 0 } else { l % r },
+                    BinOp::Shl => l.wrapping_shl(r as u32),
+                    BinOp::Shr => l.wrapping_shr(r as u32),
+                    BinOp::BitAnd => l & r,
+                    BinOp::BitOr => l | r,
+                    BinOp::BitXor => l ^ r,
+                    _ => 0,
+                }
+            }
             _ => 0,
         }
     }

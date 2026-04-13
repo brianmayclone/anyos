@@ -199,9 +199,12 @@ impl<'a> Resolver<'a> {
             }
 
             if self.intrinsic_fns.contains_key(&type_def_id) {
-                let type_str = self.interner.resolve(type_name);
+                let type_path = self.intrinsic_fns
+                    .get(&type_def_id)
+                    .cloned()
+                    .unwrap_or_else(|| self.interner.resolve(type_name).to_string());
                 let assoc_str = self.interner.resolve(assoc_name);
-                let full_path = format!("{}::{}", type_str, assoc_str);
+                let full_path = format!("{}::{}", type_path, assoc_str);
                 let def_id = self.alloc_synthetic_def_id();
                 self.intrinsic_fns.insert(def_id, full_path);
                 if hir_id != HirId(u32::MAX) {

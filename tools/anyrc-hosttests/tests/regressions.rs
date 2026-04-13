@@ -1065,6 +1065,34 @@ fn intrinsic_vec_sort_by_closure_compiles() {
 }
 
 #[test]
+fn intrinsic_vec_sort_by_branching_ordering_closure_compiles() {
+    compile_ok(
+        "intrinsic_vec_sort_by_branching_ordering_closure",
+        r#"
+        struct DirEntry {
+            entry_type: u8,
+        }
+
+        struct DialogState {
+            entries: Vec<DirEntry>,
+        }
+
+        fn demo(state: &mut DialogState) {
+            state.entries.sort_by(|a, b| {
+                if a.entry_type == 2 && b.entry_type != 2 {
+                    core::cmp::Ordering::Less
+                } else if a.entry_type != 2 && b.entry_type == 2 {
+                    core::cmp::Ordering::Greater
+                } else {
+                    core::cmp::Ordering::Equal
+                }
+            });
+        }
+        "#,
+    );
+}
+
+#[test]
 fn fixed_array_field_slice_to_utf8_compiles() {
     compile_ok(
         "fixed_array_field_slice_to_utf8",
@@ -1077,6 +1105,321 @@ fn fixed_array_field_slice_to_utf8_compiles() {
         fn demo(entry: &DirEntry) -> String {
             let slice = &entry.name[..entry.name_len as usize];
             String::from(core::str::from_utf8(slice).unwrap_or("?"))
+        }
+        "#,
+    );
+}
+
+#[test]
+fn filedialog_like_module_patterns_compile_together() {
+    compile_ok(
+        "filedialog_like_module_patterns_compile_together",
+        r#"
+        struct DirEntry {
+            name: [u8; 56],
+            name_len: u8,
+            entry_type: u8,
+            size: u32,
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Mode {
+            OpenFile,
+            OpenFolder,
+            SaveFile,
+        }
+
+        struct DialogState {
+            mode: Mode,
+            current_path: [u8; 257],
+            path_len: usize,
+            entries: Vec<DirEntry>,
+            filename_buf: [u8; 128],
+            filename_len: usize,
+        }
+
+        fn load_entries(state: &mut DialogState, buf: &[u8; 4096], count: usize) {
+            state.entries.clear();
+            for i in 0..count {
+                let off = i * 64;
+                let entry_type = buf[off];
+                let name_len = buf[off + 1] as usize;
+                let size = u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]);
+                if name_len == 0 || name_len > 56 { continue; }
+                if state.mode == Mode::OpenFolder && entry_type != 2 { continue; }
+                let mut name = [0u8; 56];
+                name[..name_len].copy_from_slice(&buf[off + 8..off + 8 + name_len]);
+                state.entries.push(DirEntry { name, name_len: name_len as u8, entry_type, size });
+            }
+            state.entries.sort_by(|a, b| {
+                if a.entry_type == 2 && b.entry_type != 2 {
+                    core::cmp::Ordering::Less
+                } else if a.entry_type != 2 && b.entry_type == 2 {
+                    core::cmp::Ordering::Greater
+                } else {
+                    a.name[..a.name_len as usize].cmp(&b.name[..b.name_len as usize])
+                }
+            });
+        }
+
+        fn entry_name(entry: &DirEntry) -> String {
+            let slice = &entry.name[..entry.name_len as usize];
+            String::from(core::str::from_utf8(slice).unwrap_or("?"))
+        }
+
+        fn current_path(state: &DialogState) -> &str {
+            core::str::from_utf8(&state.current_path[..state.path_len]).unwrap_or("/")
+        }
+
+        fn selected_name(state: &DialogState) -> String {
+            let path = current_path(state);
+            let mut full = String::from(path);
+            if !full.ends_with('/') {
+                full.push('/');
+            }
+            if !state.entries.is_empty() {
+                full.push_str(&entry_name(&state.entries[0]));
+            }
+            full
+        }
+
+        fn save_name(state: &DialogState) -> String {
+            let text = core::str::from_utf8(&state.filename_buf[..state.filename_len]).unwrap_or("");
+            String::from(text)
+        }
+        "#,
+    );
+}
+
+#[test]
+fn ordering_variants_with_imported_and_qualified_paths_compile() {
+    compile_ok(
+        "ordering_variants_with_imported_and_qualified_paths",
+        r#"
+        use core::cmp::Ordering;
+
+        fn choose(left: u8, right: u8) -> core::cmp::Ordering {
+            if left < right {
+                Ordering::Less
+            } else if left > right {
+                core::cmp::Ordering::Greater
+            } else {
+                Ordering::Equal
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn iterator_find_and_option_map_over_boxed_items_compile() {
+    compile_ok(
+        "iterator_find_and_option_map_over_boxed_items",
+        r#"
+        use alloc::boxed::Box;
+
+        struct WinInfo {
+            ext_id: u32,
+        }
+
+        fn find_ref(windows: Vec<Box<WinInfo>>, ext_id: u32) -> Option<&WinInfo> {
+            windows
+                .iter()
+                .find(|w| w.ext_id == ext_id)
+                .map(|b| &**b)
+        }
+        "#,
+    );
+}
+
+#[test]
+fn filedialog_state_helpers_compile_together() {
+    compile_ok(
+        "filedialog_state_helpers_compile_together",
+        r#"
+        struct DirEntry {
+            name: [u8; 56],
+            name_len: u8,
+            entry_type: u8,
+            size: u32,
+        }
+
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum Mode {
+            OpenFile,
+            OpenFolder,
+            SaveFile,
+        }
+
+        enum FileDialogResult {
+            Selected(String),
+        }
+
+        struct DialogState {
+            mode: Mode,
+            current_path: [u8; 257],
+            path_len: usize,
+            entries: Vec<DirEntry>,
+            selected: Option<usize>,
+            scroll_offset: u32,
+            filename_buf: [u8; 128],
+            filename_len: usize,
+        }
+
+        mod fs {
+            pub fn readdir(_path: &str, _buf: &mut [u8; 4096]) -> u32 { 0 }
+        }
+
+        fn set_path(state: &mut DialogState, path: &str) {
+            let bytes = path.as_bytes();
+            let len = bytes.len().min(256);
+            state.current_path[..len].copy_from_slice(&bytes[..len]);
+            state.path_len = len;
+        }
+
+        fn load_entries(state: &mut DialogState) {
+            state.entries.clear();
+            let path = core::str::from_utf8(&state.current_path[..state.path_len]).unwrap_or("/");
+
+            let mut buf = [0u8; 64 * 64];
+            let count = fs::readdir(path, &mut buf);
+            if count == u32::MAX {
+                return;
+            }
+
+            for i in 0..count as usize {
+                let off = i * 64;
+                if off + 64 > buf.len() { break; }
+                let entry_type = buf[off];
+                let name_len = buf[off + 1] as usize;
+                let size = u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]);
+
+                if name_len == 0 || name_len > 56 { continue; }
+                if name_len == 1 && buf[off + 8] == b'.' { continue; }
+                if name_len == 2 && buf[off + 8] == b'.' && buf[off + 9] == b'.' { continue; }
+                if state.mode == Mode::OpenFolder && entry_type != 2 { continue; }
+
+                let mut name = [0u8; 56];
+                name[..name_len].copy_from_slice(&buf[off + 8..off + 8 + name_len]);
+
+                state.entries.push(DirEntry {
+                    name,
+                    name_len: name_len as u8,
+                    entry_type,
+                    size,
+                });
+            }
+
+            state.entries.sort_by(|a, b| {
+                if a.entry_type == 2 && b.entry_type != 2 {
+                    core::cmp::Ordering::Less
+                } else if a.entry_type != 2 && b.entry_type == 2 {
+                    core::cmp::Ordering::Greater
+                } else {
+                    a.name[..a.name_len as usize].cmp(&b.name[..b.name_len as usize])
+                }
+            });
+        }
+
+        fn navigate_parent(state: &mut DialogState) {
+            let path = core::str::from_utf8(&state.current_path[..state.path_len]).unwrap_or("/");
+            if path == "/" { return; }
+
+            let trimmed = path.trim_end_matches('/');
+            let parent = match trimmed.rfind('/') {
+                Some(0) => "/",
+                Some(pos) => &trimmed[..pos],
+                None => "/",
+            };
+            let parent_str = String::from(parent);
+            set_path(state, &parent_str);
+            load_entries(state);
+            state.selected = None;
+            state.scroll_offset = 0;
+        }
+
+        fn confirm_action(state: &DialogState) -> Option<FileDialogResult> {
+            match state.mode {
+                Mode::OpenFile => {
+                    if let Some(idx) = state.selected {
+                        if idx < state.entries.len() && state.entries[idx].entry_type == 1 {
+                            let name = entry_name(&state.entries[idx]);
+                            let full = build_full_path(state, &name);
+                            return Some(FileDialogResult::Selected(full));
+                        }
+                    }
+                    None
+                }
+                Mode::OpenFolder => {
+                    if let Some(idx) = state.selected {
+                        if idx < state.entries.len() && state.entries[idx].entry_type == 2 {
+                            let name = entry_name(&state.entries[idx]);
+                            let full = build_full_path(state, &name);
+                            return Some(FileDialogResult::Selected(full));
+                        }
+                    }
+                    let path = core::str::from_utf8(&state.current_path[..state.path_len]).unwrap_or("/");
+                    Some(FileDialogResult::Selected(String::from(path)))
+                }
+                Mode::SaveFile => {
+                    if state.filename_len > 0 {
+                        let name = core::str::from_utf8(&state.filename_buf[..state.filename_len]).unwrap_or("");
+                        let full = build_full_path(state, name);
+                        return Some(FileDialogResult::Selected(full));
+                    }
+                    None
+                }
+            }
+        }
+
+        fn entry_name(entry: &DirEntry) -> String {
+            let slice = &entry.name[..entry.name_len as usize];
+            String::from(core::str::from_utf8(slice).unwrap_or("?"))
+        }
+
+        fn build_full_path(state: &DialogState, name: &str) -> String {
+            let path = core::str::from_utf8(&state.current_path[..state.path_len]).unwrap_or("/");
+            let mut full = String::from(path);
+            if !full.ends_with('/') {
+                full.push('/');
+            }
+            full.push_str(name);
+            full
+        }
+        "#,
+    );
+}
+
+#[test]
+fn window_utf8_and_slice_writer_patterns_compile() {
+    compile_ok(
+        "window_utf8_and_slice_writer_patterns_compile",
+        r#"
+        struct MenuBuilder {
+            buf: [u8; 128],
+            pos: usize,
+            num_menus_offset: usize,
+            num_menus: usize,
+        }
+
+        impl MenuBuilder {
+            pub fn build(&mut self) -> &[u8] {
+                let nm = self.num_menus as u32;
+                self.buf[self.num_menus_offset..self.num_menus_offset + 4]
+                    .copy_from_slice(&nm.to_le_bytes());
+                &self.buf[..self.pos]
+            }
+
+            fn write_bytes(&mut self, data: &[u8]) {
+                let end = (self.pos + data.len()).min(self.buf.len());
+                let count = end - self.pos;
+                self.buf[self.pos..self.pos + count].copy_from_slice(&data[..count]);
+                self.pos += count;
+            }
+        }
+
+        fn clipboard_string(buf: &[u8; 4096], actual: usize) -> Option<String> {
+            core::str::from_utf8(&buf[..actual]).ok().map(|s| String::from(s))
         }
         "#,
     );
