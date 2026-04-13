@@ -231,6 +231,7 @@ pub fn run_once() -> u32 {
                             if let Some(menu_id) = st.pressed.take() {
                                 let margin = st.popup.as_ref().map(|p| p.margin).unwrap_or(0);
                                 let owner_dd = st.popup.as_ref().and_then(|p| p.owner_dropdown);
+                                let owner_cb = st.popup.as_ref().and_then(|p| p.owner_combobox);
                                 if let Some(idx) = control::find_idx(&st.controls, menu_id) {
                                     let (ax, ay) =
                                         (st.controls[idx].base().x, st.controls[idx].base().y);
@@ -302,6 +303,44 @@ pub fn run_once() -> u32 {
                                                 control::EVENT_CHANGE,
                                                 &mut pending_cbs,
                                             );
+                                        } else if let Some(cb_id) = owner_cb {
+                                            let selected_idx =
+                                                st.controls[idx].base().state as usize;
+                                            let menu_text = st.controls[idx]
+                                                .text_base()
+                                                .map(|tb| tb.text.clone())
+                                                .unwrap_or_default();
+                                            let full_item: alloc::vec::Vec<u8> = menu_text
+                                                .split(|&b| b == b'|')
+                                                .nth(selected_idx)
+                                                .unwrap_or(&[])
+                                                .to_vec();
+                                            let actual_idx = full_item
+                                                .iter()
+                                                .position(|&b| b == 0x1F)
+                                                .and_then(|sep| {
+                                                    core::str::from_utf8(&full_item[..sep]).ok()
+                                                })
+                                                .and_then(|s| s.parse::<usize>().ok());
+                                            dismiss_popup(st);
+                                            if let Some(actual_idx) = actual_idx {
+                                                if let Some(cb_idx) =
+                                                    control::find_idx(&st.controls, cb_id)
+                                                {
+                                                    if let Some(cb) = control::cast_mut::<crate::controls::combobox::ComboBox>(
+                                                        &mut st.controls[cb_idx],
+                                                        ControlKind::ComboBox,
+                                                    ) {
+                                                        cb.apply_selected_index(actual_idx);
+                                                    }
+                                                }
+                                                fire_event_callback(
+                                                    &st.controls,
+                                                    cb_id,
+                                                    control::EVENT_CHANGE,
+                                                    &mut pending_cbs,
+                                                );
+                                            }
                                         } else {
                                             // Normal context menu
                                             dismiss_popup(st);
@@ -957,6 +996,7 @@ pub fn run_once() -> u32 {
                                                         margin, // logical — used for hit-testing and render offset
                                                         dirty: true,
                                                         owner_dropdown: None,
+                                                        owner_combobox: None,
                                                         owner_autocomplete: None,
                                                     });
                                                     let tid = libsyscall::get_tid();
@@ -1100,10 +1140,130 @@ pub fn run_once() -> u32 {
                                                             margin, // logical — used for hit-testing and render offset
                                                             dirty: true,
                                                             owner_dropdown: Some(target_id),
+                                                            owner_combobox: None,
                                                             owner_autocomplete: None,
                                                         });
                                                         let tid = libsyscall::get_tid();
                                                         compositor::focus_by_tid(st.channel_id, tid);
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if st.controls[idx2].kind() == ControlKind::ComboBox {
+                                            let raw: *mut dyn Control = &mut *st.controls[idx2];
+                                            let cb = unsafe {
+                                                &mut *(raw as *mut crate::controls::combobox::ComboBox)
+                                            };
+                                            if cb.request_popup || cb.open {
+                                                cb.request_popup = false;
+                                                cb.open = true;
+                                                let items_text = cb.popup_items();
+                                                let cb_w = cb.text_base.base.w;
+                                                let cb_h = cb.text_base.base.h;
+                                                let cb_abs =
+                                                    control::abs_position(&st.controls, target_id);
+
+                                                dismiss_popup(st);
+
+                                                if !items_text.is_empty() {
+                                                    let menu_id = st.next_id;
+                                                    st.next_id += 1;
+                                                    let menu_ctrl = crate::controls::create_control(
+                                                        ControlKind::ContextMenu,
+                                                        menu_id,
+                                                        0,
+                                                        0,
+                                                        0,
+                                                        0,
+                                                        0,
+                                                        &items_text,
+                                                    );
+                                                    st.controls.push(menu_ctrl);
+
+                                                    if let Some(mi) =
+                                                        control::find_idx(&st.controls, menu_id)
+                                                    {
+                                                        let menu_w = st.controls[mi].base().w.max(cb_w);
+                                                        st.controls[mi].base_mut().w = menu_w;
+                                                        let menu_h = st.controls[mi].base().h;
+                                                        let margin: i32 = 16;
+                                                        let popup_w = menu_w + (margin as u32) * 2;
+                                                        let popup_h = menu_h + (margin as u32) * 2;
+                                                        let phys_popup_w = crate::theme::scale(popup_w);
+                                                        let phys_popup_h = crate::theme::scale(popup_h);
+                                                        let (content_x, content_y) =
+                                                            compositor::get_window_position(
+                                                                st.channel_id,
+                                                                st.sub_id,
+                                                                comp_window_id,
+                                                            );
+                                                        let phys_cb_x = crate::theme::scale_i32(cb_abs.0);
+                                                        let phys_cb_y = crate::theme::scale_i32(cb_abs.1);
+                                                        let phys_cb_h = crate::theme::scale(cb_h);
+                                                        let phys_margin =
+                                                            crate::theme::scale_i32(margin);
+                                                        let phys_menu_h = crate::theme::scale(menu_h);
+                                                        let mut popup_x =
+                                                            content_x + phys_cb_x - phys_margin;
+                                                        let mut popup_y =
+                                                            content_y + phys_cb_y + phys_cb_h as i32
+                                                                - phys_margin;
+                                                        let (scr_w, scr_h) = compositor::screen_size();
+                                                        if popup_x + phys_popup_w as i32 > scr_w as i32
+                                                        {
+                                                            popup_x =
+                                                                scr_w as i32 - phys_popup_w as i32;
+                                                        }
+                                                        if popup_y + phys_popup_h as i32 > scr_h as i32
+                                                        {
+                                                            popup_y = content_y + phys_cb_y
+                                                                - phys_menu_h as i32
+                                                                - phys_margin;
+                                                        }
+                                                        if popup_x < 0 {
+                                                            popup_x = 0;
+                                                        }
+                                                        if popup_y < 0 {
+                                                            popup_y = 0;
+                                                        }
+                                                        let popup_flags: u32 =
+                                                            0x01 | 0x02 | 0x04 | 0x100;
+                                                        if let Some((popup_win_id, shm_id, surface)) =
+                                                            compositor::create_window(
+                                                                st.channel_id,
+                                                                st.sub_id,
+                                                                popup_x,
+                                                                popup_y,
+                                                                phys_popup_w,
+                                                                phys_popup_h,
+                                                                popup_flags,
+                                                            )
+                                                        {
+                                                            st.controls[mi].set_position(0, 0);
+                                                            st.controls[mi].base_mut().visible = false;
+                                                            let back_buffer = alloc::vec![
+                                                                0u32;
+                                                                (phys_popup_w * phys_popup_h) as usize
+                                                            ];
+                                                            st.popup = Some(crate::PopupInfo {
+                                                                window_id: popup_win_id,
+                                                                shm_id,
+                                                                surface,
+                                                                width: phys_popup_w,
+                                                                height: phys_popup_h,
+                                                                back_buffer,
+                                                                menu_id,
+                                                                owner_win_idx: wi,
+                                                                margin,
+                                                                dirty: true,
+                                                                owner_dropdown: None,
+                                                                owner_combobox: Some(target_id),
+                                                                owner_autocomplete: None,
+                                                            });
+                                                            let tid = libsyscall::get_tid();
+                                                            compositor::focus_by_tid(st.channel_id, tid);
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1315,6 +1475,207 @@ pub fn run_once() -> u32 {
                         }
                     }
 
+                    // ── ComboBox popup ─────────────────────────────────
+                    if let Some(focus_id) = st.focused {
+                        if let Some(idx) = control::find_idx(&st.controls, focus_id) {
+                            let (triggered_popup, matches, cb_w, cb_h, nav, accept) =
+                                if let Some(cb) = control::cast_mut::<crate::controls::combobox::ComboBox>(
+                                    &mut st.controls[idx],
+                                    ControlKind::ComboBox,
+                                ) {
+                                    let nav = cb.popup_nav;
+                                    cb.popup_nav = 0;
+                                    let accept = cb.popup_accept;
+                                    cb.popup_accept = false;
+                                    let cb_w = cb.text_base.base.w;
+                                    let cb_h = cb.text_base.base.h;
+                                    if cb.request_popup {
+                                        cb.request_popup = false;
+                                        (true, cb.popup_items(), cb_w, cb_h, nav, accept)
+                                    } else {
+                                        (false, alloc::vec::Vec::new(), cb_w, cb_h, nav, accept)
+                                    }
+                                } else {
+                                    (false, alloc::vec::Vec::new(), 0, 0, 0, false)
+                                };
+
+                            if triggered_popup {
+                                if !matches.is_empty() {
+                                    let cb_abs = control::abs_position(&st.controls, focus_id);
+                                    dismiss_popup(st);
+                                    let menu_id = st.next_id;
+                                    st.next_id += 1;
+                                    let menu_ctrl = crate::controls::create_control(
+                                        ControlKind::ContextMenu,
+                                        menu_id,
+                                        0,
+                                        0,
+                                        0,
+                                        0,
+                                        0,
+                                        &matches,
+                                    );
+                                    st.controls.push(menu_ctrl);
+
+                                    if let Some(mi) = control::find_idx(&st.controls, menu_id) {
+                                        let menu_w = st.controls[mi].base().w.max(cb_w);
+                                        st.controls[mi].base_mut().w = menu_w;
+                                        let menu_h = st.controls[mi].base().h;
+                                        let margin: i32 = 16;
+                                        let popup_w = menu_w + (margin as u32) * 2;
+                                        let popup_h = menu_h + (margin as u32) * 2;
+                                        let phys_popup_w = crate::theme::scale(popup_w);
+                                        let phys_popup_h = crate::theme::scale(popup_h);
+                                        let (content_x, content_y) = compositor::get_window_position(
+                                            st.channel_id,
+                                            st.sub_id,
+                                            comp_window_id,
+                                        );
+                                        let phys_cb_x = crate::theme::scale_i32(cb_abs.0);
+                                        let phys_cb_y = crate::theme::scale_i32(cb_abs.1);
+                                        let phys_cb_h = crate::theme::scale(cb_h);
+                                        let phys_margin = crate::theme::scale_i32(margin);
+                                        let mut popup_x = content_x + phys_cb_x - phys_margin;
+                                        let mut popup_y =
+                                            content_y + phys_cb_y + phys_cb_h as i32 - phys_margin;
+                                        let (scr_w, scr_h) = compositor::screen_size();
+                                        if popup_x + phys_popup_w as i32 > scr_w as i32 {
+                                            popup_x = scr_w as i32 - phys_popup_w as i32;
+                                        }
+                                        if popup_y + phys_popup_h as i32 > scr_h as i32 {
+                                            let phys_menu_h = crate::theme::scale(menu_h);
+                                            popup_y =
+                                                content_y + phys_cb_y - phys_menu_h as i32 - phys_margin;
+                                        }
+                                        if popup_x < 0 {
+                                            popup_x = 0;
+                                        }
+                                        if popup_y < 0 {
+                                            popup_y = 0;
+                                        }
+                                        let popup_flags: u32 = 0x01 | 0x02 | 0x04 | 0x100;
+                                        if let Some((popup_win_id, shm_id, surface)) =
+                                            compositor::create_window(
+                                                st.channel_id,
+                                                st.sub_id,
+                                                popup_x,
+                                                popup_y,
+                                                phys_popup_w,
+                                                phys_popup_h,
+                                                popup_flags,
+                                            )
+                                        {
+                                            st.controls[mi].set_position(0, 0);
+                                            st.controls[mi].base_mut().visible = false;
+                                            let back_buffer =
+                                                alloc::vec![0u32; (phys_popup_w * phys_popup_h) as usize];
+                                            st.popup = Some(crate::PopupInfo {
+                                                window_id: popup_win_id,
+                                                shm_id,
+                                                surface,
+                                                width: phys_popup_w,
+                                                height: phys_popup_h,
+                                                back_buffer,
+                                                menu_id,
+                                                owner_win_idx: wi,
+                                                margin,
+                                                dirty: true,
+                                                owner_dropdown: None,
+                                                owner_combobox: Some(focus_id),
+                                                owner_autocomplete: None,
+                                            });
+                                            let tid = libsyscall::get_tid();
+                                            compositor::focus_by_tid(st.channel_id, tid);
+                                        }
+                                    }
+                                } else if st
+                                    .popup
+                                    .as_ref()
+                                    .map(|p| p.owner_combobox == Some(focus_id))
+                                    .unwrap_or(false)
+                                {
+                                    dismiss_popup(st);
+                                }
+                            }
+
+                            if nav != 0 {
+                                if let Some(ref popup) = st.popup {
+                                    if popup.owner_combobox == Some(focus_id) {
+                                        let menu_id = popup.menu_id;
+                                        if let Some(mi) = control::find_idx(&st.controls, menu_id) {
+                                            let item_count = st.controls[mi]
+                                                .text_base()
+                                                .map(|tb| tb.text.split(|&b| b == b'|').count())
+                                                .unwrap_or(0)
+                                                as i32;
+                                            if item_count > 0 {
+                                                let cur = st.controls[mi].base().state as i32;
+                                                let next = if nav > 0 {
+                                                    (cur + 1).min(item_count - 1)
+                                                } else {
+                                                    (cur - 1).max(0)
+                                                };
+                                                st.controls[mi].base_mut().state = next as u32;
+                                                st.controls[mi].base_mut().mark_dirty();
+                                                if let Some(ref mut p) = st.popup {
+                                                    p.dirty = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if accept {
+                                let has_cb_popup = st
+                                    .popup
+                                    .as_ref()
+                                    .map(|p| p.owner_combobox == Some(focus_id))
+                                    .unwrap_or(false);
+                                if has_cb_popup {
+                                    let menu_id = st.popup.as_ref().unwrap().menu_id;
+                                    if let Some(mi) = control::find_idx(&st.controls, menu_id) {
+                                        let selected_idx = st.controls[mi].base().state as usize;
+                                        let menu_text = st.controls[mi]
+                                            .text_base()
+                                            .map(|tb| tb.text.clone())
+                                            .unwrap_or_default();
+                                        let full_item: alloc::vec::Vec<u8> = menu_text
+                                            .split(|&b| b == b'|')
+                                            .nth(selected_idx)
+                                            .unwrap_or(&[])
+                                            .to_vec();
+                                        let actual_idx = full_item
+                                            .iter()
+                                            .position(|&b| b == 0x1F)
+                                            .and_then(|sep| {
+                                                core::str::from_utf8(&full_item[..sep]).ok()
+                                            })
+                                            .and_then(|s| s.parse::<usize>().ok());
+                                        dismiss_popup(st);
+                                        if let Some(actual_idx) = actual_idx {
+                                            if let Some(idx2) = control::find_idx(&st.controls, focus_id)
+                                            {
+                                                if let Some(cb2) = control::cast_mut::<crate::controls::combobox::ComboBox>(
+                                                    &mut st.controls[idx2],
+                                                    ControlKind::ComboBox,
+                                                ) {
+                                                    cb2.apply_selected_index(actual_idx);
+                                                }
+                                            }
+                                            fire_event_callback(
+                                                &st.controls,
+                                                focus_id,
+                                                control::EVENT_CHANGE,
+                                                &mut pending_cbs,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // ── AutoComplete popup ────────────────────────────
                     // After key handling, check if the focused control is an
                     // AutoCompleteTextField with `suggest == true`.
@@ -1429,6 +1790,7 @@ pub fn run_once() -> u32 {
                                                 margin,
                                                 dirty: true,
                                                 owner_dropdown: None,
+                                                owner_combobox: None,
                                                 owner_autocomplete: Some(focus_id),
                                             });
                                             let tid = libsyscall::get_tid();
@@ -2445,6 +2807,19 @@ fn dismiss_popup(st: &mut crate::AnyuiState) {
                 }
             }
             // Remove the temporary ContextMenu control we created
+            st.controls.retain(|c| c.id() != popup.menu_id);
+        }
+        if let Some(cb_id) = popup.owner_combobox {
+            if let Some(cb_idx) = control::find_idx(&st.controls, cb_id) {
+                if let Some(cb) = control::cast_mut::<crate::controls::combobox::ComboBox>(
+                    &mut st.controls[cb_idx],
+                    ControlKind::ComboBox,
+                ) {
+                    cb.open = false;
+                    cb.request_popup = false;
+                    cb.text_base.base.mark_dirty();
+                }
+            }
             st.controls.retain(|c| c.id() != popup.menu_id);
         }
         compositor::destroy_window(st.channel_id, popup.window_id, popup.shm_id);

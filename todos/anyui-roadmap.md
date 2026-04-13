@@ -27,6 +27,13 @@ Es fehlen aber vor allem:
 - fortgeschrittene Desktop-Controls wie ComboBox, BreadcrumbBar, PropertyGrid
 - konsistente Interaktionsmodelle fuer Auswahl, Fokus, Editing, Validation
 
+Bereits angelaufen oder teilweise umgesetzt:
+
+- `TextField`/`TextArea`: `read_only`, Cursor-/Selection-Grundlagen
+- `ContextMenu`: Disabled-Items und Keyboard-Bedienung
+- Framework-Drag-&-Drop-Grundlagen
+- Finder und anyOS Code als erste DnD-Referenz-Apps
+
 ---
 
 ## P0
@@ -426,33 +433,161 @@ Diese Punkte fehlen quer ueber viele Controls:
 
 ---
 
-## Empfohlene Reihenfolge
+## Konkrete Prioritaeten
 
-### Phase 1
+Diese Reihenfolge ist an zwei Dingen ausgerichtet:
 
-- Clipboard-Permissions und Text-Control-Haertung
-- `TextField`/`TextArea`: `read_only`, `max_length`, Cursor, Selection
-- Menues: Disabled, Checkmarks, Shortcuts, Keyboard-Navigation
+- maximaler Sofortnutzen fuer bestehende Apps
+- moeglichst wenig Wegwerf-Arbeit fuer spaetere groessere Controls
 
-### Phase 2
+### Jetzt als naechstes
 
-- `TreeView`/`TableView`/`DataGrid` Interaktionsupgrade
-- `ComboBox`
-- Framework-Drag-&-Drop-Grundlagen
+1. `ComboBox`
+2. `ListView`
+3. `CollectionView` / `ItemsControl`
+4. `Popover` / `Sheet`
+5. `PropertyGrid`
+6. `BreadcrumbBar` / `PathBar`
+7. `RichText`
 
-### Phase 3
+### Warum genau diese Reihenfolge
 
-- `ListView`
-- `CollectionView` / `ItemsControl`
-- `Popover` / `Sheet` / `Inspector`
+#### 1. `ComboBox`
 
-### Phase 4
+Warum zuerst:
 
-- `PropertyGrid`
-- `BreadcrumbBar`
-- `TokenField`
-- `RichText`
-- Command-System
+- kleinster fehlender Desktop-Baustein mit sehr hohem Wiederverwendungswert
+- kann auf vorhandenem `DropDown`-, `TextField`- und Popup-Code aufbauen
+- schliesst eine sichtbare Luecke gegenueber WinForms, WPF und AppKit schnell
+
+Direkter Nutzen:
+
+- Settings
+- Installer
+- Mail
+- Browser-Formulare
+- Such- und Filterleisten
+
+Technische Vorarbeit:
+
+- Popup-Owner-/Dismiss-Logik weiter haerten
+- Auswahlmodell zwischen Text und Listen-Popup vereinheitlichen
+- Validation-Hooks vorsehen
+
+#### 2. `ListView`
+
+Warum direkt danach:
+
+- bringt Finder, Dateidialoge und mehrere System-Apps sofort auf ein erwachseneres Niveau
+- nutzt das neue DnD-System unmittelbar weiter
+- verhindert, dass jede App ihre Explorer-Ansicht weiter ad hoc zusammensetzt
+
+Direkter Nutzen:
+
+- Finder
+- Store
+- anyzilla
+- Dateidialoge
+- Medien- und Asset-Browser
+
+Technische Vorarbeit:
+
+- Multi-Selection fuer Collections
+- Column-/Header-Modell
+- Type-to-select
+- In-place Rename
+- Auto-scroll waehrend Drag
+
+#### 3. `CollectionView` / `ItemsControl`
+
+Warum vor weiteren Spezial-Controls:
+
+- ist das eigentliche Framework-Primitive fuer datengetriebene UIs
+- entlastet `FlowPanel`-Bastelei und schafft eine Basis fuer spaetere Controls
+- hilft sofort bei Store-, Settings-, Mail- und Launcher-Oberflaechen
+
+Direkter Nutzen:
+
+- Store
+- Settings
+- anyMail
+- Notifications
+- Launcher / Runner
+
+Technische Vorarbeit:
+
+- Item-Adapter oder Data-Source-Modell
+- Selektion und Fokus fuer wiederholte Items
+- spaetere Virtualisierung vorbereiten
+
+#### 4. `Popover` / `Sheet`
+
+Warum erst hier:
+
+- sehr wertvoll fuer moderne Desktop-Interaktion, aber weniger zentral als Auswahl- und Collection-Controls
+- sollte auf bereits verbesserter Popup-, Fokus- und Command-Logik aufsetzen
+
+Direkter Nutzen:
+
+- Finder
+- anyOS Code
+- Browser-Chrome
+- Settings
+- VM Manager
+
+Technische Vorarbeit:
+
+- ankerbasierte Positionierung
+- standardisierte Dismiss-Regeln
+- Fokus-Rueckgabe an den Ausloeser
+
+#### 5. `PropertyGrid`
+
+Warum danach:
+
+- sehr stark fuer Entwickler- und Admin-Tools
+- haengt von den vorherigen Editing- und Selection-Verbesserungen ab
+
+Direkter Nutzen:
+
+- VM Manager
+- anyTrace
+- Diagnostics
+- spaetere Designer und Devtools
+
+#### 6. `BreadcrumbBar` / `PathBar`
+
+Warum nicht frueher:
+
+- hohe UX-Wirkung, aber geringere Breitenwirkung als `ComboBox`, `ListView` und `CollectionView`
+- profitiert von Popover- und Command-Verbesserungen
+
+Direkter Nutzen:
+
+- Finder
+- Dateidialoge
+- anyzilla
+
+#### 7. `RichText`
+
+Warum zuletzt in diesem Block:
+
+- wichtig, aber weniger unblockend fuer Desktop-Produktivitaet als die Controls davor
+- wird sauberer, wenn Selection-, Clipboard- und Command-Semantik vorher vereinheitlicht sind
+
+Direkter Nutzen:
+
+- anyMail
+- Hilfetexte
+- Notifications
+- Markdown-/Dokumenten-Viewer
+
+### Was parallel weiterlaufen sollte
+
+- Text-Controls weiter vervollstaendigen: `max_length`, Undo/Redo, Wrap, scroll-to-caret
+- Menues weiter ausbauen: Checkmarks, Icons, Shortcut-Anzeige, Submenues
+- `TreeView`/`TableView`/`DataGrid` auf Multi-Selection, bessere Keyboard-Navigation und Auto-scroll ziehen
+- DnD von reinem Text auf typisierte Payloads wie `uri-list` und Copy/Move-Aushandlung erweitern
 
 ---
 

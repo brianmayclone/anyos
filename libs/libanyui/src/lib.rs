@@ -146,6 +146,9 @@ pub(crate) struct PopupInfo {
     /// If this popup was opened by a DropDown, its control ID.
     /// When the popup item is selected, the DropDown's state is updated.
     pub owner_dropdown: Option<ControlId>,
+    /// If this popup was opened by a ComboBox, its control ID.
+    /// When the popup item is selected, the ComboBox's state is updated.
+    pub owner_combobox: Option<ControlId>,
     /// If this popup was opened by an AutoCompleteTextField, its control ID.
     /// When the popup item is selected, the TextField's text is updated.
     pub owner_autocomplete: Option<ControlId>,
@@ -978,6 +981,10 @@ fn as_autocomplete_textfield(
     control::cast_mut(ctrl, ControlKind::AutoCompleteTextField)
 }
 
+fn as_combobox(ctrl: &mut Box<dyn Control>) -> Option<&mut controls::combobox::ComboBox> {
+    control::cast_mut(ctrl, ControlKind::ComboBox)
+}
+
 #[no_mangle]
 pub extern "C" fn anyui_textfield_set_prefix(id: ControlId, icon_code: u32) {
     let st = state();
@@ -1238,6 +1245,84 @@ pub extern "C" fn anyui_autocomplete_set_suggestions(id: ControlId, text: *const
             actf.text_base.base.mark_dirty();
         }
     }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_combobox_set_items(id: ControlId, text: *const u8, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cb) = as_combobox(ctrl) {
+            let data = if !text.is_null() && len > 0 {
+                unsafe { core::slice::from_raw_parts(text, len as usize) }
+            } else {
+                &[]
+            };
+            cb.set_items(data);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_combobox_set_placeholder(id: ControlId, text: *const u8, len: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cb) = as_combobox(ctrl) {
+            let data = if !text.is_null() && len > 0 {
+                unsafe { core::slice::from_raw_parts(text, len as usize) }
+            } else {
+                &[]
+            };
+            cb.set_placeholder(data);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_combobox_set_editable(id: ControlId, editable: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cb) = as_combobox(ctrl) {
+            cb.set_editable(editable != 0);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_combobox_get_editable(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cb) = as_combobox(ctrl) {
+            return cb.editable as u32;
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_combobox_set_selected_index(id: ControlId, index: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cb) = as_combobox(ctrl) {
+            if index == u32::MAX {
+                cb.base_mut().state = u32::MAX;
+                cb.set_text(&[]);
+                cb.base_mut().mark_dirty();
+            } else {
+                cb.apply_selected_index(index as usize);
+            }
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_combobox_get_selected_index(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(cb) = as_combobox(ctrl) {
+            return cb.base().state;
+        }
+    }
+    u32::MAX
 }
 
 // ── Canvas operations ────────────────────────────────────────────────
@@ -2868,6 +2953,7 @@ pub extern "C" fn anyui_open_popup(id: ControlId) {
             margin,
             dirty: true,
             owner_dropdown: None,
+            owner_combobox: None,
             owner_autocomplete: None,
         });
         let tid = libsyscall::get_tid();

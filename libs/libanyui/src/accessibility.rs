@@ -567,6 +567,7 @@ fn kind_name(k: ControlKind) -> &'static str {
         ControlKind::TreeView => "TreeView",
         ControlKind::RadioGroup => "RadioGroup",
         ControlKind::DropDown => "DropDown",
+        ControlKind::ComboBox => "ComboBox",
         ControlKind::AutoCompleteTextField => "AutoCompleteTextField",
         ControlKind::Spinner => "Spinner",
         ControlKind::PlainButton => "PlainButton",

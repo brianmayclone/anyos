@@ -359,7 +359,7 @@ add_custom_command(
     ${SYSTEM_BINS}
     ${DLL_BINS}
     ${SYSROOT_DIR}/.stamp
-    ${SELFHOST_SYSROOT_DEPS}
+    ${ISO_SYSROOT_DEPS}
     ${C_TOOLCHAIN_DEPS}
     ${MKIMAGE_EXECUTABLE}
   COMMENT "Creating bootable ISO 9660 image (El Torito, BIOS boot)"

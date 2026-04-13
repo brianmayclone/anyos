@@ -15,6 +15,7 @@ pub mod card;
 pub mod checkbox;
 pub mod chrome;
 pub mod colorwell;
+pub mod combobox;
 pub mod context_menu;
 pub mod data_grid;
 pub mod divider;
@@ -93,6 +94,9 @@ pub fn create_control(
         )),
         ControlKind::ImageView => Box::new(image_view::ImageView::new(base)),
         ControlKind::ColorWell => Box::new(colorwell::ColorWell::new(base)),
+        ControlKind::ComboBox => Box::new(combobox::ComboBox::new(
+            TextControlBase::new(base).with_text(text),
+        )),
         ControlKind::StackPanel => Box::new(stack_panel::StackPanel::new(base)),
         ControlKind::FlowPanel => Box::new(flow_panel::FlowPanel::new(base)),
         ControlKind::TableLayout => Box::new(table_layout::TableLayout::new(base)),

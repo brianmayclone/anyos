@@ -79,8 +79,14 @@ EXPORTS
     anyui_textarea_set_selection
     anyui_textarea_get_selection
     anyui_textarea_set_max_length
-    anyui_autocomplete_set_suggestions
-    anyui_marshal_set_text
+anyui_autocomplete_set_suggestions
+anyui_combobox_set_items
+anyui_combobox_set_placeholder
+anyui_combobox_set_editable
+anyui_combobox_get_editable
+anyui_combobox_set_selected_index
+anyui_combobox_get_selected_index
+anyui_marshal_set_text
     anyui_marshal_set_color
     anyui_marshal_set_state
     anyui_marshal_set_visible

@@ -2,6 +2,7 @@
 # 5. User Programs (flat binaries)
 # ============================================================
 set(SYSROOT_DIR "${CMAKE_BINARY_DIR}/sysroot")
+set(FILTERED_COPY_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/CopyTreeFiltered.cmake")
 
 # ── Architecture-dependent target selection ──
 if(ANYOS_ARCH STREQUAL "arm64")
@@ -92,36 +93,46 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     ${CMAKE_SOURCE_DIR}/VERSION
     ${ANYOS_SELFHOST_ROOT}/VERSION
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/anyrc
-    ${ANYOS_SELFHOST_ROOT}/libs/anyrc
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/stdlib
-    ${ANYOS_SELFHOST_ROOT}/libs/stdlib
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libstd
-    ${ANYOS_SELFHOST_ROOT}/libs/libstd
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libheap
-    ${ANYOS_SELFHOST_ROOT}/libs/libheap
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/dynlink
-    ${ANYOS_SELFHOST_ROOT}/libs/dynlink
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libcorevm_client
-    ${ANYOS_SELFHOST_ROOT}/libs/libcorevm_client
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libhttp_client
-    ${ANYOS_SELFHOST_ROOT}/libs/libhttp_client
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libzip_client
-    ${ANYOS_SELFHOST_ROOT}/libs/libzip_client
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/bin/acargo
-    ${ANYOS_SELFHOST_ROOT}/bin/acargo
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/bin/anyrc
-    ${ANYOS_SELFHOST_ROOT}/bin/anyrc
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/anyrc
+    -DDST=${ANYOS_SELFHOST_ROOT}/libs/anyrc
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/stdlib
+    -DDST=${ANYOS_SELFHOST_ROOT}/libs/stdlib
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libstd
+    -DDST=${ANYOS_SELFHOST_ROOT}/libs/libstd
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libheap
+    -DDST=${ANYOS_SELFHOST_ROOT}/libs/libheap
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/dynlink
+    -DDST=${ANYOS_SELFHOST_ROOT}/libs/dynlink
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libcorevm_client
+    -DDST=${ANYOS_SELFHOST_ROOT}/libs/libcorevm_client
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libhttp_client
+    -DDST=${ANYOS_SELFHOST_ROOT}/libs/libhttp_client
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libzip_client
+    -DDST=${ANYOS_SELFHOST_ROOT}/libs/libzip_client
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/bin/acargo
+    -DDST=${ANYOS_SELFHOST_ROOT}/bin/acargo
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/bin/anyrc
+    -DDST=${ANYOS_SELFHOST_ROOT}/bin/anyrc
+    -P ${FILTERED_COPY_SCRIPT}
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     ${ANYOS_SELFHOST_ROOT}/bin/acargo/target
     ${ANYOS_SELFHOST_ROOT}/bin/anyrc/target
@@ -145,6 +156,7 @@ add_custom_command(
   COMMENT "Installing Rust self-hosting sources to sysroot"
 )
 set(SELFHOST_SYSROOT_DEPS ${ANYOS_SELFHOST_ROOT}/.stamp)
+set(ISO_SYSROOT_DEPS ${ANYOS_SELFHOST_ROOT}/.stamp)
 
 set(ANYOS_SOURCE_MIRROR_ROOT "${SYSROOT_DIR}/Libraries/sources/anyos")
 file(GLOB_RECURSE ANYOS_SOURCE_MIRROR_DEPS CONFIGURE_DEPENDS
@@ -179,33 +191,42 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
     ${CMAKE_SOURCE_DIR}/VERSION
     ${ANYOS_SOURCE_MIRROR_ROOT}/VERSION
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/bin
-    ${ANYOS_SOURCE_MIRROR_ROOT}/bin
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/anyrc
-    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/anyrc
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/stdlib
-    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/stdlib
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libstd
-    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libstd
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libheap
-    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libheap
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/dynlink
-    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/dynlink
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libcorevm_client
-    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libcorevm_client
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libhttp_client
-    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libhttp_client
-  COMMAND ${CMAKE_COMMAND} -E copy_directory
-    ${CMAKE_SOURCE_DIR}/libs/libzip_client
-    ${ANYOS_SOURCE_MIRROR_ROOT}/libs/libzip_client
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/bin
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/bin
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/anyrc
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/anyrc
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/stdlib
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/stdlib
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libstd
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/libstd
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libheap
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/libheap
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/dynlink
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/dynlink
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libcorevm_client
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/libcorevm_client
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libhttp_client
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/libhttp_client
+    -P ${FILTERED_COPY_SCRIPT}
+  COMMAND ${CMAKE_COMMAND}
+    -DSRC=${CMAKE_SOURCE_DIR}/libs/libzip_client
+    -DDST=${ANYOS_SOURCE_MIRROR_ROOT}/libs/libzip_client
+    -P ${FILTERED_COPY_SCRIPT}
   COMMAND ${CMAKE_COMMAND} -E rm -rf
     ${ANYOS_SOURCE_MIRROR_ROOT}/bin/acargo/target
     ${ANYOS_SOURCE_MIRROR_ROOT}/bin/anyrc/target

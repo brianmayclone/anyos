@@ -6,6 +6,8 @@ use anyrc::intern::Interner;
 use anyrc::loader::{self, FileLoader};
 use anyrc::macros::expand_macros;
 use anyrc::parser::Parser;
+use anyrc::resolve::Resolver;
+use anyrc::typeck::TypeChecker;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -131,6 +133,54 @@ fn collect_sources(
     sources
 }
 
+fn debug_type_names(rel_src: &str, src_dir: &str, extern_crates: &[ExternCrateSpec]) {
+    let repo_root = repo_root();
+    let input_path = repo_root.join(rel_src);
+    let src = fs::read_to_string(&input_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", input_path.display(), e));
+
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(&src, &mut interner);
+    let mut krate = parser.parse_crate();
+    let cfg_ctx = CfgContext::from_flags(&anyos_cfg_flags());
+    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    expand_macros(&mut krate, &mut interner);
+
+    let loader = anyrc::loader::OsFileLoader;
+    let src_dir = repo_root.join(src_dir);
+    anyrc::loader::resolve_modules(
+        &mut krate,
+        src_dir.to_str().expect("src dir"),
+        &mut interner,
+        &loader,
+    );
+    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    inject_extern_crate_interfaces(&mut krate, extern_crates, &mut interner, &loader);
+
+    let mut lower = LoweringContext::new(&mut interner);
+    let hir = lower.lower_crate(&krate);
+
+    let mut resolver = Resolver::new(&mut interner);
+    let resolve_result = resolver.resolve_crate(&hir);
+    if !resolve_result.errors.is_empty() {
+        println!("resolve failed with {} diagnostics", resolve_result.errors.len());
+        return;
+    }
+
+    let mut checker = TypeChecker::new(&interner, &resolve_result);
+    let typeck_result = checker.check_crate(&hir);
+    println!("type-name map for selected DefIds:");
+    for def_id in [622u32, 729, 1190, 10124, 10709, 11086, 11563] {
+        let key = anyrc::hir::DefId(def_id);
+        let name = typeck_result
+            .type_def_to_name
+            .get(&key)
+            .map(|sym| interner.resolve(*sym))
+            .unwrap_or("<unknown>");
+        println!("  DefId({def_id}) -> {name}");
+    }
+}
+
 fn render_candidate(
     err: &Diagnostic,
     path: &str,
@@ -191,6 +241,11 @@ fn main() {
             println!("anyos_std compiled successfully");
         }
         Err(errors) => {
+            debug_type_names(
+                "libs/stdlib/src/lib.rs",
+                "libs/stdlib/src",
+                &opts.extern_crates,
+            );
             println!("compile failed with {} diagnostics", errors.len());
             for (idx, err) in errors.iter().enumerate() {
                 println!("\n== diagnostic {} ==", idx + 1);

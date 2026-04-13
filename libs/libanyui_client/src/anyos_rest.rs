@@ -51,6 +51,7 @@ pub const KIND_SPINNER: u32 = 44;
 pub const KIND_PLAIN_BUTTON: u32 = 45;
 pub const KIND_DATE_TIME_PICKER: u32 = 46;
 pub const KIND_LIST_BOX: u32 = 47;
+pub const KIND_COMBO_BOX: u32 = 48;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 
@@ -202,6 +203,13 @@ struct AnyuiLib {
     textarea_set_max_length: extern "C" fn(u32, u32),
     // AutoCompleteTextField
     autocomplete_set_suggestions: extern "C" fn(u32, *const u8, u32),
+    // ComboBox
+    combobox_set_items: extern "C" fn(u32, *const u8, u32),
+    combobox_set_placeholder: extern "C" fn(u32, *const u8, u32),
+    combobox_set_editable: extern "C" fn(u32, u32),
+    combobox_get_editable: extern "C" fn(u32) -> u32,
+    combobox_set_selected_index: extern "C" fn(u32, u32),
+    combobox_get_selected_index: extern "C" fn(u32) -> u32,
     // Marshal (cross-thread)
     marshal_set_text: extern "C" fn(u32, *const u8, u32),
     marshal_set_color: extern "C" fn(u32, u32),
@@ -492,6 +500,13 @@ pub fn init() -> bool {
             textarea_set_max_length: resolve(&handle, "anyui_textarea_set_max_length"),
             // AutoCompleteTextField
             autocomplete_set_suggestions: resolve(&handle, "anyui_autocomplete_set_suggestions"),
+            // ComboBox
+            combobox_set_items: resolve(&handle, "anyui_combobox_set_items"),
+            combobox_set_placeholder: resolve(&handle, "anyui_combobox_set_placeholder"),
+            combobox_set_editable: resolve(&handle, "anyui_combobox_set_editable"),
+            combobox_get_editable: resolve(&handle, "anyui_combobox_get_editable"),
+            combobox_set_selected_index: resolve(&handle, "anyui_combobox_set_selected_index"),
+            combobox_get_selected_index: resolve(&handle, "anyui_combobox_get_selected_index"),
             // Marshal (cross-thread)
             marshal_set_text: resolve(&handle, "anyui_marshal_set_text"),
             marshal_set_color: resolve(&handle, "anyui_marshal_set_color"),

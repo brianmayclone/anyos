@@ -176,6 +176,12 @@ static void collect_sysroot(const char *host_path, const char *iso_path,
                              IsoDir *dirs, int *ndirs,
                              IsoFile *files, int *nfiles);
 
+static int should_skip_iso_dir(const char *iso_path)
+{
+    return strcmp(iso_path, "/Libraries/sources") == 0 ||
+           strncmp(iso_path, "/Libraries/sources/", 19) == 0;
+}
+
 /*
  * find_or_add_dir — locate iso_path in dirs[], creating it if absent.
  * Returns the index into dirs[].
@@ -201,6 +207,9 @@ static void collect_sysroot(const char *host_path, const char *iso_path,
                              IsoDir *dirs, int *ndirs,
                              IsoFile *files, int *nfiles)
 {
+    if (should_skip_iso_dir(iso_path))
+        return;
+
     DIR *dp = opendir(host_path);
     if (!dp)
         return;

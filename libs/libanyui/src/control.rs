@@ -257,6 +257,7 @@ pub enum ControlKind {
     PlainButton = 45,
     DateTimePicker = 46,
     ListBox = 47,
+    ComboBox = 48,
 }
 
 impl ControlKind {
@@ -310,6 +311,7 @@ impl ControlKind {
             45 => Self::PlainButton,
             46 => Self::DateTimePicker,
             47 => Self::ListBox,
+            48 => Self::ComboBox,
             _ => Self::View,
         }
     }
@@ -339,6 +341,7 @@ impl ControlKind {
             Self::AutoCompleteTextField => (200, 28),
             Self::DateTimePicker => (200, 28),
             Self::ListBox => (200, 120),
+            Self::ComboBox => (200, 32),
             Self::Toolbar => (0, 36),
             Self::NavigationBar => (0, 44),
             Self::TabBar => (0, 32),

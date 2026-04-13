@@ -55,6 +55,16 @@ fn collect_macro_call_args(tokens: &[TokenTree], interner: &mut Interner) -> Vec
     }
 }
 
+fn make_intrinsic_path(interner: &mut Interner, name: &str) -> Path {
+    Path {
+        segments: vec![PathSegment {
+            ident: interner.intern(name),
+            args: None,
+        }],
+        span: Span::dummy(),
+    }
+}
+
 fn parse_vec_macro_expr(tokens: &[TokenTree], interner: &mut Interner) -> Option<Expr> {
     let src = token_trees_to_string(tokens, interner);
     let wrapped = format!("[{}]", src);
@@ -204,11 +214,18 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                 "format" => {
                     // format!("...", args...) → __anyrc_format("...", args...)
                     // Expand to a call to __anyrc_format intrinsic
-                    let fn_sym = interner.intern("__anyrc_format");
-                    let fn_path = Path {
-                        segments: vec![PathSegment { ident: fn_sym, args: None }],
-                        span: Span::dummy(),
-                    };
+                    let fn_path = make_intrinsic_path(interner, "__anyrc_format");
+                    let call_args = collect_macro_call_args(args, interner);
+                    *expr = Expr::Call(
+                        Box::new(Expr::Path(fn_path)),
+                        call_args,
+                        *span,
+                    );
+                    *changed = true;
+                    return;
+                }
+                "format_args" => {
+                    let fn_path = make_intrinsic_path(interner, "__anyrc_format_args");
                     let call_args = collect_macro_call_args(args, interner);
                     *expr = Expr::Call(
                         Box::new(Expr::Path(fn_path)),
@@ -228,11 +245,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                             _ => parsed,
                         };
                     } else {
-                        let fn_sym = interner.intern("Vec::new");
-                        let fn_path = Path {
-                            segments: vec![PathSegment { ident: fn_sym, args: None }],
-                            span: Span::dummy(),
-                        };
+                        let fn_path = make_intrinsic_path(interner, "Vec::new");
                         *expr = Expr::Call(
                             Box::new(Expr::Path(fn_path)),
                             vec![],
@@ -244,17 +257,53 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                 }
                 "println" | "eprintln" => {
                     // println!("...", args...) → __anyrc_println("...", args...)
-                    let fn_sym = interner.intern("__anyrc_println");
-                    let fn_path = Path {
-                        segments: vec![PathSegment { ident: fn_sym, args: None }],
-                        span: Span::dummy(),
-                    };
+                    let fn_path = make_intrinsic_path(interner, "__anyrc_println");
                     let call_args = collect_macro_call_args(args, interner);
                     *expr = Expr::Call(
                         Box::new(Expr::Path(fn_path)),
                         call_args,
                         *span,
                     );
+                    *changed = true;
+                    return;
+                }
+                "write" | "writeln" => {
+                    let mut call_args = collect_macro_call_args(args, interner);
+                    if call_args.is_empty() {
+                        *expr = Expr::Tuple(vec![], *span);
+                        *changed = true;
+                        return;
+                    }
+
+                    let target = call_args.remove(0);
+                    let fmt_expr = if call_args.is_empty() {
+                        Expr::Tuple(vec![], *span)
+                    } else {
+                        let fn_path = make_intrinsic_path(interner, "__anyrc_format_args");
+                        Expr::Call(Box::new(Expr::Path(fn_path)), call_args, *span)
+                    };
+                    let write_fmt_path = Path {
+                        segments: vec![
+                            PathSegment { ident: interner.intern("core"), args: None },
+                            PathSegment { ident: interner.intern("fmt"), args: None },
+                            PathSegment { ident: interner.intern("Write"), args: None },
+                            PathSegment { ident: interner.intern("write_fmt"), args: None },
+                        ],
+                        span: Span::dummy(),
+                    };
+                    *expr = Expr::Call(
+                        Box::new(Expr::Path(write_fmt_path)),
+                        vec![
+                            Expr::Ref(Box::new(target), Mutability::Mut, *span),
+                            fmt_expr,
+                        ],
+                        *span,
+                    );
+                    *changed = true;
+                    return;
+                }
+                "matches" => {
+                    *expr = Expr::Lit(Literal::Bool(false), *span);
                     *changed = true;
                     return;
                 }

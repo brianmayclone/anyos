@@ -419,6 +419,21 @@ impl<'a> TypeChecker<'a> {
                 Some(TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable))
             }
             "anyos_std::args::parse" => Some(self.parsed_args_ty()),
+            "__anyrc_println" => Some(TyKind::Unit),
+            "__anyrc_format" => {
+                if let Some(sym) = self.interner.lookup("String") {
+                    if let Some(&def_id) = self.type_name_to_def.get(&sym) {
+                        return Some(TyKind::Adt(def_id, vec![]));
+                    }
+                }
+                Some(self.fresh_infer(InferKind::General))
+            }
+            "__anyrc_format_args" => {
+                if let Some(def_id) = self.lookup_intrinsic_def_by_path("Arguments") {
+                    return Some(TyKind::Adt(def_id, vec![]));
+                }
+                Some(self.fresh_infer(InferKind::General))
+            }
             "u8::from_le_bytes" => Some(TyKind::Uint(UintTy::U8)),
             "u16::from_le_bytes" => Some(TyKind::Uint(UintTy::U16)),
             "u32::from_le_bytes" => Some(TyKind::Uint(UintTy::U32)),
@@ -1880,6 +1895,17 @@ impl<'a> TypeChecker<'a> {
             return TyKind::Error;
         }
         let last_segment = &segments[segments.len() - 1];
+        let full_path = if segments.len() >= 2 {
+            Some(
+                segments
+                    .iter()
+                    .map(|seg| self.interner.resolve(seg.ident))
+                    .collect::<Vec<_>>()
+                    .join("::"),
+            )
+        } else {
+            None
+        };
 
         if segments.len() >= 2 {
             let first_sym = segments[0].ident;
@@ -1906,29 +1932,7 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        if segments.len() >= 2 {
-            let full_path = segments
-                .iter()
-                .map(|seg| self.interner.resolve(seg.ident))
-                .collect::<Vec<_>>()
-                .join("::");
-            if let Some(def_id) = self.lookup_intrinsic_def_by_path(&full_path) {
-                let type_args = if let Some(ref args) = last_segment.args {
-                    args.args
-                        .iter()
-                        .filter_map(|a| {
-                            if let HirGenericArg::Type(ty) = a {
-                                Some(self.hir_ty_to_ty(ty))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                };
-                return TyKind::Adt(def_id, type_args);
-            }
+        if let Some(full_path) = &full_path {
             match full_path.as_str() {
                 "core::cmp::Ordering" => return self.comparison_ordering_ty(),
                 "core::sync::atomic::Ordering" => return self.atomic_ordering_ty(),
@@ -1995,6 +1999,14 @@ impl<'a> TypeChecker<'a> {
                     };
                     TyKind::Adt(def_id, type_args)
                 } else {
+                    if let Some(full_path) = &full_path {
+                        if let Some(def_id) = self.lookup_intrinsic_def_by_path(full_path) {
+                            return TyKind::Adt(def_id, vec![]);
+                        }
+                    }
+                    if let Some(def_id) = self.lookup_intrinsic_def_by_path(name) {
+                        return TyKind::Adt(def_id, vec![]);
+                    }
                     TyKind::Error
                 }
             }
@@ -2468,129 +2480,7 @@ impl<'a> TypeChecker<'a> {
 
     fn hir_ty_to_ty(&self, ty: &HirTy) -> TyKind {
         match ty {
-            HirTy::Path(path) => {
-                if path.segments.is_empty() { return TyKind::Error; }
-                let last_segment = path.segments.last().unwrap();
-
-                // Handle associated type projections: `Self::Item`, `T::Output`, etc.
-                if path.segments.len() >= 2 {
-                    let first_sym = path.segments[0].ident;
-                    let assoc_name = path.segments[1].ident;
-                    let first_str = self.interner.resolve(first_sym);
-
-                    // Self::AssocType — look up which trait's impl we're in
-                    if first_str == "Self" {
-                        // Try to find the associated type in any trait impl
-                        for (&(trait_def_id, type_name), concrete_ty) in &self.assoc_types {
-                            if type_name == assoc_name {
-                                return concrete_ty.clone();
-                            }
-                        }
-                    }
-
-                    // T::AssocType where T is a generic param with trait bounds
-                    if let Some(&param_idx) = self.current_generic_params.get(&first_sym) {
-                        if let Some(bounds) = self.current_generic_bounds.get(&param_idx) {
-                            for trait_def_id in bounds {
-                                if let Some(ty) = self.assoc_types.get(&(*trait_def_id, assoc_name)) {
-                                    return ty.clone();
-                                }
-                            }
-                        }
-                        // Even without a concrete resolution, return the param
-                        return TyKind::Param(param_idx);
-                    }
-
-                    // Enum::Variant or Module::Type — fall through to single-segment handling
-                }
-
-                if path.segments.len() >= 2 {
-                    let full_path = path.segments.iter()
-                        .map(|seg| self.interner.resolve(seg.ident))
-                        .collect::<Vec<_>>()
-                        .join("::");
-                    if let Some(def_id) = self.lookup_intrinsic_def_by_path(&full_path) {
-                        let type_args = if let Some(ref args) = last_segment.args {
-                            args.args.iter().filter_map(|a| {
-                                if let HirGenericArg::Type(ty) = a {
-                                    Some(self.hir_ty_to_ty(ty))
-                                } else {
-                                    None
-                                }
-                            }).collect()
-                        } else {
-                            vec![]
-                        };
-                        return TyKind::Adt(def_id, type_args);
-                    }
-                    match full_path.as_str() {
-                        "core::cmp::Ordering" => return self.comparison_ordering_ty(),
-                        "core::sync::atomic::Ordering" => return self.atomic_ordering_ty(),
-                        _ => {}
-                    }
-                }
-
-                let name = self.interner.resolve(last_segment.ident);
-                match name {
-                    "i8" => TyKind::Int(IntTy::I8),
-                    "i16" => TyKind::Int(IntTy::I16),
-                    "i32" => TyKind::Int(IntTy::I32),
-                    "i64" => TyKind::Int(IntTy::I64),
-                    "i128" => TyKind::Int(IntTy::I128),
-                    "isize" => TyKind::Int(IntTy::Isize),
-                    "u8" => TyKind::Uint(UintTy::U8),
-                    "u16" => TyKind::Uint(UintTy::U16),
-                    "u32" => TyKind::Uint(UintTy::U32),
-                    "u64" => TyKind::Uint(UintTy::U64),
-                    "u128" => TyKind::Uint(UintTy::U128),
-                    "usize" => TyKind::Uint(UintTy::Usize),
-                    "f32" => TyKind::Float(FloatTy::F32),
-                    "f64" => TyKind::Float(FloatTy::F64),
-                "bool" => TyKind::Bool,
-                "char" => TyKind::Char,
-                "str" => TyKind::Str,
-                "Self" => self.current_self_ty.clone().unwrap_or(TyKind::Error),
-                _ => {
-                        let sym = last_segment.ident;
-                        // Check generic type params first
-                        if let Some(&idx) = self.current_generic_params.get(&sym) {
-                            return TyKind::Param(idx);
-                        }
-                        if let Some(alias_ty) = self.type_aliases.get(&sym) {
-                            let type_args = if let Some(ref args) = last_segment.args {
-                                args.args.iter().filter_map(|a| {
-                                    if let HirGenericArg::Type(ty) = a {
-                                        Some(self.hir_ty_to_ty(ty))
-                                    } else {
-                                        None
-                                    }
-                                }).collect::<Vec<_>>()
-                            } else {
-                                vec![]
-                            };
-                            return self.substitute_params(alias_ty, &type_args);
-                        }
-                        // Look up as ADT by name
-                        if let Some(&def_id) = self.type_name_to_def.get(&sym) {
-                            // Collect generic args if present
-                            let type_args = if let Some(ref args) = last_segment.args {
-                                args.args.iter().filter_map(|a| {
-                                    if let HirGenericArg::Type(ty) = a {
-                                        Some(self.hir_ty_to_ty(ty))
-                                    } else {
-                                        None
-                                    }
-                                }).collect()
-                            } else {
-                                vec![]
-                            };
-                            TyKind::Adt(def_id, type_args)
-                        } else {
-                            TyKind::Error
-                        }
-                    }
-                }
-            }
+            HirTy::Path(path) => self.path_segments_to_ty(&path.segments),
             HirTy::Reference(_, inner, mutability, _) => {
                 TyKind::Ref(Box::new(self.hir_ty_to_ty(inner)), *mutability)
             }

@@ -2308,3 +2308,65 @@ fn result_alias_impl_with_match_and_format_args_compiles() {
         "#,
     );
 }
+
+#[test]
+fn qualified_result_and_option_variants_preserve_underlying_enum_types() {
+    compile_ok(
+        "qualified_result_and_option_variants_preserve_underlying_enum_types",
+        r#"
+        fn ok_value() -> core::result::Result<u32, u8> {
+            core::result::Result::Ok(7)
+        }
+
+        fn err_value() -> core::result::Result<u32, u8> {
+            core::result::Result::Err(1)
+        }
+
+        fn some_value() -> core::option::Option<u32> {
+            core::option::Option::Some(3)
+        }
+
+        fn none_value() -> core::option::Option<u32> {
+            core::option::Option::None
+        }
+
+        fn consume() -> u32 {
+            match ok_value() {
+                core::result::Result::Ok(v) => v,
+                core::result::Result::Err(_) => 0,
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn format_args_write_and_writeln_macros_expand_in_expr_position() {
+    compile_ok(
+        "format_args_write_and_writeln_macros_expand_in_expr_position",
+        r#"
+        fn log_pair<W: core::fmt::Write>(dst: &mut W, key: &str, value: u32) {
+            let _ = dst.write_fmt(format_args!("{}={}", key, value));
+            let _ = write!(dst, "{}={}", key, value);
+            let _ = writeln!(dst, "{}={}", key, value);
+        }
+        "#,
+    );
+}
+
+#[test]
+fn matches_macro_expands_in_boolean_position() {
+    compile_ok(
+        "matches_macro_expands_in_boolean_position",
+        r#"
+        enum Token {
+            LBrace,
+            RBrace,
+        }
+
+        fn is_brace(tok: Token) -> bool {
+            matches!(tok, Token::LBrace | Token::RBrace)
+        }
+        "#,
+    );
+}

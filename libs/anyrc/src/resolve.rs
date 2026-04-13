@@ -98,6 +98,7 @@ impl<'a> Resolver<'a> {
         self.define_intrinsic_type("Result", "Result");
         self.define_intrinsic_type("Vec", "Vec");
         self.define_intrinsic_type("String", "String");
+        self.define_intrinsic_type("Arguments", "Arguments");
         self.define_intrinsic_type("Box", "Box");
         self.define_intrinsic_type("Clone", "Clone");
         self.define_intrinsic_type("Copy", "Copy");
@@ -125,6 +126,7 @@ impl<'a> Resolver<'a> {
 
         self.define_intrinsic_value("__anyrc_println", "__anyrc_println");
         self.define_intrinsic_value("__anyrc_format", "__anyrc_format");
+        self.define_intrinsic_value("__anyrc_format_args", "__anyrc_format_args");
         self.define_intrinsic_value("Vec::new", "Vec::new");
         self.define_intrinsic_value("exit", "exit");
     }
