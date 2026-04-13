@@ -188,6 +188,21 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
 // ── Sidebar (file explorer) ────────────────────────────────────
 
 pub fn wire_sidebar() {
+    app().sidebar.tree.on_drag_start(|_| {
+        app().sidebar.begin_drag_from_selection();
+    });
+
+    app().sidebar.tree.on_drop(|_| {
+        let s = app();
+        if s.sidebar.move_drag_payload_to_hovered_dir().is_some() {
+            if let Some(ref proj) = s.current_project {
+                let root = proj.root.clone();
+                s.sidebar.refresh(&root);
+            }
+            commands::update_status();
+        }
+    });
+
     // File tree selection opens file
     app().sidebar.tree.on_selection_changed(|e| {
         let s = app();

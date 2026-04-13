@@ -133,6 +133,31 @@ fn load_locations() -> Vec<Location> {
     locations
 }
 
+fn save_locations(locations: &[Location]) {
+    let fd = fs::open(FINDER_CONF_PATH, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if fd == u32::MAX {
+        return;
+    }
+    for loc in locations.iter().take(MAX_LOCATIONS) {
+        let line = anyos_std::format!("{}={}\n", loc.name, loc.path);
+        fs::write(fd, line.as_bytes());
+    }
+    fs::close(fd);
+}
+
+fn location_name_for_path(path: &str) -> String {
+    if path == "/" {
+        return String::from("Root");
+    }
+    let trimmed = path.trim_end_matches('/');
+    let last = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    if last.is_empty() {
+        String::from(path)
+    } else {
+        String::from(last)
+    }
+}
+
 /// Discover mounted volumes by reading mount points and disk list.
 /// Returns volumes suitable for sidebar display (excludes root, /dev, /mnt/cdrom).
 fn discover_volumes() -> Vec<Volume> {
@@ -297,8 +322,10 @@ struct AppState {
     path_field: ui::TextField,
     btn_back: ui::IconButton,
     btn_fwd: ui::IconButton,
+    sidebar_panel: ui::View,
     sidebar_item_ids: Vec<u32>,
-    sidebar_panel_id: u32,
+    quick_access_drop_idx: Option<usize>,
+    quick_access_append: bool,
     volumes: Vec<Volume>,
     volume_item_ids: Vec<u32>,
     volume_eject_ids: Vec<u32>,
@@ -961,6 +988,260 @@ fn attach_root_menu(target: &ui::Label, panel: &ui::View) {
     menu.on_click_raw(root_menu_handler, 0);
     target.set_context_menu(&menu);
     panel.add(&menu);
+}
+
+fn add_sidebar_section(panel: &ui::View, text: &str, top_margin: i32) -> ui::Label {
+    let hdr = ui::Label::new(text);
+    hdr.set_dock(ui::DOCK_TOP);
+    hdr.set_size(160, 18);
+    hdr.set_font_size(10);
+    hdr.set_text_color(0xFF808080);
+    hdr.set_padding(14, 0, 8, 0);
+    hdr.set_margin(0, top_margin, 0, 2);
+    panel.add(&hdr);
+    hdr
+}
+
+fn save_and_rebuild_sidebar() {
+    let s = app();
+    save_locations(&s.locations);
+    let cwd = s.cwd.clone();
+    s.quick_access_drop_idx = None;
+    s.quick_access_append = false;
+    sync_sidebar(&cwd);
+    rebuild_sidebar();
+}
+
+fn move_quick_access(from: usize, mut to: usize) {
+    let s = app();
+    if from >= s.locations.len() || to > s.locations.len() || from == to {
+        return;
+    }
+    let loc = s.locations.remove(from);
+    if from < to {
+        to -= 1;
+    }
+    if to > s.locations.len() {
+        to = s.locations.len();
+    }
+    s.locations.insert(to, loc);
+    save_and_rebuild_sidebar();
+}
+
+fn add_quick_access_path(path: &str, mut insert_at: usize) {
+    let mut stat_buf = [0u32; 7];
+    if fs::stat(path, &mut stat_buf) != 0 || stat_buf[0] != TYPE_DIR as u32 {
+        return;
+    }
+
+    let s = app();
+    if let Some(existing) = s.locations.iter().position(|loc| loc.path.as_str() == path) {
+        move_quick_access(existing, insert_at);
+        return;
+    }
+    if insert_at > s.locations.len() {
+        insert_at = s.locations.len();
+    }
+    s.locations.insert(insert_at, Location {
+        name: location_name_for_path(path),
+        path: String::from(path),
+    });
+    if s.locations.len() > MAX_LOCATIONS {
+        s.locations.truncate(MAX_LOCATIONS);
+    }
+    save_and_rebuild_sidebar();
+}
+
+fn handle_quick_access_drop(target_idx: Option<usize>) {
+    let payload = ui::drag_get_text();
+    if payload.is_empty() {
+        return;
+    }
+
+    match target_idx {
+        Some(idx) if payload.starts_with("qa:") => {
+            if let Ok(src_idx) = payload[3..].parse::<usize>() {
+                move_quick_access(src_idx, idx);
+            }
+        }
+        Some(idx) => add_quick_access_path(&payload, idx),
+        None if payload.starts_with("qa:") => {
+            if let Ok(src_idx) = payload[3..].parse::<usize>() {
+                let len = app().locations.len();
+                move_quick_access(src_idx, len);
+            }
+        }
+        None => {
+            let len = app().locations.len();
+            add_quick_access_path(&payload, len);
+        }
+    }
+}
+
+extern "C" fn sidebar_drag_start_handler(_control_id: u32, _event_type: u32, userdata: u64) {
+    let idx = userdata as usize;
+    ui::drag_set_text(&anyos_std::format!("qa:{}", idx));
+}
+
+extern "C" fn sidebar_drag_enter_handler(control_id: u32, _event_type: u32, _userdata: u64) {
+    let idx = app()
+        .sidebar_item_ids
+        .iter()
+        .position(|&id| id == control_id);
+    set_quick_access_drop_preview(idx, false);
+}
+
+extern "C" fn sidebar_drag_leave_handler(_control_id: u32, _event_type: u32, _userdata: u64) {
+    clear_quick_access_drop_preview();
+}
+
+extern "C" fn sidebar_drop_handler(_control_id: u32, _event_type: u32, userdata: u64) {
+    clear_quick_access_drop_preview();
+    handle_quick_access_drop(Some(userdata as usize));
+}
+
+extern "C" fn quick_access_header_drag_enter(control_id: u32, _event_type: u32, _userdata: u64) {
+    let ctrl = ui::Control::from_id(control_id);
+    ctrl.set_color(0x223C7CFF);
+    ctrl.set_text_color(0xFFB0C7FF);
+    set_quick_access_drop_preview(None, true);
+}
+
+extern "C" fn quick_access_header_drag_leave(control_id: u32, _event_type: u32, _userdata: u64) {
+    let ctrl = ui::Control::from_id(control_id);
+    ctrl.set_color(0x00000000);
+    ctrl.set_text_color(0xFF808080);
+    clear_quick_access_drop_preview();
+}
+
+extern "C" fn quick_access_header_drop_handler(control_id: u32, _event_type: u32, _userdata: u64) {
+    quick_access_header_drag_leave(control_id, 0, 0);
+    handle_quick_access_drop(None);
+}
+
+fn rebuild_sidebar() {
+    let s = app();
+    s.sidebar_panel.clear();
+    s.sidebar_item_ids.clear();
+    s.quick_access_drop_idx = None;
+    s.quick_access_append = false;
+    s.volume_item_ids.clear();
+    s.volume_eject_ids.clear();
+    s.volumes = discover_volumes();
+
+    let tc = ui::theme::colors();
+    let quick_header = add_sidebar_section(&s.sidebar_panel, "Quick Access", 8);
+    quick_header.set_drop_target(true);
+    quick_header.on_drag_enter_raw(quick_access_header_drag_enter, 0);
+    quick_header.on_drag_leave_raw(quick_access_header_drag_leave, 0);
+    quick_header.on_drop_raw(quick_access_header_drop_handler, 0);
+
+    let max_quick = 5usize;
+    for (i, loc) in s.locations.iter().enumerate() {
+        if i >= max_quick { break; }
+        let item = ui::Label::new(&loc.name);
+        item.set_dock(ui::DOCK_TOP);
+        item.set_size(160, 26);
+        item.set_font_size(13);
+        item.set_text_color(tc.text);
+        item.set_padding(28, 4, 8, 4);
+        item.set_margin(2, 0, 2, 0);
+        item.on_click_raw(sidebar_click_handler, i as u64);
+        item.set_draggable(true);
+        item.set_drop_target(true);
+        item.on_drag_start_raw(sidebar_drag_start_handler, i as u64);
+        item.on_drag_enter_raw(sidebar_drag_enter_handler, i as u64);
+        item.on_drag_leave_raw(sidebar_drag_leave_handler, i as u64);
+        item.on_drop_raw(sidebar_drop_handler, i as u64);
+        attach_sidebar_menu(&item, &s.sidebar_panel, i);
+        s.sidebar_item_ids.push(item.id());
+        s.sidebar_panel.add(&item);
+    }
+
+    let has_network = s.volumes.iter().any(|v| v.network);
+
+    add_sidebar_section(&s.sidebar_panel, "Drives", 12);
+
+    let root_label = ui::Label::new("anyOS HD");
+    root_label.set_dock(ui::DOCK_TOP);
+    root_label.set_size(160, 26);
+    root_label.set_font_size(13);
+    root_label.set_text_color(tc.text);
+    root_label.set_padding(28, 4, 8, 4);
+    root_label.set_margin(2, 0, 2, 0);
+    root_label.on_click(|_| open_root_location());
+    attach_root_menu(&root_label, &s.sidebar_panel);
+    s.sidebar_panel.add(&root_label);
+
+    for (vi, vol) in s.volumes.iter().enumerate() {
+        if !vol.removable { continue; }
+
+        let row = ui::View::new();
+        row.set_dock(ui::DOCK_TOP);
+        row.set_size(160, 26);
+        row.set_color(0x00000000);
+
+        let vlabel = ui::Label::new(&vol.name);
+        vlabel.set_dock(ui::DOCK_FILL);
+        vlabel.set_font_size(13);
+        vlabel.set_text_color(tc.text);
+        vlabel.set_padding(28, 4, 4, 4);
+        vlabel.on_click_raw(volume_click_handler, vi as u64);
+        attach_volume_menu(&vlabel, &s.sidebar_panel, vi, false, vol.disk_id > 0);
+        s.volume_item_ids.push(vlabel.id());
+        row.add(&vlabel);
+
+        if vol.disk_id > 0 {
+            let eject = ui::Label::new("\u{23CF}");
+            eject.set_dock(ui::DOCK_RIGHT);
+            eject.set_size(22, 26);
+            eject.set_font_size(11);
+            eject.set_text_color(tc.text_disabled);
+            eject.set_padding(4, 4, 4, 4);
+            eject.on_click_raw(eject_click_handler, vol.disk_id as u64);
+            s.volume_eject_ids.push(eject.id());
+            row.add(&eject);
+        }
+
+        s.sidebar_panel.add(&row);
+    }
+
+    if has_network {
+        add_sidebar_section(&s.sidebar_panel, "Network", 12);
+
+        for (vi, vol) in s.volumes.iter().enumerate() {
+            if !vol.network { continue; }
+
+            let row = ui::View::new();
+            row.set_dock(ui::DOCK_TOP);
+            row.set_size(160, 26);
+            row.set_color(0x00000000);
+
+            let vlabel = ui::Label::new(&vol.name);
+            vlabel.set_dock(ui::DOCK_FILL);
+            vlabel.set_font_size(13);
+            vlabel.set_text_color(tc.text);
+            vlabel.set_padding(28, 4, 4, 4);
+            vlabel.on_click_raw(volume_click_handler, vi as u64);
+            attach_volume_menu(&vlabel, &s.sidebar_panel, vi, true, true);
+            s.volume_item_ids.push(vlabel.id());
+            row.add(&vlabel);
+
+            let eject = ui::Label::new("\u{23CF}");
+            eject.set_dock(ui::DOCK_RIGHT);
+            eject.set_size(22, 26);
+            eject.set_font_size(11);
+            eject.set_text_color(tc.text_disabled);
+            eject.set_padding(4, 4, 4, 4);
+            eject.on_click_raw(network_eject_handler, vi as u64);
+            s.volume_eject_ids.push(eject.id());
+            row.add(&eject);
+
+            s.sidebar_panel.add(&row);
+        }
+    }
+
+    refresh_sidebar_selection_visuals();
 }
 
 fn copy_selected() {
@@ -2081,6 +2362,53 @@ fn refresh_view() {
 // Refresh UI
 // ============================================================================
 
+fn refresh_sidebar_selection_visuals() {
+    let s = app();
+    let tc = ui::theme::colors();
+    let n_loc = s.locations.len();
+    for i in 0..s.sidebar_item_ids.len() {
+        let ctrl = ui::Control::from_id(s.sidebar_item_ids[i]);
+        if s.quick_access_drop_idx == Some(i) {
+            ctrl.set_color(tc.accent_hover);
+            ctrl.set_text_color(0xFFFFFFFF);
+        } else if i < n_loc && i == s.sidebar_sel {
+            ctrl.set_color(tc.selection);
+            ctrl.set_text_color(tc.check_mark);
+        } else {
+            ctrl.set_color(0x00000000);
+            ctrl.set_text_color(tc.text);
+        }
+    }
+}
+
+fn set_quick_access_drop_preview(target_idx: Option<usize>, append: bool) {
+    let s = app();
+    s.quick_access_drop_idx = target_idx;
+    s.quick_access_append = append;
+    refresh_sidebar_selection_visuals();
+
+    if append {
+        s.sb_sel_label.set_text("Drop to add at end of Quick Access");
+    } else if let Some(idx) = target_idx {
+        if idx < s.locations.len() {
+            let text = anyos_std::format!("Drop before \"{}\"", s.locations[idx].name);
+            s.sb_sel_label.set_text(&text);
+        } else {
+            s.sb_sel_label.set_text("Drop into Quick Access");
+        }
+    } else {
+        s.sb_sel_label.set_text("");
+    }
+}
+
+fn clear_quick_access_drop_preview() {
+    let s = app();
+    s.quick_access_drop_idx = None;
+    s.quick_access_append = false;
+    refresh_sidebar_selection_visuals();
+    s.sb_sel_label.set_text("");
+}
+
 fn refresh_ui() {
     let s = app();
 
@@ -2093,19 +2421,7 @@ fn refresh_ui() {
     s.btn_back.set_enabled(s.history_pos > 0);
     s.btn_fwd.set_enabled(s.history_pos + 1 < s.history.len());
 
-    // Sidebar highlight
-    let tc = ui::theme::colors();
-    let n_loc = s.locations.len();
-    for i in 0..s.sidebar_item_ids.len() {
-        let ctrl = ui::Control::from_id(s.sidebar_item_ids[i]);
-        if i < n_loc && i == s.sidebar_sel {
-            ctrl.set_color(tc.selection);
-            ctrl.set_text_color(tc.check_mark);
-        } else {
-            ctrl.set_color(0x00000000);
-            ctrl.set_text_color(tc.text);
-        }
-    }
+    refresh_sidebar_selection_visuals();
 
     refresh_view();
 }
@@ -2234,6 +2550,10 @@ fn populate_icon_view() {
         cell.on_double_click_raw(icon_item_dblclick_handler, i as u64);
         cell.on_event_raw(ui::EVENT_CONTEXT_MENU, icon_item_context_handler, i as u64);
         cell.set_context_menu(&s.ctx_menu);
+        if entry.entry_type == TYPE_DIR {
+            cell.set_draggable(true);
+            cell.on_drag_start_raw(icon_item_drag_start_handler, i as u64);
+        }
 
         s.icon_flow.add(&cell);
         s.icon_item_ids.push(cell.id());
@@ -2359,8 +2679,24 @@ fn icon_cols_per_row() -> usize {
     (w as usize / GRID_CELL_W as usize).max(1)
 }
 
+fn set_drag_payload_for_entry(idx: usize) {
+    let s = app();
+    if idx >= s.entries.len() || s.entries[idx].entry_type != TYPE_DIR {
+        ui::drag_set_text("");
+        return;
+    }
+    let path = build_full_path(&s.cwd, s.entries[idx].name_str());
+    ui::drag_set_text(&path);
+}
+
 extern "C" fn icon_item_click_handler(_control_id: u32, _event_type: u32, userdata: u64) {
     select_icon_item(userdata as usize);
+}
+
+extern "C" fn icon_item_drag_start_handler(_control_id: u32, _event_type: u32, userdata: u64) {
+    let idx = userdata as usize;
+    select_icon_item(idx);
+    set_drag_payload_for_entry(idx);
 }
 
 extern "C" fn icon_item_dblclick_handler(_control_id: u32, _event_type: u32, userdata: u64) {
@@ -2380,6 +2716,15 @@ extern "C" fn icon_item_context_handler(_control_id: u32, _event_type: u32, user
     app().grid.set_selected_row(idx as u32);
     update_context_menu();
     update_selection_status_multi();
+}
+
+extern "C" fn grid_drag_start_handler(_control_id: u32, _event_type: u32, _userdata: u64) {
+    let row = app().grid.selected_row();
+    if row == u32::MAX {
+        ui::drag_set_text("");
+        return;
+    }
+    set_drag_payload_for_entry(row as usize);
 }
 
 // ============================================================================
@@ -2531,137 +2876,6 @@ fn main() {
     let sidebar_panel = ui::View::new();
     sidebar_panel.set_dock(ui::DOCK_FILL);
     sidebar_panel.set_color(tc.window_bg);
-
-    // ── macOS-style sidebar group header: small, gray, uppercase ──
-    fn add_sidebar_section(panel: &ui::View, text: &str, top_margin: i32) {
-        let hdr = ui::Label::new(text);
-        hdr.set_dock(ui::DOCK_TOP);
-        hdr.set_size(160, 18);
-        hdr.set_font_size(10);
-        hdr.set_text_color(0xFF808080); // Gray group header
-        hdr.set_padding(14, 0, 8, 0);
-        hdr.set_margin(0, top_margin, 0, 2);
-        panel.add(&hdr);
-    }
-
-    // ── Quick Access (max 5 items from locations config) ─────────────
-    add_sidebar_section(&sidebar_panel, "Quick Access", 8);
-
-    let max_quick = 5;
-    let mut sidebar_item_ids: Vec<u32> = Vec::new();
-    for (i, loc) in locations.iter().enumerate() {
-        if i >= max_quick { break; }
-        let item = ui::Label::new(&loc.name);
-        item.set_dock(ui::DOCK_TOP);
-        item.set_size(160, 26);
-        item.set_font_size(13);
-        item.set_text_color(tc.text);
-        item.set_padding(28, 4, 8, 4);
-        item.set_margin(2, 0, 2, 0);
-        item.on_click_raw(sidebar_click_handler, i as u64);
-        attach_sidebar_menu(&item, &sidebar_panel, i);
-        sidebar_item_ids.push(item.id());
-        sidebar_panel.add(&item);
-    }
-
-    // ── Drives (removable + local volumes) ───────────────────────────
-    let volumes = discover_volumes();
-    let mut volume_item_ids: Vec<u32> = Vec::new();
-    let mut volume_eject_ids: Vec<u32> = Vec::new();
-
-    let has_network = volumes.iter().any(|v| v.network);
-
-    // Drives section always visible (root drive + removable volumes)
-    {
-        add_sidebar_section(&sidebar_panel, "Drives", 12);
-
-        // Root drive is always shown first
-        let root_label = ui::Label::new("anyOS HD");
-        root_label.set_dock(ui::DOCK_TOP);
-        root_label.set_size(160, 26);
-        root_label.set_font_size(13);
-        root_label.set_text_color(tc.text);
-        root_label.set_padding(28, 4, 8, 4);
-        root_label.set_margin(2, 0, 2, 0);
-        root_label.on_click_raw(sidebar_click_handler, 0 as u64); // index 0 = Root
-        attach_root_menu(&root_label, &sidebar_panel);
-        sidebar_panel.add(&root_label);
-
-        for (vi, vol) in volumes.iter().enumerate() {
-            if !vol.removable { continue; }
-
-            // Row: [icon space] Name ... [⏏]
-            let row = ui::View::new();
-            row.set_dock(ui::DOCK_TOP);
-            row.set_size(160, 26);
-            row.set_color(0x00000000);
-
-            let vlabel = ui::Label::new(&vol.name);
-            vlabel.set_dock(ui::DOCK_FILL);
-            vlabel.set_font_size(13);
-            vlabel.set_text_color(tc.text);
-            vlabel.set_padding(28, 4, 4, 4);
-            vlabel.on_click_raw(volume_click_handler, vi as u64);
-            attach_volume_menu(&vlabel, &sidebar_panel, vi, false, vol.disk_id > 0);
-            volume_item_ids.push(vlabel.id());
-            row.add(&vlabel);
-
-            // Eject button (⏏)
-            if vol.disk_id > 0 {
-                let eject = ui::Label::new("\u{23CF}");
-                eject.set_dock(ui::DOCK_RIGHT);
-                eject.set_size(22, 26);
-                eject.set_font_size(11);
-                eject.set_text_color(tc.text_disabled);
-                eject.set_padding(4, 4, 4, 4);
-                eject.on_click_raw(eject_click_handler, vol.disk_id as u64);
-                volume_eject_ids.push(eject.id());
-                row.add(&eject);
-            }
-
-            sidebar_panel.add(&row);
-        }
-    }
-
-    // ── Network (SMB shares, with eject/unmount button) ────────────
-    if has_network {
-        add_sidebar_section(&sidebar_panel, "Network", 12);
-
-        for (vi, vol) in volumes.iter().enumerate() {
-            if !vol.network { continue; }
-
-            let row = ui::View::new();
-            row.set_dock(ui::DOCK_TOP);
-            row.set_size(160, 26);
-            row.set_color(0x00000000);
-
-            let vlabel = ui::Label::new(&vol.name);
-            vlabel.set_dock(ui::DOCK_FILL);
-            vlabel.set_font_size(13);
-            vlabel.set_text_color(tc.text);
-            vlabel.set_padding(28, 4, 4, 4);
-            vlabel.on_click_raw(volume_click_handler, vi as u64);
-            attach_volume_menu(&vlabel, &sidebar_panel, vi, true, true);
-            volume_item_ids.push(vlabel.id());
-            row.add(&vlabel);
-
-            // Eject (unmount) button for network shares
-            let eject = ui::Label::new("\u{23CF}");
-            eject.set_dock(ui::DOCK_RIGHT);
-            eject.set_size(22, 26);
-            eject.set_font_size(11);
-            eject.set_text_color(tc.text_disabled);
-            eject.set_padding(4, 4, 4, 4);
-            // Use high bit to signal "unmount path" instead of "eject disk_id"
-            eject.on_click_raw(network_eject_handler, vi as u64);
-            volume_eject_ids.push(eject.id());
-            row.add(&eject);
-
-            sidebar_panel.add(&row);
-        }
-    }
-
-    let sidebar_panel_id = sidebar_panel.id();
     split.add(&sidebar_panel);
 
     // ── Right: content area (holds both DataGrid and Canvas) ─────────────
@@ -2680,6 +2894,8 @@ fn main() {
     grid.set_header_height(28);
     grid.set_selection_mode(ui::SELECTION_MULTI);
     grid.set_margin(4, 4, 0, 0);
+    grid.set_draggable(true);
+    grid.on_drag_start_raw(grid_drag_start_handler, 0);
 
     // Context menu — attached to grid AND added to parent panel (required!)
     let ctx_menu = ui::ContextMenu::new("Open|Copy Path");
@@ -2728,11 +2944,13 @@ fn main() {
             path_field,
             btn_back,
             btn_fwd,
-            sidebar_item_ids,
-            sidebar_panel_id,
-            volumes,
-            volume_item_ids,
-            volume_eject_ids,
+            sidebar_panel,
+            sidebar_item_ids: Vec::new(),
+            quick_access_drop_idx: None,
+            quick_access_append: false,
+            volumes: Vec::new(),
+            volume_item_ids: Vec::new(),
+            volume_eject_ids: Vec::new(),
             sb_items_label,
             sb_sel_label,
             ctx_menu,
@@ -2748,6 +2966,7 @@ fn main() {
     }
 
     // ── Initial load ─────────────────────────────────────────────────────
+    rebuild_sidebar();
     let mut args_buf = [0u8; 256];
     let raw_args = process::args(&mut args_buf);
     let initial_path = if !raw_args.is_empty() && raw_args.starts_with('/') {

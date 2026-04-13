@@ -151,6 +151,7 @@ EXPORTS
     anyui_treeview_set_expanded
     anyui_treeview_get_expanded
     anyui_treeview_get_selected
+    anyui_treeview_get_hovered
     anyui_treeview_set_selected
     anyui_treeview_clear
     anyui_treeview_get_node_count

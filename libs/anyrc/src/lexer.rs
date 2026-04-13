@@ -54,9 +54,25 @@ fn keyword_from_str(s: &str) -> Option<Keyword> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum IntSuffix {
+    I8,
+    I16,
+    I32,
+    I64,
+    I128,
+    Isize,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    Usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Literals
-    IntLit(u128),
+    IntLit(u128, Option<IntSuffix>),
     FloatLit(f64),
     StringLit(String),
     CharLit(char),
@@ -302,9 +318,9 @@ impl<'a> Lexer<'a> {
             }
         }
         // integer - skip suffix
-        self.eat_int_suffix();
+        let suffix = self.eat_int_suffix();
         let text = self.num_text(start);
-        TokenKind::IntLit(parse_int_dec(&text))
+        TokenKind::IntLit(parse_int_dec(&text), suffix)
     }
 
     fn lex_int_radix(&mut self, radix: u32) -> TokenKind {
@@ -322,8 +338,8 @@ impl<'a> Lexer<'a> {
             val = val * radix as u128 + d;
             self.pos += 1;
         }
-        self.eat_int_suffix();
-        TokenKind::IntLit(val)
+        let suffix = self.eat_int_suffix();
+        TokenKind::IntLit(val, suffix)
     }
 
     fn eat_decimal_digits(&mut self) {
@@ -352,7 +368,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn eat_int_suffix(&mut self) {
+    fn eat_int_suffix(&mut self) -> Option<IntSuffix> {
+        let start = self.pos;
         let b = self.peek();
         if b == b'u' || b == b'i' {
             let next = self.peek_at(1);
@@ -361,8 +378,25 @@ impl<'a> Lexer<'a> {
                 while self.pos < self.src.len() && self.peek().is_ascii_alphanumeric() {
                     self.pos += 1;
                 }
+                let suffix = core::str::from_utf8(&self.src[start..self.pos]).ok();
+                return match suffix {
+                    Some("i8") => Some(IntSuffix::I8),
+                    Some("i16") => Some(IntSuffix::I16),
+                    Some("i32") => Some(IntSuffix::I32),
+                    Some("i64") => Some(IntSuffix::I64),
+                    Some("i128") => Some(IntSuffix::I128),
+                    Some("isize") => Some(IntSuffix::Isize),
+                    Some("u8") => Some(IntSuffix::U8),
+                    Some("u16") => Some(IntSuffix::U16),
+                    Some("u32") => Some(IntSuffix::U32),
+                    Some("u64") => Some(IntSuffix::U64),
+                    Some("u128") => Some(IntSuffix::U128),
+                    Some("usize") => Some(IntSuffix::Usize),
+                    _ => None,
+                };
             }
         }
+        None
     }
 
     fn num_text(&self, start: usize) -> String {
@@ -404,7 +438,7 @@ impl<'a> Lexer<'a> {
                         let v = self.lex_byte_string();
                         TokenKind::ByteStringLit(v)
                     } else if self.peek() == b'\'' {
-                        TokenKind::IntLit(self.lex_byte_char() as u128)
+                        TokenKind::IntLit(self.lex_byte_char() as u128, Some(IntSuffix::U8))
                     } else {
                         while self.pos < self.src.len() && Self::is_ident_cont(self.peek()) {
                             self.pos += 1;

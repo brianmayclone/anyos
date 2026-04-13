@@ -1981,3 +1981,112 @@ fn option_as_mut_expect_preserves_inner_reference_type() {
         "#,
     );
 }
+
+#[test]
+fn core_str_from_utf8_unwrap_or_supports_string_slicing() {
+    compile_ok(
+        "core_str_from_utf8_unwrap_or_supports_string_slicing",
+        r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        impl<T, E> Result<T, E> {
+            fn unwrap_or(self, default: T) -> T {
+                match self {
+                    Result::Ok(v) => v,
+                    Result::Err(_) => default,
+                }
+            }
+        }
+
+        mod core {
+            pub mod str {
+                pub fn from_utf8(_bytes: &[u8]) -> crate::Result<&str, ()> {
+                    crate::Result::Ok("hello world")
+                }
+            }
+        }
+
+        fn args(buf: &[u8; 256], len: usize) -> &str {
+            let all = core::str::from_utf8(&buf[..len]).unwrap_or("");
+            if all.starts_with('"') {
+                match all[1..].find('"') {
+                    Some(close) => all[close + 2..].trim_start(),
+                    None => "",
+                }
+            } else {
+                match all.find(' ') {
+                    Some(idx) => all[idx + 1..].trim_start(),
+                    None => "",
+                }
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn slice_try_into_unwrap_supports_from_le_bytes_patterns() {
+    compile_ok(
+        "slice_try_into_unwrap_supports_from_le_bytes_patterns",
+        r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        impl<T, E> Result<T, E> {
+            fn unwrap(self) -> T {
+                match self {
+                    Result::Ok(v) => v,
+                    Result::Err(_) => loop {},
+                }
+            }
+        }
+
+        fn statfs_like(out: &[u8; 24]) -> u64 {
+            u64::from_le_bytes(out[0..8].try_into().unwrap())
+        }
+        "#,
+    );
+}
+
+#[test]
+fn vec_slice_after_mut_slice_coercion_keeps_byte_element_type() {
+    compile_ok(
+        "vec_slice_after_mut_slice_coercion_keeps_byte_element_type",
+        r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        impl<T, E> Result<T, E> {
+            fn unwrap_or(self, default: T) -> T {
+                match self {
+                    Result::Ok(v) => v,
+                    Result::Err(_) => default,
+                }
+            }
+        }
+
+        mod core {
+            pub mod str {
+                pub fn from_utf8(_bytes: &[u8]) -> crate::Result<&str, ()> {
+                    crate::Result::Ok("ok")
+                }
+            }
+        }
+
+        fn fill(_buf: &mut [u8]) {}
+
+        fn read_name() -> usize {
+            let mut buf = vec![0u8; 32];
+            fill(&mut buf);
+            core::str::from_utf8(&buf[4..12]).unwrap_or("").len()
+        }
+        "#,
+    );
+}

@@ -222,6 +222,11 @@ impl TreeView {
         self.selected_node
     }
 
+    /// Get the currently hovered visible node index.
+    pub fn hovered(&self) -> Option<usize> {
+        self.hovered_node
+    }
+
     /// Set selected node.
     pub fn set_selected(&mut self, index: Option<usize>) {
         if self.selected_node != index {

@@ -356,6 +356,27 @@ impl<'a> TypeChecker<'a> {
         )
     }
 
+    fn path_to_string(&self, path: &HirPath) -> String {
+        path.segments
+            .iter()
+            .map(|seg| self.interner.resolve(seg.ident))
+            .collect::<Vec<_>>()
+            .join("::")
+    }
+
+    fn const_range_len(&self, expr: &HirExpr) -> Option<usize> {
+        let HirExprKind::Range(start, end, inclusive) = &expr.kind else {
+            return None;
+        };
+        let start = start.as_ref().map(|e| self.eval_const_usize(e)).unwrap_or(0);
+        let end = end.as_ref().map(|e| self.eval_const_usize(e))?;
+        Some(if *inclusive {
+            end.saturating_sub(start).saturating_add(1)
+        } else {
+            end.saturating_sub(start)
+        })
+    }
+
     fn iterable_elem_ty(&mut self, iter: &HirExpr, iter_ty: TyKind) -> TyKind {
         let resolved = match self.shallow_resolve(iter_ty) {
             TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
@@ -927,6 +948,26 @@ impl<'a> TypeChecker<'a> {
             }
 
             HirExprKind::Call(callee, args) => {
+                if let HirExprKind::Path(path) = &callee.kind {
+                    match self.path_to_string(path).as_str() {
+                        "core::str::from_utf8" if args.len() == 1 => {
+                            let arg_ty = self.check_expr(&args[0]);
+                            let expected = TyKind::Ref(
+                                Box::new(TyKind::Slice(Box::new(TyKind::Uint(UintTy::U8)))),
+                                Mutability::Immutable,
+                            );
+                            self.unify(&expected, &arg_ty, args[0].span);
+                            if let Some(result_ty) = self.result_of(TyKind::Ref(
+                                Box::new(TyKind::Str),
+                                Mutability::Immutable,
+                            )) {
+                                return result_ty;
+                            }
+                            return self.fresh_infer(InferKind::General);
+                        }
+                        _ => {}
+                    }
+                }
                 let callee_ty = self.check_expr(callee);
                 match self.shallow_resolve(callee_ty) {
                     TyKind::FnDef(def_id, _) => {
@@ -1201,10 +1242,11 @@ impl<'a> TypeChecker<'a> {
                     }
                     TyKind::Adt(def_id, substs) => {
                         if self.is_vec_def(def_id) && substs.len() == 1 {
+                            let elem_ty = self.resolve_ty_full(substs[0].clone());
                             if is_range {
-                                TyKind::Slice(Box::new(substs[0].clone()))
+                                TyKind::Slice(Box::new(elem_ty))
                             } else {
-                                substs[0].clone()
+                                elem_ty
                             }
                         } else if self.is_string_def(def_id) {
                             if is_range {
@@ -1343,7 +1385,10 @@ impl<'a> TypeChecker<'a> {
                         "to_vec" if args.is_empty() => {
                             if let Some(vec_sym) = self.interner.lookup("Vec") {
                                 if let Some(&vec_def_id) = self.type_name_to_def.get(&vec_sym) {
-                                    return TyKind::Adt(vec_def_id, vec![elem.as_ref().clone()]);
+                                    return TyKind::Adt(
+                                        vec_def_id,
+                                        vec![self.resolve_ty_full(elem.as_ref().clone())],
+                                    );
                                 }
                             }
                             return self.fresh_infer(InferKind::General);
@@ -1360,16 +1405,17 @@ impl<'a> TypeChecker<'a> {
 
                 if let TyKind::Adt(def_id, substs) = &inner_ty {
                     if self.is_vec_def(*def_id) && substs.len() == 1 {
+                        let elem_ty = self.resolve_ty_full(substs[0].clone());
                         match method_str {
                             "iter" if args.is_empty() => {
                                 return TyKind::Slice(Box::new(TyKind::Ref(
-                                    Box::new(substs[0].clone()),
+                                    Box::new(elem_ty.clone()),
                                     Mutability::Immutable,
                                 )));
                             }
                             "iter_mut" if args.is_empty() => {
                                 return TyKind::Slice(Box::new(TyKind::Ref(
-                                    Box::new(substs[0].clone()),
+                                    Box::new(elem_ty.clone()),
                                     Mutability::Mut,
                                 )));
                             }
@@ -1471,6 +1517,28 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                if method_str == "try_into" && args.is_empty() {
+                    let array_len = match &recv.kind {
+                        HirExprKind::Index(_, idx) => self.const_range_len(idx),
+                        _ => match &inner_ty {
+                            TyKind::Array(_, n) => Some(*n),
+                            _ => None,
+                        },
+                    };
+                    let elem_ty = match &inner_ty {
+                        TyKind::Slice(elem) | TyKind::Array(elem, _) => Some(elem.as_ref().clone()),
+                        _ => None,
+                    };
+                    if let (Some(len), Some(elem_ty)) = (array_len, elem_ty) {
+                        if let Some(result_ty) =
+                            self.result_of(TyKind::Array(Box::new(elem_ty), len))
+                        {
+                            return result_ty;
+                        }
+                        return self.fresh_infer(InferKind::General);
+                    }
+                }
+
                 if matches!(&inner_ty, TyKind::Adt(def_id, _) if *def_id == SYNTH_PARSED_ARGS_DEF_ID) {
                     match method_str {
                         "has" if args.len() == 1 => return TyKind::Bool,
@@ -1508,12 +1576,13 @@ impl<'a> TypeChecker<'a> {
 
                 if let TyKind::Adt(def_id, substs) = &inner_ty {
                     if self.is_vec_def(*def_id) && substs.len() == 1 {
+                        let elem_ty = self.resolve_ty_full(substs[0].clone());
                         match method_str {
                             "len" if args.is_empty() => return TyKind::Uint(UintTy::Usize),
                             "is_empty" if args.is_empty() => return TyKind::Bool,
                             "as_slice" if args.is_empty() => {
                                 return TyKind::Ref(
-                                    Box::new(TyKind::Slice(Box::new(substs[0].clone()))),
+                                    Box::new(TyKind::Slice(Box::new(elem_ty))),
                                     Mutability::Immutable,
                                 );
                             }

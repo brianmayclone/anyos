@@ -82,6 +82,8 @@ impl Sidebar {
         tree.set_dock(ui::DOCK_FILL);
         tree.set_indent_width(16);
         tree.set_row_height(22);
+        tree.set_draggable(true);
+        tree.set_drop_target(true);
         explorer_panel.add(&tree);
 
         // Context menu for folders
@@ -165,6 +167,72 @@ impl Sidebar {
                 }
             }
             None => None,
+        }
+    }
+
+    /// Path of the currently hovered node during drag-and-drop.
+    pub fn hovered_path(&self) -> Option<String> {
+        let hovered = self.tree.hovered();
+        if hovered == u32::MAX {
+            return None;
+        }
+        self.path_for_node(hovered).map(String::from)
+    }
+
+    /// Resolve the current drag target directory from the hovered node.
+    /// Directories accept drops directly; files route to their parent directory.
+    pub fn hovered_drop_dir(&self) -> Option<String> {
+        let hovered = self.tree.hovered();
+        if hovered == u32::MAX {
+            return None;
+        }
+        match self.path_for_node(hovered) {
+            Some(p) if path::is_directory(p) => Some(String::from(p)),
+            Some(p) => Some(String::from(path::parent(p))),
+            None => None,
+        }
+    }
+
+    pub fn begin_drag_from_selection(&self) {
+        let sel = self.tree.selected();
+        if sel == u32::MAX {
+            ui::drag_set_text("");
+            return;
+        }
+        if let Some(p) = self.path_for_node(sel) {
+            ui::drag_set_text(p);
+        } else {
+            ui::drag_set_text("");
+        }
+    }
+
+    pub fn move_drag_payload_to_hovered_dir(&self) -> Option<(String, String)> {
+        let src = ui::drag_get_text();
+        if src.is_empty() {
+            return None;
+        }
+
+        let dest_dir = self.hovered_drop_dir()?;
+        if src == dest_dir {
+            return None;
+        }
+
+        let name = path::basename(&src);
+        let dest_path = path::join(&dest_dir, name);
+        if dest_path == src {
+            return None;
+        }
+        if dest_path.starts_with(&src) && path::is_directory(&src) {
+            return None;
+        }
+        if path::exists(&dest_path) {
+            return None;
+        }
+
+        if anyos_std::fs::rename(&src, &dest_path) == 0 {
+            Some((src, dest_path))
+        } else {
+            None
         }
     }
 

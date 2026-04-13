@@ -2563,6 +2563,17 @@ pub extern "C" fn anyui_treeview_get_selected(id: ControlId) -> u32 {
 }
 
 #[no_mangle]
+pub extern "C" fn anyui_treeview_get_hovered(id: ControlId) -> u32 {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
+        if let Some(tv) = as_tree_view_ref(ctrl) {
+            return tv.hovered().map_or(u32::MAX, |s| s as u32);
+        }
+    }
+    u32::MAX
+}
+
+#[no_mangle]
 pub extern "C" fn anyui_treeview_set_selected(id: ControlId, index: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {

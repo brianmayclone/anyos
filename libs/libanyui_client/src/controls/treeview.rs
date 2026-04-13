@@ -78,6 +78,11 @@ impl TreeView {
         (lib().treeview_get_selected)(self.ctrl.id)
     }
 
+    /// Get the node currently hovered by the pointer, or u32::MAX if none.
+    pub fn hovered(&self) -> u32 {
+        (lib().treeview_get_hovered)(self.ctrl.id)
+    }
+
     /// Set the selected node (u32::MAX to deselect).
     pub fn set_selected(&self, index: u32) {
         (lib().treeview_set_selected)(self.ctrl.id, index);

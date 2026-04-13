@@ -2,7 +2,7 @@ use crate::prelude::*;
 use crate::ast::*;
 use crate::diagnostics::Span;
 use crate::intern::{Interner, Symbol};
-use crate::lexer::{Keyword, Lexer, Token, TokenKind};
+use crate::lexer::{IntSuffix, Keyword, Lexer, Token, TokenKind};
 
 pub struct Parser<'a> {
     tokens: Vec<Token>,
@@ -36,6 +36,30 @@ impl<'a> Parser<'a> {
 
     fn current(&self) -> &Token {
         &self.tokens[self.pos.min(self.tokens.len() - 1)]
+    }
+
+    fn ty_from_int_suffix(&mut self, suffix: &IntSuffix, span: Span) -> Ty {
+        let name = match suffix {
+            IntSuffix::I8 => "i8",
+            IntSuffix::I16 => "i16",
+            IntSuffix::I32 => "i32",
+            IntSuffix::I64 => "i64",
+            IntSuffix::I128 => "i128",
+            IntSuffix::Isize => "isize",
+            IntSuffix::U8 => "u8",
+            IntSuffix::U16 => "u16",
+            IntSuffix::U32 => "u32",
+            IntSuffix::U64 => "u64",
+            IntSuffix::U128 => "u128",
+            IntSuffix::Usize => "usize",
+        };
+        Ty::Path(Path {
+            segments: vec![PathSegment {
+                ident: self.interner.intern(name),
+                args: None,
+            }],
+            span,
+        })
     }
 
     fn bump(&mut self) -> Token {
@@ -366,9 +390,13 @@ impl<'a> Parser<'a> {
 
         // Literals
         match &self.current().kind {
-            TokenKind::IntLit(_) => {
-                if let TokenKind::IntLit(v) = self.bump().kind {
-                    return Expr::Lit(Literal::Int(v), self.span_from(start));
+            TokenKind::IntLit(_, _) => {
+                if let TokenKind::IntLit(v, suffix) = self.bump().kind {
+                    let lit = Expr::Lit(Literal::Int(v), self.span_from(start));
+                    if let Some(suffix) = suffix {
+                        return Expr::Cast(Box::new(lit), self.ty_from_int_suffix(&suffix, self.span_from(start)), self.span_from(start));
+                    }
+                    return lit;
                 }
             }
             TokenKind::FloatLit(_) => {
@@ -814,7 +842,7 @@ impl<'a> Parser<'a> {
             TokenKind::Dot => {
                 self.bump();
                 // Tuple field access: expr.0
-                if let TokenKind::IntLit(n) = self.current().kind {
+                if let TokenKind::IntLit(n, _) = self.current().kind {
                     let idx = n as u32;
                     self.bump();
                     let name = self.interner.intern(&idx.to_string());
@@ -947,7 +975,7 @@ impl<'a> Parser<'a> {
     fn at_expr_start(&self) -> bool {
         matches!(
             &self.current().kind,
-            TokenKind::IntLit(_)
+            TokenKind::IntLit(_, _)
                 | TokenKind::FloatLit(_)
                 | TokenKind::StringLit(_)
                 | TokenKind::CharLit(_)
@@ -2562,12 +2590,12 @@ impl<'a> Parser<'a> {
 
         // Literal patterns
         match &self.current().kind {
-            TokenKind::IntLit(_) => {
-                if let TokenKind::IntLit(v) = self.bump().kind {
+            TokenKind::IntLit(_, _) => {
+                if let TokenKind::IntLit(v, _) = self.bump().kind {
                     // Check for range pattern: 0..=9
                     if self.at_exact(&TokenKind::DotDotEq) {
                         self.bump();
-                        if let TokenKind::IntLit(hi) = self.bump().kind {
+                        if let TokenKind::IntLit(hi, _) = self.bump().kind {
                             return Pattern::Range(
                                 Some(Box::new(Expr::Lit(Literal::Int(v), self.span_from(start)))),
                                 Some(Box::new(Expr::Lit(Literal::Int(hi), self.span_from(start)))),
@@ -2608,7 +2636,7 @@ impl<'a> Parser<'a> {
         // Negative literal pattern: -42
         if self.at_exact(&TokenKind::Minus) {
             self.bump();
-            if let TokenKind::IntLit(v) = self.bump().kind {
+            if let TokenKind::IntLit(v, _) = self.bump().kind {
                 // Store as literal; the negation is implicit
                 return Pattern::Literal(Literal::Int(v), self.span_from(start));
             }

@@ -1119,7 +1119,7 @@ impl<'a> PatternMatcher<'a> {
             }
             "literal" => {
                 if let TokenTree::Token(t) = &input[0] {
-                    if matches!(t.kind, TokenKind::IntLit(_) | TokenKind::FloatLit(_) |
+                    if matches!(t.kind, TokenKind::IntLit(..) | TokenKind::FloatLit(_) |
                                 TokenKind::StringLit(_) | TokenKind::CharLit(_) |
                                 TokenKind::Kw(Keyword::True) | TokenKind::Kw(Keyword::False)) {
                         return Some((vec![input[0].clone()], 1));
@@ -1192,7 +1192,7 @@ fn parse_rep_suffix(tts: &[TokenTree]) -> (Option<Token>, char, usize) {
 fn tokens_match(a: &TokenKind, b: &TokenKind) -> bool {
     match (a, b) {
         (TokenKind::Ident(s1), TokenKind::Ident(s2)) => s1 == s2,
-        (TokenKind::IntLit(a), TokenKind::IntLit(b)) => a == b,
+        (TokenKind::IntLit(a, _), TokenKind::IntLit(b, _)) => a == b,
         (TokenKind::FloatLit(a), TokenKind::FloatLit(b)) => a == b,
         (TokenKind::Kw(a), TokenKind::Kw(b)) => a == b,
         _ => core::mem::discriminant(a) == core::mem::discriminant(b),
@@ -1370,7 +1370,26 @@ fn token_to_string(kind: &TokenKind, interner: &Interner, out: &mut String) {
     use crate::lexer::Keyword;
     match kind {
         TokenKind::Ident(sym) => out.push_str(interner.resolve(*sym)),
-        TokenKind::IntLit(n) => out.push_str(&n.to_string()),
+        TokenKind::IntLit(n, suffix) => {
+            out.push_str(&n.to_string());
+            if let Some(suffix) = suffix {
+                let suffix_str = match suffix {
+                    crate::lexer::IntSuffix::I8 => "i8",
+                    crate::lexer::IntSuffix::I16 => "i16",
+                    crate::lexer::IntSuffix::I32 => "i32",
+                    crate::lexer::IntSuffix::I64 => "i64",
+                    crate::lexer::IntSuffix::I128 => "i128",
+                    crate::lexer::IntSuffix::Isize => "isize",
+                    crate::lexer::IntSuffix::U8 => "u8",
+                    crate::lexer::IntSuffix::U16 => "u16",
+                    crate::lexer::IntSuffix::U32 => "u32",
+                    crate::lexer::IntSuffix::U64 => "u64",
+                    crate::lexer::IntSuffix::U128 => "u128",
+                    crate::lexer::IntSuffix::Usize => "usize",
+                };
+                out.push_str(suffix_str);
+            }
+        }
         TokenKind::FloatLit(f) => out.push_str(&f.to_string()),
         TokenKind::StringLit(s) => { out.push('"'); out.push_str(s); out.push('"'); }
         TokenKind::CharLit(c) => { out.push('\''); out.push(*c); out.push('\''); }
