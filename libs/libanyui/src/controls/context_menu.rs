@@ -9,6 +9,8 @@ const MENU_PAD: i32 = 4;
 
 /// Icon size in logical pixels for menu items with icons.
 const ICON_SZ: i32 = 20;
+/// Hidden prefix for disabled items. Format: "\x1DLabel".
+const DISABLED_PREFIX: u8 = 0x1D;
 
 /// A divider item is exactly the text "-".
 fn is_divider(item: &[u8]) -> bool {
@@ -22,6 +24,14 @@ fn split_icon_label(item: &[u8]) -> (&[u8], &[u8]) {
         (&item[..pos], &item[pos + 1..])
     } else {
         (&[], item)
+    }
+}
+
+fn strip_disabled_prefix(item: &[u8]) -> (&[u8], bool) {
+    if item.first().copied() == Some(DISABLED_PREFIX) {
+        (&item[1..], true)
+    } else {
+        (item, false)
     }
 }
 
@@ -116,6 +126,7 @@ impl ContextMenu {
                 total_h += DIVIDER_H;
                 self.icon_cache.push((alloc::vec::Vec::new(), 0, 0));
             } else {
+                let (item, _disabled) = strip_disabled_prefix(item);
                 let (icon_path, label) = split_icon_label(item);
                 let (tw, _) = crate::draw::text_size(label);
                 if tw > max_w {
@@ -145,14 +156,52 @@ impl ContextMenu {
         self.text_base.base.h = total_h.max(MENU_PAD * 2) as u32;
     }
 
+    fn items(&self) -> alloc::vec::Vec<&[u8]> {
+        self.text_base.text.split(|&b| b == b'|').collect()
+    }
+
+    fn item_enabled(item: &[u8]) -> bool {
+        !is_divider(item) && !strip_disabled_prefix(item).1
+    }
+
+    fn first_selectable_index(&self) -> Option<u32> {
+        self.items()
+            .iter()
+            .position(|item| Self::item_enabled(item))
+            .map(|idx| idx as u32)
+    }
+
+    fn last_selectable_index(&self) -> Option<u32> {
+        self.items()
+            .iter()
+            .rposition(|item| Self::item_enabled(item))
+            .map(|idx| idx as u32)
+    }
+
+    fn move_selection(&self, current: u32, delta: i32) -> Option<u32> {
+        let items = self.items();
+        if items.is_empty() {
+            return None;
+        }
+        let start = current.min(items.len().saturating_sub(1) as u32) as i32;
+        let mut idx = start + delta;
+        while idx >= 0 && (idx as usize) < items.len() {
+            if Self::item_enabled(items[idx as usize]) {
+                return Some(idx as u32);
+            }
+            idx += delta.signum();
+        }
+        None
+    }
+
     /// Map a local Y coordinate to an item index, returning None for dividers or out-of-bounds.
     fn item_at_y(&self, ly: i32) -> Option<u32> {
-        let items: alloc::vec::Vec<&[u8]> = self.text_base.text.split(|&b| b == b'|').collect();
+        let items = self.items();
         let mut cur_y = MENU_PAD;
         for (i, item) in items.iter().enumerate() {
             let h = if is_divider(item) { DIVIDER_H } else { ITEM_H };
             if ly >= cur_y && ly < cur_y + h {
-                return if is_divider(item) {
+                return if !Self::item_enabled(item) {
                     None
                 } else {
                     Some(i as u32)
@@ -194,7 +243,7 @@ impl Control for ContextMenu {
         let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
 
-        let items: alloc::vec::Vec<&[u8]> = self.text_base.text.split(|&b| b == b'|').collect();
+        let items = self.items();
         let corner = crate::theme::scale(6);
         let menu_pad = crate::theme::scale_i32(MENU_PAD);
         let item_h = crate::theme::scale_i32(ITEM_H);
@@ -245,8 +294,10 @@ impl Control for ContextMenu {
                 );
                 iy += divider_h;
             } else {
+                let (item_text, disabled) = strip_disabled_prefix(item_text);
                 // Highlight hovered or keyboard-selected item
-                let highlighted = i as u32 == self.hovered_item || i as u32 == b.state;
+                let highlighted =
+                    !disabled && (i as u32 == self.hovered_item || i as u32 == b.state);
                 if highlighted {
                     let hl_w = if w > (item_pad_x as u32 * 2) {
                         w - item_pad_x as u32 * 2
@@ -287,7 +338,13 @@ impl Control for ContextMenu {
 
                 // Item text (offset by icon width if icons are present)
                 if !label.is_empty() {
-                    let text_color = if highlighted { 0xFFFFFFFF } else { tc.text };
+                    let text_color = if disabled {
+                        tc.text_disabled
+                    } else if highlighted {
+                        0xFFFFFFFF
+                    } else {
+                        tc.text
+                    };
                     crate::draw::draw_text_sized(
                         surface,
                         x + text_pad_x + icon_offset,
@@ -344,5 +401,91 @@ impl Control for ContextMenu {
 
     fn accepts_focus(&self) -> bool {
         true
+    }
+
+    fn handle_focus(&mut self) {
+        self.text_base.base.focused = true;
+        if self.first_selectable_index().is_some() && self.hovered_item == u32::MAX {
+            self.text_base.base.state = self
+                .first_selectable_index()
+                .unwrap_or(self.text_base.base.state);
+        }
+        self.text_base.base.mark_dirty();
+    }
+
+    fn handle_key_down(&mut self, keycode: u32, char_code: u32, _modifiers: u32) -> EventResponse {
+        use crate::control::*;
+
+        match keycode {
+            KEY_UP => {
+                let next = self
+                    .move_selection(self.text_base.base.state, -1)
+                    .or_else(|| self.first_selectable_index());
+                if let Some(next) = next {
+                    self.text_base.base.state = next;
+                    self.hovered_item = u32::MAX;
+                    self.text_base.base.mark_dirty();
+                }
+                EventResponse::CONSUMED
+            }
+            KEY_DOWN => {
+                let next = self
+                    .move_selection(self.text_base.base.state, 1)
+                    .or_else(|| self.first_selectable_index());
+                if let Some(next) = next {
+                    self.text_base.base.state = next;
+                    self.hovered_item = u32::MAX;
+                    self.text_base.base.mark_dirty();
+                }
+                EventResponse::CONSUMED
+            }
+            KEY_HOME => {
+                if let Some(first) = self.first_selectable_index() {
+                    self.text_base.base.state = first;
+                    self.hovered_item = u32::MAX;
+                    self.text_base.base.mark_dirty();
+                }
+                EventResponse::CONSUMED
+            }
+            KEY_END => {
+                if let Some(last) = self.last_selectable_index() {
+                    self.text_base.base.state = last;
+                    self.hovered_item = u32::MAX;
+                    self.text_base.base.mark_dirty();
+                }
+                EventResponse::CONSUMED
+            }
+            KEY_ENTER => {
+                let idx = self.text_base.base.state;
+                let items = self.items();
+                if let Some(item) = items.get(idx as usize) {
+                    if Self::item_enabled(item) {
+                        self.text_base.base.visible = false;
+                        self.hovered_item = u32::MAX;
+                        return EventResponse::CLICK;
+                    }
+                }
+                EventResponse::CONSUMED
+            }
+            KEY_ESCAPE => {
+                self.text_base.base.visible = false;
+                self.hovered_item = u32::MAX;
+                self.text_base.base.mark_dirty();
+                EventResponse::CONSUMED
+            }
+            _ if char_code == b' ' as u32 => {
+                let idx = self.text_base.base.state;
+                let items = self.items();
+                if let Some(item) = items.get(idx as usize) {
+                    if Self::item_enabled(item) {
+                        self.text_base.base.visible = false;
+                        self.hovered_item = u32::MAX;
+                        return EventResponse::CLICK;
+                    }
+                }
+                EventResponse::CONSUMED
+            }
+            _ => EventResponse::IGNORED,
+        }
     }
 }

@@ -849,8 +849,118 @@ fn copy_path(idx: usize) {
     if idx >= s.entries.len() { return; }
     let name = s.entries[idx].name_str();
     let fp = build_full_path(&s.cwd, name);
-    ui::clipboard_set(fp.as_str());
+    copy_path_text(fp.as_str());
+}
+
+fn copy_path_text(path: &str) {
+    let s = app();
+    ui::clipboard_set(path);
     s.sb_sel_label.set_text("Path copied");
+}
+
+fn copy_location_path(idx: usize) {
+    let s = app();
+    if idx < s.locations.len() {
+        copy_path_text(&s.locations[idx].path);
+    }
+}
+
+fn copy_volume_path(idx: usize) {
+    let s = app();
+    if idx < s.volumes.len() {
+        copy_path_text(&s.volumes[idx].mount_path);
+    }
+}
+
+fn open_location(idx: usize) {
+    let s = app();
+    if idx < s.locations.len() {
+        let path = s.locations[idx].path.clone();
+        navigate(&path);
+    }
+}
+
+fn open_volume(idx: usize) {
+    let s = app();
+    if idx < s.volumes.len() {
+        let path = s.volumes[idx].mount_path.clone();
+        navigate(&path);
+    }
+}
+
+fn eject_volume(idx: usize) {
+    let s = app();
+    if idx < s.volumes.len() {
+        let vol = &s.volumes[idx];
+        if vol.network {
+            let path = vol.mount_path.clone();
+            fs::umount(&path);
+            navigate("/");
+        } else if vol.disk_id > 0 {
+            anyos_std::sys::disk_eject(vol.disk_id);
+            navigate("/");
+        }
+    }
+}
+
+extern "C" fn sidebar_menu_handler(control_id: u32, _event_type: u32, userdata: u64) {
+    let idx = userdata as usize;
+    match ui::Control::from_id(control_id).get_state() {
+        0 => open_location(idx),
+        1 => copy_location_path(idx),
+        _ => {}
+    }
+}
+
+extern "C" fn volume_menu_handler(control_id: u32, _event_type: u32, userdata: u64) {
+    let idx = userdata as usize;
+    let action = ui::Control::from_id(control_id).get_state();
+    match action {
+        0 => open_volume(idx),
+        1 => copy_volume_path(idx),
+        3 => eject_volume(idx),
+        _ => {}
+    }
+}
+
+fn attach_sidebar_menu(target: &ui::Label, panel: &ui::View, loc_idx: usize) {
+    let menu = ui::ContextMenu::new("Open|Copy Path");
+    menu.on_click_raw(sidebar_menu_handler, loc_idx as u64);
+    target.set_context_menu(&menu);
+    panel.add(&menu);
+}
+
+fn attach_volume_menu(target: &ui::Label, panel: &ui::View, vol_idx: usize, is_network: bool, can_eject: bool) {
+    let items = if is_network {
+        "Open|Copy Path|-|Unmount"
+    } else if can_eject {
+        "Open|Copy Path|-|Eject"
+    } else {
+        "Open|Copy Path"
+    };
+    let menu = ui::ContextMenu::new(items);
+    menu.on_click_raw(volume_menu_handler, vol_idx as u64);
+    target.set_context_menu(&menu);
+    panel.add(&menu);
+}
+
+fn open_root_location() {
+    navigate("/");
+}
+
+extern "C" fn root_menu_handler(control_id: u32, _event_type: u32, _userdata: u64) {
+    match ui::Control::from_id(control_id).get_state() {
+        0 => open_root_location(),
+        1 => copy_path_text("/"),
+        _ => {}
+    }
+}
+
+fn attach_root_menu(target: &ui::Label, panel: &ui::View) {
+    let menu = ui::ContextMenu::new("Open|Copy Path");
+    menu.on_click_raw(root_menu_handler, 0);
+    target.set_context_menu(&menu);
+    panel.add(&menu);
 }
 
 fn copy_selected() {
@@ -2449,6 +2559,7 @@ fn main() {
         item.set_padding(28, 4, 8, 4);
         item.set_margin(2, 0, 2, 0);
         item.on_click_raw(sidebar_click_handler, i as u64);
+        attach_sidebar_menu(&item, &sidebar_panel, i);
         sidebar_item_ids.push(item.id());
         sidebar_panel.add(&item);
     }
@@ -2473,6 +2584,7 @@ fn main() {
         root_label.set_padding(28, 4, 8, 4);
         root_label.set_margin(2, 0, 2, 0);
         root_label.on_click_raw(sidebar_click_handler, 0 as u64); // index 0 = Root
+        attach_root_menu(&root_label, &sidebar_panel);
         sidebar_panel.add(&root_label);
 
         for (vi, vol) in volumes.iter().enumerate() {
@@ -2490,6 +2602,7 @@ fn main() {
             vlabel.set_text_color(tc.text);
             vlabel.set_padding(28, 4, 4, 4);
             vlabel.on_click_raw(volume_click_handler, vi as u64);
+            attach_volume_menu(&vlabel, &sidebar_panel, vi, false, vol.disk_id > 0);
             volume_item_ids.push(vlabel.id());
             row.add(&vlabel);
 
@@ -2528,6 +2641,7 @@ fn main() {
             vlabel.set_text_color(tc.text);
             vlabel.set_padding(28, 4, 4, 4);
             vlabel.on_click_raw(volume_click_handler, vi as u64);
+            attach_volume_menu(&vlabel, &sidebar_panel, vi, true, true);
             volume_item_ids.push(vlabel.id());
             row.add(&vlabel);
 

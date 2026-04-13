@@ -88,6 +88,11 @@ pub const EVENT_SUBMIT: u32 = 17;
 pub const EVENT_FULLSCREEN_ENTER: u32 = 18;
 pub const EVENT_FULLSCREEN_EXIT: u32 = 19;
 pub const EVENT_KEY_UP: u32 = 20;
+pub const EVENT_DRAG_START: u32 = 21;
+pub const EVENT_DRAG_ENTER: u32 = 22;
+pub const EVENT_DRAG_LEAVE: u32 = 23;
+pub const EVENT_DROP: u32 = 24;
+pub const EVENT_DRAG_END: u32 = 25;
 
 /// Callback type: extern "C" fn(control_id: u32, event_type: u32, userdata: u64)
 pub type Callback = extern "C" fn(u32, u32, u64);
@@ -207,6 +212,13 @@ struct AnyuiLib {
     marshal_dispatch: extern "C" fn(extern "C" fn(u64), u64),
     // Context menu
     set_context_menu: extern "C" fn(u32, u32),
+    set_draggable: extern "C" fn(u32, u32),
+    set_drop_target: extern "C" fn(u32, u32),
+    drag_is_active: extern "C" fn() -> u32,
+    drag_get_source: extern "C" fn() -> u32,
+    drag_get_target: extern "C" fn() -> u32,
+    drag_set_text: extern "C" fn(*const u8, u32),
+    drag_get_text: extern "C" fn(*mut u8, u32) -> u32,
     open_popup: extern "C" fn(u32),
     // Tooltip
     set_tooltip: extern "C" fn(u32, *const u8, u32),
@@ -489,6 +501,13 @@ pub fn init() -> bool {
             marshal_dispatch: resolve(&handle, "anyui_marshal_dispatch"),
             // Context menu
             set_context_menu: resolve(&handle, "anyui_set_context_menu"),
+            set_draggable: resolve(&handle, "anyui_set_draggable"),
+            set_drop_target: resolve(&handle, "anyui_set_drop_target"),
+            drag_is_active: resolve(&handle, "anyui_drag_is_active"),
+            drag_get_source: resolve(&handle, "anyui_drag_get_source"),
+            drag_get_target: resolve(&handle, "anyui_drag_get_target"),
+            drag_set_text: resolve(&handle, "anyui_drag_set_text"),
+            drag_get_text: resolve(&handle, "anyui_drag_get_text"),
             open_popup: resolve(&handle, "anyui_open_popup"),
             // Tooltip
             set_tooltip: resolve(&handle, "anyui_set_tooltip"),
@@ -933,6 +952,51 @@ impl Control {
         self.on_event_raw(EVENT_MOUSE_UP, cb, userdata);
     }
 
+    pub fn on_drag_start_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_DRAG_START, cb, userdata);
+    }
+
+    pub fn on_drag_enter_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_DRAG_ENTER, cb, userdata);
+    }
+
+    pub fn on_drag_leave_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_DRAG_LEAVE, cb, userdata);
+    }
+
+    pub fn on_drop_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_DROP, cb, userdata);
+    }
+
+    pub fn on_drag_end_raw(&self, cb: Callback, userdata: u64) {
+        self.on_event_raw(EVENT_DRAG_END, cb, userdata);
+    }
+
+    pub fn on_drag_start(&self, mut f: impl FnMut(u32) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(id));
+        self.on_drag_start_raw(thunk, ud);
+    }
+
+    pub fn on_drag_enter(&self, mut f: impl FnMut(u32) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(id));
+        self.on_drag_enter_raw(thunk, ud);
+    }
+
+    pub fn on_drag_leave(&self, mut f: impl FnMut(u32) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(id));
+        self.on_drag_leave_raw(thunk, ud);
+    }
+
+    pub fn on_drop(&self, mut f: impl FnMut(u32) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(id));
+        self.on_drop_raw(thunk, ud);
+    }
+
+    pub fn on_drag_end(&self, mut f: impl FnMut(u32) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(id));
+        self.on_drag_end_raw(thunk, ud);
+    }
+
     pub fn on_submit_raw(&self, cb: Callback, userdata: u64) {
         (lib().on_submit_fn)(self.id, cb, userdata);
     }
@@ -942,6 +1006,16 @@ impl Control {
     /// Attach a context menu to this control. Shown on right-click.
     pub fn set_context_menu(&self, menu: &impl Widget) {
         (lib().set_context_menu)(self.id, menu.id());
+    }
+
+    /// Allow this control to begin a drag session after a pointer drag gesture.
+    pub fn set_draggable(&self, draggable: bool) {
+        (lib().set_draggable)(self.id, draggable as u32);
+    }
+
+    /// Allow this control to receive drag enter/leave/drop callbacks.
+    pub fn set_drop_target(&self, drop_target: bool) {
+        (lib().set_drop_target)(self.id, drop_target as u32);
     }
 
     /// Open this control's context menu below the control (for left-click popups).
@@ -996,6 +1070,39 @@ impl Control {
 #[derive(Clone, Copy)]
 pub struct Container {
     ctrl: Control,
+}
+
+/// Set the text payload for the currently active drag session.
+pub fn drag_set_text(text: &str) {
+    let bytes = text.as_bytes();
+    (lib().drag_set_text)(bytes.as_ptr(), bytes.len() as u32);
+}
+
+/// Get the text payload for the currently active drag session.
+pub fn drag_get_text() -> alloc::string::String {
+    let len = (lib().drag_get_text)(core::ptr::null_mut(), 0) as usize;
+    if len == 0 {
+        return alloc::string::String::new();
+    }
+    let mut buf = alloc::vec![0u8; len];
+    let n = (lib().drag_get_text)(buf.as_mut_ptr(), buf.len() as u32) as usize;
+    buf.truncate(core::cmp::min(n, buf.len()));
+    alloc::string::String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Return true when a drag session is active.
+pub fn drag_is_active() -> bool {
+    (lib().drag_is_active)() != 0
+}
+
+/// Get the current drag source control ID, or 0 if no drag is active.
+pub fn drag_source() -> u32 {
+    (lib().drag_get_source)()
+}
+
+/// Get the current drag target control ID, or 0 if no target is active.
+pub fn drag_target() -> u32 {
+    (lib().drag_get_target)()
 }
 
 impl Widget for Container {

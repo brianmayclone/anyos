@@ -88,6 +88,13 @@ EXPORTS
     anyui_marshal_set_size
     anyui_marshal_dispatch
     anyui_set_context_menu
+    anyui_set_draggable
+    anyui_set_drop_target
+    anyui_drag_is_active
+    anyui_drag_get_source
+    anyui_drag_get_target
+    anyui_drag_set_text
+    anyui_drag_get_text
     anyui_open_popup
     anyui_set_tooltip
     anyui_message_box

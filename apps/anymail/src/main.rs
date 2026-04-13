@@ -313,6 +313,10 @@ fn main() {
     folder_tree.set_row_height(22);
     main_split.add(&folder_tree);
 
+    let folder_ctx_menu = anyui::ContextMenu::new("Refresh Folder|Check Mail|-|Compose");
+    folder_tree.set_context_menu(&folder_ctx_menu);
+    main_split.add(&folder_ctx_menu);
+
     // Right panel: vertical split (message grid 40% | preview 60%)
     let content_split = anyui::SplitView::new();
     content_split.set_orientation(anyui::ORIENTATION_VERTICAL);
@@ -516,6 +520,17 @@ fn main() {
 
     folder_tree.on_selection_changed(|e| {
         on_folder_selected(e.index);
+    });
+
+    folder_ctx_menu.on_item_click(|e| match e.index {
+        0 => {
+            load_folder_messages();
+            let a = app();
+            trigger_folder_sync(a.current_account, &a.current_folder.clone());
+        }
+        1 => on_get_mail(),
+        3 => open_compose(ComposeMode::New),
+        _ => {}
     });
 
     msg_grid.on_selection_changed(|_| {

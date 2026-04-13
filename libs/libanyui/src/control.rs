@@ -54,9 +54,14 @@ pub const EVENT_SUBMIT: u32 = 17;
 pub const EVENT_FULLSCREEN_ENTER: u32 = 18;
 pub const EVENT_FULLSCREEN_EXIT: u32 = 19;
 pub const EVENT_KEY_UP: u32 = 20;
+pub const EVENT_DRAG_START: u32 = 21;
+pub const EVENT_DRAG_ENTER: u32 = 22;
+pub const EVENT_DRAG_LEAVE: u32 = 23;
+pub const EVENT_DROP: u32 = 24;
+pub const EVENT_DRAG_END: u32 = 25;
 
-/// Number of callback slots (EVENT_CLICK=1 .. EVENT_KEY_UP=20, index 0 unused).
-const NUM_CALLBACK_SLOTS: usize = 21;
+/// Number of callback slots (EVENT_CLICK=1 .. EVENT_DRAG_END=25, index 0 unused).
+const NUM_CALLBACK_SLOTS: usize = 26;
 
 // ── Key codes (must match compositor's encode_scancode output) ───────
 
@@ -415,6 +420,10 @@ pub struct ControlBase {
     /// 0 means "use insertion order" (default). Cascaded: parent tab_index
     /// is used as the primary sort key, child tab_index as secondary.
     pub tab_index: u32,
+    /// Whether this control may initiate a drag session.
+    pub draggable: bool,
+    /// Whether this control may receive drag enter/leave/drop events.
+    pub drop_target: bool,
 
     /// Callback table indexed by event type (EVENT_CLICK=1 .. EVENT_MOUSE_MOVE=16).
     /// Index 0 is unused. Each slot has its own userdata.
@@ -465,6 +474,8 @@ impl ControlBase {
             context_menu: None,
             tooltip_text: Vec::new(),
             tab_index: 0,
+            draggable: false,
+            drop_target: false,
             callbacks: [None; NUM_CALLBACK_SLOTS],
         }
     }

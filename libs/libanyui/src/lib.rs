@@ -151,6 +151,16 @@ pub(crate) struct PopupInfo {
     pub owner_autocomplete: Option<ControlId>,
 }
 
+/// Active drag-and-drop session owned by the framework.
+pub(crate) struct DragSession {
+    /// Control that initiated the drag.
+    pub source_id: ControlId,
+    /// Current active drop target under the pointer, if any.
+    pub target_id: Option<ControlId>,
+    /// Opaque text payload provided by the source app.
+    pub data: Vec<u8>,
+}
+
 // ── Modal dialog tracking ─────────────────────────────────────────────
 
 /// An active modal context. Tracks the relationship between a modal dialog
@@ -200,6 +210,10 @@ pub(crate) struct AnyuiState {
     pub last_mouse_x: i32,
     /// Last known mouse position (logical pixels, window-relative).
     pub last_mouse_y: i32,
+    /// Pointer location where the current press began.
+    pub press_mouse_x: i32,
+    /// Pointer location where the current press began.
+    pub press_mouse_y: i32,
 
     // ── Tooltip ──────────────────────────────────────────────────────
     /// Framework-managed tooltip control ID (created lazily on first use).
@@ -212,6 +226,8 @@ pub(crate) struct AnyuiState {
     // ── Context menu popup ──────────────────────────────────────────
     /// Active popup window for context menus (at most one at a time).
     pub popup: Option<PopupInfo>,
+    /// Active drag-and-drop session, if a drag gesture is in progress.
+    pub drag: Option<DragSession>,
 
     // ── Timers ───────────────────────────────────────────────────────
     pub timers: timer::TimerState,
@@ -362,10 +378,13 @@ pub extern "C" fn anyui_init() -> u32 {
             pressed_button: 0,
             last_mouse_x: 0,
             last_mouse_y: 0,
+            press_mouse_x: 0,
+            press_mouse_y: 0,
             active_tooltip: None,
             tooltip_pending_id: None,
             tooltip_hover_start: 0,
             popup: None,
+            drag: None,
             timers: timer::TimerState::new(),
             needs_repaint: true,
             needs_layout: true,
@@ -2614,7 +2633,9 @@ pub extern "C" fn anyui_treeview_set_row_height(id: ControlId, height: u32) {
 /// EVENT_BLUR=5, EVENT_CLOSE=6, EVENT_RESIZE=7, EVENT_SCROLL=8,
 /// EVENT_DRAG=9, EVENT_CONTEXT_MENU=10, EVENT_DOUBLE_CLICK=11,
 /// EVENT_MOUSE_ENTER=12, EVENT_MOUSE_LEAVE=13, EVENT_MOUSE_DOWN=14,
-/// EVENT_MOUSE_UP=15, EVENT_MOUSE_MOVE=16
+/// EVENT_MOUSE_UP=15, EVENT_MOUSE_MOVE=16, EVENT_DRAG_START=21,
+/// EVENT_DRAG_ENTER=22, EVENT_DRAG_LEAVE=23, EVENT_DROP=24,
+/// EVENT_DRAG_END=25
 #[no_mangle]
 pub extern "C" fn anyui_on_event(id: ControlId, event_type: u32, cb: Callback, userdata: u64) {
     let st = state();
@@ -2645,6 +2666,63 @@ pub extern "C" fn anyui_set_context_menu(id: ControlId, menu_id: ControlId) {
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
         ctrl.base_mut().context_menu = Some(menu_id);
     }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_draggable(id: ControlId, draggable: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().draggable = draggable != 0;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_set_drop_target(id: ControlId, drop_target: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().drop_target = drop_target != 0;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_drag_is_active() -> u32 {
+    if state().drag.is_some() { 1 } else { 0 }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_drag_get_source() -> u32 {
+    state().drag.as_ref().map(|d| d.source_id).unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_drag_get_target() -> u32 {
+    state().drag.as_ref().and_then(|d| d.target_id).unwrap_or(0)
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_drag_set_text(text: *const u8, len: u32) {
+    let st = state();
+    if let Some(drag) = st.drag.as_mut() {
+        drag.data.clear();
+        if !text.is_null() && len > 0 {
+            let src = unsafe { core::slice::from_raw_parts(text, len as usize) };
+            drag.data.extend_from_slice(src);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_drag_get_text(buf: *mut u8, cap: u32) -> u32 {
+    let st = state();
+    let data = match st.drag.as_ref() {
+        Some(d) => &d.data,
+        None => return 0,
+    };
+    let n = core::cmp::min(data.len(), cap as usize);
+    if !buf.is_null() && n > 0 {
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buf, n); }
+    }
+    data.len() as u32
 }
 
 /// Programmatically open a control's context menu below the control.
@@ -2781,6 +2859,8 @@ pub extern "C" fn anyui_open_popup(id: ControlId) {
             owner_dropdown: None,
             owner_autocomplete: None,
         });
+        let tid = libsyscall::get_tid();
+        compositor::focus_by_tid(st.channel_id, tid);
     }
 }
 

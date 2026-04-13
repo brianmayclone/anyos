@@ -335,6 +335,29 @@ pub fn run_once() -> u32 {
                             let keycode = ev[2];
                             if keycode == control::KEY_ESCAPE {
                                 dismiss_popup(st);
+                            } else {
+                                let menu_id = st.popup.as_ref().map(|p| p.menu_id);
+                                let owner_ac = st.popup.as_ref().and_then(|p| p.owner_autocomplete);
+                                if owner_ac.is_none() {
+                                    if let Some(menu_id) = menu_id {
+                                        if let Some(idx) = control::find_idx(&st.controls, menu_id) {
+                                            let resp = st.controls[idx].handle_key_down(keycode, 0, 0);
+                                            st.controls[idx].base_mut().mark_dirty();
+                                            if let Some(ref mut popup) = st.popup {
+                                                popup.dirty = true;
+                                            }
+                                            if resp.fire_click {
+                                                dismiss_popup(st);
+                                                fire_event_callback(
+                                                    &st.controls,
+                                                    menu_id,
+                                                    control::EVENT_CLICK,
+                                                    &mut pending_cbs,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                         _ => {}
@@ -672,6 +695,11 @@ pub fn run_once() -> u32 {
                             }
                         }
                     }
+
+                    maybe_begin_drag(st, win_id, mx, my, &mut pending_cbs);
+                    if st.drag.is_some() {
+                        update_drag_target(st, win_id, mx, my, &mut pending_cbs);
+                    }
                 }
 
                 compositor::EVT_MOUSE_DOWN => {
@@ -731,6 +759,8 @@ pub fn run_once() -> u32 {
 
                     st.pressed = hit_id;
                     st.pressed_button = button;
+                    st.press_mouse_x = mx;
+                    st.press_mouse_y = my;
 
                     if let Some(target_id) = hit_id {
                         if let Some(idx) = control::find_idx(&st.controls, target_id) {
@@ -774,6 +804,32 @@ pub fn run_once() -> u32 {
                     let my = crate::theme::unscale(ev[3] as i32);
                     let button = ev[4] & 0xFF;
                     st.last_modifiers = (ev[4] >> 8) & 0xFF;
+
+                    if let Some(drag) = st.drag.take() {
+                        if let Some(target_id) = drag.target_id {
+                            fire_event_callback(
+                                &st.controls,
+                                target_id,
+                                control::EVENT_DROP,
+                                &mut pending_cbs,
+                            );
+                            fire_event_callback(
+                                &st.controls,
+                                target_id,
+                                control::EVENT_DRAG_LEAVE,
+                                &mut pending_cbs,
+                            );
+                        }
+                        fire_event_callback(
+                            &st.controls,
+                            drag.source_id,
+                            control::EVENT_DRAG_END,
+                            &mut pending_cbs,
+                        );
+                        st.pressed = None;
+                        st.pressed_button = 0;
+                        continue;
+                    }
 
                     let pressed_id = st.pressed.take();
 
@@ -903,6 +959,8 @@ pub fn run_once() -> u32 {
                                                         owner_dropdown: None,
                                                         owner_autocomplete: None,
                                                     });
+                                                    let tid = libsyscall::get_tid();
+                                                    compositor::focus_by_tid(st.channel_id, tid);
                                                 }
                                             }
                                         }
@@ -1044,6 +1102,8 @@ pub fn run_once() -> u32 {
                                                             owner_dropdown: Some(target_id),
                                                             owner_autocomplete: None,
                                                         });
+                                                        let tid = libsyscall::get_tid();
+                                                        compositor::focus_by_tid(st.channel_id, tid);
                                                     }
                                                 }
                                             }
@@ -1165,6 +1225,7 @@ pub fn run_once() -> u32 {
                             }
                         }
                     }
+                    st.pressed_button = 0;
                 }
 
                 compositor::EVT_KEY_DOWN => {
@@ -2053,6 +2114,101 @@ fn fire_event_callback(
                 userdata: slot.userdata,
             });
         }
+    }
+}
+
+fn nearest_drop_target(
+    controls: &[Box<dyn Control>],
+    mut id: Option<ControlId>,
+) -> Option<ControlId> {
+    while let Some(cur) = id {
+        if let Some(idx) = control::find_idx(controls, cur) {
+            let base = controls[idx].base();
+            if base.drop_target && base.visible && !base.disabled {
+                return Some(cur);
+            }
+            id = if base.parent == 0 { None } else { Some(base.parent) };
+        } else {
+            return None;
+        }
+    }
+    None
+}
+
+fn drop_target_at_point(
+    controls: &[Box<dyn Control>],
+    win_id: ControlId,
+    mx: i32,
+    my: i32,
+) -> Option<ControlId> {
+    let hovered = control::hit_test_any(controls, win_id, mx, my, 0, 0);
+    nearest_drop_target(controls, hovered)
+}
+
+fn maybe_begin_drag(
+    st: &mut crate::AnyuiState,
+    win_id: ControlId,
+    mx: i32,
+    my: i32,
+    pending: &mut Vec<PendingCallback>,
+) {
+    if st.drag.is_some() || (st.pressed_button & 0x01) == 0 {
+        return;
+    }
+    let pressed_id = match st.pressed {
+        Some(id) => id,
+        None => return,
+    };
+    if (mx - st.press_mouse_x).abs() <= 4 && (my - st.press_mouse_y).abs() <= 4 {
+        return;
+    }
+    let idx = match control::find_idx(&st.controls, pressed_id) {
+        Some(i) => i,
+        None => return,
+    };
+    if !st.controls[idx].base().draggable {
+        return;
+    }
+
+    st.drag = Some(crate::DragSession {
+        source_id: pressed_id,
+        target_id: None,
+        data: Vec::new(),
+    });
+    fire_event_callback(&st.controls, pressed_id, control::EVENT_DRAG_START, pending);
+
+    let new_target = drop_target_at_point(&st.controls, win_id, mx, my);
+    if let Some(drag) = st.drag.as_mut() {
+        drag.target_id = new_target;
+    }
+    if let Some(target_id) = new_target {
+        fire_event_callback(&st.controls, target_id, control::EVENT_DRAG_ENTER, pending);
+    }
+}
+
+fn update_drag_target(
+    st: &mut crate::AnyuiState,
+    win_id: ControlId,
+    mx: i32,
+    my: i32,
+    pending: &mut Vec<PendingCallback>,
+) {
+    let new_target = drop_target_at_point(&st.controls, win_id, mx, my);
+    let old_target = st.drag.as_ref().and_then(|d| d.target_id);
+    if new_target != old_target {
+        if let Some(old_id) = old_target {
+            fire_event_callback(&st.controls, old_id, control::EVENT_DRAG_LEAVE, pending);
+        }
+        if let Some(new_id) = new_target {
+            fire_event_callback(&st.controls, new_id, control::EVENT_DRAG_ENTER, pending);
+        }
+        if let Some(drag) = st.drag.as_mut() {
+            drag.target_id = new_target;
+        }
+    }
+
+    if let Some(source_id) = st.drag.as_ref().map(|d| d.source_id) {
+        fire_event_callback(&st.controls, source_id, control::EVENT_DRAG, pending);
     }
 }
 

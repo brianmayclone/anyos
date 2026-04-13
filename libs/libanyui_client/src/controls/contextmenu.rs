@@ -5,6 +5,7 @@ container_control!(ContextMenu, KIND_CONTEXT_MENU);
 
 impl ContextMenu {
     /// Create a context menu with pipe-separated item labels, e.g. `"Cut|Copy|Paste"`.
+    /// Prefix an item with `\u{1d}` to mark it disabled, e.g. `"\u{1d}Paste"`.
     pub fn new(items: &str) -> Self {
         let id = (lib().create_control)(KIND_CONTEXT_MENU, items.as_ptr(), items.len() as u32);
         Self { container: Container { ctrl: Control { id } } }

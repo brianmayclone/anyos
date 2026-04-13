@@ -249,6 +249,113 @@ impl<'a> TypeChecker<'a> {
         Some(TyKind::Adt(def_id, vec![ok_ty, TyKind::Error]))
     }
 
+    fn push_generic_scope(
+        &mut self,
+        params: &[HirGenericParam],
+    ) -> (HashMap<Symbol, u32>, HashMap<u32, Vec<DefId>>, usize) {
+        let old_generics = self.current_generic_params.clone();
+        let old_bounds = self.current_generic_bounds.clone();
+        let mut next_idx = self
+            .current_generic_params
+            .values()
+            .copied()
+            .max()
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        let mut added = 0usize;
+        for gp in params {
+            if let HirGenericParam::Type(name, bounds, _, _) = gp {
+                self.current_generic_params.insert(*name, next_idx);
+                let mut bound_def_ids = Vec::new();
+                for bound in bounds {
+                    if !bound.path.segments.is_empty() {
+                        let trait_name = bound.path.segments[0].ident;
+                        if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
+                            bound_def_ids.push(trait_def_id);
+                        }
+                    }
+                }
+                if !bound_def_ids.is_empty() {
+                    self.current_generic_bounds.insert(next_idx, bound_def_ids);
+                }
+                next_idx += 1;
+                added += 1;
+            }
+        }
+        (old_generics, old_bounds, added)
+    }
+
+    fn pop_generic_scope(
+        &mut self,
+        old_generics: HashMap<Symbol, u32>,
+        old_bounds: HashMap<u32, Vec<DefId>>,
+    ) {
+        self.current_generic_params = old_generics;
+        self.current_generic_bounds = old_bounds;
+    }
+
+    fn collect_param_substs(
+        &self,
+        template: &TyKind,
+        actual: &TyKind,
+        substs: &mut Vec<Option<TyKind>>,
+    ) {
+        match (template, actual) {
+            (TyKind::Param(idx), actual) => {
+                let idx = *idx as usize;
+                if substs.len() <= idx {
+                    substs.resize(idx + 1, None);
+                }
+                if substs[idx].is_none() {
+                    substs[idx] = Some(actual.clone());
+                }
+            }
+            (TyKind::Ref(t_inner, t_mut), TyKind::Ref(a_inner, a_mut))
+                if *t_mut == Mutability::Immutable || t_mut == a_mut =>
+            {
+                self.collect_param_substs(t_inner, a_inner, substs);
+            }
+            (TyKind::RawPtr(t_inner, t_mut), TyKind::RawPtr(a_inner, a_mut))
+                if t_mut == a_mut =>
+            {
+                self.collect_param_substs(t_inner, a_inner, substs);
+            }
+            (TyKind::Adt(t_def, t_args), TyKind::Adt(a_def, a_args))
+                if t_def == a_def && t_args.len() == a_args.len() =>
+            {
+                for (t_arg, a_arg) in t_args.iter().zip(a_args.iter()) {
+                    self.collect_param_substs(t_arg, a_arg, substs);
+                }
+            }
+            (TyKind::Tuple(t_tys), TyKind::Tuple(a_tys)) if t_tys.len() == a_tys.len() => {
+                for (t_ty, a_ty) in t_tys.iter().zip(a_tys.iter()) {
+                    self.collect_param_substs(t_ty, a_ty, substs);
+                }
+            }
+            (TyKind::Array(t_inner, t_len), TyKind::Array(a_inner, a_len)) if t_len == a_len => {
+                self.collect_param_substs(t_inner, a_inner, substs);
+            }
+            (TyKind::Slice(t_inner), TyKind::Slice(a_inner)) => {
+                self.collect_param_substs(t_inner, a_inner, substs);
+            }
+            _ => {}
+        }
+    }
+
+    fn infer_receiver_substs(&self, template: &TyKind, actual: &TyKind) -> Option<Vec<TyKind>> {
+        let mut substs = Vec::new();
+        self.collect_param_substs(template, actual, &mut substs);
+        if substs.iter().all(Option::is_none) {
+            return None;
+        }
+        Some(
+            substs
+                .into_iter()
+                .map(|ty| ty.unwrap_or(TyKind::Error))
+                .collect(),
+        )
+    }
+
     fn iterable_elem_ty(&mut self, iter: &HirExpr, iter_ty: TyKind) -> TyKind {
         let resolved = match self.shallow_resolve(iter_ty) {
             TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
@@ -430,31 +537,10 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
             HirItemKind::Fn(f) => {
-                // Set up generic params for this function
-                let old_generics = core::mem::take(&mut self.current_generic_params);
-                let old_bounds = core::mem::take(&mut self.current_generic_bounds);
-                let mut n_type_params = 0u32;
-                for gp in &f.generics.params {
-                    if let HirGenericParam::Type(name, bounds, _, _) = gp {
-                        self.current_generic_params.insert(*name, n_type_params);
-                        // Collect trait bounds for this param
-                        let mut bound_def_ids = Vec::new();
-                        for bound in bounds {
-                            if !bound.path.segments.is_empty() {
-                                let trait_name = bound.path.segments[0].ident;
-                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
-                                    bound_def_ids.push(trait_def_id);
-                                }
-                            }
-                        }
-                        if !bound_def_ids.is_empty() {
-                            self.current_generic_bounds.insert(n_type_params, bound_def_ids);
-                        }
-                        n_type_params += 1;
-                    }
-                }
-                if n_type_params > 0 {
-                    self.generic_fn_defs.insert(f.def_id, n_type_params as usize);
+                let (old_generics, old_bounds, added_generics) =
+                    self.push_generic_scope(&f.generics.params);
+                if added_generics > 0 {
+                    self.generic_fn_defs.insert(f.def_id, added_generics);
                 }
 
                 let params: Vec<TyKind> = f.params.iter()
@@ -464,61 +550,19 @@ impl<'a> TypeChecker<'a> {
                     .map(|t| self.hir_ty_to_ty(t))
                     .unwrap_or(TyKind::Unit);
                 self.fn_sigs.insert(f.def_id, (params, ret));
-                self.current_generic_params = old_generics;
-                self.current_generic_bounds = old_bounds;
+                self.pop_generic_scope(old_generics, old_bounds);
             }
             HirItemKind::Struct(s) => {
-                let old_generics = core::mem::take(&mut self.current_generic_params);
-                let old_bounds = core::mem::take(&mut self.current_generic_bounds);
-                let mut n_type_params = 0u32;
-                for gp in &s.generics.params {
-                    if let HirGenericParam::Type(name, bounds, _, _) = gp {
-                        self.current_generic_params.insert(*name, n_type_params);
-                        let mut bound_def_ids = Vec::new();
-                        for bound in bounds {
-                            if !bound.path.segments.is_empty() {
-                                let trait_name = bound.path.segments[0].ident;
-                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
-                                    bound_def_ids.push(trait_def_id);
-                                }
-                            }
-                        }
-                        if !bound_def_ids.is_empty() {
-                            self.current_generic_bounds.insert(n_type_params, bound_def_ids);
-                        }
-                        n_type_params += 1;
-                    }
-                }
+                let (old_generics, old_bounds, _) = self.push_generic_scope(&s.generics.params);
                 let fields: Vec<(Symbol, TyKind)> = s.fields.iter()
                     .map(|f| (f.name, self.hir_ty_to_ty(&f.ty)))
                     .collect();
                 self.struct_defs.insert(s.def_id, fields);
                 self.type_name_to_def.insert(s.name, s.def_id);
-                self.current_generic_params = old_generics;
-                self.current_generic_bounds = old_bounds;
+                self.pop_generic_scope(old_generics, old_bounds);
             }
             HirItemKind::Enum(e) => {
-                let old_generics = core::mem::take(&mut self.current_generic_params);
-                let old_bounds = core::mem::take(&mut self.current_generic_bounds);
-                let mut n_type_params = 0u32;
-                for gp in &e.generics.params {
-                    if let HirGenericParam::Type(name, bounds, _, _) = gp {
-                        self.current_generic_params.insert(*name, n_type_params);
-                        let mut bound_def_ids = Vec::new();
-                        for bound in bounds {
-                            if !bound.path.segments.is_empty() {
-                                let trait_name = bound.path.segments[0].ident;
-                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
-                                    bound_def_ids.push(trait_def_id);
-                                }
-                            }
-                        }
-                        if !bound_def_ids.is_empty() {
-                            self.current_generic_bounds.insert(n_type_params, bound_def_ids);
-                        }
-                        n_type_params += 1;
-                    }
-                }
+                let (old_generics, old_bounds, _) = self.push_generic_scope(&e.generics.params);
                 self.type_name_to_def.insert(e.name, e.def_id);
                 // Collect variant field types
                 let mut variants = Vec::new();
@@ -535,38 +579,17 @@ impl<'a> TypeChecker<'a> {
                     variants.push((v.name, field_tys));
                 }
                 self.enum_variant_fields.insert(e.def_id, variants);
-                self.current_generic_params = old_generics;
-                self.current_generic_bounds = old_bounds;
+                self.pop_generic_scope(old_generics, old_bounds);
             }
             HirItemKind::TypeAlias(ta) => {
-                let old_generics = core::mem::take(&mut self.current_generic_params);
-                let old_bounds = core::mem::take(&mut self.current_generic_bounds);
-                let mut n_type_params = 0u32;
-                for gp in &ta.generics.params {
-                    if let HirGenericParam::Type(name, bounds, _, _) = gp {
-                        self.current_generic_params.insert(*name, n_type_params);
-                        let mut bound_def_ids = Vec::new();
-                        for bound in bounds {
-                            if !bound.path.segments.is_empty() {
-                                let trait_name = bound.path.segments[0].ident;
-                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
-                                    bound_def_ids.push(trait_def_id);
-                                }
-                            }
-                        }
-                        if !bound_def_ids.is_empty() {
-                            self.current_generic_bounds.insert(n_type_params, bound_def_ids);
-                        }
-                        n_type_params += 1;
-                    }
-                }
+                let (old_generics, old_bounds, _) = self.push_generic_scope(&ta.generics.params);
                 if let Some(ty) = &ta.ty {
                     self.type_aliases.insert(ta.name, self.hir_ty_to_ty(ty));
                 }
-                self.current_generic_params = old_generics;
-                self.current_generic_bounds = old_bounds;
+                self.pop_generic_scope(old_generics, old_bounds);
             }
             HirItemKind::Impl(ib) => {
+                let (old_generics, old_bounds, _) = self.push_generic_scope(&ib.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 self.current_self_ty = Some(self.hir_ty_to_ty(&ib.self_ty));
                 // Register Self as an alias for the impl'd type
@@ -609,6 +632,7 @@ impl<'a> TypeChecker<'a> {
                     self.collect_item(sub);
                 }
                 self.current_self_ty = saved_self_ty;
+                self.pop_generic_scope(old_generics, old_bounds);
             }
             HirItemKind::Const(c) => {
                 let ty = self.hir_ty_to_ty(&c.ty);
@@ -634,6 +658,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             HirItemKind::Trait(t) => {
+                let (old_generics, old_bounds, _) = self.push_generic_scope(&t.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 self.current_self_ty = Some(TyKind::Adt(t.def_id, vec![]));
                 // Register trait name so `dyn Trait` can resolve it
@@ -654,6 +679,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.trait_methods.insert(t.def_id, methods);
                 self.current_self_ty = saved_self_ty;
+                self.pop_generic_scope(old_generics, old_bounds);
             }
             _ => {}
         }
@@ -1404,6 +1430,35 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let Some(inner_option_ty) = self.option_inner_ty(&inner_ty) {
+                    match method_str {
+                        "is_some" | "is_none" if args.is_empty() => return TyKind::Bool,
+                        "as_ref" if args.is_empty() => {
+                            if let Some(ty) = self.option_of(TyKind::Ref(
+                                Box::new(inner_option_ty.clone()),
+                                Mutability::Immutable,
+                            )) {
+                                return ty;
+                            }
+                            return self.fresh_infer(InferKind::General);
+                        }
+                        "as_mut" if args.is_empty() => {
+                            if let Some(ty) = self.option_of(TyKind::Ref(
+                                Box::new(inner_option_ty.clone()),
+                                Mutability::Mut,
+                            )) {
+                                return ty;
+                            }
+                            return self.fresh_infer(InferKind::General);
+                        }
+                        "unwrap" if args.is_empty() => return inner_option_ty.clone(),
+                        "expect" if args.len() == 1 => return inner_option_ty.clone(),
+                        "unwrap_or" if args.len() == 1 => {
+                            let default_ty = self.get_expr_ty_cached(&args[0]);
+                            self.unify(&inner_option_ty, &default_ty, args[0].span);
+                            return inner_option_ty.clone();
+                        }
+                        _ => {}
+                    }
                     if method_str == "map" && args.len() == 1 {
                         if let HirExprKind::Closure(params, _, body, _) = &args[0].kind {
                             if params.len() == 1 {
@@ -1466,11 +1521,28 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     if self.is_result_def(*def_id) && substs.len() == 2 {
-                        if method_str == "ok" && args.is_empty() {
-                            if let Some(ty) = self.option_of(substs[0].clone()) {
-                                return ty;
+                        match method_str {
+                            "is_ok" | "is_err" if args.is_empty() => return TyKind::Bool,
+                            "ok" if args.is_empty() => {
+                                if let Some(ty) = self.option_of(substs[0].clone()) {
+                                    return ty;
+                                }
+                                return self.fresh_infer(InferKind::General);
                             }
-                            return self.fresh_infer(InferKind::General);
+                            "err" if args.is_empty() => {
+                                if let Some(ty) = self.option_of(substs[1].clone()) {
+                                    return ty;
+                                }
+                                return self.fresh_infer(InferKind::General);
+                            }
+                            "unwrap" if args.is_empty() => return substs[0].clone(),
+                            "expect" if args.len() == 1 => return substs[0].clone(),
+                            "unwrap_or" if args.len() == 1 => {
+                                let default_ty = self.get_expr_ty_cached(&args[0]);
+                                self.unify(&substs[0], &default_ty, args[0].span);
+                                return substs[0].clone();
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -1531,6 +1603,24 @@ impl<'a> TypeChecker<'a> {
                         if let Some(methods) = self.resolve.impl_methods.get(&type_name) {
                             if let Some((_, method_def_id)) = methods.iter().find(|(n, _)| *n == *method_name) {
                                 if let Some((param_tys, ret_ty)) = self.fn_sigs.get(method_def_id).cloned() {
+                                    let (param_tys, ret_ty) = if let Some(self_param_ty) = param_tys.first() {
+                                        let impl_substs = self
+                                            .infer_receiver_substs(self_param_ty, &base_ty)
+                                            .or_else(|| self.infer_receiver_substs(self_param_ty, &inner_ty));
+                                        if let Some(impl_substs) = impl_substs {
+                                            (
+                                                param_tys
+                                                    .iter()
+                                                    .map(|t| self.substitute_params(t, &impl_substs))
+                                                    .collect(),
+                                                self.substitute_params(&ret_ty, &impl_substs),
+                                            )
+                                        } else {
+                                            (param_tys, ret_ty)
+                                        }
+                                    } else {
+                                        (param_tys, ret_ty)
+                                    };
                                     let n_generics = self.generic_fn_defs.get(method_def_id).copied().unwrap_or(0);
                                     let (param_tys, ret_ty) = if n_generics > 0 {
                                         let infer_vars: Vec<TyKind> = (0..n_generics)

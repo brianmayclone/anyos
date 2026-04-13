@@ -342,6 +342,13 @@ fn app() -> &'static mut AppState {
     unsafe { APP.as_mut().unwrap() }
 }
 
+/// Return true when the current sidebar selection is an actual VM node.
+fn sidebar_selection_is_vm() -> bool {
+    let a = app();
+    let sel = a.sidebar_tree.selected() as usize;
+    matches!(a.node_map.get(sel), Some(NodeKind::Vm(_)))
+}
+
 // ── Number formatting (delegates to anyos_std::fmt) ────────────────────
 
 use anyos_std::fmt as stdfmt;
@@ -2561,6 +2568,10 @@ fn main() {
     sidebar_tree.set_indent_width(16);
     sidebar.add(&sidebar_tree);
 
+    let sidebar_ctx_menu = anyui::ContextMenu::new("New VM|-|Start|Stop|Settings|-|Delete");
+    sidebar_tree.set_context_menu(&sidebar_ctx_menu);
+    sidebar.add(&sidebar_ctx_menu);
+
     win.add(&sidebar);
 
     // ── Main content area (DOCK_FILL) ──────────────────────────────
@@ -2652,6 +2663,17 @@ fn main() {
             NodeKind::Root | NodeKind::Folder(_) => {
                 // Selecting a folder or root — ignore (expand/collapse handled by TreeView).
             }
+        }
+    });
+
+    sidebar_ctx_menu.on_item_click(|e| {
+        match e.index {
+            0 => create_new_vm(),
+            2 if sidebar_selection_is_vm() => start_selected_vm(),
+            3 if sidebar_selection_is_vm() => stop_selected_vm(),
+            4 if sidebar_selection_is_vm() => open_settings_dialog(),
+            6 if sidebar_selection_is_vm() => delete_selected_vm(),
+            _ => {}
         }
     });
 

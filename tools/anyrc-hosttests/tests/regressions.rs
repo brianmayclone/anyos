@@ -1722,6 +1722,131 @@ fn struct_literal_prefers_locally_resolved_type_over_global_name_collision() {
 }
 
 #[test]
+fn shell_glob_byte_char_comparisons_compile() {
+    compile_ok(
+        "shell_glob_byte_char_comparisons_compile",
+        r#"
+        fn has_glob_chars(s: &str) -> bool {
+            let b = s.as_bytes();
+            let mut i = 0;
+            while i < b.len() {
+                if b[i] == b'\\' && i + 1 < b.len() { i += 2; }
+                else if b[i] == b'*' || b[i] == b'?' || b[i] == b'[' { return true; }
+                else { i += 1; }
+            }
+            false
+        }
+        "#,
+    );
+}
+
+#[test]
+fn intrinsic_option_as_mut_unwrap_tuple_pattern_compiles() {
+    compile_ok(
+        "intrinsic_option_as_mut_unwrap_tuple_pattern_compiles",
+        r#"
+        fn value(opt: &mut Option<(u32, u32)>) -> &mut u32 {
+            let (_, v) = opt.as_mut().unwrap();
+            v
+        }
+        "#,
+    );
+}
+
+#[test]
+fn fs_like_read_write_traits_and_metadata_flow_compile() {
+    compile_ok(
+        "fs_like_read_write_traits_and_metadata_flow_compile",
+        r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        mod error {
+            pub enum Error { NotFound, BrokenPipe }
+            pub type Result<T> = crate::Result<T, Error>;
+        }
+
+        trait Read {
+            fn read(&mut self, buf: &mut [u8]) -> error::Result<usize>;
+
+            fn read_to_end(&mut self, out: &mut Vec<u8>) -> error::Result<usize> {
+                let mut total = 0;
+                let mut tmp = [0u8; 1024];
+                loop {
+                    let n = self.read(&mut tmp)?;
+                    if n == 0 { break; }
+                    out.extend_from_slice(&tmp[..n]);
+                    total += n;
+                }
+                Ok(total)
+            }
+        }
+
+        trait Write {
+            fn write(&mut self, buf: &[u8]) -> error::Result<usize>;
+        }
+
+        struct File {
+            fd: u32,
+        }
+
+        fn fstat(_fd: u32, stat_buf: &mut [u32; 4]) -> u32 {
+            stat_buf[1] = 7;
+            0
+        }
+
+        fn read(_fd: u32, _buf: &mut [u8]) -> u32 { 0 }
+        fn write(_fd: u32, _buf: &[u8]) -> u32 { 1 }
+
+        impl File {
+            fn metadata(&self) -> error::Result<[u32; 4]> {
+                let mut stat_buf = [0u32; 4];
+                let ret = fstat(self.fd, &mut stat_buf);
+                if ret == u32::MAX {
+                    return Err(error::Error::NotFound);
+                }
+                Ok(stat_buf)
+            }
+        }
+
+        impl Read for File {
+            fn read(&mut self, buf: &mut [u8]) -> error::Result<usize> {
+                let ret = read(self.fd, buf);
+                if ret == u32::MAX {
+                    return Err(error::Error::NotFound);
+                }
+                Ok(ret as usize)
+            }
+        }
+
+        impl Write for File {
+            fn write(&mut self, buf: &[u8]) -> error::Result<usize> {
+                let ret = write(self.fd, buf);
+                if ret == u32::MAX {
+                    return Err(error::Error::BrokenPipe);
+                }
+                Ok(ret as usize)
+            }
+        }
+
+        fn read_to_vec(file: &mut File) -> error::Result<Vec<u8>> {
+            let mut v = Vec::new();
+            if let Ok(meta) = file.metadata() {
+                let size = meta[1] as usize;
+                if size > 0 {
+                    v.reserve(size);
+                }
+            }
+            file.read_to_end(&mut v)?;
+            Ok(v)
+        }
+        "#,
+    );
+}
+
+#[test]
 fn window_utf8_and_slice_writer_patterns_compile() {
     compile_ok(
         "window_utf8_and_slice_writer_patterns_compile",
@@ -1751,6 +1876,107 @@ fn window_utf8_and_slice_writer_patterns_compile() {
 
         fn clipboard_string(buf: &[u8; 4096], actual: usize) -> Option<String> {
             core::str::from_utf8(&buf[..actual]).ok().map(|s| String::from(s))
+        }
+        "#,
+    );
+}
+
+#[test]
+fn vec_repeat_macro_supports_indexing_and_slices() {
+    compile_ok(
+        "vec_repeat_macro_supports_indexing_and_slices",
+        r#"
+        fn take_bytes(buf: &mut [u8]) -> usize {
+            buf[3] = 9;
+            buf[3] as usize
+        }
+
+        fn build() -> usize {
+            let mut buf = vec![0u8; 16];
+            let n = take_bytes(&mut buf);
+            n + buf[3] as usize
+        }
+        "#,
+    );
+}
+
+#[test]
+fn vec_list_macro_supports_to_vec_expansion() {
+    compile_ok(
+        "vec_list_macro_supports_to_vec_expansion",
+        r#"
+        fn sum_tail() -> usize {
+            let buf = vec![1u8, 2u8, 3u8, 4u8];
+            let tail = &buf[1..];
+            tail[1] as usize
+        }
+        "#,
+    );
+}
+
+#[test]
+fn generic_impl_methods_substitute_receiver_type_arguments() {
+    compile_ok(
+        "generic_impl_methods_substitute_receiver_type_arguments",
+        r#"
+        struct Wrapper<T> {
+            value: T,
+        }
+
+        impl<T> Wrapper<T> {
+            fn get(&self) -> &T {
+                &self.value
+            }
+
+            fn replace(&mut self, value: T) -> T {
+                let old = self.value;
+                self.value = value;
+                old
+            }
+        }
+
+        fn use_wrapper(w: &mut Wrapper<u8>) -> u8 {
+            let old = w.replace(7u8);
+            old + *w.get()
+        }
+        "#,
+    );
+}
+
+#[test]
+fn option_as_mut_expect_preserves_inner_reference_type() {
+    compile_ok(
+        "option_as_mut_expect_preserves_inner_reference_type",
+        r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        impl<T> Option<T> {
+            fn as_mut(&mut self) -> Option<&mut T> {
+                match self {
+                    Option::Some(v) => Option::Some(v),
+                    Option::None => Option::None,
+                }
+            }
+
+            fn expect(self, _msg: &str) -> T {
+                match self {
+                    Option::Some(v) => v,
+                    Option::None => loop {},
+                }
+            }
+        }
+
+        static mut APP: Option<u32> = Option::None;
+
+        fn app() -> &'static mut u32 {
+            unsafe { APP.as_mut().expect("not initialized") }
+        }
+
+        fn touch() -> u32 {
+            *app()
         }
         "#,
     );

@@ -55,6 +55,13 @@ fn collect_macro_call_args(tokens: &[TokenTree], interner: &mut Interner) -> Vec
     }
 }
 
+fn parse_vec_macro_expr(tokens: &[TokenTree], interner: &mut Interner) -> Option<Expr> {
+    let src = token_trees_to_string(tokens, interner);
+    let wrapped = format!("[{}]", src);
+    let mut parser = Parser::new(&wrapped, interner);
+    Some(parser.parse_expr())
+}
+
 /// Expand all macros in a crate, modifying the AST in place.
 pub fn expand_macros(krate: &mut Crate, interner: &mut Interner) {
     let defs = collect_macro_defs(krate);
@@ -212,18 +219,26 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     return;
                 }
                 "vec" => {
-                    // vec![a, b, c] → { let mut v = Vec::new(); v.push(a); v.push(b); v.push(c); v }
-                    // For now, expand to Vec::new() as a simple placeholder
-                    let fn_sym = interner.intern("Vec::new");
-                    let fn_path = Path {
-                        segments: vec![PathSegment { ident: fn_sym, args: None }],
-                        span: Span::dummy(),
-                    };
-                    *expr = Expr::Call(
-                        Box::new(Expr::Path(fn_path)),
-                        vec![],
-                        *span,
-                    );
+                    if let Some(parsed) = parse_vec_macro_expr(args, interner) {
+                        let to_vec_sym = interner.intern("to_vec");
+                        *expr = match parsed {
+                            Expr::Array(_, _) | Expr::ArrayRepeat(_, _, _) => {
+                                Expr::MethodCall(Box::new(parsed), to_vec_sym, vec![], vec![], *span)
+                            }
+                            _ => parsed,
+                        };
+                    } else {
+                        let fn_sym = interner.intern("Vec::new");
+                        let fn_path = Path {
+                            segments: vec![PathSegment { ident: fn_sym, args: None }],
+                            span: Span::dummy(),
+                        };
+                        *expr = Expr::Call(
+                            Box::new(Expr::Path(fn_path)),
+                            vec![],
+                            *span,
+                        );
+                    }
                     *changed = true;
                     return;
                 }
