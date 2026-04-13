@@ -109,25 +109,6 @@ MIN_RES_H=768
 
 # ── WSL: prefer Windows QEMU if installed ───────────────────────────────────
 QEMU_BIN="qemu-system-x86_64"
-if grep -qi microsoft /proc/version 2>/dev/null; then
-    # Only use Windows QEMU if WSL interop is active (binfmt_misc WSLInterop entry exists)
-    if [ -f /proc/sys/fs/binfmt_misc/WSLInterop ]; then
-        for _p in \
-            "/mnt/c/Program Files/QEMU/qemu-system-x86_64.exe" \
-            "/mnt/c/Program Files (x86)/QEMU/qemu-system-x86_64.exe"; do
-            if [ -f "$_p" ]; then
-                QEMU_BIN="$_p"
-                break
-            fi
-        done
-    else
-        echo "Warning: WSL interop not active (binfmt_misc/WSLInterop missing) -- using Linux QEMU instead of Windows QEMU."
-        echo "  To fix: add '[interop]\\nenabled=true' to /etc/wsl.conf and run 'wsl --shutdown' in PowerShell."
-    fi
-fi
-
-# Convert a WSL path to a Windows path (no-op if wslpath not available)
-to_win_path() { wslpath -w "$1" 2>/dev/null || echo "$1"; }
 
 # Escape QEMU_BIN for use in eval (handles spaces in Windows paths)
 QEMU_BIN_ESC=$(printf '%q' "$QEMU_BIN")
