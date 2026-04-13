@@ -2391,3 +2391,24 @@ fn generic_struct_field_access_substitutes_receiver_type_arguments() {
         "#,
     );
 }
+
+#[test]
+fn borrowing_enum_variant_constructor_temporary_matches_ref_parameter() {
+    compile_ok(
+        "borrowing_enum_variant_constructor_temporary_matches_ref_parameter",
+        r#"
+        #[derive(Clone)]
+        struct Element;
+
+        enum XmlNode {
+            Element(Element),
+        }
+
+        fn serialize_node(_node: &XmlNode) {}
+
+        fn run(root: &Element) {
+            serialize_node(&XmlNode::Element(root.clone()));
+        }
+        "#,
+    );
+}
