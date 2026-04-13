@@ -151,6 +151,7 @@ fn counter_entropy() -> u64 {
 /// This must comfortably exceed bursty thread/process creation patterns such as
 /// kstress, browser worker fan-out, and parallel child spawns at boot.
 const MAX_PENDING: usize = 64;
+const PENDING_LOOKUP_SPIN_LIMIT: usize = 4096;
 
 /// Slot holding the entry point and stack pointer for a newly spawned user thread.
 ///
@@ -209,6 +210,54 @@ fn try_store_pending_program(
     slot.is_compat32 = is_compat32;
     slot.used = true;
     true
+}
+
+fn take_pending_program(
+    tid: u32,
+    trampoline_name: &str,
+) -> (u64, u64, u64, bool) {
+    let mut spins = 0usize;
+    loop {
+        {
+            let mut slots = PENDING_PROGRAMS.lock();
+            if let Some(slot) = slots.iter_mut().find(|s| s.used && s.tid == tid) {
+                let e = slot.entry;
+                let s = slot.user_stack;
+                let lr = slot.user_lr;
+                let c = slot.is_compat32;
+                slot.used = false;
+                return (e, s, lr, c);
+            }
+
+            if spins >= PENDING_LOOKUP_SPIN_LIMIT {
+                let used = slots.iter().filter(|s| s.used).count();
+                crate::serial_println!(
+                    "[loader] {}: no pending slot for tid={} after {} spins (used_slots={})",
+                    trampoline_name,
+                    tid,
+                    spins,
+                    used,
+                );
+                for slot in slots.iter().filter(|s| s.used).take(8) {
+                    crate::serial_println!(
+                        "[loader]   pending tid={} entry={:#x} stack={:#x} compat32={}",
+                        slot.tid,
+                        slot.entry,
+                        slot.user_stack,
+                        slot.is_compat32,
+                    );
+                }
+                panic!("No pending program for {}", trampoline_name);
+            }
+        }
+
+        spins += 1;
+        if (spins & 0xFF) == 0 {
+            crate::task::scheduler::schedule();
+        } else {
+            core::hint::spin_loop();
+        }
+    }
 }
 
 // =========================================================================
@@ -1623,17 +1672,8 @@ pub(crate) extern "C" fn user_thread_trampoline() {
     #[cfg(target_arch = "x86_64")]
     crate::serial_verbose_println!("  [TRAMPOLINE] entered, tid={}", crate::task::scheduler::current_tid());
     let tid = crate::task::scheduler::current_tid();
-    let (entry, user_stack, user_lr, compat32) = {
-        let mut slots = PENDING_PROGRAMS.lock();
-        let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
-            .expect("No pending program for trampoline");
-        let e = slot.entry;
-        let s = slot.user_stack;
-        let lr = slot.user_lr;
-        let c = slot.is_compat32;
-        slot.used = false; // Free the slot
-        (e, s, lr, c)
-    };
+    let (entry, user_stack, user_lr, compat32) =
+        take_pending_program(tid, "trampoline");
 
     #[cfg(target_arch = "x86_64")]
     crate::serial_verbose_println!("  [TRAMPOLINE] tid={} entry={:#x} stack={:#x} compat32={}",
@@ -1659,17 +1699,8 @@ pub fn store_pending_thread(tid: u32, entry: u64, user_stack: u64, user_lr: u64)
 pub extern "C" fn thread_create_trampoline() {
     enable_irqs_before_user_entry();
     let tid = crate::task::scheduler::current_tid();
-    let (entry, user_stack, user_lr, compat32) = {
-        let mut slots = PENDING_PROGRAMS.lock();
-        let slot = slots.iter_mut().find(|s| s.used && s.tid == tid)
-            .expect("No pending program for thread_create trampoline");
-        let e = slot.entry;
-        let s = slot.user_stack;
-        let lr = slot.user_lr;
-        let c = slot.is_compat32;
-        slot.used = false;
-        (e, s, lr, c)
-    };
+    let (entry, user_stack, user_lr, compat32) =
+        take_pending_program(tid, "thread_create trampoline");
 
     if compat32 {
         unsafe { jump_to_user_mode_compat32(entry, user_stack); }
