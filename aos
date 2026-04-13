@@ -1,2 +1,2 @@
 #scripts/run.sh --res 1600x1200 --kvm --kbd ch --fwd 2121:21 --virtio
-scripts/run.sh --kvm --kbd ch --fwd 2121:21 --virtio
+scripts/run.sh --kvm --kbd de --fwd 2121:21 --virtio

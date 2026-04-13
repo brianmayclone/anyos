@@ -551,8 +551,13 @@ pub fn expand_args(raw: &str, cwd: &str) -> Vec<String> {
 ///
 /// `pipe_counter` is a mutable counter used to generate unique pipe names.
 pub fn run_pipeline(line: &str, cwd: &str, pipe_counter: &mut u32) -> Option<PipelineResult> {
+    run_pipeline_err(line, cwd, pipe_counter).ok()
+}
+
+/// Like [`run_pipeline`] but returns the name of the failed command on error.
+pub fn run_pipeline_err(line: &str, cwd: &str, pipe_counter: &mut u32) -> Result<PipelineResult, String> {
     let segments: Vec<&str> = split_pipe_segments(line);
-    if segments.len() < 2 { return None; }
+    if segments.len() < 2 { return Err(String::from("pipeline")); }
 
     let n = segments.len();
     let mut pipes: Vec<u32> = Vec::new();
@@ -597,13 +602,13 @@ pub fn run_pipeline(line: &str, cwd: &str, pipe_counter: &mut u32) -> Option<Pip
         let tid = process::spawn_piped_full(&path, &full_args, stdout_pipe, stdin_pipe);
         if tid == u32::MAX {
             for &p in &pipes { ipc::pipe_close(p); }
-            return None;
+            return Err(String::from(cmd));
         }
         last_tid = tid;
     }
 
     let extra_pipes: Vec<u32> = pipes[..n - 1].to_vec();
-    Some(PipelineResult { last_tid, display_pipe, extra_pipes })
+    Ok(PipelineResult { last_tid, display_pipe, extra_pipes })
 }
 
 /// Split on unquoted `|` characters (respects single/double quoting).

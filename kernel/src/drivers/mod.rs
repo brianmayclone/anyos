@@ -16,9 +16,9 @@ pub mod framebuffer;
 #[cfg(target_arch = "x86_64")]
 pub mod gpu;
 pub mod hal;
-#[path = "input/layout/mod.rs"]
-pub mod layout;
 pub mod input;
+/// Re-export input layout module so syscall handlers can use `crate::drivers::layout`.
+pub use input::layout;
 #[cfg(target_arch = "x86_64")]
 pub mod kdrv;
 #[cfg(target_arch = "x86_64")]

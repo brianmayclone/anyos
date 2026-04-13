@@ -22,7 +22,7 @@ anyos_std::entry!(main);
 const DEFAULT_CELL_W: u16 = 8;
 const DEFAULT_CELL_H: u16 = 16;
 const TEXT_PAD: u16 = 4;
-const MAX_SCROLLBACK: usize = 5000;
+const MAX_SCROLLBACK: usize = 10000;
 
 // Colors (ARGB)
 const COLOR_BG: u32 = 0xFF1E1E28;
@@ -421,6 +421,8 @@ struct TerminalBuffer {
     // Mouse tracking mode: 0=off, 1000=basic, 1002=button, 1003=any, 1006=SGR
     mouse_mode: u16,
     mouse_sgr: bool,
+    // Maximum number of lines to keep in scrollback history
+    max_scrollback: usize,
     // Hyperlinks (OSC 8)
     hyperlinks: Vec<String>,  // index 0 unused, 1..N = URLs
     current_link_id: u16,
@@ -455,6 +457,7 @@ impl TerminalBuffer {
             bracketed_paste: false,
             mouse_mode: 0,
             mouse_sgr: false,
+            max_scrollback: MAX_SCROLLBACK,
             hyperlinks: Vec::new(),
             current_link_id: 0,
         }
@@ -683,8 +686,17 @@ impl TerminalBuffer {
             '\n' => {
                 let bot = self.effective_scroll_bottom() + self.scroll_offset;
                 if self.cursor_row == bot {
-                    // At bottom of scroll region — scroll up
-                    self.scroll_region_up();
+                    if self.scroll_top == 0 && self.alt_lines.is_none() {
+                        // Full-screen (no custom scroll region, not alt screen):
+                        // Grow the buffer — keep old top line as scrollback.
+                        self.scroll_offset += 1;
+                        self.cursor_row = bot + 1; // = new visible bottom
+                        self.ensure_line(self.cursor_row);
+                        self.lines[self.cursor_row].clear();
+                    } else {
+                        // Custom scroll region or alt screen: rotate in-place (no scrollback).
+                        self.scroll_region_up();
+                    }
                 } else {
                     self.cursor_row += 1;
                     self.ensure_line(self.cursor_row);
@@ -693,8 +705,8 @@ impl TerminalBuffer {
                     }
                 }
                 self.cursor_col = 0;
-                if self.alt_lines.is_none() && self.lines.len() > MAX_SCROLLBACK {
-                    let excess = self.lines.len() - MAX_SCROLLBACK;
+                if self.alt_lines.is_none() && self.lines.len() > self.max_scrollback {
+                    let excess = self.lines.len() - self.max_scrollback;
                     self.lines.drain(0..excess);
                     self.cursor_row = self.cursor_row.saturating_sub(excess);
                     self.scroll_offset = self.scroll_offset.saturating_sub(excess);
@@ -1341,7 +1353,7 @@ impl Profile {
             color_select_fg: COLOR_SELECT_FG,
             win_w: 640,
             win_h: 400,
-            scrollback: MAX_SCROLLBACK,
+            scrollback: 10000,
             is_default: true,
             saved_tabs: Vec::new(),
             font_size: DEFAULT_FONT_SIZE,
@@ -1978,6 +1990,7 @@ struct SessionDefaults {
     font_size: u16,
     color_prompt: u32,
     color_fg: u32,
+    scrollback: usize,
 }
 
 fn rebuild_pane_tree(
@@ -2012,6 +2025,7 @@ fn rebuild_pane_tree(
             *next_id += 1;
             let aliases_vec: Vec<(String, String)> = aliases.iter().map(|(a, b)| (a.clone(), b.clone())).collect();
             let mut session = Session::new(cols.max(1), rows.max(1), aliases_vec, defaults.font_size, defaults.color_prompt, defaults.color_fg);
+            session.buf.max_scrollback = defaults.scrollback;
             // Restore cwd if saved
             if let Some(cwd) = layout["cwd"].as_str() {
                 if !cwd.is_empty() {
@@ -2315,6 +2329,10 @@ struct TerminalApp {
     cursor_blink_on: bool,      // current blink phase (true = visible)
     cursor_blink_elapsed: u32,  // ms since last toggle
     autosave_counter: u32,      // counts timer ticks for periodic scrollback save
+    /// Named keyboard pipe for pager programs (more, less) running in pipelines.
+    /// Pipeline processes have stdin_pipe=0 (stdin is the data pipe), so we
+    /// forward keyboard events here instead.  Pagers open this by reading TERM_KBD_PIPE env.
+    term_kbd_pipe: u32,
 }
 
 impl TerminalApp {
@@ -2381,7 +2399,9 @@ impl TerminalApp {
 
     fn new_session(&self, cols: usize, rows: usize) -> Session {
         let aliases = load_dotenv();
-        Session::new(cols, rows, aliases, self.active_profile.font_size, self.active_profile.color_prompt, self.active_profile.color_fg)
+        let mut sess = Session::new(cols, rows, aliases, self.active_profile.font_size, self.active_profile.color_prompt, self.active_profile.color_fg);
+        sess.buf.max_scrollback = self.active_profile.scrollback;
+        sess
     }
 
     /// Snapshot current tabs into SavedTab list (for profile saving).
@@ -2410,6 +2430,7 @@ impl TerminalApp {
                 font_size: self.active_profile.font_size,
                 color_prompt: self.active_profile.color_prompt,
                 color_fg: self.active_profile.color_fg,
+                scrollback: self.active_profile.scrollback,
             };
             let root = rebuild_pane_tree(&st.layout, &mut next_id, cols, rows, &alias_pairs, &defaults);
             self.next_pane_id = next_id;
@@ -3224,8 +3245,8 @@ impl Shell {
     /// Execute a pipeline (cmd1 | cmd2 | cmd3).
     /// Returns a ForegroundProcess tracking the last command + display pipe.
     fn execute_pipeline(&mut self, line: &str, redirect: Option<Redirect>, buf: &mut TerminalBuffer) -> Option<ForegroundProcess> {
-        match anyos_std::shell::run_pipeline(line, &self.cwd, &mut self.pipe_counter) {
-            Some(r) => Some(ForegroundProcess {
+        match anyos_std::shell::run_pipeline_err(line, &self.cwd, &mut self.pipe_counter) {
+            Ok(r) => Some(ForegroundProcess {
                 tid: r.last_tid,
                 pipe_id: r.display_pipe,
                 stdin_pipe: 0,
@@ -3233,9 +3254,9 @@ impl Shell {
                 redirect,
                 command: String::from(line),
             }),
-            None => {
+            Err(failed_cmd) => {
                 buf.current_fg = COLOR_FG;
-                buf.write_str("pipe: command not found\n");
+                buf.write_str(&format!("{}: command not found\n", failed_cmd));
                 None
             }
         }
@@ -4966,23 +4987,27 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
             }
         }
     } else {
-        // Foreground process running — forward keyboard input to its stdin pipe
+        // Foreground process running — forward keyboard input to its stdin pipe.
+        // For pipeline processes stdin_pipe==0 (their stdin is wired to the data
+        // pipe); use term_kbd_pipe so pager programs (more/less) can receive keys.
         if let Some(ref fp) = sess.fg_proc {
-            if fp.stdin_pipe != 0 {
+            let kbd_target = if fp.stdin_pipe != 0 { fp.stdin_pipe } else { app().term_kbd_pipe };
+            if kbd_target != 0 {
                 match key_code {
-                    KEY_ENTER => { ipc::pipe_write(fp.stdin_pipe, b"\n"); }
-                    KEY_BACKSPACE => { ipc::pipe_write(fp.stdin_pipe, &[0x7f]); }
-                    KEY_TAB => { ipc::pipe_write(fp.stdin_pipe, b"\t"); }
-                    KEY_ESCAPE => { ipc::pipe_write(fp.stdin_pipe, b"\x1b"); }
-                    KEY_UP => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[A"); }
-                    KEY_DOWN => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[B"); }
-                    KEY_RIGHT => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[C"); }
-                    KEY_LEFT => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[D"); }
-                    KEY_HOME => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[H"); }
-                    KEY_END => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[F"); }
-                    KEY_DELETE => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[3~"); }
-                    KEY_PAGE_UP => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[5~"); }
-                    KEY_PAGE_DOWN => { ipc::pipe_write(fp.stdin_pipe, b"\x1b[6~"); }
+                    KEY_ENTER => { ipc::pipe_write(kbd_target, b"\n"); }
+                    KEY_BACKSPACE => { ipc::pipe_write(kbd_target, &[0x7f]); }
+                    KEY_TAB => { ipc::pipe_write(kbd_target, b"\t"); }
+                    KEY_ESCAPE => { ipc::pipe_write(kbd_target, b"\x1b"); }
+                    KEY_UP => { ipc::pipe_write(kbd_target, b"\x1b[A"); }
+                    KEY_DOWN => { ipc::pipe_write(kbd_target, b"\x1b[B"); }
+                    KEY_RIGHT => { ipc::pipe_write(kbd_target, b"\x1b[C"); }
+                    KEY_LEFT => { ipc::pipe_write(kbd_target, b"\x1b[D"); }
+                    KEY_HOME => { ipc::pipe_write(kbd_target, b"\x1b[H"); }
+                    KEY_END => { ipc::pipe_write(kbd_target, b"\x1b[F"); }
+                    KEY_DELETE => { ipc::pipe_write(kbd_target, b"\x1b[3~"); }
+                    // Shift+PageUp/Down is handled globally for scrollback; only forward plain PageUp/Down
+                    KEY_PAGE_UP if (mods & MOD_SHIFT) == 0 => { ipc::pipe_write(kbd_target, b"\x1b[5~"); }
+                    KEY_PAGE_DOWN if (mods & MOD_SHIFT) == 0 => { ipc::pipe_write(kbd_target, b"\x1b[6~"); }
                     _ => {
                         if char_val > 0 {
                             if (mods & MOD_CTRL) != 0 && char_val < 128 {
@@ -4990,12 +5015,12 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                                 let ctrl_code = if c >= b'a' && c <= b'z' { c - b'a' + 1 }
                                     else if c >= b'A' && c <= b'Z' { c - b'A' + 1 }
                                     else { 0 };
-                                if ctrl_code > 0 { ipc::pipe_write(fp.stdin_pipe, &[ctrl_code]); }
+                                if ctrl_code > 0 { ipc::pipe_write(kbd_target, &[ctrl_code]); }
                             } else if let Some(c) = char::from_u32(char_val) {
                                 if !c.is_control() {
                                     let mut utf8_buf = [0u8; 4];
                                     let encoded = c.encode_utf8(&mut utf8_buf);
-                                    ipc::pipe_write(fp.stdin_pipe, encoded.as_bytes());
+                                    ipc::pipe_write(kbd_target, encoded.as_bytes());
                                 }
                             }
                         }
@@ -6029,6 +6054,14 @@ fn main() {
         return;
     }
 
+    // Create a well-known keyboard pipe that pager programs (more, less) can
+    // open by name to receive user keypresses even when their stdin is a pipe.
+    // Name is scoped to this terminal's PID so multiple terminals don't collide.
+    let term_pid = anyos_std::process::getpid();
+    let kbd_pipe_name = format!("term:kbd:{}", term_pid);
+    let term_kbd_pipe = ipc::pipe_create(&kbd_pipe_name);
+    anyos_std::env::set("TERM_KBD_PIPE", &kbd_pipe_name);
+
     // Load profiles and determine default
     let profiles = load_profiles();
     let active_profile = find_default_profile(&profiles);
@@ -6039,6 +6072,7 @@ fn main() {
         font_size: active_profile.font_size,
         color_prompt: active_profile.color_prompt,
         color_fg: active_profile.color_fg,
+        scrollback: active_profile.scrollback,
     };
 
     let win = anyui::Window::new("Terminal", -1, -1, init_w, init_h);
@@ -6107,6 +6141,7 @@ fn main() {
         cursor_blink_on: true,
         cursor_blink_elapsed: 0,
         autosave_counter: 0,
+        term_kbd_pipe,
     };
 
     // Apply profile theme/opacity settings (font_size is per-session, applied via Session::new)
@@ -6146,7 +6181,8 @@ fn main() {
         }
     } else {
         // Create default first session
-        let first_session = Session::new(cols.max(1), rows.max(1), aliases, init_defaults.font_size, init_defaults.color_prompt, init_defaults.color_fg);
+        let mut first_session = Session::new(cols.max(1), rows.max(1), aliases, init_defaults.font_size, init_defaults.color_prompt, init_defaults.color_fg);
+        first_session.buf.max_scrollback = init_defaults.scrollback;
         let first_tab = Tab {
             root: PaneNode::Leaf { id: 1, session: first_session },
             active_pane_id: 1,
@@ -6190,6 +6226,7 @@ fn main() {
         if idx < a.tabs.len() {
             a.active_tab = idx;
             redraw();
+            get_canvas().focus();
         }
     });
 
@@ -6209,6 +6246,7 @@ fn main() {
             a.update_pane_sizes();
             update_tab_labels();
             redraw();
+            get_canvas().focus();
         }
     });
 
@@ -6247,6 +6285,7 @@ fn main() {
                 a.update_pane_sizes();
                 update_tab_labels();
                 redraw();
+                get_canvas().focus();
             }
             5 => { // Close tab
                 if a.tabs.len() > 1 {
@@ -6254,6 +6293,7 @@ fn main() {
                     a.update_pane_sizes();
                     update_tab_labels();
                     redraw();
+                    get_canvas().focus();
                 } else {
                     anyui::quit();
                 }
@@ -6291,10 +6331,13 @@ fn main() {
         a.update_pane_sizes();
         update_tab_labels();
         redraw();
+        get_canvas().focus();
     });
 
     // ── Canvas mouse events ──
     canvas.on_mouse_down(|x, y, button| {
+        // Clicking the canvas always reclaims keyboard focus.
+        get_canvas().focus();
         let a = app();
         let mods = anyui::get_modifiers();
 
@@ -6771,10 +6814,12 @@ fn main() {
             }
         }
 
-        // PageUp/PageDown: scroll in scrollback (when no fg process)
-        if key_code == KEY_PAGE_UP && !ke.ctrl() && !ke.shift() {
+        // PageUp/PageDown: scroll in scrollback
+        // Shift+PageUp/Down always scrolls (even with fg process), like xterm/GNOME Terminal.
+        // Plain PageUp/Down scrolls only when no fg process is running.
+        if key_code == KEY_PAGE_UP && !ke.ctrl() {
             if let Some(sess) = a.active_session_mut() {
-                if sess.fg_proc.is_none() {
+                if ke.shift() || sess.fg_proc.is_none() {
                     let scroll_amount = sess.buf.visible_rows.saturating_sub(1).max(1);
                     sess.buf.scroll_up(scroll_amount);
                     sess.dirty = true;
@@ -6783,9 +6828,9 @@ fn main() {
                 }
             }
         }
-        if key_code == KEY_PAGE_DOWN && !ke.ctrl() && !ke.shift() {
+        if key_code == KEY_PAGE_DOWN && !ke.ctrl() {
             if let Some(sess) = a.active_session_mut() {
-                if sess.fg_proc.is_none() {
+                if ke.shift() || sess.fg_proc.is_none() {
                     let scroll_amount = sess.buf.visible_rows.saturating_sub(1).max(1);
                     sess.buf.scroll_down(scroll_amount);
                     sess.dirty = true;
@@ -6806,6 +6851,7 @@ fn main() {
             let tab_bar = get_tab_bar();
             tab_bar.set_state(a.active_tab as u32);
             redraw();
+            get_canvas().focus();
             return;
         }
 
