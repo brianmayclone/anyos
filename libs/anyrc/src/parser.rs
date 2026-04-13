@@ -1308,6 +1308,30 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if self.at_kw(Keyword::Mut) && self.peek_kind() == &TokenKind::Kw(Keyword::SelfValue) {
+                self.bump(); // mut
+                self.bump(); // self
+                let self_sym = self.interner.intern("self");
+                let pat = Pattern::Ident(self_sym, Mutability::Mut, None, self.span_from(p_start));
+                let self_type_sym = self.interner.intern("Self");
+                let self_ty = Ty::Path(Path {
+                    segments: vec![PathSegment {
+                        ident: self_type_sym,
+                        args: None,
+                    }],
+                    span: self.prev_span,
+                });
+                params.push(Param {
+                    pat,
+                    ty: self_ty,
+                    span: self.span_from(p_start),
+                });
+                if !self.eat_exact(&TokenKind::Comma) {
+                    break;
+                }
+                continue;
+            }
+
             if self.at_kw(Keyword::SelfValue) {
                 self.bump();
                 let self_sym = self.interner.intern("self");
@@ -2284,6 +2308,23 @@ impl<'a> Parser<'a> {
             };
             let pat = self.parse_pattern_with_or(allow_or);
             return Pattern::Ref(Box::new(pat), mutability, self.span_from(start));
+        }
+
+        // `&&pat` is tokenized as `AndAnd`, but in pattern position it means
+        // nested immutable reference patterns such as `|&&value|`.
+        if self.at_exact(&TokenKind::AndAnd) {
+            self.bump();
+            let inner = self.parse_pattern_with_or(allow_or);
+            let inner_ref = Pattern::Ref(
+                Box::new(inner),
+                Mutability::Immutable,
+                self.span_from(start),
+            );
+            return Pattern::Ref(
+                Box::new(inner_ref),
+                Mutability::Immutable,
+                self.span_from(start),
+            );
         }
 
         // Literal patterns

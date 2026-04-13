@@ -43,7 +43,7 @@ add_custom_command(
     --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
     --kernel ${KERNEL_ELF}
     --output ${DISK_IMAGE}
-    --image-size 256
+    --image-size 512
     --sysroot ${SYSROOT_DIR}
     --fs-start 128
     --boot-cfg ${BOOT_CFG}
@@ -67,7 +67,7 @@ add_custom_command(
     ${BOOT_FONT_BIN}
     ${BOOT_CFG}
     ${BOOT_LOGO}
-  COMMENT "Creating bootable disk image (256 MiB, exFAT filesystem)"
+  COMMENT "Creating bootable disk image (512 MiB, exFAT filesystem)"
 )
 
 # ============================================================
@@ -283,7 +283,7 @@ add_custom_command(
     --bootloader ${UEFI_BOOTLOADER_EFI}
     --kernel ${KERNEL_ELF}
     --output ${UEFI_DISK_IMAGE}
-    --image-size 256
+    --image-size 512
     --sysroot ${SYSROOT_DIR}
     ${MKIMAGE_RESET_FLAG}
   DEPENDS
@@ -296,7 +296,7 @@ add_custom_command(
     ${SELFHOST_SYSROOT_DEPS}
     ${C_TOOLCHAIN_DEPS}
     ${MKIMAGE_EXECUTABLE}
-  COMMENT "Creating UEFI bootable disk image (GPT + ESP + exFAT)"
+  COMMENT "Creating UEFI bootable disk image (512 MiB, GPT + ESP + exFAT)"
 )
 
 add_custom_target(uefi-bootloader DEPENDS ${UEFI_BOOTLOADER_EFI})
@@ -426,7 +426,7 @@ add_custom_command(
   OUTPUT ${ARM64_DISK_IMAGE}
   COMMAND ${MKIMAGE_EXECUTABLE} --arm64
     --output ${ARM64_DISK_IMAGE}
-    --image-size 256
+    --image-size 512
     --sysroot ${SYSROOT_DIR}
     ${MKIMAGE_RESET_FLAG}
   DEPENDS
@@ -437,7 +437,7 @@ add_custom_command(
     ${SYSROOT_DIR}/.stamp
     ${SELFHOST_SYSROOT_DEPS}
     ${MKIMAGE_EXECUTABLE}
-  COMMENT "Creating ARM64 disk image (256 MiB, GPT + exFAT)"
+  COMMENT "Creating ARM64 disk image (512 MiB, GPT + exFAT)"
 )
 
 add_custom_target(arm64-image DEPENDS ${ARM64_DISK_IMAGE} programs)
