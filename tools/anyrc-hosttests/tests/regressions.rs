@@ -2412,3 +2412,68 @@ fn borrowing_enum_variant_constructor_temporary_matches_ref_parameter() {
         "#,
     );
 }
+
+#[test]
+fn iterator_tuple_patterns_keep_reference_bindings() {
+    compile_ok(
+        "iterator_tuple_patterns_keep_reference_bindings",
+        r#"
+        fn attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+            attrs.iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.as_str())
+        }
+        "#,
+    );
+}
+
+#[test]
+fn enum_variant_patterns_over_iter_mut_keep_mutable_reference_bindings() {
+    compile_ok(
+        "enum_variant_patterns_over_iter_mut_keep_mutable_reference_bindings",
+        r#"
+        struct Element {
+            name: String,
+        }
+
+        enum XmlNode {
+            Element(Element),
+            Text(String),
+        }
+
+        fn child_mut<'a>(nodes: &'a mut Vec<XmlNode>, name: &str) -> Option<&'a mut Element> {
+            nodes.iter_mut().filter_map(|n| match n {
+                XmlNode::Element(e) if e.name == name => Some(e),
+                _ => None,
+            }).next()
+        }
+        "#,
+    );
+}
+
+#[test]
+fn tuple_patterns_through_iter_references_bind_element_types() {
+    compile_ok(
+        "tuple_patterns_through_iter_references_bind_element_types",
+        r#"
+        struct String;
+
+        impl String {
+            fn as_str(&self) -> &str { "" }
+        }
+
+        struct PairMap {
+            entries: Vec<(String, String)>,
+        }
+
+        impl PairMap {
+            fn get(&self, name: &str) -> Option<&str> {
+                self.entries
+                    .iter()
+                    .find(|(k, _)| k.as_str() == name)
+                    .map(|(_, v)| v.as_str())
+            }
+        }
+        "#,
+    );
+}

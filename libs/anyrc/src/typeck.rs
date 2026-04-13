@@ -2334,7 +2334,20 @@ impl<'a> TypeChecker<'a> {
 
     // ── Pattern binding ──
 
+    fn wrap_pattern_binding_ty(
+        &self,
+        ptr_ty: &TyKind,
+        inner: TyKind,
+    ) -> TyKind {
+        match ptr_ty {
+            TyKind::Ref(_, mutability) => TyKind::Ref(Box::new(inner), *mutability),
+            TyKind::RawPtr(_, mutability) => TyKind::RawPtr(Box::new(inner), *mutability),
+            _ => inner,
+        }
+    }
+
     fn bind_pattern(&mut self, pat: &HirPattern, ty: TyKind) {
+        let resolved_ty = self.shallow_resolve(ty.clone());
         match pat {
             HirPattern::Ident(hir_id, _, _, sub, _) => {
                 if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
@@ -2345,31 +2358,88 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             HirPattern::Tuple(pats, _) => {
-                if let TyKind::Tuple(tys) = &self.shallow_resolve(ty) {
-                    for (p, t) in pats.iter().zip(tys.iter()) {
-                        self.bind_pattern(p, t.clone());
+                match &resolved_ty {
+                    TyKind::Tuple(tys) => {
+                        for (p, t) in pats.iter().zip(tys.iter()) {
+                            self.bind_pattern(p, t.clone());
+                        }
                     }
+                    TyKind::Ref(inner, mutability) | TyKind::RawPtr(inner, mutability) => {
+                        if let TyKind::Tuple(tys) = self.shallow_resolve(inner.as_ref().clone()) {
+                            for (p, t) in pats.iter().zip(tys.iter()) {
+                                let wrapped = self.wrap_pattern_binding_ty(
+                                    &resolved_ty,
+                                    t.clone(),
+                                );
+                                debug_assert!(matches!(
+                                    wrapped,
+                                    TyKind::Ref(_, _) | TyKind::RawPtr(_, _)
+                                ));
+                                let _ = mutability;
+                                self.bind_pattern(p, wrapped);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             HirPattern::Wildcard(_) => {}
             HirPattern::Ref(inner, _, _) => {
-                if let TyKind::Ref(inner_ty, _) = self.shallow_resolve(ty) {
+                if let TyKind::Ref(inner_ty, _) = resolved_ty {
                     self.bind_pattern(inner, *inner_ty);
                 }
             }
             HirPattern::Struct(path, fields, _, _) => {
-                if let Some(field_tys) = self.pattern_fields(path, &ty) {
-                    for field in fields {
-                        if let Some((_, field_ty)) = field_tys.iter().find(|(name, _)| *name == field.name) {
-                            self.bind_pattern(&field.pat, field_ty.clone());
+                match &resolved_ty {
+                    TyKind::Ref(inner, mutability) | TyKind::RawPtr(inner, mutability) => {
+                        if let Some(field_tys) = self.pattern_fields(path, inner.as_ref()) {
+                            for field in fields {
+                                if let Some((_, field_ty)) =
+                                    field_tys.iter().find(|(name, _)| *name == field.name)
+                                {
+                                    let wrapped = self.wrap_pattern_binding_ty(
+                                        &resolved_ty,
+                                        field_ty.clone(),
+                                    );
+                                    let _ = mutability;
+                                    self.bind_pattern(&field.pat, wrapped);
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(field_tys) = self.pattern_fields(path, &ty) {
+                            for field in fields {
+                                if let Some((_, field_ty)) =
+                                    field_tys.iter().find(|(name, _)| *name == field.name)
+                                {
+                                    self.bind_pattern(&field.pat, field_ty.clone());
+                                }
+                            }
                         }
                     }
                 }
             }
             HirPattern::TupleStruct(path, pats, _) => {
-                if let Some(field_tys) = self.pattern_variant_tys(path, &ty) {
-                    for (pat, field_ty) in pats.iter().zip(field_tys.iter()) {
-                        self.bind_pattern(pat, field_ty.clone());
+                match &resolved_ty {
+                    TyKind::Ref(inner, mutability) | TyKind::RawPtr(inner, mutability) => {
+                        if let Some(field_tys) = self.pattern_variant_tys(path, inner.as_ref()) {
+                            for (pat, field_ty) in pats.iter().zip(field_tys.iter()) {
+                                let wrapped = self.wrap_pattern_binding_ty(
+                                    &resolved_ty,
+                                    field_ty.clone(),
+                                );
+                                let _ = mutability;
+                                self.bind_pattern(pat, wrapped);
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(field_tys) = self.pattern_variant_tys(path, &ty) {
+                            for (pat, field_ty) in pats.iter().zip(field_tys.iter()) {
+                                self.bind_pattern(pat, field_ty.clone());
+                            }
+                        }
                     }
                 }
             }
