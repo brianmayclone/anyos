@@ -904,12 +904,14 @@ class ExFatFormatter:
 
     def init_fs(self):
         """Initialize the exFAT filesystem: FAT, bitmap, root directory."""
-        # Allocate cluster 2 for allocation bitmap
-        self.bitmap_cluster = self._alloc_cluster()  # = 2
-        # Allocate cluster 3 for a minimal upcase table
-        upcase_cluster = self._alloc_cluster()  # = 3
-        # Allocate cluster 4 for root directory
-        self.root_cluster = self._alloc_cluster()  # = 4
+        # The allocation bitmap may span multiple clusters on larger volumes.
+        # Reserve the full contiguous bitmap run first so it cannot overlap
+        # metadata like the upcase table or the root directory.
+        bitmap_clusters = (self.bitmap_bytes + self.cluster_size - 1) // self.cluster_size
+        self.bitmap_cluster = self._alloc_clusters_contiguous(bitmap_clusters)
+        # Allocate the remaining metadata after the bitmap run.
+        upcase_cluster = self._alloc_cluster()
+        self.root_cluster = self._alloc_cluster()
 
         # Write minimal upcase table (identity mapping for ASCII 0-127)
         upcase_data = bytearray(128 * 2)  # 128 UTF-16LE entries
@@ -962,7 +964,7 @@ class ExFatFormatter:
         backup_offset = self._abs_offset(12)
         struct.pack_into('<I', self.image, backup_offset + 96, self.root_cluster)
 
-        print(f"  exFAT: bitmap=cluster {self.bitmap_cluster}, "
+        print(f"  exFAT: bitmap=cluster {self.bitmap_cluster} ({bitmap_clusters} cluster(s)), "
               f"upcase=cluster {upcase_cluster}, root=cluster {self.root_cluster}")
 
     # =====================================================================

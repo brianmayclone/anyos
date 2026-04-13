@@ -150,6 +150,8 @@ pub struct CrateMetadata {
     pub exports: Vec<ExportedSymbol>,
     /// Dependencies this crate requires
     pub deps: Vec<String>,
+    /// Public interface source for downstream name resolution/type checking.
+    pub interface_source: String,
 }
 
 #[derive(Clone)]
@@ -196,6 +198,9 @@ pub fn serialize_metadata(meta: &CrateMetadata) -> Vec<u8> {
         buf.extend_from_slice(exp_bytes);
         buf.push(exp.kind as u8);
     }
+    let iface_bytes = meta.interface_source.as_bytes();
+    buf.extend_from_slice(&(iface_bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(iface_bytes);
     buf
 }
 
@@ -246,7 +251,24 @@ pub fn deserialize_metadata(data: &[u8]) -> Option<CrateMetadata> {
         exports.push(ExportedSymbol { name: exp_name, kind });
     }
 
-    Some(CrateMetadata { name, version, exports, deps })
+    let interface_source = if pos + 4 <= data.len() {
+        let len = u32::from_le_bytes(data[pos..pos + 4].try_into().ok()?) as usize;
+        pos += 4;
+        if pos + len > data.len() {
+            return None;
+        }
+        core::str::from_utf8(&data[pos..pos + len]).ok()?.to_string()
+    } else {
+        String::new()
+    };
+
+    Some(CrateMetadata {
+        name,
+        version,
+        exports,
+        deps,
+        interface_source,
+    })
 }
 
 /// An .rlib file: object code + metadata packed together.

@@ -125,6 +125,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     };
     let loader = crate::loader::OsFileLoader;
     let _loaded_modules = crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
+    inject_extern_crate_interfaces(&mut krate, &options.extern_crates, &mut interner, &loader);
 
     // 3. Lower to HIR
     let mut lower_ctx = LoweringContext::new(&mut interner);
@@ -298,6 +299,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
                 version: "0.1.0".to_string(),
                 exports,
                 deps: options.extern_crates.iter().map(|e| e.name.clone()).collect(),
+                interface_source: build_public_interface_source(&hir, &interner),
             };
             Ok(crate::loader::pack_rlib(&obj_bytes, &meta))
         }
@@ -491,4 +493,573 @@ fn build_runtime_object() -> elf::ObjectFile {
         symbols,
         relocations: Vec::new(),
     }
+}
+
+fn inject_extern_crate_interfaces(
+    krate: &mut crate::ast::Crate,
+    extern_crates: &[ExternCrateSpec],
+    interner: &mut Interner,
+    loader: &dyn crate::loader::FileLoader,
+) {
+    for ext in extern_crates {
+        let Some(rlib_data) = loader.read_file_bytes(&ext.rlib_path) else {
+            continue;
+        };
+        let Some((_, meta)) = crate::loader::unpack_rlib(&rlib_data) else {
+            continue;
+        };
+        if meta.interface_source.trim().is_empty() {
+            continue;
+        }
+
+        let wrapper_src = format!("mod {} {{\n{}\n}}", ext.name, meta.interface_source);
+        let mut parser = Parser::new(&wrapper_src, interner);
+        let mut iface_krate = parser.parse_crate();
+        krate.items.append(&mut iface_krate.items);
+    }
+}
+
+fn build_public_interface_source(hir: &crate::hir::HirCrate, interner: &Interner) -> String {
+    let mut out = String::new();
+    render_items(&mut out, &hir.items, interner, 0, false);
+    out
+}
+
+fn render_items(
+    out: &mut String,
+    items: &[crate::hir::HirItem],
+    interner: &Interner,
+    indent: usize,
+    in_trait: bool,
+) {
+    for item in items {
+        render_item(out, item, interner, indent, in_trait);
+    }
+}
+
+fn render_item(
+    out: &mut String,
+    item: &crate::hir::HirItem,
+    interner: &Interner,
+    indent: usize,
+    in_trait: bool,
+) {
+    use crate::hir::{HirItemKind, HirUseTreeKind, HirVariantFields};
+
+    let ind = "    ".repeat(indent);
+    match &item.kind {
+        HirItemKind::Fn(f) => {
+            out.push_str(&ind);
+            out.push_str(&render_visibility(f.vis));
+            if f.is_const {
+                out.push_str("const ");
+            }
+            if f.is_unsafe {
+                out.push_str("unsafe ");
+            }
+            if let Some(abi) = &f.abi {
+                out.push_str("extern \"");
+                out.push_str(abi);
+                out.push_str("\" ");
+            }
+            out.push_str("fn ");
+            out.push_str(interner.resolve(f.name));
+            out.push_str(&render_generics(&f.generics, interner));
+            out.push('(');
+            for (idx, param) in f.params.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&format!("arg{}: {}", idx, render_ty(&param.ty, interner)));
+            }
+            out.push(')');
+            if let Some(ret) = &f.ret_ty {
+                out.push_str(" -> ");
+                out.push_str(&render_ty(ret, interner));
+            }
+            if in_trait {
+                if f.body.is_some() {
+                    out.push_str(" { loop {} }");
+                } else {
+                    out.push(';');
+                }
+            } else {
+                out.push(';');
+            }
+            out.push('\n');
+        }
+        HirItemKind::Struct(s) => {
+            out.push_str(&ind);
+            out.push_str(&render_visibility(s.vis));
+            out.push_str("struct ");
+            out.push_str(interner.resolve(s.name));
+            out.push_str(&render_generics(&s.generics, interner));
+            if s.fields.is_empty() {
+                out.push_str(";\n");
+            } else if is_tuple_fields(&s.fields, interner) {
+                out.push('(');
+                for (idx, field) in s.fields.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push_str(&render_visibility(field.vis));
+                    out.push_str(&render_ty(&field.ty, interner));
+                }
+                out.push_str(");\n");
+            } else {
+                out.push_str(" {\n");
+                for field in &s.fields {
+                    out.push_str(&"    ".repeat(indent + 1));
+                    out.push_str(&render_visibility(field.vis));
+                    out.push_str(interner.resolve(field.name));
+                    out.push_str(": ");
+                    out.push_str(&render_ty(&field.ty, interner));
+                    out.push_str(",\n");
+                }
+                out.push_str(&ind);
+                out.push_str("}\n");
+            }
+        }
+        HirItemKind::Enum(e) => {
+            out.push_str(&ind);
+            out.push_str(&render_visibility(e.vis));
+            out.push_str("enum ");
+            out.push_str(interner.resolve(e.name));
+            out.push_str(&render_generics(&e.generics, interner));
+            out.push_str(" {\n");
+            for variant in &e.variants {
+                out.push_str(&"    ".repeat(indent + 1));
+                out.push_str(interner.resolve(variant.name));
+                match &variant.fields {
+                    HirVariantFields::Unit => {}
+                    HirVariantFields::Tuple(tys) => {
+                        out.push('(');
+                        for (idx, ty) in tys.iter().enumerate() {
+                            if idx > 0 {
+                                out.push_str(", ");
+                            }
+                            out.push_str(&render_ty(ty, interner));
+                        }
+                        out.push(')');
+                    }
+                    HirVariantFields::Struct(fields) => {
+                        out.push_str(" {\n");
+                        for field in fields {
+                            out.push_str(&"    ".repeat(indent + 2));
+                            out.push_str(interner.resolve(field.name));
+                            out.push_str(": ");
+                            out.push_str(&render_ty(&field.ty, interner));
+                            out.push_str(",\n");
+                        }
+                        out.push_str(&"    ".repeat(indent + 1));
+                        out.push('}');
+                    }
+                }
+                if let Some(discriminant) = &variant.discriminant {
+                    out.push_str(" = ");
+                    out.push_str(&render_expr(discriminant, interner));
+                }
+                out.push_str(",\n");
+            }
+            out.push_str(&ind);
+            out.push_str("}\n");
+        }
+        HirItemKind::Impl(ib) => {
+            out.push_str(&ind);
+            if ib.is_unsafe {
+                out.push_str("unsafe ");
+            }
+            out.push_str("impl");
+            out.push_str(&render_generics(&ib.generics, interner));
+            out.push(' ');
+            if let Some(trait_ref) = &ib.trait_ref {
+                out.push_str(&render_path(trait_ref, interner));
+                out.push_str(" for ");
+            }
+            out.push_str(&render_ty(&ib.self_ty, interner));
+            out.push_str(" {\n");
+            render_items(out, &ib.items, interner, indent + 1, false);
+            out.push_str(&ind);
+            out.push_str("}\n");
+        }
+        HirItemKind::Trait(t) => {
+            out.push_str(&ind);
+            out.push_str(&render_visibility(t.vis));
+            if t.is_unsafe {
+                out.push_str("unsafe ");
+            }
+            out.push_str("trait ");
+            out.push_str(interner.resolve(t.name));
+            out.push_str(&render_generics(&t.generics, interner));
+            if !t.supertraits.is_empty() {
+                out.push_str(": ");
+                for (idx, bound) in t.supertraits.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(" + ");
+                    }
+                    out.push_str(&render_path(&bound.path, interner));
+                }
+            }
+            out.push_str(" {\n");
+            render_items(out, &t.items, interner, indent + 1, true);
+            out.push_str(&ind);
+            out.push_str("}\n");
+        }
+        HirItemKind::TypeAlias(ta) => {
+            out.push_str(&ind);
+            out.push_str(&render_visibility(ta.vis));
+            out.push_str("type ");
+            out.push_str(interner.resolve(ta.name));
+            out.push_str(&render_generics(&ta.generics, interner));
+            if let Some(ty) = &ta.ty {
+                out.push_str(" = ");
+                out.push_str(&render_ty(ty, interner));
+            }
+            out.push_str(";\n");
+        }
+        HirItemKind::Const(c) => {
+            out.push_str(&ind);
+            out.push_str(&render_visibility(c.vis));
+            out.push_str("const ");
+            out.push_str(interner.resolve(c.name));
+            out.push_str(": ");
+            out.push_str(&render_ty(&c.ty, interner));
+            if let Some(value) = &c.value {
+                out.push_str(" = ");
+                out.push_str(&render_expr(value, interner));
+            }
+            out.push_str(";\n");
+        }
+        HirItemKind::Static(s) => {
+            out.push_str(&ind);
+            out.push_str(&render_visibility(s.vis));
+            out.push_str("static ");
+            if s.is_mut {
+                out.push_str("mut ");
+            }
+            out.push_str(interner.resolve(s.name));
+            out.push_str(": ");
+            out.push_str(&render_ty(&s.ty, interner));
+            out.push_str(";\n");
+        }
+        HirItemKind::Use(u) => {
+            out.push_str(&ind);
+            out.push_str("use ");
+            render_use_tree(out, u, interner);
+            out.push_str(";\n");
+        }
+        HirItemKind::Mod(m) => {
+            out.push_str(&ind);
+            out.push_str(&render_visibility(m.vis));
+            out.push_str("mod ");
+            out.push_str(interner.resolve(m.name));
+            if let Some(items) = &m.items {
+                out.push_str(" {\n");
+                render_items(out, items, interner, indent + 1, false);
+                out.push_str(&ind);
+                out.push_str("}\n");
+            } else {
+                out.push_str(" {}\n");
+            }
+        }
+        HirItemKind::ExternBlock(eb) => {
+            out.push_str(&ind);
+            out.push_str("extern ");
+            if let Some(abi) = &eb.abi {
+                out.push('"');
+                out.push_str(abi);
+                out.push('"');
+                out.push(' ');
+            }
+            out.push_str("{\n");
+            for sub in &eb.items {
+                match &sub.kind {
+                    HirItemKind::Fn(_) | HirItemKind::Static(_) => {
+                        render_item(out, sub, interner, indent + 1, false);
+                    }
+                    _ => {}
+                }
+            }
+            out.push_str(&ind);
+            out.push_str("}\n");
+        }
+    }
+
+    if !matches!(item.kind, HirItemKind::Use(_)) {
+        out.push('\n');
+    }
+
+    let _ = HirUseTreeKind::Glob;
+}
+
+fn render_visibility(vis: crate::ast::Visibility) -> &'static str {
+    match vis {
+        crate::ast::Visibility::Private => "",
+        crate::ast::Visibility::Public => "pub ",
+        crate::ast::Visibility::PubCrate => "pub(crate) ",
+    }
+}
+
+fn render_generics(generics: &crate::hir::HirGenerics, interner: &Interner) -> String {
+    if generics.params.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("<");
+    for (idx, param) in generics.params.iter().enumerate() {
+        if idx > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&render_generic_param(param, interner));
+    }
+    out.push('>');
+    out
+}
+
+fn render_generic_param(param: &crate::hir::HirGenericParam, interner: &Interner) -> String {
+    match param {
+        crate::hir::HirGenericParam::Type(name, bounds, default, _) => {
+            let mut out = interner.resolve(*name).to_string();
+            if !bounds.is_empty() {
+                out.push_str(": ");
+                for (idx, bound) in bounds.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(" + ");
+                    }
+                    out.push_str(&render_path(&bound.path, interner));
+                }
+            }
+            if let Some(default) = default {
+                out.push_str(" = ");
+                out.push_str(&render_ty(default, interner));
+            }
+            out
+        }
+        crate::hir::HirGenericParam::Lifetime(name, bounds, _) => {
+            let mut out = interner.resolve(*name).to_string();
+            if !bounds.is_empty() {
+                out.push_str(": ");
+                for (idx, bound) in bounds.iter().enumerate() {
+                    if idx > 0 {
+                        out.push_str(" + ");
+                    }
+                    out.push_str(interner.resolve(*bound));
+                }
+            }
+            out
+        }
+        crate::hir::HirGenericParam::Const(name, ty, _) => {
+            format!("const {}: {}", interner.resolve(*name), render_ty(ty, interner))
+        }
+    }
+}
+
+fn render_ty(ty: &crate::hir::HirTy, interner: &Interner) -> String {
+    match ty {
+        crate::hir::HirTy::Path(path) => render_path(path, interner),
+        crate::hir::HirTy::Reference(lifetime, inner, mutability, _) => {
+            let mut out = String::from("&");
+            if let Some(lifetime) = lifetime {
+                out.push_str(interner.resolve(*lifetime));
+                out.push(' ');
+            }
+            if *mutability == crate::ast::Mutability::Mut {
+                out.push_str("mut ");
+            }
+            out.push_str(&render_ty(inner, interner));
+            out
+        }
+        crate::hir::HirTy::RawPtr(inner, mutability, _) => {
+            let mut out = String::from("*");
+            out.push_str(if *mutability == crate::ast::Mutability::Mut { "mut " } else { "const " });
+            out.push_str(&render_ty(inner, interner));
+            out
+        }
+        crate::hir::HirTy::Tuple(tys, _) => {
+            let mut out = String::from("(");
+            for (idx, ty) in tys.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&render_ty(ty, interner));
+            }
+            if tys.len() == 1 {
+                out.push(',');
+            }
+            out.push(')');
+            out
+        }
+        crate::hir::HirTy::Array(inner, len, _) => {
+            format!("[{}; {}]", render_ty(inner, interner), render_expr(len, interner))
+        }
+        crate::hir::HirTy::Slice(inner, _) => format!("[{}]", render_ty(inner, interner)),
+        crate::hir::HirTy::FnPtr(params, ret, _) => {
+            let mut out = String::from("fn(");
+            for (idx, param) in params.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&render_ty(param, interner));
+            }
+            out.push(')');
+            if let Some(ret) = ret {
+                out.push_str(" -> ");
+                out.push_str(&render_ty(ret, interner));
+            }
+            out
+        }
+        crate::hir::HirTy::DynTrait(path, _) => format!("dyn {}", render_path(path, interner)),
+        crate::hir::HirTy::Infer(_) => "_".to_string(),
+        crate::hir::HirTy::Never(_) => "!".to_string(),
+    }
+}
+
+fn render_path(path: &crate::hir::HirPath, interner: &Interner) -> String {
+    let mut out = String::new();
+    for (idx, segment) in path.segments.iter().enumerate() {
+        if idx > 0 {
+            out.push_str("::");
+        }
+        out.push_str(interner.resolve(segment.ident));
+        if let Some(args) = &segment.args {
+            out.push('<');
+            for (arg_idx, arg) in args.args.iter().enumerate() {
+                if arg_idx > 0 {
+                    out.push_str(", ");
+                }
+                match arg {
+                    crate::hir::HirGenericArg::Type(ty) => out.push_str(&render_ty(ty, interner)),
+                    crate::hir::HirGenericArg::Lifetime(sym) => out.push_str(interner.resolve(*sym)),
+                    crate::hir::HirGenericArg::Const(expr) => out.push_str(&render_expr(expr, interner)),
+                }
+            }
+            out.push('>');
+        }
+    }
+    out
+}
+
+fn render_use_tree(out: &mut String, use_tree: &crate::hir::HirUseTree, interner: &Interner) {
+    for (idx, seg) in use_tree.path.iter().enumerate() {
+        if idx > 0 {
+            out.push_str("::");
+        }
+        out.push_str(interner.resolve(*seg));
+    }
+    match &use_tree.kind {
+        crate::hir::HirUseTreeKind::Simple(alias) => {
+            if let Some(alias) = alias {
+                out.push_str(" as ");
+                out.push_str(interner.resolve(*alias));
+            }
+        }
+        crate::hir::HirUseTreeKind::Glob => out.push_str("::*"),
+        crate::hir::HirUseTreeKind::Nested(trees) => {
+            out.push_str("::{");
+            for (idx, tree) in trees.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                render_use_tree(out, tree, interner);
+            }
+            out.push('}');
+        }
+    }
+}
+
+fn render_expr(expr: &crate::hir::HirExpr, interner: &Interner) -> String {
+    match &expr.kind {
+        crate::hir::HirExprKind::Lit(lit) => match lit {
+            crate::ast::Literal::Int(v) => v.to_string(),
+            crate::ast::Literal::Float(v) => format!("{}", v),
+            crate::ast::Literal::String(s) => format!("{:?}", s),
+            crate::ast::Literal::Char(c) => format!("{:?}", c),
+            crate::ast::Literal::Bool(v) => v.to_string(),
+            crate::ast::Literal::ByteString(bytes) => {
+                let parts: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+                format!("b\"{}\"", parts.join(""))
+            }
+        },
+        crate::hir::HirExprKind::Path(path) => render_path(path, interner),
+        crate::hir::HirExprKind::Unary(op, inner) => {
+            let op_str = match op {
+                crate::ast::UnOp::Neg => "-",
+                crate::ast::UnOp::Not => "!",
+                crate::ast::UnOp::Deref => "*",
+            };
+            format!("{}{}", op_str, render_expr(inner, interner))
+        }
+        crate::hir::HirExprKind::Binary(op, lhs, rhs) => {
+            let op_str = match op {
+                crate::ast::BinOp::Add => "+",
+                crate::ast::BinOp::Sub => "-",
+                crate::ast::BinOp::Mul => "*",
+                crate::ast::BinOp::Div => "/",
+                crate::ast::BinOp::Rem => "%",
+                crate::ast::BinOp::BitAnd => "&",
+                crate::ast::BinOp::BitOr => "|",
+                crate::ast::BinOp::BitXor => "^",
+                crate::ast::BinOp::Shl => "<<",
+                crate::ast::BinOp::Shr => ">>",
+                crate::ast::BinOp::Eq => "==",
+                crate::ast::BinOp::Ne => "!=",
+                crate::ast::BinOp::Lt => "<",
+                crate::ast::BinOp::Le => "<=",
+                crate::ast::BinOp::Gt => ">",
+                crate::ast::BinOp::Ge => ">=",
+                crate::ast::BinOp::And => "&&",
+                crate::ast::BinOp::Or => "||",
+            };
+            format!("({} {} {})", render_expr(lhs, interner), op_str, render_expr(rhs, interner))
+        }
+        crate::hir::HirExprKind::Cast(inner, ty) => {
+            format!("{} as {}", render_expr(inner, interner), render_ty(ty, interner))
+        }
+        crate::hir::HirExprKind::Paren(inner) => format!("({})", render_expr(inner, interner)),
+        crate::hir::HirExprKind::Tuple(items) => {
+            let mut out = String::from("(");
+            for (idx, item) in items.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&render_expr(item, interner));
+            }
+            if items.len() == 1 {
+                out.push(',');
+            }
+            out.push(')');
+            out
+        }
+        crate::hir::HirExprKind::Array(items) => {
+            let mut out = String::from("[");
+            for (idx, item) in items.iter().enumerate() {
+                if idx > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&render_expr(item, interner));
+            }
+            out.push(']');
+            out
+        }
+        crate::hir::HirExprKind::ArrayRepeat(value, count) => {
+            format!("[{}; {}]", render_expr(value, interner), render_expr(count, interner))
+        }
+        crate::hir::HirExprKind::Ref(inner, mutability) => {
+            if *mutability == crate::ast::Mutability::Mut {
+                format!("&mut {}", render_expr(inner, interner))
+            } else {
+                format!("&{}", render_expr(inner, interner))
+            }
+        }
+        crate::hir::HirExprKind::Deref(inner) => format!("*{}", render_expr(inner, interner)),
+        _ => "0".to_string(),
+    }
+}
+
+fn is_tuple_fields(fields: &[crate::hir::HirFieldDef], interner: &Interner) -> bool {
+    for (idx, field) in fields.iter().enumerate() {
+        if interner.resolve(field.name) != idx.to_string() {
+            return false;
+        }
+    }
+    true
 }

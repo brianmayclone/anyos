@@ -335,7 +335,9 @@ impl<'a> Parser<'a> {
         // closure: |params| expr  or  move |params| expr
         if self.at_exact(&TokenKind::Pipe)
             || self.at_exact(&TokenKind::OrOr)
-            || (self.at_kw(Keyword::Move) && self.peek_kind() == &TokenKind::Pipe)
+            || (self.at_kw(Keyword::Move)
+                && (self.peek_kind() == &TokenKind::Pipe
+                    || self.peek_kind() == &TokenKind::OrOr))
         {
             return self.parse_closure(start);
         }
@@ -1909,7 +1911,7 @@ impl<'a> Parser<'a> {
                     self.expect_exact(&TokenKind::LParen);
                     let mut param_tys = Vec::new();
                     while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
-                        param_tys.push(self.parse_ty());
+                        param_tys.push(self.parse_fn_ptr_param_ty());
                         if !self.eat_exact(&TokenKind::Comma) {
                             break;
                         }
@@ -1957,7 +1959,7 @@ impl<'a> Parser<'a> {
             self.expect_exact(&TokenKind::LParen);
             let mut param_tys = Vec::new();
             while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
-                param_tys.push(self.parse_ty());
+                param_tys.push(self.parse_fn_ptr_param_ty());
                 if !self.eat_exact(&TokenKind::Comma) {
                     break;
                 }
@@ -1998,6 +2000,23 @@ impl<'a> Parser<'a> {
         // Path type
         let path = self.parse_path_ty();
         Ty::Path(path)
+    }
+
+    fn parse_fn_ptr_param_ty(&mut self) -> Ty {
+        if self.at_exact(&TokenKind::Kw(Keyword::Mut))
+            && matches!(self.peek_kind_at(1), Some(TokenKind::Ident(_)))
+            && self.peek_kind_at(2) == Some(&TokenKind::Colon)
+        {
+            self.bump(); // mut
+            self.bump(); // name
+            self.bump(); // :
+        } else if matches!(self.current().kind, TokenKind::Ident(_))
+            && self.peek_kind() == &TokenKind::Colon
+        {
+            self.bump(); // name
+            self.bump(); // :
+        }
+        self.parse_ty()
     }
 
     fn parse_path_ty(&mut self) -> Path {

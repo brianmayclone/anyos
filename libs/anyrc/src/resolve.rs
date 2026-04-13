@@ -57,6 +57,8 @@ pub struct Resolver<'a> {
     module_stack: Vec<usize>,
     /// Intrinsic DefIds: maps synthetic DefId to full path string
     intrinsic_fns: HashMap<DefId, String>,
+    /// Current impl self type symbol for resolving `Self::assoc` within impls.
+    current_impl_self_ty: Option<Symbol>,
 }
 
 impl<'a> Resolver<'a> {
@@ -79,6 +81,7 @@ impl<'a> Resolver<'a> {
             root_scope: 0,
             module_stack: vec![0],
             intrinsic_fns: HashMap::new(),
+            current_impl_self_ty: None,
         };
         this.bootstrap_prelude_intrinsics();
         this
@@ -219,12 +222,26 @@ impl<'a> Resolver<'a> {
     fn process_use_tree(&mut self, use_tree: &HirUseTree) {
         match &use_tree.kind {
             HirUseTreeKind::Simple(alias) => {
-                // Handle `use core::...` imports as intrinsics
-                if self.is_extern_crate_path(&use_tree.path) {
-                    let local_name = alias.unwrap_or_else(|| {
+                let trailing_self = use_tree
+                    .path
+                    .last()
+                    .map(|sym| self.interner.resolve(*sym) == "self")
+                    .unwrap_or(false);
+                let full_path: Vec<Symbol> = if trailing_self && use_tree.path.len() >= 2 {
+                    use_tree.path[..use_tree.path.len() - 1].to_vec()
+                } else {
+                    use_tree.path.clone()
+                };
+                let local_name = alias.unwrap_or_else(|| {
+                    if trailing_self && use_tree.path.len() >= 2 {
+                        use_tree.path[use_tree.path.len() - 2]
+                    } else {
                         *use_tree.path.last().unwrap()
-                    });
-                    let full_path = self.path_to_string(&use_tree.path);
+                    }
+                });
+                // Handle `use core::...` imports as intrinsics
+                if self.is_extern_crate_path(&full_path) {
+                    let full_path = self.path_to_string(&full_path);
                     let def_id = self.alloc_synthetic_def_id();
                     self.intrinsic_fns.insert(def_id, full_path);
                     self.define(local_name, Namespace::Value, def_id);
@@ -232,15 +249,12 @@ impl<'a> Resolver<'a> {
                     return;
                 }
                 // use a::b::c; or use a::b::c as d;
-                if let Some((def_id, ns)) = self.resolve_use_path(&use_tree.path, use_tree.span) {
-                    let local_name = alias.unwrap_or_else(|| {
-                        *use_tree.path.last().unwrap()
-                    });
+                if let Some((def_id, ns)) = self.resolve_use_path(&full_path, use_tree.span) {
                     self.define(local_name, ns, def_id);
                     // Also define in the other namespace for cross-ns usage
                     let other_ns = if ns == Namespace::Value { Namespace::Type } else { Namespace::Value };
                     // Try other ns too - don't error if not found
-                    if let Some((def_id2, _)) = self.resolve_use_path_ns(&use_tree.path, other_ns) {
+                    if let Some((def_id2, _)) = self.resolve_use_path_ns(&full_path, other_ns) {
                         self.define(local_name, other_ns, def_id2);
                     }
                 }
@@ -292,7 +306,7 @@ impl<'a> Resolver<'a> {
     fn is_extern_crate_path(&self, path: &[Symbol]) -> bool {
         if path.is_empty() { return false; }
         let first = self.interner.resolve(path[0]);
-        first == "core" || first == "alloc" || first == "anyos_std"
+        first == "core" || first == "alloc"
     }
 
     /// Build a full path string like "core::ptr::null_mut" from symbols
@@ -561,10 +575,13 @@ impl<'a> Resolver<'a> {
         self.push_scope();
         self.resolve_generics(&ib.generics);
 
+        let saved_impl_self_ty = self.current_impl_self_ty;
+
         // Define Self in type namespace - use the self_ty symbol directly
         if let HirTy::Path(p) = &ib.self_ty {
             if !p.segments.is_empty() {
                 let first = p.segments[0].ident;
+                self.current_impl_self_ty = Some(first);
                 if let Some(def_id) = self.lookup(first, Namespace::Type) {
                     // Register Self if we can find the symbol
                     if let Some(self_sym) = self.find_symbol("Self") {
@@ -582,6 +599,7 @@ impl<'a> Resolver<'a> {
             // Register methods in impl scope for potential use
             self.resolve_item(item);
         }
+        self.current_impl_self_ty = saved_impl_self_ty;
         self.pop_scope();
     }
 
@@ -929,9 +947,15 @@ impl<'a> Resolver<'a> {
             if path.segments.len() == 2 {
                 // Two-segment path: Enum::Variant or Type::method
                 let second_name = path.segments[1].ident;
+                let type_name = if name_str == "Self" {
+                    self.current_impl_self_ty.unwrap_or(name)
+                } else {
+                    name
+                };
+                let type_name_str = self.interner.resolve(type_name).to_string();
 
                 // Try enum variant first
-                if let Some(enum_def_id) = self.lookup(name, Namespace::Type) {
+                if let Some(enum_def_id) = self.lookup(type_name, Namespace::Type) {
                     if let Some(enum_info) = self.enum_variants.get(&enum_def_id) {
                         if let Some(&variant_def_id) = enum_info.variants.get(&second_name) {
                             if hir_id != HirId(u32::MAX) {
@@ -941,7 +965,7 @@ impl<'a> Resolver<'a> {
                         }
                     }
                     // Try impl methods
-                    if let Some(methods) = self.impl_methods.get(&name) {
+                    if let Some(methods) = self.impl_methods.get(&type_name) {
                         for &(method_name, method_def_id) in methods {
                             if method_name == second_name {
                                 if hir_id != HirId(u32::MAX) {
@@ -954,7 +978,7 @@ impl<'a> Resolver<'a> {
 
                     // Check if first segment is an intrinsic type (e.g. AtomicBool::new, Ordering::Relaxed)
                     if self.intrinsic_fns.contains_key(&enum_def_id) {
-                        let type_str = self.interner.resolve(name);
+                        let type_str = self.interner.resolve(type_name);
                         let method_str = self.interner.resolve(second_name);
                         let full_path = format!("{}::{}", type_str, method_str);
                         let def_id = self.alloc_synthetic_def_id();
@@ -967,10 +991,10 @@ impl<'a> Resolver<'a> {
                 }
 
                 // Check if first segment is a primitive type with an associated constant
-                if self.primitives.iter().any(|&p| p == name_str) {
+                if self.primitives.iter().any(|&p| p == type_name_str) {
                     let second_str = self.interner.resolve(second_name);
                     let is_assoc_const = matches!(
-                        (name_str.as_str(), second_str),
+                        (type_name_str.as_str(), second_str),
                         ("u8", "MAX") | ("u16", "MAX") | ("u32", "MAX") | ("u64", "MAX") | ("u128", "MAX") | ("usize", "MAX")
                         | ("i8", "MAX") | ("i16", "MAX") | ("i32", "MAX") | ("i64", "MAX") | ("i128", "MAX") | ("isize", "MAX")
                         | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")
@@ -979,9 +1003,9 @@ impl<'a> Resolver<'a> {
                         | ("f64", "INFINITY") | ("f64", "NEG_INFINITY") | ("f64", "NAN")
                     );
                     let is_assoc_fn = matches!(second_str, "from_le_bytes" | "from_str_radix")
-                        || (name_str == "char" && second_str == "from_u32");
+                        || (type_name_str == "char" && second_str == "from_u32");
                     if is_assoc_const || is_assoc_fn {
-                        let full_path = format!("{}::{}", name_str, second_str);
+                        let full_path = format!("{}::{}", type_name_str, second_str);
                         let def_id = self.alloc_synthetic_def_id();
                         self.intrinsic_fns.insert(def_id, full_path);
                         if hir_id != HirId(u32::MAX) {

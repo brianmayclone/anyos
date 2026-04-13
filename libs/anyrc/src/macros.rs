@@ -13,6 +13,19 @@ struct MacroDef {
     rules: Vec<MacroRule>,
 }
 
+struct DllExportsSpec {
+    lib_path: String,
+    lib_struct: String,
+    init_call: Option<String>,
+    symbols: Vec<DllExportSymbol>,
+}
+
+struct DllExportSymbol {
+    name: String,
+    param_tys: Vec<String>,
+    ret_ty: String,
+}
+
 /// A captured fragment from macro pattern matching.
 #[derive(Clone, Debug)]
 enum Capture {
@@ -98,6 +111,14 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                     items.splice(i..=i, krate.items);
                     *changed = true;
                     continue;
+                }
+
+                if macro_name == "dll_exports" {
+                    if let Some(expanded) = expand_builtin_dll_exports(args, interner) {
+                        items.splice(i..=i, expanded);
+                        *changed = true;
+                        continue;
+                    }
                 }
 
                 if let Some(def) = find_macro(defs, path) {
@@ -424,6 +445,482 @@ fn find_macro<'a>(defs: &'a [MacroDef], path: &Path) -> Option<&'a MacroDef> {
     } else {
         None
     }
+}
+
+fn expand_builtin_dll_exports(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
+    let spec = parse_dll_exports_spec(args, interner)?;
+    let src = render_dll_exports_source(&spec);
+    let mut parser = Parser::new(&src, interner);
+    Some(parser.parse_crate().items)
+}
+
+fn parse_dll_exports_spec(args: &[TokenTree], interner: &Interner) -> Option<DllExportsSpec> {
+    let mut lib_path = None;
+    let mut lib_struct = None;
+    let mut init_call = None;
+    let mut symbols = None;
+    let mut i = 0;
+
+    while i < args.len() {
+        let key = token_tree_ident(&args[i], interner)?;
+        i += 1;
+        if !matches!(args.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Colon, .. }))) {
+            return None;
+        }
+        i += 1;
+
+        match key {
+            "lib_path" => {
+                lib_path = Some(token_tree_string(args.get(i)?)?);
+                i += 1;
+            }
+            "lib_struct" => {
+                lib_struct = Some(token_tree_ident(args.get(i)?, interner)?.to_string());
+                i += 1;
+            }
+            "init_call" => {
+                init_call = Some(token_tree_string(args.get(i)?)?);
+                i += 1;
+            }
+            "symbols" => {
+                let TokenTree::Delimited(Delimiter::Brace, inner) = args.get(i)? else {
+                    return None;
+                };
+                symbols = Some(parse_dll_export_symbols(inner, interner)?);
+                i += 1;
+            }
+            _ => return None,
+        }
+
+        if matches!(args.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Comma, .. }))) {
+            i += 1;
+        }
+    }
+
+    Some(DllExportsSpec {
+        lib_path: lib_path?,
+        lib_struct: lib_struct?,
+        init_call,
+        symbols: symbols?,
+    })
+}
+
+fn parse_dll_export_symbols(tokens: &[TokenTree], interner: &Interner) -> Option<Vec<DllExportSymbol>> {
+    let mut symbols = Vec::new();
+    let mut i = 0;
+
+    while i < tokens.len() {
+        if matches!(tokens.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Comma, .. }))) {
+            i += 1;
+            continue;
+        }
+
+        let name = token_tree_ident(tokens.get(i)?, interner)?.to_string();
+        i += 1;
+
+        let TokenTree::Delimited(Delimiter::Paren, params) = tokens.get(i)? else {
+            return None;
+        };
+        i += 1;
+
+        if !matches!(tokens.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Arrow, .. }))) {
+            return None;
+        }
+        i += 1;
+
+        let ret_start = i;
+        while i < tokens.len() {
+            if matches!(tokens.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Comma, .. }))) {
+                break;
+            }
+            i += 1;
+        }
+        let ret_ty = token_trees_to_string(&tokens[ret_start..i], interner).trim().to_string();
+        let param_tys = split_top_level_commas(params)
+            .into_iter()
+            .filter_map(|chunk| {
+                let ty_tokens = strip_named_macro_param(chunk);
+                let ty_src = token_trees_to_string(ty_tokens, interner);
+                let ty_src = ty_src.trim();
+                if ty_src.is_empty() {
+                    None
+                } else {
+                    Some(ty_src.to_string())
+                }
+            })
+            .collect();
+
+        symbols.push(DllExportSymbol {
+            name,
+            param_tys,
+            ret_ty,
+        });
+
+        if matches!(tokens.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Comma, .. }))) {
+            i += 1;
+        }
+    }
+
+    Some(symbols)
+}
+
+fn split_top_level_commas(tokens: &[TokenTree]) -> Vec<&[TokenTree]> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for (i, tt) in tokens.iter().enumerate() {
+        if matches!(tt, TokenTree::Token(Token { kind: TokenKind::Comma, .. })) {
+            parts.push(&tokens[start..i]);
+            start = i + 1;
+        }
+    }
+    if start < tokens.len() {
+        parts.push(&tokens[start..]);
+    }
+    parts
+}
+
+fn strip_named_macro_param<'a>(tokens: &'a [TokenTree]) -> &'a [TokenTree] {
+    for (i, tt) in tokens.iter().enumerate() {
+        if matches!(tt, TokenTree::Token(Token { kind: TokenKind::Colon, .. })) {
+            return &tokens[i + 1..];
+        }
+    }
+    tokens
+}
+
+fn token_tree_ident<'a>(tt: &'a TokenTree, interner: &'a Interner) -> Option<&'a str> {
+    let TokenTree::Token(Token { kind: TokenKind::Ident(sym), .. }) = tt else {
+        return None;
+    };
+    Some(interner.resolve(*sym))
+}
+
+fn token_tree_string(tt: &TokenTree) -> Option<String> {
+    let TokenTree::Token(Token { kind: TokenKind::StringLit(s), .. }) = tt else {
+        return None;
+    };
+    Some(s.clone())
+}
+
+fn render_dll_exports_source(spec: &DllExportsSpec) -> String {
+    let handle_ty = format!("__anyrc_dll_handle_{}", spec.lib_struct);
+    let ehdr_ty = format!("__anyrc_elf64_ehdr_{}", spec.lib_struct);
+    let phdr_ty = format!("__anyrc_elf64_phdr_{}", spec.lib_struct);
+    let dyn_ty = format!("__anyrc_elf64_dyn_{}", spec.lib_struct);
+    let sym_ty = format!("__anyrc_elf64_sym_{}", spec.lib_struct);
+    let open_failed_fn = format!("__anyrc_log_open_failed_{}", spec.lib_struct);
+    let missing_symbol_fn = format!("__anyrc_log_missing_symbol_{}", spec.lib_struct);
+    let missing_init_fn = format!("__anyrc_log_missing_init_symbol_{}", spec.lib_struct);
+    let hash_fn = format!("__anyrc_elf_hash_{}", spec.lib_struct);
+    let cstr_eq_fn = format!("__anyrc_cstr_eq_{}", spec.lib_struct);
+    let dl_open_fn = format!("__anyrc_dll_open_{}", spec.lib_struct);
+    let dl_sym_fn = format!("__anyrc_dll_sym_{}", spec.lib_struct);
+
+    let mut src = String::new();
+    src.push_str("#[repr(C)]\n");
+    src.push_str("struct ");
+    src.push_str(&ehdr_ty);
+    src.push_str(" {\n");
+    src.push_str("    e_ident: [u8; 16],\n");
+    src.push_str("    e_type: u16,\n");
+    src.push_str("    e_machine: u16,\n");
+    src.push_str("    e_version: u32,\n");
+    src.push_str("    e_entry: u64,\n");
+    src.push_str("    e_phoff: u64,\n");
+    src.push_str("    e_shoff: u64,\n");
+    src.push_str("    e_flags: u32,\n");
+    src.push_str("    e_ehsize: u16,\n");
+    src.push_str("    e_phentsize: u16,\n");
+    src.push_str("    e_phnum: u16,\n");
+    src.push_str("    e_shentsize: u16,\n");
+    src.push_str("    e_shnum: u16,\n");
+    src.push_str("    e_shstrndx: u16,\n");
+    src.push_str("}\n\n");
+    src.push_str("#[repr(C)]\n");
+    src.push_str("struct ");
+    src.push_str(&phdr_ty);
+    src.push_str(" {\n");
+    src.push_str("    p_type: u32,\n");
+    src.push_str("    p_flags: u32,\n");
+    src.push_str("    p_offset: u64,\n");
+    src.push_str("    p_vaddr: u64,\n");
+    src.push_str("    p_paddr: u64,\n");
+    src.push_str("    p_filesz: u64,\n");
+    src.push_str("    p_memsz: u64,\n");
+    src.push_str("    p_align: u64,\n");
+    src.push_str("}\n\n");
+    src.push_str("#[repr(C)]\n");
+    src.push_str("struct ");
+    src.push_str(&dyn_ty);
+    src.push_str(" {\n");
+    src.push_str("    d_tag: i64,\n");
+    src.push_str("    d_val: u64,\n");
+    src.push_str("}\n\n");
+    src.push_str("#[repr(C)]\n");
+    src.push_str("struct ");
+    src.push_str(&sym_ty);
+    src.push_str(" {\n");
+    src.push_str("    st_name: u32,\n");
+    src.push_str("    st_info: u8,\n");
+    src.push_str("    st_other: u8,\n");
+    src.push_str("    st_shndx: u16,\n");
+    src.push_str("    st_value: u64,\n");
+    src.push_str("    st_size: u64,\n");
+    src.push_str("}\n\n");
+    src.push_str("struct ");
+    src.push_str(&handle_ty);
+    src.push_str(" {\n");
+    src.push_str("    base: u64,\n");
+    src.push_str("    symtab: *const ");
+    src.push_str(&sym_ty);
+    src.push_str(",\n");
+    src.push_str("    strtab: *const u8,\n");
+    src.push_str("    buckets: *const u32,\n");
+    src.push_str("    chains: *const u32,\n");
+    src.push_str("    nbuckets: u32,\n");
+    src.push_str("}\n\n");
+    src.push_str("fn ");
+    src.push_str(&open_failed_fn);
+    src.push_str("(path: &str) {\n");
+    src.push_str("    anyos_std::println!(\"[dynlink] open failed: {}\", path);\n");
+    src.push_str("}\n\n");
+    src.push_str("fn ");
+    src.push_str(&missing_symbol_fn);
+    src.push_str("(path: &str, sym: &str) {\n");
+    src.push_str("    anyos_std::println!(\"[dynlink] missing symbol '{}' in {}\", sym, path);\n");
+    src.push_str("}\n\n");
+    src.push_str("fn ");
+    src.push_str(&missing_init_fn);
+    src.push_str("(path: &str, sym: &str) {\n");
+    src.push_str("    anyos_std::println!(\"[dynlink] missing init symbol '{}' in {}\", sym, path);\n");
+    src.push_str("}\n\n");
+    src.push_str("fn ");
+    src.push_str(&hash_fn);
+    src.push_str("(name: &[u8]) -> u32 {\n");
+    src.push_str("    let mut h: u32 = 0;\n");
+    src.push_str("    for &b in name {\n");
+    src.push_str("        h = (h << 4).wrapping_add(b as u32);\n");
+    src.push_str("        let g = h & 0xF000_0000;\n");
+    src.push_str("        if g != 0 {\n");
+    src.push_str("            h ^= g >> 24;\n");
+    src.push_str("        }\n");
+    src.push_str("        h &= !g;\n");
+    src.push_str("    }\n");
+    src.push_str("    h\n");
+    src.push_str("}\n\n");
+    src.push_str("unsafe fn ");
+    src.push_str(&cstr_eq_fn);
+    src.push_str("(cstr: *const u8, name: &[u8]) -> bool {\n");
+    src.push_str("    for (i, &b) in name.iter().enumerate() {\n");
+    src.push_str("        let c = unsafe { *cstr.add(i) };\n");
+    src.push_str("        if c != b {\n");
+    src.push_str("            return false;\n");
+    src.push_str("        }\n");
+    src.push_str("    }\n");
+    src.push_str("    unsafe { *cstr.add(name.len()) == 0 }\n");
+    src.push_str("}\n\n");
+    src.push_str("fn ");
+    src.push_str(&dl_open_fn);
+    src.push_str("(path: &str) -> Option<");
+    src.push_str(&handle_ty);
+    src.push_str("> {\n");
+    src.push_str("    let base = anyos_std::dll::dll_load(path) as u64;\n");
+    src.push_str("    if base == 0 {\n");
+    src.push_str("        return None;\n");
+    src.push_str("    }\n");
+    src.push_str("    let ehdr = unsafe { &*(base as *const ");
+    src.push_str(&ehdr_ty);
+    src.push_str(") };\n");
+    src.push_str("    if ehdr.e_ident[0] != 0x7F || ehdr.e_ident[1] != b'E' || ehdr.e_ident[2] != b'L' || ehdr.e_ident[3] != b'F' {\n");
+    src.push_str("        return None;\n");
+    src.push_str("    }\n");
+    src.push_str("    if ehdr.e_ident[4] != 2 || ehdr.e_type != 3 {\n");
+    src.push_str("        return None;\n");
+    src.push_str("    }\n");
+    src.push_str("    let phdr_base = (base + ehdr.e_phoff) as *const ");
+    src.push_str(&phdr_ty);
+    src.push_str(";\n");
+    src.push_str("    let mut dynamic_va: u64 = 0;\n");
+    src.push_str("    let mut link_base: u64 = u64::MAX;\n");
+    src.push_str("    for i in 0..ehdr.e_phnum as usize {\n");
+    src.push_str("        let ph = unsafe { &*phdr_base.add(i) };\n");
+    src.push_str("        if ph.p_type == 1 && ph.p_vaddr < link_base {\n");
+    src.push_str("            link_base = ph.p_vaddr;\n");
+    src.push_str("        }\n");
+    src.push_str("        if ph.p_type == 2 {\n");
+    src.push_str("            dynamic_va = ph.p_vaddr;\n");
+    src.push_str("        }\n");
+    src.push_str("    }\n");
+    src.push_str("    if dynamic_va == 0 {\n");
+    src.push_str("        return None;\n");
+    src.push_str("    }\n");
+    src.push_str("    let load_bias = if link_base != u64::MAX { base - link_base } else { 0 };\n");
+    src.push_str("    dynamic_va += load_bias;\n");
+    src.push_str("    let mut symtab_va: u64 = 0;\n");
+    src.push_str("    let mut strtab_va: u64 = 0;\n");
+    src.push_str("    let mut hash_va: u64 = 0;\n");
+    src.push_str("    let dyn_ptr = dynamic_va as *const ");
+    src.push_str(&dyn_ty);
+    src.push_str(";\n");
+    src.push_str("    for i in 0..128 {\n");
+    src.push_str("        let d = unsafe { &*dyn_ptr.add(i) };\n");
+    src.push_str("        match d.d_tag {\n");
+    src.push_str("            6 => symtab_va = d.d_val,\n");
+    src.push_str("            5 => strtab_va = d.d_val,\n");
+    src.push_str("            4 => hash_va = d.d_val,\n");
+    src.push_str("            0 => break,\n");
+    src.push_str("            _ => {}\n");
+    src.push_str("        }\n");
+    src.push_str("    }\n");
+    src.push_str("    if symtab_va == 0 || strtab_va == 0 || hash_va == 0 {\n");
+    src.push_str("        return None;\n");
+    src.push_str("    }\n");
+    src.push_str("    let hash_ptr = hash_va as *const u32;\n");
+    src.push_str("    let nbuckets = unsafe { *hash_ptr };\n");
+    src.push_str("    let buckets = unsafe { hash_ptr.add(2) };\n");
+    src.push_str("    let chains = unsafe { buckets.add(nbuckets as usize) };\n");
+    src.push_str("    Some(");
+    src.push_str(&handle_ty);
+    src.push_str(" {\n");
+    src.push_str("        base,\n");
+    src.push_str("        symtab: symtab_va as *const ");
+    src.push_str(&sym_ty);
+    src.push_str(",\n");
+    src.push_str("        strtab: strtab_va as *const u8,\n");
+    src.push_str("        buckets,\n");
+    src.push_str("        chains,\n");
+    src.push_str("        nbuckets,\n");
+    src.push_str("    })\n");
+    src.push_str("}\n\n");
+    src.push_str("fn ");
+    src.push_str(&dl_sym_fn);
+    src.push_str("(handle: &");
+    src.push_str(&handle_ty);
+    src.push_str(", name: &str) -> Option<*const ()> {\n");
+    src.push_str("    let h = ");
+    src.push_str(&hash_fn);
+    src.push_str("(name.as_bytes());\n");
+    src.push_str("    let bucket_idx = h % handle.nbuckets;\n");
+    src.push_str("    let mut idx = unsafe { *handle.buckets.add(bucket_idx as usize) };\n");
+    src.push_str("    while idx != 0 {\n");
+    src.push_str("        let sym = unsafe { &*handle.symtab.add(idx as usize) };\n");
+    src.push_str("        if sym.st_value != 0 {\n");
+    src.push_str("            let sym_name = unsafe { ");
+    src.push_str(&cstr_eq_fn);
+    src.push_str("(handle.strtab.add(sym.st_name as usize), name.as_bytes()) };\n");
+    src.push_str("            if sym_name {\n");
+    src.push_str("                return Some(sym.st_value as *const ());\n");
+    src.push_str("            }\n");
+    src.push_str("        }\n");
+    src.push_str("        idx = unsafe { *handle.chains.add(idx as usize) };\n");
+    src.push_str("    }\n");
+    src.push_str("    None\n");
+    src.push_str("}\n\n");
+    src.push_str("struct ");
+    src.push_str(&spec.lib_struct);
+    src.push_str(" {\n");
+    src.push_str("    _handle: ");
+    src.push_str(&handle_ty);
+    src.push_str(",\n");
+    for sym in &spec.symbols {
+        src.push_str("    ");
+        src.push_str(&sym.name);
+        src.push_str(": extern \"C\" fn(");
+        src.push_str(&sym.param_tys.join(", "));
+        src.push_str(") -> ");
+        src.push_str(&sym.ret_ty);
+        src.push_str(",\n");
+    }
+    src.push_str("}\n\n");
+    src.push_str("static mut LIB: Option<");
+    src.push_str(&spec.lib_struct);
+    src.push_str("> = None;\n\n");
+    src.push_str("fn lib() -> &'static ");
+    src.push_str(&spec.lib_struct);
+    src.push_str(" {\n");
+    src.push_str("    unsafe {\n");
+    src.push_str("        match LIB {\n");
+    src.push_str("            Some(ref lib) => lib,\n");
+    src.push_str("            None => loop {},\n");
+    src.push_str("        }\n");
+    src.push_str("    }\n");
+    src.push_str("}\n\n");
+    src.push_str("pub fn init() -> bool {\n");
+    src.push_str("    let handle = match ");
+    src.push_str(&dl_open_fn);
+    src.push_str("(\"");
+    src.push_str(&spec.lib_path);
+    src.push_str("\") {\n");
+    src.push_str("        Some(h) => h,\n");
+    src.push_str("        None => {\n");
+    src.push_str("            ");
+    src.push_str(&open_failed_fn);
+    src.push_str("(\"");
+    src.push_str(&spec.lib_path);
+    src.push_str("\");\n");
+    src.push_str("            return false;\n");
+    src.push_str("        }\n");
+    src.push_str("    };\n\n");
+    src.push_str("    unsafe {\n");
+    src.push_str("        let lib = ");
+    src.push_str(&spec.lib_struct);
+    src.push_str(" {\n");
+    for sym in &spec.symbols {
+        src.push_str("            ");
+        src.push_str(&sym.name);
+        src.push_str(": {\n");
+        src.push_str("                let ptr = match ");
+        src.push_str(&dl_sym_fn);
+        src.push_str("(&handle, \"");
+        src.push_str(&sym.name);
+        src.push_str("\") {\n");
+        src.push_str("                    Some(p) => p,\n");
+        src.push_str("                    None => {\n");
+        src.push_str("                        ");
+        src.push_str(&missing_symbol_fn);
+        src.push_str("(\"");
+        src.push_str(&spec.lib_path);
+        src.push_str("\", \"");
+        src.push_str(&sym.name);
+        src.push_str("\");\n");
+        src.push_str("                        return false;\n");
+        src.push_str("                    }\n");
+        src.push_str("                };\n");
+        src.push_str("                let func: extern \"C\" fn(");
+        src.push_str(&sym.param_tys.join(", "));
+        src.push_str(") -> ");
+        src.push_str(&sym.ret_ty);
+        src.push_str(" = core::mem::transmute_copy(&ptr);\n");
+        src.push_str("                func\n");
+        src.push_str("            },\n");
+    }
+    src.push_str("            _handle: handle,\n");
+    src.push_str("        };\n");
+    if let Some(init_call) = &spec.init_call {
+        src.push_str("        if let Some(init_ptr) = ");
+        src.push_str(&dl_sym_fn);
+        src.push_str("(&lib._handle, \"");
+        src.push_str(init_call);
+        src.push_str("\") {\n");
+        src.push_str("            let init_fn: extern \"C\" fn() = core::mem::transmute_copy(&init_ptr);\n");
+        src.push_str("            init_fn();\n");
+        src.push_str("        } else {\n");
+        src.push_str("            ");
+        src.push_str(&missing_init_fn);
+        src.push_str("(\"");
+        src.push_str(&spec.lib_path);
+        src.push_str("\", \"");
+        src.push_str(init_call);
+        src.push_str("\");\n");
+        src.push_str("            LIB = Some(lib);\n");
+        src.push_str("            return true;\n");
+        src.push_str("        }\n");
+    }
+    src.push_str("        LIB = Some(lib);\n");
+    src.push_str("    }\n");
+    src.push_str("    true\n");
+    src.push_str("}\n");
+    src
 }
 
 // ── Pattern matching ──

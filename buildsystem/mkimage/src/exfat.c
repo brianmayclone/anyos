@@ -612,6 +612,7 @@ void exfat_write_boot(ExFat *fs)
  */
 void exfat_init_fs(ExFat *fs)
 {
+    uint32_t bitmap_clusters;
     uint32_t upcase_cluster;
     uint8_t *upcase_data;
     uint32_t upcase_len;
@@ -620,12 +621,16 @@ void exfat_init_fs(ExFat *fs)
     uint32_t upcase_checksum;
     uint32_t i;
 
-    /* Allocate cluster 2 for allocation bitmap */
-    fs->bitmap_cluster = exfat_alloc_cluster(fs);   /* = 2 */
-    /* Allocate cluster 3 for minimal upcase table */
-    upcase_cluster     = exfat_alloc_cluster(fs);   /* = 3 */
-    /* Allocate cluster 4 for root directory */
-    fs->root_cluster   = exfat_alloc_cluster(fs);   /* = 4 */
+    /* The allocation bitmap can span multiple clusters on larger volumes.
+     * Reserve the full contiguous bitmap run first so it cannot overlap
+     * metadata clusters such as the upcase table or the root directory. */
+    bitmap_clusters =
+        (fs->bitmap_bytes + fs->cluster_size - 1) / fs->cluster_size;
+    fs->bitmap_cluster = exfat_alloc_contiguous(fs, bitmap_clusters);
+
+    /* Allocate the remaining metadata after the bitmap run. */
+    upcase_cluster   = exfat_alloc_cluster(fs);
+    fs->root_cluster = exfat_alloc_cluster(fs);
 
     /* ── Write minimal upcase table (identity mapping for ASCII 0-127) ── */
     /* 128 UTF-16LE entries = 256 bytes, padded to cluster_size */
@@ -697,8 +702,8 @@ void exfat_init_fs(ExFat *fs)
     write_le32(fs->image + exfat_abs_offset(fs, 0)  + 96, fs->root_cluster);
     write_le32(fs->image + exfat_abs_offset(fs, 12) + 96, fs->root_cluster);
 
-    printf("  exFAT: bitmap=cluster %u, upcase=cluster %u, root=cluster %u\n",
-           fs->bitmap_cluster, upcase_cluster, fs->root_cluster);
+    printf("  exFAT: bitmap=cluster %u (%u cluster(s)), upcase=cluster %u, root=cluster %u\n",
+           fs->bitmap_cluster, bitmap_clusters, upcase_cluster, fs->root_cluster);
 }
 
 /*
