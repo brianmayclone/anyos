@@ -2370,3 +2370,24 @@ fn matches_macro_expands_in_boolean_position() {
         "#,
     );
 }
+
+#[test]
+fn generic_struct_field_access_substitutes_receiver_type_arguments() {
+    compile_ok(
+        "generic_struct_field_access_substitutes_receiver_type_arguments",
+        r#"
+        struct Pair<T, U> {
+            left: T,
+            right: U,
+        }
+
+        fn take_right_len(pair: &Pair<u32, &str>) -> usize {
+            pair.right.len()
+        }
+
+        fn take_left(pair: Pair<u32, &str>) -> u32 {
+            pair.left
+        }
+        "#,
+    );
+}

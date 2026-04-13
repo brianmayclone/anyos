@@ -22,6 +22,8 @@ pub enum StepAction {
     Format,
     /// Set root password via chpasswd (before file copy).
     Password,
+    /// Create the target user/shared directory skeleton.
+    Users,
     /// Extract a .tar.gz archive to a target directory.
     Extract { source: String, target: String },
     /// Recursively copy a directory tree.
@@ -75,6 +77,7 @@ fn parse_from_doc(doc: &ini::IniDoc) -> Vec<InstallStep> {
             "partition" => StepAction::Partition,
             "format" => StepAction::Format,
             "password" => StepAction::Password,
+            "users" => StepAction::Users,
             "extract" => {
                 let source = match doc.get(&section_name, "source") {
                     Some(s) => s,
@@ -116,8 +119,7 @@ fn default_steps() -> Vec<InstallStep> {
         source: String::from("/System"), target: String::from("/mnt/target/System") } });
     s.push(InstallStep { label: String::from("Copying applications"), action: StepAction::Copy {
         source: String::from("/Applications"), target: String::from("/mnt/target/Applications") } });
-    s.push(InstallStep { label: String::from("Copying user data"), action: StepAction::Copy {
-        source: String::from("/Users"), target: String::from("/mnt/target/Users") } });
+    s.push(InstallStep { label: String::from("Setting up user accounts"), action: StepAction::Users });
     s.push(InstallStep { label: String::from("Copying boot files"), action: StepAction::Copy {
         source: String::from("/boot"), target: String::from("/mnt/target/boot") } });
     s.push(InstallStep { label: String::from("Copying media files"), action: StepAction::Copy {

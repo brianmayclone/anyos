@@ -1,6 +1,6 @@
 //! Installation worker thread: executes steps from install.ini script.
 
-use anyos_std::{format, String, Vec};
+use anyos_std::format;
 use anyos_std::{fs, sys};
 use core::sync::atomic::Ordering;
 use libanyui_client as ui;
@@ -8,6 +8,26 @@ use libanyui_client as ui;
 use crate::state::*;
 use crate::script::{self, StepAction};
 use crate::helpers::fix_case;
+
+struct CopyStats {
+    files: u32,
+    dirs: u32,
+    errors: u32,
+    bytes: u64,
+}
+
+impl CopyStats {
+    const fn new() -> Self {
+        Self { files: 0, dirs: 0, errors: 0, bytes: 0 }
+    }
+
+    fn add(&mut self, other: Self) {
+        self.files += other.files;
+        self.dirs += other.dirs;
+        self.errors += other.errors;
+        self.bytes += other.bytes;
+    }
+}
 
 // ── Log + progress helpers (worker thread → UI via marshal) ────────────────
 
@@ -68,6 +88,8 @@ fn update_elapsed() {
 fn fail(msg: &str) {
     log_raw(&format!("FATAL: {}", msg));
     set_phase(msg);
+    close_log_file();
+    WORKER_ACTIVE.store(false, Ordering::Release);
     WORKER_ERROR.store(true, Ordering::Release);
     WORKER_DONE.store(true, Ordering::Release);
 }
@@ -76,7 +98,10 @@ fn fail(msg: &str) {
 static mut LOG_FD: u32 = u32::MAX;
 
 fn open_log_file() {
-    let fd = fs::open("/mnt/target/install.log", 0x02 | 0x04); // O_WRITE | O_CREATE
+    let fd = fs::open(
+        "/mnt/target/install.log",
+        fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC | fs::O_SYNC,
+    );
     unsafe { LOG_FD = fd; }
 }
 
@@ -94,6 +119,7 @@ fn append_log_file(line: &str) {
 fn close_log_file() {
     let fd = unsafe { LOG_FD };
     if fd != u32::MAX {
+        let _ = fs::fsync(fd as i32);
         fs::close(fd);
         unsafe { LOG_FD = u32::MAX; }
     }
@@ -186,6 +212,7 @@ pub fn install_worker() {
             }
             StepAction::Password => {
                 let pw = read_root_password();
+                log("  Starting password configuration");
                 if !pw.is_empty() {
                     let result = anyos_std::users::chpasswd("root", "", pw);
                     if result != 0 {
@@ -198,7 +225,24 @@ pub fn install_worker() {
                     log("  Skipped (no password set)");
                 }
             }
+            StepAction::Users => {
+                let dirs = [
+                    "/mnt/target/Users",
+                    "/mnt/target/Users/Shared",
+                    "/mnt/target/Users/Shared/www",
+                    "/mnt/target/Users/settings",
+                ];
+                for dir in dirs {
+                    let rc = fs::mkdir(dir);
+                    if rc == 0 {
+                        log(&format!("  Created {}", dir));
+                    } else {
+                        log(&format!("  {}", dir));
+                    }
+                }
+            }
             StepAction::Extract { source, target } => {
+                log(&format!("  Preparing target {}", target));
                 fs::mkdir(target);
                 if !libzip_client::init() {
                     log("  Warning: libzip not available, falling back to copy");
@@ -206,8 +250,11 @@ pub fn install_worker() {
                     let fallback_src = source.replace("/install/", "/").replace(".tar.gz", "");
                     let mut stat = [0u32; 7];
                     if fs::stat(&fallback_src, &mut stat) == 0 {
-                        let n = copy_recursive(&fallback_src, target, 0);
-                        log(&format!("  Copied {} files from {}", n, fallback_src));
+                        let stats = copy_recursive(&fallback_src, target, 0);
+                        log(&format!(
+                            "  Copied {} files from {} ({} dirs, {} bytes, {} errors)",
+                            stats.files, fallback_src, stats.dirs, stats.bytes, stats.errors
+                        ));
                     } else {
                         log(&format!("  Warning: {} not found, skipped", fallback_src));
                     }
@@ -225,7 +272,7 @@ pub fn install_worker() {
                             } else {
                                 reader.extract_to_file(j, &dest_path);
                             }
-                            log(&format!("  {}", dest_path));
+                            log(&format!("  Extracted {}", dest_path));
                         }
                         log(&format!("  Extracted {} entries", count));
                     }
@@ -234,8 +281,11 @@ pub fn install_worker() {
                         let fallback_src = source.replace("/install/", "/").replace(".tar.gz", "");
                         let mut stat = [0u32; 7];
                         if fs::stat(&fallback_src, &mut stat) == 0 {
-                            let n = copy_recursive(&fallback_src, target, 0);
-                            log(&format!("  Archive not found, copied {} files from {}", n, fallback_src));
+                            let stats = copy_recursive(&fallback_src, target, 0);
+                            log(&format!(
+                                "  Archive not found, copied {} files from {} ({} dirs, {} bytes, {} errors)",
+                                stats.files, fallback_src, stats.dirs, stats.bytes, stats.errors
+                            ));
                         } else {
                             log(&format!("  Warning: {} not found, skipped", source));
                         }
@@ -248,9 +298,13 @@ pub fn install_worker() {
                     log(&format!("  Skipped (source {} not found)", source));
                     continue;
                 }
+                log(&format!("  Copying {} -> {}", source, target));
                 fs::mkdir(target);
-                let n = copy_recursive(source, target, 0);
-                log(&format!("  Copied {} files", n));
+                let stats = copy_recursive(source, target, 0);
+                log(&format!(
+                    "  Finished {} -> {} ({} files, {} dirs, {} bytes, {} errors)",
+                    source, target, stats.files, stats.dirs, stats.bytes, stats.errors
+                ));
             }
             StepAction::BootCfg => {
                 let cfg = concat!(
@@ -285,9 +339,9 @@ pub fn install_worker() {
                     INSTALL_START_MS.load(Ordering::Relaxed));
                 let secs = elapsed / 1000;
                 log("Unmounting target filesystem");
+                log_raw(&format!("=== Installation complete ({}:{:02}) ===", secs / 60, secs % 60));
                 close_log_file();
                 fs::umount("/mnt/target");
-                log_raw(&format!("=== Installation complete ({}:{:02}) ===", secs / 60, secs % 60));
             }
         }
     }
@@ -317,26 +371,33 @@ fn find_whole_disk_dev(target_disk_id: u8) -> Option<u32> {
 
 fn mount_target(mode: u32, dev_id: u32, disk_id: u8) -> Option<u8> {
     if mode == 0 {
-        sys::partition_rescan(disk_id as u32);
-        anyos_std::process::sleep(1000);
-        let mut buf = [0u8; 64 * 32];
-        let count = sys::disk_list(&mut buf);
-        for i in 0..count as usize {
-            let off = i * 64;
-            if buf[off + 1] == disk_id && buf[off + 2] != 0xFF {
-                let pid = buf[off];
-                let dev_str = format!("{}", pid);
-                if fs::mount("/mnt/target", &dev_str, FS_TYPE_EXFAT) == 0 {
-                    return Some(pid);
+        for attempt in 0..5 {
+            log(&format!("  Rescanning partitions (attempt {}/5)", attempt + 1));
+            sys::partition_rescan(disk_id as u32);
+            anyos_std::process::sleep(700 + attempt * 300);
+            let mut buf = [0u8; 64 * 32];
+            let count = sys::disk_list(&mut buf);
+            for i in 0..count as usize {
+                let off = i * 64;
+                if buf[off + 1] == disk_id && buf[off + 2] != 0xFF {
+                    let pid = buf[off];
+                    let dev_str = format!("{}", pid);
+                    let mount_rc = fs::mount("/mnt/target", &dev_str, FS_TYPE_EXFAT);
+                    if mount_rc == 0 {
+                        return Some(pid);
+                    }
+                    log(&format!("  Mount attempt failed for device {} (rc={})", pid, mount_rc));
                 }
             }
         }
         None
     } else {
         let dev_str = format!("{}", dev_id as u8);
-        if fs::mount("/mnt/target", &dev_str, FS_TYPE_EXFAT) == 0 {
+        let mount_rc = fs::mount("/mnt/target", &dev_str, FS_TYPE_EXFAT);
+        if mount_rc == 0 {
             Some(dev_id as u8)
         } else {
+            log(&format!("  Mount failed for device {} (rc={})", dev_id, mount_rc));
             None
         }
     }
@@ -503,12 +564,21 @@ fn create_partition(dev_id: u32, _disk_id: u32, total_sectors: u64) {
 
 // ── Recursive file copy ────────────────────────────────────────────────────
 
-fn copy_recursive(src: &str, dst: &str, depth: u32) -> u32 {
-    if depth > 16 { return 0; }
+fn copy_recursive(src: &str, dst: &str, depth: u32) -> CopyStats {
+    let mut stats = CopyStats::new();
+    if depth > 32 {
+        log(&format!("  Warning: max recursion depth reached at {}", src));
+        stats.errors += 1;
+        return stats;
+    }
     let mut buf = [0u8; 256 * 64];
     let count = fs::readdir(src, &mut buf);
-    if count == u32::MAX { return 0; }
-    let mut copied = 0u32;
+    if count == u32::MAX {
+        log(&format!("  Warning: could not read directory {}", src));
+        stats.errors += 1;
+        return stats;
+    }
+    log(&format!("  Scanning {} ({} entries)", src, count));
     for i in 0..count as usize {
         let off = i * 64;
         let entry_type = buf[off];
@@ -524,24 +594,62 @@ fn copy_recursive(src: &str, dst: &str, depth: u32) -> u32 {
         let child_dst = format!("{}/{}", dst, fixed);
         if entry_type == 1 {
             fs::mkdir(&child_dst);
-            copied += copy_recursive(&child_src, &child_dst, depth + 1);
+            stats.dirs += 1;
+            stats.add(copy_recursive(&child_src, &child_dst, depth + 1));
+        } else if entry_type == 2 {
+            log(&format!("  Skipping symlink {}", child_src));
         } else {
-            if copy_file(&child_src, &child_dst) {
-                copied += 1;
-                log(&format!("  {}", child_dst));
+            match copy_file(&child_src, &child_dst) {
+                Ok(bytes) => {
+                    stats.files += 1;
+                    stats.bytes += bytes;
+                    log(&format!("  Copied {} ({} bytes)", child_dst, bytes));
+                }
+                Err(()) => {
+                    stats.errors += 1;
+                    log(&format!("  Warning: failed to copy {}", child_src));
+                }
             }
         }
     }
-    copied
+    stats
 }
 
-fn copy_file(src: &str, dst: &str) -> bool {
-    let fd = fs::open(src, 0);
-    if fd == u32::MAX { return false; }
-    let mut data = Vec::new();
-    let mut buf = [0u8; 8192];
-    loop { let n = fs::read(fd, &mut buf); if n == 0 || n == u32::MAX { break; }
-        data.extend_from_slice(&buf[..n as usize]); }
-    fs::close(fd);
-    fs::write_bytes(dst, &data).is_ok()
+fn copy_file(src: &str, dst: &str) -> Result<u64, ()> {
+    let src_fd = fs::open(src, 0);
+    if src_fd == u32::MAX {
+        return Err(());
+    }
+    let dst_fd = fs::open(dst, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+    if dst_fd == u32::MAX {
+        fs::close(src_fd);
+        return Err(());
+    }
+
+    let mut total = 0u64;
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = fs::read(src_fd, &mut buf);
+        if n == 0 {
+            break;
+        }
+        if n == u32::MAX {
+            fs::close(src_fd);
+            fs::close(dst_fd);
+            return Err(());
+        }
+        let chunk = &buf[..n as usize];
+        let wrote = fs::write(dst_fd, chunk);
+        if wrote == u32::MAX || wrote as usize != chunk.len() {
+            fs::close(src_fd);
+            fs::close(dst_fd);
+            return Err(());
+        }
+        total += n as u64;
+    }
+
+    let _ = fs::fsync(dst_fd as i32);
+    fs::close(src_fd);
+    fs::close(dst_fd);
+    Ok(total)
 }

@@ -1075,10 +1075,10 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 match resolved {
-                    TyKind::Adt(def_id, _) => {
+                    TyKind::Adt(def_id, substs) => {
                         if let Some(fields) = self.struct_defs.get(&def_id) {
                             if let Some((_, fty)) = fields.iter().find(|(n, _)| *n == *field_name) {
-                                fty.clone()
+                                self.substitute_params(fty, &substs)
                             } else {
                                 self.error(expr.span, "no such field");
                                 TyKind::Error
