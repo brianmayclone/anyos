@@ -301,6 +301,20 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn describe_callee(&self, expr: &HirExpr) -> String {
+        match &expr.kind {
+            HirExprKind::Path(path) => path.segments.iter()
+                .map(|seg| self.interner.resolve(seg.ident).to_string())
+                .collect::<Vec<_>>()
+                .join("::"),
+            HirExprKind::Field(base, field) => {
+                format!("{}.{}", self.describe_callee(base), self.interner.resolve(*field))
+            }
+            HirExprKind::Paren(inner) => self.describe_callee(inner),
+            _ => String::from("<call>"),
+        }
+    }
+
     pub fn check_crate(&mut self, krate: &HirCrate) -> TypeckResult {
         // Register intrinsic types (AtomicBool, etc.) so they can be used as type annotations.
         // We find symbols by scanning resolutions that point to intrinsic type DefIds.
@@ -835,8 +849,11 @@ impl<'a> TypeChecker<'a> {
 
                             if args.len() != param_tys.len() {
                                 self.error(expr.span, &format!(
-                                    "wrong number of arguments: expected {}, found {}",
-                                    param_tys.len(), args.len()));
+                                    "wrong number of arguments for {}: expected {}, found {}",
+                                    self.describe_callee(callee),
+                                    param_tys.len(),
+                                    args.len(),
+                                ));
                                 for a in args { self.check_expr(a); }
                             } else {
                                 for (arg, pty) in args.iter().zip(param_tys.iter()) {
@@ -1087,7 +1104,12 @@ impl<'a> TypeChecker<'a> {
 
             HirExprKind::MethodCall(recv, method_name, _, args) => {
                 let recv_ty = self.check_expr(recv);
-                for a in args { self.check_expr(a); }
+                let method_str = self.interner.resolve(*method_name);
+                let defer_closure_args = method_str == "sort_by"
+                    && matches!(args.first().map(|arg| &arg.kind), Some(HirExprKind::Closure(..)));
+                if !defer_closure_args {
+                    for a in args { self.check_expr(a); }
+                }
 
                 // Resolve the receiver type to find the method
                 let base_ty = self.shallow_resolve(recv_ty.clone());
@@ -1097,7 +1119,6 @@ impl<'a> TypeChecker<'a> {
                     other => other.clone(),
                 };
 
-                let method_str = self.interner.resolve(*method_name);
                 let inner_is_string_like = matches!(&inner_ty, TyKind::Str)
                     || matches!(&inner_ty, TyKind::Adt(def_id, _) if self.is_string_def(*def_id));
                 if matches!(&inner_ty, TyKind::RawPtr(_, _)) {
@@ -1175,6 +1196,45 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                if method_str == "sort_by" && args.len() == 1 {
+                    let elem_ty = match &inner_ty {
+                        TyKind::Slice(elem) | TyKind::Array(elem, _) => Some(elem.as_ref().clone()),
+                        TyKind::Adt(_, substs) if substs.len() == 1 => Some(substs[0].clone()),
+                        _ => None,
+                    };
+                    if let Some(elem_ty) = elem_ty {
+                        if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
+                            if params.len() == 2 {
+                                let cmp_arg_ty = TyKind::Ref(Box::new(elem_ty), Mutability::Immutable);
+                                for (param, expected_ty) in params.iter().zip([cmp_arg_ty.clone(), cmp_arg_ty]) {
+                                    if !matches!(param.ty, HirTy::Infer(_)) {
+                                        let annotated_ty = self.hir_ty_to_ty(&param.ty);
+                                        self.unify(&expected_ty, &annotated_ty, param.span);
+                                    }
+                                    if let HirPattern::Ident(hir_id, _, _, _, _) = &param.pat {
+                                        if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                                            self.local_types.insert(def_id, expected_ty);
+                                        }
+                                    }
+                                }
+
+                                let body_ty = self.check_expr(body);
+                                if let Some(ordering_sym) = self.interner.lookup("Ordering") {
+                                    if let Some(&ordering_def_id) = self.type_name_to_def.get(&ordering_sym) {
+                                        let ordering_ty = TyKind::Adt(ordering_def_id, vec![]);
+                                        self.unify(&ordering_ty, &body_ty, body.span);
+                                        if let Some(ret_ty) = ret_ty {
+                                            let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
+                                            self.unify(&ordering_ty, &annotated_ret_ty, expr.span);
+                                        }
+                                    }
+                                }
+                                return TyKind::Unit;
+                            }
+                        }
+                    }
+                }
+
                 if matches!(&inner_ty, TyKind::Adt(def_id, _) if *def_id == SYNTH_PARSED_ARGS_DEF_ID) {
                     match method_str {
                         "has" if args.len() == 1 => return TyKind::Bool,
@@ -1242,8 +1302,11 @@ impl<'a> TypeChecker<'a> {
                                 let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
                                 if args.len() != user_params.len() {
                                     self.error(expr.span, &format!(
-                                        "wrong number of arguments: expected {}, found {}",
-                                        user_params.len(), args.len()));
+                                        "wrong number of arguments for method {}: expected {}, found {}",
+                                        self.interner.resolve(*method_name),
+                                        user_params.len(),
+                                        args.len(),
+                                    ));
                                 }
                                 return ret_ty;
                             }
@@ -1262,8 +1325,11 @@ impl<'a> TypeChecker<'a> {
                                         let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
                                         if args.len() != user_params.len() {
                                             self.error(expr.span, &format!(
-                                                "wrong number of arguments: expected {}, found {}",
-                                                user_params.len(), args.len()));
+                                                "wrong number of arguments for method {}: expected {}, found {}",
+                                                self.interner.resolve(*method_name),
+                                                user_params.len(),
+                                                args.len(),
+                                            ));
                                         }
                                         return ret_ty;
                                     }
@@ -1284,12 +1350,29 @@ impl<'a> TypeChecker<'a> {
                         if let Some(methods) = self.resolve.impl_methods.get(&type_name) {
                             if let Some((_, method_def_id)) = methods.iter().find(|(n, _)| *n == *method_name) {
                                 if let Some((param_tys, ret_ty)) = self.fn_sigs.get(method_def_id).cloned() {
+                                    let n_generics = self.generic_fn_defs.get(method_def_id).copied().unwrap_or(0);
+                                    let (param_tys, ret_ty) = if n_generics > 0 {
+                                        let infer_vars: Vec<TyKind> = (0..n_generics)
+                                            .map(|_| self.fresh_infer(InferKind::General))
+                                            .collect();
+                                        (
+                                            param_tys.iter()
+                                                .map(|t| self.substitute_params(t, &infer_vars))
+                                                .collect(),
+                                            self.substitute_params(&ret_ty, &infer_vars),
+                                        )
+                                    } else {
+                                        (param_tys, ret_ty)
+                                    };
                                     // Check argument types (skip &self parameter)
                                     let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
                                     if args.len() != user_params.len() {
                                         self.error(expr.span, &format!(
-                                            "wrong number of arguments: expected {}, found {}",
-                                            user_params.len(), args.len()));
+                                            "wrong number of arguments for method {}: expected {}, found {}",
+                                            self.interner.resolve(*method_name),
+                                            user_params.len(),
+                                            args.len(),
+                                        ));
                                     } else {
                                         for (arg, pty) in args.iter().zip(user_params.iter()) {
                                             let aty = self.get_expr_ty_cached(arg);

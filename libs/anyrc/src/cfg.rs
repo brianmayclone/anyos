@@ -15,7 +15,7 @@
 
 use crate::prelude::*;
 use crate::ast::*;
-use crate::intern::{Interner, Symbol};
+use crate::intern::Interner;
 use crate::lexer::TokenKind;
 use anyos_std::collections::HashMap;
 
@@ -252,7 +252,7 @@ fn strip_items(items: &mut Vec<Item>, ctx: &CfgContext, interner: &Interner) {
             }
             Item::Fn(f) => {
                 if let Some(ref mut body) = f.body {
-                    strip_stmts(&mut body.stmts, ctx, interner);
+                    strip_block(body, ctx, interner);
                 }
             }
             _ => {}
@@ -260,25 +260,167 @@ fn strip_items(items: &mut Vec<Item>, ctx: &CfgContext, interner: &Interner) {
     }
 }
 
+fn strip_block(block: &mut Block, ctx: &CfgContext, interner: &Interner) {
+    strip_stmts(&mut block.stmts, ctx, interner);
+}
+
 fn strip_stmts(stmts: &mut Vec<Stmt>, ctx: &CfgContext, interner: &Interner) {
     stmts.retain(|stmt| {
-        if let Stmt::Item(item) = stmt {
-            should_keep_item_attrs(item_attrs(item), ctx, interner)
-        } else {
-            true
+        match stmt {
+            Stmt::Item(item) => should_keep_item_attrs(item_attrs(item), ctx, interner),
+            Stmt::Attributed(attrs, _, _) => should_keep_item_attrs(attrs, ctx, interner),
+            _ => true,
         }
     });
     for stmt in stmts.iter_mut() {
-        if let Stmt::Item(item) = stmt {
-            match item {
-                Item::Mod(md) => {
-                    if let Some(ref mut sub_items) = md.items {
-                        strip_items(sub_items, ctx, interner);
-                    }
-                }
-                Item::Impl(ib) => strip_items(&mut ib.items, ctx, interner),
-                _ => {}
+        strip_stmt(stmt, ctx, interner);
+    }
+}
+
+fn strip_stmt(stmt: &mut Stmt, ctx: &CfgContext, interner: &Interner) {
+    match stmt {
+        Stmt::Let(_, _, init, _) => {
+            if let Some(init) = init {
+                strip_expr(init, ctx, interner);
             }
         }
+        Stmt::Expr(expr) | Stmt::Semi(expr, _) => strip_expr(expr, ctx, interner),
+        Stmt::Item(item) => match item {
+            Item::Mod(md) => {
+                if let Some(ref mut sub_items) = md.items {
+                    strip_items(sub_items, ctx, interner);
+                }
+            }
+            Item::Impl(ib) => strip_items(&mut ib.items, ctx, interner),
+            Item::Fn(f) => {
+                if let Some(ref mut body) = f.body {
+                    strip_block(body, ctx, interner);
+                }
+            }
+            _ => {}
+        },
+        Stmt::Attributed(_, inner, _) => strip_stmt(inner, ctx, interner),
+    }
+}
+
+fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
+    match expr {
+        Expr::Binary(_, lhs, rhs, _) | Expr::Assign(lhs, rhs, _) | Expr::AssignOp(_, lhs, rhs, _) => {
+            strip_expr(lhs, ctx, interner);
+            strip_expr(rhs, ctx, interner);
+        }
+        Expr::Unary(_, inner, _)
+        | Expr::Return(Some(inner), _)
+        | Expr::Ref(inner, _, _)
+        | Expr::Deref(inner, _)
+        | Expr::Paren(inner, _)
+        | Expr::Cast(inner, _, _) => strip_expr(inner, ctx, interner),
+        Expr::Call(callee, args, _) => {
+            strip_expr(callee, ctx, interner);
+            for arg in args {
+                strip_expr(arg, ctx, interner);
+            }
+        }
+        Expr::MethodCall(recv, _, _, args, _) => {
+            strip_expr(recv, ctx, interner);
+            for arg in args {
+                strip_expr(arg, ctx, interner);
+            }
+        }
+        Expr::Field(inner, _, _) => strip_expr(inner, ctx, interner),
+        Expr::Index(base, index, _) => {
+            strip_expr(base, ctx, interner);
+            strip_expr(index, ctx, interner);
+        }
+        Expr::Block(block) | Expr::Unsafe(block, _) | Expr::Loop(block, _, _) => {
+            strip_block(block, ctx, interner);
+        }
+        Expr::If(cond, then_block, else_branch, _) => {
+            strip_expr(cond, ctx, interner);
+            strip_block(then_block, ctx, interner);
+            if let Some(else_expr) = else_branch {
+                strip_expr(else_expr, ctx, interner);
+            }
+        }
+        Expr::Match(scrutinee, arms, _) => {
+            strip_expr(scrutinee, ctx, interner);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    strip_expr(guard, ctx, interner);
+                }
+                strip_expr(&mut arm.body, ctx, interner);
+            }
+        }
+        Expr::While(cond, body, _, _) => {
+            strip_expr(cond, ctx, interner);
+            strip_block(body, ctx, interner);
+        }
+        Expr::For(_, iter, body, _, _) => {
+            strip_expr(iter, ctx, interner);
+            strip_block(body, ctx, interner);
+        }
+        Expr::Closure(_, _, body, _, _) => strip_expr(body, ctx, interner),
+        Expr::Break(_, value, _) => {
+            if let Some(value) = value {
+                strip_expr(value, ctx, interner);
+            }
+        }
+        Expr::Struct(_, fields, base, _) => {
+            for field in fields {
+                strip_expr(&mut field.value, ctx, interner);
+            }
+            if let Some(base) = base {
+                strip_expr(base, ctx, interner);
+            }
+        }
+        Expr::Tuple(items, _) | Expr::Array(items, _) => {
+            for item in items {
+                strip_expr(item, ctx, interner);
+            }
+        }
+        Expr::ArrayRepeat(value, count, _) => {
+            strip_expr(value, ctx, interner);
+            strip_expr(count, ctx, interner);
+        }
+        Expr::Range(start, end, _, _) => {
+            if let Some(start) = start {
+                strip_expr(start, ctx, interner);
+            }
+            if let Some(end) = end {
+                strip_expr(end, ctx, interner);
+            }
+        }
+        Expr::IfLet(_, scrutinee, then_block, else_branch, _) => {
+            strip_expr(scrutinee, ctx, interner);
+            strip_block(then_block, ctx, interner);
+            if let Some(else_expr) = else_branch {
+                strip_expr(else_expr, ctx, interner);
+            }
+        }
+        Expr::WhileLet(_, scrutinee, body, _, _) => {
+            strip_expr(scrutinee, ctx, interner);
+            strip_block(body, ctx, interner);
+        }
+        Expr::InlineAsm(asm) => {
+            for operand in &mut asm.operands {
+                match operand {
+                    AsmOperand::In { expr, .. } => strip_expr(expr, ctx, interner),
+                    AsmOperand::Out { expr: Some(expr), .. } => strip_expr(expr, ctx, interner),
+                    AsmOperand::InOut { expr, out_expr, .. } => {
+                        strip_expr(expr, ctx, interner);
+                        if let Some(out_expr) = out_expr {
+                            strip_expr(out_expr, ctx, interner);
+                        }
+                    }
+                    AsmOperand::Const { expr } => strip_expr(expr, ctx, interner),
+                    AsmOperand::Sym { .. } | AsmOperand::Out { expr: None, .. } => {}
+                }
+            }
+        }
+        Expr::Lit(_, _)
+        | Expr::Path(_)
+        | Expr::Continue(_, _)
+        | Expr::Return(None, _)
+        | Expr::MacroCall(_, _, _) => {}
     }
 }

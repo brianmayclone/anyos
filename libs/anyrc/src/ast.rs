@@ -371,6 +371,7 @@ pub struct Block {
 }
 
 pub enum Stmt {
+    Attributed(Vec<Attribute>, Box<Stmt>, Span),
     Let(Pattern, Option<Ty>, Option<Box<Expr>>, Span),
     Expr(Expr),
     Semi(Expr, Span),

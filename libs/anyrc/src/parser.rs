@@ -1017,6 +1017,23 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Stmt {
         let start = self.current().span;
 
+        if self.at_exact(&TokenKind::Hash) {
+            let attrs = self.parse_attrs();
+            let vis = self.parse_visibility();
+            if self.at_item_start_after_leading() {
+                return Stmt::Item(
+                    self.parse_item_after_leading(attrs, vis, start)
+                        .expect("item after attributes"),
+                );
+            }
+            let stmt = self.parse_stmt_no_attrs(start);
+            return Stmt::Attributed(attrs, Box::new(stmt), self.span_from(start));
+        }
+
+        self.parse_stmt_no_attrs(start)
+    }
+
+    fn parse_stmt_no_attrs(&mut self, start: Span) -> Stmt {
         // let statement
         if self.at_kw(Keyword::Let) {
             self.bump();
@@ -1156,6 +1173,31 @@ impl<'a> Parser<'a> {
         )
     }
 
+    fn at_item_start_after_leading(&self) -> bool {
+        match &self.current().kind {
+            TokenKind::Kw(Keyword::Fn)
+            | TokenKind::Kw(Keyword::Struct)
+            | TokenKind::Kw(Keyword::Enum)
+            | TokenKind::Kw(Keyword::Impl)
+            | TokenKind::Kw(Keyword::Trait)
+            | TokenKind::Kw(Keyword::Use)
+            | TokenKind::Kw(Keyword::Mod)
+            | TokenKind::Kw(Keyword::Const)
+            | TokenKind::Kw(Keyword::Static)
+            | TokenKind::Kw(Keyword::Extern)
+            | TokenKind::Kw(Keyword::Type) => true,
+            TokenKind::Kw(Keyword::Unsafe) => matches!(
+                self.peek_kind(),
+                TokenKind::Kw(Keyword::Fn)
+                    | TokenKind::Kw(Keyword::Trait)
+                    | TokenKind::Kw(Keyword::Impl)
+                    | TokenKind::Kw(Keyword::Extern)
+            ),
+            TokenKind::Ident(sym) => self.interner.resolve(*sym) == "macro_rules",
+            _ => false,
+        }
+    }
+
     // ── Items ──
 
     pub fn parse_crate(&mut self) -> Crate {
@@ -1194,7 +1236,15 @@ impl<'a> Parser<'a> {
         let start = self.current().span;
         let attrs = self.parse_attrs();
         let vis = self.parse_visibility();
+        self.parse_item_after_leading(attrs, vis, start)
+    }
 
+    fn parse_item_after_leading(
+        &mut self,
+        attrs: Vec<Attribute>,
+        vis: Visibility,
+        start: Span,
+    ) -> Option<Item> {
         match &self.current().kind {
             TokenKind::Kw(Keyword::Fn) => {
                 Some(Item::Fn(self.parse_fn_def(vis, attrs, false, false, None, start)))
@@ -1271,6 +1321,24 @@ impl<'a> Parser<'a> {
                     let mut ib = self.parse_impl_block(start);
                     ib.is_unsafe = true;
                     Some(Item::Impl(ib))
+                } else if self.at_kw(Keyword::Extern) {
+                    self.bump();
+                    let abi = if let TokenKind::StringLit(_) = &self.current().kind {
+                        if let TokenKind::StringLit(s) = self.bump().kind {
+                            Some(s)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    if self.at_exact(&TokenKind::LBrace) {
+                        Some(Item::ExternBlock(self.parse_extern_block(abi, start)))
+                    } else if self.at_kw(Keyword::Fn) {
+                        Some(Item::Fn(self.parse_fn_def(vis, attrs, true, false, abi, start)))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -2105,6 +2173,16 @@ impl<'a> Parser<'a> {
         }
 
         // Infer: _
+        if self.at_ident() {
+            let sym = match &self.current().kind {
+                TokenKind::Ident(sym) => *sym,
+                _ => unreachable!(),
+            };
+            if self.interner.resolve(sym) == "_" {
+                self.bump();
+                return Ty::Infer(self.span_from(start));
+            }
+        }
         if self.at_exact(&TokenKind::Kw(Keyword::Mut)) {
             // This shouldn't happen in type position normally
         }

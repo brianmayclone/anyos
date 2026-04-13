@@ -444,6 +444,7 @@ impl<'a> LoweringContext<'a> {
 
     fn lower_stmt(&mut self, stmt: &ast::Stmt) -> HirStmt {
         match stmt {
+            ast::Stmt::Attributed(_, inner, _) => self.lower_stmt(inner),
             ast::Stmt::Let(pat, ty, init, span) => HirStmt::Let(
                 self.alloc_hir_id(),
                 self.lower_pattern(pat),

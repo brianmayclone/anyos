@@ -49,6 +49,10 @@ pub struct Resolver<'a> {
     primitives: Vec<&'static str>,
     /// Map from impl self_ty first segment symbol to list of method (name, def_id)
     impl_methods: HashMap<Symbol, Vec<(Symbol, DefId)>>,
+    /// Map from impl self_ty first segment symbol to associated value items (consts/statics).
+    impl_assoc_values: HashMap<Symbol, Vec<(Symbol, DefId)>>,
+    /// Map from impl self_ty first segment symbol to associated type items.
+    impl_assoc_types: HashMap<Symbol, Vec<(Symbol, DefId)>>,
     /// Module DefId -> scope index that contains the module's items
     module_scopes: HashMap<DefId, usize>,
     /// Root scope index (for `crate::` paths)
@@ -77,6 +81,8 @@ impl<'a> Resolver<'a> {
                 "f32", "f64", "bool", "char", "str",
             ],
             impl_methods: HashMap::new(),
+            impl_assoc_values: HashMap::new(),
+            impl_assoc_types: HashMap::new(),
             module_scopes: HashMap::new(),
             root_scope: 0,
             module_stack: vec![0],
@@ -93,12 +99,22 @@ impl<'a> Resolver<'a> {
         self.define_intrinsic_type("Vec", "Vec");
         self.define_intrinsic_type("String", "String");
         self.define_intrinsic_type("Box", "Box");
+        self.define_intrinsic_type("Clone", "Clone");
+        self.define_intrinsic_type("Copy", "Copy");
+        self.define_intrinsic_type("Debug", "Debug");
         self.define_intrinsic_type("Drop", "Drop");
+        self.define_intrinsic_type("Eq", "Eq");
+        self.define_intrinsic_type("From", "From");
+        self.define_intrinsic_type("Into", "Into");
         self.define_intrinsic_type("Iterator", "Iterator");
         self.define_intrinsic_type("IntoIterator", "IntoIterator");
         self.define_intrinsic_type("FromIterator", "FromIterator");
         self.define_intrinsic_type("ExactSizeIterator", "ExactSizeIterator");
         self.define_intrinsic_type("DoubleEndedIterator", "DoubleEndedIterator");
+        self.define_intrinsic_type("Default", "Default");
+        self.define_intrinsic_type("PartialEq", "PartialEq");
+        self.define_intrinsic_type("PartialOrd", "PartialOrd");
+        self.define_intrinsic_type("Ord", "Ord");
         self.define_intrinsic_type("Send", "Send");
         self.define_intrinsic_type("Sync", "Sync");
 
@@ -131,6 +147,115 @@ impl<'a> Resolver<'a> {
         let id = DefId(self.next_synthetic_def_id);
         self.next_synthetic_def_id += 1;
         id
+    }
+
+    fn resolve_assoc_item_on_type(
+        &mut self,
+        type_name: Symbol,
+        assoc_name: Symbol,
+        hir_id: HirId,
+    ) -> bool {
+        if let Some(methods) = self.impl_methods.get(&type_name) {
+            for &(method_name, method_def_id) in methods {
+                if method_name == assoc_name {
+                    if hir_id != HirId(u32::MAX) {
+                        self.resolutions.insert(hir_id, method_def_id);
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Some(values) = self.impl_assoc_values.get(&type_name) {
+            for &(value_name, value_def_id) in values {
+                if value_name == assoc_name {
+                    if hir_id != HirId(u32::MAX) {
+                        self.resolutions.insert(hir_id, value_def_id);
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Some(types) = self.impl_assoc_types.get(&type_name) {
+            for &(type_item_name, type_item_def_id) in types {
+                if type_item_name == assoc_name {
+                    if hir_id != HirId(u32::MAX) {
+                        self.resolutions.insert(hir_id, type_item_def_id);
+                    }
+                    return true;
+                }
+            }
+        }
+
+        if let Some(type_def_id) = self.lookup(type_name, Namespace::Type) {
+            if let Some(enum_info) = self.enum_variants.get(&type_def_id) {
+                if let Some(&variant_def_id) = enum_info.variants.get(&assoc_name) {
+                    if hir_id != HirId(u32::MAX) {
+                        self.resolutions.insert(hir_id, variant_def_id);
+                    }
+                    return true;
+                }
+            }
+
+            if self.intrinsic_fns.contains_key(&type_def_id) {
+                let type_str = self.interner.resolve(type_name);
+                let assoc_str = self.interner.resolve(assoc_name);
+                let full_path = format!("{}::{}", type_str, assoc_str);
+                let def_id = self.alloc_synthetic_def_id();
+                self.intrinsic_fns.insert(def_id, full_path);
+                if hir_id != HirId(u32::MAX) {
+                    self.resolutions.insert(hir_id, def_id);
+                }
+                return true;
+            }
+        }
+
+        let type_name_str = self.interner.resolve(type_name).to_string();
+        if assoc_name == self.find_symbol("default").unwrap_or_else(|| self.interner.intern("default")) {
+            let def_id = self.alloc_synthetic_def_id();
+            self.intrinsic_fns.insert(def_id, "Default::default".to_string());
+            if hir_id != HirId(u32::MAX) {
+                self.resolutions.insert(hir_id, def_id);
+            }
+            return true;
+        }
+        if self.primitives.iter().any(|&p| p == type_name_str) {
+            let assoc_str = self.interner.resolve(assoc_name);
+            let is_assoc_const = matches!(
+                (type_name_str.as_str(), assoc_str),
+                ("u8", "MAX") | ("u16", "MAX") | ("u32", "MAX") | ("u64", "MAX") | ("u128", "MAX") | ("usize", "MAX")
+                | ("i8", "MAX") | ("i16", "MAX") | ("i32", "MAX") | ("i64", "MAX") | ("i128", "MAX") | ("isize", "MAX")
+                | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")
+                | ("u8", "MIN") | ("u16", "MIN") | ("u32", "MIN") | ("u64", "MIN") | ("u128", "MIN") | ("usize", "MIN")
+                | ("f32", "INFINITY") | ("f32", "NEG_INFINITY") | ("f32", "NAN")
+                | ("f64", "INFINITY") | ("f64", "NEG_INFINITY") | ("f64", "NAN")
+            );
+            let is_assoc_fn = matches!(assoc_str, "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_str_radix")
+                || (type_name_str == "char" && assoc_str == "from_u32");
+            if is_assoc_const || is_assoc_fn {
+                let full_path = format!("{}::{}", type_name_str, assoc_str);
+                let def_id = self.alloc_synthetic_def_id();
+                self.intrinsic_fns.insert(def_id, full_path);
+                if hir_id != HirId(u32::MAX) {
+                    self.resolutions.insert(hir_id, def_id);
+                }
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn register_assoc_items_in_current_scope(&mut self, items: &[HirItem]) {
+        for item in items {
+            match &item.kind {
+                HirItemKind::TypeAlias(ta) => self.define(ta.name, Namespace::Type, ta.def_id),
+                HirItemKind::Const(c) => self.define(c.name, Namespace::Value, c.def_id),
+                HirItemKind::Static(s) => self.define(s.name, Namespace::Value, s.def_id),
+                _ => {}
+            }
+        }
     }
 
     pub fn resolve_crate(&mut self, krate: &HirCrate) -> ResolveResult {
@@ -362,7 +487,12 @@ impl<'a> Resolver<'a> {
                 return None;
             } else {
                 // Non-last segment: must be a module
-                if let Some(&mod_def_id) = self.scopes[scope].bindings.get(&(seg, Namespace::Type)) {
+                let mod_def_id = if i == 0 && start_idx == 0 {
+                    self.lookup_from_scope(scope, seg, Namespace::Type)
+                } else {
+                    self.scopes[scope].bindings.get(&(seg, Namespace::Type)).copied()
+                };
+                if let Some(mod_def_id) = mod_def_id {
                     if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
                         scope = mod_scope;
                     } else {
@@ -398,7 +528,12 @@ impl<'a> Resolver<'a> {
         let mut scope = start_scope;
         for (idx, &seg) in path[start_idx..].iter().enumerate() {
             let is_last = idx == path.len() - start_idx - 1;
-            if let Some(&mod_def_id) = self.scopes[scope].bindings.get(&(seg, Namespace::Type)) {
+            let mod_def_id = if idx == 0 && start_idx == 0 {
+                self.lookup_from_scope(scope, seg, Namespace::Type)
+            } else {
+                self.scopes[scope].bindings.get(&(seg, Namespace::Type)).copied()
+            };
+            if let Some(mod_def_id) = mod_def_id {
                 if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
                     scope = mod_scope;
                     if is_last {
@@ -475,6 +610,19 @@ impl<'a> Resolver<'a> {
         }
     }
 
+    fn lookup_from_scope(&self, mut scope: usize, name: Symbol, ns: Namespace) -> Option<DefId> {
+        loop {
+            if let Some(&def_id) = self.scopes[scope].bindings.get(&(name, ns)) {
+                return Some(def_id);
+            }
+            if let Some(parent) = self.scopes[scope].parent {
+                scope = parent;
+            } else {
+                return None;
+            }
+        }
+    }
+
     fn register_impl_methods(&mut self, impl_block: &HirImplBlock) {
         // Get the self type name from the first segment of the type path
         let self_ty_name = match &impl_block.self_ty {
@@ -483,11 +631,32 @@ impl<'a> Resolver<'a> {
         };
 
         for item in &impl_block.items {
-            if let HirItemKind::Fn(f) = &item.kind {
-                self.impl_methods
-                    .entry(self_ty_name)
-                    .or_default()
-                    .push((f.name, f.def_id));
+            match &item.kind {
+                HirItemKind::Fn(f) => {
+                    self.impl_methods
+                        .entry(self_ty_name)
+                        .or_default()
+                        .push((f.name, f.def_id));
+                }
+                HirItemKind::Const(c) => {
+                    self.impl_assoc_values
+                        .entry(self_ty_name)
+                        .or_default()
+                        .push((c.name, c.def_id));
+                }
+                HirItemKind::Static(s) => {
+                    self.impl_assoc_values
+                        .entry(self_ty_name)
+                        .or_default()
+                        .push((s.name, s.def_id));
+                }
+                HirItemKind::TypeAlias(ta) => {
+                    self.impl_assoc_types
+                        .entry(self_ty_name)
+                        .or_default()
+                        .push((ta.name, ta.def_id));
+                }
+                _ => {}
             }
         }
     }
@@ -580,6 +749,7 @@ impl<'a> Resolver<'a> {
     fn resolve_impl(&mut self, ib: &HirImplBlock) {
         self.push_scope();
         self.resolve_generics(&ib.generics);
+        self.register_assoc_items_in_current_scope(&ib.items);
 
         let saved_impl_self_ty = self.current_impl_self_ty;
 
@@ -622,6 +792,7 @@ impl<'a> Resolver<'a> {
         }
 
         self.resolve_generics(&t.generics);
+        self.register_assoc_items_in_current_scope(&t.items);
         for bound in &t.supertraits {
             self.resolve_path(&bound.path, Namespace::Type, HirId(u32::MAX));
         }
@@ -776,7 +947,12 @@ impl<'a> Resolver<'a> {
                     match op {
                         crate::hir::HirAsmOperand::In { expr, .. } => self.resolve_expr(expr),
                         crate::hir::HirAsmOperand::Out { expr: Some(e), .. } => self.resolve_expr(e),
-                        crate::hir::HirAsmOperand::InOut { expr, .. } => self.resolve_expr(expr),
+                        crate::hir::HirAsmOperand::InOut { expr, out_expr, .. } => {
+                            self.resolve_expr(expr);
+                            if let Some(out_expr) = out_expr {
+                                self.resolve_expr(out_expr);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -957,72 +1133,27 @@ impl<'a> Resolver<'a> {
             if path.segments.len() == 2 {
                 // Two-segment path: Enum::Variant or Type::method
                 let second_name = path.segments[1].ident;
-                let type_name = if name_str == "Self" {
-                    self.current_impl_self_ty.unwrap_or(name)
-                } else {
-                    name
-                };
-                let type_name_str = self.interner.resolve(type_name).to_string();
-
-                // Try enum variant first
-                if let Some(enum_def_id) = self.lookup(type_name, Namespace::Type) {
-                    if let Some(enum_info) = self.enum_variants.get(&enum_def_id) {
-                        if let Some(&variant_def_id) = enum_info.variants.get(&second_name) {
-                            if hir_id != HirId(u32::MAX) {
-                                self.resolutions.insert(hir_id, variant_def_id);
-                            }
-                            return;
+                if name_str == "Self" {
+                    if let Some(def_id) = self.lookup(second_name, Namespace::Type) {
+                        if hir_id != HirId(u32::MAX) {
+                            self.resolutions.insert(hir_id, def_id);
                         }
+                        return;
                     }
-                    // Try impl methods
-                    if let Some(methods) = self.impl_methods.get(&type_name) {
-                        for &(method_name, method_def_id) in methods {
-                            if method_name == second_name {
-                                if hir_id != HirId(u32::MAX) {
-                                    self.resolutions.insert(hir_id, method_def_id);
-                                }
-                                return;
-                            }
-                        }
-                    }
-
-                    // Check if first segment is an intrinsic type (e.g. AtomicBool::new, Ordering::Relaxed)
-                    if self.intrinsic_fns.contains_key(&enum_def_id) {
-                        let type_str = self.interner.resolve(type_name);
-                        let method_str = self.interner.resolve(second_name);
-                        let full_path = format!("{}::{}", type_str, method_str);
-                        let def_id = self.alloc_synthetic_def_id();
-                        self.intrinsic_fns.insert(def_id, full_path);
+                    if let Some(def_id) = self.lookup(second_name, Namespace::Value) {
                         if hir_id != HirId(u32::MAX) {
                             self.resolutions.insert(hir_id, def_id);
                         }
                         return;
                     }
                 }
-
-                // Check if first segment is a primitive type with an associated constant
-                if self.primitives.iter().any(|&p| p == type_name_str) {
-                    let second_str = self.interner.resolve(second_name);
-                    let is_assoc_const = matches!(
-                        (type_name_str.as_str(), second_str),
-                        ("u8", "MAX") | ("u16", "MAX") | ("u32", "MAX") | ("u64", "MAX") | ("u128", "MAX") | ("usize", "MAX")
-                        | ("i8", "MAX") | ("i16", "MAX") | ("i32", "MAX") | ("i64", "MAX") | ("i128", "MAX") | ("isize", "MAX")
-                        | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")
-                        | ("u8", "MIN") | ("u16", "MIN") | ("u32", "MIN") | ("u64", "MIN") | ("u128", "MIN") | ("usize", "MIN")
-                        | ("f32", "INFINITY") | ("f32", "NEG_INFINITY") | ("f32", "NAN")
-                        | ("f64", "INFINITY") | ("f64", "NEG_INFINITY") | ("f64", "NAN")
-                    );
-                    let is_assoc_fn = matches!(second_str, "from_le_bytes" | "from_str_radix")
-                        || (type_name_str == "char" && second_str == "from_u32");
-                    if is_assoc_const || is_assoc_fn {
-                        let full_path = format!("{}::{}", type_name_str, second_str);
-                        let def_id = self.alloc_synthetic_def_id();
-                        self.intrinsic_fns.insert(def_id, full_path);
-                        if hir_id != HirId(u32::MAX) {
-                            self.resolutions.insert(hir_id, def_id);
-                        }
-                        return;
-                    }
+                let type_name = if name_str == "Self" {
+                    self.current_impl_self_ty.unwrap_or(name)
+                } else {
+                    name
+                };
+                if self.resolve_assoc_item_on_type(type_name, second_name, hir_id) {
+                    return;
                 }
 
                 // Could not resolve
@@ -1073,7 +1204,6 @@ impl<'a> Resolver<'a> {
                         let next_idx = i + 1;
                         if next_idx == path.segments.len() - 2 {
                             let method_name = path.segments[next_idx + 1].ident;
-                            // Look up impl methods for this type
                             if let Some(methods) = self.impl_methods.get(&seg.ident) {
                                 for &(mname, method_def_id) in methods {
                                     if mname == method_name {
@@ -1081,7 +1211,6 @@ impl<'a> Resolver<'a> {
                                     }
                                 }
                             }
-                            // Try enum variants
                             if let Some(enum_info) = self.enum_variants.get(&sub_def_id) {
                                 if let Some(&variant_def_id) = enum_info.variants.get(&method_name) {
                                     return Some(variant_def_id);
@@ -1148,6 +1277,13 @@ impl<'a> Resolver<'a> {
                     if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
                         scope = mod_scope;
                     } else {
+                        let next_idx = i + 1;
+                        if next_idx == segments.len() - 1 {
+                            let method_name = segments[next_idx].ident;
+                            if self.resolve_assoc_item_on_type(seg.ident, method_name, hir_id) {
+                                return;
+                            }
+                        }
                         let seg_str = self.interner.resolve(seg.ident);
                         self.errors.push(Diagnostic::new(
                             Level::Error,
