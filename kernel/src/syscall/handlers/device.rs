@@ -101,7 +101,7 @@ pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
                 .unwrap_or(0);
             let pte = crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(mapped));
             let user_bytes = copy_user_bytes(mapped as u32, 4, 4);
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "[dll] existing {} -> base={:#x} phys={:#x} pte={:#x} user={}",
                 path,
                 mapped,
@@ -125,7 +125,7 @@ pub fn sys_dll_load(path_ptr: u32, _path_len: u32) -> u32 {
                 ).unwrap_or(0);
                 let pte = crate::memory::virtual_mem::read_pte(crate::memory::address::VirtAddr::new(mapped));
                 let user_bytes = copy_user_bytes(mapped as u32, 4, 4);
-                crate::serial_println!(
+                crate::serial_verbose_println!(
                     "[dll] fresh {} -> base={:#x} phys={:#x} pte={:#x} user={}",
                     path,
                     mapped,

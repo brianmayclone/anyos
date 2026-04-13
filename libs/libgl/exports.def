@@ -111,6 +111,8 @@ EXPORTS
     gl_physics_get_orientation
     gl_physics_set_angular_damping
     gl_physics_set_linear_damping
+    gl_physics_set_soft_body
+    gl_physics_get_deformation_scale
     gl_init_fullscreen
     gl_exit_fullscreen
     gl_swap_buffers_fullscreen

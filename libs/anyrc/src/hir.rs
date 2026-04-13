@@ -144,6 +144,7 @@ pub struct HirStaticDef {
 #[derive(Clone)]
 pub struct HirUseTree {
     pub id: HirId,
+    pub vis: Visibility,
     pub path: Vec<Symbol>,
     pub kind: HirUseTreeKind,
     pub span: Span,
@@ -223,7 +224,7 @@ pub struct HirInlineAsm {
 pub enum HirAsmOperand {
     In { reg: HirAsmReg, expr: Box<HirExpr> },
     Out { reg: HirAsmReg, expr: Option<Box<HirExpr>> },
-    InOut { reg: HirAsmReg, expr: Box<HirExpr> },
+    InOut { reg: HirAsmReg, expr: Box<HirExpr>, out_expr: Option<Box<HirExpr>> },
 }
 
 pub enum HirAsmReg {

@@ -19,6 +19,7 @@ pub enum Item {
     Static(StaticDef),
     Use(UseTree),
     Mod(ModDef),
+    ExternCrate(ExternCrateDef),
     MacroDef(MacroRulesDef),
     MacroCall(Path, Vec<TokenTree>, Span),
     ExternBlock(ExternBlockDef),
@@ -128,6 +129,7 @@ pub struct StaticDef {
 }
 
 pub struct UseTree {
+    pub vis: Visibility,
     pub path: Vec<Symbol>,
     pub kind: UseTreeKind,
     pub span: Span,
@@ -142,7 +144,14 @@ pub enum UseTreeKind {
 pub struct ModDef {
     pub name: Symbol,
     pub items: Option<Vec<Item>>,
+    pub attrs: Vec<Attribute>,
     pub vis: Visibility,
+    pub span: Span,
+}
+
+pub struct ExternCrateDef {
+    pub name: Symbol,
+    pub alias: Option<Symbol>,
     pub span: Span,
 }
 
@@ -225,7 +234,7 @@ pub struct InlineAsm {
 pub enum AsmOperand {
     In { reg: AsmReg, expr: Box<Expr> },
     Out { reg: AsmReg, expr: Option<Box<Expr>> },
-    InOut { reg: AsmReg, expr: Box<Expr> },
+    InOut { reg: AsmReg, expr: Box<Expr>, out_expr: Option<Box<Expr>> },
     Const { expr: Box<Expr> },
     Sym { path: Path },
 }

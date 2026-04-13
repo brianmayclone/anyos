@@ -1,11 +1,13 @@
 use anyrc::diagnostics::SourceMap;
 use anyrc::driver::{compile, CompileOptions, CrateType, EmitKind};
+use anyrc::loader;
 use anyrc::hir::HirStmt;
 use anyrc::hir::HirExprKind;
 use anyrc::hir_lower::LoweringContext;
 use anyrc::intern::Interner;
 use anyrc::parser::Parser;
 use std::fs;
+use std::path::{Path, PathBuf};
 
 fn compile_ok(name: &str, src: &str) {
     let output = format!("/tmp/{}_anyrc_test.o", name);
@@ -37,16 +39,75 @@ fn compile_ok(name: &str, src: &str) {
 }
 
 fn parse_file_ok(path: &str) {
-    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("repo root");
+    let repo_root = repo_root();
     let full_path = repo_root.join(path);
     let src = fs::read_to_string(&full_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", full_path.display(), e));
     let mut interner = Interner::new();
     let mut parser = Parser::new(&src, &mut interner);
     let _ = parser.parse_crate();
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root")
+        .to_path_buf()
+}
+
+fn anyos_cfg_flags() -> Vec<String> {
+    vec![
+        String::from("target_arch=\"x86_64\""),
+        String::from("target_pointer_width=\"64\""),
+        String::from("target_endian=\"little\""),
+        String::from("target_os=\"anyos\""),
+    ]
+}
+
+fn compile_repo_rlib(
+    crate_name: &str,
+    rel_src: &str,
+    src_dir: &str,
+    extern_crates: Vec<anyrc::driver::ExternCrateSpec>,
+) -> loader::CrateMetadata {
+    let repo_root = repo_root();
+    let input_path = repo_root.join(rel_src);
+    let src = fs::read_to_string(&input_path)
+        .unwrap_or_else(|e| panic!("failed to read {}: {}", input_path.display(), e));
+    let output = format!("/tmp/{}_anyrc_test.rlib", crate_name);
+    let opts = CompileOptions {
+        input: input_path.display().to_string(),
+        output: output.clone(),
+        emit: EmitKind::Rlib,
+        opt_level: 0,
+        crate_type: CrateType::Lib,
+        crate_name: Some(crate_name.to_string()),
+        src_dir: Some(repo_root.join(src_dir).display().to_string()),
+        extern_crates,
+        cfg_flags: anyos_cfg_flags(),
+        linker_script: None,
+        link_args: vec![],
+        env_vars: vec![],
+        features: vec![],
+    };
+
+    let bytes = match compile(&src, &opts.input, &opts) {
+        Ok(bytes) => bytes,
+        Err(errors) => {
+            let source_map = SourceMap::new(opts.input.clone(), src);
+            let rendered: Vec<String> = errors.iter().map(|e| e.render(&source_map)).collect();
+            panic!(
+                "expected repo crate `{}` to compile, but got errors:\n{}",
+                crate_name,
+                rendered.join("\n")
+            );
+        }
+    };
+
+    fs::write(&output, &bytes).expect("write rlib output");
+    let (_, meta) = loader::unpack_rlib(&bytes).expect("unpack rlib metadata");
+    meta
 }
 
 #[test]
@@ -64,6 +125,119 @@ fn raw_ptr_field_access_after_deref_compiles() {
         }
         "#,
     );
+}
+
+#[test]
+fn anyos_std_public_interface_includes_runtime_modules() {
+    let libheap_meta = compile_repo_rlib("libheap", "libs/libheap/src/lib.rs", "libs/libheap/src", vec![]);
+    assert!(
+        libheap_meta.interface_source.contains("use core::alloc::Layout;"),
+        "libheap interface lost private imports needed by exported signatures:\n{}",
+        libheap_meta.interface_source
+    );
+
+    let libheap_rlib = String::from("/tmp/libheap_anyrc_test.rlib");
+    let anyos_std_meta = compile_repo_rlib(
+        "anyos_std",
+        "libs/stdlib/src/lib.rs",
+        "libs/stdlib/src",
+        vec![anyrc::driver::ExternCrateSpec {
+            name: String::from("libheap"),
+            rlib_path: libheap_rlib,
+        }],
+    );
+
+    for needle in [
+        "pub mod fs {",
+        "pub fn open(",
+        "pub const O_WRITE: u32",
+        "pub mod env {",
+        "pub fn set(",
+        "pub fn get(",
+        "pub mod shell {",
+        "pub struct Redirect",
+        "pub fn parse_redirects(",
+    ] {
+        assert!(
+            anyos_std_meta.interface_source.contains(needle),
+            "anyos_std interface missing `{}`:\n{}",
+            needle,
+            anyos_std_meta.interface_source
+        );
+    }
+}
+
+#[test]
+fn libfont_client_compiles_with_builtin_dll_exports_and_public_interface() {
+    let dynlink_rlib = String::from("/tmp/dynlink_anyrc_test.rlib");
+    let _dynlink_meta = compile_repo_rlib("dynlink", "libs/dynlink/src/lib.rs", "libs/dynlink/src", vec![]);
+    let meta = compile_repo_rlib(
+        "libfont_client",
+        "libs/libfont_client/src/lib.rs",
+        "libs/libfont_client/src",
+        vec![anyrc::driver::ExternCrateSpec {
+            name: String::from("dynlink"),
+            rlib_path: dynlink_rlib,
+        }],
+    );
+
+    assert!(
+        !meta.interface_source.contains("Elf64Sym"),
+        "libfont_client interface leaked dynlink internals:\n{}",
+        meta.interface_source
+    );
+    for needle in [
+        "pub fn init() -> bool;",
+        "pub fn load(arg0: &str) -> Option<u32>;",
+        "pub fn measure(arg0: u32, arg1: u16, arg2: &str) -> (u32, u32);",
+    ] {
+        assert!(
+            meta.interface_source.contains(needle),
+            "libfont_client interface missing `{}`:\n{}",
+            needle,
+            meta.interface_source
+        );
+    }
+}
+
+#[test]
+fn parser_accepts_wrapped_libheap_interface_source() {
+    let meta = compile_repo_rlib("libheap", "libs/libheap/src/lib.rs", "libs/libheap/src", vec![]);
+    let src = format!("mod libheap {{\n{}\n}}", meta.interface_source);
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(&src, &mut interner);
+    let _ = parser.parse_crate();
+}
+
+#[test]
+fn parser_accepts_stdlib_source_files() {
+    fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).expect("read stdlib dir") {
+            let entry = entry.expect("stdlib dir entry");
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().and_then(|name| name.to_str()) == Some("host") {
+                    continue;
+                }
+                walk(&path, files);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                files.push(path);
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    walk(&repo_root().join("libs/stdlib/src"), &mut files);
+    files.sort();
+
+    for path in files {
+        let src = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {}", path.display(), e));
+        let mut interner = Interner::new();
+        let mut parser = Parser::new(&src, &mut interner);
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| parser.parse_crate()))
+            .unwrap_or_else(|_| panic!("parser failed for {}", path.display()));
+    }
 }
 
 #[test]
@@ -730,4 +904,17 @@ fn parser_splits_while_and_following_assignment_statement() {
     assert_eq!(body.stmts.len(), 4);
     assert!(matches!(body.stmts[2], HirStmt::Semi(ref expr, _) if matches!(expr.kind, HirExprKind::Loop(_, _))));
     assert!(matches!(body.stmts[3], HirStmt::Semi(ref expr, _) if matches!(expr.kind, HirExprKind::Assign(_, _))));
+}
+
+#[test]
+fn let_else_result_binding_compiles() {
+    compile_ok(
+        "let_else_result_binding",
+        r#"
+        fn unwrap_or_zero(x: Result<i32, i32>) -> i32 {
+            let Ok(value) = x else { return 0; };
+            value
+        }
+        "#,
+    );
 }

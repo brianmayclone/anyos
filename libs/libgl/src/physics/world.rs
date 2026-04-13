@@ -114,6 +114,7 @@ impl PhysicsWorld {
         self.integrate_motion(dt);
 
         let contacts = self.collect_contacts();
+        self.apply_contact_deformation(&contacts);
         for c in &contacts {
             touching_counts[c.i] = touching_counts[c.i].saturating_add(1);
             touching_counts[c.j] = touching_counts[c.j].saturating_add(1);
@@ -133,6 +134,7 @@ impl PhysicsWorld {
             }
         }
 
+        self.integrate_deformation(dt, &touching_counts);
         self.update_sleep_states(dt, &touching_counts);
     }
 
@@ -509,4 +511,114 @@ impl PhysicsWorld {
             }
         }
     }
+
+    fn apply_contact_deformation(&mut self, contacts: &[Contact]) {
+        for contact in contacts.iter().copied() {
+            let r_i = contact.point.sub(self.bodies[contact.i].position);
+            let r_j = contact.point.sub(self.bodies[contact.j].position);
+            let rel_vel = self.point_velocity(contact.i, r_i).sub(self.point_velocity(contact.j, r_j));
+            let impact_speed = (-rel_vel.dot(contact.normal)).max(0.0);
+            let support_pressure = (contact.penetration - PENETRATION_SLOP).max(0.0) * 8.0;
+            let intensity = impact_speed + support_pressure;
+            if intensity <= 1e-4 {
+                continue;
+            }
+
+            self.inject_deformation(contact.i, contact.normal, intensity);
+            self.inject_deformation(contact.j, contact.normal.neg(), intensity);
+        }
+    }
+
+    fn inject_deformation(&mut self, idx: usize, normal_world: Vec3, intensity: f32) {
+        let Some(body) = self.bodies.get_mut(idx) else {
+            return;
+        };
+        if !body.soft_body || body.softness <= 0.0 || body.max_deformation <= 0.0 || body.inv_mass <= 0.0 {
+            return;
+        }
+
+        let local_normal = body.orientation.conjugate().rotate_vec(normal_world).normalized();
+        let weights = Vec3::new(
+            math::abs(local_normal.x),
+            math::abs(local_normal.y),
+            math::abs(local_normal.z),
+        );
+        let weight_sum = weights.x + weights.y + weights.z;
+        if weight_sum <= 1e-6 {
+            return;
+        }
+
+        let weights = weights.scale(1.0 / weight_sum);
+        let compression = clamp_f32(
+            intensity * body.softness * (0.045 / body.mass.max(0.25)),
+            0.0,
+            body.max_deformation,
+        );
+        if compression <= 1e-6 {
+            return;
+        }
+
+        let expand_weights_raw = Vec3::new(1.0 - weights.x, 1.0 - weights.y, 1.0 - weights.z);
+        let expand_sum = expand_weights_raw.x + expand_weights_raw.y + expand_weights_raw.z;
+        let expand_weights = if expand_sum > 1e-6 {
+            expand_weights_raw.scale(1.0 / expand_sum)
+        } else {
+            Vec3::new(0.33333334, 0.33333334, 0.33333334)
+        };
+
+        let kick = expand_weights.scale(compression).sub(weights.scale(compression));
+        body.deformation_velocity = body.deformation_velocity.add(kick.scale(body.deformation_recovery.max(1.0)));
+        body.deformation_velocity = clamp_vec3(body.deformation_velocity, body.max_deformation * 18.0);
+        body.wake();
+    }
+
+    fn integrate_deformation(&mut self, dt: f32, touching_counts: &[u8]) {
+        for (idx, body) in self.bodies.iter_mut().enumerate() {
+            if !body.soft_body || body.max_deformation <= 0.0 {
+                body.deformation = Vec3::ZERO;
+                body.deformation_velocity = Vec3::ZERO;
+                continue;
+            }
+
+            let in_contact = touching_counts.get(idx).copied().unwrap_or(0) > 0;
+            let recovery = body.deformation_recovery.max(0.0);
+            let recovery_scale = if in_contact { 1.0 } else { 2.6 };
+            let damping_scale = if in_contact { 1.0 } else { 3.8 };
+            let spring = body.deformation.scale(-(recovery * recovery_scale));
+            let damping = body
+                .deformation_velocity
+                .scale(-(math::sqrt(recovery) * 1.35 * damping_scale));
+            body.deformation_velocity = body.deformation_velocity.add(spring.add(damping).scale(dt));
+            body.deformation = body.deformation.add(body.deformation_velocity.scale(dt));
+
+            let mean = (body.deformation.x + body.deformation.y + body.deformation.z) * (1.0 / 3.0);
+            body.deformation = body.deformation.sub(Vec3::new(mean, mean, mean));
+            body.deformation = clamp_soft_body_deformation(body.deformation, body.max_deformation);
+
+            let quiet = body.deformation.length_sq() < 1e-7 && body.deformation_velocity.length_sq() < 1e-6;
+            if !in_contact {
+                body.deformation_velocity = body.deformation_velocity.scale(1.0 / (1.0 + dt * recovery * 6.0));
+            }
+            if quiet || (!in_contact && body.deformation.length_sq() < 5e-6) {
+                body.deformation = Vec3::ZERO;
+                body.deformation_velocity = Vec3::ZERO;
+            }
+        }
+    }
+}
+
+fn clamp_soft_body_deformation(v: Vec3, max_deformation: f32) -> Vec3 {
+    Vec3::new(
+        clamp_f32(v.x, -max_deformation, max_deformation),
+        clamp_f32(v.y, -max_deformation, max_deformation),
+        clamp_f32(v.z, -max_deformation, max_deformation),
+    )
+}
+
+fn clamp_vec3(v: Vec3, max_abs: f32) -> Vec3 {
+    Vec3::new(
+        clamp_f32(v.x, -max_abs, max_abs),
+        clamp_f32(v.y, -max_abs, max_abs),
+        clamp_f32(v.z, -max_abs, max_abs),
+    )
 }

@@ -178,6 +178,11 @@ fn mat4_scale(sx: f32, sy: f32, sz: f32) -> Mat4 {
     ]
 }
 
+fn soft_body_scale(body_id: u32, base_scale: f32) -> Mat4 {
+    let (sx, sy, sz) = gl::physics_get_deformation_scale(body_id);
+    mat4_scale(base_scale * sx, base_scale * sy, base_scale * sz)
+}
+
 fn mat4_rotate_y(angle: f32) -> Mat4 {
     let c = gl::cos(angle);
     let s = gl::sin(angle);
@@ -777,7 +782,7 @@ fn draw_scene_geometry_main(s: &mut RenderState, vp: &Mat4) {
         let rot_mat = quat_to_mat4(qw, qx, qy, qz);
         let model = mat4_mul(
             &mat4_translate(px, py, pz),
-            &mat4_mul(&rot_mat, &mat4_scale(0.8, 0.8, 0.8)),
+            &mat4_mul(&rot_mat, &soft_body_scale(s.phys_sphere, 0.8)),
         );
         let mvp = mat4_mul(vp, &model);
 
@@ -827,7 +832,7 @@ fn draw_scene_geometry_main(s: &mut RenderState, vp: &Mat4) {
         let rot_mat = quat_to_mat4(qw, qx, qy, qz);
         let model = mat4_mul(
             &mat4_translate(px, py, pz),
-            &mat4_mul(&rot_mat, &mat4_scale(0.6, 0.6, 0.6)),
+            &mat4_mul(&rot_mat, &soft_body_scale(s.phys_boing, 0.6)),
         );
         let mvp = mat4_mul(vp, &model);
 
@@ -879,7 +884,7 @@ fn draw_scene_geometry_shadow(s: &mut RenderState, light_vp: &Mat4) {
         let rot_mat = quat_to_mat4(qw, qx, qy, qz);
         let model = mat4_mul(
             &mat4_translate(px, py, pz),
-            &mat4_mul(&rot_mat, &mat4_scale(0.8, 0.8, 0.8)),
+            &mat4_mul(&rot_mat, &soft_body_scale(s.phys_sphere, 0.8)),
         );
         gl::uniform_matrix4fv(s.loc_shadow_model, false, &model);
         gl::uniform_matrix4fv(s.loc_shadow_light_mvp, false, light_vp);
@@ -911,7 +916,7 @@ fn draw_scene_geometry_shadow(s: &mut RenderState, light_vp: &Mat4) {
         let rot_mat = quat_to_mat4(qw, qx, qy, qz);
         let model = mat4_mul(
             &mat4_translate(px, py, pz),
-            &mat4_mul(&rot_mat, &mat4_scale(0.6, 0.6, 0.6)),
+            &mat4_mul(&rot_mat, &soft_body_scale(s.phys_boing, 0.6)),
         );
         gl::uniform_matrix4fv(s.loc_shadow_model, false, &model);
         gl::uniform_matrix4fv(s.loc_shadow_light_mvp, false, light_vp);
@@ -1230,6 +1235,7 @@ fn main() {
     gl::physics_set_restitution(phys_sphere, 0.7);
     gl::physics_set_use_gravity(phys_sphere, true);
     gl::physics_set_angular_damping(phys_sphere, 0.3);
+    gl::physics_set_soft_body(phys_sphere, 0.16, 12.0, 0.12);
 
     // Cube: mass=1.5 kg, half-extents=0.45, starts elevated for a drop
     let phys_cube = gl::physics_add_box(1.5, 0.45, 0.45, 0.45, 1.2, 1.5, 0.0);
@@ -1243,6 +1249,7 @@ fn main() {
     let phys_boing = gl::physics_add_sphere(1.0, 0.6, -5.0, 0.0, 0.5);
     gl::physics_set_restitution(phys_boing, 0.92);
     gl::physics_set_angular_damping(phys_boing, 0.15);
+    gl::physics_set_soft_body(phys_boing, 0.42, 8.0, 0.26);
     gl::physics_set_active(phys_boing, false);
 
     anyos_std::println!("gldemo: physics world created ({} bodies)", gl::physics_body_count());

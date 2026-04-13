@@ -93,6 +93,12 @@ impl<'a> Resolver<'a> {
         self.define_intrinsic_type("Vec", "Vec");
         self.define_intrinsic_type("String", "String");
         self.define_intrinsic_type("Box", "Box");
+        self.define_intrinsic_type("Drop", "Drop");
+        self.define_intrinsic_type("Iterator", "Iterator");
+        self.define_intrinsic_type("IntoIterator", "IntoIterator");
+        self.define_intrinsic_type("FromIterator", "FromIterator");
+        self.define_intrinsic_type("ExactSizeIterator", "ExactSizeIterator");
+        self.define_intrinsic_type("DoubleEndedIterator", "DoubleEndedIterator");
         self.define_intrinsic_type("Send", "Send");
         self.define_intrinsic_type("Sync", "Sync");
 
@@ -266,6 +272,7 @@ impl<'a> Resolver<'a> {
                     full_path.extend_from_slice(&sub.path);
                     let combined = HirUseTree {
                         id: sub.id,
+                        vis: sub.vis,
                         path: full_path,
                         kind: sub.kind.clone(),
                         span: sub.span,
@@ -389,13 +396,12 @@ impl<'a> Resolver<'a> {
         };
 
         let mut scope = start_scope;
-        for &seg in &path[start_idx..] {
+        for (idx, &seg) in path[start_idx..].iter().enumerate() {
+            let is_last = idx == path.len() - start_idx - 1;
             if let Some(&mod_def_id) = self.scopes[scope].bindings.get(&(seg, Namespace::Type)) {
                 if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
                     scope = mod_scope;
-                    // Continue to next segment
-                    // If this is the last segment, return this def_id
-                    if core::ptr::eq(&seg, path.last().unwrap()) {
+                    if is_last {
                         return Some(mod_def_id);
                     }
                 } else {
@@ -577,7 +583,7 @@ impl<'a> Resolver<'a> {
 
         let saved_impl_self_ty = self.current_impl_self_ty;
 
-        // Define Self in type namespace - use the self_ty symbol directly
+        // Define Self in type namespace when we can tie it back to a named type.
         if let HirTy::Path(p) = &ib.self_ty {
             if !p.segments.is_empty() {
                 let first = p.segments[0].ident;
@@ -589,6 +595,10 @@ impl<'a> Resolver<'a> {
                     }
                 }
             }
+        }
+        if self.find_symbol("Self").is_some() && self.lookup(self.find_symbol("Self").unwrap(), Namespace::Type).is_none() {
+            let synthetic_self = self.alloc_synthetic_def_id();
+            self.define(self.find_symbol("Self").unwrap(), Namespace::Type, synthetic_self);
         }
 
         self.resolve_ty(&ib.self_ty);

@@ -247,33 +247,37 @@ impl<'a> MirBuilder<'a> {
             let is_last = i == block.stmts.len() - 1;
             match stmt {
                 HirStmt::Let(hir_id, pat, _ty_ann, init, span) => {
-                    // Allocate local for the binding
                     let ty = init.as_ref()
                         .map(|e| self.get_expr_ty(e))
                         .unwrap_or(TyKind::Int(IntTy::I32));
-                    let name = match pat {
-                        HirPattern::Ident(_, sym, _, _, _) => Some(*sym),
-                        _ => None,
-                    };
-                    let local = self.alloc_local(ty, name, *span);
-
-                    // Map DefId
                     if let HirPattern::Ident(pat_hir_id, _, _, _, _) = pat {
+                        let name = match pat {
+                            HirPattern::Ident(_, sym, _, _, _) => Some(*sym),
+                            _ => None,
+                        };
+                        let local = self.alloc_local(ty, name, *span);
                         if let Some(&def_id) = self.resolve.resolutions.get(pat_hir_id) {
                             self.var_map.insert(def_id, local);
                         }
-                    }
-
-                    // Emit StorageLive
-                    self.emit_stmt(Statement {
-                        kind: StatementKind::StorageLive(local),
-                        span: *span,
-                    });
-
-                    // Lower init
-                    if let Some(init_expr) = init {
-                        let op = self.lower_expr(init_expr);
-                        self.emit_assign(Place::local(local), Rvalue::Use(op), *span);
+                        self.emit_stmt(Statement {
+                            kind: StatementKind::StorageLive(local),
+                            span: *span,
+                        });
+                        if let Some(init_expr) = init {
+                            let op = self.lower_expr(init_expr);
+                            self.emit_assign(Place::local(local), Rvalue::Use(op), *span);
+                        }
+                    } else {
+                        let temp = self.alloc_local(ty.clone(), None, *span);
+                        self.emit_stmt(Statement {
+                            kind: StatementKind::StorageLive(temp),
+                            span: *span,
+                        });
+                        if let Some(init_expr) = init {
+                            let op = self.lower_expr(init_expr);
+                            self.emit_assign(Place::local(temp), Rvalue::Use(op), *span);
+                        }
+                        self.bind_let_pattern(pat, Place::local(temp), &ty, *span);
                     }
 
                     last_op = None;
@@ -292,6 +296,55 @@ impl<'a> MirBuilder<'a> {
             }
         }
         last_op
+    }
+
+    fn bind_let_pattern(&mut self, pat: &HirPattern, source: Place, ty: &TyKind, span: Span) {
+        match pat {
+            HirPattern::Ident(hir_id, name, _, _, _) => {
+                let local = self.alloc_local(ty.clone(), Some(*name), span);
+                if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                    self.var_map.insert(def_id, local);
+                }
+                self.emit_stmt(Statement {
+                    kind: StatementKind::StorageLive(local),
+                    span,
+                });
+                self.emit_assign(Place::local(local), Rvalue::Use(Operand::Copy(source)), span);
+            }
+            HirPattern::Tuple(pats, _) => {
+                if let TyKind::Tuple(elem_tys) = ty {
+                    for (idx, pat) in pats.iter().enumerate() {
+                        let elem_ty = elem_tys
+                            .get(idx)
+                            .cloned()
+                            .unwrap_or(TyKind::Int(IntTy::I32));
+                        let mut projections = source.projections.clone();
+                        projections.push(Projection::Field(idx));
+                        self.bind_let_pattern(
+                            pat,
+                            Place {
+                                local: source.local,
+                                projections,
+                            },
+                            &elem_ty,
+                            span,
+                        );
+                    }
+                }
+            }
+            HirPattern::Ref(inner, _, _) => {
+                if let TyKind::Ref(inner_ty, _) = ty {
+                    self.bind_let_pattern(inner, source, inner_ty, span);
+                }
+            }
+            HirPattern::Wildcard(_)
+            | HirPattern::Literal(_, _)
+            | HirPattern::Struct(_, _, _, _)
+            | HirPattern::TupleStruct(_, _, _)
+            | HirPattern::Or(_, _)
+            | HirPattern::Range(_, _, _, _)
+            | HirPattern::Path(_) => {}
+        }
     }
 
     /// Lower an expression, returning an Operand for the result
@@ -1294,9 +1347,12 @@ impl<'a> MirBuilder<'a> {
                                 },
                             });
                         }
-                        HirAsmOperand::InOut { reg, expr } => {
+                        HirAsmOperand::InOut { reg, expr, out_expr } => {
                             let operand = self.lower_expr(expr);
-                            let place = self.try_lower_to_place(expr);
+                            let place = out_expr
+                                .as_ref()
+                                .and_then(|expr| self.try_lower_to_place(expr))
+                                .or_else(|| self.try_lower_to_place(expr));
                             mir_operands.push(MirAsmOperand {
                                 kind: MirAsmOperandKind::InOut(operand, place),
                                 reg: match reg {

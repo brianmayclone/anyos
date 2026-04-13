@@ -222,6 +222,8 @@ struct LibGl {
     physics_get_orientation: extern "C" fn(u32, *mut f32, *mut f32, *mut f32, *mut f32),
     physics_set_angular_damping: extern "C" fn(u32, f32),
     physics_set_linear_damping: extern "C" fn(u32, f32),
+    physics_set_soft_body: extern "C" fn(u32, f32, f32, f32),
+    physics_get_deformation_scale: extern "C" fn(u32, *mut f32, *mut f32, *mut f32),
     physics_set_use_gravity: extern "C" fn(u32, u32),
     physics_set_active: extern "C" fn(u32, u32),
     physics_set_plane_d: extern "C" fn(u32, f32),
@@ -370,6 +372,8 @@ pub fn init() -> bool {
             physics_get_orientation: resolve(&handle, "gl_physics_get_orientation"),
             physics_set_angular_damping: resolve(&handle, "gl_physics_set_angular_damping"),
             physics_set_linear_damping: resolve(&handle, "gl_physics_set_linear_damping"),
+            physics_set_soft_body: resolve(&handle, "gl_physics_set_soft_body"),
+            physics_get_deformation_scale: resolve(&handle, "gl_physics_get_deformation_scale"),
             physics_set_use_gravity: resolve(&handle, "gl_physics_set_use_gravity"),
             physics_set_active: resolve(&handle, "gl_physics_set_active"),
             physics_set_plane_d: resolve(&handle, "gl_physics_set_plane_d"),
@@ -854,6 +858,18 @@ pub fn physics_set_angular_damping(id: u32, damping: f32) {
 /// Set linear damping factor (air resistance).
 pub fn physics_set_linear_damping(id: u32, damping: f32) {
     (lib().physics_set_linear_damping)(id, damping);
+}
+
+/// Enable squash-and-stretch behavior while keeping the collider rigid.
+pub fn physics_set_soft_body(id: u32, softness: f32, recovery: f32, max_deformation: f32) {
+    (lib().physics_set_soft_body)(id, softness, recovery, max_deformation);
+}
+
+/// Get the current per-axis deformation scale for rendering.
+pub fn physics_get_deformation_scale(id: u32) -> (f32, f32, f32) {
+    let (mut x, mut y, mut z) = (1.0f32, 1.0f32, 1.0f32);
+    (lib().physics_get_deformation_scale)(id, &mut x, &mut y, &mut z);
+    (x, y, z)
 }
 
 /// Set whether body is affected by gravity.

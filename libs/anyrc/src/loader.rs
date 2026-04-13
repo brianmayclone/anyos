@@ -5,7 +5,7 @@
 
 use crate::prelude::*;
 use crate::ast::{Crate, Item, ModDef};
-use crate::intern::{Interner, Symbol};
+use crate::intern::Interner;
 use crate::parser::Parser;
 use crate::macros::expand_macros;
 
@@ -94,30 +94,27 @@ fn resolve_items(
             if mod_def.items.is_none() {
                 // `mod foo;` — need to load from file
                 let mod_name = interner.resolve(mod_def.name);
+                let mut candidates = Vec::new();
+                if let Some(path_attr) = mod_path_attr(mod_def, interner) {
+                    candidates.push(format!("{}/{}", dir, path_attr));
+                }
+                candidates.push(format!("{}/{}.rs", dir, mod_name));
+                candidates.push(format!("{}/{}/mod.rs", dir, mod_name));
 
-                // Try foo.rs first, then foo/mod.rs
-                let path_rs = format!("{}/{}.rs", dir, mod_name);
-                let path_mod = format!("{}/{}/mod.rs", dir, mod_name);
-                let sub_dir;
-
-                let source = if let Some(src) = loader.read_file(&path_rs) {
-                    sub_dir = format!("{}/{}", dir, mod_name);
-                    loaded.push(ModuleSource {
-                        path: path_rs,
-                        source: src.clone(),
-                    });
-                    src
-                } else if let Some(src) = loader.read_file(&path_mod) {
-                    sub_dir = format!("{}/{}", dir, mod_name);
-                    loaded.push(ModuleSource {
-                        path: path_mod,
-                        source: src.clone(),
-                    });
-                    src
-                } else {
-                    // Module file not found — leave items as None, resolver will error
-                    continue;
+                let mut chosen_path = None;
+                let mut source = None;
+                for candidate in candidates {
+                    if let Some(src) = loader.read_file(&candidate) {
+                        chosen_path = Some(candidate.clone());
+                        source = Some(src);
+                        break;
+                    }
+                }
+                let (chosen_path, source) = match (chosen_path, source) {
+                    (Some(path), Some(src)) => (path, src),
+                    _ => continue,
                 };
+                let sub_dir = module_sub_dir(dir, mod_name, &chosen_path);
 
                 // Parse the loaded source
                 let mut parser = Parser::new(&source, interner);
@@ -129,6 +126,10 @@ fn resolve_items(
 
                 // Set the module's items
                 mod_def.items = Some(sub_crate.items);
+                loaded.push(ModuleSource {
+                    path: chosen_path,
+                    source,
+                });
             } else {
                 // Inline module `mod foo { ... }` — recurse into its items
                 if let Some(ref mut sub_items) = mod_def.items {
@@ -137,6 +138,36 @@ fn resolve_items(
                 }
             }
         }
+    }
+}
+
+fn mod_path_attr(mod_def: &ModDef, interner: &Interner) -> Option<String> {
+    for attr in &mod_def.attrs {
+        if attr.path.segments.len() != 1 {
+            continue;
+        }
+        let Some(seg) = attr.path.segments.first() else {
+            continue;
+        };
+        if interner.resolve(seg.ident) != "path" {
+            continue;
+        }
+        if let crate::ast::AttrArgs::Eq(expr) = &attr.args {
+            if let crate::ast::Expr::Lit(crate::ast::Literal::String(path), _) = &**expr {
+                return Some(path.clone());
+            }
+        }
+    }
+    None
+}
+
+fn module_sub_dir(base_dir: &str, mod_name: &str, chosen_path: &str) -> String {
+    if chosen_path.ends_with("/mod.rs") {
+        chosen_path.trim_end_matches("/mod.rs").to_string()
+    } else if let Some(parent) = chosen_path.rsplit_once('/') {
+        format!("{}/{}", parent.0, mod_name)
+    } else {
+        format!("{}/{}", base_dir, mod_name)
     }
 }
 

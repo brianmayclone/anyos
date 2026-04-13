@@ -138,6 +138,7 @@ pub struct TypeChecker<'a> {
     substitutions: HashMap<InferVar, TyKind>,
 
     current_fn_ret: Option<TyKind>,
+    current_self_ty: Option<TyKind>,
     errors: Vec<Diagnostic>,
 
     /// Synthetic DefIds for closure expressions: HirId -> DefId
@@ -172,6 +173,7 @@ impl<'a> TypeChecker<'a> {
             infer_kinds: HashMap::new(),
             substitutions: HashMap::new(),
             current_fn_ret: None,
+            current_self_ty: None,
             errors: Vec::new(),
             closure_defs: HashMap::new(),
             next_closure_def_id: 0x8000_0000,
@@ -458,6 +460,8 @@ impl<'a> TypeChecker<'a> {
                 self.enum_variant_fields.insert(e.def_id, variants);
             }
             HirItemKind::Impl(ib) => {
+                let saved_self_ty = self.current_self_ty.clone();
+                self.current_self_ty = Some(self.hir_ty_to_ty(&ib.self_ty));
                 // Register Self as an alias for the impl'd type
                 if let HirTy::Path(p) = &ib.self_ty {
                     if !p.segments.is_empty() {
@@ -497,6 +501,7 @@ impl<'a> TypeChecker<'a> {
                 for sub in &ib.items {
                     self.collect_item(sub);
                 }
+                self.current_self_ty = saved_self_ty;
             }
             HirItemKind::Const(c) => {
                 let ty = self.hir_ty_to_ty(&c.ty);
@@ -522,9 +527,14 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             HirItemKind::Trait(t) => {
+                let saved_self_ty = self.current_self_ty.clone();
+                self.current_self_ty = Some(TyKind::Adt(t.def_id, vec![]));
                 // Register trait name so `dyn Trait` can resolve it
                 self.type_name_to_def.insert(t.name, t.def_id);
                 self.trait_names.insert(t.def_id, t.name);
+                if let Some(self_sym) = self.interner.lookup("Self") {
+                    self.type_name_to_def.insert(self_sym, t.def_id);
+                }
                 // Register trait method signatures and ordering
                 let mut methods = Vec::new();
                 for sub in &t.items {
@@ -536,6 +546,7 @@ impl<'a> TypeChecker<'a> {
                     self.collect_item(sub);
                 }
                 self.trait_methods.insert(t.def_id, methods);
+                self.current_self_ty = saved_self_ty;
             }
             _ => {}
         }
@@ -1373,7 +1384,12 @@ impl<'a> TypeChecker<'a> {
                         crate::hir::HirAsmOperand::Out { expr, .. } => {
                             if let Some(e) = expr { self.check_expr(e); }
                         }
-                        crate::hir::HirAsmOperand::InOut { expr, .. } => { self.check_expr(expr); }
+                        crate::hir::HirAsmOperand::InOut { expr, out_expr, .. } => {
+                            self.check_expr(expr);
+                            if let Some(out_expr) = out_expr {
+                                self.check_expr(out_expr);
+                            }
+                        }
                     }
                 }
                 TyKind::Unit
@@ -1760,10 +1776,11 @@ impl<'a> TypeChecker<'a> {
                     "usize" => TyKind::Uint(UintTy::Usize),
                     "f32" => TyKind::Float(FloatTy::F32),
                     "f64" => TyKind::Float(FloatTy::F64),
-                    "bool" => TyKind::Bool,
-                    "char" => TyKind::Char,
-                    "str" => TyKind::Str,
-                    _ => {
+                "bool" => TyKind::Bool,
+                "char" => TyKind::Char,
+                "str" => TyKind::Str,
+                "Self" => self.current_self_ty.clone().unwrap_or(TyKind::Error),
+                _ => {
                         let sym = path.segments[0].ident;
                         // Check generic type params first
                         if let Some(&idx) = self.current_generic_params.get(&sym) {

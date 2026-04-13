@@ -46,6 +46,7 @@ impl<'a> LoweringContext<'a> {
             ast::Item::Use(u) => (HirItemKind::Use(self.lower_use_tree(u)), u.span),
             ast::Item::Mod(m) => (HirItemKind::Mod(self.lower_mod_def(m)), m.span),
             ast::Item::ExternBlock(eb) => (HirItemKind::ExternBlock(self.lower_extern_block(eb)), eb.span),
+            ast::Item::ExternCrate(_) => return None,
             ast::Item::MacroDef(_) => return None, // macro defs are consumed by expansion
             ast::Item::MacroCall(_, _, _span) => return None, // unexpanded macros are dropped
         };
@@ -184,6 +185,7 @@ impl<'a> LoweringContext<'a> {
     fn lower_use_tree(&mut self, u: &ast::UseTree) -> HirUseTree {
         HirUseTree {
             id: self.alloc_hir_id(),
+            vis: u.vis,
             path: u.path.clone(),
             kind: match &u.kind {
                 ast::UseTreeKind::Simple(alias) => HirUseTreeKind::Simple(*alias),
@@ -566,9 +568,10 @@ impl<'a> LoweringContext<'a> {
                 reg: self.lower_asm_reg(reg),
                 expr: expr.as_ref().map(|e| Box::new(self.lower_expr(e))),
             },
-            ast::AsmOperand::InOut { reg, expr } => HirAsmOperand::InOut {
+            ast::AsmOperand::InOut { reg, expr, out_expr } => HirAsmOperand::InOut {
                 reg: self.lower_asm_reg(reg),
                 expr: Box::new(self.lower_expr(expr)),
+                out_expr: out_expr.as_ref().map(|expr| Box::new(self.lower_expr(expr))),
             },
             ast::AsmOperand::Const { .. } | ast::AsmOperand::Sym { .. } => {
                 // Simplified: treat as no-op

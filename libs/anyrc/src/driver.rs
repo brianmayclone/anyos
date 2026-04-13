@@ -125,6 +125,12 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     };
     let loader = crate::loader::OsFileLoader;
     let _loaded_modules = crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
+    crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    let public_interface_source = {
+        let mut interface_lower_ctx = LoweringContext::new(&mut interner);
+        let interface_hir = interface_lower_ctx.lower_crate(&krate);
+        build_public_interface_source(&interface_hir, &interner)
+    };
     inject_extern_crate_interfaces(&mut krate, &options.extern_crates, &mut interner, &loader);
 
     // 3. Lower to HIR
@@ -299,7 +305,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
                 version: "0.1.0".to_string(),
                 exports,
                 deps: options.extern_crates.iter().map(|e| e.name.clone()).collect(),
-                interface_source: build_public_interface_source(&hir, &interner),
+                interface_source: public_interface_source,
             };
             Ok(crate::loader::pack_rlib(&obj_bytes, &meta))
         }
@@ -532,7 +538,11 @@ fn render_items(
     indent: usize,
     in_trait: bool,
 ) {
+    let local_names = local_item_names(items);
     for item in items {
+        if !item_is_exported(item, in_trait, &local_names, interner) {
+            continue;
+        }
         render_item(out, item, interner, indent, in_trait);
     }
 }
@@ -597,24 +607,40 @@ fn render_item(
             if s.fields.is_empty() {
                 out.push_str(";\n");
             } else if is_tuple_fields(&s.fields, interner) {
+                let public_fields: Vec<_> = s.fields.iter()
+                    .filter(|field| is_public_vis(field.vis))
+                    .collect();
                 out.push('(');
-                for (idx, field) in s.fields.iter().enumerate() {
+                for (idx, field) in public_fields.iter().enumerate() {
                     if idx > 0 {
                         out.push_str(", ");
                     }
                     out.push_str(&render_visibility(field.vis));
                     out.push_str(&render_ty(&field.ty, interner));
                 }
+                if public_fields.len() != s.fields.len() {
+                    if !public_fields.is_empty() {
+                        out.push_str(", ");
+                    }
+                    out.push_str("()");
+                }
                 out.push_str(");\n");
             } else {
+                let public_fields: Vec<_> = s.fields.iter()
+                    .filter(|field| is_public_vis(field.vis))
+                    .collect();
                 out.push_str(" {\n");
-                for field in &s.fields {
+                for field in public_fields {
                     out.push_str(&"    ".repeat(indent + 1));
                     out.push_str(&render_visibility(field.vis));
                     out.push_str(interner.resolve(field.name));
                     out.push_str(": ");
                     out.push_str(&render_ty(&field.ty, interner));
                     out.push_str(",\n");
+                }
+                if s.fields.iter().any(|field| !is_public_vis(field.vis)) {
+                    out.push_str(&"    ".repeat(indent + 1));
+                    out.push_str("__private: (),\n");
                 }
                 out.push_str(&ind);
                 out.push_str("}\n");
@@ -665,6 +691,13 @@ fn render_item(
             out.push_str("}\n");
         }
         HirItemKind::Impl(ib) => {
+            let impl_local_names = local_item_names(&ib.items);
+            let exported_items: Vec<&crate::hir::HirItem> = ib.items.iter()
+                .filter(|item| item_is_exported(item, false, &impl_local_names, interner))
+                .collect();
+            if exported_items.is_empty() {
+                return;
+            }
             out.push_str(&ind);
             if ib.is_unsafe {
                 out.push_str("unsafe ");
@@ -678,7 +711,9 @@ fn render_item(
             }
             out.push_str(&render_ty(&ib.self_ty, interner));
             out.push_str(" {\n");
-            render_items(out, &ib.items, interner, indent + 1, false);
+            for item in exported_items {
+                render_item(out, item, interner, indent + 1, false);
+            }
             out.push_str(&ind);
             out.push_str("}\n");
         }
@@ -744,6 +779,7 @@ fn render_item(
         }
         HirItemKind::Use(u) => {
             out.push_str(&ind);
+            out.push_str(&render_visibility(u.vis));
             out.push_str("use ");
             render_use_tree(out, u, interner);
             out.push_str(";\n");
@@ -763,6 +799,13 @@ fn render_item(
             }
         }
         HirItemKind::ExternBlock(eb) => {
+            let extern_local_names = local_item_names(&eb.items);
+            let exported_items: Vec<&crate::hir::HirItem> = eb.items.iter()
+                .filter(|item| item_is_exported(item, false, &extern_local_names, interner))
+                .collect();
+            if exported_items.is_empty() {
+                return;
+            }
             out.push_str(&ind);
             out.push_str("extern ");
             if let Some(abi) = &eb.abi {
@@ -772,11 +815,9 @@ fn render_item(
                 out.push(' ');
             }
             out.push_str("{\n");
-            for sub in &eb.items {
+            for sub in exported_items {
                 match &sub.kind {
-                    HirItemKind::Fn(_) | HirItemKind::Static(_) => {
-                        render_item(out, sub, interner, indent + 1, false);
-                    }
+                    HirItemKind::Fn(_) | HirItemKind::Static(_) => render_item(out, sub, interner, indent + 1, false),
                     _ => {}
                 }
             }
@@ -798,6 +839,76 @@ fn render_visibility(vis: crate::ast::Visibility) -> &'static str {
         crate::ast::Visibility::Public => "pub ",
         crate::ast::Visibility::PubCrate => "pub(crate) ",
     }
+}
+
+fn is_public_vis(vis: crate::ast::Visibility) -> bool {
+    vis == crate::ast::Visibility::Public
+}
+
+fn item_is_exported(
+    item: &crate::hir::HirItem,
+    in_trait: bool,
+    local_names: &[crate::intern::Symbol],
+    interner: &Interner,
+) -> bool {
+    match &item.kind {
+        crate::hir::HirItemKind::Fn(f) => in_trait || is_public_vis(f.vis),
+        crate::hir::HirItemKind::Struct(s) => is_public_vis(s.vis),
+        crate::hir::HirItemKind::Enum(e) => is_public_vis(e.vis),
+        crate::hir::HirItemKind::Trait(t) => is_public_vis(t.vis),
+        crate::hir::HirItemKind::TypeAlias(ta) => is_public_vis(ta.vis),
+        crate::hir::HirItemKind::Const(c) => is_public_vis(c.vis),
+        crate::hir::HirItemKind::Static(s) => is_public_vis(s.vis),
+        crate::hir::HirItemKind::Use(u) => use_item_supports_interface(u, local_names, interner),
+        crate::hir::HirItemKind::Mod(m) => is_public_vis(m.vis),
+        crate::hir::HirItemKind::Impl(ib) => {
+            let nested_local_names = local_item_names(&ib.items);
+            ib.items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
+        }
+        crate::hir::HirItemKind::ExternBlock(eb) => {
+            let nested_local_names = local_item_names(&eb.items);
+            eb.items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
+        }
+    }
+}
+
+fn local_item_names(items: &[crate::hir::HirItem]) -> Vec<crate::intern::Symbol> {
+    items.iter().filter_map(item_declared_name).collect()
+}
+
+fn item_declared_name(item: &crate::hir::HirItem) -> Option<crate::intern::Symbol> {
+    match &item.kind {
+        crate::hir::HirItemKind::Fn(f) => Some(f.name),
+        crate::hir::HirItemKind::Struct(s) => Some(s.name),
+        crate::hir::HirItemKind::Enum(e) => Some(e.name),
+        crate::hir::HirItemKind::Trait(t) => Some(t.name),
+        crate::hir::HirItemKind::TypeAlias(ta) => Some(ta.name),
+        crate::hir::HirItemKind::Const(c) => Some(c.name),
+        crate::hir::HirItemKind::Static(s) => Some(s.name),
+        crate::hir::HirItemKind::Mod(m) => Some(m.name),
+        _ => None,
+    }
+}
+
+fn use_item_supports_interface(
+    use_tree: &crate::hir::HirUseTree,
+    local_names: &[crate::intern::Symbol],
+    interner: &Interner,
+) -> bool {
+    if is_public_vis(use_tree.vis) {
+        return true;
+    }
+    let Some(&root) = use_tree.path.first() else {
+        return false;
+    };
+    let root_name = interner.resolve(root);
+    if root_name == "core" || root_name == "alloc" {
+        return true;
+    }
+    if root_name == "crate" || root_name == "self" || root_name == "super" {
+        return false;
+    }
+    !local_names.iter().any(|name| *name == root)
 }
 
 fn render_generics(generics: &crate::hir::HirGenerics, interner: &Interner) -> String {

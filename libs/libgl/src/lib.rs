@@ -1651,6 +1651,45 @@ pub extern "C" fn gl_physics_set_linear_damping(id: u32, damping: f32) {
     }
 }
 
+/// Enable a soft-body response for a rigid collider.
+///
+/// `softness` controls how much contacts excite visible deformation.
+/// `recovery` is the spring strength pulling the body back to rest.
+/// `max_deformation` clamps the per-axis squash/stretch amount.
+#[no_mangle]
+pub extern "C" fn gl_physics_set_soft_body(id: u32, softness: f32, recovery: f32, max_deformation: f32) {
+    if let Some(b) = phys().bodies.get_mut(id as usize) {
+        let enabled = softness > 0.0 && max_deformation > 0.0;
+        b.soft_body = enabled;
+        b.softness = if softness > 0.0 { softness } else { 0.0 };
+        b.deformation_recovery = if recovery > 0.0 { recovery } else { 0.0 };
+        b.max_deformation = if max_deformation > 0.0 { max_deformation } else { 0.0 };
+        if !enabled {
+            b.deformation = physics::Vec3::ZERO;
+            b.deformation_velocity = physics::Vec3::ZERO;
+        }
+        b.wake();
+    }
+}
+
+/// Query the current per-axis deformation scale for rendering.
+#[no_mangle]
+pub extern "C" fn gl_physics_get_deformation_scale(
+    id: u32,
+    out_x: *mut f32,
+    out_y: *mut f32,
+    out_z: *mut f32,
+) {
+    if let Some(b) = phys().bodies.get(id as usize) {
+        let sx = (1.0 + b.deformation.x).max(0.2);
+        let sy = (1.0 + b.deformation.y).max(0.2);
+        let sz = (1.0 + b.deformation.z).max(0.2);
+        if !out_x.is_null() { unsafe { *out_x = sx; } }
+        if !out_y.is_null() { unsafe { *out_y = sy; } }
+        if !out_z.is_null() { unsafe { *out_z = sz; } }
+    }
+}
+
 /// Set whether body is affected by gravity.
 #[no_mangle]
 pub extern "C" fn gl_physics_set_use_gravity(id: u32, use_grav: u32) {

@@ -1232,7 +1232,7 @@ pub fn ensure_dll_mapped_current(path: &str) -> Option<u64> {
             with_frame_read(phys, src, |src_ptr| unsafe {
                 bytes.copy_from_slice(core::slice::from_raw_parts(src_ptr, 4));
             });
-            crate::serial_println!(
+            crate::serial_verbose_println!(
                 "[dll] mapped {} base={:#x} phys={:#x} bytes={:02x} {:02x} {:02x} {:02x}",
                 name,
                 plan.base_vaddr,

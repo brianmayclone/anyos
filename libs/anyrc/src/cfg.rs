@@ -222,6 +222,7 @@ fn item_attrs(item: &Item) -> &[Attribute] {
         Item::Fn(f) => &f.attrs,
         Item::Struct(s) => &s.attrs,
         Item::Enum(e) => &e.attrs,
+        Item::Mod(m) => &m.attrs,
         Item::Trait(_) => &[],
         _ => &[],
     }
