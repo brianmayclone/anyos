@@ -1,0 +1,17 @@
+[package]
+name = "corefs-defrag"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../libs/stdlib" }
+libcorefs-tools = { path = "../../libs/libcorefs-tools" }
+corefs-core = { path = "../../../corefs/corefs-core", default-features = false, features = ["crypto"] }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+opt-level = 2
