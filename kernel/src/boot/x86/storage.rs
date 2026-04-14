@@ -23,6 +23,7 @@ pub(super) fn init_storage_and_userspace(
     fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
     fs::vfs::mount_devfs();
     maybe_mount_cdrom_root();
+    try_mount_corefs_partitions();
 
     drivers::kdrv::probe_external_drivers();
     task::users::init();
@@ -95,6 +96,35 @@ fn detect_and_register_root_partition() {
 
     if !found_root_lba {
         serial_println!("  No partition table found, using default LBA 8192");
+    }
+}
+
+fn try_mount_corefs_partitions() {
+    use drivers::storage::blockdev;
+
+    let devices = blockdev::list_devices();
+    let mut mount_index: u32 = 0;
+    for dev in &devices {
+        // Skip the "whole-disk" pseudo-entry (partition == None) and any
+        // entry that obviously can't host a filesystem (size 0).
+        if dev.partition.is_none() || dev.size_sectors == 0 {
+            continue;
+        }
+        let mount_path = if mount_index == 0 {
+            alloc::string::String::from("/corefs")
+        } else {
+            alloc::format!("/corefs{}", mount_index)
+        };
+        let did_mount = fs::corefs::try_auto_mount_corefs(
+            &mount_path,
+            dev.disk_id,
+            dev.start_lba as u32,
+            dev.size_sectors,
+            dev.id as u32,
+        );
+        if did_mount {
+            mount_index += 1;
+        }
     }
 }
 

@@ -30,8 +30,54 @@ pub mod driver;
 pub mod probe;
 
 pub use block_device::{AnyOsSectorIo, BlockDeviceAdapter, SectorIo};
-pub use driver::{corefs_to_fs_error, CoreFsDriver};
+pub use driver::{corefs_to_fs_error, empty_persisted_state, CoreFsDriver};
 pub use probe::detect;
+
+/// Versucht, das Volume bei `(disk_id, partition_lba)` als CoreFS zu
+/// erkennen und read-only unter `mount_path` zu mounten.
+///
+/// Boot-Code ruft diesen Helper einmal pro Partition auf, nach der klassischen
+/// FAT/NTFS/exFAT/ISO-Detection. `partition_sectors` wird aus dem MBR/GPT-
+/// Eintrag der Partition übernommen.
+///
+/// Liefert `true`, wenn das CoreFS-Magic gefunden **und** der Mount erfolgreich
+/// war. `false` ist kein Fehler, sondern signalisiert "keine CoreFS-Partition
+/// an dieser Position" oder "Mount fehlgeschlagen" (Details in den
+/// Serial-Logs).
+pub fn try_auto_mount_corefs(
+    mount_path: &str,
+    disk_id: u8,
+    partition_lba: u32,
+    partition_sectors: u64,
+    device_id: u32,
+) -> bool {
+    if !detect(disk_id, partition_lba) {
+        return false;
+    }
+    crate::serial_println!(
+        "[corefs] detected on disk {} part_lba {}, mounting at {}",
+        disk_id,
+        partition_lba,
+        mount_path
+    );
+    match crate::fs::vfs::mount_corefs(
+        mount_path,
+        disk_id,
+        partition_lba,
+        partition_sectors,
+        device_id,
+    ) {
+        Ok(()) => true,
+        Err(e) => {
+            crate::serial_println!(
+                "[corefs] mount at {} failed: {:?}",
+                mount_path,
+                e
+            );
+            false
+        }
+    }
+}
 
 use corefs_core::platform::{Clock, Rng, Timestamp};
 
