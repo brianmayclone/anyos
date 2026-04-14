@@ -110,10 +110,13 @@ fn try_mount_corefs_partitions() {
         if dev.partition.is_none() || dev.size_sectors == 0 {
             continue;
         }
+        // CoreFS mounts live under /mnt/corefs* so they're routed through
+        // the VFS mount-point dispatch (see fs::vfs::find_mnt_mount which
+        // only matches paths starting with /mnt/).
         let mount_path = if mount_index == 0 {
-            alloc::string::String::from("/corefs")
+            alloc::string::String::from("/mnt/corefs")
         } else {
-            alloc::format!("/corefs{}", mount_index)
+            alloc::format!("/mnt/corefs{}", mount_index)
         };
         let did_mount = fs::corefs::try_auto_mount_corefs(
             &mount_path,

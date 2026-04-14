@@ -374,6 +374,25 @@ pub fn mount_corefs(
     Ok(())
 }
 
+/// Flush the currently-mounted CoreFS driver to disk (if any).
+///
+/// Intended as a shutdown / sync hook — persists any pending mutations
+/// collected by the in-memory [`crate::fs::corefs::CoreFsDriver`] via
+/// `save_state_native`. On read-only mounts this is a no-op.
+///
+/// Returns `Ok(false)` when no CoreFS volume is mounted.
+pub fn sync_corefs() -> Result<bool, FsError> {
+    let vfs = VFS.lock();
+    let state = vfs.as_ref().ok_or(FsError::IoError)?;
+    match state.corefs_driver.as_ref() {
+        Some(driver) => {
+            driver.flush()?;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 /// Mount the device filesystem at /dev, bridging built-in virtual devices
 /// with HAL-registered hardware devices.
 pub fn mount_devfs() {
@@ -1300,6 +1319,15 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
                 }
                 return smb.read_dir(inode);
             }
+            FsType::CoreFs => {
+                let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+                let q = if relative_path.is_empty() { "/" } else { relative_path };
+                let (inode, file_type, _size) = Filesystem::lookup(driver, q)?;
+                if file_type != FileType::Directory {
+                    return Err(FsError::NotADirectory);
+                }
+                return Filesystem::readdir(driver, inode);
+            }
             _ => {
                 return Err(FsError::NotFound);
             }
@@ -1749,6 +1777,17 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
                     .map(|(_, s)| s)
                     .ok_or(FsError::IoError)?;
                 let (_inode, file_type, size) = smb.lookup(relative_path)?;
+                return Ok(default_stat(file_type, size, false));
+            }
+            FsType::CoreFs => {
+                let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+                // Rewrite relative_path so that the CoreFsDriver's internal
+                // path layout ("/foo/bar") matches — CoreFS stores everything
+                // under "/", so the relative-to-mount path already starts
+                // with '/'. If the caller asked for the mount root itself,
+                // map to "/".
+                let q = if relative_path.is_empty() { "/" } else { relative_path };
+                let (_inode, file_type, size) = Filesystem::lookup(driver, q)?;
                 return Ok(default_stat(file_type, size, false));
             }
             _ => return Err(FsError::NotFound),
