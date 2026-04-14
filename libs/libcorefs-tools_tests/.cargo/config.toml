@@ -1,0 +1,9 @@
+# Override the repo-root config that forces build-std for the anyOS
+# kernel target. Host tests use the regular precompiled standard
+# library.
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+[unstable]
+build-std = []
+build-std-features = []

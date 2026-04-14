@@ -1,0 +1,21 @@
+[package]
+name = "libcorefs-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Shared userspace library for the CoreFS CLI tools on anyOS."
+
+[features]
+default = []
+# Host-mode is used by the sibling test crate. It keeps the
+# dependency list to just `corefs-core` so that `cargo test` on the
+# developer's machine does not drag in the anyOS-target-only
+# crates (anyos_std + libheap).
+host = []
+
+[dependencies]
+corefs-core = { path = "../../../corefs/corefs-core", default-features = false, features = ["crypto"] }
+
+# anyOS-side runtime helpers. Only needed when building for the
+# AnyOS user target; the `host` feature omits this dependency.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+anyos_std = { path = "../stdlib" }
