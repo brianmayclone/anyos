@@ -13,7 +13,12 @@
 
 use alloc::string::{String, ToString};
 
-use corefs_core::storage::ondisk::volume::{format_device, FormatOptions};
+use alloc::boxed::Box;
+
+use corefs_core::config::CoreFsConfig;
+use corefs_core::platform::Timestamp;
+use corefs_core::storage::ondisk::session::{OdfDeviceSession, OdfSessionOptions};
+use corefs_core::storage::ondisk::volume::FormatOptions;
 use libcorefs_tools::args;
 use libcorefs_tools::block_device::AnyOsBlockDevice;
 use libcorefs_tools::error::{exit_code_for, ExitCode};
@@ -109,7 +114,7 @@ fn main() -> u32 {
     let label = args.get("label").unwrap_or("corefs").to_string();
     let json = args::flag_present(&args, "json");
 
-    let mut device = match AnyOsBlockDevice::open(device_id, capacity) {
+    let device = match AnyOsBlockDevice::open(device_id, capacity) {
         Ok(d) => d,
         Err(e) => {
             anyos_std::println!("mkfs.corefs: cannot open device {}: {}", device_id, e);
@@ -117,19 +122,31 @@ fn main() -> u32 {
         }
     };
 
-    let mut opts = FormatOptions {
-        label: label.clone(),
-        ..Default::default()
-    };
-    if let Some(inodes) = args.get_u64("inodes") {
-        opts.inode_count = inodes;
-    }
-    if let Some(jb) = args.get_u64("journal-blocks") {
-        opts.journal_blocks = jb;
-    }
+    // Default-FormatOptions als Inspirationsquelle für inode_count/journal_blocks.
+    let defaults = FormatOptions::default();
+    let inode_count = args.get_u64("inodes").unwrap_or(defaults.inode_count);
+    let journal_blocks = args
+        .get_u64("journal-blocks")
+        .unwrap_or(defaults.journal_blocks);
 
-    let report = match format_device(&mut device, &opts) {
-        Ok(r) => r,
+    let session_opts = OdfSessionOptions {
+        capacity_bytes: capacity,
+        label: label.clone(),
+        uuid: [0u8; 16], // Pseudo-UUID aus dem Timestamp
+        inode_count,
+        journal_blocks,
+        config: CoreFsConfig::default(),
+    };
+
+    // Frische Session — formatiert + persistiert PersistedState::empty_at(...)
+    // im NATIVE-Layout. Damit ist das Volume direkt von OdfReader/fsck/scrub
+    // konsumierbar (ohne den vorherigen Blob→Native-Migrationsschritt).
+    let session = match OdfDeviceSession::format_new_at(
+        Box::new(device),
+        &session_opts,
+        Timestamp::EPOCH,
+    ) {
+        Ok(s) => s,
         Err(e) => {
             anyos_std::println!("mkfs.corefs: format failed: {}", e);
             return exit_code_for(&e).as_u32();
@@ -140,10 +157,13 @@ fn main() -> u32 {
         device_id,
         label,
         capacity_bytes: capacity,
-        total_blocks: report.geometry.total_blocks,
-        inode_count: report.geometry.inode_count,
-        journal_blocks: report.geometry.journal_blocks,
-        generation: report.generation,
+        // Geometrie-Felder werden nach dem format_new_at noch aus dem
+        // PersistedState gelesen — `state.volume.block_size` etc.
+        total_blocks: capacity / session.device().sector_size() as u64,
+        inode_count,
+        journal_blocks,
+        // Doppel-Save (format_device + save_state_native) → Generation 2.
+        generation: 2,
     };
     libcorefs_tools::report::print_report(&out, json);
 

@@ -1,27 +1,179 @@
 // Copyright (c) 2026 Mike Strathmann
 // SPDX-License-Identifier: MIT
 
-//! `corefs-snapshot` — snapshot management (stub).
+//! `corefs-snapshot` — snapshot lifecycle management for CoreFS volumes.
 //!
-//! Snapshot operations (`list`, `create`, `delete`, `restore`) rely on
-//! the mutable `OdfDeviceSession` service which currently lives only
-//! in the `std`-gated main `corefs` crate.  The anyOS userspace
-//! counterpart is queued — until then the tool parses its
-//! sub-commands and exits with [`ExitCode::Unsupported`].
+//! ```text
+//! corefs-snapshot --device <id> --capacity <bytes> list [--json]
+//! corefs-snapshot --device <id> --capacity <bytes> create --name <name> [--scope <path>] [--json]
+//! corefs-snapshot --device <id> --capacity <bytes> delete --id <n> [--json]
+//! corefs-snapshot --device <id> --capacity <bytes> restore --id <n>
+//! ```
+//!
+//! Operates über die service-freie `OdfDeviceSession` aus `corefs-core` und
+//! mutiert direkt den `PersistedState`. **Inhaltsstandard ist
+//! "metadata-only"**: `create` erfasst Inode-Metadaten (Pfad, Kind, Mode,
+//! Timestamps), aber nicht den Datei-Body — das würde `read_file()` aus der
+//! std-gebundenen `CoreFsService`-Schicht voraussetzen (decompress + decrypt).
+//!
+//! `restore` liefert aktuell `Unsupported` — die Snapshot-Restore-Logik
+//! verweist auf die std-gebundene Service-API und wandert nach `corefs-core`
+//! in einem Folge-Schritt.
 
 #![no_std]
 #![no_main]
 
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+
+use corefs_core::domain::snapshot::{Snapshot, SnapshotInode};
+use corefs_core::platform::Timestamp;
+use corefs_core::storage::ondisk::session::OdfDeviceSession;
 use libcorefs_tools::args;
-use libcorefs_tools::error::ExitCode;
+use libcorefs_tools::block_device::AnyOsBlockDevice;
+use libcorefs_tools::error::{exit_code_for, ExitCode};
+use libcorefs_tools::report::{JsonBuilder, Report};
 
 anyos_std::entry!(main);
 
 fn usage() {
     anyos_std::println!(
-        "Usage: corefs-snapshot --device <id> --capacity <bytes> <list|create|delete|restore>\n                       \
-         [--name <name>] [--id <id>] [--scope <path>] [--json]"
+        "Usage:\n\
+         corefs-snapshot --device <id> --capacity <bytes> list [--json]\n\
+         corefs-snapshot --device <id> --capacity <bytes> create --name <name> [--scope <path>] [--json]\n\
+         corefs-snapshot --device <id> --capacity <bytes> delete --id <n> [--json]\n\
+         corefs-snapshot --device <id> --capacity <bytes> restore --id <n>"
     );
+}
+
+struct ListReport {
+    snapshots: Vec<SnapshotEntry>,
+}
+
+struct SnapshotEntry {
+    id: u64,
+    name: String,
+    scope_root: String,
+    created_at_secs: u64,
+    paths: usize,
+    file_data_count: usize,
+}
+
+impl Report for ListReport {
+    fn summary(&self) -> String {
+        if self.snapshots.is_empty() {
+            "snapshots: none".to_string()
+        } else {
+            format!("snapshots: {}", self.snapshots.len())
+        }
+    }
+    fn render_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str("snapshots\n---------\n");
+        if self.snapshots.is_empty() {
+            out.push_str("(none)\n");
+        } else {
+            for s in &self.snapshots {
+                out.push_str(&format!(
+                    "  id={:<4} name={:<20} scope={:<16} paths={:<5} files={}\n",
+                    s.id, s.name, s.scope_root, s.paths, s.file_data_count
+                ));
+            }
+        }
+        out
+    }
+    fn render_json(&self) -> String {
+        let mut b = JsonBuilder::new();
+        b.begin_object();
+        b.key("snapshots");
+        b.begin_array();
+        for s in &self.snapshots {
+            b.begin_object();
+            b.kv_u64("id", s.id);
+            b.kv_string("name", &s.name);
+            b.kv_string("scope_root", &s.scope_root);
+            b.kv_u64("created_at_secs", s.created_at_secs);
+            b.kv_u64("paths", s.paths as u64);
+            b.kv_u64("file_data_count", s.file_data_count as u64);
+            b.end_object();
+        }
+        b.end_array();
+        b.end_object();
+        b.finish()
+    }
+}
+
+struct CreateReport {
+    id: u64,
+    name: String,
+    scope_root: String,
+    paths: usize,
+    metadata_only: bool,
+}
+
+impl Report for CreateReport {
+    fn summary(&self) -> String {
+        format!(
+            "snapshot created: id={} name={} ({} paths{})",
+            self.id,
+            self.name,
+            self.paths,
+            if self.metadata_only { ", metadata-only" } else { "" }
+        )
+    }
+    fn render_text(&self) -> String {
+        format!(
+            "snapshot created\n----------------\n\
+             id          : {}\n\
+             name        : {}\n\
+             scope root  : {}\n\
+             paths       : {}\n\
+             content     : {}\n",
+            self.id,
+            self.name,
+            self.scope_root,
+            self.paths,
+            if self.metadata_only {
+                "metadata-only (file_data not captured — needs std-bound service layer)"
+            } else {
+                "full"
+            }
+        )
+    }
+    fn render_json(&self) -> String {
+        let mut b = JsonBuilder::new();
+        b.begin_object();
+        b.kv_u64("id", self.id);
+        b.kv_string("name", &self.name);
+        b.kv_string("scope_root", &self.scope_root);
+        b.kv_u64("paths", self.paths as u64);
+        b.kv_bool("metadata_only", self.metadata_only);
+        b.end_object();
+        b.finish()
+    }
+}
+
+struct DeleteReport {
+    id: u64,
+}
+
+impl Report for DeleteReport {
+    fn summary(&self) -> String {
+        format!("snapshot deleted: id={}", self.id)
+    }
+    fn render_text(&self) -> String {
+        format!("snapshot deleted\n----------------\nid : {}\n", self.id)
+    }
+    fn render_json(&self) -> String {
+        let mut b = JsonBuilder::new();
+        b.begin_object();
+        b.kv_u64("id", self.id);
+        b.end_object();
+        b.finish()
+    }
 }
 
 fn main() -> u32 {
@@ -34,25 +186,160 @@ fn main() -> u32 {
         return ExitCode::Success.as_u32();
     }
 
-    if args::parse_device_id(&args).is_none() {
+    let Some(device_id) = args::parse_device_id(&args) else {
         anyos_std::println!("corefs-snapshot: missing or invalid --device <id>");
         usage();
         return ExitCode::InvalidArgument.as_u32();
-    }
-
+    };
+    let Some(capacity) = args::parse_capacity(&args) else {
+        anyos_std::println!("corefs-snapshot: missing or invalid --capacity <bytes>");
+        usage();
+        return ExitCode::InvalidArgument.as_u32();
+    };
     let Some(sub) = args.positional_at(0) else {
         anyos_std::println!("corefs-snapshot: missing subcommand");
         usage();
         return ExitCode::InvalidArgument.as_u32();
     };
+    let json = args::flag_present(&args, "json");
+
+    let device = match AnyOsBlockDevice::open(device_id, capacity) {
+        Ok(d) => d,
+        Err(e) => {
+            anyos_std::println!("corefs-snapshot: cannot open device {}: {}", device_id, e);
+            return exit_code_for(&e).as_u32();
+        }
+    };
+    let mut session = match OdfDeviceSession::open(Box::new(device)) {
+        Ok(s) => s,
+        Err(e) => {
+            anyos_std::println!("corefs-snapshot: cannot hydrate volume: {}", e);
+            return exit_code_for(&e).as_u32();
+        }
+    };
 
     match sub {
-        "list" | "create" | "delete" | "restore" => {
+        "list" => {
+            let entries: Vec<SnapshotEntry> = session
+                .state()
+                .snapshots
+                .iter()
+                .map(|s| SnapshotEntry {
+                    id: s.id,
+                    name: s.name.clone(),
+                    scope_root: s.scope_root.clone(),
+                    created_at_secs: s.created_at.as_secs(),
+                    paths: s.paths.len(),
+                    file_data_count: s.file_data.len(),
+                })
+                .collect();
+            libcorefs_tools::report::print_report(&ListReport { snapshots: entries }, json);
+            ExitCode::Success.as_u32()
+        }
+        "create" => {
+            let Some(name) = args.get("name") else {
+                anyos_std::println!("corefs-snapshot create: --name <name> is required");
+                return ExitCode::InvalidArgument.as_u32();
+            };
+            let scope_root = args.get("scope").unwrap_or("/").to_string();
+            let name_owned = name.to_string();
+            let result = session.mutate(|state| {
+                state.next_snapshot_id += 1;
+                let snapshot_id = state.next_snapshot_id;
+                let prefix = if scope_root == "/" {
+                    String::new()
+                } else {
+                    format!("{}/", scope_root)
+                };
+                let paths: Vec<String> = state
+                    .active_inodes
+                    .iter()
+                    .map(|i| i.path.clone())
+                    .filter(|p| {
+                        scope_root == "/" || *p == scope_root || p.starts_with(&prefix)
+                    })
+                    .collect();
+                let mut snap_inodes: BTreeMap<String, SnapshotInode> = BTreeMap::new();
+                for p in &paths {
+                    if let Some(inode) = state.active_inodes.iter().find(|i| &i.path == p) {
+                        snap_inodes.insert(
+                            p.clone(),
+                            SnapshotInode {
+                                kind: inode.kind,
+                                size: inode.size,
+                                created_at: inode.created_at,
+                                modified_at: inode.modified_at,
+                                changed_at: inode.changed_at,
+                                metadata: inode.metadata.clone(),
+                                symlink_target: None,
+                            },
+                        );
+                    }
+                }
+                let snapshot = Snapshot {
+                    id: snapshot_id,
+                    name: name_owned.clone(),
+                    scope_root: scope_root.clone(),
+                    created_at: Timestamp::EPOCH,
+                    paths: paths.clone(),
+                    file_data: BTreeMap::new(),
+                    inodes: snap_inodes,
+                };
+                state.snapshots.push(snapshot);
+                Ok((snapshot_id, paths.len()))
+            });
+            match result {
+                Ok(((id, paths), _flush)) => {
+                    libcorefs_tools::report::print_report(
+                        &CreateReport {
+                            id,
+                            name: name.to_string(),
+                            scope_root,
+                            paths,
+                            metadata_only: true,
+                        },
+                        json,
+                    );
+                    ExitCode::Success.as_u32()
+                }
+                Err(e) => {
+                    anyos_std::println!("corefs-snapshot create: failed: {}", e);
+                    exit_code_for(&e).as_u32()
+                }
+            }
+        }
+        "delete" => {
+            let Some(id) = args.get_u64("id") else {
+                anyos_std::println!("corefs-snapshot delete: --id <n> is required");
+                return ExitCode::InvalidArgument.as_u32();
+            };
+            let result = session.mutate(|state| {
+                let before = state.snapshots.len();
+                state.snapshots.retain(|s| s.id != id);
+                if state.snapshots.len() == before {
+                    return Err(corefs_core::error::CoreFsError::NotFound(format!(
+                        "snapshot id {id} does not exist"
+                    )));
+                }
+                Ok(())
+            });
+            match result {
+                Ok(((), _flush)) => {
+                    libcorefs_tools::report::print_report(&DeleteReport { id }, json);
+                    ExitCode::Success.as_u32()
+                }
+                Err(e) => {
+                    anyos_std::println!("corefs-snapshot delete: {}", e);
+                    exit_code_for(&e).as_u32()
+                }
+            }
+        }
+        "restore" => {
+            let _ = args.get_u64("id");
             anyos_std::println!(
-                "corefs-snapshot '{}': planned, not yet implemented in anyOS userspace.\n\
-                 The snapshot service depends on the std-only \
-                 OdfDeviceSession API in the main corefs crate.",
-                sub
+                "corefs-snapshot restore: planned, not yet implemented in anyOS userspace.\n\
+                 Restore needs the std-gebundene CoreFsService.restore_snapshot pipeline.\n\
+                 Track: features_corefs.md § snapshot."
             );
             ExitCode::Unsupported.as_u32()
         }
