@@ -947,6 +947,39 @@ add_custom_command(
 list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/bin/false)
 
 # ============================================================
+# CoreFS administrative tools (mkfs.corefs, fsck.corefs, corefs-*)
+# Shipped under /System/sbin/ — require raw block-device access.
+# Package names use underscores because Cargo rejects '.' in names;
+# the sysroot binary keeps the canonical dotted name.
+# ============================================================
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/sbin/mkfs.corefs
+  COMMAND ${ANYELF_EXECUTABLE} bin
+    ${USER_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/mkfs_corefs.elf
+    ${SYSROOT_DIR}/System/sbin/mkfs.corefs
+  DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
+  COMMENT "Converting mkfs.corefs ELF to flat binary"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/sbin/mkfs.corefs)
+
+add_custom_command(
+  OUTPUT ${SYSROOT_DIR}/System/sbin/fsck.corefs
+  COMMAND ${ANYELF_EXECUTABLE} bin
+    ${USER_TARGET_DIR}/${USER_TARGET_TRIPLE}/release/fsck_corefs.elf
+    ${SYSROOT_DIR}/System/sbin/fsck.corefs
+  DEPENDS ${WORKSPACE_STAMP} ${ANYELF_EXECUTABLE}
+  COMMENT "Converting fsck.corefs ELF to flat binary"
+)
+list(APPEND RUST_USER_BINS ${SYSROOT_DIR}/System/sbin/fsck.corefs)
+
+add_rust_sbin_program(corefs-dump)
+add_rust_sbin_program(corefs-scrub)
+add_rust_sbin_program(corefs-defrag)
+add_rust_sbin_program(corefs-snapshot)
+add_rust_sbin_program(corefs-resize)
+add_rust_sbin_program(corefs-tier)
+
+# ============================================================
 # System programs (/System/)
 # ============================================================
 set(SYSTEM_BINS "")
