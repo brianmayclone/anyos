@@ -144,6 +144,10 @@ struct VfsState {
     mounted_exfat: Vec<(String, ExFatFs)>,
     /// OverlayFS: writable RAM layer over ISO 9660 (active when booting from CD).
     overlay_fs: Option<OverlayFs>,
+    /// CoreFS-Treiber (read-only Mount via corefs-core). Optional, weil noch
+    /// nicht alle VFS-Pfade das Dispatch auf diesen Treiber ausrollen — siehe
+    /// `fs::corefs::CoreFsDriver`.
+    corefs_driver: Option<crate::fs::corefs::CoreFsDriver>,
     /// Free slot stack for O(1) open file slot allocation.
     /// Contains indices of free (None) entries in open_files.
     free_slots: Vec<u32>,
@@ -209,6 +213,7 @@ pub fn init() {
         smbfs: Vec::new(),
         mounted_exfat: Vec::new(),
         overlay_fs: None,
+        corefs_driver: None,
         free_slots: Vec::new(),
     });
 
@@ -325,6 +330,48 @@ pub fn remove_mount(path: &str) {
     if let Some(ref mut state) = *vfs {
         state.mount_points.retain(|mp| mp.path != path);
     }
+}
+
+/// Mount a CoreFS volume read-only.
+///
+/// Boot-Code ruft diese Funktion auf, nachdem
+/// [`crate::fs::corefs::probe::detect`] für die Partition `true` geliefert
+/// hat. `partition_sectors` beschreibt die Länge der Partition in 512-Byte-
+/// Sektoren (aus MBR/GPT). Bei Erfolg ist der Treiber unter `path` im VFS
+/// registriert; read/write-Dispatch durch die klassischen VFS-Pfade folgt
+/// in einem separaten Schritt (aktuell exponiert der Treiber seinen Read-
+/// Pfad über [`crate::fs::corefs::CoreFsDriver`] direkt).
+pub fn mount_corefs(
+    path: &str,
+    disk_id: u8,
+    partition_lba: u32,
+    partition_sectors: u64,
+    device_id: u32,
+) -> Result<(), FsError> {
+    let adapter = crate::fs::corefs::BlockDeviceAdapter::new(
+        disk_id,
+        partition_lba,
+        partition_sectors,
+        /* read_only = */ true,
+    )
+    .map_err(|e| crate::fs::corefs::corefs_to_fs_error(&e))?;
+    let driver = crate::fs::corefs::CoreFsDriver::mount_read_only(adapter)?;
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    state.corefs_driver = Some(driver);
+    state.mount_points.push(MountPoint {
+        path: String::from(path),
+        fs_type: FsType::CoreFs,
+        device_id,
+    });
+    crate::serial_verbose_println!(
+        "  Mounted CoreFS (read-only) at '{}' (disk={}, lba={}, sectors={})",
+        path,
+        disk_id,
+        partition_lba,
+        partition_sectors
+    );
+    Ok(())
 }
 
 /// Mount the device filesystem at /dev, bridging built-in virtual devices
