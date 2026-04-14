@@ -11,6 +11,11 @@ debug_verbose = []
 kunit = []
 
 [dependencies]
+# Plattformneutraler CoreFS-Kern als Path-Dependency. `default-features = false`
+# deaktiviert das `crypto`-Feature (chacha20poly1305 / poly1305 mit SIMD-Intrinsics
+# bauen nicht für den soft-float Kernel-Target). AnyOS bringt seine eigenen
+# `Clock`/`Rng`-Implementierungen über die `corefs_core::platform`-Traits mit.
+corefs-core = { path = "../../corefs/corefs-core", default-features = false }
 
 [profile.dev]
 panic = "abort"
