@@ -2753,6 +2753,7 @@ fn main() {
 
     // Nav buttons — IconButton with custom pixel icons (server-side hover/press/disabled)
     let btn_back = ui::IconButton::new("");
+    btn_back.set_flat_style(true);
     btn_back.set_size(30, 28);
     if let Some(mut icon) = ui::Icon::control("left", 18) {
         icon.recolor(tc.text);
@@ -2763,6 +2764,7 @@ fn main() {
     toolbar.add(&btn_back);
 
     let btn_fwd = ui::IconButton::new("");
+    btn_fwd.set_flat_style(true);
     btn_fwd.set_size(30, 28);
     if let Some(mut icon) = ui::Icon::control("right", 18) {
         icon.recolor(tc.text);
@@ -2773,6 +2775,7 @@ fn main() {
     toolbar.add(&btn_fwd);
 
     let btn_up = ui::IconButton::new("");
+    btn_up.set_flat_style(true);
     btn_up.set_size(30, 28);
     if let Some(mut icon) = ui::Icon::control("folder", 18) {
         icon.recolor(tc.text);
@@ -2784,6 +2787,7 @@ fn main() {
     toolbar.add_separator();
 
     let btn_refresh = ui::IconButton::new("");
+    btn_refresh.set_flat_style(true);
     btn_refresh.set_size(30, 28);
     if let Some(mut icon) = ui::Icon::control("refresh", 18) {
         icon.recolor(tc.text);

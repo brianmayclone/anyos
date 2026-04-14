@@ -494,7 +494,7 @@ pub fn button_padding_h() -> u32 {
 }
 #[inline(always)]
 pub fn button_corner() -> u32 {
-    scale(10)
+    scale(7)
 }
 #[inline(always)]
 pub fn input_height() -> u32 {
@@ -526,7 +526,7 @@ pub fn radio_size() -> u32 {
 }
 #[inline(always)]
 pub fn card_corner() -> u32 {
-    scale(14)
+    scale(12)
 }
 #[inline(always)]
 pub fn tooltip_corner() -> u32 {

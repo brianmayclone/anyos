@@ -30,9 +30,10 @@ impl Toolbar {
         div
     }
 
-    /// Create an IconButton with the given icon text and add it to this toolbar.
+    /// Create an IconButton with a flat toolbar style and add it to this toolbar.
     pub fn add_icon_button(&self, icon_text: &str) -> crate::controls::IconButton {
         let btn = crate::controls::IconButton::new(icon_text);
+        btn.set_flat_style(true);
         self.add(&btn);
         btn
     }

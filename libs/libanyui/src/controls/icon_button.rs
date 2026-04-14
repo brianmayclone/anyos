@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 pub struct IconButton {
     pub(crate) text_base: TextControlBase,
     pressed: bool,
+    pub(crate) flat: bool,
     /// Pre-rendered ARGB icon pixels (from SVG rasterizer).
     pub(crate) icon_pixels: Vec<u32>,
     pub(crate) icon_w: u32,
@@ -15,6 +16,7 @@ impl IconButton {
         Self {
             text_base,
             pressed: false,
+            flat: false,
             icon_pixels: Vec::new(),
             icon_w: 0,
             icon_h: 0,
@@ -130,15 +132,32 @@ impl Control for IconButton {
         let icon_text_gap = crate::theme::scale_i32(Self::ICON_TEXT_GAP);
         let default_icon_sz = crate::theme::scale_i32(16);
 
-        let palette = if custom != 0 {
-            crate::controls::chrome::accent_palette(custom, hovered, self.pressed, disabled)
+        if self.flat {
+            if focused && !disabled {
+                crate::draw::draw_rounded_border(surface, x, y, w, h, corner, tc.accent);
+            }
+            if !disabled && self.pressed {
+                crate::draw::fill_rounded_rect(
+                    surface,
+                    x,
+                    y,
+                    w,
+                    h,
+                    corner,
+                    crate::theme::with_alpha(tc.text, 32),
+                );
+            }
         } else {
-            crate::controls::chrome::neutral_palette(hovered, self.pressed, disabled)
-        };
-        if focused && !disabled {
-            crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
+            let palette = if custom != 0 {
+                crate::controls::chrome::accent_palette(custom, hovered, self.pressed, disabled)
+            } else {
+                crate::controls::chrome::neutral_palette(hovered, self.pressed, disabled)
+            };
+            if focused && !disabled {
+                crate::controls::chrome::draw_focus(surface, x, y, w, h, corner, palette);
+            }
+            crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
         }
-        crate::controls::chrome::draw_surface(surface, x, y, w, h, corner, palette);
 
         let has_text = !self.text_base.text.is_empty();
         let text_color = if disabled {

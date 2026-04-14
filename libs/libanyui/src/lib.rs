@@ -1794,6 +1794,21 @@ pub extern "C" fn anyui_iconbutton_set_pixels(id: ControlId, data: *const u32, w
     }
 }
 
+/// Enable or disable flat toolbar-style rendering for an IconButton.
+#[no_mangle]
+pub extern "C" fn anyui_iconbutton_set_flat(id: ControlId, flat: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(ib) = control::cast_mut::<controls::icon_button::IconButton>(
+            ctrl,
+            ControlKind::IconButton,
+        ) {
+            ib.flat = flat != 0;
+            ib.base_mut().mark_dirty();
+        }
+    }
+}
+
 // ── DataGrid ─────────────────────────────────────────────────────────
 
 fn as_data_grid(

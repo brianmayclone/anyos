@@ -1151,19 +1151,26 @@ pub fn run_once() -> u32 {
                                         }
 
                                         if st.controls[idx2].kind() == ControlKind::ComboBox {
-                                            let raw: *mut dyn Control = &mut *st.controls[idx2];
-                                            let cb = unsafe {
-                                                &mut *(raw as *mut crate::controls::combobox::ComboBox)
-                                            };
-                                            if cb.request_popup || cb.open {
-                                                cb.request_popup = false;
-                                                cb.open = true;
-                                                let items_text = cb.popup_items();
-                                                let cb_w = cb.text_base.base.w;
-                                                let cb_h = cb.text_base.base.h;
-                                                let cb_abs =
-                                                    control::abs_position(&st.controls, target_id);
+                                            let (should_open, items_text, cb_w, cb_h, cb_abs) =
+                                                if let Some(cb) = control::cast_mut::<crate::controls::combobox::ComboBox>(
+                                                    &mut st.controls[idx2],
+                                                    ControlKind::ComboBox,
+                                                ) {
+                                                    let should_open = cb.request_popup || cb.open;
+                                                    cb.request_popup = false;
+                                                    cb.open = should_open;
+                                                    (
+                                                        should_open,
+                                                        cb.popup_items(),
+                                                        cb.text_base.base.w,
+                                                        cb.text_base.base.h,
+                                                        control::abs_position(&st.controls, target_id),
+                                                    )
+                                                } else {
+                                                    (false, alloc::vec::Vec::new(), 0, 0, (0, 0))
+                                                };
 
+                                            if should_open {
                                                 dismiss_popup(st);
 
                                                 if !items_text.is_empty() {

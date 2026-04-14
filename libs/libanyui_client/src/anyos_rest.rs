@@ -234,6 +234,7 @@ struct AnyuiLib {
     message_box: extern "C" fn(u32, *const u8, u32, *const u8, u32),
     // IconButton
     iconbutton_set_pixels: extern "C" fn(u32, *const u32, u32, u32),
+    iconbutton_set_flat: extern "C" fn(u32, u32),
     // ImageView
     imageview_set_pixels: extern "C" fn(u32, *const u32, u32, u32),
     imageview_set_scale_mode: extern "C" fn(u32, u32),
@@ -531,6 +532,7 @@ pub fn init() -> bool {
             message_box: resolve(&handle, "anyui_message_box"),
             // IconButton
             iconbutton_set_pixels: resolve(&handle, "anyui_iconbutton_set_pixels"),
+            iconbutton_set_flat: resolve(&handle, "anyui_iconbutton_set_flat"),
             // ImageView
             imageview_set_pixels: resolve(&handle, "anyui_imageview_set_pixels"),
             imageview_set_scale_mode: resolve(&handle, "anyui_imageview_set_scale_mode"),

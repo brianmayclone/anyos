@@ -2484,6 +2484,166 @@ fn primitive_to_le_bytes_methods_return_byte_arrays() {
 }
 
 #[test]
+fn result_ok_binding_keeps_array_type_for_indexing() {
+    compile_ok(
+        "result_ok_binding_keeps_array_type_for_indexing",
+        r#"
+        fn read_size(meta: core::result::Result<[u32; 4], u32>) -> usize {
+            if let Ok(values) = meta {
+                values[1] as usize
+            } else {
+                0
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn option_map_over_ref_index_preserves_usize_for_vec_indexing() {
+    compile_ok(
+        "option_map_over_ref_index_preserves_usize_for_vec_indexing",
+        r#"
+        fn lookup(entries: &Vec<(u32, u32)>, idx: Option<&usize>) -> Option<&u32> {
+            idx.map(|&i| &entries[i].1)
+        }
+        "#,
+    );
+}
+
+#[test]
+fn generic_enum_variant_binding_preserves_struct_fields() {
+    compile_ok(
+        "generic_enum_variant_binding_preserves_struct_fields",
+        r#"
+        struct Slot<V> {
+            value: V,
+        }
+
+        struct OccupiedEntry<'a, V> {
+            slot: &'a mut Slot<V>,
+            idx: usize,
+        }
+
+        enum Entry<'a, V> {
+            Occupied(OccupiedEntry<'a, V>),
+            Vacant,
+        }
+
+        impl<'a, V> Entry<'a, V> {
+            fn into_parts(self) -> (&'a mut Slot<V>, usize) {
+                match self {
+                    Entry::Occupied(e) => (e.slot, e.idx),
+                    Entry::Vacant => loop {},
+                }
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn nested_generic_field_chain_after_variant_binding_compiles() {
+    compile_ok(
+        "nested_generic_field_chain_after_variant_binding_compiles",
+        r#"
+        struct Map<K, V> {
+            buckets: Vec<Option<(K, V)>>,
+        }
+
+        struct OccupiedEntry<'a, K, V> {
+            map: &'a mut Map<K, V>,
+            idx: usize,
+        }
+
+        enum Entry<'a, K, V> {
+            Occupied(OccupiedEntry<'a, K, V>),
+            Vacant,
+        }
+
+        impl<'a, K, V> Entry<'a, K, V> {
+            fn value(self) -> &'a mut V {
+                match self {
+                    Entry::Occupied(e) => {
+                        let (_, v) = e.map.buckets[e.idx].as_mut().unwrap();
+                        v
+                    }
+                    Entry::Vacant => loop {},
+                }
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn borrowed_struct_with_slice_field_supports_field_access_and_indexing() {
+    compile_ok(
+        "borrowed_struct_with_slice_field_supports_field_access_and_indexing",
+        r#"
+        struct WavInfo<'a> {
+            channels: u16,
+            pcm_data: &'a [u8],
+        }
+
+        fn first_sample(wav: &WavInfo) -> u8 {
+            if wav.channels == 0 {
+                0
+            } else {
+                wav.pcm_data[0]
+            }
+        }
+        "#,
+    );
+}
+
+#[test]
+fn shell_tokenize_style_byte_scanning_compiles() {
+    compile_ok(
+        "shell_tokenize_style_byte_scanning_compiles",
+        r#"
+        fn tokenize(input: &str) -> usize {
+            let bytes = input.as_bytes();
+            let len = bytes.len();
+            let mut i = 0;
+            let mut count = 0;
+            while i < len {
+                if bytes[i] == b' ' || bytes[i] == b'\t' { i += 1; continue; }
+                while i < len && bytes[i] != b' ' && bytes[i] != b'\t' {
+                    if bytes[i] == b'\\' && i + 1 < len {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                count += 1;
+            }
+            count
+        }
+        "#,
+    );
+}
+
+#[test]
+fn wifi_connect_style_copy_from_slice_compiles() {
+    compile_ok(
+        "wifi_connect_style_copy_from_slice_compiles",
+        r#"
+        fn pack(ssid: &str, password: &str) -> [u8; 98] {
+            let ssid_b = ssid.as_bytes();
+            let pw_b = password.as_bytes();
+            let mut buf = [0u8; 98];
+            buf[0] = ssid_b.len() as u8;
+            buf[1..1 + ssid_b.len()].copy_from_slice(ssid_b);
+            buf[33] = pw_b.len() as u8;
+            buf[34..34 + pw_b.len()].copy_from_slice(pw_b);
+            buf
+        }
+        "#,
+    );
+}
+
+#[test]
 fn tuple_patterns_through_iter_references_bind_element_types() {
     compile_ok(
         "tuple_patterns_through_iter_references_bind_element_types",

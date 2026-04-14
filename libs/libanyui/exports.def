@@ -105,6 +105,7 @@ anyui_marshal_set_text
     anyui_set_tooltip
     anyui_message_box
     anyui_iconbutton_set_pixels
+    anyui_iconbutton_set_flat
     anyui_imageview_set_pixels
     anyui_imageview_set_scale_mode
     anyui_imageview_get_image_size

@@ -23,6 +23,11 @@ impl PlainButton {
         (lib().iconbutton_set_pixels)(self.ctrl.id, pixels.as_ptr(), w, h);
     }
 
+    /// Set which built-in pixel-art icon to display (legacy compatibility).
+    pub fn set_icon(&self, icon_id: u32) {
+        self.ctrl.set_state(icon_id);
+    }
+
     pub fn on_click(&self, mut f: impl FnMut(&ClickEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| f(&ClickEvent { id }));
         (lib().on_click_fn)(self.ctrl.id, thunk, ud);

@@ -47,6 +47,11 @@ impl IconButton {
         (lib().iconbutton_set_pixels)(self.ctrl.id, pixels.as_ptr(), w, h);
     }
 
+    /// Use the flatter toolbar-style rendering without a persistent background.
+    pub fn set_flat_style(&self, flat: bool) {
+        (lib().iconbutton_set_flat)(self.ctrl.id, flat as u32);
+    }
+
     /// Set which built-in pixel-art icon to display (legacy, use ICON_* constants).
     pub fn set_icon(&self, icon_id: u32) {
         self.ctrl.set_state(icon_id);

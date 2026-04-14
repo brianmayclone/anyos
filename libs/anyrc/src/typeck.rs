@@ -1800,6 +1800,41 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                if let Some((method_def_id, param_tys, ret_ty)) =
+                    self.resolve_impl_method_by_receiver(*method_name, &base_ty, &inner_ty)
+                {
+                    let n_generics = self.generic_fn_defs.get(&method_def_id).copied().unwrap_or(0);
+                    let (param_tys, ret_ty) = if n_generics > 0 {
+                        let infer_vars: Vec<TyKind> = (0..n_generics)
+                            .map(|_| self.fresh_infer(InferKind::General))
+                            .collect();
+                        (
+                            param_tys
+                                .iter()
+                                .map(|t| self.substitute_params(t, &infer_vars))
+                                .collect(),
+                            self.substitute_params(&ret_ty, &infer_vars),
+                        )
+                    } else {
+                        (param_tys, ret_ty)
+                    };
+                    let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
+                    if args.len() != user_params.len() {
+                        self.error(expr.span, &format!(
+                            "wrong number of arguments for method {}: expected {}, found {}",
+                            self.interner.resolve(*method_name),
+                            user_params.len(),
+                            args.len(),
+                        ));
+                    } else {
+                        for (arg, pty) in args.iter().zip(user_params.iter()) {
+                            let aty = self.get_expr_ty_cached(arg);
+                            self.unify(pty, &aty, arg.span);
+                        }
+                    }
+                    return ret_ty;
+                }
+
                 self.fresh_infer(InferKind::General)
             }
 
@@ -2246,6 +2281,44 @@ impl<'a> TypeChecker<'a> {
         } else {
             self.bind_pattern(&param.pat, expected_ty);
         }
+    }
+
+    fn resolve_impl_method_by_receiver(
+        &self,
+        method_name: Symbol,
+        base_ty: &TyKind,
+        inner_ty: &TyKind,
+    ) -> Option<(DefId, Vec<TyKind>, TyKind)> {
+        let mut fallback_match = None;
+
+        for methods in self.resolve.impl_methods.values() {
+            for (candidate_name, method_def_id) in methods {
+                if *candidate_name != method_name {
+                    continue;
+                }
+                let Some((param_tys, ret_ty)) = self.fn_sigs.get(method_def_id).cloned() else {
+                    continue;
+                };
+                let Some(self_param_ty) = param_tys.first() else {
+                    continue;
+                };
+                let impl_substs = self
+                    .infer_receiver_substs(self_param_ty, base_ty)
+                    .or_else(|| self.infer_receiver_substs(self_param_ty, inner_ty));
+                let Some(impl_substs) = impl_substs else {
+                    continue;
+                };
+
+                let param_tys: Vec<TyKind> = param_tys
+                    .iter()
+                    .map(|t| self.substitute_params(t, &impl_substs))
+                    .collect();
+                let ret_ty = self.substitute_params(&ret_ty, &impl_substs);
+                fallback_match = Some((*method_def_id, param_tys, ret_ty));
+            }
+        }
+
+        fallback_match
     }
 
     // ── Unification ──
