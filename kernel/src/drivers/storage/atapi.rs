@@ -36,6 +36,14 @@ const SCSI_READ_CAPACITY: u8 = 0x25;
 
 /// CD-ROM logical block size (2048 bytes).
 pub const CDROM_SECTOR_SIZE: usize = 2048;
+/// Preferred READ(10) batch size for IDE ATAPI.
+///
+/// The data phase itself is still limited by the device's 16-bit byte-count
+/// register (~64 KiB per DRQ phase), but larger READ(10) requests let the
+/// drive stream multiple phases for one PACKET command. That avoids paying the
+/// command-setup latency for every 64 KiB chunk, which was especially painful
+/// when booting large assets from CD-ROM.
+const MAX_READ10_BLOCKS: u32 = 256; // 512 KiB per PACKET command
 
 /// Detected ATAPI drive information.
 pub struct AtapiDrive {
@@ -288,14 +296,12 @@ pub fn read_sectors(lba: u32, count: u32, buf: &mut [u8]) -> bool {
         return false;
     }
 
-    // Read in chunks of up to 32 blocks (64 KiB per transfer)
-    let max_blocks: u32 = 32;
     let mut remaining = count;
     let mut cur_lba = lba;
     let mut offset = 0usize;
 
     while remaining > 0 {
-        let batch = remaining.min(max_blocks);
+        let batch = remaining.min(MAX_READ10_BLOCKS);
         let batch_bytes = batch as usize * CDROM_SECTOR_SIZE;
 
         // Build SCSI READ(10) command

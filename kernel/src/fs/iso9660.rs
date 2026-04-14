@@ -12,6 +12,9 @@ use crate::fs::vfs::FsError;
 
 /// ISO 9660 logical block size.
 const ISO_BLOCK_SIZE: usize = 2048;
+/// Keep large file reads chunky so IDE ATAPI does not pay PACKET setup cost
+/// for every 64 KiB of data when booting from CD-ROM.
+const ISO_READ_BATCH_BLOCKS: usize = 256; // 512 KiB
 
 /// Primary Volume Descriptor type.
 const VD_TYPE_PRIMARY: u8 = 1;
@@ -240,10 +243,11 @@ impl Iso9660Fs {
             cur_block += 1;
         }
 
-        // Read remaining full blocks directly into destination buffer (up to 32 at a time)
+        // Read remaining full blocks directly into destination buffer in large
+        // batches so ATAPI can stream multiple DRQ phases per READ(10).
         while bytes_read + ISO_BLOCK_SIZE <= to_read {
             let blocks_left = (to_read - bytes_read) / ISO_BLOCK_SIZE;
-            let batch = blocks_left.min(32); // AHCI ATAPI supports up to 32 CD blocks per transfer
+            let batch = blocks_left.min(ISO_READ_BATCH_BLOCKS);
             let batch_bytes = batch * ISO_BLOCK_SIZE;
             if !read_cd_blocks(extent_lba + cur_block as u32, batch as u32, &mut buf[bytes_read..bytes_read + batch_bytes]) {
                 if bytes_read > 0 {
