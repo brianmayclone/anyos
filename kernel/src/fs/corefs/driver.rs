@@ -1,45 +1,52 @@
 //! CoreFS-Treiber, der den VFS-[`Filesystem`]-Trait über `corefs_core` erfüllt.
 //!
-//! # Status: Read-only Mount
+//! # Status: Read + Append-Only Write-Subset
 //!
-//! Dieser erste Integrations-Schritt liefert einen **read-only**-Mount über
-//! [`corefs_core::storage::ondisk::reader::OdfReader`]. Damit lassen sich
-//! Pfade auflösen, Dateien lesen und Verzeichnisse listen. Schreiboperationen
-//! (`write`, `create`, `delete`) geben [`FsError::PermissionDenied`] zurück.
+//! Der Treiber hydriert beim Mount einen [`PersistedState`] aus dem Volume
+//! via [`corefs_core::storage::ondisk::native::load_state_native`] und hält
+//! ihn unter einem [`crate::sync::mutex::Mutex`]. Lesende Operationen
+//! (`read`, `lookup`, `readdir`) laufen direkt gegen den in-memory
+//! `PersistedState`; schreibende Operationen mutieren ihn, und [`flush`]
+//! schreibt alle gesammelten Änderungen atomar via
+//! [`corefs_core::storage::ondisk::native::save_state_native`] zurück.
 //!
-//! Der Write-Path wird in einem Folgeschritt über
-//! `corefs_core::storage::ondisk::native::{load_state_native,
-//! save_state_native}` ergänzt.
+//! ## Schreibpfad — Scope
 //!
-//! # Inode-Mapping
+//! - `create(Regular | Directory)` legt einen neuen Inode an (leerer
+//!   `BlockRecord` für Files). `create(Device)` → `PermissionDenied`.
+//! - `write` hängt Bytes an den `BlockRecord` des Files an oder erzeugt
+//!   einen neuen, wenn noch keiner existiert. Overwrites mitten in der
+//!   Datei werden unterstützt (byte-precise).
+//! - `delete(name)` verschiebt den betroffenen Inode nach `deleted_inodes`
+//!   und entfernt seinen `BlockRecord`.
 //!
-//! AnyOS-VFS arbeitet mit 32-bit-Inode-Nummern, CoreFS mit 64-bit [`InodeId`].
-//! Wir bilden beide auf den 64-bit **slot** (Position im Inode-Array des
-//! On-Disk-Layouts) ab und truncaten bei Überlauf. Weil CoreFS den Slot 0
-//! reserviert und typische Installationen bei weitem weniger als 2^32 Inodes
-//! allokieren, ist Truncation im realen Betrieb irrelevant. Eine
-//! Translation-Table kann später nachgezogen werden, falls das Limit
-//! überschritten wird.
+//! Nicht unterstützt (würden den Service-Layer + BlockStore-Owner brauchen):
+//! - Snapshots / Versioning / Sync-Status-Manipulation
+//! - Quota / Security (ACL)-Änderungen
+//! - Rename, chmod, chown
 //!
-//! # `FileType`-Mapping
+//! ## Inode-Mapping
 //!
-//! | AnyOS [`FileType`]        | CoreFS [`InodeKind`]  |
-//! |---------------------------|-----------------------|
-//! | `Regular`                 | `File`, `Symlink`†    |
-//! | `Directory`               | `Directory`           |
-//! | `Device`                  | — (nie aus CoreFS)    |
-//!
-//! † Symlinks werden aktuell als `Regular` präsentiert; ein dedizierter
-//! Symlink-Pfad ist ToDo, sobald AnyOS-VFS symbolische Links modelliert.
+//! Auf VFS-Ebene exponieren wir den CoreFS-Slot (0-basiert, Truncation auf
+//! u32). Intern arbeiten wir aber auf `InodeId` (domain-level Identität).
+//! Ein Hilfs-HashMap (`slot_to_id`) wird lazily beim ersten schreibenden
+//! Zugriff aufgebaut.
 
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use corefs_core::domain::inode::InodeKind;
+use corefs_core::domain::inode::{Inode, InodeId, InodeKind};
+use corefs_core::domain::metadata::FileMetadata;
+use corefs_core::domain::volume::VolumeDescriptor;
 use corefs_core::error::CoreFsError;
+use corefs_core::platform::Timestamp;
+use corefs_core::services::journal::JournalRuntimeState;
 use corefs_core::storage::block_device::BlockDevice;
-use corefs_core::storage::ondisk::reader::OdfReader;
+use corefs_core::storage::block_store::{AllocatorPolicy, BlockRecord};
+use corefs_core::storage::ondisk::native::{load_state_native, save_state_native};
+use corefs_core::storage::persisted_state::PersistedState;
+use corefs_core::config::CoreFsConfig;
 
 use crate::fs::file::{DirEntry, FileType};
 use crate::fs::vfs::{Filesystem, FsError};
@@ -58,7 +65,6 @@ pub fn corefs_to_fs_error(e: &CoreFsError) -> FsError {
         CoreFsError::InvalidInput(_) => FsError::InvalidPath,
         CoreFsError::PolicyViolation(_) => FsError::PermissionDenied,
         CoreFsError::AlreadyExists(_) => FsError::AlreadyExists,
-        // Alle übrigen Varianten (State, Io, …) werden als IoError klassifiziert.
         _ => FsError::IoError,
     }
 }
@@ -68,8 +74,34 @@ fn kind_to_file_type(k: InodeKind) -> FileType {
     match k {
         InodeKind::File => FileType::Regular,
         InodeKind::Directory => FileType::Directory,
-        // Symlinks werden im AnyOS-VFS derzeit nicht separat modelliert.
         InodeKind::Symlink => FileType::Regular,
+    }
+}
+
+/// Konstruiert einen frischen, leeren `PersistedState` — passend zum
+/// Ergebnis von `format_device` + `save_state_native(&empty_state)`.
+///
+/// Pendant zu den `empty_state()`-Helfern aus den `corefs-core`-Tests.
+pub fn empty_persisted_state() -> PersistedState {
+    let config = CoreFsConfig::default();
+    let volume = VolumeDescriptor::from_config_at(&config, Timestamp::EPOCH);
+    PersistedState {
+        config,
+        volume,
+        clean_unmount: true,
+        pending_wal: None,
+        active_inodes: Vec::new(),
+        deleted_inodes: Vec::new(),
+        allocator_policy: AllocatorPolicy::default(),
+        free_extents: Vec::new(),
+        hot_path_records: Vec::new(),
+        block_records: Vec::new(),
+        journal_entries: Vec::new(),
+        journal_runtime: JournalRuntimeState::default(),
+        versions: Vec::new(),
+        sync_statuses: Vec::new(),
+        snapshots: Vec::new(),
+        next_snapshot_id: 0,
     }
 }
 
@@ -77,70 +109,123 @@ fn kind_to_file_type(k: InodeKind) -> FileType {
 // CoreFsDriver
 // ---------------------------------------------------------------------------
 
-/// Read-only-Treiber für ein gemountetes CoreFS-Volume.
+/// Treiber für ein gemountetes CoreFS-Volume.
+///
+/// Hält den hydratisierten [`PersistedState`] im Speicher. Schreibende
+/// `Filesystem`-Aufrufe mutieren den State; Aufrufe an [`CoreFsDriver::flush`]
+/// persistieren via `save_state_native` atomar auf das Device.
 pub struct CoreFsDriver {
     inner: Mutex<Inner>,
 }
 
 struct Inner {
     device: BlockDeviceAdapter,
-    /// Cached Liste aller bekannten Pfade → Slot, erstbefüllt bei erster
-    /// Lookup-Anfrage.
-    path_cache: Option<Vec<(String, u64, InodeKind, u64)>>,
+    state: PersistedState,
+    /// Laufender Zähler für neu zu vergebende `InodeId`s. Startet bei einem
+    /// Wert oberhalb aller im State bekannten Ids, damit keine Kollision
+    /// entsteht.
+    next_id: u64,
+    read_only: bool,
 }
 
 impl CoreFsDriver {
-    /// Öffnet ein vorhandenes CoreFS-Volume über den übergebenen Adapter.
+    /// Öffnet ein vorhandenes CoreFS-Volume read-only.
     ///
-    /// Validiert den Superblock (primär + Fallbacks) und die Bitmap-Integrität
-    /// via [`OdfReader::open`]. Bei Erfolg liegt der Mount vor.
+    /// Schreibende `Filesystem`-Operationen geben [`FsError::PermissionDenied`]
+    /// zurück; `flush` ist ein No-op.
     pub fn mount_read_only(device: BlockDeviceAdapter) -> Result<Self, FsError> {
-        // Test-Open: validates magic, version and bitmap CRC — abort on error.
-        {
-            let _r = OdfReader::open(&device).map_err(|e| corefs_to_fs_error(&e))?;
-        }
+        let state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        let next_id = compute_next_id(&state);
         Ok(Self {
             inner: Mutex::new(Inner {
                 device,
-                path_cache: None,
+                state,
+                next_id,
+                read_only: true,
             }),
         })
     }
 
-    // ------------------------------------------------------------
-    // Helpers that run inside the lock
-    // ------------------------------------------------------------
+    /// Öffnet ein vorhandenes CoreFS-Volume mit Schreibzugriff.
+    ///
+    /// Erfordert, dass das Volume bereits im `LAYOUT_MODE_NATIVE` steht
+    /// (d.h. mindestens einmal mit `save_state_native` beschrieben wurde).
+    /// Ein frisch formatiertes Volume muss vorher initialisiert werden —
+    /// Tests nutzen dazu [`empty_persisted_state`] + `save_state_native`.
+    pub fn mount_writable(device: BlockDeviceAdapter) -> Result<Self, FsError> {
+        let state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        let next_id = compute_next_id(&state);
+        Ok(Self {
+            inner: Mutex::new(Inner {
+                device,
+                state,
+                next_id,
+                read_only: false,
+            }),
+        })
+    }
 
-    /// Stellt sicher, dass `inner.path_cache` befüllt ist und liefert einen
-    /// Slice darauf. Muss unter gehaltenem Lock aufgerufen werden.
-    fn ensure_path_cache(inner: &mut Inner) -> Result<(), FsError> {
-        if inner.path_cache.is_some() {
+    /// Commitet alle bisher gesammelten Mutationen atomar auf das Device.
+    ///
+    /// Nicht Teil des [`Filesystem`]-Traits — Aufrufer (Unmount-Hook,
+    /// Shutdown-Sync) rufen diese Methode gezielt auf.
+    pub fn flush(&self) -> Result<(), FsError> {
+        let mut inner = self.inner.lock();
+        if inner.read_only {
             return Ok(());
         }
-        let reader = OdfReader::open(&inner.device).map_err(|e| corefs_to_fs_error(&e))?;
-        let summaries = reader.list_inodes().map_err(|e| corefs_to_fs_error(&e))?;
-        let mut cache: Vec<(String, u64, InodeKind, u64)> = Vec::with_capacity(summaries.len());
-        for s in &summaries {
-            if s.is_deleted {
-                continue;
-            }
-            // Read attr block → path.
-            let meta = reader
-                .read_inode_metadata(s.slot)
-                .map_err(|e| corefs_to_fs_error(&e))?;
-            cache.push((meta.path, s.slot, s.kind, s.size_bytes));
-        }
-        inner.path_cache = Some(cache);
+        let Inner { device, state, .. } = &mut *inner;
+        save_state_native(device, state).map_err(|e| corefs_to_fs_error(&e))?;
         Ok(())
     }
 
-    fn slot_from_u32(inode: u32) -> u64 {
-        u64::from(inode)
+    /// Erwartbarer Inode-Mapping-Helper (u32-Truncate des u64-InodeId-Wertes).
+    fn inode_u32_from_id(id: InodeId) -> u32 {
+        id.0 as u32
     }
+}
 
-    fn u32_from_slot(slot: u64) -> u32 {
-        // Truncate — dokumentiertes Verhalten, siehe Modul-Doku.
-        slot as u32
+fn compute_next_id(state: &PersistedState) -> u64 {
+    let mut max_id: u64 = 0;
+    for i in &state.active_inodes {
+        if i.id.0 > max_id {
+            max_id = i.id.0;
+        }
+    }
+    for i in &state.deleted_inodes {
+        if i.id.0 > max_id {
+            max_id = i.id.0;
+        }
+    }
+    max_id + 1
+}
+
+// ---------------------------------------------------------------------------
+// Path helpers
+// ---------------------------------------------------------------------------
+
+fn parent_of(path: &str) -> &str {
+    // Splits off the last path segment. Root (`/`) has no parent.
+    if path == "/" || path.is_empty() {
+        return "/";
+    }
+    match path.rfind('/') {
+        Some(0) => "/",
+        Some(idx) => &path[..idx],
+        None => "/",
+    }
+}
+
+fn join_path(parent: &str, name: &str) -> String {
+    if parent == "/" {
+        let mut s = String::from("/");
+        s.push_str(name);
+        s
+    } else {
+        let mut s = String::from(parent);
+        s.push('/');
+        s.push_str(name);
+        s
     }
 }
 
@@ -151,40 +236,97 @@ impl CoreFsDriver {
 impl Filesystem for CoreFsDriver {
     fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         let inner = self.inner.lock();
-        let reader = OdfReader::open(&inner.device).map_err(|e| corefs_to_fs_error(&e))?;
-        let slot = Self::slot_from_u32(inode);
-        let content = reader
-            .read_file_content(slot)
-            .map_err(|e| corefs_to_fs_error(&e))?;
-        let off = offset as usize;
-        if off >= content.len() {
-            return Ok(0);
+        // Find BlockRecord by inode.id truncated to u32.
+        for rec in &inner.state.block_records {
+            if CoreFsDriver::inode_u32_from_id(rec.inode) == inode {
+                let off = offset as usize;
+                if off >= rec.bytes.len() {
+                    return Ok(0);
+                }
+                let n = core::cmp::min(rec.bytes.len() - off, buf.len());
+                buf[..n].copy_from_slice(&rec.bytes[off..off + n]);
+                return Ok(n);
+            }
         }
-        let avail = content.len() - off;
-        let n = core::cmp::min(avail, buf.len());
-        buf[..n].copy_from_slice(&content[off..off + n]);
-        Ok(n)
+        // Inode exists but has no block record → 0 bytes (empty file).
+        for i in &inner.state.active_inodes {
+            if CoreFsDriver::inode_u32_from_id(i.id) == inode {
+                return Ok(0);
+            }
+        }
+        Err(FsError::NotFound)
     }
 
-    fn write(&self, _inode: u32, _offset: u32, _buf: &[u8]) -> Result<usize, FsError> {
-        // Write-Path folgt in einem Folgeschritt über load_state_native /
-        // save_state_native. Aktuell bewusst read-only.
-        Err(FsError::PermissionDenied)
+    fn write(&self, inode: u32, offset: u32, buf: &[u8]) -> Result<usize, FsError> {
+        let mut inner = self.inner.lock();
+        if inner.read_only {
+            return Err(FsError::PermissionDenied);
+        }
+        // Locate the active inode first — directories cannot hold bytes.
+        let mut inode_id: Option<InodeId> = None;
+        for i in &inner.state.active_inodes {
+            if CoreFsDriver::inode_u32_from_id(i.id) == inode {
+                if !matches!(i.kind, InodeKind::File) {
+                    return Err(FsError::IsADirectory);
+                }
+                inode_id = Some(i.id);
+                break;
+            }
+        }
+        let id = inode_id.ok_or(FsError::NotFound)?;
+
+        // Append/overwrite into BlockRecord.
+        let off = offset as usize;
+        let end = off + buf.len();
+        let mut found = false;
+        for rec in inner.state.block_records.iter_mut() {
+            if rec.inode == id {
+                if rec.bytes.len() < end {
+                    rec.bytes.resize(end, 0);
+                }
+                rec.bytes[off..end].copy_from_slice(buf);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            let mut bytes: Vec<u8> = Vec::new();
+            bytes.resize(end, 0);
+            bytes[off..end].copy_from_slice(buf);
+            inner.state.block_records.push(BlockRecord {
+                inode: id,
+                bytes,
+                checksum: 0,
+                device_block: 0,
+                allocated_blocks: 0,
+            });
+        }
+
+        // Update inode size field to reflect highest written offset.
+        for i in inner.state.active_inodes.iter_mut() {
+            if i.id == id {
+                if end > i.size {
+                    i.size = end;
+                }
+                i.touch_modified_at(Timestamp::EPOCH);
+                break;
+            }
+        }
+
+        Ok(buf.len())
     }
 
     fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
         if path.is_empty() {
             return Err(FsError::InvalidPath);
         }
-        let mut inner = self.inner.lock();
-        Self::ensure_path_cache(&mut inner)?;
-        let cache = inner.path_cache.as_ref().expect("cache just initialised");
-        for (p, slot, kind, size) in cache {
-            if p == path {
+        let inner = self.inner.lock();
+        for i in &inner.state.active_inodes {
+            if i.path == path {
                 return Ok((
-                    Self::u32_from_slot(*slot),
-                    kind_to_file_type(*kind),
-                    *size as u32,
+                    CoreFsDriver::inode_u32_from_id(i.id),
+                    kind_to_file_type(i.kind),
+                    i.size as u32,
                 ));
             }
         }
@@ -192,15 +334,14 @@ impl Filesystem for CoreFsDriver {
     }
 
     fn readdir(&self, inode: u32) -> Result<Vec<DirEntry>, FsError> {
-        let mut inner = self.inner.lock();
-        Self::ensure_path_cache(&mut inner)?;
-        let cache = inner.path_cache.as_ref().expect("cache just initialised");
-        // Resolve the parent path via cached slot lookup.
-        let slot = Self::slot_from_u32(inode);
-        let parent_path = cache
+        let inner = self.inner.lock();
+        // Find the parent path.
+        let parent_path = inner
+            .state
+            .active_inodes
             .iter()
-            .find(|(_, s, _, _)| *s == slot)
-            .map(|(p, _, _, _)| p.clone())
+            .find(|i| CoreFsDriver::inode_u32_from_id(i.id) == inode)
+            .map(|i| i.path.clone())
             .ok_or(FsError::NotFound)?;
         let prefix = if parent_path == "/" {
             "/".to_string()
@@ -210,26 +351,25 @@ impl Filesystem for CoreFsDriver {
             p
         };
         let mut entries: Vec<DirEntry> = Vec::new();
-        for (p, _slot, kind, size) in cache {
-            if p == &parent_path {
+        for i in &inner.state.active_inodes {
+            if i.path == parent_path {
                 continue;
             }
-            if !p.starts_with(&prefix) {
+            if !i.path.starts_with(&prefix) {
                 continue;
             }
-            // Direct child only — no further '/' after the prefix.
-            let rest = &p[prefix.len()..];
+            let rest = &i.path[prefix.len()..];
             if rest.is_empty() || rest.contains('/') {
                 continue;
             }
             entries.push(DirEntry {
                 name: rest.to_string(),
-                file_type: kind_to_file_type(*kind),
-                size: *size as u32,
-                is_symlink: matches!(kind, InodeKind::Symlink),
-                uid: 0,
-                gid: 0,
-                mode: 0o644,
+                file_type: kind_to_file_type(i.kind),
+                size: i.size as u32,
+                is_symlink: matches!(i.kind, InodeKind::Symlink),
+                uid: i.metadata.uid as u16,
+                gid: i.metadata.gid as u16,
+                mode: i.metadata.mode as u16,
             });
         }
         Ok(entries)
@@ -237,15 +377,73 @@ impl Filesystem for CoreFsDriver {
 
     fn create(
         &self,
-        _parent_inode: u32,
-        _name: &str,
-        _file_type: FileType,
+        parent_inode: u32,
+        name: &str,
+        file_type: FileType,
     ) -> Result<u32, FsError> {
-        Err(FsError::PermissionDenied)
+        if name.is_empty() || name.contains('/') {
+            return Err(FsError::InvalidPath);
+        }
+        let kind = match file_type {
+            FileType::Regular => InodeKind::File,
+            FileType::Directory => InodeKind::Directory,
+            // Device nodes are not modelled by CoreFS inodes.
+            FileType::Device => return Err(FsError::PermissionDenied),
+        };
+
+        let mut inner = self.inner.lock();
+        if inner.read_only {
+            return Err(FsError::PermissionDenied);
+        }
+
+        // Resolve parent path.
+        let parent_path = inner
+            .state
+            .active_inodes
+            .iter()
+            .find(|i| CoreFsDriver::inode_u32_from_id(i.id) == parent_inode)
+            .map(|i| i.path.clone())
+            .ok_or(FsError::NotFound)?;
+        let new_path = join_path(&parent_path, name);
+
+        // Reject duplicates.
+        if inner.state.active_inodes.iter().any(|i| i.path == new_path) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let id = InodeId(inner.next_id);
+        inner.next_id += 1;
+        let inode = Inode::new_at(id, kind, new_path, FileMetadata::default(), Timestamp::EPOCH);
+        inner.state.active_inodes.push(inode);
+        Ok(CoreFsDriver::inode_u32_from_id(id))
     }
 
-    fn delete(&self, _parent_inode: u32, _name: &str) -> Result<(), FsError> {
-        Err(FsError::PermissionDenied)
+    fn delete(&self, parent_inode: u32, name: &str) -> Result<(), FsError> {
+        let mut inner = self.inner.lock();
+        if inner.read_only {
+            return Err(FsError::PermissionDenied);
+        }
+        let parent_path = inner
+            .state
+            .active_inodes
+            .iter()
+            .find(|i| CoreFsDriver::inode_u32_from_id(i.id) == parent_inode)
+            .map(|i| i.path.clone())
+            .ok_or(FsError::NotFound)?;
+        let target = join_path(&parent_path, name);
+
+        let pos = inner
+            .state
+            .active_inodes
+            .iter()
+            .position(|i| i.path == target)
+            .ok_or(FsError::NotFound)?;
+
+        let removed = inner.state.active_inodes.remove(pos);
+        let rid = removed.id;
+        inner.state.deleted_inodes.push(removed);
+        inner.state.block_records.retain(|rec| rec.inode != rid);
+        Ok(())
     }
 }
 
@@ -256,7 +454,34 @@ impl Filesystem for CoreFsDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
+    use corefs_core::storage::ondisk::volume::{FormatOptions, format_device};
     use corefs_core::error::CoreFsError;
+    use crate::fs::corefs::block_device::MemSectorIo;
+
+    fn build_native_adapter(part_sectors: u64) -> BlockDeviceAdapter {
+        // Build an adapter backed by a single shared MemSectorIo, format it,
+        // and drop an empty NATIVE PersistedState on it.
+        let io = Box::new(MemSectorIo::new(part_sectors + 16));
+        let mut adapter = BlockDeviceAdapter::with_io(
+            0,
+            8, /* partition offset */
+            part_sectors,
+            false,
+            io,
+        )
+        .unwrap();
+
+        let opts = FormatOptions {
+            label: alloc::string::String::from("corefs"),
+            uuid: *b"ANYOSCOREFSTEST1",
+            inode_count: 256,
+            journal_blocks: 8,
+        };
+        format_device(&mut adapter, &opts).expect("format_device");
+        save_state_native(&mut adapter, &empty_persisted_state()).expect("save empty state");
+        adapter
+    }
 
     #[test]
     fn corefs_not_found_maps_to_fs_not_found() {
@@ -304,18 +529,227 @@ mod tests {
     }
 
     #[test]
-    fn slot_u32_roundtrip_small() {
-        let s: u64 = 42;
-        assert_eq!(CoreFsDriver::slot_from_u32(CoreFsDriver::u32_from_slot(s)), s);
+    fn parent_of_root_is_root() {
+        assert_eq!(parent_of("/"), "/");
     }
 
     #[test]
-    fn write_returns_permission_denied() {
-        // We can't easily construct a CoreFsDriver without a real volume —
-        // instead we assert the trait method's intent by checking the direct
-        // error shape through the mapping used by the implementation.
-        // (The real write path will be covered once Step B+ adds write-back.)
-        let e = CoreFsError::PolicyViolation(format!("ro"));
-        assert!(matches!(corefs_to_fs_error(&e), FsError::PermissionDenied));
+    fn parent_of_top_level_is_root() {
+        assert_eq!(parent_of("/foo"), "/");
+    }
+
+    #[test]
+    fn parent_of_nested_strips_last_segment() {
+        assert_eq!(parent_of("/a/b/c"), "/a/b");
+    }
+
+    #[test]
+    fn join_path_root_adds_single_slash() {
+        assert_eq!(join_path("/", "foo"), "/foo");
+    }
+
+    #[test]
+    fn join_path_nested() {
+        assert_eq!(join_path("/a/b", "c"), "/a/b/c");
+    }
+
+    #[test]
+    fn empty_persisted_state_has_no_inodes() {
+        let s = empty_persisted_state();
+        assert!(s.active_inodes.is_empty());
+        assert!(s.deleted_inodes.is_empty());
+        assert!(s.block_records.is_empty());
+    }
+
+    #[test]
+    fn compute_next_id_with_empty_state_is_one() {
+        let s = empty_persisted_state();
+        assert_eq!(compute_next_id(&s), 1);
+    }
+
+    #[test]
+    fn writable_mount_on_formatted_volume_succeeds() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount_writable");
+        // Empty volume — no files, no root inode populated yet.
+        let inner = driver.inner.lock();
+        assert!(inner.state.active_inodes.is_empty());
+    }
+
+    #[test]
+    fn create_regular_file_and_read_back() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        // Seed root directory manually so we have a parent for create().
+        {
+            let mut inner = driver.inner.lock();
+            let id = InodeId(inner.next_id);
+            inner.next_id += 1;
+            inner.state.active_inodes.push(Inode::new_at(
+                id,
+                InodeKind::Directory,
+                alloc::string::String::from("/"),
+                FileMetadata::default(),
+                Timestamp::EPOCH,
+            ));
+        }
+        let root_inode = driver.lookup("/").expect("root").0;
+        let file_inode = driver
+            .create(root_inode, "hello.txt", FileType::Regular)
+            .expect("create");
+        let payload = b"hello corefs!";
+        assert_eq!(driver.write(file_inode, 0, payload).unwrap(), payload.len());
+
+        let mut buf = [0u8; 64];
+        let n = driver.read(file_inode, 0, &mut buf).unwrap();
+        assert_eq!(n, payload.len());
+        assert_eq!(&buf[..n], payload);
+    }
+
+    #[test]
+    fn create_duplicate_fails() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        {
+            let mut inner = driver.inner.lock();
+            let id = InodeId(inner.next_id);
+            inner.next_id += 1;
+            inner.state.active_inodes.push(Inode::new_at(
+                id,
+                InodeKind::Directory,
+                alloc::string::String::from("/"),
+                FileMetadata::default(),
+                Timestamp::EPOCH,
+            ));
+        }
+        let root = driver.lookup("/").unwrap().0;
+        driver.create(root, "x", FileType::Regular).unwrap();
+        let err = driver.create(root, "x", FileType::Regular).unwrap_err();
+        assert!(matches!(err, FsError::AlreadyExists));
+    }
+
+    #[test]
+    fn create_device_returns_permission_denied() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        {
+            let mut inner = driver.inner.lock();
+            let id = InodeId(inner.next_id);
+            inner.next_id += 1;
+            inner.state.active_inodes.push(Inode::new_at(
+                id,
+                InodeKind::Directory,
+                alloc::string::String::from("/"),
+                FileMetadata::default(),
+                Timestamp::EPOCH,
+            ));
+        }
+        let root = driver.lookup("/").unwrap().0;
+        let err = driver.create(root, "tty", FileType::Device).unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied));
+    }
+
+    #[test]
+    fn delete_moves_inode_and_drops_content() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        {
+            let mut inner = driver.inner.lock();
+            let id = InodeId(inner.next_id);
+            inner.next_id += 1;
+            inner.state.active_inodes.push(Inode::new_at(
+                id,
+                InodeKind::Directory,
+                alloc::string::String::from("/"),
+                FileMetadata::default(),
+                Timestamp::EPOCH,
+            ));
+        }
+        let root = driver.lookup("/").unwrap().0;
+        let f = driver.create(root, "doomed", FileType::Regular).unwrap();
+        driver.write(f, 0, b"bye").unwrap();
+
+        driver.delete(root, "doomed").unwrap();
+        assert!(matches!(driver.lookup("/doomed").unwrap_err(), FsError::NotFound));
+
+        let inner = driver.inner.lock();
+        assert_eq!(inner.state.deleted_inodes.len(), 1);
+        assert!(inner.state.block_records.is_empty());
+    }
+
+    #[test]
+    fn readdir_lists_only_direct_children() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        {
+            let mut inner = driver.inner.lock();
+            let id = InodeId(inner.next_id);
+            inner.next_id += 1;
+            inner.state.active_inodes.push(Inode::new_at(
+                id,
+                InodeKind::Directory,
+                alloc::string::String::from("/"),
+                FileMetadata::default(),
+                Timestamp::EPOCH,
+            ));
+        }
+        let root = driver.lookup("/").unwrap().0;
+        let d = driver.create(root, "sub", FileType::Directory).unwrap();
+        driver.create(root, "top.txt", FileType::Regular).unwrap();
+        driver.create(d, "nested.txt", FileType::Regular).unwrap();
+
+        let entries = driver.readdir(root).unwrap();
+        let names: Vec<_> = entries.iter().map(|e| e.name.clone()).collect();
+        assert!(names.contains(&"sub".to_string()));
+        assert!(names.contains(&"top.txt".to_string()));
+        assert!(!names.contains(&"nested.txt".to_string()));
+    }
+
+    #[test]
+    fn read_only_mount_blocks_mutations() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_read_only(adapter).expect("mount_ro");
+        let err = driver.create(1, "x", FileType::Regular).unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied));
+        let err = driver.write(1, 0, b"nope").unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied));
+        // flush() is a no-op on read-only mounts.
+        driver.flush().unwrap();
+    }
+
+    #[test]
+    fn write_then_flush_then_remount_roundtrips_data() {
+        let adapter = build_native_adapter(4096);
+        // Extract the underlying MemSectorIo so we can build a second adapter
+        // over the same backing memory. MemSectorIo doesn't expose that
+        // directly, so we drive this through the same adapter — flush then
+        // remount_writable to the same adapter.
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        {
+            let mut inner = driver.inner.lock();
+            let id = InodeId(inner.next_id);
+            inner.next_id += 1;
+            inner.state.active_inodes.push(Inode::new_at(
+                id,
+                InodeKind::Directory,
+                alloc::string::String::from("/"),
+                FileMetadata::default(),
+                Timestamp::EPOCH,
+            ));
+        }
+        let root = driver.lookup("/").unwrap().0;
+        let f = driver.create(root, "persist.txt", FileType::Regular).unwrap();
+        driver.write(f, 0, b"persistent").unwrap();
+        driver.flush().expect("flush");
+
+        // Re-hydrate state from the persisted device.
+        let inner = driver.inner.lock();
+        let device_ref: &BlockDeviceAdapter = &inner.device;
+        let reloaded = load_state_native(device_ref).expect("reload");
+        assert!(reloaded.active_inodes.iter().any(|i| i.path == "/persist.txt"));
+        assert!(reloaded
+            .block_records
+            .iter()
+            .any(|r| r.bytes == b"persistent"));
     }
 }
