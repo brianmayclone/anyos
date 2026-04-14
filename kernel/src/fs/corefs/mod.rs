@@ -27,9 +27,11 @@
 
 pub mod block_device;
 pub mod driver;
+pub mod probe;
 
 pub use block_device::{AnyOsSectorIo, BlockDeviceAdapter, SectorIo};
 pub use driver::{corefs_to_fs_error, CoreFsDriver};
+pub use probe::detect;
 
 use corefs_core::platform::{Clock, Rng, Timestamp};
 

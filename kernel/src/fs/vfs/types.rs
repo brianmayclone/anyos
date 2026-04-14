@@ -20,6 +20,11 @@ pub enum FsType {
     Smb,
     /// Overlay filesystem (RamFS over ISO 9660).
     Overlay,
+    /// CoreFS (bare-metal native filesystem, `no_std`).
+    ///
+    /// Siehe [`crate::fs::corefs`]. Aktuell read-only-Mount über
+    /// `corefs_core::storage::ondisk::reader::OdfReader`.
+    CoreFs,
 }
 
 /// Trait that all filesystem drivers must implement for the VFS.

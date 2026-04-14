@@ -2199,6 +2199,10 @@ pub fn statfs(path: &str) -> Option<StatFs> {
                 })
             }
             FsType::DevFs | FsType::Smb | FsType::Overlay => None,
+            // CoreFS-Mount-Pfad ist aktuell read-only und liefert (noch) keine
+            // StatFs-Werte; sobald `CoreFsDriver` total/free bereitstellt, wird
+            // das hier befüllt.
+            FsType::CoreFs => None,
         };
         if result.is_some() {
             return result;
@@ -2220,6 +2224,7 @@ pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
                 FsType::DevFs => "devfs",
                 FsType::Smb => "smb",
                 FsType::Overlay => "overlay",
+                FsType::CoreFs => "corefs",
             };
             (mp.path.clone(), fs_name, mp.device_id)
         }).collect()
