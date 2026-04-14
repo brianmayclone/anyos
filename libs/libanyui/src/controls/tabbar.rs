@@ -257,15 +257,6 @@ impl Control for TabBar {
         let active = b.state as usize;
         let tc = crate::theme::colors();
 
-        crate::draw::fill_rect(
-            surface,
-            x,
-            y,
-            w,
-            h,
-            crate::controls::chrome::blend(tc.window_bg, tc.tab_inactive_bg, 140),
-        );
-
         // Scaled constants
         let tab_pad_x = crate::theme::scale_i32(TAB_PAD_X);
         let close_btn_size = crate::theme::scale_i32(CLOSE_BTN_SIZE);
@@ -278,12 +269,17 @@ impl Control for TabBar {
         let max_tab_w = crate::theme::scale_i32(MAX_TAB_WIDTH);
         let nav_btn_size = crate::theme::scale_i32(NAV_BTN_SIZE);
         let nav_font = crate::draw::scale_font(11);
+        let track_corner = crate::theme::scale(8).min(h.saturating_sub(2) / 2);
+        let nav_corner = track_corner.saturating_sub(crate::theme::scale(1));
 
         let (has_overflow, show_left, show_right, visible, _, _) = self.overflow_info();
 
         // Compute tab widths (scaled)
         let n = self.labels.len() as i32;
         let tab_h = (h as i32 - top_margin) as u32;
+
+        let track_palette = crate::controls::chrome::neutral_palette(false, false, false);
+        crate::controls::chrome::draw_surface(surface, x, y, w, h, track_corner, track_palette);
 
         // Right-side nav area (both arrows + plus button)
         let plus_reserve_s = if self.show_plus {
@@ -328,8 +324,8 @@ impl Control for TabBar {
             let is_active = i == active;
             let is_hovered = self.hover_tab == i as i32;
 
-            // Tab background — active tab uses accent color, fully rounded
-            let pill_r = tab_h / 2; // Pill shape
+            // Tab background — keep the selected tab aligned with the track radius.
+            let tab_corner = track_corner.saturating_sub(crate::theme::scale(1));
             let palette = if is_active {
                 crate::controls::chrome::accent_palette(
                     tc.tab_border_active,
@@ -346,7 +342,7 @@ impl Control for TabBar {
                 tab_y,
                 tab_w as u32,
                 tab_h,
-                pill_r,
+                tab_corner,
                 palette,
             );
 
@@ -455,14 +451,13 @@ impl Control for TabBar {
         if self.show_plus {
             btn_x -= nav_btn_size + tab_gap;
             let btn_y = y + top_margin;
-            let nav_pill = tab_h / 2;
             crate::controls::chrome::draw_surface(
                 surface,
                 btn_x,
                 btn_y,
                 nav_btn_size as u32,
                 tab_h,
-                nav_pill,
+                nav_corner,
                 crate::controls::chrome::neutral_palette(self.nav_hover == 2, false, false),
             );
             let (tw, _) = crate::draw::text_size_at(b"+", nav_font);
@@ -476,14 +471,13 @@ impl Control for TabBar {
             btn_x -= nav_btn_size + tab_gap;
             let btn_y = y + top_margin;
             let enabled = show_right;
-            let nav_pill = tab_h / 2;
             crate::controls::chrome::draw_surface(
                 surface,
                 btn_x,
                 btn_y,
                 nav_btn_size as u32,
                 tab_h,
-                nav_pill,
+                nav_corner,
                 crate::controls::chrome::neutral_palette(
                     self.nav_hover == 1 && enabled,
                     false,
@@ -511,7 +505,7 @@ impl Control for TabBar {
                 btn_y,
                 nav_btn_size as u32,
                 tab_h,
-                nav_pill,
+                nav_corner,
                 crate::controls::chrome::neutral_palette(
                     self.nav_hover == 0 && enabled,
                     false,
