@@ -25,6 +25,10 @@
 //! - `Filesystem`-Trait mit Read/Write/Lookup/Readdir/Create/Delete
 //! - `FsType::CoreFs` im VFS-Enum, Boot-Mount-Pfad, Superblock-Magic-Detection
 
+pub mod block_device;
+
+pub use block_device::{AnyOsSectorIo, BlockDeviceAdapter, SectorIo};
+
 use corefs_core::platform::{Clock, Rng, Timestamp};
 
 /// AnyOS-Zeitquelle für `corefs-core`.
