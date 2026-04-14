@@ -2468,6 +2468,22 @@ fn vec_and_string_refs_coerce_to_slice_and_str() {
 }
 
 #[test]
+fn primitive_to_le_bytes_methods_return_byte_arrays() {
+    compile_ok(
+        "primitive_to_le_bytes_methods_return_byte_arrays",
+        r#"
+        fn encode_u32(v: u32, out: &mut [u8; 4]) {
+            out.copy_from_slice(&v.to_le_bytes());
+        }
+
+        fn encode_i16(v: i16) -> [u8; 2] {
+            v.to_le_bytes()
+        }
+        "#,
+    );
+}
+
+#[test]
 fn tuple_patterns_through_iter_references_bind_element_types() {
     compile_ok(
         "tuple_patterns_through_iter_references_bind_element_types",

@@ -6,7 +6,6 @@ use crate::control::{
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
-const CORNER: u32 = 6;
 const NO_SELECTION: u32 = u32::MAX;
 
 pub struct ComboBox {
@@ -243,7 +242,7 @@ impl Control for ComboBox {
         let ctx = crate::control::prepare_render(b, ax, ay);
         let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
-        let corner = crate::theme::scale(CORNER);
+        let corner = crate::theme::input_corner();
         let palette =
             crate::controls::chrome::flat_field_palette(0, ctx.hovered, ctx.focused, ctx.disabled);
         if ctx.focused && !ctx.disabled {

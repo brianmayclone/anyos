@@ -158,9 +158,9 @@ pub fn card_palette(hovered: bool) -> Palette {
             48,
         ),
         fill,
-        top_gloss: 0x0CFFFFFF,
-        inner_light: 0x08FFFFFF,
-        bottom_shadow: 0x20000000,
+        top_gloss: 0x16FFFFFF,
+        inner_light: 0x0CFFFFFF,
+        bottom_shadow: 0x24000000,
         focus_ring: tc.accent,
         focus_glow: crate::theme::with_alpha(tc.accent_hover, 90),
     }
@@ -227,17 +227,37 @@ pub fn draw_surface(
 
     crate::draw::fill_rounded_rect(surface, ix, iy, iw, ih, ic, palette.fill);
 
-    let gloss_h = ((ih as f32) * 0.45) as u32;
-    if gloss_h >= 2 && iw >= 4 {
-        crate::draw::fill_rounded_rect(
-            surface,
-            ix + 1,
-            iy + 1,
-            iw.saturating_sub(2),
-            gloss_h,
-            ic.saturating_sub(1),
-            palette.top_gloss,
-        );
+    let gloss_h = ((ih as f32) * 0.52) as u32;
+    if gloss_h >= 4 && iw >= 8 {
+        let gloss_bands = [
+            (0u32, palette.top_gloss),
+            (1u32, blend(palette.top_gloss, 0, 56)),
+            (2u32, blend(palette.top_gloss, 0, 112)),
+            (3u32, blend(palette.top_gloss, 0, 168)),
+            (4u32, blend(palette.top_gloss, 0, 216)),
+        ];
+        for (band, color) in gloss_bands {
+            let top = iy + 1 + ((gloss_h * band) / 5) as i32;
+            let next = iy + 1 + ((gloss_h * (band + 1)) / 5) as i32;
+            let band_h = next - top;
+            if band_h <= 0 {
+                continue;
+            }
+            let inset = 1 + band as i32;
+            let band_w = iw.saturating_sub((inset as u32) * 2);
+            if band_w < 4 {
+                continue;
+            }
+            crate::draw::fill_rounded_rect(
+                surface,
+                ix + inset,
+                top,
+                band_w,
+                band_h as u32,
+                ic.saturating_sub(1 + band),
+                color,
+            );
+        }
     }
 
     if iw >= 8 {
@@ -280,4 +300,15 @@ pub fn draw_card(surface: &Surface, x: i32, y: i32, w: u32, h: u32, corner: u32,
         36,
     );
     draw_surface(surface, x, y, w, h, corner, palette);
+    if w > 6 && h > 6 {
+        crate::draw::draw_rounded_border(
+            surface,
+            x + 1,
+            y + 1,
+            w.saturating_sub(2),
+            h.saturating_sub(2),
+            corner.saturating_sub(1),
+            crate::theme::with_alpha(0xFFFFFFFF, if crate::theme::is_light() { 36 } else { 22 }),
+        );
+    }
 }

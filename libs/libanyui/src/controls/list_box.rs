@@ -21,8 +21,6 @@ use crate::control::{
 use crate::control::{KEY_DOWN, KEY_ENTER, KEY_SPACE, KEY_UP};
 
 const ITEM_HEIGHT: u32 = 22;
-const CORNER: u32 = 4;
-
 pub struct ListBox {
     pub(crate) text_base: TextControlBase,
     /// Bitfield for multi-select (up to 64 items).
@@ -142,7 +140,7 @@ impl Control for ListBox {
         let ctx = prepare_render(b, ax, ay);
         let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
-        let corner = crate::theme::scale(CORNER);
+        let corner = crate::theme::input_corner();
 
         // Background.
         let palette =

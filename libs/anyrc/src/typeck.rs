@@ -1346,6 +1346,12 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
 
+                if matches!(method_str, "to_le_bytes" | "to_be_bytes" | "to_ne_bytes") && args.is_empty() {
+                    if let Some(width) = self.primitive_byte_width(&inner_ty) {
+                        return TyKind::Array(Box::new(TyKind::Uint(UintTy::U8)), width);
+                    }
+                }
+
                 if method_str == "next" && args.is_empty() {
                     if let TyKind::Slice(elem) = &inner_ty {
                         return self.option_of(elem.as_ref().clone())
@@ -2212,6 +2218,18 @@ impl<'a> TypeChecker<'a> {
             TyKind::Adt(def_id, substs) if self.is_vec_def(*def_id) && substs.len() == 1 => {
                 Some(substs[0].clone())
             }
+            _ => None,
+        }
+    }
+
+    fn primitive_byte_width(&self, ty: &TyKind) -> Option<usize> {
+        match ty {
+            TyKind::Uint(UintTy::U8) | TyKind::Int(IntTy::I8) => Some(1),
+            TyKind::Uint(UintTy::U16) | TyKind::Int(IntTy::I16) => Some(2),
+            TyKind::Uint(UintTy::U32) | TyKind::Int(IntTy::I32) => Some(4),
+            TyKind::Uint(UintTy::U64) | TyKind::Int(IntTy::I64) => Some(8),
+            TyKind::Uint(UintTy::U128) | TyKind::Int(IntTy::I128) => Some(16),
+            TyKind::Uint(UintTy::Usize) | TyKind::Int(IntTy::Isize) => Some(8),
             _ => None,
         }
     }

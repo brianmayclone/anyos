@@ -10,8 +10,6 @@ use crate::control::{
 };
 use crate::control::{KEY_DOWN, KEY_ENTER, KEY_ESCAPE, KEY_UP};
 
-const CORNER: u32 = 6;
-
 pub struct DropDown {
     pub(crate) text_base: TextControlBase,
     /// Set to true when the user clicks the header; the event loop reads
@@ -77,7 +75,7 @@ impl Control for DropDown {
         let ctx = prepare_render(b, ax, ay);
         let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
-        let corner = crate::theme::scale(CORNER);
+        let corner = crate::theme::input_corner();
 
         let palette =
             crate::controls::chrome::flat_field_palette(0, ctx.hovered, ctx.focused, ctx.disabled);

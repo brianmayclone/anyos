@@ -292,7 +292,7 @@ impl Control for DateTimePicker {
         let ctx = prepare_render(b, ax, ay);
         let (x, y, w, h) = (ctx.x, ctx.y, ctx.w, ctx.h);
         let tc = crate::theme::colors();
-        let corner = crate::theme::scale(6);
+        let corner = crate::theme::input_corner();
 
         // Background — field style like TextField/DropDown
         let palette =
