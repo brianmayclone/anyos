@@ -590,11 +590,11 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                 let (inode, file_type, size) = match lookup_result {
                     Ok(r) => {
                         if flags.truncate && flags.write {
-                            // No in-place truncate in the driver yet — reject
-                            // rather than silently keep old data.
-                            return Err(FsError::PermissionDenied);
+                            driver.truncate_file(r.0, 0)?;
+                            (r.0, r.1, 0)
+                        } else {
+                            r
                         }
-                        r
                     }
                     Err(FsError::NotFound) if flags.create => {
                         // Split into parent + name and create via driver.
@@ -1717,13 +1717,43 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-    // CoreFS does not yet support rename/move — reject cleanly.
-    for p in [old_path, new_path] {
-        if let Some((_mp, _rel, mnt_fs_type)) = find_mnt_mount(p, &state.mount_points) {
-            if mnt_fs_type == FsType::CoreFs {
-                return Err(FsError::PermissionDenied);
+    // CoreFS rename/move — currently supported only when source and target
+    // live on the same CoreFS mount.
+    let corefs_old = find_mnt_mount(old_path, &state.mount_points)
+        .filter(|(_, _, t)| *t == FsType::CoreFs)
+        .map(|(mp, rel, _)| (String::from(mp), String::from(rel)));
+    let corefs_new = find_mnt_mount(new_path, &state.mount_points)
+        .filter(|(_, _, t)| *t == FsType::CoreFs)
+        .map(|(mp, rel, _)| (String::from(mp), String::from(rel)));
+    match (corefs_old, corefs_new) {
+        (Some((mp_old, rel_old)), Some((mp_new, rel_new))) if mp_old == mp_new => {
+            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            fn split_rel(rel: &str) -> Result<(String, String), FsError> {
+                let rel_owned: String = if rel.is_empty() {
+                    String::from("/")
+                } else {
+                    String::from(rel)
+                };
+                let trimmed = rel_owned.trim_end_matches('/');
+                let (p, n): (String, String) = match trimmed.rfind('/') {
+                    Some(0) => (String::from("/"), String::from(&trimmed[1..])),
+                    Some(pos) => (String::from(&trimmed[..pos]), String::from(&trimmed[pos + 1..])),
+                    None => (String::from("/"), String::from(trimmed)),
+                };
+                if n.is_empty() {
+                    return Err(FsError::InvalidPath);
+                }
+                Ok((p, n))
             }
+            let (op, on) = split_rel(&rel_old)?;
+            let (np, nn) = split_rel(&rel_new)?;
+            let (old_parent_ino, _, _) = Filesystem::lookup(driver, &op)?;
+            let (new_parent_ino, _, _) = Filesystem::lookup(driver, &np)?;
+            return driver.rename_entry(old_parent_ino, &on, new_parent_ino, &nn);
         }
+        (Some(_), Some(_)) => return Err(FsError::PermissionDenied), // cross-mount
+        (Some(_), None) | (None, Some(_)) => return Err(FsError::PermissionDenied),
+        _ => {}
     }
 
     // --- OverlayFS rename ---
@@ -2046,10 +2076,16 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-    // CoreFS does not yet support in-place truncate — reject cleanly.
-    if let Some((_mp, _rel, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    // CoreFS truncate-to-zero via driver.
+    if let Some((_mp, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
-            return Err(FsError::PermissionDenied);
+            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let rel = if relative_path.is_empty() { "/" } else { relative_path };
+            let (inode, ft, _sz) = Filesystem::lookup(driver, rel)?;
+            if ft == FileType::Directory {
+                return Err(FsError::IsADirectory);
+            }
+            return driver.truncate_file(inode, 0);
         }
     }
 
@@ -2319,6 +2355,29 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
+    // CoreFS symlinks via driver.
+    if let Some((_mp, relative_path, mnt_fs_type)) = find_mnt_mount(link_path, &state.mount_points) {
+        if mnt_fs_type == FsType::CoreFs {
+            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let rel = if relative_path.is_empty() { "/" } else { relative_path };
+            let rel = rel.trim_end_matches('/');
+            let (parent, name) = match rel.rfind('/') {
+                Some(0) => ("/", &rel[1..]),
+                Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+                None => ("/", rel),
+            };
+            if name.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            let (parent_inode, parent_type, _) = Filesystem::lookup(driver, parent)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            driver.create_symlink(parent_inode, name, target)?;
+            return Ok(());
+        }
+    }
+
     let (parent_path, link_name) = split_parent_name(link_path)?;
     if let Some(ref mut exfat) = state.exfat_fs {
         let pr = resolve_exfat_path(exfat, parent_path, true)?;
@@ -2373,6 +2432,15 @@ pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
 
+    if let Some((_mp, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        if mnt_fs_type == FsType::CoreFs {
+            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let rel = if relative_path.is_empty() { "/" } else { relative_path };
+            let (inode, _, _) = Filesystem::lookup(driver, rel)?;
+            return driver.set_mode(inode, mode as u32);
+        }
+    }
+
     if let Some(ref mut exfat) = state.exfat_fs {
         return exfat.set_mode(path, mode);
     }
@@ -2383,6 +2451,15 @@ pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
 pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
+
+    if let Some((_mp, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        if mnt_fs_type == FsType::CoreFs {
+            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let rel = if relative_path.is_empty() { "/" } else { relative_path };
+            let (inode, _, _) = Filesystem::lookup(driver, rel)?;
+            return driver.set_owner(inode, uid as u32, gid as u32);
+        }
+    }
 
     if let Some(ref mut exfat) = state.exfat_fs {
         return exfat.set_owner(path, uid, gid);

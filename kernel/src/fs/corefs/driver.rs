@@ -183,6 +183,222 @@ impl CoreFsDriver {
     fn inode_u32_from_id(id: InodeId) -> u32 {
         id.0 as u32
     }
+
+    // -----------------------------------------------------------------
+    // Extended driver APIs (truncate / rename / chmod / chown / symlink)
+    // -----------------------------------------------------------------
+
+    /// Passt die Grösse einer regulären Datei an. Wird die Datei verkleinert,
+    /// werden überzählige Bytes aus dem zugehörigen `BlockRecord` entfernt;
+    /// wird sie erweitert, wird mit Null-Bytes aufgefüllt (sparse-äquivalente
+    /// Repräsentation — CoreFS hält Dateiinhalte in-memory).
+    pub fn truncate_file(&self, inode: u32, new_size: u32) -> Result<(), FsError> {
+        let mut inner = self.inner.lock();
+        if inner.read_only {
+            return Err(FsError::PermissionDenied);
+        }
+        let mut id: Option<InodeId> = None;
+        for i in inner.state.active_inodes.iter() {
+            if CoreFsDriver::inode_u32_from_id(i.id) == inode {
+                if !matches!(i.kind, InodeKind::File) {
+                    return Err(FsError::IsADirectory);
+                }
+                id = Some(i.id);
+                break;
+            }
+        }
+        let id = id.ok_or(FsError::NotFound)?;
+
+        let target = new_size as usize;
+
+        // Adjust BlockRecord (create one if needed for zero-fill extend).
+        let mut found = false;
+        for rec in inner.state.block_records.iter_mut() {
+            if rec.inode == id {
+                if rec.bytes.len() > target {
+                    rec.bytes.truncate(target);
+                } else if rec.bytes.len() < target {
+                    rec.bytes.resize(target, 0);
+                }
+                found = true;
+                break;
+            }
+        }
+        if !found && target > 0 {
+            let mut bytes: Vec<u8> = Vec::new();
+            bytes.resize(target, 0);
+            inner.state.block_records.push(BlockRecord {
+                inode: id,
+                bytes,
+                checksum: 0,
+                device_block: 0,
+                allocated_blocks: 0,
+            });
+        }
+
+        for i in inner.state.active_inodes.iter_mut() {
+            if i.id == id {
+                i.size = target;
+                i.touch_modified_at(Timestamp::EPOCH);
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// Benennt einen Eintrag im Elternverzeichnis um bzw. verschiebt ihn in
+    /// ein anderes Verzeichnis. Die Pfade aller (rekursiv) untergeordneten
+    /// Inodes werden entsprechend angepasst.
+    pub fn rename_entry(
+        &self,
+        parent: u32,
+        old_name: &str,
+        new_parent: u32,
+        new_name: &str,
+    ) -> Result<(), FsError> {
+        if old_name.is_empty() || new_name.is_empty() || old_name.contains('/')
+            || new_name.contains('/')
+        {
+            return Err(FsError::InvalidPath);
+        }
+        let mut inner = self.inner.lock();
+        if inner.read_only {
+            return Err(FsError::PermissionDenied);
+        }
+
+        // Resolve both parent paths.
+        let old_parent_path = inner
+            .state
+            .active_inodes
+            .iter()
+            .find(|i| CoreFsDriver::inode_u32_from_id(i.id) == parent)
+            .map(|i| i.path.clone())
+            .ok_or(FsError::NotFound)?;
+        let new_parent_path = inner
+            .state
+            .active_inodes
+            .iter()
+            .find(|i| CoreFsDriver::inode_u32_from_id(i.id) == new_parent)
+            .map(|i| i.path.clone())
+            .ok_or(FsError::NotFound)?;
+
+        let old_path = join_path(&old_parent_path, old_name);
+        let new_path = join_path(&new_parent_path, new_name);
+        if old_path == new_path {
+            return Ok(());
+        }
+
+        // Source must exist.
+        if !inner.state.active_inodes.iter().any(|i| i.path == old_path) {
+            return Err(FsError::NotFound);
+        }
+        // Destination must not exist.
+        if inner.state.active_inodes.iter().any(|i| i.path == new_path) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        // Rewrite matching paths (the source itself + any descendants when
+        // it's a directory).
+        let mut old_prefix = old_path.clone();
+        old_prefix.push('/');
+        for i in inner.state.active_inodes.iter_mut() {
+            if i.path == old_path {
+                i.path = new_path.clone();
+                i.touch_changed_at(Timestamp::EPOCH);
+            } else if i.path.starts_with(&old_prefix) {
+                let suffix = &i.path[old_prefix.len()..];
+                let mut rebuilt = new_path.clone();
+                rebuilt.push('/');
+                rebuilt.push_str(suffix);
+                i.path = rebuilt;
+                i.touch_changed_at(Timestamp::EPOCH);
+            }
+        }
+        Ok(())
+    }
+
+    /// Setzt die POSIX-Mode-Bits (Permissions + Type-Bits) eines Inodes.
+    pub fn set_mode(&self, inode: u32, mode: u32) -> Result<(), FsError> {
+        let mut inner = self.inner.lock();
+        if inner.read_only {
+            return Err(FsError::PermissionDenied);
+        }
+        for i in inner.state.active_inodes.iter_mut() {
+            if CoreFsDriver::inode_u32_from_id(i.id) == inode {
+                i.metadata.mode = mode;
+                i.touch_changed_at(Timestamp::EPOCH);
+                return Ok(());
+            }
+        }
+        Err(FsError::NotFound)
+    }
+
+    /// Setzt Owner (`uid`, `gid`) eines Inodes.
+    pub fn set_owner(&self, inode: u32, uid: u32, gid: u32) -> Result<(), FsError> {
+        let mut inner = self.inner.lock();
+        if inner.read_only {
+            return Err(FsError::PermissionDenied);
+        }
+        for i in inner.state.active_inodes.iter_mut() {
+            if CoreFsDriver::inode_u32_from_id(i.id) == inode {
+                i.metadata.uid = uid;
+                i.metadata.gid = gid;
+                i.touch_changed_at(Timestamp::EPOCH);
+                return Ok(());
+            }
+        }
+        Err(FsError::NotFound)
+    }
+
+    /// Legt einen symbolischen Link im angegebenen Elternverzeichnis an. Das
+    /// Ziel wird als UTF-8 im zugehörigen `BlockRecord` abgelegt — so kann
+    /// `readlink` das Ziel ohne zusätzliche Metadaten rekonstruieren.
+    pub fn create_symlink(
+        &self,
+        parent: u32,
+        name: &str,
+        target: &str,
+    ) -> Result<u32, FsError> {
+        if name.is_empty() || name.contains('/') {
+            return Err(FsError::InvalidPath);
+        }
+        let mut inner = self.inner.lock();
+        if inner.read_only {
+            return Err(FsError::PermissionDenied);
+        }
+        let parent_path = inner
+            .state
+            .active_inodes
+            .iter()
+            .find(|i| CoreFsDriver::inode_u32_from_id(i.id) == parent)
+            .map(|i| i.path.clone())
+            .ok_or(FsError::NotFound)?;
+        let new_path = join_path(&parent_path, name);
+        if inner.state.active_inodes.iter().any(|i| i.path == new_path) {
+            return Err(FsError::AlreadyExists);
+        }
+
+        let id = InodeId(inner.next_id);
+        inner.next_id += 1;
+        let mut inode = Inode::new_at(
+            id,
+            InodeKind::Symlink,
+            new_path,
+            FileMetadata::default(),
+            Timestamp::EPOCH,
+        );
+        let bytes = target.as_bytes().to_vec();
+        inode.size = bytes.len();
+        inner.state.active_inodes.push(inode);
+        inner.state.block_records.push(BlockRecord {
+            inode: id,
+            bytes,
+            checksum: 0,
+            device_block: 0,
+            allocated_blocks: 0,
+        });
+        Ok(CoreFsDriver::inode_u32_from_id(id))
+    }
 }
 
 fn compute_next_id(state: &PersistedState) -> u64 {
@@ -807,6 +1023,172 @@ mod tests {
         let mut buf = [0u8; 4];
         let err = driver.read(42_000_000, 0, &mut buf).unwrap_err();
         assert!(matches!(err, FsError::NotFound));
+    }
+
+    // ---------------------------------------------------------------
+    // Extended API tests
+    // ---------------------------------------------------------------
+
+    fn seed_root(driver: &CoreFsDriver) -> u32 {
+        let mut inner = driver.inner.lock();
+        let id = InodeId(inner.next_id);
+        inner.next_id += 1;
+        inner.state.active_inodes.push(Inode::new_at(
+            id,
+            InodeKind::Directory,
+            alloc::string::String::from("/"),
+            FileMetadata::default(),
+            Timestamp::EPOCH,
+        ));
+        drop(inner);
+        driver.lookup("/").unwrap().0
+    }
+
+    #[test]
+    fn truncate_shrinks_file_size_and_bytes() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let f = driver.create(root, "s.bin", FileType::Regular).unwrap();
+        driver.write(f, 0, b"0123456789").unwrap();
+        driver.truncate_file(f, 4).unwrap();
+        let (_, _, size) = driver.lookup("/s.bin").unwrap();
+        assert_eq!(size, 4);
+        let mut buf = [0u8; 16];
+        let n = driver.read(f, 0, &mut buf).unwrap();
+        assert_eq!(n, 4);
+        assert_eq!(&buf[..4], b"0123");
+    }
+
+    #[test]
+    fn truncate_extends_with_zero_fill() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let f = driver.create(root, "g.bin", FileType::Regular).unwrap();
+        driver.write(f, 0, b"AB").unwrap();
+        driver.truncate_file(f, 5).unwrap();
+        let (_, _, size) = driver.lookup("/g.bin").unwrap();
+        assert_eq!(size, 5);
+        let mut buf = [0u8; 8];
+        let n = driver.read(f, 0, &mut buf).unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..5], b"AB\0\0\0");
+    }
+
+    #[test]
+    fn truncate_on_directory_is_rejected() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let d = driver.create(root, "dir", FileType::Directory).unwrap();
+        let err = driver.truncate_file(d, 0).unwrap_err();
+        assert!(matches!(err, FsError::IsADirectory));
+    }
+
+    #[test]
+    fn rename_within_same_parent_updates_path() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let f = driver.create(root, "a.txt", FileType::Regular).unwrap();
+        driver.write(f, 0, b"hi").unwrap();
+        driver.rename_entry(root, "a.txt", root, "b.txt").unwrap();
+        assert!(matches!(driver.lookup("/a.txt").unwrap_err(), FsError::NotFound));
+        let (ino, _, size) = driver.lookup("/b.txt").unwrap();
+        assert_eq!(ino, f);
+        assert_eq!(size, 2);
+    }
+
+    #[test]
+    fn rename_directory_rewrites_descendants() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let d = driver.create(root, "old", FileType::Directory).unwrap();
+        driver.create(d, "child.txt", FileType::Regular).unwrap();
+        driver.rename_entry(root, "old", root, "new").unwrap();
+        assert!(driver.lookup("/new").is_ok());
+        assert!(driver.lookup("/new/child.txt").is_ok());
+        assert!(driver.lookup("/old/child.txt").is_err());
+    }
+
+    #[test]
+    fn rename_to_existing_fails() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        driver.create(root, "a", FileType::Regular).unwrap();
+        driver.create(root, "b", FileType::Regular).unwrap();
+        let err = driver.rename_entry(root, "a", root, "b").unwrap_err();
+        assert!(matches!(err, FsError::AlreadyExists));
+    }
+
+    #[test]
+    fn set_mode_updates_inode_mode() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let f = driver.create(root, "m", FileType::Regular).unwrap();
+        driver.set_mode(f, 0o644).unwrap();
+        let inner = driver.inner.lock();
+        let inode = inner.state.active_inodes.iter().find(|i| i.path == "/m").unwrap();
+        assert_eq!(inode.metadata.mode, 0o644);
+    }
+
+    #[test]
+    fn set_mode_on_unknown_inode_fails() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let err = driver.set_mode(999_000, 0o600).unwrap_err();
+        assert!(matches!(err, FsError::NotFound));
+    }
+
+    #[test]
+    fn set_owner_updates_uid_gid() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let f = driver.create(root, "o", FileType::Regular).unwrap();
+        driver.set_owner(f, 1000, 100).unwrap();
+        let inner = driver.inner.lock();
+        let inode = inner.state.active_inodes.iter().find(|i| i.path == "/o").unwrap();
+        assert_eq!(inode.metadata.uid, 1000);
+        assert_eq!(inode.metadata.gid, 100);
+    }
+
+    #[test]
+    fn set_owner_readonly_mount_rejected() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_read_only(adapter).expect("mount_ro");
+        let err = driver.set_owner(1, 1, 1).unwrap_err();
+        assert!(matches!(err, FsError::PermissionDenied));
+    }
+
+    #[test]
+    fn create_symlink_stores_target_in_block_record() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let link = driver
+            .create_symlink(root, "lnk", "/target/path")
+            .expect("symlink");
+        let mut buf = [0u8; 32];
+        let n = driver.read(link, 0, &mut buf).unwrap();
+        assert_eq!(&buf[..n], b"/target/path");
+        let (ino, _ft, size) = driver.lookup("/lnk").unwrap();
+        assert_eq!(ino, link);
+        assert_eq!(size as usize, "/target/path".len());
+    }
+
+    #[test]
+    fn create_symlink_duplicate_fails() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        driver.create_symlink(root, "l", "a").unwrap();
+        let err = driver.create_symlink(root, "l", "b").unwrap_err();
+        assert!(matches!(err, FsError::AlreadyExists));
     }
 
     #[test]
