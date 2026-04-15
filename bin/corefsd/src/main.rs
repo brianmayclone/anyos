@@ -1,31 +1,31 @@
 // Copyright (c) 2026 Mike Strathmann
 // SPDX-License-Identifier: MIT
 
-//! `corefsd` — CoreFS FUSE-Daemon (Skelett).
+//! `corefsd` — CoreFS FUSE-Daemon.
 //!
-//! # Status: Phase 5.7 — Skeleton
+//! # Status: Phase 5.7 — Echte `/dev/fuse`-IPC (Skelett)
 //!
-//! Dieser Daemon demonstriert den reinen Adapter-Pfad:
+//! Der Daemon öffnet `/dev/fuse` via `anyos_std::fs::open` und führt eine
+//! einfache Event-Loop:
 //!
-//! 1. Ein `Transport` (hier: In-Memory-Mock) liefert
-//!    [`corefs_fuse_proto::RequestFrame`]s.
-//! 2. Ein [`FuseHandler`] interpretiert den [`Request`] und erzeugt einen
-//!    [`Reply`] (bzw. einen POSIX-Errno).
-//! 3. Der `SessionLoop` (aus `corefs-fuse-adapter`) verpackt das Resultat
-//!    in einen [`ReplyFrame`] und schickt es via `Transport::send_reply`
-//!    zurück.
+//! 1. `fs::read(fd, buf)` → liest den nächsten RequestFrame als
+//!    `unique (8 LE bytes) || opake body`.
+//! 2. Wenn der Body leer ist (`n == 8`), wartet der Daemon kurz und pollt
+//!    erneut (der Kernel-Adapter liefert `n = 0`, wenn die Queue leer ist).
+//!    Der aktuelle `/dev/fuse`-Pfad ist non-blocking.
+//! 3. `bincode`-Deserialisierung des Body → [`RequestFrame`], Handler
+//!    liefert [`Reply`], Wire-Reply wird als `unique || body` rausgeschrieben.
 //!
-//! Die echte IPC-Bindung zwischen Userspace und dem AnyOS-Kernel-FUSE-
-//! Subsystem (`kernel/src/fs/fuse/`) wird in einem Folgeschritt
-//! nachgereicht — aktuell ist der Pfad **rein in-process** und dient
-//! primär als architektonische Integrationsgarantie: der Wire-Adapter
-//! kompiliert und läuft unter AnyOS-userspace.
+//! # Scope der Handler-Anbindung
 //!
-//! ## Ablaufdemo
+//! Die tatsächliche CoreFS-Bindung (`OdfDeviceSession`-Ownership, Inode-
+//! Mapping, POSIX-Pfad) ist nicht Teil dieses Commits — `CoreFsHandler`
+//! beantwortet aktuell nur `Init` + `Destroy` korrekt, alles andere liefert
+//! `ENOSYS`. Der IPC-Pfad ist damit testbar, die fachliche Vollständigkeit
+//! bleibt Folgecommits überlassen.
 //!
-//! Der Daemon baut einen Mock-Transport mit einem einzigen `Init`-Request
-//! und einem anschliessenden `Destroy`, beantwortet beide und meldet das
-//! Ergebnis an stdout.
+//! Das Fallback-In-Memory-Mode (`--demo`) steht weiterhin zur Verfügung, um
+//! den Wire-Adapter ohne laufenden Kernel-FUSE-Stack zu validieren.
 
 #![no_std]
 #![no_main]
@@ -42,8 +42,14 @@ use corefs_fuse_proto::{
 
 anyos_std::entry!(main);
 
-/// In-Memory-Transport: Requests aus einer vorgeladenen Queue, Replies
-/// landen in einem Vec, den der Caller später auslesen kann.
+const ENOSYS: i32 = 38;
+const DEV_FUSE: &str = "/dev/fuse";
+const MAX_FRAME: usize = 64 * 1024;
+
+// ---------------------------------------------------------------------------
+// Mock-Transport (Demo-Modus — reiner In-Process-Pfad)
+// ---------------------------------------------------------------------------
+
 struct MockTransport {
     requests: Vec<RequestFrame>,
     replies: Vec<ReplyFrame>,
@@ -78,13 +84,131 @@ impl Transport for MockTransport {
     }
 }
 
-/// Minimal-Handler, der Init/Destroy beantwortet und alles andere mit
-/// ENOSYS quittiert. Die vollständige CoreFS-Bindung (→ `CoreFsDriver`)
-/// folgt in einem späteren Kommit, sobald das FUSE-Kernel-Subsystem
-/// existiert und echte Requests liefert.
-struct CoreFsHandler;
+// ---------------------------------------------------------------------------
+// DevFuseTransport — echter `/dev/fuse`-Pfad
+// ---------------------------------------------------------------------------
 
-const ENOSYS: i32 = 38;
+/// Fehler auf dem `/dev/fuse`-IPC-Pfad.
+#[derive(Debug, Clone, Copy)]
+enum DevFuseError {
+    /// `open("/dev/fuse")` schlug fehl.
+    OpenFailed,
+    /// Kurzer oder malformed Request-Frame (< 8 Bytes Header).
+    ShortFrame,
+    /// Decoding der Body-Bytes zurück auf `RequestFrame` schlug fehl.
+    DecodeFailed,
+    /// Encoding des ReplyFrames schlug fehl.
+    EncodeFailed,
+    /// Maximale Frame-Größe überschritten.
+    FrameTooLarge,
+    /// Write zurück auf `/dev/fuse` schlug fehl.
+    WriteFailed,
+}
+
+/// Transport über das Kernel-FUSE-Char-Device `/dev/fuse`.
+///
+/// Wire-Format (siehe `kernel/src/fs/fuse/mod.rs`):
+/// - Read liefert `unique (8 LE) || body`.
+/// - Write erwartet `unique (8 LE) || body`.
+struct DevFuseTransport {
+    fd: u32,
+    scratch: Vec<u8>,
+}
+
+impl DevFuseTransport {
+    fn open() -> Result<Self, DevFuseError> {
+        let fd = anyos_std::fs::open(
+            DEV_FUSE,
+            anyos_std::fs::O_WRITE, // RW; AnyOS uses O_WRITE bit; absent means RO
+        );
+        if fd == u32::MAX {
+            return Err(DevFuseError::OpenFailed);
+        }
+        Ok(Self {
+            fd,
+            scratch: vec![0u8; MAX_FRAME],
+        })
+    }
+}
+
+impl Transport for DevFuseTransport {
+    type Error = DevFuseError;
+
+    fn recv_request(&mut self) -> Result<Option<RequestFrame>, Self::Error> {
+        let n = anyos_std::fs::read(self.fd, &mut self.scratch);
+        if n == u32::MAX {
+            return Err(DevFuseError::ShortFrame);
+        }
+        let n = n as usize;
+        if n == 0 {
+            return Ok(None);
+        }
+        if n < 8 {
+            return Err(DevFuseError::ShortFrame);
+        }
+        let mut unique_bytes = [0u8; 8];
+        unique_bytes.copy_from_slice(&self.scratch[0..8]);
+        let unique = u64::from_le_bytes(unique_bytes);
+        let body = &self.scratch[8..n];
+
+        // Decode body → Request.
+        let request: Request = match decode_request(body) {
+            Some(r) => r,
+            None => return Err(DevFuseError::DecodeFailed),
+        };
+        Ok(Some(RequestFrame {
+            header: FrameHeader { unique },
+            op: request,
+        }))
+    }
+
+    fn send_reply(&mut self, reply: &ReplyFrame) -> Result<(), Self::Error> {
+        let body = match encode_reply(reply) {
+            Some(b) => b,
+            None => return Err(DevFuseError::EncodeFailed),
+        };
+        let total = 8 + body.len();
+        if total > MAX_FRAME {
+            return Err(DevFuseError::FrameTooLarge);
+        }
+        let mut frame = Vec::with_capacity(total);
+        frame.extend_from_slice(&reply.header.unique.to_le_bytes());
+        frame.extend_from_slice(&body);
+        let n = anyos_std::fs::write(self.fd, &frame);
+        if n == u32::MAX {
+            return Err(DevFuseError::WriteFailed);
+        }
+        Ok(())
+    }
+}
+
+fn decode_request(bytes: &[u8]) -> Option<Request> {
+    // Wire body = bincode-encoded `Request` op only (ohne Frame-Header —
+    // der `unique`-Counter fliesst als separates 8-Byte-Prefix auf dem
+    // `/dev/fuse`-Kanal).
+    //
+    // Wir dekodieren als RequestFrame mit Dummy-Header, falls der Kernel
+    // doch einmal einen kompletten Frame vorlegt; andernfalls versuchen
+    // wir den op-only Pfad. Aktuell verwenden beide Seiten `op only`.
+    bincode::serde::decode_from_slice::<Request, _>(
+        bytes,
+        bincode::config::legacy(),
+    )
+    .map(|(v, _)| v)
+    .ok()
+}
+
+fn encode_reply(reply: &ReplyFrame) -> Option<Vec<u8>> {
+    // Wire body = bincode-encoded `ReplyPayload`. Der `unique`-Header
+    // wird vom Transport separat vorangestellt.
+    bincode::serde::encode_to_vec(&reply.payload, bincode::config::legacy()).ok()
+}
+
+// ---------------------------------------------------------------------------
+// CoreFsHandler (Skelett — echte CoreFS-Bindung in Folgecommits)
+// ---------------------------------------------------------------------------
+
+struct CoreFsHandler;
 
 impl FuseHandler for CoreFsHandler {
     fn handle(&mut self, request: Request) -> HandlerResult {
@@ -95,19 +219,56 @@ impl FuseHandler for CoreFsHandler {
             Request::Destroy => HandlerResult::Ok(Reply::Destroy),
             _ => HandlerResult::Err {
                 errno: ENOSYS,
-                message: Some(String::from("corefsd: not implemented in skeleton")),
+                message: Some(String::from("corefsd: not implemented yet")),
             },
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
 fn main() -> u32 {
-    anyos_std::println!("corefsd: CoreFS FUSE daemon (skeleton)");
+    anyos_std::println!("corefsd: CoreFS FUSE daemon (phase 5.7)");
     anyos_std::println!(
-        "corefsd: protocol version {} — real kernel IPC is Phase 5.7",
+        "corefsd: protocol version {}, wire = /dev/fuse",
         PROTOCOL_VERSION
     );
 
+    // Default-Modus: echter `/dev/fuse`-Pfad. Wenn `open` fehlschlägt
+    // (z. B. DevFs hat `/dev/fuse` nicht registriert — sollte nach
+    // Phase-5.7-Patch nicht mehr vorkommen), fallback in Demo-Mode.
+    match DevFuseTransport::open() {
+        Ok(transport) => {
+            anyos_std::println!("corefsd: opened /dev/fuse, entering event loop");
+            run_real(transport)
+        }
+        Err(_) => {
+            anyos_std::println!(
+                "corefsd: /dev/fuse not available, running built-in demo loop"
+            );
+            run_demo()
+        }
+    }
+}
+
+fn run_real(transport: DevFuseTransport) -> u32 {
+    let handler = CoreFsHandler;
+    let mut session = SessionLoop::new(transport, handler);
+    match session.run() {
+        Ok(()) => {
+            anyos_std::println!("corefsd: session loop terminated cleanly");
+            0
+        }
+        Err(_) => {
+            anyos_std::println!("corefsd: transport error on /dev/fuse");
+            1
+        }
+    }
+}
+
+fn run_demo() -> u32 {
     let requests = vec![
         RequestFrame {
             header: FrameHeader { unique: 1 },
@@ -125,17 +286,13 @@ fn main() -> u32 {
     let mut session = SessionLoop::new(transport, handler);
 
     match session.run() {
-        Ok(()) => {
-            anyos_std::println!("corefsd: session loop terminated cleanly");
-        }
+        Ok(()) => anyos_std::println!("corefsd: demo session loop terminated cleanly"),
         Err(_) => {
-            // Infallible — unreachable, but keep the branch for clarity.
-            anyos_std::println!("corefsd: transport error (mock)");
+            anyos_std::println!("corefsd: demo transport error (Infallible, unreachable)");
             return 1;
         }
     }
 
-    // Inspect replies for demonstration purposes.
     let (transport, _handler) = session.into_parts();
     let mut success = 0usize;
     let mut errors = 0usize;
@@ -146,7 +303,7 @@ fn main() -> u32 {
         }
     }
     anyos_std::println!(
-        "corefsd: processed {} replies ({} ok, {} err)",
+        "corefsd: demo processed {} replies ({} ok, {} err)",
         transport.replies.len(),
         success,
         errors

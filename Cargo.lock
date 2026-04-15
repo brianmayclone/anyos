@@ -489,6 +489,7 @@ name = "corefsd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "bincode",
  "corefs-core",
  "corefs-fuse-adapter",
  "corefs-fuse-proto",
