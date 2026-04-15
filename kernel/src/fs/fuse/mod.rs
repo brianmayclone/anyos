@@ -96,6 +96,8 @@ struct SessionInner {
     next_unique: Unique,
     /// Gesetzt nach einem `Destroy`-Request bzw. explizitem Close.
     closed: bool,
+    /// Wartende Threads pro Unique (nur in `enqueue_and_wait` gesetzt).
+    waiters: BTreeMap<Unique, u32>,
 }
 
 impl FuseSession {
@@ -107,6 +109,7 @@ impl FuseSession {
                 replies: BTreeMap::new(),
                 next_unique: 1,
                 closed: false,
+                waiters: BTreeMap::new(),
             }),
         }
     }
@@ -134,13 +137,23 @@ impl FuseSession {
     }
 
     /// Der Daemon liefert eine Reply zurück. Wird von der passenden
-    /// `take_reply`-Aufruf konsumiert.
+    /// `take_reply`-Aufruf konsumiert. Weckt ggf. den wartenden Thread
+    /// (siehe [`FuseSession::enqueue_and_wait`]).
     pub fn deliver_reply(&self, reply: PendingReply) -> Result<(), FuseError> {
-        let mut inner = self.inner.lock();
-        if inner.closed {
-            return Err(FuseError::SessionClosed);
+        let waiter_tid = {
+            let mut inner = self.inner.lock();
+            if inner.closed {
+                return Err(FuseError::SessionClosed);
+            }
+            inner.replies.insert(reply.unique, reply.body);
+            inner.waiters.remove(&reply.unique)
+        };
+        #[cfg(not(test))]
+        if let Some(tid) = waiter_tid {
+            crate::task::scheduler::wake_thread(tid);
         }
-        inner.replies.insert(reply.unique, reply.body);
+        #[cfg(test)]
+        let _ = waiter_tid;
         Ok(())
     }
 
@@ -151,10 +164,82 @@ impl FuseSession {
     }
 
     /// Markiert die Session als beendet. Folgende Enqueue-Versuche
-    /// scheitern mit [`FuseError::SessionClosed`].
+    /// scheitern mit [`FuseError::SessionClosed`]. Alle wartenden Threads
+    /// werden geweckt — sie erhalten beim Fortsetzen
+    /// [`FuseError::SessionClosed`].
     pub fn close(&self) {
-        let mut inner = self.inner.lock();
-        inner.closed = true;
+        let tids: Vec<u32> = {
+            let mut inner = self.inner.lock();
+            inner.closed = true;
+            let tids: Vec<u32> = inner.waiters.values().copied().collect();
+            inner.waiters.clear();
+            tids
+        };
+        #[cfg(not(test))]
+        for tid in tids {
+            crate::task::scheduler::wake_thread(tid);
+        }
+        #[cfg(test)]
+        let _ = tids;
+    }
+
+    /// Enqueue a request and block the current thread until the reply
+    /// arrives. Returns the reply body.
+    ///
+    /// # Invariante gegen Enqueue/Wake-Race
+    /// Weil `deliver_reply` den Waiter-Eintrag erst nach dem Einfügen der
+    /// Reply entfernt, geht kein Wakeup verloren:
+    /// - Reply kommt **vor** `block_current_thread()` → der Take-Check am
+    ///   Ende erfolgreich, kein Blocking.
+    /// - Reply kommt **nach** `block_current_thread()` → `wake_thread` wird
+    ///   aufgerufen, da der Waiter zu dem Zeitpunkt noch eingetragen ist.
+    pub fn enqueue_and_wait(&self, body: Vec<u8>) -> Result<Vec<u8>, FuseError> {
+        let unique = {
+            let mut inner = self.inner.lock();
+            if inner.closed {
+                return Err(FuseError::SessionClosed);
+            }
+            let unique = inner.next_unique;
+            inner.next_unique = inner.next_unique.wrapping_add(1);
+            inner.queue.push(PendingRequest { unique, body });
+            #[cfg(not(test))]
+            {
+                let tid = crate::task::scheduler::current_tid();
+                inner.waiters.insert(unique, tid);
+            }
+            unique
+        };
+
+        // Loop: check for reply, else block. Spurious wakeups / races
+        // (reply landet zwischen insert+block) sind durch re-check abgefangen.
+        #[cfg(not(test))]
+        loop {
+            {
+                let mut inner = self.inner.lock();
+                if let Some(body) = inner.replies.remove(&unique) {
+                    inner.waiters.remove(&unique);
+                    return Ok(body);
+                }
+                if inner.closed {
+                    inner.waiters.remove(&unique);
+                    return Err(FuseError::SessionClosed);
+                }
+            }
+            crate::task::scheduler::block_current_thread();
+        }
+
+        #[cfg(test)]
+        {
+            // Test-pfad ohne Scheduler: synchron prüfen und sonst fehlschlagen.
+            let mut inner = self.inner.lock();
+            if let Some(body) = inner.replies.remove(&unique) {
+                return Ok(body);
+            }
+            if inner.closed {
+                return Err(FuseError::SessionClosed);
+            }
+            Err(FuseError::NoMatchingReply)
+        }
     }
 
     /// `true`, wenn noch Requests in der Queue warten.
@@ -383,6 +468,44 @@ mod tests {
         let _id = register_session(s);
         let mut buf = [0u8; 64];
         assert_eq!(devfs_read(&mut buf), Some(0));
+    }
+
+    #[test]
+    fn enqueue_and_wait_returns_reply_when_preexisting() {
+        // Race path: reply already delivered before the wait.
+        // In tests we run single-threaded, so we simulate that the
+        // daemon delivered first: enqueue, then deliver for the next
+        // unique id, then wait.
+        let s = FuseSession::new();
+        // Pre-allocate the unique by reserving: we enqueue via the
+        // blocking API after first manually depositing a reply for
+        // `next_unique=1`. deliver_reply requires session not closed.
+        s.deliver_reply(PendingReply { unique: 1, body: vec![11, 22] }).unwrap();
+        let body = s.enqueue_and_wait(vec![0xDE]).unwrap();
+        assert_eq!(body, vec![11, 22]);
+    }
+
+    #[test]
+    fn enqueue_and_wait_on_closed_session_errors() {
+        let s = FuseSession::new();
+        s.close();
+        assert!(matches!(
+            s.enqueue_and_wait(vec![1]),
+            Err(FuseError::SessionClosed)
+        ));
+    }
+
+    #[test]
+    fn close_clears_waiters_without_wake() {
+        // Regression: close() must not panic even with waiters recorded.
+        // (In tests waiters is empty since we gate on cfg(test), but the
+        // path must still be safe.)
+        let s = FuseSession::new();
+        s.close();
+        // A later deliver_reply should fail cleanly.
+        assert!(s
+            .deliver_reply(PendingReply { unique: 1, body: vec![] })
+            .is_err());
     }
 
     #[test]
