@@ -815,6 +815,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fusedemo"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "bincode",
+ "corefs-fuse-adapter",
+ "corefs-fuse-proto",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

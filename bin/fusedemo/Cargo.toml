@@ -1,0 +1,18 @@
+[package]
+name = "fusedemo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../libs/stdlib" }
+corefs-fuse-proto = { path = "../../../corefs/corefs-fuse-proto", default-features = false }
+corefs-fuse-adapter = { path = "../../../corefs/corefs-fuse-adapter", default-features = false }
+bincode = { version = "2", default-features = false, features = ["alloc", "serde"] }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+opt-level = 2
