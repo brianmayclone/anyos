@@ -16,6 +16,14 @@ kunit = []
 # bauen nicht für den soft-float Kernel-Target). AnyOS bringt seine eigenen
 # `Clock`/`Rng`-Implementierungen über die `corefs_core::platform`-Traits mit.
 corefs-core = { path = "../../corefs/corefs-core", default-features = false }
+# Wire-Typen für das In-Kernel-FUSE-Subsystem (Request/Reply-Enums +
+# bincode-legacy Encode/Decode). `default-features = false` hält die Crate
+# im no_std-Modus.
+corefs-fuse-proto = { path = "../../corefs/corefs-fuse-proto", default-features = false }
+# bincode-legacy als Wire-Codec für corefs-fuse-proto. Versionen spiegeln die
+# in corefs-fuse-proto/Cargo.toml verwendeten Features.
+bincode = { version = "2.0", default-features = false, features = ["alloc", "serde"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 
 [profile.dev]
 panic = "abort"

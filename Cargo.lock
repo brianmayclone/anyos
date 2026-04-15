@@ -124,7 +124,10 @@ dependencies = [
 name = "anyos_kernel"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "corefs-core",
+ "corefs-fuse-proto",
+ "serde",
 ]
 
 [[package]]

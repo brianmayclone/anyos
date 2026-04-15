@@ -362,6 +362,89 @@ pub fn devfs_write(buf: &[u8]) -> Option<usize> {
     Some(buf.len())
 }
 
+// ---------------------------------------------------------------------------
+// fuse_call — VFS-Helper für Request/Reply-Round-Trip
+// ---------------------------------------------------------------------------
+
+use corefs_fuse_proto::{
+    Reply as ProtoReply, ReplyPayload as ProtoReplyPayload, Request as ProtoRequest,
+};
+
+/// Fehler beim fuse_call-Round-Trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FuseCallError {
+    /// Request konnte nicht serialisiert werden.
+    EncodeFailed,
+    /// Reply konnte nicht deserialisiert werden.
+    DecodeFailed,
+    /// Session-Transport meldete Fehler (z. B. geschlossene Session).
+    Transport(FuseError),
+    /// Daemon meldete einen POSIX-errno.
+    Remote {
+        /// POSIX-errno.
+        errno: i32,
+    },
+    /// Daemon lieferte einen Reply-Typ, der nicht zum gesendeten Request passt.
+    UnexpectedReply,
+}
+
+/// Führt einen kompletten Request/Reply-Round-Trip über die Session aus.
+///
+/// - Serialisiert `req` via bincode-legacy (ohne 8-Byte-Unique-Header — der
+///   wird vom `/dev/fuse`-Transport aus `SessionInner::next_unique` vorne
+///   angeklebt).
+/// - Ruft [`FuseSession::enqueue_and_wait`] → blockiert bis Reply eintrifft.
+/// - Deserialisiert die Reply-Bytes als [`ProtoReply`] + [`ProtoReplyPayload`]
+///   (Ok/Err) und gibt die entpackte [`ProtoReply`] zurück.
+///
+/// Das Wire-Format ist zwischen Kernel und Daemon asymmetrisch: der Kernel
+/// serialisiert nur den `Request`-Op (ohne `RequestFrame`-Header), der
+/// Daemon serialisiert nur den `ReplyPayload` (ohne `ReplyFrame`-Header).
+/// Die `unique`-ID-Zuordnung übernimmt der Transport-Layer.
+pub fn fuse_call(
+    session: &FuseSession,
+    req: &ProtoRequest,
+) -> Result<ProtoReply, FuseCallError> {
+    let body = bincode::serde::encode_to_vec(req, bincode::config::legacy())
+        .map_err(|_| FuseCallError::EncodeFailed)?;
+    let reply_bytes = session
+        .enqueue_and_wait(body)
+        .map_err(FuseCallError::Transport)?;
+    let (payload, _): (ProtoReplyPayload, _) =
+        bincode::serde::decode_from_slice(&reply_bytes, bincode::config::legacy())
+            .map_err(|_| FuseCallError::DecodeFailed)?;
+    match payload {
+        ProtoReplyPayload::Ok(r) => Ok(r),
+        ProtoReplyPayload::Err { errno, .. } => Err(FuseCallError::Remote { errno }),
+    }
+}
+
+/// Mappt einen [`FuseCallError`] auf den grob passenden [`FsError`].
+/// POSIX-errno → FsError:
+/// - ENOENT(2) → NotFound
+/// - EACCES(13) → PermissionDenied
+/// - EEXIST(17) → AlreadyExists
+/// - ENOTDIR(20) → NotADirectory
+/// - EISDIR(21) → IsADirectory
+/// - ENOSPC(28) → NoSpace
+/// - sonst → IoError
+#[allow(dead_code)]
+pub fn fuse_call_error_to_fs_error(e: FuseCallError) -> crate::fs::vfs::FsError {
+    use crate::fs::vfs::FsError;
+    match e {
+        FuseCallError::Remote { errno } => match errno {
+            2 => FsError::NotFound,
+            13 => FsError::PermissionDenied,
+            17 => FsError::AlreadyExists,
+            20 => FsError::NotADirectory,
+            21 => FsError::IsADirectory,
+            28 => FsError::NoSpace,
+            _ => FsError::IoError,
+        },
+        _ => FsError::IoError,
+    }
+}
+
 #[cfg(test)]
 fn clear_registry_for_test() {
     let mut r = REGISTRY.lock();
@@ -506,6 +589,47 @@ mod tests {
         assert!(s
             .deliver_reply(PendingReply { unique: 1, body: vec![] })
             .is_err());
+    }
+
+    #[test]
+    fn fuse_call_decodes_ok_reply() {
+        use corefs_fuse_proto::{
+            Attr, Reply as PR, ReplyPayload, Request as PQ,
+        };
+        let s = FuseSession::new();
+        // Pre-deposit a reply for unique=1 (next id), simulating daemon
+        // already answered before block.
+        let payload = ReplyPayload::Ok(PR::Getattr(Attr {
+            ino: 42, size: 7, blocks: 1, mode: 0o644, nlink: 1,
+            uid: 0, gid: 0, kind: 1, crtime_secs: 1, mtime_secs: 1, ctime_secs: 1,
+        }));
+        let body =
+            bincode::serde::encode_to_vec(&payload, bincode::config::legacy()).unwrap();
+        s.deliver_reply(PendingReply { unique: 1, body }).unwrap();
+
+        let req = PQ::Getattr { ino: 42 };
+        let reply = fuse_call(&s, &req).expect("round-trip ok");
+        match reply {
+            PR::Getattr(a) => {
+                assert_eq!(a.ino, 42);
+                assert_eq!(a.size, 7);
+            }
+            _ => panic!("wrong reply variant"),
+        }
+    }
+
+    #[test]
+    fn fuse_call_decodes_err_reply_to_remote() {
+        use corefs_fuse_proto::{ReplyPayload, Request as PQ};
+        let s = FuseSession::new();
+        let payload = ReplyPayload::Err { errno: 2, message: None };
+        let body =
+            bincode::serde::encode_to_vec(&payload, bincode::config::legacy()).unwrap();
+        s.deliver_reply(PendingReply { unique: 1, body }).unwrap();
+
+        let req = PQ::Getattr { ino: 99 };
+        let err = fuse_call(&s, &req).expect_err("should error");
+        assert!(matches!(err, FuseCallError::Remote { errno: 2 }));
     }
 
     #[test]
