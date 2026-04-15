@@ -25,6 +25,15 @@ pub enum FsType {
     /// Siehe [`crate::fs::corefs`]. Aktuell read-only-Mount über
     /// `corefs_core::storage::ondisk::reader::OdfReader`.
     CoreFs,
+    /// FUSE userspace filesystem.
+    ///
+    /// Der tatsächliche Treiber lebt in einem Userspace-Daemon (z. B.
+    /// `corefsd`), der Requests via `/dev/fuse` empfängt und Replies
+    /// zurückschreibt. Der Kernel hält für diesen Mount nur die
+    /// [`crate::fs::fuse::FuseSession`] und leitet VFS-Calls darauf
+    /// weiter. Dispatch-Integration ist aktuell minimal (Phase 5.7) —
+    /// siehe [`crate::fs::fuse`].
+    Fuse,
 }
 
 /// Trait that all filesystem drivers must implement for the VFS.

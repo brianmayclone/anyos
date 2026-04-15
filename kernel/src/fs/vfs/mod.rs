@@ -2529,6 +2529,8 @@ pub fn statfs(path: &str) -> Option<StatFs> {
             // StatFs-Werte; sobald `CoreFsDriver` total/free bereitstellt, wird
             // das hier befüllt.
             FsType::CoreFs => None,
+            // FUSE — statfs müsste via Request an den Daemon gehen; TODO Phase 5.7+.
+            FsType::Fuse => None,
         };
         if result.is_some() {
             return result;
@@ -2551,6 +2553,7 @@ pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
                 FsType::Smb => "smb",
                 FsType::Overlay => "overlay",
                 FsType::CoreFs => "corefs",
+                FsType::Fuse => "fuse",
             };
             (mp.path.clone(), fs_name, mp.device_id)
         }).collect()

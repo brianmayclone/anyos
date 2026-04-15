@@ -24,6 +24,10 @@ enum DeviceBackend {
     },
     /// HAL-registered hardware device — proxies to hal::device_read/write
     Hal { path: String },
+    /// FUSE character device — read pulls the next pending request frame,
+    /// write delivers a reply. See [`crate::fs::fuse::devfs_read`] /
+    /// [`crate::fs::fuse::devfs_write`].
+    Fuse,
 }
 
 impl DevFs {
@@ -37,6 +41,14 @@ impl DevFs {
         devfs.register_callback("null", Some(dev_null_read), Some(dev_null_write));
         devfs.register_callback("zero", Some(dev_zero_read), Some(dev_null_write));
         devfs.register_callback("console", None, Some(dev_console_write));
+
+        // FUSE character device — backed by the kernel FUSE session
+        // registry. Userspace daemons (corefsd) open `/dev/fuse` and
+        // read/write opaque request/reply frames through it.
+        devfs.devices.push(DeviceEntry {
+            name: String::from("fuse"),
+            backend: DeviceBackend::Fuse,
+        });
 
         devfs
     }
@@ -107,6 +119,7 @@ impl DevFs {
             DeviceBackend::Hal { path } => {
                 crate::drivers::hal::device_read(path, 0, buf).ok()
             }
+            DeviceBackend::Fuse => crate::fs::fuse::devfs_read(buf),
         }
     }
 
@@ -120,6 +133,7 @@ impl DevFs {
             DeviceBackend::Hal { path } => {
                 crate::drivers::hal::device_write(path, 0, buf).ok()
             }
+            DeviceBackend::Fuse => crate::fs::fuse::devfs_write(buf),
         }
     }
 }

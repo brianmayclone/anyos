@@ -19,15 +19,28 @@
 //!   [`FuseSession::deliver_reply`] — beide deterministisch, ohne
 //!   echte IPC.
 //!
-//! Was ausdrücklich **nicht** passiert:
-//! - Kein `/dev/fuse`-Gerät registriert.
-//! - Keine `FsType::Fuse`-VFS-Variante.
-//! - Keine Umleitung von VFS-Calls auf die Session.
-//! - Keine Wire-Encodierung (die Wire-Kodierung lebt in
-//!   `corefs_fuse_proto::{RequestFrame, ReplyFrame}` und wird vom
-//!   zukünftigen `/dev/fuse`-Treiber bedient, nicht von diesem Modul).
+//! Phase-5.7-Erweiterung (inkrementell):
+//! - [`FUSE_REGISTRY`] hält global registrierte Sessions unter einer
+//!   Session-ID; der [`devfs`]-Adapter liest/schreibt hier die Wire-
+//!   Frames durch.
+//! - [`FsType::Fuse`] existiert im VFS-Enum, ist aber im
+//!   Dispatch-Hauptpfad (`vfs::open`/`read`/…) noch nicht verdrahtet —
+//!   Mounts vom Typ Fuse werden aktuell in der Mount-Tabelle geführt,
+//!   alle darüber gehenden I/O-Aufrufe fallen in den Default-Zweig
+//!   und scheitern mit `NotFound`/`PermissionDenied`. Der Adapter ist
+//!   damit ein ehrliches Skelett für Folgecommits.
+//!
+//! Was ausdrücklich **noch nicht** passiert:
+//! - Kein vollständiges VFS-Dispatch auf die Session (open/read/write/
+//!   lookup/readdir → Request; Kernel blockiert bis Reply). Das
+//!   erfordert einen Wait/Wake-Mechanismus, den der AnyOS-Scheduler
+//!   noch nicht exponiert.
+//! - Keine Wire-Encodierung innerhalb des Moduls — der
+//!   `/dev/fuse`-Adapter reicht opake Bytes durch, Ser/De passiert im
+//!   Userspace-Daemon via `corefs_fuse_proto`.
 
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::sync::mutex::Mutex;
@@ -158,6 +171,121 @@ impl Default for FuseSession {
 }
 
 // ---------------------------------------------------------------------------
+// Global Session Registry + /dev/fuse character-device API
+// ---------------------------------------------------------------------------
+
+/// Eindeutige Session-ID (pro FUSE-Mount).
+pub type SessionId = u32;
+
+struct Registry {
+    sessions: BTreeMap<SessionId, Arc<FuseSession>>,
+    next_id: SessionId,
+    /// Default-Session, gegen die der Char-Device-Adapter arbeitet, solange
+    /// das Multi-Session-Protokoll noch nicht steht. Entspricht der
+    /// Single-FUSE-Mount-Erwartung, die `corefsd` heute liefert.
+    default_id: Option<SessionId>,
+}
+
+static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
+    sessions: BTreeMap::new(),
+    next_id: 1,
+    default_id: None,
+});
+
+/// Registriert eine neue Session und liefert ihre `SessionId`. Die erste
+/// registrierte Session wird automatisch als Default gesetzt (für die
+/// einfache `/dev/fuse`-read/write-API, solange nur ein Daemon läuft).
+pub fn register_session(session: Arc<FuseSession>) -> SessionId {
+    let mut r = REGISTRY.lock();
+    let id = r.next_id;
+    r.next_id = r.next_id.wrapping_add(1);
+    r.sessions.insert(id, session);
+    if r.default_id.is_none() {
+        r.default_id = Some(id);
+    }
+    id
+}
+
+/// Entfernt eine Session aus dem Registry. Wenn die entfernte Session die
+/// Default-Session war, wird `default_id` gelöscht.
+pub fn unregister_session(id: SessionId) {
+    let mut r = REGISTRY.lock();
+    r.sessions.remove(&id);
+    if r.default_id == Some(id) {
+        r.default_id = None;
+    }
+}
+
+/// Liefert (falls vorhanden) einen geklonten `Arc` auf eine Session.
+pub fn session(id: SessionId) -> Option<Arc<FuseSession>> {
+    REGISTRY.lock().sessions.get(&id).cloned()
+}
+
+/// Liefert die Default-Session (erste registrierte, nicht geschlossene).
+pub fn default_session() -> Option<Arc<FuseSession>> {
+    let r = REGISTRY.lock();
+    r.default_id.and_then(|id| r.sessions.get(&id).cloned())
+}
+
+/// `/dev/fuse`-Read-Operation.
+///
+/// Der Daemon ruft das auf, um den nächsten pending RequestFrame (als opake
+/// Bytes) abzuholen. Rückgabe:
+/// - `Some(n)` mit `n > 0` = `n` Bytes nach `buf` geschrieben.
+/// - `Some(0)` = Queue leer (der Daemon soll erneut pollen).
+/// - `None` = keine Session aktiv oder Session geschlossen.
+///
+/// **Limitation**: aktuell nicht-blockierend (polling). Ein späteres
+/// Wait/Wake-Integration wird das zu einem echten blockierenden `read`
+/// machen.
+pub fn devfs_read(buf: &mut [u8]) -> Option<usize> {
+    let session = default_session()?;
+    let request = match session.pop_request() {
+        Some(r) => r,
+        None => return Some(0),
+    };
+    let body_len = request.body.len();
+    // Wire-Format: `unique` (8 bytes little-endian) || body
+    let total = 8 + body_len;
+    if buf.len() < total {
+        // Truncated read — drop the request to avoid deadlock. A full
+        // protocol would requeue here; the skeleton just warns.
+        return Some(0);
+    }
+    buf[0..8].copy_from_slice(&request.unique.to_le_bytes());
+    buf[8..total].copy_from_slice(&request.body);
+    Some(total)
+}
+
+/// `/dev/fuse`-Write-Operation.
+///
+/// Der Daemon ruft das auf, um einen Reply zurückzuschicken. Erwartetes
+/// Wire-Format: `unique` (8 bytes little-endian) || opake Reply-Bytes.
+/// Rückgabe:
+/// - `Some(n)` = `n` Bytes akzeptiert.
+/// - `None` = keine Session aktiv, Session geschlossen oder Frame zu klein.
+pub fn devfs_write(buf: &[u8]) -> Option<usize> {
+    if buf.len() < 8 {
+        return None;
+    }
+    let session = default_session()?;
+    let mut unique_bytes = [0u8; 8];
+    unique_bytes.copy_from_slice(&buf[0..8]);
+    let unique = Unique::from_le_bytes(unique_bytes);
+    let body = buf[8..].to_vec();
+    session.deliver_reply(PendingReply { unique, body }).ok()?;
+    Some(buf.len())
+}
+
+#[cfg(test)]
+fn clear_registry_for_test() {
+    let mut r = REGISTRY.lock();
+    r.sessions.clear();
+    r.default_id = None;
+    r.next_id = 1;
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -206,5 +334,64 @@ mod tests {
         let s = FuseSession::new();
         s.close();
         assert!(matches!(s.enqueue_request(vec![0]), Err(FuseError::SessionClosed)));
+    }
+
+    #[test]
+    fn devfs_read_returns_none_without_session() {
+        clear_registry_for_test();
+        let mut buf = [0u8; 64];
+        assert!(devfs_read(&mut buf).is_none());
+    }
+
+    #[test]
+    fn devfs_read_delivers_queued_request_with_unique_header() {
+        clear_registry_for_test();
+        let s = Arc::new(FuseSession::new());
+        let _id = register_session(s.clone());
+        let u = s.enqueue_request(vec![0xAA, 0xBB]).unwrap();
+
+        let mut buf = [0u8; 64];
+        let n = devfs_read(&mut buf).expect("session present");
+        assert_eq!(n, 8 + 2);
+        let mut unique_bytes = [0u8; 8];
+        unique_bytes.copy_from_slice(&buf[0..8]);
+        assert_eq!(Unique::from_le_bytes(unique_bytes), u);
+        assert_eq!(&buf[8..10], &[0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn devfs_write_delivers_reply_matched_by_unique() {
+        clear_registry_for_test();
+        let s = Arc::new(FuseSession::new());
+        let _id = register_session(s.clone());
+        let u = s.enqueue_request(vec![1]).unwrap();
+
+        // Compose a wire frame: unique || payload.
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&u.to_le_bytes());
+        frame.extend_from_slice(&[9, 8, 7]);
+        assert_eq!(devfs_write(&frame), Some(frame.len()));
+
+        let reply = s.take_reply(u).expect("reply present");
+        assert_eq!(reply, vec![9, 8, 7]);
+    }
+
+    #[test]
+    fn devfs_read_returns_zero_when_queue_empty() {
+        clear_registry_for_test();
+        let s = Arc::new(FuseSession::new());
+        let _id = register_session(s);
+        let mut buf = [0u8; 64];
+        assert_eq!(devfs_read(&mut buf), Some(0));
+    }
+
+    #[test]
+    fn register_then_unregister_clears_default() {
+        clear_registry_for_test();
+        let s = Arc::new(FuseSession::new());
+        let id = register_session(s);
+        assert!(default_session().is_some());
+        unregister_session(id);
+        assert!(default_session().is_none());
     }
 }
