@@ -583,6 +583,56 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
             }
+            FsType::CoreFs => {
+                let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+                let q = if relative_path.is_empty() { "/" } else { relative_path };
+                let lookup_result = Filesystem::lookup(driver, q);
+                let (inode, file_type, size) = match lookup_result {
+                    Ok(r) => {
+                        if flags.truncate && flags.write {
+                            // No in-place truncate in the driver yet — reject
+                            // rather than silently keep old data.
+                            return Err(FsError::PermissionDenied);
+                        }
+                        r
+                    }
+                    Err(FsError::NotFound) if flags.create => {
+                        // Split into parent + name and create via driver.
+                        let rel = q.trim_end_matches('/');
+                        let (parent, name) = match rel.rfind('/') {
+                            Some(0) => ("/", &rel[1..]),
+                            Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+                            None => ("/", rel),
+                        };
+                        let (parent_inode, parent_type, _) = Filesystem::lookup(driver, parent)?;
+                        if parent_type != FileType::Directory {
+                            return Err(FsError::NotADirectory);
+                        }
+                        let new_inode = Filesystem::create(driver, parent_inode, name, FileType::Regular)?;
+                        (new_inode, FileType::Regular, 0)
+                    }
+                    Err(e) => return Err(e),
+                };
+                let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+                let position = if flags.append { size } else { 0 };
+                let file = OpenFile {
+                    fd: slot_id,
+                    path: String::from(path),
+                    file_type,
+                    flags,
+                    position,
+                    size,
+                    fs_id: 8, // CoreFS
+                    inode,
+                    parent_cluster: 0,
+                    refcount: 1,
+                    seek_cache_offset: 0,
+                    seek_cache_cluster: 0,
+                    entry_dirty: false,
+                };
+                state.open_files[slot_id as usize] = Some(file);
+                return Ok(slot_id);
+            }
             FsType::Smb => {
                 let mount_path_owned = String::from(mount_path);
                 let relative_path_owned = String::from(relative_path);
@@ -875,6 +925,11 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
                 }
                 do_writeback = true;
             }
+            if was_writable && fs_id == 8 {
+                if let Some(driver) = state.corefs_driver.as_ref() {
+                    let _ = driver.flush();
+                }
+            }
             state.free_slot(slot_id);
         }
     } // VFS lock released
@@ -918,6 +973,11 @@ pub fn decref(slot_id: u32) {
                         queue_disk_flush(&mut disks_to_flush, disk_id);
                     }
                     do_writeback = true;
+                }
+                if was_writable && fs_id == 8 {
+                    if let Some(driver) = state.corefs_driver.as_ref() {
+                        let _ = driver.flush();
+                    }
                 }
                 state.free_slot(slot_id);
             }
@@ -1009,6 +1069,24 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         let to_read = buf.len().min(remaining);
         let ntfs = state.ntfs_fs.as_ref().ok_or(FsError::IoError)?;
         let bytes_read = ntfs.read_file(file.inode, file.position, &mut buf[..to_read])?;
+        file.position += bytes_read as u32;
+        return Ok(bytes_read);
+    }
+
+    // --- CoreFS file ---
+    if file.fs_id == 8 {
+        if file.position >= file.size {
+            return Ok(0);
+        }
+        let remaining = (file.size - file.position) as usize;
+        let to_read = buf.len().min(remaining);
+        let file_inode = file.inode;
+        let file_position = file.position;
+        let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
+        let bytes_read = Filesystem::read(driver, file_inode, file_position, &mut buf[..to_read])?;
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
         file.position += bytes_read as u32;
         return Ok(bytes_read);
     }
@@ -1142,6 +1220,38 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             return Ok(buf.len());
         }
         return Ok(buf.len());
+    }
+
+    // --- CoreFS file ---
+    if file.fs_id == 8 {
+        let file_inode = file.inode;
+        let file_position = file.position;
+        let sync_write = file.flags.sync;
+        let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
+        let bytes_written = Filesystem::write(driver, file_inode, file_position, buf)?;
+        // Re-query the driver for the updated size — the write may have
+        // extended the file beyond its previous end.
+        let new_size = {
+            // We have the driver reference above; fetch path, then lookup.
+            let file = state.open_files.get(slot_id as usize)
+                .and_then(|e| e.as_ref())
+                .ok_or(FsError::BadFd)?;
+            let mount_rel = find_mnt_mount(&file.path, &state.mount_points)
+                .map(|(_, rel, _)| String::from(rel))
+                .unwrap_or_else(|| String::from("/"));
+            let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
+            Filesystem::lookup(driver, &mount_rel).map(|(_, _, s)| s).unwrap_or(file.size)
+        };
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        file.position += bytes_written as u32;
+        file.size = core::cmp::max(new_size, file.position);
+        if sync_write {
+            let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
+            driver.flush()?;
+        }
+        return Ok(bytes_written);
     }
 
     // --- SMB file (network) ---
@@ -1540,8 +1650,26 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
-    // --- Mount point path (SMB delete) ---
+    // --- Mount point path (SMB / CoreFS delete) ---
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        if mnt_fs_type == FsType::CoreFs {
+            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let rel = if relative_path.is_empty() { "/" } else { relative_path };
+            let rel = rel.trim_end_matches('/');
+            let (parent, name) = match rel.rfind('/') {
+                Some(0) => ("/", &rel[1..]),
+                Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+                None => ("/", rel),
+            };
+            if name.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            let (parent_inode, parent_type, _) = Filesystem::lookup(driver, parent)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            return Filesystem::delete(driver, parent_inode, name);
+        }
         if mnt_fs_type == FsType::Smb {
             let mount_path_owned = String::from(mount_path);
             let rel_parent_name = {
@@ -1620,6 +1748,25 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
 
     // --- Mount point path (e.g. /mnt/target/...) ---
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        if mnt_fs_type == FsType::CoreFs {
+            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let rel = if relative_path.is_empty() { "/" } else { relative_path };
+            let rel = rel.trim_end_matches('/');
+            let (parent, name) = match rel.rfind('/') {
+                Some(0) => ("/", &rel[1..]),
+                Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+                None => ("/", rel),
+            };
+            if name.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            let (parent_inode, parent_type, _) = Filesystem::lookup(driver, parent)?;
+            if parent_type != FileType::Directory {
+                return Err(FsError::NotADirectory);
+            }
+            Filesystem::create(driver, parent_inode, name, FileType::Directory)?;
+            return Ok(());
+        }
         if mnt_fs_type == FsType::ExFat {
             let mount_path_owned = String::from(mount_path);
             let (parent_rel, dirname) = split_parent_name(relative_path)?;
