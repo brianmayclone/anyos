@@ -718,6 +718,98 @@ mod tests {
     }
 
     #[test]
+    fn write_extends_size_on_append() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        {
+            let mut inner = driver.inner.lock();
+            let id = InodeId(inner.next_id);
+            inner.next_id += 1;
+            inner.state.active_inodes.push(Inode::new_at(
+                id,
+                InodeKind::Directory,
+                alloc::string::String::from("/"),
+                FileMetadata::default(),
+                Timestamp::EPOCH,
+            ));
+        }
+        let root = driver.lookup("/").unwrap().0;
+        let f = driver.create(root, "grow.log", FileType::Regular).unwrap();
+
+        // Three successive appends: 0..4, 4..8, 8..12.
+        driver.write(f, 0, b"AAAA").unwrap();
+        driver.write(f, 4, b"BBBB").unwrap();
+        driver.write(f, 8, b"CCCC").unwrap();
+
+        let (_ino, _ft, size) = driver.lookup("/grow.log").unwrap();
+        assert_eq!(size, 12);
+
+        let mut buf = [0u8; 16];
+        let n = driver.read(f, 0, &mut buf).unwrap();
+        assert_eq!(n, 12);
+        assert_eq!(&buf[..12], b"AAAABBBBCCCC");
+    }
+
+    #[test]
+    fn overlapping_write_overwrites_bytes() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        {
+            let mut inner = driver.inner.lock();
+            let id = InodeId(inner.next_id);
+            inner.next_id += 1;
+            inner.state.active_inodes.push(Inode::new_at(
+                id,
+                InodeKind::Directory,
+                alloc::string::String::from("/"),
+                FileMetadata::default(),
+                Timestamp::EPOCH,
+            ));
+        }
+        let root = driver.lookup("/").unwrap().0;
+        let f = driver.create(root, "ov.bin", FileType::Regular).unwrap();
+        driver.write(f, 0, b"0123456789").unwrap();
+        // Overlapping overwrite in the middle.
+        driver.write(f, 3, b"XYZ").unwrap();
+
+        let mut buf = [0u8; 16];
+        let n = driver.read(f, 0, &mut buf).unwrap();
+        assert_eq!(n, 10);
+        assert_eq!(&buf[..10], b"012XYZ6789");
+    }
+
+    #[test]
+    fn write_to_directory_is_rejected() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        {
+            let mut inner = driver.inner.lock();
+            let id = InodeId(inner.next_id);
+            inner.next_id += 1;
+            inner.state.active_inodes.push(Inode::new_at(
+                id,
+                InodeKind::Directory,
+                alloc::string::String::from("/"),
+                FileMetadata::default(),
+                Timestamp::EPOCH,
+            ));
+        }
+        let root = driver.lookup("/").unwrap().0;
+        let d = driver.create(root, "adir", FileType::Directory).unwrap();
+        let err = driver.write(d, 0, b"nope").unwrap_err();
+        assert!(matches!(err, FsError::IsADirectory));
+    }
+
+    #[test]
+    fn read_from_unknown_inode_is_not_found() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let mut buf = [0u8; 4];
+        let err = driver.read(42_000_000, 0, &mut buf).unwrap_err();
+        assert!(matches!(err, FsError::NotFound));
+    }
+
+    #[test]
     fn write_then_flush_then_remount_roundtrips_data() {
         let adapter = build_native_adapter(4096);
         // Extract the underlying MemSectorIo so we can build a second adapter
