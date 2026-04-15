@@ -4,6 +4,7 @@ pub mod blockcache;
 pub mod corefs;
 pub mod devfs;
 pub mod exfat;
+pub mod fuse;
 pub mod fat;
 pub mod fd_table;
 pub mod file;

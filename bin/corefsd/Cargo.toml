@@ -1,0 +1,19 @@
+[package]
+name = "corefsd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../libs/stdlib" }
+libcorefs-tools = { path = "../../libs/libcorefs-tools" }
+corefs-core = { path = "../../../corefs/corefs-core", default-features = false }
+corefs-fuse-proto = { path = "../../../corefs/corefs-fuse-proto", default-features = false }
+corefs-fuse-adapter = { path = "../../../corefs/corefs-fuse-adapter", default-features = false }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"
+opt-level = 2
