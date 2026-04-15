@@ -374,6 +374,42 @@ pub fn mount_corefs(
     Ok(())
 }
 
+/// Mount a FUSE-Session als VFS-Dateisystem.
+///
+/// Die eigentliche Dateisystem-Logik lebt im Userspace-Daemon, der über die
+/// [`crate::fs::fuse::FuseSession`] Requests empfängt. `session_id` identifiziert
+/// die bereits via [`crate::fs::fuse::register_session`] registrierte Session.
+///
+/// `mount_path` ist der VFS-Pfad, unter dem der Mount erscheinen soll
+/// (z. B. `/mnt/fuse`). Die Funktion legt eine eigene [`crate::fs::fuse::inode_map::InodeMap`]
+/// pro Mount an; Root-Inode (VFS-`u32 = 1`) mappt auf FUSE-`u64 = 1`.
+pub fn mount_fuse(mount_path: &str, session_id: u32) -> Result<(), FsError> {
+    // Session muss existieren, sonst kein sinnvoller Mount.
+    if crate::fs::fuse::session(session_id).is_none() {
+        return Err(FsError::NotFound);
+    }
+    let mut vfs = VFS.lock();
+    let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    // Duplikatprüfung.
+    for mp in &state.mount_points {
+        if mp.path == mount_path {
+            return Err(FsError::AlreadyExists);
+        }
+    }
+    crate::fs::fuse::inode_map::ensure_mount(session_id);
+    state.mount_points.push(MountPoint {
+        path: String::from(mount_path),
+        fs_type: FsType::Fuse,
+        device_id: session_id,
+    });
+    crate::serial_verbose_println!(
+        "  Mounted FUSE session {} at '{}'",
+        session_id,
+        mount_path
+    );
+    Ok(())
+}
+
 /// Flush the currently-mounted CoreFS driver to disk (if any).
 ///
 /// Intended as a shutdown / sync hook — persists any pending mutations
@@ -632,6 +668,12 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                 };
                 state.open_files[slot_id as usize] = Some(file);
                 return Ok(slot_id);
+            }
+            FsType::Fuse => {
+                let mount_path_owned = String::from(mount_path);
+                let rel_owned = String::from(relative_path);
+                let path_owned = String::from(path);
+                return fuse_open_entry(state, &mount_path_owned, &rel_owned, flags, &path_owned);
             }
             FsType::Smb => {
                 let mount_path_owned = String::from(mount_path);
@@ -930,6 +972,22 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
                     let _ = driver.flush();
                 }
             }
+            if fs_id == 9 {
+                // Send Release to the FUSE daemon. Failures are logged but
+                // don't block slot-free — the kernel side must always
+                // release the slot to avoid FD leaks.
+                if let Some(Some(file)) = state.open_files.get(slot_id as usize) {
+                    if let Ok((sid, session)) = fuse_session_of(file) {
+                        if let Some(ino_u64) =
+                            crate::fs::fuse::inode_map::to_u64(sid, file.inode)
+                        {
+                            let fh = fuse_fh_of(file);
+                            let req = fuse_proto::Request::Release { ino: ino_u64, fh };
+                            let _ = crate::fs::fuse::fuse_call(&session, &req);
+                        }
+                    }
+                }
+            }
             state.free_slot(slot_id);
         }
     } // VFS lock released
@@ -977,6 +1035,20 @@ pub fn decref(slot_id: u32) {
                 if was_writable && fs_id == 8 {
                     if let Some(driver) = state.corefs_driver.as_ref() {
                         let _ = driver.flush();
+                    }
+                }
+                if fs_id == 9 {
+                    if let Some(Some(file)) = state.open_files.get(slot_id as usize) {
+                        if let Ok((sid, session)) = fuse_session_of(file) {
+                            if let Some(ino_u64) =
+                                crate::fs::fuse::inode_map::to_u64(sid, file.inode)
+                            {
+                                let fh = fuse_fh_of(file);
+                                let req =
+                                    fuse_proto::Request::Release { ino: ino_u64, fh };
+                                let _ = crate::fs::fuse::fuse_call(&session, &req);
+                            }
+                        }
                     }
                 }
                 state.free_slot(slot_id);
@@ -1089,6 +1161,37 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
             .ok_or(FsError::BadFd)?;
         file.position += bytes_read as u32;
         return Ok(bytes_read);
+    }
+
+    // --- FUSE file ---
+    if file.fs_id == 9 {
+        if file.position >= file.size {
+            return Ok(0);
+        }
+        let remaining = (file.size - file.position) as usize;
+        let to_read = buf.len().min(remaining);
+        let (sid, session) = fuse_session_of(file)?;
+        let inode_u64 = crate::fs::fuse::inode_map::to_u64(sid, file.inode)
+            .ok_or(FsError::IoError)?;
+        let fh = fuse_fh_of(file);
+        let req = fuse_proto::Request::Read {
+            ino: inode_u64,
+            fh,
+            offset: file.position as u64,
+            size: to_read as u32,
+        };
+        let reply = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+        let data = match reply {
+            fuse_proto::Reply::Read { data } => data,
+            _ => return Err(FsError::IoError),
+        };
+        let n = core::cmp::min(data.len(), buf.len());
+        buf[..n].copy_from_slice(&data[..n]);
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        file.position += n as u32;
+        return Ok(n);
     }
 
     // --- SMB file (network) ---
@@ -1252,6 +1355,33 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             driver.flush()?;
         }
         return Ok(bytes_written);
+    }
+
+    // --- FUSE file ---
+    if file.fs_id == 9 {
+        let (sid, session) = fuse_session_of(file)?;
+        let inode_u64 = crate::fs::fuse::inode_map::to_u64(sid, file.inode)
+            .ok_or(FsError::IoError)?;
+        let fh = fuse_fh_of(file);
+        let req = fuse_proto::Request::Write {
+            ino: inode_u64,
+            fh,
+            offset: file.position as u64,
+            data: buf.to_vec(),
+        };
+        let reply = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+        let written = match reply {
+            fuse_proto::Reply::Write { written } => written as usize,
+            _ => return Err(FsError::IoError),
+        };
+        let file = state.open_files.get_mut(slot_id as usize)
+            .and_then(|e| e.as_mut())
+            .ok_or(FsError::BadFd)?;
+        file.position += written as u32;
+        if file.position > file.size {
+            file.size = file.position;
+        }
+        return Ok(written);
     }
 
     // --- SMB file (network) ---
@@ -1437,6 +1567,34 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
                     return Err(FsError::NotADirectory);
                 }
                 return Filesystem::readdir(driver, inode);
+            }
+            FsType::Fuse => {
+                let session_id = fuse_session_id_for(state, mount_path)
+                    .ok_or(FsError::IoError)?;
+                let session =
+                    crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+                let (_attr, _vfs_u32, ino_u64) =
+                    fuse_resolve_path(&session, session_id, relative_path)?;
+                let req = fuse_proto::Request::Readdir { ino: ino_u64, offset: 0 };
+                let reply =
+                    crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+                let entries = match reply {
+                    fuse_proto::Reply::Readdir(v) => v,
+                    _ => return Err(FsError::IoError),
+                };
+                let mut out = Vec::with_capacity(entries.len());
+                for e in entries {
+                    out.push(DirEntry {
+                        name: e.name,
+                        file_type: crate::fs::fuse::attr_kind_to_file_type(e.kind),
+                        size: 0,
+                        is_symlink: e.kind == 3,
+                        uid: 0,
+                        gid: 0,
+                        mode: 0o755,
+                    });
+                }
+                return Ok(out);
             }
             _ => {
                 return Err(FsError::NotFound);
@@ -1670,6 +1828,22 @@ pub fn delete(path: &str) -> Result<(), FsError> {
             }
             return Filesystem::delete(driver, parent_inode, name);
         }
+        if mnt_fs_type == FsType::Fuse {
+            let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
+            let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+            let (parent_rel, name) = fuse_split_parent_name(relative_path)?;
+            if name.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            let (_p_attr, _p_u32, parent_u64) =
+                fuse_resolve_path(&session, session_id, parent_rel)?;
+            let req = fuse_proto::Request::Unlink {
+                parent: parent_u64,
+                name: String::from(name),
+            };
+            let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+            return Ok(());
+        }
         if mnt_fs_type == FsType::Smb {
             let mount_path_owned = String::from(mount_path);
             let rel_parent_name = {
@@ -1804,6 +1978,23 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
                 return Err(FsError::NotADirectory);
             }
             Filesystem::create(driver, parent_inode, name, FileType::Directory)?;
+            return Ok(());
+        }
+        if mnt_fs_type == FsType::Fuse {
+            let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
+            let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+            let (parent_rel, name) = fuse_split_parent_name(relative_path)?;
+            if name.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            let (_p_attr, _p_u32, parent_u64) =
+                fuse_resolve_path(&session, session_id, parent_rel)?;
+            let req = fuse_proto::Request::Mkdir {
+                parent: parent_u64,
+                name: String::from(name),
+                mode: 0o755,
+            };
+            let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
             return Ok(());
         }
         if mnt_fs_type == FsType::ExFat {
@@ -1975,6 +2166,25 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
                 let q = if relative_path.is_empty() { "/" } else { relative_path };
                 let (_inode, file_type, size) = Filesystem::lookup(driver, q)?;
                 return Ok(default_stat(file_type, size, false));
+            }
+            FsType::Fuse => {
+                let session_id = state
+                    .mount_points
+                    .iter()
+                    .find(|m| m.path == mount_path)
+                    .map(|m| m.device_id)
+                    .ok_or(FsError::IoError)?;
+                let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+                let (attr, _, _) = fuse_resolve_path(&session, session_id, relative_path)?;
+                return Ok(StatResult {
+                    file_type: crate::fs::fuse::attr_kind_to_file_type(attr.kind),
+                    size: attr.size as u32,
+                    is_symlink: attr.kind == 3,
+                    uid: attr.uid as u16,
+                    gid: attr.gid as u16,
+                    mode: (attr.mode & 0xFFF) as u16,
+                    mtime: attr.mtime_secs as u32,
+                });
             }
             _ => return Err(FsError::NotFound),
         }
@@ -2561,3 +2771,160 @@ pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
         Vec::new()
     }
 }
+
+// ---------------------------------------------------------------------------
+// FUSE dispatch helpers
+// ---------------------------------------------------------------------------
+
+use corefs_fuse_proto as fuse_proto;
+
+/// Findet die Session-ID (device_id) eines FUSE-Mounts am gegebenen mount_path.
+fn fuse_session_id_for(state: &VfsState, mount_path: &str) -> Option<u32> {
+    state
+        .mount_points
+        .iter()
+        .find(|m| m.path == mount_path && m.fs_type == FsType::Fuse)
+        .map(|m| m.device_id)
+}
+
+/// Fehler-Mapping vom FuseCallError-Helper in [`FsError`].
+fn fuse_err(e: crate::fs::fuse::FuseCallError) -> FsError {
+    crate::fs::fuse::fuse_call_error_to_fs_error(e)
+}
+
+/// Löst einen Pfad relativ zum Mount-Root auf — Komponente für Komponente via
+/// `Lookup`-Requests — und liefert das `Attr` samt VFS-u32-Inode und FUSE-u64.
+/// Ein leerer/`"/"`-Pfad liefert den Root (Inode=1, via `Getattr`).
+fn fuse_resolve_path(
+    session: &crate::fs::fuse::FuseSession,
+    session_id: u32,
+    rel_path: &str,
+) -> Result<(fuse_proto::Attr, u32, u64), FsError> {
+    let trimmed = rel_path.trim_start_matches('/').trim_end_matches('/');
+    // Root case
+    if trimmed.is_empty() {
+        let req = fuse_proto::Request::Getattr { ino: 1 };
+        let reply = crate::fs::fuse::fuse_call(session, &req).map_err(fuse_err)?;
+        let attr = match reply {
+            fuse_proto::Reply::Getattr(a) => a,
+            _ => return Err(FsError::IoError),
+        };
+        return Ok((attr, 1u32, 1u64));
+    }
+    // Walk components.
+    let mut parent_u64: u64 = 1;
+    let mut last_attr: Option<fuse_proto::Attr> = None;
+    let mut last_u32: u32 = 1;
+    for comp in trimmed.split('/') {
+        if comp.is_empty() {
+            continue;
+        }
+        let req = fuse_proto::Request::Lookup {
+            parent: parent_u64,
+            name: String::from(comp),
+        };
+        let reply = crate::fs::fuse::fuse_call(session, &req).map_err(fuse_err)?;
+        let attr = match reply {
+            fuse_proto::Reply::Lookup(a) => a,
+            _ => return Err(FsError::IoError),
+        };
+        last_u32 = crate::fs::fuse::inode_map::intern(session_id, attr.ino);
+        parent_u64 = attr.ino;
+        last_attr = Some(attr);
+    }
+    let attr = last_attr.ok_or(FsError::NotFound)?;
+    Ok((attr, last_u32, attr.ino))
+}
+
+/// Mappt einen kernel-VFS-Pfad in den Mount-relativen Pfad plus Eltern-Inode-u64.
+fn fuse_split_parent_name<'a>(rel: &'a str) -> Result<(&'a str, &'a str), FsError> {
+    let trimmed = rel.trim_end_matches('/');
+    let trimmed = if trimmed.is_empty() { "/" } else { trimmed };
+    match trimmed.rfind('/') {
+        Some(0) => Ok(("/", &trimmed[1..])),
+        Some(pos) => Ok((&trimmed[..pos], &trimmed[pos + 1..])),
+        None => Ok(("/", trimmed)),
+    }
+}
+
+/// Öffnet einen FUSE-Eintrag: Attr auflösen, `Request::Open` an Daemon,
+/// neuen OpenFile-Slot anlegen. Die `fh` (FileHandle vom Daemon) wird in
+/// `parent_cluster` geparkt (cast u64→u32; Daemons geben typ. kleine ids).
+fn fuse_open_entry(
+    state: &mut VfsState,
+    mount_path: &str,
+    rel_path: &str,
+    flags: FileFlags,
+    full_path: &str,
+) -> Result<FileDescriptor, FsError> {
+    let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
+    let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+
+    // Try to resolve; on NotFound + create, issue Create.
+    let resolve = fuse_resolve_path(&session, session_id, rel_path);
+    let (attr, fh) = match resolve {
+        Ok((attr, _u32, ino_u64)) => {
+            // Open-Call
+            let req = fuse_proto::Request::Open { ino: ino_u64, flags: 0 };
+            let reply = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+            match reply {
+                fuse_proto::Reply::Open { fh, .. } => (attr, fh),
+                _ => return Err(FsError::IoError),
+            }
+        }
+        Err(FsError::NotFound) if flags.create => {
+            let (parent_rel, name) = fuse_split_parent_name(rel_path)?;
+            let (_p_attr, _p_u32, parent_u64) = fuse_resolve_path(&session, session_id, parent_rel)?;
+            let req = fuse_proto::Request::Create {
+                parent: parent_u64,
+                name: String::from(name),
+                mode: 0o644,
+                flags: 0,
+            };
+            let reply = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+            match reply {
+                fuse_proto::Reply::Create { attr, fh, .. } => {
+                    let _ = crate::fs::fuse::inode_map::intern(session_id, attr.ino);
+                    (attr, fh)
+                }
+                _ => return Err(FsError::IoError),
+            }
+        }
+        Err(e) => return Err(e),
+    };
+
+    let inode_u32 = crate::fs::fuse::inode_map::intern(session_id, attr.ino);
+    let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+    let position = if flags.append { attr.size as u32 } else { 0 };
+    let file = OpenFile {
+        fd: slot_id,
+        path: String::from(full_path),
+        file_type: crate::fs::fuse::attr_kind_to_file_type(attr.kind),
+        flags,
+        position,
+        size: attr.size as u32,
+        fs_id: 9, // FUSE
+        inode: inode_u32,
+        parent_cluster: (fh & 0xFFFF_FFFF) as u32, // repurpose: low-32 of fh
+        refcount: 1,
+        seek_cache_offset: ((fh >> 32) & 0xFFFF_FFFF) as u32, // repurpose: high-32 of fh
+        seek_cache_cluster: session_id,
+        entry_dirty: false,
+    };
+    state.open_files[slot_id as usize] = Some(file);
+    Ok(slot_id)
+}
+
+/// Rekonstruiert die FUSE-`fh` (u64) aus einem OpenFile-Slot.
+fn fuse_fh_of(file: &OpenFile) -> u64 {
+    ((file.seek_cache_offset as u64) << 32) | (file.parent_cluster as u64)
+}
+
+/// Liefert `(session_id, session)` für eine OpenFile mit `fs_id == 9`.
+fn fuse_session_of(file: &OpenFile) -> Result<(u32, Arc<crate::fs::fuse::FuseSession>), FsError> {
+    let sid = file.seek_cache_cluster;
+    let s = crate::fs::fuse::session(sid).ok_or(FsError::NotFound)?;
+    Ok((sid, s))
+}
+
+use alloc::sync::Arc;

@@ -45,6 +45,8 @@ use alloc::vec::Vec;
 
 use crate::sync::mutex::Mutex;
 
+pub mod inode_map;
+
 /// Eindeutige Request-ID — gespiegelt vom Daemon in der passenden Reply.
 /// Kompatibel zu `corefs_fuse_proto::Unique`.
 pub type Unique = u64;
@@ -442,6 +444,17 @@ pub fn fuse_call_error_to_fs_error(e: FuseCallError) -> crate::fs::vfs::FsError 
             _ => FsError::IoError,
         },
         _ => FsError::IoError,
+    }
+}
+
+/// Mappt [`corefs_fuse_proto::Attr::kind`] (1=File, 2=Dir, 3=Symlink, …)
+/// auf den kernelseitigen [`crate::fs::file::FileType`]. Unbekannte Kinds
+/// werden als `Regular` behandelt — konservativer Default.
+pub fn attr_kind_to_file_type(kind: u8) -> crate::fs::file::FileType {
+    use crate::fs::file::FileType;
+    match kind {
+        2 => FileType::Directory,
+        _ => FileType::Regular,
     }
 }
 
