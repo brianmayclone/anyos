@@ -564,6 +564,23 @@ impl FuseHandler for CoreFsHandler {
             Request::Mkdir { parent, name, .. } => self.op_mkdir(parent, name),
             Request::Unlink { parent, name } => self.op_unlink(parent, name),
             Request::Statfs => self.op_statfs(),
+            // Flush/Fsync: persist on the session where possible; for the
+            // current PersistedState model a write has already been flushed
+            // by op_write, so this is a no-op acknowledging the request.
+            Request::Flush { .. } => HandlerResult::Ok(Reply::Flush),
+            Request::Fsync { .. } => HandlerResult::Ok(Reply::Fsync),
+            // The following ops are plumbed on the wire but not yet backed
+            // by CoreFsHandler mutations. Returning ENOSYS keeps the
+            // protocol exhaustive while preserving honest semantics for
+            // callers.
+            Request::Setattr { .. }
+            | Request::Rmdir { .. }
+            | Request::Rename { .. }
+            | Request::Symlink { .. }
+            | Request::Readlink { .. } => HandlerResult::Err {
+                errno: 38, // ENOSYS
+                message: Some(String::from("op not implemented yet")),
+            },
         }
     }
 }
