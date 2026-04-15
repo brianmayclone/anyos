@@ -432,6 +432,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "corefs-fuse-adapter"
+version = "0.1.19"
+dependencies = [
+ "corefs-core",
+ "corefs-fuse-proto",
+ "serde",
+]
+
+[[package]]
+name = "corefs-fuse-proto"
+version = "0.1.19"
+dependencies = [
+ "bincode",
+ "serde",
+]
+
+[[package]]
 name = "corefs-resize"
 version = "0.1.0"
 dependencies = [
@@ -464,6 +481,17 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "corefs-core",
+ "libcorefs-tools",
+]
+
+[[package]]
+name = "corefsd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "corefs-core",
+ "corefs-fuse-adapter",
+ "corefs-fuse-proto",
  "libcorefs-tools",
 ]
 

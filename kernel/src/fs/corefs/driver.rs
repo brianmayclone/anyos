@@ -153,7 +153,37 @@ impl CoreFsDriver {
     /// Ein frisch formatiertes Volume muss vorher initialisiert werden —
     /// Tests nutzen dazu [`empty_persisted_state`] + `save_state_native`.
     pub fn mount_writable(device: BlockDeviceAdapter) -> Result<Self, FsError> {
-        let state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        let mut state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+
+        // Unclean-Mount-Recovery: Falls der vorherige Unmount nicht clean
+        // war und eine pending WAL vorliegt, spielen wir die strukturellen
+        // Operationen (Create/Delete/Rename/Truncate-size) direkt hier zurück.
+        // Block-Level-Ops (PatchExtent, Truncate-data) bleiben der späteren
+        // App-Schicht vorbehalten und werden via `skipped_data_ops` gemeldet.
+        if !state.clean_unmount && state.pending_wal.is_some() {
+            let now = {
+                use corefs_core::platform::Clock;
+                super::KernelClock.now()
+            };
+            match state.replay_pending_wal(now) {
+                Ok(report) => {
+                    crate::serial_println!(
+                        "[corefs] unclean mount recovery: structural={} skipped_data={} txn={:?}",
+                        report.applied_structural,
+                        report.skipped_data_ops,
+                        report.transaction_id
+                    );
+                }
+                Err(e) => {
+                    crate::serial_println!(
+                        "[corefs] unclean mount recovery failed: {:?}",
+                        e
+                    );
+                }
+            }
+            state.clean_unmount = true;
+        }
+
         let next_id = compute_next_id(&state);
         Ok(Self {
             inner: Mutex::new(Inner {

@@ -7,14 +7,16 @@
 **A 64-bit operating system built from scratch in Rust and Assembly**
 
 macOS-inspired desktop with window compositor, OpenGL ES 2.0 (hardware-accelerated via VirGL/SVGA3D),<br>
-full network stack, USB 3.0, 7 filesystems, audio, TrueType fonts,<br>
-and a self-hosted Rust compiler — all running bare-metal on x86_64.
+full TCP/IP network stack with WiFi, USB 3.0, 7 filesystems, audio, TrueType fonts,<br>
+SMP multi-core scheduler (up to 16 CPUs), and a self-hosted Rust compiler — all running bare-metal on x86_64.<br>
+An **AArch64 port** targeting Raspberry Pi 4/5 is in active development.
 
 <br>
 
 ![Rust](https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white)
 ![NASM](https://img.shields.io/badge/NASM-Assembly-0066B8?style=flat-square)
 ![x86_64](https://img.shields.io/badge/Arch-x86__64-4B7BEC?style=flat-square)
+![AArch64](https://img.shields.io/badge/Arch-AArch64-7B4BEC?style=flat-square)
 ![License: MIT](https://img.shields.io/badge/License-MIT-2ecc71?style=flat-square)
 ![Programs](https://img.shields.io/badge/Programs-174+-e67e22?style=flat-square)
 ![Syscalls](https://img.shields.io/badge/Syscalls-232-9b59b6?style=flat-square)
@@ -116,6 +118,16 @@ and a self-hosted Rust compiler — all running bare-metal on x86_64.
 - **Runtime app permissions** — per-user capability grants with consent dialog on first launch, reviewable in Settings
 - **Thermal monitoring** — Intel/AMD CPU temperature sensors and LM75/TMP75 external sensors via SMBus
 - **I2C/SMBus support** — device detection, byte/word/block read/write for touchpads, sensors, and other I2C peripherals
+
+### AArch64 Port *(in development)*
+
+- **AArch64 kernel** targeting **Raspberry Pi 4** (BCM2711) and **Raspberry Pi 5** (BCM2712)
+- Boot sequence: EL2 → EL1 transition, MMU setup (VMSAv8-A, 4-level paging)
+- **GICv3** interrupt controller with Generic Timer
+- **SMP** via PSCI (`CPU_ON`), up to 4 cores
+- **Syscall dispatch** via `SVC #0`
+- Portable kernel subsystems (VFS, TCP/IP, IPC, scheduler, crypto, graphics) require no architecture-specific changes
+- Dual-arch build system: same CMake + Cargo pipeline, `aarch64-anyos.json` custom target
 
 ### Graphics & UI
 
@@ -628,6 +640,7 @@ DLIB programs link against lightweight client stub crates (e.g. `libimage_client
 - **[libjs API](docs/libjs-api.md)** — JavaScript engine
 - **[libwebview API](docs/libwebview-api.md)** — HTML/CSS/JS rendering engine
 - **[Services](docs/services.md)** — System services documentation
+- **[CoreFS](docs/corefs.md)** — Native filesystem: kernel driver, VFS integration, userland tools
 - **[crust Compiler](docs/crust-ccargo-api.md)** — Self-hosted Rust subset compiler and ccargo toolchain reference
 - **[Package Manager](docs/ami.md)** — AMI package manager / system info daemon
 
