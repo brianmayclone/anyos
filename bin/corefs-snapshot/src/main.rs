@@ -16,9 +16,10 @@
 //! Timestamps), aber nicht den Datei-Body — das würde `read_file()` aus der
 //! std-gebundenen `CoreFsService`-Schicht voraussetzen (decompress + decrypt).
 //!
-//! `restore` liefert aktuell `Unsupported` — die Snapshot-Restore-Logik
-//! verweist auf die std-gebundene Service-API und wandert nach `corefs-core`
-//! in einem Folge-Schritt.
+//! `restore` arbeitet gegen `PersistedState::restore_snapshot_at` und spielt
+//! die erfassten Inode-Metadaten (plus optional file_data) zurück. Auf
+//! metadata-only Snapshots verhält sich restore idempotent für die
+//! block_records.
 
 #![no_std]
 #![no_main]
@@ -158,6 +159,62 @@ impl Report for CreateReport {
 
 struct DeleteReport {
     id: u64,
+}
+
+struct RestoreReport {
+    snapshot_id: u64,
+    snapshot_name: String,
+    restored_files: usize,
+    restored_dirs: usize,
+    skipped_paths: Vec<String>,
+}
+
+impl Report for RestoreReport {
+    fn summary(&self) -> String {
+        if self.skipped_paths.is_empty() {
+            format!(
+                "snapshot {} restored ({} files, {} dirs)",
+                self.snapshot_id, self.restored_files, self.restored_dirs
+            )
+        } else {
+            format!(
+                "snapshot {} restored partially ({} files, {} dirs, {} skipped)",
+                self.snapshot_id,
+                self.restored_files,
+                self.restored_dirs,
+                self.skipped_paths.len()
+            )
+        }
+    }
+    fn render_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str("snapshot restore\n----------------\n");
+        out.push_str(&format!("id             : {}\n", self.snapshot_id));
+        out.push_str(&format!("name           : {}\n", self.snapshot_name));
+        out.push_str(&format!("restored files : {}\n", self.restored_files));
+        out.push_str(&format!("restored dirs  : {}\n", self.restored_dirs));
+        out.push_str(&format!("skipped paths  : {}\n", self.skipped_paths.len()));
+        for p in &self.skipped_paths {
+            out.push_str(&format!("  {}\n", p));
+        }
+        out
+    }
+    fn render_json(&self) -> String {
+        let mut b = JsonBuilder::new();
+        b.begin_object();
+        b.kv_u64("snapshot_id", self.snapshot_id);
+        b.kv_string("snapshot_name", &self.snapshot_name);
+        b.kv_u64("restored_files", self.restored_files as u64);
+        b.kv_u64("restored_dirs", self.restored_dirs as u64);
+        b.key("skipped_paths");
+        b.begin_array();
+        for p in &self.skipped_paths {
+            b.string(p);
+        }
+        b.end_array();
+        b.end_object();
+        b.finish()
+    }
 }
 
 impl Report for DeleteReport {
@@ -335,13 +392,32 @@ fn main() -> u32 {
             }
         }
         "restore" => {
-            let _ = args.get_u64("id");
-            anyos_std::println!(
-                "corefs-snapshot restore: planned, not yet implemented in anyOS userspace.\n\
-                 Restore needs the std-gebundene CoreFsService.restore_snapshot pipeline.\n\
-                 Track: features_corefs.md § snapshot."
-            );
-            ExitCode::Unsupported.as_u32()
+            let Some(id) = args.get_u64("id") else {
+                anyos_std::println!("corefs-snapshot restore: --id <n> is required");
+                return ExitCode::InvalidArgument.as_u32();
+            };
+            let result = session.mutate(|state| {
+                state.restore_snapshot_at(id, Timestamp::EPOCH)
+            });
+            match result {
+                Ok((report, _flush)) => {
+                    libcorefs_tools::report::print_report(
+                        &RestoreReport {
+                            snapshot_id: report.snapshot_id,
+                            snapshot_name: report.snapshot_name,
+                            restored_files: report.restored_files,
+                            restored_dirs: report.restored_dirs,
+                            skipped_paths: report.skipped_paths,
+                        },
+                        json,
+                    );
+                    ExitCode::Success.as_u32()
+                }
+                Err(e) => {
+                    anyos_std::println!("corefs-snapshot restore: {}", e);
+                    exit_code_for(&e).as_u32()
+                }
+            }
         }
         other => {
             anyos_std::println!("corefs-snapshot: unknown subcommand '{}'", other);
