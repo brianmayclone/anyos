@@ -360,8 +360,21 @@ pub fn devfs_write(buf: &[u8]) -> Option<usize> {
     unique_bytes.copy_from_slice(&buf[0..8]);
     let unique = Unique::from_le_bytes(unique_bytes);
     let body = buf[8..].to_vec();
-    session.deliver_reply(PendingReply { unique, body }).ok()?;
-    Some(buf.len())
+    match session.deliver_reply(PendingReply { unique, body }) {
+        Ok(()) => Some(buf.len()),
+        Err(FuseError::SessionClosed) => {
+            // Explicit: daemon tried to write to a session the kernel has
+            // already torn down. Upper layers should surface this as EIO,
+            // not a silent drop. Log it so the daemon sees the mismatch.
+            #[cfg(not(test))]
+            crate::serial_println!(
+                "[fuse] devfs_write: session closed, reply for unique {} dropped (EIO)",
+                unique
+            );
+            None
+        }
+        Err(_) => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -589,6 +602,20 @@ mod tests {
             s.enqueue_and_wait(vec![1]),
             Err(FuseError::SessionClosed)
         ));
+    }
+
+    #[test]
+    fn devfs_write_on_closed_session_returns_none() {
+        clear_registry_for_test();
+        let s = Arc::new(FuseSession::new());
+        let _id = register_session(s.clone());
+        s.close();
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&1u64.to_le_bytes());
+        frame.extend_from_slice(&[0xEE]);
+        // Previously: silent Some(len) via `.ok()?` short-circuit → now
+        // None so the upper VFS layer can surface EIO.
+        assert_eq!(devfs_write(&frame), None);
     }
 
     #[test]

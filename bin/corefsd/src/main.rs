@@ -141,6 +141,18 @@ impl DevFuseTransport {
     }
 }
 
+impl Drop for DevFuseTransport {
+    fn drop(&mut self) {
+        // Best-effort close on abnormal exit — the kernel side will tear
+        // the FuseSession down separately (see `FuseSession::close`), but
+        // we still want to release the userspace fd to avoid a leaked
+        // reference in the descriptor table.
+        if self.fd != u32::MAX {
+            let _ = anyos_std::fs::close(self.fd);
+        }
+    }
+}
+
 impl Transport for DevFuseTransport {
     type Error = DevFuseError;
 
