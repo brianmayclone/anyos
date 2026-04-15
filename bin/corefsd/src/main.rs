@@ -30,15 +30,25 @@
 #![no_std]
 #![no_main]
 
+mod handler;
+
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 
+use corefs_core::platform::Timestamp;
+use corefs_core::storage::block_device::BlockDevice;
+use corefs_core::storage::ondisk::session::{OdfDeviceSession, OdfSessionOptions};
 use corefs_fuse_adapter::{FuseHandler, HandlerResult, SessionLoop, Transport};
 use corefs_fuse_proto::{
     FrameHeader, PROTOCOL_VERSION, Reply, ReplyFrame, ReplyPayload, Request, RequestFrame,
 };
+use libcorefs_tools::args;
+use libcorefs_tools::block_device::AnyOsBlockDevice;
+
+use handler::CoreFsHandler;
 
 anyos_std::entry!(main);
 
@@ -205,12 +215,13 @@ fn encode_reply(reply: &ReplyFrame) -> Option<Vec<u8>> {
 }
 
 // ---------------------------------------------------------------------------
-// CoreFsHandler (Skelett — echte CoreFS-Bindung in Folgecommits)
+// StubHandler (Fallback für den Demo-Modus, wenn keine Device-Args übergeben
+// wurden). Der echte Handler lebt in `handler::CoreFsHandler`.
 // ---------------------------------------------------------------------------
 
-struct CoreFsHandler;
+struct StubHandler;
 
-impl FuseHandler for CoreFsHandler {
+impl FuseHandler for StubHandler {
     fn handle(&mut self, request: Request) -> HandlerResult {
         match request {
             Request::Init { .. } => HandlerResult::Ok(Reply::Init {
@@ -236,13 +247,29 @@ fn main() -> u32 {
         PROTOCOL_VERSION
     );
 
-    // Default-Modus: echter `/dev/fuse`-Pfad. Wenn `open` fehlschlägt
-    // (z. B. DevFs hat `/dev/fuse` nicht registriert — sollte nach
-    // Phase-5.7-Patch nicht mehr vorkommen), fallback in Demo-Mode.
+    // Parse `--device <id> --capacity <bytes>` (optional). If both are
+    // given, bind a real `CoreFsHandler` to the referenced block device.
+    // Otherwise fall back to the in-memory stub handler (demo mode).
+    let mut buf = [0u8; 256];
+    let raw = anyos_std::process::args(&mut buf);
+    let parsed = args::parse(raw);
+    let device_id = args::parse_device_id(&parsed);
+    let capacity = args::parse_capacity(&parsed);
+
     match DevFuseTransport::open() {
         Ok(transport) => {
             anyos_std::println!("corefsd: opened /dev/fuse, entering event loop");
-            run_real(transport)
+            if let (Some(dev_id), Some(cap)) = (device_id, capacity) {
+                match build_real_handler(dev_id, cap) {
+                    Ok(h) => run_with_handler(transport, h),
+                    Err(code) => code,
+                }
+            } else {
+                anyos_std::println!(
+                    "corefsd: no --device/--capacity — serving stub (Init/Destroy only)"
+                );
+                run_with_handler(transport, StubHandler)
+            }
         }
         Err(_) => {
             anyos_std::println!(
@@ -253,8 +280,51 @@ fn main() -> u32 {
     }
 }
 
-fn run_real(transport: DevFuseTransport) -> u32 {
-    let handler = CoreFsHandler;
+fn build_real_handler(device_id: u32, capacity: u64) -> Result<CoreFsHandler, u32> {
+    let device = match AnyOsBlockDevice::open(device_id, capacity) {
+        Ok(d) => d,
+        Err(e) => {
+            anyos_std::println!("corefsd: cannot open device {}: {}", device_id, e);
+            return Err(1);
+        }
+    };
+    let boxed: Box<dyn BlockDevice> = Box::new(device);
+    // Try opening the existing volume first; fall back to format-new if the
+    // volume is uninitialised.  This keeps the daemon useful in bring-up
+    // scenarios where the block device was just allocated.
+    let session = match OdfDeviceSession::open(boxed) {
+        Ok(s) => s,
+        Err(e_open) => {
+            anyos_std::println!(
+                "corefsd: open failed ({}), trying format_new_at()",
+                e_open
+            );
+            let fresh = match AnyOsBlockDevice::open(device_id, capacity) {
+                Ok(d) => d,
+                Err(e) => {
+                    anyos_std::println!("corefsd: re-open of device {} failed: {}", device_id, e);
+                    return Err(1);
+                }
+            };
+            let boxed2: Box<dyn BlockDevice> = Box::new(fresh);
+            let opts = OdfSessionOptions {
+                capacity_bytes: capacity,
+                ..OdfSessionOptions::with_defaults()
+            };
+            match OdfDeviceSession::format_new_at(boxed2, &opts, Timestamp::EPOCH) {
+                Ok(s) => s,
+                Err(e) => {
+                    anyos_std::println!("corefsd: format_new_at failed: {}", e);
+                    return Err(1);
+                }
+            }
+        }
+    };
+    anyos_std::println!("corefsd: CoreFS session bound to device {}", device_id);
+    Ok(CoreFsHandler::new(session))
+}
+
+fn run_with_handler<H: FuseHandler>(transport: DevFuseTransport, handler: H) -> u32 {
     let mut session = SessionLoop::new(transport, handler);
     match session.run() {
         Ok(()) => {
@@ -282,7 +352,7 @@ fn run_demo() -> u32 {
         },
     ];
     let transport = MockTransport::with_requests(requests);
-    let handler = CoreFsHandler;
+    let handler = StubHandler;
     let mut session = SessionLoop::new(transport, handler);
 
     match session.run() {
