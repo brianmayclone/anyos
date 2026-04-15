@@ -1717,6 +1717,15 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
+    // CoreFS does not yet support rename/move — reject cleanly.
+    for p in [old_path, new_path] {
+        if let Some((_mp, _rel, mnt_fs_type)) = find_mnt_mount(p, &state.mount_points) {
+            if mnt_fs_type == FsType::CoreFs {
+                return Err(FsError::PermissionDenied);
+            }
+        }
+    }
+
     // --- OverlayFS rename ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
         let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
@@ -2036,6 +2045,13 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
     if is_dev_path(path) { return Err(FsError::PermissionDenied); }
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
+
+    // CoreFS does not yet support in-place truncate — reject cleanly.
+    if let Some((_mp, _rel, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        if mnt_fs_type == FsType::CoreFs {
+            return Err(FsError::PermissionDenied);
+        }
+    }
 
     // --- OverlayFS truncate ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
