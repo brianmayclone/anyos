@@ -21,6 +21,21 @@
 //! durch. [`BlockDeviceAdapter::trim`] ist daher ein No-op; `supports_trim`
 //! liefert `false`.
 //!
+//! # Block-Cache
+//!
+//! Die aktuelle Implementierung spricht `drivers::storage` direkt an. Die
+//! kernel-weite Block-Cache-Infrastruktur (`crate::fs::blockcache`) ist
+//! **nicht** angebunden — jedes CoreFS-Read übersetzt 1:1 in einen
+//! ATA/AHCI/NVMe-Request. Für die erste bootfähige Stufe ist das OK (der
+//! Native-Layout-Loader liest nur Header + Segment-Directory und cached
+//! intern im `DeviceVolume`), aber der "Hot-Path-Read" auf grossen Dateien
+//! wird darunter leiden.
+//!
+//! TODO (Phase 5.5 follow-up): Optional-Wrapper mit Read-Caching via
+//! `blockcache::read_through` und Write-through für `write_at`. Erfordert
+//! Block-Cache-API-Review (Lifetime der Leih-Buffer, Invalidierungs-Events
+//! beim `sync`).
+//!
 //! # Teststrategie
 //!
 //! Die realen `read_sectors_on_disk` / `write_sectors_on_disk`-Aufrufe wirken
