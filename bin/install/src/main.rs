@@ -36,21 +36,22 @@ struct DiskInfo {
 }
 
 fn list_block_devices() -> Vec<DiskInfo> {
-    let mut buf = [0u8; 32 * 32]; // max 32 devices
+    const ENTRY: usize = 64;
+    let mut buf = [0u8; ENTRY * 16]; // max 16 devices
     let count = sys::disk_list(&mut buf);
     let mut devices = Vec::new();
     for i in 0..count as usize {
-        let off = i * 32;
+        let off = i * ENTRY;
         let device_id = buf[off];
         let disk_id = buf[off + 1];
         let partition = buf[off + 2];
         let start_lba = u64::from_le_bytes([
-            buf[off+4], buf[off+5], buf[off+6], buf[off+7],
             buf[off+8], buf[off+9], buf[off+10], buf[off+11],
+            buf[off+12], buf[off+13], buf[off+14], buf[off+15],
         ]);
         let size_sectors = u64::from_le_bytes([
-            buf[off+12], buf[off+13], buf[off+14], buf[off+15],
             buf[off+16], buf[off+17], buf[off+18], buf[off+19],
+            buf[off+20], buf[off+21], buf[off+22], buf[off+23],
         ]);
         devices.push(DiskInfo { device_id, disk_id, partition, start_lba, size_sectors });
     }

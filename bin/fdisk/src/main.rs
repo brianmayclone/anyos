@@ -135,6 +135,7 @@ fn type_name(t: u8) -> &'static str {
         0x07 => "NTFS/exFAT",
         0x82 => "Linux swap",
         0x83 => "Linux",
+        0xCF => "CoreFS",
         0xEE => "GPT protective",
         0xEF => "EFI System",
         _ => "Unknown",
@@ -199,7 +200,27 @@ fn print_partitions(disk_id: u32) {
 
 /// List all block devices.
 fn list_all() {
-    let mut buf = [0u8; 32 * 16]; // up to 16 devices
+    // Entry size: 64 bytes per device (matches kernel's preferred format
+    // which includes the 40-byte device label after the 24-byte header).
+    const ENTRY: usize = 64;
+    const MAX_DEVS: usize = 16;
+
+    // First pass: find all whole-disk entries and rescan their partitions
+    // so that the device list is always up-to-date.
+    {
+        let mut tmp = [0u8; ENTRY * MAX_DEVS];
+        let n = anyos_std::sys::disk_list(&mut tmp);
+        for i in 0..n as usize {
+            let off = i * ENTRY;
+            let disk_id = tmp[off + 1];
+            let part = tmp[off + 2];
+            if part == 0xFF {
+                anyos_std::sys::partition_rescan(disk_id as u32);
+            }
+        }
+    }
+
+    let mut buf = [0u8; ENTRY * MAX_DEVS];
     let count = anyos_std::sys::disk_list(&mut buf);
 
     if count == 0 {
@@ -207,15 +228,15 @@ fn list_all() {
         return;
     }
 
-    println!("{:<10} {:<6} {:<6} {:>12} {:>12} {:>10}",
-        "Device", "Disk", "Part", "Start LBA", "Sectors", "Size");
-    println!("{}", "--------------------------------------------------------------");
+    println!("{:<10} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
+        "Device", "ID", "Disk", "Part", "Start LBA", "Sectors", "Size");
+    println!("{}", "--------------------------------------------------------------------");
 
     let mut seen_disks = [false; 8];
 
     for i in 0..count as usize {
-        let off = i * 32;
-        let _id = buf[off];
+        let off = i * ENTRY;
+        let id = buf[off];
         let disk_id = buf[off + 1];
         let part = buf[off + 2];
         let start_lba = read_u64_le(&buf, off + 8);
@@ -226,12 +247,12 @@ fn list_all() {
 
         if part == 0xFF {
             // Whole disk
-            println!("hd{:<7} {:<6} {:<6} {:>12} {:>12} {:>10}",
-                disk_id, disk_id, "-", start_lba, size_sectors, size_str);
+            println!("hd{:<7} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
+                disk_id, id, disk_id, "-", start_lba, size_sectors, size_str);
             seen_disks[disk_id as usize & 7] = true;
         } else {
-            println!("hd{}p{:<5} {:<6} {:<6} {:>12} {:>12} {:>10}",
-                disk_id, part + 1, disk_id, part + 1, start_lba, size_sectors, size_str);
+            println!("hd{}p{:<5} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
+                disk_id, part + 1, id, disk_id, part + 1, start_lba, size_sectors, size_str);
         }
     }
 
@@ -296,6 +317,7 @@ fn interactive(disk_id: u32) {
                 println!("  07  NTFS/exFAT");
                 println!("  82  Linux swap");
                 println!("  83  Linux");
+                println!("  CF  CoreFS");
                 println!("  EF  EFI System");
             }
             Some(b'w') => {
