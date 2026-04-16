@@ -352,10 +352,10 @@ pub fn mount_corefs(
         disk_id,
         partition_lba,
         partition_sectors,
-        /* read_only = */ true,
+        /* read_only = */ false,
     )
     .map_err(|e| crate::fs::corefs::corefs_to_fs_error(&e))?;
-    let driver = crate::fs::corefs::CoreFsDriver::mount_read_only(adapter)?;
+    let driver = crate::fs::corefs::CoreFsDriver::mount_writable(adapter)?;
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
     state.corefs_driver = Some(driver);
@@ -2922,10 +2922,13 @@ pub fn statfs(path: &str) -> Option<StatFs> {
                 })
             }
             FsType::DevFs | FsType::Smb | FsType::Overlay => None,
-            // CoreFS-Mount-Pfad ist aktuell read-only und liefert (noch) keine
-            // StatFs-Werte; sobald `CoreFsDriver` total/free bereitstellt, wird
-            // das hier befüllt.
-            FsType::CoreFs => None,
+            FsType::CoreFs => state.corefs_driver.as_ref().and_then(|driver| {
+                driver.statfs().ok().map(|(total, used, free)| StatFs {
+                    total_bytes: total,
+                    used_bytes: used,
+                    free_bytes: free,
+                })
+            }),
             // FUSE — statfs müsste via Request an den Daemon gehen; TODO Phase 5.7+.
             FsType::Fuse => None,
         };

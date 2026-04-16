@@ -134,7 +134,10 @@ impl CoreFsDriver {
     /// Schreibende `Filesystem`-Operationen geben [`FsError::PermissionDenied`]
     /// zurück; `flush` ist ein No-op.
     pub fn mount_read_only(device: BlockDeviceAdapter) -> Result<Self, FsError> {
-        let state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        let mut state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        // Frisch formatierte Volumes haben keinen Root-Inode. In-Memory
+        // synthesieren, damit lookup("/") / readdir funktionieren.
+        ensure_root_directory(&mut state);
         let next_id = compute_next_id(&state);
         Ok(Self {
             inner: Mutex::new(Inner {
@@ -184,15 +187,37 @@ impl CoreFsDriver {
             state.clean_unmount = true;
         }
 
+        // Frisch formatierte Volumes haben keinen Root-Inode — beim ersten
+        // Mount anlegen und direkt persistieren, damit auch Read-Only-Mounts
+        // derselben Disk danach funktionieren.
+        let root_added = ensure_root_directory(&mut state);
+
         let next_id = compute_next_id(&state);
-        Ok(Self {
+        let this = Self {
             inner: Mutex::new(Inner {
                 device,
                 state,
                 next_id,
                 read_only: false,
             }),
-        })
+        };
+        if root_added {
+            this.flush()?;
+        }
+        Ok(this)
+    }
+
+    /// Liefert (total_bytes, used_bytes, free_bytes) aus dem on-disk
+    /// Superblock. Wird vom VFS `statfs`-Pfad (z.B. für `df`) benutzt.
+    pub fn statfs(&self) -> Result<(u64, u64, u64), FsError> {
+        use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
+        let inner = self.inner.lock();
+        let info = corefs_core::storage::ondisk::volume::inspect(&inner.device)
+            .map_err(|e| corefs_to_fs_error(&e))?;
+        let total = info.total_blocks.saturating_mul(BLOCK_SIZE);
+        let free = info.free_blocks.saturating_mul(BLOCK_SIZE);
+        let used = total.saturating_sub(free);
+        Ok((total, used, free))
     }
 
     /// Commitet alle bisher gesammelten Mutationen atomar auf das Device.
@@ -429,6 +454,30 @@ impl CoreFsDriver {
         });
         Ok(CoreFsDriver::inode_u32_from_id(id))
     }
+}
+
+/// Stellt sicher, dass der `PersistedState` einen Root-Directory-Inode
+/// (`path = "/"`, `InodeKind::Directory`, Mode 0o755) enthält. Liefert
+/// `true`, wenn ein Root-Inode neu angelegt wurde.
+fn ensure_root_directory(state: &mut PersistedState) -> bool {
+    let has_root = state
+        .active_inodes
+        .iter()
+        .any(|i| i.path == "/" && matches!(i.kind, InodeKind::Directory));
+    if has_root {
+        return false;
+    }
+    let mut metadata = FileMetadata::default();
+    metadata.mode = 0o755;
+    let root = Inode::new_at(
+        InodeId(1),
+        InodeKind::Directory,
+        String::from("/"),
+        metadata,
+        Timestamp::EPOCH,
+    );
+    state.active_inodes.push(root);
+    true
 }
 
 fn compute_next_id(state: &PersistedState) -> u64 {
