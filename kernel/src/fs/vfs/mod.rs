@@ -1837,9 +1837,27 @@ pub fn delete(path: &str) -> Result<(), FsError> {
             }
             let (_p_attr, _p_u32, parent_u64) =
                 fuse_resolve_path(&session, session_id, parent_rel)?;
-            let req = fuse_proto::Request::Unlink {
-                parent: parent_u64,
-                name: String::from(name),
+            // Resolve the child entry to pick Unlink vs. Rmdir based on type.
+            let child_attr = {
+                let req = fuse_proto::Request::Lookup {
+                    parent: parent_u64,
+                    name: String::from(name),
+                };
+                match crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)? {
+                    fuse_proto::Reply::Lookup(a) => a,
+                    _ => return Err(FsError::IoError),
+                }
+            };
+            let req = if child_attr.kind == 2 {
+                fuse_proto::Request::Rmdir {
+                    parent: parent_u64,
+                    name: String::from(name),
+                }
+            } else {
+                fuse_proto::Request::Unlink {
+                    parent: parent_u64,
+                    name: String::from(name),
+                }
             };
             let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
             return Ok(());
@@ -1924,6 +1942,46 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
             let (old_parent_ino, _, _) = Filesystem::lookup(driver, &op)?;
             let (new_parent_ino, _, _) = Filesystem::lookup(driver, &np)?;
             return driver.rename_entry(old_parent_ino, &on, new_parent_ino, &nn);
+        }
+        (Some(_), Some(_)) => return Err(FsError::PermissionDenied), // cross-mount
+        (Some(_), None) | (None, Some(_)) => return Err(FsError::PermissionDenied),
+        _ => {}
+    }
+
+    // --- FUSE rename (same-mount only) -----------------------------------
+    let fuse_old = find_mnt_mount(old_path, &state.mount_points)
+        .filter(|(_, _, t)| *t == FsType::Fuse)
+        .map(|(mp, rel, _)| (String::from(mp), String::from(rel)));
+    let fuse_new = find_mnt_mount(new_path, &state.mount_points)
+        .filter(|(_, _, t)| *t == FsType::Fuse)
+        .map(|(mp, rel, _)| (String::from(mp), String::from(rel)));
+    match (fuse_old, fuse_new) {
+        (Some((mp_old, rel_old)), Some((mp_new, rel_new))) if mp_old == mp_new => {
+            let session_id = fuse_session_id_for(state, &mp_old).ok_or(FsError::IoError)?;
+            let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+            let (op_rel, on_owned) = {
+                let (p, n) = fuse_split_parent_name(&rel_old)?;
+                (String::from(p), String::from(n))
+            };
+            let (np_rel, nn_owned) = {
+                let (p, n) = fuse_split_parent_name(&rel_new)?;
+                (String::from(p), String::from(n))
+            };
+            if on_owned.is_empty() || nn_owned.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            let (_oa, _ou, old_parent_u64) =
+                fuse_resolve_path(&session, session_id, &op_rel)?;
+            let (_na, _nu, new_parent_u64) =
+                fuse_resolve_path(&session, session_id, &np_rel)?;
+            let req = fuse_proto::Request::Rename {
+                parent: old_parent_u64,
+                old_name: on_owned,
+                new_parent: new_parent_u64,
+                new_name: nn_owned,
+            };
+            let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+            return Ok(());
         }
         (Some(_), Some(_)) => return Err(FsError::PermissionDenied), // cross-mount
         (Some(_), None) | (None, Some(_)) => return Err(FsError::PermissionDenied),
@@ -2287,7 +2345,7 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // CoreFS truncate-to-zero via driver.
-    if let Some((_mp, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
@@ -2296,6 +2354,24 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
                 return Err(FsError::IsADirectory);
             }
             return driver.truncate_file(inode, 0);
+        }
+        if mnt_fs_type == FsType::Fuse {
+            let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
+            let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+            let (attr, _u32, ino_u64) =
+                fuse_resolve_path(&session, session_id, relative_path)?;
+            if attr.kind == 2 {
+                return Err(FsError::IsADirectory);
+            }
+            let req = fuse_proto::Request::Setattr {
+                ino: ino_u64,
+                attr: fuse_proto::PartialAttr {
+                    size: Some(0),
+                    ..Default::default()
+                },
+            };
+            let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+            return Ok(());
         }
     }
 
@@ -2610,7 +2686,7 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // CoreFS symlinks via driver.
-    if let Some((_mp, relative_path, mnt_fs_type)) = find_mnt_mount(link_path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(link_path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
@@ -2628,6 +2704,23 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
                 return Err(FsError::NotADirectory);
             }
             driver.create_symlink(parent_inode, name, target)?;
+            return Ok(());
+        }
+        if mnt_fs_type == FsType::Fuse {
+            let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
+            let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+            let (parent_rel, name) = fuse_split_parent_name(relative_path)?;
+            if name.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            let (_pa, _pu, parent_u64) =
+                fuse_resolve_path(&session, session_id, parent_rel)?;
+            let req = fuse_proto::Request::Symlink {
+                parent: parent_u64,
+                name: String::from(name),
+                target: String::from(target),
+            };
+            let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
             return Ok(());
         }
     }
@@ -2651,6 +2744,25 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
     if is_dev_path(path) { return Err(FsError::InvalidPath); }
     let vfs = VFS.lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
+
+    // FUSE mounts take precedence over legacy backends.
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        if mnt_fs_type == FsType::Fuse {
+            let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
+            let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+            let (attr, _u32, ino_u64) =
+                fuse_resolve_path(&session, session_id, relative_path)?;
+            if attr.kind != 3 {
+                return Err(FsError::InvalidPath);
+            }
+            let req = fuse_proto::Request::Readlink { ino: ino_u64 };
+            let reply = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+            return match reply {
+                fuse_proto::Reply::Readlink(t) => Ok(t),
+                _ => Err(FsError::IoError),
+            };
+        }
+    }
 
     if let Some(ref exfat) = state.exfat_fs {
         // Resolve all path components EXCEPT the final one
@@ -2686,12 +2798,27 @@ pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
 
-    if let Some((_mp, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
             let (inode, _, _) = Filesystem::lookup(driver, rel)?;
             return driver.set_mode(inode, mode as u32);
+        }
+        if mnt_fs_type == FsType::Fuse {
+            let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
+            let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+            let (_attr, _u32, ino_u64) =
+                fuse_resolve_path(&session, session_id, relative_path)?;
+            let req = fuse_proto::Request::Setattr {
+                ino: ino_u64,
+                attr: fuse_proto::PartialAttr {
+                    mode: Some(mode as u32),
+                    ..Default::default()
+                },
+            };
+            let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+            return Ok(());
         }
     }
 
@@ -2706,12 +2833,28 @@ pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
 
-    if let Some((_mp, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
             let (inode, _, _) = Filesystem::lookup(driver, rel)?;
             return driver.set_owner(inode, uid as u32, gid as u32);
+        }
+        if mnt_fs_type == FsType::Fuse {
+            let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
+            let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
+            let (_attr, _u32, ino_u64) =
+                fuse_resolve_path(&session, session_id, relative_path)?;
+            let req = fuse_proto::Request::Setattr {
+                ino: ino_u64,
+                attr: fuse_proto::PartialAttr {
+                    uid: Some(uid as u32),
+                    gid: Some(gid as u32),
+                    ..Default::default()
+                },
+            };
+            let _ = crate::fs::fuse::fuse_call(&session, &req).map_err(fuse_err)?;
+            return Ok(());
         }
     }
 
