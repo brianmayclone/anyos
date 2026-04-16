@@ -117,7 +117,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 
 | # | Name | Args | Return | Description |
 |---|------|------|--------|-------------|
-| 93 | `mount` | mount_path_ptr, device_path_ptr, fs_type | 0 or error | Mount filesystem. fs_type: 0=FAT, 1=ISO9660 |
+| 93 | `mount` | mount_path_ptr, device_path_ptr, fs_type | 0 or error | Mount filesystem. fs_type: 0=FAT/exFAT, 1=ISO9660, 4=NTFS, 5=SMB, 6=CoreFS. Device string is numeric device_id for FAT/exFAT/CoreFS, device path for ISO9660, or `//ip/share` for SMB. |
 | 94 | `umount` | mount_path_ptr | 0 or error | Unmount filesystem |
 | 95 | `list_mounts` | buf_ptr, buf_len | bytes_written | List mounted filesystems ("mount_path\tfs_type\n" format) |
 

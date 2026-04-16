@@ -2435,6 +2435,42 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
             crate::serial_verbose_println!("  Mounted SMB at '{}'", mount_path);
             Ok(())
         }
+        6 => {
+            // CoreFS mount by device ID
+            // device string = decimal device_id (from SYS_DISK_LIST)
+            let dev_id: u8 = device.parse::<u8>().map_err(|_| {
+                crate::serial_verbose_println!("  mount_fs: invalid device '{}' (expected numeric device_id)", device);
+                FsError::InvalidPath
+            })?;
+            let bdev = crate::drivers::storage::blockdev::get_device(dev_id)
+                .ok_or_else(|| {
+                    crate::serial_verbose_println!("  mount_fs: device {} not found", dev_id);
+                    FsError::NotFound
+                })?;
+            // Partition-only: whole-disk devices cannot be CoreFS-mounted
+            if bdev.partition.is_none() {
+                crate::serial_verbose_println!("  mount_fs: device {} is a whole disk, not a partition", dev_id);
+                return Err(FsError::InvalidPath);
+            }
+            let start_lba = bdev.start_lba as u32;
+            let size_sectors = bdev.size_sectors;
+            // Probe for CoreFS superblock magic
+            if !crate::fs::corefs::detect(bdev.disk_id, start_lba) {
+                crate::serial_verbose_println!(
+                    "  mount_fs: device {} (disk={} lba={}) has no CoreFS signature",
+                    dev_id, bdev.disk_id, start_lba
+                );
+                return Err(FsError::InvalidPath);
+            }
+            // Only one CoreFS volume can be mounted at a time
+            if state.corefs_driver.is_some() {
+                crate::serial_verbose_println!("  mount_fs: a CoreFS volume is already mounted");
+                return Err(FsError::AlreadyExists);
+            }
+            // Drop VFS lock — mount_corefs acquires it internally
+            drop(vfs);
+            mount_corefs(mount_path, bdev.disk_id, start_lba, size_sectors, dev_id as u32)
+        }
         _ => Err(FsError::InvalidPath),
     }
 }
@@ -2535,6 +2571,14 @@ pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
                 // Flush any pending metadata before dropping
                 let _ = state.mounted_exfat[idx].1.flush_metadata();
                 state.mounted_exfat.remove(idx);
+            }
+        }
+
+        // If it was CoreFS, flush pending writes and drop the driver
+        if mp.fs_type == FsType::CoreFs {
+            if let Some(driver) = state.corefs_driver.take() {
+                let _ = driver.flush();
+                crate::serial_verbose_println!("  Unmounted CoreFS '{}'", mount_path);
             }
         }
 

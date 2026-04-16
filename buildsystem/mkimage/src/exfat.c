@@ -863,10 +863,32 @@ static int read_host_symlink_target(const char *path, char *buf, size_t buf_size
  * Mirrors ExFatFormatter.ROOT_ONLY_DIRS.
  */
 static const char * const ROOT_ONLY_DIRS[] = {
-    "System/sbin",
     "System/users/perm",
     NULL
 };
+
+/*
+ * Executable-by-all directories: uid=0, gid=0, mode=0xF55 (rwxr-xr-x).
+ * Programs are world-readable/-executable but owned by root.
+ */
+static const char * const EXEC_ALL_DIRS[] = {
+    "System/sbin",
+    NULL
+};
+
+static int is_exec_all(const char *virt_path)
+{
+    int i;
+    for (i = 0; EXEC_ALL_DIRS[i] != NULL; ++i) {
+        const char *d   = EXEC_ALL_DIRS[i];
+        size_t      dlen = strlen(d);
+        if (strcmp(virt_path, d) == 0)
+            return 1;
+        if (strncmp(virt_path, d, dlen) == 0 && virt_path[dlen] == '/')
+            return 1;
+    }
+    return 0;
+}
 
 /*
  * Return 1 if virt_path matches or is under any ROOT_ONLY_DIRS entry.
@@ -964,7 +986,9 @@ static void exfat_populate_dir(ExFat *fs, const char *host_path,
         /* Determine permissions */
         uid  = 0;
         gid  = 0;
-        mode = is_root_only(child_virt) ? 0xF00 : 0xFFF;
+        mode = is_root_only(child_virt) ? 0xF00
+             : is_exec_all(child_virt)  ? 0xF55
+             : 0xFFF;
 
         if (S_ISDIR(st.st_mode)) {
             uint32_t dir_cluster = exfat_create_dir(fs, parent_cluster,
@@ -1479,7 +1503,9 @@ static void exfat_sync_dir(ExFat *fs, const char *host_path,
         if (lstat(full_path, &st) != 0) { free(names[i]); continue; }
 
         uint16_t uid = 0, gid = 0;
-        uint16_t mode = is_root_only(child_virt) ? 0xF00 : 0xFFF;
+        uint16_t mode = is_root_only(child_virt) ? 0xF00
+                      : is_exec_all(child_virt)  ? 0xF55
+                      : 0xFFF;
 
         ExFatNode *child = exfat_find_child(existing, names[i]);
 

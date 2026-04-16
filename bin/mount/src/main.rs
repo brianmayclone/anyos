@@ -3,10 +3,11 @@
 
 anyos_std::entry!(main);
 
-/// Filesystem type constants (must match kernel).
+/// Filesystem type constants (must match kernel mount_fs() dispatch).
 const FS_TYPE_FAT: u32 = 0;
 const FS_TYPE_ISO9660: u32 = 1;
 const FS_TYPE_SMB: u32 = 5;
+const FS_TYPE_COREFS: u32 = 6;
 
 fn main() {
 
@@ -15,7 +16,24 @@ fn main() {
     let args = anyos_std::process::args(&mut args_buf);
 
     if args.contains("--help") {
-        anyos_std::println!("mount - Mount a filesystem\n\nUsage: mount [DEVICE MOUNTPOINT]\n\nOptions:\n  -t TYPE        Filesystem type (fat, iso9660, smb)");
+        anyos_std::println!("mount - Mount a filesystem");
+        anyos_std::println!("");
+        anyos_std::println!("Usage: mount [-t TYPE] DEVICE MOUNTPOINT");
+        anyos_std::println!("       mount                (list mounts)");
+        anyos_std::println!("");
+        anyos_std::println!("Options:");
+        anyos_std::println!("  -t TYPE   Filesystem type:");
+        anyos_std::println!("              fat, vfat     FAT/exFAT filesystem");
+        anyos_std::println!("              iso9660, iso  ISO 9660 (CD-ROM)");
+        anyos_std::println!("              smb, cifs     SMB/CIFS network share");
+        anyos_std::println!("              corefs        CoreFS filesystem");
+        anyos_std::println!("");
+        anyos_std::println!("Examples:");
+        anyos_std::println!("  mount -t corefs 3 /mnt/data     Mount CoreFS partition (device 3)");
+        anyos_std::println!("  mount -t fat 2 /mnt/usb         Mount FAT partition (device 2)");
+        anyos_std::println!("  mount -t smb //10.0.0.1/share /mnt/share");
+        anyos_std::println!("");
+        anyos_std::println!("Device IDs can be found with 'lsblk' or 'sysinfo --disks'.");
         return;
     }
 
@@ -90,17 +108,19 @@ fn main() {
         _ => {
             anyos_std::println!("Usage: mount [-t fstype] device mountpoint");
             anyos_std::println!("       mount                (list mounts)");
-            anyos_std::println!("Types: fat, iso9660, smb");
+            anyos_std::println!("Types: fat, exfat, iso9660, smb, corefs");
             return;
         }
     };
 
     let fs_type = match fs_type_str {
-        Some("fat") | Some("fat16") | Some("vfat") => FS_TYPE_FAT,
+        Some("fat") | Some("fat16") | Some("vfat") | Some("exfat") => FS_TYPE_FAT,
         Some("iso9660") | Some("iso") | Some("cdrom") => FS_TYPE_ISO9660,
         Some("smb") | Some("cifs") | Some("samba") => FS_TYPE_SMB,
+        Some("corefs") => FS_TYPE_COREFS,
         Some(other) => {
             anyos_std::println!("mount: unknown filesystem type '{}'", other);
+            anyos_std::println!("Supported types: fat, exfat, iso9660, smb, corefs");
             return;
         }
         None => {
@@ -111,6 +131,7 @@ fn main() {
                 FS_TYPE_SMB
             } else {
                 anyos_std::println!("mount: specify filesystem type with -t");
+                anyos_std::println!("Supported types: fat, exfat, iso9660, smb, corefs");
                 return;
             }
         }
