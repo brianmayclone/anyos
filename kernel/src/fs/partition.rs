@@ -28,6 +28,7 @@ pub enum PartitionType {
     LinuxNative,
     GptEsp,
     GptBasicData,
+    CoreFs,      // MBR type 0xCF
     GptLinuxFs,
     Unknown(u8),
 }
@@ -43,6 +44,7 @@ impl PartitionType {
             Self::NtfsExfat => "NTFS/exFAT",
             Self::LinuxSwap => "Linux swap",
             Self::LinuxNative => "Linux",
+            Self::CoreFs => "CoreFS",
             Self::GptEsp => "EFI System",
             Self::GptBasicData => "GPT Basic Data",
             Self::GptLinuxFs => "GPT Linux",
@@ -110,6 +112,7 @@ fn mbr_type(t: u8) -> PartitionType {
         0x07 => PartitionType::NtfsExfat,
         0x82 => PartitionType::LinuxSwap,
         0x83 => PartitionType::LinuxNative,
+        0xCF => PartitionType::CoreFs,
         other => PartitionType::Unknown(other),
     }
 }

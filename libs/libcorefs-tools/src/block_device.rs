@@ -143,6 +143,18 @@ impl AnyOsBlockDevice<SyscallBackend> {
         Self::new(SyscallBackend, device_id, 0, capacity_bytes, SECTOR_SIZE_512)
     }
 
+    /// Open a device, querying its capacity from the kernel via
+    /// [`anyos_std::sys::disk_list`].  Returns an error when the
+    /// device id is not found.
+    pub fn open_auto(device_id: u32) -> CoreFsResult<Self> {
+        let cap = query_device_capacity(device_id).ok_or_else(|| {
+            CoreFsError::InvalidInput(format!(
+                "device {device_id} not found in disk_list"
+            ))
+        })?;
+        Self::new(SyscallBackend, device_id, 0, cap, SECTOR_SIZE_512)
+    }
+
     /// Open a partition view (byte offset 0 on the FS side maps to
     /// `partition_lba_offset` on the disk).
     pub fn open_partition(
@@ -158,6 +170,53 @@ impl AnyOsBlockDevice<SyscallBackend> {
             SECTOR_SIZE_512,
         )
     }
+}
+
+/// Query the capacity (in bytes) of a block device by scanning the
+/// kernel's device list.  Returns `None` when no device with
+/// `device_id` is found.
+///
+/// The entry format returned by [`anyos_std::sys::disk_list`] is:
+/// ```text
+///   [0]      id (u8)
+///   [1]      disk_id (u8)
+///   [2]      partition (0xFF = whole disk, else index)
+///   [3..8]   reserved
+///   [8..16]  start_lba (u64 LE)
+///   [16..24] size_sectors (u64 LE)
+///   [24..32] reserved
+/// ```
+#[cfg(target_os = "none")]
+pub fn query_device_capacity(device_id: u32) -> Option<u64> {
+    // 64 bytes per entry (kernel sends 64-byte entries when buffer is
+    // large enough, which includes the 40-byte device label).
+    let mut buf = [0u8; 64 * 16];
+    let count = anyos_std::sys::disk_list(&mut buf);
+    if count == 0 || count == u32::MAX {
+        return None;
+    }
+    let entry_size: usize = 64;
+    for i in 0..count as usize {
+        let base = i * entry_size;
+        if base + entry_size > buf.len() {
+            break;
+        }
+        let id = buf[base] as u32;
+        if id == device_id {
+            let size_sectors = u64::from_le_bytes([
+                buf[base + 16],
+                buf[base + 17],
+                buf[base + 18],
+                buf[base + 19],
+                buf[base + 20],
+                buf[base + 21],
+                buf[base + 22],
+                buf[base + 23],
+            ]);
+            return Some(size_sectors * SECTOR_SIZE_512 as u64);
+        }
+    }
+    None
 }
 
 impl<B: DiskBackend> BlockDevice for AnyOsBlockDevice<B> {
