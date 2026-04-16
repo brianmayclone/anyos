@@ -116,8 +116,17 @@ IRQ 18, 50      ; Reserved
 IRQ 19, 51      ; Reserved
 IRQ 20, 52      ; IPI: TLB shootdown
 IRQ 21, 53      ; IPI: Halt
-IRQ 22, 54      ; Reserved
-IRQ 23, 55      ; LAPIC Spurious
+IRQ 22, 54      ; MSI vector base (first PCI MSI slot)
+IRQ 23, 55      ; LAPIC Spurious / second MSI slot
+
+; Additional MSI slots (vectors 56-87) — all route through irq_common_stub
+; so PCI MSI devices beyond the first two don't fault with #GP (missing IDT
+; gate) the moment they try to fire an interrupt.
+%assign n 24
+%rep 32
+    IRQ n, (32 + n)
+    %assign n n+1
+%endrep
 
 ; =============================================================================
 ; Common ISR stub - saves all GPRs, calls Rust isr_handler, restores state

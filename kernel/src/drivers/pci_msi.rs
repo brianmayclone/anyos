@@ -61,8 +61,12 @@ fn msi_data(vector: u8) -> u32 {
 // ── MSI Vector Allocator ────────────────────────────────────────────────────
 
 /// MSI vectors start at 54 (after LAPIC timer=48, IPI vectors 52-53).
+/// The upper bound matches the IDT gates + asm stubs defined in
+/// `kernel/asm/x86/interrupts.asm` and `kernel/src/arch/x86/idt.rs`; vectors
+/// beyond that range have no IDT entry and would fault with #GP on delivery.
+/// Bump all three when adding more slots.
 const MSI_VECTOR_BASE: u8 = 54;
-const MSI_VECTOR_MAX: u8 = 254; // 255 = spurious
+const MSI_VECTOR_MAX: u8 = 87;
 const MSI_VECTOR_COUNT: usize = (MSI_VECTOR_MAX - MSI_VECTOR_BASE + 1) as usize;
 
 /// Bitmap tracking allocated MSI vectors (4 × 64 = 256 bits, more than enough).

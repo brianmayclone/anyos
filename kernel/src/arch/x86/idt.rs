@@ -219,6 +219,15 @@ extern "C" {
     // LAPIC / APIC vectors
     fn irq16(); fn irq17(); fn irq18(); fn irq19();
     fn irq20(); fn irq21(); fn irq22(); fn irq23();
+    // PCI MSI slots (vectors 56-87)
+    fn irq24(); fn irq25(); fn irq26(); fn irq27();
+    fn irq28(); fn irq29(); fn irq30(); fn irq31();
+    fn irq32(); fn irq33(); fn irq34(); fn irq35();
+    fn irq36(); fn irq37(); fn irq38(); fn irq39();
+    fn irq40(); fn irq41(); fn irq42(); fn irq43();
+    fn irq44(); fn irq45(); fn irq46(); fn irq47();
+    fn irq48(); fn irq49(); fn irq50(); fn irq51();
+    fn irq52(); fn irq53(); fn irq54(); fn irq55();
 
     fn syscall_entry();
 }
@@ -285,7 +294,40 @@ pub fn init() {
     set_gate(52, irq20, KERNEL_CODE_SEG, GATE_INTERRUPT); // IPI: TLB
     set_gate(53, irq21, KERNEL_CODE_SEG, GATE_INTERRUPT); // IPI: Halt
     set_gate(54, irq22, KERNEL_CODE_SEG, GATE_INTERRUPT);
-    set_gate(55, irq23, KERNEL_CODE_SEG, GATE_INTERRUPT); // Spurious
+    set_gate(55, irq23, KERNEL_CODE_SEG, GATE_INTERRUPT); // Spurious / MSI
+    // PCI MSI slots (vectors 56-87)
+    set_gate(56, irq24, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(57, irq25, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(58, irq26, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(59, irq27, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(60, irq28, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(61, irq29, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(62, irq30, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(63, irq31, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(64, irq32, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(65, irq33, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(66, irq34, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(67, irq35, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(68, irq36, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(69, irq37, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(70, irq38, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(71, irq39, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(72, irq40, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(73, irq41, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(74, irq42, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(75, irq43, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(76, irq44, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(77, irq45, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(78, irq46, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(79, irq47, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(80, irq48, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(81, irq49, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(82, irq50, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(83, irq51, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(84, irq52, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(85, irq53, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(86, irq54, KERNEL_CODE_SEG, GATE_INTERRUPT);
+    set_gate(87, irq55, KERNEL_CODE_SEG, GATE_INTERRUPT);
 
     // Syscall: int 0x80 - DPL=3 trap gate so Ring 3 code can invoke it
     set_gate(0x80, syscall_entry, KERNEL_CODE_SEG, GATE_TRAP_DPL3);
