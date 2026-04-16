@@ -6,7 +6,7 @@ anyos_std::entry!(main);
 fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
-    let args = anyos_std::args::parse(raw, b"sf");
+    let args = anyos_std::args::parse(raw, b"");
 
     if raw.contains("--help") {
         anyos_std::println!("ln - Create links between files");

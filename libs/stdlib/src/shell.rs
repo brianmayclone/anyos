@@ -280,6 +280,14 @@ pub fn resolve_cmd_path(cmd: &str, cwd: &str) -> String {
         if let Some(p) = resolve_from_applications(cmd) {
             return p;
         }
+        // Check /System/sbin/ for admin tools (fdisk, mkfs.corefs, etc.)
+        let sbin_path = format!("/System/sbin/{}", cmd);
+        {
+            let mut st = [0u32; 7];
+            if crate::fs::stat(&sbin_path, &mut st) == 0 {
+                return sbin_path;
+            }
+        }
         format!("/System/bin/{}", cmd)
     }
 }
