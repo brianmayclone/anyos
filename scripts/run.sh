@@ -116,6 +116,7 @@ WIFI_FLAGS=""
 WIFI_LABEL=""
 TEMPDISK=false
 DISK_SPECS=()
+EXPECT_DISK=false
 VMWARE_WS=false
 ARM64_MODE=false
 HEADLESS=false
@@ -198,6 +199,12 @@ for arg in "$@"; do
         continue
     fi
 
+    if [ "$EXPECT_DISK" = true ]; then
+        EXPECT_DISK=false
+        DISK_SPECS+=("$arg")
+        continue
+    fi
+
     case "$arg" in
         --vmware-ws)
             VMWARE_WS=true
@@ -238,12 +245,7 @@ for arg in "$@"; do
             TEMPDISK=true
             ;;
         --disk)
-            if [ -z "$2" ]; then
-                echo "Error: --disk requires an argument (PATH[:SIZE])"
-                exit 1
-            fi
-            DISK_SPECS+=("$2")
-            shift
+            EXPECT_DISK=true
             ;;
         --audio)
             if [ "$(uname -s)" = "Darwin" ]; then
@@ -344,6 +346,11 @@ fi
 
 if [ "$EXPECT_KBD" = true ]; then
     echo "Error: --kbd requires a layout name (us, de, ch, fr, pl)"
+    exit 1
+fi
+
+if [ "$EXPECT_DISK" = true ]; then
+    echo "Error: --disk requires an argument (PATH[:SIZE], e.g. data.img:4G)"
     exit 1
 fi
 
