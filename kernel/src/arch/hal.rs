@@ -213,8 +213,47 @@ pub fn delay_ms(ms: u64) {
 #[cfg(target_arch = "x86_64")]
 #[inline]
 pub fn set_kernel_stack_for_cpu(cpu: usize, stack_top: u64) {
+    // RBP corruption diagnostic — a Page Fault at addr ~0xFFFFFFFFFFFFFFCA
+    // was traced to RBP being clobbered to the cpu_id value (2) somewhere
+    // around these two calls, even though both save/restore RBP correctly.
+    // This guard captures RBP before/after each call and panics immediately
+    // if it changes, narrowing the culprit to one of the two callees (or
+    // an external agent such as NMI/MCE).
+    let rbp_before: u64;
+    unsafe { core::arch::asm!("mov {}, rbp", out(reg) rbp_before, options(nomem, nostack)); }
+
     crate::arch::x86::tss::set_kernel_stack_for_cpu(cpu, stack_top);
+
+    let rbp_mid: u64;
+    unsafe { core::arch::asm!("mov {}, rbp", out(reg) rbp_mid, options(nomem, nostack)); }
+    if rbp_before != rbp_mid {
+        // Use raw serial — we may be inside the scheduler with the lock held.
+        unsafe {
+            use crate::arch::x86::port::{inb, outb};
+            let msg = b"\r\n!!! RBP CLOBBERED by tss::set_kernel_stack_for_cpu\r\n";
+            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+        }
+        panic!(
+            "RBP clobbered by tss::set_kernel_stack_for_cpu: before={:#x} after={:#x} cpu={}",
+            rbp_before, rbp_mid, cpu,
+        );
+    }
+
     crate::arch::x86::syscall_msr::set_kernel_rsp(cpu, stack_top);
+
+    let rbp_after: u64;
+    unsafe { core::arch::asm!("mov {}, rbp", out(reg) rbp_after, options(nomem, nostack)); }
+    if rbp_before != rbp_after {
+        unsafe {
+            use crate::arch::x86::port::{inb, outb};
+            let msg = b"\r\n!!! RBP CLOBBERED by syscall_msr::set_kernel_rsp\r\n";
+            for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+        }
+        panic!(
+            "RBP clobbered by syscall_msr::set_kernel_rsp: before={:#x} after={:#x} cpu={}",
+            rbp_before, rbp_after, cpu,
+        );
+    }
 }
 
 #[cfg(target_arch = "aarch64")]

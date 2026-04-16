@@ -358,15 +358,24 @@ pub fn run_once() -> u32 {
                             }
                         }
                         compositor::EVT_FOCUS_LOST => {
-                            // Another window gained focus → dismiss popup
-                            // But NOT for AutoComplete popups — they intentionally
-                            // keep focus on the main window's text field.
-                            let is_ac = st
+                            // Another window gained focus → dismiss popup.
+                            // But NOT for popups owned by an input control
+                            // (AutoComplete, DropDown, ComboBox): focus_by_tid
+                            // deliberately keeps focus on the main window after
+                            // popup creation, which generates a spurious
+                            // FOCUS_LOST on the popup.  These popups are
+                            // dismissed via click-outside (line ~409) or item
+                            // selection instead.
+                            let has_owner = st
                                 .popup
                                 .as_ref()
-                                .map(|p| p.owner_autocomplete.is_some())
+                                .map(|p| {
+                                    p.owner_autocomplete.is_some()
+                                        || p.owner_dropdown.is_some()
+                                        || p.owner_combobox.is_some()
+                                })
                                 .unwrap_or(false);
-                            if !is_ac {
+                            if !has_owner {
                                 dismiss_popup(st);
                             }
                         }
