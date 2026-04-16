@@ -816,9 +816,86 @@ fn main() {
                     finished_fg.close_pipes();
                 }
 
-                // Show prompt again
-                redraw_prompt_line(&mut buf, &shell);
-                dirty = true;
+                // Resume pending command chain (&&, ||, ;) if present
+                if !shell.pending_chain.is_empty() {
+                    shell.chain_last_success = status == 0;
+                    let chain_actions = {
+                        let mut out = BufOutput { buf: &mut buf };
+                        shell.resume_pending_chain(&mut out, &mut app_builtins)
+                    };
+                    let mut chain_needs_fg = false;
+                    for action in chain_actions {
+                        match action {
+                            libshellcommon::interpreter::ShellAction::Done => {}
+                            libshellcommon::interpreter::ShellAction::RunForeground { path, args, command, redirect, input_data } => {
+                                let pipe_name = format!("shell:fg:{}:{}", process::getpid(), shell.pipe_counter);
+                                shell.pipe_counter += 1;
+                                let stdout_pipe = ipc::pipe_create(&pipe_name);
+                                let stdin_name = format!("shell:fgin:{}:{}", process::getpid(), shell.pipe_counter);
+                                shell.pipe_counter += 1;
+                                let stdin_pipe = ipc::pipe_create(&stdin_name);
+                                if let Some(ref input) = input_data {
+                                    ipc::pipe_write(stdin_pipe, input.as_bytes());
+                                }
+                                let tid = process::spawn_piped_full(&path, &args, stdout_pipe, stdin_pipe);
+                                if tid != u32::MAX {
+                                    if let Some(redir) = redirect {
+                                        process::waitpid(tid);
+                                        let mut out_buf2 = [0u8; 4096];
+                                        let mut captured = String::new();
+                                        loop {
+                                            let n = ipc::pipe_read(stdout_pipe, &mut out_buf2);
+                                            if n == 0 || n == u32::MAX { break; }
+                                            if let Ok(s) = core::str::from_utf8(&out_buf2[..n as usize]) {
+                                                captured.push_str(s);
+                                            }
+                                        }
+                                        ipc::pipe_close(stdout_pipe);
+                                        ipc::pipe_close(stdin_pipe);
+                                        let mut redir = redir;
+                                        anyos_std::shell::write_redirect(&mut redir, &captured);
+                                    } else {
+                                        fg_proc = Some(ForegroundProcess {
+                                            tid, stdout_pipe, stdin_pipe,
+                                            command: String::from(command.as_str()),
+                                            extra_pipes: Vec::new(),
+                                        });
+                                        chain_needs_fg = true;
+                                    }
+                                } else {
+                                    let msg = format!("shell: {}: command not found\n", command);
+                                    buf.feed(msg.as_bytes());
+                                    ipc::pipe_close(stdout_pipe);
+                                    ipc::pipe_close(stdin_pipe);
+                                }
+                            }
+                            libshellcommon::interpreter::ShellAction::RunPipeline { line, redirect } => {
+                                if let Some(result) = anyos_std::shell::run_pipeline(&line, &shell.cwd, &mut shell.pipe_counter) {
+                                    fg_proc = Some(ForegroundProcess {
+                                        tid: result.last_tid,
+                                        stdout_pipe: result.display_pipe,
+                                        stdin_pipe: 0,
+                                        command: String::from(line.as_str()),
+                                        extra_pipes: result.extra_pipes,
+                                    });
+                                    chain_needs_fg = true;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    if chain_needs_fg {
+                        dirty = true;
+                        // Don't show prompt — wait for the next fg process
+                    } else {
+                        redraw_prompt_line(&mut buf, &shell);
+                        dirty = true;
+                    }
+                } else {
+                    // Show prompt again
+                    redraw_prompt_line(&mut buf, &shell);
+                    dirty = true;
+                }
             }
         }
 

@@ -67,7 +67,7 @@ fn actions_one(a: ShellAction) -> Vec<ShellAction> {
 // ─── Logical Operators ──────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-enum LogicalOp {
+pub enum LogicalOp {
     None,
     And,
     Or,
@@ -162,18 +162,29 @@ pub struct ShellState {
     pub bg_jobs: Vec<BackgroundJob>,
     pub next_job_id: u32,
     pub pipe_counter: u32,
+    /// When true, execute() skips history push (used by chain execution).
+    suppress_history: bool,
+    /// Remaining commands from a `&&`/`||`/`;` chain waiting for the current
+    /// foreground process to finish before continuing.
+    pub pending_chain: Vec<(LogicalOp, String)>,
+    pub chain_last_success: bool,
 }
 
 impl ShellState {
     pub fn new() -> Self {
+        let mut history = History::new();
+        history.load();
         ShellState {
             line: InputLine::new(),
-            history: History::new(),
+            history,
             cwd: String::from("/"),
             aliases: Vec::new(),
             bg_jobs: Vec::new(),
             next_job_id: 1,
             pipe_counter: 0,
+            suppress_history: false,
+            pending_chain: Vec::new(),
+            chain_last_success: true,
         }
     }
 
@@ -223,8 +234,9 @@ impl ShellState {
         let raw_line = String::from(self.line.text.trim_matches(|c: char| c == ' '));
         out.write_char('\n');
 
-        if !raw_line.is_empty() {
+        if !raw_line.is_empty() && !self.suppress_history {
             self.history.push(&raw_line);
+            self.history.save();
         }
         self.line.clear();
         self.history.reset_index();
@@ -234,36 +246,13 @@ impl ShellState {
         }
 
         // Logical operators (&&, ||, ;)
+        // Save the full chain into pending_chain and resume it.  If an
+        // external command is encountered, the remaining chain is kept in
+        // pending_chain for the caller to resume after the process exits.
         if let Some(chain) = split_logical_operators(&raw_line) {
-            let mut actions = Vec::new();
-            let mut last_success = true;
-            for (op, cmd_str) in chain {
-                let should_run = match op {
-                    LogicalOp::None | LogicalOp::Semicolon => true,
-                    LogicalOp::And => last_success,
-                    LogicalOp::Or => !last_success,
-                };
-                if !should_run { continue; }
-                let cmd_str = String::from(cmd_str.trim());
-                if cmd_str.is_empty() { continue; }
-                let saved_input = core::mem::replace(&mut self.line.text, cmd_str);
-                let saved_cursor = self.line.cursor;
-                self.line.cursor_end();
-                let sub_actions = self.execute(out, app);
-                self.line.text = saved_input;
-                self.line.cursor = saved_cursor;
-                // If sub-action requires caller intervention, return immediately
-                for a in &sub_actions {
-                    match a {
-                        ShellAction::Done => { last_success = true; }
-                        _ => {
-                            actions.extend(sub_actions);
-                            return actions;
-                        }
-                    }
-                }
-            }
-            return actions;
+            self.pending_chain = chain;
+            self.chain_last_success = true;
+            return self.resume_pending_chain(out, app);
         }
 
         let result = self.execute_single(&raw_line, out, app);
@@ -272,6 +261,47 @@ impl ShellState {
         self.check_bg_jobs(out);
 
         result
+    }
+
+    /// Resume execution of a pending `&&`/`||`/`;` chain.  Drains commands
+    /// until the chain is exhausted or an external command is encountered
+    /// (returned to the caller; the remaining chain stays for later resumption).
+    pub fn resume_pending_chain(&mut self, out: &mut dyn ShellOutput, app: &mut dyn AppBuiltins) -> Vec<ShellAction> {
+        while !self.pending_chain.is_empty() {
+            let (op, cmd_str) = self.pending_chain.remove(0);
+            let should_run = match op {
+                LogicalOp::None | LogicalOp::Semicolon => true,
+                LogicalOp::And => self.chain_last_success,
+                LogicalOp::Or => !self.chain_last_success,
+            };
+            if !should_run { continue; }
+            let cmd_str = String::from(cmd_str.trim());
+            if cmd_str.is_empty() { continue; }
+
+            // Execute via execute() with history suppressed
+            let saved_input = core::mem::replace(&mut self.line.text, cmd_str);
+            let saved_cursor = self.line.cursor;
+            self.line.cursor_end();
+            self.suppress_history = true;
+            let sub_actions = self.execute(out, app);
+            self.suppress_history = false;
+            self.line.text = saved_input;
+            self.line.cursor = saved_cursor;
+
+            // Check if an external command was returned
+            let mut has_external = false;
+            for a in &sub_actions {
+                match a {
+                    ShellAction::Done => { self.chain_last_success = true; }
+                    _ => { has_external = true; break; }
+                }
+            }
+            if has_external {
+                // External command — return it. Remaining chain is in pending_chain.
+                return sub_actions;
+            }
+        }
+        actions_one(ShellAction::Done)
     }
 
     /// Execute a single command (no logical operators).

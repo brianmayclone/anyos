@@ -26,7 +26,10 @@ pub const BUILTIN_COMMANDS: &[&str] = &[
 ];
 
 /// Maximum history entries before oldest are dropped.
-pub const HISTORY_MAX: usize = 64;
+pub const HISTORY_MAX: usize = 500;
+
+/// Default history file name (relative to $HOME).
+const HISTORY_FILENAME: &str = ".anysh_history";
 
 // ─── File / Directory Helpers ───────────────────────────────────────────────
 
@@ -434,6 +437,59 @@ impl History {
     /// Access all entries (e.g. for a `history` builtin command).
     pub fn entries(&self) -> &[String] {
         &self.entries
+    }
+
+    /// Return the path to the history file: `$HOME/.anysh_history`.
+    fn history_path() -> Option<String> {
+        let mut buf = [0u8; 128];
+        let len = anyos_std::env::get("HOME", &mut buf);
+        if len == u32::MAX {
+            return None;
+        }
+        let home = core::str::from_utf8(&buf[..len as usize]).ok()?;
+        Some(format!("{}/{}", home, HISTORY_FILENAME))
+    }
+
+    /// Load history from `$HOME/.anysh_history`.
+    pub fn load(&mut self) {
+        let path = match Self::history_path() {
+            Some(p) => p,
+            None => return,
+        };
+        let mut buf = [0u8; 32768];
+        let n = read_file_to_buf(&path, &mut buf);
+        if n == 0 {
+            return;
+        }
+        let text = match core::str::from_utf8(&buf[..n]) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        for line in text.split('\n') {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                self.entries.push(String::from(trimmed));
+            }
+        }
+        // Keep only the last max_entries
+        while self.entries.len() > self.max_entries {
+            self.entries.remove(0);
+        }
+        self.index = None;
+    }
+
+    /// Save history to `$HOME/.anysh_history`.
+    pub fn save(&self) {
+        let path = match Self::history_path() {
+            Some(p) => p,
+            None => return,
+        };
+        let mut out = String::new();
+        for entry in &self.entries {
+            out.push_str(entry.as_str());
+            out.push('\n');
+        }
+        let _ = fs::write_bytes(&path, out.as_bytes());
     }
 }
 

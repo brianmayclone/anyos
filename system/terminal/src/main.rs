@@ -2789,18 +2789,29 @@ struct Shell {
     next_job_id: u32,
     /// Monotone counter for unique pipe names (shared with anyos_std::shell::run_pipeline).
     pipe_counter: u32,
+    /// When true, submit() skips history push (used by chain execution).
+    suppress_history: bool,
+    /// Remaining commands from a `&&`/`||`/`;` chain waiting for the current
+    /// foreground process to finish before continuing.
+    pending_chain: Vec<(LogicalOp, String)>,
+    chain_last_success: bool,
 }
 
 impl Shell {
     fn new() -> Self {
+        let mut history = libshellcommon::History::new();
+        history.load();
         Shell {
             line: libshellcommon::InputLine::new(),
-            history: libshellcommon::History::new(),
+            history,
             cwd: String::from("/"),
             aliases: Vec::new(),
             bg_jobs: Vec::new(),
             next_job_id: 1,
             pipe_counter: 0,
+            suppress_history: false,
+            pending_chain: Vec::new(),
+            chain_last_success: true,
         }
     }
 
@@ -2869,8 +2880,9 @@ impl Shell {
         let raw_line = self.line.text.trim_matches(|c: char| c == ' ').to_string();
         buf.write_char('\n');
 
-        if !raw_line.is_empty() {
+        if !raw_line.is_empty() && !self.suppress_history {
             self.history.push(&raw_line);
+            self.history.save();
         }
 
         self.line.clear();
@@ -2881,34 +2893,16 @@ impl Shell {
         }
 
         // Check for logical operators (&&, ||, ;)
-        // Split on these and execute sequentially
+        // Split and execute sequentially. If an external command is encountered,
+        // save the remaining chain in pending_chain and return — poll_fg_processes
+        // will resume the chain when the foreground process exits.
         if let Some(chain) = split_logical_operators(&raw_line) {
-            let mut last_success = true;
-            for (op, cmd_str) in chain {
-                let should_run = match op {
-                    LogicalOp::None | LogicalOp::Semicolon => true,
-                    LogicalOp::And => last_success,
-                    LogicalOp::Or => !last_success,
-                };
-                if !should_run { continue; }
-                let cmd_str = cmd_str.trim().to_string();
-                if cmd_str.is_empty() { continue; }
-                // Execute each sub-command via recursive submit
-                let saved_input = core::mem::replace(&mut self.line.text, cmd_str);
-                let saved_cursor = self.line.cursor;
-                self.line.cursor_end();
-                let (cont, fg, su) = self.submit(buf);
-                self.line.text = saved_input;
-                self.line.cursor = saved_cursor;
-                // For now, assume builtins succeed. External commands we can't chain.
-                if fg.is_some() || su.is_some() {
-                    // External process — can't chain further, return it
-                    return (cont, fg, su);
-                }
-                if !cont { return (false, None, None); }
-                last_success = true; // builtins always succeed for now
-            }
-            return (true, None, None);
+            self.pending_chain.clear();
+            self.chain_last_success = true;
+            // Feed the full chain into pending_chain and fall through to
+            // resume_pending_chain() which will execute the first command.
+            self.pending_chain = chain;
+            return self.resume_pending_chain(buf);
         }
 
         // Expand aliases: replace first word if it matches an alias
@@ -3241,6 +3235,79 @@ impl Shell {
         }
 
         (true, None, None)
+    }
+
+    /// Resume execution of a pending `&&`/`||`/`;` chain.  Drains commands from
+    /// `self.pending_chain` until either the chain is exhausted (returns no
+    /// foreground process) or an external command needs to run (returns the
+    /// `ForegroundProcess`; the remaining chain stays in `pending_chain` for
+    /// `poll_fg_processes` to resume later).
+    fn resume_pending_chain(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
+        while !self.pending_chain.is_empty() {
+            let (op, cmd_str) = self.pending_chain.remove(0);
+            let should_run = match op {
+                LogicalOp::None | LogicalOp::Semicolon => true,
+                LogicalOp::And => self.chain_last_success,
+                LogicalOp::Or => !self.chain_last_success,
+            };
+            if !should_run { continue; }
+            let cmd_str = cmd_str.trim().to_string();
+            if cmd_str.is_empty() { continue; }
+
+            // Execute the sub-command directly (not via recursive submit, to
+            // avoid polluting the history with partial commands).
+            let saved_input = core::mem::replace(&mut self.line.text, cmd_str);
+            let saved_cursor = self.line.cursor;
+            self.line.cursor_end();
+            let raw_line = self.line.text.trim_matches(|c: char| c == ' ').to_string();
+            self.line.clear();
+
+            // Run the single command via the main submit code path, but we
+            // re-use execute_single_raw which is the part of submit after the
+            // chain check.  For simplicity, just do a full submit — but mark
+            // that we're inside a chain so it doesn't re-push to history.
+            // Instead, we inline the execution directly.
+            let result = self.execute_single_command(&raw_line, buf);
+            self.line.text = saved_input;
+            self.line.cursor = saved_cursor;
+
+            match result {
+                (_, Some(fg), su) => {
+                    // External process — return it. pending_chain still has the
+                    // remaining commands, which poll_fg_processes will resume.
+                    return (true, Some(fg), su);
+                }
+                (false, None, _) => {
+                    // exit command
+                    self.pending_chain.clear();
+                    return (false, None, None);
+                }
+                (true, None, Some(su)) => {
+                    // su — can't chain further
+                    self.pending_chain.clear();
+                    return (true, None, Some(su));
+                }
+                (true, None, None) => {
+                    // Builtin completed — continue chain
+                    self.chain_last_success = true;
+                }
+            }
+        }
+        (true, None, None)
+    }
+
+    /// Execute a single command by delegating to submit() with history suppressed.
+    /// Used by resume_pending_chain to avoid duplicating all builtin handling.
+    fn execute_single_command(&mut self, raw_line: &str, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
+        let saved_input = core::mem::replace(&mut self.line.text, raw_line.to_string());
+        let saved_cursor = self.line.cursor;
+        self.line.cursor_end();
+        self.suppress_history = true;
+        let result = self.submit(buf);
+        self.suppress_history = false;
+        self.line.text = saved_input;
+        self.line.cursor = saved_cursor;
+        result
     }
 
     /// Execute a pipeline (cmd1 | cmd2 | cmd3).
@@ -4609,6 +4676,8 @@ fn poll_fg_processes(app: &mut TerminalApp) {
                 sess.buf.current_fg = COLOR_DIM;
                 let msg = format!("[{}]  Stopped\n", job_id);
                 sess.buf.write_str(&msg);
+                // Abort any pending chain when a process is stopped
+                sess.shell.pending_chain.clear();
                 sess.show_prompt();
                 sess.dirty = true;
                 continue;
@@ -4642,6 +4711,26 @@ fn poll_fg_processes(app: &mut TerminalApp) {
                     let msg = format!("Process exited with code {}\n", exit_code);
                     sess.buf.write_str(&msg);
                 }
+
+                // Resume pending command chain (&&, ||, ;) if there are
+                // remaining commands.  The exit code of the just-finished
+                // process determines whether && / || branches are taken.
+                if !sess.shell.pending_chain.is_empty() {
+                    sess.shell.chain_last_success = exit_code == 0;
+                    let (cont, new_fg, _su) = sess.shell.resume_pending_chain(&mut sess.buf);
+                    if let Some(fp) = new_fg {
+                        sess.fg_proc = Some(fp);
+                    } else {
+                        // Chain finished — show prompt
+                        if !cont {
+                            // "exit" in chain — handled by caller
+                        }
+                        sess.show_prompt();
+                    }
+                    sess.dirty = true;
+                    continue;
+                }
+
                 sess.show_prompt();
                 sess.dirty = true;
 
@@ -4885,6 +4974,7 @@ fn handle_session_key(sess: &mut Session, key_code: u32, char_val: u32, mods: u3
                         });
                         // Add to history
                         sess.shell.history.push(&trimmed_input);
+                        sess.shell.history.save();
                         sess.shell.line.clear();
                         sess.shell.line.cursor = 0;
                         sess.dirty = true;
