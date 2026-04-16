@@ -36,8 +36,13 @@
 # ── Storage ───────────────────────────────────────────────────────────────────
 #   --ide         Use legacy IDE (PIO) instead of AHCI (DMA) for disk I/O
 #   --cdrom       Boot from ISO image (CD-ROM) instead of hard drive
-#   --tempdisk    Attach a fresh 1 GB empty hard disk (recreated each start).
+#   --tempdisk    Attach a fresh 2 GB empty hard disk (recreated each start).
 #                   Useful for testing ISO installations: --cdrom --tempdisk
+#   --disk PATH[:SIZE]
+#                   Attach a persistent hard disk at PATH (preserved across runs).
+#                   Created with SIZE (e.g. 4G, 512M) if the file does not yet
+#                   exist. Default SIZE is 2G. Repeatable to attach multiple
+#                   disks. Example: --disk data.img:4G --disk /tmp/extra.img
 #   --uefi        Boot via UEFI (OVMF firmware) instead of BIOS
 #
 # ── CPU / Acceleration ────────────────────────────────────────────────────────
@@ -110,6 +115,7 @@ EXPECT_BRIDGE=false
 WIFI_FLAGS=""
 WIFI_LABEL=""
 TEMPDISK=false
+DISK_SPECS=()
 VMWARE_WS=false
 ARM64_MODE=false
 HEADLESS=false
@@ -231,6 +237,14 @@ for arg in "$@"; do
         --tempdisk)
             TEMPDISK=true
             ;;
+        --disk)
+            if [ -z "$2" ]; then
+                echo "Error: --disk requires an argument (PATH[:SIZE])"
+                exit 1
+            fi
+            DISK_SPECS+=("$2")
+            shift
+            ;;
         --audio)
             if [ "$(uname -s)" = "Darwin" ]; then
                 AUDIO_FLAGS="-device AC97,audiodev=audio0 -audiodev coreaudio,id=audio0"
@@ -312,7 +326,7 @@ for arg in "$@"; do
             SNAPSHOT=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --clipboard] [--arm64] [--headless] [--snapshot]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --clipboard] [--arm64] [--headless] [--snapshot]"
             exit 1
             ;;
     esac
@@ -651,13 +665,48 @@ TEMPDISK_FLAGS=""
 TEMPDISK_LABEL=""
 if [ "$TEMPDISK" = true ]; then
     TEMPDISK_FILE="${SCRIPT_DIR}/../build/tempdisk.img"
-    echo "Creating 512 MB temp disk: $TEMPDISK_FILE"
+    echo "Creating 2048 MB temp disk: $TEMPDISK_FILE"
     rm -f "$TEMPDISK_FILE"
-    qemu-img create -f raw "$TEMPDISK_FILE" 512M >/dev/null 2>&1
+    qemu-img create -f raw "$TEMPDISK_FILE" 2048M >/dev/null 2>&1
     # Attach as SATA disk via dedicated AHCI controller (detected by anyOS AHCI driver)
     TEMPDISK_FLAGS="-device ahci,id=tempdisk-ahci -drive file=$TEMPDISK_FILE,format=raw,if=none,id=tempdrive -device ide-hd,drive=tempdrive,bus=tempdisk-ahci.0"
-    TEMPDISK_LABEL=", tempdisk: 512 MB"
+    TEMPDISK_LABEL=", tempdisk: 2048 MB"
 fi
+
+# ── Persistent extra disks (--disk PATH[:SIZE]) ───────────────────────────────
+# Each --disk attaches its own AHCI controller so every disk appears as a
+# separate SATA device. Files are created on first use and preserved across
+# runs. SIZE defaults to 2G when omitted.
+EXTRA_DISK_FLAGS=""
+EXTRA_DISK_LABEL=""
+disk_idx=0
+for spec in "${DISK_SPECS[@]}"; do
+    disk_idx=$((disk_idx + 1))
+    # Split on the LAST ':' so Windows-style paths (C:\...) stay intact.
+    if [[ "$spec" == *:* ]]; then
+        disk_path="${spec%:*}"
+        disk_size="${spec##*:}"
+    else
+        disk_path="$spec"
+        disk_size="2G"
+    fi
+    # Resolve relative paths against the project's build/ directory.
+    if [[ "$disk_path" != /* ]]; then
+        disk_path="${SCRIPT_DIR}/../build/$disk_path"
+    fi
+    if [ ! -f "$disk_path" ]; then
+        echo "Creating persistent disk $disk_idx: $disk_path ($disk_size)"
+        mkdir -p "$(dirname "$disk_path")"
+        if ! qemu-img create -f raw "$disk_path" "$disk_size" >/dev/null 2>&1; then
+            echo "Error: could not create disk '$disk_path' (size '$disk_size')"
+            exit 1
+        fi
+    else
+        echo "Attaching persistent disk $disk_idx: $disk_path"
+    fi
+    EXTRA_DISK_FLAGS="$EXTRA_DISK_FLAGS -device ahci,id=extra${disk_idx}-ahci -drive file=${disk_path},format=raw,if=none,id=extra${disk_idx}drive -device ide-hd,drive=extra${disk_idx}drive,bus=extra${disk_idx}-ahci.0"
+    EXTRA_DISK_LABEL="${EXTRA_DISK_LABEL}, disk${disk_idx}: ${disk_path}"
+done
 
 if [ "$CDROM_MODE" = true ]; then
     IMAGE="${SCRIPT_DIR}/../build/anyos.iso"
@@ -862,7 +911,7 @@ if [ "$VGA" = "virgl" ]; then
     export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL$SPICE_LABEL"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$EXTRA_DISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL$SPICE_LABEL"
 
 
 QEMU_CMD="$QEMU_BIN_ESC \
@@ -871,6 +920,7 @@ QEMU_CMD="$QEMU_BIN_ESC \
     $BIOS_FLAGS \
     $DRIVE_FLAGS \
     $TEMPDISK_FLAGS \
+    $EXTRA_DISK_FLAGS \
     -m 4096M \
     -smp cpus=4 \
     -serial stdio \
