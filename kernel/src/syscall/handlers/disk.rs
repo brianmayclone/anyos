@@ -11,11 +11,10 @@ use super::helpers::is_valid_user_ptr;
 ///   [0]     id (u8)
 ///   [1]     disk_id (u8)
 ///   [2]     partition index (0xFF = whole disk, else 0-based)
-///   [3]     reserved
-///   [4..12] start_lba (LE u64)
-///   [12..20] size_sectors (LE u64)
-///   [20..60] label (40 bytes, NUL-padded, from ATA IDENTIFY / USB / SD)
-///   [60..64] reserved (zeroed)
+///   [3..8]  reserved
+///   [8..16] start_lba (LE u64)
+///   [16..24] size_sectors (LE u64)
+///   [24..64] label (40 bytes, NUL-padded, from ATA IDENTIFY / USB / SD)
 /// Returns total device count.
 ///
 /// Backwards-compatible: if the buffer is too small for 64-byte entries but
@@ -36,11 +35,11 @@ pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
             buf[off] = dev.id;
             buf[off + 1] = dev.disk_id;
             buf[off + 2] = dev.partition.unwrap_or(0xFF);
-            buf[off + 4..off + 12].copy_from_slice(&dev.start_lba.to_le_bytes());
-            buf[off + 12..off + 20].copy_from_slice(&dev.size_sectors.to_le_bytes());
+            buf[off + 8..off + 16].copy_from_slice(&dev.start_lba.to_le_bytes());
+            buf[off + 16..off + 24].copy_from_slice(&dev.size_sectors.to_le_bytes());
             if entry_size >= 64 {
                 let label_len = dev.label.len().min(40);
-                buf[off + 20..off + 20 + label_len].copy_from_slice(&dev.label[..label_len]);
+                buf[off + 24..off + 24 + label_len].copy_from_slice(&dev.label[..label_len]);
             }
         }
     }
@@ -62,11 +61,11 @@ pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
             buf[off] = dev.id;
             buf[off + 1] = dev.disk_id;
             buf[off + 2] = dev.partition.unwrap_or(0xFF);
-            buf[off + 4..off + 12].copy_from_slice(&dev.start_lba.to_le_bytes());
-            buf[off + 12..off + 20].copy_from_slice(&dev.size_sectors.to_le_bytes());
+            buf[off + 8..off + 16].copy_from_slice(&dev.start_lba.to_le_bytes());
+            buf[off + 16..off + 24].copy_from_slice(&dev.size_sectors.to_le_bytes());
             if entry_size >= 64 {
                 let label_len = dev.label.len().min(40);
-                buf[off + 20..off + 20 + label_len].copy_from_slice(&dev.label[..label_len]);
+                buf[off + 24..off + 24 + label_len].copy_from_slice(&dev.label[..label_len]);
             }
         }
     }
@@ -79,9 +78,10 @@ pub fn sys_disk_list(buf_ptr: u32, buf_size: u32) -> u32 {
 ///   [1]     type_id (u8, see PartitionType mapping)
 ///   [2]     bootable (u8, 0/1)
 ///   [3]     scheme (u8: 0=MBR, 1=GPT, 2=None)
-///   [4..12] start_lba (LE u64)
-///   [12..20] size_sectors (LE u64)
-///   [20..32] reserved (zeroed)
+///   [4..8]  reserved
+///   [8..16] start_lba (LE u64)
+///   [16..24] size_sectors (LE u64)
+///   [24..32] reserved (zeroed)
 /// Returns partition count.
 #[cfg(target_arch = "x86_64")]
 pub fn sys_disk_partitions(disk_id: u32, buf_ptr: u32, buf_size: u32) -> u32 {
@@ -108,8 +108,8 @@ pub fn sys_disk_partitions(disk_id: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                 partition::PartitionScheme::Gpt => 1,
                 partition::PartitionScheme::None => 2,
             };
-            buf[off + 4..off + 12].copy_from_slice(&part.start_lba.to_le_bytes());
-            buf[off + 12..off + 20].copy_from_slice(&part.size_sectors.to_le_bytes());
+            buf[off + 8..off + 16].copy_from_slice(&part.start_lba.to_le_bytes());
+            buf[off + 16..off + 24].copy_from_slice(&part.size_sectors.to_le_bytes());
         }
     }
     count as u32
@@ -149,8 +149,8 @@ pub fn sys_disk_partitions(disk_id: u32, buf_ptr: u32, buf_size: u32) -> u32 {
                 partition::PartitionScheme::Gpt => 1,
                 partition::PartitionScheme::None => 2,
             };
-            buf[off + 4..off + 12].copy_from_slice(&part.start_lba.to_le_bytes());
-            buf[off + 12..off + 20].copy_from_slice(&part.size_sectors.to_le_bytes());
+            buf[off + 8..off + 16].copy_from_slice(&part.start_lba.to_le_bytes());
+            buf[off + 16..off + 24].copy_from_slice(&part.size_sectors.to_le_bytes());
         }
     }
     count as u32
