@@ -298,22 +298,45 @@ pub fn sys_umount(mount_path_ptr: u32) -> u32 {
     }
 }
 
+/// Append a decimal u32 to `out`.
+fn push_u32(out: &mut String, mut n: u32) {
+    if n == 0 {
+        out.push('0');
+        return;
+    }
+    let mut digits = [0u8; 10];
+    let mut i = 0;
+    while n > 0 {
+        digits[i] = b'0' + (n % 10) as u8;
+        n /= 10;
+        i += 1;
+    }
+    while i > 0 {
+        i -= 1;
+        out.push(digits[i] as char);
+    }
+}
+
 /// sys_list_mounts - List all mount points.
 /// arg1=buf_ptr: output buffer
 /// arg2=buf_len: buffer capacity
 /// Returns number of bytes written, or u32::MAX on error.
 ///
-/// Output format: "mount_path\tfs_type\n" for each mount, null-terminated.
+/// Output format: "mount_path\tfs_type\tdev_id\n" for each mount, null-terminated.
+/// `dev_id` is the decimal block-device ID (same ID space as SYS_DISK_LIST). For
+/// pseudo-mounts without a backing block device (smb, fuse, devfs), it is 0.
 pub fn sys_list_mounts(buf_ptr: u32, buf_len: u32) -> u32 {
     if buf_ptr == 0 || buf_len == 0 { return u32::MAX; }
     if !is_valid_user_ptr(buf_ptr as u64, buf_len as u64) { return u32::MAX; }
 
     let mounts = crate::fs::vfs::list_mounts();
     let mut output = String::new();
-    for (path, fs_type, _dev_id) in &mounts {
+    for (path, fs_type, dev_id) in &mounts {
         output.push_str(path);
         output.push('\t');
         output.push_str(fs_type);
+        output.push('\t');
+        push_u32(&mut output, *dev_id);
         output.push('\n');
     }
 

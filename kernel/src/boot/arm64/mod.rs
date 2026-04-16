@@ -112,7 +112,7 @@ fn init_storage() {
     for dev in &devices {
         if dev.disk_id == 0 && dev.partition.is_some() {
             serial_println!(
-                "  Partition hd0p{}: start_lba={} type={}",
+                "  Partition sda{}: start_lba={} type={}",
                 dev.partition.unwrap() + 1,
                 dev.start_lba,
                 dev.part_type.label()

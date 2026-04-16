@@ -77,7 +77,7 @@ fn detect_and_register_root_partition() {
     for dev in &devices {
         if dev.disk_id == 0 && dev.partition.is_some() {
             serial_println!(
-                "  Partition hd0p{}: start_lba={} type={}",
+                "  Partition sda{}: start_lba={} type={}",
                 dev.partition.unwrap() + 1,
                 dev.start_lba,
                 dev.part_type.label()
@@ -86,7 +86,7 @@ fn detect_and_register_root_partition() {
                 fs::vfs::set_root_partition_lba(dev.start_lba as u32);
                 found_root_lba = true;
                 serial_println!(
-                    "  Root partition: hd0p{} (LBA {})",
+                    "  Root partition: sda{} (LBA {})",
                     dev.partition.unwrap() + 1,
                     dev.start_lba
                 );

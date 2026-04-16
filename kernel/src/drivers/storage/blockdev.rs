@@ -118,12 +118,17 @@ impl BlockDevice {
         self.read_sectors(relative_lba, 1, buf)
     }
 
-    /// Human-readable device name (e.g. "hd0", "hd0p1").
+    /// Human-readable device name in Linux convention (e.g. "sda", "sda1").
     pub fn name(&self) -> alloc::string::String {
-        if let Some(p) = self.partition {
-            alloc::format!("hd{}p{}", self.disk_id, p + 1)
+        let letter = if self.disk_id < 26 {
+            (b'a' + self.disk_id) as char
         } else {
-            alloc::format!("hd{}", self.disk_id)
+            '?'
+        };
+        if let Some(p) = self.partition {
+            alloc::format!("sd{}{}", letter, p + 1)
+        } else {
+            alloc::format!("sd{}", letter)
         }
     }
 }
@@ -285,30 +290,40 @@ pub fn auto_mount_removable(disk_id: u8) {
     }
 }
 
-/// Parse a device path like "/dev/hd0p1" into (disk_id, partition_index).
+/// Parse a device path like "/dev/sda1" into (disk_id, partition_index).
 ///
-/// Returns `(disk_id, Some(part_idx))` for partitions or `(disk_id, None)` for whole disks.
-/// partition_index is 0-based (hd0p1 → partition index 0).
+/// Accepts both the Linux convention (`/dev/sda`, `/dev/sda1`) and the legacy
+/// notation (`/dev/hd0`, `/dev/hd0p1`) for backwards compatibility.
+/// Returns `(disk_id, Some(part_idx))` for partitions or `(disk_id, None)` for
+/// whole disks. `partition_index` is 0-based (sda1 → index 0).
 pub fn parse_device_path(path: &str) -> Option<(u8, Option<u8>)> {
     let name = path.strip_prefix("/dev/").unwrap_or(path);
 
-    if !name.starts_with("hd") {
-        return None;
-    }
-    let rest = &name[2..];
-
-    // Find where 'p' is (if present)
-    if let Some(p_pos) = rest.find('p') {
-        let disk_str = &rest[..p_pos];
-        let part_str = &rest[p_pos + 1..];
-        let disk_id: u8 = disk_str.parse().ok()?;
-        let part_num: u8 = part_str.parse().ok()?;
-        if part_num == 0 {
-            return None; // partitions are 1-based in user-facing names
+    if let Some(rest) = name.strip_prefix("sd") {
+        // Linux form: sd<letter>[<part>]
+        let b = rest.as_bytes();
+        if b.is_empty() || !(b[0] >= b'a' && b[0] <= b'z') {
+            return None;
         }
+        let disk_id = b[0] - b'a';
+        if rest.len() == 1 {
+            return Some((disk_id, None));
+        }
+        let part_num: u8 = rest[1..].parse().ok()?;
+        if part_num == 0 { return None; }
         Some((disk_id, Some(part_num - 1)))
+    } else if let Some(rest) = name.strip_prefix("hd") {
+        // Legacy form: hd<digit>[p<part>]
+        if let Some(p_pos) = rest.find('p') {
+            let disk_id: u8 = rest[..p_pos].parse().ok()?;
+            let part_num: u8 = rest[p_pos + 1..].parse().ok()?;
+            if part_num == 0 { return None; }
+            Some((disk_id, Some(part_num - 1)))
+        } else {
+            let disk_id: u8 = rest.parse().ok()?;
+            Some((disk_id, None))
+        }
     } else {
-        let disk_id: u8 = rest.parse().ok()?;
-        Some((disk_id, None))
+        None
     }
 }

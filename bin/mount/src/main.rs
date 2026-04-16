@@ -50,16 +50,14 @@ fn main() {
             anyos_std::println!("No filesystems mounted.");
             return;
         }
-        // Parse and display "path\tfstype\n" entries
+        // Parse and display "path\tfstype\tdev_id\n" entries
         if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
             for line in text.lines() {
                 if line.is_empty() { continue; }
-                let parts: (&str, &str) = if let Some(tab) = line.find('\t') {
-                    (&line[..tab], &line[tab+1..])
-                } else {
-                    (line, "unknown")
-                };
-                anyos_std::println!("{} type {}", parts.0, parts.1);
+                let mut parts = line.splitn(3, '\t');
+                let path = parts.next().unwrap_or("");
+                let fstype = parts.next().unwrap_or("unknown");
+                anyos_std::println!("{} type {}", path, fstype);
             }
         }
         return;

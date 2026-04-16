@@ -269,7 +269,9 @@ pub fn fsync(fd: i32) -> bool {
     syscall1(SYS_FSYNC, fd as u64) == 0
 }
 
-/// List all mount points. Writes tab-separated "path\tfstype\n" entries to buf.
+/// List all mount points. Writes tab-separated "path\tfstype\tdev_id\n" entries
+/// to `buf`. `dev_id` is the decimal block-device ID (same space as
+/// `sys::disk_list`) or `0` for pseudo-mounts (smb, fuse, devfs).
 /// Returns bytes written, or u32::MAX on error.
 pub fn list_mounts(buf: &mut [u8]) -> u32 {
     sys_err(syscall2(SYS_LIST_MOUNTS, buf.as_mut_ptr() as u64, buf.len() as u64))

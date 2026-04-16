@@ -112,7 +112,7 @@ fn is_live_cd_boot() -> bool {
     }
     if let Ok(text) = core::str::from_utf8(&buf[..n as usize]) {
         for line in text.split('\n') {
-            let mut parts = line.splitn(2, '\t');
+            let mut parts = line.splitn(3, '\t');
             let mount = parts.next().unwrap_or("");
             let fstype = parts.next().unwrap_or("");
             if mount == "/" && fstype == "iso9660" {

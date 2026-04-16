@@ -63,6 +63,11 @@ fn type_color(t: u8) -> u32 {
     }
 }
 
+/// Convert disk_id to Linux-style device letter: 0 → 'a', 1 → 'b', …
+fn disk_letter(disk_id: u8) -> char {
+    if disk_id < 26 { (b'a' + disk_id) as char } else { '?' }
+}
+
 fn format_size(sectors: u64) -> String {
     let bytes = sectors * 512;
     if bytes >= 1024 * 1024 * 1024 {
@@ -170,7 +175,7 @@ fn load_mounts() -> Vec<(String, String)> {
     let text = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
     for line in text.split('\n') {
         if line.is_empty() { continue; }
-        let mut parts = line.splitn(2, '\t');
+        let mut parts = line.splitn(3, '\t');
         let path = parts.next().unwrap_or("");
         let fs = parts.next().unwrap_or("");
         if !path.is_empty() {
@@ -211,8 +216,8 @@ fn build_display_rows(disk: &DiskInfo, parts: &[PartInfo], mounts: &[(String, St
         }
 
         // The partition itself
-        let part_name = format!("hd{}p{}", disk.disk_id, p.index + 1);
-        let dev_path = format!("/dev/hd{}p{}", disk.disk_id, p.index + 1);
+        let part_name = format!("sd{}{}", disk_letter(disk.disk_id), p.index + 1);
+        let dev_path = format!("/dev/sd{}{}", disk_letter(disk.disk_id), p.index + 1);
 
         // Find mount point
         let mp = mounts.iter()
@@ -984,8 +989,8 @@ fn main() {
             let sel = grid.selected_row();
             if sel == u32::MAX || (sel as usize) >= drows.len() {
                 ui::MessageBox::show(ui::MessageBoxType::Info,
-                    &format!("Disk hd{}\nTotal: {}\nSectors: {}",
-                        disk.disk_id, format_size(disk.total_sectors), disk.total_sectors),
+                    &format!("Disk sd{}\nTotal: {}\nSectors: {}",
+                        disk_letter(disk.disk_id), format_size(disk.total_sectors), disk.total_sectors),
                     None);
                 return;
             }
@@ -1075,7 +1080,7 @@ fn update_sidebar(
             let d = &disks[i];
             let bg = if i == selected { sel_bg } else { normal_bg };
             buttons[i].set_color(bg);
-            buttons[i].set_text(&format!("  hd{}", d.disk_id));
+            buttons[i].set_text(&format!("  sd{}", disk_letter(d.disk_id)));
             buttons[i].set_visible(true);
 
             // Show size and partition count for selected disk
@@ -1159,8 +1164,8 @@ fn update_ui(
     let used: u64 = parts.iter().map(|p| p.size_sectors).sum();
     let free = disk.total_sectors.saturating_sub(used);
     info.set_text(&format!(
-        "hd{} \u{2022} Total: {} \u{2022} Used: {} \u{2022} Free: {} \u{2022} {} partition(s)",
-        disk.disk_id,
+        "sd{} \u{2022} Total: {} \u{2022} Used: {} \u{2022} Free: {} \u{2022} {} partition(s)",
+        disk_letter(disk.disk_id),
         format_size(disk.total_sectors),
         format_size(used),
         format_size(free),

@@ -174,7 +174,7 @@ fn print_partitions(disk_id: u32) {
         return;
     }
 
-    println!("Disk hd{}: {} partitions", disk_id, count);
+    println!("Disk sd{}: {} partitions", disk_letter(disk_id), count);
     println!("{:<6} {:<4} {:<12} {:>12} {:>12} {:>10}",
         "Part", "Boot", "Type", "Start LBA", "Sectors", "Size");
     println!("{}", "--------------------------------------------------------------");
@@ -192,10 +192,15 @@ fn print_partitions(disk_id: u32) {
         let mut size_buf = [0u8; 32];
         let size_str = format_size(size_sectors, &mut size_buf);
 
-        println!("hd{}p{:<2} {:<4} {:<12} {:>12} {:>12} {:>10}",
-            disk_id, index + 1, boot_str, type_name(ptype),
+        println!("sd{}{:<3} {:<4} {:<12} {:>12} {:>12} {:>10}",
+            disk_letter(disk_id), index + 1, boot_str, type_name(ptype),
             start_lba, size_sectors, size_str);
     }
+}
+
+/// Convert disk_id (0-25) to its Linux-style device letter: 0 → 'a', 1 → 'b', …
+fn disk_letter(disk_id: u32) -> char {
+    if disk_id < 26 { (b'a' + disk_id as u8) as char } else { '?' }
 }
 
 /// List all block devices.
@@ -247,12 +252,12 @@ fn list_all() {
 
         if part == 0xFF {
             // Whole disk
-            println!("hd{:<7} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
-                disk_id, id, disk_id, "-", start_lba, size_sectors, size_str);
+            println!("sd{:<8} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
+                disk_letter(disk_id as u32), id, disk_id, "-", start_lba, size_sectors, size_str);
             seen_disks[disk_id as usize & 7] = true;
         } else {
-            println!("hd{}p{:<5} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
-                disk_id, part + 1, id, disk_id, part + 1, start_lba, size_sectors, size_str);
+            println!("sd{}{:<6} {:>4} {:<6} {:<6} {:>12} {:>12} {:>10}",
+                disk_letter(disk_id as u32), part + 1, id, disk_id, part + 1, start_lba, size_sectors, size_str);
         }
     }
 
@@ -269,7 +274,7 @@ fn list_all() {
 
 /// Interactive fdisk session for a disk.
 fn interactive(disk_id: u32) {
-    println!("fdisk: interactive mode for hd{}", disk_id);
+    println!("fdisk: interactive mode for sd{}", disk_letter(disk_id));
     println!("Type 'h' for help.\n");
 
     loop {
@@ -338,6 +343,23 @@ fn interactive(disk_id: u32) {
     }
 }
 
+/// Get total sector count for a whole disk via disk_list.
+fn disk_total_sectors(disk_id: u32) -> Option<u64> {
+    const ENTRY: usize = 64;
+    const MAX_DEVS: usize = 16;
+    let mut buf = [0u8; ENTRY * MAX_DEVS];
+    let count = anyos_std::sys::disk_list(&mut buf);
+    for i in 0..count as usize {
+        let off = i * ENTRY;
+        let did = buf[off + 1];
+        let part = buf[off + 2];
+        if part == 0xFF && did as u32 == disk_id {
+            return Some(read_u64_le(&buf, off + 16));
+        }
+    }
+    None
+}
+
 /// Create a new partition.
 fn cmd_new_partition(disk_id: u32) {
     // Read current partitions to find free slots and space
@@ -366,7 +388,7 @@ fn cmd_new_partition(disk_id: u32) {
         }
     };
 
-    println!("Using partition slot {} (hd{}p{})", slot, disk_id, slot + 1);
+    println!("Using partition slot {} (sd{}{})", slot, disk_letter(disk_id), slot + 1);
 
     // Ask for start LBA
     print!("Start LBA (default: auto): ");
@@ -433,6 +455,45 @@ fn cmd_new_partition(disk_id: u32) {
         }
     };
 
+    // Validate: partition must fit on disk
+    let end_lba = start_lba as u64 + size_sectors as u64;
+    if let Some(disk_sectors) = disk_total_sectors(disk_id) {
+        if end_lba > disk_sectors {
+            let mut sb1 = [0u8; 32];
+            let mut sb2 = [0u8; 32];
+            let part_size = format_size(size_sectors as u64, &mut sb1);
+            let disk_size = format_size(disk_sectors, &mut sb2);
+            println!("Error: partition exceeds disk size!");
+            println!("  Partition end: LBA {} (start {} + size {})",
+                end_lba, start_lba, size_sectors);
+            println!("  Disk capacity: {} sectors ({})", disk_sectors, disk_size);
+            let avail = if (start_lba as u64) < disk_sectors {
+                disk_sectors - start_lba as u64
+            } else {
+                0
+            };
+            let mut sb3 = [0u8; 32];
+            let avail_str = format_size(avail, &mut sb3);
+            println!("  Available from LBA {}: {} sectors ({})",
+                start_lba, avail, avail_str);
+            return;
+        }
+    }
+
+    // Validate: no overlap with existing partitions
+    for i in 0..count as usize {
+        let off = i * 32;
+        let ex_start = read_u64_le(&part_buf, off + 8);
+        let ex_size = read_u64_le(&part_buf, off + 16);
+        let ex_end = ex_start + ex_size;
+        let ex_idx = part_buf[off] as usize + 1;
+        if (start_lba as u64) < ex_end && end_lba > ex_start {
+            println!("Error: overlaps with partition sd{}{} (LBA {}-{})!",
+                disk_letter(disk_id), ex_idx, ex_start, ex_end - 1);
+            return;
+        }
+    }
+
     // Build the 16-byte entry
     let mut entry = [0u8; 16];
     entry[0] = slot as u8;
@@ -445,8 +506,8 @@ fn cmd_new_partition(disk_id: u32) {
     if ret == 0 {
         let mut sb = [0u8; 32];
         let ss = format_size(size_sectors as u64, &mut sb);
-        println!("Created partition hd{}p{}: type=0x{:02X} ({}) start={} size={} ({})",
-            disk_id, slot + 1, ptype, type_name(ptype), start_lba, size_sectors, ss);
+        println!("Created partition sd{}{}: type=0x{:02X} ({}) start={} size={} ({})",
+            disk_letter(disk_id), slot + 1, ptype, type_name(ptype), start_lba, size_sectors, ss);
     } else {
         println!("Error creating partition.");
     }
@@ -600,13 +661,19 @@ fn main() {
         return;
     }
 
-    // fdisk /dev/hd0  or  fdisk 0
+    // fdisk /dev/sda  (Linux-style, letter) or fdisk /dev/hd0 (legacy, digit) or fdisk 0
     if args.pos_count > 0 {
         let target = args.positional[0];
-        // Parse disk ID from path or plain number
-        let disk_id = if target.starts_with("/dev/hd") {
-            // Extract just the disk number (before any 'p')
-            let rest = &target[7..];
+        let disk_id = if let Some(rest) = target.strip_prefix("/dev/sd") {
+            // Linux convention: /dev/sd<letter>[<part>] — letter selects the disk.
+            let bytes = rest.as_bytes();
+            if bytes.is_empty() || !(bytes[0] >= b'a' && bytes[0] <= b'z') {
+                println!("fdisk: invalid device '{}'", target);
+                return;
+            }
+            (bytes[0] - b'a') as u32
+        } else if let Some(rest) = target.strip_prefix("/dev/hd") {
+            // Legacy fallback: /dev/hd<digit>[p<part>] — digit is the disk id.
             let end = rest.find('p').unwrap_or(rest.len());
             match parse_u32(&rest[..end]) {
                 Some(d) => d,

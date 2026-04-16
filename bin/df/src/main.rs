@@ -52,6 +52,66 @@ fn fmt_u32(mut n: u32, buf: &mut [u8]) -> usize {
     i
 }
 
+/// Entry from SYS_DISK_LIST (64-byte format) — only the fields we need.
+#[derive(Clone, Copy)]
+struct DiskEntry {
+    id: u8,
+    disk_id: u8,
+    partition: u8, // 0xFF = whole disk
+}
+
+fn load_disks(out: &mut [DiskEntry; 32]) -> usize {
+    let mut buf = [0u8; 64 * 32];
+    let n = anyos_std::sys::disk_list(&mut buf) as usize;
+    let count = n.min(32);
+    for i in 0..count {
+        let off = i * 64;
+        out[i] = DiskEntry {
+            id: buf[off],
+            disk_id: buf[off + 1],
+            partition: buf[off + 2],
+        };
+    }
+    count
+}
+
+/// Build "/dev/sd<letter>" or "/dev/sd<letter><part>" (Linux convention) from a
+/// block-device ID, or a type-specific fallback if the ID is not a real disk.
+fn format_dev_name<'a>(
+    dev_id: u32,
+    fs_type: &str,
+    disks: &[DiskEntry],
+    buf: &'a mut [u8; 20],
+) -> &'a str {
+    if fs_type == "iso9660" {
+        return copy_str("/dev/cdrom", buf);
+    }
+    if fs_type == "smb" {
+        return copy_str("smb", buf);
+    }
+    if fs_type == "fuse" {
+        return copy_str("fuse", buf);
+    }
+    for d in disks {
+        if d.id as u32 == dev_id {
+            let mut i = 0;
+            for &b in b"/dev/sd" { buf[i] = b; i += 1; }
+            buf[i] = b'a' + d.disk_id; i += 1;
+            if d.partition != 0xFF {
+                i += fmt_u32((d.partition + 1) as u32, &mut buf[i..]);
+            }
+            return unsafe { core::str::from_utf8_unchecked(&buf[..i]) };
+        }
+    }
+    copy_str(fs_type, buf)
+}
+
+fn copy_str<'a>(s: &str, buf: &'a mut [u8; 20]) -> &'a str {
+    let n = s.len().min(buf.len());
+    buf[..n].copy_from_slice(&s.as_bytes()[..n]);
+    unsafe { core::str::from_utf8_unchecked(&buf[..n]) }
+}
+
 fn main() {
     anyos_std::i18n::init();
     let t = anyos_std::i18n::t;
@@ -74,6 +134,10 @@ fn main() {
         return;
     }
 
+    // Load block-device table once for dev_id → /dev/sd<letter><part> resolution.
+    let mut disks = [DiskEntry { id: 0, disk_id: 0, partition: 0xFF }; 32];
+    let disk_count = load_disks(&mut disks);
+
     anyos_std::println!("{:<20}{:>8}  {:>8}  {:>8}  {:>5}  {}",
         t("Filesystem"), t("Size"), t("Used"), t("Avail"), t("Use%"), t("Mounted on"));
 
@@ -85,22 +149,19 @@ fn main() {
     for line in mnt_str.split('\n') {
         let line = line.trim();
         if line.is_empty() { continue; }
-        let mut parts = line.splitn(2, '\t');
+        let mut parts = line.splitn(3, '\t');
         let mount_path = match parts.next() {
             Some(p) => p,
             None => continue,
         };
         let fs_type = parts.next().unwrap_or("unknown");
+        let dev_id: u32 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
 
         // Skip devfs
         if fs_type == "devfs" { continue; }
 
-        let dev_name = match fs_type {
-            "iso9660" => "/dev/cdrom",
-            "exfat" | "fat16" | "ntfs" => "/dev/hda",
-            "smb" => "smb",
-            _ => fs_type,
-        };
+        let mut name_buf = [0u8; 20];
+        let dev_name = format_dev_name(dev_id, fs_type, &disks[..disk_count], &mut name_buf);
 
         if let Some(st) = anyos_std::fs::statfs(mount_path) {
             let total_kb = (st.total_bytes / 1024) as u32;
@@ -122,8 +183,9 @@ fn main() {
                     dev_name, total_kb, used_kb, free_kb, use_pct, mount_path);
             }
         } else {
-            // Skip mounts without stats (e.g. failed disk mounts)
-            continue;
+            // No statfs (e.g. corefs, fuse) — show mount without size info.
+            anyos_std::println!("{:<20}{:>8}  {:>8}  {:>8}  {:>4}  {}",
+                dev_name, "-", "-", "-", "-", mount_path);
         }
     }
 }

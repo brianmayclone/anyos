@@ -145,7 +145,7 @@ fn get_mounts() -> Vec<MountInfo> {
     let text = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
     for line in text.split('\n') {
         if line.is_empty() { continue; }
-        let mut parts = line.splitn(2, '\t');
+        let mut parts = line.splitn(3, '\t');
         let path = parts.next().unwrap_or("");
         let fstype = parts.next().unwrap_or("");
         if path.is_empty() { continue; }
