@@ -2333,6 +2333,7 @@ struct TerminalApp {
     /// Pipeline processes have stdin_pipe=0 (stdin is the data pipe), so we
     /// forward keyboard events here instead.  Pagers open this by reading TERM_KBD_PIPE env.
     term_kbd_pipe: u32,
+    focused: bool,
 }
 
 impl TerminalApp {
@@ -4644,13 +4645,15 @@ fn poll_fg_processes(app: &mut TerminalApp) {
                 sess.show_prompt();
                 sess.dirty = true;
 
-                // Notify when command finishes (useful when window is in background)
-                anyui::show_notification(
-                    "Terminal",
-                    "Befehl abgeschlossen",
-                    None,
-                    3000,
-                );
+                // Notify when command finishes (only when window is in background)
+                if !app.focused {
+                    anyui::show_notification(
+                        "Terminal",
+                        "Befehl abgeschlossen",
+                        None,
+                        3000,
+                    );
+                }
             }
         }
     }
@@ -6142,6 +6145,7 @@ fn main() {
         cursor_blink_elapsed: 0,
         autosave_counter: 0,
         term_kbd_pipe,
+        focused: true,
     };
 
     // Apply profile theme/opacity settings (font_size is per-session, applied via Session::new)
@@ -6947,6 +6951,9 @@ fn main() {
         save_profiles(&a.profiles);
         anyui::quit();
     });
+
+    win.on_focus(|_| { app().focused = true; });
+    win.on_blur(|_| { app().focused = false; });
 
     // ── Timer for polling subprocess pipes + cursor blink ──
     anyui::set_timer(50, || {

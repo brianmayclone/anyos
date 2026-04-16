@@ -1,4 +1,4 @@
-use crate::{Container, Control, Widget, lib, events, KIND_WINDOW, EVENT_CLOSE, EVENT_RESIZE, EVENT_KEY, EVENT_KEY_UP, EVENT_FULLSCREEN_ENTER, EVENT_FULLSCREEN_EXIT};
+use crate::{Container, Control, Widget, lib, events, KIND_WINDOW, EVENT_CLOSE, EVENT_RESIZE, EVENT_KEY, EVENT_KEY_UP, EVENT_FULLSCREEN_ENTER, EVENT_FULLSCREEN_EXIT, EVENT_FOCUS, EVENT_BLUR};
 use crate::events::{EventArgs, ClickEvent};
 use crate::KeyEvent;
 
@@ -66,6 +66,16 @@ impl Window {
     pub fn on_resize(&self, mut f: impl FnMut(&EventArgs) + 'static) {
         let (thunk, ud) = events::register(move |id, _| f(&EventArgs { id }));
         (lib().on_event_fn)(self.container.ctrl.id, EVENT_RESIZE, thunk, ud);
+    }
+
+    pub fn on_focus(&self, mut f: impl FnMut(&EventArgs) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(&EventArgs { id }));
+        (lib().on_event_fn)(self.container.ctrl.id, EVENT_FOCUS, thunk, ud);
+    }
+
+    pub fn on_blur(&self, mut f: impl FnMut(&EventArgs) + 'static) {
+        let (thunk, ud) = events::register(move |id, _| f(&EventArgs { id }));
+        (lib().on_event_fn)(self.container.ctrl.id, EVENT_BLUR, thunk, ud);
     }
 
     /// Mark this window as a modal child of `owner`.
