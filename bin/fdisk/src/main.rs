@@ -83,38 +83,43 @@ fn parse_size(s: &str) -> Option<u64> {
 /// Format sectors as a human-readable size string.
 fn format_size(sectors: u64, buf: &mut [u8]) -> &str {
     let bytes = sectors * 512;
-    let (val, unit) = if bytes >= 1024 * 1024 * 1024 {
-        (bytes / (1024 * 1024 * 1024), "GiB")
+    let (whole, frac, unit) = if bytes >= 1024 * 1024 * 1024 {
+        let unit_size: u64 = 1024 * 1024 * 1024;
+        (bytes / unit_size, (bytes % unit_size) * 10 / unit_size, "GiB")
     } else if bytes >= 1024 * 1024 {
-        (bytes / (1024 * 1024), "MiB")
+        let unit_size: u64 = 1024 * 1024;
+        (bytes / unit_size, (bytes % unit_size) * 10 / unit_size, "MiB")
     } else if bytes >= 1024 {
-        (bytes / 1024, "KiB")
+        let unit_size: u64 = 1024;
+        (bytes / unit_size, (bytes % unit_size) * 10 / unit_size, "KiB")
     } else {
-        (bytes, "B")
+        (bytes, 0, "B")
     };
-    // Format into buf
+
     let mut pos = 0;
-    let mut n = val;
+    // whole part
+    let mut n = whole;
     if n == 0 {
-        buf[0] = b'0';
-        pos = 1;
+        buf[pos] = b'0';
+        pos += 1;
     } else {
-        // Write digits in reverse
         let start = pos;
         while n > 0 {
             buf[pos] = b'0' + (n % 10) as u8;
             n /= 10;
             pos += 1;
         }
-        // Reverse
-        let end = pos;
-        let mut l = start;
-        let mut r = end - 1;
+        let (mut l, mut r) = (start, pos - 1);
         while l < r {
             buf.swap(l, r);
             l += 1;
             r -= 1;
         }
+    }
+    // one fractional digit for KiB/MiB/GiB if non-zero
+    if unit != "B" && frac > 0 {
+        buf[pos] = b'.'; pos += 1;
+        buf[pos] = b'0' + frac as u8; pos += 1;
     }
     buf[pos] = b' ';
     pos += 1;
@@ -421,20 +426,38 @@ fn cmd_new_partition(disk_id: u32) {
         }
     };
 
-    // Ask for size
-    print!("Size (sectors, or e.g. 100M, 1G): ");
+    // How many sectors are free from start_lba to end of disk (for the "max" default).
+    let max_available: u32 = disk_total_sectors(disk_id)
+        .and_then(|total| total.checked_sub(start_lba as u64))
+        .map(|v| v.min(u32::MAX as u64) as u32)
+        .unwrap_or(u32::MAX);
+
+    // Ask for size — empty input or "max"/"all" fills the remaining space.
+    let mut max_hint = [0u8; 32];
+    let hint = format_size(max_available as u64, &mut max_hint);
+    print!("Size (sectors, e.g. 100M, 1G; empty or 'max' = {}): ", hint);
     let mut size_buf = [0u8; 32];
     let size_len = read_line(&mut size_buf);
-    if size_len == 0 {
-        println!("No size specified.");
-        return;
-    }
-    let size_str = core::str::from_utf8(&size_buf[..size_len]).unwrap_or("");
-    let size_sectors = match parse_size(size_str) {
-        Some(v) => v as u32,
-        None => {
-            println!("Invalid size.");
+    let size_str = core::str::from_utf8(&size_buf[..size_len])
+        .unwrap_or("")
+        .trim();
+    let size_sectors: u32 = if size_str.is_empty()
+        || size_str.eq_ignore_ascii_case("max")
+        || size_str.eq_ignore_ascii_case("all")
+        || size_str == "*"
+    {
+        if max_available == 0 {
+            println!("No free space available at LBA {}.", start_lba);
             return;
+        }
+        max_available
+    } else {
+        match parse_size(size_str) {
+            Some(v) => v as u32,
+            None => {
+                println!("Invalid size.");
+                return;
+            }
         }
     };
 
