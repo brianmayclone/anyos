@@ -657,44 +657,39 @@ extern "C" fn export_get_clipboard(
         return 0;
     }
 
-    let shm_id = syscall::shm_create(out_cap);
-    if shm_id == 0 {
-        return 0;
-    }
-    let shm_addr = syscall::shm_map(shm_id);
-    if shm_addr == 0 {
-        syscall::shm_destroy(shm_id);
-        return 0;
-    }
-
     let tid = syscall::get_tid();
-    let cmd: [u32; 5] = [CMD_GET_CLIPBOARD, shm_id, out_cap, tid, 0];
+    // Send request — shm_id field is 0 (compositor provides its own SHM).
+    let cmd: [u32; 5] = [CMD_GET_CLIPBOARD, 0, out_cap, tid, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 
     // Poll for RESP_CLIPBOARD_DATA
     let mut response = [0u32; 5];
-    let mut result_len: u32 = 0;
     for _ in 0..50 {
         while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
             if response[0] == RESP_CLIPBOARD_DATA && response[4] == tid {
-                result_len = response[2];
+                let comp_shm_id = response[1];
+                let result_len = response[2];
                 let format = response[3];
                 if !out_format.is_null() {
                     unsafe { *out_format = format; }
                 }
-                // Copy data from SHM to output buffer
                 let copy_len = (result_len as usize).min(out_cap as usize);
-                if copy_len > 0 {
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            shm_addr as *const u8,
-                            out_ptr,
-                            copy_len,
-                        );
+                if copy_len > 0 && comp_shm_id != 0 {
+                    // Map compositor-owned SHM, copy data, unmap (do NOT destroy).
+                    let shm_addr = syscall::shm_map(comp_shm_id);
+                    if shm_addr != 0 {
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                shm_addr as *const u8,
+                                out_ptr,
+                                copy_len,
+                            );
+                        }
+                        syscall::shm_unmap(comp_shm_id);
+                    } else {
+                        return 0;
                     }
                 }
-                syscall::shm_unmap(shm_id);
-                syscall::shm_destroy(shm_id);
                 return result_len;
             }
         }
@@ -702,8 +697,6 @@ extern "C" fn export_get_clipboard(
     }
 
     // Timeout
-    syscall::shm_unmap(shm_id);
-    syscall::shm_destroy(shm_id);
     0
 }
 

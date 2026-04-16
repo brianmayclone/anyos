@@ -470,31 +470,55 @@ impl Desktop {
                 None
             }
             proto::CMD_GET_CLIPBOARD => {
-                let shm_id = cmd[1];
+                // cmd[1] is ignored (legacy: was app-created shm_id, now unused)
+                let _legacy_shm = cmd[1];
                 let capacity = cmd[2] as usize;
                 let requester_tid = cmd[3];
-                if shm_id == 0 || capacity == 0 {
-                    anyos_std::println!("[clipboard] GET rejected: shm={} cap={}", shm_id, capacity);
-                    let target = self.get_sub_id_for_tid(requester_tid);
-                    return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
-                }
-                let shm_addr = anyos_std::ipc::shm_map(shm_id);
-                if shm_addr == 0 {
-                    anyos_std::println!("[clipboard] GET shm_map failed for shm_id={}", shm_id);
-                    let target = self.get_sub_id_for_tid(requester_tid);
-                    return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
-                }
-                let copy_len = self.clipboard_data.len().min(capacity);
-                if copy_len > 0 {
-                    let dst = unsafe {
-                        core::slice::from_raw_parts_mut(shm_addr as *mut u8, copy_len)
-                    };
-                    dst.copy_from_slice(&self.clipboard_data[..copy_len]);
-                }
-                anyos_std::ipc::shm_unmap(shm_id);
                 let target = self.get_sub_id_for_tid(requester_tid);
-                anyos_std::println!("[clipboard] GET: stored={} bytes, returning {} to tid={}", self.clipboard_data.len(), copy_len, requester_tid);
-                Some((target, [proto::RESP_CLIPBOARD_DATA, shm_id, copy_len as u32, self.clipboard_format, requester_tid]))
+
+                let copy_len = self.clipboard_data.len().min(if capacity > 0 { capacity } else { 65536 });
+                if copy_len == 0 {
+                    return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, self.clipboard_format, requester_tid]));
+                }
+
+                // Ensure compositor-owned clipboard SHM is large enough.
+                let needed = copy_len as u32;
+                if self.clipboard_shm_id == 0 || needed > self.clipboard_shm_cap {
+                    // (Re)allocate: free old block if any.
+                    if self.clipboard_shm_id != 0 {
+                        anyos_std::ipc::shm_unmap(self.clipboard_shm_id);
+                        anyos_std::ipc::shm_destroy(self.clipboard_shm_id);
+                    }
+                    let alloc_cap = needed.max(4096); // minimum 4 KiB
+                    let id = anyos_std::ipc::shm_create(alloc_cap);
+                    if id == 0 {
+                        self.clipboard_shm_id = 0;
+                        self.clipboard_shm_addr = 0;
+                        self.clipboard_shm_cap = 0;
+                        return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
+                    }
+                    let addr = anyos_std::ipc::shm_map(id);
+                    if addr == 0 {
+                        anyos_std::ipc::shm_destroy(id);
+                        self.clipboard_shm_id = 0;
+                        self.clipboard_shm_addr = 0;
+                        self.clipboard_shm_cap = 0;
+                        return Some((target, [proto::RESP_CLIPBOARD_DATA, 0, 0, 0, requester_tid]));
+                    }
+                    self.clipboard_shm_id = id;
+                    self.clipboard_shm_addr = addr;
+                    self.clipboard_shm_cap = alloc_cap;
+                }
+
+                // Copy clipboard data into compositor-owned SHM.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        self.clipboard_data.as_ptr(),
+                        self.clipboard_shm_addr as *mut u8,
+                        copy_len,
+                    );
+                }
+                Some((target, [proto::RESP_CLIPBOARD_DATA, self.clipboard_shm_id, copy_len as u32, self.clipboard_format, requester_tid]))
             }
             proto::CMD_SET_WALLPAPER => {
                 let shm_id = cmd[1];

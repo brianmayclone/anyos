@@ -55,6 +55,16 @@
 #                   Example: --bridge virbr0
 #   --wifi        Add a second NIC as Wi-Fi adapter (virtio-net, NAT, appears as wlan0)
 #
+# ── Clipboard / SPICE ─────────────────────────────────────────────────────
+#   --spice       Enable SPICE display + virtio-serial for clipboard sync.
+#                   Adds a SPICE server on port 5930 and a vdagent virtio-serial
+#                   channel so the guest vdagent daemon can sync clipboard with the host.
+#                   Connect with: remote-viewer spice://localhost:5930
+#                   Install: sudo apt-get install virt-viewer
+#   --clipboard   Enable clipboard sync only (no SPICE display).
+#                   Adds virtio-serial + chardev for vdagent, but keeps the normal
+#                   GTK/SDL display. Requires QEMU 6.1+ with -chardev qemu-vdagent.
+#
 # ── VMware Workstation ────────────────────────────────────────────────────────
 #   --vmware-ws   Start VMware Workstation VM named 'anyos' and stream COM1 serial.
 #                   Converts anyos.img to VMDK, configures serial pipe, starts VM.
@@ -104,6 +114,8 @@ VMWARE_WS=false
 ARM64_MODE=false
 HEADLESS=false
 SNAPSHOT=false
+SPICE_MODE=false
+CLIPBOARD_MODE=false
 MIN_RES_W=1024
 MIN_RES_H=768
 
@@ -284,6 +296,12 @@ for arg in "$@"; do
             WIFI_FLAGS="-netdev user,id=wifi0 -device virtio-net-pci,netdev=wifi0,mac=52:54:00:12:34:57"
             WIFI_LABEL=", wifi: virtio-net (NAT)"
             ;;
+        --spice)
+            SPICE_MODE=true
+            ;;
+        --clipboard)
+            CLIPBOARD_MODE=true
+            ;;
         --arm64)
             ARM64_MODE=true
             ;;
@@ -294,7 +312,7 @@ for arg in "$@"; do
             SNAPSHOT=true
             ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--arm64] [--headless] [--snapshot]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --clipboard] [--arm64] [--headless] [--snapshot]"
             exit 1
             ;;
     esac
@@ -788,6 +806,22 @@ else
     [ -n "$FWD_RULES" ] && NET_LABEL="${NET_LABEL}${FWD_RULES//,hostfwd=tcp::/ fwd:}"
 fi
 
+# ── SPICE / Clipboard sync ───────────────────────────────────────────────────
+SPICE_FLAGS=""
+SPICE_LABEL=""
+if [ "$SPICE_MODE" = true ]; then
+    # Full SPICE display + clipboard via vdagent virtio-serial channel.
+    SPICE_FLAGS="-spice port=5930,disable-ticketing=on -device virtio-serial -chardev spicevmc,id=vdagent,debug=0,name=vdagent -device virtserialport,chardev=vdagent,name=com.redhat.spice.0"
+    DISPLAY_FLAGS="-display spice-app"
+    SPICE_LABEL=", spice: port 5930 (clipboard+display)"
+    echo "SPICE enabled on port 5930. Connect with: remote-viewer spice://localhost:5930"
+elif [ "$CLIPBOARD_MODE" = true ]; then
+    # Clipboard sync only (GTK display stays). Uses QEMU's built-in qemu-vdagent chardev
+    # which bridges the host clipboard into the virtio-serial channel without SPICE.
+    SPICE_FLAGS="-device virtio-serial -chardev qemu-vdagent,id=vdagent,clipboard=on -device virtserialport,chardev=vdagent,name=com.redhat.spice.0"
+    SPICE_LABEL=", clipboard: vdagent (host sync)"
+fi
+
 # ── Windows QEMU (WSL): convert paths and adjust flags ──────────────────────
 if [[ "$QEMU_BIN" == *.exe ]]; then
     WIN_IMAGE="$(to_win_path "$IMAGE")"
@@ -828,7 +862,7 @@ if [ "$VGA" = "virgl" ]; then
     export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json
 fi
 
-echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL"
+echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL$SPICE_LABEL"
 
 
 QEMU_CMD="$QEMU_BIN_ESC \
@@ -846,6 +880,7 @@ QEMU_CMD="$QEMU_BIN_ESC \
     $WIFI_FLAGS \
     $AUDIO_FLAGS \
     $USB_FLAGS \
+    $SPICE_FLAGS \
     -no-reboot \
     -no-shutdown"
 

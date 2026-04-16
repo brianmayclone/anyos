@@ -53,7 +53,9 @@ pub const RESP_VRAM_WINDOW_CREATED: u32 = 0x2004;
 pub const RESP_VRAM_WINDOW_FAILED: u32 = 0x2005;
 
 /// Clipboard data response: [RESP, shm_id, len, format, requester_tid]
-/// Sent in response to CMD_GET_CLIPBOARD. len=0 means clipboard is empty.
+/// Sent in response to CMD_GET_CLIPBOARD. shm_id is compositor-owned; the app
+/// maps it (read-only), copies the data, and unmaps — but does NOT destroy it.
+/// len=0 means clipboard is empty.
 pub const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 
 /// Fullscreen entered: [RESP, window_id, (width << 16) | height, stride, fb_ptr_or_0]
@@ -162,9 +164,10 @@ pub const CMD_SET_WALLPAPER: u32 = 0x100F;
 pub const CMD_SET_CLIPBOARD: u32 = 0x1011;
 
 /// Get clipboard contents.
-/// [CMD, shm_id, capacity, 0, 0]
-/// App creates empty SHM with `capacity` bytes. Compositor writes clipboard data into it
-/// and responds with RESP_CLIPBOARD_DATA.
+/// [CMD, 0, capacity, requester_tid, 0]
+/// App sends request (shm_id field is 0). Compositor writes clipboard data into its
+/// own persistent SHM and responds with RESP_CLIPBOARD_DATA containing the
+/// compositor-owned shm_id. App maps that SHM, copies the data, and unmaps.
 pub const CMD_GET_CLIPBOARD: u32 = 0x1012;
 
 // ── App → Compositor: Notification Commands ──────────────────────────────

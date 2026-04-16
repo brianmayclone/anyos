@@ -91,39 +91,37 @@ fn set_compositor_clipboard(comp_chan: u32, text: &[u8]) {
 fn get_compositor_clipboard(comp_chan: u32, sub_id: u32, buf: &mut [u8]) -> usize {
     if buf.is_empty() { return 0; }
     let cap = buf.len().min(MAX_CLIPBOARD_SIZE) as u32;
-    let shm_id = ipc::shm_create(cap);
-    if shm_id == 0 { return 0; }
-    let shm_addr = ipc::shm_map(shm_id);
-    if shm_addr == 0 {
-        ipc::shm_destroy(shm_id);
-        return 0;
-    }
     let tid = process::getpid();
-    let cmd: [u32; 5] = [CMD_GET_CLIPBOARD, shm_id, cap, tid, 0];
+    // shm_id field is 0 — compositor provides its own persistent SHM.
+    let cmd: [u32; 5] = [CMD_GET_CLIPBOARD, 0, cap, tid, 0];
     ipc::evt_chan_emit(comp_chan, &cmd);
 
     let mut response = [0u32; 5];
     for _ in 0..50 {
         while ipc::evt_chan_poll(comp_chan, sub_id, &mut response) {
             if response[0] == RESP_CLIPBOARD_DATA && response[4] == tid {
+                let comp_shm_id = response[1];
                 let result_len = response[2] as usize;
                 let copy_len = result_len.min(buf.len());
-                if copy_len > 0 {
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(
-                            shm_addr as *const u8, buf.as_mut_ptr(), copy_len,
-                        );
+                if copy_len > 0 && comp_shm_id != 0 {
+                    // Map compositor-owned SHM, copy, unmap (do NOT destroy).
+                    let shm_addr = ipc::shm_map(comp_shm_id);
+                    if shm_addr != 0 {
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                shm_addr as *const u8, buf.as_mut_ptr(), copy_len,
+                            );
+                        }
+                        ipc::shm_unmap(comp_shm_id);
+                    } else {
+                        return 0;
                     }
                 }
-                ipc::shm_unmap(shm_id);
-                ipc::shm_destroy(shm_id);
                 return copy_len;
             }
         }
         process::sleep(5);
     }
-    ipc::shm_unmap(shm_id);
-    ipc::shm_destroy(shm_id);
     0
 }
 

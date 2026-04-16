@@ -157,6 +157,10 @@ pub struct Desktop {
     pub(crate) clipboard_data: Vec<u8>,
     /// Clipboard format: 0 = text/plain, 1 = text/uri-list.
     pub(crate) clipboard_format: u32,
+    /// Compositor-owned SHM for clipboard reads (persistent, avoids race conditions).
+    pub(crate) clipboard_shm_id: u32,
+    pub(crate) clipboard_shm_addr: u32,
+    pub(crate) clipboard_shm_cap: u32,
     /// Volume HUD overlay (centered-bottom).
     pub(crate) volume_hud: volume_hud::VolumeHud,
     /// Frame ACK queue: (sub_id, window_id) pairs to emit after compose.
@@ -269,6 +273,9 @@ impl Desktop {
             wallpaper_path_len: 0,
             clipboard_data: Vec::new(),
             clipboard_format: 0,
+            clipboard_shm_id: 0,
+            clipboard_shm_addr: 0,
+            clipboard_shm_cap: 0,
             volume_hud: volume_hud::VolumeHud::new(),
             frame_ack_queue: Vec::new(),
             logout_requested: false,
