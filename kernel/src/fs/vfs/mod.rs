@@ -36,6 +36,13 @@ const DEFAULT_PARTITION_LBA: u32 = 8192;
 /// The actual partition LBA used for the root filesystem (set at boot from
 /// partition table or fallback to DEFAULT_PARTITION_LBA).
 static ROOT_PARTITION_LBA: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(8192);
+/// blockdev ID of the root partition, or u32::MAX if not resolved yet.
+/// Reported by `list_mounts()` so userspace (df, mount) can display the
+/// correct /dev/sdX name for "/" — the boot-time mount() call passes the
+/// placeholder device_id=0 which would otherwise alias to the first
+/// registered blockdev (often the tempdisk).
+static ROOT_BLOCKDEV_ID: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
 
 fn queue_disk_flush(disks: &mut Vec<u8>, disk_id: u8) {
     if !disks.contains(&disk_id) {
@@ -119,6 +126,17 @@ pub fn set_root_partition_lba(lba: u32) {
 /// Get the current root partition LBA.
 pub fn root_partition_lba() -> u32 {
     ROOT_PARTITION_LBA.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// Record the blockdev ID that backs the root mount.
+pub fn set_root_blockdev_id(id: u8) {
+    ROOT_BLOCKDEV_ID.store(id as u32, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// blockdev ID of the root partition, or `None` if not recorded.
+pub fn root_blockdev_id() -> Option<u8> {
+    let v = ROOT_BLOCKDEV_ID.load(core::sync::atomic::Ordering::Relaxed);
+    if v == u32::MAX { None } else { Some(v as u8) }
 }
 
 /// Invalidate all directory cache entries after path topology changes.
@@ -2940,8 +2958,14 @@ pub fn statfs(path: &str) -> Option<StatFs> {
 }
 
 /// List all current mount points. Returns Vec of (mount_path, fs_type_name, device_id).
+///
+/// `device_id` is the blockdev ID as reported to userspace. For mounts other
+/// than `/` it comes straight from the MountPoint. The root mount is set up
+/// at boot with a placeholder device_id, so we substitute the resolved root
+/// blockdev ID (recorded via `set_root_blockdev_id()`) when available.
 pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
     let vfs = VFS.lock();
+    let root_id = root_blockdev_id().map(|v| v as u32);
     if let Some(ref state) = *vfs {
         state.mount_points.iter().map(|mp| {
             let fs_name = match mp.fs_type {
@@ -2955,7 +2979,12 @@ pub fn list_mounts() -> Vec<(String, &'static str, u32)> {
                 FsType::CoreFs => "corefs",
                 FsType::Fuse => "fuse",
             };
-            (mp.path.clone(), fs_name, mp.device_id)
+            let dev = if mp.path == "/" {
+                root_id.unwrap_or(mp.device_id)
+            } else {
+                mp.device_id
+            };
+            (mp.path.clone(), fs_name, dev)
         }).collect()
     } else {
         Vec::new()

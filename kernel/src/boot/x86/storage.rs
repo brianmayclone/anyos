@@ -84,11 +84,13 @@ fn detect_and_register_root_partition() {
             );
             if !found_root_lba && dev.part_type != PartitionType::GptEsp {
                 fs::vfs::set_root_partition_lba(dev.start_lba as u32);
+                fs::vfs::set_root_blockdev_id(dev.id);
                 found_root_lba = true;
                 serial_println!(
-                    "  Root partition: sda{} (LBA {})",
+                    "  Root partition: sda{} (LBA {}, blockdev id={})",
                     dev.partition.unwrap() + 1,
-                    dev.start_lba
+                    dev.start_lba,
+                    dev.id
                 );
             }
         }
