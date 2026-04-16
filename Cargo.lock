@@ -547,6 +547,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "dd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "delgroup"
 version = "0.1.0"
 dependencies = [
