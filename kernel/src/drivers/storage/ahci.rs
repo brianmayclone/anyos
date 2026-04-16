@@ -151,6 +151,30 @@ struct AhciController {
 
 static mut AHCI: Option<AhciController> = None;
 
+// ── Secondary AHCI controllers (e.g. --tempdisk adds a second AHCI HBA) ──
+
+/// Maximum number of secondary AHCI controllers.
+const MAX_SECONDARY_CONTROLLERS: usize = 4;
+
+/// State for a secondary AHCI controller (separate PCI device / MMIO base).
+struct SecondaryAhci {
+    mmio_base: u64,
+    port: u32,
+    clb_phys: u64,
+    ctba_phys: u64,
+    bounce_phys: u64,
+    total_sectors: u64,
+    disk_id: u8,
+}
+
+static mut SECONDARY_AHCI: [Option<SecondaryAhci>; MAX_SECONDARY_CONTROLLERS] =
+    [None, None, None, None];
+static mut SECONDARY_AHCI_COUNT: usize = 0;
+
+/// MMIO virtual base for secondary controllers (after primary at 0xD006_0000).
+/// Each secondary gets 8 pages (32 KiB).
+const AHCI_SECONDARY_MMIO_VIRT: u64 = 0xFFFF_FFFF_D006_8000;
+
 /// TID of the thread currently waiting for AHCI I/O completion.
 /// 0 means no thread is waiting.
 static AHCI_WAITER: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
@@ -880,6 +904,13 @@ pub fn flush() -> bool {
 
 /// Initialize the AHCI controller from a PCI device and register as active storage backend.
 pub fn init_and_register(pci: &PciDevice) {
+    // If the primary AHCI controller is already initialized, register this
+    // controller as a secondary (e.g. --tempdisk adds a second AHCI HBA).
+    if unsafe { AHCI.is_some() } {
+        init_secondary_controller(pci);
+        return;
+    }
+
     // BAR5 = ABAR (AHCI Base Address Register)
     let abar_raw = pci.bars[5];
 
@@ -1346,7 +1377,230 @@ pub fn init_and_register(pci: &PciDevice) {
     }
 }
 
-// ── Extra disk I/O dispatch ──────────────────────────
+// ── Secondary AHCI controller init ────────────────────
+
+/// Initialize a secondary AHCI controller as an additional block device.
+/// This is called when `AHCI` (the primary controller) is already set.
+fn init_secondary_controller(pci: &PciDevice) {
+    let abar_raw = pci.bars[5];
+    if abar_raw == 0 {
+        crate::serial_verbose_println!("  AHCI secondary: BAR5 is zero, skipping");
+        return;
+    }
+    let abar_phys = (abar_raw & !0xF) as u64;
+
+    let sec_idx = unsafe { SECONDARY_AHCI_COUNT };
+    if sec_idx >= MAX_SECONDARY_CONTROLLERS {
+        crate::serial_verbose_println!("  AHCI secondary: too many controllers, skipping");
+        return;
+    }
+
+    // Enable PCI bus mastering + memory space
+    let cmd = pci_config_read32(pci.bus, pci.device, pci.function, 0x04);
+    pci_config_write32(pci.bus, pci.device, pci.function, 0x04, cmd | 0x07);
+
+    // Map MMIO at a separate virtual address
+    let mmio_base = AHCI_SECONDARY_MMIO_VIRT + (sec_idx as u64) * (AHCI_MMIO_PAGES as u64 * 4096);
+    for i in 0..AHCI_MMIO_PAGES {
+        let phys = PhysAddr::new(abar_phys + (i as u64) * 4096);
+        let virt = VirtAddr::new(mmio_base + (i as u64) * 4096);
+        virtual_mem::map_page(virt, phys, 0x03);
+    }
+
+    unsafe {
+        // Enable AHCI mode
+        let ghc = mmio_read32(mmio_base, REG_GHC);
+        mmio_write32(mmio_base, REG_GHC, ghc | GHC_AE);
+
+        let pi = mmio_read32(mmio_base, REG_PI);
+
+        // Find first SATA disk port
+        let mut found_port: Option<u32> = None;
+        for port in 0..32u32 {
+            if pi & (1 << port) == 0 { continue; }
+            let ssts = port_read(mmio_base, port, PORT_SSTS);
+            if ssts & 0x0F != 3 { continue; }
+            let sig = port_read(mmio_base, port, PORT_SIG);
+            if sig == SATA_SIG_ATA {
+                found_port = Some(port);
+                break;
+            }
+        }
+
+        let port = match found_port {
+            Some(p) => p,
+            None => {
+                crate::serial_verbose_println!("  AHCI secondary: no SATA disk found");
+                return;
+            }
+        };
+
+        // Allocate DMA structures
+        let clb_phys = match physical::alloc_frame() { Some(f) => f.as_u64(), None => return };
+        let fb_phys = match physical::alloc_frame() { Some(f) => f.as_u64(), None => return };
+        let ctba_phys = match physical::alloc_frame() { Some(f) => f.as_u64(), None => return };
+        let bounce_phys = match physical::alloc_contiguous(BOUNCE_BUF_FRAMES) {
+            Some(f) => f.as_u64(), None => return,
+        };
+
+        core::ptr::write_bytes(clb_phys as *mut u8, 0, 4096);
+        core::ptr::write_bytes(fb_phys as *mut u8, 0, 4096);
+        core::ptr::write_bytes(ctba_phys as *mut u8, 0, 4096);
+        core::ptr::write_bytes(bounce_phys as *mut u8, 0, BOUNCE_BUF_SIZE);
+
+        let cmd_header = clb_phys as *mut CmdHeader;
+        (*cmd_header).ctba = ctba_phys as u32;
+        (*cmd_header).ctbau = (ctba_phys >> 32) as u32;
+
+        stop_port(mmio_base, port);
+        port_write(mmio_base, port, PORT_CLB, clb_phys as u32);
+        port_write(mmio_base, port, PORT_CLBU, (clb_phys >> 32) as u32);
+        port_write(mmio_base, port, PORT_FB, fb_phys as u32);
+        port_write(mmio_base, port, PORT_FBU, (fb_phys >> 32) as u32);
+        port_write(mmio_base, port, PORT_SERR, 0xFFFF_FFFF);
+        port_write(mmio_base, port, PORT_IS, 0xFFFF_FFFF);
+        start_port(mmio_base, port);
+
+        // IDENTIFY
+        let mut total_sectors: u64 = 0;
+        let id_ok = issue_command_on_port(
+            mmio_base, port, clb_phys, ctba_phys,
+            bounce_phys, ATA_CMD_IDENTIFY, 0, 1, 512, false,
+        );
+        if id_ok {
+            let identify = bounce_phys as *const u16;
+            let lo = *identify.add(100) as u64 | ((*identify.add(101) as u64) << 16);
+            let hi = *identify.add(102) as u64 | ((*identify.add(103) as u64) << 16);
+            total_sectors = lo | (hi << 32);
+            if total_sectors == 0 {
+                total_sectors = (*identify.add(60) as u64) | ((*identify.add(61) as u64) << 16);
+            }
+            crate::serial_println!(
+                "  AHCI secondary: port {} disk: {} sectors ({} MiB)",
+                port, total_sectors, total_sectors / 2048
+            );
+        }
+
+        // Enable interrupts (MSI for this device)
+        let port_ie = (1u32 << 0) | (1 << 30) | (1 << 31);
+        port_write(mmio_base, port, PORT_IE, port_ie);
+        let ghc2 = mmio_read32(mmio_base, REG_GHC);
+        mmio_write32(mmio_base, REG_GHC, ghc2 | GHC_IE);
+        let msi_vector = crate::drivers::pci_msi::enable_msi(pci);
+        if let Some(vec) = msi_vector {
+            crate::drivers::pci_msi::register_msi_handler(vec, ahci_msi_handler);
+            crate::serial_println!("  AHCI secondary: MSI vector {} registered", vec);
+        }
+
+        // Assign disk_id: primary=0, extras on primary controller use 1+, so
+        // secondary controllers start after the primary's extra disks.
+        let primary_extra = AHCI.as_ref().map_or(0, |a| a.extra_disk_count);
+        let disk_id = (1 + primary_extra + sec_idx) as u8;
+
+        SECONDARY_AHCI[sec_idx] = Some(SecondaryAhci {
+            mmio_base, port, clb_phys, ctba_phys, bounce_phys, total_sectors, disk_id,
+        });
+        SECONDARY_AHCI_COUNT = sec_idx + 1;
+
+        // Register I/O override and blockdev
+        super::register_device_io(disk_id, secondary_ahci_read, secondary_ahci_write);
+
+        use super::blockdev;
+        blockdev::register_device(blockdev::BlockDevice {
+            id: disk_id, disk_id, partition: None,
+            part_type: crate::fs::partition::PartitionType::Empty,
+            start_lba: 0, size_sectors: total_sectors,
+            label: [0u8; 40],
+        });
+        blockdev::scan_and_register_partitions(disk_id);
+
+        crate::serial_println!(
+            "  AHCI secondary: registered as disk {} (ABAR={:#010x}, port {})",
+            disk_id, abar_phys, port
+        );
+    }
+}
+
+fn secondary_ahci_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> bool {
+    let sec = match unsafe { SECONDARY_AHCI.iter().flatten().find(|s| s.disk_id == disk_id) } {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let mut offset = 0usize;
+    let mut remaining = count;
+    let mut cur_lba = lba as u64;
+
+    while remaining > 0 {
+        let batch = remaining.min(BOUNCE_BUF_SECTORS);
+        let byte_count = batch as usize * 512;
+
+        let ok = unsafe {
+            issue_command_on_port(
+                sec.mmio_base, sec.port,
+                sec.clb_phys, sec.ctba_phys,
+                sec.bounce_phys,
+                ATA_CMD_READ_DMA_EXT, cur_lba, batch as u16,
+                byte_count as u32, false,
+            )
+        };
+        if !ok { return false; }
+
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                sec.bounce_phys as *const u8,
+                buf.as_mut_ptr().add(offset),
+                byte_count,
+            );
+        }
+        offset += byte_count;
+        cur_lba += batch as u64;
+        remaining -= batch;
+    }
+    true
+}
+
+fn secondary_ahci_write(disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool {
+    let sec = match unsafe { SECONDARY_AHCI.iter().flatten().find(|s| s.disk_id == disk_id) } {
+        Some(s) => s,
+        None => return false,
+    };
+
+    let mut offset = 0usize;
+    let mut remaining = count;
+    let mut cur_lba = lba as u64;
+
+    while remaining > 0 {
+        let batch = remaining.min(BOUNCE_BUF_SECTORS);
+        let byte_count = batch as usize * 512;
+
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                buf.as_ptr().add(offset),
+                sec.bounce_phys as *mut u8,
+                byte_count,
+            );
+        }
+
+        let ok = unsafe {
+            issue_command_on_port(
+                sec.mmio_base, sec.port,
+                sec.clb_phys, sec.ctba_phys,
+                sec.bounce_phys,
+                ATA_CMD_WRITE_DMA_EXT, cur_lba, batch as u16,
+                byte_count as u32, true,
+            )
+        };
+        if !ok { return false; }
+
+        offset += byte_count;
+        cur_lba += batch as u64;
+        remaining -= batch;
+    }
+    true
+}
+
+// ── Extra disk I/O dispatch (same controller, different ports) ──
 
 /// Mapping: (disk_id, ahci_port, total_sectors) for extra disks.
 static mut EXTRA_DISK_MAP: [(u8, u32, u64); MAX_EXTRA_DISKS] = [(0, 0, 0); MAX_EXTRA_DISKS];
