@@ -74,7 +74,7 @@ Affected files:
 ### CLI Programs (`bin/`) -- 105 programs
 - Standard Unix-like tools: ls, cat, cp, mv, rm, mkdir, grep, find, head, tail, sort, tar, gzip, zip, unzip, etc.
 - Network tools: ping, ssh, sshd, scp, wget, ftp, ftpd, curl, dhcp, dns, ifconfig, arp, netstat, vncd, httpd, openvpn
-- System: ps, top, htop, mount, umount, sysinfo, dmesg, neofetch, kill, killall
+- System: ps, top, htop, mount (`-t fat|exfat|iso9660|smb|corefs`), umount, sysinfo, dmesg, neofetch, kill, killall
 - Editors: nano, vi, nvi, sed, awk
 - Package manager: ami, apkg
 - Version control: git
@@ -492,6 +492,32 @@ anyos_std::fs::write_bytes(path, data).is_ok();
 let mut buf = [0u8; 64 * 128];
 let count = anyos_std::fs::readdir(path, &mut buf);
 // Each entry: [type:u8, name_len:u8, flags:u8, pad:u8, size:u32, name:56bytes]
+```
+
+### Mount / Unmount
+```rust
+// Mount CoreFS partition (device_id as string, e.g. from SYS_DISK_LIST)
+anyos_std::fs::mount("/mnt/data", "3", 6);   // 6 = CoreFS
+
+// Mount exFAT partition
+anyos_std::fs::mount("/mnt/usb", "2", 0);    // 0 = FAT/exFAT
+
+// Mount SMB share
+anyos_std::fs::mount("/mnt/share", "//10.0.0.1/docs", 5);  // 5 = SMB
+
+// Unmount
+anyos_std::fs::umount("/mnt/data");
+
+// fs_type constants: 0=FAT/exFAT, 1=ISO9660, 4=NTFS, 5=SMB, 6=CoreFS
+```
+
+CLI usage:
+```
+mount -t corefs 3 /mnt/data       # CoreFS partition (device 3)
+mount -t fat 2 /mnt/usb           # FAT/exFAT partition
+mount -t smb //10.0.0.1/share /mnt/share
+mount                              # List all mounts
+umount /mnt/data                   # Unmount
 ```
 
 ### FileDialog
