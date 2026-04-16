@@ -20,13 +20,15 @@ use corefs_core::platform::Timestamp;
 use corefs_core::storage::block_store::BlockRecord;
 use corefs_core::storage::ondisk::session::OdfDeviceSession;
 use corefs_fuse_adapter::{FuseHandler, HandlerResult};
-use corefs_fuse_proto::{Attr, DirEntry, PROTOCOL_VERSION, Reply, Request, StatFs};
+use corefs_fuse_proto::{Attr, DirEntry, PROTOCOL_VERSION, PartialAttr, Reply, Request, StatFs};
 
 const ENOENT: i32 = 2;
 const EIO: i32 = 5;
 const EEXIST: i32 = 17;
 const EINVAL: i32 = 22;
+#[allow(dead_code)]
 const ENOTDIR: i32 = 20;
+const ENOTEMPTY: i32 = 39;
 
 fn err_from(e: &CoreFsError) -> i32 {
     match e {
@@ -521,6 +523,445 @@ impl CoreFsHandler {
         }
     }
 
+    fn op_rmdir(&mut self, parent: FuseInodeNo, name: String) -> HandlerResult {
+        let parent_path = match self.path_of(parent) {
+            Some(p) => p.clone(),
+            None => {
+                return HandlerResult::Err {
+                    errno: ENOENT,
+                    message: None,
+                };
+            }
+        };
+        let child_path = if parent_path == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", parent_path, name)
+        };
+        let child_prefix = format!("{}/", child_path);
+        let result = self.session.mutate(|state| {
+            let idx = state
+                .active_inodes
+                .iter()
+                .position(|i| i.path == child_path)
+                .ok_or_else(|| CoreFsError::NotFound(child_path.clone()))?;
+            if state.active_inodes[idx].kind != InodeKind::Directory {
+                return Err(CoreFsError::InvalidCommand(
+                    "rmdir target is not a directory".into(),
+                ));
+            }
+            // Non-empty check: no other active inode may have `child_path/` as
+            // prefix.
+            if state
+                .active_inodes
+                .iter()
+                .any(|i| i.path.starts_with(child_prefix.as_str()))
+            {
+                return Err(CoreFsError::InvalidCommand(
+                    "directory not empty".into(),
+                ));
+            }
+            let removed = state.active_inodes.remove(idx);
+            state.block_records.retain(|r| r.inode != removed.id);
+            state.deleted_inodes.push(removed);
+            Ok(())
+        });
+        match result {
+            Ok(_) => {
+                let stale: Vec<FuseInodeNo> = self
+                    .inode_by_no
+                    .iter()
+                    .filter(|(_, p)| **p == child_path)
+                    .map(|(n, _)| *n)
+                    .collect();
+                for n in stale {
+                    self.inode_by_no.remove(&n);
+                }
+                self.no_by_inode_id
+                    .retain(|_, v| self.inode_by_no.contains_key(v));
+                HandlerResult::Ok(Reply::Rmdir)
+            }
+            Err(CoreFsError::InvalidCommand(ref m)) if m == "directory not empty" => {
+                HandlerResult::Err {
+                    errno: ENOTEMPTY,
+                    message: Some(m.clone()),
+                }
+            }
+            Err(e) => HandlerResult::Err {
+                errno: err_from(&e),
+                message: Some(e.to_string()),
+            },
+        }
+    }
+
+    fn op_rename(
+        &mut self,
+        parent: FuseInodeNo,
+        old_name: String,
+        new_parent: FuseInodeNo,
+        new_name: String,
+    ) -> HandlerResult {
+        let old_parent_path = match self.path_of(parent) {
+            Some(p) => p.clone(),
+            None => {
+                return HandlerResult::Err {
+                    errno: ENOENT,
+                    message: None,
+                };
+            }
+        };
+        let new_parent_path = match self.path_of(new_parent) {
+            Some(p) => p.clone(),
+            None => {
+                return HandlerResult::Err {
+                    errno: ENOENT,
+                    message: None,
+                };
+            }
+        };
+        if old_name.is_empty()
+            || new_name.is_empty()
+            || old_name.contains('/')
+            || new_name.contains('/')
+        {
+            return HandlerResult::Err {
+                errno: EINVAL,
+                message: None,
+            };
+        }
+        let old_path = if old_parent_path == "/" {
+            format!("/{}", old_name)
+        } else {
+            format!("{}/{}", old_parent_path, old_name)
+        };
+        let new_path = if new_parent_path == "/" {
+            format!("/{}", new_name)
+        } else {
+            format!("{}/{}", new_parent_path, new_name)
+        };
+        if old_path == new_path {
+            // No-op rename — treat as success.
+            return HandlerResult::Ok(Reply::Rename);
+        }
+        let now = self.clock;
+        let old_prefix = format!("{}/", old_path);
+        let new_prefix_owned = format!("{}/", new_path);
+        let old_path_owned = old_path.clone();
+        let new_path_owned = new_path.clone();
+        let result = self.session.mutate(|state| {
+            // Source must exist.
+            if !state.active_inodes.iter().any(|i| i.path == old_path_owned) {
+                return Err(CoreFsError::NotFound(old_path_owned.clone()));
+            }
+            // Target must NOT exist (no overwrite semantics in this stub).
+            if state.active_inodes.iter().any(|i| i.path == new_path_owned) {
+                return Err(CoreFsError::AlreadyExists(new_path_owned.clone()));
+            }
+            for inode in state.active_inodes.iter_mut() {
+                if inode.path == old_path_owned {
+                    inode.path = new_path_owned.clone();
+                    inode.touch_changed_at(now);
+                } else if inode.path.starts_with(old_prefix.as_str()) {
+                    let suffix = &inode.path[old_prefix.len()..];
+                    inode.path = format!("{}{}", new_prefix_owned, suffix);
+                    inode.touch_changed_at(now);
+                }
+            }
+            Ok(())
+        });
+        match result {
+            Ok(_) => {
+                // Refresh inode_by_no for all affected paths.
+                let updated: Vec<(FuseInodeNo, String)> = {
+                    let state = self.session.state();
+                    self.inode_by_no
+                        .iter()
+                        .filter_map(|(no, path)| {
+                            // Only update entries whose inode-id is still
+                            // present in active_inodes — resolve by walking the
+                            // reverse map.
+                            let id = self
+                                .no_by_inode_id
+                                .iter()
+                                .find(|(_id, n)| *n == no)
+                                .map(|(id, _)| *id)?;
+                            let cur = state
+                                .active_inodes
+                                .iter()
+                                .find(|i| i.id == id)
+                                .map(|i| i.path.clone())?;
+                            if cur != *path {
+                                Some((*no, cur))
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                };
+                for (no, new_p) in updated {
+                    self.inode_by_no.insert(no, new_p);
+                }
+                HandlerResult::Ok(Reply::Rename)
+            }
+            Err(e) => HandlerResult::Err {
+                errno: err_from(&e),
+                message: Some(e.to_string()),
+            },
+        }
+    }
+
+    fn op_setattr(&mut self, ino: FuseInodeNo, attr: PartialAttr) -> HandlerResult {
+        let path = match self.path_of(ino) {
+            Some(p) => p.clone(),
+            None => {
+                return HandlerResult::Err {
+                    errno: ENOENT,
+                    message: None,
+                };
+            }
+        };
+        if path == "/" {
+            // Root attribute changes are accepted as a no-op so tools like
+            // `chmod /mnt/corefs` don't fail; a real implementation would
+            // persist root metadata separately.
+            let root_attr = Attr {
+                ino: 1,
+                size: 0,
+                blocks: 1,
+                mode: attr.mode.unwrap_or(0o755),
+                nlink: 1,
+                uid: attr.uid.unwrap_or(0),
+                gid: attr.gid.unwrap_or(0),
+                kind: 2,
+                crtime_secs: 0,
+                mtime_secs: attr.mtime_secs.unwrap_or(0),
+                ctime_secs: 0,
+            };
+            return HandlerResult::Ok(Reply::Setattr(root_attr));
+        }
+        let now = self.clock;
+        let result = self.session.mutate(|state| {
+            let inode_id = state
+                .active_inodes
+                .iter()
+                .find(|i| i.path == path)
+                .map(|i| i.id)
+                .ok_or_else(|| CoreFsError::NotFound(path.clone()))?;
+            // Apply size-change (truncate / extend) to the backing record.
+            if let Some(new_size) = attr.size {
+                let rec_idx = state
+                    .block_records
+                    .iter()
+                    .position(|r| r.inode == inode_id);
+                match rec_idx {
+                    Some(idx) => {
+                        let rec = &mut state.block_records[idx];
+                        let ns = new_size as usize;
+                        if rec.bytes.len() < ns {
+                            rec.bytes.resize(ns, 0);
+                        } else {
+                            rec.bytes.truncate(ns);
+                        }
+                    }
+                    None if new_size > 0 => {
+                        state.block_records.push(BlockRecord {
+                            inode: inode_id,
+                            bytes: Vec::from_iter(core::iter::repeat(0u8).take(new_size as usize)),
+                            checksum: 0,
+                            device_block: 0,
+                            allocated_blocks: 0,
+                        });
+                    }
+                    None => {}
+                }
+            }
+            if let Some(inode) = state.active_inodes.iter_mut().find(|i| i.id == inode_id) {
+                let mut touched_content = false;
+                let mut touched_meta = false;
+                if let Some(m) = attr.mode {
+                    inode.metadata.mode = m;
+                    touched_meta = true;
+                }
+                if let Some(u) = attr.uid {
+                    inode.metadata.uid = u;
+                    touched_meta = true;
+                }
+                if let Some(g) = attr.gid {
+                    inode.metadata.gid = g;
+                    touched_meta = true;
+                }
+                if let Some(s) = attr.size {
+                    inode.size = s as usize;
+                    touched_content = true;
+                }
+                if let Some(ms) = attr.mtime_secs {
+                    inode.modified_at = Timestamp::from_secs(ms);
+                    touched_content = true;
+                }
+                if touched_content {
+                    inode.touch_modified_at(now);
+                } else if touched_meta {
+                    inode.touch_changed_at(now);
+                }
+            }
+            Ok(())
+        });
+        match result {
+            Ok(_) => {
+                let inode_clone = {
+                    let state = self.session.state();
+                    state
+                        .active_inodes
+                        .iter()
+                        .find(|i| i.path == path)
+                        .cloned()
+                };
+                let Some(inode) = inode_clone else {
+                    return HandlerResult::Err {
+                        errno: EIO,
+                        message: None,
+                    };
+                };
+                let attr_out = self.attr_for(ino, &inode);
+                HandlerResult::Ok(Reply::Setattr(attr_out))
+            }
+            Err(e) => HandlerResult::Err {
+                errno: err_from(&e),
+                message: Some(e.to_string()),
+            },
+        }
+    }
+
+    fn op_symlink(
+        &mut self,
+        parent: FuseInodeNo,
+        name: String,
+        target: String,
+    ) -> HandlerResult {
+        let parent_path = match self.path_of(parent) {
+            Some(p) => p.clone(),
+            None => {
+                return HandlerResult::Err {
+                    errno: ENOENT,
+                    message: None,
+                };
+            }
+        };
+        if name.is_empty() || name.contains('/') {
+            return HandlerResult::Err {
+                errno: EINVAL,
+                message: None,
+            };
+        }
+        let child_path = if parent_path == "/" {
+            format!("/{}", name)
+        } else {
+            format!("{}/{}", parent_path, name)
+        };
+        let now = self.clock;
+        let target_bytes = target.into_bytes();
+        let target_len = target_bytes.len();
+        let result = self.session.mutate(|state| {
+            if state.active_inodes.iter().any(|i| i.path == child_path) {
+                return Err(CoreFsError::AlreadyExists(child_path.clone()));
+            }
+            let next_id = state
+                .active_inodes
+                .iter()
+                .map(|i| i.id.0)
+                .chain(state.deleted_inodes.iter().map(|i| i.id.0))
+                .max()
+                .unwrap_or(0)
+                + 1;
+            let mut metadata = FileMetadata::default();
+            metadata.mode = 0o777;
+            let mut inode = Inode::new_at(
+                InodeId(next_id),
+                InodeKind::Symlink,
+                child_path.clone(),
+                metadata,
+                now,
+            );
+            inode.size = target_len;
+            state.active_inodes.push(inode);
+            // Store target as raw bytes in a backing block record.
+            state.block_records.push(BlockRecord {
+                inode: InodeId(next_id),
+                bytes: target_bytes,
+                checksum: 0,
+                device_block: 0,
+                allocated_blocks: 0,
+            });
+            Ok(InodeId(next_id))
+        });
+        match result {
+            Ok((id, _)) => {
+                let inode_clone = {
+                    let state = self.session.state();
+                    state
+                        .active_inodes
+                        .iter()
+                        .find(|i| i.id == id)
+                        .cloned()
+                };
+                let Some(inode) = inode_clone else {
+                    return HandlerResult::Err {
+                        errno: EIO,
+                        message: None,
+                    };
+                };
+                let no = self.intern(&inode);
+                let attr = self.attr_for(no, &inode);
+                HandlerResult::Ok(Reply::Symlink(attr))
+            }
+            Err(e) => HandlerResult::Err {
+                errno: err_from(&e),
+                message: Some(e.to_string()),
+            },
+        }
+    }
+
+    fn op_readlink(&self, ino: FuseInodeNo) -> HandlerResult {
+        let path = match self.path_of(ino) {
+            Some(p) => p.clone(),
+            None => {
+                return HandlerResult::Err {
+                    errno: ENOENT,
+                    message: None,
+                };
+            }
+        };
+        let state = self.session.state();
+        let inode = match Self::inode_for_path(state, &path) {
+            Some(i) => i,
+            None => {
+                return HandlerResult::Err {
+                    errno: ENOENT,
+                    message: None,
+                };
+            }
+        };
+        if inode.kind != InodeKind::Symlink {
+            return HandlerResult::Err {
+                errno: EINVAL,
+                message: Some(String::from("inode is not a symlink")),
+            };
+        }
+        let bytes = state
+            .block_records
+            .iter()
+            .find(|r| r.inode == inode.id)
+            .map(|r| r.bytes.clone())
+            .unwrap_or_default();
+        match String::from_utf8(bytes) {
+            Ok(s) => HandlerResult::Ok(Reply::Readlink(s)),
+            Err(_) => HandlerResult::Err {
+                errno: EIO,
+                message: Some(String::from("symlink target is not valid UTF-8")),
+            },
+        }
+    }
+
     fn op_statfs(&self) -> HandlerResult {
         let state = self.session.state();
         let block_size = state.volume.block_size as u32;
@@ -569,18 +1010,20 @@ impl FuseHandler for CoreFsHandler {
             // by op_write, so this is a no-op acknowledging the request.
             Request::Flush { .. } => HandlerResult::Ok(Reply::Flush),
             Request::Fsync { .. } => HandlerResult::Ok(Reply::Fsync),
-            // The following ops are plumbed on the wire but not yet backed
-            // by CoreFsHandler mutations. Returning ENOSYS keeps the
-            // protocol exhaustive while preserving honest semantics for
-            // callers.
-            Request::Setattr { .. }
-            | Request::Rmdir { .. }
-            | Request::Rename { .. }
-            | Request::Symlink { .. }
-            | Request::Readlink { .. } => HandlerResult::Err {
-                errno: 38, // ENOSYS
-                message: Some(String::from("op not implemented yet")),
-            },
+            Request::Setattr { ino, attr } => self.op_setattr(ino, attr),
+            Request::Rmdir { parent, name } => self.op_rmdir(parent, name),
+            Request::Rename {
+                parent,
+                old_name,
+                new_parent,
+                new_name,
+            } => self.op_rename(parent, old_name, new_parent, new_name),
+            Request::Symlink {
+                parent,
+                name,
+                target,
+            } => self.op_symlink(parent, name, target),
+            Request::Readlink { ino } => self.op_readlink(ino),
         }
     }
 }
@@ -810,6 +1253,240 @@ mod tests {
             HandlerResult::Ok(Reply::Statfs(s)) => {
                 assert!(s.bsize >= 512);
             }
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    // --- New mutation ops (Setattr/Rmdir/Rename/Symlink/Readlink) ---
+
+    #[test]
+    fn setattr_mode_and_size_updates_inode() {
+        let mut h = mk_handler();
+        let attr = match h.handle(Request::Create {
+            parent: 1,
+            name: "s.bin".to_string(),
+            mode: 0o644,
+            flags: 0,
+        }) {
+            HandlerResult::Ok(Reply::Create { attr, .. }) => attr,
+            other => panic!("unexpected {:?}", other),
+        };
+        // Apply mode + size change.
+        let new_attr = match h.handle(Request::Setattr {
+            ino: attr.ino,
+            attr: PartialAttr {
+                mode: Some(0o600),
+                uid: Some(1000),
+                gid: Some(1000),
+                size: Some(10),
+                mtime_secs: Some(1_700_000_000),
+                atime_secs: None,
+            },
+        }) {
+            HandlerResult::Ok(Reply::Setattr(a)) => a,
+            other => panic!("unexpected {:?}", other),
+        };
+        assert_eq!(new_attr.mode, 0o600);
+        assert_eq!(new_attr.uid, 1000);
+        assert_eq!(new_attr.gid, 1000);
+        assert_eq!(new_attr.size, 10);
+    }
+
+    #[test]
+    fn setattr_size_truncate_shrinks_payload() {
+        let mut h = mk_handler();
+        let created = h.handle(Request::Create {
+            parent: 1,
+            name: "t.bin".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        let (ino, fh) = match created {
+            HandlerResult::Ok(Reply::Create { attr, fh, .. }) => (attr.ino, fh),
+            other => panic!("unexpected {:?}", other),
+        };
+        let _ = h.handle(Request::Write {
+            ino,
+            fh,
+            offset: 0,
+            data: b"hello world".to_vec(),
+        });
+        // Truncate to 5 bytes.
+        let _ = h.handle(Request::Setattr {
+            ino,
+            attr: PartialAttr {
+                size: Some(5),
+                ..PartialAttr::default()
+            },
+        });
+        match h.handle(Request::Read {
+            ino,
+            fh,
+            offset: 0,
+            size: 100,
+        }) {
+            HandlerResult::Ok(Reply::Read { data }) => assert_eq!(&data, b"hello"),
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rmdir_empty_ok_then_enotempty() {
+        let mut h = mk_handler();
+        let _ = h.handle(Request::Mkdir {
+            parent: 1,
+            name: "d".to_string(),
+            mode: 0o755,
+        });
+        // Put a file inside → rmdir must fail with ENOTEMPTY.
+        let attr = match h.handle(Request::Lookup {
+            parent: 1,
+            name: "d".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Lookup(a)) => a,
+            other => panic!("unexpected {:?}", other),
+        };
+        let _ = h.handle(Request::Create {
+            parent: attr.ino,
+            name: "inner".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        match h.handle(Request::Rmdir {
+            parent: 1,
+            name: "d".to_string(),
+        }) {
+            HandlerResult::Err { errno, .. } => assert_eq!(errno, ENOTEMPTY),
+            other => panic!("unexpected {:?}", other),
+        }
+        // Remove the file, then rmdir succeeds.
+        let _ = h.handle(Request::Unlink {
+            parent: attr.ino,
+            name: "inner".to_string(),
+        });
+        match h.handle(Request::Rmdir {
+            parent: 1,
+            name: "d".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Rmdir) => {}
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rename_simple_move() {
+        let mut h = mk_handler();
+        let _ = h.handle(Request::Create {
+            parent: 1,
+            name: "a".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        match h.handle(Request::Rename {
+            parent: 1,
+            old_name: "a".to_string(),
+            new_parent: 1,
+            new_name: "b".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Rename) => {}
+            other => panic!("unexpected {:?}", other),
+        }
+        // Old name must be gone.
+        match h.handle(Request::Lookup {
+            parent: 1,
+            name: "a".to_string(),
+        }) {
+            HandlerResult::Err { errno, .. } => assert_eq!(errno, ENOENT),
+            other => panic!("unexpected {:?}", other),
+        }
+        // New name must exist.
+        match h.handle(Request::Lookup {
+            parent: 1,
+            name: "b".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Lookup(a)) => assert_eq!(a.kind, 1),
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rename_rewrites_descendants() {
+        let mut h = mk_handler();
+        let _ = h.handle(Request::Mkdir {
+            parent: 1,
+            name: "src".to_string(),
+            mode: 0o755,
+        });
+        let src_attr = match h.handle(Request::Lookup {
+            parent: 1,
+            name: "src".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Lookup(a)) => a,
+            other => panic!("unexpected {:?}", other),
+        };
+        let _ = h.handle(Request::Create {
+            parent: src_attr.ino,
+            name: "file".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        // Rename parent src → dst; descendant file must follow.
+        let _ = h.handle(Request::Rename {
+            parent: 1,
+            old_name: "src".to_string(),
+            new_parent: 1,
+            new_name: "dst".to_string(),
+        });
+        match h.handle(Request::Lookup {
+            parent: 1,
+            name: "dst".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Lookup(a)) => {
+                // Descendant must now live under /dst/file.
+                match h.handle(Request::Lookup {
+                    parent: a.ino,
+                    name: "file".to_string(),
+                }) {
+                    HandlerResult::Ok(Reply::Lookup(_)) => {}
+                    other => panic!("unexpected {:?}", other),
+                }
+            }
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn symlink_then_readlink_roundtrip() {
+        let mut h = mk_handler();
+        let attr = match h.handle(Request::Symlink {
+            parent: 1,
+            name: "link".to_string(),
+            target: "/some/where".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Symlink(a)) => a,
+            other => panic!("unexpected {:?}", other),
+        };
+        assert_eq!(attr.kind, 3);
+        match h.handle(Request::Readlink { ino: attr.ino }) {
+            HandlerResult::Ok(Reply::Readlink(t)) => assert_eq!(t, "/some/where"),
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn readlink_on_regular_file_is_einval() {
+        let mut h = mk_handler();
+        let attr = match h.handle(Request::Create {
+            parent: 1,
+            name: "notlink".to_string(),
+            mode: 0o644,
+            flags: 0,
+        }) {
+            HandlerResult::Ok(Reply::Create { attr, .. }) => attr,
+            other => panic!("unexpected {:?}", other),
+        };
+        match h.handle(Request::Readlink { ino: attr.ino }) {
+            HandlerResult::Err { errno, .. } => assert_eq!(errno, EINVAL),
             other => panic!("unexpected {:?}", other),
         }
     }
