@@ -3,6 +3,11 @@
 //! Each block device represents either a whole disk or a single partition.
 //! Partition block devices translate relative LBAs to absolute disk LBAs
 //! and enforce bounds checking.
+//!
+//! Device IDs are **stable**: once assigned, an ID never changes or gets
+//! reused for a different device during the lifetime of the system.
+//! Removing a device leaves a `None` slot that can be reclaimed by a
+//! future registration.
 
 use alloc::vec::Vec;
 use crate::serial_verbose_println;
@@ -12,7 +17,7 @@ use crate::fs::partition::PartitionType;
 /// Block device representing a whole disk or a partition on a disk.
 #[derive(Debug, Clone)]
 pub struct BlockDevice {
-    /// Global device ID (index into the device registry).
+    /// Global device ID (stable, never reassigned).
     pub id: u8,
     /// Disk index (0 = primary disk, 1 = secondary, ...).
     pub disk_id: u8,
@@ -126,12 +131,30 @@ impl BlockDevice {
 /// Maximum number of block devices we track.
 const MAX_DEVICES: usize = 32;
 
-/// Global block device registry.
-static DEVICES: Spinlock<Vec<BlockDevice>> = Spinlock::new(Vec::new());
+/// Global block device registry.  Slots may be `None` after a device
+/// has been removed — this keeps all other IDs stable.
+static DEVICES: Spinlock<Vec<Option<BlockDevice>>> = Spinlock::new(Vec::new());
 
 /// Register a new block device. Returns its assigned device ID.
+///
+/// Reuses the first free (None) slot if one exists, otherwise appends.
 pub fn register_device(dev: BlockDevice) -> u8 {
     let mut devs = DEVICES.lock();
+    // Look for a free slot
+    for (i, slot) in devs.iter_mut().enumerate() {
+        if slot.is_none() {
+            let id = i as u8;
+            let mut dev = dev;
+            dev.id = id;
+            serial_verbose_println!(
+                "[blockdev] registered: id={} disk={} part={:?} start={} size={}",
+                id, dev.disk_id, dev.partition, dev.start_lba, dev.size_sectors
+            );
+            *slot = Some(dev);
+            return id;
+        }
+    }
+    // No free slot — append
     let id = devs.len() as u8;
     let mut dev = dev;
     dev.id = id;
@@ -139,39 +162,49 @@ pub fn register_device(dev: BlockDevice) -> u8 {
         "[blockdev] registered: id={} disk={} part={:?} start={} size={}",
         id, dev.disk_id, dev.partition, dev.start_lba, dev.size_sectors
     );
-    devs.push(dev);
+    devs.push(Some(dev));
     id
 }
 
 /// Get a block device by its ID. Returns a clone.
 pub fn get_device(id: u8) -> Option<BlockDevice> {
     let devs = DEVICES.lock();
-    devs.get(id as usize).cloned()
+    devs.get(id as usize).and_then(|slot| slot.clone())
 }
 
 /// Find a block device for a specific disk and optional partition.
 pub fn find_device(disk_id: u8, partition: Option<u8>) -> Option<BlockDevice> {
     let devs = DEVICES.lock();
-    devs.iter().find(|d| d.disk_id == disk_id && d.partition == partition).cloned()
+    devs.iter()
+        .filter_map(|slot| slot.as_ref())
+        .find(|d| d.disk_id == disk_id && d.partition == partition)
+        .cloned()
 }
 
-/// List all registered block devices.
+/// List all registered block devices (skips empty slots).
 pub fn list_devices() -> Vec<BlockDevice> {
-    DEVICES.lock().clone()
+    DEVICES.lock().iter().filter_map(|slot| slot.clone()).collect()
 }
 
-/// Count of registered devices.
+/// Count of registered (non-empty) devices.
 pub fn device_count() -> usize {
-    DEVICES.lock().len()
+    DEVICES.lock().iter().filter(|s| s.is_some()).count()
 }
 
-/// Remove all partition devices for a given disk (keeps the whole-disk device).
+/// Remove all partition devices for a given disk (keeps the whole-disk
+/// device).  The freed slots become `None` — IDs are **not** reassigned.
 pub fn remove_partition_devices(disk_id: u8) {
     let mut devs = DEVICES.lock();
-    devs.retain(|d| !(d.disk_id == disk_id && d.partition.is_some()));
-    // Re-assign IDs to match index
-    for (i, dev) in devs.iter_mut().enumerate() {
-        dev.id = i as u8;
+    for slot in devs.iter_mut() {
+        if let Some(dev) = slot {
+            if dev.disk_id == disk_id && dev.partition.is_some() {
+                serial_verbose_println!(
+                    "[blockdev] removed: id={} disk={} part={:?}",
+                    dev.id, dev.disk_id, dev.partition
+                );
+                *slot = None;
+            }
+        }
     }
 }
 
@@ -227,7 +260,7 @@ pub fn scan_and_register_partitions(disk_id: u8) {
 /// Called after scan_and_register_partitions() for hot-plugged devices (USB, SD).
 /// Mount point format: /Volumes/disk{disk_id}p{part+1}
 pub fn auto_mount_removable(disk_id: u8) {
-    let devs = DEVICES.lock().clone();
+    let devs = list_devices();
     for dev in &devs {
         if dev.disk_id != disk_id || dev.partition.is_none() { continue; }
         let part_idx = dev.partition.unwrap();
