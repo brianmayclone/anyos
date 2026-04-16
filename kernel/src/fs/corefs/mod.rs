@@ -32,6 +32,9 @@ pub mod probe;
 #[cfg(any(test, feature = "kunit"))]
 mod integration_tests;
 
+#[cfg(any(test, feature = "kunit"))]
+mod integration_characterization_tests;
+
 pub use block_device::{AnyOsSectorIo, BlockDeviceAdapter, SectorIo};
 pub use driver::{corefs_to_fs_error, empty_persisted_state, CoreFsDriver};
 pub use probe::detect;
