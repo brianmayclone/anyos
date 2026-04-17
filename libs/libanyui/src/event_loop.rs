@@ -358,24 +358,15 @@ pub fn run_once() -> u32 {
                             }
                         }
                         compositor::EVT_FOCUS_LOST => {
-                            // Another window gained focus → dismiss popup.
-                            // But NOT for popups owned by an input control
-                            // (AutoComplete, DropDown, ComboBox): focus_by_tid
-                            // deliberately keeps focus on the main window after
-                            // popup creation, which generates a spurious
-                            // FOCUS_LOST on the popup.  These popups are
-                            // dismissed via click-outside (line ~409) or item
-                            // selection instead.
-                            let has_owner = st
+                            // Another window gained focus → dismiss popup
+                            // But NOT for AutoComplete popups — they intentionally
+                            // keep focus on the main window's text field.
+                            let is_ac = st
                                 .popup
                                 .as_ref()
-                                .map(|p| {
-                                    p.owner_autocomplete.is_some()
-                                        || p.owner_dropdown.is_some()
-                                        || p.owner_combobox.is_some()
-                                })
+                                .map(|p| p.owner_autocomplete.is_some())
                                 .unwrap_or(false);
-                            if !has_owner {
+                            if !is_ac {
                                 dismiss_popup(st);
                             }
                         }
@@ -1008,8 +999,9 @@ pub fn run_once() -> u32 {
                                                         owner_combobox: None,
                                                         owner_autocomplete: None,
                                                     });
-                                                    let tid = libsyscall::get_tid();
-                                                    compositor::focus_by_tid(st.channel_id, tid);
+                                                    // Popup keeps focus from create_window so it
+                                                    // receives keyboard navigation; clicking outside
+                                                    // dismisses via line ~409 / EVT_FOCUS_LOST.
                                                 }
                                             }
                                         }
@@ -1152,8 +1144,9 @@ pub fn run_once() -> u32 {
                                                             owner_combobox: None,
                                                             owner_autocomplete: None,
                                                         });
-                                                        let tid = libsyscall::get_tid();
-                                                        compositor::focus_by_tid(st.channel_id, tid);
+                                                        // Popup keeps focus from create_window so it
+                                                        // receives clicks/keys; clicking the main
+                                                        // window dismisses via EVT_FOCUS_LOST.
                                                     }
                                                 }
                                             }
@@ -1277,8 +1270,8 @@ pub fn run_once() -> u32 {
                                                                 owner_combobox: Some(target_id),
                                                                 owner_autocomplete: None,
                                                             });
-                                                            let tid = libsyscall::get_tid();
-                                                            compositor::focus_by_tid(st.channel_id, tid);
+                                                            // Popup keeps focus from create_window;
+                                                            // EVT_FOCUS_LOST dismisses on outside click.
                                                         }
                                                     }
                                                 }
@@ -1600,8 +1593,8 @@ pub fn run_once() -> u32 {
                                                 owner_combobox: Some(focus_id),
                                                 owner_autocomplete: None,
                                             });
-                                            let tid = libsyscall::get_tid();
-                                            compositor::focus_by_tid(st.channel_id, tid);
+                                            // Popup keeps focus from create_window;
+                                            // EVT_FOCUS_LOST dismisses on outside click.
                                         }
                                     }
                                 } else if st
