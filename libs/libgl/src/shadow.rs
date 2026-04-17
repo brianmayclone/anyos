@@ -10,8 +10,6 @@ use crate::types::*;
 
 const DEFAULT_UP: [f32; 3] = [0.0, 1.0, 0.0];
 const FALLBACK_UP: [f32; 3] = [0.0, 0.0, 1.0];
-const SHADOW_BLUR_THRESHOLD: f32 = 0.0035;
-
 #[inline(always)]
 fn dot(a: &[f32; 3], b: &[f32; 3]) -> f32 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -150,74 +148,6 @@ fn fit_directional_light_matrices(
     (view, proj, mvp)
 }
 
-fn blur_weighted_depth(
-    src: &[f32],
-    dst: &mut [f32],
-    w: usize,
-    h: usize,
-    horizontal: bool,
-) {
-    const OFFSETS: [isize; 5] = [-2, -1, 0, 1, 2];
-    const WEIGHTS: [f32; 5] = [1.0, 4.0, 6.0, 4.0, 1.0];
-
-    for y in 0..h {
-        for x in 0..w {
-            let idx = y * w + x;
-            let center = src[idx];
-            let mut sum = 0.0f32;
-            let mut total = 0.0f32;
-
-            for i in 0..OFFSETS.len() {
-                let off = OFFSETS[i];
-                let sx = if horizontal {
-                    (x as isize + off).clamp(0, w as isize - 1) as usize
-                } else {
-                    x
-                };
-                let sy = if horizontal {
-                    y
-                } else {
-                    (y as isize + off).clamp(0, h as isize - 1) as usize
-                };
-                let sample = src[sy * w + sx];
-                let diff = (sample - center).abs();
-                if diff <= SHADOW_BLUR_THRESHOLD {
-                    let weight = WEIGHTS[i];
-                    sum += sample * weight;
-                    total += weight;
-                }
-            }
-
-            dst[idx] = if total > 0.0 { sum / total } else { center };
-        }
-    }
-}
-
-fn prefilter_shadow_map() {
-    let c = ctx();
-    if c.shadow_depth_tex_id == 0 {
-        return;
-    }
-
-    let tex_id = c.shadow_depth_tex_id;
-    let mut tmp = core::mem::take(&mut c.shadow_blur_tmp);
-    if let Some(tex) = c.textures.get_mut(tex_id) {
-        let w = tex.width as usize;
-        let h = tex.height as usize;
-        let count = w.saturating_mul(h);
-        if count == 0 || tex.depth.len() != count {
-            c.shadow_blur_tmp = tmp;
-            return;
-        }
-        if tmp.len() != count {
-            tmp.resize(count, 1.0);
-        }
-        blur_weighted_depth(&tex.depth, &mut tmp, w, h, true);
-        blur_weighted_depth(&tmp, &mut tex.depth, w, h, false);
-    }
-    c.shadow_blur_tmp = tmp;
-}
-
 /// Ensure the internal shadow depth texture/FBO exist.
 pub fn ensure_resources() {
     let c = ctx();
@@ -231,10 +161,10 @@ pub fn ensure_resources() {
     crate::glGenTextures(1, tex.as_mut_ptr());
     c.shadow_depth_tex_id = tex[0];
     crate::glBindTexture(GL_TEXTURE_2D, tex[0]);
-    // Bilinear depth sampling softens the blocky PCF result noticeably in the
-    // software path without needing a much larger shadow map.
-    crate::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR as i32);
-    crate::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR as i32);
+    // Apps already do manual PCF taps in shader code. Keeping the raw depth
+    // map unfiltered preserves compare precision and avoids double-smoothing.
+    crate::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST as i32);
+    crate::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST as i32);
     crate::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE as i32);
     crate::glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE as i32);
     crate::glTexImage2D(
@@ -328,9 +258,6 @@ pub fn end_pass() {
     crate::glBindFramebuffer(GL_FRAMEBUFFER, 0);
     let prev = c.shadow_prev_viewport;
     crate::glViewport(prev[0], prev[1], prev[2], prev[3]);
-    if !unsafe { crate::USE_HW_BACKEND } {
-        prefilter_shadow_map();
-    }
     c.shadow_pass_active = false;
     c.shadow_map_ready = true;
 }
