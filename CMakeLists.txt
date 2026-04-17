@@ -49,6 +49,21 @@ else()
   message(STATUS "System filesystem: exfat (single-partition)")
 endif()
 
+# Dual-partition image layout (Phase 5):
+#   Partition 1 (exFAT /boot, small)     — kernel + boot assets
+#   Partition 2 (exFAT /, large)         — /System, /Applications, /Users, …
+# This is produced by the Python tools/__mkimage.py (not the C mkimage,
+# which only knows single-partition).  When OFF (default), the C
+# builder is used exactly as before — full backwards compatibility.
+option(ANYOS_DUAL_PARTITION "Create a dual-partition disk image (/boot + /)" OFF)
+set(ANYOS_BOOT_PARTITION_SIZE_MIB "32" CACHE STRING
+    "Size of the /boot partition in MiB (only used when ANYOS_DUAL_PARTITION=ON)")
+if(ANYOS_DUAL_PARTITION)
+  message(STATUS "Image layout: dual-partition (/boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB + /)")
+else()
+  message(STATUS "Image layout: single-partition (legacy)")
+endif()
+
 # Version — passed from build.sh/build.ps1 via -DANYOS_VERSION or read from VERSION file
 if(NOT ANYOS_VERSION)
   file(READ "${CMAKE_SOURCE_DIR}/VERSION" ANYOS_VERSION)

@@ -21,6 +21,11 @@ pub(super) fn init_storage_and_userspace(
     serial_println!("  Block cache initialized (8 MiB, 16384 sectors)");
     fs::vfs::init();
     fs::vfs::mount("/", fs::vfs::FsType::Fat, 0);
+    // Dual-partition layouts add `/boot` as a second sub-mount so that
+    // Stage 2 and the early kernel can continue to read the (small) boot
+    // filesystem while user-facing paths (/System, /Applications, /Users)
+    // all live on the larger root partition.
+    fs::vfs::mount_boot_if_present();
     fs::vfs::mount_devfs();
     maybe_mount_cdrom_root();
     try_mount_corefs_partitions();
@@ -73,7 +78,28 @@ fn detect_and_register_root_partition() {
     blockdev::scan_and_register_partitions(0);
 
     let devices = blockdev::list_devices();
-    let mut found_root_lba = false;
+
+    // Collect all data-carrying partitions on disk 0 in MBR order.
+    //
+    // Criteria:
+    //  - Partition slot assigned (skips the whole-disk pseudo-entry).
+    //  - Not a GPT EFI System Partition (ESP is bootloader-only).
+    //  - Not CoreFS — CoreFS partitions are mounted separately under
+    //    /mnt/corefs* (or /System with the opt-in flag from Phase 1),
+    //    not used as the classic Root-FS.
+    //
+    // The sort key is the partition-table index so we always see the
+    // partitions in the same order the MBR lists them, regardless of
+    // registration order.
+    let mut data_parts: alloc::vec::Vec<&blockdev::BlockDevice> = devices
+        .iter()
+        .filter(|d| d.disk_id == 0 && d.partition.is_some())
+        .filter(|d| {
+            d.part_type != PartitionType::GptEsp && d.part_type != PartitionType::CoreFs
+        })
+        .collect();
+    data_parts.sort_by_key(|d| d.partition.unwrap_or(0));
+
     for dev in &devices {
         if dev.disk_id == 0 && dev.partition.is_some() {
             serial_println!(
@@ -82,22 +108,55 @@ fn detect_and_register_root_partition() {
                 dev.start_lba,
                 dev.part_type.label()
             );
-            if !found_root_lba && dev.part_type != PartitionType::GptEsp {
-                fs::vfs::set_root_partition_lba(dev.start_lba as u32);
-                fs::vfs::set_root_blockdev_id(dev.id);
-                found_root_lba = true;
-                serial_println!(
-                    "  Root partition: sda{} (LBA {}, blockdev id={})",
-                    dev.partition.unwrap() + 1,
-                    dev.start_lba,
-                    dev.id
-                );
-            }
         }
     }
 
-    if !found_root_lba {
-        serial_println!("  No partition table found, using default LBA 8192");
+    // Policy for picking `/` vs `/boot`:
+    //
+    //  - 0 data partitions: no MBR, fall back to DEFAULT_PARTITION_LBA
+    //    (setup mode / legacy CD-booted images).
+    //  - 1 data partition: classic single-partition layout — this is
+    //    `/`, there is no separate `/boot` mount.
+    //  - 2+ data partitions (dual-partition layout, Phase 5): the first
+    //    partition is the boot filesystem (kernel assets, boot.cfg,
+    //    logo/font) and gets mounted under `/boot`; the second is the
+    //    root filesystem (/System, /Applications, /Users, …).  Any
+    //    extra data partitions beyond the first two are ignored here
+    //    and can still be mounted manually.
+    match data_parts.len() {
+        0 => {
+            serial_println!("  No partition table found, using default LBA 8192");
+        }
+        1 => {
+            let root = data_parts[0];
+            fs::vfs::set_root_partition_lba(root.start_lba as u32);
+            fs::vfs::set_root_blockdev_id(root.id);
+            serial_println!(
+                "  Root partition: sda{} (LBA {}, blockdev id={}) — single-partition layout",
+                root.partition.unwrap() + 1,
+                root.start_lba,
+                root.id
+            );
+        }
+        _ => {
+            let boot = data_parts[0];
+            let root = data_parts[1];
+            fs::vfs::set_root_partition_lba(root.start_lba as u32);
+            fs::vfs::set_root_blockdev_id(root.id);
+            fs::vfs::set_boot_blockdev_id(boot.id);
+            serial_println!(
+                "  Root partition: sda{} (LBA {}, blockdev id={})",
+                root.partition.unwrap() + 1,
+                root.start_lba,
+                root.id
+            );
+            serial_println!(
+                "  Boot partition: sda{} (LBA {}, blockdev id={}) — dual-partition layout",
+                boot.partition.unwrap() + 1,
+                boot.start_lba,
+                boot.id
+            );
+        }
     }
 }
 

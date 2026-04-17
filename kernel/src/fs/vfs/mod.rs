@@ -44,6 +44,13 @@ static ROOT_PARTITION_LBA: core::sync::atomic::AtomicU32 = core::sync::atomic::A
 static ROOT_BLOCKDEV_ID: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(u32::MAX);
 
+/// blockdev ID of the dedicated `/boot` partition (Partition 1 in a
+/// dual-partition layout), or `u32::MAX` if the image uses the classic
+/// single-partition layout.  Set by the boot-side partition scanner —
+/// see `kernel/src/boot/x86/storage.rs::detect_and_register_root_partition`.
+static BOOT_BLOCKDEV_ID: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(u32::MAX);
+
 fn queue_disk_flush(disks: &mut Vec<u8>, disk_id: u8) {
     if !disks.contains(&disk_id) {
         disks.push(disk_id);
@@ -137,6 +144,45 @@ pub fn set_root_blockdev_id(id: u8) {
 pub fn root_blockdev_id() -> Option<u8> {
     let v = ROOT_BLOCKDEV_ID.load(core::sync::atomic::Ordering::Relaxed);
     if v == u32::MAX { None } else { Some(v as u8) }
+}
+
+/// Record the blockdev ID that backs the dedicated `/boot` partition
+/// (Partition 1 in a dual-partition layout).  When unset (default), the
+/// image is assumed to use a single-partition layout and no `/boot`
+/// mount is created.
+pub fn set_boot_blockdev_id(id: u8) {
+    BOOT_BLOCKDEV_ID.store(id as u32, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// blockdev ID of the `/boot` partition, or `None` if the image has no
+/// dedicated boot partition.
+pub fn boot_blockdev_id() -> Option<u8> {
+    let v = BOOT_BLOCKDEV_ID.load(core::sync::atomic::Ordering::Relaxed);
+    if v == u32::MAX { None } else { Some(v as u8) }
+}
+
+/// Mount the `/boot` partition if one was discovered during partition
+/// scanning.  Must be called after the root `/` mount is in place,
+/// because the VFS-state must already be initialized.
+///
+/// Dispatch for `/boot/*` paths goes through
+/// [`path::find_submount`] — the same mechanism that routes `/mnt/*`
+/// and `/System` mounts to their respective FS drivers.
+pub fn mount_boot_if_present() {
+    let dev_id = match boot_blockdev_id() {
+        Some(id) => id,
+        None => return,
+    };
+    // fs_type_id=0 triggers the exFAT/FAT auto-detect path inside
+    // mount_fs, which covers both FAT32 and exFAT boot partitions.
+    let dev_str = alloc::format!("{}", dev_id as u32);
+    match mount_fs("/boot", &dev_str, 0) {
+        Ok(()) => crate::serial_println!("  Mounted /boot (device {})", dev_id),
+        Err(e) => crate::serial_println!(
+            "  Warning: /boot mount failed on device {}: {:?}",
+            dev_id, e
+        ),
+    }
 }
 
 /// Invalidate all directory cache entries after path topology changes.

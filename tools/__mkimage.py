@@ -688,9 +688,10 @@ class ExFatFormatter:
         struct.pack_into('<I', self.fat_cache, 0, 0xFFFFFFF8)
         struct.pack_into('<I', self.fat_cache, 4, 0xFFFFFFFF)
 
-        # In-memory allocation bitmap
-        bitmap_bytes = (self.cluster_count + 7) // 8
-        self.bitmap = bytearray(bitmap_bytes)
+        # In-memory allocation bitmap.  Store the byte count on `self`
+        # so `init_fs()` can compute how many clusters the bitmap spans.
+        self.bitmap_bytes = (self.cluster_count + 7) // 8
+        self.bitmap = bytearray(self.bitmap_bytes)
 
         print(f"  exFAT: {self.cluster_count} clusters, {self.cluster_size} bytes/cluster")
         print(f"  exFAT: FAT at sector +{self.fat_offset} ({self.fat_length} sectors), "
@@ -1148,14 +1149,24 @@ class ExFatFormatter:
     # Paths are relative to sysroot, using forward slashes.
     ROOT_ONLY_DIRS = {"System/sbin", "System/users/perm"}
 
-    def populate_from_sysroot(self, sysroot_path):
-        """Recursively copy files from sysroot directory to the filesystem."""
+    def populate_from_sysroot(self, sysroot_path, include_predicate=None):
+        """Recursively copy files from sysroot directory to the filesystem.
+
+        `include_predicate` is an optional callable `fn(virt_path: str,
+        is_dir: bool) -> bool` that decides whether an entry is written.
+        When omitted, every file / directory is included — backwards-
+        compatible with single-partition callers.
+
+        Directories are visited even if the predicate rejects them —
+        their *children* may still match.  The directory itself is only
+        materialised on disk the first time a file inside it is written.
+        """
         if not os.path.isdir(sysroot_path):
             print(f"  Warning: sysroot path '{sysroot_path}' does not exist, skipping")
             return
-        self._populate_dir(sysroot_path, self.root_cluster, "")
+        self._populate_dir(sysroot_path, self.root_cluster, "", include_predicate)
 
-    def _populate_dir(self, host_path, parent_cluster, virt_path):
+    def _populate_dir(self, host_path, parent_cluster, virt_path, include_predicate=None):
         """Recursively populate a directory."""
         entries = sorted(os.listdir(host_path))
 
@@ -1166,6 +1177,22 @@ class ExFatFormatter:
             if entry_name.startswith('.'):
                 continue
 
+            is_dir = os.path.isdir(full_path)
+
+            # When a predicate is supplied, skip entries it rejects.
+            # Directories still descend so sub-entries that match can
+            # drag their own parent path into existence (see lazy
+            # directory materialisation in populate_from_sysroot_lazy).
+            if include_predicate is not None:
+                if is_dir:
+                    # We recurse into the directory unconditionally and
+                    # let the predicate decide file-by-file; populating
+                    # empty directories is harmless.
+                    pass
+                else:
+                    if not include_predicate(child_virt, False):
+                        continue
+
             # Check if this path (or any ancestor) is root-only
             is_restricted = any(
                 child_virt == d or child_virt.startswith(d + "/")
@@ -1175,12 +1202,12 @@ class ExFatFormatter:
             gid = 0
             mode = 0xF00 if is_restricted else 0xFFF
 
-            if os.path.isdir(full_path):
+            if is_dir:
                 dir_cluster = self.create_directory(
                     parent_cluster, entry_name, uid=uid, gid=gid, mode=mode)
                 suffix = " [root-only]" if is_restricted else ""
                 print(f"    Dir:  {entry_name}/ (cluster={dir_cluster}){suffix}")
-                self._populate_dir(full_path, dir_cluster, child_virt)
+                self._populate_dir(full_path, dir_cluster, child_virt, include_predicate)
 
             elif os.path.isfile(full_path):
                 with open(full_path, 'rb') as f:
@@ -1398,6 +1425,201 @@ def create_bios_image(args):
         f.write(image)
 
     print(f"\nDisk image created: {args.output} ({args.image_size} MiB)")
+
+
+# =====================================================================
+# Image creation: BIOS mode — dual partition layout
+# =====================================================================
+
+def _chs_encode(lba):
+    """Encode an LBA as an MBR CHS tuple (obsolete but required).  We
+    clamp at the classic (1023, 254, 63) maximum; modern BIOSes
+    rely on the 32-bit LBA field exclusively."""
+    cylinder = min(lba // (255 * 63), 1023)
+    head = (lba // 63) % 255
+    sector = (lba % 63) + 1
+    return bytes((
+        head & 0xFF,
+        (sector & 0x3F) | ((cylinder >> 2) & 0xC0),
+        cylinder & 0xFF,
+    ))
+
+
+def _write_mbr_partition_entry(image, slot, *, bootable, ptype, start_lba, size_sectors):
+    """Overwrite one 16-byte MBR partition entry (slot 0..3)."""
+    if not (0 <= slot < 4):
+        raise ValueError(f"MBR partition slot {slot} out of range")
+    if start_lba + size_sectors > 0xFFFFFFFF:
+        raise ValueError(
+            f"partition ends at LBA {start_lba + size_sectors}, beyond MBR 32-bit limit"
+        )
+    entry = bytearray(16)
+    entry[0] = 0x80 if bootable else 0x00
+    entry[1:4] = _chs_encode(start_lba)
+    entry[4] = ptype & 0xFF
+    entry[5:8] = _chs_encode(start_lba + size_sectors - 1)
+    struct.pack_into("<I", entry, 8, start_lba)
+    struct.pack_into("<I", entry, 12, size_sectors)
+    off = 0x1BE + slot * 16
+    image[off:off + 16] = bytes(entry)
+
+
+def _boot_include_predicate(virt_path, is_dir):
+    """Select sysroot entries that belong on the dedicated /boot partition.
+
+    Files under `/boot/...` are always included.  Everything else is
+    excluded — the kernel binary is injected separately below.
+    """
+    return virt_path == "boot" or virt_path.startswith("boot/")
+
+
+def _root_include_predicate(virt_path, is_dir):
+    """Select sysroot entries that belong on the root partition (/).
+
+    Complement of the boot predicate: everything *except* `/boot/...`.
+    """
+    return virt_path != "boot" and not virt_path.startswith("boot/")
+
+
+def create_bios_image_dual(args):
+    """Create a BIOS-bootable disk image with two partitions:
+       Partition 1 (exFAT, small)   → mounted as /boot by the kernel
+       Partition 2 (exFAT, large)   → mounted as / by the kernel
+
+    Layout on disk:
+        Sector 0          MBR + Stage 1
+        Sectors 1-63      Stage 2
+        Sectors 64-127    Kernel flat binary (unchanged — Stage 2 still
+                          loads it directly from these sectors while
+                          the primary exFAT read path resolves
+                          `/System/krnl64` from Partition 1)
+        LBA 128..+X       Partition 1: exFAT /boot
+        LBA 128+X..end    Partition 2: exFAT /
+    """
+    image_size = args.image_size * 1024 * 1024
+    boot_size_bytes = args.boot_partition_size_mib * 1024 * 1024
+
+    # Load boot sectors and kernel.
+    with open(args.stage1, "rb") as f:
+        stage1 = f.read()
+    if len(stage1) != SECTOR_SIZE:
+        print(f"ERROR: Stage 1 must be exactly {SECTOR_SIZE} bytes, got {len(stage1)}", file=sys.stderr)
+        sys.exit(1)
+    with open(args.stage2, "rb") as f:
+        stage2 = f.read()
+    stage2_max = 63 * SECTOR_SIZE
+    if len(stage2) > stage2_max:
+        print(f"ERROR: Stage 2 is {len(stage2)} bytes, max is {stage2_max}", file=sys.stderr)
+        sys.exit(1)
+    with open(args.kernel, "rb") as f:
+        kernel_elf = f.read()
+
+    KERNEL_LMA = 0x00100000
+    kernel_flat = elf_to_flat_binary(kernel_elf, KERNEL_LMA)
+
+    print(f"Dual-partition BIOS image:")
+    print(f"  Image size: {args.image_size} MiB")
+    print(f"  Partition 1 (/boot): {args.boot_partition_size_mib} MiB")
+    print(f"  Stage 1: {len(stage1)} bytes")
+    print(f"  Stage 2: {len(stage2)} bytes "
+          f"({(len(stage2) + SECTOR_SIZE - 1) // SECTOR_SIZE} sectors)")
+    print(f"  Kernel:  {len(kernel_flat)} bytes "
+          f"(delivered as /System/krnl64 on Partition 1)")
+
+    # NOTE: Unlike the legacy single-partition Python path, we do NOT
+    # drop the flat kernel into raw sectors 64..127.  Modern anyOS
+    # kernels are ~6 MiB, far larger than that window, and the C
+    # mkimage never used raw-sector kernel either — Stage 2 reads the
+    # kernel from the exFAT `/System/krnl64` file on Partition 1.
+
+    # Geometry
+    total_sectors = image_size // SECTOR_SIZE
+    boot_start = args.fs_start
+    boot_sectors = boot_size_bytes // SECTOR_SIZE
+    root_start = boot_start + boot_sectors
+    if root_start >= total_sectors:
+        print("ERROR: Partition 1 consumes the whole image, no room for Partition 2",
+              file=sys.stderr)
+        sys.exit(1)
+    root_sectors = total_sectors - root_start
+
+    print(f"  Partition 1: LBA {boot_start}..{boot_start + boot_sectors - 1} "
+          f"({boot_sectors} sectors)")
+    print(f"  Partition 2: LBA {root_start}..{root_start + root_sectors - 1} "
+          f"({root_sectors} sectors)")
+
+    image = bytearray(image_size)
+    image[0:len(stage1)] = stage1
+    image[SECTOR_SIZE:SECTOR_SIZE + len(stage2)] = stage2
+
+    # ── Partition 1: /boot ────────────────────────────────────────────────
+    #
+    # Populated from sysroot/boot/* (filtered) plus:
+    #  - /System/krnl64 injected directly from the flat kernel binary,
+    #    because Stage 2 reads the kernel from the primary exFAT
+    #    partition by that path.
+    #
+    # NOTE (Phase 5b open items — tracked in memory/phase5-dual-partition-plan.md):
+    #  - The C mkimage additionally injects /boot/logo.bin (PNG→RGB
+    #    converted via `convert_logo_for_bootloader`) and /boot/font.bin
+    #    (verbatim) from separate build-artefact paths.  We don't have
+    #    a Python port of the logo conversion yet, so the current
+    #    Python dual-partition image is missing those two assets —
+    #    Stage 2 will still find boot.cfg + krnl64 but graphical
+    #    splash/font fallback behaviour is undefined.
+    #  - Boot-validation in QEMU pending; tested up to the Stage-2
+    #    "5" marker (file-load phase) but not through exfat_init on
+    #    Partition 1.
+    print(f"\nPartition 1 (/boot) — populating:")
+    boot_fs = ExFatFormatter(image, boot_start, boot_sectors)
+    boot_fs.write_boot_sector()
+    boot_fs.init_fs()
+    if args.sysroot:
+        boot_fs.populate_from_sysroot(args.sysroot, _boot_include_predicate)
+
+    # Inject /System/krnl64 from the flat kernel binary (see note above).
+    system_dir_cluster = boot_fs.create_directory(
+        boot_fs.root_cluster, "System", uid=0, gid=0, mode=0xFFF,
+    )
+    print(f"    Dir:  System/ (cluster={system_dir_cluster})")
+    boot_fs.add_file(
+        system_dir_cluster, "krnl64", kernel_flat, uid=0, gid=0, mode=0xFFF,
+    )
+    print(f"  /System/krnl64 (on /boot partition): {len(kernel_flat)} bytes")
+    boot_fs.flush_fat_and_bitmap()
+
+    # ── Partition 2: / ────────────────────────────────────────────────────
+    print(f"\nPartition 2 (/) — populating:")
+    root_fs = ExFatFormatter(image, root_start, root_sectors)
+    root_fs.write_boot_sector()
+    root_fs.init_fs()
+    if args.sysroot:
+        root_fs.populate_from_sysroot(args.sysroot, _root_include_predicate)
+    root_fs.flush_fat_and_bitmap()
+
+    # ── MBR partition table ───────────────────────────────────────────────
+    _write_mbr_partition_entry(
+        image, 0,
+        bootable=True, ptype=0x07,
+        start_lba=boot_start, size_sectors=boot_sectors,
+    )
+    _write_mbr_partition_entry(
+        image, 1,
+        bootable=False, ptype=0x07,
+        start_lba=root_start, size_sectors=root_sectors,
+    )
+    # Slots 2-3 stay empty (already zero-initialised).
+    image[0x1FE] = 0x55
+    image[0x1FF] = 0xAA
+
+    with open(args.output, "wb") as f:
+        f.write(image)
+
+    print(f"\nDual-partition disk image created: {args.output} ({args.image_size} MiB)")
+    print(f"  Partition 1 (/boot): LBA {boot_start} + {boot_sectors} sectors "
+          f"({args.boot_partition_size_mib} MiB)")
+    print(f"  Partition 2 (/):     LBA {root_start} + {root_sectors} sectors "
+          f"({root_sectors * SECTOR_SIZE // (1024 * 1024)} MiB)")
 
 
 # =====================================================================
@@ -1989,6 +2211,14 @@ def main():
                         help="Path to sysroot directory to populate filesystem")
     parser.add_argument("--fs-start", type=int, default=8192,
                         help="Start sector for exFAT filesystem (BIOS mode only)")
+    parser.add_argument("--dual-partition", action="store_true",
+                        help=("BIOS mode: create a dual-partition layout — "
+                              "Partition 1 (exFAT /boot) + Partition 2 "
+                              "(exFAT /).  Matches the `--system-fs=corefs`-"
+                              "style layout described in the Phase-5 plan."))
+    parser.add_argument("--boot-partition-size-mib", type=int, default=32,
+                        help=("Size of the /boot partition in MiB when "
+                              "--dual-partition is set (default: 32)."))
     args = parser.parse_args()
 
     if args.iso:
@@ -2000,7 +2230,10 @@ def main():
             print("ERROR: --stage1, --stage2, and --kernel are required for BIOS mode",
                   file=sys.stderr)
             sys.exit(1)
-        create_bios_image(args)
+        if args.dual_partition:
+            create_bios_image_dual(args)
+        else:
+            create_bios_image(args)
 
 
 if __name__ == "__main__":

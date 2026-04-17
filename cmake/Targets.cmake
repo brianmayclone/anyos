@@ -49,27 +49,63 @@ if(ANYOS_SYSTEM_FS STREQUAL "corefs")
       --mkfs-corefs-host ${MKFS_COREFS_HOST_EXECUTABLE}
       --label system)
   set(COREFS_POST_DEPS ${MKFS_COREFS_HOST_EXECUTABLE})
-  set(IMAGE_COMMENT "Creating bootable disk image (512 MiB exFAT + ${ANYOS_SYSTEM_FS_SIZE_MIB} MiB CoreFS)")
 else()
   set(COREFS_POST_CMD "")
   set(COREFS_POST_DEPS "")
+endif()
+
+# Image layout:
+#
+#   * Single-partition (default)  — built by the fast C mkimage
+#     tool.  Kernel + all sysroot files end up on one exFAT
+#     filesystem starting at sector 128.  Optional CoreFS post-
+#     processing (see above) appends a CoreFS partition at the end.
+#
+#   * Dual-partition (ANYOS_DUAL_PARTITION=ON)  — built by the
+#     Python tools/__mkimage.py.  Partition 1 (exFAT /boot, default
+#     32 MiB) contains Stage2's required files + /System/krnl64;
+#     Partition 2 (exFAT /) holds everything else — /System/bin,
+#     /Applications, /Users, /Libraries, …  The kernel mounts them
+#     as / and /boot respectively (see kernel/src/boot/x86/storage.rs).
+if(ANYOS_DUAL_PARTITION)
+  if(NOT PYTHON_EXECUTABLE)
+    message(FATAL_ERROR
+      "ANYOS_DUAL_PARTITION=ON requires Python (python3/python) in PATH")
+  endif()
+  set(IMAGE_BUILD_CMD
+    ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/__mkimage.py
+      --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
+      --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
+      --kernel ${KERNEL_ELF}
+      --output ${DISK_IMAGE}
+      --image-size 512
+      --sysroot ${SYSROOT_DIR}
+      --fs-start 128
+      --dual-partition
+      --boot-partition-size-mib ${ANYOS_BOOT_PARTITION_SIZE_MIB})
+  set(IMAGE_BUILD_DEP ${CMAKE_SOURCE_DIR}/tools/__mkimage.py)
+  set(IMAGE_COMMENT "Creating dual-partition disk image (/boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB + /)")
+else()
+  set(IMAGE_BUILD_CMD
+    ${MKIMAGE_EXECUTABLE}
+      --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
+      --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
+      --kernel ${KERNEL_ELF}
+      --output ${DISK_IMAGE}
+      --image-size 512
+      --sysroot ${SYSROOT_DIR}
+      --fs-start 128
+      --boot-cfg ${BOOT_CFG}
+      --boot-logo ${BOOT_LOGO}
+      --boot-font ${BOOT_FONT_BIN}
+      ${MKIMAGE_RESET_FLAG})
+  set(IMAGE_BUILD_DEP ${MKIMAGE_EXECUTABLE})
   set(IMAGE_COMMENT "Creating bootable disk image (512 MiB, exFAT filesystem)")
 endif()
 
 add_custom_command(
   OUTPUT ${DISK_IMAGE}
-  COMMAND ${MKIMAGE_EXECUTABLE}
-    --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
-    --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
-    --kernel ${KERNEL_ELF}
-    --output ${DISK_IMAGE}
-    --image-size 512
-    --sysroot ${SYSROOT_DIR}
-    --fs-start 128
-    --boot-cfg ${BOOT_CFG}
-    --boot-logo ${BOOT_LOGO}
-    --boot-font ${BOOT_FONT_BIN}
-    ${MKIMAGE_RESET_FLAG}
+  COMMAND ${IMAGE_BUILD_CMD}
   ${COREFS_POST_CMD}
   DEPENDS
     ${CMAKE_BINARY_DIR}/stage1.bin
@@ -83,7 +119,7 @@ add_custom_command(
     ${SYSROOT_DIR}/.stamp
     ${SELFHOST_SYSROOT_DEPS}
     ${C_TOOLCHAIN_DEPS}
-    ${MKIMAGE_EXECUTABLE}
+    ${IMAGE_BUILD_DEP}
     ${PROVISION_DEPS}
     ${BOOT_FONT_BIN}
     ${BOOT_CFG}
