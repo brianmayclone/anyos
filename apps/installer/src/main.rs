@@ -488,8 +488,27 @@ fn main() {
 
     let disk_grid = ui::DataGrid::new(1, 1); disk_grid.set_visible(false); page2.add(&disk_grid);
 
+    // System-filesystem layout toggle.  Default OFF (single-partition exFAT,
+    // behaves exactly like pre-Phase-4 installs).  When enabled, the
+    // installer additionally creates a CoreFS partition at the end of the
+    // selected disk — see apps/installer/src/worker.rs::create_partition_dual
+    // and format_corefs_via_mkfs.
+    let fs_cb = ui::Checkbox::new(
+        "Add CoreFS system partition (128 MiB, experimental)"
+    );
+    fs_cb.set_position(cx - 200, 378);
+    fs_cb.set_size(400, 20);
+    fs_cb.set_color(tc.window_bg);
+    fs_cb.set_text_color(0xFFCCCCCC);
+    fs_cb.on_checked_changed(|ev| {
+        use crate::state::{SYSTEM_FS, SYSTEM_FS_COREFS, SYSTEM_FS_EXFAT};
+        let v = if ev.checked { SYSTEM_FS_COREFS } else { SYSTEM_FS_EXFAT };
+        SYSTEM_FS.store(v, core::sync::atomic::Ordering::Release);
+    });
+    page2.add(&fs_cb);
+
     let p2_warn = ui::Label::new("The selected disk will be erased and anyOS will be installed.");
-    p2_warn.set_position(0, 390); p2_warn.set_size(WIN_W, 16); p2_warn.set_font_size(11);
+    p2_warn.set_position(0, 402); p2_warn.set_size(WIN_W, 16); p2_warn.set_font_size(11);
     p2_warn.set_color(tc.window_bg); p2_warn.set_text_color(0xFF777777);
     p2_warn.set_text_align(ui::TEXT_ALIGN_CENTER); page2.add(&p2_warn);
 

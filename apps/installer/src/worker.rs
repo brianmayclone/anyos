@@ -184,19 +184,65 @@ pub fn install_worker() {
             StepAction::Partition => {
                 if mode == 1 { log("  Skipped (partition install)"); continue; }
                 let bl_dev = find_whole_disk_dev(disk_id).unwrap_or(dev_id);
-                create_partition(bl_dev, disk_id as u32, total_sectors);
-                log("  Partition table created");
+                let want_corefs = SYSTEM_FS.load(Ordering::Acquire) == SYSTEM_FS_COREFS;
+                if want_corefs {
+                    let corefs_mib = SYSTEM_FS_COREFS_SIZE_MIB.load(Ordering::Acquire);
+                    match create_partition_dual(bl_dev, total_sectors, corefs_mib) {
+                        Ok((exfat_sectors, corefs_start, corefs_sectors)) => {
+                            log(&format!(
+                                "  Partition table: exFAT start={} size={}, CoreFS start={} size={}",
+                                PARTITION_START, exfat_sectors, corefs_start, corefs_sectors
+                            ));
+                        }
+                        Err(e) => {
+                            fail(&format!("Dual partition creation failed: {}", e));
+                            return;
+                        }
+                    }
+                } else {
+                    create_partition(bl_dev, disk_id as u32, total_sectors);
+                    log("  Partition table created (exFAT only)");
+                }
             }
             StepAction::Format => {
+                let want_corefs = SYSTEM_FS.load(Ordering::Acquire) == SYSTEM_FS_COREFS;
                 if mode == 0 {
                     let bl_dev = find_whole_disk_dev(disk_id).unwrap_or(dev_id);
-                    let fs_sectors = (total_sectors - PARTITION_START as u64) as u32;
+                    let corefs_mib = SYSTEM_FS_COREFS_SIZE_MIB.load(Ordering::Acquire);
+                    let total_fs_sectors = total_sectors - PARTITION_START as u64;
+                    let fs_sectors = if want_corefs {
+                        let corefs_sectors = corefs_mib_to_sectors(corefs_mib);
+                        if corefs_sectors as u64 >= total_fs_sectors {
+                            fail("CoreFS partition size exceeds available disk space");
+                            return;
+                        }
+                        (total_fs_sectors - corefs_sectors as u64) as u32
+                    } else {
+                        total_fs_sectors as u32
+                    };
                     format_exfat(bl_dev, PARTITION_START, fs_sectors);
                 } else {
                     format_exfat(dev_id, 0, total_sectors as u32);
                 }
                 fs::sync();
                 log("  Filesystem formatted (exFAT)");
+
+                if want_corefs && mode == 0 {
+                    // The dual-partition MBR entry was written above by
+                    // create_partition_dual.  Rescan so the new CoreFS
+                    // partition gets its own device id, then hand off to
+                    // the on-system /System/bin/mkfs.corefs binary.
+                    sys::partition_rescan(disk_id as u32);
+                    anyos_std::process::sleep(200);
+                    match format_corefs_via_mkfs(disk_id, "system") {
+                        Ok(msg) => log(&format!("  CoreFS formatted ({})", msg)),
+                        Err(e) => {
+                            // Non-fatal: boot exFAT is ready, the user
+                            // can re-run mkfs.corefs manually if needed.
+                            log(&format!("  Warning: CoreFS format failed: {}", e));
+                        }
+                    }
+                }
 
                 // Mount the target
                 let part_id = mount_target(mode, dev_id, disk_id);
@@ -560,6 +606,131 @@ fn create_partition(dev_id: u32, _disk_id: u32, total_sectors: u64) {
     mbr[off+12..off+16].copy_from_slice(&(part_size as u32).to_le_bytes());
     for i in 1..4 { let o = 446 + i * 16; for b in &mut mbr[o..o+16] { *b = 0; } }
     sys::disk_write(dev_id, 0, 1, &mbr);
+}
+
+/// Convert `mib` MiB → 512-byte sectors.  Overflow-safe for sane
+/// installer inputs (max 4 GiB, ~8 million sectors, fits in u32).
+fn corefs_mib_to_sectors(mib: u32) -> u32 {
+    mib.saturating_mul(1024 * 1024 / SECTOR_SIZE)
+}
+
+/// Write a dual-partition MBR — slot 0 = exFAT boot, slot 1 = CoreFS
+/// system — on a freshly-selected whole-disk device.
+///
+/// Returns `(exfat_sectors, corefs_start_lba, corefs_sectors)` for
+/// downstream logging.  Reserves at least 16 MiB for the boot exFAT
+/// to avoid shrinking it into uselessness.
+fn create_partition_dual(
+    dev_id: u32,
+    total_sectors: u64,
+    corefs_size_mib: u32,
+) -> Result<(u32, u32, u32), &'static str> {
+    let corefs_sectors = corefs_mib_to_sectors(corefs_size_mib);
+    if corefs_sectors == 0 {
+        return Err("CoreFS partition size must be > 0 MiB");
+    }
+    let available = total_sectors
+        .checked_sub(PARTITION_START as u64)
+        .ok_or("disk smaller than PARTITION_START")?;
+    if (corefs_sectors as u64) >= available {
+        return Err("CoreFS partition exceeds available disk space");
+    }
+    const MIN_EXFAT_SECTORS: u64 = 32 * 1024; // 16 MiB
+    let exfat_sectors_u64 = available - corefs_sectors as u64;
+    if exfat_sectors_u64 < MIN_EXFAT_SECTORS {
+        return Err("CoreFS size too large — boot exFAT would be < 16 MiB");
+    }
+    let exfat_sectors = exfat_sectors_u64 as u32;
+    let corefs_start = PARTITION_START + exfat_sectors;
+
+    let mut mbr = [0u8; 512];
+    sys::disk_read(dev_id, 0, 1, &mut mbr);
+    mbr[510] = 0x55; mbr[511] = 0xAA;
+
+    // Slot 0 — boot exFAT (bootable).
+    let off = 446;
+    mbr[off]   = 0x80; mbr[off+1] = 0xFE; mbr[off+2] = 0xFF; mbr[off+3] = 0xFF;
+    mbr[off+4] = FS_TYPE_EXFAT as u8;
+    mbr[off+5] = 0xFE; mbr[off+6] = 0xFF; mbr[off+7] = 0xFF;
+    mbr[off+8..off+12].copy_from_slice(&PARTITION_START.to_le_bytes());
+    mbr[off+12..off+16].copy_from_slice(&exfat_sectors.to_le_bytes());
+
+    // Slot 1 — CoreFS system (non-bootable, type 0xCF).
+    let off1 = 446 + 16;
+    mbr[off1]   = 0x00; mbr[off1+1] = 0xFE; mbr[off1+2] = 0xFF; mbr[off1+3] = 0xFF;
+    mbr[off1+4] = FS_TYPE_COREFS as u8;
+    mbr[off1+5] = 0xFE; mbr[off1+6] = 0xFF; mbr[off1+7] = 0xFF;
+    mbr[off1+8..off1+12].copy_from_slice(&corefs_start.to_le_bytes());
+    mbr[off1+12..off1+16].copy_from_slice(&corefs_sectors.to_le_bytes());
+
+    // Slots 2 + 3 — unused.
+    for i in 2..4 {
+        let o = 446 + i * 16;
+        for b in &mut mbr[o..o+16] { *b = 0; }
+    }
+
+    sys::disk_write(dev_id, 0, 1, &mbr);
+    Ok((exfat_sectors, corefs_start, corefs_sectors))
+}
+
+/// After the MBR rescan exposes the CoreFS partition with its own
+/// device-id, invoke the on-disk `/System/bin/mkfs.corefs` binary to
+/// lay down a fresh CoreFS superblock on it.
+///
+/// Returns a short diagnostic message on success, or an error string
+/// with enough context to show in the installer log.
+fn format_corefs_via_mkfs(
+    disk_id: u8,
+    label: &str,
+) -> Result<anyos_std::String, anyos_std::String> {
+    // Walk the fresh disk list to find the partition on `disk_id` with
+    // part_type == 0xCF.  Entry layout matches query_device_capacity
+    // in libs/libcorefs-tools (64-byte stride, id at +0, disk_id at +1,
+    // partition at +2, size_sectors at +16..+24, part_type at +40).
+    const ENTRY: usize = 64;
+    let mut buf = [0u8; ENTRY * 32];
+    let count = sys::disk_list(&mut buf);
+    if count == 0 || count == u32::MAX {
+        return Err(anyos_std::String::from("disk_list returned no entries"));
+    }
+
+    let mut corefs_dev: Option<u32> = None;
+    for i in 0..count as usize {
+        let base = i * ENTRY;
+        if base + ENTRY > buf.len() { break; }
+        let d_id = buf[base + 1];
+        let part = buf[base + 2];
+        if d_id != disk_id || part == 0xFF { continue; }
+
+        // The part_type byte lives at +40 in the 64-byte disk_list entry.
+        // Cross-referenced with query_device_capacity / kernel/src/drivers/storage/blockdev.rs.
+        let ptype = buf[base + 40];
+        if ptype == FS_TYPE_COREFS as u8 {
+            corefs_dev = Some(buf[base] as u32);
+            break;
+        }
+    }
+
+    let dev_id = corefs_dev
+        .ok_or_else(|| anyos_std::String::from(
+            "no 0xCF partition visible after rescan — did the partition table write succeed?"
+        ))?;
+
+    // mkfs.corefs reads its size from disk_list, so just passing
+    // --device is enough.  Label keeps the volume identifiable.
+    let path = "/System/bin/mkfs.corefs";
+    let args = format!("--device {} --label {}", dev_id, label);
+    let tid = anyos_std::process::spawn(path, &args);
+    if tid == u32::MAX {
+        return Err(anyos_std::String::from("failed to spawn /System/bin/mkfs.corefs"));
+    }
+    let exit = anyos_std::process::waitpid(tid);
+    if exit != 0 {
+        return Err(anyos_std::format!(
+            "mkfs.corefs exited with code {} (device {})", exit, dev_id
+        ));
+    }
+    Ok(anyos_std::format!("device {}, label '{}'", dev_id, label))
 }
 
 // ── Recursive file copy ────────────────────────────────────────────────────

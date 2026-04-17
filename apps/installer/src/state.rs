@@ -13,6 +13,22 @@ pub static WORKER_PROGRESS: AtomicU32 = AtomicU32::new(0);
 pub static INSTALL_DISK_ID: AtomicU32 = AtomicU32::new(u32::MAX);
 pub static INSTALL_MODE: AtomicU32 = AtomicU32::new(0); // 0=whole disk, 1=existing partition
 
+/// System-filesystem layout chosen by the user on Page 2.
+///
+///  * `SYSTEM_FS_EXFAT` (0, default) — classic single-partition install:
+///    one exFAT partition spanning the whole disk.
+///  * `SYSTEM_FS_COREFS` (1) — dual-partition install: exFAT boot partition
+///    plus a CoreFS system partition at the tail of the disk, sized by
+///    [`SYSTEM_FS_COREFS_SIZE_MIB`].  Matches the layout the image-build
+///    pipeline produces with `cmake -DANYOS_SYSTEM_FS=corefs`.
+pub static SYSTEM_FS: AtomicU32 = AtomicU32::new(0);
+pub const SYSTEM_FS_EXFAT: u32 = 0;
+pub const SYSTEM_FS_COREFS: u32 = 1;
+
+/// Size (MiB) of the CoreFS system partition in dual-partition mode.
+/// Only read when `SYSTEM_FS == SYSTEM_FS_COREFS`.  Default: 128 MiB.
+pub static SYSTEM_FS_COREFS_SIZE_MIB: AtomicU32 = AtomicU32::new(128);
+
 // Marshal IDs for cross-thread UI updates
 pub static mut PROGRESS_BAR_ID: u32 = 0;
 pub static mut STATUS_LABEL_ID: u32 = 0;
@@ -39,6 +55,10 @@ pub const FAT_OFFSET: u32 = 32;
 pub const SPC: u32 = 8;
 pub const SPC_SHIFT: u8 = 3;
 pub const FS_TYPE_EXFAT: u32 = 7;
+
+/// MBR partition-type byte for CoreFS volumes (matches
+/// `kernel/src/fs/partition.rs:115`).
+pub const FS_TYPE_COREFS: u32 = 0xCF;
 
 pub const WIN_W: u32 = 780;
 pub const WIN_H: u32 = 520;
