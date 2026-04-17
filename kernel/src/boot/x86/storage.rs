@@ -172,6 +172,24 @@ fn detect_and_register_root_partition() {
             );
         }
     }
+
+    // Phase 5c — auto-activate CoreFS-as-/System when the dual-partition
+    // image also carries a CoreFS system partition (MBR type 0xCF) on
+    // the boot disk.  Without this, try_mount_corefs_partitions() would
+    // attach the partition to `/mnt/corefs` by default; with the flag
+    // set it replaces the exFAT `/System/*` content with the CoreFS
+    // tree.  Leaving the flag off when no CoreFS partition exists
+    // keeps single-partition / exfat-only installs identical to before.
+    let has_corefs_partition = devices
+        .iter()
+        .any(|d| d.disk_id == 0 && d.partition.is_some()
+                 && d.part_type == PartitionType::CoreFs);
+    if has_corefs_partition {
+        fs::corefs::enable_mount_as_system();
+        serial_println!(
+            "  CoreFS partition detected on boot disk — /System will be served from CoreFS"
+        );
+    }
 }
 
 fn try_mount_corefs_partitions() {

@@ -41,11 +41,21 @@ set(BOOT_LOGO ${CMAKE_SOURCE_DIR}/kernel/src/graphics/boot_logo.bin)
 # ANYOS_SYSTEM_FS cache variable — defaults to "exfat" (no-op) for full
 # backwards compatibility.
 if(ANYOS_SYSTEM_FS STREQUAL "corefs")
+  # Where the CoreFS partition descriptor lands in the MBR depends on
+  # whether the base image is single-partition (slot 0 = exFAT, CoreFS
+  # goes into slot 1) or dual-partition (slot 0 = /boot, slot 1 = /,
+  # CoreFS goes into slot 2).
+  if(ANYOS_DUAL_PARTITION)
+    set(COREFS_MBR_SLOT "2")
+  else()
+    set(COREFS_MBR_SLOT "1")
+  endif()
   set(COREFS_POST_CMD
     COMMAND ${PYTHON_EXECUTABLE}
       ${CMAKE_SOURCE_DIR}/tools/anyos_append_corefs.py
       --image ${DISK_IMAGE}
       --size ${ANYOS_SYSTEM_FS_SIZE_MIB}M
+      --slot ${COREFS_MBR_SLOT}
       --mkfs-corefs-host ${MKFS_COREFS_HOST_EXECUTABLE}
       --label system)
   set(COREFS_POST_DEPS ${MKFS_COREFS_HOST_EXECUTABLE})
