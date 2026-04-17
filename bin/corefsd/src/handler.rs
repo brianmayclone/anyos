@@ -17,7 +17,8 @@ use corefs_core::domain::inode::{Inode, InodeId, InodeKind};
 use corefs_core::domain::metadata::FileMetadata;
 use corefs_core::error::CoreFsError;
 use corefs_core::platform::Timestamp;
-use corefs_core::storage::block_store::BlockRecord;
+use corefs_core::storage::block_store::BlockStore;
+use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
 use corefs_core::storage::ondisk::session::OdfDeviceSession;
 use corefs_fuse_adapter::{FuseHandler, HandlerResult};
 use corefs_fuse_proto::{Attr, DirEntry, PROTOCOL_VERSION, PartialAttr, Reply, Request, StatFs};
@@ -66,6 +67,11 @@ type FuseInodeNo = u64;
 /// Stateful handler behind the `/dev/fuse` event loop.
 pub struct CoreFsHandler {
     session: OdfDeviceSession,
+    /// Extent-basierter Block-Store. Hält die Datei-Bytes im internen
+    /// Compat-Device des `BlockStore` (kein Byte-Feld im `BlockRecord` mehr).
+    /// Nach jeder Mutation synchronisieren wir die Records zurück in den
+    /// `PersistedState`, damit Metadaten-Flush sie mit abbildet.
+    blocks: BlockStore,
     /// Map FUSE InodeNo → absoluten CoreFS-Pfad (Root = 1 → "/").
     inode_by_no: BTreeMap<FuseInodeNo, String>,
     /// Rückweg: CoreFS-InodeId → FUSE-InodeNo (um beim Lookup alte Nummern
@@ -86,8 +92,13 @@ impl CoreFsHandler {
     pub fn new(session: OdfDeviceSession) -> Self {
         let mut inode_by_no = BTreeMap::new();
         inode_by_no.insert(1u64, "/".to_string());
+        let blocks = BlockStore::from_records_with_block_size(
+            session.state().block_records.clone(),
+            BLOCK_SIZE as usize,
+        );
         Self {
             session,
+            blocks,
             inode_by_no,
             no_by_inode_id: BTreeMap::new(),
             next_no: 2,
@@ -95,6 +106,19 @@ impl CoreFsHandler {
             next_fh: 1,
             clock: Timestamp::EPOCH,
         }
+    }
+
+    /// Spiegelt die aktuellen `BlockStore`-Records in den `PersistedState`
+    /// zurück und flusht (via `session.mutate`), damit Metadaten persistent
+    /// werden. Datei-Bytes leben im internen Compat-Device des `BlockStore`.
+    fn sync_records(&mut self) -> Result<(), CoreFsError> {
+        let records = self.blocks.records();
+        self.session
+            .mutate(|state| {
+                state.block_records = records;
+                Ok(())
+            })
+            .map(|_| ())
     }
 
     /// Liefert die FUSE-InodeNo zu einem Inode — vergibt sie bei Bedarf neu.
@@ -293,11 +317,11 @@ impl CoreFsHandler {
                 };
             }
         };
-        let data = state
-            .block_records
-            .iter()
-            .find(|r| r.inode == inode_id)
-            .map(|r| r.bytes.clone())
+        let _ = state;
+        let data = self
+            .blocks
+            .read(inode_id)
+            .map(|r| r.bytes)
             .unwrap_or_default();
         let start = offset as usize;
         let end = start.saturating_add(size as usize).min(data.len());
@@ -321,37 +345,41 @@ impl CoreFsHandler {
         };
         let now = self.clock;
         let write_len = data.len();
-        let result = self.session.mutate(|state| {
-            let inode_id = state
-                .active_inodes
-                .iter()
-                .find(|i| i.path == path)
-                .map(|i| i.id)
-                .ok_or_else(|| CoreFsError::NotFound(path.clone()))?;
-            // Expand-or-create the corresponding block_record.
-            let rec = if let Some(idx) = state
-                .block_records
-                .iter()
-                .position(|r| r.inode == inode_id)
-            {
-                &mut state.block_records[idx]
-            } else {
-                state.block_records.push(BlockRecord {
-                    inode: inode_id,
-                    bytes: Vec::new(),
-                    checksum: 0,
-                    device_block: 0,
-                    allocated_blocks: 0,
-                });
-                state.block_records.last_mut().unwrap()
-            };
-            let start = offset as usize;
-            let end = start + data.len();
-            if rec.bytes.len() < end {
-                rec.bytes.resize(end, 0);
+        // Resolve inode and compute the new byte buffer outside of
+        // `session.mutate(...)` — we mutate the `BlockStore` (which owns the
+        // bytes) and then sync metadata back into state.
+        let inode_id = match self
+            .session
+            .state()
+            .active_inodes
+            .iter()
+            .find(|i| i.path == path)
+            .map(|i| i.id)
+        {
+            Some(id) => id,
+            None => {
+                return HandlerResult::Err {
+                    errno: ENOENT,
+                    message: None,
+                };
             }
-            rec.bytes[start..end].copy_from_slice(&data);
-            // Update inode size/mtime.
+        };
+        let mut existing = self
+            .blocks
+            .read(inode_id)
+            .map(|r| r.bytes)
+            .unwrap_or_default();
+        let start = offset as usize;
+        let end = start + data.len();
+        if existing.len() < end {
+            existing.resize(end, 0);
+        }
+        existing[start..end].copy_from_slice(&data);
+        self.blocks.write(inode_id, existing);
+
+        let records = self.blocks.records();
+        let result = self.session.mutate(|state| {
+            state.block_records = records;
             if let Some(inode) = state.active_inodes.iter_mut().find(|i| i.id == inode_id) {
                 if end > inode.size {
                     inode.size = end;
@@ -487,6 +515,16 @@ impl CoreFsHandler {
         } else {
             format!("{}/{}", parent_path, name)
         };
+        let removed_id: Option<InodeId> = self
+            .session
+            .state()
+            .active_inodes
+            .iter()
+            .find(|i| i.path == child_path)
+            .map(|i| i.id);
+        if let Some(id) = removed_id {
+            let _ = self.blocks.remove(id);
+        }
         let result = self.session.mutate(|state| {
             let idx = state
                 .active_inodes
@@ -494,7 +532,6 @@ impl CoreFsHandler {
                 .position(|i| i.path == child_path)
                 .ok_or_else(|| CoreFsError::NotFound(child_path.clone()))?;
             let removed = state.active_inodes.remove(idx);
-            // Remove backing block records.
             state.block_records.retain(|r| r.inode != removed.id);
             state.deleted_inodes.push(removed);
             Ok(())
@@ -740,41 +777,43 @@ impl CoreFsHandler {
             return HandlerResult::Ok(Reply::Setattr(root_attr));
         }
         let now = self.clock;
-        let result = self.session.mutate(|state| {
-            let inode_id = state
-                .active_inodes
-                .iter()
-                .find(|i| i.path == path)
-                .map(|i| i.id)
-                .ok_or_else(|| CoreFsError::NotFound(path.clone()))?;
-            // Apply size-change (truncate / extend) to the backing record.
-            if let Some(new_size) = attr.size {
-                let rec_idx = state
-                    .block_records
-                    .iter()
-                    .position(|r| r.inode == inode_id);
-                match rec_idx {
-                    Some(idx) => {
-                        let rec = &mut state.block_records[idx];
-                        let ns = new_size as usize;
-                        if rec.bytes.len() < ns {
-                            rec.bytes.resize(ns, 0);
-                        } else {
-                            rec.bytes.truncate(ns);
-                        }
-                    }
-                    None if new_size > 0 => {
-                        state.block_records.push(BlockRecord {
-                            inode: inode_id,
-                            bytes: Vec::from_iter(core::iter::repeat(0u8).take(new_size as usize)),
-                            checksum: 0,
-                            device_block: 0,
-                            allocated_blocks: 0,
-                        });
-                    }
-                    None => {}
-                }
+        // Resolve inode and apply size-change to the `BlockStore` before
+        // opening the state-mutation borrow.
+        let inode_id = match self
+            .session
+            .state()
+            .active_inodes
+            .iter()
+            .find(|i| i.path == path)
+            .map(|i| i.id)
+        {
+            Some(id) => id,
+            None => {
+                return HandlerResult::Err {
+                    errno: ENOENT,
+                    message: None,
+                };
             }
+        };
+        if let Some(new_size) = attr.size {
+            let mut bytes = self
+                .blocks
+                .read(inode_id)
+                .map(|r| r.bytes)
+                .unwrap_or_default();
+            let ns = new_size as usize;
+            if bytes.len() < ns {
+                bytes.resize(ns, 0);
+            } else {
+                bytes.truncate(ns);
+            }
+            if !bytes.is_empty() || self.blocks.contains(inode_id) {
+                self.blocks.write(inode_id, bytes);
+            }
+        }
+        let records = self.blocks.records();
+        let result = self.session.mutate(|state| {
+            state.block_records = records;
             if let Some(inode) = state.active_inodes.iter_mut().find(|i| i.id == inode_id) {
                 let mut touched_content = false;
                 let mut touched_meta = false;
@@ -884,16 +923,14 @@ impl CoreFsHandler {
             );
             inode.size = target_len;
             state.active_inodes.push(inode);
-            // Store target as raw bytes in a backing block record.
-            state.block_records.push(BlockRecord {
-                inode: InodeId(next_id),
-                bytes: target_bytes,
-                checksum: 0,
-                device_block: 0,
-                allocated_blocks: 0,
-            });
             Ok(InodeId(next_id))
         });
+        // Store target as raw bytes in the `BlockStore` outside the `mutate`
+        // closure — the closure only owns `&mut state`, not the store.
+        if let Ok((id, _)) = &result {
+            self.blocks.write(*id, target_bytes);
+            let _ = self.sync_records();
+        }
         match result {
             Ok((id, _)) => {
                 let inode_clone = {
@@ -947,11 +984,10 @@ impl CoreFsHandler {
                 message: Some(String::from("inode is not a symlink")),
             };
         }
-        let bytes = state
-            .block_records
-            .iter()
-            .find(|r| r.inode == inode.id)
-            .map(|r| r.bytes.clone())
+        let bytes = self
+            .blocks
+            .read(inode.id)
+            .map(|r| r.bytes)
             .unwrap_or_default();
         match String::from_utf8(bytes) {
             Ok(s) => HandlerResult::Ok(Reply::Readlink(s)),
@@ -968,7 +1004,7 @@ impl CoreFsHandler {
         let used_blocks: u64 = state
             .block_records
             .iter()
-            .map(|r| r.allocated_blocks)
+            .map(|r| r.total_blocks())
             .sum();
         // VolumeDescriptor does not track total_blocks directly in this
         // snapshot — fake it with a generous constant derived from the
