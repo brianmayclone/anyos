@@ -557,4 +557,35 @@ impl Filesystem for NtfsFsDriver {
     fn read_only(&self) -> bool {
         true
     }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    // commit_open_file inherits the default no-op:  NTFS is read-only,
+    // there are no writes to commit.
+}
+
+/// Probe + mount this filesystem at the root path.
+///
+/// Tries to construct a [`NtfsFs`] from the VBR at `partition_lba`.
+/// `NtfsFs::new` checks the OEM signature `"NTFS    "` and returns
+/// an error for non-NTFS volumes.
+pub fn try_mount_root(
+    device_id: u32,
+    partition_lba: u32,
+    partition_sectors: u64,
+) -> Option<alloc::boxed::Box<dyn Filesystem + Send + Sync>> {
+    try_mount_root_typed(device_id, partition_lba, partition_sectors)
+        .map(|d| alloc::boxed::Box::new(d) as alloc::boxed::Box<dyn Filesystem + Send + Sync>)
+}
+
+/// Same as [`try_mount_root`] but returns the concrete driver type
+/// for the per-FS typed-field VFS layout.
+pub fn try_mount_root_typed(
+    device_id: u32,
+    partition_lba: u32,
+    _partition_sectors: u64,
+) -> Option<NtfsFsDriver> {
+    NtfsFs::new(device_id, partition_lba).ok().map(NtfsFsDriver::new)
 }

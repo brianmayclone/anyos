@@ -345,4 +345,48 @@ impl Filesystem for FatFsDriver {
     fn read_only(&self) -> bool {
         false
     }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn commit_open_file(
+        &self,
+        parent_inode: u32,
+        name: &str,
+        new_inode: u32,
+        new_size: u32,
+    ) -> Result<(), FsError> {
+        // FAT close-time dirent commit: persist (size, first_cluster).
+        // FAT inode == cluster directly, so parent_inode is parent_cluster
+        // and new_inode is the new first_cluster of the file.
+        self.inner
+            .lock()
+            .update_entry(parent_inode, name, new_size, new_inode)
+    }
+}
+
+/// Probe + mount this filesystem at the root path.
+///
+/// Tries to construct a [`FatFs`] from the VBR at `partition_lba`.
+/// `FatFs::new` validates the BPB internally and rejects non-FAT
+/// volumes — `try_mount_root` propagates that rejection so the
+/// next probe in the registry can run.
+pub fn try_mount_root(
+    device_id: u32,
+    partition_lba: u32,
+    partition_sectors: u64,
+) -> Option<alloc::boxed::Box<dyn Filesystem + Send + Sync>> {
+    try_mount_root_typed(device_id, partition_lba, partition_sectors)
+        .map(|d| alloc::boxed::Box::new(d) as alloc::boxed::Box<dyn Filesystem + Send + Sync>)
+}
+
+/// Same as [`try_mount_root`] but returns the concrete driver type
+/// for the per-FS typed-field VFS layout.
+pub fn try_mount_root_typed(
+    device_id: u32,
+    partition_lba: u32,
+    _partition_sectors: u64,
+) -> Option<FatFsDriver> {
+    FatFs::new(device_id, partition_lba).ok().map(FatFsDriver::new)
 }

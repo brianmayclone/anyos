@@ -905,6 +905,14 @@ impl Filesystem for CoreFsDriver {
     fn read_only(&self) -> bool {
         self.inner.lock().read_only
     }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    // commit_open_file inherits the default no-op:  CoreFS persists
+    // writes immediately via BlockStore::write_at, no dirent fix-up
+    // needed at close().
 }
 
 // ---------------------------------------------------------------------------

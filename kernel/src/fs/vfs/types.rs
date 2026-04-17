@@ -3,6 +3,7 @@
 use crate::fs::file::{DirEntry, FileType};
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::any::Any;
 
 /// Supported filesystem types for mount points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,6 +168,38 @@ pub trait Filesystem: Send + Sync {
     /// is always read-only, an ISO 9660 CD is always read-only).
     fn read_only(&self) -> bool {
         false
+    }
+
+    // -----------------------------------------------------------------
+    // Type-erasure helpers
+    // -----------------------------------------------------------------
+
+    /// Type-erased reference for downcasting.  Used by the VFS to
+    /// access driver-specific APIs (e.g. exFAT cluster bookkeeping for
+    /// close-time dirent commits) without resorting to per-FS branches
+    /// at every call site.  Each implementation simply returns `self`.
+    fn as_any(&self) -> &dyn Any;
+
+    // -----------------------------------------------------------------
+    // Close-time / write-time housekeeping
+    // -----------------------------------------------------------------
+
+    /// Commit the file's directory-entry metadata (size, first cluster,
+    /// mtime) after writes.  Cluster-based filesystems (exFAT, FAT)
+    /// override to write the dirent back to disk; transactional
+    /// filesystems (CoreFS) inherit the no-op default because writes
+    /// persist immediately via [`Filesystem::write`].
+    ///
+    /// `parent_inode`/`name` identify the directory entry; `new_inode`
+    /// reflects any cluster reallocation that happened during writes.
+    fn commit_open_file(
+        &self,
+        _parent_inode: u32,
+        _name: &str,
+        _new_inode: u32,
+        _new_size: u32,
+    ) -> Result<(), FsError> {
+        Ok(())
     }
 }
 

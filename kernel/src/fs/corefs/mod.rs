@@ -78,6 +78,47 @@ pub fn mount_as_system_enabled() -> bool {
 /// war. `false` ist kein Fehler, sondern signalisiert "keine CoreFS-Partition
 /// an dieser Position" oder "Mount fehlgeschlagen" (Details in den
 /// Serial-Logs).
+/// Probe + mount this filesystem at the root path.
+///
+/// Wraps `CoreFsDriver::mount_writable` in the uniform Trait-Box
+/// envelope every FS provides for the generic `ROOT_FS_PROBES`
+/// loop in `vfs::mod`.  Returns `None` if the partition does not
+/// carry the CoreFS magic, mirroring the convention of
+/// `exfat::try_mount_root` and friends.
+///
+/// `device_id` is interpreted as the underlying disk id (`u8`),
+/// matching how the boot-time mount() invokes us.
+pub fn try_mount_root(
+    device_id: u32,
+    partition_lba: u32,
+    partition_sectors: u64,
+) -> Option<alloc::boxed::Box<dyn crate::fs::vfs::Filesystem + Send + Sync>> {
+    try_mount_root_typed(device_id, partition_lba, partition_sectors)
+        .map(|d| alloc::boxed::Box::new(d)
+            as alloc::boxed::Box<dyn crate::fs::vfs::Filesystem + Send + Sync>)
+}
+
+/// Same as [`try_mount_root`] but returns the concrete driver type
+/// for the per-FS typed-field VFS layout.
+pub fn try_mount_root_typed(
+    device_id: u32,
+    partition_lba: u32,
+    partition_sectors: u64,
+) -> Option<CoreFsDriver> {
+    let disk_id = device_id as u8;
+    if !detect(disk_id, partition_lba) {
+        return None;
+    }
+    let adapter = BlockDeviceAdapter::new(
+        disk_id,
+        partition_lba,
+        partition_sectors,
+        /* read_only = */ false,
+    )
+    .ok()?;
+    CoreFsDriver::mount_writable(adapter).ok()
+}
+
 pub fn try_auto_mount_corefs(
     mount_path: &str,
     disk_id: u8,

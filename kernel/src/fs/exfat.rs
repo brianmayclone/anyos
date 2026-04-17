@@ -2276,4 +2276,61 @@ impl Filesystem for ExFatFsDriver {
         // mounted ro would set this via a future flag on ExFatFs.
         false
     }
+
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    fn commit_open_file(
+        &self,
+        parent_inode: u32,
+        name: &str,
+        new_inode: u32,
+        new_size: u32,
+    ) -> Result<(), VfsFsError> {
+        // exFAT close-time dirent commit: write back the updated
+        // (size, first_cluster) pair so subsequent mounts see the
+        // post-write state.  Mirrors the legacy `commit_open_exfat_entry`
+        // path that lived in `vfs::mod.rs`.
+        let (parent_cluster, _) = decode_inode(parent_inode);
+        self.inner
+            .lock()
+            .update_entry(parent_cluster, name, new_size, new_inode)
+    }
+}
+
+/// Probe + mount this filesystem at the root path.
+///
+/// Returns a fully-mounted [`ExFatFsDriver`] boxed as
+/// `Box<dyn Filesystem + Send + Sync>` if the on-disk VBR's OEM
+/// identifier reads `"EXFAT   "`.  Returns `None` if the volume is
+/// not exFAT (the next probe in the registry takes over).
+///
+/// `_partition_sectors` is accepted for signature uniformity with the
+/// other FS probes but unused here — `ExFatFs::new` reads the size
+/// from the VBR itself.
+pub fn try_mount_root(
+    device_id: u32,
+    partition_lba: u32,
+    partition_sectors: u64,
+) -> Option<alloc::boxed::Box<dyn Filesystem + Send + Sync>> {
+    try_mount_root_typed(device_id, partition_lba, partition_sectors)
+        .map(|d| alloc::boxed::Box::new(d) as alloc::boxed::Box<dyn Filesystem + Send + Sync>)
+}
+
+/// Same as [`try_mount_root`] but returns the concrete driver type
+/// for the per-FS typed-field VFS layout.
+pub fn try_mount_root_typed(
+    device_id: u32,
+    partition_lba: u32,
+    _partition_sectors: u64,
+) -> Option<ExFatFsDriver> {
+    let mut buf = [0u8; 512];
+    if !disk_read_sectors(device_id, partition_lba, 1, &mut buf) {
+        return None;
+    }
+    if &buf[3..11] != b"EXFAT   " {
+        return None;
+    }
+    ExFatFs::new(device_id, partition_lba).ok().map(ExFatFsDriver::new)
 }
