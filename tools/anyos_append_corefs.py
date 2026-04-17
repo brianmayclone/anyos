@@ -168,6 +168,7 @@ def append_corefs_partition(
     slot: int,
     label: str,
     mkfs_corefs_host: Path,
+    populate_from: "Path | None" = None,
 ) -> None:
     """Extend the image and format a fresh CoreFS volume in the appended space."""
     if not image.is_file():
@@ -223,7 +224,8 @@ def append_corefs_partition(
     write_mbr_partition_entry(image, slot, entry)
     print(f"  wrote MBR partition slot {slot} (type=0xCF, boot=0)")
 
-    # Step 3: format the newly-reserved region as CoreFS.
+    # Step 3: format the newly-reserved region as CoreFS (and optionally
+    # populate it from a host directory in the same invocation).
     cmd = [
         str(mkfs_corefs_host),
         "--output", str(image),
@@ -231,6 +233,8 @@ def append_corefs_partition(
         "--size", str(size_bytes),
         "--label", label,
     ]
+    if populate_from is not None:
+        cmd.extend(["--populate", str(populate_from)])
     print(f"  invoking mkfs-corefs-host…")
     result = subprocess.run(cmd, check=False, capture_output=True, text=True)
     for line in result.stdout.splitlines():
@@ -266,6 +270,10 @@ def main() -> int:
                         help="Volume label for the CoreFS partition (default: system).")
     parser.add_argument("--slot", type=int, default=1,
                         help="MBR partition slot to populate (0..3, default: 1).")
+    parser.add_argument("--populate", type=Path, default=None,
+                        help="Optional host directory whose contents are copied "
+                             "into the CoreFS volume after format. Forwarded to "
+                             "mkfs-corefs-host --populate.")
     args = parser.parse_args()
 
     try:
@@ -275,6 +283,7 @@ def main() -> int:
             slot=args.slot,
             label=args.label,
             mkfs_corefs_host=args.mkfs_corefs_host,
+            populate_from=args.populate,
         )
     except (FileNotFoundError, ValueError, IOError, RuntimeError) as e:
         print(f"anyos_append_corefs: ERROR: {e}", file=sys.stderr)

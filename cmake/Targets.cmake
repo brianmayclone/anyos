@@ -45,10 +45,19 @@ if(ANYOS_SYSTEM_FS STREQUAL "corefs")
   # whether the base image is single-partition (slot 0 = exFAT, CoreFS
   # goes into slot 1) or dual-partition (slot 0 = /boot, slot 1 = /,
   # CoreFS goes into slot 2).
+  #
+  # In dual-partition layouts we also populate the CoreFS volume with
+  # the contents of sysroot/System, so that once the kernel mounts
+  # the partition under /System (via the auto-activate path in Phase
+  # 5c/1) every binary, library and app bundle is served from CoreFS.
+  # In single-partition layouts we leave the CoreFS partition empty —
+  # it exists as a sandbox/test target next to the main exFAT root.
   if(ANYOS_DUAL_PARTITION)
     set(COREFS_MBR_SLOT "2")
+    set(COREFS_POPULATE_ARGS --populate ${SYSROOT_DIR}/System)
   else()
     set(COREFS_MBR_SLOT "1")
+    set(COREFS_POPULATE_ARGS)
   endif()
   set(COREFS_POST_CMD
     COMMAND ${PYTHON_EXECUTABLE}
@@ -57,7 +66,8 @@ if(ANYOS_SYSTEM_FS STREQUAL "corefs")
       --size ${ANYOS_SYSTEM_FS_SIZE_MIB}M
       --slot ${COREFS_MBR_SLOT}
       --mkfs-corefs-host ${MKFS_COREFS_HOST_EXECUTABLE}
-      --label system)
+      --label system
+      ${COREFS_POPULATE_ARGS})
   set(COREFS_POST_DEPS ${MKFS_COREFS_HOST_EXECUTABLE})
 else()
   set(COREFS_POST_CMD "")

@@ -48,6 +48,10 @@ pub struct FormatRequest<'a> {
     /// Optional override for the number of journal blocks.
     /// `None` picks [`FormatOptions::default`]'s value.
     pub journal_blocks: Option<u64>,
+    /// Optional host directory whose contents will be copied into the
+    /// freshly-formatted volume after save.  `None` leaves the volume
+    /// empty (just root).
+    pub populate_from: Option<&'a Path>,
 }
 
 /// Summary of a successful format operation.
@@ -59,6 +63,8 @@ pub struct FormatOutcome {
     pub journal_blocks: u64,
     pub label: String,
     pub generation: u64,
+    /// Populated only when [`FormatRequest::populate_from`] was set.
+    pub populate: Option<crate::populate::PopulateReport>,
 }
 
 /// Format a CoreFS volume according to `req`.
@@ -144,7 +150,24 @@ pub fn format_volume(req: &FormatRequest<'_>) -> Result<FormatOutcome, FormatErr
     // so downstream tooling (image builder, inspect, fsck) sees
     // consistent numbers.
     let total_blocks = req.size_bytes / BLOCK_SIZE;
-    drop(session); // flush on drop
+
+    // Optional populate.  We reclaim the device from the session first
+    // because BlockStore::write_at needs a `&mut dyn BlockDevice` and
+    // the session's device field is private.
+    let populate_report = if let Some(src) = req.populate_from {
+        let mut device = session.into_device();
+        let report = crate::populate::populate_volume(
+            device.as_mut(),
+            src,
+            Timestamp::EPOCH,
+        )
+        .map_err(|e| FormatError::Populate(e.to_string()))?;
+        // Device drops here, flushing pending writes to the file.
+        Some(report)
+    } else {
+        drop(session); // flush on drop
+        None
+    };
 
     Ok(FormatOutcome {
         capacity_bytes: req.size_bytes,
@@ -155,6 +178,7 @@ pub fn format_volume(req: &FormatRequest<'_>) -> Result<FormatOutcome, FormatErr
         // `format_new_at` writes superblock twice (format + save_state_native),
         // so generation starts at 2.  Matching the anyOS-side mkfs.corefs.
         generation: 2,
+        populate: populate_report,
     })
 }
 
@@ -189,6 +213,8 @@ pub enum FormatError {
     },
     /// CoreFS format or adapter error bubbled up from `corefs-core`.
     CoreFs(corefs_core::error::CoreFsError),
+    /// Error during the optional post-format populate step.
+    Populate(String),
 }
 
 impl std::fmt::Display for FormatError {
@@ -210,6 +236,7 @@ impl std::fmt::Display for FormatError {
             }
             FormatError::Io { path, source } => write!(f, "I/O error on {path}: {source}"),
             FormatError::CoreFs(e) => write!(f, "corefs format failed: {e}"),
+            FormatError::Populate(msg) => write!(f, "populate failed: {msg}"),
         }
     }
 }

@@ -25,6 +25,7 @@
 
 mod backend;
 mod format;
+mod populate;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -73,6 +74,7 @@ fn main() -> ExitCode {
                 | FormatError::InvalidOffset { .. }
                 | FormatError::SizeOverflow => ToolExit::InvalidArgument,
                 FormatError::CoreFs(ref inner) => libcorefs_tools::error::exit_code_for(inner),
+                FormatError::Populate(_) => ToolExit::Generic,
             };
             ExitCode::from(code.as_u32() as u8)
         }
@@ -89,6 +91,7 @@ struct Cli {
     inode_count: Option<u64>,
     journal_blocks: Option<u64>,
     json: bool,
+    populate_from: Option<PathBuf>,
 }
 
 impl Cli {
@@ -112,6 +115,15 @@ impl Cli {
         let inode_count = a.get_u64("inodes");
         let journal_blocks = a.get_u64("journal-blocks");
         let json = a.has("json");
+        let populate_from = a.get("populate").map(PathBuf::from);
+        if let Some(ref p) = populate_from {
+            if !p.is_dir() {
+                return Err(format!(
+                    "--populate '{}' is not an existing directory",
+                    p.display()
+                ));
+            }
+        }
 
         Ok(Self {
             output: PathBuf::from(output),
@@ -121,6 +133,7 @@ impl Cli {
             inode_count,
             journal_blocks,
             json,
+            populate_from,
         })
     }
 }
@@ -136,6 +149,7 @@ fn run(cli: &Cli) -> Result<FormatOutcome, FormatError> {
         label: &cli.label,
         inode_count: cli.inode_count,
         journal_blocks: cli.journal_blocks,
+        populate_from: cli.populate_from.as_deref(),
     };
     format_volume(&req)
 }
@@ -169,10 +183,17 @@ fn resolve_size(
 /// Text or JSON summary.
 fn emit_report(cli: &Cli, outcome: &FormatOutcome) {
     if cli.json {
+        let populate = match &outcome.populate {
+            Some(p) => format!(
+                ",\"populate\":{{\"directories\":{},\"files\":{},\"bytes\":{},\"skipped\":{}}}",
+                p.directories, p.files, p.bytes, p.skipped
+            ),
+            None => String::new(),
+        };
         println!(
             "{{\"output\":\"{path}\",\"offset_bytes\":{off},\"capacity_bytes\":{cap},\
              \"total_blocks\":{blocks},\"inode_slots\":{inodes},\
-             \"journal_blocks\":{journal},\"label\":\"{label}\",\"generation\":{gen}}}",
+             \"journal_blocks\":{journal},\"label\":\"{label}\",\"generation\":{gen}{pop}}}",
             path = json_escape(&cli.output.display().to_string()),
             off = cli.offset,
             cap = outcome.capacity_bytes,
@@ -181,6 +202,7 @@ fn emit_report(cli: &Cli, outcome: &FormatOutcome) {
             journal = outcome.journal_blocks,
             label = json_escape(&outcome.label),
             gen = outcome.generation,
+            pop = populate,
         );
     } else {
         println!(
@@ -194,6 +216,12 @@ fn emit_report(cli: &Cli, outcome: &FormatOutcome) {
         println!("  journal blocks  : {}", outcome.journal_blocks);
         println!("  label           : {}", outcome.label);
         println!("  generation      : {}", outcome.generation);
+        if let Some(p) = &outcome.populate {
+            println!(
+                "  populated       : {} directories, {} files ({} bytes, {} skipped)",
+                p.directories, p.files, p.bytes, p.skipped
+            );
+        }
     }
 }
 
@@ -208,6 +236,9 @@ fn print_usage() {
            --label <name>            Volume label, up to 16 bytes (default: corefs)\n\
            --inodes <count>          Override inode-table size\n\
            --journal-blocks <n>      Override journal size in blocks\n\
+           --populate <dir>          After format, copy <dir>/* into the volume\n\
+                                     (directories become CoreFS dirs, files get\n\
+                                     inodes + BlockStore-written bytes)\n\
            --json                    Emit JSON instead of plain text\n\
            --help, -h                Show this help\n\
          \n\
