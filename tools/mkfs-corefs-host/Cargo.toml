@@ -1,0 +1,29 @@
+# Copyright (c) 2026 Mike Strathmann
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "mkfs-corefs-host"
+version = "0.1.0"
+edition = "2021"
+description = "Host-side CoreFS formatter — creates a CoreFS volume inside a regular file (disk image / loopback / /dev/sdX)."
+license = "MIT"
+
+[[bin]]
+name = "mkfs-corefs-host"
+path = "src/main.rs"
+
+[dependencies]
+# Shared helper library for CoreFS CLI tools (args parser, error mapping,
+# Report trait, AnyOsBlockDevice adapter).  `host` feature switches the
+# library to std-mode and drops the anyos_std dependency, so it builds
+# cleanly on Linux with stable cargo.
+libcorefs-tools = { path = "../../libs/libcorefs-tools", features = ["host"] }
+corefs-core = { path = "../../../corefs/corefs-core", default-features = false, features = ["crypto"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = "symbols"

@@ -1,0 +1,10 @@
+# Override the repository-wide `.cargo/config.toml` which points at the
+# bare-metal anyOS target.  Host tools must build with the default host
+# triple so they can link against libstd and host system libraries.
+[build]
+target = "x86_64-unknown-linux-gnu"
+
+[unstable]
+# Disable the kernel-target build-std machinery for this crate.
+build-std = []
+build-std-features = []
