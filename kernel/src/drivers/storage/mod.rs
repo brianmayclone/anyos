@@ -16,7 +16,7 @@ pub mod lsi_scsi;
 pub mod sdhci;
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use crate::sync::spinlock::Spinlock;
 
 // ── Per-Device I/O Override ──────────────────────────────────────────────────
@@ -81,6 +81,43 @@ static LAST_READ_END_LBA: AtomicU32 = AtomicU32::new(0);
 static READAHEAD_LEVEL: AtomicU32 = AtomicU32::new(64);
 const READAHEAD_MIN: u32 = 16;   //   8 KiB
 const READAHEAD_MAX: u32 = 512;  // 256 KiB
+
+/// Per-Disk Sektor-Anzahl, einmalig beim Disk-Init gesetzt (AHCI/ATA/NVMe).
+///
+/// Lookup via [`disk_sector_count`] ist ein einziger atomic Load — kein Lock,
+/// keine Allokation. Wird vom Readahead-Pfad in [`read_sectors_on_disk`]
+/// genutzt, um Fetches nicht über das Disk-Ende hinaus auszudehnen (sonst
+/// verweigert QEMU/AHCI den Transfer am letzten Sektor und hängt 5 s im
+/// Kommando-Timeout).
+///
+/// Wert `0` bedeutet "unbekannt" — der Readahead-Pfad verzichtet dann auf
+/// Readahead statt ein potenziell ungültiges Read auszulösen.
+const MAX_DISKS: usize = 16;
+static DISK_SECTORS: [AtomicU64; MAX_DISKS] = {
+    // Keine `AtomicU64::new` in const context für Array-Initialisierung —
+    // deshalb der `[const { ... }; N]` Trick.
+    [const { AtomicU64::new(0) }; MAX_DISKS]
+};
+
+/// Hinterlegt die Sektor-Anzahl einer physischen Disk.
+///
+/// Wird von AHCI/ATA/NVMe beim Init aufgerufen, sobald `IDENTIFY DEVICE`
+/// (oder das Äquivalent) die Kapazität geliefert hat. Nach dem Aufruf
+/// kennt der Readahead-Pfad die Disk-Grenze und clampt Fetches korrekt.
+pub fn set_disk_sector_count(disk_id: u8, sector_count: u64) {
+    if (disk_id as usize) < MAX_DISKS {
+        DISK_SECTORS[disk_id as usize].store(sector_count, Ordering::Relaxed);
+    }
+}
+
+/// Liefert die registrierte Sektor-Anzahl einer physischen Disk, oder `0`
+/// wenn kein Wert bekannt ist.
+pub fn disk_sector_count(disk_id: u8) -> u64 {
+    if (disk_id as usize) >= MAX_DISKS {
+        return 0;
+    }
+    DISK_SECTORS[disk_id as usize].load(Ordering::Relaxed)
+}
 
 #[inline]
 fn io_lock_acquire() {
@@ -188,6 +225,27 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         }
     } else {
         0
+    };
+
+    // Clamp readahead so the fetch never extends past the disk's last sector.
+    // Ohne diesen Clamp versucht der Treiber am Disk-Ende einen Read über die
+    // Kapazität hinaus — QEMU/AHCI hängt dann 5 s im Kommando-Timeout, was
+    // z.B. `df` auf CoreFS-Mounts massiv verlangsamt (Secondary-Superblock
+    // liegt genau im letzten Block des Volumes). Bei unbekannter Kapazität
+    // (disk_sector_count == 0) lassen wir den Readahead unverändert.
+    let readahead = {
+        let disk_sectors = disk_sector_count(disk_id);
+        if disk_sectors > 0 {
+            let end = (miss_lba as u64).saturating_add(miss_count as u64);
+            if end >= disk_sectors {
+                0
+            } else {
+                let room = (disk_sectors - end).min(u32::MAX as u64) as u32;
+                readahead.min(room)
+            }
+        } else {
+            readahead
+        }
     };
 
     let total_fetch = miss_count + readahead;

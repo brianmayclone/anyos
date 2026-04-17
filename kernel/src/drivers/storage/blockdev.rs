@@ -143,31 +143,50 @@ static DEVICES: Spinlock<Vec<Option<BlockDevice>>> = Spinlock::new(Vec::new());
 /// Register a new block device. Returns its assigned device ID.
 ///
 /// Reuses the first free (None) slot if one exists, otherwise appends.
+///
+/// Whole-disk devices (`partition == None`) melden ihre Sektor-Anzahl auch
+/// an die Storage-Readahead-Infrastruktur, damit Fetches nicht über das
+/// Disk-Ende hinaus gehen.
 pub fn register_device(dev: BlockDevice) -> u8 {
+    let whole_disk_sectors = if dev.partition.is_none() { dev.size_sectors } else { 0 };
+    let disk_id = dev.disk_id;
     let mut devs = DEVICES.lock();
     // Look for a free slot
-    for (i, slot) in devs.iter_mut().enumerate() {
-        if slot.is_none() {
-            let id = i as u8;
-            let mut dev = dev;
-            dev.id = id;
-            serial_verbose_println!(
-                "[blockdev] registered: id={} disk={} part={:?} start={} size={}",
-                id, dev.disk_id, dev.partition, dev.start_lba, dev.size_sectors
-            );
-            *slot = Some(dev);
-            return id;
+    let id = {
+        let mut assigned = None;
+        for (i, slot) in devs.iter_mut().enumerate() {
+            if slot.is_none() {
+                let id = i as u8;
+                let mut dev = dev.clone();
+                dev.id = id;
+                serial_verbose_println!(
+                    "[blockdev] registered: id={} disk={} part={:?} start={} size={}",
+                    id, dev.disk_id, dev.partition, dev.start_lba, dev.size_sectors
+                );
+                *slot = Some(dev);
+                assigned = Some(id);
+                break;
+            }
         }
+        match assigned {
+            Some(id) => id,
+            None => {
+                let id = devs.len() as u8;
+                let mut dev = dev;
+                dev.id = id;
+                serial_verbose_println!(
+                    "[blockdev] registered: id={} disk={} part={:?} start={} size={}",
+                    id, dev.disk_id, dev.partition, dev.start_lba, dev.size_sectors
+                );
+                devs.push(Some(dev));
+                id
+            }
+        }
+    };
+    drop(devs);
+    if whole_disk_sectors > 0 {
+        super::set_disk_sector_count(disk_id, whole_disk_sectors);
     }
-    // No free slot — append
-    let id = devs.len() as u8;
-    let mut dev = dev;
-    dev.id = id;
-    serial_verbose_println!(
-        "[blockdev] registered: id={} disk={} part={:?} start={} size={}",
-        id, dev.disk_id, dev.partition, dev.start_lba, dev.size_sectors
-    );
-    devs.push(Some(dev));
     id
 }
 

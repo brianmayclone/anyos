@@ -127,6 +127,9 @@ struct Inner {
     /// Laufender Zähler für neu zu vergebende `InodeId`s.
     next_id: u64,
     read_only: bool,
+    /// Volume-Kapazität in Blöcken, einmalig beim Mount aus der
+    /// Device-Geometrie berechnet. Ermöglicht `statfs()` ohne Disk-I/O.
+    total_blocks: u64,
 }
 
 impl CoreFsDriver {
@@ -148,6 +151,7 @@ impl CoreFsDriver {
             state.free_extents.clone(),
             first_data_block,
         );
+        let total_blocks = device.capacity() / BLOCK_SIZE;
         Ok(Self {
             inner: Mutex::new(Inner {
                 device,
@@ -155,6 +159,7 @@ impl CoreFsDriver {
                 blocks,
                 next_id,
                 read_only: true,
+                total_blocks,
             }),
         })
     }
@@ -211,6 +216,7 @@ impl CoreFsDriver {
             state.free_extents.clone(),
             first_data_block,
         );
+        let total_blocks = device.capacity() / BLOCK_SIZE;
         let this = Self {
             inner: Mutex::new(Inner {
                 device,
@@ -218,6 +224,7 @@ impl CoreFsDriver {
                 blocks,
                 next_id,
                 read_only: false,
+                total_blocks,
             }),
         };
         if root_added {
@@ -226,16 +233,34 @@ impl CoreFsDriver {
         Ok(this)
     }
 
-    /// Liefert (total_bytes, used_bytes, free_bytes) aus dem on-disk
-    /// Superblock. Wird vom VFS `statfs`-Pfad (z.B. für `df`) benutzt.
+    /// Liefert (total_bytes, used_bytes, free_bytes) für `df` / VFS-`statfs`.
+    ///
+    /// Antwortet ohne Disk-I/O aus dem in-memory `BlockStore`:
+    ///   - `total` kommt aus der beim Mount gecachten Volume-Kapazität.
+    ///   - `used` ist die Summe aller Extents über die bekannten `BlockRecord`s
+    ///     (tatsächlich an Files gebundene Blöcke).
+    ///   - `free` = `total - used`.
+    ///
+    /// Wir zählen hier bewusst NICHT `fragmentation_report().total_free_blocks`,
+    /// weil dieser Report nur explizit freigegebene Extents führt — bei frisch
+    /// formatierten Volumes ohne Deallokationen sind alle freien Blöcke
+    /// implizit oberhalb des Allokator-Wasserstands und fehlen dort.
+    ///
+    /// Vorher rief diese Methode `corefs_core::volume::inspect()` auf, das
+    /// drei Superblöcke (Primary, Tertiary, Secondary am Volume-Ende) frisch
+    /// las — der Secondary-Read konnte am Partitions-Ende einen AHCI-Timeout
+    /// provozieren und `df` um 10 s verlangsamen.
     pub fn statfs(&self) -> Result<(u64, u64, u64), FsError> {
-        use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
         let inner = self.inner.lock();
-        let info = corefs_core::storage::ondisk::volume::inspect(&inner.device)
-            .map_err(|e| corefs_to_fs_error(&e))?;
-        let total = info.total_blocks.saturating_mul(BLOCK_SIZE);
-        let free = info.free_blocks.saturating_mul(BLOCK_SIZE);
-        let used = total.saturating_sub(free);
+        let used_blocks: u64 = inner
+            .blocks
+            .records()
+            .iter()
+            .map(|r| r.total_blocks())
+            .sum();
+        let total = inner.total_blocks.saturating_mul(BLOCK_SIZE);
+        let used = used_blocks.saturating_mul(BLOCK_SIZE);
+        let free = total.saturating_sub(used);
         Ok((total, used, free))
     }
 
