@@ -459,3 +459,102 @@ fn filetime_to_unix(ft: u64) -> u32 {
     }
     unix_secs as u32
 }
+
+// ===========================================================================
+// NtfsFsDriver — `Filesystem`-Trait-Adapter um die bestehende `NtfsFs`.
+// ===========================================================================
+//
+// Phase 6 Step 5 of the FS-Abstraktion (memory/phase6-fs-abstraction-plan.md).
+// NTFS is read-only in anyOS, so this is the smallest of the three
+// adapters: write/create/delete inherit the trait's
+// `PermissionDenied` defaults wholesale.
+
+use crate::fs::vfs::{Filesystem, StatResult};
+use crate::sync::mutex::Mutex;
+
+/// Trait-shaped wrapper around [`NtfsFs`] (read-only).
+pub struct NtfsFsDriver {
+    inner: Mutex<NtfsFs>,
+}
+
+impl NtfsFsDriver {
+    /// Construct a driver from an already-mounted [`NtfsFs`].
+    pub fn new(fs: NtfsFs) -> Self {
+        Self {
+            inner: Mutex::new(fs),
+        }
+    }
+
+    /// Borrow the inner FS — escape hatch for the legacy VFS direct
+    /// call paths until the VfsState refactor (Phase 6 Step 6).
+    pub fn lock_inner(&self) -> crate::sync::mutex::MutexGuard<'_, NtfsFs> {
+        self.inner.lock()
+    }
+}
+
+impl Filesystem for NtfsFsDriver {
+    fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+        self.inner.lock().read_file(inode, offset, buf)
+    }
+
+    fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
+        self.inner.lock().lookup(path)
+    }
+
+    fn readdir(&self, inode: u32) -> Result<Vec<DirEntry>, FsError> {
+        // NTFS MFT records are 48-bit on disk but VFS inodes are u32.
+        // We inherit the existing truncation contract of the inherent
+        // `lookup`/`stat_path`/`read_file` triplet — they already round-
+        // trip MFT records through u32 today.
+        self.inner.lock().read_dir(inode as u64)
+    }
+
+    // --- write path: all default (PermissionDenied), NTFS is read-only.
+    //     The trait defaults already do the right thing.
+
+    fn write(&self, _inode: u32, _offset: u32, _buf: &[u8]) -> Result<usize, FsError> {
+        Err(FsError::PermissionDenied)
+    }
+    fn create(
+        &self,
+        _parent_inode: u32,
+        _name: &str,
+        _file_type: FileType,
+    ) -> Result<u32, FsError> {
+        Err(FsError::PermissionDenied)
+    }
+    fn delete(&self, _parent_inode: u32, _name: &str) -> Result<(), FsError> {
+        Err(FsError::PermissionDenied)
+    }
+
+    // --- metadata ---
+
+    fn stat(&self, path: &str) -> Result<StatResult, FsError> {
+        let fs = self.inner.lock();
+        // stat_path returns (file_type, size, created, modified, accessed).
+        // NTFS encodes ACLs not POSIX bits — surface sensible defaults so
+        // users with read access see "world-readable" (mirroring how the
+        // existing `vfs::stat()` path renders NTFS today).
+        let (file_type, size, _created, modified, _accessed) = fs.stat_path(path)?;
+        Ok(StatResult {
+            file_type,
+            size,
+            is_symlink: false,
+            uid: 0,
+            gid: 0,
+            mode: 0o555, // read + execute, no write — read-only volume
+            mtime: modified,
+        })
+    }
+
+    // --- lifecycle ---
+
+    fn sync(&self) -> Result<(), FsError> {
+        // Read-only filesystem — nothing to flush.
+        Ok(())
+    }
+
+    fn read_only(&self) -> bool {
+        true
+    }
+}

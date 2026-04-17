@@ -237,3 +237,112 @@ impl FatFs {
         }
     }
 }
+
+// ===========================================================================
+// FatFsDriver — `Filesystem`-Trait-Adapter um die bestehende `FatFs`.
+// ===========================================================================
+//
+// Phase 6 Step 4 of the FS-Abstraktion (memory/phase6-fs-abstraction-plan.md).
+// Mirrors the ExFatFsDriver pattern: Mutex-wrapped inner FS, trait
+// methods delegate to the cluster-based inherent fns.
+//
+// Scope (read path + minimal metadata):
+//   * lookup, read, readdir   — direct mappings (FAT inode == cluster)
+//   * stat                    — wraps stat_path, returns POSIX-default
+//                               permissions (FAT has no native uid/gid/mode)
+//   * sync                    — no-op (FAT writes-through, no metadata cache)
+//   * read_only               — false
+//
+// Stubbed (PermissionDenied) — same rationale as ExFatFsDriver: the
+// inherent write/create/delete/truncate/rename APIs key off
+// (parent_cluster, name) or take an `old_size` and don't map 1:1 to the
+// trait's (inode, …) shape without an inode↔directory-position cache.
+// statfs is also deferred — FatFs has no cheap free-cluster summariser.
+
+use crate::fs::file::{DirEntry, FileType};
+use crate::fs::vfs::{Filesystem, StatResult};
+use crate::sync::mutex::Mutex;
+
+/// Trait-shaped wrapper around [`FatFs`].
+pub struct FatFsDriver {
+    inner: Mutex<FatFs>,
+}
+
+impl FatFsDriver {
+    /// Construct a driver from an already-mounted [`FatFs`].
+    pub fn new(fs: FatFs) -> Self {
+        Self {
+            inner: Mutex::new(fs),
+        }
+    }
+
+    /// Borrow the inner FS — escape hatch for the legacy VFS direct
+    /// call paths until the VfsState refactor (Phase 6 Step 6).
+    pub fn lock_inner(&self) -> crate::sync::mutex::MutexGuard<'_, FatFs> {
+        self.inner.lock()
+    }
+}
+
+impl Filesystem for FatFsDriver {
+    fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
+        // FAT exposes inode == start_cluster directly (no encoded
+        // contiguous bit like exFAT).
+        self.inner.lock().read_file(inode, offset, buf)
+    }
+
+    fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), FsError> {
+        self.inner.lock().lookup(path)
+    }
+
+    fn readdir(&self, inode: u32) -> Result<Vec<DirEntry>, FsError> {
+        self.inner.lock().read_dir(inode)
+    }
+
+    // --- write path stubbed ---
+
+    fn write(&self, _inode: u32, _offset: u32, _buf: &[u8]) -> Result<usize, FsError> {
+        Err(FsError::PermissionDenied)
+    }
+    fn create(
+        &self,
+        _parent_inode: u32,
+        _name: &str,
+        _file_type: FileType,
+    ) -> Result<u32, FsError> {
+        Err(FsError::PermissionDenied)
+    }
+    fn delete(&self, _parent_inode: u32, _name: &str) -> Result<(), FsError> {
+        Err(FsError::PermissionDenied)
+    }
+
+    // --- metadata ---
+
+    fn stat(&self, path: &str) -> Result<StatResult, FsError> {
+        let fs = self.inner.lock();
+        // stat_path returns (inode, file_type, size, mtime).  FAT has no
+        // POSIX-style permissions — surface sensible defaults: world-readable,
+        // owner=root.  Symlinks aren't a FAT feature.
+        let (_inode, file_type, size, mtime) = fs.stat_path(path)?;
+        Ok(StatResult {
+            file_type,
+            size,
+            is_symlink: false,
+            uid: 0,
+            gid: 0,
+            mode: 0o755,
+            mtime,
+        })
+    }
+
+    // --- lifecycle ---
+
+    fn sync(&self) -> Result<(), FsError> {
+        // FatFs writes through to disk on each operation (no in-memory
+        // metadata cache today).  Nothing to flush.
+        Ok(())
+    }
+
+    fn read_only(&self) -> bool {
+        false
+    }
+}
