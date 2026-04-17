@@ -17,7 +17,7 @@ use crate::sync::mutex::Mutex;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
-use self::path::{dev_name, find_mnt_mount, is_dev_path, resolve_exfat_path, split_parent_name};
+use self::path::{dev_name, find_submount, is_dev_path, resolve_exfat_path, split_parent_name};
 pub use self::types::{Filesystem, FsError, FsType, StatFs, StatResult};
 
 /// Maximum number of simultaneously open file descriptors (system-wide).
@@ -527,7 +527,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
     }
 
     // --- Mount point path (e.g. /mnt/cdrom0/..., /mnt/share/...) ---
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         match mnt_fs_type {
             FsType::Iso9660 => {
                 if let Some(ref iso) = state.iso9660_fs {
@@ -1357,7 +1357,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
             let file = state.open_files.get(slot_id as usize)
                 .and_then(|e| e.as_ref())
                 .ok_or(FsError::BadFd)?;
-            let mount_rel = find_mnt_mount(&file.path, &state.mount_points)
+            let mount_rel = find_submount(&file.path, &state.mount_points)
                 .map(|(_, rel, _)| String::from(rel))
                 .unwrap_or_else(|| String::from("/"));
             let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
@@ -1530,7 +1530,7 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
     }
 
     // --- Mount point path (e.g. /mnt/cdrom0/..., /mnt/share/...) ---
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         match mnt_fs_type {
             FsType::Iso9660 => {
                 if let Some(ref iso) = state.iso9660_fs {
@@ -1738,7 +1738,7 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
     {
         let mut vfs = VFS.lock();
         let state = vfs.as_mut().ok_or(FsError::IoError)?;
-        if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+        if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
             match mnt_fs_type {
                 FsType::Iso9660 => {
                     if let Some(ref iso) = state.iso9660_fs {
@@ -1827,7 +1827,7 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // --- Mount point path (SMB / CoreFS delete) ---
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
@@ -1929,10 +1929,10 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
 
     // CoreFS rename/move — currently supported only when source and target
     // live on the same CoreFS mount.
-    let corefs_old = find_mnt_mount(old_path, &state.mount_points)
+    let corefs_old = find_submount(old_path, &state.mount_points)
         .filter(|(_, _, t)| *t == FsType::CoreFs)
         .map(|(mp, rel, _)| (String::from(mp), String::from(rel)));
-    let corefs_new = find_mnt_mount(new_path, &state.mount_points)
+    let corefs_new = find_submount(new_path, &state.mount_points)
         .filter(|(_, _, t)| *t == FsType::CoreFs)
         .map(|(mp, rel, _)| (String::from(mp), String::from(rel)));
     match (corefs_old, corefs_new) {
@@ -1967,10 +1967,10 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
     }
 
     // --- FUSE rename (same-mount only) -----------------------------------
-    let fuse_old = find_mnt_mount(old_path, &state.mount_points)
+    let fuse_old = find_submount(old_path, &state.mount_points)
         .filter(|(_, _, t)| *t == FsType::Fuse)
         .map(|(mp, rel, _)| (String::from(mp), String::from(rel)));
-    let fuse_new = find_mnt_mount(new_path, &state.mount_points)
+    let fuse_new = find_submount(new_path, &state.mount_points)
         .filter(|(_, _, t)| *t == FsType::Fuse)
         .map(|(mp, rel, _)| (String::from(mp), String::from(rel)));
     match (fuse_old, fuse_new) {
@@ -2036,7 +2036,7 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // --- Mount point path (e.g. /mnt/target/...) ---
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
@@ -2198,7 +2198,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
     if path == "/dev" || path == "/dev/" { return Ok(default_stat(FileType::Directory, 0, false)); }
 
     // --- Mount point path ---
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         match mnt_fs_type {
             FsType::Iso9660 => {
                 if let Some(ref iso) = state.iso9660_fs {
@@ -2363,7 +2363,7 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // CoreFS truncate-to-zero via driver.
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
@@ -2704,7 +2704,7 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
 
     // CoreFS symlinks via driver.
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(link_path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(link_path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
@@ -2764,7 +2764,7 @@ pub fn readlink(path: &str) -> Result<String, FsError> {
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
 
     // FUSE mounts take precedence over legacy backends.
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::Fuse {
             let session_id = fuse_session_id_for(state, mount_path).ok_or(FsError::IoError)?;
             let session = crate::fs::fuse::session(session_id).ok_or(FsError::NotFound)?;
@@ -2816,7 +2816,7 @@ pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
 
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
@@ -2851,7 +2851,7 @@ pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::NotFound)?;
 
-    if let Some((mount_path, relative_path, mnt_fs_type)) = find_mnt_mount(path, &state.mount_points) {
+    if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
             let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };

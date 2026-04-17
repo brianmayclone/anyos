@@ -39,6 +39,34 @@ pub use block_device::{AnyOsSectorIo, BlockDeviceAdapter, SectorIo};
 pub use driver::{corefs_to_fs_error, empty_persisted_state, CoreFsDriver};
 pub use probe::detect;
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
+/// Soll die erste CoreFS-Partition auf der Root-Disk als `/System` gemountet
+/// werden (anstatt unter `/mnt/corefs`)?
+///
+/// Default: `false` — CoreFS-Partitionen werden alle unter `/mnt/corefs*`
+/// gemountet, kompatibel zum klassischen Single-FS-Root-Layout.
+///
+/// Wird vom Bootloader / Boot-Config / Installer gesetzt (Phase 3 & 4 des
+/// Dual-Partition-Rollouts), damit bei einem CoreFS-System-Image die erste
+/// 0xCF-Partition auf der Root-Disk unter `/System` landet und damit die
+/// klassischen Pfade wie `/System/bin/*`, `/System/lib/*` etc. aus CoreFS
+/// kommen. Das FAT/exFAT-Root bleibt dabei weiter das Boot-FS (enthält
+/// nur `/boot/*` + den Kernel), der Bootloader bleibt unangefasst.
+static MOUNT_COREFS_AS_SYSTEM: AtomicBool = AtomicBool::new(false);
+
+/// Aktiviert das CoreFS-als-`/System`-Mount-Verhalten. Siehe
+/// [`MOUNT_COREFS_AS_SYSTEM`].
+pub fn enable_mount_as_system() {
+    MOUNT_COREFS_AS_SYSTEM.store(true, Ordering::Relaxed);
+}
+
+/// Liefert, ob die erste CoreFS-Partition auf der Root-Disk als `/System`
+/// gemountet werden soll.
+pub fn mount_as_system_enabled() -> bool {
+    MOUNT_COREFS_AS_SYSTEM.load(Ordering::Relaxed)
+}
+
 /// Versucht, das Volume bei `(disk_id, partition_lba)` als CoreFS zu
 /// erkennen und read-only unter `mount_path` zu mounten.
 ///

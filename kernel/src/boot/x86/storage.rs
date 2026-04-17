@@ -105,17 +105,28 @@ fn try_mount_corefs_partitions() {
     use drivers::storage::blockdev;
 
     let devices = blockdev::list_devices();
+    let root_disk_id: u8 = 0; // Root-FS lebt immer auf disk 0 (erste BIOS-Disk).
     let mut mount_index: u32 = 0;
+    let mut system_mounted = false;
+    let want_system_mount = fs::corefs::mount_as_system_enabled();
+
     for dev in &devices {
         // Skip the "whole-disk" pseudo-entry (partition == None) and any
         // entry that obviously can't host a filesystem (size 0).
         if dev.partition.is_none() || dev.size_sectors == 0 {
             continue;
         }
-        // CoreFS mounts live under /mnt/corefs* so they're routed through
-        // the VFS mount-point dispatch (see fs::vfs::find_mnt_mount which
-        // only matches paths starting with /mnt/).
-        let mount_path = if mount_index == 0 {
+        // Ersten CoreFS-Hit auf der Root-Disk optional nach /System mounten,
+        // damit `/System/bin/*`, `/System/lib/*` usw. aus CoreFS bedient
+        // werden können. Alle weiteren CoreFS-Partitionen landen wie gehabt
+        // unter /mnt/corefs*. Nach VFS-Dispatch verhält sich `/System` wie
+        // jeder andere Sub-Mount — siehe `fs::vfs::path::find_submount`.
+        let mount_path = if want_system_mount
+            && !system_mounted
+            && dev.disk_id == root_disk_id
+        {
+            alloc::string::String::from("/System")
+        } else if mount_index == 0 {
             alloc::string::String::from("/mnt/corefs")
         } else {
             alloc::format!("/mnt/corefs{}", mount_index)
@@ -128,7 +139,11 @@ fn try_mount_corefs_partitions() {
             dev.id as u32,
         );
         if did_mount {
-            mount_index += 1;
+            if mount_path == "/System" {
+                system_mounted = true;
+            } else {
+                mount_index += 1;
+            }
         }
     }
 }

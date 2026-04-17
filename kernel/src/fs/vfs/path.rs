@@ -35,9 +35,15 @@ pub fn dev_name(path: &str) -> &str {
     if path.len() > 5 { &path[5..] } else { "" }
 }
 
-/// Check if a path targets a /mnt/ mount point.
-/// Returns (mount_path, relative_path, fs_type) if matched.
-pub fn find_mnt_mount<'a>(
+/// Finde den Sub-Mount-Point, dessen Pfad ein Präfix von `path` ist (longest match).
+///
+/// Unterstützt beliebige Mount-Pfade außer `/` (Root-Dispatch läuft separat)
+/// und `/dev` (DevFs wird über `is_dev_path` abgehandelt). Damit können sowohl
+/// klassische `/mnt/*`-Mounts als auch System-Mounts wie `/System` auf einem
+/// eigenen FS-Treiber liegen.
+///
+/// Returns `(mount_path, relative_path, fs_type)` bei Match, sonst `None`.
+pub fn find_submount<'a>(
     path: &'a str,
     mount_points: &[MountPoint],
 ) -> Option<(&'a str, &'a str, FsType)> {
@@ -45,7 +51,9 @@ pub fn find_mnt_mount<'a>(
     let mut best_type = FsType::Fat;
     let mut found = false;
     for mount_point in mount_points {
-        if !mount_point.path.starts_with("/mnt/") {
+        // Root und /dev werden über eigene Dispatch-Pfade behandelt — hier nur
+        // echte Sub-Mounts betrachten, egal ob /mnt/*, /System, /Applications usw.
+        if mount_point.path == "/" || mount_point.path == "/dev" {
             continue;
         }
         let mount_path = mount_point.path.as_str();
