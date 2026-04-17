@@ -44,6 +44,17 @@
 #                   exist. Default SIZE is 2G. Repeatable to attach multiple
 #                   disks. Example: --disk data.img:4G --disk /tmp/extra.img
 #   --uefi        Boot via UEFI (OVMF firmware) instead of BIOS
+#   --system-fs {exfat|corefs}
+#                   Choose the image layout for the system partition and
+#                   (re)configure CMake accordingly.  `exfat` (default) is the
+#                   classic single-partition layout; `corefs` appends a CoreFS
+#                   partition (MBR type 0xCF, default 128 MiB) at the end of
+#                   the disk image.  Equivalent to:
+#                   `cmake .. -DANYOS_SYSTEM_FS=corefs`
+#   --system-fs-size N
+#                   Override the size (in MiB) of the CoreFS system partition.
+#                   Only meaningful together with `--system-fs corefs`.
+#                   Equivalent to: `cmake .. -DANYOS_SYSTEM_FS_SIZE_MIB=N`
 #
 # ── CPU / Acceleration ────────────────────────────────────────────────────────
 #   --kvm         Enable hardware virtualization (KVM on Linux, HVF on macOS).
@@ -123,6 +134,11 @@ HEADLESS=false
 SNAPSHOT=false
 SPICE_MODE=false
 CLIPBOARD_MODE=false
+# Empty unless --system-fs / --system-fs-size is explicitly given.
+SYSTEM_FS_OPT=""
+SYSTEM_FS_SIZE_OPT=""
+EXPECT_SYSTEM_FS=false
+EXPECT_SYSTEM_FS_SIZE=false
 MIN_RES_W=1024
 MIN_RES_H=768
 
@@ -205,6 +221,31 @@ for arg in "$@"; do
         continue
     fi
 
+    if [ "$EXPECT_SYSTEM_FS" = true ]; then
+        EXPECT_SYSTEM_FS=false
+        case "$arg" in
+            exfat|corefs)
+                SYSTEM_FS_OPT="$arg"
+                ;;
+            *)
+                echo "Error: --system-fs expects 'exfat' or 'corefs', got '$arg'"
+                exit 1
+                ;;
+        esac
+        continue
+    fi
+
+    if [ "$EXPECT_SYSTEM_FS_SIZE" = true ]; then
+        EXPECT_SYSTEM_FS_SIZE=false
+        if [[ "$arg" =~ ^[0-9]+$ ]] && [ "$arg" -gt 0 ]; then
+            SYSTEM_FS_SIZE_OPT="$arg"
+        else
+            echo "Error: --system-fs-size expects a positive integer (MiB), got '$arg'"
+            exit 1
+        fi
+        continue
+    fi
+
     case "$arg" in
         --vmware-ws)
             VMWARE_WS=true
@@ -246,6 +287,12 @@ for arg in "$@"; do
             ;;
         --disk)
             EXPECT_DISK=true
+            ;;
+        --system-fs)
+            EXPECT_SYSTEM_FS=true
+            ;;
+        --system-fs-size)
+            EXPECT_SYSTEM_FS_SIZE=true
             ;;
         --audio)
             if [ "$(uname -s)" = "Darwin" ]; then
@@ -352,6 +399,40 @@ fi
 if [ "$EXPECT_DISK" = true ]; then
     echo "Error: --disk requires an argument (PATH[:SIZE], e.g. data.img:4G)"
     exit 1
+fi
+
+if [ "$EXPECT_SYSTEM_FS" = true ]; then
+    echo "Error: --system-fs requires an argument (exfat | corefs)"
+    exit 1
+fi
+if [ "$EXPECT_SYSTEM_FS_SIZE" = true ]; then
+    echo "Error: --system-fs-size requires a positive integer (MiB)"
+    exit 1
+fi
+
+# ── Propagate --system-fs / --system-fs-size to CMake ───────────────────────
+#
+# The two knobs are build-time CMake options, not QEMU runtime flags, so
+# we reconfigure the build directory and trigger a rebuild before
+# dispatching to QEMU.  A no-op when the cache already reflects the
+# requested values (CMake exits quickly without rewriting files).
+if [ -n "$SYSTEM_FS_OPT" ] || [ -n "$SYSTEM_FS_SIZE_OPT" ]; then
+    RECONFIG_BUILD_DIR="${SCRIPT_DIR}/../build"
+    if [ ! -d "$RECONFIG_BUILD_DIR" ]; then
+        echo "Error: build directory '$RECONFIG_BUILD_DIR' not found."
+        echo "       Run 'cmake .. -G Ninja' from build/ first."
+        exit 1
+    fi
+    CMAKE_DEFS=()
+    [ -n "$SYSTEM_FS_OPT" ] && CMAKE_DEFS+=("-DANYOS_SYSTEM_FS=${SYSTEM_FS_OPT}")
+    [ -n "$SYSTEM_FS_SIZE_OPT" ] && CMAKE_DEFS+=("-DANYOS_SYSTEM_FS_SIZE_MIB=${SYSTEM_FS_SIZE_OPT}")
+    echo ">>> reconfiguring build dir with ${CMAKE_DEFS[*]}"
+    (cd "$RECONFIG_BUILD_DIR" && cmake "${CMAKE_DEFS[@]}" .)
+    echo ">>> rebuilding image (ninja)"
+    if ! ninja -C "$RECONFIG_BUILD_DIR"; then
+        echo "Error: ninja build failed — cannot launch QEMU."
+        exit 1
+    fi
 fi
 
 # ── VMware Workstation mode ─────────────────────────────────────────────────

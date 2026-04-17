@@ -108,6 +108,27 @@ add_custom_command(
   COMMENT "Building buildsystem tool: mkmanifest"
 )
 
+# mkfs-corefs-host — host-side CoreFS formatter (Cargo-based, stable toolchain).
+#
+# Only referenced when ANYOS_SYSTEM_FS=corefs; we build it unconditionally
+# here because driving a conditional Cargo build through CMake add_custom_command
+# is far more brittle than a cheap "always built, maybe unused" stamp.  The
+# Cargo build is incremental, so re-runs are fast when nothing changed.
+set(MKFS_COREFS_HOST_DIR "${CMAKE_SOURCE_DIR}/tools/mkfs-corefs-host")
+set(MKFS_COREFS_HOST_EXECUTABLE
+    "${MKFS_COREFS_HOST_DIR}/target/x86_64-unknown-linux-gnu/release/mkfs-corefs-host")
+file(GLOB_RECURSE MKFS_COREFS_HOST_SRCS
+    "${MKFS_COREFS_HOST_DIR}/src/*.rs"
+    "${MKFS_COREFS_HOST_DIR}/Cargo.toml")
+add_custom_command(
+  OUTPUT ${MKFS_COREFS_HOST_EXECUTABLE}
+  COMMAND ${CARGO_EXECUTABLE} +stable build --release --manifest-path
+          "${MKFS_COREFS_HOST_DIR}/Cargo.toml"
+  DEPENDS ${MKFS_COREFS_HOST_SRCS}
+  WORKING_DIRECTORY ${MKFS_COREFS_HOST_DIR}
+  COMMENT "Building host tool: mkfs-corefs-host (cargo +stable)"
+)
+
 # Target to build all buildsystem tools
 add_custom_target(buildsystem-tools
   DEPENDS ${ANYELF_EXECUTABLE} ${MKIMAGE_EXECUTABLE} ${ANYLD_EXECUTABLE} ${MKAPPBUNDLE_EXECUTABLE}

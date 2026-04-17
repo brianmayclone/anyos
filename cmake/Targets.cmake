@@ -36,6 +36,26 @@ add_custom_command(
 set(BOOT_CFG ${CMAKE_SOURCE_DIR}/sysroot/boot/boot.cfg)
 set(BOOT_LOGO ${CMAKE_SOURCE_DIR}/kernel/src/graphics/boot_logo.bin)
 
+# Optional post-processing step: append a CoreFS system partition to the
+# exFAT-only image produced by mkimage.  Controlled by the top-level
+# ANYOS_SYSTEM_FS cache variable — defaults to "exfat" (no-op) for full
+# backwards compatibility.
+if(ANYOS_SYSTEM_FS STREQUAL "corefs")
+  set(COREFS_POST_CMD
+    COMMAND ${PYTHON_EXECUTABLE}
+      ${CMAKE_SOURCE_DIR}/tools/anyos_append_corefs.py
+      --image ${DISK_IMAGE}
+      --size ${ANYOS_SYSTEM_FS_SIZE_MIB}M
+      --mkfs-corefs-host ${MKFS_COREFS_HOST_EXECUTABLE}
+      --label system)
+  set(COREFS_POST_DEPS ${MKFS_COREFS_HOST_EXECUTABLE})
+  set(IMAGE_COMMENT "Creating bootable disk image (512 MiB exFAT + ${ANYOS_SYSTEM_FS_SIZE_MIB} MiB CoreFS)")
+else()
+  set(COREFS_POST_CMD "")
+  set(COREFS_POST_DEPS "")
+  set(IMAGE_COMMENT "Creating bootable disk image (512 MiB, exFAT filesystem)")
+endif()
+
 add_custom_command(
   OUTPUT ${DISK_IMAGE}
   COMMAND ${MKIMAGE_EXECUTABLE}
@@ -50,6 +70,7 @@ add_custom_command(
     --boot-logo ${BOOT_LOGO}
     --boot-font ${BOOT_FONT_BIN}
     ${MKIMAGE_RESET_FLAG}
+  ${COREFS_POST_CMD}
   DEPENDS
     ${CMAKE_BINARY_DIR}/stage1.bin
     ${CMAKE_BINARY_DIR}/stage2.bin
@@ -67,7 +88,8 @@ add_custom_command(
     ${BOOT_FONT_BIN}
     ${BOOT_CFG}
     ${BOOT_LOGO}
-  COMMENT "Creating bootable disk image (512 MiB, exFAT filesystem)"
+    ${COREFS_POST_DEPS}
+  COMMENT "${IMAGE_COMMENT}"
 )
 
 # ============================================================

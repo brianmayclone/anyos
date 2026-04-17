@@ -30,6 +30,25 @@ option(ANYOS_NO_CROSS "Disable cross-compilation (skip libc, TCC, games, curl)" 
 option(ANYOS_RESET "Force fresh disk image rebuild (destroy runtime data)" OFF)
 set(ANYOS_ARCH "x86_64" CACHE STRING "Target architecture (x86_64 or arm64)")
 
+# System-filesystem selection.  `exfat` (default) keeps the classic
+# single-partition layout — everything lives on the exFAT boot filesystem.
+# `corefs` appends a second partition (MBR type 0xCF) at the end of the
+# disk image, formatted as CoreFS, and leaves the boot exFAT untouched.
+# Size of the appended partition is controlled by ANYOS_SYSTEM_FS_SIZE_MIB.
+set(ANYOS_SYSTEM_FS "exfat" CACHE STRING "System filesystem: exfat | corefs")
+set_property(CACHE ANYOS_SYSTEM_FS PROPERTY STRINGS exfat corefs)
+set(ANYOS_SYSTEM_FS_SIZE_MIB "128" CACHE STRING
+    "Size of the CoreFS system partition in MiB (only used when ANYOS_SYSTEM_FS=corefs)")
+if(NOT ANYOS_SYSTEM_FS MATCHES "^(exfat|corefs)$")
+  message(FATAL_ERROR
+    "ANYOS_SYSTEM_FS must be 'exfat' or 'corefs', got '${ANYOS_SYSTEM_FS}'")
+endif()
+if(ANYOS_SYSTEM_FS STREQUAL "corefs")
+  message(STATUS "System filesystem: corefs (+${ANYOS_SYSTEM_FS_SIZE_MIB} MiB CoreFS partition)")
+else()
+  message(STATUS "System filesystem: exfat (single-partition)")
+endif()
+
 # Version — passed from build.sh/build.ps1 via -DANYOS_VERSION or read from VERSION file
 if(NOT ANYOS_VERSION)
   file(READ "${CMAKE_SOURCE_DIR}/VERSION" ANYOS_VERSION)
