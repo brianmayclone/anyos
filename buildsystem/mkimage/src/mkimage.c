@@ -461,6 +461,250 @@ void create_bios_image(const Args *args) {
            incremental ? "updated" : "created", args->output, args->image_size);
 }
 
+/* ── BIOS dual-partition image creation ───────────────────────────────── */
+
+/*
+ * Sysroot-filter predicates for the dual-partition layout.
+ *
+ * Partition 1 (/boot):
+ *   Anything under sysroot/boot/...  → YES
+ *   everything else                  → NO
+ *   The kernel and the bootloader-rendered logo/font are injected
+ *   separately below (they live under /boot on the FS but not in the
+ *   shared sysroot source tree).
+ *
+ * Partition 2 (/):
+ *   Everything *except* sysroot/boot/... → YES
+ *   The /System/krnl64 copy is *not* duplicated onto Partition 2;
+ *   it's only needed by Stage 2 which always reads from Partition 1.
+ */
+static int dp_include_boot(const char *virt_path, int is_dir)
+{
+    (void)is_dir;
+    if (strcmp(virt_path, "boot") == 0)       return 1;
+    if (strncmp(virt_path, "boot/", 5) == 0)  return 1;
+    return 0;
+}
+
+static int dp_include_root(const char *virt_path, int is_dir)
+{
+    (void)is_dir;
+    if (strcmp(virt_path, "boot") == 0)       return 0;
+    if (strncmp(virt_path, "boot/", 5) == 0)  return 0;
+    return 1;
+}
+
+/*
+ * Write one 16-byte MBR partition entry at offset `slot` (0..3).
+ * Mirrors the helper in `tools/anyos_append_corefs.py`.
+ */
+static void write_mbr_partition_entry(uint8_t *image, int slot,
+                                      int bootable, uint8_t ptype,
+                                      uint32_t start_lba,
+                                      uint32_t size_sectors)
+{
+    uint8_t *entry = image + 446 + slot * 16;
+    memset(entry, 0, 16);
+    entry[0] = bootable ? 0x80 : 0x00;
+    /* CHS fields — obsolete but conventional; all-0xFF means "use LBA". */
+    entry[1] = 0x00; entry[2] = 0x02; entry[3] = 0x00;
+    entry[4] = ptype;
+    entry[5] = 0xFE; entry[6] = 0xFF; entry[7] = 0xFF;
+    write_le32(entry + 8,  start_lba);
+    write_le32(entry + 12, size_sectors);
+}
+
+/*
+ * Inject the boot-asset files (boot.cfg, logo.bin, font.bin) into
+ * `/boot/` on the supplied exFAT instance.  Shared with the single-
+ * partition writer's logic — the only difference is which partition
+ * receives the files.  Free's what it allocates; keeps the caller's
+ * paths alive via `args`.
+ */
+static void inject_boot_assets(ExFat *fs, uint32_t boot_dir,
+                               const Args *args)
+{
+    if (args->boot_cfg) {
+        size_t sz;
+        uint8_t *d = read_file(args->boot_cfg, &sz);
+        if (d) {
+            exfat_add_file(fs, boot_dir, "boot.cfg",
+                           d, sz, 0, 0, 0644, time(NULL));
+            free(d);
+            printf("  /boot/boot.cfg (%zu bytes)\n", sz);
+        }
+    }
+    if (args->boot_logo) {
+        size_t sz;
+        uint8_t *d = read_file(args->boot_logo, &sz);
+        if (d) {
+            size_t rgb_sz;
+            uint8_t *rgb = convert_logo_for_bootloader(d, sz, &rgb_sz);
+            free(d);
+            if (rgb) {
+                exfat_add_file(fs, boot_dir, "logo.bin",
+                               rgb, rgb_sz, 0, 0, 0644, time(NULL));
+                free(rgb);
+                printf("  /boot/logo.bin (%zu bytes)\n", rgb_sz);
+            }
+        }
+    }
+    if (args->boot_font) {
+        size_t sz;
+        uint8_t *d = read_file(args->boot_font, &sz);
+        if (d) {
+            exfat_add_file(fs, boot_dir, "font.bin",
+                           d, sz, 0, 0, 0644, time(NULL));
+            free(d);
+            printf("  /boot/font.bin (%zu bytes)\n", sz);
+        }
+    }
+}
+
+/*
+ * Build a BIOS-bootable disk image with two exFAT partitions:
+ *
+ *     Partition 1 (/boot, small)    — Stage 2 reads `/System/krnl64`
+ *     Partition 2 (/, large)        — kernel mounts this as root
+ *
+ * Incremental mode is NOT supported — this path always performs a
+ * full rebuild (the layout itself changed relative to what an
+ * existing single-partition image would hold).
+ */
+void create_bios_image_dual(const Args *args)
+{
+    size_t s1_size, s2_size, k_size;
+    uint8_t *s1   = read_file(args->stage1, &s1_size);
+    if (!s1)   fatal("cannot read stage1");
+    uint8_t *s2   = read_file(args->stage2, &s2_size);
+    if (!s2)   fatal("cannot read stage2");
+    uint8_t *kelf = read_file(args->kernel, &k_size);
+    if (!kelf) fatal("cannot read kernel");
+
+    if (s1_size != SECTOR_SIZE)
+        fatal("stage1 must be exactly %d bytes, got %zu", SECTOR_SIZE, s1_size);
+    if (s2_size > 63 * SECTOR_SIZE)
+        fatal("stage2 too large: %zu bytes (max %d)", s2_size, 63 * SECTOR_SIZE);
+
+    uint64_t kernel_lma = 0x00100000;
+    printf("Kernel ELF: %zu bytes\n", k_size);
+    size_t flat_size;
+    uint8_t *kernel = elf_to_flat(kelf, k_size, kernel_lma, &flat_size);
+    if (!kernel) fatal("kernel ELF conversion failed");
+    free(kelf);
+
+    /* Geometry */
+    int boot_mib = args->boot_partition_size_mib > 0
+                   ? args->boot_partition_size_mib : 32;
+    size_t   image_size       = (size_t)args->image_size * 1024 * 1024;
+    uint64_t total_sectors    = image_size / SECTOR_SIZE;
+    uint32_t boot_start_lba   = (uint32_t)args->fs_start;
+    uint32_t boot_sectors     = (uint32_t)(((uint64_t)boot_mib * 1024 * 1024) / SECTOR_SIZE);
+    uint32_t root_start_lba   = boot_start_lba + boot_sectors;
+    if ((uint64_t)root_start_lba >= total_sectors)
+        fatal("boot partition consumes entire image, no room for /");
+    uint32_t root_sectors     = (uint32_t)(total_sectors - root_start_lba);
+
+    printf("\nDual-partition BIOS image:\n");
+    printf("  Image: %d MiB (%llu sectors)\n",
+           args->image_size, (unsigned long long)total_sectors);
+    printf("  Stage 1: %zu bytes, Stage 2: %zu bytes\n", s1_size, s2_size);
+    printf("  Kernel (flat): %zu bytes → /System/krnl64 on Partition 1\n",
+           flat_size);
+    printf("  Partition 1 (/boot): LBA %u..%u (%u sectors, %d MiB)\n",
+           boot_start_lba,
+           boot_start_lba + boot_sectors - 1,
+           boot_sectors, boot_mib);
+    printf("  Partition 2 (/):     LBA %u..%u (%u sectors, %u MiB)\n",
+           root_start_lba,
+           root_start_lba + root_sectors - 1,
+           root_sectors, root_sectors * SECTOR_SIZE / (1024 * 1024));
+
+    /* Full-rebuild image buffer. */
+    uint8_t *image = calloc(1, image_size);
+    if (!image) fatal("out of memory for image (%zu bytes)", image_size);
+
+    /* Boot sectors at LBA 0..63 are identical to single-partition. */
+    memcpy(image, s1, s1_size);
+    memcpy(image + SECTOR_SIZE, s2, s2_size);
+
+    /* MBR partition table: 2 entries (rest left zero by calloc). */
+    write_mbr_partition_entry(image, 0, /* bootable = */ 1, 0x07,
+                              boot_start_lba, boot_sectors);
+    write_mbr_partition_entry(image, 1, /* bootable = */ 0, 0x07,
+                              root_start_lba, root_sectors);
+    printf("\nMBR partition table:\n");
+    printf("  Slot 0: type=0x07 (exFAT /boot)  start=%u sectors=%u [bootable]\n",
+           boot_start_lba, boot_sectors);
+    printf("  Slot 1: type=0x07 (exFAT /)      start=%u sectors=%u\n",
+           root_start_lba, root_sectors);
+
+    free(s1);
+    free(s2);
+
+    /* ── Partition 1 — /boot ──────────────────────────────────────────── */
+    printf("\nPartition 1 (/boot) — formatting and populating:\n");
+    ExFat boot_fs;
+    exfat_init(&boot_fs, image, boot_start_lba, boot_sectors, 8);
+    exfat_write_boot(&boot_fs);
+    exfat_init_fs(&boot_fs);
+
+    if (args->sysroot) {
+        exfat_populate_sysroot_filtered(&boot_fs, args->sysroot,
+                                        dp_include_boot);
+    }
+
+    /* Stage 2 reads /System/krnl64 from the primary partition. */
+    uint32_t system_dir = exfat_find_dir(&boot_fs, boot_fs.root_cluster, "System");
+    if (!system_dir)
+        system_dir = exfat_create_dir(&boot_fs, boot_fs.root_cluster, "System",
+                                      0, 0, 0755, time(NULL));
+    exfat_add_file(&boot_fs, system_dir, "krnl64",
+                   kernel, flat_size, 0, 0, 0644, time(NULL));
+    printf("  /System/krnl64 (%zu bytes) — Stage 2 load target\n", flat_size);
+
+    /* /boot/<asset> injects.  The sysroot/boot tree may already
+     * contain a boot.cfg — we leave it alone; inject_boot_assets adds
+     * the authoritative copy.  (In single-partition mode the caller's
+     * loop first deletes any duplicate; here we skip that because the
+     * boot partition is freshly formatted per build.) */
+    uint32_t boot_dir = exfat_find_dir(&boot_fs, boot_fs.root_cluster, "boot");
+    if (!boot_dir)
+        boot_dir = exfat_create_dir(&boot_fs, boot_fs.root_cluster, "boot",
+                                    0, 0, 0755, time(NULL));
+    inject_boot_assets(&boot_fs, boot_dir, args);
+
+    exfat_flush(&boot_fs);
+    exfat_free(&boot_fs);
+
+    /* ── Partition 2 — / ──────────────────────────────────────────────── */
+    printf("\nPartition 2 (/) — formatting and populating:\n");
+    ExFat root_fs;
+    exfat_init(&root_fs, image, root_start_lba, root_sectors, 8);
+    exfat_write_boot(&root_fs);
+    exfat_init_fs(&root_fs);
+
+    if (args->sysroot) {
+        exfat_populate_sysroot_filtered(&root_fs, args->sysroot,
+                                        dp_include_root);
+    }
+
+    exfat_flush(&root_fs);
+    exfat_free(&root_fs);
+
+    free(kernel);
+
+    /* Write image */
+    FILE *fp = fopen(args->output, "wb");
+    if (!fp) fatal("cannot create '%s'", args->output);
+    fwrite(image, 1, image_size, fp);
+    fclose(fp);
+    free(image);
+
+    printf("\nDual-partition disk image created: %s (%d MiB)\n",
+           args->output, args->image_size);
+}
+
 /* ── UEFI image creation ──────────────────────────────────────────────── */
 
 void create_uefi_image(const Args *args) {
@@ -799,6 +1043,12 @@ static int parse_args(int argc, char **argv, Args *args) {
             args->boot_logo = argv[++i];
         } else if (strcmp(argv[i], "--boot-font") == 0 && i + 1 < argc) {
             args->boot_font = argv[++i];
+        } else if (strcmp(argv[i], "--dual-partition") == 0) {
+            args->dual_partition = 1;
+            if (args->boot_partition_size_mib <= 0)
+                args->boot_partition_size_mib = 32; /* sane default */
+        } else if (strcmp(argv[i], "--boot-partition-size-mib") == 0 && i + 1 < argc) {
+            args->boot_partition_size_mib = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--reset") == 0) {
             args->reset = 1;
         } else if (strcmp(argv[i], "-h") == 0 ||
@@ -844,7 +1094,11 @@ int main(int argc, char **argv) {
         /* BIOS mode */
         if (!args.stage1 || !args.stage2 || !args.kernel)
             fatal("--stage1, --stage2, and --kernel required for BIOS mode");
-        create_bios_image(&args);
+        if (args.dual_partition) {
+            create_bios_image_dual(&args);
+        } else {
+            create_bios_image(&args);
+        }
     }
 
     return 0;

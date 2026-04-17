@@ -68,12 +68,11 @@ endif()
 #     /Applications, /Users, /Libraries, …  The kernel mounts them
 #     as / and /boot respectively (see kernel/src/boot/x86/storage.rs).
 if(ANYOS_DUAL_PARTITION)
-  if(NOT PYTHON_EXECUTABLE)
-    message(FATAL_ERROR
-      "ANYOS_DUAL_PARTITION=ON requires Python (python3/python) in PATH")
-  endif()
+  # Dual-partition path uses the same C mkimage, with --dual-partition
+  # + --boot-partition-size-mib switching it to the two-partition
+  # layout (see buildsystem/mkimage/src/mkimage.c:create_bios_image_dual).
   set(IMAGE_BUILD_CMD
-    ${PYTHON_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/__mkimage.py
+    ${MKIMAGE_EXECUTABLE}
       --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
       --stage2 ${CMAKE_BINARY_DIR}/stage2.bin
       --kernel ${KERNEL_ELF}
@@ -81,9 +80,12 @@ if(ANYOS_DUAL_PARTITION)
       --image-size 512
       --sysroot ${SYSROOT_DIR}
       --fs-start 128
+      --boot-cfg ${BOOT_CFG}
+      --boot-logo ${BOOT_LOGO}
+      --boot-font ${BOOT_FONT_BIN}
       --dual-partition
       --boot-partition-size-mib ${ANYOS_BOOT_PARTITION_SIZE_MIB})
-  set(IMAGE_BUILD_DEP ${CMAKE_SOURCE_DIR}/tools/__mkimage.py)
+  set(IMAGE_BUILD_DEP ${MKIMAGE_EXECUTABLE})
   set(IMAGE_COMMENT "Creating dual-partition disk image (/boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB + /)")
 else()
   set(IMAGE_BUILD_CMD

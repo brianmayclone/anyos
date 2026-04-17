@@ -1037,6 +1037,141 @@ void exfat_populate_sysroot(ExFat *fs, const char *sysroot_path)
 }
 
 /*
+ * Internal recursive worker that consults `include` before materialising
+ * an entry.  Directories rejected by the predicate are skipped *with*
+ * their entire subtree — that matches the dual-partition use-case
+ * (/boot lives entirely on Partition 1, never on Partition 2).  Files
+ * rejected by the predicate are simply dropped.
+ *
+ * Mirrors `exfat_populate_dir` otherwise: same lstat + permission +
+ * symlink handling, same readdir+sort loop.
+ */
+static void exfat_populate_dir_filtered(ExFat *fs, const char *host_path,
+                                        uint32_t parent_cluster,
+                                        const char *virt_path,
+                                        ExFatIncludeFn include)
+{
+    DIR           *d;
+    struct dirent *ent;
+    char         **names      = NULL;
+    int            name_count = 0;
+    int            name_cap   = 0;
+    int            i;
+
+    d = opendir(host_path);
+    if (!d) {
+        fprintf(stderr, "  WARNING: Cannot open directory %s\n", host_path);
+        return;
+    }
+
+    while ((ent = readdir(d)) != NULL) {
+        const char *n = ent->d_name;
+        if (n[0] == '.')
+            continue;
+        if (name_count >= name_cap) {
+            int    new_cap = (name_cap == 0) ? 64 : name_cap * 2;
+            char **tmp     = (char **)realloc(names,
+                                              (size_t)new_cap * sizeof(char *));
+            if (!tmp)
+                fatal("exfat_populate_dir_filtered: realloc failed");
+            names    = tmp;
+            name_cap = new_cap;
+        }
+        names[name_count++] = strdup(n);
+    }
+    closedir(d);
+
+    for (i = 0; i < name_count - 1; ++i) {
+        int j;
+        for (j = i + 1; j < name_count; ++j) {
+            if (strcmp(names[i], names[j]) > 0) {
+                char *tmp  = names[i];
+                names[i]   = names[j];
+                names[j]   = tmp;
+            }
+        }
+    }
+
+    for (i = 0; i < name_count; ++i) {
+        const char *entry_name = names[i];
+        char        full_path[4096];
+        char        child_virt[4096];
+        struct stat st;
+        uint16_t    uid, gid, mode;
+        int         is_dir;
+
+        snprintf(full_path, sizeof(full_path), "%s/%s", host_path, entry_name);
+        if (virt_path[0] == '\0')
+            snprintf(child_virt, sizeof(child_virt), "%s", entry_name);
+        else
+            snprintf(child_virt, sizeof(child_virt), "%s/%s", virt_path, entry_name);
+
+        if (lstat(full_path, &st) != 0) {
+            free(names[i]);
+            continue;
+        }
+
+        is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
+
+        /* Consult the predicate.  For directories, a reject prunes the
+         * entire subtree.  For files/symlinks, a reject drops this one
+         * entry only. */
+        if (include && !include(child_virt, is_dir)) {
+            free(names[i]);
+            continue;
+        }
+
+        uid  = 0;
+        gid  = 0;
+        mode = is_root_only(child_virt) ? 0xF00
+             : is_exec_all(child_virt)  ? 0xF55
+             : 0xFFF;
+
+        if (is_dir) {
+            uint32_t dir_cluster = exfat_create_dir(fs, parent_cluster,
+                                                    entry_name, uid, gid, mode,
+                                                    st.st_mtime);
+            printf("    Dir:  %s/ (cluster=%u)%s\n",
+                   entry_name, dir_cluster,
+                   (mode == 0xF00) ? " [root-only]" : "");
+            exfat_populate_dir_filtered(fs, full_path, dir_cluster,
+                                        child_virt, include);
+        } else if (S_ISLNK(st.st_mode)) {
+            char target[4096];
+            if (read_host_symlink_target(full_path, target, sizeof(target)) == 0) {
+                exfat_add_symlink(fs, parent_cluster, entry_name, target,
+                                  uid, gid, mode, st.st_mtime);
+            }
+        } else if (S_ISREG(st.st_mode)) {
+            size_t   file_size;
+            uint8_t *file_data = read_file(full_path, &file_size);
+            exfat_add_file(fs, parent_cluster, entry_name,
+                           file_data, file_size, uid, gid, mode,
+                           st.st_mtime);
+            free(file_data);
+        }
+
+        free(names[i]);
+    }
+
+    free(names);
+}
+
+void exfat_populate_sysroot_filtered(ExFat *fs, const char *sysroot_path,
+                                     ExFatIncludeFn include)
+{
+    struct stat st;
+
+    if (stat(sysroot_path, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        printf("  Warning: sysroot path '%s' does not exist, skipping\n",
+               sysroot_path);
+        return;
+    }
+
+    exfat_populate_dir_filtered(fs, sysroot_path, fs->root_cluster, "", include);
+}
+
+/*
  * Write the in-memory FAT cache and allocation bitmap to disk.
  * Mirrors ExFatFormatter.flush_fat_and_bitmap().
  */

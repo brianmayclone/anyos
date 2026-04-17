@@ -107,6 +107,16 @@ typedef struct {
     const char *boot_cfg;   /* Path to boot.cfg */
     const char *boot_logo;  /* Path to boot_logo.bin (RGBA format) */
     const char *boot_font;  /* Path to boot_font.bin (8x16 bitmap font) */
+
+    /* Dual-partition layout (Phase 5):
+     *
+     *   Partition 1 (exFAT /boot, small)  — kernel + boot assets
+     *   Partition 2 (exFAT /, large)      — sysroot minus /boot/*
+     *
+     * When dual_partition is 0 (default), the classic single-partition
+     * layout is produced and boot_partition_size_mib is ignored. */
+    int         dual_partition;
+    int         boot_partition_size_mib; /* default 32 when --dual-partition */
 } Args;
 
 /* ── FAT16 formatter state ────────────────────────────────────────────── */
@@ -220,6 +230,20 @@ void     exfat_add_file(ExFat *fs, uint32_t parent, const char *name,
                         uint16_t uid, uint16_t gid, uint16_t mode,
                         time_t mtime);
 void     exfat_populate_sysroot(ExFat *fs, const char *sysroot_path);
+
+/*
+ * Filtered variant — the predicate decides, per virtual path
+ * (e.g. "boot", "boot/logo.bin", "System/bin/init"), whether the
+ * entry is included.  When the predicate returns 0 for a directory,
+ * the directory itself is skipped AND its children are not visited.
+ * When 0 for a file, only that file is skipped.
+ *
+ * Used by the dual-partition builder to split the sysroot between
+ * the /boot and / partitions.
+ */
+typedef int (*ExFatIncludeFn)(const char *virt_path, int is_dir);
+void     exfat_populate_sysroot_filtered(ExFat *fs, const char *sysroot_path,
+                                         ExFatIncludeFn include);
 void     exfat_flush(ExFat *fs);
 void     exfat_free(ExFat *fs);
 
@@ -260,6 +284,7 @@ void create_iso_image(const Args *args);
 /* ── BIOS/UEFI image creation (mkimage.c) ─────────────────────────────── */
 
 void create_bios_image(const Args *args);
+void create_bios_image_dual(const Args *args);
 void create_uefi_image(const Args *args);
 void create_arm64_image(const Args *args);
 

@@ -75,6 +75,20 @@ fn detect_and_register_root_partition() {
         size_sectors: disk_sectors,
         label: disk_label,
     });
+    // ATA warm-up read: the first read issued to the IDE/ATA backend
+    // right after IDENTIFY DEVICE occasionally returns a zeroed buffer
+    // (the DMA transfer completes one command too late).  The later
+    // blockdev::scan_and_register_partitions would then see a zero
+    // MBR and report "no MBR signature", making the kernel fall back
+    // to DEFAULT_PARTITION_LBA and miss all partitions.  A single
+    // discarded read before the scan reliably primes the channel.
+    // (Phase-5 regression investigation, kept here rather than in
+    // the ATA driver so the fix is visible at the call site.)
+    {
+        let mut warmup = [0u8; 512];
+        let _ = drivers::storage::read_sectors(0, 1, &mut warmup);
+    }
+
     blockdev::scan_and_register_partitions(0);
 
     let devices = blockdev::list_devices();
