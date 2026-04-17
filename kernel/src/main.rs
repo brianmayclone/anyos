@@ -17,6 +17,8 @@ mod drivers;
 mod fs;
 mod graphics;
 mod ipc;
+pub mod random;
+pub mod time;
 #[cfg(feature = "kunit")]
 mod kunit;
 mod memory;

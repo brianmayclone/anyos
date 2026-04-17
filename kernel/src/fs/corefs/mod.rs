@@ -87,98 +87,21 @@ pub fn try_auto_mount_corefs(
 
 use corefs_core::platform::{Clock, Rng, Timestamp};
 
-/// Convert (year, month, day, hour, min, sec) in UTC to Unix seconds.
-///
-/// Minimal Gregorian conversion for years >= 1970, matching the behaviour of
-/// `fs::fat::datetime::dos_datetime_to_unix` but without the DOS bit-layout.
-/// Accepts out-of-range inputs by clamping — a broken RTC should not panic.
-fn ymd_hms_to_unix(year: u16, month: u8, day: u8, hour: u8, min: u8, sec: u8) -> u64 {
-    const CUMUL: [u32; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    let year = if year < 1970 { 1970u32 } else { year as u32 };
-    let month = month.clamp(1, 12) as u32;
-    let day = day.clamp(1, 31) as u32;
-
-    let mut days: u32 = 0;
-    for y in 1970..year {
-        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
-        days += if leap { 366 } else { 365 };
-    }
-    days += CUMUL[(month - 1) as usize];
-    let leap_y = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
-    if month > 2 && leap_y {
-        days += 1;
-    }
-    days += day - 1;
-
-    (days as u64) * 86_400
-        + (hour.min(59) as u64) * 3600
-        + (min.min(59) as u64) * 60
-        + sec.min(59) as u64
-}
-
-/// AnyOS-Zeitquelle für `corefs-core`.
-///
-/// Strategie (x86_64):
-/// 1. Wir lesen einmalig beim ersten `now()`-Aufruf die CMOS-RTC (MC146818) aus
-///    und rechnen sie in Unix-Sekunden um. Dieser Wert wird zusammen mit dem
-///    PIT/TSC-Millisekunden-Stand zum Zeitpunkt des Samples gespeichert
-///    (`BOOT_UNIX_SECS`, `BOOT_OFFSET_MS`).
-/// 2. Jeder folgende `now()`-Aufruf liefert
-///    `BOOT_UNIX_SECS + (real_ms_since_boot() - BOOT_OFFSET_MS) / 1000`.
-///
-/// So wird die RTC nur einmal gelesen (teure CMOS-Pollings vermieden) und der
-/// Zeitstempel wächst strikt monoton mit dem kalibrierten PIT-Tick-Counter.
-/// Fallback ohne RTC (oder auf non-x86-Targets): `Timestamp::EPOCH` plus
-/// monoton steigende Sekunden seit Boot, damit Inode-Zeiten zumindest
-/// unterscheidbar bleiben.
+/// AnyOS-Zeitquelle für `corefs-core` — delegiert an `crate::time`.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct KernelClock;
 
-#[cfg(target_arch = "x86_64")]
-mod clock_state {
-    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-    pub static BOOT_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
-    pub static BOOT_OFFSET_MS: AtomicU64 = AtomicU64::new(0);
-    pub static INITIALISED: AtomicBool = AtomicBool::new(false);
-}
-
 impl Clock for KernelClock {
     fn now(&self) -> Timestamp {
-        #[cfg(target_arch = "x86_64")]
-        {
-            use clock_state::*;
-            use core::sync::atomic::Ordering;
-            let ms_now = crate::arch::x86::pit::real_ms_since_boot();
-            if !INITIALISED.load(Ordering::Acquire) {
-                let t = crate::drivers::rtc::read_time();
-                let unix = ymd_hms_to_unix(t.year, t.month, t.day, t.hours, t.minutes, t.seconds);
-                // Races with another init are harmless — last writer wins,
-                // and both writers see the same RTC second ±1.
-                BOOT_UNIX_SECS.store(unix, Ordering::Relaxed);
-                BOOT_OFFSET_MS.store(ms_now, Ordering::Relaxed);
-                INITIALISED.store(true, Ordering::Release);
-                return Timestamp::from_secs(unix);
-            }
-            let base = BOOT_UNIX_SECS.load(Ordering::Relaxed);
-            let off = BOOT_OFFSET_MS.load(Ordering::Relaxed);
-            let delta_ms = ms_now.saturating_sub(off);
-            Timestamp::from_secs(base + delta_ms / 1000)
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            // Keine plattformneutrale Wall-Clock-API im Kernel — liefere
-            // Epoch, bis ein aarch64-RTC-Pfad existiert.
-            Timestamp::EPOCH
-        }
+        Timestamp::from_secs(crate::time::wall_clock_unix_secs())
     }
 }
 
 /// AnyOS-Zufallsquelle für `corefs-core`.
 ///
-/// Default-Konstruktion nutzt [`KernelRng::from_hardware_entropy`], das bei
-/// vorhandenem RDRAND (CPUID.01H:ECX.RDRAND) vier 64-Bit-Samples mit dem
-/// aktuellen TSC mischt. Ohne RDRAND wird stattdessen TSC + aktuelle Thread-
-/// ID + eine feste Kernel-Code-Adresse in einen SplitMix64-Seed gemischt.
+/// Hält einen lokalen XorShift64-State für schnelle sequentielle Calls
+/// (z. B. Inode-ID-Generierung). Der initiale Seed kommt von `crate::random`
+/// (VirtIO RNG → RDRAND → TSC-PRNG-Kette).
 #[derive(Debug, Clone)]
 pub struct KernelRng {
     state: u64,
@@ -193,81 +116,10 @@ impl KernelRng {
         }
     }
 
-    /// Versucht, per RDRAND einen u64 zu lesen. Gibt `None` zurück, wenn
-    /// RDRAND nicht verfügbar ist oder mehrere Retries erfolglos sind.
-    #[cfg(target_arch = "x86_64")]
-    fn try_rdrand_u64() -> Option<u64> {
-        let feats = crate::arch::x86::cpuid::features();
-        if !feats.rdrand {
-            return None;
-        }
-        // Intel SDM empfiehlt bis zu 10 Retries.
-        for _ in 0..10 {
-            let mut out: u64 = 0;
-            let ok: u8;
-            unsafe {
-                core::arch::asm!(
-                    "rdrand {0}",
-                    "setc {1}",
-                    out(reg) out,
-                    out(reg_byte) ok,
-                    options(nomem, nostack),
-                );
-            }
-            if ok != 0 {
-                return Some(out);
-            }
-        }
-        None
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    fn try_rdrand_u64() -> Option<u64> {
-        None
-    }
-
-    /// Konstruiert einen `KernelRng` aus Hardware-Entropie.
-    ///
-    /// Bevorzugt: 4× RDRAND XOR-gemischt mit TSC.
-    /// Fallback: SplitMix64 über TSC + Thread-ID + Code-Adresse.
+    /// Konstruiert einen `KernelRng` aus Hardware-Entropie via `crate::random`.
     #[must_use]
     pub fn from_hardware_entropy() -> Self {
-        #[cfg(target_arch = "x86_64")]
-        let tsc = crate::arch::x86::pit::rdtsc();
-        #[cfg(not(target_arch = "x86_64"))]
-        let tsc: u64 = 0;
-
-        let mut seed: u64 = tsc;
-
-        // Try RDRAND × 4
-        let mut rdrand_any = false;
-        for _ in 0..4 {
-            if let Some(x) = Self::try_rdrand_u64() {
-                seed ^= x;
-                // SplitMix64 step to diffuse
-                seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-                let mut z = seed;
-                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-                seed ^= z ^ (z >> 31);
-                rdrand_any = true;
-            }
-        }
-
-        if !rdrand_any {
-            // Fallback: TSC + current thread id + a kernel code address
-            let tid = crate::task::scheduler::current_tid() as u64;
-            let code_ptr = (Self::from_hardware_entropy as fn() -> Self) as usize as u64;
-            seed ^= tid.rotate_left(17);
-            seed ^= code_ptr.rotate_left(31);
-            seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-            let mut z = seed;
-            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-            seed ^= z ^ (z >> 31);
-        }
-
-        Self::from_seed(seed)
+        Self::from_seed(crate::random::next_u64())
     }
 }
 
@@ -303,26 +155,6 @@ impl Rng for KernelRng {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ymd_hms_conversion_known_values() {
-        // 1970-01-01 00:00:00 = 0
-        assert_eq!(ymd_hms_to_unix(1970, 1, 1, 0, 0, 0), 0);
-        // 2024-01-01 00:00:00 = 1_704_067_200
-        assert_eq!(ymd_hms_to_unix(2024, 1, 1, 0, 0, 0), 1_704_067_200);
-        // 2000-02-29 12:00:00 = 951_782_400 + 12*3600
-        assert_eq!(
-            ymd_hms_to_unix(2000, 2, 29, 12, 0, 0),
-            951_782_400 + 12 * 3600
-        );
-    }
-
-    #[test]
-    fn ymd_hms_clamps_invalid_inputs() {
-        // Out-of-range month/day must not panic.
-        let _ = ymd_hms_to_unix(1970, 0, 0, 99, 99, 99);
-        let _ = ymd_hms_to_unix(1965, 13, 32, 25, 61, 61);
-    }
 
     #[test]
     fn kernel_rng_from_hardware_entropy_non_zero_seed() {
