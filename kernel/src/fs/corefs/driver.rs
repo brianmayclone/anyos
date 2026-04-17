@@ -32,7 +32,6 @@
 //! Ein Hilfs-HashMap (`slot_to_id`) wird lazily beim ersten schreibenden
 //! Zugriff aufgebaut.
 
-use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -43,8 +42,7 @@ use corefs_core::error::CoreFsError;
 use corefs_core::platform::Timestamp;
 use corefs_core::services::journal::JournalRuntimeState;
 use corefs_core::storage::block_device::BlockDevice;
-use corefs_core::storage::block_store::{AllocatorPolicy, BlockRecord, ExtentRef};
-use corefs_core::storage::ondisk::checksum::Crc32c;
+use corefs_core::storage::block_store::{AllocatorPolicy, BlockStore};
 use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
 use corefs_core::storage::ondisk::native::{load_state_native, save_state_native};
 use corefs_core::storage::persisted_state::PersistedState;
@@ -123,17 +121,12 @@ pub struct CoreFsDriver {
 struct Inner {
     device: BlockDeviceAdapter,
     state: PersistedState,
-    /// Laufender Zähler für neu zu vergebende `InodeId`s. Startet bei einem
-    /// Wert oberhalb aller im State bekannten Ids, damit keine Kollision
-    /// entsteht.
+    /// Device-backed block store — actual file bytes are written to / read
+    /// from `device` on every I/O call.  No in-memory byte buffer.
+    blocks: BlockStore,
+    /// Laufender Zähler für neu zu vergebende `InodeId`s.
     next_id: u64,
     read_only: bool,
-    /// In-memory byte data per inode (the extent-based BlockRecord holds only
-    /// metadata; actual bytes live here until flush writes them to the device).
-    byte_data: BTreeMap<InodeId, Vec<u8>>,
-    /// Next free physical block on the device for writing file data.
-    /// Initialized conservatively past the ODF metadata region on mount.
-    next_data_block: u64,
 }
 
 impl CoreFsDriver {
@@ -147,15 +140,21 @@ impl CoreFsDriver {
         // synthesieren, damit lookup("/") / readdir funktionieren.
         ensure_root_directory(&mut state);
         let next_id = compute_next_id(&state);
-        let (byte_data, next_data_block) = load_byte_data(&device, &state);
+        let first_data_block = compute_first_data_block(&state);
+        let blocks = BlockStore::from_records_with_allocator_and_start(
+            state.block_records.clone(),
+            BLOCK_SIZE as usize,
+            state.allocator_policy.clone(),
+            state.free_extents.clone(),
+            first_data_block,
+        );
         Ok(Self {
             inner: Mutex::new(Inner {
                 device,
                 state,
+                blocks,
                 next_id,
                 read_only: true,
-                byte_data,
-                next_data_block,
             }),
         })
     }
@@ -204,15 +203,21 @@ impl CoreFsDriver {
         let root_added = ensure_root_directory(&mut state);
 
         let next_id = compute_next_id(&state);
-        let (byte_data, next_data_block) = load_byte_data(&device, &state);
+        let first_data_block = compute_first_data_block(&state);
+        let blocks = BlockStore::from_records_with_allocator_and_start(
+            state.block_records.clone(),
+            BLOCK_SIZE as usize,
+            state.allocator_policy.clone(),
+            state.free_extents.clone(),
+            first_data_block,
+        );
         let this = Self {
             inner: Mutex::new(Inner {
                 device,
                 state,
+                blocks,
                 next_id,
                 read_only: false,
-                byte_data,
-                next_data_block,
             }),
         };
         if root_added {
@@ -244,57 +249,11 @@ impl CoreFsDriver {
             return Ok(());
         }
 
-        // Write byte data to the device and build extent-based BlockRecords.
-        inner.state.block_records.clear();
-        let byte_data_snapshot: Vec<(InodeId, Vec<u8>)> = inner
-            .byte_data
-            .iter()
-            .map(|(id, bytes)| (*id, bytes.clone()))
-            .collect();
-        for (inode_id, bytes) in byte_data_snapshot {
-            if bytes.is_empty() {
-                // Empty file: push a metadata-only record with no extents.
-                inner.state.block_records.push(BlockRecord {
-                    inode: inode_id,
-                    logical_size: 0,
-                    extents: Vec::new(),
-                    content_crc: 0,
-                    flags: 0,
-                });
-                continue;
-            }
-            let crc = Crc32c::hash(&bytes);
-            let needed_blocks = (bytes.len() as u64).div_ceil(BLOCK_SIZE);
-            let phys_block = inner.next_data_block;
-            inner.next_data_block += needed_blocks;
-
-            // Write padded block-aligned data to device.
-            let buf_len = (needed_blocks * BLOCK_SIZE) as usize;
-            let mut buf = alloc::vec![0u8; buf_len];
-            buf[..bytes.len()].copy_from_slice(&bytes);
-            inner
-                .device
-                .write_at(phys_block * BLOCK_SIZE, &buf)
-                .map_err(|_| FsError::IoError)?;
-
-            inner.state.block_records.push(BlockRecord {
-                inode: inode_id,
-                logical_size: bytes.len() as u64,
-                extents: alloc::vec![ExtentRef {
-                    logical_block: 0,
-                    logical_len: bytes.len() as u32,
-                    physical_block: phys_block,
-                    length_blocks: needed_blocks as u32,
-                    physical_len: bytes.len() as u32,
-                    content_crc: crc,
-                    flags: 0,
-                }],
-                content_crc: crc,
-                flags: 0,
-            });
-        }
-
-        let Inner { device, state, .. } = &mut *inner;
+        // Sync metadata from BlockStore into state, then persist.
+        // File bytes are already on the device (written by write_at / write_device).
+        let Inner { device, state, blocks, .. } = &mut *inner;
+        state.block_records = blocks.records();
+        state.free_extents = blocks.free_extents();
         save_state_native(device, state).map_err(|e| corefs_to_fs_error(&e))?;
         Ok(())
     }
@@ -329,19 +288,15 @@ impl CoreFsDriver {
         }
         let id = id.ok_or(FsError::NotFound)?;
 
-        let target = new_size as usize;
+        let target = new_size as u64;
 
-        // Adjust byte data (create entry if needed for zero-fill extend).
-        let bytes = inner.byte_data.entry(id).or_insert_with(Vec::new);
-        if bytes.len() > target {
-            bytes.truncate(target);
-        } else if bytes.len() < target {
-            bytes.resize(target, 0);
-        }
+        // Resize on device: grow with zero-fill or shrink.
+        let Inner { blocks, device, state, .. } = &mut *inner;
+        blocks.truncate(device, id, target).map_err(|_| FsError::IoError)?;
 
-        for i in inner.state.active_inodes.iter_mut() {
+        for i in state.active_inodes.iter_mut() {
             if i.id == id {
-                i.size = target;
+                i.size = target as usize;
                 i.touch_modified_at(Timestamp::EPOCH);
                 break;
             }
@@ -483,6 +438,7 @@ impl CoreFsDriver {
 
         let id = InodeId(inner.next_id);
         inner.next_id += 1;
+        let target_bytes = target.as_bytes();
         let mut inode = Inode::new_at(
             id,
             InodeKind::Symlink,
@@ -490,10 +446,10 @@ impl CoreFsDriver {
             FileMetadata::default(),
             Timestamp::EPOCH,
         );
-        let bytes = target.as_bytes().to_vec();
-        inode.size = bytes.len();
+        inode.size = target_bytes.len();
         inner.state.active_inodes.push(inode);
-        inner.byte_data.insert(id, bytes);
+        let Inner { blocks, device, .. } = &mut *inner;
+        blocks.write_device(device, id, target_bytes).map_err(|_| FsError::IoError)?;
         Ok(CoreFsDriver::inode_u32_from_id(id))
     }
 }
@@ -537,44 +493,19 @@ fn compute_next_id(state: &PersistedState) -> u64 {
     max_id + 1
 }
 
-/// Populate `byte_data` from device extents after a native state load.
-///
-/// Also computes the next safe physical block to use for new data writes —
-/// set to one past the highest physical block currently occupied by any extent.
-fn load_byte_data(
-    device: &BlockDeviceAdapter,
-    state: &PersistedState,
-) -> (BTreeMap<InodeId, Vec<u8>>, u64) {
-    let mut byte_data: BTreeMap<InodeId, Vec<u8>> = BTreeMap::new();
-    // Start past a safe ODF metadata region (conservative default).
-    let mut next_data_block: u64 = 1000;
-
-    for rec in &state.block_records {
-        let mut bytes = alloc::vec![0u8; rec.logical_size as usize];
-        let mut offset = 0usize;
-        for ext in &rec.extents {
-            let dev_offset = ext.physical_block * BLOCK_SIZE;
-            let read_len = u64::from(ext.length_blocks) * BLOCK_SIZE;
-            if let Ok(buf) = device.read_at(dev_offset, read_len) {
-                let want = (ext.logical_len as usize)
-                    .min(buf.len())
-                    .min(bytes.len().saturating_sub(offset));
-                if want > 0 {
-                    bytes[offset..offset + want].copy_from_slice(&buf[..want]);
-                    offset += want;
-                }
-            }
-            // Track highest used block so we don't overwrite existing data.
-            let end_block = ext.physical_block + u64::from(ext.length_blocks);
-            if end_block > next_data_block {
-                next_data_block = end_block;
-            }
-        }
-        bytes.truncate(rec.logical_size as usize);
-        byte_data.insert(rec.inode, bytes);
-    }
-
-    (byte_data, next_data_block)
+/// Berechnet den ersten sicheren physischen Block für Datei-Schreibvorgänge.
+/// Ist der erste Block hinter dem Ende aller bekannten Extents,
+/// oder 256 (sicher hinter dem ODF-Metadaten-Bereich) — je nachdem, was größer ist.
+fn compute_first_data_block(state: &PersistedState) -> u64 {
+    let highest = state
+        .block_records
+        .iter()
+        .flat_map(|r| r.extents.iter())
+        .map(|e| e.physical_block + u64::from(e.length_blocks))
+        .max()
+        .unwrap_or(0);
+    // 256 blocks × 4096 bytes = 1 MiB — sicher hinter jedem ODF-Metadaten-Bereich.
+    highest.max(256)
 }
 
 // ---------------------------------------------------------------------------
@@ -613,25 +544,20 @@ fn join_path(parent: &str, name: &str) -> String {
 impl Filesystem for CoreFsDriver {
     fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError> {
         let inner = self.inner.lock();
-        // Find byte data by inode id truncated to u32.
-        for (id, bytes) in &inner.byte_data {
-            if CoreFsDriver::inode_u32_from_id(*id) == inode {
-                let off = offset as usize;
-                if off >= bytes.len() {
-                    return Ok(0);
-                }
-                let n = core::cmp::min(bytes.len() - off, buf.len());
-                buf[..n].copy_from_slice(&bytes[off..off + n]);
-                return Ok(n);
-            }
-        }
-        // Inode exists but has no byte data → 0 bytes (empty file).
-        for i in &inner.state.active_inodes {
-            if CoreFsDriver::inode_u32_from_id(i.id) == inode {
-                return Ok(0);
-            }
-        }
-        Err(FsError::NotFound)
+        // Find the domain InodeId for this VFS inode number.
+        let inode_id = inner
+            .state
+            .active_inodes
+            .iter()
+            .find(|i| CoreFsDriver::inode_u32_from_id(i.id) == inode)
+            .map(|i| i.id)
+            .ok_or(FsError::NotFound)?;
+        // Stream bytes from the device via BlockStore.
+        let n = inner
+            .blocks
+            .read_bytes(&inner.device, inode_id, offset as u64, buf)
+            .map_err(|_| FsError::IoError)?;
+        Ok(n)
     }
 
     fn write(&self, inode: u32, offset: u32, buf: &[u8]) -> Result<usize, FsError> {
@@ -652,20 +578,18 @@ impl Filesystem for CoreFsDriver {
         }
         let id = inode_id.ok_or(FsError::NotFound)?;
 
-        // Append/overwrite into byte_data.
-        let off = offset as usize;
-        let end = off + buf.len();
-        let bytes = inner.byte_data.entry(id).or_insert_with(Vec::new);
-        if bytes.len() < end {
-            bytes.resize(end, 0);
+        // Write bytes directly to device (offset write, RMW if partial block).
+        let new_end = offset as usize + buf.len();
+        {
+            let Inner { blocks, device, .. } = &mut *inner;
+            blocks.write_at(device, id, offset as u64, buf).map_err(|_| FsError::IoError)?;
         }
-        bytes[off..end].copy_from_slice(buf);
 
         // Update inode size field to reflect highest written offset.
         for i in inner.state.active_inodes.iter_mut() {
             if i.id == id {
-                if end > i.size {
-                    i.size = end;
+                if new_end > i.size {
+                    i.size = new_end;
                 }
                 i.touch_modified_at(Timestamp::EPOCH);
                 break;
@@ -802,7 +726,9 @@ impl Filesystem for CoreFsDriver {
         let rid = removed.id;
         inner.state.deleted_inodes.push(removed);
         inner.state.block_records.retain(|rec| rec.inode != rid);
-        inner.byte_data.remove(&rid);
+        // Release device extents for the deleted inode.
+        let Inner { blocks, device, .. } = &mut *inner;
+        blocks.remove_inode(device, rid);
         Ok(())
     }
 }
