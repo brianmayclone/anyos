@@ -2,7 +2,7 @@
 //! Delegates to the mounted filesystem (exFAT or FAT16) and manages the global open file table.
 
 mod cache;
-mod path;
+pub(crate) mod path;
 mod types;
 
 use crate::fs::devfs::DevFs;

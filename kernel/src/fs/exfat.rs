@@ -2126,3 +2126,154 @@ impl ExFatFs {
         }
     }
 }
+
+// ===========================================================================
+// ExFatFsDriver — `Filesystem`-Trait-Adapter um die bestehende `ExFatFs`.
+// ===========================================================================
+//
+// Wraps the cluster-based, mostly-`&mut self`-flavoured `ExFatFs` API in a
+// path/inode-based Trait that the VFS dispatch layer can consume
+// generically (Phase 6 Step 3 of the FS-Abstraktion — siehe
+// memory/phase6-fs-abstraction-plan.md).
+//
+// Scope of this commit (read path + read-only metadata):
+//
+//   * `lookup`, `read`, `readdir`        — direct or near-direct mapping
+//   * `stat`, `statfs`, `sync`           — wrap existing inherent fns
+//   * `read_only`                        — false (ExFat is RW)
+//
+// `write`, `create`, `delete`, `truncate`, `rename`, `set_mode`,
+// `set_owner`, `create_symlink`, `readlink` are **stubbed** to
+// `PermissionDenied` for now — their underlying `ExFatFs` methods take
+// signatures (parent_cluster + name, inode + old_size, …) that don't map
+// 1:1 to the trait without an inode↔directory-position cache.  The VFS
+// keeps using the existing `state.exfat_fs` direct-call paths for those
+// operations until the VfsState refactor (Phase 6 Step 6) shows what
+// shape the trait should take.
+
+use crate::fs::vfs::{Filesystem, FsError as VfsFsError, StatFs, StatResult};
+use crate::sync::mutex::Mutex;
+
+/// Trait-shaped wrapper around [`ExFatFs`].  Owns the underlying FS
+/// behind a [`Mutex`] so the trait's `&self` methods can mutate the
+/// FAT cache / bitmap / dirent buffers via interior locking — same
+/// pattern as `CoreFsDriver`.
+pub struct ExFatFsDriver {
+    inner: Mutex<ExFatFs>,
+}
+
+impl ExFatFsDriver {
+    /// Construct a driver from an already-mounted [`ExFatFs`].
+    pub fn new(fs: ExFatFs) -> Self {
+        Self {
+            inner: Mutex::new(fs),
+        }
+    }
+
+    /// Borrow the inner FS directly — escape hatch for the few VFS
+    /// call sites that still use exFAT-specific APIs (cluster-based
+    /// directory traversal, parent_cluster tracking in OpenFile, …)
+    /// and haven't been migrated to the trait yet.
+    pub fn lock_inner(&self) -> crate::sync::mutex::MutexGuard<'_, ExFatFs> {
+        self.inner.lock()
+    }
+}
+
+impl Filesystem for ExFatFsDriver {
+    // -----------------------------------------------------------------
+    // Required: read path
+    // -----------------------------------------------------------------
+
+    fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, VfsFsError> {
+        self.inner.lock().read_file(inode, offset, buf)
+    }
+
+    fn lookup(&self, path: &str) -> Result<(u32, FileType, u32), VfsFsError> {
+        self.inner.lock().lookup(path)
+    }
+
+    fn readdir(&self, inode: u32) -> Result<Vec<DirEntry>, VfsFsError> {
+        // VFS inode → exFAT cluster.  Files have inode == encoded cluster +
+        // contiguous flag; for directories the cluster is the directory's
+        // own first cluster.
+        let (cluster, _contiguous) = decode_inode(inode);
+        self.inner.lock().read_dir(cluster)
+    }
+
+    // -----------------------------------------------------------------
+    // Required (stubbed): write path
+    //
+    // exFAT's write/create/delete/truncate APIs key off
+    // (parent_cluster, name) or take an `old_size`.  Mapping those onto
+    // the trait's (inode, …) shape needs an inode→(parent_cluster,
+    // entry_position) lookup we don't have yet.  Until the VfsState
+    // refactor (Phase 6 Step 6) decides the final API shape, we defer
+    // by returning PermissionDenied — and the legacy VFS direct-call
+    // paths continue to handle these operations as today.
+    // -----------------------------------------------------------------
+
+    fn write(&self, _inode: u32, _offset: u32, _buf: &[u8]) -> Result<usize, VfsFsError> {
+        Err(VfsFsError::PermissionDenied)
+    }
+
+    fn create(
+        &self,
+        _parent_inode: u32,
+        _name: &str,
+        _file_type: FileType,
+    ) -> Result<u32, VfsFsError> {
+        Err(VfsFsError::PermissionDenied)
+    }
+
+    fn delete(&self, _parent_inode: u32, _name: &str) -> Result<(), VfsFsError> {
+        Err(VfsFsError::PermissionDenied)
+    }
+
+    // -----------------------------------------------------------------
+    // Metadata overrides (defaults would lose uid/gid/mode/mtime info)
+    // -----------------------------------------------------------------
+
+    fn stat(&self, path: &str) -> Result<StatResult, VfsFsError> {
+        let fs = self.inner.lock();
+        // Resolve the path to recover (inode, file_type, size,
+        // is_symlink, uid/gid/mode/mtime).  resolve_exfat_path lives
+        // in fs::vfs::path and walks symlinks at intermediate
+        // components; here we want lstat-style behaviour (don't follow
+        // a final symlink) so the caller can also use this for
+        // readlink discovery.
+        let entry =
+            crate::fs::vfs::path::resolve_exfat_path(&fs, path, /* follow_last = */ false)?;
+        Ok(StatResult {
+            file_type: entry.file_type,
+            size: entry.size,
+            is_symlink: entry.is_symlink,
+            uid: entry.uid,
+            gid: entry.gid,
+            mode: entry.mode,
+            mtime: entry.mtime,
+        })
+    }
+
+    fn statfs(&self) -> Result<StatFs, VfsFsError> {
+        let (total, free) = self.inner.lock().fs_stats();
+        Ok(StatFs {
+            total_bytes: total,
+            used_bytes: total.saturating_sub(free),
+            free_bytes: free,
+        })
+    }
+
+    // -----------------------------------------------------------------
+    // Lifecycle
+    // -----------------------------------------------------------------
+
+    fn sync(&self) -> Result<(), VfsFsError> {
+        self.inner.lock().flush_metadata()
+    }
+
+    fn read_only(&self) -> bool {
+        // ExFat is mounted read-write by default in anyOS; volumes
+        // mounted ro would set this via a future flag on ExFatFs.
+        false
+    }
+}
