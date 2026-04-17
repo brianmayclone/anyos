@@ -108,9 +108,7 @@ fn detect_and_register_root_partition() {
     let mut data_parts: alloc::vec::Vec<&blockdev::BlockDevice> = devices
         .iter()
         .filter(|d| d.disk_id == 0 && d.partition.is_some())
-        .filter(|d| {
-            d.part_type != PartitionType::GptEsp && d.part_type != PartitionType::CoreFs
-        })
+        .filter(|d| d.part_type != PartitionType::GptEsp)
         .collect();
     data_parts.sort_by_key(|d| d.partition.unwrap_or(0));
 
@@ -174,20 +172,31 @@ fn detect_and_register_root_partition() {
     }
 
     // Phase 5c — auto-activate CoreFS-as-/System when the dual-partition
-    // image also carries a CoreFS system partition (MBR type 0xCF) on
-    // the boot disk.  Without this, try_mount_corefs_partitions() would
-    // attach the partition to `/mnt/corefs` by default; with the flag
-    // set it replaces the exFAT `/System/*` content with the CoreFS
-    // tree.  Leaving the flag off when no CoreFS partition exists
-    // keeps single-partition / exfat-only installs identical to before.
-    let has_corefs_partition = devices
-        .iter()
-        .any(|d| d.disk_id == 0 && d.partition.is_some()
-                 && d.part_type == PartitionType::CoreFs);
-    if has_corefs_partition {
+    // image carries a *separate* CoreFS system partition (MBR type 0xCF)
+    // on the boot disk that is not already serving as `/`.  In Phase 6
+    // the dual-partition layout can also use CoreFS *as the root*
+    // (FAT /boot + CoreFS /), in which case the partition is mounted
+    // by the generic root probe and we must NOT also try to attach it
+    // under /System — that would be a double mount.
+    //
+    // Detection: CoreFS counts as "extra system partition" only when it
+    // is not the chosen root.  data_parts[1] is the root in dual-
+    // partition mode, data_parts[0] in single-partition mode.
+    let root_part_lba = match data_parts.len() {
+        0 => None,
+        1 => Some(data_parts[0].start_lba),
+        _ => Some(data_parts[1].start_lba),
+    };
+    let extra_corefs = devices.iter().any(|d| {
+        d.disk_id == 0
+            && d.partition.is_some()
+            && d.part_type == PartitionType::CoreFs
+            && Some(d.start_lba) != root_part_lba
+    });
+    if extra_corefs {
         fs::corefs::enable_mount_as_system();
         serial_println!(
-            "  CoreFS partition detected on boot disk — /System will be served from CoreFS"
+            "  Extra CoreFS partition detected on boot disk — /System will be served from CoreFS"
         );
     }
 }
@@ -197,6 +206,7 @@ fn try_mount_corefs_partitions() {
 
     let devices = blockdev::list_devices();
     let root_disk_id: u8 = 0; // Root-FS lebt immer auf disk 0 (erste BIOS-Disk).
+    let root_lba = fs::vfs::root_partition_lba();
     let mut mount_index: u32 = 0;
     let mut system_mounted = false;
     let want_system_mount = fs::corefs::mount_as_system_enabled();
@@ -205,6 +215,12 @@ fn try_mount_corefs_partitions() {
         // Skip the "whole-disk" pseudo-entry (partition == None) and any
         // entry that obviously can't host a filesystem (size 0).
         if dev.partition.is_none() || dev.size_sectors == 0 {
+            continue;
+        }
+        // Skip the partition that is already serving as `/` — re-mounting
+        // it under /mnt/corefs* or /System would be a duplicate of the
+        // root mount the generic FS-probe loop already performed.
+        if dev.disk_id == root_disk_id && dev.start_lba as u32 == root_lba {
             continue;
         }
         // Ersten CoreFS-Hit auf der Root-Disk optional nach /System mounten,

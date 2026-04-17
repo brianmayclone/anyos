@@ -1056,6 +1056,56 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
         return Ok(slot_id);
     }
 
+    // --- CoreFS root path (Phase 6 generic dispatch) ---
+    if state.corefs_driver.is_some() {
+        let driver = state.corefs_driver.as_ref().unwrap();
+        let q = if path.is_empty() { "/" } else { path };
+        let (inode, file_type, size) = match Filesystem::lookup(driver, q) {
+            Ok(r) => {
+                if flags.truncate && flags.write {
+                    driver.truncate_file(r.0, 0)?;
+                    (r.0, r.1, 0)
+                } else {
+                    r
+                }
+            }
+            Err(FsError::NotFound) if flags.create => {
+                let rel = q.trim_end_matches('/');
+                let (parent, name) = match rel.rfind('/') {
+                    Some(0) => ("/", &rel[1..]),
+                    Some(pos) => (&rel[..pos], &rel[pos + 1..]),
+                    None => ("/", rel),
+                };
+                let (parent_inode, parent_type, _) = Filesystem::lookup(driver, parent)?;
+                if parent_type != FileType::Directory {
+                    return Err(FsError::NotADirectory);
+                }
+                let new_inode = Filesystem::create(driver, parent_inode, name, FileType::Regular)?;
+                (new_inode, FileType::Regular, 0)
+            }
+            Err(e) => return Err(e),
+        };
+        let slot_id = state.alloc_slot().ok_or(FsError::TooManyOpenFiles)?;
+        let position = if flags.append { size } else { 0 };
+        let file = OpenFile {
+            fd: slot_id,
+            path: String::from(path),
+            file_type,
+            flags,
+            position,
+            size,
+            fs_id: 8, // CoreFS
+            inode,
+            parent_cluster: 0,
+            refcount: 1,
+            seek_cache_offset: 0,
+            seek_cache_cluster: 0,
+            entry_dirty: false,
+        };
+        state.open_files[slot_id as usize] = Some(file);
+        return Ok(slot_id);
+    }
+
     // --- OverlayFS root (CD-ROM boot with writable RAM overlay) ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
         let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
@@ -2000,6 +2050,20 @@ pub fn read_file_to_vec(path: &str) -> Result<Vec<u8>, FsError> {
                 return Err(FsError::IsADirectory);
             }
             ReadPlan::Fat(fat.get_file_read_plan(cluster, size))
+        } else if let Some(driver) = state.corefs_driver.as_ref() {
+            // CoreFS root path: dispatch via the Filesystem trait.  CoreFS
+            // already streams through its own block cache so we don't need
+            // a deferred read plan like the cluster-based filesystems —
+            // a single Filesystem::read call services the whole file.
+            let q = if path.is_empty() { "/" } else { path };
+            let (inode, file_type, size) = Filesystem::lookup(driver, q)?;
+            if file_type == FileType::Directory {
+                return Err(FsError::IsADirectory);
+            }
+            let mut buf = alloc::vec![0u8; size as usize];
+            let n = Filesystem::read(driver, inode, 0, &mut buf)?;
+            buf.truncate(n);
+            return Ok(buf);
         } else if let Some(ref iso) = state.iso9660_fs {
             return iso.read_file_to_vec(path);
         } else {

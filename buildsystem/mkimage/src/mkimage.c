@@ -571,6 +571,73 @@ static void inject_boot_assets(ExFat *fs, uint32_t boot_dir,
  * full rebuild (the layout itself changed relative to what an
  * existing single-partition image would hold).
  */
+/*
+ * Phase-6 post-write step.  Invokes `mkfs-corefs-host` on the freshly
+ * written image to format Partition 2 as CoreFS and populate it with
+ * the sysroot.
+ *
+ * The boot/ subtree is intentionally kept in the populate set: the
+ * kernel mounts a separate /boot from Partition 1 (which shadows the
+ * duplicate at runtime), so leaving boot/* in CoreFS adds ~4 MiB of
+ * harmless duplication and gives the system a fallback if the boot
+ * partition ever fails to mount.
+ *
+ * Aborts the build on any error from the subprocess — a botched
+ * CoreFS format would leave an unbootable image.
+ */
+static void format_corefs_partition(const Args *args,
+                                    uint32_t root_start_lba,
+                                    uint32_t root_sectors)
+{
+    if (!args->mkfs_corefs_host)
+        fatal("internal: format_corefs_partition without mkfs-corefs-host");
+
+    uint64_t offset_bytes = (uint64_t)root_start_lba * SECTOR_SIZE;
+    uint64_t size_bytes   = (uint64_t)root_sectors   * SECTOR_SIZE;
+
+    printf("\nPost-write: invoking mkfs-corefs-host on Partition 2:\n");
+    printf("  offset=%llu bytes (LBA %u)\n",
+           (unsigned long long)offset_bytes, root_start_lba);
+    printf("  size  =%llu bytes (%u sectors, %llu MiB)\n",
+           (unsigned long long)size_bytes, root_sectors,
+           (unsigned long long)(size_bytes / (1024 * 1024)));
+
+    /* Build the command line as a single shell-escaped string.  Image
+     * paths and the sysroot come from CMake/CTest, which already keep
+     * them free of shell metacharacters; we still quote everything
+     * defensively to survive odd build directories. */
+    size_t bufsz = 4096;
+    char *cmd = (char *)malloc(bufsz);
+    if (!cmd) fatal("out of memory building mkfs-corefs-host command");
+    int n;
+
+    if (args->sysroot) {
+        n = snprintf(cmd, bufsz,
+            "\"%s\" --output \"%s\" --offset %llu --size %llu "
+            "--label root --populate \"%s\"",
+            args->mkfs_corefs_host, args->output,
+            (unsigned long long)offset_bytes,
+            (unsigned long long)size_bytes,
+            args->sysroot);
+    } else {
+        n = snprintf(cmd, bufsz,
+            "\"%s\" --output \"%s\" --offset %llu --size %llu --label root",
+            args->mkfs_corefs_host, args->output,
+            (unsigned long long)offset_bytes,
+            (unsigned long long)size_bytes);
+    }
+    if (n < 0 || (size_t)n >= bufsz)
+        fatal("mkfs-corefs-host command line too long");
+
+    printf("  $ %s\n", cmd);
+    int rc = system(cmd);
+    free(cmd);
+    if (rc != 0)
+        fatal("mkfs-corefs-host failed (exit code %d)", rc);
+
+    printf("  Partition 2 formatted as CoreFS and populated.\n");
+}
+
 void create_bios_image_dual(const Args *args)
 {
     size_t s1_size, s2_size, k_size;
@@ -628,16 +695,23 @@ void create_bios_image_dual(const Args *args)
     memcpy(image, s1, s1_size);
     memcpy(image + SECTOR_SIZE, s2, s2_size);
 
+    int root_is_corefs = args->root_fs && strcmp(args->root_fs, "corefs") == 0;
+    if (root_is_corefs && !args->mkfs_corefs_host) {
+        fatal("--root-fs=corefs requires --mkfs-corefs-host=<path>");
+    }
+    uint8_t root_ptype = root_is_corefs ? 0xCF : 0x07;
+    const char *root_label = root_is_corefs ? "CoreFS /" : "exFAT /";
+
     /* MBR partition table: 2 entries (rest left zero by calloc). */
     write_mbr_partition_entry(image, 0, /* bootable = */ 1, 0x07,
                               boot_start_lba, boot_sectors);
-    write_mbr_partition_entry(image, 1, /* bootable = */ 0, 0x07,
+    write_mbr_partition_entry(image, 1, /* bootable = */ 0, root_ptype,
                               root_start_lba, root_sectors);
     printf("\nMBR partition table:\n");
     printf("  Slot 0: type=0x07 (exFAT /boot)  start=%u sectors=%u [bootable]\n",
            boot_start_lba, boot_sectors);
-    printf("  Slot 1: type=0x07 (exFAT /)      start=%u sectors=%u\n",
-           root_start_lba, root_sectors);
+    printf("  Slot 1: type=0x%02X (%s)      start=%u sectors=%u\n",
+           root_ptype, root_label, root_start_lba, root_sectors);
 
     free(s1);
     free(s2);
@@ -678,19 +752,28 @@ void create_bios_image_dual(const Args *args)
     exfat_free(&boot_fs);
 
     /* ── Partition 2 — / ──────────────────────────────────────────────── */
-    printf("\nPartition 2 (/) — formatting and populating:\n");
-    ExFat root_fs;
-    exfat_init(&root_fs, image, root_start_lba, root_sectors, 8);
-    exfat_write_boot(&root_fs);
-    exfat_init_fs(&root_fs);
+    if (root_is_corefs) {
+        /* Leave Partition 2 zeroed in the in-memory image; it will be
+         * formatted+populated by mkfs-corefs-host below, after the image
+         * has been written to disk.  The MBR slot 1 type byte already
+         * declares this region as 0xCF (CoreFS), so the kernel's
+         * ROOT_FS_PROBES will probe CoreFS first and find the magic. */
+        printf("\nPartition 2 (/) — deferred to mkfs-corefs-host (post-write)\n");
+    } else {
+        printf("\nPartition 2 (/) — formatting and populating:\n");
+        ExFat root_fs;
+        exfat_init(&root_fs, image, root_start_lba, root_sectors, 8);
+        exfat_write_boot(&root_fs);
+        exfat_init_fs(&root_fs);
 
-    if (args->sysroot) {
-        exfat_populate_sysroot_filtered(&root_fs, args->sysroot,
-                                        dp_include_root);
+        if (args->sysroot) {
+            exfat_populate_sysroot_filtered(&root_fs, args->sysroot,
+                                            dp_include_root);
+        }
+
+        exfat_flush(&root_fs);
+        exfat_free(&root_fs);
     }
-
-    exfat_flush(&root_fs);
-    exfat_free(&root_fs);
 
     free(kernel);
 
@@ -700,6 +783,11 @@ void create_bios_image_dual(const Args *args)
     fwrite(image, 1, image_size, fp);
     fclose(fp);
     free(image);
+
+    /* ── Phase 6: post-write CoreFS format + populate ─────────────────── */
+    if (root_is_corefs) {
+        format_corefs_partition(args, root_start_lba, root_sectors);
+    }
 
     printf("\nDual-partition disk image created: %s (%d MiB)\n",
            args->output, args->image_size);
@@ -1049,6 +1137,10 @@ static int parse_args(int argc, char **argv, Args *args) {
                 args->boot_partition_size_mib = 32; /* sane default */
         } else if (strcmp(argv[i], "--boot-partition-size-mib") == 0 && i + 1 < argc) {
             args->boot_partition_size_mib = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--root-fs") == 0 && i + 1 < argc) {
+            args->root_fs = argv[++i];
+        } else if (strcmp(argv[i], "--mkfs-corefs-host") == 0 && i + 1 < argc) {
+            args->mkfs_corefs_host = argv[++i];
         } else if (strcmp(argv[i], "--reset") == 0) {
             args->reset = 1;
         } else if (strcmp(argv[i], "-h") == 0 ||

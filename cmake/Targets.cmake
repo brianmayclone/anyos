@@ -91,6 +91,24 @@ if(ANYOS_DUAL_PARTITION)
   # Dual-partition path uses the same C mkimage, with --dual-partition
   # + --boot-partition-size-mib switching it to the two-partition
   # layout (see buildsystem/mkimage/src/mkimage.c:create_bios_image_dual).
+  #
+  # When ANYOS_SYSTEM_FS=corefs, mkimage skips the exFAT format on
+  # Partition 2, marks the MBR slot as 0xCF (CoreFS), and invokes
+  # mkfs-corefs-host as a subprocess after the image is on disk.  The
+  # legacy COREFS_POST_CMD (anyos_append_corefs.py, which appended a
+  # 3rd partition) is suppressed in this branch — Partition 2 *is* the
+  # CoreFS root.
+  set(DUAL_ROOT_FS_ARGS "")
+  if(ANYOS_SYSTEM_FS STREQUAL "corefs")
+    set(DUAL_ROOT_FS_ARGS
+      --root-fs corefs
+      --mkfs-corefs-host ${MKFS_COREFS_HOST_EXECUTABLE})
+    # Suppress the legacy 3rd-partition appender — Partition 2 carries
+    # CoreFS now, an additional CoreFS region would be redundant.
+    set(COREFS_POST_CMD "")
+    set(COREFS_POST_DEPS ${MKFS_COREFS_HOST_EXECUTABLE})
+  endif()
+
   set(IMAGE_BUILD_CMD
     ${MKIMAGE_EXECUTABLE}
       --stage1 ${CMAKE_BINARY_DIR}/stage1.bin
@@ -104,9 +122,14 @@ if(ANYOS_DUAL_PARTITION)
       --boot-logo ${BOOT_LOGO}
       --boot-font ${BOOT_FONT_BIN}
       --dual-partition
-      --boot-partition-size-mib ${ANYOS_BOOT_PARTITION_SIZE_MIB})
+      --boot-partition-size-mib ${ANYOS_BOOT_PARTITION_SIZE_MIB}
+      ${DUAL_ROOT_FS_ARGS})
   set(IMAGE_BUILD_DEP ${MKIMAGE_EXECUTABLE})
-  set(IMAGE_COMMENT "Creating dual-partition disk image (/boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB + /)")
+  if(ANYOS_SYSTEM_FS STREQUAL "corefs")
+    set(IMAGE_COMMENT "Creating dual-partition image (/boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB exFAT + / CoreFS)")
+  else()
+    set(IMAGE_COMMENT "Creating dual-partition disk image (/boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB + /)")
+  endif()
 else()
   set(IMAGE_BUILD_CMD
     ${MKIMAGE_EXECUTABLE}

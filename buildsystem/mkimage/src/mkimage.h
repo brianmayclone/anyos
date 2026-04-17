@@ -117,6 +117,24 @@ typedef struct {
      * layout is produced and boot_partition_size_mib is ignored. */
     int         dual_partition;
     int         boot_partition_size_mib; /* default 32 when --dual-partition */
+
+    /* Root-FS selection for the dual-partition layout (Phase 6).
+     *
+     *   "exfat"  (default) — Partition 2 is formatted as exFAT inside
+     *                        mkimage, just like /boot.
+     *   "corefs"           — Partition 2 is left blank by mkimage, the
+     *                        MBR slot 1 type byte is set to 0xCF (CoreFS),
+     *                        and after the image is written out to disk
+     *                        `mkfs_corefs_host` is invoked as a subprocess
+     *                        to format + populate the partition with the
+     *                        sysroot (boot/* is filtered out via a
+     *                        temporary mirror tree).
+     *
+     * Only meaningful with `dual_partition=1`.  Single-partition mode
+     * always uses exFAT for Partition 1.  See
+     * memory/phase6-fs-abstraction-status.md for the broader plan. */
+    const char *root_fs;          /* "exfat" or "corefs"; NULL = "exfat" */
+    const char *mkfs_corefs_host; /* path to mkfs-corefs-host binary */
 } Args;
 
 /* ── FAT16 formatter state ────────────────────────────────────────────── */
