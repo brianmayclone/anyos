@@ -49,7 +49,7 @@ use corefs_core::storage::persisted_state::PersistedState;
 use corefs_core::config::CoreFsConfig;
 
 use crate::fs::file::{DirEntry, FileType};
-use crate::fs::vfs::{Filesystem, FsError};
+use crate::fs::vfs::{Filesystem, FsError, StatFs, StatResult};
 use crate::sync::mutex::Mutex;
 
 use super::block_device::BlockDeviceAdapter;
@@ -549,6 +549,21 @@ fn parent_of(path: &str) -> &str {
     }
 }
 
+/// Split a path into (parent, name).  Duplicate of the private
+/// helper in `fs::vfs::path` so we can use it from within the FS
+/// driver without making that module `pub(crate)`.
+fn split_parent_name(path: &str) -> Result<(&str, &str), FsError> {
+    let path = path.trim_end_matches('/');
+    if path.is_empty() || path == "/" {
+        return Err(FsError::InvalidPath);
+    }
+    match path.rfind('/') {
+        Some(0) => Ok(("/", &path[1..])),
+        Some(pos) => Ok((&path[..pos], &path[pos + 1..])),
+        None => Err(FsError::InvalidPath),
+    }
+}
+
 fn join_path(parent: &str, name: &str) -> String {
     if parent == "/" {
         let mut s = String::from("/");
@@ -755,6 +770,140 @@ impl Filesystem for CoreFsDriver {
         let Inner { blocks, device, .. } = &mut *inner;
         blocks.remove_inode(device, rid);
         Ok(())
+    }
+
+    // -----------------------------------------------------------------
+    // Extended trait methods — mostly forwarding to the inherent
+    // helper fns defined earlier in this file.  The shape mismatch
+    // between `pub fn xyz(parent, ...)` (parent-inode based) and the
+    // trait `pub fn xyz(path, ...)` (path based) is handled here.
+    // -----------------------------------------------------------------
+
+    fn stat(&self, path: &str) -> Result<StatResult, FsError> {
+        if path.is_empty() {
+            return Err(FsError::InvalidPath);
+        }
+        let inner = self.inner.lock();
+        for i in &inner.state.active_inodes {
+            if i.path == path {
+                return Ok(StatResult {
+                    file_type: kind_to_file_type(i.kind),
+                    size: i.size as u32,
+                    is_symlink: matches!(i.kind, InodeKind::Symlink),
+                    uid: i.metadata.uid as u16,
+                    gid: i.metadata.gid as u16,
+                    mode: i.metadata.mode as u16,
+                    // CoreFS stores Timestamp fields on the inode —
+                    // project to Unix seconds for the VFS StatResult.
+                    mtime: i.modified_at.as_secs() as u32,
+                });
+            }
+        }
+        Err(FsError::NotFound)
+    }
+
+    fn statfs(&self) -> Result<StatFs, FsError> {
+        let (total, used, free) = self.statfs()?;
+        Ok(StatFs {
+            total_bytes: total,
+            used_bytes: used,
+            free_bytes: free,
+        })
+    }
+
+    fn rename(&self, old_path: &str, new_path: &str) -> Result<(), FsError> {
+        // Inherent rename_entry takes (parent, old_name, new_parent,
+        // new_name) — split each path into those components.  Root is
+        // a sentinel; resolve each parent through the active-inodes
+        // table to find their inode numbers.
+        let (old_parent_path, old_name) = split_parent_name(old_path)?;
+        let (new_parent_path, new_name) = split_parent_name(new_path)?;
+        let (old_parent, new_parent) = {
+            let inner = self.inner.lock();
+            let old_p = inner
+                .state
+                .active_inodes
+                .iter()
+                .find(|i| i.path == old_parent_path)
+                .map(|i| CoreFsDriver::inode_u32_from_id(i.id))
+                .ok_or(FsError::NotFound)?;
+            let new_p = inner
+                .state
+                .active_inodes
+                .iter()
+                .find(|i| i.path == new_parent_path)
+                .map(|i| CoreFsDriver::inode_u32_from_id(i.id))
+                .ok_or(FsError::NotFound)?;
+            (old_p, new_p)
+        };
+        self.rename_entry(old_parent, old_name, new_parent, new_name)
+    }
+
+    fn truncate(&self, inode: u32, size: u32) -> Result<(), FsError> {
+        self.truncate_file(inode, size)
+    }
+
+    fn set_mode(&self, inode: u32, mode: u16) -> Result<(), FsError> {
+        // Inherent uses u32 (POSIX mode with type bits), trait uses
+        // u16 (VFS mode mask).  Sign-extend the u16 into the low
+        // 16 bits of a u32 — type bits above the permission bits
+        // stay 0, which matches what the VFS sets today.
+        self.set_mode(inode, mode as u32)
+    }
+
+    fn set_owner(&self, inode: u32, uid: u16, gid: u16) -> Result<(), FsError> {
+        self.set_owner(inode, uid as u32, gid as u32)
+    }
+
+    fn create_symlink(&self, link_path: &str, target: &str) -> Result<(), FsError> {
+        let (parent_path, name) = split_parent_name(link_path)?;
+        let parent = {
+            let inner = self.inner.lock();
+            inner
+                .state
+                .active_inodes
+                .iter()
+                .find(|i| i.path == parent_path)
+                .map(|i| CoreFsDriver::inode_u32_from_id(i.id))
+                .ok_or(FsError::NotFound)?
+        };
+        // Inherent create_symlink returns the new inode; the trait
+        // variant returns unit — discard the handle.
+        let _ = self.create_symlink(parent, name, target)?;
+        Ok(())
+    }
+
+    fn readlink(&self, inode: u32) -> Result<String, FsError> {
+        // Symlinks store their target as the inode's byte content
+        // (see create_symlink: `blocks.write_device(..., target_bytes)`).
+        // Read it back and decode as UTF-8.
+        let inner = self.inner.lock();
+        let inode_id = inner
+            .state
+            .active_inodes
+            .iter()
+            .find(|i| CoreFsDriver::inode_u32_from_id(i.id) == inode)
+            .ok_or(FsError::NotFound)?;
+        if !matches!(inode_id.kind, InodeKind::Symlink) {
+            return Err(FsError::InvalidPath);
+        }
+        let id = inode_id.id;
+        let mut buf = alloc::vec![0u8; inode_id.size];
+        drop(inode_id);
+        let n = inner
+            .blocks
+            .read_bytes(&inner.device, id, 0, buf.as_mut_slice())
+            .map_err(|_| FsError::IoError)?;
+        buf.truncate(n);
+        String::from_utf8(buf).map_err(|_| FsError::IoError)
+    }
+
+    fn sync(&self) -> Result<(), FsError> {
+        self.flush()
+    }
+
+    fn read_only(&self) -> bool {
+        self.inner.lock().read_only
     }
 }
 

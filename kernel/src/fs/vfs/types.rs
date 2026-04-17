@@ -1,6 +1,7 @@
 //! Shared VFS-facing types and traits.
 
 use crate::fs::file::{DirEntry, FileType};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Supported filesystem types for mount points.
@@ -37,7 +38,38 @@ pub enum FsType {
 }
 
 /// Trait that all filesystem drivers must implement for the VFS.
-pub trait Filesystem {
+///
+/// A [`Filesystem`] instance is the complete driver for one mounted
+/// volume (root or sub-mount) — it owns the block device, the dirty
+/// state, any in-memory caches, and exposes everything the VFS
+/// dispatch layer needs to service user syscalls against that mount.
+///
+/// # Design
+///
+/// The trait is deliberately **path- and inode-based**, with inodes
+/// represented as opaque `u32` cookies.  Cluster-based filesystems
+/// (FAT/exFAT/NTFS) encode their cluster number into the `u32`
+/// internally — see `crate::fs::exfat::decode_inode`.  Path-based
+/// filesystems (CoreFS) use a monotonic counter.  The VFS never
+/// inspects the encoding.
+///
+/// # Defaults
+///
+/// Methods that require write access or filesystem-specific features
+/// (symlinks, permissions, stat-time) have default implementations
+/// returning [`FsError::PermissionDenied`].  Read-only drivers (NTFS,
+/// ISO 9660 when surfaced via this trait) inherit those defaults as
+/// "operation not supported" — keeping each driver's impl block
+/// limited to the methods it genuinely supports.
+///
+/// The `Send + Sync` bound makes the trait object storable behind
+/// `VfsState`'s `Mutex` so the whole root-FS API is dispatched
+/// generically.
+pub trait Filesystem: Send + Sync {
+    // -----------------------------------------------------------------
+    // Required: read, write, namespace
+    // -----------------------------------------------------------------
+
     /// Read bytes from a file identified by inode at the given offset.
     fn read(&self, inode: u32, offset: u32, buf: &mut [u8]) -> Result<usize, FsError>;
     /// Write bytes to a file identified by inode at the given offset.
@@ -47,9 +79,95 @@ pub trait Filesystem {
     /// List entries in a directory identified by inode.
     fn readdir(&self, inode: u32) -> Result<Vec<DirEntry>, FsError>;
     /// Create a new file or directory under the given parent inode.
+    /// Returns the new child's inode.
     fn create(&self, parent_inode: u32, name: &str, file_type: FileType) -> Result<u32, FsError>;
     /// Delete a file or directory by name under the given parent inode.
     fn delete(&self, parent_inode: u32, name: &str) -> Result<(), FsError>;
+
+    // -----------------------------------------------------------------
+    // Metadata (default: derive minimal info from lookup + readdir)
+    // -----------------------------------------------------------------
+
+    /// Full stat for `path`, including permission bits and mtime.
+    ///
+    /// Default implementation falls back to [`Filesystem::lookup`] +
+    /// zero'd permissions — drivers that track uid/gid/mode/mtime in
+    /// their on-disk metadata should override.
+    fn stat(&self, path: &str) -> Result<StatResult, FsError> {
+        let (_inode, file_type, size) = self.lookup(path)?;
+        Ok(StatResult {
+            file_type,
+            size,
+            is_symlink: false,
+            uid: 0,
+            gid: 0,
+            mode: 0o777,
+            mtime: 0,
+        })
+    }
+
+    /// Volume-level statistics (total / used / free).  Drivers that
+    /// cannot compute this cheaply return
+    /// [`FsError::PermissionDenied`] by default.
+    fn statfs(&self) -> Result<StatFs, FsError> {
+        Err(FsError::PermissionDenied)
+    }
+
+    // -----------------------------------------------------------------
+    // Mutating ops (default: not supported)
+    // -----------------------------------------------------------------
+
+    /// Move / rename an entry.  Cross-directory renames are allowed.
+    fn rename(&self, _old_path: &str, _new_path: &str) -> Result<(), FsError> {
+        Err(FsError::PermissionDenied)
+    }
+
+    /// Resize a file.  Growing is expected to zero-fill; shrinking
+    /// releases any storage past `size`.
+    fn truncate(&self, _inode: u32, _size: u32) -> Result<(), FsError> {
+        Err(FsError::PermissionDenied)
+    }
+
+    /// Update the POSIX mode bits (permissions + type flags).
+    fn set_mode(&self, _inode: u32, _mode: u16) -> Result<(), FsError> {
+        Err(FsError::PermissionDenied)
+    }
+
+    /// Update the owner / group of an inode.
+    fn set_owner(&self, _inode: u32, _uid: u16, _gid: u16) -> Result<(), FsError> {
+        Err(FsError::PermissionDenied)
+    }
+
+    // -----------------------------------------------------------------
+    // Symlinks (default: not supported)
+    // -----------------------------------------------------------------
+
+    /// Create a symbolic link at `link_path` pointing to `target`.
+    fn create_symlink(&self, _link_path: &str, _target: &str) -> Result<(), FsError> {
+        Err(FsError::PermissionDenied)
+    }
+
+    /// Read the target of a symbolic-link inode.
+    fn readlink(&self, _inode: u32) -> Result<String, FsError> {
+        Err(FsError::PermissionDenied)
+    }
+
+    // -----------------------------------------------------------------
+    // Sync / lifecycle
+    // -----------------------------------------------------------------
+
+    /// Flush dirty metadata / caches to the underlying device.
+    /// Default is a no-op — drivers with in-memory state should
+    /// override (CoreFS, ExFat).
+    fn sync(&self) -> Result<(), FsError> {
+        Ok(())
+    }
+
+    /// Returns `true` when the volume was opened read-only (e.g. NTFS
+    /// is always read-only, an ISO 9660 CD is always read-only).
+    fn read_only(&self) -> bool {
+        false
+    }
 }
 
 /// Filesystem operation error codes.
