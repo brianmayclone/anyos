@@ -26,8 +26,16 @@ DEBUG_SURF=0
 NO_CROSS=0
 VER_MODE="patch"
 ANYOS_ARCH="x86_64"
+# Empty unless --system-fs / --system-fs-size is explicitly given.
+# Forwarded to CMake as -DANYOS_SYSTEM_FS / -DANYOS_SYSTEM_FS_SIZE_MIB.
+SYSTEM_FS=""
+SYSTEM_FS_SIZE_MIB=""
+CMAKE_PASSTHROUGH=()
 
-for arg in "$@"; do
+i=0
+argv=("$@")
+while [ $i -lt ${#argv[@]} ]; do
+    arg="${argv[$i]}"
     case "$arg" in
         --clean)
             CLEAN=1
@@ -65,9 +73,61 @@ for arg in "$@"; do
         --arm64)
             ANYOS_ARCH="arm64"
             ;;
+        --system-fs)
+            i=$((i + 1))
+            next="${argv[$i]:-}"
+            case "$next" in
+                exfat|corefs)
+                    SYSTEM_FS="$next"
+                    ;;
+                *)
+                    echo "Error: --system-fs expects 'exfat' or 'corefs', got '$next'"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        --system-fs=*)
+            val="${arg#--system-fs=}"
+            case "$val" in
+                exfat|corefs)
+                    SYSTEM_FS="$val"
+                    ;;
+                *)
+                    echo "Error: --system-fs expects 'exfat' or 'corefs', got '$val'"
+                    exit 1
+                    ;;
+            esac
+            ;;
+        --system-fs-size)
+            i=$((i + 1))
+            next="${argv[$i]:-}"
+            if [[ "$next" =~ ^[0-9]+$ ]] && [ "$next" -gt 0 ]; then
+                SYSTEM_FS_SIZE_MIB="$next"
+            else
+                echo "Error: --system-fs-size expects a positive integer (MiB), got '$next'"
+                exit 1
+            fi
+            ;;
+        --system-fs-size=*)
+            val="${arg#--system-fs-size=}"
+            if [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -gt 0 ]; then
+                SYSTEM_FS_SIZE_MIB="$val"
+            else
+                echo "Error: --system-fs-size expects a positive integer (MiB), got '$val'"
+                exit 1
+            fi
+            ;;
+        -D*)
+            # Transparent CMake pass-through — allow any -D<VAR>=<VAL>
+            # flag to be forwarded to cmake without build.sh having to
+            # know about it.  Example: ./build.sh -DANYOS_SYSTEM_FS=corefs
+            CMAKE_PASSTHROUGH+=("$arg")
+            ;;
         *)
             echo "Usage: $0 [--clean] [--reset] [--uefi] [--iso] [--all] [--debug] [--debug-surf] [--no-cross]"
             echo "       [--iminor] [--imajor] [--nover] [--arm64]"
+            echo "       [--system-fs {exfat|corefs}] [--system-fs-size <MiB>]"
+            echo "       [-D<VAR>=<VAL> ...]"
             echo ""
             echo "  --clean       Force full rebuild of all components"
             echo "  --reset       Force fresh disk image (destroy runtime data)"
@@ -81,9 +141,14 @@ for arg in "$@"; do
             echo "  --imajor      Increment major version (reset minor and patch to 0)"
             echo "  --nover       Skip version increment"
             echo "  --arm64       Build for AArch64 (ARM64) instead of x86_64"
+            echo "  --system-fs   System filesystem: exfat (default) or corefs"
+            echo "                (adds CoreFS partition at the end of the disk image)"
+            echo "  --system-fs-size  Size of the CoreFS partition in MiB (default 128)"
+            echo "  -D<VAR>=<VAL>    Pass additional CMake variables through"
             exit 1
             ;;
     esac
+    i=$((i + 1))
 done
 
 if [ "$ANYOS_ARCH" = "arm64" ]; then
@@ -146,6 +211,21 @@ echo "Version: ${ANYOS_VERSION}"
 
 # CMake flags
 CMAKE_EXTRA_FLAGS="-DANYOS_DEBUG_VERBOSE=$([ "$DEBUG_VERBOSE" -eq 1 ] && echo ON || echo OFF) -DANYOS_DEBUG_SURF=$([ "$DEBUG_SURF" -eq 1 ] && echo ON || echo OFF) -DANYOS_NO_CROSS=$([ "$NO_CROSS" -eq 1 ] && echo ON || echo OFF) -DANYOS_RESET=$([ "$RESET" -eq 1 ] && echo ON || echo OFF) -DANYOS_VERSION=${ANYOS_VERSION} -DANYOS_ARCH=${ANYOS_ARCH}"
+
+# System-filesystem switches — only appended when the user opted in, so
+# existing builds without the flag keep using whatever value is currently
+# in the CMake cache (typically the default "exfat").
+if [ -n "$SYSTEM_FS" ]; then
+    CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DANYOS_SYSTEM_FS=${SYSTEM_FS}"
+fi
+if [ -n "$SYSTEM_FS_SIZE_MIB" ]; then
+    CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS -DANYOS_SYSTEM_FS_SIZE_MIB=${SYSTEM_FS_SIZE_MIB}"
+fi
+
+# Generic -D<var>=<val> pass-through (collected above).
+for def in "${CMAKE_PASSTHROUGH[@]}"; do
+    CMAKE_EXTRA_FLAGS="$CMAKE_EXTRA_FLAGS $def"
+done
 
 # Ensure build directory exists
 if [ ! -f "${BUILD_DIR}/build.ninja" ]; then
