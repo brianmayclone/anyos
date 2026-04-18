@@ -6,6 +6,7 @@ use anyos_std::fs;
 use anyos_std::println;
 use anyos_std::format;
 use anyos_std::Box;
+use libami::{AmiClient, AmiValue};
 
 use libanyui_client as ui;
 use libinstall;
@@ -80,11 +81,40 @@ fn run_service_manager() {
     println!("init: '{}' exited (code={})", path, code);
 }
 
+fn wait_for_confd_ready() -> bool {
+    set_status("Waiting for confd...");
+    PROGRESS.store(8, Ordering::Release);
+
+    for attempt in 0..200 {
+        match AmiClient::connect("init") {
+            Ok(mut ami) => match ami.get("svc.confd.ready") {
+                Ok(item) => {
+                    if matches!(item.value, AmiValue::Bool(true)) {
+                        println!("init: confd reported ready");
+                        return true;
+                    }
+                }
+                Err(_) => {}
+            },
+            Err(_) => {}
+        }
+
+        if attempt % 25 == 0 {
+            println!("init: waiting for confd readiness...");
+        }
+        process::sleep(20);
+    }
+
+    println!("init: WARNING - timed out waiting for confd readiness");
+    false
+}
+
 // ── Worker thread ───────────────────────────────────────────────────────────
 
 fn worker_entry() {
     recover_pending_upgrade_if_needed();
 
+    let _ = wait_for_confd_ready();
     set_status("Starting services...");
     PROGRESS.store(15, Ordering::Release);
     run_service_manager();

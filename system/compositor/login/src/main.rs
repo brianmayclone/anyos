@@ -229,7 +229,6 @@ fn attempt_login(uf_id: u32, pf_id: u32) -> bool {
 
     if process::authenticate(username, password) {
         unsafe { LOGIN_UID = process::getuid() as u32; }
-        let _ = login_schema().write_string("state/last_user", username);
         true
     } else {
         ui::MessageBox::show(

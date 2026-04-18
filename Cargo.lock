@@ -414,6 +414,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libami",
+ "libconf",
  "libconf_schema",
  "libfont_client",
  "libimage_client",
@@ -426,6 +427,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libdb_client",
+ "libsvc",
 ]
 
 [[package]]
@@ -1028,6 +1030,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "dynlink",
+ "libami",
  "libanyui_client",
  "libimage_client",
  "libinstall",

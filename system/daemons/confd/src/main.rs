@@ -13,6 +13,7 @@ mod schema;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use libsvc::ServiceLifecycle;
 
 anyos_std::entry!(main);
 
@@ -278,9 +279,14 @@ impl ConfState {
 
 fn main() {
     anyos_std::println!("confd: starting central configuration registry");
+    let mut lifecycle = connect_lifecycle();
+    if let Some(svc) = lifecycle.as_mut() {
+        let _ = svc.notify_starting();
+    }
 
     if !libdb_client::init() {
         anyos_std::println!("confd: failed to load libdb.so");
+        notify_failed(&mut lifecycle, "libdb_init_failed");
         return;
     }
 
@@ -291,6 +297,7 @@ fn main() {
         Some(db) => db,
         None => {
             anyos_std::println!("confd: failed to open database at {}", DB_PATH);
+            notify_failed(&mut lifecycle, "database_open_failed");
             return;
         }
     };
@@ -308,6 +315,7 @@ fn main() {
     let pipe_id = anyos_std::ipc::pipe_create(PIPE_NAME);
     if pipe_id == 0 || pipe_id == u32::MAX {
         anyos_std::println!("confd: failed to create '{}' pipe", PIPE_NAME);
+        notify_failed(&mut lifecycle, "pipe_create_failed");
         return;
     }
 
@@ -317,6 +325,11 @@ fn main() {
         DB_PATH,
         state.entries.len()
     );
+    if let Some(svc) = lifecycle.as_mut() {
+        let _ = svc.set_detail("pipe", PIPE_NAME);
+        let _ = svc.set_detail("db", DB_PATH);
+        let _ = svc.notify_ready();
+    }
 
     let mut pipe_buf = [0u8; 4096];
     loop {
@@ -341,6 +354,23 @@ fn ensure_db_file() {
         return;
     }
     anyos_std::fs::close(fd);
+}
+
+fn connect_lifecycle() -> Option<ServiceLifecycle> {
+    for _ in 0..100 {
+        match ServiceLifecycle::connect("confd") {
+            Ok(svc) => return Some(svc),
+            Err(_) => anyos_std::process::sleep(20),
+        }
+    }
+    anyos_std::println!("confd: WARNING - AMID not reachable for service lifecycle");
+    None
+}
+
+fn notify_failed(lifecycle: &mut Option<ServiceLifecycle>, reason: &str) {
+    if let Some(svc) = lifecycle.as_mut() {
+        let _ = svc.notify_failed(reason);
+    }
 }
 
 fn path_matches_prefix(path: &str, prefix: &str) -> bool {
