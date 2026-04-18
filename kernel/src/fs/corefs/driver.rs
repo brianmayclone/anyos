@@ -372,12 +372,60 @@ impl CoreFsDriver {
         }
 
         // Source must exist.
-        if !inner.state.active_inodes.iter().any(|i| i.path == old_path) {
-            return Err(FsError::NotFound);
-        }
-        // Destination must not exist.
-        if inner.state.active_inodes.iter().any(|i| i.path == new_path) {
-            return Err(FsError::AlreadyExists);
+        let src_kind = inner
+            .state
+            .active_inodes
+            .iter()
+            .find(|i| i.path == old_path)
+            .map(|i| i.kind)
+            .ok_or(FsError::NotFound)?;
+
+        // POSIX rename-overwrite semantics when the destination exists.
+        let dst_info: Option<(InodeId, InodeKind)> = inner
+            .state
+            .active_inodes
+            .iter()
+            .find(|i| i.path == new_path)
+            .map(|i| (i.id, i.kind));
+        let mut new_prefix = new_path.clone();
+        new_prefix.push('/');
+        let target_remove_id: Option<InodeId> = match (src_kind, dst_info) {
+            (_, None) => None,
+            (InodeKind::File | InodeKind::Symlink, Some((_, InodeKind::Directory))) => {
+                return Err(FsError::IsADirectory);
+            }
+            (InodeKind::Directory, Some((_, InodeKind::File | InodeKind::Symlink))) => {
+                return Err(FsError::NotADirectory);
+            }
+            (InodeKind::File | InodeKind::Symlink, Some((id, InodeKind::File | InodeKind::Symlink))) => {
+                Some(id)
+            }
+            (InodeKind::Directory, Some((id, InodeKind::Directory))) => {
+                // Destination directory must be empty.
+                let non_empty = inner
+                    .state
+                    .active_inodes
+                    .iter()
+                    .any(|i| i.path.starts_with(new_prefix.as_str()));
+                if non_empty {
+                    return Err(FsError::DirectoryNotEmpty);
+                }
+                Some(id)
+            }
+        };
+
+        // Remove overwrite target, if any.
+        if let Some(target_id) = target_remove_id {
+            if let Some(idx) = inner
+                .state
+                .active_inodes
+                .iter()
+                .position(|i| i.id == target_id)
+            {
+                let removed = inner.state.active_inodes.remove(idx);
+                inner.state.block_records.retain(|r| r.inode != removed.id);
+                inner.state.deleted_inodes.push(removed);
+            }
         }
 
         // Rewrite matching paths (the source itself + any descendants when
@@ -1366,14 +1414,71 @@ mod tests {
     }
 
     #[test]
-    fn rename_to_existing_fails() {
+    fn rename_file_over_file_overwrites_target() {
         let adapter = build_native_adapter(4096);
         let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
         let root = seed_root(&driver);
-        driver.create(root, "a", FileType::Regular).unwrap();
-        driver.create(root, "b", FileType::Regular).unwrap();
-        let err = driver.rename_entry(root, "a", root, "b").unwrap_err();
-        assert!(matches!(err, FsError::AlreadyExists));
+        let a = driver.create(root, "a", FileType::Regular).unwrap();
+        driver.write(a, 0, b"AA").unwrap();
+        let b = driver.create(root, "b", FileType::Regular).unwrap();
+        driver.write(b, 0, b"BBBB").unwrap();
+        // POSIX: file-over-file rename overwrites the target atomically.
+        driver.rename_entry(root, "a", root, "b").unwrap();
+        // "a" is gone.
+        assert!(matches!(driver.lookup("/a").unwrap_err(), FsError::NotFound));
+        // "b" now has the source inode (a) and its content.
+        let (ino, _, size) = driver.lookup("/b").unwrap();
+        assert_eq!(ino, a);
+        assert_eq!(size, 2);
+    }
+
+    #[test]
+    fn rename_dir_over_empty_dir_succeeds() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let src = driver.create(root, "src", FileType::Directory).unwrap();
+        driver.create(src, "inner", FileType::Regular).unwrap();
+        let _dst = driver.create(root, "dst", FileType::Directory).unwrap();
+        driver.rename_entry(root, "src", root, "dst").unwrap();
+        // /src is gone; /dst/inner is the carried-over descendant.
+        assert!(matches!(driver.lookup("/src").unwrap_err(), FsError::NotFound));
+        assert!(driver.lookup("/dst").is_ok());
+        assert!(driver.lookup("/dst/inner").is_ok());
+    }
+
+    #[test]
+    fn rename_dir_over_non_empty_dir_is_not_empty() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        let _src = driver.create(root, "src", FileType::Directory).unwrap();
+        let dst = driver.create(root, "dst", FileType::Directory).unwrap();
+        driver.create(dst, "keep", FileType::Regular).unwrap();
+        let err = driver.rename_entry(root, "src", root, "dst").unwrap_err();
+        assert!(matches!(err, FsError::DirectoryNotEmpty));
+    }
+
+    #[test]
+    fn rename_file_over_dir_is_isdir() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        driver.create(root, "f", FileType::Regular).unwrap();
+        driver.create(root, "d", FileType::Directory).unwrap();
+        let err = driver.rename_entry(root, "f", root, "d").unwrap_err();
+        assert!(matches!(err, FsError::IsADirectory));
+    }
+
+    #[test]
+    fn rename_dir_over_file_is_not_dir() {
+        let adapter = build_native_adapter(4096);
+        let driver = CoreFsDriver::mount_writable(adapter).expect("mount");
+        let root = seed_root(&driver);
+        driver.create(root, "d", FileType::Directory).unwrap();
+        driver.create(root, "f", FileType::Regular).unwrap();
+        let err = driver.rename_entry(root, "d", root, "f").unwrap_err();
+        assert!(matches!(err, FsError::NotADirectory));
     }
 
     #[test]

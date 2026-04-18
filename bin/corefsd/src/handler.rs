@@ -27,8 +27,8 @@ const ENOENT: i32 = 2;
 const EIO: i32 = 5;
 const EEXIST: i32 = 17;
 const EINVAL: i32 = 22;
-#[allow(dead_code)]
 const ENOTDIR: i32 = 20;
+const EISDIR: i32 = 21;
 const ENOTEMPTY: i32 = 39;
 
 fn err_from(e: &CoreFsError) -> i32 {
@@ -685,14 +685,94 @@ impl CoreFsHandler {
         let new_prefix_owned = format!("{}/", new_path);
         let old_path_owned = old_path.clone();
         let new_path_owned = new_path.clone();
+        // Pre-check kinds and remove any overwrite target under POSIX rules.
+        // Errors here are reported via special CoreFsError::InvalidCommand
+        // marker strings that op_rename maps to the correct POSIX errno
+        // below.
+        let target_remove_id: Option<InodeId> = {
+            let state = self.session.state();
+            let src_kind = state
+                .active_inodes
+                .iter()
+                .find(|i| i.path == old_path_owned)
+                .map(|i| i.kind);
+            let dst = state
+                .active_inodes
+                .iter()
+                .find(|i| i.path == new_path_owned)
+                .map(|i| (i.id, i.kind));
+            match (src_kind, dst) {
+                (None, _) => {
+                    return HandlerResult::Err {
+                        errno: ENOENT,
+                        message: None,
+                    };
+                }
+                (Some(_), None) => None,
+                (Some(InodeKind::File), Some((_id, InodeKind::Directory))) => {
+                    return HandlerResult::Err {
+                        errno: EISDIR,
+                        message: None,
+                    };
+                }
+                (Some(InodeKind::Directory), Some((_id, InodeKind::File))) => {
+                    return HandlerResult::Err {
+                        errno: ENOTDIR,
+                        message: None,
+                    };
+                }
+                (Some(InodeKind::File), Some((id, InodeKind::File)))
+                | (Some(InodeKind::Symlink), Some((id, InodeKind::File)))
+                | (Some(InodeKind::File), Some((id, InodeKind::Symlink)))
+                | (Some(InodeKind::Symlink), Some((id, InodeKind::Symlink))) => Some(id),
+                (Some(InodeKind::Directory), Some((id, InodeKind::Directory))) => {
+                    // Target directory must be empty.
+                    let non_empty = state
+                        .active_inodes
+                        .iter()
+                        .any(|i| i.path.starts_with(new_prefix_owned.as_str()));
+                    if non_empty {
+                        return HandlerResult::Err {
+                            errno: ENOTEMPTY,
+                            message: None,
+                        };
+                    }
+                    Some(id)
+                }
+                (Some(InodeKind::Symlink), Some((_id, InodeKind::Directory))) => {
+                    return HandlerResult::Err {
+                        errno: EISDIR,
+                        message: None,
+                    };
+                }
+                (Some(InodeKind::Directory), Some((_id, InodeKind::Symlink))) => {
+                    return HandlerResult::Err {
+                        errno: ENOTDIR,
+                        message: None,
+                    };
+                }
+            }
+        };
+        // Remove overwrite target blocks outside the `mutate` closure.
+        if let Some(id) = target_remove_id {
+            let _ = self.blocks.remove(id);
+        }
         let result = self.session.mutate(|state| {
-            // Source must exist.
+            // Source must still exist (defensive, in case of concurrent ops).
             if !state.active_inodes.iter().any(|i| i.path == old_path_owned) {
                 return Err(CoreFsError::NotFound(old_path_owned.clone()));
             }
-            // Target must NOT exist (no overwrite semantics in this stub).
-            if state.active_inodes.iter().any(|i| i.path == new_path_owned) {
-                return Err(CoreFsError::AlreadyExists(new_path_owned.clone()));
+            // Drop overwrite target (if any) from active_inodes.
+            if let Some(target_id) = target_remove_id {
+                if let Some(idx) = state
+                    .active_inodes
+                    .iter()
+                    .position(|i| i.id == target_id)
+                {
+                    let removed = state.active_inodes.remove(idx);
+                    state.block_records.retain(|r| r.inode != removed.id);
+                    state.deleted_inodes.push(removed);
+                }
             }
             for inode in state.active_inodes.iter_mut() {
                 if inode.path == old_path_owned {
@@ -738,6 +818,26 @@ impl CoreFsHandler {
                 for (no, new_p) in updated {
                     self.inode_by_no.insert(no, new_p);
                 }
+                // Drop FUSE-InodeNo mappings for inodes that no longer exist
+                // (e.g. the overwrite target was removed).
+                let active_ids: alloc::collections::BTreeSet<InodeId> = self
+                    .session
+                    .state()
+                    .active_inodes
+                    .iter()
+                    .map(|i| i.id)
+                    .collect();
+                let stale_nos: Vec<FuseInodeNo> = self
+                    .no_by_inode_id
+                    .iter()
+                    .filter(|(id, _)| !active_ids.contains(id))
+                    .map(|(_, no)| *no)
+                    .collect();
+                for n in stale_nos {
+                    self.inode_by_no.remove(&n);
+                }
+                self.no_by_inode_id
+                    .retain(|id, _| active_ids.contains(id));
                 HandlerResult::Ok(Reply::Rename)
             }
             Err(e) => HandlerResult::Err {
@@ -1487,6 +1587,235 @@ mod tests {
                     other => panic!("unexpected {:?}", other),
                 }
             }
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rename_file_over_file_overwrites_target() {
+        let mut h = mk_handler();
+        // Create source with content "src"
+        let src_created = h.handle(Request::Create {
+            parent: 1,
+            name: "src".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        let (src_ino, src_fh) = match src_created {
+            HandlerResult::Ok(Reply::Create { attr, fh, .. }) => (attr.ino, fh),
+            other => panic!("unexpected {:?}", other),
+        };
+        let _ = h.handle(Request::Write {
+            ino: src_ino,
+            fh: src_fh,
+            offset: 0,
+            data: b"src".to_vec(),
+        });
+        // Create target with content "DST-OLD"
+        let dst_created = h.handle(Request::Create {
+            parent: 1,
+            name: "dst".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        let (dst_ino, dst_fh) = match dst_created {
+            HandlerResult::Ok(Reply::Create { attr, fh, .. }) => (attr.ino, fh),
+            other => panic!("unexpected {:?}", other),
+        };
+        let _ = h.handle(Request::Write {
+            ino: dst_ino,
+            fh: dst_fh,
+            offset: 0,
+            data: b"DST-OLD".to_vec(),
+        });
+        // Rename src over dst — POSIX: target is replaced atomically.
+        match h.handle(Request::Rename {
+            parent: 1,
+            old_name: "src".to_string(),
+            new_parent: 1,
+            new_name: "dst".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Rename) => {}
+            other => panic!("unexpected {:?}", other),
+        }
+        // src must be gone.
+        match h.handle(Request::Lookup {
+            parent: 1,
+            name: "src".to_string(),
+        }) {
+            HandlerResult::Err { errno, .. } => assert_eq!(errno, ENOENT),
+            other => panic!("unexpected {:?}", other),
+        }
+        // dst must now exist and carry the source's content.
+        let dst_attr = match h.handle(Request::Lookup {
+            parent: 1,
+            name: "dst".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Lookup(a)) => a,
+            other => panic!("unexpected {:?}", other),
+        };
+        let fh = match h.handle(Request::Open {
+            ino: dst_attr.ino,
+            flags: 0,
+        }) {
+            HandlerResult::Ok(Reply::Open { fh, .. }) => fh,
+            other => panic!("unexpected {:?}", other),
+        };
+        match h.handle(Request::Read {
+            ino: dst_attr.ino,
+            fh,
+            offset: 0,
+            size: 64,
+        }) {
+            HandlerResult::Ok(Reply::Read { data }) => assert_eq!(&data, b"src"),
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rename_dir_over_empty_dir_succeeds() {
+        let mut h = mk_handler();
+        let _ = h.handle(Request::Mkdir {
+            parent: 1,
+            name: "src".to_string(),
+            mode: 0o755,
+        });
+        let src_attr = match h.handle(Request::Lookup {
+            parent: 1,
+            name: "src".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Lookup(a)) => a,
+            other => panic!("unexpected {:?}", other),
+        };
+        // Put a file inside source so we can verify it moves.
+        let _ = h.handle(Request::Create {
+            parent: src_attr.ino,
+            name: "inner".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        // Empty destination directory.
+        let _ = h.handle(Request::Mkdir {
+            parent: 1,
+            name: "dst".to_string(),
+            mode: 0o755,
+        });
+        match h.handle(Request::Rename {
+            parent: 1,
+            old_name: "src".to_string(),
+            new_parent: 1,
+            new_name: "dst".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Rename) => {}
+            other => panic!("unexpected {:?}", other),
+        }
+        // /dst/inner must now exist; /src must be gone.
+        match h.handle(Request::Lookup {
+            parent: 1,
+            name: "src".to_string(),
+        }) {
+            HandlerResult::Err { errno, .. } => assert_eq!(errno, ENOENT),
+            other => panic!("unexpected {:?}", other),
+        }
+        let dst_attr = match h.handle(Request::Lookup {
+            parent: 1,
+            name: "dst".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Lookup(a)) => a,
+            other => panic!("unexpected {:?}", other),
+        };
+        match h.handle(Request::Lookup {
+            parent: dst_attr.ino,
+            name: "inner".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Lookup(_)) => {}
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rename_dir_over_non_empty_dir_is_enotempty() {
+        let mut h = mk_handler();
+        let _ = h.handle(Request::Mkdir {
+            parent: 1,
+            name: "src".to_string(),
+            mode: 0o755,
+        });
+        let _ = h.handle(Request::Mkdir {
+            parent: 1,
+            name: "dst".to_string(),
+            mode: 0o755,
+        });
+        let dst_attr = match h.handle(Request::Lookup {
+            parent: 1,
+            name: "dst".to_string(),
+        }) {
+            HandlerResult::Ok(Reply::Lookup(a)) => a,
+            other => panic!("unexpected {:?}", other),
+        };
+        let _ = h.handle(Request::Create {
+            parent: dst_attr.ino,
+            name: "keep".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        match h.handle(Request::Rename {
+            parent: 1,
+            old_name: "src".to_string(),
+            new_parent: 1,
+            new_name: "dst".to_string(),
+        }) {
+            HandlerResult::Err { errno, .. } => assert_eq!(errno, ENOTEMPTY),
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rename_file_over_dir_is_eisdir() {
+        let mut h = mk_handler();
+        let _ = h.handle(Request::Create {
+            parent: 1,
+            name: "f".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        let _ = h.handle(Request::Mkdir {
+            parent: 1,
+            name: "d".to_string(),
+            mode: 0o755,
+        });
+        match h.handle(Request::Rename {
+            parent: 1,
+            old_name: "f".to_string(),
+            new_parent: 1,
+            new_name: "d".to_string(),
+        }) {
+            HandlerResult::Err { errno, .. } => assert_eq!(errno, EISDIR),
+            other => panic!("unexpected {:?}", other),
+        }
+    }
+
+    #[test]
+    fn rename_dir_over_file_is_enotdir() {
+        let mut h = mk_handler();
+        let _ = h.handle(Request::Mkdir {
+            parent: 1,
+            name: "d".to_string(),
+            mode: 0o755,
+        });
+        let _ = h.handle(Request::Create {
+            parent: 1,
+            name: "f".to_string(),
+            mode: 0o644,
+            flags: 0,
+        });
+        match h.handle(Request::Rename {
+            parent: 1,
+            old_name: "d".to_string(),
+            new_parent: 1,
+            new_name: "f".to_string(),
+        }) {
+            HandlerResult::Err { errno, .. } => assert_eq!(errno, ENOTDIR),
             other => panic!("unexpected {:?}", other),
         }
     }

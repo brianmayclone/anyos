@@ -41,6 +41,7 @@ pub(super) fn fs_err(e: crate::fs::vfs::FsError) -> u32 {
         FsError::InvalidPath => 22,     // EINVAL
         FsError::TooManyOpenFiles => 24, // EMFILE
         FsError::BadFd => 9,            // EBADF
+        FsError::DirectoryNotEmpty => 39, // ENOTEMPTY
     };
     (-errno) as u32
 }

@@ -226,6 +226,8 @@ pub enum FsError {
     TooManyOpenFiles,
     /// File descriptor is not valid or not open.
     BadFd,
+    /// Directory is not empty (e.g. rmdir / rename-over-non-empty-dir).
+    DirectoryNotEmpty,
 }
 
 /// Stat result with permission info.
