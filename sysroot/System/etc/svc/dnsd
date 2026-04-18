@@ -1,0 +1,4 @@
+exec=/System/bin/dnsd
+args=
+depends=networkd
+startup_timeout_ms=5000

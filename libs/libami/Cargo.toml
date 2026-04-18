@@ -1,0 +1,13 @@
+[package]
+name = "libami"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libsyscall = { path = "../libsyscall" }
+
+[features]
+host = []
+
+[lib]
+name = "libami"

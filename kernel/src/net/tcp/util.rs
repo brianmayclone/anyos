@@ -9,7 +9,7 @@ use crate::net::types::Ipv4Addr;
 use crate::sync::spinlock::Spinlock;
 use super::tcb::*;
 use super::send::send_segment;
-use super::TCP_CONNECTIONS;
+use super::{TCP_CONNECTIONS, conn_hash_insert, conn_hash_remove};
 
 // ── Sequence number comparison (wrapping-safe) ──────────────────────
 
@@ -38,6 +38,24 @@ pub(crate) fn alloc_ephemeral_port() -> u16 {
     let p = *port;
     *port = if p >= 65535 { 49152 } else { p + 1 };
     p
+}
+
+/// Insert an IPv4 connection into the fast 4-tuple hash.
+pub(crate) fn insert_slot_hash(table: &[Option<Tcb>], idx: usize) {
+    if let Some(tcb) = table.get(idx).and_then(|slot| slot.as_ref()) {
+        if !tcb.is_ipv6 && tcb.state != TcpState::Listen {
+            conn_hash_insert(tcb.local_port, tcb.remote_port, &tcb.remote_ip, idx);
+        }
+    }
+}
+
+/// Remove an IPv4 connection from the fast 4-tuple hash.
+pub(crate) fn remove_slot_hash(table: &[Option<Tcb>], idx: usize) {
+    if let Some(tcb) = table.get(idx).and_then(|slot| slot.as_ref()) {
+        if !tcb.is_ipv6 && tcb.state != TcpState::Listen {
+            conn_hash_remove(tcb.local_port, tcb.remote_port, &tcb.remote_ip);
+        }
+    }
 }
 
 // ── RST generation ──────────────────────────────────────────────────
@@ -97,9 +115,11 @@ pub fn cleanup_for_thread(tid: u32) {
                                 rst_count += 1;
                             }
                         }
+                        remove_slot_hash(table, j);
                         table[j] = None;
                     }
                 }
+                remove_slot_hash(table, i);
                 table[i] = None;
                 crate::serial_verbose_println!("TCP: cleanup listener socket {} for TID {}", i, tid);
             }
@@ -125,6 +145,7 @@ pub fn cleanup_for_thread(tid: u32) {
                         _ => {}
                     }
                 }
+                remove_slot_hash(table, i);
                 table[i] = None;
                 crate::serial_verbose_println!("TCP: cleanup socket {} for TID {}", i, tid);
             }

@@ -9,18 +9,20 @@ const CHUNK_SIZE: usize = CHUNK_X * CHUNK_Y * CHUNK_Z;
 const SEA_LEVEL: i32 = 64;
 
 fn terrain_height(wx: i32, wz: i32, seed: u32) -> i32 {
-    let seed_f = seed as f32;
+    let seed_f = seed_offset(seed, 2048.0);
+    let seed_fx = seed_offset(seed ^ 0xA511_E9B3, 4096.0);
+    let seed_fz = seed_offset(seed ^ 0x63D8_35D7, 4096.0);
     let world_x = wx as f32;
     let world_z = wz as f32;
 
-    let base_x = world_x * 0.0045 + seed_f * 0.013;
-    let base_z = world_z * 0.0045 - seed_f * 0.011;
-    let detail_x = world_x * 0.011 + seed_f * 0.031;
-    let detail_z = world_z * 0.011 - seed_f * 0.027;
-    let ridge_x = world_x * 0.007 + seed_f * 0.019;
-    let ridge_z = world_z * 0.007 + seed_f * 0.017;
-    let mask_x = world_x * 0.0026 - seed_f * 0.007;
-    let mask_z = world_z * 0.0026 + seed_f * 0.009;
+    let base_x = world_x * 0.0045 + seed_fx * 0.013;
+    let base_z = world_z * 0.0045 - seed_fz * 0.011;
+    let detail_x = world_x * 0.011 + seed_fx * 0.031;
+    let detail_z = world_z * 0.011 - seed_fz * 0.027;
+    let ridge_x = world_x * 0.007 + seed_fx * 0.019;
+    let ridge_z = world_z * 0.007 + seed_fz * 0.017;
+    let mask_x = world_x * 0.0026 - seed_fx * 0.007;
+    let mask_z = world_z * 0.0026 + seed_fz * 0.009;
 
     let base = 60.0 + fbm2d(base_x, base_z, 5, 0.52) * 10.0;
     let rolling = fbm2d(detail_x, detail_z, 4, 0.55).max(-0.15) * 16.0;
@@ -29,7 +31,7 @@ fn terrain_height(wx: i32, wz: i32, seed: u32) -> i32 {
     let mask_base = ((fbm2d(mask_x, mask_z, 3, 0.58) + 1.0) * 0.5).max(0.0);
     let mountain_mask = mask_base * mask_base;
     let plateau_base =
-        noise2d(world_x * 0.0018 + seed_f * 0.021, world_z * 0.0018 - seed_f * 0.025).max(0.0);
+        noise2d(world_x * 0.0018 + seed_fx * 0.021, world_z * 0.0018 - seed_fz * 0.025).max(0.0);
     let plateau = plateau_base * plateau_base * 18.0;
 
     let mut height = base + rolling + ridge * mountain_mask + plateau;
@@ -40,6 +42,12 @@ fn terrain_height(wx: i32, wz: i32, seed: u32) -> i32 {
         height = 148.0;
     }
     (height + 0.5) as i32
+}
+
+fn seed_offset(seed: u32, range: f32) -> f32 {
+    let mixed = hash(seed);
+    let unit = (mixed as f32) / (u32::MAX as f32);
+    unit * range - range * 0.5
 }
 
 fn hash(mut x: u32) -> u32 {

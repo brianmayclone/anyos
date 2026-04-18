@@ -1,47 +1,38 @@
 //! Dock configuration loading/saving — programs.conf and icon loading.
 
-use alloc::format;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 use anyos_std::fs;
 use anyos_std::icons;
+use anyos_std::vec;
+use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 
 use crate::types::{DockItem, Icon};
 
-const SYSTEM_CONFIG_PATH: &str = "/System/dock/programs.conf";
+const LEGACY_DOCK_DEFAULT: &str = "\
+# Dock programs configuration\n\
+# Format: name|path\n\
+Finder|/Applications/Finder.app\n\
+Surf|/Applications/Surf.app\n\
+Terminal|/Applications/Terminal.app\n\
+Activity Monitor|/Applications/Activity Monitor.app\n\
+Settings|/Applications/Settings.app\n";
 
-/// Get the dock config path. Tries `/Users/<username>/.dock.conf` first,
-/// falls back to `/System/dock/programs.conf` (e.g. for root).
-fn config_path() -> String {
-    let uid = anyos_std::process::getuid();
-    let mut name_buf = [0u8; 64];
-    let len = anyos_std::process::getusername(uid, &mut name_buf);
-    if len != u32::MAX && len > 0 {
-        if let Ok(username) = core::str::from_utf8(&name_buf[..len as usize]) {
-            let path = format!("/Users/{}/.dock.conf", username);
-            // Verify the user directory exists
-            let dir = format!("/Users/{}", username);
-            let mut stat_buf = [0u32; 7];
-            if fs::stat(&dir, &mut stat_buf) == 0 {
-                return path;
-            }
-        }
-    }
-    // Fallback to $HOME env var
-    let mut home_buf = [0u8; 256];
-    let hlen = anyos_std::env::get("HOME", &mut home_buf);
-    if hlen != u32::MAX && hlen > 0 {
-        if let Ok(home) = core::str::from_utf8(&home_buf[..hlen as usize]) {
-            let mut stat_buf = [0u32; 7];
-            if fs::stat(home, &mut stat_buf) == 0 {
-                return format!("{}/.dock.conf", home);
-            }
-        }
-    }
-    // Fallback to system config path
-    String::from(SYSTEM_CONFIG_PATH)
+const DOCK_ITEMS_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] =
+    &[default_string("config/pinned_items_blob", LEGACY_DOCK_DEFAULT)];
+const DOCK_ITEMS_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const DOCK_ITEMS_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "profile/dock_items",
+    RegistryScope::User,
+    1,
+    &["config"],
+    DOCK_ITEMS_DEFAULTS,
+    DOCK_ITEMS_MIGRATIONS,
+);
+
+fn dock_items_schema() -> ServiceSchema<'static> {
+    ServiceSchema::new("dock", &DOCK_ITEMS_MANIFEST)
 }
 
 /// Parse dock config from text (shared by both system and user config).
@@ -76,37 +67,10 @@ fn parse_config(text: &str) -> Vec<DockItem> {
     items
 }
 
-/// Read a config file and return its text content.
-fn read_config_file(path: &str) -> Option<String> {
-    let mut stat_buf = [0u32; 7];
-    if fs::stat(path, &mut stat_buf) != 0 {
-        return None;
-    }
-    let file_size = stat_buf[1] as usize;
-    if file_size == 0 || file_size > 4096 {
-        return None;
-    }
-
-    let fd = fs::open(path, 0);
-    if fd == u32::MAX {
-        return None;
-    }
-
-    let mut data = vec![0u8; file_size];
-    let bytes_read = fs::read(fd, &mut data) as usize;
-    fs::close(fd);
-
-    if bytes_read == 0 {
-        return None;
-    }
-
-    core::str::from_utf8(&data[..bytes_read]).ok().map(String::from)
-}
-
 /// Check if the system booted from a live CD (root filesystem is ISO 9660).
 fn is_live_cd_boot() -> bool {
     let mut buf = [0u8; 1024];
-    let n = fs::list_mounts(&mut buf);
+    let n = anyos_std::fs::list_mounts(&mut buf);
     if n == 0 || n == u32::MAX {
         return false;
     }
@@ -155,26 +119,16 @@ fn ensure_installer_on_live_cd(items: &mut Vec<DockItem>) {
 /// Format: one item per line: `name|path`
 /// Lines starting with '#' are comments, empty lines are skipped.
 pub fn load_dock_config() -> Vec<DockItem> {
-    let path = config_path();
-    let mut items = if let Some(text) = read_config_file(&path) {
-        let parsed = parse_config(&text);
-        if !parsed.is_empty() {
-            parsed
-        } else if path != SYSTEM_CONFIG_PATH {
-            // User config was empty, try system fallback
-            read_config_file(SYSTEM_CONFIG_PATH)
-                .map(|t| parse_config(&t))
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    } else if path != SYSTEM_CONFIG_PATH {
-        read_config_file(SYSTEM_CONFIG_PATH)
-            .map(|t| parse_config(&t))
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let _ = dock_items_schema().register();
+    let raw = dock_items_schema()
+        .read_string("config/pinned_items_blob")
+        .unwrap_or_else(|| String::from(LEGACY_DOCK_DEFAULT));
+    let mut items = parse_config(&raw);
+
+    if items.is_empty() {
+        items = parse_config(LEGACY_DOCK_DEFAULT);
+        let _ = dock_items_schema().write_string("config/pinned_items_blob", LEGACY_DOCK_DEFAULT);
+    }
 
     // On live CD boot, add Installer to the dock
     ensure_installer_on_live_cd(&mut items);
@@ -184,8 +138,6 @@ pub fn load_dock_config() -> Vec<DockItem> {
 
 /// Save pinned dock items to the dock config file.
 pub fn save_dock_config(items: &[DockItem]) {
-    let path = config_path();
-
     let mut content = String::new();
     content.push_str("# Dock configuration\n");
     for item in items {
@@ -197,7 +149,7 @@ pub fn save_dock_config(items: &[DockItem]) {
         }
     }
 
-    let _ = fs::write_bytes(&path, content.as_bytes());
+    let _ = dock_items_schema().write_string("config/pinned_items_blob", &content);
 }
 
 const FINDER_NAME: &str = "Finder";

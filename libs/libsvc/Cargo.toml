@@ -1,0 +1,14 @@
+[package]
+name = "libsvc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libami = { path = "../libami" }
+libsyscall = { path = "../libsyscall" }
+
+[features]
+host = ["libami/host"]
+
+[lib]
+name = "libsvc"

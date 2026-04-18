@@ -59,7 +59,6 @@ pub struct GameState {
     pub mining_active: bool,
     pub mining_target: Option<MiningTarget>,
     pub mining_progress: f32,
-    pub place_key_down: bool,
     pub autosave_at_ms: u32,
 }
 

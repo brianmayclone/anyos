@@ -16,6 +16,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libconf_schema",
  "libimage_client",
 ]
 
@@ -36,9 +37,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "libconf"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libsyscall",
+]
+
+[[package]]
+name = "libconf_schema"
+version = "0.1.0"
+dependencies = [
+ "libconf",
+]
+
+[[package]]
 name = "libheap"
 version = "0.1.0"
 
 [[package]]
 name = "libimage_client"
+version = "0.1.0"
+
+[[package]]
+name = "libsyscall"
 version = "0.1.0"

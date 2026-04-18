@@ -41,7 +41,7 @@ pub(super) fn start_userspace(_boot_info: &BootInfo, nogui: bool) -> ! {
     drivers::boot_console::stop_spinner();
 
     if nogui {
-        start_textmode_console();
+        start_textmode_console(true);
     } else {
         start_graphical_userspace(framebuffer.width, framebuffer.height);
     }
@@ -122,7 +122,11 @@ fn update_display_geometry(width: u32, height: u32, pitch: u32, addr: u32) {
     drivers::vmmdev::set_screen_size(width as u16, height as u16);
 }
 
-fn start_textmode_console() {
+fn start_textmode_console(spawn_core_services: bool) {
+    if spawn_core_services {
+        spawn_amid();
+        spawn_confd();
+    }
     drivers::textcon::init();
 
     if let Some((width, height, _, _)) = drivers::gpu::with_gpu(|gpu| gpu.get_mode()) {
@@ -151,6 +155,17 @@ fn start_graphical_userspace(fallback_width: u32, fallback_height: u32) {
         drivers::gpu::enable_splash_cursor(display_width, display_height);
     }
 
+    let amid_ok = spawn_amid();
+    let confd_ok = spawn_confd();
+    if !amid_ok || !confd_ok {
+        serial_println!(
+            "  WARN: Graphical boot aborted: amid_ok={}, confd_ok={}. Falling back to text mode.",
+            amid_ok,
+            confd_ok
+        );
+        start_textmode_console(false);
+        return;
+    }
     flush_gpu_before_compositor();
 
     let setup_mode = SETUP_MODE.load(Ordering::Relaxed);
@@ -163,6 +178,32 @@ fn start_graphical_userspace(fallback_width: u32, fallback_height: u32) {
     }
 
     serial_println!("Userspace started, entering scheduler...");
+}
+
+fn spawn_amid() -> bool {
+    match task::loader::load_and_run("/System/bin/amid", "amid") {
+        Ok(tid) => {
+            serial_println!("[OK] AMID spawned (TID={})", tid);
+            true
+        }
+        Err(err) => {
+            serial_println!("  WARN: Failed to load AMID: {}", err);
+            false
+        }
+    }
+}
+
+fn spawn_confd() -> bool {
+    match task::loader::load_and_run("/System/bin/confd", "confd") {
+        Ok(tid) => {
+            serial_println!("[OK] CONFD spawned (TID={})", tid);
+            true
+        }
+        Err(err) => {
+            serial_println!("  WARN: Failed to load CONFD: {}", err);
+            false
+        }
+    }
 }
 
 fn flush_gpu_before_compositor() {

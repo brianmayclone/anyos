@@ -136,6 +136,7 @@ pub(super) fn process_deferred_thread_cleanup(entry: DeferredThreadCleanup) {
     }
 
     crate::net::tcp::cleanup_for_thread(entry.tid);
+    crate::net::udp::cleanup_for_thread(entry.tid);
     crate::drivers::audio::mixer::close_channels_for_pid(entry.tid);
 
     if entry.emit_exit_event {

@@ -157,16 +157,53 @@ fn init_userspace() -> ! {
     }
 
     drivers::boot_console::stop_spinner();
+    let amid_ok = spawn_amid();
+    let confd_ok = spawn_confd();
+    if !amid_ok || !confd_ok {
+        serial_println!(
+            "  WARN: Graphical boot aborted: amid_ok={}, confd_ok={}. Falling back to text mode.",
+            amid_ok,
+            confd_ok
+        );
+        start_textmode_console();
+        task::scheduler::run();
+    }
 
     if drivers::framebuffer::is_available() && !NOGUI.load(Ordering::Relaxed) {
         GPU_ACCEL.store(false, Ordering::Relaxed);
         GPU_HW_CURSOR.store(drivers::arm::gpu::has_hw_cursor(), Ordering::Relaxed);
         spawn_compositor(SETUP_MODE.load(Ordering::Relaxed));
     } else {
-        spawn_init();
+        start_textmode_console();
     }
 
     task::scheduler::run();
+}
+
+fn spawn_amid() -> bool {
+    match task::loader::load_and_run("/System/bin/amid", "amid") {
+        Ok(tid) => {
+            serial_println!("[OK] AMID spawned (TID={})", tid);
+            true
+        }
+        Err(err) => {
+            serial_println!("  WARN: Failed to load AMID: {}", err);
+            false
+        }
+    }
+}
+
+fn spawn_confd() -> bool {
+    match task::loader::load_and_run("/System/bin/confd", "confd") {
+        Ok(tid) => {
+            serial_println!("[OK] CONFD spawned (TID={})", tid);
+            true
+        }
+        Err(err) => {
+            serial_println!("  WARN: Failed to load CONFD: {}", err);
+            false
+        }
+    }
 }
 
 fn spawn_compositor(setup_mode: bool) {
@@ -184,15 +221,17 @@ fn spawn_compositor(setup_mode: bool) {
         Ok(tid) => serial_println!("[OK] Userspace compositor spawned (TID={})", tid),
         Err(err) => {
             serial_println!("  WARN: Failed to load compositor: {}", err);
-            spawn_init();
+            start_textmode_console();
         }
     }
 }
 
-fn spawn_init() {
-    match task::loader::load_and_run("/System/bin/init", "init") {
-        Ok(tid) => serial_println!("[OK] Init spawned (TID={})", tid),
-        Err(err) => serial_println!("  WARN: Failed to load init: {}", err),
+fn start_textmode_console() {
+    drivers::textcon::init();
+    serial_println!("[OK] Text mode: skipping compositor/init");
+    match task::loader::load_and_run("/System/bin/textmode_console", "textmode_console") {
+        Ok(tid) => serial_println!("[OK] textmode_console spawned (TID={})", tid),
+        Err(err) => serial_println!("  WARN: Failed to load textmode_console: {}", err),
     }
 }
 

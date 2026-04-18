@@ -8,6 +8,7 @@ use anyos_std::Vec;
 
 use crate::config;
 use crate::render::{acquire_lock, desktop_ref, release_lock, signal_render};
+use libconf::{ConfClient, ConfValue, RegistryScope};
 
 use super::ipc::handle_ipc_commands;
 use super::session::perform_logout;
@@ -136,6 +137,7 @@ pub(crate) fn management_loop(
                     let nlen = process::getusername(uid, &mut name_buf);
                     if nlen != u32::MAX && nlen > 0 {
                         if let Ok(username) = core::str::from_utf8(&name_buf[..nlen as usize]) {
+                            persist_last_login_user(username);
                             anyos_std::env::set("USER", username);
                             let home = alloc::format!("/Users/{}", username);
                             anyos_std::env::set("HOME", &home);
@@ -153,6 +155,13 @@ pub(crate) fn management_loop(
             desktop.compositor.damage_all();
             release_lock();
             signal_render();
+
+            let (required_tids, required_ok) = config::launch_required_services();
+            service_tids.extend(required_tids);
+            if !required_ok {
+                println!("compositor: desktop session startup aborted because a required service is missing");
+                continue;
+            }
 
             let dock_tid = process::spawn("/System/compositor/dock", "");
             if dock_tid != u32::MAX {
@@ -284,5 +293,18 @@ pub(crate) fn management_loop(
                 perform_shutdown(mode, service_tids);
             }
         }
+    }
+}
+
+fn persist_last_login_user(username: &str) {
+    if username.is_empty() {
+        return;
+    }
+    if let Ok(mut client) = ConfClient::connect("compositor") {
+        let _ = client.set(
+            RegistryScope::System,
+            "system/login/state/last_user",
+            ConfValue::String(alloc::string::String::from(username)),
+        );
     }
 }

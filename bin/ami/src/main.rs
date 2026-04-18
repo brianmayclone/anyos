@@ -1,11 +1,4 @@
-//! ami — CLI client for querying the amid (Anywhere Management Interface) daemon.
-//!
-//! Interactive REPL that sends SQL queries to amid via named pipe and
-//! displays results as formatted tables in the terminal.
-//!
-//! Usage:
-//!   ami                  — enter interactive REPL mode
-//!   ami "SELECT ..."     — execute a single query and exit
+//! ami — CLI client for the AMI v1 state service.
 
 #![no_std]
 #![no_main]
@@ -14,284 +7,340 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use libami::{AmiClient, AmiError, AmiEvent, AmiEventKind, AmiItem, AmiValue};
+
 anyos_std::entry!(main);
 
-// ── Constants ────────────────────────────────────────────────────────────────
-
-/// Named pipe created by amid for receiving queries.
-const AMID_PIPE: &str = "ami";
-
-/// Maximum line length for REPL input.
 const MAX_INPUT: usize = 1024;
 
-/// Maximum response size (64 KiB).
-const MAX_RESPONSE: usize = 65536;
-
-// ── Main ─────────────────────────────────────────────────────────────────────
-
 fn main() {
-    // Get our TID for the response pipe name
-    let tid = anyos_std::process::getpid();
-
-    // Check if amid is running by trying to open its pipe
-    let amid_pipe = anyos_std::ipc::pipe_open(AMID_PIPE);
-    if amid_pipe == 0 {
-        anyos_std::println!("ami: amid daemon is not running");
-        anyos_std::println!("  Start it with: svc start amid");
-        return;
-    }
-
-    // Create our response pipe
-    let reply_name = format!("ami-{}", tid);
-    let reply_pipe = anyos_std::ipc::pipe_create(&reply_name);
-    if reply_pipe == 0 {
-        anyos_std::println!("ami: failed to create response pipe");
-        return;
-    }
-
-    // Check for single-shot query from args
-    // process::args() already strips argv[0], returns just the arguments
-    let mut args_buf = [0u8; 256];
-    let args_str = anyos_std::process::args(&mut args_buf);
-    if args_str.contains("--help") {
-        anyos_std::println!("ami - Anywhere Management Interface client");
-        anyos_std::println!("");
-        anyos_std::println!("Usage: ami [QUERY]");
-        anyos_std::println!("");
-        anyos_std::println!("Without arguments, starts an interactive REPL.");
-        anyos_std::println!("With a QUERY argument, executes it and exits.");
-        anyos_std::println!("");
-        anyos_std::println!("REPL commands:");
-        anyos_std::println!("  SELECT ...     Execute a SQL query");
-        anyos_std::println!("  list tables    List available tables");
-        anyos_std::println!("  help           Show help");
-        anyos_std::println!("  exit           Quit");
-        anyos_std::ipc::pipe_close(reply_pipe);
-        return;
-    }
-
-    let query_from_args = strip_quotes(args_str);
-
-    if !query_from_args.is_empty() {
-        // Single-shot mode: execute one query and exit
-        execute_and_print(amid_pipe, reply_pipe, tid, &query_from_args);
-        anyos_std::ipc::pipe_close(reply_pipe);
-        return;
-    }
-
-    // Interactive REPL mode
-    anyos_std::println!("ami — Anywhere Management Interface client");
-    anyos_std::println!("Connected to amid (pipe='{}')", AMID_PIPE);
-    anyos_std::println!("Type SQL queries (SELECT only) or 'exit' to quit.\n");
-
-    let mut input_buf = [0u8; MAX_INPUT];
-
-    loop {
-        anyos_std::print!("ami> ");
-        let line = read_line(&mut input_buf);
-        if line.is_empty() { continue; }
-
-        // Check for exit commands
-        if line.eq_ignore_ascii_case("exit") || line.eq_ignore_ascii_case("quit")
-            || line.eq_ignore_ascii_case("\\q") {
-            break;
-        }
-
-        // Show help
-        if line.eq_ignore_ascii_case("help") || line == "?" {
-            print_help();
-            continue;
-        }
-
-        // Show tables
-        if line.eq_ignore_ascii_case("tables")
-            || line.eq_ignore_ascii_case("list tables")
-            || line.eq_ignore_ascii_case("show tables")
-            || line.eq_ignore_ascii_case("\\dt")
-        {
-            anyos_std::println!("Tables: hw, mem, cpu, threads, devices, disks, net, svc");
-            continue;
-        }
-
-        execute_and_print(amid_pipe, reply_pipe, tid, line);
-    }
-
-    anyos_std::ipc::pipe_close(reply_pipe);
-}
-
-// ── Query Execution ──────────────────────────────────────────────────────────
-
-/// Send a query to amid and print the formatted result.
-fn execute_and_print(amid_pipe: u32, reply_pipe: u32, tid: u32, sql: &str) {
-    // Send request: "{tid}\t{sql}\n"
-    let request = format!("{}\t{}\n", tid, sql);
-    let written = anyos_std::ipc::pipe_write(amid_pipe, request.as_bytes());
-    if written == u32::MAX {
-        anyos_std::println!("Error: amid pipe disconnected");
-        return;
-    }
-
-    // Wait for response with timeout (poll up to 3 seconds)
-    let mut resp_buf = alloc::vec![0u8; MAX_RESPONSE];
-    let start = anyos_std::sys::uptime_ms();
-    let mut total_read = 0usize;
-
-    loop {
-        let n = anyos_std::ipc::pipe_read(reply_pipe, &mut resp_buf[total_read..]);
-        if n > 0 && n != u32::MAX {
-            total_read += n as usize;
-            // Check for end marker (double newline)
-            if total_read >= 2
-                && resp_buf[total_read - 1] == b'\n'
-                && resp_buf[total_read - 2] == b'\n'
-            {
-                break;
-            }
-        }
-
-        let elapsed = anyos_std::sys::uptime_ms().wrapping_sub(start);
-        if elapsed > 3000 {
-            anyos_std::println!("Error: timeout waiting for amid response");
-            return;
-        }
-        anyos_std::process::sleep(5);
-    }
-
-    if total_read == 0 {
-        anyos_std::println!("Error: empty response from amid");
-        return;
-    }
-
-    let resp = &resp_buf[..total_read];
-    parse_and_display(resp);
-}
-
-// ── Response Parsing ─────────────────────────────────────────────────────────
-
-/// Parse amid's TSV response and display as formatted table.
-fn parse_and_display(resp: &[u8]) {
-    let text = match core::str::from_utf8(resp) {
-        Ok(s) => s,
+    let mut client = match AmiClient::connect("amid") {
+        Ok(client) => client,
         Err(_) => {
-            anyos_std::println!("Error: invalid UTF-8 in response");
+            anyos_std::println!("ami: amid daemon is not running");
             return;
         }
     };
 
-    // Split into lines
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    // Remove trailing empty lines
-    while lines.last() == Some(&"") {
-        lines.pop();
-    }
-
-    if lines.is_empty() {
-        anyos_std::println!("Error: empty response");
+    let mut args_buf = [0u8; 256];
+    let args_str = anyos_std::process::args(&mut args_buf);
+    if args_str.contains("--help") {
+        print_help();
         return;
     }
 
-    // First line: "OK\t{col_count}\t{row_count}" or "ERR\t{message}"
-    let status_line = lines[0];
-    if status_line.starts_with("ERR\t") {
-        anyos_std::println!("Error: {}", &status_line[4..]);
+    let single = strip_quotes(args_str);
+    if !single.is_empty() {
+        run_command(&mut client, single);
         return;
     }
 
-    if !status_line.starts_with("OK\t") {
-        anyos_std::println!("Error: unexpected response: {}", status_line);
-        return;
-    }
+    anyos_std::println!("ami — Anywhere Management Interface client");
+    anyos_std::println!("Commands: get, list, watch, namespaces, services, ping, help, exit\n");
 
-    // Parse OK header
-    let parts: Vec<&str> = status_line.split('\t').collect();
-    if parts.len() < 3 {
-        anyos_std::println!("Error: malformed OK header");
-        return;
+    let mut input_buf = [0u8; MAX_INPUT];
+    loop {
+        anyos_std::print!("ami> ");
+        let line = read_line(&mut input_buf);
+        if line.is_empty() {
+            continue;
+        }
+        if line.eq_ignore_ascii_case("exit") || line.eq_ignore_ascii_case("quit") || line == "\\q" {
+            break;
+        }
+        if line.eq_ignore_ascii_case("help") || line == "?" {
+            print_help();
+            continue;
+        }
+        run_command(&mut client, line);
     }
-    let col_count = parse_usize(parts[1]);
-    let row_count = parse_usize(parts[2]);
+}
 
-    if col_count == 0 {
-        anyos_std::println!("(empty result set)");
-        return;
+fn run_command(client: &mut AmiClient, line: &str) {
+    let (verb, rest) = split_first_word(line.trim());
+    match verb {
+        "get" | "GET" => cmd_get(client, rest),
+        "list" | "LIST" => cmd_list(client, rest),
+        "watch" | "WATCH" => cmd_watch(client, rest),
+        "namespaces" | "NAMESPACES" => cmd_namespaces(client),
+        "services" | "SERVICES" => cmd_services(client),
+        "ping" | "PING" => cmd_ping(client),
+        "set" | "SET" => cmd_set(client, rest),
+        "del" | "DEL" => cmd_del(client, rest),
+        "" => {}
+        _ => anyos_std::println!("Unknown command: {}", verb),
     }
+}
 
-    // Line 1: column names
-    if lines.len() < 2 {
-        anyos_std::println!("(empty result set)");
-        return;
+fn cmd_get(client: &mut AmiClient, key: &str) {
+    match client.get(key) {
+        Ok(item) => print_item(&item),
+        Err(err) => print_error(err),
     }
-    let col_names: Vec<&str> = lines[1].split('\t').collect();
+}
 
-    // Lines 2+: row data
-    let mut rows: Vec<Vec<&str>> = Vec::new();
-    for i in 2..lines.len() {
-        if lines[i].is_empty() { continue; }
-        let cells: Vec<&str> = lines[i].split('\t').collect();
-        rows.push(cells);
+fn cmd_list(client: &mut AmiClient, prefix: &str) {
+    match client.list(prefix) {
+        Ok(items) => {
+            if items.is_empty() {
+                anyos_std::println!("(empty)");
+                return;
+            }
+            for item in &items {
+                print_item(item);
+            }
+        }
+        Err(err) => print_error(err),
     }
+}
 
-    // Calculate column widths
-    let mut widths = Vec::with_capacity(col_count);
-    for c in 0..col_count {
-        let header_w = col_names.get(c).map(|s| s.len()).unwrap_or(0);
-        let mut max_w = header_w;
-        for row in &rows {
-            if let Some(cell) = row.get(c) {
-                if cell.len() > max_w {
-                    max_w = cell.len();
+fn cmd_watch(client: &mut AmiClient, prefix: &str) {
+    let watch_id = match client.watch(prefix) {
+        Ok(id) => id,
+        Err(err) => {
+            print_error(err);
+            return;
+        }
+    };
+
+    anyos_std::println!("Watching '{}' (id={})", prefix, watch_id);
+    loop {
+        match client.poll_event(1000) {
+            Ok(Some(event)) => print_event(&event),
+            Ok(None) => {}
+            Err(err) => {
+                print_error(err);
+                return;
+            }
+        }
+    }
+}
+
+fn cmd_ping(client: &mut AmiClient) {
+    match client.ping() {
+        Ok(()) => anyos_std::println!("PONG"),
+        Err(err) => print_error(err),
+    }
+}
+
+fn cmd_namespaces(client: &mut AmiClient) {
+    match client.list("") {
+        Ok(items) => {
+            let mut roots = Vec::new();
+            for item in &items {
+                let root = first_segment(&item.key);
+                if !root.is_empty() && !roots.iter().any(|v: &String| v == &root) {
+                    roots.push(root);
+                }
+            }
+            if roots.is_empty() {
+                anyos_std::println!("(empty)");
+                return;
+            }
+            for root in &roots {
+                anyos_std::println!("{}.", root);
+            }
+        }
+        Err(err) => print_error(err),
+    }
+}
+
+fn cmd_services(client: &mut AmiClient) {
+    match client.list("svc.") {
+        Ok(items) => {
+            let mut services = Vec::new();
+            for item in &items {
+                let name = service_name_from_key(&item.key);
+                if !name.is_empty() && !services.iter().any(|v: &String| v == &name) {
+                    services.push(name);
+                }
+            }
+            if services.is_empty() {
+                anyos_std::println!("(no service state published)");
+                return;
+            }
+            for service in &services {
+                let state = field_value(&items, service, "state").unwrap_or_else(|| String::from("unknown"));
+                let ready = field_value(&items, service, "ready").unwrap_or_else(|| String::from("false"));
+                let health = field_value(&items, service, "health").unwrap_or_else(|| String::new());
+                if health.is_empty() {
+                    anyos_std::println!("{}: state={} ready={}", service, state, ready);
+                } else {
+                    anyos_std::println!("{}: state={} ready={} health={}", service, state, ready, health);
                 }
             }
         }
-        widths.push(max_w.max(1));
+        Err(err) => print_error(err),
     }
-
-    // Print header
-    print_row(&col_names, &widths, col_count);
-    print_separator(&widths, col_count);
-
-    // Print rows
-    for row in &rows {
-        print_row(row, &widths, col_count);
-    }
-
-    // Print summary
-    anyos_std::println!("({} row{})", row_count, if row_count == 1 { "" } else { "s" });
 }
 
-/// Print a row with padded columns.
-fn print_row(cells: &[&str], widths: &[usize], col_count: usize) {
-    let mut line = String::new();
-    for c in 0..col_count {
-        if c > 0 { line.push_str(" | "); }
-        let cell = cells.get(c).copied().unwrap_or("");
-        line.push_str(cell);
-        // Pad with spaces
-        for _ in cell.len()..widths[c] {
-            line.push(' ');
+fn cmd_set(client: &mut AmiClient, rest: &str) {
+    let mut parts = rest.splitn(3, ' ');
+    let Some(key) = parts.next() else {
+        anyos_std::println!("Usage: set <key> <type> <value>");
+        return;
+    };
+    let Some(ty) = parts.next() else {
+        anyos_std::println!("Usage: set <key> <type> <value>");
+        return;
+    };
+    let Some(raw) = parts.next() else {
+        anyos_std::println!("Usage: set <key> <type> <value>");
+        return;
+    };
+
+    let value = match parse_value(ty, raw) {
+        Some(value) => value,
+        None => {
+            anyos_std::println!("Invalid value");
+            return;
+        }
+    };
+
+    match client.set(key, value) {
+        Ok(item) => {
+            anyos_std::println!("Updated {} (v{}, t={})", item.key, item.version, item.updated_at);
+        }
+        Err(err) => print_error(err),
+    }
+}
+
+fn cmd_del(client: &mut AmiClient, key: &str) {
+    match client.del(key) {
+        Ok(()) => anyos_std::println!("Deleted {}", key),
+        Err(err) => print_error(err),
+    }
+}
+
+fn parse_value(ty: &str, raw: &str) -> Option<AmiValue> {
+    match ty {
+        "string" => Some(AmiValue::String(String::from(raw))),
+        "int" => parse_i64(raw).map(AmiValue::Int),
+        "bool" => match raw {
+            "true" => Some(AmiValue::Bool(true)),
+            "false" => Some(AmiValue::Bool(false)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn print_item(item: &AmiItem) {
+    anyos_std::println!(
+        "{} = {} (v{}, t={})",
+        item.key,
+        value_to_string(&item.value),
+        item.version,
+        item.updated_at
+    );
+}
+
+fn print_event(event: &AmiEvent) {
+    match event.kind {
+        AmiEventKind::Set => {
+            if let Some(value) = &event.value {
+                anyos_std::println!(
+                    "[watch {}] {} = {} (v{}, t={})",
+                    event.watch_id,
+                    event.key,
+                    value_to_string(value),
+                    event.version,
+                    event.updated_at
+                );
+            }
+        }
+        AmiEventKind::Delete => {
+            anyos_std::println!(
+                "[watch {}] deleted {} (v{}, t={})",
+                event.watch_id,
+                event.key,
+                event.version,
+                event.updated_at
+            );
         }
     }
-    anyos_std::println!("{}", line);
 }
 
-/// Print a separator line (dashes).
-fn print_separator(widths: &[usize], col_count: usize) {
-    let mut line = String::new();
-    for c in 0..col_count {
-        if c > 0 { line.push_str("-+-"); }
-        for _ in 0..widths[c] {
-            line.push('-');
+fn print_error(err: AmiError) {
+    match err {
+        AmiError::Remote(msg) | AmiError::Protocol(msg) => anyos_std::println!("Error: {}", msg),
+        AmiError::NotRunning => anyos_std::println!("Error: amid daemon is not running"),
+        AmiError::PipeCreateFailed => anyos_std::println!("Error: failed to create reply pipe"),
+        AmiError::Disconnected => anyos_std::println!("Error: amid pipe disconnected"),
+        AmiError::Timeout => anyos_std::println!("Error: timeout waiting for amid"),
+        AmiError::InvalidArgument(msg) => anyos_std::println!("Error: {}", msg),
+    }
+}
+
+fn value_to_string(value: &AmiValue) -> String {
+    match value {
+        AmiValue::String(s) => String::from(s.as_str()),
+        AmiValue::Int(v) => format!("{}", *v),
+        AmiValue::Bool(v) => {
+            if *v { String::from("true") } else { String::from("false") }
         }
     }
-    anyos_std::println!("{}", line);
 }
 
-// ── Input Reading ────────────────────────────────────────────────────────────
+fn first_segment(key: &str) -> String {
+    if let Some(pos) = key.find('.') {
+        String::from(&key[..pos])
+    } else {
+        String::from(key)
+    }
+}
 
-/// Read a line from stdin (fd 0), one byte at a time.
-/// Returns the trimmed line as a &str.
+fn service_name_from_key(key: &str) -> String {
+    if !key.starts_with("svc.") {
+        return String::new();
+    }
+    let rest = &key[4..];
+    if let Some(pos) = rest.find('.') {
+        String::from(&rest[..pos])
+    } else {
+        String::new()
+    }
+}
+
+fn field_value(items: &[AmiItem], service: &str, field: &str) -> Option<String> {
+    let prefix = format!("svc.{}.{}", service, field);
+    for item in items {
+        if item.key == prefix {
+            return Some(value_to_string(&item.value));
+        }
+    }
+    None
+}
+
+fn split_first_word(input: &str) -> (&str, &str) {
+    if let Some(pos) = input.find(' ') {
+        (&input[..pos], input[pos + 1..].trim())
+    } else {
+        (input, "")
+    }
+}
+
+fn parse_i64(s: &str) -> Option<i64> {
+    if s.is_empty() {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let (neg, start) = if bytes[0] == b'-' { (true, 1usize) } else { (false, 0usize) };
+    if start >= bytes.len() {
+        return None;
+    }
+    let mut val = 0i64;
+    for &b in &bytes[start..] {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        val = val.checked_mul(10)?.checked_add((b - b'0') as i64)?;
+    }
+    Some(if neg { -val } else { val })
+}
+
 fn read_line(buf: &mut [u8; MAX_INPUT]) -> &str {
-    let mut pos = 0;
+    let mut pos = 0usize;
     loop {
         let mut byte = [0u8; 1];
         let n = anyos_std::fs::read(0, &mut byte);
@@ -300,7 +349,6 @@ fn read_line(buf: &mut [u8; MAX_INPUT]) -> &str {
             continue;
         }
         if n == u32::MAX {
-            // EOF / pipe closed
             return "";
         }
         match byte[0] {
@@ -309,7 +357,6 @@ fn read_line(buf: &mut [u8; MAX_INPUT]) -> &str {
                 break;
             }
             8 | 127 => {
-                // Backspace
                 if pos > 0 {
                     pos -= 1;
                     anyos_std::print!("\x08 \x08");
@@ -323,51 +370,36 @@ fn read_line(buf: &mut [u8; MAX_INPUT]) -> &str {
             _ => {}
         }
     }
-    let s = core::str::from_utf8(&buf[..pos]).unwrap_or("");
-    s.trim()
+    core::str::from_utf8(&buf[..pos]).unwrap_or("").trim()
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-/// Parse a decimal string into usize.
-fn parse_usize(s: &str) -> usize {
-    let mut val = 0usize;
-    for b in s.bytes() {
-        if b >= b'0' && b <= b'9' {
-            val = val.saturating_mul(10).saturating_add((b - b'0') as usize);
-        } else {
-            break;
-        }
-    }
-    val
-}
-
-/// Strip surrounding quotes from args if present.
 fn strip_quotes(s: &str) -> &str {
     let s = s.trim();
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        return &s[1..s.len() - 1];
+        &s[1..s.len() - 1]
+    } else if s.len() >= 2 && s.starts_with('\'') && s.ends_with('\'') {
+        &s[1..s.len() - 1]
+    } else {
+        s
     }
-    if s.len() >= 2 && s.starts_with('\'') && s.ends_with('\'') {
-        return &s[1..s.len() - 1];
-    }
-    s
 }
 
-/// Print help text.
 fn print_help() {
-    anyos_std::println!("Available commands:");
-    anyos_std::println!("  SELECT ...     Execute a SQL query against amid's database");
-    anyos_std::println!("  list tables    List available tables");
-    anyos_std::println!("  tables         List available tables (short)");
-    anyos_std::println!("  help           Show this help");
-    anyos_std::println!("  exit           Quit the REPL");
+    anyos_std::println!("ami - Anywhere Management Interface client");
     anyos_std::println!("");
-    anyos_std::println!("Tables: hw, mem, cpu, threads, devices, disks, net, svc");
+    anyos_std::println!("Usage:");
+    anyos_std::println!("  ami                   Start interactive mode");
+    anyos_std::println!("  ami \"get dns.status\" Run a single command");
     anyos_std::println!("");
-    anyos_std::println!("Examples:");
-    anyos_std::println!("  SELECT * FROM hw");
-    anyos_std::println!("  SELECT * FROM cpu");
-    anyos_std::println!("  SELECT tid, name, state FROM threads");
-    anyos_std::println!("  SELECT * FROM net WHERE key = 'ip'");
+    anyos_std::println!("Commands:");
+    anyos_std::println!("  get <key>             Read one key");
+    anyos_std::println!("  list <prefix>         List keys below a prefix");
+    anyos_std::println!("  watch <prefix>        Watch live changes");
+    anyos_std::println!("  namespaces            List top-level prefixes");
+    anyos_std::println!("  services              Summarize svc.* service state");
+    anyos_std::println!("  ping                  Check liveness");
+    anyos_std::println!("  set <key> <t> <v>     Debug write (subject to AMID policy)");
+    anyos_std::println!("  del <key>             Debug delete (subject to AMID policy)");
+    anyos_std::println!("  help                  Show help");
+    anyos_std::println!("  exit                  Quit");
 }

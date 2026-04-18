@@ -4,9 +4,11 @@
 use alloc::format;
 use alloc::string::String;
 
+use libconf::{ConfClient, ConfTarget, ConfValue};
+
 anyos_std::entry!(main);
 
-const CRONTAB_DIR: &str = "/System/etc/crond";
+const USER_JOBS_ROOT: &str = "jobs/crond/jobs";
 
 fn usage() {
     anyos_std::println!("Usage: crontab [-l] [-r] [-e] [file]");
@@ -22,82 +24,165 @@ fn usage() {
     anyos_std::println!("  0      12   *   *     1-5     /System/bin/echo lunch");
 }
 
-/// Get the crontab file path for the current user.
-fn user_crontab() -> String {
-    // Use UID-based naming; default to "root" for uid 0
-    let uid = anyos_std::process::getuid();
-    format!("{}/{}", CRONTAB_DIR, uid)
+fn user_target() -> ConfTarget {
+    ConfTarget::User(anyos_std::process::getuid())
 }
 
-/// List all entries from the user's crontab.
+fn read_string(client: &mut ConfClient, target: ConfTarget, path: &str) -> Option<String> {
+    match client.get_target(target, path).ok()?.value {
+        Some(ConfValue::String(value)) => Some(value),
+        Some(ConfValue::Int(value)) => Some(format!("{}", value)),
+        Some(ConfValue::Bool(value)) => Some(if value { String::from("true") } else { String::from("false") }),
+        None => None,
+    }
+}
+
+fn read_bool(client: &mut ConfClient, target: ConfTarget, path: &str) -> Option<bool> {
+    match client.get_target(target, path).ok()?.value {
+        Some(ConfValue::Bool(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn ensure_user_root(client: &mut ConfClient, target: ConfTarget) {
+    let _ = client.mkdir_target(target, "jobs");
+    let _ = client.mkdir_target(target, "jobs/crond");
+    let _ = client.mkdir_target(target, USER_JOBS_ROOT);
+}
+
+fn format_user_crontab() -> Option<String> {
+    let target = user_target();
+    let mut client = ConfClient::connect("crontab").ok()?;
+    let items = client.list_target(target, USER_JOBS_ROOT).ok()?;
+    let mut out = String::new();
+
+    for item in items {
+        if item.kind != libconf::NodeKind::Directory {
+            continue;
+        }
+        let base = item.path;
+        let enabled = read_bool(&mut client, target, &format!("{}/enabled", base)).unwrap_or(true);
+        if !enabled {
+            continue;
+        }
+        let minute = read_string(&mut client, target, &format!("{}/minute", base)).unwrap_or_else(|| String::from("*"));
+        let hour = read_string(&mut client, target, &format!("{}/hour", base)).unwrap_or_else(|| String::from("*"));
+        let day = read_string(&mut client, target, &format!("{}/day", base)).unwrap_or_else(|| String::from("*"));
+        let month = read_string(&mut client, target, &format!("{}/month", base)).unwrap_or_else(|| String::from("*"));
+        let weekday = read_string(&mut client, target, &format!("{}/weekday", base)).unwrap_or_else(|| String::from("*"));
+        let Some(command) = read_string(&mut client, target, &format!("{}/command", base)) else {
+            continue;
+        };
+        out.push_str(&format!("{} {} {} {} {} {}\n", minute, hour, day, month, weekday, command));
+    }
+
+    Some(out)
+}
+
 fn list_crontab() {
-    let path = user_crontab();
-    match anyos_std::fs::read_to_string(&path) {
-        Ok(content) => {
-            if content.is_empty() {
-                anyos_std::println!("crontab: no crontab for current user");
-            } else {
-                anyos_std::print!("{}", content);
-            }
-        }
-        Err(_) => {
-            anyos_std::println!("crontab: no crontab for current user");
-        }
+    match format_user_crontab() {
+        Some(content) if !content.is_empty() => anyos_std::print!("{}", content),
+        _ => anyos_std::println!("crontab: no crontab for current user"),
     }
 }
 
-/// Remove the user's crontab.
 fn remove_crontab() {
-    let path = user_crontab();
-    if anyos_std::fs::unlink(&path) == u32::MAX {
-        anyos_std::println!("crontab: no crontab to remove");
-    } else {
-        anyos_std::println!("crontab: removed");
+    let target = user_target();
+    match ConfClient::connect("crontab") {
+        Ok(mut client) => {
+            let _ = client.del_target(target, USER_JOBS_ROOT);
+            anyos_std::println!("crontab: removed");
+        }
+        Err(_) => anyos_std::println!("crontab: confd is not available"),
     }
 }
 
-/// Edit the crontab using vi.
-fn edit_crontab() {
-    let path = user_crontab();
-    // Ensure directory and file exist
-    anyos_std::fs::mkdir(CRONTAB_DIR);
-    // Create file if it doesn't exist
-    let fd = anyos_std::fs::open(&path, 4); // O_CREATE
-    if fd != u32::MAX {
-        anyos_std::fs::close(fd);
+fn write_job(client: &mut ConfClient, target: ConfTarget, job_id: &str, line: &str) -> bool {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return false;
     }
-    // Open in vi
-    anyos_std::process::exec("/System/bin/vi", &path);
+
+    let mut fields = [""; 5];
+    let mut rest = line;
+    for slot in &mut fields {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            return false;
+        }
+        let end = rest.find(|c: char| c == ' ' || c == '\t').unwrap_or(rest.len());
+        *slot = &rest[..end];
+        rest = &rest[end..];
+    }
+
+    let command = rest.trim_start();
+    if command.is_empty() {
+        return false;
+    }
+
+    let base = format!("{}/{}", USER_JOBS_ROOT, job_id);
+    let _ = client.mkdir_target(target, &base);
+    let _ = client.set_target(target, &format!("{}/minute", base), ConfValue::String(String::from(fields[0])));
+    let _ = client.set_target(target, &format!("{}/hour", base), ConfValue::String(String::from(fields[1])));
+    let _ = client.set_target(target, &format!("{}/day", base), ConfValue::String(String::from(fields[2])));
+    let _ = client.set_target(target, &format!("{}/month", base), ConfValue::String(String::from(fields[3])));
+    let _ = client.set_target(target, &format!("{}/weekday", base), ConfValue::String(String::from(fields[4])));
+    let _ = client.set_target(target, &format!("{}/command", base), ConfValue::String(String::from(command)));
+    let _ = client.set_target(target, &format!("{}/enabled", base), ConfValue::Bool(true));
+    true
 }
 
-/// Install a crontab from a file.
+fn install_crontab_text(content: &str) -> Result<u32, ()> {
+    let target = user_target();
+    let mut client = ConfClient::connect("crontab").map_err(|_| ())?;
+    ensure_user_root(&mut client, target);
+    let _ = client.del_target(target, USER_JOBS_ROOT);
+    ensure_user_root(&mut client, target);
+
+    let mut valid_lines = 0u32;
+    for (idx, line) in content.split('\n').enumerate() {
+        let job_id = format!("job{:04}", idx + 1);
+        if write_job(&mut client, target, &job_id, line) {
+            valid_lines += 1;
+        }
+    }
+    Ok(valid_lines)
+}
+
 fn install_crontab(file: &str) {
     match anyos_std::fs::read_to_string(file) {
-        Ok(content) => {
-            // Validate: count non-empty, non-comment lines
-            let mut valid_lines = 0u32;
-            for line in content.split('\n') {
-                let line = line.trim();
-                if !line.is_empty() && !line.starts_with('#') {
-                    valid_lines += 1;
-                }
-            }
-
-            // Ensure directory exists
-            anyos_std::fs::mkdir(CRONTAB_DIR);
-
-            // Write to user's crontab file
-            let path = user_crontab();
-            if anyos_std::fs::write_bytes(&path, content.as_bytes()).is_ok() {
-                anyos_std::println!("crontab: installed {} entries", valid_lines);
-            } else {
-                anyos_std::println!("crontab: failed to write {}", path);
-            }
-        }
-        Err(_) => {
-            anyos_std::println!("crontab: cannot open '{}'", file);
-        }
+        Ok(content) => match install_crontab_text(&content) {
+            Ok(valid_lines) => anyos_std::println!("crontab: installed {} entries", valid_lines),
+            Err(_) => anyos_std::println!("crontab: confd is not available"),
+        },
+        Err(_) => anyos_std::println!("crontab: cannot open '{}'", file),
     }
+}
+
+fn edit_crontab() {
+    let uid = anyos_std::process::getuid();
+    let tmp_dir = "/tmp";
+    let tmp_path = format!("{}/crontab-{}.tmp", tmp_dir, uid);
+    let _ = anyos_std::fs::mkdir(tmp_dir);
+
+    let content = format_user_crontab().unwrap_or_default();
+    let _ = anyos_std::fs::write_bytes(&tmp_path, content.as_bytes());
+
+    let tid = anyos_std::process::spawn("/System/bin/vi", &tmp_path);
+    if tid == u32::MAX {
+        anyos_std::println!("crontab: failed to launch vi");
+        return;
+    }
+    anyos_std::process::waitpid(tid);
+
+    match anyos_std::fs::read_to_string(&tmp_path) {
+        Ok(updated) => match install_crontab_text(&updated) {
+            Ok(valid_lines) => anyos_std::println!("crontab: installed {} entries", valid_lines),
+            Err(_) => anyos_std::println!("crontab: confd is not available"),
+        },
+        Err(_) => anyos_std::println!("crontab: failed to read edited crontab"),
+    }
+    let _ = anyos_std::fs::unlink(&tmp_path);
 }
 
 fn main() {
@@ -112,10 +197,7 @@ fn main() {
 
     if args.has(b'h') {
         usage();
-        return;
-    }
-
-    if args.has(b'l') {
+    } else if args.has(b'l') {
         list_crontab();
     } else if args.has(b'r') {
         remove_crontab();

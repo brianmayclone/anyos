@@ -3,7 +3,7 @@
 The Search Daemon (`searchd`) provides system-wide file indexing and full-text search for anyOS. It periodically crawls standard directories, classifies files by type, indexes text content, and exposes a search API via named pipe IPC.
 
 **Binary:** `/System/bin/searchd`
-**Source:** `system/searchd/`
+**Source:** `system/daemons/searchd/`
 **Database:** `/System/sysdb/search.db`
 **Configuration:** `/System/etc/searchd.conf`
 **IPC Pipe:** `searchd`

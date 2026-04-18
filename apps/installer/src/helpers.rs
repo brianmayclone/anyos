@@ -31,6 +31,8 @@ pub fn detect_disks() -> Vec<DiskEntry> {
         let label = String::from(label);
 
         if partition == 0xFF {
+            let existing_os = detect_existing_os(device_id);
+            let upgrade_candidate = existing_os.as_deref() == Some("anyOS");
             // Whole disk — count its partitions
             let part_count = (0..count as usize)
                 .filter(|&j| {
@@ -46,8 +48,12 @@ pub fn detect_disks() -> Vec<DiskEntry> {
                 partition_count: part_count,
                 label,
                 part_type_id: 0,
+                existing_os,
+                upgrade_candidate,
             });
         } else {
+            let existing_os = detect_partition_os(device_id);
+            let upgrade_candidate = existing_os.as_deref() == Some("anyOS");
             // Partition entry
             entries.push(DiskEntry {
                 device_id,
@@ -57,12 +63,26 @@ pub fn detect_disks() -> Vec<DiskEntry> {
                 partition_count: 0,
                 label,
                 part_type_id: 0, // could be extended later
+                existing_os,
+                upgrade_candidate,
             });
         }
     }
 
     entries.sort_by_key(|d| (d.disk_id, d.partition_index.unwrap_or(0xFF)));
     entries
+}
+
+fn detect_partition_os(device_id: u8) -> Option<String> {
+    let mut vbr = [0u8; 512];
+    sys::disk_read(device_id as u32, 0, 1, &mut vbr);
+    if vbr[3..11] == *b"EXFAT   " {
+        let serial = u32::from_le_bytes([vbr[100], vbr[101], vbr[102], vbr[103]]);
+        if serial == 0x414E594F {
+            return Some(String::from("anyOS"));
+        }
+    }
+    None
 }
 
 /// Human-readable size string from a sector count (512 B/sector).

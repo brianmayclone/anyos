@@ -1,9 +1,6 @@
 // Copyright (c) 2024-2026 Mike Strathmann
 // SPDX-License-Identifier: MIT
 //! FTP Settings — anyOS GUI for configuring the ftpd daemon.
-//!
-//! Reads/writes `/System/etc/ftpd/ftpd.conf` and `/System/etc/ftpd/shares.conf`,
-//! then signals the running daemon via the "ftpd" named pipe so it reloads.
 
 #![no_std]
 #![no_main]
@@ -11,16 +8,38 @@
 anyos_std::entry!(main);
 
 use anyos_std::{ipc, println, String, Vec, format, i18n};
+use libconf_schema::{default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema};
 use libanyui_client as ui;
 use ui::ColumnDef;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const CONF_PATH: &str = "/System/etc/ftpd/ftpd.conf";
-const SHARES_PATH: &str = "/System/etc/ftpd/shares.conf";
 const FTPD_PIPE: &str = "ftpd";
 const WIN_W: u32 = 520;
 const WIN_H: u32 = 640;
+const FTP_SETTINGS_DIRS: &[&str] = &["config"];
+const FTP_SETTINGS_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_bool("config/enabled", true),
+    default_int("config/port", 21),
+    default_bool("config/passive_mode", true),
+    default_int("config/passive_port_min", 50_000),
+    default_int("config/passive_port_max", 50_010),
+    default_bool("config/allow_anonymous", true),
+    default_string("config/anonymous_root", "/users/shared/ftp"),
+    default_int("config/max_clients", 10),
+    default_bool("config/chroot_users", false),
+    default_string("config/shares_blob", "*:/users/shared/ftp:r\n"),
+];
+const FTP_SETTINGS_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const FTP_SETTINGS_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "services/ftpd",
+    RegistryScope::System,
+    1,
+    FTP_SETTINGS_DIRS,
+    FTP_SETTINGS_DEFAULTS,
+    FTP_SETTINGS_MIGRATIONS,
+);
+const FTP_SETTINGS_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("ftp-settings", &FTP_SETTINGS_MANIFEST);
 
 const MAX_SHARES: usize = 64;
 
@@ -75,36 +94,36 @@ impl FtpConf {
 
 fn load_conf() -> FtpConf {
     let mut cfg = FtpConf::default_conf();
-
-    if let Ok(content) = anyos_std::fs::read_to_string(CONF_PATH) {
-        for line in content.split('\n') {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') { continue; }
-            if let Some(val) = line.strip_prefix("enabled=") {
-                cfg.enabled = matches!(val.trim(), "yes" | "true" | "1");
-            } else if let Some(val) = line.strip_prefix("port=") {
-                if let Ok(p) = val.trim().parse::<u16>() { if p > 0 { cfg.port = p; } }
-            } else if let Some(val) = line.strip_prefix("passive_mode=") {
-                cfg.passive_mode = matches!(val.trim(), "yes" | "true" | "1");
-            } else if let Some(val) = line.strip_prefix("passive_port_min=") {
-                if let Ok(p) = val.trim().parse::<u16>() { cfg.passive_port_min = p; }
-            } else if let Some(val) = line.strip_prefix("passive_port_max=") {
-                if let Ok(p) = val.trim().parse::<u16>() { cfg.passive_port_max = p; }
-            } else if let Some(val) = line.strip_prefix("allow_anonymous=") {
-                cfg.allow_anonymous = matches!(val.trim(), "yes" | "true" | "1");
-            } else if let Some(val) = line.strip_prefix("anonymous_root=") {
-                cfg.anonymous_root = String::from(val.trim());
-            } else if let Some(val) = line.strip_prefix("max_clients=") {
-                if let Ok(v) = val.trim().parse::<u16>() { if v > 0 { cfg.max_clients = v; } }
-            } else if let Some(val) = line.strip_prefix("chroot_users=") {
-                cfg.chroot_users = matches!(val.trim(), "yes" | "true" | "1");
-            }
-        }
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_bool("config/enabled") {
+        cfg.enabled = v;
     }
-
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_i64("config/port") {
+        if v > 0 && v <= u16::MAX as i64 { cfg.port = v as u16; }
+    }
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_bool("config/passive_mode") {
+        cfg.passive_mode = v;
+    }
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_i64("config/passive_port_min") {
+        if v >= 0 && v <= u16::MAX as i64 { cfg.passive_port_min = v as u16; }
+    }
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_i64("config/passive_port_max") {
+        if v >= 0 && v <= u16::MAX as i64 { cfg.passive_port_max = v as u16; }
+    }
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_bool("config/allow_anonymous") {
+        cfg.allow_anonymous = v;
+    }
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_string("config/anonymous_root") {
+        cfg.anonymous_root = v;
+    }
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_i64("config/max_clients") {
+        if v > 0 && v <= u16::MAX as i64 { cfg.max_clients = v as u16; }
+    }
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_bool("config/chroot_users") {
+        cfg.chroot_users = v;
+    }
     cfg.shares.clear();
-    if let Ok(content) = anyos_std::fs::read_to_string(SHARES_PATH) {
-        for line in content.split('\n') {
+    if let Some(v) = FTP_SETTINGS_SCHEMA.read_string("config/shares_blob") {
+        for line in v.split('\n') {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') { continue; }
             let mut parts = line.splitn(3, ':');
@@ -120,30 +139,21 @@ fn load_conf() -> FtpConf {
             });
         }
     }
-
     cfg
 }
 
 fn save_conf(cfg: &FtpConf) -> bool {
-    let _ = anyos_std::fs::mkdir("/System/etc/ftpd");
-
-    let mut main_out = String::new();
-    main_out.push_str("# anyOS FTP Server Configuration\n");
-    main_out.push_str(if cfg.enabled { "enabled=yes\n" } else { "enabled=no\n" });
-    main_out.push_str(&format!("port={}\n", cfg.port));
-    main_out.push_str(if cfg.passive_mode { "passive_mode=yes\n" } else { "passive_mode=no\n" });
-    main_out.push_str(&format!("passive_port_min={}\n", cfg.passive_port_min));
-    main_out.push_str(&format!("passive_port_max={}\n", cfg.passive_port_max));
-    main_out.push_str(if cfg.allow_anonymous { "allow_anonymous=yes\n" } else { "allow_anonymous=no\n" });
-    main_out.push_str(&format!("anonymous_root={}\n", cfg.anonymous_root));
-    main_out.push_str(&format!("max_clients={}\n", cfg.max_clients));
-    main_out.push_str(if cfg.chroot_users { "chroot_users=yes\n" } else { "chroot_users=no\n" });
-
-    let ok_main = anyos_std::fs::write_bytes(CONF_PATH, main_out.as_bytes()).is_ok();
+    let _ = FTP_SETTINGS_SCHEMA.write_bool("config/enabled", cfg.enabled);
+    let _ = FTP_SETTINGS_SCHEMA.write_i64("config/port", cfg.port as i64);
+    let _ = FTP_SETTINGS_SCHEMA.write_bool("config/passive_mode", cfg.passive_mode);
+    let _ = FTP_SETTINGS_SCHEMA.write_i64("config/passive_port_min", cfg.passive_port_min as i64);
+    let _ = FTP_SETTINGS_SCHEMA.write_i64("config/passive_port_max", cfg.passive_port_max as i64);
+    let _ = FTP_SETTINGS_SCHEMA.write_bool("config/allow_anonymous", cfg.allow_anonymous);
+    let _ = FTP_SETTINGS_SCHEMA.write_string("config/anonymous_root", &cfg.anonymous_root);
+    let _ = FTP_SETTINGS_SCHEMA.write_i64("config/max_clients", cfg.max_clients as i64);
+    let _ = FTP_SETTINGS_SCHEMA.write_bool("config/chroot_users", cfg.chroot_users);
 
     let mut shares_out = String::new();
-    shares_out.push_str("# anyOS FTP Shares Configuration\n");
-    shares_out.push_str("# Format: username:path:permissions  (r=read, w=write, *=all users)\n");
     for share in &cfg.shares {
         shares_out.push_str(&share.user);
         shares_out.push(':');
@@ -153,9 +163,7 @@ fn save_conf(cfg: &FtpConf) -> bool {
         if share.can_write { shares_out.push('w'); }
         shares_out.push('\n');
     }
-
-    let ok_shares = anyos_std::fs::write_bytes(SHARES_PATH, shares_out.as_bytes()).is_ok();
-    ok_main && ok_shares
+    FTP_SETTINGS_SCHEMA.write_string("config/shares_blob", &shares_out).is_ok()
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -422,6 +430,7 @@ fn main() {
         return;
     }
     i18n::init();
+    let _ = FTP_SETTINGS_SCHEMA.register();
 
     let cfg = load_conf();
 

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
+libami = { path = "../../libs/libami" }
 
 [profile.dev]
 panic = "abort"

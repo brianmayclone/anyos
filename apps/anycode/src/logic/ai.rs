@@ -2,6 +2,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::format;
 use anyos_std::json::{Value, Number};
+use libconf_schema::{default_int, default_string, manifest, RegistryScope, ServiceSchema};
 
 // ════════════════════════════════════════════════════════════════
 //  AI Assistant — Vibe Coding Backend
@@ -109,7 +110,27 @@ impl CodeAction {
 //  AI Configuration
 // ════════════════════════════════════════════════════════════════
 
-const AI_SETTINGS_PATH: &str = "/Users/settings/anycode-ai.json";
+const AI_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_string("config/provider", "openai"),
+    default_string("config/api_key", ""),
+    default_string("config/model", "gpt-4o"),
+    default_int("config/max_tokens", 4096),
+    default_string("config/temperature", "0.7"),
+    default_string("config/endpoint", ""),
+];
+const AI_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const AI_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/anycode_ai",
+    RegistryScope::User,
+    1,
+    &["config"],
+    AI_DEFAULTS,
+    AI_MIGRATIONS,
+);
+
+fn ai_schema() -> ServiceSchema<'static> {
+    ServiceSchema::new("anycode", &AI_MANIFEST)
+}
 
 pub struct AiConfig {
     pub provider: AiProvider,
@@ -123,34 +144,11 @@ pub struct AiConfig {
 
 impl AiConfig {
     pub fn load() -> Self {
-        let defaults = Self::defaults();
-        let data = match anyos_std::fs::read_to_string(AI_SETTINGS_PATH) {
-            Ok(s) => s,
-            Err(_) => return defaults,
-        };
-        let val = match Value::parse(&data) {
-            Ok(v) => v,
-            Err(_) => return defaults,
-        };
-
-        let provider = match val["provider"].as_str() {
-            Some("anthropic") | Some("claude") => AiProvider::Anthropic,
-            _ => AiProvider::OpenAI,
-        };
-
-        Self {
-            provider,
-            api_key: val["api_key"].as_str().map(String::from).unwrap_or_default(),
-            model: val["model"].as_str().map(String::from)
-                .unwrap_or_else(|| String::from(provider.default_model())),
-            max_tokens: val["max_tokens"].as_i64().unwrap_or(4096) as u32,
-            temperature: match &val["temperature"] {
-                Value::Number(Number::Float(f)) => *f,
-                Value::Number(Number::Int(i)) => *i as f64,
-                _ => 0.7,
-            },
-            custom_endpoint: val["endpoint"].as_str().map(String::from).unwrap_or_default(),
+        let _ = ai_schema().register();
+        if let Some(cfg) = load_from_confd() {
+            return cfg;
         }
+        Self::defaults()
     }
 
     pub fn defaults() -> Self {
@@ -165,21 +163,18 @@ impl AiConfig {
     }
 
     pub fn save(&self) {
-        let mut obj = Value::new_object();
         let provider_str = match self.provider {
             AiProvider::OpenAI => "openai",
             AiProvider::Anthropic => "anthropic",
         };
-        obj.set("provider", Value::String(String::from(provider_str)));
-        obj.set("api_key", Value::String(self.api_key.clone()));
-        obj.set("model", Value::String(self.model.clone()));
-        obj.set("max_tokens", Value::Number(Number::Int(self.max_tokens as i64)));
-        obj.set("temperature", Value::Number(Number::Float(self.temperature)));
-        if !self.custom_endpoint.is_empty() {
-            obj.set("endpoint", Value::String(self.custom_endpoint.clone()));
-        }
-        let json = obj.to_json_string_pretty();
-        let _ = anyos_std::fs::write_bytes(AI_SETTINGS_PATH, json.as_bytes());
+        let _ = ai_schema().register();
+        let _ = ai_schema().write_string("config/provider", provider_str);
+        let _ = ai_schema().write_string("config/api_key", &self.api_key);
+        let _ = ai_schema().write_string("config/model", &self.model);
+        let _ = ai_schema().write_i64("config/max_tokens", self.max_tokens as i64);
+        let temp = format!("{}", self.temperature);
+        let _ = ai_schema().write_string("config/temperature", &temp);
+        let _ = ai_schema().write_string("config/endpoint", &self.custom_endpoint);
     }
 
     pub fn is_configured(&self) -> bool {
@@ -193,6 +188,30 @@ impl AiConfig {
             self.provider.api_url()
         }
     }
+}
+
+fn load_from_confd() -> Option<AiConfig> {
+    let provider = match ai_schema().read_string("config/provider")?.as_str() {
+        "anthropic" | "claude" => AiProvider::Anthropic,
+        _ => AiProvider::OpenAI,
+    };
+    let model = ai_schema()
+        .read_string("config/model")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| String::from(provider.default_model()));
+    let max_tokens = ai_schema().read_i64("config/max_tokens").unwrap_or(4096).max(0) as u32;
+    let temperature = ai_schema()
+        .read_string("config/temperature")
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(0.7);
+    Some(AiConfig {
+        provider,
+        api_key: ai_schema().read_string("config/api_key").unwrap_or_default(),
+        model,
+        max_tokens,
+        temperature,
+        custom_endpoint: ai_schema().read_string("config/endpoint").unwrap_or_default(),
+    })
 }
 
 // ════════════════════════════════════════════════════════════════

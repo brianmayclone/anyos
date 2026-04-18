@@ -51,6 +51,7 @@ pub fn build_frame(dst: MacAddr, src: MacAddr, ethertype: u16, payload: &[u8]) -
 
 /// Dispatch an incoming Ethernet frame to the appropriate protocol handler
 pub fn handle_frame(data: &[u8]) {
+    super::trace::record_frame(super::trace::DIR_RX, data);
     let frame = match parse(data) {
         Some(f) => f,
         None => return,
@@ -68,6 +69,7 @@ pub fn handle_frame(data: &[u8]) {
 pub fn send_frame(dst: MacAddr, ethertype: u16, payload: &[u8]) {
     let our_mac = super::config().mac;
     let frame = build_frame(dst, our_mac, ethertype, payload);
+    super::trace::record_frame(super::trace::DIR_TX, &frame);
     // Use the registered network driver (E1000, VirtIO Net, etc.)
     crate::drivers::network::transmit(&frame);
 }

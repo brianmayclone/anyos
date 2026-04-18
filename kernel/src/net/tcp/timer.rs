@@ -8,6 +8,7 @@
 use core::sync::atomic::Ordering;
 use super::tcb::*;
 use super::send::{send_segment, send_syn_segment, send_segment_v6, send_syn_segment_v6};
+use super::util::remove_slot_hash;
 use super::{TCP_CONNECTIONS, TCP_RETRANSMITS};
 use crate::net::types::{Ipv4Addr, Ipv6Addr};
 
@@ -88,6 +89,7 @@ pub fn check_retransmissions() {
 
             // Closed cleanup
             if tcb.state == TcpState::Closed {
+                remove_slot_hash(table, i);
                 table[i] = None;
                 continue;
             }
@@ -96,6 +98,7 @@ pub fn check_retransmissions() {
             if tcb.state == TcpState::SynReceived
                 && tcb.retransmit_count >= MAX_RETRANSMITS
             {
+                remove_slot_hash(table, i);
                 table[i] = None;
                 continue;
             }
@@ -118,6 +121,7 @@ pub fn check_retransmissions() {
         }
 
         if should_cleanup {
+            remove_slot_hash(table, i);
             table[i] = None;
             continue;
         }

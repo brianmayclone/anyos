@@ -222,7 +222,6 @@ fn main() {
             mining_active: false,
             mining_target: None,
             mining_progress: 0.0,
-            place_key_down: false,
             autosave_at_ms: anyos_std::sys::uptime_ms().wrapping_add(4000),
         });
     }
@@ -257,10 +256,7 @@ fn main() {
             c if c == b's' as u32 || c == b'S' as u32 => s.player.backward = true,
             c if c == b'a' as u32 || c == b'A' as u32 => s.player.left = true,
             c if c == b'd' as u32 || c == b'D' as u32 => s.player.right = true,
-            c if c == b' ' as u32 => {
-                s.mining_active = true;
-                game::reset_mining(s);
-            }
+            c if c == b' ' as u32 => s.player.jump = true,
             c if c == b'f' as u32 || c == b'F' as u32 => s.player.ascend = true,
             c if c == b'c' as u32 || c == b'C' as u32 => s.player.descend = true,
             c if c == b'g' as u32 || c == b'G' as u32 => {
@@ -279,12 +275,6 @@ fn main() {
                         save_if_needed(s);
                         s.app_mode = AppMode::MainMenu;
                         menu::refresh_menu_state(s);
-                    }
-                }
-                0x1D => {
-                    if !s.place_key_down {
-                        s.place_key_down = true;
-                        place_targeted_block(s);
                     }
                 }
                 libanyui_client::KEY_LEFT => s.player.look_left = true,
@@ -307,14 +297,10 @@ fn main() {
             c if c == b's' as u32 || c == b'S' as u32 => s.player.backward = false,
             c if c == b'a' as u32 || c == b'A' as u32 => s.player.left = false,
             c if c == b'd' as u32 || c == b'D' as u32 => s.player.right = false,
-            c if c == b' ' as u32 => {
-                s.mining_active = false;
-                game::reset_mining(s);
-            }
+            c if c == b' ' as u32 => s.player.jump = false,
             c if c == b'f' as u32 || c == b'F' as u32 => s.player.ascend = false,
             c if c == b'c' as u32 || c == b'C' as u32 => s.player.descend = false,
             _ => match ke.keycode {
-                0x1D => s.place_key_down = false,
                 libanyui_client::KEY_LEFT => s.player.look_left = false,
                 libanyui_client::KEY_RIGHT => s.player.look_right = false,
                 libanyui_client::KEY_UP => s.player.look_up = false,

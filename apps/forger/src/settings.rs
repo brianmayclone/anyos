@@ -1,5 +1,6 @@
 use alloc::string::String;
 use anyos_std::json::Value;
+use libconf_schema::{default_bool, default_string, manifest, RegistryScope, ServiceSchema};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GraphicsQuality {
@@ -22,6 +23,25 @@ pub struct GameSettings {
     pub shadow_quality: ShadowQuality,
 }
 
+const FORGER_SETTINGS_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_string("config/graphics_quality", "balanced"),
+    default_bool("config/shadows_enabled", false),
+    default_string("config/shadow_quality", "balanced"),
+];
+const FORGER_SETTINGS_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const FORGER_SETTINGS_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/forger",
+    RegistryScope::User,
+    1,
+    &["config"],
+    FORGER_SETTINGS_DEFAULTS,
+    FORGER_SETTINGS_MIGRATIONS,
+);
+
+fn schema() -> ServiceSchema<'static> {
+    ServiceSchema::new("forger", &FORGER_SETTINGS_MANIFEST)
+}
+
 impl GameSettings {
     pub fn defaults() -> Self {
         Self {
@@ -32,39 +52,20 @@ impl GameSettings {
     }
 
     pub fn load() -> Self {
-        let path = settings_path();
-        let Ok(text) = anyos_std::fs::read_to_string(&path) else {
-            let settings = Self::defaults();
-            settings.save();
+        let _ = schema().register();
+        if let Some(settings) = load_from_confd() {
             return settings;
-        };
-        let Ok(json) = Value::parse(&text) else {
-            return Self::defaults();
-        };
-
-        Self {
-            graphics_quality: match json["graphics_quality"].as_str().unwrap_or("balanced") {
-                "fast" => GraphicsQuality::Fast,
-                "fancy" => GraphicsQuality::Fancy,
-                _ => GraphicsQuality::Balanced,
-            },
-            shadows_enabled: json["shadows_enabled"].as_bool().unwrap_or(false),
-            shadow_quality: match json["shadow_quality"].as_str().unwrap_or("balanced") {
-                "soft" => ShadowQuality::Soft,
-                "crisp" => ShadowQuality::Crisp,
-                _ => ShadowQuality::Balanced,
-            },
         }
+        let settings = Self::defaults();
+        settings.save();
+        settings
     }
 
     pub fn save(&self) {
-        crate::save::mkdir_p(&crate::save::data_root());
-        let mut root = Value::new_object();
-        root.set("graphics_quality", self.graphics_quality_key().into());
-        root.set("shadows_enabled", self.shadows_enabled.into());
-        root.set("shadow_quality", self.shadow_quality_key().into());
-        let json = root.to_json_string_pretty();
-        let _ = anyos_std::fs::write_bytes(&settings_path(), json.as_bytes());
+        let _ = schema().register();
+        let _ = schema().write_string("config/graphics_quality", self.graphics_quality_key());
+        let _ = schema().write_bool("config/shadows_enabled", self.shadows_enabled);
+        let _ = schema().write_string("config/shadow_quality", self.shadow_quality_key());
     }
 
     pub fn graphics_quality_index(&self) -> u32 {
@@ -164,6 +165,21 @@ impl GameSettings {
     }
 }
 
-fn settings_path() -> String {
-    alloc::format!("{}/settings.json", crate::save::data_root())
+fn load_from_confd() -> Option<GameSettings> {
+    let graphics_quality = match schema().read_string("config/graphics_quality")?.as_str() {
+        "fast" => GraphicsQuality::Fast,
+        "fancy" => GraphicsQuality::Fancy,
+        _ => GraphicsQuality::Balanced,
+    };
+    let shadows_enabled = schema().read_bool("config/shadows_enabled").unwrap_or(false);
+    let shadow_quality = match schema().read_string("config/shadow_quality")?.as_str() {
+        "soft" => ShadowQuality::Soft,
+        "crisp" => ShadowQuality::Crisp,
+        _ => ShadowQuality::Balanced,
+    };
+    Some(GameSettings {
+        graphics_quality,
+        shadows_enabled,
+        shadow_quality,
+    })
 }

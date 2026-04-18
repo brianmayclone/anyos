@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "libdns"
+version = "0.1.0"
+dependencies = [
+ "libsyscall",
+]
+
+[[package]]
 name = "libheap"
 version = "0.1.0"
 
@@ -10,6 +17,7 @@ version = "0.1.0"
 name = "libhttp"
 version = "0.1.0"
 dependencies = [
+ "libdns",
  "libheap",
  "libsyscall",
  "libtls",

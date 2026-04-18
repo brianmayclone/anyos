@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 dynlink = { path = "../../libs/dynlink" }
+libconf = { path = "../../libs/libconf" }
 libanyui_client = { path = "../../libs/libanyui_client" }
 
 [profile.dev]

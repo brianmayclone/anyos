@@ -175,11 +175,9 @@ After the kernel hands off to `/System/init`, the init program:
 
 1. Runs CPU and memory benchmarks, publishes results via `sys:startup_info` pipe
 2. Signals `boot_ready()` (compositor transitions from splash to desktop)
-3. Parses `/System/etc/init/init.conf` line by line:
-   - `/System/bin/dhcp` -- DHCP client (foreground, waits for completion)
-   - `/System/bin/svc start-all` -- Service manager starts all configured services
+3. Launches `/System/svc start-all`
 
-The **service manager** (`svc start-all`) reads `/System/etc/svc/` for service configurations and starts each service (e.g., `logd`, `sshd`, `echoserver`) with dependency resolution.
+The **service manager** (`svc start-all`) reads `/System/etc/svc/` for service configurations and starts each service (e.g., `logd`, `sshd`, `networkd`, `dnsd`) with dependency resolution.
 
 See [services.md](services.md) for the full service system documentation.
 
@@ -702,7 +700,7 @@ Page-granular shared memory regions for zero-copy data transfer.
 
 ### fontd — Font Server (SHM-based)
 
-The **fontd** daemon (`system/fontd/`) loads TTF font files from `/System/fonts/` into SHM regions on demand. All processes that need font data request it from fontd and map the returned SHM — the font bytes exist exactly once in physical RAM.
+The **fontd** daemon (`system/daemons/fontd/`) loads TTF font files from `/System/fonts/` into SHM regions on demand. All processes that need font data request it from fontd and map the returned SHM — the font bytes exist exactly once in physical RAM.
 
 **Startup:** Compositor spawns fontd before `libfont_client::init()`, subscribes to the `"fontd"` event channel before the spawn to avoid a race, then waits for `EVT_FONTD_READY` (0x6000).
 

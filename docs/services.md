@@ -4,15 +4,18 @@ The anyOS service system provides a unified mechanism for managing background da
 
 | Component | Type | Source | Binary |
 |-----------|------|--------|--------|
-| **svc** | CLI tool | `bin/svc/` | `/System/bin/svc` |
-| **logd** | System daemon | `bin/logd/` | `/System/bin/logd` |
-| **crond** | System daemon | `bin/crond/` | `/System/bin/crond` |
-| **httpd** | System daemon | `bin/httpd/` | `/System/bin/httpd` |
-| **ftpd** | System daemon | `bin/ftpd/` | `/System/bin/ftpd` |
-| **vncd** | System daemon | `bin/vncd/` | `/System/bin/vncd` |
-| **amid** | System daemon | `system/amid/` | `/System/bin/amid` |
-| **fontd** | System daemon | `system/fontd/` | `/System/fontd` |
+| **svc** | CLI tool | `system/svc/` | `/System/svc` |
+| **ami** | CLI tool | `bin/ami/` | `/System/bin/ami` |
+| **logd** | System daemon | `system/daemons/logd/` | `/System/bin/logd` |
+| **crond** | System daemon | `system/daemons/crond/` | `/System/bin/crond` |
+| **httpd** | System daemon | `system/daemons/httpd/` | `/System/bin/httpd` |
+| **ftpd** | System daemon | `system/daemons/ftpd/` | `/System/bin/ftpd` |
+| **vncd** | System daemon | `system/daemons/vncd/` | `/System/bin/vncd` |
+| **vdagent** | System daemon | `system/daemons/vdagent/` | `/System/bin/vdagent` |
+| **amid** | System daemon | `system/daemons/amid/` | `/System/bin/amid` |
+| **fontd** | System daemon | `system/daemons/fontd/` | `/System/fontd` |
 | **Event Viewer** | GUI application | `system/eventviewer/` | `/Applications/Event Viewer.app` |
+| **AMI Console** | GUI application | `system/amiconsole/` | `/Applications/AMI Console.app` |
 
 ### Managed Services
 
@@ -26,8 +29,9 @@ The following services are configured in `/System/etc/svc/` and started at boot 
 | **httpd** | HTTP web server |
 | **ftpd** | FTP server (PASV mode, config at `/System/etc/ftpd/`) |
 | **vncd** | VNC server (remote desktop) |
-
-**Note — crond double-start:** `crond` is launched as a background process in `init.conf` (`/System/bin/crond &`) **and** has a svc config file. When `svc start-all` runs later, it detects that `crond` is already running (via thread detection) and skips it. This is harmless but redundant. To avoid confusion, either remove crond from `init.conf` or remove its svc config file.
+| **vdagent** | SPICE guest agent (clipboard / host integration) |
+| **networkd** | Network configuration daemon (DHCP/static apply, link monitoring) |
+| **dnsd** | DNS resolver daemon (cache, hosts integration, stats/reload IPC) |
 
 ### System Daemons (non-svc)
 
@@ -38,6 +42,7 @@ These daemons are started directly by the compositor, sessionhost, or init — n
 | Daemon | Binary | Description |
 |--------|--------|-------------|
 | **fontd** | `/System/fontd` | Font server — loads TTF fonts into SHM on demand, shared across all processes. Compositor waits for `EVT_FONTD_READY` (0x6000) before initializing libfont. See `docs/libfont-api.md` for protocol details. |
+| **amid** | `/System/bin/amid` | Anywhere Management Interface daemon — shared runtime state store with `LIST`/`WATCH`-style IPC. Spawned early by the kernel before the compositor so core services can register immediately. |
 
 **Compositor login services** — launched before the login screen via `compositor.conf [login]`:
 
@@ -61,13 +66,6 @@ These daemons are started directly by the compositor, sessionhost, or init — n
 | **login** | `/System/login` | Login manager (spawned by compositor at startup, destroyed after authentication) |
 | **dock** | `/System/compositor/dock` | Desktop dock (spawned after login succeeds) |
 
-**Init-launched** — started via `init.conf` before `svc start-all`:
-
-| Daemon | Binary | Description |
-|--------|--------|-------------|
-| **dhcp** | `/System/bin/dhcp` | DHCP client (run synchronously at boot) |
-| **crond** | `/System/bin/crond` | Cron job scheduler (run in background via `&`) |
-
 **Sessionhost-spawned** — launched on demand by sessionhost:
 
 | Daemon | Binary | Description |
@@ -79,7 +77,6 @@ These daemons are started directly by the compositor, sessionhost, or init — n
 
 | Daemon | Binary | Description |
 |--------|--------|-------------|
-| **amid** | `/System/bin/amid` | Anywhere Management Interface — system information database with SQL query interface. No svc config file; start manually with `/System/bin/amid &`. |
 | **desktopd** | `/System/desktopd` | Desktop shell daemon — menu bar registration and focus tracking |
 | **wifimon** | `/System/wifimon` | WiFi tray icon — macOS-style WiFi status/scanning menu in the menu bar |
 
@@ -113,11 +110,11 @@ These daemons are started directly by the compositor, sessionhost, or init — n
 
 ## Service Manager (svc)
 
-The `svc` command manages system services defined by configuration files in `/System/etc/svc/`. It detects running services by querying the kernel thread list (not PID files), making it robust against crashes and restarts.
+The `svc` command manages system services defined by configuration files in `/System/etc/svc/`. It detects running services by querying the kernel thread list (not PID files), and for AMI-aware daemons it also waits for an explicit readiness signal before considering startup successful.
 
 **Note —** `svc` calls `detach()` (syscall 314) on every spawned service. This ensures services survive `svc`'s own exit. Without detach, the kernel's cascade-kill mechanism would terminate all services when `svc start-all` returns. The `detach()` syscall sets the child's `parent_tid` to 0, making it a root process exempt from cascade-kill.
 
-**Source:** `bin/svc/src/main.rs`
+**Source:** `system/svc/src/main.rs`
 
 ### Commands
 
@@ -165,10 +162,15 @@ Each service is defined by a plain-text configuration file in `/System/etc/svc/`
 ```
 exec=<path to binary>
 args=<optional command-line arguments>
-depends=<comma-separated list of dependency service names>
+depends=<comma-separated list of hard dependency service names>
+wants=<comma-separated list of soft dependency service names>
+after=<comma-separated list of ordering-only predecessors>
+startup_timeout_ms=<optional readiness timeout via AMI>
 ```
 
 All keys are optional except `exec`. If `exec` is missing or empty, the config file is considered invalid and the service is skipped.
+
+If `startup_timeout_ms` is non-zero, `svc` waits for the daemon to publish `svc.<name>.ready=true` or `svc.<name>.state=ready` via AMI. If the daemon reports `state=failed` or the timeout expires first, startup fails and hard dependents are not started.
 
 #### Example Configurations
 
@@ -213,17 +215,65 @@ args=
 exec=/System/bin/webapp
 args=--port 8080
 depends=logd,sshd
+startup_timeout_ms=5000
 ```
 
 ### Dependencies
 
-Services can declare dependencies via the `depends=` key. When starting a service (either via `svc start` or `svc start-all`), the dependency resolver:
+Services can declare three kinds of graph edges:
 
-1. Parses the `depends=` value as a comma-separated list of service names
-2. Recursively resolves each dependency's own dependencies (depth-first)
-3. Starts any dependency that is not already running
-4. Aborts with an error if a dependency fails to start
-5. Protects against circular dependencies with a maximum chain depth of **8 levels**
+1. `depends=` — hard dependency. `svc` starts it first and aborts the current service if it cannot be started.
+2. `wants=` — soft dependency. `svc` tries to start it first, but the current service may still start if the wanted service fails.
+3. `after=` — ordering-only edge. `svc` does not auto-start the referenced service just because of `after=`, but when both are part of the start set it ensures the referenced service is ordered first.
+
+`svc start-all` builds a dependency graph across all configured services and topologically orders the start sequence. `svc start <name>` recursively walks that service's hard and soft dependencies before spawning the target service.
+
+For services with `startup_timeout_ms > 0`, dependency resolution waits for AMI readiness, not just for the thread to exist. This allows daemons such as `networkd` and `dnsd` to declare real startup dependencies.
+
+### Cycles
+
+`svc` detects circular references in the dependency graph.
+
+It does **not** fail the whole boot sequence immediately. Instead, it logs the cycle and ignores the currently encountered back-edge so the rest of the graph can still start. This is intentionally the least-destructive behavior:
+
+1. detect the cycle
+2. break only the recursive back-edge that caused the loop
+3. continue starting the remaining services
+
+This means a cycle such as `A depends=B` and `B depends=A` will still allow both daemons to come up, rather than stalling the whole service manager.
+
+### Service Lifecycle via AMI
+
+AMI-aware daemons should use `libsvc`, which is a thin lifecycle wrapper built on `libami`.
+
+`libsvc` publishes a standard namespace:
+
+- `svc.<name>.state`
+- `svc.<name>.ready`
+- `svc.<name>.error`
+- `svc.<name>.tid`
+- `svc.<name>.started_at`
+- optional health/details such as `svc.<name>.health`
+
+Typical lifecycle:
+
+1. `notify_starting()`
+2. `notify_ready()` when the service is operational
+3. `notify_failed(reason)` if startup cannot complete
+4. `notify_stopping()` during shutdown
+
+The following daemons already publish lifecycle state through `libsvc`:
+
+- `logd`
+- `crond`
+- `httpd`
+- `ftpd`
+- `vncd`
+- `vdagent`
+- `networkd`
+- `dnsd`
+
+`sshd` is still a legacy non-Rust daemon and currently remains thread-liveness based.
 
 ### Thread Detection
 
@@ -241,20 +291,7 @@ This approach is crash-safe: if a service crashes, there is no stale PID file to
 
 ### Boot Integration
 
-Services are started at boot via `init.conf`:
-
-**`/System/etc/init/init.conf`**
-```
-/System/bin/dhcp
-/System/bin/crond &
-/System/bin/svc start-all
-```
-
-The `init` program:
-1. Runs each line as a command (splitting path from arguments at the first space)
-2. Passes the full command line as `args` (including argv[0] for the program name convention)
-3. Suffix `&` runs the program in the background (init does not wait for it)
-4. Lines starting with `#` are comments
+Services are started at boot by `init`, which launches `svc start-all`.
 
 When `svc start-all` runs, it:
 1. Reads all service config files from `/System/etc/svc/`
@@ -269,7 +306,7 @@ When `svc start-all` runs, it:
 
 The `logd` daemon is a central logging service that collects messages from two sources and writes timestamped, structured log entries to disk with automatic rotation.
 
-**Source:** `bin/logd/src/main.rs`
+**Source:** `system/daemons/logd/src/main.rs`
 **Binary:** `/System/bin/logd`
 **Config:** `/System/etc/logd.conf`
 **Log output:** `/System/logs/system.log`

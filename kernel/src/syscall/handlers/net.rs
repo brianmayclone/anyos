@@ -71,22 +71,26 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
             crate::net::dns::load_hosts();
             0
         }
+        13 => {
+            // Flush the in-kernel DNS cache
+            crate::net::dns::flush_cache();
+            0
+        }
         7 => {
-            // Get interface configs. buf_ptr = output buffer, must hold N*64 bytes.
+            // Get interface configs. buf_ptr = output buffer, must hold N*128 bytes.
             // Returns number of interfaces written.
             if buf_ptr == 0 { return u32::MAX; }
-            // Assume caller provides buffer for up to 8 interfaces (512 bytes)
-            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 8 * 64) };
+            let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, 8 * 128) };
             crate::net::interfaces::serialize_configs(buf)
         }
         8 => {
             // Set interface configs and save to disk.
-            // buf_ptr points to: [count:u32, entries: count*64 bytes]
+            // buf_ptr points to: [count:u32, entries: count*128 bytes]
             if buf_ptr == 0 { return u32::MAX; }
             let count = unsafe { *(buf_ptr as *const u32) };
             if count == 0 || count > 8 { return u32::MAX; }
             let data_ptr = (buf_ptr + 4) as *const u8;
-            let data = unsafe { core::slice::from_raw_parts(data_ptr, count as usize * 64) };
+            let data = unsafe { core::slice::from_raw_parts(data_ptr, count as usize * 128) };
             crate::net::interfaces::apply_and_save(data, count)
         }
         9 => {
@@ -167,6 +171,28 @@ pub fn sys_net_config(cmd: u32, buf_ptr: u32) -> u32 {
                 }
             }
             count as u32
+        }
+        14 => {
+            crate::net::trace::set_enabled(true);
+            0
+        }
+        15 => {
+            crate::net::trace::set_enabled(false);
+            0
+        }
+        16 => {
+            crate::net::trace::clear();
+            0
+        }
+        17 => {
+            if buf_ptr == 0 { return u32::MAX; }
+            let buf = unsafe {
+                core::slice::from_raw_parts_mut(
+                    buf_ptr as *mut u8,
+                    crate::net::trace::ENTRY_SIZE * 64,
+                )
+            };
+            crate::net::trace::read_and_clear(buf)
         }
         _ => u32::MAX,
     }

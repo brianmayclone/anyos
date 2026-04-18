@@ -1,2 +1,5 @@
 exec=/System/bin/httpd
 args=
+wants=networkd,logd
+after=networkd,logd
+startup_timeout_ms=5000

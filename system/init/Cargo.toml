@@ -6,8 +6,10 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 dynlink = { path = "../../libs/dynlink" }
+libami = { path = "../../libs/libami" }
 libanyui_client = { path = "../../libs/libanyui_client" }
 libimage_client = { path = "../../libs/libimage_client" }
+libinstall = { path = "../../libs/libinstall" }
 
 [profile.dev]
 panic = "abort"

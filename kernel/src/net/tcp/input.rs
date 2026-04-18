@@ -8,7 +8,7 @@ use core::sync::atomic::Ordering;
 use super::tcb::*;
 use super::send::{send_segment, send_syn_segment, send_segment_v6, send_syn_segment_v6};
 use super::recv::accept_data_deferred;
-use super::util::{is_seq_gt, is_seq_gte, is_seq_lte, send_rst};
+use super::util::{insert_slot_hash, is_seq_gt, is_seq_gte, is_seq_lte, remove_slot_hash, send_rst};
 use super::{TCP_CONNECTIONS, TCP_SEGMENTS_RECV, TCP_RETRANSMITS};
 use crate::net::types::Ipv6Addr;
 
@@ -110,11 +110,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                                 }
                             }
                             if let Some(evict) = oldest_idx {
-                                if let Some(tcb) = &table[evict] {
-                                    super::conn_hash_remove(
-                                        tcb.local_port, tcb.remote_port, &tcb.remote_ip,
-                                    );
-                                }
+                                remove_slot_hash(table, evict);
                                 table[evict] = None;
                             }
                         }
@@ -138,6 +134,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                                     tcb.rcv_wnd_shift = OUR_WINDOW_SHIFT;
                                 }
                                 *slot = Some(tcb);
+                                insert_slot_hash(table, i);
                                 new_slot = Some(i);
                                 break;
                             }
@@ -181,6 +178,7 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                 wake_tid = tcb.waiting_tid;
                 tcb.waiting_tid = 0;
             }
+            remove_slot_hash(table, idx);
             drop(conns);
             if wake_tid != 0 {
                 crate::task::scheduler::try_wake_thread(wake_tid);
@@ -289,6 +287,10 @@ pub fn handle_tcp(pkt: &crate::net::ipv4::Ipv4Packet<'_>) {
                 TcpState::SynReceived | TcpState::Listen | TcpState::Closed => None,
             }
         };
+
+        if table[idx].as_ref().map(|tcb| tcb.state == TcpState::Closed).unwrap_or(false) {
+            remove_slot_hash(table, idx);
+        }
 
         // Collect waiting_tid — wake after lock drop
         if let Some(tcb) = table[idx].as_mut() {
@@ -618,6 +620,7 @@ pub fn handle_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) {
                 wake_tid = tcb.waiting_tid;
                 tcb.waiting_tid = 0;
             }
+            remove_slot_hash(table, idx);
             drop(conns);
             if wake_tid != 0 {
                 crate::task::scheduler::try_wake_thread(wake_tid);
@@ -649,6 +652,10 @@ pub fn handle_tcp_v6(pkt: &crate::net::ipv6::Ipv6Packet<'_>) {
                 _ => None,
             }
         };
+
+        if table[idx].as_ref().map(|tcb| tcb.state == TcpState::Closed).unwrap_or(false) {
+            remove_slot_hash(table, idx);
+        }
 
         // Collect wake TID
         if let Some(tcb) = table[idx].as_mut() {

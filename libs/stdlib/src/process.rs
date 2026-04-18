@@ -204,25 +204,33 @@ pub fn detach(child_tid: u32) -> bool {
 /// For non-app binaries, use [`spawn`] directly.
 pub fn launch_app(path: &str, args: &str) -> u32 {
     use crate::ipc;
+    crate::println!("[launch_app] start path='{}' args='{}'", path, args);
+    const CMD_LAUNCH_APP: u32 = 0x5001;
+    const EVT_LAUNCH_RESULT: u32 = 0x5002;
 
     // Open the sessionhost channel
     let chan = ipc::evt_chan_create("sessionhost");
-    let sub = ipc::evt_chan_subscribe(chan, 0);
+    let sub = ipc::evt_chan_subscribe(chan, EVT_LAUNCH_RESULT);
+    crate::println!("[launch_app] sessionhost chan={} sub={}", chan, sub);
 
     // Write "path\x1Fargs" into shared memory
     let total_len = path.len() + 1 + args.len() + 1; // +1 separator, +1 null
     let shm_size = if total_len < 512 { 512 } else { total_len as u32 };
     let shm_id = ipc::shm_create(shm_size);
     if shm_id == 0 {
+        crate::println!("[launch_app] shm_create failed");
         ipc::evt_chan_unsubscribe(chan, sub);
         return u32::MAX;
     }
+    crate::println!("[launch_app] shm_id={} size={}", shm_id, shm_size);
     let addr = ipc::shm_map(shm_id);
     if addr == 0 {
+        crate::println!("[launch_app] shm_map failed for shm_id={}", shm_id);
         ipc::shm_destroy(shm_id);
         ipc::evt_chan_unsubscribe(chan, sub);
         return u32::MAX;
     }
+    crate::println!("[launch_app] shm mapped at 0x{:x}", addr);
 
     let dst = addr as *mut u8;
     let mut pos = 0usize;
@@ -241,20 +249,25 @@ pub fn launch_app(path: &str, args: &str) -> u32 {
     unsafe { dst.add(pos).write_volatile(0); }
 
     ipc::shm_unmap(shm_id);
+    crate::println!("[launch_app] request prepared shm_id={}", shm_id);
 
     // Send CMD_LAUNCH_APP: [cmd, our_sub_id, shm_id, 0, 0]
-    const CMD_LAUNCH_APP: u32 = 0x5001;
-    const EVT_LAUNCH_RESULT: u32 = 0x5002;
     let request = [CMD_LAUNCH_APP, sub, shm_id, 0, 0];
     ipc::evt_chan_emit(chan, &request);
+    crate::println!("[launch_app] request emitted shm_id={} requester_sub={}", shm_id, sub);
 
     // Wait for response (with timeout)
     let mut evt = [0u32; 5];
     for _ in 0..600 {
         // 600 * 50ms = 30s timeout
         if ipc::evt_chan_poll(chan, sub, &mut evt) {
+            crate::println!(
+                "[launch_app] response evt={} arg1={} arg2={} arg3={} arg4={}",
+                evt[0], evt[1], evt[2], evt[3], evt[4]
+            );
             if evt[0] == EVT_LAUNCH_RESULT {
                 ipc::evt_chan_unsubscribe(chan, sub);
+                crate::println!("[launch_app] done tid={}", evt[1]);
                 return evt[1];
             }
         }
@@ -262,6 +275,7 @@ pub fn launch_app(path: &str, args: &str) -> u32 {
     }
 
     ipc::evt_chan_unsubscribe(chan, sub);
+    crate::println!("[launch_app] timeout waiting for sessionhost");
     u32::MAX
 }
 

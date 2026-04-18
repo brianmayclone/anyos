@@ -1,9 +1,10 @@
 //! Installation worker thread: executes steps from install.ini script.
 
 use anyos_std::format;
-use anyos_std::{fs, sys};
+use anyos_std::{fs, sys, String};
 use core::sync::atomic::Ordering;
 use libanyui_client as ui;
+use libinstall::{self, ApplyStats, PreflightCheck};
 
 use crate::state::*;
 use crate::script::{self, StepAction};
@@ -132,6 +133,7 @@ pub fn install_worker() {
 
     let dev_id = INSTALL_DISK_ID.load(Ordering::Acquire);
     let mode = INSTALL_MODE.load(Ordering::Acquire);
+    let operation = INSTALL_OPERATION.load(Ordering::Acquire);
 
     // Resolve disk info
     let mut buf = [0u8; 64 * 32];
@@ -155,8 +157,22 @@ pub fn install_worker() {
         return;
     }
 
-    log_raw(&format!("Target: dev={} disk={} sectors={} mode={}",
-        dev_id, disk_id, total_sectors, mode));
+    log_raw(&format!("Target: dev={} disk={} sectors={} mode={} operation={}",
+        dev_id, disk_id, total_sectors, mode, operation));
+
+    if operation == 1 {
+        if let Err(msg) = run_upgrade(dev_id, disk_id, mode) {
+            fail(&msg);
+            return;
+        }
+        set_progress(100);
+        set_phase("Upgrade complete!");
+        update_elapsed();
+        unsafe { ui::marshal_set_visible(BTN_REBOOT_ID, true); }
+        WORKER_DONE.store(true, Ordering::Release);
+        WORKER_ACTIVE.store(false, Ordering::Release);
+        return;
+    }
 
     // Load install script
     let steps = script::load_steps();
@@ -399,6 +415,81 @@ pub fn install_worker() {
     unsafe { ui::marshal_set_visible(BTN_REBOOT_ID, true); }
     WORKER_DONE.store(true, Ordering::Release);
     WORKER_ACTIVE.store(false, Ordering::Release);
+}
+
+fn run_upgrade(dev_id: u32, disk_id: u8, mode: u32) -> Result<(), String> {
+    set_step_prefix("Upgrade");
+    log_raw("--- [upgrade] Preparing target ---");
+
+    let part_id = mount_target(mode, dev_id, disk_id)
+        .ok_or_else(|| String::from("Could not mount target filesystem"))?;
+    log(&format!("  Mounted /mnt/target (dev={})", part_id));
+    open_log_file();
+    log_raw("--- anyOS Upgrade Log ---");
+
+    let existing = libinstall::detect_existing_installation("/mnt/target")
+        .ok_or_else(|| String::from("No existing anyOS installation found on target"))?;
+    log(&format!("  Existing anyOS version: {}", existing.version));
+    if existing.has_users {
+        log("  Preserving /Users data");
+    }
+
+    let list = libinstall::load_upgrade_list("/install/upgrade.json")
+        .unwrap_or_else(libinstall::default_upgrade_list);
+    log(&format!(
+        "  UpgradeList: {} -> {} ({} operations)",
+        list.from_version,
+        list.to_version,
+        list.operations.len()
+    ));
+
+    set_phase("Running safety checks");
+    let preflight = libinstall::preflight_upgrade("/mnt/target", &list);
+    if let Some(free) = preflight.available_bytes {
+        log(&format!(
+            "  Preflight: need about {} bytes, free {} bytes",
+            preflight.estimated_required_bytes, free
+        ));
+    } else {
+        log(&format!(
+            "  Preflight: need about {} bytes, free space unknown",
+            preflight.estimated_required_bytes
+        ));
+    }
+    for issue in &preflight.issues {
+        let level = match issue.level {
+            PreflightCheck::Info => "info",
+            PreflightCheck::Warning => "warning",
+            PreflightCheck::Error => "error",
+        };
+        log(&format!("  Preflight {}: {}", level, issue.message));
+    }
+    if !preflight.ok {
+        close_log_file();
+        fs::umount("/mnt/target");
+        return Err(String::from("Upgrade aborted by preflight checks"));
+    }
+
+    set_phase("Applying upgrade plan");
+    let stats = libinstall::apply_upgrade_list("/mnt/target", &list)
+        .map_err(|e| format!("Upgrade failed: {}", e))?;
+    log_upgrade_stats(stats);
+
+    log("Unmounting target filesystem");
+    close_log_file();
+    fs::umount("/mnt/target");
+    Ok(())
+}
+
+fn log_upgrade_stats(stats: ApplyStats) {
+    log(&format!(
+        "  Upgrade applied: {} files copied, {} configs merged, {} preserved, {} dirs, {} errors",
+        stats.files_copied,
+        stats.configs_merged,
+        stats.files_preserved,
+        stats.dirs_created,
+        stats.errors
+    ));
 }
 
 // ── Disk helpers ───────────────────────────────────────────────────────────

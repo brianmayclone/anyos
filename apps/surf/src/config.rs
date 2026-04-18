@@ -2,14 +2,27 @@
 // SPDX-License-Identifier: MIT
 
 //! Settings and bookmark persistence for Surf.
-//!
-//! Stores all data in a single JSON file at `/Users/surf.json`.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::json::Value;
+use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 
-const CONFIG_PATH: &str = "/Users/surf.json";
+const SURF_DIRS: &[&str] = &["config"];
+const SURF_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_string("config/homepage", ""),
+    default_string("config/bookmarks_json", "[]"),
+];
+const SURF_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const SURF_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/surf",
+    RegistryScope::User,
+    1,
+    SURF_DIRS,
+    SURF_DEFAULTS,
+    SURF_MIGRATIONS,
+);
+const SURF_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("surf", &SURF_MANIFEST);
 
 // ═══════════════════════════════════════════════════════════
 // Settings
@@ -115,41 +128,29 @@ fn bookmark_from_json(val: &Value) -> BookmarkItem {
 // ═══════════════════════════════════════════════════════════
 
 pub fn load() -> (SurfConfig, BookmarkStore) {
-    let data = match anyos_std::fs::read_to_string(CONFIG_PATH) {
-        Ok(s) => s,
-        Err(_) => return (SurfConfig::default(), BookmarkStore::new()),
-    };
-    let root = match Value::parse(&data) {
-        Ok(v) => v,
-        Err(_) => return (SurfConfig::default(), BookmarkStore::new()),
-    };
-
-    let config = SurfConfig {
-        homepage: String::from(root["homepage"].as_str().unwrap_or("")),
-    };
-
+    let _ = SURF_SCHEMA.register();
+    let homepage = SURF_SCHEMA.read_string("config/homepage").unwrap_or_default();
     let mut store = BookmarkStore::new();
-    if let Some(arr) = root["bookmarks"].as_array() {
-        for item_val in arr {
-            store.roots.push(bookmark_from_json(item_val));
+    if let Some(json) = SURF_SCHEMA.read_string("config/bookmarks_json") {
+        if let Ok(arr) = Value::parse(&json) {
+            if let Some(bookmarks) = arr.as_array() {
+                for item_val in bookmarks {
+                    store.roots.push(bookmark_from_json(item_val));
+                }
+            }
         }
     }
-
-    (config, store)
+    (SurfConfig { homepage }, store)
 }
 
 pub fn save(config: &SurfConfig, store: &BookmarkStore) {
-    let mut root = Value::new_object();
-    root.set("homepage", Value::String(config.homepage.clone()));
-
     let mut bookmarks_arr = Value::new_array();
     for item in &store.roots {
         bookmarks_arr.push(bookmark_to_json(item));
     }
-    root.set("bookmarks", bookmarks_arr);
-
-    let json = root.to_json_string_pretty();
-    let _ = anyos_std::fs::write_bytes(CONFIG_PATH, json.as_bytes());
+    let json = bookmarks_arr.to_json_string_pretty();
+    let _ = SURF_SCHEMA.write_string("config/homepage", &config.homepage);
+    let _ = SURF_SCHEMA.write_string("config/bookmarks_json", &json);
 }
 
 // ═══════════════════════════════════════════════════════════

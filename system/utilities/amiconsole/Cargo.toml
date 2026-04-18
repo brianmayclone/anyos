@@ -1,0 +1,17 @@
+[package]
+name = "amiconsole"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../../libs/stdlib" }
+dynlink = { path = "../../../libs/dynlink" }
+libami = { path = "../../../libs/libami" }
+libanyui_client = { path = "../../../libs/libanyui_client" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

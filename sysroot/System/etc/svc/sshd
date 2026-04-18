@@ -1,2 +1,4 @@
 exec=/System/bin/sshd
 args=
+wants=networkd,logd
+after=networkd,logd

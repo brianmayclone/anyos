@@ -19,8 +19,28 @@ pub const DEFAULT_FILE_ICON: &str = "/System/media/icons/default.ico";
 /// Folder icon path.
 pub const FOLDER_ICON: &str = "/System/media/icons/folder.ico";
 
-/// Mimetype configuration file path.
-const MIMETYPES_CONF: &str = "/System/mimetypes.conf";
+const MIMETYPES_DEFAULTS: &str = "\
+# anyOS mimetype associations\n\
+# Format: extension|application_path|icon_path (icon_path is optional)\n\
+txt|/Applications/Notepad.app|/System/media/icons/text.ico\n\
+conf|/Applications/Notepad.app|/System/media/icons/config.ico\n\
+log|/Applications/Notepad.app|/System/media/icons/text.ico\n\
+md|/Applications/Markdown Viewer.app|/System/media/icons/text.ico\n\
+ini|/Applications/Notepad.app|/System/media/icons/config.ico\n\
+c|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+cpp|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+rs|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+py|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+js|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+mjv|/Applications/Video Player.app|/System/media/icons/video.ico\n\
+png|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+jpg|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+jpeg|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+bmp|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+gif|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+ico|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+dlib||/System/media/icons/dll.ico\n\
+ttf||/System/media/icons/font.ico\n";
 
 /// Path for user mimetype overrides (JSON).
 const USER_MIMETYPES_PATH: &str = "/System/user_mimetypes.json";
@@ -119,6 +139,7 @@ pub fn app_icon_path(bin_path: &str) -> String {
 }
 
 /// A parsed mimetype association entry.
+#[derive(Clone)]
 pub struct MimeEntry {
     pub ext: String,
     pub app: String,
@@ -126,6 +147,7 @@ pub struct MimeEntry {
 }
 
 /// A user override: extension -> preferred application path.
+#[derive(Clone)]
 pub struct MimeOverride {
     pub ext: String,
     pub app: String,
@@ -133,19 +155,34 @@ pub struct MimeOverride {
 
 /// A collection of mimetype associations loaded from mimetypes.conf,
 /// with optional user overrides from user_mimetypes.json.
+#[derive(Clone)]
 pub struct MimeDb {
     entries: Vec<MimeEntry>,
     overrides: Vec<MimeOverride>,
 }
 
+static mut MIME_DB_CACHE: Option<MimeDb> = None;
+
 impl MimeDb {
     /// Load the mimetype database from /System/mimetypes.conf
     /// and user overrides from /System/user_mimetypes.json.
     pub fn load() -> Self {
-        Self {
+        unsafe {
+            if let Some(cache) = MIME_DB_CACHE.as_ref() {
+                return cache.clone();
+            }
+        }
+
+        let db = Self {
             entries: load_mimetypes_inner(),
             overrides: load_user_overrides(),
+        };
+
+        unsafe {
+            MIME_DB_CACHE = Some(db.clone());
         }
+
+        db
     }
 
     /// Look up a mimetype entry by file extension (e.g. "txt", "png").
@@ -189,33 +226,17 @@ impl MimeDb {
             });
         }
         save_user_overrides(&self.overrides);
+        unsafe {
+            MIME_DB_CACHE = Some(self.clone());
+        }
     }
 }
 
 fn load_mimetypes_inner() -> Vec<MimeEntry> {
-    let fd = fs::open(MIMETYPES_CONF, 0);
-    if fd == u32::MAX {
-        return Vec::new();
-    }
-
-    let mut data = Vec::new();
-    let mut buf = [0u8; 256];
-    loop {
-        let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX {
-            break;
-        }
-        data.extend_from_slice(&buf[..n as usize]);
-    }
-    fs::close(fd);
-
-    let text = match core::str::from_utf8(&data) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
+    let text = String::from(MIMETYPES_DEFAULTS);
 
     let mut entries = Vec::new();
-    for line in text.split('\n') {
+    for line in text.as_str().split('\n') {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;

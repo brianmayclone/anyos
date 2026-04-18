@@ -86,6 +86,14 @@ pub fn unbind(port: u16) {
     }
 }
 
+/// Release all UDP ports owned by a specific thread/process.
+pub fn cleanup_for_thread(tid: u32) {
+    let mut ports = UDP_PORTS.lock();
+    if let Some(map) = ports.as_mut() {
+        map.retain(|_, cfg| cfg.owner_tid != tid);
+    }
+}
+
 /// Set a per-port option. Returns true on success.
 pub fn set_opt(port: u16, opt: u32, val: u32) -> bool {
     let mut ports = UDP_PORTS.lock();
