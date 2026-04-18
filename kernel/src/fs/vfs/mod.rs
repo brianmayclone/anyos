@@ -464,7 +464,7 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
                 state.root_fs_type = Some(probe.fs_type);
                 chosen = probe.fs_type;
                 mounted = true;
-                crate::serial_verbose_println!(
+                crate::serial_println!(
                     "  Mounted {} at '{}' (LBA {}, device {})",
                     probe.name, path, lba, device_id
                 );
@@ -472,8 +472,9 @@ pub fn mount(path: &str, fs_type: FsType, device_id: u32) {
             }
         }
         if !mounted {
-            crate::serial_verbose_println!(
-                "  No FS driver matched the root partition at LBA {}", lba
+            crate::serial_println!(
+                "  No FS driver matched the root partition at LBA {} (device {})",
+                lba, device_id
             );
         }
         chosen
@@ -533,6 +534,21 @@ pub fn mount_corefs(
     let driver = crate::fs::corefs::CoreFsDriver::mount_writable(adapter)?;
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
+    // Single-slot limitation: `state.corefs_driver` is reused by both the
+    // root mount and any /mnt/corefs* sub-mounts via `FsType::CoreFs`
+    // dispatch.  If the root is already CoreFS, overwriting the slot
+    // would redirect *all* root-relative file reads to the sub-mount's
+    // device — every subsequent `/Libraries/*` read would hit the wrong
+    // partition and return NotFound.  Refuse the sub-mount until a
+    // proper `mounted_corefs: Vec<(path, driver)>` Vec exists.
+    if state.root_fs_type == Some(FsType::CoreFs) && path != "/" {
+        crate::serial_println!(
+            "  [corefs] skipping sub-mount at '{}' — root already serves CoreFS \
+             (multi-CoreFS dispatch not yet implemented)",
+            path
+        );
+        return Err(FsError::AlreadyExists);
+    }
     state.corefs_driver = Some(driver);
     state.mount_points.push(MountPoint {
         path: String::from(path),
