@@ -3,7 +3,6 @@
 //! Provides path resolution for app icons and file type icons,
 //! shared between the dock, finder, and other GUI programs.
 
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::fs;
@@ -147,6 +146,7 @@ pub fn app_icon_path(bin_path: &str) -> String {
 }
 
 /// A parsed mimetype association entry.
+#[derive(Clone)]
 pub struct MimeEntry {
     pub ext: String,
     pub app: String,
@@ -154,6 +154,7 @@ pub struct MimeEntry {
 }
 
 /// A user override: extension -> preferred application path.
+#[derive(Clone)]
 pub struct MimeOverride {
     pub ext: String,
     pub app: String,
@@ -161,19 +162,34 @@ pub struct MimeOverride {
 
 /// A collection of mimetype associations loaded from mimetypes.conf,
 /// with optional user overrides from user_mimetypes.json.
+#[derive(Clone)]
 pub struct MimeDb {
     entries: Vec<MimeEntry>,
     overrides: Vec<MimeOverride>,
 }
 
+static mut MIME_DB_CACHE: Option<MimeDb> = None;
+
 impl MimeDb {
     /// Load the mimetype database from /System/mimetypes.conf
     /// and user overrides from /System/user_mimetypes.json.
     pub fn load() -> Self {
-        Self {
+        unsafe {
+            if let Some(cache) = MIME_DB_CACHE.as_ref() {
+                return cache.clone();
+            }
+        }
+
+        let db = Self {
             entries: load_mimetypes_inner(),
             overrides: load_user_overrides(),
+        };
+
+        unsafe {
+            MIME_DB_CACHE = Some(db.clone());
         }
+
+        db
     }
 
     /// Look up a mimetype entry by file extension (e.g. "txt", "png").
@@ -217,14 +233,18 @@ impl MimeDb {
             });
         }
         save_user_overrides(&self.overrides);
+        unsafe {
+            MIME_DB_CACHE = Some(self.clone());
+        }
     }
 }
 
 fn load_mimetypes_inner() -> Vec<MimeEntry> {
-    let text = load_system_mimetypes_text();
+    let text = read_confd_string(MIMETYPES_CONF_PATH)
+        .unwrap_or_else(|| String::from(MIMETYPES_DEFAULTS));
 
     let mut entries = Vec::new();
-    for line in text.split('\n') {
+    for line in text.as_str().split('\n') {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -247,14 +267,6 @@ fn load_mimetypes_inner() -> Vec<MimeEntry> {
         }
     }
     entries
-}
-
-fn load_system_mimetypes_text() -> &'static str {
-    let dynamic = read_confd_string(MIMETYPES_CONF_PATH);
-    if let Some(text) = dynamic {
-        return Box::leak(text.into_boxed_str());
-    }
-    MIMETYPES_DEFAULTS
 }
 
 fn read_confd_string(path: &str) -> Option<String> {
