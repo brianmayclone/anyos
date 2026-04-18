@@ -323,6 +323,15 @@ impl CoreFsHandler {
             .read(inode_id)
             .map(|r| r.bytes)
             .unwrap_or_default();
+        // Update atime on read (strict semantics). A relatime/noatime
+        // mount option layer is left to higher levels.
+        let now = self.clock;
+        let _ = self.session.mutate(|state| {
+            if let Some(inode) = state.active_inodes.iter_mut().find(|i| i.id == inode_id) {
+                inode.touch_accessed_at(now);
+            }
+            Ok(())
+        });
         let start = offset as usize;
         let end = start.saturating_add(size as usize).min(data.len());
         let slice = if start >= data.len() {
@@ -937,6 +946,11 @@ impl CoreFsHandler {
                     inode.modified_at = Timestamp::from_secs(ms);
                     touched_content = true;
                 }
+                if let Some(asec) = attr.atime_secs {
+                    // atime is a pure read-touch; it does not update
+                    // mtime/ctime on its own.
+                    inode.accessed_at = Timestamp::from_secs(asec);
+                }
                 if touched_content {
                     inode.touch_modified_at(now);
                 } else if touched_meta {
@@ -1426,6 +1440,41 @@ mod tests {
         assert_eq!(new_attr.uid, 1000);
         assert_eq!(new_attr.gid, 1000);
         assert_eq!(new_attr.size, 10);
+    }
+
+    #[test]
+    fn setattr_atime_persists_on_inode() {
+        use corefs_core::domain::inode::InodeKind as IK;
+        let mut h = mk_handler();
+        let attr = match h.handle(Request::Create {
+            parent: 1,
+            name: "a.bin".to_string(),
+            mode: 0o644,
+            flags: 0,
+        }) {
+            HandlerResult::Ok(Reply::Create { attr, .. }) => attr,
+            other => panic!("unexpected {:?}", other),
+        };
+        let _ = h.handle(Request::Setattr {
+            ino: attr.ino,
+            attr: PartialAttr {
+                atime_secs: Some(1_800_000_000),
+                ..PartialAttr::default()
+            },
+        });
+        // Inspect the session directly to verify atime persisted without
+        // touching mtime/ctime.
+        let state = h.session.state();
+        let inode = state
+            .active_inodes
+            .iter()
+            .find(|i| i.path == "/a.bin")
+            .expect("inode exists");
+        assert_eq!(inode.kind, IK::File);
+        assert_eq!(inode.accessed_at.as_secs(), 1_800_000_000);
+        // mtime/ctime must be untouched (still EPOCH = 0 for this handler).
+        assert_eq!(inode.modified_at.as_secs(), 0);
+        assert_eq!(inode.changed_at.as_secs(), 0);
     }
 
     #[test]
