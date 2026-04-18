@@ -108,7 +108,11 @@ pub fn populate_volume(
         .any(|i| i.path == "/" && matches!(i.kind, InodeKind::Directory));
     if !has_root {
         let mut md = FileMetadata::default();
-        md.mode = 0o755;
+        // anyOS permission encoding (see kernel/src/fs/permissions.rs):
+        // 4 bits per class, Read=1 Modify=2 Delete=4 Create=8.
+        // 0xFFF = full access for owner/group/other, matches the
+        // DEFAULT_MODE that exFAT returns when no perms are stored.
+        md.mode = 0xFFF;
         state.active_inodes.push(Inode::new_at(
             InodeId(1),
             InodeKind::Directory,
@@ -225,7 +229,7 @@ fn walk(
             let id = InodeId(*next_id);
             *next_id += 1;
             let mut md = FileMetadata::default();
-            md.mode = 0o755;
+            md.mode = 0xFFF;
             state.active_inodes.push(Inode::new_at(
                 id, InodeKind::Directory, virt_path.clone(), md, timestamp,
             ));
@@ -248,7 +252,7 @@ fn walk(
             *next_id += 1;
 
             let mut md = FileMetadata::default();
-            md.mode = 0o644;
+            md.mode = 0xFFF;
             let mut inode = Inode::new_at(
                 id, InodeKind::File, virt_path.clone(), md, timestamp,
             );
