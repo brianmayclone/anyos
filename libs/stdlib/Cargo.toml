@@ -9,4 +9,3 @@ mmap_heap = []
 
 [dependencies]
 libheap = { path = "../libheap" }
-libsyscall = { path = "../libsyscall" }

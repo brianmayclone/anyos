@@ -147,7 +147,6 @@ name = "anyos_std"
 version = "0.1.0"
 dependencies = [
  "libheap",
- "libsyscall",
 ]
 
 [[package]]
