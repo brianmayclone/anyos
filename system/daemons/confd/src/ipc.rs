@@ -56,6 +56,7 @@ fn dispatch(db: &Database, state: &mut ConfState, tid: u32, cmd: &str) {
         "GET" | "get" => cmd_get(state, tid, rest),
         "DEL" | "del" => cmd_del(db, state, tid, rest),
         "LIST" | "list" => cmd_list(state, tid, rest),
+        "LISTCHILDREN" | "listchildren" | "LIST_CHILDREN" | "list_children" => cmd_list_children(state, tid, rest),
         "AUDIT" | "audit" => cmd_audit(db, state, tid, rest),
         "WATCH" | "watch" => cmd_watch(state, tid, rest),
         "UNWATCH" | "unwatch" => cmd_unwatch(state, tid, rest),
@@ -517,6 +518,19 @@ fn cmd_list(state: &ConfState, tid: u32, rest: &str) {
         return;
     };
     let items = state.list_prefix(&canonical_path);
+    for entry in &items {
+        send_line(tid, &format_entry_line("ITEM", scope, entry));
+    }
+    send_line(tid, "END");
+}
+
+fn cmd_list_children(state: &ConfState, tid: u32, rest: &str) {
+    let Some((scope, _logical_path, canonical_path, _actor_uid, _actor_name, _owner_uid)) =
+        parse_scope_and_path(state, tid, rest)
+    else {
+        return;
+    };
+    let items = state.list_direct_children(&canonical_path);
     for entry in &items {
         send_line(tid, &format_entry_line("ITEM", scope, entry));
     }
@@ -1013,6 +1027,9 @@ fn decode_value(type_name: &str, raw_value: &str) -> Option<ConfValue> {
 }
 
 fn escape_value(value: &str) -> String {
+    if value.is_empty() {
+        return String::from("%empty");
+    }
     let mut out = String::new();
     for ch in value.chars() {
         match ch {
@@ -1027,6 +1044,9 @@ fn escape_value(value: &str) -> String {
 }
 
 fn unescape_value(value: &str) -> String {
+    if value == "%empty" {
+        return String::new();
+    }
     let bytes = value.as_bytes();
     let mut out = String::new();
     let mut i = 0usize;

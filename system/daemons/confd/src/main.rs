@@ -224,6 +224,17 @@ impl ConfState {
         items
     }
 
+    pub fn list_direct_children(&self, canonical_prefix: &str) -> Vec<RegistryEntry> {
+        let mut items = Vec::new();
+        for entry in &self.entries {
+            if is_direct_child_path(&entry.canonical_path, canonical_prefix) {
+                items.push(entry.clone());
+            }
+        }
+        items.sort_by(|a, b| a.canonical_path.cmp(&b.canonical_path));
+        items
+    }
+
     pub fn add_watch(&mut self, tid: u32, scope: Scope, canonical_prefix: &str) -> u32 {
         let id = self.next_watch_id;
         self.next_watch_id = self.next_watch_id.wrapping_add(1).max(1);
@@ -342,4 +353,20 @@ fn path_matches_prefix(path: &str, prefix: &str) -> bool {
     }
 
     false
+}
+
+fn is_direct_child_path(path: &str, prefix: &str) -> bool {
+    if prefix.is_empty() {
+        return !path.is_empty() && !path.contains('/');
+    }
+    if path == prefix {
+        return false;
+    }
+    let Some(rest) = path.strip_prefix(prefix) else {
+        return false;
+    };
+    let Some(rest) = rest.strip_prefix('/') else {
+        return false;
+    };
+    !rest.is_empty() && !rest.contains('/')
 }

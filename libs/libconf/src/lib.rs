@@ -276,6 +276,24 @@ impl ConfClient {
         parse_list_response(&response)
     }
 
+    pub fn list_children(&mut self, scope: RegistryScope, path: &str) -> Result<Vec<ConfItem>, ConfError> {
+        self.list_children_target(ConfTarget::Scope(scope), path)
+    }
+
+    pub fn list_children_for_user(&mut self, uid: u16, path: &str) -> Result<Vec<ConfItem>, ConfError> {
+        self.list_children_target(ConfTarget::User(uid), path)
+    }
+
+    pub fn list_children_target(&mut self, target: ConfTarget, path: &str) -> Result<Vec<ConfItem>, ConfError> {
+        validate_path(path)?;
+        let mut cmd = String::from("LISTCHILDREN ");
+        cmd.push_str(&target_name(target));
+        cmd.push(' ');
+        cmd.push_str(path);
+        let response = self.request_multi_line(&cmd)?;
+        parse_list_response(&response)
+    }
+
     pub fn watch(&mut self, scope: RegistryScope, path: &str) -> Result<u32, ConfError> {
         self.watch_target(ConfTarget::Scope(scope), path)
     }
@@ -635,6 +653,9 @@ fn append_manifest_field(
 }
 
 fn escape_value(value: &str) -> String {
+    if value.is_empty() {
+        return String::from("%empty");
+    }
     let mut out = String::new();
     for ch in value.chars() {
         match ch {
@@ -651,6 +672,9 @@ fn escape_value(value: &str) -> String {
 }
 
 fn unescape_value(value: &str) -> String {
+    if value == "%empty" {
+        return String::new();
+    }
     let bytes = value.as_bytes();
     let mut out = String::new();
     let mut i = 0usize;

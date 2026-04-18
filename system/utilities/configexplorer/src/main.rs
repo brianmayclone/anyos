@@ -279,18 +279,54 @@ fn scope_from_ui() -> RegistryScope {
     }
 }
 
+fn scope_name(scope: RegistryScope) -> &'static str {
+    match scope {
+        RegistryScope::System => "SYSTEM",
+        RegistryScope::User => "USER",
+    }
+}
+
+fn error_summary(err: &ConfError) -> String {
+    match err {
+        ConfError::NotRunning => String::from("NotRunning"),
+        ConfError::PipeCreateFailed => String::from("PipeCreateFailed"),
+        ConfError::Disconnected => String::from("Disconnected"),
+        ConfError::Timeout => String::from("Timeout"),
+        ConfError::Protocol(msg) => format!("Protocol({})", msg),
+        ConfError::Remote(msg) => format!("Remote({})", msg),
+        ConfError::InvalidArgument(msg) => format!("InvalidArgument({})", msg),
+    }
+}
+
 fn reload_snapshot() {
     let a = app();
     let tc = ui::theme::colors();
+    let scope = scope_from_ui();
+
+    anyos_std::println!(
+        "configexplorer: reload scope={} dir='{}' client_present={}",
+        scope_name(scope),
+        a.current_dir.as_str(),
+        a.client.is_some()
+    );
 
     if a.client.is_none() {
         match ConfClient::connect("configexplorer") {
             Ok(client) => {
+                anyos_std::println!(
+                    "configexplorer: connect OK scope={}",
+                    scope_name(scope)
+                );
                 a.client = Some(client);
                 a.connection.set_text("Live");
                 a.connection.set_text_color(tc.success);
             }
-            Err(_) => {
+            Err(err) => {
+                anyos_std::println!(
+                    "configexplorer: connect FAILED scope={} err={}",
+                    scope_name(scope),
+                    error_summary(&err)
+                );
                 a.connection.set_text("Disconnected");
                 a.connection.set_text_color(tc.destructive);
                 a.status.set_text("confd is not reachable yet.");
@@ -304,17 +340,27 @@ fn reload_snapshot() {
 
     let result = {
         let client = a.client.as_mut().unwrap();
-        client.list(scope_from_ui(), "")
+        client.list(scope, "")
     };
 
     match result {
         Ok(items) => {
+            anyos_std::println!(
+                "configexplorer: list OK scope={} items={}",
+                scope_name(scope),
+                items.len()
+            );
             a.items = items;
             rebuild_tree(a);
             refresh_visible(a);
             restore_selection(a);
         }
         Err(err) => {
+            anyos_std::println!(
+                "configexplorer: list FAILED scope={} err={}",
+                scope_name(scope),
+                error_summary(&err)
+            );
             a.grid.set_row_count(0);
             a.tree.clear();
             a.tree_nodes.clear();
