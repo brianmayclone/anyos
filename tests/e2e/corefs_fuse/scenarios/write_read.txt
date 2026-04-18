@@ -1,0 +1,27 @@
+SCENARIO: write_read
+DESCRIPTION:
+  Round-trip test: format a blank CoreFS volume, mount it via corefsd,
+  write a file, unmount cleanly, remount, verify the file survives.
+
+PRECONDITIONS:
+  - QEMU boots AnyOS to a shell prompt.
+  - /dev/vdb is a freshly-formatted CoreFS volume (mkfs.corefs ran on host).
+  - corefsd is either autostarted by init or launched by the driver.
+
+STEPS:
+  1. corefsd  --device /dev/vdb  --mount /mnt/corefs
+  2. echo     "hello corefs" > /mnt/corefs/greeting.txt
+  3. sync                               # flush pending WAL
+  4. umount   /mnt/corefs                # clean unmount sets clean_unmount = true
+  5. corefsd  --device /dev/vdb  --mount /mnt/corefs
+  6. cat      /mnt/corefs/greeting.txt  # must print "hello corefs"
+  7. stat     /mnt/corefs/greeting.txt  # must report size == 13
+
+EXPECTED OUTPUT:
+  __E2E_PASS__ write_read
+
+FAILURE MODES (each produces __E2E_FAIL__ write_read <why>):
+  - corefsd exits non-zero at step 1 or 5            -> mount_failure
+  - step 6 prints anything other than "hello corefs" -> content_mismatch
+  - step 7 reports the wrong size                    -> size_mismatch
+  - the second mount logs an unclean-recovery banner -> recovery_triggered
