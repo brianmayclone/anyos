@@ -51,6 +51,7 @@ pub fn sys_exit(status: u32) -> u32 {
 
     // Clean up TCP connections/listeners owned by this thread
     crate::net::tcp::cleanup_for_thread(tid);
+    crate::net::udp::cleanup_for_thread(tid);
 
     // Clean up environment variables for this process
     if let Some(pd_phys) = pd {

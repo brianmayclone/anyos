@@ -1,2 +1,5 @@
 exec=/System/bin/vncd
 args=
+wants=networkd,logd
+after=networkd,logd
+startup_timeout_ms=5000

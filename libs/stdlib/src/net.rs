@@ -59,6 +59,70 @@ pub fn reload_hosts() -> u32 {
     syscall2(SYS_NET_CONFIG, 6, 0)
 }
 
+/// Flush the in-kernel DNS cache.
+pub fn flush_dns_cache() -> u32 {
+    syscall2(SYS_NET_CONFIG, 13, 0)
+}
+
+pub const NET_TRACE_ENTRY_SIZE: usize = 24;
+pub const NET_TRACE_DIR_RX: u8 = 0;
+pub const NET_TRACE_DIR_TX: u8 = 1;
+
+pub struct NetTraceEntry {
+    pub timestamp_ms: u32,
+    pub length: u16,
+    pub ethertype: u16,
+    pub src_port: u16,
+    pub dst_port: u16,
+    pub src_ip: [u8; 4],
+    pub dst_ip: [u8; 4],
+    pub direction: u8,
+    pub protocol: u8,
+    pub ttl: u8,
+    pub flags: u8,
+}
+
+impl NetTraceEntry {
+    pub fn from_bytes(buf: &[u8]) -> Option<Self> {
+        if buf.len() < NET_TRACE_ENTRY_SIZE {
+            return None;
+        }
+        Some(Self {
+            timestamp_ms: u32::from_le_bytes(buf[0..4].try_into().ok()?),
+            length: u16::from_le_bytes(buf[4..6].try_into().ok()?),
+            ethertype: u16::from_le_bytes(buf[6..8].try_into().ok()?),
+            src_port: u16::from_le_bytes(buf[8..10].try_into().ok()?),
+            dst_port: u16::from_le_bytes(buf[10..12].try_into().ok()?),
+            src_ip: buf[12..16].try_into().ok()?,
+            dst_ip: buf[16..20].try_into().ok()?,
+            direction: buf[20],
+            protocol: buf[21],
+            ttl: buf[22],
+            flags: buf[23],
+        })
+    }
+
+    pub fn is_dns(&self) -> bool {
+        (self.flags & 0x01) != 0
+    }
+}
+
+pub fn net_trace_enable() -> u32 {
+    syscall2(SYS_NET_CONFIG, 14, 0)
+}
+
+pub fn net_trace_disable() -> u32 {
+    syscall2(SYS_NET_CONFIG, 15, 0)
+}
+
+pub fn net_trace_clear() -> u32 {
+    syscall2(SYS_NET_CONFIG, 16, 0)
+}
+
+pub fn net_trace_read(buf: &mut [u8]) -> u32 {
+    syscall2(SYS_NET_CONFIG, 17, buf.as_mut_ptr() as u64)
+}
+
 /// Get interface configurations from the kernel.
 ///
 /// Each interface entry is 128 bytes:

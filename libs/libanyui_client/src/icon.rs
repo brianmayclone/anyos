@@ -30,19 +30,6 @@ pub struct Icon {
     pub height: u32,
 }
 
-// ── mimetypes.conf cache ──────────────────────────────
-
-static mut MIMETYPE_CONF: Option<Vec<u8>> = None;
-
-fn mimetype_conf() -> Option<&'static [u8]> {
-    unsafe {
-        if MIMETYPE_CONF.is_none() {
-            MIMETYPE_CONF = Some(anyos_std::fs::read_to_vec("/System/media/icons/mimetypes.conf").ok()?);
-        }
-        MIMETYPE_CONF.as_deref()
-    }
-}
-
 // ── Rendered icon cache (colored pixels) ──────────────
 //
 // Caches the final ARGB pixel output so repeated renders of the same
@@ -120,32 +107,15 @@ impl Icon {
 
     /// Load an icon for a file extension (e.g., "txt", "png", "rs").
     ///
-    /// Reads `/System/media/icons/mimetypes.conf` to map extension to icon name,
-    /// then loads the ICO file from `/System/media/icons/`.
+    /// Resolves the icon path via the central mimetype registry.
     pub fn for_filetype(ext: &str) -> Option<Self> {
         Self::for_filetype_sized(ext, 32)
     }
 
     /// Load an icon for a file extension at a specific size.
     pub fn for_filetype_sized(ext: &str, size: u32) -> Option<Self> {
-        // Read mimetypes.conf (cached in memory after first load)
-        let conf = mimetype_conf()?;
-        let icon_name = parse_mimetype_conf(conf, ext.as_bytes())?;
-
-        // Load the ICO file
-        let mut path_buf = [0u8; 128];
-        let prefix = b"/System/media/icons/";
-        let suffix = b".ico";
-        if prefix.len() + icon_name.len() + suffix.len() >= path_buf.len() {
-            return None;
-        }
-        path_buf[..prefix.len()].copy_from_slice(prefix);
-        path_buf[prefix.len()..prefix.len() + icon_name.len()].copy_from_slice(icon_name);
-        path_buf[prefix.len() + icon_name.len()..prefix.len() + icon_name.len() + suffix.len()].copy_from_slice(suffix);
-        let path_len = prefix.len() + icon_name.len() + suffix.len();
-        let path = core::str::from_utf8(&path_buf[..path_len]).ok()?;
-
-        Self::load(path, size)
+        let db = anyos_std::icons::MimeDb::load();
+        Self::load(db.icon_for_ext(ext), size)
     }
 
     /// Load an icon for an application by name (e.g., "terminal", "files").
@@ -339,42 +309,4 @@ impl Icon {
     pub fn apply_to(&self, image_view: &ImageView) {
         image_view.set_pixels(&self.pixels, self.width, self.height);
     }
-}
-
-/// Parse mimetypes.conf to find icon name for an extension.
-///
-/// Format: each line is `extension=iconname` (or lines starting with `#` are comments).
-fn parse_mimetype_conf<'a>(data: &'a [u8], ext: &[u8]) -> Option<&'a [u8]> {
-    let mut i = 0;
-    while i < data.len() {
-        // Find end of line
-        let line_start = i;
-        while i < data.len() && data[i] != b'\n' {
-            i += 1;
-        }
-        let line = &data[line_start..i];
-        if i < data.len() { i += 1; } // skip \n
-
-        // Skip empty lines and comments
-        if line.is_empty() || line[0] == b'#' {
-            continue;
-        }
-
-        // Find '=' separator
-        if let Some(eq_pos) = line.iter().position(|&b| b == b'=') {
-            let key = &line[..eq_pos];
-            let value = &line[eq_pos + 1..];
-            // Trim trailing \r
-            let value = if value.last() == Some(&b'\r') {
-                &value[..value.len() - 1]
-            } else {
-                value
-            };
-            // Case-insensitive comparison for the extension
-            if key.len() == ext.len() && key.iter().zip(ext.iter()).all(|(&a, &b)| a.to_ascii_lowercase() == b.to_ascii_lowercase()) {
-                return Some(value);
-            }
-        }
-    }
-    None
 }

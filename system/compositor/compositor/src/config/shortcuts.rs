@@ -2,7 +2,7 @@
 
 use crate::keys::*;
 
-use super::file::read_conf;
+use super::file::{read_string, register_manifest};
 
 const MAX_SHORTCUTS: usize = 32;
 
@@ -22,24 +22,17 @@ pub enum ShortcutAction {
 }
 
 pub fn read_shortcuts() -> alloc::vec::Vec<KeyboardShortcut> {
-    let text = match read_conf() {
+    register_manifest();
+    let text = match read_string("shortcuts/mappings_blob") {
         Some(t) => t,
         None => return alloc::vec::Vec::new(),
     };
 
     let mut shortcuts = alloc::vec::Vec::with_capacity(8);
-    let mut in_shortcuts = false;
 
     for line in text.split('\n') {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with('[') {
-            in_shortcuts = line == "[shortcuts]";
-            continue;
-        }
-        if !in_shortcuts {
             continue;
         }
         if shortcuts.len() >= MAX_SHORTCUTS {

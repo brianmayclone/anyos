@@ -203,8 +203,9 @@ fn cleanup_killed_children(children: &[u32]) {
                 FdKind::Tty | FdKind::None => {}
             }
         }
-        // Clean up TCP connections
+        // Clean up network state
         crate::net::tcp::cleanup_for_thread(child_tid);
+        crate::net::udp::cleanup_for_thread(child_tid);
         // Clean up audio mixer channels
         crate::drivers::audio::mixer::close_channels_for_pid(child_tid);
     }
@@ -673,6 +674,7 @@ pub fn kill_thread(tid: u32) -> u32 {
         }
     }
     crate::net::tcp::cleanup_for_thread(tid);
+    crate::net::udp::cleanup_for_thread(tid);
     // Clean up audio mixer channels
     crate::drivers::audio::mixer::close_channels_for_pid(tid);
     if let Some(pd) = pd_to_destroy {

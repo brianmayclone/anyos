@@ -314,12 +314,7 @@ fn resolve_host(host: &str) -> Option<[u8; 4]> {
     if let Some(ip) = parse_ip(host) {
         return Some(ip);
     }
-    let mut resolved = [0u8; 4];
-    if syscall::dns_resolve(host, &mut resolved) == 0 {
-        Some(resolved)
-    } else {
-        None
-    }
+    libdns::resolve_ipv4(host)
 }
 
 // ── Data transport ──────────────────────────────────────────────────────────

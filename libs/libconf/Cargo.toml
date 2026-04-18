@@ -1,0 +1,16 @@
+[package]
+name = "libconf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../stdlib" }
+libsyscall = { path = "../libsyscall" }
+
+[features]
+default = []
+host = []
+
+[lib]
+name = "libconf"
+path = "src/lib.rs"

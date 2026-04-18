@@ -45,12 +45,18 @@ pub const SYS_DLL_LOAD: u32 = 80;
 
 // Networking
 pub const SYS_NET_DNS: u32 = 43;
+pub const SYS_NET_CONFIG: u32 = 40;
 pub const SYS_TCP_CONNECT: u32 = 100;
 pub const SYS_TCP_SEND: u32 = 101;
 pub const SYS_TCP_RECV: u32 = 102;
 pub const SYS_TCP_CLOSE: u32 = 103;
 pub const SYS_TCP_STATUS: u32 = 104;
 pub const SYS_TCP_RECV_AVAILABLE: u32 = 130;
+pub const SYS_PIPE_CREATE: u32 = 45;
+pub const SYS_PIPE_READ: u32 = 46;
+pub const SYS_PIPE_CLOSE: u32 = 47;
+pub const SYS_PIPE_WRITE: u32 = 48;
+pub const SYS_PIPE_OPEN: u32 = 49;
 
 // Display / GPU
 pub const SYS_SCREEN_SIZE: u32 = 72;

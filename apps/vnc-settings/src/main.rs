@@ -1,8 +1,5 @@
 //! VNC Settings — anyOS GUI for configuring the vncd daemon.
 //!
-//! Reads and writes `/System/etc/vncd.conf`, then signals the running daemon
-//! via the "vncd" named pipe so it reloads without restarting.
-//!
 //! # Layout
 //! ```
 //! ┌─ VNC Settings ──────────────────────────────────────────┐
@@ -41,15 +38,33 @@ anyos_std::entry!(main);
 
 use anyos_std::{ipc, println, String, Vec, format, i18n};
 use anyos_std::users;
+use libconf_schema::{default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema};
 use libanyui_client as ui;
 use ui::ColumnDef;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const CONF_PATH: &str = "/System/etc/vncd.conf";
 const VNCD_PIPE: &str = "vncd";
 const WIN_W: u32 = 440;
 const WIN_H: u32 = 520;
+const VNC_SETTINGS_DIRS: &[&str] = &["config"];
+const VNC_SETTINGS_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_bool("config/enabled", false),
+    default_int("config/port", 5900),
+    default_bool("config/allow_root", false),
+    default_string("config/password", "anyos"),
+    default_string("config/allowed_users_csv", ""),
+];
+const VNC_SETTINGS_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const VNC_SETTINGS_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "services/vncd",
+    RegistryScope::System,
+    1,
+    VNC_SETTINGS_DIRS,
+    VNC_SETTINGS_DEFAULTS,
+    VNC_SETTINGS_MIGRATIONS,
+);
+const VNC_SETTINGS_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("vnc-settings", &VNC_SETTINGS_MANIFEST);
 
 // ── Config model ──────────────────────────────────────────────────────────────
 
@@ -77,31 +92,25 @@ impl VncConf {
 
 fn load_conf() -> VncConf {
     let mut cfg = VncConf::default_conf();
-    let content = match anyos_std::fs::read_to_string(CONF_PATH) {
-        Ok(s) => s,
-        Err(_) => return cfg,
-    };
-    for line in content.split('\n') {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
+    if let Some(v) = VNC_SETTINGS_SCHEMA.read_bool("config/enabled") {
+        cfg.enabled = v;
+    }
+    if let Some(port) = VNC_SETTINGS_SCHEMA.read_i64("config/port") {
+        if port > 0 && port <= u16::MAX as i64 {
+            cfg.port = port as u16;
         }
-        if let Some(val) = line.strip_prefix("enabled=") {
-            cfg.enabled = matches!(val.trim(), "yes" | "true" | "1");
-        } else if let Some(val) = line.strip_prefix("port=") {
-            if let Ok(p) = val.trim().parse::<u16>() {
-                if p > 0 { cfg.port = p; }
-            }
-        } else if let Some(val) = line.strip_prefix("allow_root=") {
-            cfg.allow_root = matches!(val.trim(), "yes" | "true" | "1");
-        } else if let Some(val) = line.strip_prefix("password=") {
-            cfg.password = String::from(val.trim());
-        } else if let Some(val) = line.strip_prefix("allowed_users=") {
-            for user in val.split(',') {
-                let u = user.trim();
-                if !u.is_empty() {
-                    cfg.allowed_users.push(String::from(u));
-                }
+    }
+    if let Some(v) = VNC_SETTINGS_SCHEMA.read_bool("config/allow_root") {
+        cfg.allow_root = v;
+    }
+    if let Some(v) = VNC_SETTINGS_SCHEMA.read_string("config/password") {
+        cfg.password = v;
+    }
+    if let Some(v) = VNC_SETTINGS_SCHEMA.read_string("config/allowed_users_csv") {
+        for user in v.split(',') {
+            let u = user.trim();
+            if !u.is_empty() {
+                cfg.allowed_users.push(String::from(u));
             }
         }
     }
@@ -109,24 +118,16 @@ fn load_conf() -> VncConf {
 }
 
 fn save_conf(cfg: &VncConf) {
-    let mut out = String::new();
-    out.push_str("# anyOS VNC Server Configuration\n");
-    out.push_str(if cfg.enabled { "enabled=yes\n" } else { "enabled=no\n" });
-    out.push_str(&format!("port={}\n", cfg.port));
-    out.push_str(if cfg.allow_root { "allow_root=yes\n" } else { "allow_root=no\n" });
-    out.push_str("allowed_users=");
+    let _ = VNC_SETTINGS_SCHEMA.write_bool("config/enabled", cfg.enabled);
+    let _ = VNC_SETTINGS_SCHEMA.write_i64("config/port", cfg.port as i64);
+    let _ = VNC_SETTINGS_SCHEMA.write_bool("config/allow_root", cfg.allow_root);
+    let _ = VNC_SETTINGS_SCHEMA.write_string("config/password", &cfg.password);
+    let mut users_csv = String::new();
     for (i, u) in cfg.allowed_users.iter().enumerate() {
-        if i > 0 { out.push(','); }
-        out.push_str(u);
+        if i > 0 { users_csv.push(','); }
+        users_csv.push_str(u);
     }
-    out.push('\n');
-    out.push_str(&format!("password={}\n", cfg.password));
-
-    let fd = anyos_std::fs::open(CONF_PATH, anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC);
-    if fd != u32::MAX {
-        anyos_std::fs::write(fd, out.as_bytes());
-        anyos_std::fs::close(fd);
-    }
+    let _ = VNC_SETTINGS_SCHEMA.write_string("config/allowed_users_csv", &users_csv);
 }
 
 /// Return `true` if `username` exists in the local user database.
@@ -311,6 +312,7 @@ fn main() {
         return;
     }
     i18n::init();
+    let _ = VNC_SETTINGS_SCHEMA.register();
 
     let cfg = load_conf();
 

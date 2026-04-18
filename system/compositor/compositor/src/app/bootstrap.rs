@@ -1,5 +1,6 @@
 //! Compositor startup and bootstrapping.
 
+use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use anyos_std::env;
@@ -9,6 +10,7 @@ use anyos_std::println;
 use anyos_std::process;
 use anyos_std::sys;
 use anyos_std::Vec;
+use libami::{AmiClient, AmiValue};
 
 use crate::config;
 use crate::desktop;
@@ -68,6 +70,26 @@ fn spawn_init_waiter(init_tid: u32) {
     );
 }
 
+fn register_with_ami(width: u32, height: u32, setup_mode: bool) {
+    for _ in 0..100 {
+        match AmiClient::connect("compositor") {
+            Ok(mut ami) => {
+                let _ = ami.set("compositor.status", AmiValue::String(String::from("starting")));
+                let _ = ami.set("compositor.framebuffer.width", AmiValue::Int(width as i64));
+                let _ = ami.set("compositor.framebuffer.height", AmiValue::Int(height as i64));
+                let _ = ami.set("compositor.setup_mode", AmiValue::Bool(setup_mode));
+                let _ = ami.set("compositor.status", AmiValue::String(String::from("ready")));
+                println!("compositor: registered with AMID");
+                return;
+            }
+            Err(_) => {
+                process::sleep(20);
+            }
+        }
+    }
+    println!("compositor: WARNING — AMID not reachable during bootstrap");
+}
+
 pub fn is_init_done() -> bool {
     INIT_DONE.load(Ordering::Acquire)
 }
@@ -115,6 +137,8 @@ pub fn run() {
     let width = fb_info.width;
     let height = fb_info.height;
     let fb_ptr = fb_info.fb_addr as *mut u32;
+
+    register_with_ami(width, height, setup_mode);
 
     // Start fontd (font server) — must be running before libfont_client::init()
     // so that font data is served from shared memory instead of each process

@@ -1,2 +1,3 @@
 exec=/System/bin/logd
 args=
+startup_timeout_ms=3000

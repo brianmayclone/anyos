@@ -1,0 +1,9 @@
+[package]
+name = "libinstall"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../stdlib" }
+libzip_client = { path = "../libzip_client" }
+

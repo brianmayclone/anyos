@@ -5,13 +5,14 @@ edition = "2021"
 
 [dependencies]
 anyos_std = { path = "../stdlib" }
+libdns = { path = "../libdns" }
 libanyui_client = { path = "../libanyui_client" }
 libfont_client = { path = "../libfont_client" }
 libjs = { path = "../libjs" }
 
 [features]
 debug_surf = []
-host = ["anyos_std/host", "libanyui_client/host", "libfont_client/host", "libjs/host"]
+host = ["anyos_std/host", "libanyui_client/host", "libfont_client/host", "libjs/host", "libdns/host"]
 
 [lib]
 name = "libwebview"

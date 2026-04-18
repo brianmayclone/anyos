@@ -3,16 +3,16 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::fs;
 use anyos_std::process;
 use anyos_std::println;
 use anyos_std::{String, Vec, format, vec, i18n};
+use libconf::{ConfClient, ConfValue, NodeKind, RegistryScope};
 use libanyui_client as ui;
 use ui::ColumnDef;
 
 // ─── Constants ──────────────────────────────────────────────────────
 
-const SITES_DIR: &str = "/System/etc/httpd/sites";
+const SITES_ROOT: &str = "services/httpd/sites";
 const IPC_PIPE_NAME: &str = "httpd";
 const WIN_W: u32 = 960;
 const WIN_H: u32 = 640;
@@ -85,66 +85,78 @@ anyos_std::global_app_state!(AppState);
 
 fn load_sites() -> Vec<SiteConfig> {
     let mut sites = Vec::new();
-    let mut dir_buf = [0u8; 4096];
-    let n = fs::readdir(SITES_DIR, &mut dir_buf);
-    if n == u32::MAX {
+    let Ok(mut client) = ConfClient::connect("webmanager") else {
         return sites;
-    }
+    };
+    let Ok(items) = client.list(RegistryScope::System, SITES_ROOT) else {
+        return sites;
+    };
 
-    let mut off = 0usize;
-    for _ in 0..n as usize {
-        if off + 64 > dir_buf.len() {
-            break;
-        }
-        let entry_type = dir_buf[off];
-        let name_len = dir_buf[off + 1] as usize;
-        if name_len == 0 || off + 8 + name_len > dir_buf.len() {
-            off += 64;
+    for item in items {
+        if item.kind != NodeKind::Directory {
             continue;
         }
-        let name_bytes = &dir_buf[off + 8..off + 8 + name_len];
-
-        if entry_type == 0 {
-            if let Ok(filename) = core::str::from_utf8(name_bytes) {
-                if !filename.starts_with('.') {
-                    let path = format!("{}/{}", SITES_DIR, filename);
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Some(site) = parse_site_file(&content, filename) {
-                            sites.push(site);
-                        }
-                    }
-                }
-            }
+        let Some(filename) = item.path.rsplit('/').next() else {
+            continue;
+        };
+        if filename.starts_with('.') {
+            continue;
         }
-        off += 64;
+        if let Some(site) = load_site_from_registry(&mut client, filename) {
+            sites.push(site);
+        }
     }
     sites
 }
 
-fn parse_site_file(content: &str, filename: &str) -> Option<SiteConfig> {
-    let mut site = SiteConfig::new_default(filename);
+fn conf_string(client: &mut ConfClient, path: &str) -> Option<String> {
+    match client.get(RegistryScope::System, path).ok()?.value {
+        Some(ConfValue::String(value)) => Some(value),
+        Some(ConfValue::Int(value)) => Some(format!("{}", value)),
+        Some(ConfValue::Bool(value)) => Some(if value { String::from("true") } else { String::from("false") }),
+        None => None,
+    }
+}
 
-    for line in content.split('\n') {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some(val) = line.strip_prefix("name=") {
-            site.name = String::from(val.trim());
-        } else if let Some(val) = line.strip_prefix("port=") {
-            site.port = parse_u16(val.trim()).unwrap_or(80);
-        } else if let Some(val) = line.strip_prefix("ssl=") {
-            site.ssl = val.trim() == "true";
-        } else if let Some(val) = line.strip_prefix("ssl_port=") {
-            site.ssl_port = parse_u16(val.trim()).unwrap_or(443);
-        } else if let Some(val) = line.strip_prefix("root=") {
-            site.root = String::from(val.trim());
-        } else if let Some(val) = line.strip_prefix("index=") {
-            site.index = String::from(val.trim());
-        } else if let Some(val) = line.strip_prefix("enabled=") {
-            site.enabled = val.trim() == "true";
-        } else if let Some(val) = line.strip_prefix("rewrite=") {
-            let val = val.trim();
+fn conf_bool(client: &mut ConfClient, path: &str) -> Option<bool> {
+    match client.get(RegistryScope::System, path).ok()?.value {
+        Some(ConfValue::Bool(value)) => Some(value),
+        _ => None,
+    }
+}
+
+fn load_site_from_registry(client: &mut ConfClient, filename: &str) -> Option<SiteConfig> {
+    let mut site = SiteConfig::new_default(filename);
+    let base = format!("{}/{}", SITES_ROOT, filename);
+
+    if let Some(value) = conf_string(client, &format!("{}/name", base)) {
+        site.name = value;
+    }
+    if let Some(value) = conf_string(client, &format!("{}/root", base)) {
+        site.root = value;
+    }
+    if let Some(value) = conf_string(client, &format!("{}/index_csv", base)) {
+        site.index = value;
+    }
+    if let Some(value) = conf_string(client, &format!("{}/port", base)) {
+        site.port = parse_u16(&value).unwrap_or(80);
+    }
+    if let Some(value) = conf_bool(client, &format!("{}/enabled", base)) {
+        site.enabled = value;
+    }
+    if let Some(value) = conf_bool(client, &format!("{}/ssl", base)) {
+        site.ssl = value;
+    }
+    if let Some(value) = conf_string(client, &format!("{}/ssl_port", base)) {
+        site.ssl_port = parse_u16(&value).unwrap_or(443);
+    }
+    if let Some(value) = conf_string(client, &format!("{}/rewrites_blob", base)) {
+        for line in value.split('\n') {
+            let line = line.trim();
+            if line.is_empty() || !line.starts_with("rewrite=") {
+                continue;
+            }
+            let val = line.trim_start_matches("rewrite=").trim();
             if let Some(space) = val.find(' ') {
                 site.rewrites.push(RewriteRule {
                     pattern: String::from(val[..space].trim()),
@@ -161,25 +173,36 @@ fn parse_site_file(content: &str, filename: &str) -> Option<SiteConfig> {
 }
 
 fn save_site(site: &SiteConfig) {
-    let mut content = String::new();
-    content.push_str(&format!("name={}\n", site.name));
-    content.push_str(&format!("port={}\n", site.port));
-    content.push_str(&format!("ssl={}\n", if site.ssl { "true" } else { "false" }));
-    content.push_str(&format!("ssl_port={}\n", site.ssl_port));
-    content.push_str(&format!("root={}\n", site.root));
-    content.push_str(&format!("index={}\n", site.index));
-    content.push_str(&format!("enabled={}\n", if site.enabled { "true" } else { "false" }));
-    for rw in &site.rewrites {
-        content.push_str(&format!("rewrite={} {}\n", rw.pattern, rw.target));
-    }
+    let Ok(mut client) = ConfClient::connect("webmanager") else {
+        return;
+    };
+    let base = format!("{}/{}", SITES_ROOT, site.filename);
+    let _ = client.mkdir(RegistryScope::System, SITES_ROOT);
+    let _ = client.mkdir(RegistryScope::System, &base);
+    let _ = client.set(RegistryScope::System, &format!("{}/name", base), ConfValue::String(site.name.clone()));
+    let _ = client.set(RegistryScope::System, &format!("{}/port", base), ConfValue::Int(site.port as i64));
+    let _ = client.set(RegistryScope::System, &format!("{}/ssl", base), ConfValue::Bool(site.ssl));
+    let _ = client.set(RegistryScope::System, &format!("{}/ssl_port", base), ConfValue::Int(site.ssl_port as i64));
+    let _ = client.set(RegistryScope::System, &format!("{}/root", base), ConfValue::String(site.root.clone()));
+    let _ = client.set(RegistryScope::System, &format!("{}/index_csv", base), ConfValue::String(site.index.clone()));
+    let _ = client.set(RegistryScope::System, &format!("{}/enabled", base), ConfValue::Bool(site.enabled));
 
-    let path = format!("{}/{}", SITES_DIR, site.filename);
-    let _ = fs::write_bytes(&path, content.as_bytes());
+    let mut rewrites_blob = String::new();
+    for rw in &site.rewrites {
+        rewrites_blob.push_str(&format!("rewrite={} {}\n", rw.pattern, rw.target));
+    }
+    let _ = client.set(
+        RegistryScope::System,
+        &format!("{}/rewrites_blob", base),
+        ConfValue::String(rewrites_blob),
+    );
 }
 
 fn delete_site_file(filename: &str) {
-    let path = format!("{}/{}", SITES_DIR, filename);
-    fs::unlink(&path);
+    let Ok(mut client) = ConfClient::connect("webmanager") else {
+        return;
+    };
+    let _ = client.del(RegistryScope::System, &format!("{}/{}", SITES_ROOT, filename));
 }
 
 // ─── Service Control ────────────────────────────────────────────────
@@ -379,14 +402,9 @@ fn generate_unique_filename(sites: &[SiteConfig]) -> String {
     let mut num = 1u32;
     loop {
         let name = format!("site{}", num);
-        let path = format!("{}/{}", SITES_DIR, name);
-        let mut stat = [0u32; 7];
-        if fs::stat(&path, &mut stat) != 0 {
-            // Also check in-memory list
-            let exists = sites.iter().any(|s| s.filename == name);
-            if !exists {
-                return name;
-            }
+        let exists = sites.iter().any(|s| s.filename == name);
+        if !exists {
+            return name;
         }
         num += 1;
         if num > 999 {
@@ -403,9 +421,6 @@ fn main() {
         return;
     }
     i18n::init();
-
-    // Ensure config directory exists
-    fs::mkdir(SITES_DIR);
 
     // ── Main window ──
     let win = ui::Window::new(i18n::t("Web Manager"), -1, -1, WIN_W, WIN_H);

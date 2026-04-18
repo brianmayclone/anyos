@@ -10,9 +10,10 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use anyos_std::{fs, process, crypto};
 use anyos_std::json::Value;
+use libinstall;
 
 use libanyui_client as ui;
-use ui::{ColumnDef, Widget, DOCK_TOP, DOCK_BOTTOM, DOCK_FILL, ALIGN_RIGHT};
+use ui::{ColumnDef, DOCK_TOP, DOCK_BOTTOM, DOCK_FILL, ALIGN_RIGHT};
 
 anyos_std::entry!(main);
 
@@ -438,8 +439,13 @@ fn current_system_version() -> String {
     if let Some(m) = parse_manifest(MANIFEST_LOCAL) {
         return m.version;
     }
-    // Fallback: compile-time version
-    String::from(env!("ANYOS_VERSION"))
+    if let Ok(version) = fs::read_to_string("/VERSION") {
+        let trimmed = version.trim();
+        if !trimmed.is_empty() {
+            return String::from(trimmed);
+        }
+    }
+    String::from("0.4.0")
 }
 
 // ── Worker: download index + manifest ────────────────────────────────────────
@@ -581,51 +587,23 @@ fn worker_upgrade_all() {
                 }
             }
 
-            // Extract
-            if let Some(reader) = libzip_client::TarReader::open(&cache_path) {
-                let count = reader.entry_count();
-                let mut prefix: Option<String> = None;
-                for i in 0..count {
-                    let name = reader.entry_name(i);
-                    if name.ends_with("/pkg.json") {
-                        if let Some(slash) = name.rfind('/') {
-                            prefix = Some(format!("{}/files/", &name[..slash]));
-                        }
-                        break;
-                    }
+            // Extract via shared install library
+            if let Ok(result) = libinstall::install_package_archive(&cache_path, "/") {
+                let new_files = result.files;
+                if let Some(inst) = installed_db.iter_mut().find(|p| p.name == item.name) {
+                    inst.version = String::from(&item.new_ver);
+                    inst.files = new_files;
+                } else {
+                    installed_db.push(InstalledPkg {
+                        name: String::from(&item.name),
+                        version: String::from(&item.new_ver),
+                        files: new_files,
+                        pkg_type: String::from(&item.pkg_type),
+                        auto_dep: false,
+                    });
                 }
-                if let Some(pfx) = prefix {
-                    let mut new_files: Vec<String> = Vec::new();
-                    for i in 0..count {
-                        let name = reader.entry_name(i);
-                        if !name.starts_with(&pfx) { continue; }
-                        let rel = &name[pfx.len()..];
-                        if rel.is_empty() { continue; }
-                        let target = format!("/{}", rel);
-                        if reader.entry_is_dir(i) {
-                            fs::mkdir(&target);
-                        } else {
-                            ensure_parent_dirs(&target);
-                            if reader.extract_to_file(i, &target) {
-                                new_files.push(target);
-                            }
-                        }
-                    }
-                    if let Some(inst) = installed_db.iter_mut().find(|p| p.name == item.name) {
-                        inst.version = String::from(&item.new_ver);
-                        inst.files = new_files;
-                    } else {
-                        installed_db.push(InstalledPkg {
-                            name: String::from(&item.name),
-                            version: String::from(&item.new_ver),
-                            files: new_files,
-                            pkg_type: String::from(&item.pkg_type),
-                            auto_dep: false,
-                        });
-                    }
-                    if item.pkg_type == "system" {
-                        WORKER_NEEDS_REBOOT.store(true, Ordering::SeqCst);
-                    }
+                if item.pkg_type == "system" {
+                    WORKER_NEEDS_REBOOT.store(true, Ordering::SeqCst);
                 }
             }
 

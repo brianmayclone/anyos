@@ -6,7 +6,7 @@
 use core::sync::atomic::Ordering;
 use super::tcb::*;
 use super::send::{send_segment, send_syn_segment, send_segment_v6, send_syn_segment_v6, send_segment_auto};
-use super::util::alloc_ephemeral_port;
+use super::util::{alloc_ephemeral_port, insert_slot_hash, remove_slot_hash};
 use super::{TCP_CONNECTIONS, TCP_ACTIVE_OPENS, TCP_PASSIVE_OPENS};
 use crate::net::types::{Ipv4Addr, Ipv6Addr};
 
@@ -32,6 +32,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
                 tcb.last_send_tick = crate::arch::hal::timer_current_ticks();
                 tcb.owner_tid = tid;
                 *slot = Some(tcb);
+                insert_slot_hash(table, i);
                 found = Some(i);
                 break;
             }
@@ -87,6 +88,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
                     _ => {}
                 }
                 if tcb.reset_received {
+                    remove_slot_hash(table, slot_id);
                     table[slot_id] = None;
                     return u32::MAX;
                 }
@@ -94,6 +96,7 @@ pub fn connect(remote_ip: Ipv4Addr, remote_port: u16, timeout_ticks: u32) -> u32
                 let now = crate::arch::hal::timer_current_ticks();
                 if now.wrapping_sub(start) >= timeout_ticks {
                     crate::serial_verbose_println!("TCP: connect timeout");
+                    remove_slot_hash(table, slot_id);
                     table[slot_id] = None;
                     return u32::MAX;
                 }
@@ -174,6 +177,7 @@ pub fn connect_v6(remote_ip: Ipv6Addr, remote_port: u16, timeout_ticks: u32) -> 
         if now.wrapping_sub(start) >= timeout_ticks {
             let mut conns = TCP_CONNECTIONS.lock();
             if let Some(table) = conns.as_mut() {
+                remove_slot_hash(table, slot_id as usize);
                 table[slot_id as usize] = None;
             }
             return u32::MAX;
@@ -336,10 +340,12 @@ pub fn close_listener(socket_id: u32) -> u32 {
             tcb.parent_listener == Some(id as u16) && !tcb.accepted
         }).unwrap_or(false);
         if is_pending {
+            remove_slot_hash(table, i);
             table[i] = None;
         }
     }
 
+    remove_slot_hash(table, id);
     table[id] = None;
     crate::serial_verbose_println!("TCP: listener socket {} closed", id);
     0
@@ -397,10 +403,12 @@ pub fn close(socket_id: u32) -> u32 {
                 }
             }
             TcpState::Closed => {
+                remove_slot_hash(table, id);
                 table[id] = None;
                 return 0;
             }
             _ => {
+                remove_slot_hash(table, id);
                 table[id] = None;
                 return 0;
             }
@@ -431,6 +439,7 @@ pub fn close(socket_id: u32) -> u32 {
                 match tcb.state {
                     TcpState::Closed | TcpState::TimeWait => {
                         if tcb.state == TcpState::Closed {
+                            remove_slot_hash(table, id);
                             table[id] = None;
                         }
                         return 0;
@@ -438,6 +447,7 @@ pub fn close(socket_id: u32) -> u32 {
                     _ => {}
                 }
                 if tcb.reset_received {
+                    remove_slot_hash(table, id);
                     table[id] = None;
                     return 0;
                 }
@@ -468,6 +478,7 @@ pub fn close(socket_id: u32) -> u32 {
                                     tcb.snd_nxt, tcb.rcv_nxt)
                     }
                 });
+                remove_slot_hash(table, id);
                 table[id] = None;
                 info
             };

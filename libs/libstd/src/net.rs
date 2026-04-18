@@ -190,7 +190,7 @@ impl ToSocketAddrs for (&str, u16) {
         // DNS resolve
         let mut result = [0u8; 4];
         let ret = anyos_std::net::dns(host, &mut result);
-        if ret == u32::MAX || ret == 0 {
+        if ret != 0 {
             return Err(io::Error::new(io::ErrorKind::Other, "DNS resolution failed"));
         }
         let ip = Ipv4Addr::new(result[0], result[1], result[2], result[3]);

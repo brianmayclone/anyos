@@ -12,6 +12,7 @@ pub static WORKER_ERROR: AtomicBool = AtomicBool::new(false);
 pub static WORKER_PROGRESS: AtomicU32 = AtomicU32::new(0);
 pub static INSTALL_DISK_ID: AtomicU32 = AtomicU32::new(u32::MAX);
 pub static INSTALL_MODE: AtomicU32 = AtomicU32::new(0); // 0=whole disk, 1=existing partition
+pub static INSTALL_OPERATION: AtomicU32 = AtomicU32::new(0); // 0=fresh install, 1=upgrade
 
 // Marshal IDs for cross-thread UI updates
 pub static mut PROGRESS_BAR_ID: u32 = 0;
@@ -55,6 +56,8 @@ pub struct DiskEntry {
     pub partition_count: u32,
     pub label: String,
     pub part_type_id: u8,
+    pub existing_os: Option<String>,
+    pub upgrade_candidate: bool,
 }
 
 // ── App state singleton ────────────────────────────────────────────────────

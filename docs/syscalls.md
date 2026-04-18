@@ -125,7 +125,7 @@ Used by 32-bit compatibility mode (libc, TCC-compiled programs).
 
 | # | Name | Args | Return | Description |
 |---|------|------|--------|-------------|
-| 40 | `net_config` | cmd, buf_ptr | status | cmd: 0=get, 1=set, 2=disable, 3=enable, 4=query_enabled, 5=query_available. Buffer: 24 bytes [ip:4, mask:4, gw:4, dns:4, mac:6, link:1, pad:1] |
+| 40 | `net_config` | cmd, buf_ptr | status | cmd: 0=get, 1=set, 2=disable, 3=enable, 4=query_enabled, 5=query_available, 6=reload_hosts, 13=flush_dns_cache. Buffer: 24 bytes [ip:4, mask:4, gw:4, dns:4, mac:6, link:1, pad:1] |
 | 41 | `net_ping` | ip_ptr, seq, timeout_ticks | rtt_ticks or 0xFFFFFFFF | ICMP echo request; returns round-trip time in PIT ticks |
 | 42 | `net_dhcp` | buf_ptr | 0 or error | DHCP discovery and auto-configuration |
 | 43 | `net_dns` | hostname_ptr, result_ptr | 0 or error | DNS name resolution; writes 4-byte IPv4 address to result_ptr |

@@ -3,10 +3,11 @@
 use anyos_std::println;
 use anyos_std::process;
 
-use super::file::read_conf;
+use super::file::{read_string, register_manifest};
 
 pub fn launch_login_services() {
-    let text = match read_conf() {
+    register_manifest();
+    let text = match read_string("login/programs_blob") {
         Some(t) => t,
         None => return,
     };
@@ -34,10 +35,11 @@ pub fn launch_login_services() {
 }
 
 pub fn launch_autostart() -> alloc::vec::Vec<u32> {
-    let text = match read_conf() {
+    register_manifest();
+    let text = match read_string("autostart/programs_blob") {
         Some(t) => t,
         None => {
-            println!("compositor: no compositor.conf found");
+            println!("compositor: no autostart configuration found");
             return alloc::vec::Vec::new();
         }
     };

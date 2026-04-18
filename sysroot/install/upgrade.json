@@ -1,0 +1,45 @@
+{
+  "from_version": "0.0.0",
+  "to_version": "0.4.0",
+  "operations": [
+    {
+      "action": "ensure_dir",
+      "path": "/System/etc/apkg"
+    },
+    {
+      "action": "sync_tree",
+      "source": "/System",
+      "target": "/System",
+      "merge_configs": true,
+      "preserve_existing": false
+    },
+    {
+      "action": "sync_tree",
+      "source": "/Applications",
+      "target": "/Applications",
+      "merge_configs": true,
+      "preserve_existing": false
+    },
+    {
+      "action": "sync_tree",
+      "source": "/Libraries",
+      "target": "/Libraries",
+      "merge_configs": false,
+      "preserve_existing": false
+    },
+    {
+      "action": "sync_tree",
+      "source": "/boot",
+      "target": "/boot",
+      "merge_configs": true,
+      "preserve_existing": false
+    },
+    {
+      "action": "sync_tree",
+      "source": "/media",
+      "target": "/media",
+      "merge_configs": false,
+      "preserve_existing": false
+    }
+  ]
+}

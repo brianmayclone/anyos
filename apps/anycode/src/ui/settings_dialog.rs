@@ -264,7 +264,7 @@ pub fn show() {
     page_ai.add(&ai_key);
 
     y += 24;
-    let key_hint = ui::Label::new(t("Stored locally in /Users/settings/anycode-ai.json"));
+    let key_hint = ui::Label::new(t("Stored in confd on user level"));
     key_hint.set_position(FIELD_X, y + 4);
     key_hint.set_font_size(10);
     key_hint.set_text_color(tc.text_secondary);

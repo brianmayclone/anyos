@@ -297,18 +297,27 @@ file(GLOB_RECURSE _WS_RS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/bin/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/apps/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/system/*/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/system/daemons/*/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/system/compositor/*/src/*.rs"
+  "${CMAKE_SOURCE_DIR}/system/utilities/*/src/*.rs"
   "${CMAKE_SOURCE_DIR}/system/compositor/compositor/src/*.rs"
 )
 file(GLOB _WS_TOMLS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/bin/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/apps/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/system/*/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/system/daemons/*/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/system/compositor/*/Cargo.toml"
+  "${CMAKE_SOURCE_DIR}/system/utilities/*/Cargo.toml"
   "${CMAKE_SOURCE_DIR}/system/compositor/compositor/Cargo.toml"
 )
 file(GLOB _WS_BUILD_RS CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/bin/*/build.rs"
   "${CMAKE_SOURCE_DIR}/apps/*/build.rs"
   "${CMAKE_SOURCE_DIR}/system/*/build.rs"
+  "${CMAKE_SOURCE_DIR}/system/daemons/*/build.rs"
+  "${CMAKE_SOURCE_DIR}/system/compositor/*/build.rs"
+  "${CMAKE_SOURCE_DIR}/system/utilities/*/build.rs"
   "${CMAKE_SOURCE_DIR}/system/compositor/compositor/build.rs"
 )
 
@@ -817,7 +826,8 @@ add_rust_user_program(sudo)
 add_rust_user_program(echoserver)
 add_rust_user_program(wifi)
 add_rust_user_program(netstat)
-add_rust_user_program(svc)
+add_rust_user_program(route)
+add_rust_user_program(dcpdump)
 add_rust_user_program(logd)
 add_rust_user_program(ami)
 add_rust_user_program(vi)
@@ -984,6 +994,7 @@ add_rust_sbin_program(corefs-tier)
 # System programs (/System/)
 # ============================================================
 set(SYSTEM_BINS "")
+add_rust_system_program(svc)
 add_rust_system_program(init)
 add_rust_system_program(audiomon)
 add_rust_system_program(wifimon)
@@ -993,22 +1004,25 @@ add_rust_system_program(login)
 add_rust_system_program(permdialog)
 add_rust_system_program(notifyd)
 add_rust_user_program(amid)
+add_rust_user_program(confd)
 add_rust_user_program(searchd)
+add_rust_user_program(dnsd)
+add_rust_user_program(networkd)
 add_rust_user_program(textmode_console)
 
 # ============================================================
 # Desktop GUI applications -> .app bundles in /Applications/
 # ============================================================
 set(APP_BINS "")
-add_app(terminal    ${CMAKE_SOURCE_DIR}/system/terminal     "Terminal")
-add_app(shell       ${CMAKE_SOURCE_DIR}/system/shell        "Shell")
-add_app(taskmanager ${CMAKE_SOURCE_DIR}/system/taskmanager  "Activity Monitor")
-add_app(settings    ${CMAKE_SOURCE_DIR}/system/settings     "Settings")
-add_app(finder      ${CMAKE_SOURCE_DIR}/system/finder       "Finder")
-add_app(diskutil   ${CMAKE_SOURCE_DIR}/system/diskutil     "Disk Utility")
-add_app(eventviewer ${CMAKE_SOURCE_DIR}/system/eventviewer  "Event Viewer")
-add_app(anybout    ${CMAKE_SOURCE_DIR}/system/anybout     "About anyOS")
-add_app(anytrace    ${CMAKE_SOURCE_DIR}/system/anytrace     "anyTrace")
+add_app(terminal    ${CMAKE_SOURCE_DIR}/system/utilities/terminal     "Terminal")
+add_app(shell       ${CMAKE_SOURCE_DIR}/system/utilities/shell        "Shell")
+add_app(taskmanager ${CMAKE_SOURCE_DIR}/system/utilities/taskmanager  "Activity Monitor")
+add_app(settings    ${CMAKE_SOURCE_DIR}/system/compositor/settings     "Settings")
+add_app(finder      ${CMAKE_SOURCE_DIR}/system/compositor/finder       "Finder")
+add_app(diskutil   ${CMAKE_SOURCE_DIR}/system/utilities/diskutil     "Disk Utility")
+add_app(eventviewer ${CMAKE_SOURCE_DIR}/system/utilities/eventviewer  "Event Viewer")
+add_app(anybout    ${CMAKE_SOURCE_DIR}/system/compositor/anybout     "About anyOS")
+add_app(anytrace    ${CMAKE_SOURCE_DIR}/system/utilities/anytrace     "anyTrace")
 add_app(notepad     ${CMAKE_SOURCE_DIR}/apps/notepad        "Notepad")
 add_app(imgview     ${CMAKE_SOURCE_DIR}/apps/imgview        "Image Viewer")
 add_app(videoplayer ${CMAKE_SOURCE_DIR}/apps/videoplayer    "Video Player")
@@ -1041,19 +1055,21 @@ if(NOT ANYOS_ARCH STREQUAL "arm64")
 endif()
 add_app(anymail     ${CMAKE_SOURCE_DIR}/apps/anymail       "anyMail")
 add_app(anyzilla    ${CMAKE_SOURCE_DIR}/apps/anyzilla      "anyzilla")
+add_app(amiconsole  ${CMAKE_SOURCE_DIR}/system/utilities/amiconsole  "AMI Console")
+add_app(configexplorer ${CMAKE_SOURCE_DIR}/system/utilities/configexplorer "Config Explorer")
 add_app(notifications ${CMAKE_SOURCE_DIR}/apps/notifications "Notifications")
 add_app(installer    ${CMAKE_SOURCE_DIR}/apps/installer     "Installer")
 add_app(keyboard     ${CMAKE_SOURCE_DIR}/apps/keyboard      "Keyboard")
 add_app(updater      ${CMAKE_SOURCE_DIR}/apps/updater       "Software Update")
 add_app(diskusage    ${CMAKE_SOURCE_DIR}/apps/diskusage     "Disk Usage")
-add_system_app(runner       ${CMAKE_SOURCE_DIR}/system/runner     "Runner")
+add_system_app(runner       ${CMAKE_SOURCE_DIR}/system/utilities/runner     "Runner")
 
 # ============================================================
 # Session host, Desktop shell, Crash dialog
 # ============================================================
 
 # fontd — Font server daemon (standalone workspace, kernel target)
-set(FONTD_SRC_DIR ${CMAKE_SOURCE_DIR}/system/fontd)
+set(FONTD_SRC_DIR ${CMAKE_SOURCE_DIR}/system/daemons/fontd)
 set(FONTD_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/fontd.elf")
 add_custom_command(
   OUTPUT ${FONTD_ELF}
@@ -1084,7 +1100,7 @@ add_custom_command(
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/fontd)
 
 # Sessionhost (standalone workspace, kernel target)
-set(SESSIONHOST_SRC_DIR ${CMAKE_SOURCE_DIR}/system/sessionhost)
+set(SESSIONHOST_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/sessionhost)
 set(SESSIONHOST_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/sessionhost.elf")
 add_custom_command(
   OUTPUT ${SESSIONHOST_ELF}
@@ -1112,7 +1128,7 @@ add_custom_command(
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/Sessionhost)
 
 # Desktop shell (standalone workspace, kernel target)
-set(DESKTOPD_SRC_DIR ${CMAKE_SOURCE_DIR}/system/desktopd)
+set(DESKTOPD_SRC_DIR ${CMAKE_SOURCE_DIR}/system/daemons/desktopd)
 set(DESKTOPD_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/desktopd.elf")
 add_custom_command(
   OUTPUT ${DESKTOPD_ELF}
@@ -1141,7 +1157,7 @@ add_custom_command(
 list(APPEND SYSTEM_BINS ${SYSROOT_DIR}/System/Desktop)
 
 # CrashDialog (standalone workspace, kernel target, .app bundle)
-set(CRASHDIALOG_SRC_DIR ${CMAKE_SOURCE_DIR}/system/crashdialog)
+set(CRASHDIALOG_SRC_DIR ${CMAKE_SOURCE_DIR}/system/compositor/crashdialog)
 set(CRASHDIALOG_ELF "${CMAKE_BINARY_DIR}/kernel/${KERNEL_TARGET_TRIPLE}/release/crashdialog.elf")
 add_custom_command(
   OUTPUT ${CRASHDIALOG_ELF}
@@ -1236,8 +1252,6 @@ add_custom_command(
           ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons/controls
           ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons/devices
           ${CMAKE_SOURCE_DIR}/sysroot/System/media/icons/devices/usb
-          ${CMAKE_SOURCE_DIR}/sysroot/System/compositor/compositor.conf
-          ${CMAKE_SOURCE_DIR}/sysroot/System/etc/inputmon.conf
   COMMENT "Populating sysroot from tools/sysroot"
 )
 
@@ -1257,29 +1271,10 @@ add_custom_target(bootloader_sysroot DEPENDS
   ${SYSROOT_DIR}/boot/stage2.bin
 )
 
-# Install service config files only if they don't already exist in the build
-# sysroot. This preserves user-edited settings across rebuilds.
-# The defaults live in defaults/ (not sysroot/) so copy_directory doesn't touch them.
 if(ANYOS_ARCH STREQUAL "arm64")
   file(REMOVE "${SYSROOT_DIR}/System/etc/svc/sshd")
-endif()
-if(NOT EXISTS "${SYSROOT_DIR}/System/etc/searchd.conf")
-  file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/searchd.conf"
-       DESTINATION "${SYSROOT_DIR}/System/etc")
-endif()
-if(NOT EXISTS "${SYSROOT_DIR}/System/etc/vncd.conf")
-  file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/vncd.conf"
-       DESTINATION "${SYSROOT_DIR}/System/etc")
-endif()
-if(NOT EXISTS "${SYSROOT_DIR}/System/etc/ftpd/ftpd.conf")
-  file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/etc/ftpd")
-  file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/ftpd/ftpd.conf"
-       DESTINATION "${SYSROOT_DIR}/System/etc/ftpd")
-endif()
-if(NOT EXISTS "${SYSROOT_DIR}/System/etc/ftpd/shares.conf")
-  file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/etc/ftpd")
-  file(COPY "${CMAKE_SOURCE_DIR}/defaults/System/etc/ftpd/shares.conf"
-       DESTINATION "${SYSROOT_DIR}/System/etc/ftpd")
+  file(REMOVE "${SYSROOT_DIR}/System/etc/httpd/httpd.conf")
+  file(REMOVE "${SYSROOT_DIR}/System/etc/httpd/sites/default")
 endif()
 # ── Hardware firmware blobs (WiFi, Bluetooth) ──────────────────────────────
 # Copy firmware files from sysroot/ source tree into the build sysroot.

@@ -264,8 +264,7 @@ To use the AI assistant, you need an API key.\n\
 OpenAI:    Get a key at platform.openai.com\n\
 Anthropic: Get a key at console.anthropic.com\n\
 \n\
-The key is stored locally in:\n\
-  /Users/settings/anycode-ai.json\n\
+The key is stored in your user profile via confd.\n\
 ";
         self.chat_area.set_text(text);
     }

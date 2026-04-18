@@ -70,6 +70,17 @@ name = "ami"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libami",
+]
+
+[[package]]
+name = "amiconsole"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libami",
+ "libanyui_client",
 ]
 
 [[package]]
@@ -106,6 +117,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libconf_schema",
  "libhttp_client",
 ]
 
@@ -135,6 +147,7 @@ name = "anyos_std"
 version = "0.1.0"
 dependencies = [
  "libheap",
+ "libsyscall",
 ]
 
 [[package]]
@@ -401,9 +414,29 @@ name = "compositor"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libami",
+ "libconf_schema",
  "libfont_client",
  "libimage_client",
  "librender_client",
+]
+
+[[package]]
+name = "confd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libdb_client",
+]
+
+[[package]]
+name = "configexplorer"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libanyui_client",
+ "libconf",
 ]
 
 [[package]]
@@ -520,6 +553,9 @@ name = "crond"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libconf",
+ "libconf_schema",
+ "libsvc",
 ]
 
 [[package]]
@@ -527,6 +563,7 @@ name = "crontab"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libconf",
 ]
 
 [[package]]
@@ -541,6 +578,13 @@ dependencies = [
 
 [[package]]
 name = "date"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
+name = "dcpdump"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
@@ -654,6 +698,16 @@ name = "dns"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libdns",
+]
+
+[[package]]
+name = "dnsd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libconf_schema",
+ "libsvc",
 ]
 
 [[package]]
@@ -752,6 +806,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libanyui_client",
+ "libconf_schema",
  "libimage_client",
 ]
 
@@ -772,6 +827,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libconf_schema",
  "libgl_client",
  "libphysics_client",
 ]
@@ -812,6 +868,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libconf_schema",
 ]
 
 [[package]]
@@ -819,6 +876,8 @@ name = "ftpd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libconf_schema",
+ "libsvc",
 ]
 
 [[package]]
@@ -933,6 +992,9 @@ name = "httpd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libconf",
+ "libconf_schema",
+ "libsvc",
 ]
 
 [[package]]
@@ -969,6 +1031,7 @@ dependencies = [
  "dynlink",
  "libanyui_client",
  "libimage_client",
+ "libinstall",
 ]
 
 [[package]]
@@ -987,6 +1050,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libcompositor_client",
+ "libconf_schema",
  "libfont_client",
  "librender_client",
 ]
@@ -1006,6 +1070,7 @@ dependencies = [
  "dynlink",
  "libanyui_client",
  "libini_client",
+ "libinstall",
  "libzip_client",
 ]
 
@@ -1066,6 +1131,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "libami"
+version = "0.1.0"
+dependencies = [
+ "libsyscall",
+]
+
+[[package]]
 name = "libanyui_client"
 version = "0.1.0"
 dependencies = [
@@ -1084,6 +1156,21 @@ checksum = "48f5d2a454e16a5ea0f4ced81bd44e4cfc7bd3a507b61887c99fd3538b28e4af"
 [[package]]
 name = "libcompositor_client"
 version = "0.1.0"
+
+[[package]]
+name = "libconf"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libsyscall",
+]
+
+[[package]]
+name = "libconf_schema"
+version = "0.1.0"
+dependencies = [
+ "libconf",
+]
 
 [[package]]
 name = "libcorefs-tools"
@@ -1107,6 +1194,13 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "dynlink",
+]
+
+[[package]]
+name = "libdns"
+version = "0.1.0"
+dependencies = [
+ "libsyscall",
 ]
 
 [[package]]
@@ -1161,6 +1255,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "libinstall"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libzip_client",
+]
+
+[[package]]
 name = "libjs"
 version = "0.1.0"
 dependencies = [
@@ -1194,11 +1296,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "libsvc"
+version = "0.1.0"
+dependencies = [
+ "libami",
+ "libsyscall",
+]
+
+[[package]]
 name = "libsvg_client"
 version = "0.1.0"
 dependencies = [
  "dynlink",
 ]
+
+[[package]]
+name = "libsyscall"
+version = "0.1.0"
 
 [[package]]
 name = "libtls"
@@ -1214,6 +1328,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libanyui_client",
+ "libdns",
  "libfont_client",
  "libjs",
 ]
@@ -1258,6 +1373,8 @@ name = "logd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libconf_schema",
+ "libsvc",
 ]
 
 [[package]]
@@ -1267,6 +1384,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libconf_schema",
  "libimage_client",
 ]
 
@@ -1372,6 +1490,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "networkd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libconf_schema",
+ "libdns",
+ "libsvc",
+]
+
+[[package]]
 name = "nice"
 version = "0.1.0"
 dependencies = [
@@ -1417,6 +1545,7 @@ name = "ntpd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libconf_schema",
 ]
 
 [[package]]
@@ -1619,6 +1748,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "route"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+]
+
+[[package]]
 name = "runner"
 version = "0.1.0"
 dependencies = [
@@ -1687,6 +1823,7 @@ name = "searchd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libconf_schema",
  "libdb_client",
 ]
 
@@ -1748,6 +1885,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libconf_schema",
  "libimage_client",
 ]
 
@@ -1852,6 +1990,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libanyui_client",
+ "libconf_schema",
  "libfont_client",
  "libimage_client",
  "libsvg_client",
@@ -1864,6 +2003,9 @@ name = "svc"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libami",
+ "libconf",
+ "libconf_schema",
 ]
 
 [[package]]
@@ -1932,6 +2074,7 @@ name = "textmode_console"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libconf_schema",
 ]
 
 [[package]]
@@ -2053,6 +2196,7 @@ dependencies = [
  "dynlink",
  "libanyui_client",
  "libhttp_client",
+ "libinstall",
  "libzip_client",
 ]
 
@@ -2068,6 +2212,7 @@ name = "vdagent"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libsvc",
 ]
 
 [[package]]
@@ -2127,6 +2272,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libconf_schema",
 ]
 
 [[package]]
@@ -2134,6 +2280,8 @@ name = "vncd"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libconf_schema",
+ "libsvc",
 ]
 
 [[package]]
@@ -2165,6 +2313,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libconf",
 ]
 
 [[package]]
@@ -2202,6 +2351,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libcompositor_client",
+ "libconf_schema",
  "libfont_client",
  "librender_client",
 ]

@@ -15,6 +15,7 @@ pub mod dhcp;
 pub mod dns;
 pub mod tcp;
 pub mod interfaces;
+pub mod trace;
 pub mod wifi;
 
 #[allow(unused_imports)]

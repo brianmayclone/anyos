@@ -1,0 +1,17 @@
+[package]
+name = "networkd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../../libs/stdlib" }
+libconf_schema = { path = "../../../libs/libconf_schema" }
+libdns = { path = "../../../libs/libdns" }
+libsvc = { path = "../../../libs/libsvc" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

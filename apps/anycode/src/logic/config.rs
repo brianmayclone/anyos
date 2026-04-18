@@ -2,6 +2,7 @@ use alloc::string::String;
 use alloc::format;
 use alloc::vec::Vec;
 use anyos_std::json::{Value, Number};
+use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 
 use crate::util::path;
 
@@ -35,14 +36,28 @@ pub struct Config {
 
 const DEFAULT_SETTINGS_PATH: &str = "/Users/settings/anycode.json";
 const FONT_MONO: u32 = 4;
+const ANYCODE_DIRS: &[&str] = &["config"];
+const ANYCODE_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] =
+    &[default_string("config/settings_json", "")];
+const ANYCODE_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const ANYCODE_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/anycode",
+    RegistryScope::User,
+    1,
+    ANYCODE_DIRS,
+    ANYCODE_DEFAULTS,
+    ANYCODE_MIGRATIONS,
+);
+const ANYCODE_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("anycode", &ANYCODE_MANIFEST);
 
 impl Config {
     /// Load settings from disk, or return defaults with auto-discovery.
     pub fn load() -> Self {
+        let _ = ANYCODE_SCHEMA.register();
         let defaults = Self::defaults();
-        let data = match anyos_std::fs::read_to_string(DEFAULT_SETTINGS_PATH) {
-            Ok(s) => s,
-            Err(_) => {
+        let data = match ANYCODE_SCHEMA.read_string("config/settings_json") {
+            Some(s) if !s.is_empty() => s,
+            _ => {
                 let mut cfg = defaults;
                 cfg.auto_discover();
                 cfg.save();
@@ -117,7 +132,7 @@ impl Config {
         obj.set("session_files", json_string_array(&self.session_files));
         obj.set("session_active_file", Value::String(self.session_active_file.clone()));
         let json = obj.to_json_string_pretty();
-        let _ = anyos_std::fs::write_bytes(DEFAULT_SETTINGS_PATH, json.as_bytes());
+        let _ = ANYCODE_SCHEMA.write_string("config/settings_json", &json);
     }
 
     pub fn defaults() -> Self {

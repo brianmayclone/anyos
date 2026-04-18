@@ -7,6 +7,7 @@ edition = "2021"
 crate-type = ["staticlib"]
 
 [dependencies]
+libdns = { path = "../libdns" }
 libheap = { path = "../libheap" }
 libsyscall = { path = "../libsyscall" }
 libtls = { path = "../libtls" }

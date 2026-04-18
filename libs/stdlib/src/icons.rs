@@ -3,9 +3,12 @@
 //! Provides path resolution for app icons and file type icons,
 //! shared between the dock, finder, and other GUI programs.
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use crate::fs;
+use crate::ipc;
+use crate::process;
 
 /// Base directory for app icons (.ico files).
 pub const APP_ICONS_DIR: &str = "/System/media/icons/apps";
@@ -19,8 +22,33 @@ pub const DEFAULT_FILE_ICON: &str = "/System/media/icons/default.ico";
 /// Folder icon path.
 pub const FOLDER_ICON: &str = "/System/media/icons/folder.ico";
 
-/// Mimetype configuration file path.
-const MIMETYPES_CONF: &str = "/System/mimetypes.conf";
+/// Registry path containing system mimetype associations.
+const MIMETYPES_CONF_PATH: &str = "system/mimetypes/config/associations_blob";
+const MIMETYPES_DEFAULTS: &str = "\
+# anyOS mimetype associations\n\
+# Format: extension|application_path|icon_path (icon_path is optional)\n\
+txt|/Applications/Notepad.app|/System/media/icons/text.ico\n\
+conf|/Applications/Notepad.app|/System/media/icons/config.ico\n\
+log|/Applications/Notepad.app|/System/media/icons/text.ico\n\
+md|/Applications/Markdown Viewer.app|/System/media/icons/text.ico\n\
+ini|/Applications/Notepad.app|/System/media/icons/config.ico\n\
+c|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+cpp|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+rs|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+py|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+js|/Applications/anyOS Code.app|/System/media/icons/code.ico\n\
+mjv|/Applications/Video Player.app|/System/media/icons/video.ico\n\
+png|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+jpg|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+jpeg|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+bmp|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+gif|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+ico|/Applications/Image Viewer.app|/System/media/icons/image.ico\n\
+dlib||/System/media/icons/dll.ico\n\
+ttf||/System/media/icons/font.ico\n";
+const CONFD_PIPE_NAME: &str = "confd";
+const CONFD_READ_RETRIES: usize = 40;
+const CONFD_READ_CHUNK_SIZE: usize = 512;
 
 /// Path for user mimetype overrides (JSON).
 const USER_MIMETYPES_PATH: &str = "/System/user_mimetypes.json";
@@ -193,26 +221,7 @@ impl MimeDb {
 }
 
 fn load_mimetypes_inner() -> Vec<MimeEntry> {
-    let fd = fs::open(MIMETYPES_CONF, 0);
-    if fd == u32::MAX {
-        return Vec::new();
-    }
-
-    let mut data = Vec::new();
-    let mut buf = [0u8; 256];
-    loop {
-        let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX {
-            break;
-        }
-        data.extend_from_slice(&buf[..n as usize]);
-    }
-    fs::close(fd);
-
-    let text = match core::str::from_utf8(&data) {
-        Ok(s) => s,
-        Err(_) => return Vec::new(),
-    };
+    let text = load_system_mimetypes_text();
 
     let mut entries = Vec::new();
     for line in text.split('\n') {
@@ -238,6 +247,120 @@ fn load_mimetypes_inner() -> Vec<MimeEntry> {
         }
     }
     entries
+}
+
+fn load_system_mimetypes_text() -> &'static str {
+    let dynamic = read_confd_string(MIMETYPES_CONF_PATH);
+    if let Some(text) = dynamic {
+        return Box::leak(text.into_boxed_str());
+    }
+    MIMETYPES_DEFAULTS
+}
+
+fn read_confd_string(path: &str) -> Option<String> {
+    let req_pipe = ipc::pipe_open(CONFD_PIPE_NAME);
+    if req_pipe == 0 {
+        return None;
+    }
+
+    let tid = libsyscall::get_tid();
+    let reply_name = alloc::format!("confd-{}", tid);
+    let reply_pipe = ipc::pipe_create(&reply_name);
+    if reply_pipe == 0 {
+        return None;
+    }
+
+    let mut command = alloc::format!("{}\tHELLO icons\n", tid);
+    if ipc::pipe_write(req_pipe, command.as_bytes()) == 0 {
+        ipc::pipe_close(reply_pipe);
+        return None;
+    }
+    if read_reply_line(reply_pipe).is_none() {
+        ipc::pipe_close(reply_pipe);
+        return None;
+    }
+
+    command = alloc::format!("{}\tGET system {}\n", tid, path);
+    if ipc::pipe_write(req_pipe, command.as_bytes()) == 0 {
+        ipc::pipe_close(reply_pipe);
+        return None;
+    }
+
+    let line = read_reply_line(reply_pipe);
+    ipc::pipe_close(reply_pipe);
+    parse_item_string(&line?)
+}
+
+fn read_reply_line(reply_pipe: u32) -> Option<String> {
+    let mut data = Vec::new();
+    let mut chunk = [0u8; CONFD_READ_CHUNK_SIZE];
+
+    for _ in 0..CONFD_READ_RETRIES {
+        let n = ipc::pipe_read(reply_pipe, &mut chunk);
+        if n == u32::MAX {
+            return None;
+        }
+        if n > 0 {
+            data.extend_from_slice(&chunk[..n as usize]);
+            if let Some(newline) = data.iter().position(|&b| b == b'\n') {
+                return String::from_utf8(data[..newline].to_vec()).ok();
+            }
+        }
+        process::sleep(10);
+    }
+
+    None
+}
+
+fn parse_item_string(line: &str) -> Option<String> {
+    if line.starts_with("ERR ") {
+        return None;
+    }
+
+    let mut parts = line.splitn(8, ' ');
+    if parts.next()? != "ITEM" {
+        return None;
+    }
+    let _scope = parts.next()?;
+    let _path = parts.next()?;
+    let kind = parts.next()?;
+    let value_type = parts.next()?;
+    let value_text = parts.next()?;
+    let _version = parts.next()?;
+    let _updated_at = parts.next()?;
+
+    if kind != "value" || value_type != "string" {
+        return None;
+    }
+
+    decode_conf_value(value_text)
+}
+
+fn decode_conf_value(encoded: &str) -> Option<String> {
+    let bytes = encoded.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = decode_hex(bytes[i + 1])?;
+            let lo = decode_hex(bytes[i + 2])?;
+            out.push((hi << 4 | lo) as char);
+            i += 3;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    Some(out)
+}
+
+fn decode_hex(ch: u8) -> Option<u8> {
+    match ch {
+        b'0'..=b'9' => Some(ch - b'0'),
+        b'a'..=b'f' => Some(ch - b'a' + 10),
+        b'A'..=b'F' => Some(ch - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn load_user_overrides() -> Vec<MimeOverride> {

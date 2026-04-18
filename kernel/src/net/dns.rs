@@ -7,6 +7,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use super::types::{Ipv4Addr, Ipv6Addr, IpAddr};
 use crate::sync::spinlock::Spinlock;
+use core::sync::atomic::{AtomicU16, Ordering};
 
 const DNS_PORT: u16 = 53;
 const DNS_CACHE_SIZE: usize = 64;
@@ -105,6 +106,8 @@ struct DnsCacheEntry {
 
 /// Simple DNS cache — stores up to DNS_CACHE_SIZE entries, evicts oldest on overflow.
 static DNS_CACHE: Spinlock<Vec<DnsCacheEntry>> = Spinlock::new(Vec::new());
+static NEXT_DNS_SRC_PORT: AtomicU16 = AtomicU16::new(49152);
+static NEXT_DNS_TXID: AtomicU16 = AtomicU16::new(0xAAB0);
 
 /// Look up a cached DNS entry. Returns None if not cached or expired (5 min TTL).
 fn cache_lookup(hostname: &str) -> Option<Ipv4Addr> {
@@ -144,6 +147,27 @@ fn cache_insert(hostname: &str, addr: Ipv4Addr) {
     });
 }
 
+/// Flush the in-kernel DNS cache.
+pub fn flush_cache() {
+    DNS_CACHE.lock().clear();
+}
+
+fn next_txid() -> u16 {
+    NEXT_DNS_TXID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn bind_query_port() -> Option<u16> {
+    for _ in 0..256 {
+        let candidate = NEXT_DNS_SRC_PORT.fetch_add(1, Ordering::Relaxed);
+        let port = if candidate < 49152 { 49152 } else { candidate };
+        let port = if port == u16::MAX { 49152 } else { port };
+        if super::udp::bind(port) {
+            return Some(port);
+        }
+    }
+    None
+}
+
 /// Resolve a hostname to an IPv4 address.
 ///
 /// Resolution order: hosts file → cache → DNS query.
@@ -165,18 +189,17 @@ pub fn resolve(hostname: &str) -> Result<Ipv4Addr, &'static str> {
     }
 
     // Build DNS query
-    let query = build_query(hostname);
+    let txid = next_txid();
+    let query = build_query(hostname, txid);
 
-    // Bind a temporary port
-    let src_port: u16 = 49152; // Use a fixed ephemeral port
-    super::udp::bind(src_port);
+    let src_port = bind_query_port().ok_or("DNS: no free UDP source port")?;
 
     // Send query
     super::udp::send(cfg.dns, src_port, DNS_PORT, &query);
 
     // Wait for response
     let result = match super::udp::recv_timeout(src_port, 500) {
-        Some(dgram) => parse_response(&dgram.data),
+        Some(dgram) => parse_response(&dgram.data, txid),
         None => Err("DNS timeout"),
     };
 
@@ -211,15 +234,15 @@ pub fn resolve_v6(hostname: &str) -> Result<Ipv6Addr, &'static str> {
     };
 
     // Build DNS query for AAAA record
-    let query = build_query_aaaa(hostname);
+    let txid = next_txid();
+    let query = build_query_aaaa(hostname, txid);
 
-    let src_port: u16 = 49153;
-    super::udp::bind(src_port);
+    let src_port = bind_query_port().ok_or("DNS: no free UDP source port")?;
 
     super::udp::send(dns_server, src_port, DNS_PORT, &query);
 
     let result = match super::udp::recv_timeout(src_port, 500) {
-        Some(dgram) => parse_response_v6(&dgram.data),
+        Some(dgram) => parse_response_v6(&dgram.data, txid),
         None => Err("DNS timeout"),
     };
 
@@ -228,11 +251,11 @@ pub fn resolve_v6(hostname: &str) -> Result<Ipv6Addr, &'static str> {
 }
 
 /// Build a DNS query for AAAA record (IPv6).
-fn build_query_aaaa(hostname: &str) -> Vec<u8> {
+fn build_query_aaaa(hostname: &str, txid: u16) -> Vec<u8> {
     let mut pkt = Vec::with_capacity(64);
 
     // Transaction ID
-    pkt.push(0xAA); pkt.push(0xCC);
+    pkt.push((txid >> 8) as u8); pkt.push((txid & 0xFF) as u8);
     // Flags: standard query, recursion desired
     pkt.push(0x01); pkt.push(0x00);
     // Questions: 1
@@ -261,12 +284,12 @@ fn build_query_aaaa(hostname: &str) -> Vec<u8> {
 }
 
 /// Parse a DNS response for AAAA records.
-fn parse_response_v6(data: &[u8]) -> Result<Ipv6Addr, &'static str> {
+fn parse_response_v6(data: &[u8], txid: u16) -> Result<Ipv6Addr, &'static str> {
     if data.len() < 12 {
         return Err("DNS response too short");
     }
 
-    if data[0] != 0xAA || data[1] != 0xCC {
+    if data[0] != (txid >> 8) as u8 || data[1] != (txid & 0xFF) as u8 {
         return Err("DNS transaction ID mismatch");
     }
 
@@ -312,11 +335,11 @@ fn parse_response_v6(data: &[u8]) -> Result<Ipv6Addr, &'static str> {
     Err("DNS: no AAAA record found")
 }
 
-fn build_query(hostname: &str) -> Vec<u8> {
+fn build_query(hostname: &str, txid: u16) -> Vec<u8> {
     let mut pkt = Vec::with_capacity(64);
 
     // Transaction ID
-    pkt.push(0xAA); pkt.push(0xBB);
+    pkt.push((txid >> 8) as u8); pkt.push((txid & 0xFF) as u8);
     // Flags: standard query, recursion desired
     pkt.push(0x01); pkt.push(0x00);
     // Questions: 1
@@ -345,13 +368,13 @@ fn build_query(hostname: &str) -> Vec<u8> {
     pkt
 }
 
-fn parse_response(data: &[u8]) -> Result<Ipv4Addr, &'static str> {
+fn parse_response(data: &[u8], txid: u16) -> Result<Ipv4Addr, &'static str> {
     if data.len() < 12 {
         return Err("DNS response too short");
     }
 
     // Check transaction ID
-    if data[0] != 0xAA || data[1] != 0xBB {
+    if data[0] != (txid >> 8) as u8 || data[1] != (txid & 0xFF) as u8 {
         return Err("DNS transaction ID mismatch");
     }
 

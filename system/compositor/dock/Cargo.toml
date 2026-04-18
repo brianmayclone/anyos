@@ -8,6 +8,7 @@ anyos_std = { path = "../../../libs/stdlib" }
 dynlink = { path = "../../../libs/dynlink" }
 libanyui_client = { path = "../../../libs/libanyui_client" }
 libimage_client = { path = "../../../libs/libimage_client" }
+libconf_schema = { path = "../../../libs/libconf_schema" }
 
 [profile.dev]
 panic = "abort"

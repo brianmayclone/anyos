@@ -488,6 +488,7 @@ pub struct StatFs {
 | `is_nic_enabled` | `fn is_nic_enabled() -> bool` | Check if NIC is enabled. |
 | `is_nic_available` | `fn is_nic_available() -> bool` | Check if NIC hardware is present. |
 | `reload_hosts` | `fn reload_hosts() -> u32` | Reload the hosts file from disk. Returns 0 on success. |
+| `flush_dns_cache` | `fn flush_dns_cache() -> u32` | Flush the in-kernel DNS cache. Returns 0 on success. |
 | `nic_driver_name` | `fn nic_driver_name(buf: &mut [u8; 64]) -> u32` | Get NIC driver name. Returns bytes written or 0 if no NIC. |
 | `get_interfaces` | `fn get_interfaces(buf: &mut [u8; 512]) -> u32` | Get interface configurations (64-byte entries). Returns interface count. |
 | `set_interfaces` | `fn set_interfaces(buf: &[u8]) -> u32` | Save and apply interface configurations. Returns 0 on success. |

@@ -124,7 +124,11 @@ fn populate_disk_cards(disks: &[DiskEntry]) {
         size_label.set_text_align(ui::TEXT_ALIGN_CENTER);
         card.add(&size_label);
 
-        let status_str = if disk.partition_index.is_none() {
+        let status_str = if disk.upgrade_candidate {
+            String::from("anyOS detected - upgrade")
+        } else if let Some(ref os_name) = disk.existing_os {
+            format!("Contains {}", os_name)
+        } else if disk.partition_index.is_none() {
             if disk.partition_count == 0 { String::from("Unpartitioned") }
             else { format!("{} partition{}", disk.partition_count,
                 if disk.partition_count == 1 { "" } else { "s" }) }
@@ -210,7 +214,11 @@ fn show_page(step: u32) {
         0 => { next_ctrl.set_text("Continue"); next_ctrl.set_enabled(true); next_ctrl.set_color(ACCENT); }
         1 => { next_ctrl.set_text("Agree"); next_ctrl.set_enabled(true); next_ctrl.set_color(ACCENT); }
         2 => {
-            next_ctrl.set_text("Continue");
+            let label = match a.selected_disk.and_then(|idx| a.disks.get(idx)) {
+                Some(disk) if disk.upgrade_candidate => "Upgrade",
+                _ => "Continue",
+            };
+            next_ctrl.set_text(label);
             let has = a.selected_disk.is_some();
             next_ctrl.set_enabled(has); next_ctrl.set_color(if has { ACCENT } else { 0xFF555555 });
         }
@@ -302,7 +310,7 @@ fn poll_worker() {
         if is_error {
             a.btn_reboot.set_text("Close");
             a.btn_reboot.set_visible(true);
-            ui::Control::from_id(a.complete_label_id).set_text("Installation Failed");
+            ui::Control::from_id(a.complete_label_id).set_text("Operation Failed");
             ui::Control::from_id(a.complete_label_id).set_text_color(0xFFFF6B6B);
             ui::Control::from_id(a.complete_label_id).set_visible(true);
             a.phase_label.set_visible(true);
@@ -546,7 +554,7 @@ fn main() {
     let page4 = ui::View::new(); page4.set_dock(DOCK_FILL); page4.set_color(tc.window_bg);
     page4.set_visible(false); win.add(&page4);
 
-    let p4_title = ui::Label::new("Installing anyOS...");
+    let p4_title = ui::Label::new("Preparing anyOS...");
     p4_title.set_position(0, 30); p4_title.set_size(WIN_W, 34); p4_title.set_font_size(24);
     p4_title.set_color(tc.window_bg); p4_title.set_text_color(0xFFFFFFFF);
     p4_title.set_text_align(ui::TEXT_ALIGN_CENTER); page4.add(&p4_title);
@@ -643,7 +651,27 @@ fn main() {
                     Some(i) if i < a.disks.len() => i,
                     _ => { ui::MessageBox::show(ui::MessageBoxType::Warning, "Please select a target.", None); return; }
                 };
-                if let Some(os_name) = detect_existing_os(a.disks[idx].device_id) {
+                let disk = &a.disks[idx];
+                if disk.upgrade_candidate {
+                    let target_name = if let Some(pi) = disk.partition_index {
+                        format!("Disk {} Partition {}", disk.disk_id, pi + 1)
+                    } else {
+                        format!("Disk {}", disk.disk_id)
+                    };
+                    let msg = format!(
+                        "A previous anyOS installation was found on {}.\n\
+                         The installer will upgrade the system, keep user data and merge configuration files.",
+                        target_name
+                    );
+                    ui::MessageBox::show(ui::MessageBoxType::Warning, &msg, Some("Upgrade"));
+                    show_page(4);
+                    INSTALL_DISK_ID.store(disk.device_id as u32, Ordering::Release);
+                    INSTALL_MODE.store(if disk.partition_index.is_some() { 1 } else { 0 }, Ordering::Release);
+                    INSTALL_OPERATION.store(1, Ordering::Release);
+                    start_install();
+                    return;
+                }
+                if let Some(os_name) = detect_existing_os(disk.device_id) {
                     let msg = format!(
                         "The selected disk appears to contain {}.\n\
                          Installing anyOS will erase all data.\n\nDo you want to continue?", os_name);
@@ -671,6 +699,7 @@ fn main() {
 
                 INSTALL_DISK_ID.store(disk.device_id as u32, Ordering::Release);
                 INSTALL_MODE.store(if disk.partition_index.is_some() { 1 } else { 0 }, Ordering::Release);
+                INSTALL_OPERATION.store(0, Ordering::Release);
                 start_install();
             }
             _ => {}

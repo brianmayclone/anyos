@@ -1,2 +1,5 @@
 exec=/System/bin/crond
 args=
+wants=logd
+after=logd
+startup_timeout_ms=3000

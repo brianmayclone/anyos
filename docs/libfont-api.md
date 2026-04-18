@@ -9,7 +9,7 @@ The **libfont** shared library provides TrueType font loading and text rendering
 
 ## fontd — Font Server Architecture
 
-System fonts are managed by the **fontd** daemon (`system/fontd/`). fontd loads TTF files from `/System/fonts/` into shared memory (SHM) on demand. All processes share the same physical font data pages — fonts are loaded exactly **once** from disk regardless of how many processes use them.
+System fonts are managed by the **fontd** daemon (`system/daemons/fontd/`). fontd loads TTF files from `/System/fonts/` into shared memory (SHM) on demand. All processes share the same physical font data pages — fonts are loaded exactly **once** from disk regardless of how many processes use them.
 
 ### Boot sequence
 
@@ -82,7 +82,7 @@ Response: `EVT_FONT_LIST` (0x6006) with shm_id containing newline-separated file
 ### fontd source structure
 
 ```
-system/fontd/
+system/daemons/fontd/
 ├── src/
 │   ├── main.rs       — Event loop, spawns cache, emits EVT_FONTD_READY
 │   ├── protocol.rs   — IPC command dispatch, SHM string I/O

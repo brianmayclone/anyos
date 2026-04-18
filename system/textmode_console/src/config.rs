@@ -2,8 +2,7 @@
 //!
 //! Reads two sources:
 //!
-//! - **`/System/etc/inputmon.conf`** — keyboard layout (section `[keyboard]`,
-//!   key `layout=<id>`).
+//! - **`confd`** — keyboard layout via `profile/input/config/layout`.
 //! - **`/System/env`** — console size via `CONSOLE_MODE=<1|2|3>`.
 //!
 //! | Mode | Columns | Rows |
@@ -15,9 +14,20 @@
 //! These modes match the values accepted by the `bin/mode` utility.
 
 use anyos_std::{fs, kbd, sys};
+use libconf_schema::{default_int, manifest, RegistryScope, ServiceSchema};
 
 /// Predefined console dimensions indexed by `CONSOLE_MODE` (1-based).
 const MODES: [(u32, u32); 3] = [(80, 25), (120, 37), (160, 50)];
+const INPUTMON_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "profile/input",
+    RegistryScope::User,
+    1,
+    &["config"],
+    &[default_int("config/layout", 1)],
+    &[],
+);
+const INPUTMON_SCHEMA: ServiceSchema<'static> =
+    ServiceSchema::new("textmode_console", &INPUTMON_MANIFEST);
 
 /// Apply keyboard layout and optional console dimensions from the system
 /// configuration files.  Called once at program start before printing the
@@ -30,23 +40,9 @@ pub fn apply_system_config() {
 // ─── Keyboard layout ─────────────────────────────────────────────────────────
 
 fn apply_keyboard_layout() {
-    let conf = match fs::read_to_string("/System/etc/inputmon.conf") {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-
-    let mut in_keyboard = false;
-    for line in conf.split('\n') {
-        let line = line.trim();
-        if line == "[keyboard]" { in_keyboard = true; continue; }
-        if line.starts_with('[') { in_keyboard = false; continue; }
-        if in_keyboard {
-            if let Some(val) = line.strip_prefix("layout=") {
-                if let Ok(id) = val.trim().parse::<u32>() {
-                    kbd::set_layout(id);
-                }
-            }
-        }
+    let _ = INPUTMON_SCHEMA.register();
+    if let Some(id) = INPUTMON_SCHEMA.read_i64("config/layout") {
+        kbd::set_layout(id.max(0) as u32);
     }
 }
 

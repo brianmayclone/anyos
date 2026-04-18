@@ -6,9 +6,11 @@ use anyos_std::sys;
 use anyos_std::fs;
 use anyos_std::ipc;
 use anyos_std::println;
+use anyos_std::format;
 use anyos_std::Box;
 
 use libanyui_client as ui;
+use libinstall;
 use ui::Widget;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
@@ -113,107 +115,21 @@ fn benchmark_memory(duration_ticks: u32) -> u32 {
     iterations
 }
 
-// ── Init Config Parser ──────────────────────────────────────────────────────
+// ── Service Startup ─────────────────────────────────────────────────────────
 
-fn run_init_conf(total_steps: &mut u32, current_step: &mut u32) {
-    let fd = fs::open("/System/etc/init/init.conf", 0);
-    if fd == u32::MAX {
-        println!("init: /System/etc/init/init.conf not found, skipping");
+fn run_service_manager() {
+    let path = "/System/svc";
+    let args = "/System/svc start-all";
+
+    println!("init: spawning '{}'", args);
+    let tid = process::spawn(path, args);
+    if tid == u32::MAX {
+        println!("init: FAILED to spawn '{}'", path);
         return;
     }
 
-    let mut buf = [0u8; 1024];
-    let n = fs::read(fd, &mut buf) as usize;
-    fs::close(fd);
-
-    if n == 0 {
-        return;
-    }
-
-    // First pass: count non-comment, non-empty lines for progress
-    let data = &buf[..n];
-    let mut line_count: u32 = 0;
-    {
-        let mut ls = 0;
-        for i in 0..=n {
-            let at_end = i == n;
-            let is_nl = !at_end && data[i] == b'\n';
-            if is_nl || at_end {
-                let le = if !at_end && i > 0 && data[i.saturating_sub(1)] == b'\r' { i - 1 } else { i };
-                let line = &data[ls..le];
-                ls = i + 1;
-                let trimmed = trim_bytes(line);
-                if !trimmed.is_empty() && trimmed[0] != b'#' {
-                    line_count += 1;
-                }
-            }
-        }
-    }
-
-    // Benchmarks are 2 steps, services are line_count steps
-    *total_steps = 2 + line_count;
-
-    // Second pass: execute
-    let mut line_start = 0;
-    for i in 0..=n {
-        let at_end = i == n;
-        let is_newline = !at_end && data[i] == b'\n';
-
-        if is_newline || at_end {
-            let line_end = if !at_end && i > 0 && data[i.saturating_sub(1)] == b'\r' {
-                i - 1
-            } else {
-                i
-            };
-            let line = &data[line_start..line_end];
-            line_start = i + 1;
-
-            let trimmed = trim_bytes(line);
-            if trimmed.is_empty() || trimmed[0] == b'#' {
-                continue;
-            }
-
-            if let Ok(entry) = core::str::from_utf8(trimmed) {
-                let (cmd, background) = if entry.ends_with('&') {
-                    (entry[..entry.len() - 1].trim_end(), true)
-                } else {
-                    (entry, false)
-                };
-                let path = match cmd.find(' ') {
-                    Some(idx) => &cmd[..idx],
-                    None => cmd,
-                };
-
-                // Extract a readable service name from the path
-                let svc_name = path.rsplit('/').next().unwrap_or(path);
-                set_status("Starting Services ...");
-                *current_step += 1;
-                let pct = (*current_step * 100 / *total_steps).min(100);
-                PROGRESS.store(pct, Ordering::Release);
-
-                println!("init: spawning '{}'{}", cmd, if background { " [bg]" } else { "" });
-                let tid = process::spawn(path, cmd);
-                if tid == u32::MAX {
-                    println!("init: FAILED to spawn '{}'", path);
-                } else if !background {
-                    let code = process::waitpid(tid);
-                    println!("init: '{}' exited (code={})", path, code);
-                }
-            }
-        }
-    }
-}
-
-fn trim_bytes(b: &[u8]) -> &[u8] {
-    let mut start = 0;
-    while start < b.len() && (b[start] == b' ' || b[start] == b'\t') {
-        start += 1;
-    }
-    let mut end = b.len();
-    while end > start && (b[end - 1] == b' ' || b[end - 1] == b'\t') {
-        end -= 1;
-    }
-    &b[start..end]
+    let code = process::waitpid(tid);
+    println!("init: '{}' exited (code={})", path, code);
 }
 
 // ── Formatting ──────────────────────────────────────────────────────────────
@@ -229,6 +145,8 @@ fn fmt_u32(buf: &mut [u8], val: u32) -> usize {
 // ── Worker thread ───────────────────────────────────────────────────────────
 
 fn worker_entry() {
+    recover_pending_upgrade_if_needed();
+
     let hz = sys::tick_hz();
 
     // Phase 1: CPU benchmark
@@ -278,18 +196,40 @@ fn worker_entry() {
 
     sys::boot_ready();
 
-    // Phase 3: Run init.conf
+    // Phase 3: Start managed services
     set_status("Starting services...");
     PROGRESS.store(25, Ordering::Release);
-
-    let mut total_steps: u32 = 5;
-    let mut current_step: u32 = 2; // benchmarks already done
-    run_init_conf(&mut total_steps, &mut current_step);
+    run_service_manager();
 
     // Done
     set_status("Ready");
     PROGRESS.store(100, Ordering::Release);
     WORKER_DONE.store(true, Ordering::Release);
+}
+
+fn recover_pending_upgrade_if_needed() {
+    if !libinstall::has_pending_upgrade("/") {
+        return;
+    }
+
+    set_status("Recovering interrupted upgrade...");
+    PROGRESS.store(2, Ordering::Release);
+    println!("init: detected interrupted system upgrade, starting recovery");
+
+    match libinstall::recover_pending_upgrade("/") {
+        Ok(restored) => {
+            println!("init: recovered interrupted upgrade ({} files restored)", restored);
+            let _ = fs::mkdir("/System/Logs");
+            let _ = fs::write_bytes(
+                "/System/Logs/upgrade-recovery.log",
+                format!("recovered interrupted upgrade: {} files restored\n", restored).as_bytes(),
+            );
+        }
+        Err(err) => {
+            println!("init: FAILED to recover interrupted upgrade: {}", err);
+            set_status("Upgrade recovery failed");
+        }
+    }
 }
 
 // ── Main (GUI) ──────────────────────────────────────────────────────────────

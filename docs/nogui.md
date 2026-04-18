@@ -339,7 +339,7 @@ The store is not a replacement for environment variables — environment variabl
 | Login | GUI login dialog | Text login prompt |
 | Terminal | Terminal.app | textmode_console (built-in shell) |
 | Graphics | Full 2D/3D GPU | No UI; framebuffer is text-only |
-| Services | All (via init.conf + svc) | Only if launched from the shell |
+| Services | All (via svc start-all) | Only if launched from the shell |
 | ANSI colors | Full (Terminal.app) | Full (textcon ANSI parser) |
 | Scrollback | Terminal.app history | Kernel ring buffer (200 rows) |
 | `$TERM` | `ansi` | `ansi` |

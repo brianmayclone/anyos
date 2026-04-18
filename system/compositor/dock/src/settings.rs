@@ -1,13 +1,5 @@
 //! Dock settings: size, magnification, position.
-//!
-//! Persisted as key=value pairs. Path: `~/.dock_settings.conf` for normal
-//! users, `/System/dock/dock_settings.conf` as fallback (e.g. root).
-
-use alloc::format;
-use alloc::string::String;
-use alloc::vec;
-
-use anyos_std::fs;
+use libconf_schema::{default_bool, default_int, manifest, RegistryScope, ServiceSchema};
 
 /// Dock position constants.
 pub const POS_BOTTOM: u32 = 0;
@@ -56,127 +48,62 @@ impl DockSettings {
     }
 }
 
-/// System fallback path for dock settings.
-const SYSTEM_SETTINGS_PATH: &str = "/System/dock/dock_settings.conf";
+const DOCK_SETTINGS_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_int("config/icon_size", 48),
+    default_bool("config/magnification", true),
+    default_int("config/mag_size", 80),
+    default_int("config/position", 0),
+    default_bool("config/auto_hide", false),
+];
+const DOCK_SETTINGS_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const DOCK_SETTINGS_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "profile/dock_settings",
+    RegistryScope::User,
+    1,
+    &["config"],
+    DOCK_SETTINGS_DEFAULTS,
+    DOCK_SETTINGS_MIGRATIONS,
+);
 
-/// Resolve the dock settings file path.
-/// Tries `/Users/<username>/.dock_settings.conf` first,
-/// falls back to `/System/dock/dock_settings.conf` (e.g. for root).
-pub fn settings_path() -> String {
-    let uid = anyos_std::process::getuid();
-    let mut name_buf = [0u8; 64];
-    let len = anyos_std::process::getusername(uid, &mut name_buf);
-    if len != u32::MAX && len > 0 {
-        if let Ok(username) = core::str::from_utf8(&name_buf[..len as usize]) {
-            let dir = format!("/Users/{}", username);
-            let mut stat_buf = [0u32; 7];
-            if fs::stat(&dir, &mut stat_buf) == 0 {
-                return format!("/Users/{}/.dock_settings.conf", username);
-            }
-        }
-    }
-    let mut home_buf = [0u8; 256];
-    let hlen = anyos_std::env::get("HOME", &mut home_buf);
-    if hlen != u32::MAX && hlen > 0 {
-        if let Ok(home) = core::str::from_utf8(&home_buf[..hlen as usize]) {
-            let mut stat_buf = [0u32; 7];
-            if fs::stat(home, &mut stat_buf) == 0 {
-                return format!("{}/.dock_settings.conf", home);
-            }
-        }
-    }
-    String::from(SYSTEM_SETTINGS_PATH)
+fn dock_settings_schema() -> ServiceSchema<'static> {
+    ServiceSchema::new("dock", &DOCK_SETTINGS_MANIFEST)
 }
 
 /// Load dock settings from the settings file. Returns defaults on failure.
 pub fn load_dock_settings() -> DockSettings {
-    let path = settings_path();
-
-    let mut stat_buf = [0u32; 7];
-    if fs::stat(&path, &mut stat_buf) != 0 {
-        return DockSettings::default();
+    let _ = dock_settings_schema().register();
+    let mut confd = DockSettings::default();
+    let mut found = false;
+    if let Some(v) = dock_settings_schema().read_i64("config/icon_size") {
+        confd.icon_size = v.max(0) as u32;
+        found = true;
     }
-    let file_size = stat_buf[1] as usize;
-    if file_size == 0 || file_size > 1024 {
-        return DockSettings::default();
+    if let Some(v) = dock_settings_schema().read_bool("config/magnification") {
+        confd.magnification = v;
+        found = true;
     }
-
-    let fd = fs::open(&path, 0);
-    if fd == u32::MAX {
-        return DockSettings::default();
+    if let Some(v) = dock_settings_schema().read_i64("config/mag_size") {
+        confd.mag_size = v.max(0) as u32;
+        found = true;
     }
-
-    let mut data = vec![0u8; file_size];
-    let n = fs::read(fd, &mut data) as usize;
-    fs::close(fd);
-
-    if n == 0 {
-        return DockSettings::default();
+    if let Some(v) = dock_settings_schema().read_i64("config/position") {
+        confd.position = v.max(0) as u32;
+        found = true;
     }
-
-    let text = match core::str::from_utf8(&data[..n]) {
-        Ok(s) => s,
-        Err(_) => return DockSettings::default(),
-    };
-
-    let mut s = DockSettings::default();
-    for line in text.split('\n') {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some((key, val)) = line.split_once('=') {
-            let key = key.trim();
-            let val = val.trim();
-            match key {
-                "icon_size" => {
-                    if let Some(v) = parse_u32(val) { s.icon_size = v; }
-                }
-                "magnification" => {
-                    s.magnification = val == "1" || val == "true";
-                }
-                "mag_size" => {
-                    if let Some(v) = parse_u32(val) { s.mag_size = v; }
-                }
-                "position" => {
-                    if let Some(v) = parse_u32(val) { s.position = v; }
-                }
-                "auto_hide" => {
-                    s.auto_hide = val == "1" || val == "true";
-                }
-                _ => {}
-            }
-        }
+    if let Some(v) = dock_settings_schema().read_bool("config/auto_hide") {
+        confd.auto_hide = v;
+        found = true;
     }
-
-    s.validate();
-    s
+    confd.validate();
+    confd
 }
 
 /// Save dock settings to the settings file.
 pub fn save_dock_settings(s: &DockSettings) {
-    let path = settings_path();
-
-    let content = format!(
-        "icon_size={}\nmagnification={}\nmag_size={}\nposition={}\nauto_hide={}\n",
-        s.icon_size,
-        if s.magnification { 1 } else { 0 },
-        s.mag_size,
-        s.position,
-        if s.auto_hide { 1 } else { 0 },
-    );
-
-    let _ = fs::write_bytes(&path, content.as_bytes());
-}
-
-/// Simple u32 parser (no_std).
-fn parse_u32(s: &str) -> Option<u32> {
-    let mut result: u32 = 0;
-    for b in s.bytes() {
-        if b < b'0' || b > b'9' {
-            return None;
-        }
-        result = result.checked_mul(10)?.checked_add((b - b'0') as u32)?;
-    }
-    if s.is_empty() { None } else { Some(result) }
+    let _ = dock_settings_schema().register();
+    let _ = dock_settings_schema().write_i64("config/icon_size", s.icon_size as i64);
+    let _ = dock_settings_schema().write_bool("config/magnification", s.magnification);
+    let _ = dock_settings_schema().write_i64("config/mag_size", s.mag_size as i64);
+    let _ = dock_settings_schema().write_i64("config/position", s.position as i64);
+    let _ = dock_settings_schema().write_bool("config/auto_hide", s.auto_hide);
 }
