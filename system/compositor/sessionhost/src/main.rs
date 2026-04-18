@@ -43,14 +43,30 @@ fn main() {
 
         // Poll launch requests from Dock/Finder
         if ipc::evt_chan_poll(chan, chan_sub, &mut evt) {
+            anyos_std::println!(
+                "[sessionhost] evt={} req_sub={} shm_id={}",
+                evt[0], evt[1], evt[2]
+            );
             if evt[0] == CMD_LAUNCH_APP {
                 // evt[1] = requester sub_id, evt[2] = shm_id with path
                 let requester_sub = evt[1];
                 let shm_id = evt[2];
+                anyos_std::println!(
+                    "[sessionhost] launch request requester_sub={} shm_id={}",
+                    requester_sub, shm_id
+                );
                 let tid = launch::launch_app(shm_id);
+                anyos_std::println!(
+                    "[sessionhost] launch result requester_sub={} tid={}",
+                    requester_sub, tid
+                );
                 // Send result back to requester
                 let reply = [EVT_LAUNCH_RESULT, tid, 0, 0, 0];
                 ipc::evt_chan_emit_to(chan, requester_sub, &reply);
+                anyos_std::println!(
+                    "[sessionhost] reply emitted requester_sub={} tid={}",
+                    requester_sub, tid
+                );
             }
             continue;
         }

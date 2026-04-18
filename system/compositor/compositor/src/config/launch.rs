@@ -2,8 +2,31 @@
 
 use anyos_std::println;
 use anyos_std::process;
+use alloc::vec::Vec;
 
 use super::file::{read_string, register_manifest};
+
+fn collect_program_lines<'a>(text: &'a str, section_name: &str) -> Vec<&'a str> {
+    let has_sections = text.lines().any(|line| line.trim_start().starts_with('['));
+    let mut in_target_section = !has_sections;
+    let mut lines = Vec::new();
+
+    for line in text.split('\n') {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with('[') {
+            in_target_section = line == section_name;
+            continue;
+        }
+        if in_target_section {
+            lines.push(line);
+        }
+    }
+
+    lines
+}
 
 pub fn launch_login_services() {
     register_manifest();
@@ -12,19 +35,7 @@ pub fn launch_login_services() {
         None => return,
     };
 
-    let mut in_login = false;
-    for line in text.split('\n') {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with('[') {
-            in_login = line == "[login]";
-            continue;
-        }
-        if !in_login {
-            continue;
-        }
+    for line in collect_program_lines(&text, "[login]") {
         let tid = process::spawn(line, "");
         if tid != 0 {
             println!("compositor: [login] launched '{}' (TID={})", line, tid);
@@ -44,21 +55,9 @@ pub fn launch_autostart() -> alloc::vec::Vec<u32> {
         }
     };
 
-    let mut in_autostart = false;
     let mut tids = alloc::vec::Vec::new();
 
-    for line in text.split('\n') {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if line.starts_with('[') {
-            in_autostart = line == "[autostart]";
-            continue;
-        }
-        if !in_autostart {
-            continue;
-        }
+    for line in collect_program_lines(&text, "[autostart]") {
         let tid = process::spawn(line, "");
         if tid != 0 && tid != u32::MAX {
             println!("compositor: launched '{}' (TID={})", line, tid);
