@@ -512,11 +512,15 @@ impl CoreFsDriver {
         let id = InodeId(inner.next_id);
         inner.next_id += 1;
         let target_bytes = target.as_bytes();
+        let mut md = FileMetadata::default();
+        md.uid = crate::task::scheduler::current_thread_uid() as u32;
+        md.gid = crate::task::scheduler::current_thread_gid() as u32;
+        md.mode = 0xF11;
         let mut inode = Inode::new_at(
             id,
             InodeKind::Symlink,
             new_path,
-            FileMetadata::default(),
+            md,
             Timestamp::EPOCH,
         );
         inode.size = target_bytes.len();
@@ -539,7 +543,8 @@ fn ensure_root_directory(state: &mut PersistedState) -> bool {
         return false;
     }
     let mut metadata = FileMetadata::default();
-    metadata.mode = 0o755;
+    // anyOS permission encoding: owner=RMDC, group=R, other=R.
+    metadata.mode = 0xF11;
     let root = Inode::new_at(
         InodeId(1),
         InodeKind::Directory,
@@ -784,7 +789,14 @@ impl Filesystem for CoreFsDriver {
 
         let id = InodeId(inner.next_id);
         inner.next_id += 1;
-        let inode = Inode::new_at(id, kind, new_path, FileMetadata::default(), Timestamp::EPOCH);
+        let mut md = FileMetadata::default();
+        md.uid = crate::task::scheduler::current_thread_uid() as u32;
+        md.gid = crate::task::scheduler::current_thread_gid() as u32;
+        // anyOS permission encoding (see kernel/src/fs/permissions.rs):
+        // owner=RMDC, group=R, other=R — owner has full control, everyone
+        // else can only read (and, for directories, traverse).
+        md.mode = 0xF11;
+        let inode = Inode::new_at(id, kind, new_path, md, Timestamp::EPOCH);
         inner.state.active_inodes.push(inode);
         Ok(CoreFsDriver::inode_u32_from_id(id))
     }
