@@ -6,6 +6,8 @@ use alloc::vec::Vec;
 
 use super::file::{read_string, register_manifest};
 
+const REQUIRED_SESSION_PROGRAMS: &[&str] = &["/System/Sessionhost"];
+
 fn collect_program_lines<'a>(text: &'a str, section_name: &str) -> Vec<&'a str> {
     let has_sections = text.lines().any(|line| line.trim_start().starts_with('['));
     let mut in_target_section = !has_sections;
@@ -26,6 +28,24 @@ fn collect_program_lines<'a>(text: &'a str, section_name: &str) -> Vec<&'a str> 
     }
 
     lines
+}
+
+pub fn launch_required_services() -> (Vec<u32>, bool) {
+    let mut tids = Vec::new();
+    let mut all_ok = true;
+
+    for path in REQUIRED_SESSION_PROGRAMS {
+        let tid = process::spawn(path, "");
+        if tid != 0 && tid != u32::MAX {
+            println!("compositor: required service launched '{}' (TID={})", path, tid);
+            tids.push(tid);
+        } else {
+            println!("compositor: FATAL — required service failed '{}'", path);
+            all_ok = false;
+        }
+    }
+
+    (tids, all_ok)
 }
 
 pub fn launch_login_services() {

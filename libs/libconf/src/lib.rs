@@ -7,8 +7,10 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 const PIPE_NAME: &str = "confd";
-const MAX_READ_RETRIES: usize = 200;
 const READ_CHUNK_SIZE: usize = 512;
+const SINGLE_LINE_TIMEOUT_MS: u32 = 5_000;
+const MULTI_LINE_TIMEOUT_MS: u32 = 30_000;
+const READ_IDLE_GRACE_MS: u32 = 500;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistryScope {
@@ -497,13 +499,22 @@ impl ConfClient {
 
             let mut data = Vec::new();
             let mut chunk = [0u8; READ_CHUNK_SIZE];
-            for _ in 0..MAX_READ_RETRIES {
+            let timeout_ms = if expect_end {
+                MULTI_LINE_TIMEOUT_MS
+            } else {
+                SINGLE_LINE_TIMEOUT_MS
+            };
+            let overall_deadline = libsyscall::uptime_ms().wrapping_add(timeout_ms);
+            let mut idle_deadline = libsyscall::uptime_ms().wrapping_add(READ_IDLE_GRACE_MS);
+
+            loop {
                 let n = anyos_std::ipc::pipe_read(self.reply_pipe, &mut chunk);
                 if n == u32::MAX {
                     return Err(ConfError::Disconnected);
                 }
                 if n > 0 {
                     data.extend_from_slice(&chunk[..n as usize]);
+                    idle_deadline = libsyscall::uptime_ms().wrapping_add(READ_IDLE_GRACE_MS);
                     if !expect_end {
                         if let Some(line) = take_first_line(&data) {
                             return Ok(line);
@@ -513,6 +524,12 @@ impl ConfClient {
                             .map_err(|_| ConfError::Protocol(String::from("invalid UTF-8")))?;
                         return Ok(String::from(text));
                     }
+                }
+                let now = libsyscall::uptime_ms();
+                if deadline_reached(overall_deadline)
+                    || (!data.is_empty() && deadline_reached(idle_deadline))
+                {
+                    break;
                 }
                 anyos_std::process::sleep(10);
             }

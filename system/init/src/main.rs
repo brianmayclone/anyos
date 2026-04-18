@@ -2,9 +2,7 @@
 #![no_main]
 
 use anyos_std::process;
-use anyos_std::sys;
 use anyos_std::fs;
-use anyos_std::ipc;
 use anyos_std::println;
 use anyos_std::format;
 use anyos_std::Box;
@@ -65,56 +63,6 @@ fn get_status(buf: &mut [u8; 128]) -> usize {
     status.len
 }
 
-// ── CPU Benchmark ───────────────────────────────────────────────────────────
-
-fn benchmark_cpu(duration_ticks: u32) -> u32 {
-    let start = sys::uptime();
-    let mut iterations: u32 = 0;
-    let mut acc: u32 = 0x12345678;
-
-    loop {
-        for _ in 0..64 {
-            for _ in 0..1000 {
-                acc = acc.wrapping_mul(1103515245).wrapping_add(12345);
-                acc ^= acc >> 16;
-                acc = acc.wrapping_add(acc << 5);
-            }
-            iterations += 1;
-        }
-        if sys::uptime().wrapping_sub(start) >= duration_ticks {
-            break;
-        }
-    }
-
-    if acc == 0 { iterations += 1; }
-    iterations
-}
-
-fn benchmark_memory(duration_ticks: u32) -> u32 {
-    let start = sys::uptime();
-    let mut iterations: u32 = 0;
-    let mut buf = [0u32; 4096]; // 16 KiB
-
-    loop {
-        for _ in 0..32 {
-            for i in 0..buf.len() {
-                buf[i] = (i as u32).wrapping_mul(0xDEADBEEF);
-            }
-            let mut sum: u32 = 0;
-            for i in 0..buf.len() {
-                sum = sum.wrapping_add(buf[i]);
-            }
-            if sum == 0 { buf[0] = 1; }
-            iterations += 1;
-        }
-        if sys::uptime().wrapping_sub(start) >= duration_ticks {
-            break;
-        }
-    }
-
-    iterations
-}
-
 // ── Service Startup ─────────────────────────────────────────────────────────
 
 fn run_service_manager() {
@@ -132,73 +80,13 @@ fn run_service_manager() {
     println!("init: '{}' exited (code={})", path, code);
 }
 
-// ── Formatting ──────────────────────────────────────────────────────────────
-
-fn fmt_u32(buf: &mut [u8], val: u32) -> usize {
-    let mut tmp = [0u8; 12];
-    let s = anyos_std::fmt::fmt_u32(&mut tmp, val);
-    let n = s.len();
-    buf[..n].copy_from_slice(s.as_bytes());
-    n
-}
-
 // ── Worker thread ───────────────────────────────────────────────────────────
 
 fn worker_entry() {
     recover_pending_upgrade_if_needed();
 
-    let hz = sys::tick_hz();
-
-    // Phase 1: CPU benchmark
-    set_status("Initializing Hardware (1/2)...");
-    PROGRESS.store(5, Ordering::Release);
-    let cpu_score = benchmark_cpu(hz * 2);
-
-    // Phase 2: Memory benchmark
-    set_status("Initializing Hardware (2/2)...");
-    PROGRESS.store(15, Ordering::Release);
-    let mem_score = benchmark_memory(hz);
-
-    // Report results
-    let mut line = [0u8; 80];
-    let mut p: usize;
-
-    p = 0;
-    let s = b"  CPU score : ";
-    line[p..p + s.len()].copy_from_slice(s); p += s.len();
-    p += fmt_u32(&mut line[p..], cpu_score);
-    let s = b" Kops/2s";
-    line[p..p + s.len()].copy_from_slice(s); p += s.len();
-    if let Ok(s) = core::str::from_utf8(&line[..p]) { println!("{}", s); }
-
-    p = 0;
-    let s = b"  Mem score : ";
-    line[p..p + s.len()].copy_from_slice(s); p += s.len();
-    p += fmt_u32(&mut line[p..], mem_score);
-    let s = b" passes/1s (16K buf)";
-    line[p..p + s.len()].copy_from_slice(s); p += s.len();
-    if let Ok(s) = core::str::from_utf8(&line[..p]) { println!("{}", s); }
-
-    let pipe_id = ipc::pipe_create("sys:startup_info");
-    if pipe_id > 0 {
-        let mut info = [0u8; 128];
-        let mut ip = 0;
-        let s = b"cpu_score=";
-        info[ip..ip + s.len()].copy_from_slice(s); ip += s.len();
-        ip += fmt_u32(&mut info[ip..], cpu_score);
-        info[ip] = b'\n'; ip += 1;
-        let s = b"mem_score=";
-        info[ip..ip + s.len()].copy_from_slice(s); ip += s.len();
-        ip += fmt_u32(&mut info[ip..], mem_score);
-        info[ip] = b'\n'; ip += 1;
-        ipc::pipe_write(pipe_id, &info[..ip]);
-    }
-
-    sys::boot_ready();
-
-    // Phase 3: Start managed services
     set_status("Starting services...");
-    PROGRESS.store(25, Ordering::Release);
+    PROGRESS.store(15, Ordering::Release);
     run_service_manager();
 
     // Done

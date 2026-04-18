@@ -6,7 +6,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use libanyui_client as ui;
-use libconf::{ConfClient, ConfItem, ConfValue, NodeKind, RegistryScope};
+use libconf::{ConfClient, ConfError, ConfItem, ConfValue, NodeKind, RegistryScope};
 
 anyos_std::entry!(main);
 
@@ -314,11 +314,28 @@ fn reload_snapshot() {
             refresh_visible(a);
             restore_selection(a);
         }
-        Err(_) => {
-            a.client = None;
-            a.connection.set_text("Retrying...");
-            a.connection.set_text_color(tc.warning);
-            a.status.set_text("Lost connection to confd. Will retry automatically.");
+        Err(err) => {
+            a.grid.set_row_count(0);
+            a.tree.clear();
+            a.tree_nodes.clear();
+            match err {
+                ConfError::Remote(message) if message == "forbidden" => {
+                    a.connection.set_text("Live");
+                    a.connection.set_text_color(tc.success);
+                    a.status.set_text("SYSTEM scope is forbidden for the current identity.");
+                }
+                ConfError::Timeout => {
+                    a.connection.set_text("Slow");
+                    a.connection.set_text_color(tc.warning);
+                    a.status.set_text("Registry snapshot timed out. Retrying automatically.");
+                }
+                _ => {
+                    a.client = None;
+                    a.connection.set_text("Retrying...");
+                    a.connection.set_text_color(tc.warning);
+                    a.status.set_text("Lost connection to confd. Will retry automatically.");
+                }
+            }
         }
     }
 }

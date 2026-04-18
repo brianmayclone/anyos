@@ -7,7 +7,7 @@ use libconf_schema::{default_int, default_string, manifest, RegistryScope, Servi
 
 const DEFAULT_LOGIN_PROGRAMS: &str = "/System/inputmon\n";
 const DEFAULT_AUTOSTART_PROGRAMS: &str =
-    "/System/Sessionhost\n/System/notifyd\n/System/netmon\n/System/audiomon\n";
+    "/System/notifyd\n/System/netmon\n/System/audiomon\n";
 const DEFAULT_SHORTCUTS: &str = "";
 
 const COMPOSITOR_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[

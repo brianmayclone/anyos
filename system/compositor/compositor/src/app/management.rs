@@ -154,6 +154,13 @@ pub(crate) fn management_loop(
             release_lock();
             signal_render();
 
+            let (required_tids, required_ok) = config::launch_required_services();
+            service_tids.extend(required_tids);
+            if !required_ok {
+                println!("compositor: desktop session startup aborted because a required service is missing");
+                continue;
+            }
+
             let dock_tid = process::spawn("/System/compositor/dock", "");
             if dock_tid != u32::MAX {
                 service_tids.push(dock_tid);
