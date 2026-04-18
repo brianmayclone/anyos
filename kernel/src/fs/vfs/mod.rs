@@ -1918,6 +1918,20 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
         return Ok(entries);
     }
 
+    // --- CoreFS root path (Phase 6 generic dispatch) ---
+    if let Some(driver) = state.corefs_driver.as_ref() {
+        let q = if path.is_empty() { "/" } else { path };
+        let (inode, file_type, _size) = Filesystem::lookup(driver, q)?;
+        if file_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        let mut entries = Filesystem::readdir(driver, inode)?;
+        if path == "/" {
+            add_virtual_root_entries(state, &mut entries);
+        }
+        return Ok(entries);
+    }
+
     // --- OverlayFS root (CD-ROM boot with writable RAM overlay) ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
         let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
@@ -2591,6 +2605,12 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
         });
     }
 
+    // --- CoreFS root path (Phase 6 generic dispatch) ---
+    if let Some(driver) = state.corefs_driver.as_ref() {
+        let q = if path.is_empty() { "/" } else { path };
+        return Filesystem::stat(driver, q);
+    }
+
     // --- OverlayFS root (CD-ROM boot with writable RAM overlay) ---
     if state.overlay_fs.is_some() && state.iso9660_fs.is_some() {
         let iso = state.iso9660_fs.as_ref().ok_or(FsError::IoError)?;
@@ -3120,6 +3140,13 @@ pub fn get_permissions(path: &str) -> Result<(u16, u16, u16), FsError> {
         let exfat_guard = exfat_drv.lock_inner();
         let exfat = &*exfat_guard;
         return exfat.get_permissions(path);
+    }
+
+    // CoreFS root path — derive (uid, gid, mode) from stat().
+    if let Some(driver) = state.corefs_driver.as_ref() {
+        let q = if path.is_empty() { "/" } else { path };
+        let st = Filesystem::stat(driver, q)?;
+        return Ok((st.uid, st.gid, st.mode));
     }
 
     // FAT16 / other: no permission support
