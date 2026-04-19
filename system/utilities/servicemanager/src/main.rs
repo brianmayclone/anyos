@@ -33,6 +33,12 @@ struct ServiceEntry {
     error: String,
 }
 
+struct RuntimeEntry {
+    name: String,
+    state: String,
+    error: String,
+}
+
 struct App {
     conf: Option<ConfClient>,
     ami: Option<AmiClient>,
@@ -456,11 +462,13 @@ fn load_services() -> Result<Vec<ServiceEntry>, String> {
     };
 
     let items = client
-        .list_children(RegistryScope::System, "services")
-        .map_err(|err| format!("Failed to list services: {:?}", err))?;
+        .list(RegistryScope::System, "services")
+        .map_err(|err| format!("Failed to load services: {:?}", err))?;
+    let runtime = load_runtime_entries();
     let mut services = Vec::new();
+    let mut names = Vec::new();
 
-    for item in items {
+    for item in &items {
         if item.kind != NodeKind::Directory {
             continue;
         }
@@ -470,7 +478,11 @@ fn load_services() -> Result<Vec<ServiceEntry>, String> {
         if name.is_empty() || name.contains('/') {
             continue;
         }
-        if let Some(service) = read_service_entry(name) {
+        if names.iter().any(|existing: &String| existing.as_str() == name) {
+            continue;
+        }
+        names.push(String::from(name));
+        if let Some(service) = read_service_entry(name, &items, &runtime) {
             services.push(service);
         }
     }
@@ -479,23 +491,24 @@ fn load_services() -> Result<Vec<ServiceEntry>, String> {
     Ok(services)
 }
 
-fn read_service_entry(name: &str) -> Option<ServiceEntry> {
-    let a = app();
-    let client = a.conf.as_mut()?;
-
-    let removed = conf_bool(client, name, "removed").unwrap_or(false);
+fn read_service_entry(
+    name: &str,
+    items: &[libconf::ConfItem],
+    runtime: &[RuntimeEntry],
+) -> Option<ServiceEntry> {
+    let removed = conf_bool(items, name, "removed").unwrap_or(false);
     if removed {
         return None;
     }
 
-    let exec = conf_string(client, name, "exec")?;
-    let args = conf_string(client, name, "args").unwrap_or_default();
-    let depends = conf_string(client, name, "depends").unwrap_or_default();
-    let wants = conf_string(client, name, "wants").unwrap_or_default();
-    let after = conf_string(client, name, "after").unwrap_or_default();
-    let enabled = conf_bool(client, name, "enabled").unwrap_or(true);
-    let startup_timeout_ms = conf_u32(client, name, "startup_timeout_ms").unwrap_or(0);
-    let (state, error) = read_runtime_state(name);
+    let exec = conf_string(items, name, "exec")?;
+    let args = conf_string(items, name, "args").unwrap_or_default();
+    let depends = conf_string(items, name, "depends").unwrap_or_default();
+    let wants = conf_string(items, name, "wants").unwrap_or_default();
+    let after = conf_string(items, name, "after").unwrap_or_default();
+    let enabled = conf_bool(items, name, "enabled").unwrap_or(true);
+    let startup_timeout_ms = conf_u32(items, name, "startup_timeout_ms").unwrap_or(0);
+    let (state, error) = read_runtime_state(runtime, name);
 
     Some(ServiceEntry {
         name: String::from(name),
@@ -515,54 +528,90 @@ fn conf_path(name: &str, field: &str) -> String {
     format!("services/{}/config/{}", name, field)
 }
 
-fn conf_string(client: &mut ConfClient, name: &str, field: &str) -> Option<String> {
-    match client.get(RegistryScope::System, &conf_path(name, field)).ok()?.value {
-        Some(ConfValue::String(value)) => Some(value),
+fn conf_item_value<'a>(items: &'a [libconf::ConfItem], name: &str, field: &str) -> Option<&'a ConfValue> {
+    let path = conf_path(name, field);
+    items.iter().find(|item| item.path == path)?.value.as_ref()
+}
+
+fn conf_string(items: &[libconf::ConfItem], name: &str, field: &str) -> Option<String> {
+    match conf_item_value(items, name, field)? {
+        ConfValue::String(value) => Some(value.clone()),
         _ => None,
     }
 }
 
-fn conf_bool(client: &mut ConfClient, name: &str, field: &str) -> Option<bool> {
-    match client.get(RegistryScope::System, &conf_path(name, field)).ok()?.value {
-        Some(ConfValue::Bool(value)) => Some(value),
-        Some(ConfValue::Int(value)) => Some(value != 0),
+fn conf_bool(items: &[libconf::ConfItem], name: &str, field: &str) -> Option<bool> {
+    match conf_item_value(items, name, field)? {
+        ConfValue::Bool(value) => Some(*value),
+        ConfValue::Int(value) => Some(*value != 0),
         _ => None,
     }
 }
 
-fn conf_u32(client: &mut ConfClient, name: &str, field: &str) -> Option<u32> {
-    match client.get(RegistryScope::System, &conf_path(name, field)).ok()?.value {
-        Some(ConfValue::Int(value)) if value >= 0 => Some(value as u32),
+fn conf_u32(items: &[libconf::ConfItem], name: &str, field: &str) -> Option<u32> {
+    match conf_item_value(items, name, field)? {
+        ConfValue::Int(value) if *value >= 0 => Some(*value as u32),
         _ => None,
     }
 }
 
-fn read_runtime_state(name: &str) -> (String, String) {
+fn load_runtime_entries() -> Vec<RuntimeEntry> {
     let a = app();
     let Some(ami) = a.ami.as_mut() else {
-        return (String::from("unknown"), String::new());
+        return Vec::new();
+    };
+    let Ok(items) = ami.list("svc.") else {
+        return Vec::new();
     };
 
-    let state_key = format!("svc.{}.state", name);
-    let error_key = format!("svc.{}.error", name);
+    let mut runtime = Vec::new();
+    for item in items {
+        let Some(rest) = item.key.strip_prefix("svc.") else {
+            continue;
+        };
+        let Some(dot) = rest.find('.') else {
+            continue;
+        };
+        let name = &rest[..dot];
+        let field = &rest[dot + 1..];
+        if name.is_empty() {
+            continue;
+        }
 
-    let state = match ami.get(&state_key) {
-        Ok(item) => match item.value {
-            AmiValue::String(value) => value,
-            _ => String::from("running"),
-        },
-        Err(_) => String::from("stopped"),
-    };
+        let idx = if let Some(idx) = runtime.iter().position(|entry: &RuntimeEntry| entry.name == name) {
+            idx
+        } else {
+            runtime.push(RuntimeEntry {
+                name: String::from(name),
+                state: String::from("stopped"),
+                error: String::new(),
+            });
+            runtime.len() - 1
+        };
 
-    let error = match ami.get(&error_key) {
-        Ok(item) => match item.value {
-            AmiValue::String(value) => value,
-            _ => String::new(),
-        },
-        Err(_) => String::new(),
-    };
+        match field {
+            "state" => {
+                if let AmiValue::String(value) = item.value {
+                    runtime[idx].state = value;
+                }
+            }
+            "error" => {
+                if let AmiValue::String(value) = item.value {
+                    runtime[idx].error = value;
+                }
+            }
+            _ => {}
+        }
+    }
 
-    (state, error)
+    runtime
+}
+
+fn read_runtime_state(runtime: &[RuntimeEntry], name: &str) -> (String, String) {
+    if let Some(entry) = runtime.iter().find(|entry| entry.name == name) {
+        return (entry.state.clone(), entry.error.clone());
+    }
+    (String::from("stopped"), String::new())
 }
 
 fn refresh_visible() {
