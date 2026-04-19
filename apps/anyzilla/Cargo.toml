@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 libanyui_client = { path = "../../libs/libanyui_client" }
+libconf_schema = { path = "../../libs/libconf_schema" }
 
 [profile.dev]
 panic = "abort"

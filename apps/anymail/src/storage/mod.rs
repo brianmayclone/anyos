@@ -3,3 +3,4 @@
 pub mod account;
 pub mod contacts;
 pub mod maildir;
+pub mod schema;

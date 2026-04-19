@@ -206,8 +206,7 @@ pub fn sync_worker_entry() {
     }
 
     // Save contacts (on worker thread — file I/O is safe)
-    let contacts_path = alloc::format!("{}/contacts.json", base_dir);
-    crate::app().address_book.save(&contacts_path);
+    crate::app().address_book.save();
 
     ss.phase.store(SyncPhase::Done as u32, Ordering::Release);
     ss.worker_active.store(false, Ordering::Release);

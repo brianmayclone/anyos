@@ -1,10 +1,12 @@
 // Copyright (c) 2024-2026 Mike Strathmann
 // SPDX-License-Identifier: MIT
-//! Address book / contacts (JSON persistence).
+//! Address book / contacts backed by confd with JSON import compatibility.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::json::Value;
+
+use crate::storage::schema::schema;
 
 /// A contact entry.
 #[derive(Clone)]
@@ -38,13 +40,23 @@ impl AddressBook {
         }
     }
 
-    /// Load contacts from JSON file.
-    pub fn load(path: &str) -> Self {
-        let mut book = Self::new();
+    /// Load from confd, falling back to a legacy JSON file on first run.
+    pub fn load(legacy_path: &str) -> Self {
+        let _ = schema().register();
+        if let Some(book) = load_from_confd() {
+            return book;
+        }
+        let book = Self::load_from_path(legacy_path);
+        if !book.contacts.is_empty() {
+            book.save();
+        }
+        book
+    }
 
+    pub fn load_from_path(path: &str) -> Self {
         let fd = anyos_std::fs::open(path, 0);
         if fd == u32::MAX {
-            return book;
+            return Self::new();
         }
 
         let mut buf = alloc::vec![0u8; 64 * 1024];
@@ -64,15 +76,30 @@ impl AddressBook {
         }
         anyos_std::fs::close(fd);
 
-        if total == 0 {
+        let text = match core::str::from_utf8(&buf[..total]) {
+            Ok(s) => s.trim(),
+            Err(_) => return Self::new(),
+        };
+        Self::from_json_str(text)
+    }
+
+    /// Save the authoritative address book to confd.
+    pub fn save(&self) {
+        let _ = schema().register();
+        let json = self.to_json_string();
+        let _ = schema().write_string("config/contacts_json", &json);
+    }
+
+    pub fn save_to_path(&self, path: &str) {
+        let json_str = self.to_json_string();
+        let _ = anyos_std::fs::write_bytes(path, json_str.as_bytes());
+    }
+
+    fn from_json_str(text: &str) -> Self {
+        let mut book = Self::new();
+        if text.is_empty() {
             return book;
         }
-
-        let text = match core::str::from_utf8(&buf[..total]) {
-            Ok(s) => s,
-            Err(_) => return book,
-        };
-
         let json = match Value::parse(text) {
             Ok(v) => v,
             Err(_) => return book,
@@ -93,8 +120,7 @@ impl AddressBook {
         book
     }
 
-    /// Save contacts to JSON file.
-    pub fn save(&self, path: &str) {
+    fn to_json_string(&self) -> String {
         let mut root = Value::new_object();
         let mut arr = Value::new_array();
 
@@ -108,8 +134,7 @@ impl AddressBook {
         }
 
         root.set("contacts", arr);
-        let json_str = root.to_json_string_pretty();
-        let _ = anyos_std::fs::write_bytes(path, json_str.as_bytes());
+        root.to_json_string_pretty()
     }
 
     /// Add a contact (avoids duplicates by email).
@@ -160,6 +185,11 @@ impl AddressBook {
             }
         }
     }
+}
+
+fn load_from_confd() -> Option<AddressBook> {
+    let json = schema().read_string("config/contacts_json")?;
+    Some(AddressBook::from_json_str(&json))
 }
 
 fn to_lower(s: &str) -> String {

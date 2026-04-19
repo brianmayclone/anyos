@@ -12,6 +12,7 @@ use anyos_std::{net, fs, env};
 use anyos_std::json::Value;
 use libanyui_client as anyui;
 use anyui::{IconType, Widget};
+use libconf_schema::{default_int, default_string, manifest, RegistryScope, ServiceSchema};
 
 anyos_std::entry!(main);
 
@@ -33,6 +34,28 @@ struct FileEntry {
 
 const SITES_FILE: &str = ".anyzilla_sites.json";
 const PREFS_FILE: &str = ".anyzilla_prefs.json";
+const ANYZILLA_DIRS: &[&str] = &["config"];
+const ANYZILLA_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_string("config/sites_json", ""),
+    default_string("config/prefs_json", ""),
+    default_int("config/win_x", -1),
+    default_int("config/win_y", -1),
+    default_int("config/win_w", 1100),
+    default_int("config/win_h", 680),
+];
+const ANYZILLA_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const ANYZILLA_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/anyzilla",
+    RegistryScope::User,
+    1,
+    ANYZILLA_DIRS,
+    ANYZILLA_DEFAULTS,
+    ANYZILLA_MIGRATIONS,
+);
+
+fn config_schema() -> ServiceSchema<'static> {
+    ServiceSchema::new("anyzilla", &ANYZILLA_MANIFEST)
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum SortColumn { Name, Size, Date }
@@ -82,21 +105,22 @@ fn sites_path() -> String {
 }
 
 fn load_sites() -> Vec<SiteProfile> {
-    let path = sites_path();
-    let fd = fs::open(&path, 0);
-    if fd == u32::MAX { return Vec::new(); }
-    let mut data = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
-        data.extend_from_slice(&buf[..n as usize]);
+    let _ = config_schema().register();
+    if let Some(text) = config_schema().read_string("config/sites_json") {
+        if !text.trim().is_empty() {
+            return parse_sites_json(&text);
+        }
     }
-    fs::close(fd);
-    let text = match core::str::from_utf8(&data) {
-        Ok(s) => s.trim(),
-        Err(_) => return Vec::new(),
-    };
+    let path = sites_path();
+    let text = read_legacy_json(&path);
+    let sites = parse_sites_json(&text);
+    if !sites.is_empty() {
+        save_sites(&sites);
+    }
+    sites
+}
+
+fn parse_sites_json(text: &str) -> Vec<SiteProfile> {
     let val = match Value::parse(text) {
         Ok(v) => v,
         Err(_) => return Vec::new(),
@@ -113,6 +137,7 @@ fn load_sites() -> Vec<SiteProfile> {
 }
 
 fn save_sites(sites: &[SiteProfile]) {
+    let _ = config_schema().register();
     let mut root = Value::new_object();
     let mut arr = Value::new_array();
     for site in sites {
@@ -120,7 +145,7 @@ fn save_sites(sites: &[SiteProfile]) {
     }
     root.set("sites", arr);
     let json = root.to_json_string_pretty();
-    let _ = fs::write_bytes(&sites_path(), json.as_bytes());
+    let _ = config_schema().write_string("config/sites_json", &json);
 }
 
 struct Prefs {
@@ -140,25 +165,24 @@ fn prefs_path() -> String {
 }
 
 fn load_prefs() -> Prefs {
+    let _ = config_schema().register();
+    if let Some(text) = config_schema().read_string("config/prefs_json") {
+        if !text.trim().is_empty() {
+            return parse_prefs_json(&text);
+        }
+    }
     let path = prefs_path();
-    let fd = fs::open(&path, 0);
-    if fd == u32::MAX {
-        return Prefs { win_x: -1, win_y: -1, win_w: 1100, win_h: 680,
-            last_host: String::new(), last_port: 21, last_user: String::new(), last_pass: String::new() };
+    let prefs = parse_prefs_json(&read_legacy_json(&path));
+    if prefs.win_x != -1 || !prefs.last_host.is_empty() {
+        save_prefs(&prefs);
     }
-    let mut data = Vec::new();
-    let mut buf = [0u8; 2048];
-    loop {
-        let n = fs::read(fd, &mut buf);
-        if n == 0 || n == u32::MAX { break; }
-        data.extend_from_slice(&buf[..n as usize]);
-    }
-    fs::close(fd);
-    let text = core::str::from_utf8(&data).unwrap_or("");
+    prefs
+}
+
+fn parse_prefs_json(text: &str) -> Prefs {
     let val = match Value::parse(text.trim()) {
         Ok(v) => v,
-        Err(_) => return Prefs { win_x: -1, win_y: -1, win_w: 1100, win_h: 680,
-            last_host: String::new(), last_port: 21, last_user: String::new(), last_pass: String::new() },
+        Err(_) => return default_prefs(),
     };
     let mut p = Prefs {
         win_x: val["win_x"].as_i64().unwrap_or(-1) as i32,
@@ -177,6 +201,7 @@ fn load_prefs() -> Prefs {
 }
 
 fn save_prefs(p: &Prefs) {
+    let _ = config_schema().register();
     let mut root = Value::new_object();
     root.set("win_x", (p.win_x as i64).into());
     root.set("win_y", (p.win_y as i64).into());
@@ -189,7 +214,40 @@ fn save_prefs(p: &Prefs) {
         root.set("last_pass", Value::from(p.last_pass.as_str()));
     }
     let json = root.to_json_string_pretty();
-    let _ = fs::write_bytes(&prefs_path(), json.as_bytes());
+    let _ = config_schema().write_string("config/prefs_json", &json);
+    let _ = config_schema().write_i64("config/win_x", p.win_x as i64);
+    let _ = config_schema().write_i64("config/win_y", p.win_y as i64);
+    let _ = config_schema().write_i64("config/win_w", p.win_w as i64);
+    let _ = config_schema().write_i64("config/win_h", p.win_h as i64);
+}
+
+fn default_prefs() -> Prefs {
+    Prefs {
+        win_x: -1,
+        win_y: -1,
+        win_w: 1100,
+        win_h: 680,
+        last_host: String::new(),
+        last_port: 21,
+        last_user: String::new(),
+        last_pass: String::new(),
+    }
+}
+
+fn read_legacy_json(path: &str) -> String {
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return String::new();
+    }
+    let mut data = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = fs::read(fd, &mut buf);
+        if n == 0 || n == u32::MAX { break; }
+        data.extend_from_slice(&buf[..n as usize]);
+    }
+    fs::close(fd);
+    core::str::from_utf8(&data).unwrap_or("").to_string()
 }
 
 fn sort_entries(entries: &mut [FileEntry], col: SortColumn, order: SortOrder) {

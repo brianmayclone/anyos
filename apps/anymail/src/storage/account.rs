@@ -1,10 +1,12 @@
 // Copyright (c) 2024-2026 Mike Strathmann
 // SPDX-License-Identifier: MIT
-//! Account configuration (JSON persistence in $HOME/.anymail/accounts.json).
+//! Account configuration backed by confd with JSON import/export compatibility.
 
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::json::Value;
+
+use crate::storage::schema::schema;
 
 /// Protocol type for incoming mail.
 #[derive(Clone, Copy, PartialEq)]
@@ -116,17 +118,27 @@ impl MailConfig {
         }
     }
 
-    /// Load accounts from JSON file.
-    pub fn load(path: &str) -> Self {
-        let mut config = Self::new();
-
-        let fd = anyos_std::fs::open(path, 0);
-        if fd == u32::MAX {
-            // File doesn't exist or can't be opened
+    /// Load config from confd, falling back to a legacy JSON file on first run.
+    pub fn load(legacy_path: &str) -> Self {
+        let _ = schema().register();
+        if let Some(config) = load_from_confd() {
             return config;
         }
+        let config = Self::load_from_path(legacy_path);
+        if !config.accounts.is_empty() || config.check_on_startup != Self::new().check_on_startup {
+            config.save();
+        }
+        config
+    }
 
-        let mut buf = alloc::vec![0u8; 64 * 1024]; // Increased buffer size
+    /// Load accounts from a JSON file for migration or import.
+    pub fn load_from_path(path: &str) -> Self {
+        let fd = anyos_std::fs::open(path, 0);
+        if fd == u32::MAX {
+            return Self::new();
+        }
+
+        let mut buf = alloc::vec![0u8; 64 * 1024];
         let mut total = 0usize;
         loop {
             let mut chunk = [0u8; 4096];
@@ -143,27 +155,37 @@ impl MailConfig {
         }
         anyos_std::fs::close(fd);
 
-        if total == 0 {
-            // File is empty
+        let trimmed = core::str::from_utf8(&buf[..total]).unwrap_or("").trim();
+        Self::from_json_str(trimmed)
+    }
+
+    /// Save the authoritative config to confd.
+    pub fn save(&self) {
+        let _ = schema().register();
+        let _ = schema().write_bool("config/check_on_startup", self.check_on_startup);
+        let _ = schema().write_string("config/theme", &self.theme);
+        let _ = schema().write_i64("config/active_account", self.active_account as i64);
+        let json = self.to_json_string();
+        let _ = schema().write_string("config/accounts_json", &json);
+    }
+
+    /// Save JSON to a file for export compatibility.
+    pub fn save_to_path(&self, path: &str) {
+        let json_str = self.to_json_string();
+        let _ = anyos_std::fs::write_bytes(path, json_str.as_bytes());
+    }
+
+    fn from_json_str(text: &str) -> Self {
+        let mut config = Self::new();
+        if text.is_empty() {
             return config;
         }
-
-        // Trim whitespace and null bytes
-        let text_bytes = &buf[..total];
-        let trimmed = core::str::from_utf8(text_bytes).unwrap_or("").trim();
-
-        if trimmed.is_empty() {
-            return config;
-        }
-
-        let json = match Value::parse(trimmed) {
+        let json = match Value::parse(text) {
             Ok(v) => v,
-            Err(_) => {
-                // JSON parse failed - return default config
-                return config;
-            }
+            Err(_) => return config,
         };
 
+        config.active_account = json["active_account"].as_i64().unwrap_or(0).max(0) as usize;
         config.check_on_startup = json["check_on_startup"].as_bool().unwrap_or(true);
         config.theme = String::from(json["theme"].as_str().unwrap_or("dark"));
 
@@ -185,12 +207,11 @@ impl MailConfig {
                 acc.incoming_security =
                     parse_security(item["incoming_security"].as_str().unwrap_or("tls"));
                 acc.incoming_user = String::from(item["incoming_user"].as_str().unwrap_or(""));
-                // Try obfuscated format first, fall back to plain text
                 let pass_str = item["incoming_pass"].as_str().unwrap_or("");
                 acc.incoming_pass = if pass_str.starts_with("$OBF$") {
-                    deobfuscate(&pass_str[5..]) // Skip $OBF$ prefix
+                    deobfuscate(&pass_str[5..])
                 } else {
-                    String::from(pass_str) // Plain text fallback
+                    String::from(pass_str)
                 };
 
                 acc.smtp_host = String::from(item["smtp_host"].as_str().unwrap_or(""));
@@ -198,12 +219,11 @@ impl MailConfig {
                 acc.smtp_security =
                     parse_security(item["smtp_security"].as_str().unwrap_or("starttls"));
                 acc.smtp_user = String::from(item["smtp_user"].as_str().unwrap_or(""));
-                // Try obfuscated format first, fall back to plain text
                 let pass_str = item["smtp_pass"].as_str().unwrap_or("");
                 acc.smtp_pass = if pass_str.starts_with("$OBF$") {
-                    deobfuscate(&pass_str[5..]) // Skip $OBF$ prefix
+                    deobfuscate(&pass_str[5..])
                 } else {
-                    String::from(pass_str) // Plain text fallback
+                    String::from(pass_str)
                 };
 
                 acc.check_interval_secs = item["check_interval"].as_i64().unwrap_or(300) as u32;
@@ -214,7 +234,6 @@ impl MailConfig {
                     acc.id = Account::generate_id(&acc.email);
                 }
 
-                // Sanity check: only add account if it has email
                 if !acc.email.is_empty() {
                     config.accounts.push(acc);
                 }
@@ -224,9 +243,9 @@ impl MailConfig {
         config
     }
 
-    /// Save accounts to JSON file.
-    pub fn save(&self, path: &str) {
+    fn to_json_string(&self) -> String {
         let mut root = Value::new_object();
+        root.set("active_account", (self.active_account as i64).into());
         root.set("check_on_startup", self.check_on_startup.into());
         root.set("theme", self.theme.as_str().into());
 
@@ -262,9 +281,24 @@ impl MailConfig {
         }
         root.set("accounts", arr);
 
-        let json_str = root.to_json_string_pretty();
-        let _ = anyos_std::fs::write_bytes(path, json_str.as_bytes());
+        root.to_json_string_pretty()
     }
+}
+
+fn load_from_confd() -> Option<MailConfig> {
+    let json = schema().read_string("config/accounts_json")?;
+    let mut config = MailConfig::from_json_str(&json);
+    config.check_on_startup = schema()
+        .read_bool("config/check_on_startup")
+        .unwrap_or(config.check_on_startup);
+    config.theme = schema()
+        .read_string("config/theme")
+        .unwrap_or(config.theme);
+    config.active_account = schema()
+        .read_i64("config/active_account")
+        .unwrap_or(config.active_account as i64)
+        .max(0) as usize;
+    Some(config)
 }
 
 fn parse_security(s: &str) -> Security {
@@ -281,16 +315,6 @@ fn security_str(s: Security) -> &'static str {
         Security::StartTls => "starttls",
         Security::None => "none",
     }
-}
-
-/// Simple XOR obfuscation with machine-derived key (not cryptographically secure).
-fn obfuscate(password: &str) -> String {
-    let key = anyos_std::crypto::md5(b"anymail-key-seed");
-    let mut out = Vec::new();
-    for (i, &b) in password.as_bytes().iter().enumerate() {
-        out.push(b ^ key[i % 16]);
-    }
-    crate::mail::base64::encode_str(&out)
 }
 
 fn deobfuscate(encoded: &str) -> String {

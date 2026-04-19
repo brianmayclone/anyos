@@ -73,7 +73,6 @@ struct FolderInfo {
 struct AppState {
     // Paths
     base_dir: String,
-    config_path: String,
 
     // Config
     config: MailConfig,
@@ -386,7 +385,6 @@ fn main() {
     unsafe {
         APP = Some(AppState {
             base_dir: base_dir.clone(),
-            config_path: config_path.clone(),
             config,
             address_book,
             win: win.clone(),
@@ -2019,7 +2017,7 @@ fn open_account_setup() {
             a.config.accounts.push(acc);
         }
 
-        a.config.save(&a.config_path);
+        a.config.save();
         maildir::ensure_dirs(&a.base_dir, &a.config.accounts.last().unwrap().id);
         populate_folder_tree();
         set_status(anyos_std::i18n::t("Account saved"));
@@ -2093,7 +2091,7 @@ fn open_account_setup() {
 fn export_accounts() {
     if let Some(path) = anyui::FileDialog::save_file("anymail-accounts.json") {
         let a = app();
-        a.config.save(&path);
+        a.config.save_to_path(&path);
         set_status(&format!(
             "{}: {}",
             anyos_std::i18n::t("Accounts exported to"),
@@ -2109,7 +2107,7 @@ fn export_accounts() {
 
 fn import_accounts() {
     if let Some(path) = anyui::FileDialog::open_file() {
-        let imported = MailConfig::load(&path);
+        let imported = MailConfig::load_from_path(&path);
         if imported.accounts.is_empty() {
             anyui::MessageBox::show(
                 anyui::MessageBoxType::Warning,
@@ -2181,7 +2179,7 @@ fn import_accounts() {
                     maildir::ensure_dirs(&a.base_dir, &acc.id);
                 }
             }
-            a.config.save(&a.config_path);
+            a.config.save();
             populate_folder_tree();
             set_status(anyos_std::i18n::t("Accounts imported (merged)"));
             anyui::MessageBox::show(
@@ -2202,7 +2200,7 @@ fn import_accounts() {
             for acc in &a.config.accounts {
                 maildir::ensure_dirs(&a.base_dir, &acc.id);
             }
-            a.config.save(&a.config_path);
+            a.config.save();
             populate_folder_tree();
             set_status(anyos_std::i18n::t("Accounts imported (replaced)"));
             anyui::MessageBox::show(
@@ -2310,8 +2308,7 @@ fn open_contacts() {
                 let contact = Contact::new(&name, &email);
                 let a = app();
                 a.address_book.add(contact);
-                let contacts_path = format!("{}/contacts.json", a.base_dir);
-                a.address_book.save(&contacts_path);
+                a.address_book.save();
 
                 // Refresh the grid
                 let contacts = &a.address_book.contacts;
@@ -2333,8 +2330,7 @@ fn open_contacts() {
         if row < a.address_book.contacts.len() {
             let email = a.address_book.contacts[row].email.clone();
             a.address_book.remove(&email);
-            let contacts_path = format!("{}/contacts.json", a.base_dir);
-            a.address_book.save(&contacts_path);
+            a.address_book.save();
 
             let contacts = &a.address_book.contacts;
             grid.set_row_count(contacts.len() as u32);
