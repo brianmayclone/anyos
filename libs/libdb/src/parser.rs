@@ -19,6 +19,9 @@ enum Token {
     Create,
     Table,
     Drop,
+    Alter,
+    Add,
+    Column,
     Insert,
     Into,
     Values,
@@ -43,6 +46,7 @@ enum Token {
     Distinct,
     Integer,  // type keyword
     Text,     // type keyword
+    Blob,     // type keyword
 
     // Identifiers and literals
     Ident(String),
@@ -245,6 +249,9 @@ impl<'a> Tokenizer<'a> {
             "CREATE" => Token::Create,
             "TABLE" => Token::Table,
             "DROP" => Token::Drop,
+            "ALTER" => Token::Alter,
+            "ADD" => Token::Add,
+            "COLUMN" => Token::Column,
             "INSERT" => Token::Insert,
             "INTO" => Token::Into,
             "VALUES" => Token::Values,
@@ -269,6 +276,7 @@ impl<'a> Tokenizer<'a> {
             "DISTINCT" => Token::Distinct,
             "INTEGER" | "INT" => Token::Integer,
             "TEXT" | "VARCHAR" => Token::Text,
+            "BLOB" => Token::Blob,
             _ => Token::Ident(String::from(word)),
         };
         Ok(tok)
@@ -342,6 +350,7 @@ impl Parser {
         match self.peek().clone() {
             Token::Create => self.parse_create_table(),
             Token::Drop => self.parse_drop_table(),
+            Token::Alter => self.parse_alter_table(),
             Token::Insert => self.parse_insert(),
             Token::Select => self.parse_select(),
             Token::Update => self.parse_update(),
@@ -368,8 +377,9 @@ impl Parser {
             let col_type = match self.advance() {
                 Token::Integer => ColumnType::Integer,
                 Token::Text => ColumnType::Text,
+                Token::Blob => ColumnType::Blob,
                 other => {
-                    let mut msg = String::from("Expected column type (INTEGER or TEXT), got ");
+                    let mut msg = String::from("Expected column type (INTEGER, TEXT or BLOB), got ");
                     msg.push_str(&format_token(&other));
                     return Err(DbError::Parse(msg));
                 }
@@ -401,6 +411,32 @@ impl Parser {
         let name = self.expect_ident()?;
         if self.peek() == &Token::Semi { self.advance(); }
         Ok(Statement::DropTable { name })
+    }
+
+    fn parse_alter_table(&mut self) -> DbResult<Statement> {
+        self.advance(); // ALTER
+        self.expect(&Token::Table)?;
+        let table = self.expect_ident()?;
+        self.expect(&Token::Add)?;
+        if self.peek() == &Token::Column {
+            self.advance();
+        }
+        let name = self.expect_ident()?;
+        let col_type = match self.advance() {
+            Token::Integer => ColumnType::Integer,
+            Token::Text => ColumnType::Text,
+            Token::Blob => ColumnType::Blob,
+            other => {
+                let mut msg = String::from("Expected column type (INTEGER, TEXT or BLOB), got ");
+                msg.push_str(&format_token(&other));
+                return Err(DbError::Parse(msg));
+            }
+        };
+        if self.peek() == &Token::Semi { self.advance(); }
+        Ok(Statement::AlterTableAddColumn {
+            table,
+            column: ColumnDef { name, col_type },
+        })
     }
 
     // ── INSERT INTO name (cols) VALUES (vals) ───────────────────────────
@@ -706,6 +742,17 @@ impl Parser {
         match self.peek().clone() {
             Token::IntLit(v) => { self.advance(); Ok(Expr::Literal(Value::Integer(v))) }
             Token::StrLit(s) => { self.advance(); Ok(Expr::Literal(Value::Text(s))) }
+            Token::Ident(ref s) if s.eq_ignore_ascii_case("x") => {
+                self.advance();
+                match self.advance() {
+                    Token::StrLit(hex) => Ok(Expr::Literal(Value::Blob(parse_hex_blob(&hex)?))),
+                    other => {
+                        let mut msg = String::from("Expected hex string after X, got ");
+                        msg.push_str(&format_token(&other));
+                        Err(DbError::Parse(msg))
+                    }
+                }
+            }
             Token::Null => { self.advance(); Ok(Expr::Literal(Value::Null)) }
             Token::Ident(s) => { self.advance(); Ok(Expr::Column(s)) }
             Token::LParen => {
@@ -727,9 +774,17 @@ impl Parser {
         match self.advance() {
             Token::IntLit(v) => Ok(Value::Integer(v)),
             Token::StrLit(s) => Ok(Value::Text(s)),
+            Token::Ident(s) if s.eq_ignore_ascii_case("x") => match self.advance() {
+                Token::StrLit(hex) => Ok(Value::Blob(parse_hex_blob(&hex)?)),
+                other => {
+                    let mut msg = String::from("Expected hex string after X, got ");
+                    msg.push_str(&format_token(&other));
+                    Err(DbError::Parse(msg))
+                }
+            },
             Token::Null => Ok(Value::Null),
             other => {
-                let mut msg = String::from("Expected value (integer, string, or NULL), got ");
+                let mut msg = String::from("Expected value (integer, string, blob, or NULL), got ");
                 msg.push_str(&format_token(&other));
                 Err(DbError::Parse(msg))
             }
@@ -744,6 +799,9 @@ fn format_token(tok: &Token) -> String {
         Token::Create => String::from("CREATE"),
         Token::Table => String::from("TABLE"),
         Token::Drop => String::from("DROP"),
+        Token::Alter => String::from("ALTER"),
+        Token::Add => String::from("ADD"),
+        Token::Column => String::from("COLUMN"),
         Token::Insert => String::from("INSERT"),
         Token::Into => String::from("INTO"),
         Token::Values => String::from("VALUES"),
@@ -768,6 +826,7 @@ fn format_token(tok: &Token) -> String {
         Token::Distinct => String::from("DISTINCT"),
         Token::Integer => String::from("INTEGER"),
         Token::Text => String::from("TEXT"),
+        Token::Blob => String::from("BLOB"),
         Token::Ident(s) => {
             let mut m = String::from("'");
             m.push_str(s);
@@ -797,6 +856,31 @@ fn format_token(tok: &Token) -> String {
         Token::Comma => String::from("','"),
         Token::Semi => String::from("';'"),
         Token::Eof => String::from("end of input"),
+    }
+}
+
+fn parse_hex_blob(hex: &str) -> DbResult<Vec<u8>> {
+    let bytes = hex.as_bytes();
+    if bytes.len() % 2 != 0 {
+        return Err(DbError::Parse(String::from("Hex blob literal must have even length")));
+    }
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let hi = hex_nibble(bytes[i])?;
+        let lo = hex_nibble(bytes[i + 1])?;
+        out.push((hi << 4) | lo);
+        i += 2;
+    }
+    Ok(out)
+}
+
+fn hex_nibble(b: u8) -> DbResult<u8> {
+    match b {
+        b'0'..=b'9' => Ok(b - b'0'),
+        b'a'..=b'f' => Ok(10 + (b - b'a')),
+        b'A'..=b'F' => Ok(10 + (b - b'A')),
+        _ => Err(DbError::Parse(String::from("Invalid hex digit in blob literal"))),
     }
 }
 

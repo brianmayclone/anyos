@@ -11,6 +11,7 @@ EXPORTS
     libdb_result_get_int
     libdb_result_get_int_hi
     libdb_result_get_text
+    libdb_result_get_blob
     libdb_result_is_null
     libdb_result_free
     libdb_flush

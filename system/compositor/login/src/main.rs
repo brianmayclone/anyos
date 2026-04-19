@@ -3,7 +3,7 @@
 
 anyos_std::entry!(main);
 
-use anyos_std::{i18n, process, users};
+use anyos_std::{i18n, println, process, users};
 use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 use libanyui_client as ui;
 use ui::Widget;
@@ -38,7 +38,10 @@ const PAD: i32 = 30;
 static mut LOGIN_UID: u32 = u32::MAX;
 
 fn main() -> u32 {
-    let _ = login_schema().register();
+    match login_schema().register() {
+        Ok(_) => println!("login: schema register OK"),
+        Err(err) => println!("login: schema register FAILED: {:?}", err),
+    }
     if !ui::init() {
         return u32::MAX; // Signal failure/retry to compositor, NOT root-auth
     }
@@ -118,11 +121,15 @@ fn main() -> u32 {
     {
         if let Some(name) = login_schema().read_string("state/last_user") {
             let name = name.trim();
+            println!("login: last_user read raw='{}'", name);
             if !name.is_empty() {
                 user_field.set_text(name);
                 login_btn.set_state(1); // enable button
                 has_last_user = true;
+                println!("login: restored last_user='{}' from confd", name);
             }
+        } else {
+            println!("login: last_user missing in confd");
         }
     }
 
@@ -155,6 +162,7 @@ fn main() -> u32 {
                         user_field.set_text(name);
                         login_btn.set_state(1);
                         has_last_user = true;
+                        println!("login: fallback single-user prefill='{}'", name);
                     }
                 }
             }

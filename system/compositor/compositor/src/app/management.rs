@@ -298,13 +298,25 @@ pub(crate) fn management_loop(
 
 fn persist_last_login_user(username: &str) {
     if username.is_empty() {
+        println!("compositor: persist_last_login_user skipped (empty username)");
         return;
     }
     if let Ok(mut client) = ConfClient::connect("compositor") {
-        let _ = client.set(
+        match client.set(
             RegistryScope::System,
             "system/login/state/last_user",
             ConfValue::String(alloc::string::String::from(username)),
+        ) {
+            Ok(_) => println!("compositor: persisted last_user='{}' via confd", username),
+            Err(err) => println!(
+                "compositor: FAILED to persist last_user='{}' via confd: {:?}",
+                username, err
+            ),
+        }
+    } else {
+        println!(
+            "compositor: FAILED to connect to confd for last_user='{}'",
+            username
         );
     }
 }

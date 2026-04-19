@@ -134,12 +134,16 @@ pub struct Database {
     fd: u32,
     /// Cached copy of page 0 (header + table directory).
     page0: [u8; PAGE_SIZE],
+    /// On-disk format.
+    format: DbFormat,
     /// Parsed table schemas (in sync with page0).
     pub tables: Vec<TableSchema>,
     /// Number of tables.
     pub table_count: u32,
     /// First free page (for page reuse — 0 = none, allocate at end).
     first_free_page: u32,
+    /// First linked-list page containing table metadata in v2.
+    first_table_dir_page: u32,
     /// Total pages in the file.
     total_pages: u32,
     /// Last error message.
@@ -168,9 +172,11 @@ impl Database {
             let mut db = Database {
                 fd,
                 page0: [0u8; PAGE_SIZE],
+                format: DbFormat::V2,
                 tables: Vec::new(),
                 table_count: 0,
                 first_free_page: 0,
+                first_table_dir_page: 0,
                 total_pages: 0,
                 last_error: String::new(),
                 cache: PageCache::new(fd),
@@ -191,9 +197,11 @@ impl Database {
             let mut db = Database {
                 fd,
                 page0: [0u8; PAGE_SIZE],
+                format: DbFormat::V2,
                 tables: Vec::new(),
                 table_count: 0,
                 first_free_page: 0,
+                first_table_dir_page: 0,
                 total_pages: 1,
                 last_error: String::new(),
                 cache: PageCache::new(fd),
@@ -260,12 +268,18 @@ impl Database {
         if n == u32::MAX || n as usize != PAGE_SIZE {
             return Err(DbError::Io(String::from("Write failed")));
         }
+        if syscall::fsync(self.fd) == u32::MAX {
+            return Err(DbError::Io(String::from("fsync failed after raw write")));
+        }
         Ok(())
     }
 
     /// Flush all dirty cached pages to disk.
     pub fn flush(&mut self) -> DbResult<()> {
         self.cache.flush();
+        if syscall::fsync(self.fd) == u32::MAX {
+            return Err(DbError::Io(String::from("fsync failed")));
+        }
         Ok(())
     }
 
@@ -282,29 +296,36 @@ impl Database {
         if (n as usize) < PAGE_SIZE {
             self.page0[n as usize..].fill(0);
         }
-        let (tc, ff) = schema::read_header(&self.page0)?;
-        self.table_count = tc;
-        self.first_free_page = ff;
-        self.tables = schema::read_tables(&self.page0, tc)?;
+        let header = schema::read_header(&self.page0)?;
+        self.format = header.format;
+        self.table_count = header.table_count;
+        self.first_free_page = header.first_free_page;
+        self.first_table_dir_page = header.first_table_dir_page;
         let file_size = syscall::file_size(self.fd);
         self.total_pages = if file_size > 0 {
             (file_size as usize / PAGE_SIZE).max(1) as u32
         } else {
             1
         };
+
+        self.tables = match self.format {
+            DbFormat::V1 => schema::read_tables_v1(&self.page0, self.table_count)?,
+            DbFormat::V2 => self.load_table_directory(self.first_table_dir_page)?,
+        };
         Ok(())
     }
 
     /// Flush page 0 to disk (after schema changes).
     fn flush_page0(&mut self) -> DbResult<()> {
-        schema::write_header_fields(&mut self.page0, self.table_count, self.first_free_page);
-        for (i, table) in self.tables.iter().enumerate() {
-            schema::write_table_entry(&mut self.page0, i, table);
-        }
-        // Update page0 in cache without stack-copying 4 KiB.
-        // We write directly: the cache stores a pointer to heap, the copy
-        // happens inside Box::new inside put() which is unavoidable but
-        // only 1 level deep (no nesting).
+        self.format = DbFormat::V2;
+        self.write_table_directory()?;
+        schema::write_header_fields(
+            &mut self.page0,
+            self.format,
+            self.table_count,
+            self.first_free_page,
+            self.first_table_dir_page,
+        );
         self.cache.put(0, &self.page0, true);
         Ok(())
     }
@@ -345,13 +366,166 @@ impl Database {
         Ok(())
     }
 
+    fn free_page_chain(&mut self, mut page_num: u32) -> DbResult<()> {
+        while page_num != 0 {
+            let mut page = [0u8; PAGE_SIZE];
+            self.read_page(page_num, &mut page)?;
+            let next = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
+            self.free_page(page_num)?;
+            page_num = next;
+        }
+        Ok(())
+    }
+
+    fn load_table_directory(&mut self, mut page_num: u32) -> DbResult<Vec<TableSchema>> {
+        let mut tables = Vec::new();
+        while page_num != 0 {
+            let mut page = [0u8; PAGE_SIZE];
+            self.read_page(page_num, &mut page)?;
+            let next_page = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
+            let row_count = u32::from_le_bytes([page[4], page[5], page[6], page[7]]);
+            let first_data_page = u32::from_le_bytes([page[8], page[9], page[10], page[11]]);
+            let schema_page = u32::from_le_bytes([page[12], page[13], page[14], page[15]]);
+            let name_len = u16::from_le_bytes([page[16], page[17]]) as usize;
+            if name_len == 0 || 18 + name_len > PAGE_SIZE {
+                return Err(DbError::Corrupt(String::from("Invalid table directory entry")));
+            }
+            let name = core::str::from_utf8(&page[18..18 + name_len])
+                .map_err(|_| DbError::Corrupt(String::from("Invalid table name encoding")))?;
+            let columns = self.read_schema_columns(schema_page)?;
+            tables.push(TableSchema {
+                name: String::from(name),
+                columns,
+                row_count,
+                first_data_page,
+                schema_page,
+                dir_page: page_num,
+            });
+            page_num = next_page;
+        }
+        Ok(tables)
+    }
+
+    fn read_schema_columns(&mut self, mut page_num: u32) -> DbResult<Vec<ColumnDef>> {
+        let mut columns = Vec::new();
+        while page_num != 0 {
+            let mut page = [0u8; PAGE_SIZE];
+            self.read_page(page_num, &mut page)?;
+            let next_page = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
+            let used_end = u16::from_le_bytes([page[4], page[5]]) as usize;
+            let end = if used_end == 0 { 8 } else { used_end.min(PAGE_SIZE) };
+            let mut pos = 8usize;
+            while pos + 2 <= end {
+                let name_len = page[pos] as usize;
+                let col_type = match page[pos + 1] as u16 {
+                    1 => ColumnType::Integer,
+                    2 => ColumnType::Text,
+                    3 => ColumnType::Blob,
+                    _ => return Err(DbError::Corrupt(String::from("Invalid schema column type"))),
+                };
+                pos += 2;
+                if pos + name_len > end {
+                    return Err(DbError::Corrupt(String::from("Schema page truncated")));
+                }
+                let name = core::str::from_utf8(&page[pos..pos + name_len])
+                    .map_err(|_| DbError::Corrupt(String::from("Invalid schema column name")))?;
+                columns.push(ColumnDef {
+                    name: String::from(name),
+                    col_type,
+                });
+                pos += name_len;
+            }
+            page_num = next_page;
+        }
+        Ok(columns)
+    }
+
+    fn write_schema_columns(&mut self, columns: &[ColumnDef], old_first_page: u32) -> DbResult<u32> {
+        if old_first_page != 0 {
+            self.free_page_chain(old_first_page)?;
+        }
+
+        let mut serialized = Vec::new();
+        for column in columns {
+            if column.name.len() > MAX_COL_NAME {
+                return Err(DbError::Parse(String::from("Column name too long")));
+            }
+            serialized.push(column.name.len() as u8);
+            serialized.push(column.col_type as u8);
+            serialized.extend_from_slice(column.name.as_bytes());
+        }
+
+        let mut offset = 0usize;
+        let mut first_page = 0u32;
+        let mut prev_page = 0u32;
+        while offset < serialized.len() || first_page == 0 {
+            let page_num = self.alloc_page()?;
+            if first_page == 0 {
+                first_page = page_num;
+            }
+            let mut page = [0u8; PAGE_SIZE];
+            let space = PAGE_SIZE - 8;
+            let remaining = serialized.len().saturating_sub(offset);
+            let chunk = remaining.min(space);
+            if chunk > 0 {
+                page[8..8 + chunk].copy_from_slice(&serialized[offset..offset + chunk]);
+                offset += chunk;
+            }
+            let used_end = 8 + chunk;
+            page[4..6].copy_from_slice(&(used_end as u16).to_le_bytes());
+            self.write_page(page_num, &page)?;
+
+            if prev_page != 0 {
+                let mut prev = [0u8; PAGE_SIZE];
+                self.read_page(prev_page, &mut prev)?;
+                prev[0..4].copy_from_slice(&page_num.to_le_bytes());
+                self.write_page(prev_page, &prev)?;
+            }
+            prev_page = page_num;
+        }
+        Ok(first_page)
+    }
+
+    fn write_table_directory(&mut self) -> DbResult<()> {
+        for i in 0..self.tables.len() {
+            if self.tables[i].dir_page == 0 {
+                self.tables[i].dir_page = self.alloc_page()?;
+            }
+            let old_schema_page = self.tables[i].schema_page;
+            let columns = self.tables[i].columns.clone();
+            self.tables[i].schema_page = self.write_schema_columns(&columns, old_schema_page)?;
+        }
+
+        self.first_table_dir_page = self.tables.first().map(|t| t.dir_page).unwrap_or(0);
+
+        for i in 0..self.tables.len() {
+            let next = if i + 1 < self.tables.len() {
+                self.tables[i + 1].dir_page
+            } else {
+                0
+            };
+            let table = &self.tables[i];
+            let name_bytes = table.name.as_bytes();
+            if name_bytes.len() > MAX_TABLE_NAME {
+                return Err(DbError::Parse(String::from("Table name too long")));
+            }
+            let mut page = [0u8; PAGE_SIZE];
+            page[0..4].copy_from_slice(&next.to_le_bytes());
+            page[4..8].copy_from_slice(&table.row_count.to_le_bytes());
+            page[8..12].copy_from_slice(&table.first_data_page.to_le_bytes());
+            page[12..16].copy_from_slice(&table.schema_page.to_le_bytes());
+            page[16..18].copy_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+            page[18..18 + name_bytes.len()].copy_from_slice(name_bytes);
+            self.write_page(table.dir_page, &page)?;
+        }
+
+        Ok(())
+    }
+
     // ── Table management ─────────────────────────────────────────────────
 
     /// Create a new table with the given schema.
     pub fn create_table(&mut self, name: &str, columns: &[ColumnDef]) -> DbResult<()> {
-        if self.table_count as usize >= MAX_TABLES {
-            return Err(DbError::TooManyTables);
-        }
         if columns.len() > MAX_COLUMNS {
             return Err(DbError::TooManyColumns);
         }
@@ -372,6 +546,8 @@ impl Database {
             columns: columns.to_vec(),
             row_count: 0,
             first_data_page: 0,
+            schema_page: 0,
+            dir_page: 0,
         };
         self.tables.push(table);
         self.table_count += 1;
@@ -383,24 +559,31 @@ impl Database {
         let idx = schema::find_table(&self.tables, name)
             .ok_or_else(|| DbError::TableNotFound(String::from(name)))?;
 
-        // Free all data pages in the chain
-        let mut page_num = self.tables[idx].first_data_page;
-        while page_num != 0 {
-            let mut page = [0u8; PAGE_SIZE];
-            self.read_page(page_num, &mut page)?;
-            let next = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
-            self.free_page(page_num)?;
-            page_num = next;
+        self.free_page_chain(self.tables[idx].first_data_page)?;
+        self.free_page_chain(self.tables[idx].schema_page)?;
+        if self.tables[idx].dir_page != 0 {
+            self.free_page(self.tables[idx].dir_page)?;
         }
 
         // Remove from schema list and compact
         self.tables.remove(idx);
         self.table_count -= 1;
+        self.flush_page0()
+    }
 
-        // Rewrite all entries in page0 (compact)
-        for i in 0..MAX_TABLES {
-            schema::clear_table_entry(&mut self.page0, i);
+    pub fn add_column(&mut self, table_name: &str, column: ColumnDef) -> DbResult<()> {
+        let table_idx = schema::find_table(&self.tables, table_name)
+            .ok_or_else(|| DbError::TableNotFound(String::from(table_name)))?;
+        if column.name.len() > MAX_COL_NAME {
+            return Err(DbError::Parse(String::from("Column name too long")));
         }
+        if self.tables[table_idx].find_column(&column.name).is_some() {
+            return Err(DbError::TableExists(String::from("Column already exists")));
+        }
+        if self.tables[table_idx].columns.len() >= MAX_COLUMNS {
+            return Err(DbError::TooManyColumns);
+        }
+        self.tables[table_idx].columns.push(column);
         self.flush_page0()
     }
 
@@ -428,13 +611,22 @@ impl Database {
                     buf.extend_from_slice(&v.to_le_bytes());
                 }
                 Value::Text(s) => {
-                    if s.len() > 255 {
+                    if s.len() > 4096 {
                         return Err(DbError::ValueTooLarge);
                     }
                     buf.push(TAG_TEXT);
                     buf.push((s.len() & 0xFF) as u8);
                     buf.push(((s.len() >> 8) & 0xFF) as u8);
                     buf.extend_from_slice(s.as_bytes());
+                }
+                Value::Blob(b) => {
+                    if b.len() > 4096 {
+                        return Err(DbError::ValueTooLarge);
+                    }
+                    buf.push(TAG_BLOB);
+                    buf.push((b.len() & 0xFF) as u8);
+                    buf.push(((b.len() >> 8) & 0xFF) as u8);
+                    buf.extend_from_slice(b);
                 }
             }
         }
@@ -484,6 +676,15 @@ impl Database {
                     let s = core::str::from_utf8(&data[pos + 3..pos + 3 + slen]).unwrap_or("");
                     values.push(Value::Text(String::from(s)));
                     pos += 3 + slen;
+                }
+                TAG_BLOB => {
+                    if pos + 3 > end { break; }
+                    let blen = u16::from_le_bytes([data[pos + 1], data[pos + 2]]) as usize;
+                    if pos + 3 + blen > end { break; }
+                    let mut blob = Vec::with_capacity(blen);
+                    blob.extend_from_slice(&data[pos + 3..pos + 3 + blen]);
+                    values.push(Value::Blob(blob));
+                    pos += 3 + blen;
                 }
                 _ => break,
             }

@@ -14,8 +14,11 @@ use alloc::vec::Vec;
 /// Database file page size in bytes.
 pub const PAGE_SIZE: usize = 4096;
 
-/// Magic bytes identifying an anyOS database file.
-pub const MAGIC: &[u8; 8] = b"ANYDB100";
+/// Magic bytes identifying a v1 anyOS database file.
+pub const MAGIC_V1: &[u8; 8] = b"ANYDB100";
+
+/// Magic bytes identifying a v2 anyOS database file.
+pub const MAGIC_V2: &[u8; 8] = b"ANYDB200";
 
 /// Header size in bytes at the start of page 0.
 pub const HEADER_SIZE: usize = 32;
@@ -23,17 +26,17 @@ pub const HEADER_SIZE: usize = 32;
 /// Size of a table directory entry in bytes.
 pub const TABLE_ENTRY_SIZE: usize = 256;
 
-/// Maximum number of tables per database (limited by page 0 capacity).
-pub const MAX_TABLES: usize = (PAGE_SIZE - HEADER_SIZE) / TABLE_ENTRY_SIZE; // 15
-
 /// Maximum columns per table.
-pub const MAX_COLUMNS: usize = 8;
+pub const MAX_COLUMNS: usize = 1024;
 
-/// Maximum table name length (null-terminated in 32 bytes).
-pub const MAX_TABLE_NAME: usize = 31;
+/// Maximum table name length.
+pub const MAX_TABLE_NAME: usize = 255;
 
-/// Maximum column name length (null-terminated in 24 bytes).
-pub const MAX_COL_NAME: usize = 23;
+/// Maximum column name length.
+pub const MAX_COL_NAME: usize = 255;
+
+/// Maximum inline columns stored in a v1 page0 entry.
+pub const MAX_INLINE_COLUMNS: usize = 8;
 
 /// Data page header size in bytes.
 pub const DATA_PAGE_HEADER: usize = 8;
@@ -60,6 +63,9 @@ pub const TAG_INTEGER: u8 = 0x01;
 /// Tag byte for TEXT value (u16 length + bytes).
 pub const TAG_TEXT: u8 = 0x02;
 
+/// Tag byte for BLOB value (u16 length + bytes).
+pub const TAG_BLOB: u8 = 0x03;
+
 // ── Column type ──────────────────────────────────────────────────────────────
 
 /// SQL column type.
@@ -68,6 +74,7 @@ pub const TAG_TEXT: u8 = 0x02;
 pub enum ColumnType {
     Integer = 1,
     Text = 2,
+    Blob = 3,
 }
 
 impl ColumnType {
@@ -76,9 +83,17 @@ impl ColumnType {
         match v {
             1 => Some(ColumnType::Integer),
             2 => Some(ColumnType::Text),
+            3 => Some(ColumnType::Blob),
             _ => None,
         }
     }
+}
+
+/// Database on-disk format version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DbFormat {
+    V1,
+    V2,
 }
 
 // ── Column definition ────────────────────────────────────────────────────────
@@ -98,6 +113,7 @@ pub enum Value {
     Null,
     Integer(i64),
     Text(String),
+    Blob(Vec<u8>),
 }
 
 impl Value {
@@ -107,6 +123,7 @@ impl Value {
             Value::Null => 1,
             Value::Integer(_) => 9,       // tag + 8 bytes
             Value::Text(s) => 3 + s.len(), // tag + u16 len + data
+            Value::Blob(b) => 3 + b.len(), // tag + u16 len + data
         }
     }
 }
@@ -128,6 +145,8 @@ pub struct TableSchema {
     pub columns: Vec<ColumnDef>,
     pub row_count: u32,
     pub first_data_page: u32,
+    pub schema_page: u32,
+    pub dir_page: u32,
 }
 
 impl TableSchema {
@@ -164,11 +183,9 @@ pub enum DbError {
     ColumnNotFound(String),
     /// Type mismatch (e.g. inserting text into integer column).
     TypeMismatch(String),
-    /// Too many tables (max 31).
-    TooManyTables,
-    /// Too many columns (max 8).
+    /// Too many columns.
     TooManyColumns,
-    /// Value too large (text > 255 bytes).
+    /// Value too large (text > 4096 bytes).
     ValueTooLarge,
     /// Corrupt database file.
     Corrupt(String),
@@ -210,9 +227,8 @@ impl DbError {
                 m.push_str(s);
                 m
             }
-            DbError::TooManyTables => String::from("Too many tables (max 15)"),
-            DbError::TooManyColumns => String::from("Too many columns (max 8)"),
-            DbError::ValueTooLarge => String::from("Value too large (text max 255 bytes)"),
+            DbError::TooManyColumns => String::from("Too many columns (max 1024)"),
+            DbError::ValueTooLarge => String::from("Value too large (text max 4096 bytes)"),
             DbError::Corrupt(s) => {
                 let mut m = String::from("Corrupt database: ");
                 m.push_str(s);
@@ -237,6 +253,10 @@ pub enum Statement {
     },
     DropTable {
         name: String,
+    },
+    AlterTableAddColumn {
+        table: String,
+        column: ColumnDef,
     },
     Insert {
         table: String,

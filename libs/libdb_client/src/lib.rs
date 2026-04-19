@@ -35,6 +35,7 @@ dynlink::dll_exports! {
         libdb_result_get_int(id: u32, row: u32, col: u32) -> u32,
         libdb_result_get_int_hi(id: u32, row: u32, col: u32) -> u32,
         libdb_result_get_text(id: u32, row: u32, col: u32, buf: *mut u8, buf_len: u32) -> u32,
+        libdb_result_get_blob(id: u32, row: u32, col: u32, buf: *mut u8, buf_len: u32) -> u32,
         libdb_result_is_null(id: u32, row: u32, col: u32) -> u32,
         libdb_result_free(id: u32) -> (),
         libdb_flush(handle: u32) -> u32,
@@ -153,8 +154,8 @@ impl QueryResult {
         if (lib().libdb_result_is_null)(self.id, row, col) == 1 {
             return None;
         }
-        let mut buf = [0u8; 256];
-        let n = (lib().libdb_result_get_text)(self.id, row, col, buf.as_mut_ptr(), 256);
+        let mut buf = [0u8; 4096];
+        let n = (lib().libdb_result_get_text)(self.id, row, col, buf.as_mut_ptr(), 4096);
         if n == 0 {
             // Could be empty string or not text
             Some(String::new())
@@ -162,6 +163,16 @@ impl QueryResult {
             let s = core::str::from_utf8(&buf[..n as usize]).unwrap_or("");
             Some(String::from(s))
         }
+    }
+
+    /// Get a blob value from a cell. Returns None if null.
+    pub fn get_blob(&self, row: u32, col: u32) -> Option<Vec<u8>> {
+        if (lib().libdb_result_is_null)(self.id, row, col) == 1 {
+            return None;
+        }
+        let mut buf = [0u8; 4096];
+        let n = (lib().libdb_result_get_blob)(self.id, row, col, buf.as_mut_ptr(), 4096);
+        Some(buf[..n as usize].to_vec())
     }
 
     /// Check if a cell is NULL.

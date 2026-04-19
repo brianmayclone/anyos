@@ -340,6 +340,29 @@ pub extern "C" fn libdb_result_get_text(
     0
 }
 
+/// Get a blob value from a result cell. Returns bytes written to buf.
+#[no_mangle]
+pub extern "C" fn libdb_result_get_blob(
+    result_id: u32,
+    row: u32,
+    col: u32,
+    buf_ptr: *mut u8,
+    buf_len: u32,
+) -> u32 {
+    if let Some(rs) = get_result(result_id) {
+        if let Some(r) = rs.rows.get(row as usize) {
+            if let Some(Value::Blob(bytes)) = r.values.get(col as usize) {
+                let copy_len = bytes.len().min(buf_len as usize);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(bytes.as_ptr(), buf_ptr, copy_len);
+                }
+                return copy_len as u32;
+            }
+        }
+    }
+    0
+}
+
 /// Check if a result cell is NULL. Returns 1 if null, 0 otherwise.
 #[no_mangle]
 pub extern "C" fn libdb_result_is_null(result_id: u32, row: u32, col: u32) -> u32 {

@@ -1296,10 +1296,10 @@ endif()
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/etc/wifi")
 
 # FTP public share directory with a test file for download verification.
-file(MAKE_DIRECTORY "${SYSROOT_DIR}/users/shared/ftp")
-if(NOT EXISTS "${SYSROOT_DIR}/users/shared/ftp/README.txt")
-  file(COPY "${CMAKE_SOURCE_DIR}/defaults/users/shared/ftp/README.txt"
-       DESTINATION "${SYSROOT_DIR}/users/shared/ftp")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/Users/shared/ftp")
+if(NOT EXISTS "${SYSROOT_DIR}/Users/shared/ftp/README.txt")
+  file(COPY "${CMAKE_SOURCE_DIR}/defaults/Users/shared/ftp/README.txt"
+       DESTINATION "${SYSROOT_DIR}/Users/shared/ftp")
 endif()
 
 # User provisioning from config/users.conf
@@ -1317,7 +1317,7 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/config/users.conf")
       ${CMAKE_SOURCE_DIR}/config/users.conf
       ${CMAKE_SOURCE_DIR}/config/provision_users.cmake
       ${SYSROOT_DIR}/.stamp
-    COMMENT "Provisioning users from config/users.conf"
+    COMMENT "Provisioning Users from config/users.conf"
   )
   set(PROVISION_DEPS ${SYSROOT_DIR}/System/users/.provisioned)
 endif()

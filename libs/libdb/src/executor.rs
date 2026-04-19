@@ -23,6 +23,10 @@ pub fn exec(db: &mut Database, stmt: Statement) -> DbResult<u32> {
             db.drop_table(&name)?;
             Ok(0)
         }
+        Statement::AlterTableAddColumn { table, column } => {
+            db.add_column(&table, column)?;
+            Ok(0)
+        }
         Statement::Insert { table, columns, values } => {
             exec_insert(db, &table, &columns, &values)
         }
@@ -226,11 +230,14 @@ fn cmp_values(a: &Value, b: &Value) -> core::cmp::Ordering {
         (_, Value::Null) => core::cmp::Ordering::Greater,
         (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
+        (Value::Blob(x), Value::Blob(y)) => x.cmp(y),
         (Value::Integer(x), Value::Text(_)) => {
             // Integer before text
             core::cmp::Ordering::Less
         }
         (Value::Text(_), Value::Integer(_)) => core::cmp::Ordering::Greater,
+        (Value::Blob(_), Value::Integer(_) | Value::Text(_)) => core::cmp::Ordering::Greater,
+        (Value::Integer(_) | Value::Text(_), Value::Blob(_)) => core::cmp::Ordering::Less,
     }
 }
 
@@ -355,6 +362,7 @@ fn eval_where(expr: &Expr, values: &[Value], schema: &[ColumnDef]) -> DbResult<b
                     fmt_i64_val(&mut s, v);
                     Ok(like_match(&s, pattern))
                 }
+                Value::Blob(_) => Ok(false),
             }
         }
         Expr::NotLike { expr, pattern } => {
@@ -367,6 +375,7 @@ fn eval_where(expr: &Expr, values: &[Value], schema: &[ColumnDef]) -> DbResult<b
                     fmt_i64_val(&mut s, v);
                     Ok(!like_match(&s, pattern))
                 }
+                Value::Blob(_) => Ok(false),
             }
         }
         Expr::Literal(Value::Integer(0)) => Ok(false),
@@ -483,6 +492,16 @@ fn compare_values(left: &Value, right: &Value, op: CmpOp) -> bool {
                 CmpOp::Ge => a >= b,
             }
         }
+        (Value::Blob(a), Value::Blob(b)) => {
+            match op {
+                CmpOp::Eq => a == b,
+                CmpOp::Ne => a != b,
+                CmpOp::Lt => a < b,
+                CmpOp::Gt => a > b,
+                CmpOp::Le => a <= b,
+                CmpOp::Ge => a >= b,
+            }
+        }
         // Cross-type comparison: integer vs text
         (Value::Integer(a), Value::Text(b)) => {
             // Try parsing text as integer
@@ -499,6 +518,7 @@ fn compare_values(left: &Value, right: &Value, op: CmpOp) -> bool {
                 matches!(op, CmpOp::Ne)
             }
         }
+        (Value::Blob(_), _) | (_, Value::Blob(_)) => matches!(op, CmpOp::Ne),
     }
 }
 
@@ -524,6 +544,7 @@ fn validate_type(val: &Value, col: &ColumnDef) -> DbResult<()> {
         (Value::Null, _) => Ok(()), // NULL is always valid
         (Value::Integer(_), ColumnType::Integer) => Ok(()),
         (Value::Text(_), ColumnType::Text) => Ok(()),
+        (Value::Blob(_), ColumnType::Blob) => Ok(()),
         (Value::Integer(_), ColumnType::Text) => {
             let mut msg = String::from("Column '");
             msg.push_str(&col.name);
@@ -534,6 +555,30 @@ fn validate_type(val: &Value, col: &ColumnDef) -> DbResult<()> {
             let mut msg = String::from("Column '");
             msg.push_str(&col.name);
             msg.push_str("' expects INTEGER, got TEXT");
+            Err(DbError::TypeMismatch(msg))
+        }
+        (Value::Integer(_), ColumnType::Blob) => {
+            let mut msg = String::from("Column '");
+            msg.push_str(&col.name);
+            msg.push_str("' expects BLOB, got INTEGER");
+            Err(DbError::TypeMismatch(msg))
+        }
+        (Value::Text(_), ColumnType::Blob) => {
+            let mut msg = String::from("Column '");
+            msg.push_str(&col.name);
+            msg.push_str("' expects BLOB, got TEXT");
+            Err(DbError::TypeMismatch(msg))
+        }
+        (Value::Blob(_), ColumnType::Integer) => {
+            let mut msg = String::from("Column '");
+            msg.push_str(&col.name);
+            msg.push_str("' expects INTEGER, got BLOB");
+            Err(DbError::TypeMismatch(msg))
+        }
+        (Value::Blob(_), ColumnType::Text) => {
+            let mut msg = String::from("Column '");
+            msg.push_str(&col.name);
+            msg.push_str("' expects TEXT, got BLOB");
             Err(DbError::TypeMismatch(msg))
         }
     }

@@ -39,6 +39,7 @@ pub const SYS_GETCWD: u32 = 25;
 pub const SYS_MKDIR: u32 = 90;
 pub const SYS_LSEEK: u32 = 105;
 pub const SYS_FSTAT: u32 = 106;
+pub const SYS_FSYNC: u32 = 285;
 
 // DLL
 pub const SYS_DLL_LOAD: u32 = 80;
@@ -412,6 +413,12 @@ pub fn file_size(fd: u32) -> u32 {
 /// Get file stats. Returns 0 on success.
 pub fn fstat(fd: u32, stat_buf: &mut [u32; 4]) -> u32 {
     let ret = syscall2(SYS_FSTAT, fd as u64, stat_buf.as_mut_ptr() as u64);
+    if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
+}
+
+/// Flush deferred metadata for a specific open file to disk.
+pub fn fsync(fd: u32) -> u32 {
+    let ret = syscall1(SYS_FSYNC, fd as u64);
     if (ret as i64) < 0 { u32::MAX } else { ret as u32 }
 }
 

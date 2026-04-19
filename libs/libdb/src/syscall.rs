@@ -2,5 +2,5 @@
 
 pub use libsyscall::{
     exit, sbrk, mmap, munmap, open, close, read, write, lseek, file_size, log,
-    O_WRITE, O_CREATE, O_TRUNC, SEEK_SET,
+    fsync, O_WRITE, O_CREATE, O_TRUNC, SEEK_SET,
 };

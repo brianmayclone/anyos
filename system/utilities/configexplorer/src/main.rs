@@ -18,6 +18,12 @@ const DETAIL_H: u32 = 230;
 const SIDEBAR_W: u32 = 260;
 const REFRESH_MS: u32 = 1500;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RefreshMode {
+    Soft,
+    Rebuild,
+}
+
 struct TreeNode {
     id: u32,
     path: String,
@@ -259,15 +265,15 @@ fn main() {
         let a = app();
         a.current_dir.clear();
         a.selected_path.clear();
-        reload_snapshot();
+        reload_snapshot(RefreshMode::Rebuild);
     });
 
-    btn_refresh.on_click(|_| reload_snapshot());
+    btn_refresh.on_click(|_| reload_snapshot(RefreshMode::Rebuild));
     btn_save.on_click(|_| save_current());
     btn_delete.on_click(|_| delete_current());
 
-    ui::set_timer(REFRESH_MS, || reload_snapshot());
-    reload_snapshot();
+    ui::set_timer(REFRESH_MS, || reload_snapshot(RefreshMode::Soft));
+    reload_snapshot(RefreshMode::Rebuild);
     ui::run();
 }
 
@@ -298,13 +304,14 @@ fn error_summary(err: &ConfError) -> String {
     }
 }
 
-fn reload_snapshot() {
+fn reload_snapshot(mode: RefreshMode) {
     let a = app();
     let tc = ui::theme::colors();
     let scope = scope_from_ui();
 
     anyos_std::println!(
-        "configexplorer: reload scope={} dir='{}' client_present={}",
+        "configexplorer: reload mode={} scope={} dir='{}' client_present={}",
+        if mode == RefreshMode::Rebuild { "rebuild" } else { "soft" },
         scope_name(scope),
         a.current_dir.as_str(),
         a.client.is_some()
@@ -331,8 +338,10 @@ fn reload_snapshot() {
                 a.connection.set_text_color(tc.destructive);
                 a.status.set_text("confd is not reachable yet.");
                 a.grid.set_row_count(0);
-                a.tree.clear();
-                a.tree_nodes.clear();
+                if mode == RefreshMode::Rebuild {
+                    a.tree.clear();
+                    a.tree_nodes.clear();
+                }
                 return;
             }
         }
@@ -351,7 +360,10 @@ fn reload_snapshot() {
                 items.len()
             );
             a.items = items;
-            rebuild_tree(a);
+            normalize_current_dir(a);
+            if mode == RefreshMode::Rebuild || a.tree_nodes.is_empty() {
+                rebuild_tree(a);
+            }
             refresh_visible(a);
             restore_selection(a);
         }
@@ -362,8 +374,10 @@ fn reload_snapshot() {
                 error_summary(&err)
             );
             a.grid.set_row_count(0);
-            a.tree.clear();
-            a.tree_nodes.clear();
+            if mode == RefreshMode::Rebuild {
+                a.tree.clear();
+                a.tree_nodes.clear();
+            }
             match err {
                 ConfError::Remote(message) if message == "forbidden" => {
                     a.connection.set_text("Live");
@@ -407,6 +421,27 @@ fn rebuild_tree(a: &mut App) {
 
     let selected_node = find_tree_node_for_path(&a.tree_nodes, &selected).unwrap_or(root);
     a.tree.set_selected(selected_node);
+}
+
+fn normalize_current_dir(a: &mut App) {
+    if a.current_dir.is_empty() {
+        return;
+    }
+
+    if directory_exists(&a.items, &a.current_dir) {
+        return;
+    }
+
+    let mut candidate = parent_dir(&a.current_dir);
+    while !candidate.is_empty() {
+        if directory_exists(&a.items, &candidate) {
+            a.current_dir = candidate;
+            return;
+        }
+        candidate = parent_dir(&candidate);
+    }
+
+    a.current_dir.clear();
 }
 
 fn ensure_tree_path(a: &mut App, root: u32, path: &str) {
@@ -593,7 +628,7 @@ fn save_current() {
             let a = app();
             a.selected_path = path;
             a.status.set_text("Saved.");
-            reload_snapshot();
+            reload_snapshot(RefreshMode::Rebuild);
         }
         Err(_) => app().status.set_text("Save failed."),
     }
@@ -620,7 +655,7 @@ fn delete_current() {
             let a = app();
             a.selected_path.clear();
             a.status.set_text("Deleted.");
-            reload_snapshot();
+            reload_snapshot(RefreshMode::Rebuild);
         }
         Err(_) => app().status.set_text("Delete failed."),
     }
@@ -639,6 +674,10 @@ fn collect_dirs(items: &[ConfItem]) -> Vec<String> {
         }
     }
     dirs
+}
+
+fn directory_exists(items: &[ConfItem], path: &str) -> bool {
+    items.iter().any(|item| item.kind == NodeKind::Directory && item.path == path)
 }
 
 fn tree_path_for_node(node_id: u32) -> Option<String> {

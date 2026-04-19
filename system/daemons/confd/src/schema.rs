@@ -34,11 +34,30 @@ pub struct AuditEntry {
 
 pub fn init_tables(db: &Database) {
     for sql in CREATE_STATEMENTS {
-        let _ = db.exec(sql);
+        if let Err(err) = db.exec(sql) {
+            if !err.contains("already exists") {
+                anyos_std::println!("confd: CREATE TABLE error: {}", err);
+            }
+        }
     }
     for sql in ALTER_STATEMENTS {
-        let _ = db.exec(sql);
+        if let Err(err) = db.exec(sql) {
+            if !err.contains("duplicate column") && !err.contains("already exists") {
+                anyos_std::println!("confd: ALTER TABLE error: {}", err);
+            }
+        }
     }
+    if let Err(err) = db.flush() {
+        anyos_std::println!("confd: database flush after init_tables failed: {}", err);
+    }
+}
+
+pub fn count_rows(db: &Database, table: &str) -> Option<u64> {
+    let sql = format!("SELECT * FROM {}", table);
+    let Ok(result) = db.query(&sql) else {
+        return None;
+    };
+    Some(result.row_count() as u64)
 }
 
 pub fn load_entries(db: &Database) -> Vec<RegistryEntry> {
