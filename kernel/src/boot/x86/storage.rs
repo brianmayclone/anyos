@@ -62,7 +62,10 @@ fn detect_and_register_root_partition() {
         if ahci_sectors > 0 {
             (ahci_sectors, drivers::storage::ahci::disk_model())
         } else {
-            (drivers::storage::ata::disk_total_sectors(), drivers::storage::ata::disk_model())
+            (
+                drivers::storage::ata::disk_total_sectors(),
+                drivers::storage::ata::disk_model(),
+            )
         }
     };
 
@@ -111,6 +114,31 @@ fn detect_and_register_root_partition() {
         .filter(|d| d.part_type != PartitionType::GptEsp)
         .collect();
     data_parts.sort_by_key(|d| d.partition.unwrap_or(0));
+
+    // Single-partition + appended-CoreFS layout detection:
+    //   * Slot 0 = exFAT/FAT/NTFS with the full sysroot (the real `/`).
+    //   * Slot 1 = CoreFS, appended by tools/anyos_append_corefs.py as an
+    //     empty sandbox (Targets.cmake deliberately does NOT populate it
+    //     in single-partition mode).
+    // Dual-partition + CoreFS-root layout (Phase 6) looks superficially
+    // identical in the MBR, but there the boot partition (slot 0) is
+    // much smaller than the CoreFS root (slot 1).  Use relative size:
+    // if slot 0 is at least as large as slot 1, the CoreFS slot is the
+    // appended sandbox — drop it from root selection so the FAT is
+    // picked, and suppress the Phase-5c auto-mount as /System (the
+    // sandbox is empty and would shadow the real /System on FAT).
+    let appended_corefs_sandbox = data_parts.len() >= 2
+        && data_parts[1].part_type == PartitionType::CoreFs
+        && data_parts[0].part_type != PartitionType::CoreFs
+        && data_parts[0].size_sectors >= data_parts[1].size_sectors;
+    if appended_corefs_sandbox {
+        let sandbox = data_parts.remove(1);
+        serial_println!(
+            "  Appended CoreFS sandbox detected on sda{} ({} sectors) — not used as root",
+            sandbox.partition.unwrap() + 1,
+            sandbox.size_sectors
+        );
+    }
 
     for dev in &devices {
         if dev.disk_id == 0 && dev.partition.is_some() {
@@ -187,12 +215,13 @@ fn detect_and_register_root_partition() {
         1 => Some(data_parts[0].start_lba),
         _ => Some(data_parts[1].start_lba),
     };
-    let extra_corefs = devices.iter().any(|d| {
-        d.disk_id == 0
-            && d.partition.is_some()
-            && d.part_type == PartitionType::CoreFs
-            && Some(d.start_lba) != root_part_lba
-    });
+    let extra_corefs = !appended_corefs_sandbox
+        && devices.iter().any(|d| {
+            d.disk_id == 0
+                && d.partition.is_some()
+                && d.part_type == PartitionType::CoreFs
+                && Some(d.start_lba) != root_part_lba
+        });
     if extra_corefs {
         fs::corefs::enable_mount_as_system();
         serial_println!(
@@ -228,10 +257,7 @@ fn try_mount_corefs_partitions() {
         // werden können. Alle weiteren CoreFS-Partitionen landen wie gehabt
         // unter /mnt/corefs*. Nach VFS-Dispatch verhält sich `/System` wie
         // jeder andere Sub-Mount — siehe `fs::vfs::path::find_submount`.
-        let mount_path = if want_system_mount
-            && !system_mounted
-            && dev.disk_id == root_disk_id
-        {
+        let mount_path = if want_system_mount && !system_mounted && dev.disk_id == root_disk_id {
             alloc::string::String::from("/System")
         } else if mount_index == 0 {
             alloc::string::String::from("/mnt/corefs")

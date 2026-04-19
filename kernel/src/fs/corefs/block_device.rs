@@ -23,12 +23,12 @@
 //!
 //! # Block-Cache
 //!
-//! Reads laufen als Read-through über die kernel-weite Block-Cache-
-//! Infrastruktur (`crate::fs::blockcache`): Cache-Hit liefert direkt aus RAM,
-//! Cache-Miss liest vom Storage-Backend und populiert den Cache. Writes
-//! bleiben bewusst write-through und invalidieren betroffene Cache-Sektoren,
-//! damit der Enterprise-Pfad keine stale reads durch deferred write-back
-//! riskiert.
+//! Das Caching passiert eine Schicht tiefer: `crate::drivers::storage::
+//! read_sectors_on_disk` / `write_sectors_on_disk` gehen bereits durch den
+//! globalen `fs::blockcache`. Der Adapter ruft den Cache daher selbst NICHT
+//! zusätzlich auf — ein weiterer Wrap-Pfad würde nur Spinlock-Traffic
+//! duplizieren und beim Write die gerade per write-back markierten Dirty-
+//! Einträge fälschlich invalidieren, bevor sie geflusht werden.
 //!
 //! # Teststrategie
 //!
@@ -45,8 +45,8 @@ use core::fmt;
 
 use corefs_core::error::{CoreFsError, CoreFsResult};
 use corefs_core::storage::block_device::{
-    BlockDevice, DeviceGeometry, SECTOR_SIZE_512, check_alignment, check_bounds,
-    check_write_permission,
+    check_alignment, check_bounds, check_write_permission, BlockDevice, DeviceGeometry,
+    SECTOR_SIZE_512,
 };
 
 /// AnyOS-Standard-Sektorgröße (alle unterstützten Backends melden 512 Bytes).
@@ -209,16 +209,12 @@ impl BlockDevice for BlockDeviceAdapter {
         let count = (length / u64::from(ANYOS_SECTOR_SIZE)) as u32;
         let abs_lba = self.byte_offset_to_abs_lba(offset);
         let mut buf = vec![0u8; length as usize];
-        if crate::fs::blockcache::cached_read(self.disk_id, abs_lba, count, &mut buf) == count {
-            return Ok(buf);
-        }
         if !self.io.read_sectors(self.disk_id, abs_lba, count, &mut buf) {
             return Err(CoreFsError::State(format!(
                 "BlockDeviceAdapter: read_sectors_on_disk failed (disk_id={}, lba={abs_lba}, count={count})",
                 self.disk_id
             )));
         }
-        crate::fs::blockcache::populate(self.disk_id, abs_lba, count, &buf);
         Ok(buf)
     }
 
@@ -238,7 +234,6 @@ impl BlockDevice for BlockDeviceAdapter {
                 self.disk_id
             )));
         }
-        crate::fs::blockcache::invalidate(self.disk_id, abs_lba, count);
         Ok(())
     }
 
@@ -282,8 +277,7 @@ impl MemSectorIo {
         Self {
             bytes: crate::sync::mutex::Mutex::new(vec![
                 0u8;
-                (total_sectors
-                    * u64::from(ANYOS_SECTOR_SIZE))
+                (total_sectors * u64::from(ANYOS_SECTOR_SIZE))
                     as usize
             ]),
         }
@@ -325,7 +319,11 @@ impl SectorIo for MemSectorIo {
 mod tests {
     use super::*;
 
-    fn adapter_with_mem(offset: u32, part_sectors: u64, disk_total_sectors: u64) -> BlockDeviceAdapter {
+    fn adapter_with_mem(
+        offset: u32,
+        part_sectors: u64,
+        disk_total_sectors: u64,
+    ) -> BlockDeviceAdapter {
         BlockDeviceAdapter::with_io(
             0,
             offset,
@@ -338,27 +336,16 @@ mod tests {
 
     #[test]
     fn new_rejects_zero_partition() {
-        let err = BlockDeviceAdapter::with_io(
-            0,
-            0,
-            0,
-            false,
-            Box::new(MemSectorIo::new(16)),
-        )
-        .unwrap_err();
+        let err = BlockDeviceAdapter::with_io(0, 0, 0, false, Box::new(MemSectorIo::new(16)))
+            .unwrap_err();
         assert!(matches!(err, CoreFsError::InvalidInput(_)));
     }
 
     #[test]
     fn new_rejects_u32_overflow() {
-        let err = BlockDeviceAdapter::with_io(
-            0,
-            u32::MAX - 1,
-            10,
-            false,
-            Box::new(MemSectorIo::new(16)),
-        )
-        .unwrap_err();
+        let err =
+            BlockDeviceAdapter::with_io(0, u32::MAX - 1, 10, false, Box::new(MemSectorIo::new(16)))
+                .unwrap_err();
         assert!(matches!(err, CoreFsError::InvalidInput(_)));
     }
 
@@ -406,14 +393,8 @@ mod tests {
 
     #[test]
     fn read_only_blocks_writes() {
-        let mut a = BlockDeviceAdapter::with_io(
-            0,
-            0,
-            16,
-            true,
-            Box::new(MemSectorIo::new(16)),
-        )
-        .unwrap();
+        let mut a =
+            BlockDeviceAdapter::with_io(0, 0, 16, true, Box::new(MemSectorIo::new(16))).unwrap();
         let err = a.write_at(0, &[0u8; 512]).unwrap_err();
         assert!(matches!(err, CoreFsError::PolicyViolation(_)));
     }

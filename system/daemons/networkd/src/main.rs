@@ -119,18 +119,19 @@ fn main() {
 
     let mut cfg = load_config();
     let mut state = NetworkState::new();
-    let mut ready_announced = false;
-    if apply_interfaces(&cfg, &mut state, true) {
-        ready_announced = true;
-        if let Some(lifecycle) = lifecycle.as_mut() {
-            let _ = lifecycle.notify_ready();
-            let _ = lifecycle.set_health("configured");
-        }
+    // Announce readiness as soon as the IPC pipe is open — a DHCP failure must
+    // not block `svc start-all` and therefore the entire boot chain.  A still-
+    // configuring interface keeps trying in the background via periodic_check.
+    let applied_ok = apply_interfaces(&cfg, &mut state, true);
+    let mut ready_announced = true;
+    if let Some(lifecycle) = lifecycle.as_mut() {
+        let _ = lifecycle.notify_ready();
+        let _ = lifecycle.set_health(if applied_ok { "configured" } else { "degraded" });
     }
 
     let mut pipe_buf = [0u8; 512];
     let mut last_poll = 0u32;
-    println!("networkd: ready (pipe='{}')", PIPE_NAME);
+    println!("networkd: ready (pipe='{}', applied_ok={})", PIPE_NAME, applied_ok);
 
     loop {
         if handle_requests(pipe_id, &mut cfg, &mut state, lifecycle.as_mut(), &mut ready_announced) {

@@ -1,2 +1,59 @@
-#scripts/run.sh --res 1600x1200 --kvm --kbd ch --fwd 2121:21 --virtio
-scripts/run.sh --kvm --kbd ch --fwd 2121:21 --virtio --tempdisk --clipboard --disk "/tmp/data.img:4G" --system-fs corefs
+#!/usr/bin/env bash
+# anyOS launcher.
+#
+# Usage:
+#   aos            — single-partition exFAT root (legacy, CoreFS appended as empty sandbox)
+#   aos dual       — dual-partition: exFAT /boot (64 MiB) + CoreFS /
+#   aos single     — explicit single-partition mode
+#
+# All variants attach a persistent 4G data disk at /tmp/data.img and a 2G tempdisk.
+
+set -e
+
+cd "$(dirname "$0")"
+
+MODE="${1:-single}"
+
+case "$MODE" in
+    dual)
+        DUAL_FLAG="ON"
+        BOOT_MIB="64"
+        echo ">>> Layout: dual-partition (exFAT /boot ${BOOT_MIB} MiB + CoreFS /)"
+        ;;
+    single|"")
+        DUAL_FLAG="OFF"
+        BOOT_MIB="32"
+        echo ">>> Layout: single-partition (exFAT root + empty CoreFS sandbox)"
+        ;;
+    *)
+        echo "Unknown mode '$MODE'. Use: aos [single|dual]" >&2
+        exit 1
+        ;;
+esac
+
+# Reconfigure only when a cached value differs from what we want.
+NEED_RECONF=0
+if [ ! -f build/CMakeCache.txt ]; then
+    NEED_RECONF=1
+else
+    CURR_DUAL=$(grep -E '^ANYOS_DUAL_PARTITION:BOOL=' build/CMakeCache.txt | cut -d= -f2 || true)
+    CURR_FS=$(grep -E '^ANYOS_SYSTEM_FS:STRING=' build/CMakeCache.txt | cut -d= -f2 || true)
+    CURR_BOOT=$(grep -E '^ANYOS_BOOT_PARTITION_SIZE_MIB:STRING=' build/CMakeCache.txt | cut -d= -f2 || true)
+    [ "$CURR_DUAL" != "$DUAL_FLAG" ] && NEED_RECONF=1
+    [ "$CURR_FS" != "corefs" ]       && NEED_RECONF=1
+    [ "$CURR_BOOT" != "$BOOT_MIB" ]  && NEED_RECONF=1
+fi
+
+if [ "$NEED_RECONF" = "1" ]; then
+    echo ">>> Reconfiguring build dir"
+    mkdir -p build
+    ( cd build && cmake .. -G Ninja \
+        -DANYOS_DUAL_PARTITION=${DUAL_FLAG} \
+        -DANYOS_SYSTEM_FS=corefs \
+        -DANYOS_BOOT_PARTITION_SIZE_MIB=${BOOT_MIB} )
+fi
+
+exec scripts/run.sh \
+    --kvm --kbd ch --fwd 2121:21 --virtio --tempdisk --clipboard \
+    --disk "/tmp/data.img:4G" \
+    --system-fs corefs
