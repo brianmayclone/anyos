@@ -526,7 +526,8 @@ impl ConfClient {
             line.push('\t');
             line.push_str(command);
             line.push('\n');
-            if anyos_std::ipc::pipe_write(self.req_pipe, line.as_bytes()) == 0 {
+            let written = anyos_std::ipc::pipe_write(self.req_pipe, line.as_bytes());
+            if written == 0 || written == u32::MAX {
                 return Err(ConfError::Disconnected);
             }
 
@@ -575,7 +576,7 @@ impl Drop for ConfClient {
     fn drop(&mut self) {
         #[cfg(not(feature = "host"))]
         {
-            if self.reply_pipe != 0 {
+            if self.reply_pipe != 0 && self.reply_pipe != u32::MAX {
                 anyos_std::ipc::pipe_close(self.reply_pipe);
             }
         }

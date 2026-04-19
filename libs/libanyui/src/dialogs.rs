@@ -3,9 +3,13 @@
 //! Each dialog is a standalone compositor window that is set modal to the
 //! calling window. Uses the same blocking mini event loop as MessageBox.
 
-use crate::control::{Control, ControlId, ControlKind, DockStyle, EVENT_CLICK, EVENT_DOUBLE_CLICK};
+use crate::control::{
+    Control, ControlId, ControlKind, DockStyle, EVENT_CHANGE, EVENT_CLICK, EVENT_DOUBLE_CLICK,
+    EVENT_SUBMIT,
+};
 use crate::controls;
 use crate::{event_loop, state, syscall};
+use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -31,8 +35,35 @@ unsafe fn dialog_result_ptr() -> *const u8 {
 static mut DIALOG_TREE_ID: ControlId = 0;
 static mut DIALOG_CARD_ID: ControlId = 0;
 static mut DIALOG_PATH_LABEL_ID: ControlId = 0;
+static mut DIALOG_STATUS_LABEL_ID: ControlId = 0;
 static mut DIALOG_NAME_FIELD_ID: ControlId = 0;
+static mut DIALOG_CONFIRM_BTN_ID: ControlId = 0;
 static mut DIALOG_SHOW_FILES: bool = true;
+static mut DIALOG_MODE: u64 = 0;
+static mut DIALOG_INITIAL_DIR: [u8; 257] = [0; 257];
+static mut DIALOG_INITIAL_DIR_LEN: usize = 0;
+static mut DIALOG_DIR_COUNT: usize = 0;
+static mut DIALOG_FILE_COUNT: usize = 0;
+static mut DIALOG_PLACE_BUTTON_IDS: [ControlId; 6] = [0; 6];
+
+const PLACE_CURRENT: usize = 0;
+const PLACE_LABELS: [&[u8]; 6] = [
+    b"Working Dir",
+    b"Root",
+    b"Applications",
+    b"Users",
+    b"System",
+    b"Libraries",
+];
+
+const PLACE_PATHS: [&[u8]; 6] = [
+    b"",
+    b"/",
+    b"/Applications",
+    b"/Users",
+    b"/System",
+    b"/Libraries",
+];
 
 // ── Directory entry ──────────────────────────────────────────────────
 
@@ -97,6 +128,184 @@ fn path_parent(path: &[u8], out: &mut [u8; 257]) -> usize {
     out[..last_slash].copy_from_slice(&path[..last_slash]);
     out[last_slash] = 0;
     last_slash
+}
+
+fn copy_path_to_dialog(path: &[u8]) {
+    let len = path.len().min(256);
+    unsafe {
+        DIALOG_CURRENT_DIR[..len].copy_from_slice(&path[..len]);
+        DIALOG_CURRENT_DIR[len] = 0;
+        DIALOG_CURRENT_DIR_LEN = len;
+    }
+}
+
+fn init_dialog_dir() -> usize {
+    let mut cwd_buf = [0u8; 257];
+    let cwd_len = syscall::getcwd(&mut cwd_buf);
+    let cwd_len = if cwd_len != u32::MAX && cwd_len > 0 {
+        cwd_len as usize
+    } else {
+        cwd_buf[0] = b'/';
+        cwd_buf[1] = 0;
+        1
+    };
+    let cwd_len = cwd_len.min(256);
+    unsafe {
+        DIALOG_INITIAL_DIR[..cwd_len].copy_from_slice(&cwd_buf[..cwd_len]);
+        DIALOG_INITIAL_DIR_LEN = cwd_len;
+    }
+    copy_path_to_dialog(&cwd_buf[..cwd_len]);
+    cwd_len
+}
+
+fn set_control_text(id: ControlId, text: &[u8], text_color: Option<u32>) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.set_text(text);
+        if let Some(color) = text_color {
+            if let Some(tb) = ctrl.text_base_mut() {
+                tb.text_style.text_color = color;
+            }
+        }
+    }
+}
+
+fn set_control_disabled(id: ControlId, disabled: bool) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().disabled = disabled;
+        ctrl.base_mut().mark_dirty();
+    }
+}
+
+fn place_path(index: usize) -> &'static [u8] {
+    if index == PLACE_CURRENT {
+        unsafe { &DIALOG_INITIAL_DIR[..DIALOG_INITIAL_DIR_LEN] }
+    } else {
+        PLACE_PATHS[index]
+    }
+}
+
+fn place_is_active(index: usize) -> bool {
+    let path = unsafe { &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN] };
+    let target = place_path(index);
+    if target.is_empty() {
+        return false;
+    }
+    if target == b"/" {
+        return path == b"/";
+    }
+    path == target || (path.starts_with(target) && path.get(target.len()) == Some(&b'/'))
+}
+
+fn sync_place_buttons() {
+    let tc = crate::theme::colors();
+    let st = state();
+    let button_ids = unsafe { DIALOG_PLACE_BUTTON_IDS };
+    for (index, &btn_id) in button_ids.iter().enumerate() {
+        if btn_id == 0 {
+            continue;
+        }
+        if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == btn_id) {
+            ctrl.set_color(if place_is_active(index) { tc.accent } else { 0 });
+            if let Some(tb) = ctrl.text_base_mut() {
+                tb.text_style.text_color = if place_is_active(index) {
+                    0xFFFFFFFF
+                } else {
+                    tc.text
+                };
+            }
+        }
+    }
+}
+
+fn current_selection_name() -> Option<Vec<u8>> {
+    let raw = get_selected_node_text()?;
+    if raw == b".." {
+        return None;
+    }
+    Some(strip_dir_suffix(&raw).to_vec())
+}
+
+fn sync_dialog_labels() {
+    let tc = crate::theme::colors();
+    let path_label_id = unsafe { DIALOG_PATH_LABEL_ID };
+    let status_label_id = unsafe { DIALOG_STATUS_LABEL_ID };
+    let current_dir = unsafe { &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN] };
+    set_control_text(path_label_id, current_dir, Some(tc.text_secondary));
+
+    let mut status = if unsafe { DIALOG_MODE } == 3 {
+        let location = core::str::from_utf8(current_dir).unwrap_or("/");
+        format!("The new folder will be created in {}", location)
+    } else {
+        format!(
+            "{} folders, {} files",
+            unsafe { DIALOG_DIR_COUNT },
+            unsafe { DIALOG_FILE_COUNT }
+        )
+    };
+    if unsafe { DIALOG_MODE } != 3 {
+        if let Some(name) = current_selection_name() {
+            if let Ok(sel) = core::str::from_utf8(&name) {
+                status.push_str("  •  ");
+                status.push_str(sel);
+            }
+        }
+    }
+    set_control_text(status_label_id, status.as_bytes(), Some(tc.text_secondary));
+    sync_place_buttons();
+}
+
+fn sync_name_field_from_selection() {
+    if unsafe { DIALOG_MODE } != 2 {
+        return;
+    }
+    let name_field_id = unsafe { DIALOG_NAME_FIELD_ID };
+    if name_field_id == 0 {
+        return;
+    }
+    if let Some(sel_idx) = get_selected_index() {
+        let is_dir = unsafe { sel_idx < DIALOG_ENTRY_COUNT && DIALOG_ENTRY_IS_DIR[sel_idx] };
+        if is_dir {
+            return;
+        }
+    }
+    if let Some(name) = current_selection_name() {
+        let st = state();
+        if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == name_field_id) {
+            ctrl.set_text(&name);
+        }
+    }
+}
+
+fn sync_confirm_button() {
+    let confirm_btn_id = unsafe { DIALOG_CONFIRM_BTN_ID };
+    if confirm_btn_id == 0 {
+        return;
+    }
+
+    let disabled = match unsafe { DIALOG_MODE } {
+        1 => get_selected_index().is_none(),
+        2 | 3 => {
+            let st = state();
+            let name_field_id = unsafe { DIALOG_NAME_FIELD_ID };
+            if let Some(ctrl) = st.controls.iter().find(|c| c.id() == name_field_id) {
+                ctrl.text().is_empty()
+            } else {
+                true
+            }
+        }
+        _ => false,
+    };
+    set_control_disabled(confirm_btn_id, disabled);
+}
+
+fn refresh_dialog_state(update_name_from_selection: bool) {
+    if update_name_from_selection {
+        sync_name_field_from_selection();
+    }
+    sync_dialog_labels();
+    sync_confirm_button();
 }
 
 // ── Directory listing ────────────────────────────────────────────────
@@ -226,51 +435,10 @@ fn populate_file_list(show_files: bool) {
         }
     }
 
-    // Update path label with entry counts for feedback
-    let path_label_id = unsafe { DIALOG_PATH_LABEL_ID };
-    // Build label: "<path>  (Xd Xf)"
-    let mut label_buf = [0u8; 300];
-    let dp_len = dir_path.len().min(240);
-    label_buf[..dp_len].copy_from_slice(&dir_path[..dp_len]);
-    let mut pos = dp_len;
-    label_buf[pos] = b' ';
-    pos += 1;
-    label_buf[pos] = b' ';
-    pos += 1;
-    label_buf[pos] = b'(';
-    pos += 1;
-    pos += write_usize(&mut label_buf[pos..], num_dirs);
-    label_buf[pos] = b'd';
-    pos += 1;
-    label_buf[pos] = b' ';
-    pos += 1;
-    pos += write_usize(&mut label_buf[pos..], num_files);
-    label_buf[pos] = b'f';
-    pos += 1;
-    label_buf[pos] = b')';
-    pos += 1;
-    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == path_label_id) {
-        ctrl.set_text(&label_buf[..pos]);
+    unsafe {
+        DIALOG_DIR_COUNT = num_dirs;
+        DIALOG_FILE_COUNT = num_files;
     }
-}
-
-fn write_usize(buf: &mut [u8], val: usize) -> usize {
-    if val == 0 {
-        buf[0] = b'0';
-        return 1;
-    }
-    let mut tmp = [0u8; 10];
-    let mut n = val;
-    let mut len = 0;
-    while n > 0 {
-        tmp[len] = b'0' + (n % 10) as u8;
-        n /= 10;
-        len += 1;
-    }
-    for i in 0..len {
-        buf[i] = tmp[len - 1 - i];
-    }
-    len
 }
 
 fn as_tree_view_mut(
@@ -352,6 +520,7 @@ fn navigate_to(name: &[u8]) {
     }
     let show_files = unsafe { DIALOG_SHOW_FILES };
     populate_file_list(show_files);
+    refresh_dialog_state(false);
 }
 
 // ── Callbacks ────────────────────────────────────────────────────────
@@ -509,6 +678,16 @@ extern "C" fn dialog_up_clicked(_id: u32, _event_type: u32, _userdata: u64) {
     navigate_to(b"..");
 }
 
+extern "C" fn dialog_place_clicked(_id: u32, _event_type: u32, userdata: u64) {
+    let index = userdata as usize;
+    if index >= PLACE_PATHS.len() {
+        return;
+    }
+    copy_path_to_dialog(place_path(index));
+    populate_file_list(unsafe { DIALOG_SHOW_FILES });
+    refresh_dialog_state(false);
+}
+
 extern "C" fn dialog_tree_double_click(_id: u32, _event_type: u32, _userdata: u64) {
     if let Some(sel_idx) = get_selected_index() {
         let is_dir = unsafe { sel_idx < DIALOG_ENTRY_COUNT && DIALOG_ENTRY_IS_DIR[sel_idx] };
@@ -529,6 +708,18 @@ extern "C" fn dialog_tree_double_click(_id: u32, _event_type: u32, _userdata: u6
             }
         }
     }
+}
+
+extern "C" fn dialog_tree_changed(_id: u32, _event_type: u32, _userdata: u64) {
+    refresh_dialog_state(true);
+}
+
+extern "C" fn dialog_name_changed(_id: u32, _event_type: u32, _userdata: u64) {
+    refresh_dialog_state(false);
+}
+
+extern "C" fn dialog_name_submit(_id: u32, _event_type: u32, _userdata: u64) {
+    dialog_confirm_clicked(_id, _event_type, _userdata);
 }
 
 // ── Helper: add child to parent ──────────────────────────────────────
@@ -555,6 +746,7 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
     let owner_win_id = st.windows.last().copied();
 
     let is_create_folder = matches!(dialog_type, DialogType::CreateFolder);
+    let tc = crate::theme::colors();
 
     // Dialog dimensions and metadata
     let (dlg_w, dlg_h, title, confirm_label, show_files, has_name_field, confirm_userdata): (
@@ -567,8 +759,8 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
         u64,
     ) = match dialog_type {
         DialogType::OpenFolder => (
-            650,
-            520,
+            900,
+            640,
             b"Open Folder" as &[u8],
             b"Open" as &[u8],
             false,
@@ -576,8 +768,8 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
             0,
         ),
         DialogType::OpenFile => (
-            650,
-            520,
+            900,
+            640,
             b"Open File" as &[u8],
             b"Open" as &[u8],
             true,
@@ -585,8 +777,8 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
             1,
         ),
         DialogType::SaveFile => (
-            650,
-            520,
+            900,
+            680,
             b"Save File" as &[u8],
             b"Save" as &[u8],
             true,
@@ -594,8 +786,8 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
             2,
         ),
         DialogType::CreateFolder => (
-            350,
-            200,
+            520,
+            260,
             b"New Folder" as &[u8],
             b"Create" as &[u8],
             false,
@@ -604,17 +796,19 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
         ),
     };
 
-    // Initialize current directory — start at root
-    let mut cwd_buf = [0u8; 257];
-    cwd_buf[0] = b'/';
-    cwd_buf[1] = 0;
-    let cwd_len = 1usize;
+    // Initialize current directory from the process cwd.
+    let cwd_len = init_dialog_dir();
     unsafe {
-        DIALOG_CURRENT_DIR[..cwd_len].copy_from_slice(&cwd_buf[..cwd_len]);
-        DIALOG_CURRENT_DIR_LEN = cwd_len;
         DIALOG_SHOW_FILES = show_files;
         DIALOG_RESULT_LEN = 0;
         DIALOG_DISMISSED = false;
+        DIALOG_MODE = confirm_userdata;
+        DIALOG_STATUS_LABEL_ID = 0;
+        DIALOG_NAME_FIELD_ID = 0;
+        DIALOG_CONFIRM_BTN_ID = 0;
+        DIALOG_DIR_COUNT = 0;
+        DIALOG_FILE_COUNT = 0;
+        DIALOG_PLACE_BUTTON_IDS = [0; 6];
     }
 
     // ── Create standalone dialog window, centered on owner ──────────
@@ -643,7 +837,9 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
 
     // ── Allocate control IDs ─────────────────────────────────────────
     let st = state();
-    let path_bar_id = st.next_id;
+    let header_id = st.next_id;
+    st.next_id += 1;
+    let title_id = st.next_id;
     st.next_id += 1;
     let path_label_id = st.next_id;
     st.next_id += 1;
@@ -654,13 +850,24 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
     } else {
         0
     };
-    let bottom_bar_id = st.next_id;
+    let body_id = st.next_id;
+    st.next_id += 1;
+    let footer_id = st.next_id;
+    st.next_id += 1;
+    let status_label_id = st.next_id;
     st.next_id += 1;
     let cancel_btn_id = st.next_id;
     st.next_id += 1;
     let confirm_btn_id = st.next_id;
     st.next_id += 1;
-    let tree_id = if !is_create_folder {
+    let name_row_id = if has_name_field {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let name_label_id = if has_name_field {
         let id = st.next_id;
         st.next_id += 1;
         id
@@ -674,203 +881,418 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
     } else {
         0
     };
-    // Separator line IDs (between path bar ↔ tree, tree ↔ bottom bar)
-    let sep_top_id = if !is_create_folder {
+    let tree_id = if !is_create_folder {
         let id = st.next_id;
         st.next_id += 1;
         id
     } else {
         0
     };
-    let sep_bot_id = if !is_create_folder {
+    let sidebar_id = if !is_create_folder {
         let id = st.next_id;
         st.next_id += 1;
         id
     } else {
         0
     };
+    let sidebar_title_id = if !is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let main_card_id = if !is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let main_title_id = if !is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let content_card_id = if is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let content_title_id = if is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let content_subtitle_id = if is_create_folder {
+        let id = st.next_id;
+        st.next_id += 1;
+        id
+    } else {
+        0
+    };
+    let mut place_btn_ids = [0u32; 6];
+    if !is_create_folder {
+        for id in &mut place_btn_ids {
+            *id = st.next_id;
+            st.next_id += 1;
+        }
+    }
 
     // Store IDs for callbacks
     unsafe {
         DIALOG_TREE_ID = tree_id;
         DIALOG_CARD_ID = dialog_win_id;
         DIALOG_PATH_LABEL_ID = path_label_id;
+        DIALOG_STATUS_LABEL_ID = status_label_id;
         DIALOG_NAME_FIELD_ID = name_field_id;
+        DIALOG_CONFIRM_BTN_ID = confirm_btn_id;
+        DIALOG_PLACE_BUTTON_IDS = place_btn_ids;
     }
 
-    // ── Path bar (top, subtle contrast background) ───────────────────
-    let mut path_bar = controls::create_control(
+    // ── Header ────────────────────────────────────────────────────────
+    let mut header = controls::create_control(
         ControlKind::View,
-        path_bar_id,
+        header_id,
         dialog_win_id,
         0,
         0,
         dlg_w,
-        36,
+        82,
         &[],
     );
-    path_bar.base_mut().dock = DockStyle::Top;
-    path_bar.set_color(0xFF2D2D30);
-    st.controls.push(path_bar);
-    add_child_to_parent(dialog_win_id, path_bar_id);
+    header.base_mut().dock = DockStyle::Top;
+    header.set_color(tc.toolbar_bg);
+    st.controls.push(header);
+    add_child_to_parent(dialog_win_id, header_id);
 
-    // "^" button inside path bar (navigate to parent directory)
     if !is_create_folder {
         let mut up_btn = controls::create_control(
             ControlKind::Button,
             up_btn_id,
-            path_bar_id,
+            header_id,
             0,
-            4,
-            28,
-            28,
-            b"^",
+            20,
+            86,
+            34,
+            b"Up",
         );
         up_btn.base_mut().dock = DockStyle::Right;
-        up_btn.base_mut().margin.right = 6;
+        up_btn.base_mut().margin.top = 22;
+        up_btn.base_mut().margin.right = 18;
         st.controls.push(up_btn);
-        add_child_to_parent(path_bar_id, up_btn_id);
+        add_child_to_parent(header_id, up_btn_id);
     }
 
-    // Path label inside path bar
+    let mut title_label = controls::create_control(
+        ControlKind::Label,
+        title_id,
+        header_id,
+        0,
+        0,
+        dlg_w,
+        28,
+        title,
+    );
+    title_label.base_mut().dock = DockStyle::Top;
+    title_label.base_mut().margin.left = 20;
+    title_label.base_mut().margin.top = 14;
+    title_label.base_mut().margin.right = if is_create_folder { 20 } else { 118 };
+    if let Some(tb) = title_label.text_base_mut() {
+        tb.text_style.font_id = 1;
+        tb.text_style.font_size = 18;
+        tb.text_style.text_color = tc.text;
+    }
+    st.controls.push(title_label);
+    add_child_to_parent(header_id, title_id);
+
     let mut path_label = controls::create_control(
         ControlKind::Label,
         path_label_id,
-        path_bar_id,
+        header_id,
         0,
         0,
-        dlg_w - 44,
-        36,
-        &cwd_buf[..cwd_len],
+        dlg_w,
+        24,
+        unsafe { &DIALOG_CURRENT_DIR[..cwd_len] },
     );
     path_label.base_mut().dock = DockStyle::Fill;
-    path_label.base_mut().margin.left = 12;
+    path_label.base_mut().margin.left = 20;
+    path_label.base_mut().margin.right = if is_create_folder { 20 } else { 118 };
+    path_label.base_mut().margin.bottom = 14;
     if let Some(tb) = path_label.text_base_mut() {
-        tb.text_style.text_color = 0xFFCCCCCC;
+        tb.text_style.font_size = 12;
+        tb.text_style.text_color = tc.text_secondary;
     }
     st.controls.push(path_label);
-    add_child_to_parent(path_bar_id, path_label_id);
+    add_child_to_parent(header_id, path_label_id);
 
-    // ── Separator line (path bar → tree) ─────────────────────────────
-    if !is_create_folder {
-        let mut sep_top = controls::create_control(
-            ControlKind::View,
-            sep_top_id,
-            dialog_win_id,
-            0,
-            0,
-            dlg_w,
-            1,
-            &[],
-        );
-        sep_top.base_mut().dock = DockStyle::Top;
-        sep_top.set_color(0xFF3E3E42);
-        st.controls.push(sep_top);
-        add_child_to_parent(dialog_win_id, sep_top_id);
-    }
-
-    // ── Bottom bar (buttons + optional name field) ───────────────────
-    let mut bottom_bar = controls::create_control(
+    // ── Footer ────────────────────────────────────────────────────────
+    let footer_h = if has_name_field { 104 } else { 60 };
+    let mut footer = controls::create_control(
         ControlKind::View,
-        bottom_bar_id,
+        footer_id,
         dialog_win_id,
         0,
         0,
         dlg_w,
-        48,
+        footer_h,
         &[],
     );
-    bottom_bar.base_mut().dock = DockStyle::Bottom;
-    bottom_bar.base_mut().margin.left = 12;
-    bottom_bar.base_mut().margin.right = 12;
-    bottom_bar.base_mut().margin.bottom = 10;
-    st.controls.push(bottom_bar);
-    add_child_to_parent(dialog_win_id, bottom_bar_id);
+    footer.base_mut().dock = DockStyle::Bottom;
+    footer.set_color(tc.toolbar_bg);
+    st.controls.push(footer);
+    add_child_to_parent(dialog_win_id, footer_id);
 
-    // Separator line (tree → bottom bar)
-    if !is_create_folder {
-        let mut sep_bot = controls::create_control(
+    if has_name_field {
+        let mut name_row = controls::create_control(
             ControlKind::View,
-            sep_bot_id,
-            dialog_win_id,
+            name_row_id,
+            footer_id,
             0,
             0,
             dlg_w,
-            1,
+            42,
             &[],
         );
-        sep_bot.base_mut().dock = DockStyle::Bottom;
-        sep_bot.set_color(0xFF3E3E42);
-        st.controls.push(sep_bot);
-        add_child_to_parent(dialog_win_id, sep_bot_id);
-    }
+        name_row.base_mut().dock = DockStyle::Top;
+        name_row.base_mut().margin.left = 18;
+        name_row.base_mut().margin.right = 18;
+        name_row.base_mut().margin.top = 12;
+        st.controls.push(name_row);
+        add_child_to_parent(footer_id, name_row_id);
 
-    // Name field (Save/CreateFolder only)
-    if has_name_field {
-        let text_to_set = if !default_name.is_empty() {
-            default_name
-        } else {
-            &[]
-        };
-        let field_w = if is_create_folder {
-            dlg_w - 44
-        } else {
-            dlg_w - 200
-        };
+        let mut name_label = controls::create_control(
+            ControlKind::Label,
+            name_label_id,
+            name_row_id,
+            0,
+            8,
+            78,
+            30,
+            if is_create_folder {
+                b"Folder"
+            } else {
+                b"File name"
+            },
+        );
+        name_label.base_mut().dock = DockStyle::Left;
+        if let Some(tb) = name_label.text_base_mut() {
+            tb.text_style.text_color = tc.text_secondary;
+        }
+        st.controls.push(name_label);
+        add_child_to_parent(name_row_id, name_label_id);
+
         let mut name_field = controls::create_control(
             ControlKind::TextField,
             name_field_id,
-            bottom_bar_id,
+            name_row_id,
             0,
             8,
-            field_w,
+            dlg_w,
             30,
-            text_to_set,
+            default_name,
         );
-        name_field.base_mut().dock = DockStyle::Left;
-        name_field.base_mut().margin.right = 10;
+        name_field.base_mut().dock = DockStyle::Fill;
+        name_field.base_mut().margin.left = 10;
+        if let Some(tb) = name_field.text_base_mut() {
+            tb.text_style.font_size = 13;
+        }
         st.controls.push(name_field);
-        add_child_to_parent(bottom_bar_id, name_field_id);
+        add_child_to_parent(name_row_id, name_field_id);
+        crate::anyui_textfield_set_placeholder(
+            name_field_id,
+            if is_create_folder {
+                b"Folder name".as_ptr()
+            } else {
+                b"Choose a file name".as_ptr()
+            },
+            if is_create_folder { 11 } else { 18 },
+        );
     }
 
-    // Confirm button (right side)
-    let mut confirm_btn = controls::create_control(
-        ControlKind::Button,
-        confirm_btn_id,
-        bottom_bar_id,
-        0,
-        8,
-        84,
-        32,
-        confirm_label,
-    );
-    confirm_btn.base_mut().dock = DockStyle::Right;
-    confirm_btn.set_color(0xFF0E639C); // blue accent
-    st.controls.push(confirm_btn);
-    add_child_to_parent(bottom_bar_id, confirm_btn_id);
-
-    // Cancel button
     let mut cancel_btn = controls::create_control(
         ControlKind::Button,
         cancel_btn_id,
-        bottom_bar_id,
+        footer_id,
         0,
-        8,
-        84,
+        0,
+        94,
         32,
         b"Cancel",
     );
     cancel_btn.base_mut().dock = DockStyle::Right;
-    cancel_btn.base_mut().margin.right = 10;
+    cancel_btn.base_mut().margin.right = 18;
+    cancel_btn.base_mut().margin.bottom = 10;
     st.controls.push(cancel_btn);
-    add_child_to_parent(bottom_bar_id, cancel_btn_id);
+    add_child_to_parent(footer_id, cancel_btn_id);
 
-    // ── TreeView (file list, fills remaining space) ──────────────────
+    let mut confirm_btn = controls::create_control(
+        ControlKind::Button,
+        confirm_btn_id,
+        footer_id,
+        0,
+        0,
+        104,
+        32,
+        confirm_label,
+    );
+    confirm_btn.base_mut().dock = DockStyle::Right;
+    confirm_btn.base_mut().margin.right = 10;
+    confirm_btn.base_mut().margin.bottom = 10;
+    confirm_btn.set_color(tc.accent);
+    st.controls.push(confirm_btn);
+    add_child_to_parent(footer_id, confirm_btn_id);
+
+    let mut status_label = controls::create_control(
+        ControlKind::Label,
+        status_label_id,
+        footer_id,
+        0,
+        0,
+        dlg_w,
+        42,
+        &[],
+    );
+    status_label.base_mut().dock = DockStyle::Fill;
+    status_label.base_mut().margin.left = 18;
+    status_label.base_mut().margin.right = 18;
+    status_label.base_mut().margin.bottom = 10;
+    if let Some(tb) = status_label.text_base_mut() {
+        tb.text_style.font_size = 12;
+        tb.text_style.text_color = tc.text_secondary;
+    }
+    st.controls.push(status_label);
+    add_child_to_parent(footer_id, status_label_id);
+
+    // ── Body/content ──────────────────────────────────────────────────
+    let mut body = controls::create_control(
+        ControlKind::View,
+        body_id,
+        dialog_win_id,
+        0,
+        0,
+        dlg_w,
+        dlg_h,
+        &[],
+    );
+    body.base_mut().dock = DockStyle::Fill;
+    body.set_color(tc.window_bg);
+    st.controls.push(body);
+    add_child_to_parent(dialog_win_id, body_id);
+
     if !is_create_folder {
+        let mut sidebar = controls::create_control(
+            ControlKind::View,
+            sidebar_id,
+            body_id,
+            0,
+            0,
+            196,
+            dlg_h,
+            &[],
+        );
+        sidebar.base_mut().dock = DockStyle::Left;
+        sidebar.base_mut().margin.left = 16;
+        sidebar.base_mut().margin.top = 16;
+        sidebar.base_mut().margin.bottom = 16;
+        sidebar.set_color(tc.sidebar_bg);
+        st.controls.push(sidebar);
+        add_child_to_parent(body_id, sidebar_id);
+
+        let mut sidebar_title = controls::create_control(
+            ControlKind::Label,
+            sidebar_title_id,
+            sidebar_id,
+            0,
+            0,
+            160,
+            24,
+            b"Places",
+        );
+        sidebar_title.base_mut().dock = DockStyle::Top;
+        sidebar_title.base_mut().margin.left = 14;
+        sidebar_title.base_mut().margin.top = 14;
+        sidebar_title.base_mut().margin.bottom = 8;
+        if let Some(tb) = sidebar_title.text_base_mut() {
+            tb.text_style.font_id = 1;
+            tb.text_style.text_color = tc.text_secondary;
+        }
+        st.controls.push(sidebar_title);
+        add_child_to_parent(sidebar_id, sidebar_title_id);
+
+        for (index, (&btn_id, &label)) in place_btn_ids.iter().zip(PLACE_LABELS.iter()).enumerate() {
+            let mut btn = controls::create_control(
+                ControlKind::Button,
+                btn_id,
+                sidebar_id,
+                0,
+                0,
+                156,
+                32,
+                label,
+            );
+            btn.base_mut().dock = DockStyle::Top;
+            btn.base_mut().margin.left = 12;
+            btn.base_mut().margin.right = 12;
+            btn.base_mut().margin.bottom = 8;
+            if index == PLACE_CURRENT {
+                btn.base_mut().margin.top = 2;
+            }
+            st.controls.push(btn);
+            add_child_to_parent(sidebar_id, btn_id);
+        }
+
+        let mut main_card = controls::create_control(
+            ControlKind::View,
+            main_card_id,
+            body_id,
+            0,
+            0,
+            dlg_w,
+            dlg_h,
+            &[],
+        );
+        main_card.base_mut().dock = DockStyle::Fill;
+        main_card.base_mut().margin.left = 14;
+        main_card.base_mut().margin.right = 16;
+        main_card.base_mut().margin.top = 16;
+        main_card.base_mut().margin.bottom = 16;
+        main_card.set_color(tc.card_bg);
+        st.controls.push(main_card);
+        add_child_to_parent(body_id, main_card_id);
+
+        let mut main_title = controls::create_control(
+            ControlKind::Label,
+            main_title_id,
+            main_card_id,
+            0,
+            0,
+            120,
+            24,
+            if show_files { b"Folders and files" } else { b"Folders" },
+        );
+        main_title.base_mut().dock = DockStyle::Top;
+        main_title.base_mut().margin.left = 16;
+        main_title.base_mut().margin.top = 16;
+        main_title.base_mut().margin.bottom = 10;
+        if let Some(tb) = main_title.text_base_mut() {
+            tb.text_style.font_id = 1;
+            tb.text_style.text_color = tc.text_secondary;
+        }
+        st.controls.push(main_title);
+        add_child_to_parent(main_card_id, main_title_id);
+
         let mut tree = controls::create_control(
             ControlKind::TreeView,
             tree_id,
-            dialog_win_id,
+            main_card_id,
             0,
             0,
             dlg_w,
@@ -878,28 +1300,86 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
             &[],
         );
         tree.base_mut().dock = DockStyle::Fill;
-        tree.base_mut().margin.left = 0;
-        tree.base_mut().margin.right = 0;
+        tree.base_mut().margin.left = 16;
+        tree.base_mut().margin.right = 16;
         tree.base_mut().margin.top = 0;
-        tree.base_mut().margin.bottom = 0;
+        tree.base_mut().margin.bottom = 16;
         st.controls.push(tree);
-        add_child_to_parent(dialog_win_id, tree_id);
+        add_child_to_parent(main_card_id, tree_id);
 
-        // Configure tree view — taller rows for better readability
         if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == tree_id) {
             if let Some(tv) = as_tree_view_mut(ctrl) {
-                tv.row_height = 26;
-                tv.indent_width = 0; // flat list, no indentation
+                tv.row_height = 30;
+                tv.indent_width = 0;
             }
         }
 
-        // Register double-click on tree
         if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == tree_id) {
             ctrl.set_event_callback(EVENT_DOUBLE_CLICK, dialog_tree_double_click, 0);
+            ctrl.set_event_callback(EVENT_CHANGE, dialog_tree_changed, 0);
+            ctrl.set_event_callback(EVENT_SUBMIT, dialog_confirm_clicked, confirm_userdata);
         }
 
-        // Populate file list
         populate_file_list(show_files);
+    } else {
+        let mut content_card = controls::create_control(
+            ControlKind::View,
+            content_card_id,
+            body_id,
+            0,
+            0,
+            dlg_w,
+            dlg_h,
+            &[],
+        );
+        content_card.base_mut().dock = DockStyle::Fill;
+        content_card.base_mut().margin.left = 18;
+        content_card.base_mut().margin.right = 18;
+        content_card.base_mut().margin.top = 18;
+        content_card.base_mut().margin.bottom = 18;
+        content_card.set_color(tc.card_bg);
+        st.controls.push(content_card);
+        add_child_to_parent(body_id, content_card_id);
+
+        let mut content_title = controls::create_control(
+            ControlKind::Label,
+            content_title_id,
+            content_card_id,
+            0,
+            0,
+            200,
+            26,
+            b"Create folder in",
+        );
+        content_title.base_mut().dock = DockStyle::Top;
+        content_title.base_mut().margin.left = 18;
+        content_title.base_mut().margin.top = 18;
+        if let Some(tb) = content_title.text_base_mut() {
+            tb.text_style.font_id = 1;
+            tb.text_style.text_color = tc.text_secondary;
+        }
+        st.controls.push(content_title);
+        add_child_to_parent(content_card_id, content_title_id);
+
+        let mut content_subtitle = controls::create_control(
+            ControlKind::Label,
+            content_subtitle_id,
+            content_card_id,
+            0,
+            0,
+            300,
+            24,
+            unsafe { &DIALOG_CURRENT_DIR[..cwd_len] },
+        );
+        content_subtitle.base_mut().dock = DockStyle::Top;
+        content_subtitle.base_mut().margin.left = 18;
+        content_subtitle.base_mut().margin.bottom = 16;
+        if let Some(tb) = content_subtitle.text_base_mut() {
+            tb.text_style.font_size = 13;
+            tb.text_style.text_color = tc.text;
+        }
+        st.controls.push(content_subtitle);
+        add_child_to_parent(content_card_id, content_subtitle_id);
     }
 
     // ── Register callbacks ───────────────────────────────────────────
@@ -909,15 +1389,40 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
     if let Some(b) = st.controls.iter_mut().find(|c| c.id() == confirm_btn_id) {
         b.set_event_callback(EVENT_CLICK, dialog_confirm_clicked, confirm_userdata);
     }
+    if let Some(f) = st.controls.iter_mut().find(|c| c.id() == name_field_id) {
+        f.set_event_callback(EVENT_CHANGE, dialog_name_changed, 0);
+        f.set_event_callback(EVENT_SUBMIT, dialog_name_submit, confirm_userdata);
+    }
     if up_btn_id != 0 {
         if let Some(b) = st.controls.iter_mut().find(|c| c.id() == up_btn_id) {
             b.set_event_callback(EVENT_CLICK, dialog_up_clicked, 0);
+        }
+    }
+    for (index, &btn_id) in place_btn_ids.iter().enumerate() {
+        if btn_id == 0 {
+            continue;
+        }
+        if let Some(b) = st.controls.iter_mut().find(|c| c.id() == btn_id) {
+            b.set_event_callback(EVENT_CLICK, dialog_place_clicked, index as u64);
         }
     }
     // Window close button (X) → same as Cancel
     if let Some(b) = st.controls.iter_mut().find(|c| c.id() == dialog_win_id) {
         b.set_event_callback(crate::control::EVENT_CLOSE, dialog_cancel_clicked, 0);
     }
+
+    if name_field_id != 0 {
+        if default_name.is_empty() {
+            crate::anyui_set_focus(name_field_id);
+        } else {
+            crate::anyui_textfield_select_all(name_field_id);
+            crate::anyui_set_focus(name_field_id);
+        }
+    } else if tree_id != 0 {
+        crate::anyui_set_focus(tree_id);
+    }
+
+    refresh_dialog_state(false);
 
     // ── Mini event loop ──────────────────────────────────────────────
     while !unsafe { DIALOG_DISMISSED } {

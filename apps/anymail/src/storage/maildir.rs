@@ -16,19 +16,51 @@ use libdb_client::Database;
 
 const MAX_DB_TEXT: usize = 240;
 
+pub fn prepare_base_dir(preferred: Option<&str>, fallback: &str) -> Option<String> {
+    let mut candidates = Vec::new();
+    if let Some(path) = preferred {
+        if !path.is_empty() {
+            candidates.push(String::from(path));
+        }
+    }
+    if candidates.iter().all(|path| path != fallback) {
+        candidates.push(String::from(fallback));
+    }
+    if candidates.iter().all(|path| path != "/tmp/.anymail") {
+        candidates.push(String::from("/tmp/.anymail"));
+    }
+
+    for candidate in candidates {
+        if validate_base_dir(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Ensure the directory structure exists for an account.
-pub fn ensure_dirs(base: &str, account_id: &str) {
+pub fn ensure_dirs(base: &str, account_id: &str) -> bool {
+    if !validate_base_dir(base) {
+        return false;
+    }
+
     let acct_dir = alloc::format!("{}/accounts/{}", base, account_id);
-    anyos_std::fs::mkdir(&acct_dir);
+    if !mkdir_recursive(&acct_dir) {
+        return false;
+    }
 
     for folder in &["INBOX", "Sent", "Drafts", "Trash", "Spam", "Archive"] {
         let folder_dir = alloc::format!("{}/{}", acct_dir, folder);
-        anyos_std::fs::mkdir(&folder_dir);
+        if !mkdir_recursive(&folder_dir) {
+            return false;
+        }
         let msg_dir = alloc::format!("{}/messages", folder_dir);
-        anyos_std::fs::mkdir(&msg_dir);
+        if !mkdir_recursive(&msg_dir) {
+            return false;
+        }
     }
 
-    let _ = open_db(base, account_id);
+    validate_db(base, account_id)
 }
 
 /// Get the path for a folder's index file.
@@ -183,6 +215,9 @@ pub fn save_index(path: &str, messages: &[MessageSummary]) {
 
 /// Save a raw message to disk.
 pub fn save_message(path: &str, data: &[u8]) {
+    if let Some(parent) = parent_dir(path) {
+        let _ = mkdir_recursive(parent);
+    }
     let _ = anyos_std::fs::write_bytes(path, data);
 }
 
@@ -366,7 +401,15 @@ fn open_db(base: &str, account_id: &str) -> Option<Database> {
     if !libdb_client::init() {
         return None;
     }
+    if !validate_base_dir(base) {
+        return None;
+    }
     let path = alloc::format!("{}/accounts/{}/mailindex.db", base, account_id);
+    if let Some(parent) = parent_dir(&path) {
+        if !mkdir_recursive(parent) {
+            return None;
+        }
+    }
     let db = Database::open(&path)?;
     let _ = create_schema(&db);
     Some(db)
@@ -389,6 +432,87 @@ fn exec_schema(db: &Database, sql: &str) -> Result<(), String> {
         Ok(_) => Ok(()),
         Err(err) if err.contains("already exists") => Ok(()),
         Err(err) => Err(err),
+    }
+}
+
+fn validate_base_dir(base: &str) -> bool {
+    if base.is_empty() {
+        return false;
+    }
+    if !mkdir_recursive(base) {
+        return false;
+    }
+    let accounts_dir = alloc::format!("{}/accounts", base);
+    if !mkdir_recursive(&accounts_dir) {
+        return false;
+    }
+    let probe = alloc::format!("{}/.write_probe", base);
+    if anyos_std::fs::write_bytes(&probe, b"ok").is_err() {
+        return false;
+    }
+    let _ = anyos_std::fs::unlink(&probe);
+    true
+}
+
+fn validate_db(base: &str, account_id: &str) -> bool {
+    let path = alloc::format!("{}/accounts/{}/mailindex.db", base, account_id);
+    let Some(db) = open_db(base, account_id) else {
+        return false;
+    };
+    if db.query("SELECT uid FROM msg_head LIMIT 1").is_err() {
+        return false;
+    }
+    if db.query("SELECT uid FROM msg_meta LIMIT 1").is_err() {
+        return false;
+    }
+    if db.flush().is_err() {
+        return false;
+    }
+    path_exists(&path)
+}
+
+fn path_exists(path: &str) -> bool {
+    let mut stat_buf = [0u32; 7];
+    anyos_std::fs::stat(path, &mut stat_buf) == 0
+}
+
+fn mkdir_recursive(path: &str) -> bool {
+    if path.is_empty() || path == "/" {
+        return true;
+    }
+    if path_exists(path) {
+        return true;
+    }
+
+    let mut current = String::new();
+    if path.starts_with('/') {
+        current.push('/');
+    }
+
+    for part in path.split('/') {
+        if part.is_empty() {
+            continue;
+        }
+        if !current.is_empty() && !current.ends_with('/') {
+            current.push('/');
+        }
+        current.push_str(part);
+        if path_exists(&current) {
+            continue;
+        }
+        if anyos_std::fs::mkdir(&current) != 0 && !path_exists(&current) {
+            return false;
+        }
+    }
+    path_exists(path)
+}
+
+fn parent_dir(path: &str) -> Option<&str> {
+    let slash = path.rfind('/')?;
+    if slash == 0 {
+        Some("/")
+    } else {
+        Some(&path[..slash])
     }
 }
 

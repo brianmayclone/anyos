@@ -724,21 +724,31 @@ fn main() {
 
     let home = home_dir();
     let default_base_dir = format!("{}/.anymail", home);
-    let base_dir = match storage::schema::schema().read_external_ref("state/mail_store_ref") {
-        Some(path) if !path.is_empty() => path,
-        _ => default_base_dir,
-    };
+    let stored_ref = storage::schema::schema().read_external_ref("state/mail_store_ref");
+    let base_dir = storage::maildir::prepare_base_dir(stored_ref.as_deref(), &default_base_dir)
+        .unwrap_or_else(|| String::from("/tmp/.anymail"));
     let config_path = format!("{}/accounts.json", base_dir);
     let contacts_path = format!("{}/contacts.json", base_dir);
-
-    // Ensure base directory exists
-    anyos_std::fs::mkdir(&base_dir);
     let _ = storage::schema::schema().write_external_ref("state/mail_store_ref", &base_dir);
 
     // Load configuration
     let config = MailConfig::load(&config_path);
     let address_book = AddressBook::load(&contacts_path);
     let colors = tc();
+    let mut storage_notice = if let Some(old_ref) = stored_ref {
+        if old_ref != base_dir {
+            format!("Mail storage path repaired: {}", base_dir)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    for account in &config.accounts {
+        if !maildir::ensure_dirs(&base_dir, &account.id) && storage_notice.is_empty() {
+            storage_notice = format!("Mail storage validation failed under {}", base_dir);
+        }
+    }
 
     // ── Window ─────────────────────────────────────────────────────────
     let t = anyos_std::i18n::t;
@@ -767,11 +777,13 @@ fn main() {
     btn_reply_all.set_size(34, 34);
     btn_reply_all.set_system_icon("corner-up-left", anyui::IconType::Outline, colors.text, 24);
     btn_reply_all.set_tooltip(t("Reply All"));
+    btn_reply_all.set_visible(false);
 
     let btn_forward = toolbar.add_icon_button("");
     btn_forward.set_size(34, 34);
     btn_forward.set_system_icon("mail-forward", anyui::IconType::Outline, colors.text, 24);
     btn_forward.set_tooltip(t("Forward"));
+    btn_forward.set_visible(false);
 
     toolbar.add_separator();
 
@@ -785,6 +797,7 @@ fn main() {
     btn_junk.set_size(34, 34);
     btn_junk.set_system_icon("mail-x", anyui::IconType::Outline, colors.text, 24);
     btn_junk.set_tooltip(t("Junk"));
+    btn_junk.set_visible(false);
 
     let btn_delete = toolbar.add_icon_button("");
     btn_delete.set_size(34, 34);
@@ -808,6 +821,7 @@ fn main() {
     btn_contacts.set_size(34, 34);
     btn_contacts.set_system_icon("address-book", anyui::IconType::Outline, colors.text, 24);
     btn_contacts.set_tooltip(t("Contacts"));
+    btn_contacts.set_visible(false);
 
     win.add(&toolbar);
 
@@ -859,16 +873,19 @@ fn main() {
     let filter_unread = anyui::Button::new(t("Unread"));
     filter_unread.set_position(640, 30);
     filter_unread.set_size(70, 22);
+    filter_unread.set_visible(false);
     filter_bar.add(&filter_unread);
 
     let filter_starred = anyui::Button::new(t("Starred"));
     filter_starred.set_position(716, 30);
     filter_starred.set_size(76, 22);
+    filter_starred.set_visible(false);
     filter_bar.add(&filter_starred);
 
     let filter_attach = anyui::Button::new(t("Attach"));
     filter_attach.set_position(798, 30);
     filter_attach.set_size(74, 22);
+    filter_attach.set_visible(false);
     filter_bar.add(&filter_attach);
 
     win.add(&filter_bar);
@@ -1222,10 +1239,15 @@ fn main() {
         }
     }
 
-    if has_accounts {
+    if !storage_notice.is_empty() {
+        set_status(&storage_notice);
+    } else if has_accounts {
         set_status(t("Ready"));
     } else {
         set_status("Start by adding a mail account.");
+    }
+
+    if !has_accounts {
         open_account_setup(true);
     }
 

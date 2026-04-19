@@ -650,7 +650,7 @@ fn ensure_parent_dirs(
             current.push('/');
         }
         current.push_str(segment);
-        let canonical = canonical_path(scope, actor_uid, &current);
+        let canonical = canonical_path(scope, owner_uid, &current);
         if state.find_entry(&canonical).is_some() {
             continue;
         }
@@ -1144,7 +1144,7 @@ fn send_line(reply_pipe_name: &str, tid: u32, line: &str) {
         reply_pipe_name
     };
     let reply_pipe = cached_reply_pipe(reply_pipe_name);
-    if reply_pipe == 0 {
+    if reply_pipe == 0 || reply_pipe == u32::MAX {
         return;
     }
     let mut msg = String::from(line);
@@ -1166,7 +1166,7 @@ fn cached_reply_pipe(reply_pipe_name: &str) -> u32 {
         }
 
         let pipe_id = anyos_std::ipc::pipe_open(reply_pipe_name);
-        if pipe_id != 0 {
+        if pipe_id != 0 && pipe_id != u32::MAX {
             cache.push((String::from(reply_pipe_name), pipe_id));
         }
         pipe_id
@@ -1183,7 +1183,7 @@ fn invalidate_cached_reply_pipe(reply_pipe_name: &str, pipe_id: u32) {
             .position(|(name, cached_id)| name.as_str() == reply_pipe_name && *cached_id == pipe_id)
         {
             let (_, cached_id) = cache.remove(pos);
-            if cached_id != 0 {
+            if cached_id != 0 && cached_id != u32::MAX {
                 let _ = anyos_std::ipc::pipe_close(cached_id);
             }
         }

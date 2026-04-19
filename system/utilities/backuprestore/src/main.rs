@@ -6,14 +6,14 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use anyos_std::{fs, i18n, process, sys};
-use libdb_client::Database;
 use libanyui_client as ui;
+use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
+use libdb_client::Database;
 
 anyos_std::entry!(main);
 
-const WIN_W: u32 = 760;
-const WIN_H: u32 = 420;
-const TOOLBAR_H: u32 = 40;
+const WIN_W: u32 = 720;
+const WIN_H: u32 = 360;
 const STATUS_H: u32 = 28;
 
 const CONF_DB_PATH: &str = "/System/sysdb/config.db";
@@ -27,10 +27,26 @@ const MANIFEST_ARCHIVE_ENTRY: &str = "manifest.txt";
 const EXTERNAL_ARCHIVE_ROOT: &str = "external";
 const VALUE_TYPE_EXTERNAL_REF: i64 = 4;
 
+const HISTORY_DIRS: &[&str] = &["history"];
+const HISTORY_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_string("history/last_backup_at", ""),
+    default_string("history/last_backup_path", ""),
+    default_string("history/last_restore_at", ""),
+    default_string("history/last_restore_path", ""),
+];
+const HISTORY_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "system/utilities/backuprestore",
+    RegistryScope::User,
+    1,
+    HISTORY_DIRS,
+    HISTORY_DEFAULTS,
+    &[],
+);
+
 struct App {
     status: ui::Label,
-    detail: ui::TextEditor,
-    db_path: ui::TextField,
+    last_backup: ui::Label,
+    last_restore: ui::Label,
 }
 
 struct ExternalRefEntry {
@@ -38,6 +54,17 @@ struct ExternalRefEntry {
     target_path: String,
     archive_path: String,
     is_dir: bool,
+}
+
+struct SkippedExternalRef {
+    logical_path: String,
+    target_path: String,
+}
+
+struct BackupOutcome {
+    archive_path: String,
+    exported_refs: usize,
+    skipped_refs: Vec<SkippedExternalRef>,
 }
 
 struct AppliedRestore {
@@ -48,33 +75,21 @@ struct AppliedRestore {
 
 anyos_std::global_app_state!(App);
 
+fn history_schema() -> ServiceSchema<'static> {
+    ServiceSchema::new("backuprestore", &HISTORY_MANIFEST)
+}
+
 fn main() {
     if !ui::init() {
         anyos_std::println!("backuprestore: failed to load libanyui.so");
         return;
     }
     i18n::init();
+    let _ = history_schema().register();
 
     let tc = ui::theme::colors();
     let win = ui::Window::new("Backup & Restore", -1, -1, WIN_W, WIN_H);
-
-    let toolbar = ui::Toolbar::new();
-    toolbar.set_dock(ui::DOCK_TOP);
-    toolbar.set_size(WIN_W, TOOLBAR_H);
-    toolbar.set_padding(8, 5, 8, 5);
-    win.add(&toolbar);
-
-    let btn_backup = toolbar.add_button("Backup...");
-    btn_backup.set_size(110, 28);
-
-    let btn_restore = toolbar.add_button("Restore...");
-    btn_restore.set_size(110, 28);
-
-    toolbar.add_separator();
-    let title = toolbar.add_label("Configuration Backup");
-    title.set_font_size(15);
-    title.set_text_color(tc.text);
-    title.set_size(260, 26);
+    win.set_color(tc.window_bg);
 
     let status_bar = ui::View::new();
     status_bar.set_dock(ui::DOCK_BOTTOM);
@@ -92,67 +107,87 @@ fn main() {
 
     let root = ui::View::new();
     root.set_dock(ui::DOCK_FILL);
-    root.set_color(tc.editor_bg);
-    root.set_padding(16, 14, 16, 14);
+    root.set_color(tc.window_bg);
     win.add(&root);
 
-    let intro = ui::Label::new(
-        "Creates a compressed backup of confd plus every ExternalRef target stored in the registry.",
-    );
-    intro.set_position(16, 14);
-    intro.set_size(720, 22);
-    intro.set_text_color(tc.text);
-    root.add(&intro);
+    let title = ui::Label::new("Backup & Restore");
+    title.set_position(28, 28);
+    title.set_size(360, 34);
+    title.set_font_size(24);
+    title.set_text_color(tc.text);
+    root.add(&title);
 
-    let note = ui::Label::new(
-        "Restore replaces config.db and referenced external files/directories, then restarts the system.",
+    let subtitle = ui::Label::new(
+        "Create a backup of your configuration and app data references, or restore a previous one.",
     );
-    note.set_position(16, 40);
-    note.set_size(720, 20);
+    subtitle.set_position(28, 68);
+    subtitle.set_size(640, 22);
+    subtitle.set_font_size(13);
+    subtitle.set_text_color(tc.text_secondary);
+    root.add(&subtitle);
+
+    let note = ui::Label::new("Restoring will restart the system when finished.");
+    note.set_position(28, 94);
+    note.set_size(420, 18);
+    note.set_font_size(12);
     note.set_text_color(tc.text_secondary);
-    note.set_font_size(11);
     root.add(&note);
 
-    let db_label = ui::Label::new("Current Database");
-    db_label.set_position(16, 80);
-    db_label.set_size(180, 16);
-    root.add(&db_label);
+    let card = ui::View::new();
+    card.set_position(28, 132);
+    card.set_size(664, 150);
+    card.set_color(tc.card_bg);
+    root.add(&card);
 
-    let db_path = ui::TextField::new();
-    db_path.set_position(16, 102);
-    db_path.set_size(710, 28);
-    db_path.set_read_only(true);
-    db_path.set_text(CONF_DB_PATH);
-    root.add(&db_path);
+    let card_title = ui::Label::new("Choose an action");
+    card_title.set_position(24, 22);
+    card_title.set_size(240, 24);
+    card_title.set_font_size(16);
+    card_title.set_text_color(tc.text);
+    card.add(&card_title);
 
-    let detail_label = ui::Label::new("Details");
-    detail_label.set_position(16, 146);
-    detail_label.set_size(80, 16);
-    root.add(&detail_label);
+    let card_text = ui::Label::new(
+        "Backups include the confd database and all reachable ExternalRef targets.",
+    );
+    card_text.set_position(24, 50);
+    card_text.set_size(560, 20);
+    card_text.set_font_size(12);
+    card_text.set_text_color(tc.text_secondary);
+    card.add(&card_text);
 
-    let detail = ui::TextEditor::new(710, 190);
-    detail.set_position(16, 168);
-    detail.set_editor_font(4, 12);
-    detail.set_read_only(true);
-    root.add(&detail);
+    let btn_backup = ui::Button::new("Create Backup");
+    btn_backup.set_position(24, 90);
+    btn_backup.set_size(184, 40);
+    card.add(&btn_backup);
+
+    let btn_restore = ui::Button::new("Restore Backup");
+    btn_restore.set_position(222, 90);
+    btn_restore.set_size(184, 40);
+    card.add(&btn_restore);
+
+    let last_backup = ui::Label::new("");
+    last_backup.set_position(28, 302);
+    last_backup.set_size(640, 18);
+    last_backup.set_font_size(11);
+    last_backup.set_text_color(tc.text_secondary);
+    root.add(&last_backup);
+
+    let last_restore = ui::Label::new("");
+    last_restore.set_position(28, 322);
+    last_restore.set_size(640, 18);
+    last_restore.set_font_size(11);
+    last_restore.set_text_color(tc.text_secondary);
+    root.add(&last_restore);
 
     unsafe {
         APP = Some(App {
             status,
-            detail,
-            db_path,
+            last_backup,
+            last_restore,
         });
     }
 
-    set_detail(
-        "Backups are written as compressed .tar.gz archives.\n\
-         Contents:\n\
-         - config.db\n\
-         - manifest.txt with ExternalRef mappings\n\
-         - every referenced external file or directory tree\n\n\
-         Restore keeps rollback copies of config.db and replaced external targets, then performs a reboot.",
-    );
-    refresh_status();
+    refresh_ui();
 
     btn_backup.on_click(|_| do_backup());
     btn_restore.on_click(|_| do_restore());
@@ -165,19 +200,31 @@ fn set_status(text: &str) {
     app().status.set_text(text);
 }
 
-fn set_detail(text: &str) {
-    app().detail.set_text(text);
-}
-
-fn refresh_status() {
+fn refresh_ui() {
     let mut stat = [0u32; 7];
     if fs::stat(CONF_DB_PATH, &mut stat) == 0 {
-        let size = stat[1];
-        set_status(&format!("Database present: {}", format_size(size)));
-        app().db_path.set_text(CONF_DB_PATH);
+        set_status("Ready.");
     } else {
-        set_status("Database not found.");
-        app().db_path.set_text("(missing)");
+        set_status("Configuration database not found.");
+    }
+
+    let schema = history_schema();
+    let backup_at = schema.read_string("history/last_backup_at").unwrap_or_default();
+    let backup_path = schema.read_string("history/last_backup_path").unwrap_or_default();
+    let restore_at = schema.read_string("history/last_restore_at").unwrap_or_default();
+    let restore_path = schema.read_string("history/last_restore_path").unwrap_or_default();
+
+    app().last_backup.set_text(&history_line("Last backup", &backup_at, &backup_path));
+    app().last_restore.set_text(&history_line("Last restore", &restore_at, &restore_path));
+}
+
+fn history_line(prefix: &str, at: &str, path: &str) -> String {
+    if at.is_empty() {
+        format!("{}: Never", prefix)
+    } else if path.is_empty() {
+        format!("{}: {}", prefix, at)
+    } else {
+        format!("{}: {}  •  {}", prefix, at, path)
     }
 }
 
@@ -190,30 +237,45 @@ fn do_backup() {
     if fs::stat(CONF_DB_PATH, &mut stat) != 0 {
         ui::MessageBox::show(
             ui::MessageBoxType::Warning,
-            "The confd database was not found at /System/sysdb/config.db.",
+            "The configuration database could not be found.",
             Some("OK"),
         );
-        refresh_status();
+        refresh_ui();
         return;
     }
 
-    let default_name = default_backup_name();
-    let Some(path) = ui::FileDialog::save_file(&default_name) else {
+    let Some(path) = ui::FileDialog::save_file(&default_backup_name()) else {
         return;
     };
 
-    set_status("Collecting ExternalRef targets...");
+    set_status("Creating backup...");
     match create_backup_archive(&path) {
-        Ok(summary) => {
-            set_detail(&summary);
-            set_status("Backup completed.");
-            ui::MessageBox::show(ui::MessageBoxType::Info, &summary, Some("OK"));
+        Ok(outcome) => {
+            record_backup(&outcome.archive_path);
+            refresh_ui();
+            if outcome.skipped_refs.is_empty() {
+                set_status("Backup completed.");
+                ui::MessageBox::show(
+                    ui::MessageBoxType::Info,
+                    "Backup created successfully.",
+                    Some("OK"),
+                );
+            } else {
+                set_status("Backup completed with warnings.");
+                ui::MessageBox::show(
+                    ui::MessageBoxType::Warning,
+                    &backup_warning_text(&outcome),
+                    Some("OK"),
+                );
+            }
         }
         Err(err) => {
-            let message = format!("Backup failed.\n\n{}", err);
-            set_detail(&message);
             set_status("Backup failed.");
-            ui::MessageBox::show(ui::MessageBoxType::Alert, &message, Some("OK"));
+            ui::MessageBox::show(
+                ui::MessageBoxType::Alert,
+                &format!("Backup failed.\n\n{}", err),
+                Some("OK"),
+            );
         }
     }
 }
@@ -227,22 +289,20 @@ fn do_restore() {
         return;
     };
 
-    set_status("Stopping confd...");
+    set_status("Preparing restore...");
     if !run_svc_command("stop", "confd") {
         ui::MessageBox::show(
             ui::MessageBoxType::Alert,
-            "Failed to launch /System/svc for stopping confd.",
+            "Could not stop confd for restore.",
             Some("OK"),
         );
         return;
     }
     process::sleep(300);
 
-    let result = restore_archive(&path);
-
-    match result {
+    match restore_archive(&path) {
         Ok(summary) => {
-            set_detail(&summary);
+            record_restore(&path);
             set_status("Restore completed. Restarting system...");
             ui::MessageBox::show(ui::MessageBoxType::Info, &summary, Some("Restart"));
             process::sleep(200);
@@ -251,27 +311,53 @@ fn do_restore() {
         Err(err) => {
             let _ = run_svc_command("start", "confd");
             process::sleep(300);
-            refresh_status();
-            let message = format!("Restore failed.\n\n{}", err);
-            set_detail(&message);
+            refresh_ui();
             set_status("Restore failed.");
-            ui::MessageBox::show(ui::MessageBoxType::Alert, &message, Some("OK"));
+            ui::MessageBox::show(
+                ui::MessageBoxType::Alert,
+                &format!("Restore failed.\n\n{}", err),
+                Some("OK"),
+            );
         }
     }
 }
 
-fn create_backup_archive(path: &str) -> Result<String, String> {
-    let refs = collect_external_refs()?;
+fn record_backup(path: &str) {
+    let schema = history_schema();
+    let _ = schema.write_string("history/last_backup_at", &now_string());
+    let _ = schema.write_string("history/last_backup_path", path);
+}
+
+fn record_restore(path: &str) {
+    let schema = history_schema();
+    let _ = schema.write_string("history/last_restore_at", &now_string());
+    let _ = schema.write_string("history/last_restore_path", path);
+}
+
+fn now_string() -> String {
+    let mut buf = [0u8; 8];
+    sys::time(&mut buf);
+    let year = buf[0] as u16 | ((buf[1] as u16) << 8);
+    let month = buf[2];
+    let day = buf[3];
+    let hour = buf[4];
+    let min = buf[5];
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", year, month, day, hour, min)
+}
+
+fn create_backup_archive(path: &str) -> Result<BackupOutcome, String> {
+    let (refs, skipped_refs) = collect_external_refs()?;
     let db_bytes = fs::read_to_vec(CONF_DB_PATH)
-        .map_err(|_| format!("Could not read the confd database at {}.", CONF_DB_PATH))?;
+        .map_err(|_| String::from("Could not read the configuration database."))?;
     let writer = libzip_client::TarWriter::new()
-        .ok_or_else(|| String::from("Could not create a tar writer."))?;
+        .ok_or_else(|| String::from("Could not create the backup archive."))?;
+
     if !writer.add_file(DB_ARCHIVE_ENTRY, &db_bytes) {
-        return Err(String::from("Could not add config.db to the backup archive."));
+        return Err(String::from("Could not add the configuration database to the backup."));
     }
 
     if !refs.is_empty() && !writer.add_dir("external/") {
-        return Err(String::from("Could not create the external/ archive root."));
+        return Err(String::from("Could not prepare the external data section in the backup."));
     }
 
     for entry in &refs {
@@ -280,43 +366,53 @@ fn create_backup_archive(path: &str) -> Result<String, String> {
 
     let manifest = build_manifest(&refs);
     if !writer.add_file(MANIFEST_ARCHIVE_ENTRY, manifest.as_bytes()) {
-        return Err(String::from("Could not add manifest.txt to the backup archive."));
+        return Err(String::from("Could not add the backup manifest."));
     }
 
     if !writer.write_to_file(path, true) {
-        return Err(format!("Could not write the backup archive to {}.", path));
+        return Err(String::from("Could not write the backup file."));
     }
 
-    Ok(format!(
-        "Backup created successfully.\n\nArchive: {}\nDatabase: {}\nExternalRef targets included: {}",
-        path,
-        CONF_DB_PATH,
-        refs.len()
-    ))
+    Ok(BackupOutcome {
+        archive_path: String::from(path),
+        exported_refs: refs.len(),
+        skipped_refs,
+    })
+}
+
+fn backup_warning_text(outcome: &BackupOutcome) -> String {
+    let count = outcome.skipped_refs.len();
+    let mut text = format!(
+        "Backup created, but {} reference{} could not be exported.\n\nThis can lead to missing app data when restoring this backup.",
+        count,
+        if count == 1 { "" } else { "s" },
+    );
+    if let Some(first) = outcome.skipped_refs.first() {
+        text.push_str("\n\nExample target:\n");
+        text.push_str(&first.target_path);
+    }
+    text
 }
 
 fn restore_archive(archive_path: &str) -> Result<String, String> {
     cleanup_restore_artifacts();
 
     let reader = libzip_client::TarReader::open(archive_path)
-        .ok_or_else(|| format!("Could not open backup archive {}.", archive_path))?;
+        .ok_or_else(|| String::from("Could not open the selected backup."))?;
     let db_index = find_archive_entry(&reader, DB_ARCHIVE_ENTRY)
-        .ok_or_else(|| String::from("Backup archive does not contain config.db."))?;
+        .ok_or_else(|| String::from("The selected backup is incomplete."))?;
     let manifest_index = find_archive_entry(&reader, MANIFEST_ARCHIVE_ENTRY)
-        .ok_or_else(|| String::from("Backup archive does not contain manifest.txt."))?;
+        .ok_or_else(|| String::from("The selected backup is incomplete."))?;
 
     let manifest_bytes = reader
         .extract(manifest_index)
-        .ok_or_else(|| String::from("Could not extract manifest.txt from the backup archive."))?;
+        .ok_or_else(|| String::from("Could not read the backup manifest."))?;
     let manifest_text = core::str::from_utf8(&manifest_bytes)
-        .map_err(|_| String::from("manifest.txt is not valid UTF-8."))?;
+        .map_err(|_| String::from("The backup manifest is invalid."))?;
     let refs = parse_manifest(manifest_text)?;
 
     if !reader.extract_to_file(db_index, RESTORE_TMP_PATH) {
-        return Err(format!(
-            "Could not extract config.db from {} to {}.",
-            archive_path, RESTORE_TMP_PATH
-        ));
+        return Err(String::from("Could not extract the configuration database from the backup."));
     }
 
     extract_external_stage(&reader)?;
@@ -329,27 +425,20 @@ fn restore_archive(archive_path: &str) -> Result<String, String> {
         let mut stat = [0u32; 7];
         had_existing_config = fs::stat(CONF_DB_PATH, &mut stat) == 0;
         if had_existing_config && fs::rename(CONF_DB_PATH, PRE_RESTORE_PATH) != 0 {
-            return Err(format!(
-                "Could not move the current database out of the way.\nDatabase: {}\nBackup copy: {}",
-                CONF_DB_PATH, PRE_RESTORE_PATH
-            ));
+            return Err(String::from("Could not prepare the current configuration for restore."));
         }
 
         if fs::rename(RESTORE_TMP_PATH, CONF_DB_PATH) != 0 {
             if had_existing_config {
                 let _ = fs::rename(PRE_RESTORE_PATH, CONF_DB_PATH);
             }
-            return Err(format!(
-                "Could not replace the active database with the restored file.\nDatabase: {}",
-                CONF_DB_PATH
-            ));
+            return Err(String::from("Could not replace the current configuration database."));
         }
         config_replaced = true;
 
         for entry in &refs {
             apply_external_restore(entry, &mut applied)?;
         }
-
         Ok(())
     })();
 
@@ -368,13 +457,8 @@ fn restore_archive(archive_path: &str) -> Result<String, String> {
 
     let _ = remove_tree(RESTORE_STAGE_DIR);
 
-    Ok(format!(
-        "Restore completed.\n\nBackup: {}\nDatabase: {}\nRollback DB copy: {}\nExternalRef targets restored: {}\nExternal rollback root: {}\n\nThe system must restart now so all services reload the restored configuration state.",
-        archive_path,
-        CONF_DB_PATH,
-        PRE_RESTORE_PATH,
-        refs.len(),
-        PRE_RESTORE_EXTERNAL_ROOT
+    Ok(String::from(
+        "Restore completed.\n\nThe selected backup was restored successfully.\nThe system will restart now.",
     ))
 }
 
@@ -383,7 +467,7 @@ fn ensure_libraries() -> bool {
         set_status("libzip.so unavailable.");
         ui::MessageBox::show(
             ui::MessageBoxType::Alert,
-            "libzip.so could not be loaded. Backup and restore need /Libraries/libzip.so.",
+            "libzip.so could not be loaded.",
             Some("OK"),
         );
         return false;
@@ -392,7 +476,7 @@ fn ensure_libraries() -> bool {
         set_status("libdb.so unavailable.");
         ui::MessageBox::show(
             ui::MessageBoxType::Alert,
-            "libdb.so could not be loaded. Backup and restore need /Libraries/libdb.so.",
+            "libdb.so could not be loaded.",
             Some("OK"),
         );
         return false;
@@ -400,17 +484,18 @@ fn ensure_libraries() -> bool {
     true
 }
 
-fn collect_external_refs() -> Result<Vec<ExternalRefEntry>, String> {
+fn collect_external_refs() -> Result<(Vec<ExternalRefEntry>, Vec<SkippedExternalRef>), String> {
     let db = Database::open(CONF_DB_PATH)
-        .ok_or_else(|| format!("Could not open confd database {}.", CONF_DB_PATH))?;
+        .ok_or_else(|| String::from("Could not open the configuration database."))?;
     let result = db
         .query(&format!(
             "SELECT logical_path, value_text FROM registry WHERE value_type = {} ORDER BY logical_path",
             VALUE_TYPE_EXTERNAL_REF
         ))
-        .map_err(|err| format!("Could not query ExternalRef entries from config.db: {}", err))?;
+        .map_err(|err| format!("Could not read ExternalRef entries: {}", err))?;
 
     let mut refs = Vec::new();
+    let mut skipped = Vec::new();
     for row in 0..result.row_count() {
         let logical_path = result.get_text(row, 0).unwrap_or_default();
         let target_path = result.get_text(row, 1).unwrap_or_default();
@@ -420,10 +505,11 @@ fn collect_external_refs() -> Result<Vec<ExternalRefEntry>, String> {
 
         let mut stat = [0u32; 7];
         if fs::stat(&target_path, &mut stat) != 0 {
-            return Err(format!(
-                "ExternalRef target missing.\nRegistry: {}\nTarget: {}",
-                logical_path, target_path
-            ));
+            skipped.push(SkippedExternalRef {
+                logical_path,
+                target_path,
+            });
+            continue;
         }
 
         let index = refs.len();
@@ -435,7 +521,7 @@ fn collect_external_refs() -> Result<Vec<ExternalRefEntry>, String> {
         });
     }
 
-    Ok(refs)
+    Ok((refs, skipped))
 }
 
 fn add_external_ref_to_archive(
@@ -447,13 +533,13 @@ fn add_external_ref_to_archive(
     } else {
         let root_dir = format!("{}/", entry.archive_path);
         if !writer.add_dir(&root_dir) {
-            return Err(format!("Could not add archive directory {}.", root_dir));
+            return Err(String::from("Could not prepare a referenced file for backup."));
         }
         let bytes = fs::read_to_vec(&entry.target_path)
             .map_err(|_| format!("Could not read referenced file {}.", entry.target_path))?;
         let archive_file = format!("{}/payload", entry.archive_path);
         if !writer.add_file(&archive_file, &bytes) {
-            return Err(format!("Could not add {} to the backup archive.", entry.target_path));
+            return Err(format!("Could not add {} to the backup.", entry.target_path));
         }
         Ok(())
     }
@@ -466,11 +552,11 @@ fn add_dir_tree_to_archive(
 ) -> Result<(), String> {
     let archive_entry = format!("{}/", archive_dir);
     if !writer.add_dir(&archive_entry) {
-        return Err(format!("Could not add archive directory {}.", archive_entry));
+        return Err(String::from("Could not prepare a referenced folder for backup."));
     }
 
     let entries = fs::read_dir(source_dir)
-        .map_err(|_| format!("Could not read directory {}.", source_dir))?;
+        .map_err(|_| format!("Could not read referenced directory {}.", source_dir))?;
     for child in entries {
         if child.name == "." || child.name == ".." {
             continue;
@@ -483,7 +569,7 @@ fn add_dir_tree_to_archive(
             let bytes = fs::read_to_vec(&source_path)
                 .map_err(|_| format!("Could not read referenced file {}.", source_path))?;
             if !writer.add_file(&child_archive, &bytes) {
-                return Err(format!("Could not add {} to the backup archive.", source_path));
+                return Err(format!("Could not add {} to the backup.", source_path));
             }
         }
     }
@@ -510,7 +596,7 @@ fn parse_manifest(text: &str) -> Result<Vec<ExternalRefEntry>, String> {
     let mut lines = text.lines();
     match lines.next() {
         Some("ANYOS-BACKUP-V2") => {}
-        _ => return Err(String::from("Backup manifest has an unknown format.")),
+        _ => return Err(String::from("The backup manifest has an unknown format.")),
     }
 
     let mut refs = Vec::new();
@@ -525,18 +611,18 @@ fn parse_manifest(text: &str) -> Result<Vec<ExternalRefEntry>, String> {
         let logical_path = fields
             .next()
             .map(unescape_manifest_field)
-            .ok_or_else(|| String::from("Manifest entry is missing a logical path."))?;
+            .ok_or_else(|| String::from("The backup manifest is incomplete."))?;
         let kind = fields
             .next()
-            .ok_or_else(|| String::from("Manifest entry is missing a kind."))?;
+            .ok_or_else(|| String::from("The backup manifest is incomplete."))?;
         let target_path = fields
             .next()
             .map(unescape_manifest_field)
-            .ok_or_else(|| String::from("Manifest entry is missing a target path."))?;
+            .ok_or_else(|| String::from("The backup manifest is incomplete."))?;
         let archive_path = fields
             .next()
             .map(unescape_manifest_field)
-            .ok_or_else(|| String::from("Manifest entry is missing an archive path."))?;
+            .ok_or_else(|| String::from("The backup manifest is incomplete."))?;
 
         refs.push(ExternalRefEntry {
             logical_path,
@@ -565,7 +651,7 @@ fn extract_external_stage(reader: &libzip_client::TarReader) -> Result<(), Strin
         }
         ensure_parent_dirs(&stage_path);
         if !reader.extract_to_file(index, &stage_path) {
-            return Err(format!("Could not extract {} to {}.", name, stage_path));
+            return Err(String::from("Could not extract external app data from the backup."));
         }
     }
 
@@ -589,10 +675,7 @@ fn apply_external_restore(
         let _ = remove_tree(&backup_path);
         ensure_parent_dirs(&backup_path);
         if fs::rename(&entry.target_path, &backup_path) != 0 {
-            return Err(format!(
-                "Could not move the current ExternalRef target out of the way.\nTarget: {}\nBackup: {}",
-                entry.target_path, backup_path
-            ));
+            return Err(String::from("Could not prepare current app data for restore."));
         }
     }
 
@@ -601,10 +684,7 @@ fn apply_external_restore(
         if had_existing {
             let _ = fs::rename(&backup_path, &entry.target_path);
         }
-        return Err(format!(
-            "Could not restore the ExternalRef target.\nTarget: {}\nStaged: {}\nRegistry: {}",
-            entry.target_path, staged_path, entry.logical_path
-        ));
+        return Err(String::from("Could not restore referenced app data."));
     }
 
     applied.push(AppliedRestore {
@@ -634,11 +714,7 @@ fn cleanup_restore_artifacts() {
 }
 
 fn backup_slot_for_target(target_path: &str) -> String {
-    format!(
-        "{}/{}",
-        PRE_RESTORE_EXTERNAL_ROOT,
-        strip_leading_slash(target_path)
-    )
+    format!("{}/{}", PRE_RESTORE_EXTERNAL_ROOT, strip_leading_slash(target_path))
 }
 
 fn find_archive_entry(reader: &libzip_client::TarReader, wanted: &str) -> Option<u32> {
@@ -780,14 +856,4 @@ fn default_backup_name() -> String {
         "anyos-config-{:04}{:02}{:02}-{:02}{:02}.confdb.tar.gz",
         year, month, day, hour, min
     )
-}
-
-fn format_size(bytes: u32) -> String {
-    if bytes >= 1024 * 1024 {
-        format!("{} MiB", bytes / (1024 * 1024))
-    } else if bytes >= 1024 {
-        format!("{} KiB", bytes / 1024)
-    } else {
-        format!("{} B", bytes)
-    }
 }

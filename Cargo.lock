@@ -248,6 +248,7 @@ dependencies = [
  "anyos_std",
  "dynlink",
  "libanyui_client",
+ "libconf_schema",
  "libdb_client",
  "libzip_client",
 ]

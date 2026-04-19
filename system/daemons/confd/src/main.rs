@@ -347,7 +347,7 @@ fn main() {
     let mut state = ConfState::new(entries, next_audit_seq);
 
     let old_pipe = anyos_std::ipc::pipe_open(PIPE_NAME);
-    if old_pipe != 0 {
+    if old_pipe != 0 && old_pipe != u32::MAX {
         anyos_std::ipc::pipe_close(old_pipe);
     }
 
