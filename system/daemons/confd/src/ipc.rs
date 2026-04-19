@@ -1017,6 +1017,7 @@ fn encode_value(value: Option<&ConfValue>) -> (&'static str, String) {
         Some(ConfValue::String(s)) => ("string", escape_value(s)),
         Some(ConfValue::Int(v)) => ("int", format!("{}", *v)),
         Some(ConfValue::Bool(v)) => ("bool", if *v { String::from("1") } else { String::from("0") }),
+        Some(ConfValue::ExternalRef(path)) => ("external_ref", escape_value(path)),
         None => ("none", String::from("-")),
     }
 }
@@ -1030,6 +1031,7 @@ fn decode_value(type_name: &str, raw_value: &str) -> Option<ConfValue> {
             "0" | "false" | "FALSE" => Some(ConfValue::Bool(false)),
             _ => None,
         },
+        "external_ref" | "EXTERNAL_REF" => Some(ConfValue::ExternalRef(unescape_value(raw_value))),
         _ => None,
     }
 }

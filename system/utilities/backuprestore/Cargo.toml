@@ -1,0 +1,18 @@
+[package]
+name = "backuprestore"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyos_std = { path = "../../../libs/stdlib" }
+dynlink = { path = "../../../libs/dynlink" }
+libanyui_client = { path = "../../../libs/libanyui_client" }
+libdb_client = { path = "../../../libs/libdb_client" }
+libzip_client = { path = "../../../libs/libzip_client" }
+
+[profile.dev]
+panic = "abort"
+opt-level = 2
+
+[profile.release]
+panic = "abort"

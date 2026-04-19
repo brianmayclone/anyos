@@ -15,11 +15,10 @@ show_splash:
     cmp word [logo_sectors], 0
     je .no_logo
 
-    ; Set logo_y to vertically centered position
-    ; center_y = (screen_h - logo_h * 2) / 2
+    ; Set logo_y to vertically centered position using native logo height
+    ; center_y = (screen_h - logo_h) / 2
     movzx eax, word [0x2000 + 0x14]    ; screen height
     a32 mov ebx, [LOGO_LOAD_ADDR + 4]  ; logo height (from header)
-    shl ebx, 1                          ; * 2 (upscale)
     sub eax, ebx
     shr eax, 1
     mov [logo_y], eax
@@ -47,7 +46,7 @@ clear_screen:
     ret
 
 ; -----------------------------------------------------------------------------
-; draw_logo - Draw logo with 2x nearest-neighbor upscale
+; draw_logo - Draw logo at native pixel size
 ;   Logo at LOGO_LOAD_ADDR: [width:u32][height:u32][RGB pixels 3 bytes each]
 ;   Black pixels (0,0,0) are transparent
 ; -----------------------------------------------------------------------------
@@ -60,11 +59,9 @@ draw_logo:
     a32 mov ebx, [LOGO_LOAD_ADDR + 4]  ; logo height
     mov [logo_h], ebx
 
-    ; Compute horizontal center: logo_x = (screen_w - logo_w * 2) / 2
+    ; Compute horizontal center: logo_x = (screen_w - logo_w) / 2
     movzx ecx, word [0x2000 + 0x12]   ; screen width
-    mov edx, eax
-    shl edx, 1                          ; logo_w * 2
-    sub ecx, edx
+    sub ecx, eax
     shr ecx, 1
     mov [logo_x], ecx
 
@@ -95,12 +92,6 @@ draw_logo:
     cmp dword [.src_rows_left], 0
     je .done
 
-    ; Repeat this source row 2 times vertically
-    mov byte [.repeat_count], 2
-    mov [.row_src_start], esi           ; save source pointer for this row
-
-.vert_repeat:
-    mov esi, [.row_src_start]           ; reset source to row start
     mov edi, [.dst_base]
     mov ecx, [logo_w]
 
@@ -125,31 +116,18 @@ draw_logo:
     movzx ebx, byte [esi - 1]          ; B
     or eax, ebx
 
-    ; Write 2 horizontal pixels
     mov [edi], eax
-    mov [edi + 4], eax
     jmp .next_pixel
 
 .skip_pixel:
-    ; Transparent, skip 2 pixels
 .next_pixel:
-    add edi, 8                          ; advance 2 pixels * 4 bytes
+    add edi, 4                          ; advance 1 pixel * 4 bytes
     dec ecx
     jnz .src_pixel_loop
 
     ; Advance destination to next row
     mov eax, [.pitch]
     add [.dst_base], eax
-
-    dec byte [.repeat_count]
-    jnz .vert_repeat
-
-    ; Advance source past this row (source pointer is already at end after last repeat)
-    ; esi was reset each repeat, so advance from row start by logo_w * 3
-    mov esi, [.row_src_start]
-    mov eax, [logo_w]
-    lea eax, [eax + eax * 2]           ; * 3
-    add esi, eax
 
     dec dword [.src_rows_left]
     jmp .src_row_loop
@@ -161,9 +139,7 @@ draw_logo:
 ; Local data for draw_logo
 .dst_base:      dd 0
 .pitch:         dd 0
-.row_src_start: dd 0
 .src_rows_left: dd 0
-.repeat_count:  db 0
 
 ; -----------------------------------------------------------------------------
 ; wait_for_input - Wait for timeout or Escape key
@@ -238,4 +214,3 @@ logo_w:      dd 0
 logo_h:      dd 0
 logo_x:      dd 0
 logo_y:      dd 0
-logo_repeat: db 0

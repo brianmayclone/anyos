@@ -295,7 +295,7 @@ fn sync_imap_async(
     // ── Phase 3: Fetch Messages ──────────────────────────────────
     let folders_to_sync: Vec<&str> = match target_folder {
         Some(ref f) => alloc::vec![f.as_str()],
-        None => alloc::vec!["INBOX", "Sent", "Drafts"],
+        None => alloc::vec!["INBOX", "Sent", "Drafts", "Archive"],
     };
 
     ss.phase
@@ -400,6 +400,7 @@ fn sync_imap_async(
                                 let preview: String = full.text_body.chars().take(100).collect();
                                 s.preview = preview;
                             }
+                            s.category = maildir::classify_message(&s, folder_name);
 
                             // Learn contacts
                             crate::app().address_book.learn_from_addresses(&s.to);
@@ -556,6 +557,7 @@ fn sync_pop3_async(
                     let preview: String = full.text_body.chars().take(100).collect();
                     summary.preview = preview;
                 }
+                summary.category = maildir::classify_message(&summary, "INBOX");
 
                 // Save .eml
                 let msg_path = maildir::message_path(base_dir, &account.id, "INBOX", *msg_num);

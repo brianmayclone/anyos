@@ -552,6 +552,7 @@ fn show_detail(row: u32) {
             Some(ConfValue::String(_)) => 1,
             Some(ConfValue::Int(_)) => 2,
             Some(ConfValue::Bool(_)) => 3,
+            Some(ConfValue::ExternalRef(_)) => 1,
             None => 1,
         },
     });
@@ -740,6 +741,7 @@ fn kind_name(item: &ConfItem) -> &'static str {
             Some(ConfValue::String(_)) => "string",
             Some(ConfValue::Int(_)) => "int",
             Some(ConfValue::Bool(_)) => "bool",
+            Some(ConfValue::ExternalRef(_)) => "external_ref",
             None => "value",
         },
     }
@@ -752,6 +754,7 @@ fn value_text(item: &ConfItem) -> String {
         Some(ConfValue::Bool(value)) => {
             if *value { String::from("true") } else { String::from("false") }
         }
+        Some(ConfValue::ExternalRef(value)) => value.clone(),
         None => String::new(),
     }
 }

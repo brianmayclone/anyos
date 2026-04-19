@@ -149,6 +149,7 @@ fn service_path(name: &str, field: &str) -> String {
 fn read_service_string(client: &mut ConfClient, name: &str, field: &str) -> Option<String> {
     match client.get(RegistryScope::System, &service_path(name, field)).ok()?.value {
         Some(libconf::ConfValue::String(value)) => Some(value),
+        Some(libconf::ConfValue::ExternalRef(value)) => Some(value),
         _ => None,
     }
 }

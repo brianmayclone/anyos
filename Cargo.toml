@@ -30,6 +30,7 @@ members = [
   "system/compositor/settings",
   "system/compositor/wifimon",
   "system/utilities/amiconsole",
+  "system/utilities/backuprestore",
   "system/utilities/configexplorer",
   "system/utilities/anytrace",
   "system/utilities/diskutil",

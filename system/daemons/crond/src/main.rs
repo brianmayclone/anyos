@@ -175,6 +175,7 @@ fn read_conf_string(client: &mut ConfClient, target: ConfTarget, path: &str) -> 
         Some(ConfValue::String(value)) => Some(value),
         Some(ConfValue::Int(value)) => Some(format!("{}", value)),
         Some(ConfValue::Bool(value)) => Some(if value { String::from("true") } else { String::from("false") }),
+        Some(ConfValue::ExternalRef(value)) => Some(value),
         None => None,
     }
 }

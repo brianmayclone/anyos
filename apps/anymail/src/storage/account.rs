@@ -2,9 +2,11 @@
 // SPDX-License-Identifier: MIT
 //! Account configuration backed by confd with JSON import/export compatibility.
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::json::Value;
+use libconf_schema::{ConfClient, RegistryScope};
 
 use crate::storage::schema::schema;
 
@@ -121,7 +123,12 @@ impl MailConfig {
     /// Load config from confd, falling back to a legacy JSON file on first run.
     pub fn load(legacy_path: &str) -> Self {
         let _ = schema().register();
-        if let Some(config) = load_from_confd() {
+        if let Some(config) = load_structured_from_confd() {
+            return config;
+        }
+        if let Some(config) = load_legacy_blob_from_confd() {
+            config.save();
+            delete_legacy_accounts_blob();
             return config;
         }
         let config = Self::load_from_path(legacy_path);
@@ -165,8 +172,10 @@ impl MailConfig {
         let _ = schema().write_bool("config/check_on_startup", self.check_on_startup);
         let _ = schema().write_string("config/theme", &self.theme);
         let _ = schema().write_i64("config/active_account", self.active_account as i64);
-        let json = self.to_json_string();
-        let _ = schema().write_string("config/accounts_json", &json);
+        let _ = schema().write_i64("config/accounts_schema_version", 1);
+        let _ = schema().write_i64("config/accounts_count", self.accounts.len() as i64);
+        save_accounts_to_confd(&self.accounts);
+        delete_legacy_accounts_blob();
     }
 
     /// Save JSON to a file for export compatibility.
@@ -285,8 +294,39 @@ impl MailConfig {
     }
 }
 
-fn load_from_confd() -> Option<MailConfig> {
+fn load_structured_from_confd() -> Option<MailConfig> {
+    if schema().read_i64("config/accounts_schema_version").unwrap_or(0) < 1 {
+        return None;
+    }
+
+    let mut config = MailConfig::new();
+    config.check_on_startup = schema()
+        .read_bool("config/check_on_startup")
+        .unwrap_or(config.check_on_startup);
+    config.theme = schema()
+        .read_string("config/theme")
+        .unwrap_or(config.theme);
+
+    let count = schema().read_i64("config/accounts_count").unwrap_or(0).max(0) as usize;
+    for index in 0..count {
+        if let Some(account) = load_structured_account(index) {
+            config.accounts.push(account);
+        }
+    }
+
+    config.active_account = schema()
+        .read_i64("config/active_account")
+        .unwrap_or(0)
+        .max(0) as usize;
+    clamp_active_account(&mut config);
+    Some(config)
+}
+
+fn load_legacy_blob_from_confd() -> Option<MailConfig> {
     let json = schema().read_string("config/accounts_json")?;
+    if json.trim().is_empty() {
+        return None;
+    }
     let mut config = MailConfig::from_json_str(&json);
     config.check_on_startup = schema()
         .read_bool("config/check_on_startup")
@@ -298,7 +338,173 @@ fn load_from_confd() -> Option<MailConfig> {
         .read_i64("config/active_account")
         .unwrap_or(config.active_account as i64)
         .max(0) as usize;
+    clamp_active_account(&mut config);
     Some(config)
+}
+
+fn load_structured_account(index: usize) -> Option<Account> {
+    let mut acc = Account::new();
+    let prefix = account_prefix(index);
+
+    acc.id = schema().read_string(&join_path(&prefix, "id")).unwrap_or_default();
+    acc.display_name = schema()
+        .read_string(&join_path(&prefix, "display_name"))
+        .unwrap_or_default();
+    acc.email = schema().read_string(&join_path(&prefix, "email"))?;
+
+    let proto = schema()
+        .read_string(&join_path(&prefix, "incoming_protocol"))
+        .unwrap_or_else(|| String::from("imap"));
+    acc.incoming_protocol = if proto == "pop3" {
+        IncomingProtocol::Pop3
+    } else {
+        IncomingProtocol::Imap
+    };
+    acc.incoming_host = schema()
+        .read_string(&join_path(&prefix, "incoming_host"))
+        .unwrap_or_default();
+    acc.incoming_port = schema()
+        .read_i64(&join_path(&prefix, "incoming_port"))
+        .unwrap_or(993) as u16;
+    acc.incoming_security = parse_security(
+        &schema()
+            .read_string(&join_path(&prefix, "incoming_security"))
+            .unwrap_or_else(|| String::from("tls")),
+    );
+    acc.incoming_user = schema()
+        .read_string(&join_path(&prefix, "incoming_user"))
+        .unwrap_or_default();
+    acc.incoming_pass = schema()
+        .read_string(&join_path(&prefix, "incoming_pass"))
+        .unwrap_or_default();
+    acc.smtp_host = schema()
+        .read_string(&join_path(&prefix, "smtp_host"))
+        .unwrap_or_default();
+    acc.smtp_port = schema()
+        .read_i64(&join_path(&prefix, "smtp_port"))
+        .unwrap_or(587) as u16;
+    acc.smtp_security = parse_security(
+        &schema()
+            .read_string(&join_path(&prefix, "smtp_security"))
+            .unwrap_or_else(|| String::from("starttls")),
+    );
+    acc.smtp_user = schema()
+        .read_string(&join_path(&prefix, "smtp_user"))
+        .unwrap_or_default();
+    acc.smtp_pass = schema()
+        .read_string(&join_path(&prefix, "smtp_pass"))
+        .unwrap_or_default();
+    acc.check_interval_secs = schema()
+        .read_i64(&join_path(&prefix, "check_interval_secs"))
+        .unwrap_or(300)
+        .max(0) as u32;
+    acc.signature = schema()
+        .read_string(&join_path(&prefix, "signature"))
+        .unwrap_or_default();
+    acc.leave_on_server = schema()
+        .read_bool(&join_path(&prefix, "leave_on_server"))
+        .unwrap_or(true);
+
+    if acc.id.is_empty() {
+        acc.id = Account::generate_id(&acc.email);
+    }
+    Some(acc)
+}
+
+fn save_accounts_to_confd(accounts: &[Account]) {
+    let mut client = match ConfClient::connect("anymail") {
+        Ok(client) => client,
+        Err(_) => return,
+    };
+
+    let scope = RegistryScope::User;
+    let root = schema().full_path("config/accounts");
+    let _ = client.mkdir(scope, &root);
+
+    for (index, account) in accounts.iter().enumerate() {
+        let prefix = schema().full_path(&account_prefix(index));
+        let _ = client.mkdir(scope, &prefix);
+        write_account_field(index, "id", &account.id);
+        write_account_field(index, "display_name", &account.display_name);
+        write_account_field(index, "email", &account.email);
+        write_account_field(
+            index,
+            "incoming_protocol",
+            if account.is_imap() { "imap" } else { "pop3" },
+        );
+        write_account_field(index, "incoming_host", &account.incoming_host);
+        let _ = schema().write_i64(
+            &join_path(&account_prefix(index), "incoming_port"),
+            account.incoming_port as i64,
+        );
+        write_account_field(
+            index,
+            "incoming_security",
+            security_str(account.incoming_security),
+        );
+        write_account_field(index, "incoming_user", &account.incoming_user);
+        write_account_field(index, "incoming_pass", &account.incoming_pass);
+        write_account_field(index, "smtp_host", &account.smtp_host);
+        let _ = schema().write_i64(
+            &join_path(&account_prefix(index), "smtp_port"),
+            account.smtp_port as i64,
+        );
+        write_account_field(index, "smtp_security", security_str(account.smtp_security));
+        write_account_field(index, "smtp_user", &account.smtp_user);
+        write_account_field(index, "smtp_pass", &account.smtp_pass);
+        let _ = schema().write_i64(
+            &join_path(&account_prefix(index), "check_interval_secs"),
+            account.check_interval_secs as i64,
+        );
+        write_account_field(index, "signature", &account.signature);
+        let _ = schema().write_bool(
+            &join_path(&account_prefix(index), "leave_on_server"),
+            account.leave_on_server,
+        );
+    }
+
+    if let Ok(children) = client.list_children(scope, &root) {
+        for child in children {
+            let name = leaf_name(&child.path);
+            if let Ok(index) = name.parse::<usize>() {
+                if index >= accounts.len() {
+                    let _ = client.del(scope, &child.path);
+                }
+            }
+        }
+    }
+}
+
+fn write_account_field(index: usize, field: &str, value: &str) {
+    let _ = schema().write_string(&join_path(&account_prefix(index), field), value);
+}
+
+fn account_prefix(index: usize) -> String {
+    format!("config/accounts/{}", index)
+}
+
+fn join_path(prefix: &str, field: &str) -> String {
+    format!("{}/{}", prefix, field)
+}
+
+fn leaf_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+fn clamp_active_account(config: &mut MailConfig) {
+    if config.accounts.is_empty() {
+        config.active_account = 0;
+    } else if config.active_account >= config.accounts.len() {
+        config.active_account = config.accounts.len() - 1;
+    }
+}
+
+fn delete_legacy_accounts_blob() {
+    let mut client = match ConfClient::connect("anymail") {
+        Ok(client) => client,
+        Err(_) => return,
+    };
+    let _ = client.del(RegistryScope::User, &schema().full_path("config/accounts_json"));
 }
 
 fn parse_security(s: &str) -> Security {

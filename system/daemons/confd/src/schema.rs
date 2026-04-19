@@ -87,6 +87,7 @@ pub fn load_entries(db: &Database) -> Vec<RegistryEntry> {
             1 => Some(ConfValue::String(result.get_text(row, 6).unwrap_or_default())),
             2 => Some(ConfValue::Int(result.get_int(row, 7).unwrap_or(0))),
             3 => Some(ConfValue::Bool(result.get_int(row, 8).unwrap_or(0) != 0)),
+            4 => Some(ConfValue::ExternalRef(result.get_text(row, 6).unwrap_or_default())),
             _ => None,
         };
         let version = result.get_int(row, 9).unwrap_or(0).max(0) as u64;
@@ -133,6 +134,12 @@ pub fn persist_entry(db: &Database, entry: &RegistryEntry) -> Result<(), String>
             String::from("''"),
             String::from("0"),
             if *v { String::from("1") } else { String::from("0") },
+        ),
+        Some(ConfValue::ExternalRef(path)) => (
+            4,
+            format!("'{}'", escape_sql(path)),
+            String::from("0"),
+            String::from("0"),
         ),
         None => (0, String::from("''"), String::from("0"), String::from("0")),
     };

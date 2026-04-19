@@ -89,6 +89,7 @@ fn split_csv(value: &str) -> Vec<String> {
 fn conf_string(client: &mut ConfClient, path: &str) -> Option<String> {
     match client.get(RegistryScope::System, path).ok()?.value {
         Some(ConfValue::String(value)) => Some(value),
+        Some(ConfValue::ExternalRef(value)) => Some(value),
         _ => None,
     }
 }

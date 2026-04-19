@@ -38,6 +38,7 @@ pub(crate) enum ConfValue {
     String(String),
     Int(i64),
     Bool(bool),
+    ExternalRef(String),
 }
 
 #[derive(Clone)]

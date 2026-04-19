@@ -536,6 +536,7 @@ fn conf_item_value<'a>(items: &'a [libconf::ConfItem], name: &str, field: &str) 
 fn conf_string(items: &[libconf::ConfItem], name: &str, field: &str) -> Option<String> {
     match conf_item_value(items, name, field)? {
         ConfValue::String(value) => Some(value.clone()),
+        ConfValue::ExternalRef(value) => Some(value.clone()),
         _ => None,
     }
 }

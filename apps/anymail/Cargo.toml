@@ -10,6 +10,7 @@ libwebview = { path = "../../libs/libwebview" }
 libimage_client = { path = "../../libs/libimage_client" }
 libtls = { path = "../../libs/libtls" }
 libconf_schema = { path = "../../libs/libconf_schema" }
+libdb_client = { path = "../../libs/libdb_client" }
 
 [profile.dev]
 panic = "abort"

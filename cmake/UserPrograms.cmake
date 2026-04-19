@@ -443,6 +443,8 @@ function(add_app_in_folder NAME SRC_DIR DISPLAY_NAME SUBDIR)
     COMMAND ${MKAPPBUNDLE_EXECUTABLE} ${_BUNDLE_ARGS}
     DEPENDS ${_BUNDLE_DEPS}
     COMMENT "Packaging ${DISPLAY_NAME}.app (mkappbundle)"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
   )
   set(APP_BINS ${APP_BINS} "${APP_DIR}/${DISPLAY_NAME}" PARENT_SCOPE)
 endfunction()
@@ -486,6 +488,8 @@ function(add_system_app NAME SRC_DIR DISPLAY_NAME)
     COMMAND ${MKAPPBUNDLE_EXECUTABLE} ${_BUNDLE_ARGS}
     DEPENDS ${_BUNDLE_DEPS}
     COMMENT "Packaging ${DISPLAY_NAME}.app → /System/ (mkappbundle)"
+    COMMAND_EXPAND_LISTS
+    VERBATIM
   )
   set(SYSTEM_BINS ${SYSTEM_BINS} "${APP_DIR}/${DISPLAY_NAME}" PARENT_SCOPE)
 endfunction()
@@ -1068,6 +1072,7 @@ endif()
 add_app(anymail     ${CMAKE_SOURCE_DIR}/apps/anymail       "anyMail")
 add_app(anyzilla    ${CMAKE_SOURCE_DIR}/apps/anyzilla      "anyzilla")
 add_app_in_folder(amiconsole  ${CMAKE_SOURCE_DIR}/system/utilities/amiconsole  "AMI Console" "Management")
+add_app_in_folder(backuprestore ${CMAKE_SOURCE_DIR}/system/utilities/backuprestore "Backup & Restore" "Management")
 add_app_in_folder(configexplorer ${CMAKE_SOURCE_DIR}/system/utilities/configexplorer "Config Explorer" "Management")
 add_app_in_folder(servicemanager ${CMAKE_SOURCE_DIR}/system/utilities/servicemanager "Service Manager" "Management")
 add_app(notifications ${CMAKE_SOURCE_DIR}/apps/notifications "Notifications")

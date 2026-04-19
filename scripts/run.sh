@@ -99,6 +99,7 @@
 #   ./run.sh --kvm --usb --kbd de              # KVM, USB keyboard+mouse, German layout
 #   ./run.sh --kvm --fwd 2222:22 --fwd 80:80   # KVM + port forwarding
 #   ./run.sh --vmware --kvm --bridge virbr0     # VMware SVGA, KVM, bridged network
+#   ./run.sh --persist-power                    # Keep QEMU open after guest power events
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -134,6 +135,7 @@ HEADLESS=false
 SNAPSHOT=false
 SPICE_MODE=false
 CLIPBOARD_MODE=false
+PERSIST_POWER=false
 # Empty unless --system-fs / --system-fs-size is explicitly given.
 SYSTEM_FS_OPT=""
 SYSTEM_FS_SIZE_OPT=""
@@ -374,8 +376,11 @@ for arg in "$@"; do
         --snapshot)
             SNAPSHOT=true
             ;;
+        --persist-power)
+            PERSIST_POWER=true
+            ;;
         *)
-            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --clipboard] [--arm64] [--headless] [--snapshot]"
+            echo "Usage: $0 [--vmware | --std | --virtio | --virgl] [--res WxH] [--ide] [--cdrom] [--tempdisk] [--disk PATH[:SIZE] ...] [--audio] [--usb | --tablet] [--uefi] [--kvm] [--kbd LAYOUT] [--fwd HOST:GUEST ...] [--bridge [IFACE]] [--wifi] [--spice | --clipboard] [--arm64] [--headless] [--snapshot] [--persist-power]"
             exit 1
             ;;
     esac
@@ -1001,6 +1006,10 @@ fi
 
 echo "Starting anyOS with $VGA_LABEL (-vga $VGA), disk: $DRIVE_LABEL$TEMPDISK_LABEL$EXTRA_DISK_LABEL$AUDIO_LABEL$USB_LABEL$KVM_LABEL$RES_LABEL$KBD_LABEL$NET_LABEL$WIFI_LABEL$SPICE_LABEL"
 
+POWER_FLAGS=""
+if [ "$PERSIST_POWER" = true ]; then
+    POWER_FLAGS="-no-reboot -no-shutdown"
+fi
 
 QEMU_CMD="$QEMU_BIN_ESC \
     $CPU_FLAGS \
@@ -1019,7 +1028,6 @@ QEMU_CMD="$QEMU_BIN_ESC \
     $AUDIO_FLAGS \
     $USB_FLAGS \
     $SPICE_FLAGS \
-    -no-reboot \
-    -no-shutdown"
+    $POWER_FLAGS"
 
 eval "$QEMU_CMD"

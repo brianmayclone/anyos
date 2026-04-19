@@ -7,7 +7,7 @@
 # SPDX-License-Identifier: MIT
 
 # Run anyOS in QEMU on Windows
-# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Virgl] [-Res "WxH"] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-Wifi] [-VBox] [-VMwareWS]
+# Usage: .\scripts\run.ps1 [-Vmware] [-Std] [-Virtio] [-Virgl] [-Res "WxH"] [-Ide] [-Cdrom] [-Audio] [-Usb] [-Uefi] [-Kvm] [-Fwd "H:G","H:G"] [-Wifi] [-PersistPower] [-VBox] [-VMwareWS]
 #
 #   -VBox     Start VirtualBox VM named 'anyos' and stream its COM1 serial output here
 #   -VMwareWS Start VMware Workstation VM named 'anyos' and stream its COM1 serial output here
@@ -25,6 +25,7 @@
 #   -Fwd H:G  Forward host port H to guest port G (TCP). Repeatable.
 #             Example: -Fwd "2222:22","8080:8080"
 #   -Wifi     Add a second NIC emulating a Wi-Fi adapter (virtio-net, NAT, appears as wlan0 in anyOS)
+#   -PersistPower  Keep QEMU running after guest shutdown/reboot for debugging
 
 param(
     [switch]$VBox,
@@ -40,6 +41,7 @@ param(
     [switch]$Uefi,
     [switch]$Kvm,
     [switch]$Wifi,
+    [switch]$PersistPower,
     [string]$Res = "",
     [string[]]$Fwd = @()
 )
@@ -607,8 +609,10 @@ if ($Wifi) {
     $wifiLabel = ", wifi: virtio-net (NAT)"
 }
 
-$args += "-no-reboot"
-$args += "-no-shutdown"
+if ($PersistPower) {
+    $args += "-no-reboot"
+    $args += "-no-shutdown"
+}
 
 # Audio (Windows uses wasapi backend)
 $audioLabel = ""

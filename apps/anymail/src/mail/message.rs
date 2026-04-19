@@ -26,6 +26,7 @@ pub struct MessageSummary {
     pub date: String, // Sortable: YYYY-MM-DD HH:MM:SS
     pub size: u64,
     pub flags: u32,
+    pub category: String,
     pub in_reply_to: String,
     pub references: String,
     pub preview: String, // First ~100 chars of plain text body
@@ -42,6 +43,7 @@ impl MessageSummary {
             date: String::new(),
             size: 0,
             flags: 0,
+            category: String::new(),
             in_reply_to: String::new(),
             references: String::new(),
             preview: String::new(),

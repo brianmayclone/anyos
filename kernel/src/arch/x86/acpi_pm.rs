@@ -15,7 +15,7 @@
 //! window used by `crate::arch::x86::acpi` to avoid interference.
 
 use crate::sync::spinlock::Spinlock;
-use crate::arch::x86::port::{inl, outl, inw, outw};
+use crate::arch::x86::port::{inl, inw, outw};
 
 // ── Private Virtual Window ────────────────────────────────────────────────────
 
@@ -90,6 +90,8 @@ struct AcpiSdtHeader {
 /// Covers ACPI 1.0 + 2.0 fields needed for P-states, C-states, sleep, and reset.
 #[derive(Debug, Clone, Copy)]
 pub struct Fadt {
+    /// Legacy 32-bit DSDT physical address.
+    pub dsdt: u32,
     /// SCI interrupt vector (x86 IRQ line).
     pub sci_interrupt: u16,
     /// SMI command port (write `acpi_enable` here to take ACPI ownership).
@@ -140,6 +142,8 @@ pub struct Fadt {
     pub reset_reg_address: u64,
     /// ACPI 2.0+ RESET_VALUE: value to write to trigger platform reset.
     pub reset_value: u8,
+    /// ACPI 2.0+ X_DSDT physical address (0 if unavailable).
+    pub x_dsdt: u64,
 }
 
 // ── Global State ─────────────────────────────────────────────────────────────
@@ -328,6 +332,7 @@ fn parse_fadt_table(virt: u64) -> Option<Fadt> {
     // Read table length from the SDT header (offset 4) for ACPI 2.0+ field bounds check.
     let table_length   = ru32!(4);
 
+    let dsdt           = ru32!(40);
     let sci_interrupt  = ru16!(46);
     let smi_cmd        = ru32!(48);
     let acpi_enable    = ru8!(52);
@@ -350,32 +355,29 @@ fn parse_fadt_table(virt: u64) -> Option<Fadt> {
     let iapc_boot_arch = ru16!(109);
     let flags          = ru32!(112);
 
-    // ACPI 2.0+ RESET_REG (Generic Address Structure at offset 128):
-    //   [116..120] RESET_REG.AddressSpaceId (u8 at 128)
-    //   [128]      AddressSpaceId: 0 = SystemMemory, 1 = SystemIO
-    //   [129]      RegisterBitWidth
-    //   [130]      RegisterBitOffset
-    //   [131]      AccessSize
-    //   [132..140] Address (u64)
-    //   [140]      RESET_VALUE (u8)
-    // Only read if the table is long enough (ACPI 2.0 FADT is >= 244 bytes).
-    let (reset_reg_addr_space, reset_reg_address, reset_value) = if table_length >= 141 {
+    // ACPI 2.0+ layout:
+    //   [116..128) RESET_REG GAS
+    //   [128]      RESET_VALUE
+    //   [140..148) X_DSDT
+    let (reset_reg_addr_space, reset_reg_address, reset_value, x_dsdt) = if table_length >= 148 {
         macro_rules! ru64 {
             ($off:expr) => { unsafe { (b.add($off) as *const u64).read_unaligned() } }
         }
-        let addr_space = ru8!(128);
-        let address    = ru64!(132);
-        let value      = ru8!(140);
+        let addr_space = ru8!(116);
+        let address    = ru64!(120);
+        let value      = ru8!(128);
+        let x_dsdt     = ru64!(140);
         crate::serial_verbose_println!(
             "  ACPI PM: RESET_REG addr_space={} address={:#010x} value={:#04x}",
             addr_space, address, value
         );
-        (addr_space, address, value)
+        (addr_space, address, value, x_dsdt)
     } else {
-        (0, 0u64, 0u8)
+        (0, 0u64, 0u8, 0u64)
     };
 
     Some(Fadt {
+        dsdt,
         sci_interrupt,
         smi_cmd,
         acpi_enable,
@@ -401,6 +403,7 @@ fn parse_fadt_table(virt: u64) -> Option<Fadt> {
         reset_reg_addr_space,
         reset_reg_address,
         reset_value,
+        x_dsdt,
     })
 }
 
@@ -433,17 +436,6 @@ pub fn enter_c2(fadt: &Fadt) {
     let _ = _dummy;
 }
 
-/// Request a system sleep state by writing SLP_TYP + SLP_EN to PM1a_CNT.
-///
-/// The SLP_TYP values used here are per the ACPI spec defaults:
-/// - S0 = no-op (normal running)
-/// - S3 = suspend to RAM (SLP_TYP = 0b001)
-/// - S4 = suspend to disk (SLP_TYP = 0b010)
-/// - S5 = power off (SLP_TYP = 0b101)
-///
-/// Note: In a real system the _S3/_S4/_S5 AML objects in the DSDT define the
-/// actual SLP_TYP values; we use the ACPI spec defaults as a reasonable
-/// approximation without AML evaluation.
 pub fn request_sleep_state(state: SleepState) {
     let fadt = match get_fadt() {
         Some(f) => f,
@@ -453,32 +445,39 @@ pub fn request_sleep_state(state: SleepState) {
         }
     };
 
-    let slp_typ: u16 = match state {
-        SleepState::S0 => return, // Already in S0
-        SleepState::S3 => 0b001,
-        SleepState::S4 => 0b010,
-        SleepState::S5 => 0b101,
+    if state == SleepState::S0 {
+        return;
+    }
+
+    enable_acpi_mode(&fadt);
+
+    let (slp_typ_a, slp_typ_b) = match sleep_types_for_state(&fadt, state) {
+        Some(v) => v,
+        None => return,
     };
 
-    // PM1 Control register layout:
-    //   bits [12:10] = SLP_TYP
-    //   bit  [13]    = SLP_EN (write-only; triggers state change)
-    let value: u16 = (slp_typ << 10) | (1 << 13); // SLP_TYP + SLP_EN
-
     crate::serial_verbose_println!(
-        "  ACPI PM: requesting sleep state {:?} — writing {:#06x} to PM1a_CNT {:#010x}",
-        state, value, fadt.pm1a_cnt_blk
+        "  ACPI PM: requesting sleep state {:?} — SLP_TYPa={} SLP_TYPb={}",
+        state, slp_typ_a, slp_typ_b
     );
 
     let port_a = fadt.pm1a_cnt_blk as u16;
-    // Safety: writing to the PM1 control port causes a hardware power state
-    // transition on ACPI-capable systems. This is the correct way to power off.
-    unsafe { outw(port_a, value); }
+    let current_a = unsafe { inw(port_a) };
+    let value_a = (current_a & !((0x7 << 10) | (1 << 13))) | (slp_typ_a << 10);
+    unsafe {
+        outw(port_a, value_a);
+        outw(port_a, value_a | (1 << 13));
+    }
 
     // Optional: write to PM1b_CNT if it exists
     if fadt.pm1b_cnt_blk != 0 {
         let port_b = fadt.pm1b_cnt_blk as u16;
-        unsafe { outw(port_b, value); }
+        let current_b = unsafe { inw(port_b) };
+        let value_b = (current_b & !((0x7 << 10) | (1 << 13))) | (slp_typ_b << 10);
+        unsafe {
+            outw(port_b, value_b);
+            outw(port_b, value_b | (1 << 13));
+        }
     }
 }
 
@@ -493,6 +492,162 @@ pub enum SleepState {
     S4,
     /// S5 — Soft power off.
     S5,
+}
+
+fn parse_pkg_length(bytes: &[u8], offset: usize) -> Option<(usize, usize)> {
+    let lead = *bytes.get(offset)?;
+    let follow_count = (lead >> 6) as usize;
+    if follow_count > 3 || offset + follow_count >= bytes.len() {
+        return None;
+    }
+
+    let mut value = (lead & 0x0F) as usize;
+    for i in 0..follow_count {
+        let b = *bytes.get(offset + 1 + i)? as usize;
+        value |= b << (4 + i * 8);
+    }
+    Some((value, 1 + follow_count))
+}
+
+fn parse_aml_integer(bytes: &[u8], offset: usize) -> Option<(u16, usize)> {
+    let op = *bytes.get(offset)?;
+    match op {
+        0x00 => Some((0, 1)),
+        0x01 => Some((1, 1)),
+        0x0A => Some((*bytes.get(offset + 1)? as u16, 2)),
+        0x0B => {
+            let lo = *bytes.get(offset + 1)? as u16;
+            let hi = *bytes.get(offset + 2)? as u16;
+            Some((lo | (hi << 8), 3))
+        }
+        0x0C => {
+            let b0 = *bytes.get(offset + 1)? as u32;
+            let b1 = *bytes.get(offset + 2)? as u32;
+            let b2 = *bytes.get(offset + 3)? as u32;
+            let b3 = *bytes.get(offset + 4)? as u32;
+            Some((((b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)) & 0xFFFF) as u16, 5))
+        }
+        0x0E => {
+            let mut value = 0u64;
+            for i in 0..8 {
+                value |= (*bytes.get(offset + 1 + i)? as u64) << (i * 8);
+            }
+            Some(((value & 0xFFFF) as u16, 9))
+        }
+        _ if op <= 0x3F => Some((op as u16, 1)),
+        _ => None,
+    }
+}
+
+fn parse_s5_sleep_types(dsdt_phys: u64) -> Option<(u16, u16)> {
+    if dsdt_phys == 0 {
+        return None;
+    }
+
+    let header_virt = pm_map(dsdt_phys as u32, 0x1000);
+    let header = header_virt as *const AcpiSdtHeader;
+    let sig = unsafe { core::ptr::addr_of!((*header).signature).read_unaligned() };
+    let length = unsafe { core::ptr::addr_of!((*header).length).read_unaligned() } as usize;
+    pm_unmap(1);
+
+    if &sig != b"DSDT" || length < core::mem::size_of::<AcpiSdtHeader>() {
+        return None;
+    }
+
+    let table_virt = pm_map(dsdt_phys as u32, length as u32);
+    let table = unsafe { core::slice::from_raw_parts(table_virt as *const u8, length) };
+    let body = &table[core::mem::size_of::<AcpiSdtHeader>()..];
+
+    let mut result = None;
+    for i in 0..body.len().saturating_sub(4) {
+        if &body[i..i + 4] != b"_S5_" {
+            continue;
+        }
+
+        let has_nameop = (i >= 1 && body[i - 1] == 0x08)
+            || (i >= 2 && body[i - 2] == 0x08 && body[i - 1] == b'\\');
+        if !has_nameop {
+            continue;
+        }
+
+        let mut off = i + 4;
+        if body.get(off) != Some(&0x12) {
+            continue;
+        }
+        off += 1;
+
+        let (_pkg_len, pkg_len_bytes) = match parse_pkg_length(body, off) {
+            Some(v) => v,
+            None => continue,
+        };
+        off += pkg_len_bytes;
+
+        if body.get(off).is_none() {
+            continue;
+        }
+        off += 1;
+
+        let (slp_typ_a, used_a) = match parse_aml_integer(body, off) {
+            Some(v) => v,
+            None => continue,
+        };
+        off += used_a;
+        let (slp_typ_b, _used_b) = match parse_aml_integer(body, off) {
+            Some(v) => v,
+            None => continue,
+        };
+
+        result = Some((slp_typ_a & 0x7, slp_typ_b & 0x7));
+        break;
+    }
+
+    let pages = (length + 0xFFF) / 0x1000;
+    pm_unmap(pages);
+    result
+}
+
+fn sleep_types_for_state(fadt: &Fadt, state: SleepState) -> Option<(u16, u16)> {
+    match state {
+        SleepState::S0 => None,
+        SleepState::S3 => Some((0b001, 0b001)),
+        SleepState::S4 => Some((0b010, 0b010)),
+        SleepState::S5 => {
+            let dsdt_phys = if fadt.x_dsdt != 0 { fadt.x_dsdt } else { fadt.dsdt as u64 };
+            parse_s5_sleep_types(dsdt_phys).or(Some((0b101, 0b101)))
+        }
+    }
+}
+
+fn enable_acpi_mode(fadt: &Fadt) {
+    if fadt.pm1a_cnt_blk == 0 {
+        return;
+    }
+
+    let port = fadt.pm1a_cnt_blk as u16;
+    if unsafe { inw(port) } & 1 != 0 {
+        return;
+    }
+
+    if fadt.smi_cmd == 0 || fadt.acpi_enable == 0 {
+        return;
+    }
+
+    crate::serial_verbose_println!(
+        "  ACPI PM: enabling ACPI mode via SMI_CMD {:#010x} value {:#04x}",
+        fadt.smi_cmd,
+        fadt.acpi_enable
+    );
+    unsafe { crate::arch::x86::port::outb(fadt.smi_cmd as u16, fadt.acpi_enable); }
+
+    for _ in 0..1_000_000u32 {
+        if unsafe { inw(port) } & 1 != 0 {
+            crate::serial_verbose_println!("  ACPI PM: ACPI mode enabled");
+            return;
+        }
+        core::hint::spin_loop();
+    }
+
+    crate::serial_verbose_println!("  ACPI PM: ACPI mode did not report SCI_EN");
 }
 
 // ── P-State (Frequency Scaling) ───────────────────────────────────────────────
@@ -588,6 +743,9 @@ pub fn shutdown() {
     crate::serial_verbose_println!("  ACPI PM: trying port 0x604 (QEMU)");
     unsafe { outw(0x604, 0x2000); }
 
+    crate::serial_verbose_println!("  ACPI PM: trying port 0x4004 (VirtualBox)");
+    unsafe { outw(0x4004, 0x3400); }
+
     // Fallback: Bochs ACPI shutdown
     crate::serial_verbose_println!("  ACPI PM: trying port 0xB004 (Bochs)");
     unsafe { outw(0xB004, 0x2000); }
@@ -602,15 +760,8 @@ pub fn shutdown() {
 /// Power off via ACPI given an explicit FADT reference (used by callers that
 /// already have a validated FADT without re-locking FADT global).
 pub fn acpi_poweroff(fadt: &Fadt) {
-    let slp_typ: u16 = 0b101; // S5 SLP_TYP (ACPI default)
-    let value: u16 = (slp_typ << 10) | (1 << 13);
-
-    unsafe {
-        outw(fadt.pm1a_cnt_blk as u16, value);
-        if fadt.pm1b_cnt_blk != 0 {
-            outw(fadt.pm1b_cnt_blk as u16, value);
-        }
-    }
+    let _ = fadt;
+    request_sleep_state(SleepState::S5);
 }
 
 /// Attempt a platform reboot via the ACPI RESET_REG (FADT offset 128+).

@@ -33,6 +33,7 @@ pub enum ConfValue {
     String(String),
     Int(i64),
     Bool(bool),
+    ExternalRef(String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +41,7 @@ pub enum ConfValueRef<'a> {
     String(&'a str),
     Int(i64),
     Bool(bool),
+    ExternalRef(&'a str),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -630,6 +632,7 @@ fn encode_value(value: &ConfValue) -> Result<(&'static str, String), ConfError> 
         ConfValue::String(s) => ("string", escape_value(s)),
         ConfValue::Int(v) => ("int", format!("{}", *v)),
         ConfValue::Bool(v) => ("bool", if *v { String::from("1") } else { String::from("0") }),
+        ConfValue::ExternalRef(path) => ("external_ref", escape_value(path)),
     })
 }
 
@@ -638,6 +641,7 @@ fn encode_value_ref(value: ConfValueRef<'_>) -> (&'static str, String) {
         ConfValueRef::String(s) => ("string", escape_value(s)),
         ConfValueRef::Int(v) => ("int", format!("{}", v)),
         ConfValueRef::Bool(v) => ("bool", if v { String::from("1") } else { String::from("0") }),
+        ConfValueRef::ExternalRef(path) => ("external_ref", escape_value(path)),
     }
 }
 
@@ -770,6 +774,7 @@ fn parse_item_line(line: &str) -> Result<ConfItem, ConfError> {
             parse_i64(raw_value).ok_or_else(|| ConfError::Protocol(String::from("invalid int")))?,
         )),
         "bool" => Some(ConfValue::Bool(matches!(raw_value, "1" | "true" | "TRUE"))),
+        "external_ref" => Some(ConfValue::ExternalRef(unescape_value(raw_value))),
         _ => return Err(ConfError::Protocol(String::from("invalid value type"))),
     };
 
@@ -851,6 +856,7 @@ fn parse_event_line(line: &str) -> Result<ConfEvent, ConfError> {
             parse_i64(raw_value).ok_or_else(|| ConfError::Protocol(String::from("invalid int")))?,
         )),
         "bool" => Some(ConfValue::Bool(matches!(raw_value, "1" | "true" | "TRUE"))),
+        "external_ref" => Some(ConfValue::ExternalRef(unescape_value(raw_value))),
         _ => return Err(ConfError::Protocol(String::from("invalid value type"))),
     };
 

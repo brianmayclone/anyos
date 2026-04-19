@@ -31,6 +31,13 @@ pub const fn default_bool(path: &'static str, value: bool) -> DefaultEntry<'stat
     }
 }
 
+pub const fn default_external_ref(path: &'static str, value: &'static str) -> DefaultEntry<'static> {
+    DefaultEntry {
+        path,
+        value: ConfValueRef::ExternalRef(value),
+    }
+}
+
 pub const fn migration_string(
     version: u32,
     path: &'static str,
@@ -56,6 +63,18 @@ pub const fn migration_bool(version: u32, path: &'static str, value: bool) -> Mi
         version,
         path,
         value: ConfValueRef::Bool(value),
+    })
+}
+
+pub const fn migration_external_ref(
+    version: u32,
+    path: &'static str,
+    value: &'static str,
+) -> MigrationStep<'static> {
+    MigrationStep::Set(MigrationEntry {
+        version,
+        path,
+        value: ConfValueRef::ExternalRef(value),
     })
 }
 
@@ -136,6 +155,13 @@ impl<'a> ServiceSchema<'a> {
         }
     }
 
+    pub fn read_external_ref(&self, rel_path: &str) -> Option<String> {
+        match self.read_item(rel_path)?.value {
+            Some(ConfValue::ExternalRef(v)) => Some(v),
+            _ => None,
+        }
+    }
+
     pub fn write_i64(&self, rel_path: &str, value: i64) -> Result<ConfItem, ConfError> {
         self.write_value(rel_path, ConfValue::Int(value))
     }
@@ -146,6 +172,10 @@ impl<'a> ServiceSchema<'a> {
 
     pub fn write_string(&self, rel_path: &str, value: &str) -> Result<ConfItem, ConfError> {
         self.write_value(rel_path, ConfValue::String(String::from(value)))
+    }
+
+    pub fn write_external_ref(&self, rel_path: &str, value: &str) -> Result<ConfItem, ConfError> {
+        self.write_value(rel_path, ConfValue::ExternalRef(String::from(value)))
     }
 
     pub fn full_path(&self, rel_path: &str) -> String {

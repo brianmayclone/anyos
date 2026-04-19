@@ -634,7 +634,8 @@ pub fn sys_shutdown(mode: u32) -> u32 {
 ///   1. 8042 keyboard controller reset (0xFE to port 0x64)
 ///   2. ACPI RESET_REG (FADT offset 128+, ACPI 2.0+)
 ///   3. PCI CF9 reset (port 0xCF9 — works on most Intel/AMD chipsets)
-///   4. Triple fault (load empty IDT, trigger #UD → CPU reset)
+///   4. Fast A20/system reset via port 0x92
+///   5. Triple fault (load empty IDT, trigger #UD → CPU reset)
 #[cfg(target_arch = "x86_64")]
 fn x86_reboot_sequence() -> ! {
     // Spin helper: brief delay to let the hardware react
@@ -645,7 +646,7 @@ fn x86_reboot_sequence() -> ! {
     }
 
     // ── Method 1: 8042 keyboard controller reset ──
-    crate::serial_println!("kernel: reboot method 1/4 — 8042 keyboard controller (port 0x64)...");
+    crate::serial_println!("kernel: reboot method 1/5 — 8042 keyboard controller (port 0x64)...");
     unsafe {
         let mut timeout = 100_000u32;
         while crate::arch::x86::port::inb(0x64) & 0x02 != 0 && timeout > 0 {
@@ -656,7 +657,7 @@ fn x86_reboot_sequence() -> ! {
     spin_brief();
 
     // ── Method 2: ACPI Reset Register ──
-    crate::serial_println!("kernel: reboot method 2/4 — ACPI RESET_REG...");
+    crate::serial_println!("kernel: reboot method 2/5 — ACPI RESET_REG...");
     if crate::arch::x86::acpi_pm::acpi_reboot() {
         spin_brief();
     }
@@ -664,7 +665,7 @@ fn x86_reboot_sequence() -> ! {
     // ── Method 3: PCI CF9 reset ──
     // The CF9 register is on the Intel/AMD LPC or PCH. Writing 0x06 triggers
     // a hard reset (full platform reset), 0x0E triggers a warm reset.
-    crate::serial_println!("kernel: reboot method 3/4 — PCI CF9 reset...");
+    crate::serial_println!("kernel: reboot method 3/5 — PCI CF9 reset...");
     unsafe {
         // First clear, then write reset type
         crate::arch::x86::port::outb(0xCF9, 0x02); // set bit 1 (system reset)
@@ -672,10 +673,20 @@ fn x86_reboot_sequence() -> ! {
     }
     spin_brief();
 
-    // ── Method 4: Triple fault ──
+    // ── Method 4: Fast reset via port 0x92 ──
+    crate::serial_println!("kernel: reboot method 4/5 — port 0x92 fast reset...");
+    unsafe {
+        let mut value = crate::arch::x86::port::inb(0x92);
+        value |= 0x01;
+        value &= !0x02;
+        crate::arch::x86::port::outb(0x92, value);
+    }
+    spin_brief();
+
+    // ── Method 5: Triple fault ──
     // Load an empty IDT and trigger an undefined instruction. With no #UD handler,
     // the CPU double-faults; with no #DF handler, it triple-faults and resets.
-    crate::serial_println!("kernel: reboot method 4/4 — triple fault...");
+    crate::serial_println!("kernel: reboot method 5/5 — triple fault...");
     unsafe {
         // IDTR with limit=0, base=0 → no valid IDT entries
         let null_idtr: [u8; 10] = [0; 10];
