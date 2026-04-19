@@ -7,8 +7,8 @@
 //! ihn unter einem [`crate::sync::mutex::Mutex`]. Lesende Operationen
 //! (`read`, `lookup`, `readdir`) laufen direkt gegen den in-memory
 //! `PersistedState`; schreibende Operationen mutieren ihn, und [`flush`]
-//! schreibt geänderte Metadaten und Inode-Payloads inkrementell via
-//! [`corefs_core::storage::ondisk::native::save_state_native_incremental`]
+//! schreibt bekannte Dirty-Inodes gezielt via
+//! [`corefs_core::storage::ondisk::native::save_state_native_incremental_dirty`]
 //! zurück.
 //!
 //! ## Schreibpfad — Scope
@@ -32,7 +32,7 @@
 //! Mount-seitige BTree-Indizes halten Pfad-, VFS-Inode-, CoreFS-Inode- und
 //! Parent/Child-Lookups schnell, ohne Hot-Path-Scans über alle Inodes.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -48,7 +48,9 @@ use corefs_core::storage::block_store::{AllocatorPolicy, BlockStore};
 use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
 #[cfg(test)]
 use corefs_core::storage::ondisk::native::save_state_native;
-use corefs_core::storage::ondisk::native::{load_state_native, save_state_native_incremental};
+use corefs_core::storage::ondisk::native::{
+    load_state_native, save_state_native_incremental, save_state_native_incremental_dirty,
+};
 use corefs_core::storage::persisted_state::PersistedState;
 
 use crate::fs::file::{DirEntry, FileType};
@@ -171,6 +173,10 @@ struct Inner {
     indexes: InodeIndexes,
     /// Metadaten oder BlockRecord-Sicht haben sich seit dem letzten Flush geändert.
     dirty: bool,
+    /// Domain-Inodes, deren Slot gezielt aktualisiert werden kann.
+    dirty_inodes: BTreeSet<u64>,
+    /// Domain-Inodes, deren Slot hart freigegeben werden soll.
+    removed_inodes: BTreeSet<u64>,
 }
 
 impl Inner {
@@ -193,11 +199,18 @@ impl Inner {
             total_blocks,
             indexes,
             dirty,
+            dirty_inodes: BTreeSet::new(),
+            removed_inodes: BTreeSet::new(),
         }
     }
 
     fn rebuild_indexes(&mut self) {
         self.indexes = InodeIndexes::rebuild(&self.state);
+    }
+
+    fn mark_dirty(&mut self, id: InodeId) {
+        self.dirty = true;
+        self.dirty_inodes.insert(id.0);
     }
 
     #[cfg(test)]
@@ -410,11 +423,22 @@ impl CoreFsDriver {
             state,
             blocks,
             dirty,
+            dirty_inodes,
+            removed_inodes,
             ..
         } = &mut *inner;
         state.block_records = blocks.records();
         state.free_extents = blocks.free_extents();
-        save_state_native_incremental(device, state).map_err(|e| corefs_to_fs_error(&e))?;
+        if dirty_inodes.is_empty() && removed_inodes.is_empty() {
+            save_state_native_incremental(device, state).map_err(|e| corefs_to_fs_error(&e))?;
+        } else {
+            let touched: Vec<InodeId> = dirty_inodes.iter().copied().map(InodeId).collect();
+            let removed: Vec<InodeId> = removed_inodes.iter().copied().map(InodeId).collect();
+            save_state_native_incremental_dirty(device, state, &touched, &removed)
+                .map_err(|e| corefs_to_fs_error(&e))?;
+            dirty_inodes.clear();
+            removed_inodes.clear();
+        }
         *dirty = false;
         Ok(())
     }
@@ -462,7 +486,7 @@ impl CoreFsDriver {
             i.size = target as usize;
             i.touch_modified_at(Timestamp::EPOCH);
         }
-        inner.dirty = true;
+        inner.mark_dirty(id);
         Ok(())
     }
 
@@ -550,10 +574,12 @@ impl CoreFsDriver {
             if let Some(idx) = inner.indexes.id_to_pos.get(&target_id.0).copied() {
                 let removed = inner.state.active_inodes.remove(idx);
                 inner.state.block_records.retain(|r| r.inode != removed.id);
+                let removed_id = removed.id;
                 inner.state.deleted_inodes.push(removed);
                 let Inner { blocks, device, .. } = &mut *inner;
                 blocks.remove_inode(device, target_id);
                 inner.rebuild_indexes();
+                inner.mark_dirty(removed_id);
             }
         }
 
@@ -561,10 +587,12 @@ impl CoreFsDriver {
         // it's a directory).
         let mut old_prefix = old_path.clone();
         old_prefix.push('/');
+        let mut changed_ids: Vec<InodeId> = Vec::new();
         for i in inner.state.active_inodes.iter_mut() {
             if i.path == old_path {
                 i.path = new_path.clone();
                 i.touch_changed_at(Timestamp::EPOCH);
+                changed_ids.push(i.id);
             } else if i.path.starts_with(&old_prefix) {
                 let suffix = &i.path[old_prefix.len()..];
                 let mut rebuilt = new_path.clone();
@@ -572,10 +600,13 @@ impl CoreFsDriver {
                 rebuilt.push_str(suffix);
                 i.path = rebuilt;
                 i.touch_changed_at(Timestamp::EPOCH);
+                changed_ids.push(i.id);
             }
         }
         inner.rebuild_indexes();
-        inner.dirty = true;
+        for id in changed_ids {
+            inner.mark_dirty(id);
+        }
         Ok(())
     }
 
@@ -590,7 +621,7 @@ impl CoreFsDriver {
         let i = inner.inode_mut_by_id(id).ok_or(FsError::NotFound)?;
         i.metadata.mode = mode;
         i.touch_changed_at(Timestamp::EPOCH);
-        inner.dirty = true;
+        inner.mark_dirty(id);
         Ok(())
     }
 
@@ -606,7 +637,7 @@ impl CoreFsDriver {
         i.metadata.uid = uid;
         i.metadata.gid = gid;
         i.touch_changed_at(Timestamp::EPOCH);
-        inner.dirty = true;
+        inner.mark_dirty(id);
         Ok(())
     }
 
@@ -647,7 +678,7 @@ impl CoreFsDriver {
             .map_err(|_| FsError::IoError)?;
         inner.state.active_inodes.push(inode);
         inner.register_last_inode(Some(parent_id));
-        inner.dirty = true;
+        inner.mark_dirty(id);
         Ok(CoreFsDriver::inode_u32_from_id(id))
     }
 }
@@ -800,7 +831,7 @@ impl Filesystem for CoreFsDriver {
             i.touch_modified_at(Timestamp::EPOCH);
         }
 
-        inner.dirty = true;
+        inner.mark_dirty(id);
         Ok(buf.len())
     }
 
@@ -895,7 +926,7 @@ impl Filesystem for CoreFsDriver {
         let inode = Inode::new_at(id, kind, new_path, md, Timestamp::EPOCH);
         inner.state.active_inodes.push(inode);
         inner.register_last_inode(Some(parent_id));
-        inner.dirty = true;
+        inner.mark_dirty(id);
         Ok(CoreFsDriver::inode_u32_from_id(id))
     }
 
@@ -930,7 +961,7 @@ impl Filesystem for CoreFsDriver {
         let Inner { blocks, device, .. } = &mut *inner;
         blocks.remove_inode(device, rid);
         inner.rebuild_indexes();
-        inner.dirty = true;
+        inner.mark_dirty(rid);
         Ok(())
     }
 
