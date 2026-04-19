@@ -44,7 +44,11 @@ use corefs_core::services::journal::JournalRuntimeState;
 use corefs_core::storage::block_device::BlockDevice;
 use corefs_core::storage::block_store::{AllocatorPolicy, BlockStore};
 use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
-use corefs_core::storage::ondisk::native::{load_state_native, save_state_native};
+use corefs_core::storage::ondisk::native::{
+    load_state_native, save_state_native_incremental,
+};
+#[cfg(test)]
+use corefs_core::storage::ondisk::native::save_state_native;
 use corefs_core::storage::persisted_state::PersistedState;
 use corefs_core::config::CoreFsConfig;
 
@@ -112,8 +116,8 @@ pub fn empty_persisted_state() -> PersistedState {
 /// Treiber für ein gemountetes CoreFS-Volume.
 ///
 /// Hält den hydratisierten [`PersistedState`] im Speicher. Schreibende
-/// `Filesystem`-Aufrufe mutieren den State; Aufrufe an [`CoreFsDriver::flush`]
-/// persistieren via `save_state_native` atomar auf das Device.
+    /// `Filesystem`-Aufrufe mutieren den State; Aufrufe an [`CoreFsDriver::flush`]
+    /// persistieren inkrementell und atomar auf das Device.
 pub struct CoreFsDriver {
     inner: Mutex<Inner>,
 }
@@ -279,7 +283,7 @@ impl CoreFsDriver {
         let Inner { device, state, blocks, .. } = &mut *inner;
         state.block_records = blocks.records();
         state.free_extents = blocks.free_extents();
-        save_state_native(device, state).map_err(|e| corefs_to_fs_error(&e))?;
+        save_state_native_incremental(device, state).map_err(|e| corefs_to_fs_error(&e))?;
         Ok(())
     }
 

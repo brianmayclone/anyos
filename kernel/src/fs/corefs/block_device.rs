@@ -23,18 +23,12 @@
 //!
 //! # Block-Cache
 //!
-//! Die aktuelle Implementierung spricht `drivers::storage` direkt an. Die
-//! kernel-weite Block-Cache-Infrastruktur (`crate::fs::blockcache`) ist
-//! **nicht** angebunden — jedes CoreFS-Read übersetzt 1:1 in einen
-//! ATA/AHCI/NVMe-Request. Für die erste bootfähige Stufe ist das OK (der
-//! Native-Layout-Loader liest nur Header + Segment-Directory und cached
-//! intern im `DeviceVolume`), aber der "Hot-Path-Read" auf grossen Dateien
-//! wird darunter leiden.
-//!
-//! TODO (Phase 5.5 follow-up): Optional-Wrapper mit Read-Caching via
-//! `blockcache::read_through` und Write-through für `write_at`. Erfordert
-//! Block-Cache-API-Review (Lifetime der Leih-Buffer, Invalidierungs-Events
-//! beim `sync`).
+//! Reads laufen als Read-through über die kernel-weite Block-Cache-
+//! Infrastruktur (`crate::fs::blockcache`): Cache-Hit liefert direkt aus RAM,
+//! Cache-Miss liest vom Storage-Backend und populiert den Cache. Writes
+//! bleiben bewusst write-through und invalidieren betroffene Cache-Sektoren,
+//! damit der Enterprise-Pfad keine stale reads durch deferred write-back
+//! riskiert.
 //!
 //! # Teststrategie
 //!
@@ -215,12 +209,16 @@ impl BlockDevice for BlockDeviceAdapter {
         let count = (length / u64::from(ANYOS_SECTOR_SIZE)) as u32;
         let abs_lba = self.byte_offset_to_abs_lba(offset);
         let mut buf = vec![0u8; length as usize];
+        if crate::fs::blockcache::cached_read(self.disk_id, abs_lba, count, &mut buf) == count {
+            return Ok(buf);
+        }
         if !self.io.read_sectors(self.disk_id, abs_lba, count, &mut buf) {
             return Err(CoreFsError::State(format!(
                 "BlockDeviceAdapter: read_sectors_on_disk failed (disk_id={}, lba={abs_lba}, count={count})",
                 self.disk_id
             )));
         }
+        crate::fs::blockcache::populate(self.disk_id, abs_lba, count, &buf);
         Ok(buf)
     }
 
@@ -240,6 +238,7 @@ impl BlockDevice for BlockDeviceAdapter {
                 self.disk_id
             )));
         }
+        crate::fs::blockcache::invalidate(self.disk_id, abs_lba, count);
         Ok(())
     }
 
