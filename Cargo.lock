@@ -1874,6 +1874,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "servicemanager"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "dynlink",
+ "libami",
+ "libanyui_client",
+ "libconf",
+]
+
+[[package]]
 name = "set"
 version = "0.1.0"
 dependencies = [

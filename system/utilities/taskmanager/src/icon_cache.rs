@@ -7,9 +7,7 @@ use crate::types::{IconEntry, ICON_SIZE};
 
 pub fn load_app_icon(name: &str) -> Vec<u32> {
     let bin_path = {
-        let app_path = alloc::format!("/Applications/{}.app", name);
-        let mut stat_buf = [0u32; 7];
-        if fs::stat(&app_path, &mut stat_buf) == 0 && stat_buf[0] == 1 {
+        if let Some(app_path) = icons::find_app_bundle_by_stem(name) {
             app_path
         } else {
             alloc::format!("/System/bin/{}", name)

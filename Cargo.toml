@@ -36,6 +36,7 @@ members = [
   "system/utilities/eventviewer",
   "system/utilities/runner",
   "system/utilities/shell",
+  "system/utilities/servicemanager",
   "system/utilities/taskmanager",
   "system/utilities/terminal",
   "system/compositor/compositor",

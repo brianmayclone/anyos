@@ -5,12 +5,16 @@ extern crate alloc;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 const PIPE_NAME: &str = "confd";
 const READ_CHUNK_SIZE: usize = 512;
 const SINGLE_LINE_TIMEOUT_MS: u32 = 5_000;
 const MULTI_LINE_TIMEOUT_MS: u32 = 30_000;
 const READ_IDLE_GRACE_MS: u32 = 500;
+const REQUEST_POLL_SLEEP_MS: u32 = 1;
+const EVENT_POLL_SLEEP_MS: u32 = 10;
+static NEXT_CLIENT_SEQ: AtomicU32 = AtomicU32::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RegistryScope {
@@ -134,6 +138,7 @@ pub struct ConfClient {
     tid: u32,
     req_pipe: u32,
     reply_pipe: u32,
+    reply_pipe_name: String,
     client_name: String,
 }
 
@@ -152,6 +157,7 @@ impl ConfClient {
                 tid: 1,
                 req_pipe: 1,
                 reply_pipe: 1,
+                reply_pipe_name: String::from("confd-1-host"),
                 client_name: client_name.to_string(),
             })
         }
@@ -164,7 +170,8 @@ impl ConfClient {
                 return Err(ConfError::NotRunning);
             }
 
-            let reply_name = format!("confd-{}", tid);
+            let seq = NEXT_CLIENT_SEQ.fetch_add(1, Ordering::Relaxed);
+            let reply_name = format!("confd-{}-{}", tid, seq);
             let reply_pipe = anyos_std::ipc::pipe_create(&reply_name);
             if reply_pipe == 0 {
                 return Err(ConfError::PipeCreateFailed);
@@ -174,6 +181,7 @@ impl ConfClient {
                 tid,
                 req_pipe,
                 reply_pipe,
+                reply_pipe_name: reply_name,
                 client_name: client_name.to_string(),
             };
             client.hello()?;
@@ -461,7 +469,7 @@ impl ConfClient {
                 if timeout_ms == 0 || deadline_reached(deadline) {
                     return Ok(None);
                 }
-                anyos_std::process::sleep(10);
+                anyos_std::process::sleep(EVENT_POLL_SLEEP_MS);
             }
         }
     }
@@ -510,7 +518,12 @@ impl ConfClient {
         #[cfg(not(feature = "host"))]
         {
             let mut line = String::new();
-            line.push_str(&format!("{}\t{}\n", self.tid, command));
+            line.push_str(&self.tid.to_string());
+            line.push('\t');
+            line.push_str(&self.reply_pipe_name);
+            line.push('\t');
+            line.push_str(command);
+            line.push('\n');
             if anyos_std::ipc::pipe_write(self.req_pipe, line.as_bytes()) == 0 {
                 return Err(ConfError::Disconnected);
             }
@@ -543,13 +556,12 @@ impl ConfClient {
                         return Ok(String::from(text));
                     }
                 }
-                let now = libsyscall::uptime_ms();
                 if deadline_reached(overall_deadline)
                     || (!data.is_empty() && deadline_reached(idle_deadline))
                 {
                     break;
                 }
-                anyos_std::process::sleep(10);
+                anyos_std::process::sleep(REQUEST_POLL_SLEEP_MS);
             }
 
             Err(ConfError::Timeout)

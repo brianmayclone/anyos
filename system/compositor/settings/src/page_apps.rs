@@ -10,6 +10,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::fs;
 use anyos_std::i18n;
+use anyos_std::icons;
 use anyos_std::permissions;
 use anyos_std::process;
 use libanyui_client as ui;
@@ -46,7 +47,6 @@ const PERM_GROUPS: &[PermGroup] = &[
 
 // ── App bundle metadata ─────────────────────────────────────────────────────
 
-const APPS_DIR: &str = "/Applications";
 const MAX_APPS: usize = 32;
 
 struct AppInfo {
@@ -334,35 +334,10 @@ fn build_detail_row(card: &ui::Card, label_text: &str, value_text: &str, first: 
 
 fn scan_apps() -> Vec<AppInfo> {
     let mut apps = Vec::new();
-
-    let mut dir_buf = [0u8; 64 * 64];
-    let count = fs::readdir(APPS_DIR, &mut dir_buf);
-    if count == u32::MAX || count == 0 {
-        return apps;
-    }
-
-    for i in 0..count as usize {
+    for bundle_path in icons::collect_app_bundles() {
         if apps.len() >= MAX_APPS {
             break;
         }
-        let raw = &dir_buf[i * 64..(i + 1) * 64];
-        let entry_type = raw[0];
-        let name_len = raw[1] as usize;
-
-        // We want directories (type 1) ending in .app
-        if entry_type != 1 || name_len == 0 {
-            continue;
-        }
-        let nlen = name_len.min(56);
-        let name = match core::str::from_utf8(&raw[8..8 + nlen]) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        if !name.ends_with(".app") {
-            continue;
-        }
-
-        let bundle_path = format!("{}/{}", APPS_DIR, name);
         if let Some(info) = parse_app_bundle(&bundle_path) {
             apps.push(info);
         }

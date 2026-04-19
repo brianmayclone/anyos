@@ -36,11 +36,6 @@ fn ensure_connected() -> bool {
         SUB_ID = sub;
 
         let mut num_buf = [0u8; 16];
-        syscall::log(b"[libfont] fontd: connected (chan=");
-        syscall::log(crate::font_manager::format_u32(chan, &mut num_buf).as_bytes());
-        syscall::log(b", sub=");
-        syscall::log(crate::font_manager::format_u32(sub, &mut num_buf).as_bytes());
-        syscall::log(b")\n");
         true
     }
 }
@@ -66,12 +61,8 @@ pub fn request_font(filename: &[u8]) -> Option<&'static [u8]> {
         dst[name_len] = 0;
     }
 
-    syscall::log(b"[libfont] fontd: requesting ");
-    syscall::log(filename);
+  
     let mut nb = [0u8; 16];
-    syscall::log(b" (name_shm=");
-    syscall::log(crate::font_manager::format_u32(name_shm, &mut nb).as_bytes());
-    syscall::log(b")\n");
 
     // Broadcast request (fontd + ourselves receive it)
     let req = [CMD_LOAD_BY_NAME, sub, name_shm, 0, 0];
@@ -109,14 +100,6 @@ pub fn request_font(filename: &[u8]) -> Option<&'static [u8]> {
     if addr == 0 { return None; }
 
     let data = unsafe { core::slice::from_raw_parts(addr as *const u8, data_size as usize) };
-
-    syscall::log(b"[libfont] fontd: mapped ");
-    syscall::log(filename);
-    syscall::log(b" (");
-    syscall::log(crate::font_manager::format_u32(data_size / 1024, &mut nb).as_bytes());
-    syscall::log(b" KB, shm=");
-    syscall::log(crate::font_manager::format_u32(font_shm, &mut nb).as_bytes());
-    syscall::log(b")\n");
 
     Some(data)
 }

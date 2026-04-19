@@ -16,8 +16,11 @@ const LEGACY_DOCK_DEFAULT: &str = "\
 Finder|/Applications/Finder.app\n\
 Surf|/Applications/Surf.app\n\
 Terminal|/Applications/Terminal.app\n\
-Activity Monitor|/Applications/Activity Monitor.app\n\
+Activity Monitor|/Applications/Management/Activity Monitor.app\n\
 Settings|/Applications/Settings.app\n";
+
+const ACTIVITY_MONITOR_OLD_PATH: &str = "/Applications/Activity Monitor.app";
+const ACTIVITY_MONITOR_PATH: &str = "/Applications/Management/Activity Monitor.app";
 
 const DOCK_ITEMS_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] =
     &[default_string("config/pinned_items_blob", LEGACY_DOCK_DEFAULT)];
@@ -125,9 +128,20 @@ pub fn load_dock_config() -> Vec<DockItem> {
         .unwrap_or_else(|| String::from(LEGACY_DOCK_DEFAULT));
     let mut items = parse_config(&raw);
 
+    let mut migrated = false;
+    for item in &mut items {
+        if item.bin_path == ACTIVITY_MONITOR_OLD_PATH {
+            item.bin_path.clear();
+            item.bin_path.push_str(ACTIVITY_MONITOR_PATH);
+            migrated = true;
+        }
+    }
+
     if items.is_empty() {
         items = parse_config(LEGACY_DOCK_DEFAULT);
         let _ = dock_items_schema().write_string("config/pinned_items_blob", LEGACY_DOCK_DEFAULT);
+    } else if migrated {
+        save_dock_config(&items);
     }
 
     // On live CD boot, add Installer to the dock

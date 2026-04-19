@@ -1911,8 +1911,6 @@ fn fmt_mode(mode: u32, is_dir: bool) -> String {
 // "Open With" dialog
 // ============================================================================
 
-const APPLICATIONS_DIR: &str = "/Applications";
-
 #[derive(Clone)]
 struct AppInfo {
     display_name: String,
@@ -1921,25 +1919,9 @@ struct AppInfo {
 
 fn enumerate_applications() -> Vec<AppInfo> {
     let mut apps = Vec::new();
-    let mut buf = [0u8; 256 * 64];
-    let count = fs::readdir(APPLICATIONS_DIR, &mut buf);
-    if count == u32::MAX { return apps; }
-
-    for i in 0..count as usize {
-        let off = i * 64;
-        let entry_type = buf[off];
-        let name_len = buf[off + 1] as usize;
-        let name = &buf[off + 8..off + 8 + name_len.min(55)];
-
-        if entry_type != TYPE_DIR { continue; }
-        if let Ok(name_str) = core::str::from_utf8(name) {
-            if !name_str.ends_with(".app") { continue; }
-
-            let bundle_path = build_full_path(APPLICATIONS_DIR, name_str);
-            let display_name = icons::app_bundle_name(&bundle_path);
-
-            apps.push(AppInfo { display_name, bundle_path });
-        }
+    for bundle_path in icons::collect_app_bundles() {
+        let display_name = icons::app_bundle_name(&bundle_path);
+        apps.push(AppInfo { display_name, bundle_path });
     }
 
     apps.sort_by(|a, b| a.display_name.as_str().cmp(b.display_name.as_str()));

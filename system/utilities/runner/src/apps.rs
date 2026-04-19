@@ -3,6 +3,7 @@
 //! Application scanning, metadata, and icon loading.
 
 use anyos_std::{String, Vec};
+use anyos_std::icons;
 
 /// Icon size to load (pixels).
 pub const ICON_SIZE: u32 = 20;
@@ -18,29 +19,9 @@ pub struct AppEntry {
 /// Scans `/Applications/` for `.app` bundles, returning them sorted by name.
 pub fn scan_apps() -> Vec<AppEntry> {
     let mut apps = Vec::new();
-    let mut buf = [0u8; 128 * 64];
-    let count = anyos_std::fs::readdir("/Applications", &mut buf);
-    if count == u32::MAX {
-        return apps;
-    }
-    for i in 0..count as usize {
-        let off = i * 64;
-        if buf[off] != 1 {
-            continue;
-        }
-        let name_len = (buf[off + 1] as usize).min(55);
-        let name_str = match core::str::from_utf8(&buf[off + 8..off + 8 + name_len]) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        if !name_str.ends_with(".app") {
-            continue;
-        }
-
-        let mut path = String::from("/Applications/");
-        path.push_str(name_str);
-
-        let display_name = read_app_name(&path, name_str);
+    for path in icons::collect_app_bundles() {
+        let folder_name = path.rsplit('/').next().unwrap_or(path.as_str());
+        let display_name = read_app_name(&path, folder_name);
         let icon = load_icon(&path);
 
         apps.push(AppEntry { name: display_name, path, icon });

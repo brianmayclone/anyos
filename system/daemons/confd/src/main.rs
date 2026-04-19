@@ -58,6 +58,7 @@ pub(crate) struct RegistryEntry {
 pub(crate) struct Watch {
     pub id: u32,
     pub tid: u32,
+    pub reply_pipe_name: String,
     pub scope: Scope,
     pub canonical_prefix: String,
 }
@@ -66,6 +67,7 @@ pub(crate) struct Watch {
 pub(crate) struct ClientInfo {
     pub tid: u32,
     pub uid: u16,
+    pub reply_pipe_name: String,
     pub name: String,
 }
 
@@ -90,8 +92,12 @@ impl ConfState {
         }
     }
 
-    pub fn set_client(&mut self, tid: u32, uid: u16, name: &str) {
-        if let Some(client) = self.clients.iter_mut().find(|client| client.tid == tid) {
+    pub fn set_client(&mut self, tid: u32, reply_pipe_name: &str, uid: u16, name: &str) {
+        if let Some(client) = self
+            .clients
+            .iter_mut()
+            .find(|client| client.tid == tid && client.reply_pipe_name == reply_pipe_name)
+        {
             client.uid = uid;
             client.name.clear();
             client.name.push_str(name);
@@ -101,14 +107,15 @@ impl ConfState {
         self.clients.push(ClientInfo {
             tid,
             uid,
+            reply_pipe_name: String::from(reply_pipe_name),
             name: String::from(name),
         });
     }
 
-    pub fn client_name(&self, tid: u32) -> &str {
+    pub fn client_name(&self, tid: u32, reply_pipe_name: &str) -> &str {
         self.clients
             .iter()
-            .find(|client| client.tid == tid)
+            .find(|client| client.tid == tid && client.reply_pipe_name == reply_pipe_name)
             .map(|client| client.name.as_str())
             .unwrap_or("unknown")
     }
@@ -236,23 +243,34 @@ impl ConfState {
         items
     }
 
-    pub fn add_watch(&mut self, tid: u32, scope: Scope, canonical_prefix: &str) -> u32 {
+    pub fn add_watch(
+        &mut self,
+        tid: u32,
+        reply_pipe_name: &str,
+        scope: Scope,
+        canonical_prefix: &str,
+    ) -> u32 {
         let id = self.next_watch_id;
         self.next_watch_id = self.next_watch_id.wrapping_add(1).max(1);
         self.watches.push(Watch {
             id,
             tid,
+            reply_pipe_name: String::from(reply_pipe_name),
             scope,
             canonical_prefix: String::from(canonical_prefix),
         });
         id
     }
 
-    pub fn remove_watch(&mut self, tid: u32, watch_id: u32) -> bool {
+    pub fn remove_watch(&mut self, tid: u32, reply_pipe_name: &str, watch_id: u32) -> bool {
         let Some(pos) = self
             .watches
             .iter()
-            .position(|watch| watch.tid == tid && watch.id == watch_id)
+            .position(|watch| {
+                watch.tid == tid
+                    && watch.reply_pipe_name == reply_pipe_name
+                    && watch.id == watch_id
+            })
         else {
             return false;
         };
@@ -264,13 +282,13 @@ impl ConfState {
         &self,
         scope: Scope,
         canonical_path: &str,
-    ) -> Vec<(u32, u32, Scope)> {
+    ) -> Vec<(u32, &str, u32, Scope)> {
         let mut matches = Vec::new();
         for watch in &self.watches {
             if watch.scope == scope
                 && path_matches_prefix(canonical_path, watch.canonical_prefix.as_str())
             {
-                matches.push((watch.tid, watch.id, watch.scope));
+                matches.push((watch.tid, watch.reply_pipe_name.as_str(), watch.id, watch.scope));
             }
         }
         matches
@@ -278,14 +296,14 @@ impl ConfState {
 }
 
 fn main() {
-    anyos_std::println!("confd: starting central configuration registry");
+    anyos_std::println!("[confd] starting central configuration registry");
     let mut lifecycle = connect_lifecycle();
     if let Some(svc) = lifecycle.as_mut() {
         let _ = svc.notify_starting();
     }
 
     if !libdb_client::init() {
-        anyos_std::println!("confd: failed to load libdb.so");
+        anyos_std::println!("[confd] failed to load libdb.so");
         notify_failed(&mut lifecycle, "libdb_init_failed");
         return;
     }
@@ -297,7 +315,7 @@ fn main() {
     let db = match libdb_client::Database::open(DB_PATH) {
         Some(db) => db,
         None => {
-            anyos_std::println!("confd: failed to open database at {}", DB_PATH);
+            anyos_std::println!("[confd] failed to open database at {}", DB_PATH);
             notify_failed(&mut lifecycle, "database_open_failed");
             return;
         }
@@ -312,14 +330,14 @@ fn main() {
     let schema_rows = schema::count_rows(&db, "schemas");
     if registry_rows.is_some() && audit_rows.is_some() && schema_rows.is_some() {
         anyos_std::println!(
-            "confd: db integrity check OK (registry={}, audit={}, schemas={})",
+            "[confd] db integrity check OK (registry={}, audit={}, schemas={})",
             registry_rows.unwrap_or(0),
             audit_rows.unwrap_or(0),
             schema_rows.unwrap_or(0),
         );
     } else {
         anyos_std::println!(
-            "confd: db integrity check WARNING (registry={:?}, audit={:?}, schemas={:?})",
+            "[confd] db integrity check WARNING (registry={:?}, audit={:?}, schemas={:?})",
             registry_rows,
             audit_rows,
             schema_rows,
@@ -334,13 +352,13 @@ fn main() {
 
     let pipe_id = anyos_std::ipc::pipe_create(PIPE_NAME);
     if pipe_id == 0 || pipe_id == u32::MAX {
-        anyos_std::println!("confd: failed to create '{}' pipe", PIPE_NAME);
+        anyos_std::println!("[confd] failed to create '{}' pipe", PIPE_NAME);
         notify_failed(&mut lifecycle, "pipe_create_failed");
         return;
     }
 
     anyos_std::println!(
-        "confd: ready (pipe='{}', db='{}', existed={}, entries={}, registry_rows={:?}, audit_rows={:?}, schema_rows={:?}, next_audit_seq={})",
+        "[confd] ready (pipe='{}', db='{}', existed={}, entries={}, registry_rows={:?}, audit_rows={:?}, schema_rows={:?}, next_audit_seq={})",
         PIPE_NAME,
         DB_PATH,
         db_preexisting,
@@ -368,7 +386,7 @@ fn ensure_db_file() -> bool {
     let probe = anyos_std::fs::open(DB_PATH, 0);
     if probe != u32::MAX {
         anyos_std::fs::close(probe);
-        anyos_std::println!("confd: database file found at {}", DB_PATH);
+        anyos_std::println!("[confd] database file found at {}", DB_PATH);
         return true;
     }
 
@@ -377,23 +395,23 @@ fn ensure_db_file() -> bool {
         anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC,
     );
     if fd == u32::MAX {
-        anyos_std::println!("confd: failed to create database file at {}", DB_PATH);
+        anyos_std::println!("[confd] failed to create database file at {}", DB_PATH);
         return false;
     }
     anyos_std::fs::close(fd);
-    anyos_std::println!("confd: created new database file at {}", DB_PATH);
+    anyos_std::println!("[confd] created new database file at {}", DB_PATH);
     false
 }
 
 fn log_db_file_state(stage: &str) {
     let mut stat_buf = [0u32; 7];
     if anyos_std::fs::stat(DB_PATH, &mut stat_buf) != 0 {
-        anyos_std::println!("confd: db {} stat FAILED path={}", stage, DB_PATH);
+        anyos_std::println!("[confd] db {} stat FAILED path={}", stage, DB_PATH);
         return;
     }
 
     anyos_std::println!(
-        "confd: db {} type={} size={} uid={} gid={} mode=0x{:x} mtime={}",
+        "[confd] db {} type={} size={} uid={} gid={} mode=0x{:x} mtime={}",
         stage,
         stat_buf[0],
         stat_buf[1],
@@ -411,7 +429,7 @@ fn connect_lifecycle() -> Option<ServiceLifecycle> {
             Err(_) => anyos_std::process::sleep(20),
         }
     }
-    anyos_std::println!("confd: WARNING - AMID not reachable for service lifecycle");
+    anyos_std::println!("[confd] WARNING - AMID not reachable for service lifecycle");
     None
 }
 

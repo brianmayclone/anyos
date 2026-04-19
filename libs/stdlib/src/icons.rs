@@ -18,6 +18,9 @@ pub const DEFAULT_FILE_ICON: &str = "/System/media/icons/default.ico";
 
 /// Folder icon path.
 pub const FOLDER_ICON: &str = "/System/media/icons/folder.ico";
+const DIR_ENTRY_SIZE: usize = 64;
+const DIR_NAME_OFFSET: usize = 8;
+const DIR_NAME_MAX: usize = 56;
 
 const MIMETYPES_DEFAULTS: &str = "\
 # anyOS mimetype associations\n\
@@ -48,6 +51,66 @@ const USER_MIMETYPES_PATH: &str = "/System/user_mimetypes.json";
 /// Check if a path refers to a .app bundle (directory ending in `.app`).
 pub fn is_app_bundle(path: &str) -> bool {
     path.ends_with(".app")
+}
+
+fn collect_app_bundles_from_dir(dir: &str, out: &mut Vec<String>) {
+    let mut buf = [0u8; DIR_ENTRY_SIZE * 128];
+    let count = fs::readdir(dir, &mut buf);
+    if count == 0 || count == u32::MAX {
+        return;
+    }
+
+    for i in 0..count as usize {
+        let base = i * DIR_ENTRY_SIZE;
+        if base + DIR_ENTRY_SIZE > buf.len() || buf[base] != 1 {
+            continue;
+        }
+
+        let name_len = (buf[base + 1] as usize).min(DIR_NAME_MAX);
+        if name_len == 0 {
+            continue;
+        }
+        let Ok(entry_name) =
+            core::str::from_utf8(&buf[base + DIR_NAME_OFFSET..base + DIR_NAME_OFFSET + name_len])
+        else {
+            continue;
+        };
+
+        let mut path = String::from(dir);
+        if !dir.ends_with('/') {
+            path.push('/');
+        }
+        path.push_str(entry_name);
+
+        if is_app_bundle(entry_name) {
+            out.push(path);
+        } else {
+            collect_app_bundles_from_dir(&path, out);
+        }
+    }
+}
+
+/// Enumerate `.app` bundles under `/Applications`, including nested folders
+/// such as `/Applications/Management`.
+pub fn collect_app_bundles() -> Vec<String> {
+    let mut bundles = Vec::new();
+    collect_app_bundles_from_dir("/Applications", &mut bundles);
+    bundles
+}
+
+/// Find an app bundle by its folder stem (case-insensitive).
+pub fn find_app_bundle_by_stem(name: &str) -> Option<String> {
+    let name_lower = name.to_ascii_lowercase();
+    for bundle_path in collect_app_bundles() {
+        let folder = bundle_path.rsplit('/').next().unwrap_or(bundle_path.as_str());
+        let Some(stem) = folder.strip_suffix(".app") else {
+            continue;
+        };
+        if stem.to_ascii_lowercase() == name_lower {
+            return Some(bundle_path);
+        }
+    }
+    None
 }
 
 /// Read the display name from a .app bundle's Info.conf.

@@ -32,63 +32,70 @@ pub fn handle_requests(db: &Database, state: &mut ConfState, pipe_id: u32, buf: 
 }
 
 fn handle_single_request(db: &Database, state: &mut ConfState, line: &str) {
-    let Some(tab_pos) = line.find('\t') else {
+    let Some(first_tab) = line.find('\t') else {
         return;
     };
-    let Some(tid) = parse_u32(&line[..tab_pos]) else {
+    let Some(tid) = parse_u32(&line[..first_tab]) else {
         return;
     };
-    let cmd = line[tab_pos + 1..].trim();
+    let rest = &line[first_tab + 1..];
+    let (reply_pipe_name, cmd) = if let Some(second_tab) = rest.find('\t') {
+        (&rest[..second_tab], rest[second_tab + 1..].trim())
+    } else {
+        ("", rest.trim())
+    };
     if cmd.is_empty() {
         return;
     }
-    dispatch(db, state, tid, cmd);
+    dispatch(db, state, tid, reply_pipe_name, cmd);
 }
 
-fn dispatch(db: &Database, state: &mut ConfState, tid: u32, cmd: &str) {
+fn dispatch(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str, cmd: &str) {
     let (verb, rest) = split_first_word(cmd);
     match verb {
-        "HELLO" | "hello" => cmd_hello(state, tid, rest),
-        "PING" | "ping" => send_line(tid, "PONG"),
-        "REGISTER" | "register" => cmd_register(db, state, tid, rest),
-        "MKDIR" | "mkdir" => cmd_mkdir(db, state, tid, rest),
-        "SET" | "set" => cmd_set(db, state, tid, rest),
-        "GET" | "get" => cmd_get(state, tid, rest),
-        "DEL" | "del" => cmd_del(db, state, tid, rest),
-        "LIST" | "list" => cmd_list(state, tid, rest),
-        "LISTCHILDREN" | "listchildren" | "LIST_CHILDREN" | "list_children" => cmd_list_children(state, tid, rest),
-        "AUDIT" | "audit" => cmd_audit(db, state, tid, rest),
-        "WATCH" | "watch" => cmd_watch(state, tid, rest),
-        "UNWATCH" | "unwatch" => cmd_unwatch(state, tid, rest),
-        _ => send_line(tid, "ERR unknown_command"),
+        "HELLO" | "hello" => cmd_hello(state, tid, reply_pipe_name, rest),
+        "PING" | "ping" => send_line(reply_pipe_name, tid, "PONG"),
+        "REGISTER" | "register" => cmd_register(db, state, tid, reply_pipe_name, rest),
+        "MKDIR" | "mkdir" => cmd_mkdir(db, state, tid, reply_pipe_name, rest),
+        "SET" | "set" => cmd_set(db, state, tid, reply_pipe_name, rest),
+        "GET" | "get" => cmd_get(state, tid, reply_pipe_name, rest),
+        "DEL" | "del" => cmd_del(db, state, tid, reply_pipe_name, rest),
+        "LIST" | "list" => cmd_list(state, tid, reply_pipe_name, rest),
+        "LISTCHILDREN" | "listchildren" | "LIST_CHILDREN" | "list_children" => {
+            cmd_list_children(state, tid, reply_pipe_name, rest)
+        }
+        "AUDIT" | "audit" => cmd_audit(db, state, tid, reply_pipe_name, rest),
+        "WATCH" | "watch" => cmd_watch(state, tid, reply_pipe_name, rest),
+        "UNWATCH" | "unwatch" => cmd_unwatch(state, tid, reply_pipe_name, rest),
+        _ => send_line(reply_pipe_name, tid, "ERR unknown_command"),
     }
 }
 
-fn cmd_hello(state: &mut ConfState, tid: u32, rest: &str) {
+fn cmd_hello(state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let uid = uid_for_tid(tid).unwrap_or(0);
     let mut name = rest.trim();
     if name.is_empty() {
         name = if uid == 0 { "service" } else { "app" };
     }
     if !is_valid_client_name(name) {
-        send_line(tid, "ERR invalid_client_name");
+        send_line(reply_pipe_name, tid, "ERR invalid_client_name");
         return;
     }
-    state.set_client(tid, uid, name);
+    state.set_client(tid, reply_pipe_name, uid, name);
     let mut resp = String::from("OK hello ");
     push_u32(&mut resp, uid as u32);
-    send_line(tid, &resp);
+    send_line(reply_pipe_name, tid, &resp);
 }
 
-fn cmd_mkdir(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
+fn cmd_mkdir(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let Some((scope, logical_path, canonical_path, actor_uid, actor_name, owner_uid)) =
-        parse_scope_and_path(state, tid, rest)
+        parse_scope_and_path(state, tid, reply_pipe_name, rest)
     else {
         return;
     };
 
     if !can_write(scope, actor_uid, owner_uid) {
-        send_line(tid, "ERR forbidden");
+        send_line(reply_pipe_name, tid, "ERR forbidden");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "mkdir", scope, &logical_path, "forbidden", "", 0);
         return;
     }
@@ -106,7 +113,7 @@ fn cmd_mkdir(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
         now,
     );
     if changed && schema::persist_entry(db, &entry).is_err() {
-        send_line(tid, "ERR persist_failed");
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "mkdir", scope, &logical_path, "persist_failed", "", entry.version);
         return;
     }
@@ -119,7 +126,7 @@ fn cmd_mkdir(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
     push_u64(&mut resp, entry.version);
     resp.push(' ');
     push_u64(&mut resp, entry.updated_at);
-    send_line(tid, &resp);
+    send_line(reply_pipe_name, tid, &resp);
 
     audit(state, db, actor_uid, owner_uid, &actor_name, tid, "mkdir", scope, &logical_path, "ok", "", entry.version);
     if changed {
@@ -127,40 +134,40 @@ fn cmd_mkdir(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
     }
 }
 
-fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
+fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let mut parts = rest.splitn(4, ' ');
     let Some(scope_raw) = parts.next() else {
-        send_line(tid, "ERR invalid_register");
+        send_line(reply_pipe_name, tid, "ERR invalid_register");
         return;
     };
     let Some(namespace) = parts.next() else {
-        send_line(tid, "ERR invalid_register");
+        send_line(reply_pipe_name, tid, "ERR invalid_register");
         return;
     };
     let Some(version_raw) = parts.next() else {
-        send_line(tid, "ERR invalid_register");
+        send_line(reply_pipe_name, tid, "ERR invalid_register");
         return;
     };
     let manifest_text = parts.next().unwrap_or("");
 
     let Some((scope, requested_owner_uid)) = parse_scope_spec(scope_raw) else {
-        send_line(tid, "ERR invalid_scope");
+        send_line(reply_pipe_name, tid, "ERR invalid_scope");
         return;
     };
     if !is_valid_logical_path(namespace) || namespace.is_empty() {
-        send_line(tid, "ERR invalid_namespace");
+        send_line(reply_pipe_name, tid, "ERR invalid_namespace");
         return;
     }
     let Some(schema_version) = parse_u32(version_raw) else {
-        send_line(tid, "ERR invalid_schema_version");
+        send_line(reply_pipe_name, tid, "ERR invalid_schema_version");
         return;
     };
 
     let actor_uid = uid_for_tid(tid).unwrap_or(0);
-    let actor_name = String::from(state.client_name(tid));
+    let actor_name = String::from(state.client_name(tid, reply_pipe_name));
     let owner_uid = owner_uid_for_scope(scope, actor_uid, requested_owner_uid);
     if !can_write(scope, actor_uid, owner_uid) {
-        send_line(tid, "ERR forbidden");
+        send_line(reply_pipe_name, tid, "ERR forbidden");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "register", scope, namespace, "forbidden", "", 0);
         return;
     }
@@ -354,7 +361,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
     )
     .is_err()
     {
-        send_line(tid, "ERR persist_failed");
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "register", scope, namespace, "persist_failed", "", schema_version as u64);
         return;
     }
@@ -367,7 +374,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
     push_u32(&mut resp, schema_version);
     resp.push(' ');
     push_u32(&mut resp, applied_version);
-    send_line(tid, &resp);
+    send_line(reply_pipe_name, tid, &resp);
 
     audit(
         state,
@@ -385,39 +392,39 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
     );
 }
 
-fn cmd_set(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
+fn cmd_set(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let mut parts = rest.splitn(4, ' ');
     let Some(scope_name_raw) = parts.next() else {
-        send_line(tid, "ERR invalid_set");
+        send_line(reply_pipe_name, tid, "ERR invalid_set");
         return;
     };
     let Some(path) = parts.next() else {
-        send_line(tid, "ERR invalid_set");
+        send_line(reply_pipe_name, tid, "ERR invalid_set");
         return;
     };
     let Some(type_name) = parts.next() else {
-        send_line(tid, "ERR invalid_set");
+        send_line(reply_pipe_name, tid, "ERR invalid_set");
         return;
     };
     let Some(raw_value) = parts.next() else {
-        send_line(tid, "ERR invalid_set");
+        send_line(reply_pipe_name, tid, "ERR invalid_set");
         return;
     };
 
     let meta = format!("{} {}", scope_name_raw, path);
     let Some((scope, logical_path, canonical_path, actor_uid, actor_name, owner_uid)) =
-        parse_scope_and_path(state, tid, &meta)
+        parse_scope_and_path(state, tid, reply_pipe_name, &meta)
     else {
         return;
     };
     if !can_write(scope, actor_uid, owner_uid) {
-        send_line(tid, "ERR forbidden");
+        send_line(reply_pipe_name, tid, "ERR forbidden");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "set", scope, &logical_path, "forbidden", "", 0);
         return;
     }
 
     let Some(value) = decode_value(type_name, raw_value) else {
-        send_line(tid, "ERR invalid_value");
+        send_line(reply_pipe_name, tid, "ERR invalid_value");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "set", scope, &logical_path, "invalid_value", type_name, 0);
         return;
     };
@@ -436,7 +443,7 @@ fn cmd_set(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
         now,
     );
     if changed && schema::persist_entry(db, &entry).is_err() {
-        send_line(tid, "ERR persist_failed");
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "set", scope, &logical_path, "persist_failed", "", entry.version);
         return;
     }
@@ -449,7 +456,7 @@ fn cmd_set(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
     push_u64(&mut resp, entry.version);
     resp.push(' ');
     push_u64(&mut resp, entry.updated_at);
-    send_line(tid, &resp);
+    send_line(reply_pipe_name, tid, &resp);
 
     audit(state, db, actor_uid, owner_uid, &actor_name, tid, "set", scope, &logical_path, "ok", "", entry.version);
     if changed {
@@ -457,40 +464,40 @@ fn cmd_set(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
     }
 }
 
-fn cmd_get(state: &ConfState, tid: u32, rest: &str) {
+fn cmd_get(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let Some((scope, _logical_path, canonical_path, _actor_uid, _actor_name, _owner_uid)) =
-        parse_scope_and_path(state, tid, rest)
+        parse_scope_and_path(state, tid, reply_pipe_name, rest)
     else {
         return;
     };
     let Some(entry) = state.find_entry(&canonical_path) else {
-        send_line(tid, "ERR not_found");
+        send_line(reply_pipe_name, tid, "ERR not_found");
         return;
     };
-    send_line(tid, &format_entry_line("ITEM", scope, entry));
+    send_line(reply_pipe_name, tid, &format_entry_line("ITEM", scope, entry));
 }
 
-fn cmd_del(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
+fn cmd_del(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let Some((scope, logical_path, canonical_path, actor_uid, actor_name, owner_uid)) =
-        parse_scope_and_path(state, tid, rest)
+        parse_scope_and_path(state, tid, reply_pipe_name, rest)
     else {
         return;
     };
     if !can_write(scope, actor_uid, owner_uid) {
-        send_line(tid, "ERR forbidden");
+        send_line(reply_pipe_name, tid, "ERR forbidden");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "del", scope, &logical_path, "forbidden", "", 0);
         return;
     }
 
     let Some(old_entry) = state.remove_entry(&canonical_path) else {
-        send_line(tid, "ERR not_found");
+        send_line(reply_pipe_name, tid, "ERR not_found");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "del", scope, &logical_path, "not_found", "", 0);
         return;
     };
 
     if schema::delete_entry(db, &canonical_path).is_err() {
         state.entries.push(old_entry);
-        send_line(tid, "ERR persist_failed");
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
         audit(state, db, actor_uid, owner_uid, &actor_name, tid, "del", scope, &logical_path, "persist_failed", "", 0);
         return;
     }
@@ -505,118 +512,119 @@ fn cmd_del(db: &Database, state: &mut ConfState, tid: u32, rest: &str) {
     push_u64(&mut resp, version);
     resp.push(' ');
     push_u64(&mut resp, updated_at);
-    send_line(tid, &resp);
+    send_line(reply_pipe_name, tid, &resp);
 
     audit(state, db, actor_uid, owner_uid, &actor_name, tid, "del", scope, &logical_path, "ok", "", version);
     emit_delete_events(state, scope, &logical_path, &canonical_path, version, updated_at);
 }
 
-fn cmd_list(state: &ConfState, tid: u32, rest: &str) {
+fn cmd_list(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let Some((scope, _logical_path, canonical_path, _actor_uid, _actor_name, _owner_uid)) =
-        parse_scope_and_path(state, tid, rest)
+        parse_scope_and_path(state, tid, reply_pipe_name, rest)
     else {
         return;
     };
     let items = state.list_prefix(&canonical_path);
     for entry in &items {
-        send_line(tid, &format_entry_line("ITEM", scope, entry));
+        send_line(reply_pipe_name, tid, &format_entry_line("ITEM", scope, entry));
     }
-    send_line(tid, "END");
+    send_line(reply_pipe_name, tid, "END");
 }
 
-fn cmd_list_children(state: &ConfState, tid: u32, rest: &str) {
+fn cmd_list_children(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let Some((scope, _logical_path, canonical_path, _actor_uid, _actor_name, _owner_uid)) =
-        parse_scope_and_path(state, tid, rest)
+        parse_scope_and_path(state, tid, reply_pipe_name, rest)
     else {
         return;
     };
     let items = state.list_direct_children(&canonical_path);
     for entry in &items {
-        send_line(tid, &format_entry_line("ITEM", scope, entry));
+        send_line(reply_pipe_name, tid, &format_entry_line("ITEM", scope, entry));
     }
-    send_line(tid, "END");
+    send_line(reply_pipe_name, tid, "END");
 }
 
-fn cmd_audit(db: &Database, state: &ConfState, tid: u32, rest: &str) {
+fn cmd_audit(db: &Database, state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let mut parts = rest.split_whitespace();
     let Some(scope_token) = parts.next() else {
-        send_line(tid, "ERR invalid_audit");
+        send_line(reply_pipe_name, tid, "ERR invalid_audit");
         return;
     };
     let path = parts.next().unwrap_or("");
     let limit = parts.next().and_then(parse_u32).unwrap_or(100).max(1).min(500);
 
     if !is_valid_logical_path(path) {
-        send_line(tid, "ERR invalid_path");
+        send_line(reply_pipe_name, tid, "ERR invalid_path");
         return;
     }
 
     let Some((scope, requested_owner_uid)) = parse_scope_spec(scope_token) else {
-        send_line(tid, "ERR invalid_scope");
+        send_line(reply_pipe_name, tid, "ERR invalid_scope");
         return;
     };
     let actor_uid = uid_for_tid(tid).unwrap_or(0);
     let owner_uid = owner_uid_for_scope(scope, actor_uid, requested_owner_uid);
     if !can_read(scope, actor_uid, owner_uid) {
-        send_line(tid, "ERR forbidden");
+        send_line(reply_pipe_name, tid, "ERR forbidden");
         return;
     }
 
     let entries = schema::query_audit(db, scope, owner_uid, path, limit);
     for entry in &entries {
-        send_line(tid, &format_audit_line(entry));
+        send_line(reply_pipe_name, tid, &format_audit_line(entry));
     }
-    send_line(tid, "END");
+    send_line(reply_pipe_name, tid, "END");
 }
 
-fn cmd_watch(state: &mut ConfState, tid: u32, rest: &str) {
+fn cmd_watch(state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let Some((scope, _logical_path, canonical_path, _actor_uid, _actor_name, _owner_uid)) =
-        parse_scope_and_path(state, tid, rest)
+        parse_scope_and_path(state, tid, reply_pipe_name, rest)
     else {
         return;
     };
-    let watch_id = state.add_watch(tid, scope, &canonical_path);
+    let watch_id = state.add_watch(tid, reply_pipe_name, scope, &canonical_path);
     let mut resp = String::from("OK watch ");
     push_u32(&mut resp, watch_id);
-    send_line(tid, &resp);
+    send_line(reply_pipe_name, tid, &resp);
 }
 
-fn cmd_unwatch(state: &mut ConfState, tid: u32, raw_id: &str) {
+fn cmd_unwatch(state: &mut ConfState, tid: u32, reply_pipe_name: &str, raw_id: &str) {
     let Some(watch_id) = parse_u32(raw_id) else {
-        send_line(tid, "ERR invalid_watch_id");
+        send_line(reply_pipe_name, tid, "ERR invalid_watch_id");
         return;
     };
-    if !state.remove_watch(tid, watch_id) {
-        send_line(tid, "ERR not_found");
+    if !state.remove_watch(tid, reply_pipe_name, watch_id) {
+        send_line(reply_pipe_name, tid, "ERR not_found");
         return;
     }
     let mut resp = String::from("OK unwatch ");
     push_u32(&mut resp, watch_id);
-    send_line(tid, &resp);
+    send_line(reply_pipe_name, tid, &resp);
 }
 
 fn parse_scope_and_path(
     state: &ConfState,
     tid: u32,
+    reply_pipe_name: &str,
     rest: &str,
 ) -> Option<(Scope, String, String, u16, String, u16)> {
     let (scope_token, path) = split_first_word(rest);
     let (scope, requested_owner_uid) = match parse_scope_spec(scope_token) {
         Some(v) => v,
         None => {
-            send_line(tid, "ERR invalid_scope");
+            send_line(reply_pipe_name, tid, "ERR invalid_scope");
             return None;
         }
     };
     if !is_valid_logical_path(path) {
-        send_line(tid, "ERR invalid_path");
+        send_line(reply_pipe_name, tid, "ERR invalid_path");
         return None;
     }
     let actor_uid = uid_for_tid(tid).unwrap_or(0);
-    let actor_name = String::from(state.client_name(tid));
+    let actor_name = String::from(state.client_name(tid, reply_pipe_name));
     let owner_uid = owner_uid_for_scope(scope, actor_uid, requested_owner_uid);
     if !can_read(scope, actor_uid, owner_uid) {
-        send_line(tid, "ERR forbidden");
+        send_line(reply_pipe_name, tid, "ERR forbidden");
         return None;
     }
     let logical_path = String::from(path);
@@ -786,7 +794,7 @@ fn emit_change_events(state: &ConfState, entry: &RegistryEntry, action: &str) {
     }
 
     let (type_name, value_str) = encode_value(entry.value.as_ref());
-    for (tid, watch_id, scope) in watchers {
+    for (tid, reply_pipe_name, watch_id, scope) in watchers {
         let mut msg = String::from("EVENT ");
         push_u32(&mut msg, watch_id);
         msg.push(' ');
@@ -805,7 +813,7 @@ fn emit_change_events(state: &ConfState, entry: &RegistryEntry, action: &str) {
         push_u64(&mut msg, entry.version);
         msg.push(' ');
         push_u64(&mut msg, entry.updated_at);
-        send_line(tid, &msg);
+        send_line(reply_pipe_name, tid, &msg);
     }
 }
 
@@ -822,7 +830,7 @@ fn emit_delete_events(
         return;
     }
 
-    for (tid, watch_id, event_scope) in watchers {
+    for (tid, reply_pipe_name, watch_id, event_scope) in watchers {
         let mut msg = String::from("EVENT ");
         push_u32(&mut msg, watch_id);
         msg.push_str(" delete ");
@@ -833,7 +841,7 @@ fn emit_delete_events(
         push_u64(&mut msg, version);
         msg.push(' ');
         push_u64(&mut msg, updated_at);
-        send_line(tid, &msg);
+        send_line(reply_pipe_name, tid, &msg);
     }
 }
 
@@ -1125,16 +1133,62 @@ fn is_valid_logical_path(path: &str) -> bool {
     })
 }
 
-fn send_line(tid: u32, line: &str) {
-    let reply_pipe_name = format!("confd-{}", tid);
-    let reply_pipe = anyos_std::ipc::pipe_open(&reply_pipe_name);
+fn send_line(reply_pipe_name: &str, tid: u32, line: &str) {
+    let resolved_reply_name;
+    let reply_pipe_name = if reply_pipe_name.is_empty() {
+        resolved_reply_name = format!("confd-{}", tid);
+        resolved_reply_name.as_str()
+    } else {
+        reply_pipe_name
+    };
+    let reply_pipe = cached_reply_pipe(reply_pipe_name);
     if reply_pipe == 0 {
         return;
     }
     let mut msg = String::from(line);
     msg.push('\n');
-    anyos_std::ipc::pipe_write(reply_pipe, msg.as_bytes());
+    let written = anyos_std::ipc::pipe_write(reply_pipe, msg.as_bytes());
+    if written == 0 || written == u32::MAX {
+        invalidate_cached_reply_pipe(reply_pipe_name, reply_pipe);
+    }
 }
+
+fn cached_reply_pipe(reply_pipe_name: &str) -> u32 {
+    unsafe {
+        let cache = REPLY_PIPE_CACHE.get_or_insert_with(Vec::new);
+        if let Some((_, pipe_id)) = cache
+            .iter()
+            .find(|(name, _)| name.as_str() == reply_pipe_name)
+        {
+            return *pipe_id;
+        }
+
+        let pipe_id = anyos_std::ipc::pipe_open(reply_pipe_name);
+        if pipe_id != 0 {
+            cache.push((String::from(reply_pipe_name), pipe_id));
+        }
+        pipe_id
+    }
+}
+
+fn invalidate_cached_reply_pipe(reply_pipe_name: &str, pipe_id: u32) {
+    unsafe {
+        let Some(cache) = REPLY_PIPE_CACHE.as_mut() else {
+            return;
+        };
+        if let Some(pos) = cache
+            .iter()
+            .position(|(name, cached_id)| name.as_str() == reply_pipe_name && *cached_id == pipe_id)
+        {
+            let (_, cached_id) = cache.remove(pos);
+            if cached_id != 0 {
+                let _ = anyos_std::ipc::pipe_close(cached_id);
+            }
+        }
+    }
+}
+
+static mut REPLY_PIPE_CACHE: Option<Vec<(String, u32)>> = None;
 
 fn split_first_word(input: &str) -> (&str, &str) {
     let trimmed = input.trim();
