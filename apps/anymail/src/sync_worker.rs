@@ -264,19 +264,8 @@ fn sync_imap_async(
     set_worker_status(&alloc::format!("Syncing folders for {}...", account.email));
 
     if let Ok(folders) = client.list_folders() {
-        // Ensure local directories for each folder
-        maildir::ensure_dirs(base_dir, &account.id);
-        for f in &folders {
-            let folder_dir = alloc::format!(
-                "{}/accounts/{}/{}",
-                base_dir,
-                account.id,
-                sanitize_folder(&f.name)
-            );
-            anyos_std::fs::mkdir(&folder_dir);
-            let msg_dir = alloc::format!("{}/messages", folder_dir);
-            anyos_std::fs::mkdir(&msg_dir);
-        }
+        // Ensure libdb storage exists for this account.
+        let _ = maildir::ensure_dirs(base_dir, &account.id);
 
         ss.acquire();
         ss.folder_results.push(FolderSyncResult {

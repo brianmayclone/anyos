@@ -20,6 +20,8 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+const LARGE_VALUE_BUF: usize = 2 * 1024 * 1024;
+
 dynlink::dll_exports! {
     lib_path: "/Libraries/libdb.so",
     lib_struct: LibDb,
@@ -159,8 +161,14 @@ impl QueryResult {
         if (lib().libdb_result_is_null)(self.id, row, col) == 1 {
             return None;
         }
-        let mut buf = [0u8; 4096];
-        let n = (lib().libdb_result_get_text)(self.id, row, col, buf.as_mut_ptr(), 4096);
+        let mut buf = alloc::vec![0u8; LARGE_VALUE_BUF];
+        let n = (lib().libdb_result_get_text)(
+            self.id,
+            row,
+            col,
+            buf.as_mut_ptr(),
+            LARGE_VALUE_BUF as u32,
+        );
         if n == 0 {
             // Could be empty string or not text
             Some(String::new())
@@ -175,8 +183,14 @@ impl QueryResult {
         if (lib().libdb_result_is_null)(self.id, row, col) == 1 {
             return None;
         }
-        let mut buf = [0u8; 4096];
-        let n = (lib().libdb_result_get_blob)(self.id, row, col, buf.as_mut_ptr(), 4096);
+        let mut buf = alloc::vec![0u8; LARGE_VALUE_BUF];
+        let n = (lib().libdb_result_get_blob)(
+            self.id,
+            row,
+            col,
+            buf.as_mut_ptr(),
+            LARGE_VALUE_BUF as u32,
+        );
         Some(buf[..n as usize].to_vec())
     }
 

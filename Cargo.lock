@@ -600,6 +600,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "dba"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libdb_client",
+]
+
+[[package]]
 name = "dcpdump"
 version = "0.1.0"
 dependencies = [

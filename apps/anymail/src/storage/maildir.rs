@@ -1,12 +1,12 @@
 // Copyright (c) 2024-2026 Mike Strathmann
 // SPDX-License-Identifier: MIT
-//! Local mail storage (Maildir-inspired with libdb-backed indexes).
+//! Local mail storage with libdb-backed indexes and message bodies.
 //!
 //! Directory structure:
 //!   $HOME/.anymail/accounts/<id>/mailindex.db
-//!   $HOME/.anymail/accounts/<id>/<folder>/messages/<uid>.eml
 //!   $HOME/.anymail/accounts/<id>/<folder>/index.json   (legacy import only)
 
+use crate::mail::base64;
 use crate::mail::message::MessageSummary;
 use crate::mail::rfc2822::EmailAddress;
 use alloc::string::String;
@@ -15,6 +15,7 @@ use anyos_std::json::Value;
 use libdb_client::Database;
 
 const MAX_DB_TEXT: usize = 240;
+const MESSAGE_CHUNK_SIZE: usize = 3000;
 
 pub fn prepare_base_dir(preferred: Option<&str>, fallback: &str) -> Option<String> {
     let mut candidates = Vec::new();
@@ -47,17 +48,6 @@ pub fn ensure_dirs(base: &str, account_id: &str) -> bool {
     let acct_dir = alloc::format!("{}/accounts/{}", base, account_id);
     if !mkdir_recursive(&acct_dir) {
         return false;
-    }
-
-    for folder in &["INBOX", "Sent", "Drafts", "Trash", "Spam", "Archive"] {
-        let folder_dir = alloc::format!("{}/{}", acct_dir, folder);
-        if !mkdir_recursive(&folder_dir) {
-            return false;
-        }
-        let msg_dir = alloc::format!("{}/messages", folder_dir);
-        if !mkdir_recursive(&msg_dir) {
-            return false;
-        }
     }
 
     validate_db(base, account_id)
@@ -215,6 +205,18 @@ pub fn save_index(path: &str, messages: &[MessageSummary]) {
 
 /// Save a raw message to disk.
 pub fn save_message(path: &str, data: &[u8]) {
+    if let Some((base, account_id, folder, uid)) = parse_message_path(path) {
+        if let Some(db) = open_db(base, account_id) {
+            let encoded = base64::encode_str(data);
+            if store_message_chunks(&db, folder, uid, &encoded) {
+                if path_exists(path) {
+                    let _ = anyos_std::fs::unlink(path);
+                }
+                return;
+            }
+        }
+    }
+
     if let Some(parent) = parent_dir(path) {
         let _ = mkdir_recursive(parent);
     }
@@ -223,6 +225,24 @@ pub fn save_message(path: &str, data: &[u8]) {
 
 /// Load a raw message from disk.
 pub fn load_message(path: &str) -> Option<Vec<u8>> {
+    if let Some((base, account_id, folder, uid)) = parse_message_path(path) {
+        if let Some(db) = open_db(base, account_id) {
+            if let Some(encoded) = load_message_chunks(&db, folder, uid) {
+                return Some(base64::decode_str(&encoded));
+            }
+            if let Some(encoded) = load_legacy_db_message(&db, folder, uid) {
+                let _ = store_message_chunks(&db, folder, uid, &encoded);
+                let _ = db.exec(&alloc::format!(
+                    "DELETE FROM msg_body WHERE folder = {} AND uid = {}",
+                    sql_text(folder),
+                    uid
+                ));
+                let _ = db.flush();
+                return Some(base64::decode_str(&encoded));
+            }
+        }
+    }
+
     let fd = anyos_std::fs::open(path, 0);
     if fd == u32::MAX {
         return None;
@@ -238,21 +258,56 @@ pub fn load_message(path: &str) -> Option<Vec<u8>> {
         buf.extend_from_slice(&chunk[..n as usize]);
     }
     anyos_std::fs::close(fd);
+    save_message(path, &buf);
+    let _ = anyos_std::fs::unlink(path);
     Some(buf)
 }
 
 /// Delete a message file from disk.
 pub fn delete_message(path: &str) {
+    if let Some((base, account_id, folder, uid)) = parse_message_path(path) {
+        if let Some(db) = open_db(base, account_id) {
+            let _ = db.exec(&alloc::format!(
+                "DELETE FROM msg_body WHERE folder = {} AND uid = {}",
+                sql_text(folder),
+                uid
+            ));
+            let _ = db.exec(&alloc::format!(
+                "DELETE FROM msg_body_chunk WHERE folder = {} AND uid = {}",
+                sql_text(folder),
+                uid
+            ));
+            let _ = db.flush();
+        }
+    }
     anyos_std::fs::unlink(path);
 }
 
 pub fn move_message(base: &str, account_id: &str, from_folder: &str, to_folder: &str, uid: u32) {
+    if let Some(db) = open_db(base, account_id) {
+        let _ = db.exec(&alloc::format!(
+            "UPDATE msg_body SET folder = {} WHERE folder = {} AND uid = {}",
+            sql_text(to_folder),
+            sql_text(from_folder),
+            uid
+        ));
+        let _ = db.exec(&alloc::format!(
+            "UPDATE msg_body_chunk SET folder = {} WHERE folder = {} AND uid = {}",
+            sql_text(to_folder),
+            sql_text(from_folder),
+            uid
+        ));
+        let _ = db.flush();
+    }
+
     let old_path = message_path(base, account_id, from_folder, uid);
     let new_path = message_path(base, account_id, to_folder, uid);
-    if anyos_std::fs::rename(&old_path, &new_path) != 0 {
-        if let Some(raw) = load_message(&old_path) {
-            save_message(&new_path, &raw);
-            delete_message(&old_path);
+    if path_exists(&old_path) {
+        if anyos_std::fs::rename(&old_path, &new_path) != 0 {
+            if let Some(raw) = load_legacy_message_file(&old_path) {
+                save_message(&new_path, &raw);
+                let _ = anyos_std::fs::unlink(&old_path);
+            }
         }
     }
 }
@@ -424,6 +479,14 @@ fn create_schema(db: &Database) -> Result<(), String> {
         db,
         "CREATE TABLE msg_meta (folder TEXT, uid INTEGER, flags INTEGER, in_reply_to TEXT, references_hdr TEXT, preview TEXT, category TEXT, to_list TEXT)",
     )?;
+    exec_schema(
+        db,
+        "CREATE TABLE msg_body (folder TEXT, uid INTEGER, raw_message TEXT)",
+    )?;
+    exec_schema(
+        db,
+        "CREATE TABLE msg_body_chunk (folder TEXT, uid INTEGER, chunk_idx INTEGER, raw_chunk TEXT)",
+    )?;
     Ok(())
 }
 
@@ -463,6 +526,15 @@ fn validate_db(base: &str, account_id: &str) -> bool {
         return false;
     }
     if db.query("SELECT uid FROM msg_meta LIMIT 1").is_err() {
+        return false;
+    }
+    if db.query("SELECT uid FROM msg_body LIMIT 1").is_err() {
+        return false;
+    }
+    if db
+        .query("SELECT uid FROM msg_body_chunk LIMIT 1")
+        .is_err()
+    {
         return false;
     }
     if db.flush().is_err() {
@@ -527,6 +599,25 @@ fn parse_index_path(path: &str) -> Option<(&str, &str, &str)> {
     let slash2 = rest.find('/')?;
     let folder = &rest[..slash2];
     Some((base, account_id, folder))
+}
+
+fn parse_message_path(path: &str) -> Option<(&str, &str, &str, u32)> {
+    let marker = "/accounts/";
+    let start = path.find(marker)?;
+    let base = &path[..start];
+    let rest = &path[start + marker.len()..];
+    let slash1 = rest.find('/')?;
+    let account_id = &rest[..slash1];
+    let rest = &rest[slash1 + 1..];
+    let slash2 = rest.find('/')?;
+    let folder = &rest[..slash2];
+    let rest = &rest[slash2 + 1..];
+    let msg_marker = "messages/";
+    let msg_start = rest.find(msg_marker)?;
+    let file = &rest[msg_start + msg_marker.len()..];
+    let uid_text = file.strip_suffix(".eml")?;
+    let uid = uid_text.parse().ok()?;
+    Some((base, account_id, folder, uid))
 }
 
 fn is_folder_empty(db: &Database, folder: &str) -> bool {
@@ -636,8 +727,21 @@ fn deserialize_addresses(text: &str) -> Vec<EmailAddress> {
 }
 
 fn sql_text(text: &str) -> String {
+    sql_text_impl(text, true)
+}
+
+fn sql_text_unbounded(text: &str) -> String {
+    sql_text_impl(text, false)
+}
+
+fn sql_text_impl(text: &str, truncate: bool) -> String {
     let mut out = String::from("'");
-    for c in truncate_text(text).chars() {
+    let source = if truncate {
+        truncate_text(text)
+    } else {
+        String::from(text)
+    };
+    for c in source.chars() {
         if c == '\'' {
             out.push('\'');
             out.push('\'');
@@ -647,6 +751,109 @@ fn sql_text(text: &str) -> String {
     }
     out.push('\'');
     out
+}
+
+fn load_legacy_message_file(path: &str) -> Option<Vec<u8>> {
+    let fd = anyos_std::fs::open(path, 0);
+    if fd == u32::MAX {
+        return None;
+    }
+
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        let n = anyos_std::fs::read(fd, &mut chunk);
+        if n == 0 || n == u32::MAX {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n as usize]);
+    }
+    anyos_std::fs::close(fd);
+    Some(buf)
+}
+
+fn store_message_chunks(db: &Database, folder: &str, uid: u32, encoded: &str) -> bool {
+    let _ = db.exec(&alloc::format!(
+        "DELETE FROM msg_body WHERE folder = {} AND uid = {}",
+        sql_text(folder),
+        uid
+    ));
+    let _ = db.exec(&alloc::format!(
+        "DELETE FROM msg_body_chunk WHERE folder = {} AND uid = {}",
+        sql_text(folder),
+        uid
+    ));
+
+    if encoded.is_empty() {
+        let _ = db.exec(&alloc::format!(
+            "INSERT INTO msg_body_chunk (folder, uid, chunk_idx, raw_chunk) VALUES ({}, {}, 0, '')",
+            sql_text(folder),
+            uid
+        ));
+        return db.flush().is_ok();
+    }
+
+    let mut chunk_idx = 0usize;
+    let mut start = 0usize;
+    while start < encoded.len() {
+        let mut end = (start + MESSAGE_CHUNK_SIZE).min(encoded.len());
+        while end > start && !encoded.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == start {
+            return false;
+        }
+        let chunk = &encoded[start..end];
+        let sql = alloc::format!(
+            "INSERT INTO msg_body_chunk (folder, uid, chunk_idx, raw_chunk) VALUES ({}, {}, {}, {})",
+            sql_text(folder),
+            uid,
+            chunk_idx,
+            sql_text_unbounded(chunk)
+        );
+        if db.exec(&sql).is_err() {
+            return false;
+        }
+        chunk_idx += 1;
+        start = end;
+    }
+
+    db.flush().is_ok()
+}
+
+fn load_message_chunks(db: &Database, folder: &str, uid: u32) -> Option<String> {
+    let sql = alloc::format!(
+        "SELECT chunk_idx, raw_chunk FROM msg_body_chunk WHERE folder = {} AND uid = {} ORDER BY chunk_idx ASC",
+        sql_text(folder),
+        uid
+    );
+    let rows = db.query(&sql).ok()?;
+    if rows.row_count() == 0 {
+        return None;
+    }
+
+    let mut encoded = String::new();
+    for row in 0..rows.row_count() {
+        encoded.push_str(&rows.get_text(row, 1).unwrap_or_default());
+    }
+    Some(encoded)
+}
+
+fn load_legacy_db_message(db: &Database, folder: &str, uid: u32) -> Option<String> {
+    let sql = alloc::format!(
+        "SELECT raw_message FROM msg_body WHERE folder = {} AND uid = {} LIMIT 1",
+        sql_text(folder),
+        uid
+    );
+    let rows = db.query(&sql).ok()?;
+    if rows.row_count() == 0 {
+        return None;
+    }
+    let encoded = rows.get_text(0, 0).unwrap_or_default();
+    if encoded.is_empty() {
+        return Some(String::new());
+    }
+    Some(encoded)
 }
 
 fn sql_like_pattern(text: &str) -> String {
