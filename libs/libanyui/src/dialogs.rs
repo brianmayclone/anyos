@@ -552,10 +552,7 @@ enum DialogType {
 
 fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
     let st = state();
-    if st.windows.is_empty() {
-        return 0;
-    }
-    let owner_win_id = *st.windows.last().unwrap();
+    let owner_win_id = st.windows.last().copied();
 
     let is_create_folder = matches!(dialog_type, DialogType::CreateFolder);
 
@@ -622,7 +619,10 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
 
     // ── Create standalone dialog window, centered on owner ──────────
     // Flags: NOT_RESIZABLE(0x02) | NO_MINIMIZE(0x10) | NO_MAXIMIZE(0x20)
-    let (dlg_x, dlg_y) = crate::center_on_owner(owner_win_id, dlg_w, dlg_h);
+    let (dlg_x, dlg_y) = match owner_win_id {
+        Some(id) => crate::center_on_owner(id, dlg_w, dlg_h),
+        None => (-1, -1),
+    };
     let dialog_win_id = crate::anyui_create_window(
         title.as_ptr(),
         title.len() as u32,
@@ -637,7 +637,9 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
     }
 
     // Make it modal to the owner window
-    crate::anyui_set_modal(dialog_win_id, owner_win_id);
+    if let Some(owner_id) = owner_win_id {
+        crate::anyui_set_modal(dialog_win_id, owner_id);
+    }
 
     // ── Allocate control IDs ─────────────────────────────────────────
     let st = state();
