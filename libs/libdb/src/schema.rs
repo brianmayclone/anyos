@@ -122,6 +122,7 @@ fn read_v1_table_entry(entry: &[u8]) -> DbResult<TableSchema> {
     Ok(TableSchema {
         name: String::from(name),
         columns,
+        indexes: Vec::new(),
         row_count,
         first_data_page,
         schema_page: 0,

@@ -10,6 +10,8 @@ const CREATE_STATEMENTS: &[&str] = &[
     "CREATE TABLE registry (canonical_path TEXT, logical_path TEXT, scope INTEGER, owner_uid INTEGER, kind INTEGER, value_type INTEGER, value_text TEXT, value_int INTEGER, value_bool INTEGER, version INTEGER, updated_at INTEGER, writer_uid INTEGER, writer_name TEXT)",
     "CREATE TABLE audit (seq INTEGER, actor_uid INTEGER, owner_uid INTEGER, actor_name TEXT, tid INTEGER, action TEXT, scope INTEGER, logical_path TEXT, status TEXT, detail TEXT, version INTEGER, at_ms INTEGER)",
     "CREATE TABLE schemas (scope INTEGER, owner_uid INTEGER, namespace TEXT, schema_version INTEGER, applied_version INTEGER, manifest_text TEXT, updated_at INTEGER, writer_name TEXT)",
+    "CREATE UNIQUE INDEX registry_canonical_path_idx ON registry (canonical_path)",
+    "CREATE INDEX schemas_namespace_idx ON schemas (namespace)",
 ];
 
 const ALTER_STATEMENTS: &[&str] = &[

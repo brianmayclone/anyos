@@ -10,6 +10,7 @@ use crate::{AmiValue, StateEntry};
 
 const CREATE_STATEMENTS: &[&str] = &[
     "CREATE TABLE state (key TEXT, type INTEGER, value_text TEXT, value_int INTEGER, value_bool INTEGER, version INTEGER, updated_at INTEGER, owner TEXT)",
+    "CREATE UNIQUE INDEX state_key_idx ON state (key)",
 ];
 
 pub fn init_tables(db: &Database) {

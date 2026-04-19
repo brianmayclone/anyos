@@ -14,8 +14,7 @@ use alloc::vec::Vec;
 
 anyos_std::entry!(main);
 
-pub(crate) const DB_PATH: &str = "/System/sysdb/ami.db";
-pub(crate) const DB_DIR: &str = "/System/sysdb";
+pub(crate) const DB_PATH: &str = ":memory:";
 pub(crate) const PIPE_NAME: &str = "ami";
 
 #[derive(Clone, PartialEq, Eq)]
@@ -189,13 +188,10 @@ fn main() {
         return;
     }
 
-    anyos_std::fs::mkdir(DB_DIR);
-    ensure_db_file();
-
-    let db = match libdb_client::Database::open(DB_PATH) {
+    let db = match libdb_client::Database::open_in_memory() {
         Some(db) => db,
         None => {
-            anyos_std::println!("amid: failed to open database at {}", DB_PATH);
+            anyos_std::println!("amid: failed to open in-memory database");
             return;
         }
     };
@@ -227,22 +223,4 @@ fn main() {
         let active = ipc::handle_requests(&db, &mut state, pipe_id, &mut pipe_buf);
         anyos_std::process::sleep(if active { 20 } else { 100 });
     }
-}
-
-fn ensure_db_file() {
-    let probe = anyos_std::fs::open(DB_PATH, 0);
-    if probe != u32::MAX {
-        anyos_std::fs::close(probe);
-        return;
-    }
-
-    let fd = anyos_std::fs::open(
-        DB_PATH,
-        anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC,
-    );
-    if fd == u32::MAX {
-        anyos_std::println!("amid: failed to create database file at {}", DB_PATH);
-        return;
-    }
-    anyos_std::fs::close(fd);
 }

@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use crate::types::*;
 use crate::schema;
 use crate::syscall;
+use crate::index::{encode_index_key, RowLocation, TableIndexState};
 
 // ── Page cache ──────────────────────────────────────────────────────────────
 
@@ -24,17 +25,28 @@ struct CachedPage {
     dirty: bool,
 }
 
+impl Clone for CachedPage {
+    fn clone(&self) -> Self {
+        Self {
+            page_num: self.page_num,
+            data: self.data,
+            dirty: self.dirty,
+        }
+    }
+}
+
 /// Simple page cache with LRU eviction.
 /// Pages are heap-allocated (Box) so Vec operations only move 8-byte pointers,
 /// not 4 KiB page buffers — prevents stack overflow during cache reshuffling.
 struct PageCache {
     pages: Vec<alloc::boxed::Box<CachedPage>>,
     fd: u32,
+    in_memory: bool,
 }
 
 impl PageCache {
-    fn new(fd: u32) -> Self {
-        PageCache { pages: Vec::with_capacity(CACHE_CAPACITY), fd }
+    fn new(fd: u32, in_memory: bool) -> Self {
+        PageCache { pages: Vec::with_capacity(CACHE_CAPACITY), fd, in_memory }
     }
 
     /// Look up a page in the cache. Returns a reference to the data if found.
@@ -92,7 +104,7 @@ impl PageCache {
         // Evict LRU if full
         if self.pages.len() >= CACHE_CAPACITY {
             let victim = self.pages.pop().unwrap();
-            if victim.dirty {
+            if victim.dirty && !self.in_memory {
                 Self::write_to_disk(self.fd, victim.page_num, &victim.data);
             }
         }
@@ -104,6 +116,12 @@ impl PageCache {
 
     /// Flush all dirty pages to disk.
     fn flush(&mut self) {
+        if self.in_memory {
+            for entry in &mut self.pages {
+                entry.dirty = false;
+            }
+            return;
+        }
         for entry in &mut self.pages {
             if entry.dirty {
                 Self::write_to_disk(self.fd, entry.page_num, &entry.data);
@@ -119,6 +137,10 @@ impl PageCache {
         }
     }
 
+    fn clear(&mut self) {
+        self.pages.clear();
+    }
+
     /// Write a single page to disk (used internally for eviction and flush).
     fn write_to_disk(fd: u32, page_num: u32, data: &[u8; PAGE_SIZE]) {
         let offset = page_num as i32 * PAGE_SIZE as i32;
@@ -127,17 +149,33 @@ impl PageCache {
     }
 }
 
+#[derive(Clone)]
+struct TxSnapshot {
+    page0: [u8; PAGE_SIZE],
+    format: DbFormat,
+    tables: Vec<TableSchema>,
+    table_count: u32,
+    first_free_page: u32,
+    first_table_dir_page: u32,
+    total_pages: u32,
+    pages: Vec<[u8; PAGE_SIZE]>,
+}
+
+
 // ── Database handle ──────────────────────────────────────────────────────────
 
 /// An open database file.
 pub struct Database {
     fd: u32,
+    in_memory: bool,
     /// Cached copy of page 0 (header + table directory).
     page0: [u8; PAGE_SIZE],
     /// On-disk format.
     format: DbFormat,
     /// Parsed table schemas (in sync with page0).
     pub tables: Vec<TableSchema>,
+    /// In-memory equality indexes rebuilt from persisted definitions.
+    index_states: Vec<TableIndexState>,
     /// Number of tables.
     pub table_count: u32,
     /// First free page (for page reuse — 0 = none, allocate at end).
@@ -150,11 +188,16 @@ pub struct Database {
     pub last_error: String,
     /// Page cache — avoids repeated disk reads.
     cache: PageCache,
+    /// Optional transaction snapshot.
+    tx_snapshot: Option<TxSnapshot>,
 }
 
 impl Database {
     /// Open or create a database file.
     pub fn open(path: &str) -> DbResult<Database> {
+        if path == ":memory:" {
+            return Self::open_in_memory();
+        }
         // Try to open existing file first
         let fd = syscall::open(path, 0); // read-only probe
         let file_exists = fd != u32::MAX;
@@ -171,15 +214,18 @@ impl Database {
             }
             let mut db = Database {
                 fd,
+                in_memory: false,
                 page0: [0u8; PAGE_SIZE],
                 format: DbFormat::V2,
                 tables: Vec::new(),
+                index_states: Vec::new(),
                 table_count: 0,
                 first_free_page: 0,
                 first_table_dir_page: 0,
                 total_pages: 0,
                 last_error: String::new(),
-                cache: PageCache::new(fd),
+                cache: PageCache::new(fd, false),
+                tx_snapshot: None,
             };
             db.load_page0()?;
             Ok(db)
@@ -196,15 +242,18 @@ impl Database {
             }
             let mut db = Database {
                 fd,
+                in_memory: false,
                 page0: [0u8; PAGE_SIZE],
                 format: DbFormat::V2,
                 tables: Vec::new(),
+                index_states: Vec::new(),
                 table_count: 0,
                 first_free_page: 0,
                 first_table_dir_page: 0,
                 total_pages: 1,
                 last_error: String::new(),
-                cache: PageCache::new(fd),
+                cache: PageCache::new(fd, false),
+                tx_snapshot: None,
             };
             schema::init_header(&mut db.page0);
             // Write page 0 directly to disk so the file has content
@@ -213,6 +262,28 @@ impl Database {
             db.cache.put(0, &db.page0, false);
             Ok(db)
         }
+    }
+
+    pub fn open_in_memory() -> DbResult<Database> {
+        let fd = u32::MAX;
+        let mut db = Database {
+            fd,
+            in_memory: true,
+            page0: [0u8; PAGE_SIZE],
+            format: DbFormat::V2,
+            tables: Vec::new(),
+            index_states: Vec::new(),
+            table_count: 0,
+            first_free_page: 0,
+            first_table_dir_page: 0,
+            total_pages: 1,
+            last_error: String::new(),
+            cache: PageCache::new(fd, true),
+            tx_snapshot: None,
+        };
+        schema::init_header(&mut db.page0);
+        db.cache.put(0, &db.page0, false);
+        Ok(db)
     }
 
     /// Close the database (flush dirty pages and release fd).
@@ -235,6 +306,11 @@ impl Database {
         }
 
         // Cache miss — read from disk
+        if self.in_memory {
+            buf.fill(0);
+            self.cache.put(page_num, buf, false);
+            return Ok(());
+        }
         let offset = page_num as i32 * PAGE_SIZE as i32;
         if syscall::lseek(self.fd, offset, syscall::SEEK_SET) == u32::MAX {
             return Err(DbError::Io(String::from("Seek failed")));
@@ -252,6 +328,61 @@ impl Database {
         Ok(())
     }
 
+    pub fn begin_transaction(&mut self) -> DbResult<()> {
+        if self.tx_snapshot.is_some() {
+            return Err(DbError::Parse(String::from("Transaction already active")));
+        }
+        let mut pages = Vec::with_capacity(self.total_pages as usize);
+        for page_num in 0..self.total_pages {
+            let mut page = [0u8; PAGE_SIZE];
+            self.read_page(page_num, &mut page)?;
+            pages.push(page);
+        }
+        self.tx_snapshot = Some(TxSnapshot {
+            page0: self.page0,
+            format: self.format,
+            tables: self.tables.clone(),
+            table_count: self.table_count,
+            first_free_page: self.first_free_page,
+            first_table_dir_page: self.first_table_dir_page,
+            total_pages: self.total_pages,
+            pages,
+        });
+        Ok(())
+    }
+
+    pub fn commit_transaction(&mut self) -> DbResult<()> {
+        if self.tx_snapshot.is_none() {
+            return Err(DbError::Parse(String::from("No active transaction")));
+        }
+        self.flush()?;
+        self.tx_snapshot = None;
+        Ok(())
+    }
+
+    pub fn rollback_transaction(&mut self) -> DbResult<()> {
+        let snapshot = self.tx_snapshot.take()
+            .ok_or_else(|| DbError::Parse(String::from("No active transaction")))?;
+        self.page0 = snapshot.page0;
+        self.format = snapshot.format;
+        self.tables = snapshot.tables;
+        self.table_count = snapshot.table_count;
+        self.first_free_page = snapshot.first_free_page;
+        self.first_table_dir_page = snapshot.first_table_dir_page;
+        self.total_pages = snapshot.total_pages;
+        self.index_states.clear();
+        self.cache.clear();
+        for (page_num, page) in snapshot.pages.iter().enumerate() {
+            self.cache.put(page_num as u32, page, true);
+            if !self.in_memory {
+                self.write_page_raw(page_num as u32, page)?;
+            }
+        }
+        self.flush()?;
+        self.rebuild_all_indexes()?;
+        Ok(())
+    }
+
     /// Write a page — updates cache (dirty) and defers disk write until flush.
     fn write_page(&mut self, page_num: u32, buf: &[u8; PAGE_SIZE]) -> DbResult<()> {
         self.cache.put(page_num, buf, true);
@@ -260,6 +391,9 @@ impl Database {
 
     /// Write a page directly to disk (bypasses cache).
     fn write_page_raw(&self, page_num: u32, buf: &[u8; PAGE_SIZE]) -> DbResult<()> {
+        if self.in_memory {
+            return Ok(());
+        }
         let offset = page_num as i32 * PAGE_SIZE as i32;
         if syscall::lseek(self.fd, offset, syscall::SEEK_SET) == u32::MAX {
             return Err(DbError::Io(String::from("Seek failed")));
@@ -277,6 +411,9 @@ impl Database {
     /// Flush all dirty cached pages to disk.
     pub fn flush(&mut self) -> DbResult<()> {
         self.cache.flush();
+        if self.in_memory {
+            return Ok(());
+        }
         if syscall::fsync(self.fd) == u32::MAX {
             return Err(DbError::Io(String::from("fsync failed")));
         }
@@ -312,6 +449,7 @@ impl Database {
             DbFormat::V1 => schema::read_tables_v1(&self.page0, self.table_count)?,
             DbFormat::V2 => self.load_table_directory(self.first_table_dir_page)?,
         };
+        self.rebuild_all_indexes()?;
         Ok(())
     }
 
@@ -392,10 +530,11 @@ impl Database {
             }
             let name = core::str::from_utf8(&page[18..18 + name_len])
                 .map_err(|_| DbError::Corrupt(String::from("Invalid table name encoding")))?;
-            let columns = self.read_schema_columns(schema_page)?;
+            let (columns, indexes) = self.read_schema_definition(schema_page)?;
             tables.push(TableSchema {
                 name: String::from(name),
                 columns,
+                indexes,
                 row_count,
                 first_data_page,
                 schema_page,
@@ -406,41 +545,109 @@ impl Database {
         Ok(tables)
     }
 
-    fn read_schema_columns(&mut self, mut page_num: u32) -> DbResult<Vec<ColumnDef>> {
+    fn read_schema_definition(&mut self, mut page_num: u32) -> DbResult<(Vec<ColumnDef>, Vec<IndexDef>)> {
         let mut columns = Vec::new();
+        let mut indexes = Vec::new();
         while page_num != 0 {
             let mut page = [0u8; PAGE_SIZE];
             self.read_page(page_num, &mut page)?;
             let next_page = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
             let used_end = u16::from_le_bytes([page[4], page[5]]) as usize;
             let end = if used_end == 0 { 8 } else { used_end.min(PAGE_SIZE) };
+            let structured = page[6] == 1;
             let mut pos = 8usize;
-            while pos + 2 <= end {
-                let name_len = page[pos] as usize;
-                let col_type = match page[pos + 1] as u16 {
-                    1 => ColumnType::Integer,
-                    2 => ColumnType::Text,
-                    3 => ColumnType::Blob,
-                    _ => return Err(DbError::Corrupt(String::from("Invalid schema column type"))),
-                };
-                pos += 2;
-                if pos + name_len > end {
-                    return Err(DbError::Corrupt(String::from("Schema page truncated")));
+            while pos < end {
+                if structured {
+                    if pos + 1 > end {
+                        break;
+                    }
+                    let tag = page[pos];
+                    pos += 1;
+                    match tag {
+                        1 => {
+                            if pos + 2 > end {
+                                return Err(DbError::Corrupt(String::from("Schema column truncated")));
+                            }
+                            let name_len = page[pos] as usize;
+                            let col_type = match page[pos + 1] as u16 {
+                                1 => ColumnType::Integer,
+                                2 => ColumnType::Text,
+                                3 => ColumnType::Blob,
+                                _ => return Err(DbError::Corrupt(String::from("Invalid schema column type"))),
+                            };
+                            pos += 2;
+                            if pos + name_len > end {
+                                return Err(DbError::Corrupt(String::from("Schema column name truncated")));
+                            }
+                            let name = core::str::from_utf8(&page[pos..pos + name_len])
+                                .map_err(|_| DbError::Corrupt(String::from("Invalid schema column name")))?;
+                            columns.push(ColumnDef {
+                                name: String::from(name),
+                                col_type,
+                            });
+                            pos += name_len;
+                        }
+                        2 => {
+                            if pos + 3 > end {
+                                return Err(DbError::Corrupt(String::from("Schema index truncated")));
+                            }
+                            let name_len = page[pos] as usize;
+                            let col_len = page[pos + 1] as usize;
+                            let flags = page[pos + 2];
+                            pos += 3;
+                            if pos + name_len + col_len > end {
+                                return Err(DbError::Corrupt(String::from("Schema index name truncated")));
+                            }
+                            let name = core::str::from_utf8(&page[pos..pos + name_len])
+                                .map_err(|_| DbError::Corrupt(String::from("Invalid schema index name")))?;
+                            pos += name_len;
+                            let column = core::str::from_utf8(&page[pos..pos + col_len])
+                                .map_err(|_| DbError::Corrupt(String::from("Invalid schema index column")))?;
+                            pos += col_len;
+                            indexes.push(IndexDef {
+                                name: String::from(name),
+                                column: String::from(column),
+                                unique: (flags & 0x01) != 0,
+                            });
+                        }
+                        0 => break,
+                        _ => return Err(DbError::Corrupt(String::from("Unknown schema entry tag"))),
+                    }
+                } else {
+                    if pos + 2 > end {
+                        break;
+                    }
+                    let name_len = page[pos] as usize;
+                    let col_type = match page[pos + 1] as u16 {
+                        1 => ColumnType::Integer,
+                        2 => ColumnType::Text,
+                        3 => ColumnType::Blob,
+                        _ => return Err(DbError::Corrupt(String::from("Invalid schema column type"))),
+                    };
+                    pos += 2;
+                    if pos + name_len > end {
+                        return Err(DbError::Corrupt(String::from("Schema page truncated")));
+                    }
+                    let name = core::str::from_utf8(&page[pos..pos + name_len])
+                        .map_err(|_| DbError::Corrupt(String::from("Invalid schema column name")))?;
+                    columns.push(ColumnDef {
+                        name: String::from(name),
+                        col_type,
+                    });
+                    pos += name_len;
                 }
-                let name = core::str::from_utf8(&page[pos..pos + name_len])
-                    .map_err(|_| DbError::Corrupt(String::from("Invalid schema column name")))?;
-                columns.push(ColumnDef {
-                    name: String::from(name),
-                    col_type,
-                });
-                pos += name_len;
             }
             page_num = next_page;
         }
-        Ok(columns)
+        Ok((columns, indexes))
     }
 
-    fn write_schema_columns(&mut self, columns: &[ColumnDef], old_first_page: u32) -> DbResult<u32> {
+    fn write_schema_definition(
+        &mut self,
+        columns: &[ColumnDef],
+        indexes: &[IndexDef],
+        old_first_page: u32,
+    ) -> DbResult<u32> {
         if old_first_page != 0 {
             self.free_page_chain(old_first_page)?;
         }
@@ -450,9 +657,24 @@ impl Database {
             if column.name.len() > MAX_COL_NAME {
                 return Err(DbError::Parse(String::from("Column name too long")));
             }
+            serialized.push(1);
             serialized.push(column.name.len() as u8);
             serialized.push(column.col_type as u8);
             serialized.extend_from_slice(column.name.as_bytes());
+        }
+        for index in indexes {
+            if index.name.len() > MAX_COL_NAME {
+                return Err(DbError::Parse(String::from("Index name too long")));
+            }
+            if index.column.len() > MAX_COL_NAME {
+                return Err(DbError::Parse(String::from("Indexed column name too long")));
+            }
+            serialized.push(2);
+            serialized.push(index.name.len() as u8);
+            serialized.push(index.column.len() as u8);
+            serialized.push(if index.unique { 1 } else { 0 });
+            serialized.extend_from_slice(index.name.as_bytes());
+            serialized.extend_from_slice(index.column.as_bytes());
         }
 
         let mut offset = 0usize;
@@ -471,6 +693,7 @@ impl Database {
                 page[8..8 + chunk].copy_from_slice(&serialized[offset..offset + chunk]);
                 offset += chunk;
             }
+            page[6] = 1;
             let used_end = 8 + chunk;
             page[4..6].copy_from_slice(&(used_end as u16).to_le_bytes());
             self.write_page(page_num, &page)?;
@@ -493,7 +716,9 @@ impl Database {
             }
             let old_schema_page = self.tables[i].schema_page;
             let columns = self.tables[i].columns.clone();
-            self.tables[i].schema_page = self.write_schema_columns(&columns, old_schema_page)?;
+            let indexes = self.tables[i].indexes.clone();
+            self.tables[i].schema_page =
+                self.write_schema_definition(&columns, &indexes, old_schema_page)?;
         }
 
         self.first_table_dir_page = self.tables.first().map(|t| t.dir_page).unwrap_or(0);
@@ -544,12 +769,14 @@ impl Database {
         let table = TableSchema {
             name: String::from(name),
             columns: columns.to_vec(),
+            indexes: Vec::new(),
             row_count: 0,
             first_data_page: 0,
             schema_page: 0,
             dir_page: 0,
         };
         self.tables.push(table);
+        self.index_states.push(TableIndexState { maps: Vec::new() });
         self.table_count += 1;
         self.flush_page0()
     }
@@ -567,6 +794,9 @@ impl Database {
 
         // Remove from schema list and compact
         self.tables.remove(idx);
+        if idx < self.index_states.len() {
+            self.index_states.remove(idx);
+        }
         self.table_count -= 1;
         self.flush_page0()
     }
@@ -585,6 +815,194 @@ impl Database {
         }
         self.tables[table_idx].columns.push(column);
         self.flush_page0()
+    }
+
+    pub fn create_index(
+        &mut self,
+        table_name: &str,
+        index_name: &str,
+        column_name: &str,
+        unique: bool,
+    ) -> DbResult<()> {
+        let table_idx = schema::find_table(&self.tables, table_name)
+            .ok_or_else(|| DbError::TableNotFound(String::from(table_name)))?;
+        if index_name.len() > MAX_COL_NAME {
+            return Err(DbError::Parse(String::from("Index name too long")));
+        }
+        if self.tables[table_idx]
+            .indexes
+            .iter()
+            .any(|index| index.name.eq_ignore_ascii_case(index_name))
+        {
+            return Err(DbError::IndexExists(String::from(index_name)));
+        }
+        if self.tables[table_idx].find_column(column_name).is_none() {
+            return Err(DbError::ColumnNotFound(String::from(column_name)));
+        }
+        self.tables[table_idx].indexes.push(IndexDef {
+            name: String::from(index_name),
+            column: String::from(column_name),
+            unique,
+        });
+        if let Err(err) = self.rebuild_indexes_for_table(table_idx) {
+            self.tables[table_idx].indexes.pop();
+            let _ = self.rebuild_indexes_for_table(table_idx);
+            return Err(err);
+        }
+        self.flush_page0()
+    }
+
+    fn rebuild_all_indexes(&mut self) -> DbResult<()> {
+        self.index_states.clear();
+        self.index_states
+            .resize_with(self.tables.len(), || TableIndexState { maps: Vec::new() });
+        for table_idx in 0..self.tables.len() {
+            self.rebuild_indexes_for_table(table_idx)?;
+        }
+        Ok(())
+    }
+
+    fn rebuild_indexes_for_table(&mut self, table_idx: usize) -> DbResult<()> {
+        let index_defs = self.tables[table_idx].indexes.clone();
+        let rows = self.scan_table(table_idx)?;
+        let mut maps: Vec<crate::index::IndexMap> = Vec::with_capacity(index_defs.len());
+        for _ in 0..index_defs.len() {
+            maps.push(Default::default());
+        }
+
+        for (page_num, offset, row) in rows {
+            let location = RowLocation { page_num, offset };
+            for (index_idx, index) in index_defs.iter().enumerate() {
+                let Some(column_idx) = self.tables[table_idx].find_column(&index.column) else {
+                    return Err(DbError::ColumnNotFound(index.column.clone()));
+                };
+                let key = encode_index_key(row.values.get(column_idx).unwrap_or(&Value::Null));
+                let bucket = maps[index_idx].entry(key).or_insert_with(Vec::new);
+                if index.unique && !bucket.is_empty() {
+                    return Err(DbError::TypeMismatch(String::from("Unique index violation")));
+                }
+                bucket.push(location);
+            }
+        }
+
+        self.index_states[table_idx] = TableIndexState { maps };
+        Ok(())
+    }
+
+    fn add_row_to_indexes(
+        &mut self,
+        table_idx: usize,
+        location: RowLocation,
+        values: &[Value],
+    ) -> DbResult<()> {
+        if table_idx >= self.index_states.len() {
+            return Ok(());
+        }
+        for (index_idx, index) in self.tables[table_idx].indexes.iter().enumerate() {
+            let Some(column_idx) = self.tables[table_idx].find_column(&index.column) else {
+                return Err(DbError::ColumnNotFound(index.column.clone()));
+            };
+            let key = encode_index_key(values.get(column_idx).unwrap_or(&Value::Null));
+            let bucket = self.index_states[table_idx].maps[index_idx]
+                .entry(key)
+                .or_insert_with(Vec::new);
+            if index.unique && !bucket.is_empty() {
+                return Err(DbError::TypeMismatch(String::from("Unique index violation")));
+            }
+            bucket.push(location);
+        }
+        Ok(())
+    }
+
+    fn check_unique_constraints(&self, table_idx: usize, values: &[Value]) -> DbResult<()> {
+        if table_idx >= self.index_states.len() {
+            return Ok(());
+        }
+        for (index_idx, index) in self.tables[table_idx].indexes.iter().enumerate() {
+            if !index.unique {
+                continue;
+            }
+            let Some(column_idx) = self.tables[table_idx].find_column(&index.column) else {
+                return Err(DbError::ColumnNotFound(index.column.clone()));
+            };
+            let key = encode_index_key(values.get(column_idx).unwrap_or(&Value::Null));
+            if self.index_states[table_idx].maps[index_idx]
+                .get(&key)
+                .map(|bucket| !bucket.is_empty())
+                .unwrap_or(false)
+            {
+                return Err(DbError::TypeMismatch(String::from("Unique index violation")));
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_row_from_indexes(
+        &mut self,
+        table_idx: usize,
+        location: RowLocation,
+        values: &[Value],
+    ) -> DbResult<()> {
+        if table_idx >= self.index_states.len() {
+            return Ok(());
+        }
+        for (index_idx, index) in self.tables[table_idx].indexes.iter().enumerate() {
+            let Some(column_idx) = self.tables[table_idx].find_column(&index.column) else {
+                return Err(DbError::ColumnNotFound(index.column.clone()));
+            };
+            let key = encode_index_key(values.get(column_idx).unwrap_or(&Value::Null));
+            let mut remove_bucket = false;
+            if let Some(bucket) = self.index_states[table_idx].maps[index_idx].get_mut(&key) {
+                if let Some(pos) = bucket.iter().position(|entry| *entry == location) {
+                    bucket.remove(pos);
+                }
+                if bucket.is_empty() {
+                    remove_bucket = true;
+                }
+            }
+            if remove_bucket {
+                self.index_states[table_idx].maps[index_idx].remove(&key);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn find_rows_by_index(
+        &mut self,
+        table_idx: usize,
+        column_idx: usize,
+        value: &Value,
+    ) -> DbResult<Option<Vec<(u32, usize, Row)>>> {
+        if table_idx >= self.index_states.len() {
+            return Ok(None);
+        }
+        let Some(index_idx) = self.tables[table_idx]
+            .indexes
+            .iter()
+            .position(|index| self.tables[table_idx]
+                .find_column(&index.column)
+                .map(|idx| idx == column_idx)
+                .unwrap_or(false)) else {
+            return Ok(None);
+        };
+
+        let key = encode_index_key(value);
+        let Some(locations) = self.index_states[table_idx].maps[index_idx].get(&key).cloned() else {
+            return Ok(Some(Vec::new()));
+        };
+
+        let col_count = self.tables[table_idx].columns.len();
+        let mut rows = Vec::with_capacity(locations.len());
+        for location in locations {
+            let mut page = [0u8; PAGE_SIZE];
+            self.read_page(location.page_num, &mut page)?;
+            if let Some((row, _)) = Self::deserialize_row(&page, location.offset, col_count) {
+                if !row.values.is_empty() {
+                    rows.push((location.page_num, location.offset, row));
+                }
+            }
+        }
+        Ok(Some(rows))
     }
 
     // ── Row serialization ────────────────────────────────────────────────
@@ -735,6 +1153,7 @@ impl Database {
     pub fn insert_row(&mut self, table_idx: usize, values: &[Value]) -> DbResult<()> {
         let row_data = Self::serialize_row(values)?;
         let row_len = row_data.len();
+        self.check_unique_constraints(table_idx, values)?;
 
         let table = &self.tables[table_idx];
         let mut page_num = table.first_data_page;
@@ -749,6 +1168,7 @@ impl Database {
             let data_end = if data_end == 0 { DATA_PAGE_HEADER } else { data_end };
 
             if data_end + row_len <= PAGE_SIZE {
+                let row_offset = data_end;
                 page[data_end..data_end + row_len].copy_from_slice(&row_data);
                 let new_end = (data_end + row_len) as u16;
                 page[6..8].copy_from_slice(&new_end.to_le_bytes());
@@ -757,6 +1177,14 @@ impl Database {
                 self.write_page(page_num, &page)?;
 
                 self.tables[table_idx].row_count += 1;
+                self.add_row_to_indexes(
+                    table_idx,
+                    RowLocation {
+                        page_num,
+                        offset: row_offset,
+                    },
+                    values,
+                )?;
                 self.flush_page0()?;
                 return Ok(());
             }
@@ -784,6 +1212,14 @@ impl Database {
         }
 
         self.tables[table_idx].row_count += 1;
+        self.add_row_to_indexes(
+            table_idx,
+            RowLocation {
+                page_num: new_page_num,
+                offset: DATA_PAGE_HEADER,
+            },
+            values,
+        )?;
         self.flush_page0()
     }
 
@@ -793,6 +1229,9 @@ impl Database {
     pub fn delete_row(&mut self, table_idx: usize, page_num: u32, offset: usize) -> DbResult<()> {
         let mut page = [0u8; PAGE_SIZE];
         self.read_page(page_num, &mut page)?;
+        let col_count = self.tables[table_idx].columns.len();
+        let existing_row = Self::deserialize_row(&page, offset, col_count)
+            .and_then(|(row, _)| if row.values.is_empty() { None } else { Some(row) });
 
         page[offset] = ROW_DELETED;
 
@@ -802,6 +1241,13 @@ impl Database {
         }
 
         self.write_page(page_num, &page)?;
+        if let Some(row) = existing_row {
+            self.remove_row_from_indexes(
+                table_idx,
+                RowLocation { page_num, offset },
+                &row.values,
+            )?;
+        }
 
         if self.tables[table_idx].row_count > 0 {
             self.tables[table_idx].row_count -= 1;

@@ -21,6 +21,8 @@ mod types;
 mod parser;
 mod schema;
 mod engine;
+mod index;
+mod optimizer;
 mod executor;
 pub mod syscall;
 

@@ -17,11 +17,18 @@ use crate::types::*;
 enum Token {
     // Keywords
     Create,
+    Unique,
+    Index,
+    On,
     Table,
     Drop,
     Alter,
     Add,
     Column,
+    Begin,
+    Commit,
+    Rollback,
+    Transaction,
     Insert,
     Into,
     Values,
@@ -247,11 +254,18 @@ impl<'a> Tokenizer<'a> {
 
         let tok = match upper_str {
             "CREATE" => Token::Create,
+            "UNIQUE" => Token::Unique,
+            "INDEX" => Token::Index,
+            "ON" => Token::On,
             "TABLE" => Token::Table,
             "DROP" => Token::Drop,
             "ALTER" => Token::Alter,
             "ADD" => Token::Add,
             "COLUMN" => Token::Column,
+            "BEGIN" => Token::Begin,
+            "COMMIT" => Token::Commit,
+            "ROLLBACK" => Token::Rollback,
+            "TRANSACTION" => Token::Transaction,
             "INSERT" => Token::Insert,
             "INTO" => Token::Into,
             "VALUES" => Token::Values,
@@ -348,9 +362,12 @@ impl Parser {
     /// Parse the top-level statement.
     fn parse_statement(&mut self) -> DbResult<Statement> {
         match self.peek().clone() {
-            Token::Create => self.parse_create_table(),
+            Token::Create => self.parse_create(),
             Token::Drop => self.parse_drop_table(),
             Token::Alter => self.parse_alter_table(),
+            Token::Begin => self.parse_begin(),
+            Token::Commit => self.parse_commit(),
+            Token::Rollback => self.parse_rollback(),
             Token::Insert => self.parse_insert(),
             Token::Select => self.parse_select(),
             Token::Update => self.parse_update(),
@@ -363,10 +380,28 @@ impl Parser {
         }
     }
 
-    // ── CREATE TABLE name (col1 TYPE, col2 TYPE, ...) ───────────────────
+    // ── CREATE TABLE / INDEX ─────────────────────────────────────────────
+
+    fn parse_create(&mut self) -> DbResult<Statement> {
+        self.advance(); // CREATE
+        let unique = if self.peek() == &Token::Unique {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        match self.peek() {
+            Token::Table => self.parse_create_table(),
+            Token::Index => self.parse_create_index(unique),
+            other => {
+                let mut msg = String::from("Expected TABLE or INDEX after CREATE, got ");
+                msg.push_str(&format_token(other));
+                Err(DbError::Parse(msg))
+            }
+        }
+    }
 
     fn parse_create_table(&mut self) -> DbResult<Statement> {
-        self.advance(); // CREATE
         self.expect(&Token::Table)?;
         let name = self.expect_ident()?;
         self.expect(&Token::LParen)?;
@@ -403,6 +438,23 @@ impl Parser {
         Ok(Statement::CreateTable { name, columns })
     }
 
+    fn parse_create_index(&mut self, unique: bool) -> DbResult<Statement> {
+        self.expect(&Token::Index)?;
+        let name = self.expect_ident()?;
+        self.expect(&Token::On)?;
+        let table = self.expect_ident()?;
+        self.expect(&Token::LParen)?;
+        let column = self.expect_ident()?;
+        self.expect(&Token::RParen)?;
+        if self.peek() == &Token::Semi { self.advance(); }
+        Ok(Statement::CreateIndex {
+            name,
+            table,
+            column,
+            unique,
+        })
+    }
+
     // ── DROP TABLE name ─────────────────────────────────────────────────
 
     fn parse_drop_table(&mut self) -> DbResult<Statement> {
@@ -437,6 +489,33 @@ impl Parser {
             table,
             column: ColumnDef { name, col_type },
         })
+    }
+
+    fn parse_begin(&mut self) -> DbResult<Statement> {
+        self.advance();
+        if self.peek() == &Token::Transaction {
+            self.advance();
+        }
+        if self.peek() == &Token::Semi { self.advance(); }
+        Ok(Statement::BeginTransaction)
+    }
+
+    fn parse_commit(&mut self) -> DbResult<Statement> {
+        self.advance();
+        if self.peek() == &Token::Transaction {
+            self.advance();
+        }
+        if self.peek() == &Token::Semi { self.advance(); }
+        Ok(Statement::CommitTransaction)
+    }
+
+    fn parse_rollback(&mut self) -> DbResult<Statement> {
+        self.advance();
+        if self.peek() == &Token::Transaction {
+            self.advance();
+        }
+        if self.peek() == &Token::Semi { self.advance(); }
+        Ok(Statement::RollbackTransaction)
     }
 
     // ── INSERT INTO name (cols) VALUES (vals) ───────────────────────────
@@ -797,11 +876,18 @@ impl Parser {
 fn format_token(tok: &Token) -> String {
     match tok {
         Token::Create => String::from("CREATE"),
+        Token::Unique => String::from("UNIQUE"),
+        Token::Index => String::from("INDEX"),
+        Token::On => String::from("ON"),
         Token::Table => String::from("TABLE"),
         Token::Drop => String::from("DROP"),
         Token::Alter => String::from("ALTER"),
         Token::Add => String::from("ADD"),
         Token::Column => String::from("COLUMN"),
+        Token::Begin => String::from("BEGIN"),
+        Token::Commit => String::from("COMMIT"),
+        Token::Rollback => String::from("ROLLBACK"),
+        Token::Transaction => String::from("TRANSACTION"),
         Token::Insert => String::from("INSERT"),
         Token::Into => String::from("INTO"),
         Token::Values => String::from("VALUES"),

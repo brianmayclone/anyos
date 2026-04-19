@@ -56,6 +56,11 @@ impl Database {
         if h == 0 { None } else { Some(Database { handle: h }) }
     }
 
+    /// Open an ephemeral in-memory database with no backing file.
+    pub fn open_in_memory() -> Option<Database> {
+        Self::open(":memory:")
+    }
+
     /// Execute a non-query SQL statement (CREATE, DROP, INSERT, UPDATE, DELETE).
     /// Returns the number of rows affected, or an error message.
     pub fn exec(&self, sql: &str) -> Result<u32, String> {

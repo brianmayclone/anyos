@@ -105,6 +105,14 @@ pub struct ColumnDef {
     pub col_type: ColumnType,
 }
 
+/// A single-column index definition.
+#[derive(Debug, Clone)]
+pub struct IndexDef {
+    pub name: String,
+    pub column: String,
+    pub unique: bool,
+}
+
 // ── Value ────────────────────────────────────────────────────────────────────
 
 /// A database value (cell contents).
@@ -143,6 +151,7 @@ pub struct Row {
 pub struct TableSchema {
     pub name: String,
     pub columns: Vec<ColumnDef>,
+    pub indexes: Vec<IndexDef>,
     pub row_count: u32,
     pub first_data_page: u32,
     pub schema_page: u32,
@@ -179,6 +188,8 @@ pub enum DbError {
     TableNotFound(String),
     /// Table already exists.
     TableExists(String),
+    /// Index already exists.
+    IndexExists(String),
     /// Column not found.
     ColumnNotFound(String),
     /// Type mismatch (e.g. inserting text into integer column).
@@ -217,6 +228,11 @@ impl DbError {
                 m.push_str(s);
                 m
             }
+            DbError::IndexExists(s) => {
+                let mut m = String::from("Index already exists: ");
+                m.push_str(s);
+                m
+            }
             DbError::ColumnNotFound(s) => {
                 let mut m = String::from("Column not found: ");
                 m.push_str(s);
@@ -251,6 +267,12 @@ pub enum Statement {
         name: String,
         columns: Vec<ColumnDef>,
     },
+    CreateIndex {
+        name: String,
+        table: String,
+        column: String,
+        unique: bool,
+    },
     DropTable {
         name: String,
     },
@@ -258,6 +280,9 @@ pub enum Statement {
         table: String,
         column: ColumnDef,
     },
+    BeginTransaction,
+    CommitTransaction,
+    RollbackTransaction,
     Insert {
         table: String,
         columns: Vec<String>,

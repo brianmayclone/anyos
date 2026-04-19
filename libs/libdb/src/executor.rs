@@ -9,6 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use crate::types::*;
 use crate::engine::Database;
+use crate::optimizer;
 use crate::schema;
 
 /// Execute a non-query statement (CREATE, DROP, INSERT, UPDATE, DELETE).
@@ -19,12 +20,28 @@ pub fn exec(db: &mut Database, stmt: Statement) -> DbResult<u32> {
             db.create_table(&name, &columns)?;
             Ok(0)
         }
+        Statement::CreateIndex { name, table, column, unique } => {
+            db.create_index(&table, &name, &column, unique)?;
+            Ok(0)
+        }
         Statement::DropTable { name } => {
             db.drop_table(&name)?;
             Ok(0)
         }
         Statement::AlterTableAddColumn { table, column } => {
             db.add_column(&table, column)?;
+            Ok(0)
+        }
+        Statement::BeginTransaction => {
+            db.begin_transaction()?;
+            Ok(0)
+        }
+        Statement::CommitTransaction => {
+            db.commit_transaction()?;
+            Ok(0)
+        }
+        Statement::RollbackTransaction => {
+            db.rollback_transaction()?;
             Ok(0)
         }
         Statement::Insert { table, columns, values } => {
@@ -145,8 +162,8 @@ fn exec_select(
         }
     };
 
-    // Scan and filter rows
-    let all_rows = db.scan_table(table_idx)?;
+    // Scan and filter rows, using an index for simple equality predicates when possible.
+    let all_rows = load_candidate_rows(db, table_idx, where_clause)?;
     let mut result_rows = Vec::new();
 
     for (_page, _offset, row) in &all_rows {
@@ -231,7 +248,7 @@ fn cmp_values(a: &Value, b: &Value) -> core::cmp::Ordering {
         (Value::Integer(x), Value::Integer(y)) => x.cmp(y),
         (Value::Text(x), Value::Text(y)) => x.cmp(y),
         (Value::Blob(x), Value::Blob(y)) => x.cmp(y),
-        (Value::Integer(x), Value::Text(_)) => {
+        (Value::Integer(_), Value::Text(_)) => {
             // Integer before text
             core::cmp::Ordering::Less
         }
@@ -239,6 +256,27 @@ fn cmp_values(a: &Value, b: &Value) -> core::cmp::Ordering {
         (Value::Blob(_), Value::Integer(_) | Value::Text(_)) => core::cmp::Ordering::Greater,
         (Value::Integer(_) | Value::Text(_), Value::Blob(_)) => core::cmp::Ordering::Less,
     }
+}
+
+fn load_candidate_rows(
+    db: &mut Database,
+    table_idx: usize,
+    where_clause: Option<&Expr>,
+) -> DbResult<Vec<(u32, usize, Row)>> {
+    let Some(expr) = where_clause else {
+        return db.scan_table(table_idx);
+    };
+
+    for (column_name, lookup_value) in optimizer::collect_equality_lookups(expr) {
+        let Some(column_idx) = db.tables[table_idx].find_column(column_name) else {
+            continue;
+        };
+        if let Some(rows) = db.find_rows_by_index(table_idx, column_idx, lookup_value)? {
+            return Ok(rows);
+        }
+    }
+
+    db.scan_table(table_idx)
 }
 
 // ── UPDATE ───────────────────────────────────────────────────────────────────
@@ -263,8 +301,7 @@ fn exec_update(
         assign_indices.push((idx, val.clone()));
     }
 
-    // Scan for matching rows
-    let all_rows = db.scan_table(table_idx)?;
+    let all_rows = load_candidate_rows(db, table_idx, where_clause)?;
     let mut to_update: Vec<(u32, usize, Vec<Value>)> = Vec::new();
 
     for (page, offset, row) in &all_rows {
@@ -303,8 +340,7 @@ fn exec_delete(
 
     let schema_cols = db.tables[table_idx].columns.clone();
 
-    // Scan for matching rows
-    let all_rows = db.scan_table(table_idx)?;
+    let all_rows = load_candidate_rows(db, table_idx, where_clause)?;
     let mut to_delete: Vec<(u32, usize)> = Vec::new();
 
     for (page, offset, row) in &all_rows {
