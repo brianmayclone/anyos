@@ -280,6 +280,19 @@ pub enum Statement {
         table: String,
         column: ColumnDef,
     },
+    AlterTableRenameTo {
+        old_name: String,
+        new_name: String,
+    },
+    AlterTableRenameColumn {
+        table: String,
+        old_name: String,
+        new_name: String,
+    },
+    AlterTableDropColumn {
+        table: String,
+        column_name: String,
+    },
     BeginTransaction,
     CommitTransaction,
     RollbackTransaction,

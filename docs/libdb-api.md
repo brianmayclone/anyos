@@ -366,6 +366,25 @@ Free a result set and release its memory. Must be called when the result is no l
 
 The SQL parser is case-insensitive for keywords and identifier lookups. Line comments (`-- ...`) are supported. Statements may optionally end with a semicolon.
 
+### ALTER TABLE
+
+```sql
+ALTER TABLE name ADD COLUMN col TYPE
+ALTER TABLE name ADD col TYPE
+ALTER TABLE name RENAME TO new_name
+ALTER TABLE name RENAME COLUMN old_name TO new_name
+ALTER TABLE name DROP COLUMN col
+ALTER TABLE name DROP col
+```
+
+Supported operations:
+- `ADD COLUMN` / `ADD` appends a new nullable column to the schema
+- `RENAME TO` renames the table
+- `RENAME COLUMN` renames a column and updates index metadata referencing it
+- `DROP COLUMN` rewrites existing rows without that column and removes indexes on the dropped column
+
+**Errors:** Table not found, column not found, target name already exists, dropping the last column, type/name constraint violations.
+
 ### CREATE TABLE
 
 ```sql

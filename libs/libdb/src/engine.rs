@@ -817,6 +817,95 @@ impl Database {
         self.flush_page0()
     }
 
+    pub fn rename_table(&mut self, old_name: &str, new_name: &str) -> DbResult<()> {
+        let table_idx = schema::find_table(&self.tables, old_name)
+            .ok_or_else(|| DbError::TableNotFound(String::from(old_name)))?;
+        if new_name.len() > MAX_TABLE_NAME {
+            return Err(DbError::Parse(String::from("Table name too long")));
+        }
+        if self.tables.iter().enumerate().any(|(idx, table)| {
+            idx != table_idx && table.name.eq_ignore_ascii_case(new_name)
+        }) {
+            return Err(DbError::TableExists(String::from(new_name)));
+        }
+        self.tables[table_idx].name = String::from(new_name);
+        self.flush_page0()
+    }
+
+    pub fn rename_column(&mut self, table_name: &str, old_name: &str, new_name: &str) -> DbResult<()> {
+        let table_idx = schema::find_table(&self.tables, table_name)
+            .ok_or_else(|| DbError::TableNotFound(String::from(table_name)))?;
+        if new_name.len() > MAX_COL_NAME {
+            return Err(DbError::Parse(String::from("Column name too long")));
+        }
+        let column_idx = self.tables[table_idx]
+            .find_column(old_name)
+            .ok_or_else(|| DbError::ColumnNotFound(String::from(old_name)))?;
+        if self.tables[table_idx].columns.iter().enumerate().any(|(idx, col)| {
+            idx != column_idx && col.name.eq_ignore_ascii_case(new_name)
+        }) {
+            return Err(DbError::TableExists(String::from("Column already exists")));
+        }
+
+        self.tables[table_idx].columns[column_idx].name = String::from(new_name);
+        for index in &mut self.tables[table_idx].indexes {
+            if index.column.eq_ignore_ascii_case(old_name) {
+                index.column = String::from(new_name);
+            }
+        }
+        self.flush_page0()
+    }
+
+    pub fn drop_column(&mut self, table_name: &str, column_name: &str) -> DbResult<()> {
+        let table_idx = schema::find_table(&self.tables, table_name)
+            .ok_or_else(|| DbError::TableNotFound(String::from(table_name)))?;
+        let column_idx = self.tables[table_idx]
+            .find_column(column_name)
+            .ok_or_else(|| DbError::ColumnNotFound(String::from(column_name)))?;
+        if self.tables[table_idx].columns.len() <= 1 {
+            return Err(DbError::Parse(String::from("Cannot drop the last column")));
+        }
+
+        let rows = self.scan_table(table_idx)?;
+        let mut rewritten_rows = Vec::with_capacity(rows.len());
+        for (_page_num, _offset, row) in rows {
+            let mut values = row.values;
+            if column_idx < values.len() {
+                values.remove(column_idx);
+            }
+            rewritten_rows.push(values);
+        }
+
+        let old_first_data_page = self.tables[table_idx].first_data_page;
+        if old_first_data_page != 0 {
+            self.free_page_chain(old_first_data_page)?;
+        }
+
+        self.tables[table_idx].columns.remove(column_idx);
+        self.tables[table_idx]
+            .indexes
+            .retain(|index| !index.column.eq_ignore_ascii_case(column_name));
+        self.tables[table_idx].first_data_page = 0;
+        self.tables[table_idx].row_count = 0;
+
+        if table_idx >= self.index_states.len() {
+            self.index_states
+                .resize_with(self.tables.len(), || TableIndexState { maps: Vec::new() });
+        }
+        self.index_states[table_idx] = TableIndexState {
+            maps: Vec::with_capacity(self.tables[table_idx].indexes.len()),
+        };
+        for _ in 0..self.tables[table_idx].indexes.len() {
+            self.index_states[table_idx].maps.push(Default::default());
+        }
+
+        self.flush_page0()?;
+        for values in &rewritten_rows {
+            self.insert_row(table_idx, values)?;
+        }
+        Ok(())
+    }
+
     pub fn create_index(
         &mut self,
         table_name: &str,

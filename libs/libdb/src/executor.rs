@@ -32,6 +32,18 @@ pub fn exec(db: &mut Database, stmt: Statement) -> DbResult<u32> {
             db.add_column(&table, column)?;
             Ok(0)
         }
+        Statement::AlterTableRenameTo { old_name, new_name } => {
+            db.rename_table(&old_name, &new_name)?;
+            Ok(0)
+        }
+        Statement::AlterTableRenameColumn { table, old_name, new_name } => {
+            db.rename_column(&table, &old_name, &new_name)?;
+            Ok(0)
+        }
+        Statement::AlterTableDropColumn { table, column_name } => {
+            db.drop_column(&table, &column_name)?;
+            Ok(0)
+        }
         Statement::BeginTransaction => {
             db.begin_transaction()?;
             Ok(0)

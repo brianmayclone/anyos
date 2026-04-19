@@ -25,6 +25,8 @@ enum Token {
     Alter,
     Add,
     Column,
+    Rename,
+    To,
     Begin,
     Commit,
     Rollback,
@@ -262,6 +264,8 @@ impl<'a> Tokenizer<'a> {
             "ALTER" => Token::Alter,
             "ADD" => Token::Add,
             "COLUMN" => Token::Column,
+            "RENAME" => Token::Rename,
+            "TO" => Token::To,
             "BEGIN" => Token::Begin,
             "COMMIT" => Token::Commit,
             "ROLLBACK" => Token::Rollback,
@@ -469,26 +473,68 @@ impl Parser {
         self.advance(); // ALTER
         self.expect(&Token::Table)?;
         let table = self.expect_ident()?;
-        self.expect(&Token::Add)?;
-        if self.peek() == &Token::Column {
-            self.advance();
-        }
-        let name = self.expect_ident()?;
-        let col_type = match self.advance() {
-            Token::Integer => ColumnType::Integer,
-            Token::Text => ColumnType::Text,
-            Token::Blob => ColumnType::Blob,
-            other => {
-                let mut msg = String::from("Expected column type (INTEGER, TEXT or BLOB), got ");
-                msg.push_str(&format_token(&other));
-                return Err(DbError::Parse(msg));
+
+        match self.peek() {
+            Token::Add => {
+                self.advance();
+                if self.peek() == &Token::Column {
+                    self.advance();
+                }
+                let name = self.expect_ident()?;
+                let col_type = match self.advance() {
+                    Token::Integer => ColumnType::Integer,
+                    Token::Text => ColumnType::Text,
+                    Token::Blob => ColumnType::Blob,
+                    other => {
+                        let mut msg = String::from("Expected column type (INTEGER, TEXT or BLOB), got ");
+                        msg.push_str(&format_token(&other));
+                        return Err(DbError::Parse(msg));
+                    }
+                };
+                if self.peek() == &Token::Semi { self.advance(); }
+                Ok(Statement::AlterTableAddColumn {
+                    table,
+                    column: ColumnDef { name, col_type },
+                })
             }
-        };
-        if self.peek() == &Token::Semi { self.advance(); }
-        Ok(Statement::AlterTableAddColumn {
-            table,
-            column: ColumnDef { name, col_type },
-        })
+            Token::Rename => {
+                self.advance();
+                if self.peek() == &Token::Column {
+                    self.advance();
+                    let old_name = self.expect_ident()?;
+                    self.expect(&Token::To)?;
+                    let new_name = self.expect_ident()?;
+                    if self.peek() == &Token::Semi { self.advance(); }
+                    Ok(Statement::AlterTableRenameColumn {
+                        table,
+                        old_name,
+                        new_name,
+                    })
+                } else {
+                    self.expect(&Token::To)?;
+                    let new_name = self.expect_ident()?;
+                    if self.peek() == &Token::Semi { self.advance(); }
+                    Ok(Statement::AlterTableRenameTo {
+                        old_name: table,
+                        new_name,
+                    })
+                }
+            }
+            Token::Drop => {
+                self.advance();
+                if self.peek() == &Token::Column {
+                    self.advance();
+                }
+                let column_name = self.expect_ident()?;
+                if self.peek() == &Token::Semi { self.advance(); }
+                Ok(Statement::AlterTableDropColumn { table, column_name })
+            }
+            other => {
+                let mut msg = String::from("Expected ADD, DROP or RENAME in ALTER TABLE, got ");
+                msg.push_str(&format_token(other));
+                Err(DbError::Parse(msg))
+            }
+        }
     }
 
     fn parse_begin(&mut self) -> DbResult<Statement> {
@@ -884,6 +930,8 @@ fn format_token(tok: &Token) -> String {
         Token::Alter => String::from("ALTER"),
         Token::Add => String::from("ADD"),
         Token::Column => String::from("COLUMN"),
+        Token::Rename => String::from("RENAME"),
+        Token::To => String::from("TO"),
         Token::Begin => String::from("BEGIN"),
         Token::Commit => String::from("COMMIT"),
         Token::Rollback => String::from("ROLLBACK"),
