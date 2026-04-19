@@ -169,6 +169,8 @@ struct Inner {
     total_blocks: u64,
     /// Mount-seitige Inode-Indizes für O(log n)-Lookup und O(children)-Readdir.
     indexes: InodeIndexes,
+    /// Metadaten oder BlockRecord-Sicht haben sich seit dem letzten Flush geändert.
+    dirty: bool,
 }
 
 impl Inner {
@@ -179,6 +181,7 @@ impl Inner {
         next_id: u64,
         read_only: bool,
         total_blocks: u64,
+        dirty: bool,
     ) -> Self {
         let indexes = InodeIndexes::rebuild(&state);
         Self {
@@ -189,6 +192,7 @@ impl Inner {
             read_only,
             total_blocks,
             indexes,
+            dirty,
         }
     }
 
@@ -280,6 +284,7 @@ impl CoreFsDriver {
                 next_id,
                 true,
                 total_blocks,
+                false,
             )),
         })
     }
@@ -292,6 +297,7 @@ impl CoreFsDriver {
     /// Tests nutzen dazu [`empty_persisted_state`] + `save_state_native`.
     pub fn mount_writable(device: BlockDeviceAdapter) -> Result<Self, FsError> {
         let mut state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        let mut needs_persist = false;
 
         // Unclean-Mount-Recovery: Falls der vorherige Unmount nicht clean
         // war und eine pending WAL vorliegt, spielen wir die strukturellen
@@ -311,6 +317,7 @@ impl CoreFsDriver {
                         report.skipped_data_ops,
                         report.transaction_id
                     );
+                    needs_persist = true;
                 }
                 Err(e) => {
                     crate::serial_println!("[corefs] unclean mount recovery failed: {:?}", e);
@@ -323,6 +330,7 @@ impl CoreFsDriver {
         // Mount anlegen und direkt persistieren, damit auch Read-Only-Mounts
         // derselben Disk danach funktionieren.
         let root_added = ensure_root_directory(&mut state);
+        needs_persist |= root_added;
 
         let next_id = compute_next_id(&state);
         let first_data_block = compute_first_data_block(&state);
@@ -342,9 +350,10 @@ impl CoreFsDriver {
                 next_id,
                 false,
                 total_blocks,
+                needs_persist,
             )),
         };
-        if root_added {
+        if needs_persist {
             this.flush()?;
         }
         Ok(this)
@@ -390,6 +399,9 @@ impl CoreFsDriver {
         if inner.read_only {
             return Ok(());
         }
+        if !inner.dirty {
+            return Ok(());
+        }
 
         // Sync metadata from BlockStore into state, then persist.
         // File bytes are already on the device (written by write_at / write_device).
@@ -397,11 +409,13 @@ impl CoreFsDriver {
             device,
             state,
             blocks,
+            dirty,
             ..
         } = &mut *inner;
         state.block_records = blocks.records();
         state.free_extents = blocks.free_extents();
         save_state_native_incremental(device, state).map_err(|e| corefs_to_fs_error(&e))?;
+        *dirty = false;
         Ok(())
     }
 
@@ -448,6 +462,7 @@ impl CoreFsDriver {
             i.size = target as usize;
             i.touch_modified_at(Timestamp::EPOCH);
         }
+        inner.dirty = true;
         Ok(())
     }
 
@@ -560,6 +575,7 @@ impl CoreFsDriver {
             }
         }
         inner.rebuild_indexes();
+        inner.dirty = true;
         Ok(())
     }
 
@@ -574,6 +590,7 @@ impl CoreFsDriver {
         let i = inner.inode_mut_by_id(id).ok_or(FsError::NotFound)?;
         i.metadata.mode = mode;
         i.touch_changed_at(Timestamp::EPOCH);
+        inner.dirty = true;
         Ok(())
     }
 
@@ -589,6 +606,7 @@ impl CoreFsDriver {
         i.metadata.uid = uid;
         i.metadata.gid = gid;
         i.touch_changed_at(Timestamp::EPOCH);
+        inner.dirty = true;
         Ok(())
     }
 
@@ -629,6 +647,7 @@ impl CoreFsDriver {
             .map_err(|_| FsError::IoError)?;
         inner.state.active_inodes.push(inode);
         inner.register_last_inode(Some(parent_id));
+        inner.dirty = true;
         Ok(CoreFsDriver::inode_u32_from_id(id))
     }
 }
@@ -781,6 +800,7 @@ impl Filesystem for CoreFsDriver {
             i.touch_modified_at(Timestamp::EPOCH);
         }
 
+        inner.dirty = true;
         Ok(buf.len())
     }
 
@@ -875,6 +895,7 @@ impl Filesystem for CoreFsDriver {
         let inode = Inode::new_at(id, kind, new_path, md, Timestamp::EPOCH);
         inner.state.active_inodes.push(inode);
         inner.register_last_inode(Some(parent_id));
+        inner.dirty = true;
         Ok(CoreFsDriver::inode_u32_from_id(id))
     }
 
@@ -909,6 +930,7 @@ impl Filesystem for CoreFsDriver {
         let Inner { blocks, device, .. } = &mut *inner;
         blocks.remove_inode(device, rid);
         inner.rebuild_indexes();
+        inner.dirty = true;
         Ok(())
     }
 
