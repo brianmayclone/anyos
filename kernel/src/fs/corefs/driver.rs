@@ -8,7 +8,7 @@
 //! (`read`, `lookup`, `readdir`) laufen direkt gegen den in-memory
 //! `PersistedState`; schreibende Operationen mutieren ihn, und [`flush`]
 //! schreibt bekannte Dirty-Inodes gezielt via
-//! [`corefs_core::storage::ondisk::native::save_state_native_incremental_dirty`]
+//! [`corefs_core::storage::ondisk::native::save_state_native_incremental_dirty_with_slots`]
 //! zurück.
 //!
 //! ## Schreibpfad — Scope
@@ -49,7 +49,8 @@ use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
 #[cfg(test)]
 use corefs_core::storage::ondisk::native::save_state_native;
 use corefs_core::storage::ondisk::native::{
-    load_state_native, save_state_native_incremental, save_state_native_incremental_dirty,
+    load_native_inode_slot_index, load_state_native, save_state_native_incremental,
+    save_state_native_incremental_dirty_with_slots, InodeSlotMapping,
 };
 use corefs_core::storage::persisted_state::PersistedState;
 
@@ -81,6 +82,19 @@ fn kind_to_file_type(k: InodeKind) -> FileType {
         InodeKind::Directory => FileType::Directory,
         InodeKind::Symlink => FileType::Regular,
     }
+}
+
+fn slot_map_from_mappings(mappings: Vec<InodeSlotMapping>) -> BTreeMap<u64, u64> {
+    let mut slots = BTreeMap::new();
+    for mapping in mappings {
+        slots.insert(mapping.inode.0, mapping.slot);
+    }
+    slots
+}
+
+fn load_inode_slot_map(device: &BlockDeviceAdapter) -> Result<BTreeMap<u64, u64>, FsError> {
+    let mappings = load_native_inode_slot_index(device).map_err(|e| corefs_to_fs_error(&e))?;
+    Ok(slot_map_from_mappings(mappings))
 }
 
 /// Konstruiert einen frischen, leeren `PersistedState` — passend zum
@@ -171,6 +185,8 @@ struct Inner {
     total_blocks: u64,
     /// Mount-seitige Inode-Indizes für O(log n)-Lookup und O(children)-Readdir.
     indexes: InodeIndexes,
+    /// Mount-seitiger Cache: domain `InodeId` -> nativer Inode-Table-Slot.
+    inode_slots: BTreeMap<u64, u64>,
     /// Metadaten oder BlockRecord-Sicht haben sich seit dem letzten Flush geändert.
     dirty: bool,
     /// Domain-Inodes, deren Slot gezielt aktualisiert werden kann.
@@ -187,6 +203,7 @@ impl Inner {
         next_id: u64,
         read_only: bool,
         total_blocks: u64,
+        inode_slots: BTreeMap<u64, u64>,
         dirty: bool,
     ) -> Self {
         let indexes = InodeIndexes::rebuild(&state);
@@ -198,6 +215,7 @@ impl Inner {
             read_only,
             total_blocks,
             indexes,
+            inode_slots,
             dirty,
             dirty_inodes: BTreeSet::new(),
             removed_inodes: BTreeSet::new(),
@@ -211,6 +229,30 @@ impl Inner {
     fn mark_dirty(&mut self, id: InodeId) {
         self.dirty = true;
         self.dirty_inodes.insert(id.0);
+    }
+
+    fn slot_hints_for_pending_flush(&self) -> Vec<InodeSlotMapping> {
+        let mut hints = Vec::new();
+        for id in &self.dirty_inodes {
+            if let Some(slot) = self.inode_slots.get(id).copied() {
+                hints.push(InodeSlotMapping {
+                    inode: InodeId(*id),
+                    slot,
+                });
+            }
+        }
+        for id in &self.removed_inodes {
+            if self.dirty_inodes.contains(id) {
+                continue;
+            }
+            if let Some(slot) = self.inode_slots.get(id).copied() {
+                hints.push(InodeSlotMapping {
+                    inode: InodeId(*id),
+                    slot,
+                });
+            }
+        }
+        hints
     }
 
     #[cfg(test)]
@@ -276,6 +318,7 @@ impl CoreFsDriver {
     /// zurück; `flush` ist ein No-op.
     pub fn mount_read_only(device: BlockDeviceAdapter) -> Result<Self, FsError> {
         let mut state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        let inode_slots = load_inode_slot_map(&device)?;
         // Frisch formatierte Volumes haben keinen Root-Inode. In-Memory
         // synthesieren, damit lookup("/") / readdir funktionieren.
         ensure_root_directory(&mut state);
@@ -297,6 +340,7 @@ impl CoreFsDriver {
                 next_id,
                 true,
                 total_blocks,
+                inode_slots,
                 false,
             )),
         })
@@ -310,6 +354,7 @@ impl CoreFsDriver {
     /// Tests nutzen dazu [`empty_persisted_state`] + `save_state_native`.
     pub fn mount_writable(device: BlockDeviceAdapter) -> Result<Self, FsError> {
         let mut state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        let inode_slots = load_inode_slot_map(&device)?;
         let mut needs_persist = false;
 
         // Unclean-Mount-Recovery: Falls der vorherige Unmount nicht clean
@@ -363,9 +408,14 @@ impl CoreFsDriver {
                 next_id,
                 false,
                 total_blocks,
+                inode_slots,
                 needs_persist,
             )),
         };
+        if root_added {
+            let mut inner = this.inner.lock();
+            inner.mark_dirty(InodeId(1));
+        }
         if needs_persist {
             this.flush()?;
         }
@@ -418,28 +468,48 @@ impl CoreFsDriver {
 
         // Sync metadata from BlockStore into state, then persist.
         // File bytes are already on the device (written by write_at / write_device).
-        let Inner {
-            device,
-            state,
-            blocks,
-            dirty,
-            dirty_inodes,
-            removed_inodes,
-            ..
-        } = &mut *inner;
-        state.block_records = blocks.records();
-        state.free_extents = blocks.free_extents();
-        if dirty_inodes.is_empty() && removed_inodes.is_empty() {
-            save_state_native_incremental(device, state).map_err(|e| corefs_to_fs_error(&e))?;
-        } else {
-            let touched: Vec<InodeId> = dirty_inodes.iter().copied().map(InodeId).collect();
-            let removed: Vec<InodeId> = removed_inodes.iter().copied().map(InodeId).collect();
-            save_state_native_incremental_dirty(device, state, &touched, &removed)
-                .map_err(|e| corefs_to_fs_error(&e))?;
-            dirty_inodes.clear();
-            removed_inodes.clear();
+        {
+            let Inner { state, blocks, .. } = &mut *inner;
+            state.block_records = blocks.records();
+            state.free_extents = blocks.free_extents();
         }
-        *dirty = false;
+
+        if inner.dirty_inodes.is_empty() && inner.removed_inodes.is_empty() {
+            let refreshed_slots = {
+                let Inner { device, state, .. } = &mut *inner;
+                save_state_native_incremental(device, state).map_err(|e| corefs_to_fs_error(&e))?;
+                load_native_inode_slot_index(device).map_err(|e| corefs_to_fs_error(&e))?
+            };
+            inner.inode_slots = slot_map_from_mappings(refreshed_slots);
+        } else {
+            let touched: Vec<InodeId> = inner.dirty_inodes.iter().copied().map(InodeId).collect();
+            let removed: Vec<InodeId> = inner.removed_inodes.iter().copied().map(InodeId).collect();
+            let slot_hints = inner.slot_hints_for_pending_flush();
+            let report = {
+                let Inner { device, state, .. } = &mut *inner;
+                save_state_native_incremental_dirty_with_slots(
+                    device,
+                    state,
+                    &touched,
+                    &removed,
+                    &slot_hints,
+                )
+                .map_err(|e| corefs_to_fs_error(&e))?
+            };
+            if report.incremental.fell_back_to_full_save {
+                inner.inode_slots = slot_map_from_mappings(report.assigned_slots);
+            } else {
+                for mapping in report.assigned_slots {
+                    inner.inode_slots.insert(mapping.inode.0, mapping.slot);
+                }
+                for mapping in report.removed_slots {
+                    inner.inode_slots.remove(&mapping.inode.0);
+                }
+            }
+            inner.dirty_inodes.clear();
+            inner.removed_inodes.clear();
+        }
+        inner.dirty = false;
         Ok(())
     }
 
