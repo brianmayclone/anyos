@@ -17,12 +17,36 @@ fn perm_path(uid: u16, app_id: &str) -> String {
 
 /// Ensure the directory `/System/users/perm/{uid}/` exists, creating
 /// intermediate directories as needed.
+///
+/// Each level is created explicitly and errors are swallowed only for
+/// AlreadyExists — a missing parent (e.g. a read-only / not-yet-mounted
+/// `/System`) is logged so the downstream `write_stored_perms` NotFound
+/// failure has an obvious breadcrumb instead of failing silently.
 fn ensure_perm_dir(uid: u16) {
-    // Create each level; errors are OK (AlreadyExists is expected).
-    let _ = vfs::mkdir("/System/users");
-    let _ = vfs::mkdir("/System/users/perm");
+    for dir in [
+        "/System/users",
+        "/System/users/perm",
+    ] {
+        match vfs::mkdir(dir) {
+            Ok(_) => {}
+            Err(crate::fs::vfs::FsError::AlreadyExists) => {}
+            Err(e) => {
+                crate::serial_println!(
+                    "PERM: ensure_perm_dir: mkdir('{}') failed: {:?}", dir, e
+                );
+            }
+        }
+    }
     let dir = format!("/System/users/perm/{}", uid);
-    let _ = vfs::mkdir(&dir);
+    match vfs::mkdir(&dir) {
+        Ok(_) => {}
+        Err(crate::fs::vfs::FsError::AlreadyExists) => {}
+        Err(e) => {
+            crate::serial_println!(
+                "PERM: ensure_perm_dir: mkdir('{}') failed: {:?}", dir, e
+            );
+        }
+    }
 }
 
 /// Read stored granted capabilities for (uid, app_id).
