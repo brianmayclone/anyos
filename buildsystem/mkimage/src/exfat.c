@@ -9,7 +9,53 @@
 
 #include <dirent.h>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <errno.h>
+#else
 #include <unistd.h>
+#endif
+
+typedef struct HostStat {
+    struct stat st;
+    int         is_symlink;
+} HostStat;
+
+static int host_lstat(const char *path, HostStat *out)
+{
+#ifdef _WIN32
+    /* The Windows CRT used by this build does not provide POSIX lstat/readlink.
+     * Fall back to stat() so regular files/directories still populate images. */
+    if (stat(path, &out->st) != 0)
+        return -1;
+    out->is_symlink = 0;
+    return 0;
+#else
+    if (lstat(path, &out->st) != 0)
+        return -1;
+    out->is_symlink = S_ISLNK(out->st.st_mode) ? 1 : 0;
+    return 0;
+#endif
+}
+
+static int host_stat_is_dir(const HostStat *st)
+{
+    return S_ISDIR(st->st.st_mode) ? 1 : 0;
+}
+
+static int host_stat_is_reg(const HostStat *st)
+{
+    return S_ISREG(st->st.st_mode) ? 1 : 0;
+}
+
+static int host_stat_is_lnk(const HostStat *st)
+{
+    return st->is_symlink;
+}
+
+static time_t host_stat_mtime(const HostStat *st)
+{
+    return st->st.st_mtime;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
  * Internal helpers
@@ -842,6 +888,13 @@ static void exfat_add_symlink(ExFat *fs, uint32_t parent, const char *name,
 
 static int read_host_symlink_target(const char *path, char *buf, size_t buf_size)
 {
+#ifdef _WIN32
+    (void)path;
+    (void)buf;
+    (void)buf_size;
+    errno = ENOSYS;
+    return -1;
+#else
     ssize_t len;
 
     if (buf_size == 0)
@@ -853,6 +906,7 @@ static int read_host_symlink_target(const char *path, char *buf, size_t buf_size
 
     buf[len] = '\0';
     return 0;
+#endif
 }
 
 /* ── Recursive sysroot population ─────────────────────────────────────────── */
@@ -967,7 +1021,7 @@ static void exfat_populate_dir(ExFat *fs, const char *host_path,
         const char *entry_name = names[i];
         char        full_path[4096];
         char        child_virt[4096];
-        struct stat st;
+        HostStat    st;
         uint16_t    uid, gid, mode;
 
         snprintf(full_path,  sizeof(full_path),  "%s/%s", host_path, entry_name);
@@ -978,7 +1032,7 @@ static void exfat_populate_dir(ExFat *fs, const char *host_path,
         else
             snprintf(child_virt, sizeof(child_virt), "%s/%s", virt_path, entry_name);
 
-        if (lstat(full_path, &st) != 0) {
+        if (host_lstat(full_path, &st) != 0) {
             free(names[i]);
             continue;
         }
@@ -990,26 +1044,26 @@ static void exfat_populate_dir(ExFat *fs, const char *host_path,
              : is_exec_all(child_virt)  ? 0xF55
              : 0xFFF;
 
-        if (S_ISDIR(st.st_mode)) {
+        if (host_stat_is_dir(&st)) {
             uint32_t dir_cluster = exfat_create_dir(fs, parent_cluster,
                                                     entry_name, uid, gid, mode,
-                                                    st.st_mtime);
+                                                    host_stat_mtime(&st));
             printf("    Dir:  %s/ (cluster=%u)%s\n",
                    entry_name, dir_cluster,
                    (mode == 0xF00) ? " [root-only]" : "");
             exfat_populate_dir(fs, full_path, dir_cluster, child_virt);
-        } else if (S_ISLNK(st.st_mode)) {
+        } else if (host_stat_is_lnk(&st)) {
             char target[4096];
             if (read_host_symlink_target(full_path, target, sizeof(target)) == 0) {
                 exfat_add_symlink(fs, parent_cluster, entry_name, target,
-                                  uid, gid, mode, st.st_mtime);
+                                  uid, gid, mode, host_stat_mtime(&st));
             }
-        } else if (S_ISREG(st.st_mode)) {
+        } else if (host_stat_is_reg(&st)) {
             size_t   file_size;
             uint8_t *file_data = read_file(full_path, &file_size);
             exfat_add_file(fs, parent_cluster, entry_name,
                            file_data, file_size, uid, gid, mode,
-                           st.st_mtime);
+                           host_stat_mtime(&st));
             free(file_data);
         }
 
@@ -1096,7 +1150,7 @@ static void exfat_populate_dir_filtered(ExFat *fs, const char *host_path,
         const char *entry_name = names[i];
         char        full_path[4096];
         char        child_virt[4096];
-        struct stat st;
+        HostStat    st;
         uint16_t    uid, gid, mode;
         int         is_dir;
 
@@ -1106,12 +1160,12 @@ static void exfat_populate_dir_filtered(ExFat *fs, const char *host_path,
         else
             snprintf(child_virt, sizeof(child_virt), "%s/%s", virt_path, entry_name);
 
-        if (lstat(full_path, &st) != 0) {
+        if (host_lstat(full_path, &st) != 0) {
             free(names[i]);
             continue;
         }
 
-        is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
+        is_dir = host_stat_is_dir(&st);
 
         /* Consult the predicate.  For directories, a reject prunes the
          * entire subtree.  For files/symlinks, a reject drops this one
@@ -1130,24 +1184,24 @@ static void exfat_populate_dir_filtered(ExFat *fs, const char *host_path,
         if (is_dir) {
             uint32_t dir_cluster = exfat_create_dir(fs, parent_cluster,
                                                     entry_name, uid, gid, mode,
-                                                    st.st_mtime);
+                                                    host_stat_mtime(&st));
             printf("    Dir:  %s/ (cluster=%u)%s\n",
                    entry_name, dir_cluster,
                    (mode == 0xF00) ? " [root-only]" : "");
             exfat_populate_dir_filtered(fs, full_path, dir_cluster,
                                         child_virt, include);
-        } else if (S_ISLNK(st.st_mode)) {
+        } else if (host_stat_is_lnk(&st)) {
             char target[4096];
             if (read_host_symlink_target(full_path, target, sizeof(target)) == 0) {
                 exfat_add_symlink(fs, parent_cluster, entry_name, target,
-                                  uid, gid, mode, st.st_mtime);
+                                  uid, gid, mode, host_stat_mtime(&st));
             }
-        } else if (S_ISREG(st.st_mode)) {
+        } else if (host_stat_is_reg(&st)) {
             size_t   file_size;
             uint8_t *file_data = read_file(full_path, &file_size);
             exfat_add_file(fs, parent_cluster, entry_name,
                            file_data, file_size, uid, gid, mode,
-                           st.st_mtime);
+                           host_stat_mtime(&st));
             free(file_data);
         }
 
@@ -1634,8 +1688,8 @@ static void exfat_sync_dir(ExFat *fs, const char *host_path,
         else
             snprintf(child_virt, sizeof(child_virt), "%s/%s", virt_path, names[i]);
 
-        struct stat st;
-        if (lstat(full_path, &st) != 0) { free(names[i]); continue; }
+        HostStat st;
+        if (host_lstat(full_path, &st) != 0) { free(names[i]); continue; }
 
         uint16_t uid = 0, gid = 0;
         uint16_t mode = is_root_only(child_virt) ? 0xF00
@@ -1644,7 +1698,7 @@ static void exfat_sync_dir(ExFat *fs, const char *host_path,
 
         ExFatNode *child = exfat_find_child(existing, names[i]);
 
-        if (S_ISDIR(st.st_mode)) {
+        if (host_stat_is_dir(&st)) {
             if (child && (child->attrs & EXFAT_ATTR_DIR)) {
                 /* Directory exists — recurse */
                 exfat_sync_dir(fs, full_path, child->first_cluster, child,
@@ -1653,13 +1707,13 @@ static void exfat_sync_dir(ExFat *fs, const char *host_path,
                 /* New directory */
                 uint32_t dir_cl = exfat_create_dir(fs, parent_cluster,
                                                     names[i], uid, gid, mode,
-                                                    st.st_mtime);
+                                                    host_stat_mtime(&st));
                 printf("    Dir+: %s/ (cluster=%u)\n", names[i], dir_cl);
                 /* Populate new directory fully */
                 exfat_populate_dir(fs, full_path, dir_cl, child_virt);
                 (*n_added)++;
             }
-        } else if (S_ISLNK(st.st_mode)) {
+        } else if (host_stat_is_lnk(&st)) {
             char target[4096];
             size_t target_len;
             if (read_host_symlink_target(full_path, target, sizeof(target)) != 0) {
@@ -1675,21 +1729,21 @@ static void exfat_sync_dir(ExFat *fs, const char *host_path,
                     exfat_free_clusters(fs, child);
                     exfat_delete_entry(fs, child);
                     exfat_add_symlink(fs, parent_cluster, names[i], target,
-                                      uid, gid, mode, st.st_mtime);
+                                      uid, gid, mode, host_stat_mtime(&st));
                     (*n_updated)++;
                 }
             } else if (child) {
                 exfat_free_clusters(fs, child);
                 exfat_delete_entry(fs, child);
                 exfat_add_symlink(fs, parent_cluster, names[i], target,
-                                  uid, gid, mode, st.st_mtime);
+                                  uid, gid, mode, host_stat_mtime(&st));
                 (*n_updated)++;
             } else {
                 exfat_add_symlink(fs, parent_cluster, names[i], target,
-                                  uid, gid, mode, st.st_mtime);
+                                  uid, gid, mode, host_stat_mtime(&st));
                 (*n_added)++;
             }
-        } else if (S_ISREG(st.st_mode)) {
+        } else if (host_stat_is_reg(&st)) {
             size_t file_size;
             uint8_t *file_data = read_file(full_path, &file_size);
 
@@ -1704,7 +1758,7 @@ static void exfat_sync_dir(ExFat *fs, const char *host_path,
                     exfat_delete_entry(fs, child);
                     exfat_add_file(fs, parent_cluster, names[i],
                                    file_data, file_size, uid, gid, mode,
-                                   st.st_mtime);
+                                   host_stat_mtime(&st));
                     (*n_updated)++;
                 }
             } else if (child) {
@@ -1712,13 +1766,13 @@ static void exfat_sync_dir(ExFat *fs, const char *host_path,
                 exfat_delete_entry(fs, child);
                 exfat_add_file(fs, parent_cluster, names[i],
                                file_data, file_size, uid, gid, mode,
-                               st.st_mtime);
+                               host_stat_mtime(&st));
                 (*n_updated)++;
             } else {
                 /* New file */
                 exfat_add_file(fs, parent_cluster, names[i],
                                file_data, file_size, uid, gid, mode,
-                               st.st_mtime);
+                               host_stat_mtime(&st));
                 (*n_added)++;
             }
             free(file_data);
