@@ -86,7 +86,9 @@ impl BlockCache {
 
     /// Look up a sector in the cache. Returns true if found and copies data to `buf`.
     pub fn lookup(&mut self, disk_id: u8, lba: u32, buf: &mut [u8]) -> bool {
-        if self.hash_table.is_empty() { return false; } // Not initialized yet
+        if self.hash_table.is_empty() {
+            return false;
+        } // Not initialized yet
         let key = Self::make_key(disk_id, lba);
         let h = Self::hash(key);
 
@@ -205,7 +207,9 @@ impl BlockCache {
         self.slots[victim].data[..n].copy_from_slice(&data[..n]);
         if n < 512 {
             // Zero-fill remainder
-            for b in &mut self.slots[victim].data[n..] { *b = 0; }
+            for b in &mut self.slots[victim].data[n..] {
+                *b = 0;
+            }
         }
         self.slots[victim].key = key;
         self.slots[victim].dirty = false;
@@ -228,7 +232,9 @@ impl BlockCache {
 
     /// Insert a dirty sector (for write-back caching).
     pub fn insert_dirty(&mut self, disk_id: u8, lba: u32, data: &[u8]) {
-        if self.slots.is_empty() { return; }
+        if self.slots.is_empty() {
+            return;
+        }
         self.insert(disk_id, lba, data);
         let key = Self::make_key(disk_id, lba);
         // Mark as dirty
@@ -236,7 +242,9 @@ impl BlockCache {
         for probe in 0..MAX_PROBES {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
-            if slot_idx == EMPTY { break; }
+            if slot_idx == EMPTY {
+                break;
+            }
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].key == key {
                 self.slots[si].dirty = true;
@@ -254,13 +262,17 @@ impl BlockCache {
 
     /// Invalidate a cached sector (e.g. after direct disk write).
     pub fn invalidate(&mut self, disk_id: u8, lba: u32) {
-        if self.hash_table.is_empty() { return; }
+        if self.hash_table.is_empty() {
+            return;
+        }
         let key = Self::make_key(disk_id, lba);
         let h = Self::hash(key);
         for probe in 0..MAX_PROBES {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
-            if slot_idx == EMPTY { return; }
+            if slot_idx == EMPTY {
+                return;
+            }
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].key == key {
                 self.slots[si].key = 0;
@@ -318,18 +330,26 @@ impl BlockCache {
     /// Get cache statistics: (hits, misses, hit_rate_percent).
     pub fn stats(&self) -> (u64, u64, u32) {
         let total = self.hits + self.misses;
-        let rate = if total > 0 { (self.hits * 100 / total) as u32 } else { 0 };
+        let rate = if total > 0 {
+            (self.hits * 100 / total) as u32
+        } else {
+            0
+        };
         (self.hits, self.misses, rate)
     }
 
     /// Mark a specific key as dirty (internal helper).
     fn mark_dirty(&mut self, key: u64) {
-        if self.hash_table.is_empty() { return; }
+        if self.hash_table.is_empty() {
+            return;
+        }
         let h = Self::hash(key);
         for probe in 0..MAX_PROBES {
             let idx = (h + probe) & (HASH_SIZE - 1);
             let slot_idx = self.hash_table[idx];
-            if slot_idx == EMPTY { return; }
+            if slot_idx == EMPTY {
+                return;
+            }
             let si = slot_idx as usize;
             if si < self.slots.len() && self.slots[si].key == key {
                 self.slots[si].dirty = true;
@@ -338,7 +358,10 @@ impl BlockCache {
         }
         // Fallback linear
         for slot in &mut self.slots {
-            if slot.key == key { slot.dirty = true; return; }
+            if slot.key == key {
+                slot.dirty = true;
+                return;
+            }
         }
     }
 
@@ -404,25 +427,33 @@ pub fn init() {
 /// Try to read `count` sectors from cache. Returns number of sectors served
 /// from cache (starting from lba, stops at first miss).
 pub fn cached_read(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -> u32 {
-    if !CACHE_READY.load(Ordering::Acquire) { return 0; }
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return 0;
+    }
     BLOCK_CACHE.lock().lookup_range(disk_id, lba, count, buf)
 }
 
 /// Insert sectors into cache after a disk read.
 pub fn populate(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
-    if !CACHE_READY.load(Ordering::Acquire) { return; }
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return;
+    }
     BLOCK_CACHE.lock().insert_range(disk_id, lba, count, data);
 }
 
 /// Invalidate cached sectors (after a direct write to disk).
 pub fn invalidate(disk_id: u8, lba: u32, count: u32) {
-    if !CACHE_READY.load(Ordering::Acquire) { return; }
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return;
+    }
     BLOCK_CACHE.lock().invalidate_range(disk_id, lba, count);
 }
 
 /// Invalidate all cached sectors for a disk.
 pub fn invalidate_disk(disk_id: u8) {
-    if !CACHE_READY.load(Ordering::Acquire) { return; }
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return;
+    }
     let mut cache = BLOCK_CACHE.lock();
     for i in 0..cache.slots.len() {
         if (cache.slots[i].key >> 32) == disk_id as u64 {
@@ -437,7 +468,9 @@ pub fn invalidate_disk(disk_id: u8) {
 /// Insert sectors as dirty (write-back caching). The data is cached in RAM
 /// and will be written to disk later during writeback.
 pub fn write_back(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
-    if !CACHE_READY.load(Ordering::Acquire) { return; }
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return;
+    }
     let mut cache = BLOCK_CACHE.lock();
     for i in 0..count {
         let offset = i as usize * 512;
@@ -455,63 +488,109 @@ pub fn write_back(disk_id: u8, lba: u32, count: u32, data: &[u8]) {
 /// multi-sector writes for efficiency.
 /// Returns number of sectors flushed.
 pub fn writeback_flush(disk_id: u8) -> u32 {
-    if !CACHE_READY.load(Ordering::Acquire) { return 0; }
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return 0;
+    }
 
-    // Collect dirty (lba, slot_index) pairs, then sort by LBA for coalescing
-    let mut dirty_entries: alloc::vec::Vec<(u32, usize)> = alloc::vec::Vec::new();
+    // Snapshot dirty blocks as (lba, 512-byte data) pairs under a single lock.
+    //
+    // Previously this function collected `(lba, slot_index)`, dropped the lock,
+    // then re-acquired it later and read cache.slots[slot_index].data. Between
+    // the two lock windows another CPU could call `insert()` / `populate()`
+    // and EVICT the dirty slot, filling it with data for a different LBA.
+    // Writeback would then flush the wrong bytes to the wrong sector — silent
+    // data corruption plus a free-list-level inconsistency when the evictor's
+    // allocator touched the same memory region. Snapshotting the data while
+    // we still hold the lock removes the window entirely.
+    //
+    // `key` is captured together with (lba,data) so the re-lock below can
+    // verify the slot still holds the same entry before clearing the dirty
+    // flag. If it was evicted and repopulated we leave dirty=true on the new
+    // occupant so a subsequent writeback cycle flushes whatever belongs there.
+    struct DirtyCopy {
+        key: u64,
+        lba: u32,
+        slot: usize,
+        data: [u8; 512],
+    }
+
+    let mut snapshot: alloc::vec::Vec<DirtyCopy> = alloc::vec::Vec::new();
     {
         let cache = BLOCK_CACHE.lock();
-        let disk_prefix = (disk_id as u64) << 32;
         for i in 0..cache.slots.len() {
-            if cache.slots[i].dirty && (cache.slots[i].key >> 32) == disk_id as u64 {
-                let lba = (cache.slots[i].key & 0xFFFFFFFF) as u32;
-                dirty_entries.push((lba, i));
+            let entry = &cache.slots[i];
+            if entry.dirty && (entry.key >> 32) == disk_id as u64 {
+                let lba = (entry.key & 0xFFFFFFFF) as u32;
+                snapshot.push(DirtyCopy {
+                    key: entry.key,
+                    lba,
+                    slot: i,
+                    data: entry.data,
+                });
             }
         }
     }
 
-    if dirty_entries.is_empty() { return 0; }
+    if snapshot.is_empty() {
+        return 0;
+    }
 
-    // Sort by LBA for coalescing
-    dirty_entries.sort_unstable_by_key(|&(lba, _)| lba);
+    // Sort by LBA so coalescing works regardless of slot-order.
+    snapshot.sort_unstable_by_key(|c| c.lba);
 
     let mut flushed = 0u32;
     let mut i = 0;
-    while i < dirty_entries.len() {
-        // Find run of consecutive LBAs
-        let run_start_lba = dirty_entries[i].0;
+    while i < snapshot.len() {
+        // Find run of consecutive LBAs.
+        let run_start_lba = snapshot[i].lba;
         let mut run_len = 1usize;
-        while i + run_len < dirty_entries.len()
-            && dirty_entries[i + run_len].0 == run_start_lba + run_len as u32
+        while i + run_len < snapshot.len()
+            && snapshot[i + run_len].lba == run_start_lba + run_len as u32
         {
             run_len += 1;
         }
 
-        // Build coalesced write buffer and clear dirty flags
+        // Assemble the write buffer from the in-band snapshot — no cache lock
+        // needed here, so the disk write path cannot contend with concurrent
+        // cache readers/writers.
         let mut buf = alloc::vec![0u8; run_len * 512];
+        for j in 0..run_len {
+            buf[j * 512..(j + 1) * 512].copy_from_slice(&snapshot[i + j].data);
+        }
+
+        // Write coalesced run to disk (bypasses cache, goes direct to hardware).
+        let ok = crate::drivers::storage::write_sectors_direct_on_disk(
+            disk_id,
+            run_start_lba,
+            run_len as u32,
+            &buf,
+        );
+        if ok {
+            flushed += run_len as u32;
+        }
+
+        // Reconcile dirty flags under the lock, checking key identity per slot:
+        //   * write succeeded + slot still holds our key      → clear dirty
+        //   * write failed  + slot still holds our key        → leave dirty
+        //   * slot was evicted/repopulated (key differs)      → don't touch;
+        //     whatever is there now has its own dirty flag lifecycle
         {
             let mut cache = BLOCK_CACHE.lock();
             for j in 0..run_len {
-                let slot = dirty_entries[i + j].1;
-                if slot < cache.slots.len() {
-                    buf[j * 512..(j + 1) * 512].copy_from_slice(&cache.slots[slot].data);
-                    cache.slots[slot].dirty = false;
+                let snap = &snapshot[i + j];
+                if snap.slot >= cache.slots.len() {
+                    continue;
+                }
+                let slot = &mut cache.slots[snap.slot];
+                if slot.key != snap.key {
+                    continue;
+                }
+                if ok {
+                    slot.dirty = false;
                 }
             }
         }
 
-        // Write coalesced run to disk (bypasses cache, goes direct to hardware)
-        if crate::drivers::storage::write_sectors_direct_on_disk(disk_id, run_start_lba, run_len as u32, &buf) {
-            flushed += run_len as u32;
-        } else {
-            let mut cache = BLOCK_CACHE.lock();
-            for j in 0..run_len {
-                let slot = dirty_entries[i + j].1;
-                if slot < cache.slots.len() {
-                    cache.slots[slot].dirty = true;
-                }
-            }
-        }
         i += run_len;
     }
 
@@ -520,7 +599,9 @@ pub fn writeback_flush(disk_id: u8) -> u32 {
 
 /// Return the number of dirty sectors in the cache.
 pub fn dirty_count(disk_id: u8) -> u32 {
-    if !CACHE_READY.load(Ordering::Acquire) { return 0; }
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return 0;
+    }
     let cache = BLOCK_CACHE.lock();
     let mut count = 0u32;
     for slot in &cache.slots {
@@ -533,6 +614,8 @@ pub fn dirty_count(disk_id: u8) -> u32 {
 
 /// Get cache stats: (hits, misses, hit_rate_percent).
 pub fn stats() -> (u64, u64, u32) {
-    if !CACHE_READY.load(Ordering::Acquire) { return (0, 0, 0); }
+    if !CACHE_READY.load(Ordering::Acquire) {
+        return (0, 0, 0);
+    }
     BLOCK_CACHE.lock().stats()
 }

@@ -102,7 +102,10 @@ struct SizeClassBucket {
 
 impl SizeClassBucket {
     const fn new() -> Self {
-        SizeClassBucket { head: core::ptr::null_mut(), count: 0 }
+        SizeClassBucket {
+            head: core::ptr::null_mut(),
+            count: 0,
+        }
     }
 }
 
@@ -115,8 +118,12 @@ impl PerCpuBuckets {
     const fn new() -> Self {
         PerCpuBuckets {
             buckets: [
-                SizeClassBucket::new(), SizeClassBucket::new(), SizeClassBucket::new(),
-                SizeClassBucket::new(), SizeClassBucket::new(), SizeClassBucket::new(),
+                SizeClassBucket::new(),
+                SizeClassBucket::new(),
+                SizeClassBucket::new(),
+                SizeClassBucket::new(),
+                SizeClassBucket::new(),
+                SizeClassBucket::new(),
             ],
         }
     }
@@ -144,8 +151,18 @@ fn size_class_index(size: usize) -> Option<usize> {
 }
 
 /// Try to allocate from a per-CPU size-class bucket. O(1), lock-free (IF=0).
+///
+/// Defends against a corrupted free-list head by validating that the head
+/// pointer — and the `next` pointer we're about to install — both land inside
+/// the committed heap window. A use-after-free that wrote e.g. `0xFFFF_FFFF`
+/// into a bucket block's first 8 bytes would otherwise fault the kernel on
+/// the next bucket alloc (observed crash: RIP inside LockedHeap::alloc,
+/// CR2=0xFFFFFFFF). With the checks we return null and let the slow path
+/// handle it; the bucket is then reset so the corrupted chain stops spreading.
 unsafe fn bucket_alloc(cpu: usize, size: usize) -> *mut u8 {
-    if cpu >= PERCPU_MAX_CPUS { return core::ptr::null_mut(); }
+    if cpu >= PERCPU_MAX_CPUS {
+        return core::ptr::null_mut();
+    }
     let sci = match size_class_index(size) {
         Some(i) => i,
         None => return core::ptr::null_mut(),
@@ -154,16 +171,33 @@ unsafe fn bucket_alloc(cpu: usize, size: usize) -> *mut u8 {
     if bucket.head.is_null() {
         return core::ptr::null_mut();
     }
+    if !is_in_heap(bucket.head as usize) {
+        // Corrupted head — drop the whole bucket rather than dereference.
+        bucket.head = core::ptr::null_mut();
+        bucket.count = 0;
+        return core::ptr::null_mut();
+    }
     let node = bucket.head;
-    bucket.head = (*node).next;
-    bucket.count -= 1;
+    let next = (*node).next;
+    if !next.is_null() && !is_in_heap(next as usize) {
+        // Corrupted link inside the bucket — drop the chain.
+        bucket.head = core::ptr::null_mut();
+        bucket.count = 0;
+        return core::ptr::null_mut();
+    }
+    bucket.head = next;
+    if bucket.count > 0 {
+        bucket.count -= 1;
+    }
     node as *mut u8
 }
 
 /// Return a block to a per-CPU size-class bucket. O(1), lock-free (IF=0).
 /// Returns true if successfully cached, false if bucket is full.
 unsafe fn bucket_dealloc(cpu: usize, ptr: *mut u8, size: usize) -> bool {
-    if cpu >= PERCPU_MAX_CPUS { return false; }
+    if cpu >= PERCPU_MAX_CPUS {
+        return false;
+    }
     let sci = match size_class_index(size) {
         Some(i) => i,
         None => return false,
@@ -202,6 +236,10 @@ static mut PERCPU_CACHES: [PerCpuCache; PERCPU_MAX_CPUS] = {
 
 /// Try to allocate from the per-CPU local free list (lock-free, IF=0).
 /// Returns null if no suitable block found locally.
+///
+/// Walks the per-CPU free list with the same cycle + bounds safeguards as
+/// `alloc_inner`: a corrupted link (use-after-free that wrote garbage into a
+/// cached block's header) drops the whole local cache instead of faulting.
 unsafe fn percpu_alloc(cpu: usize, size: usize) -> *mut u8 {
     if cpu >= PERCPU_MAX_CPUS {
         return core::ptr::null_mut();
@@ -210,7 +248,18 @@ unsafe fn percpu_alloc(cpu: usize, size: usize) -> *mut u8 {
     let mut prev: *mut FreeBlock = core::ptr::null_mut();
     let mut current = cache.free_list;
 
+    const MAX_ITER: usize = 100_000;
+    let mut iter = 0usize;
     while !current.is_null() {
+        iter += 1;
+        if iter > MAX_ITER || !is_in_heap(current as usize) {
+            // Corrupted or cyclic free list — discard everything we've seen
+            // so the next alloc starts from a clean slate via the global
+            // path. We can't coalesce safely once the chain is broken.
+            cache.free_list = core::ptr::null_mut();
+            cache.cached_bytes = 0;
+            return core::ptr::null_mut();
+        }
         let block_size = (*current).size;
         if block_size >= size {
             if block_size >= size + core::mem::size_of::<FreeBlock>() + 8 {
@@ -247,7 +296,10 @@ unsafe fn percpu_alloc(cpu: usize, size: usize) -> *mut u8 {
 unsafe fn percpu_dealloc(cpu: usize, ptr: *mut u8, size: usize) {
     if cpu >= PERCPU_MAX_CPUS {
         // Fallback: insert directly into global list (caller holds global lock)
-        dealloc_inner(ptr, core::alloc::Layout::from_size_align_unchecked(size, 16));
+        dealloc_inner(
+            ptr,
+            core::alloc::Layout::from_size_align_unchecked(size, 16),
+        );
         return;
     }
     let cache = &mut PERCPU_CACHES[cpu];
@@ -357,12 +409,17 @@ impl LockedHeap {
                 unsafe {
                     use crate::arch::x86::port::{inb, outb};
                     let msg = b"\r\n!!! HEAP_LOCK TIMEOUT\r\n";
-                    for &c in msg { while inb(0x3FD) & 0x20 == 0 {} outb(0x3F8, c); }
+                    for &c in msg {
+                        while inb(0x3FD) & 0x20 == 0 {}
+                        outb(0x3F8, c);
+                    }
                 }
                 #[cfg(target_arch = "aarch64")]
                 {
                     let msg = b"\r\n!!! HEAP_LOCK TIMEOUT\r\n";
-                    for &c in msg { crate::arch::arm64::serial::write_byte(c); }
+                    for &c in msg {
+                        crate::arch::arm64::serial::write_byte(c);
+                    }
                 }
             }
         }
@@ -386,7 +443,10 @@ unsafe impl GlobalAlloc for LockedHeap {
             return core::ptr::null_mut();
         }
 
-        let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
+        let size = align_up(
+            layout.size().max(core::mem::size_of::<FreeBlock>()),
+            layout.align().max(16),
+        );
 
         // Ultra-fast path: try size-class bucket first (O(1), no lock, IF=0)
         let flags = crate::arch::hal::save_and_disable_interrupts();
@@ -413,7 +473,10 @@ unsafe impl GlobalAlloc for LockedHeap {
 
         // If allocation failed, try growing the heap and retry
         if result.is_null() {
-            let needed = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
+            let needed = align_up(
+                layout.size().max(core::mem::size_of::<FreeBlock>()),
+                layout.align().max(16),
+            );
             if grow_heap(needed) {
                 result = alloc_inner(layout);
             }
@@ -424,7 +487,10 @@ unsafe impl GlobalAlloc for LockedHeap {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
+        let size = align_up(
+            layout.size().max(core::mem::size_of::<FreeBlock>()),
+            layout.align().max(16),
+        );
 
         // Validate: pointer must be within heap bounds
         if !is_in_heap(ptr as usize) {
@@ -475,7 +541,9 @@ unsafe impl GlobalAlloc for LockedHeap {
 /// Used by the timer heartbeat to detect if the heap is part of a deadlock chain.
 #[inline]
 pub fn is_heap_locked() -> bool {
-    HEAP_ALLOCATOR.lock.load(core::sync::atomic::Ordering::Relaxed)
+    HEAP_ALLOCATOR
+        .lock
+        .load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Check if an address is within the committed heap range.
@@ -487,7 +555,10 @@ fn is_in_heap(addr: usize) -> bool {
 }
 
 unsafe fn alloc_inner(layout: Layout) -> *mut u8 {
-    let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
+    let size = align_up(
+        layout.size().max(core::mem::size_of::<FreeBlock>()),
+        layout.align().max(16),
+    );
 
     // First-fit search with cycle detection (max iteration guard).
     // A corrupted free list with cycles would loop forever under the heap lock
@@ -681,7 +752,10 @@ unsafe fn grow_heap_exact(growth: usize) -> bool {
 }
 
 unsafe fn dealloc_inner(ptr: *mut u8, layout: Layout) {
-    let size = align_up(layout.size().max(core::mem::size_of::<FreeBlock>()), layout.align().max(16));
+    let size = align_up(
+        layout.size().max(core::mem::size_of::<FreeBlock>()),
+        layout.align().max(16),
+    );
 
     // Validate: pointer must be within heap bounds
     if !is_in_heap(ptr as usize) {
@@ -791,20 +865,34 @@ pub fn validate_heap() {
             let size = (*current).size;
 
             if addr < heap_start || addr >= heap_end {
-                crate::serial_verbose_println!("HEAP CORRUPT: block #{} at {:#x} outside heap bounds [{:#x}..{:#x}]",
-                    count, addr, heap_start, heap_end);
+                crate::serial_verbose_println!(
+                    "HEAP CORRUPT: block #{} at {:#x} outside heap bounds [{:#x}..{:#x}]",
+                    count,
+                    addr,
+                    heap_start,
+                    heap_end
+                );
                 HEAP_ALLOCATOR.release(flags);
                 return;
             }
             if size == 0 || addr + size > heap_end {
-                crate::serial_verbose_println!("HEAP CORRUPT: block #{} at {:#x} size {:#x} extends past heap end {:#x}",
-                    count, addr, size, heap_end);
+                crate::serial_verbose_println!(
+                    "HEAP CORRUPT: block #{} at {:#x} size {:#x} extends past heap end {:#x}",
+                    count,
+                    addr,
+                    size,
+                    heap_end
+                );
                 HEAP_ALLOCATOR.release(flags);
                 return;
             }
             if addr < prev_end {
-                crate::serial_verbose_println!("HEAP CORRUPT: block #{} at {:#x} overlaps previous ending at {:#x}",
-                    count, addr, prev_end);
+                crate::serial_verbose_println!(
+                    "HEAP CORRUPT: block #{} at {:#x} overlaps previous ending at {:#x}",
+                    count,
+                    addr,
+                    prev_end
+                );
                 HEAP_ALLOCATOR.release(flags);
                 return;
             }
@@ -815,14 +903,20 @@ pub fn validate_heap() {
             current = (*current).next;
 
             if count > 10000 {
-                crate::serial_verbose_println!("HEAP CORRUPT: free list has >10000 entries (loop?)");
+                crate::serial_verbose_println!(
+                    "HEAP CORRUPT: free list has >10000 entries (loop?)"
+                );
                 HEAP_ALLOCATOR.release(flags);
                 return;
             }
         }
 
-        crate::serial_verbose_println!("  Heap check: {} free block(s), {} KiB free / {} KiB committed",
-            count, total_free / 1024, HEAP_COMMITTED.load(Ordering::Acquire) / 1024);
+        crate::serial_verbose_println!(
+            "  Heap check: {} free block(s), {} KiB free / {} KiB committed",
+            count,
+            total_free / 1024,
+            HEAP_COMMITTED.load(Ordering::Acquire) / 1024
+        );
         HEAP_ALLOCATOR.release(flags);
     }
 }
