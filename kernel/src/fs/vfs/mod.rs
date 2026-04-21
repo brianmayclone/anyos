@@ -2396,6 +2396,26 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
         return overlay.mkdir(path);
     }
 
+    // --- CoreFS-as-root ---
+    //
+    // In dual-partition + --root-fs=corefs mode (Phase 6) the root filesystem
+    // is CoreFS, not exFAT/FAT. Without this branch, mkdir on a top-level
+    // path like `/System/users` falls through to the FAT fallback below,
+    // which finds `state.fat_fs == None` and returns IoError — silently
+    // masked by the `let _ =` swallow in ensure_perm_dir(), leaving apps
+    // unable to persist per-user data (observed: Surf launch failing because
+    // `/System/users/perm/{uid}/{app}` couldn't be created).
+    if state.root_fs_type == Some(FsType::CoreFs) {
+        let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
+        let (parent_path, dirname) = split_parent_name(path)?;
+        let (parent_inode, parent_type, _) = Filesystem::lookup(driver, parent_path)?;
+        if parent_type != FileType::Directory {
+            return Err(FsError::NotADirectory);
+        }
+        Filesystem::create(driver, parent_inode, dirname, FileType::Directory)?;
+        return Ok(());
+    }
+
     let (parent_path, dirname) = split_parent_name(path)?;
     if let Some(exfat_drv) = state.exfat_fs.as_ref() {
         let mut exfat_guard = exfat_drv.lock_inner();
