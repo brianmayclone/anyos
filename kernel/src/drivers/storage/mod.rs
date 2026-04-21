@@ -82,6 +82,65 @@ static READAHEAD_LEVEL: AtomicU32 = AtomicU32::new(64);
 const READAHEAD_MIN: u32 = 16;   //   8 KiB
 const READAHEAD_MAX: u32 = 512;  // 256 KiB
 
+/// Reusable readahead buffer pool.
+///
+/// Large reads with readahead previously did `alloc::vec![0u8; fetch_bytes]`
+/// on every call (up to ~300 KiB) and dropped it again at the end of the
+/// function. Under sustained I/O that kept the kernel heap allocator hot on
+/// every CPU simultaneously and amplified any latent allocator bug. The pool
+/// keeps four static 288 KiB buffers around so the steady-state miss path
+/// needs no heap allocation at all; it falls back to a `Vec` only when all
+/// slots are busy (rare — bounded by concurrent reader count).
+const READAHEAD_POOL_SIZE: usize = 4;
+const READAHEAD_BUF_BYTES: usize = (READAHEAD_MAX as usize + 64) * 512;
+
+struct ReadaheadSlot {
+    in_use: AtomicBool,
+    buf: core::cell::UnsafeCell<[u8; READAHEAD_BUF_BYTES]>,
+}
+
+// Safety: the `in_use` flag provides exclusive access to the UnsafeCell.
+unsafe impl Sync for ReadaheadSlot {}
+
+static READAHEAD_POOL: [ReadaheadSlot; READAHEAD_POOL_SIZE] = [
+    ReadaheadSlot { in_use: AtomicBool::new(false), buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]) },
+    ReadaheadSlot { in_use: AtomicBool::new(false), buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]) },
+    ReadaheadSlot { in_use: AtomicBool::new(false), buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]) },
+    ReadaheadSlot { in_use: AtomicBool::new(false), buf: core::cell::UnsafeCell::new([0u8; READAHEAD_BUF_BYTES]) },
+];
+
+/// RAII handle — drops release the `in_use` flag so the slot is reusable.
+struct ReadaheadLease { index: usize }
+
+impl Drop for ReadaheadLease {
+    fn drop(&mut self) {
+        READAHEAD_POOL[self.index].in_use.store(false, Ordering::Release);
+    }
+}
+
+fn acquire_readahead_slot() -> Option<ReadaheadLease> {
+    for i in 0..READAHEAD_POOL_SIZE {
+        if READAHEAD_POOL[i]
+            .in_use
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some(ReadaheadLease { index: i });
+        }
+    }
+    None
+}
+
+/// Borrow a mutable slice into the pool buffer. The lease guarantees
+/// exclusive ownership until it drops, so the raw-pointer → &mut slice is safe.
+fn readahead_slot_bytes(lease: &ReadaheadLease, len: usize) -> &'static mut [u8] {
+    let n = len.min(READAHEAD_BUF_BYTES);
+    unsafe {
+        let ptr = (*READAHEAD_POOL[lease.index].buf.get()).as_mut_ptr();
+        core::slice::from_raw_parts_mut(ptr, n)
+    }
+}
+
 /// Per-Disk Sektor-Anzahl, einmalig beim Disk-Init gesetzt (AHCI/ATA/NVMe).
 ///
 /// Lookup via [`disk_sector_count`] ist ein einziger atomic Load — kein Lock,
@@ -254,23 +313,42 @@ pub fn read_sectors_on_disk(disk_id: u8, lba: u32, count: u32, buf: &mut [u8]) -
         LAST_READ_END_LBA.store(miss_lba + total_fetch, Ordering::Relaxed);
     }
 
-    // We need a potentially larger buffer for readahead
+    // Prefer a pool buffer to avoid a heap allocation per read (see
+    // READAHEAD_POOL comment). Fall back to Vec only when all slots are in
+    // use simultaneously.
     let result = if readahead > 0 {
-        let mut big_buf = alloc::vec![0u8; fetch_bytes];
-        io_lock_acquire();
-        let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, &mut big_buf);
-        io_lock_release();
-        if ok {
-            // Copy requested portion to caller buffer
-            let needed = miss_count as usize * 512;
-            let copy_end = needed.min(buf.len() - miss_offset);
-            buf[miss_offset..miss_offset + copy_end]
-                .copy_from_slice(&big_buf[..copy_end]);
-            // Populate cache with ALL fetched sectors (requested + readahead)
-            crate::fs::blockcache::populate(disk_id, miss_lba, total_fetch, &big_buf);
-            true
+        if let Some(lease) = acquire_readahead_slot() {
+            let big_buf = readahead_slot_bytes(&lease, fetch_bytes);
+            io_lock_acquire();
+            let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, big_buf);
+            io_lock_release();
+            if ok {
+                let needed = miss_count as usize * 512;
+                let copy_end = needed.min(buf.len() - miss_offset);
+                buf[miss_offset..miss_offset + copy_end]
+                    .copy_from_slice(&big_buf[..copy_end]);
+                crate::fs::blockcache::populate(
+                    disk_id, miss_lba, total_fetch, &big_buf[..fetch_bytes],
+                );
+                true
+            } else {
+                false
+            }
         } else {
-            false
+            let mut big_buf = alloc::vec![0u8; fetch_bytes];
+            io_lock_acquire();
+            let ok = read_sectors_raw_for_disk(disk_id, miss_lba, total_fetch, &mut big_buf);
+            io_lock_release();
+            if ok {
+                let needed = miss_count as usize * 512;
+                let copy_end = needed.min(buf.len() - miss_offset);
+                buf[miss_offset..miss_offset + copy_end]
+                    .copy_from_slice(&big_buf[..copy_end]);
+                crate::fs::blockcache::populate(disk_id, miss_lba, total_fetch, &big_buf);
+                true
+            } else {
+                false
+            }
         }
     } else {
         // No readahead: read directly into caller buffer
