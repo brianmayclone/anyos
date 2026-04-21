@@ -84,12 +84,36 @@ pub fn write_stored_perms(uid: u16, app_id: &str, granted: CapSet) -> bool {
     };
     match vfs::open(&path, flags) {
         Ok(fd) => {
-            let _ = vfs::write(fd, content.as_bytes());
-            let _ = vfs::close(fd);
-            true
+            let wrote = vfs::write(fd, content.as_bytes());
+            let closed = vfs::close(fd);
+            match (wrote, closed) {
+                (Ok(n), Ok(())) if n == content.len() => true,
+                // Short write or close error — surface as a warning so a
+                // half-written permission file doesn't silently cause sys_spawn
+                // to loop back into the permdialog forever.
+                (Ok(n), Ok(())) => {
+                    crate::serial_println!(
+                        "PERM: short write path='{}' wrote={} expected={}",
+                        path, n, content.len()
+                    );
+                    false
+                }
+                (Err(e), _) => {
+                    crate::serial_println!(
+                        "PERM: write failed path='{}' err={:?}", path, e
+                    );
+                    false
+                }
+                (Ok(_), Err(e)) => {
+                    crate::serial_println!(
+                        "PERM: close failed path='{}' err={:?}", path, e
+                    );
+                    false
+                }
+            }
         }
         Err(e) => {
-            crate::serial_verbose_println!("PERM: write_stored_perms failed: path='{}' err={:?}", path, e);
+            crate::serial_println!("PERM: open failed path='{}' err={:?}", path, e);
             false
         }
     }

@@ -210,9 +210,14 @@ while(I LESS USER_COUNT)
       endif()
     endif()
 
-    # Ensure home dir and Documents exist
+    # Ensure home dir, Documents and .config exist. User-space apps (Terminal,
+    # ClipMan, etc.) store per-user state under ~/.config/<app>/ and expect
+    # the .config parent to already exist — their `mkdir -p` helpers can't
+    # recover on runtime-CoreFS because the chained mkdir calls ignore errors
+    # and never actually force-create missing ancestors.
     file(MAKE_DIRECTORY "${SYSROOT_HOME}")
     file(MAKE_DIRECTORY "${SYSROOT_HOME}/Documents")
+    file(MAKE_DIRECTORY "${SYSROOT_HOME}/.config")
     message(STATUS "Created home directory: ${UHOME}")
   endif()
 
