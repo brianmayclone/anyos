@@ -52,6 +52,9 @@ use corefs_core::storage::ondisk::native::{
     load_native_inode_slot_index, load_state_native, save_state_native_incremental,
     save_state_native_incremental_dirty_with_slots, InodeSlotMapping,
 };
+use corefs_core::storage::ondisk::journal::Journal;
+use corefs_core::storage::ondisk::journaled::recover_pending_transactions;
+use corefs_core::storage::ondisk::volume::read_sb_with_fallbacks;
 use corefs_core::storage::persisted_state::PersistedState;
 
 use crate::fs::file::{DirEntry, FileType};
@@ -352,8 +355,37 @@ impl CoreFsDriver {
     /// (d.h. mindestens einmal mit `save_state_native` beschrieben wurde).
     /// Ein frisch formatiertes Volume muss vorher initialisiert werden —
     /// Tests nutzen dazu [`empty_persisted_state`] + `save_state_native`.
-    pub fn mount_writable(device: BlockDeviceAdapter) -> Result<Self, FsError> {
+    pub fn mount_writable(mut device: BlockDeviceAdapter) -> Result<Self, FsError> {
+        let mut journal_needs_format = false;
+        match recover_pending_transactions(&mut device) {
+            Ok(report) => {
+                if report.ops_applied > 0 {
+                    crate::serial_println!(
+                        "[corefs] replayed {} journal ops from txns {:?}",
+                        report.ops_applied,
+                        report.txns_replayed
+                    );
+                }
+            }
+            Err(e) => {
+                crate::serial_println!("[corefs] journal recovery skipped/failed: {:?}", e);
+                journal_needs_format = true;
+            }
+        }
+
         let mut state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        if journal_needs_format {
+            match read_sb_with_fallbacks(&device)
+                .and_then(|sb| Journal::format(&mut device, &sb).map(|_| ()))
+            {
+                Ok(()) => {
+                    crate::serial_println!("[corefs] journal header rebuilt after native load");
+                }
+                Err(e) => {
+                    crate::serial_println!("[corefs] journal rebuild failed: {:?}", e);
+                }
+            }
+        }
         let inode_slots = load_inode_slot_map(&device)?;
         let mut needs_persist = false;
 

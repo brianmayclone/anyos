@@ -115,8 +115,18 @@ pub fn try_mount_root_typed(
         partition_sectors,
         /* read_only = */ false,
     )
+    .map_err(|e| {
+        crate::serial_println!("[corefs] root adapter failed: {:?}", e);
+        e
+    })
     .ok()?;
-    CoreFsDriver::mount_writable(adapter).ok()
+    match CoreFsDriver::mount_writable(adapter) {
+        Ok(driver) => Some(driver),
+        Err(e) => {
+            crate::serial_println!("[corefs] root mount failed: {:?}", e);
+            None
+        }
+    }
 }
 
 pub fn try_auto_mount_corefs(

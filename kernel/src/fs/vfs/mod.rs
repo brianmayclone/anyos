@@ -2978,6 +2978,9 @@ pub fn sync_all() {
             let _ = exfat.flush_metadata();
             queue_disk_flush(&mut disks_to_flush, exfat.device_id as u8);
         }
+        if let Some(driver) = state.corefs_driver.as_ref() {
+            let _ = driver.flush();
+        }
     }
     drop(vfs);
     // Flush write-back block cache to disk (coalesced writes)
