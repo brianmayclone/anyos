@@ -6,6 +6,8 @@
 use super::helpers::{copy_user_bytes, fs_err, is_valid_user_ptr, read_user_str_safe, resolve_path};
 use crate::fs::permissions::{check_permission, PERM_CREATE};
 
+const WRITE_COPY_CHUNK: usize = 64 * 1024;
+
 /// sys_write - Write to a file descriptor
 /// fd=1 -> stdout (pipe if configured, else serial), fd=2 -> stderr (same), fd>=3 -> VFS file
 pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
@@ -15,9 +17,6 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
     if len > 0x1000_0000 || !is_valid_user_ptr(buf_ptr as u64, len as u64) {
         return u32::MAX;
     }
-    let Some(buf) = copy_user_bytes(buf_ptr, len as usize, 0x1000_0000usize) else {
-        return u32::MAX;
-    };
 
     use crate::fs::fd_table::FdKind;
 
@@ -26,15 +25,36 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
         Some(entry) => {
             match entry.kind {
                 FdKind::File { global_id } => {
-                    match crate::fs::vfs::write(global_id, &buf) {
-                        Ok(n) => {
-                            crate::task::scheduler::record_io_write(n as u64);
-                            n as u32
+                    let mut total = 0usize;
+                    while total < len as usize {
+                        let chunk_len = ((len as usize) - total).min(WRITE_COPY_CHUNK);
+                        let Some(buf) = copy_user_bytes(
+                            buf_ptr.wrapping_add(total as u32),
+                            chunk_len,
+                            WRITE_COPY_CHUNK,
+                        ) else {
+                            return if total > 0 { total as u32 } else { u32::MAX };
+                        };
+                        match crate::fs::vfs::write(global_id, &buf) {
+                            Ok(n) => {
+                                crate::task::scheduler::record_io_write(n as u64);
+                                total += n;
+                                if n < chunk_len {
+                                    return total as u32;
+                                }
+                            }
+                            Err(e) => {
+                                return if total > 0 { total as u32 } else { fs_err(e) };
+                            }
                         }
-                        Err(e) => fs_err(e),
                     }
+                    total as u32
                 }
                 FdKind::PipeWrite { pipe_id } => {
+                    let chunk_len = (len as usize).min(WRITE_COPY_CHUNK);
+                    let Some(buf) = copy_user_bytes(buf_ptr, chunk_len, WRITE_COPY_CHUNK) else {
+                        return u32::MAX;
+                    };
                     if entry.flags.nonblock {
                         // O_NONBLOCK: return EAGAIN if no buffer space available
                         use crate::ipc::anon_pipe::PIPE_BUF_SIZE;
@@ -46,6 +66,10 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                     crate::ipc::anon_pipe::write(pipe_id, &buf)
                 }
                 FdKind::Tty => {
+                    let chunk_len = (len as usize).min(WRITE_COPY_CHUNK);
+                    let Some(buf) = copy_user_bytes(buf_ptr, chunk_len, WRITE_COPY_CHUNK) else {
+                        return u32::MAX;
+                    };
                     // Terminal I/O: write to named stdout pipe + serial (if verbose)
                     let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
                     if pipe_id != 0 {
@@ -58,7 +82,7 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                         }
                         crate::drivers::serial::output_lock_release(lock_state);
                     }
-                    len
+                    chunk_len as u32
                 }
                 FdKind::PipeRead { .. } | FdKind::None => u32::MAX,
             }
@@ -66,6 +90,10 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
         None => {
             // Backward compat for kernel threads (no FdTable setup)
             if fd == 1 || fd == 2 {
+                let chunk_len = (len as usize).min(WRITE_COPY_CHUNK);
+                let Some(buf) = copy_user_bytes(buf_ptr, chunk_len, WRITE_COPY_CHUNK) else {
+                    return u32::MAX;
+                };
                 let pipe_id = crate::task::scheduler::current_thread_stdout_pipe();
                 if pipe_id != 0 {
                     crate::ipc::pipe::write(pipe_id, &buf);
@@ -77,7 +105,7 @@ pub fn sys_write(fd: u32, buf_ptr: u32, len: u32) -> u32 {
                     }
                     crate::drivers::serial::output_lock_release(lock_state);
                 }
-                len
+                chunk_len as u32
             } else {
                 u32::MAX
             }
