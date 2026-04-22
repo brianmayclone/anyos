@@ -79,14 +79,29 @@ const PERCPU_MAX_CPUS: usize = 16;
 /// Maximum bytes cached per CPU before flushing half back to the global list.
 const PERCPU_CACHE_MAX: usize = 256 * 1024; // 256 KiB
 
-// --- Size-class bucket allocator for small objects ---
-// Provides O(1) alloc/dealloc for common small sizes without walking the free list.
-// Each bucket is a simple LIFO stack of fixed-size blocks.
+// --- Size-class bucket allocator ---
+// Provides O(1) alloc/dealloc with no global lock for sizes up to 128 KiB.
+// Each bucket is a simple LIFO stack of fixed-size blocks. Requests are
+// rounded UP to the next size class, so freed blocks always return to a
+// matching bucket and can be reused without external fragmentation.
+//
+// Power-of-two classes from 32 B to 128 KiB. The 73 KiB allocation that
+// previously panicked the kernel after 10 h uptime now lands in the 128 KiB
+// bucket and is satisfied without walking the fragmented global free list.
 
-/// Size classes: 32, 64, 128, 256, 512, 1024 bytes.
-const SIZE_CLASSES: [usize; 6] = [32, 64, 128, 256, 512, 1024];
-/// Maximum blocks per size class per CPU (limits memory reserved in buckets).
-const BUCKET_MAX_BLOCKS: usize = 128;
+const SIZE_CLASSES: [usize; 13] = [
+    32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072,
+];
+const NUM_SIZE_CLASSES: usize = 13;
+
+/// Per-class cap on cached blocks per CPU. Larger classes cap lower so
+/// total per-CPU bucket residency stays bounded (~2 MiB per CPU across
+/// all classes when fully populated × 16 CPUs ≈ 32 MiB on a 442 MiB heap).
+const BUCKET_CAPS: [usize; 13] = [
+    128, 128, 128, 128, 128, 128, // 32 B .. 1 KiB
+    64, 32, 32, 16, // 2 KiB .. 16 KiB
+    8, 4, 4, // 32 KiB .. 128 KiB
+];
 
 /// A single node in a bucket's free stack (stored in-place in the freed block).
 #[repr(C)]
@@ -111,20 +126,14 @@ impl SizeClassBucket {
 
 /// Per-CPU buckets for each size class.
 struct PerCpuBuckets {
-    buckets: [SizeClassBucket; 6],
+    buckets: [SizeClassBucket; NUM_SIZE_CLASSES],
 }
 
 impl PerCpuBuckets {
     const fn new() -> Self {
+        const INIT: SizeClassBucket = SizeClassBucket::new();
         PerCpuBuckets {
-            buckets: [
-                SizeClassBucket::new(),
-                SizeClassBucket::new(),
-                SizeClassBucket::new(),
-                SizeClassBucket::new(),
-                SizeClassBucket::new(),
-                SizeClassBucket::new(),
-            ],
+            buckets: [INIT; NUM_SIZE_CLASSES],
         }
     }
 }
@@ -134,20 +143,27 @@ static mut PERCPU_BUCKETS: [PerCpuBuckets; PERCPU_MAX_CPUS] = {
     [INIT; PERCPU_MAX_CPUS]
 };
 
-/// Map a requested size to a size-class index. Only EXACT matches with
-/// size-class boundaries are accepted to prevent returning a smaller block
-/// for a larger request (e.g., a 16-byte block for a 32-byte alloc).
+/// Round `size` up to the next size class. Returns the index, or None
+/// if the request exceeds the largest class (then the request goes
+/// directly to the per-CPU cache / global free list).
 #[inline(always)]
 fn size_class_index(size: usize) -> Option<usize> {
-    match size {
-        32 => Some(0),
-        64 => Some(1),
-        128 => Some(2),
-        256 => Some(3),
-        512 => Some(4),
-        1024 => Some(5),
-        _ => None,
+    let mut i = 0;
+    while i < NUM_SIZE_CLASSES {
+        if SIZE_CLASSES[i] >= size {
+            return Some(i);
+        }
+        i += 1;
     }
+    None
+}
+
+/// Block size for a given size-class index. Always >= the original request
+/// that produced this index — alloc returns blocks of this exact size, and
+/// dealloc routes them back to the same bucket.
+#[inline(always)]
+fn size_class_size(idx: usize) -> usize {
+    SIZE_CLASSES[idx]
 }
 
 /// Try to allocate from a per-CPU size-class bucket. O(1), lock-free (IF=0).
@@ -159,14 +175,10 @@ fn size_class_index(size: usize) -> Option<usize> {
 /// the next bucket alloc (observed crash: RIP inside LockedHeap::alloc,
 /// CR2=0xFFFFFFFF). With the checks we return null and let the slow path
 /// handle it; the bucket is then reset so the corrupted chain stops spreading.
-unsafe fn bucket_alloc(cpu: usize, size: usize) -> *mut u8 {
-    if cpu >= PERCPU_MAX_CPUS {
+unsafe fn bucket_alloc(cpu: usize, sci: usize) -> *mut u8 {
+    if cpu >= PERCPU_MAX_CPUS || sci >= NUM_SIZE_CLASSES {
         return core::ptr::null_mut();
     }
-    let sci = match size_class_index(size) {
-        Some(i) => i,
-        None => return core::ptr::null_mut(),
-    };
     let bucket = &mut PERCPU_BUCKETS[cpu].buckets[sci];
     if bucket.head.is_null() {
         return core::ptr::null_mut();
@@ -194,16 +206,12 @@ unsafe fn bucket_alloc(cpu: usize, size: usize) -> *mut u8 {
 
 /// Return a block to a per-CPU size-class bucket. O(1), lock-free (IF=0).
 /// Returns true if successfully cached, false if bucket is full.
-unsafe fn bucket_dealloc(cpu: usize, ptr: *mut u8, size: usize) -> bool {
-    if cpu >= PERCPU_MAX_CPUS {
+unsafe fn bucket_dealloc(cpu: usize, ptr: *mut u8, sci: usize) -> bool {
+    if cpu >= PERCPU_MAX_CPUS || sci >= NUM_SIZE_CLASSES {
         return false;
     }
-    let sci = match size_class_index(size) {
-        Some(i) => i,
-        None => return false,
-    };
     let bucket = &mut PERCPU_BUCKETS[cpu].buckets[sci];
-    if bucket.count >= BUCKET_MAX_BLOCKS {
+    if bucket.count >= BUCKET_CAPS[sci] {
         return false; // bucket full, use regular dealloc path
     }
     let node = ptr as *mut BucketNode;
@@ -443,54 +451,72 @@ unsafe impl GlobalAlloc for LockedHeap {
             return core::ptr::null_mut();
         }
 
-        let size = align_up(
+        let raw_size = align_up(
             layout.size().max(core::mem::size_of::<FreeBlock>()),
             layout.align().max(16),
         );
 
-        // Ultra-fast path: try size-class bucket first (O(1), no lock, IF=0)
+        // Round up to the next size class. Bucket-eligible allocations are
+        // ALWAYS satisfied with a class-sized block — even when the bucket
+        // is empty and we fall through to the global free list — so dealloc
+        // can route the same block back to the matching bucket without
+        // size mismatch. Sizes > 128 KiB go straight to the global path.
+        let (effective_size, sci) = match size_class_index(raw_size) {
+            Some(idx) => (size_class_size(idx), Some(idx)),
+            None => (raw_size, None),
+        };
+
+        // Ultra-fast path: per-CPU bucket (O(1), no lock, IF=0).
         let flags = crate::arch::hal::save_and_disable_interrupts();
         let cpu = crate::arch::hal::cpu_id();
-        if size <= 1024 {
-            let result = bucket_alloc(cpu, size);
+        if let Some(idx) = sci {
+            let result = bucket_alloc(cpu, idx);
             if !result.is_null() {
                 crate::arch::hal::restore_interrupt_state(flags);
                 return result;
             }
         }
 
-        // Fast path: try per-CPU cache (no global lock needed)
-        let result = percpu_alloc(cpu, size);
-        if !result.is_null() {
-            crate::arch::hal::restore_interrupt_state(flags);
-            return result;
+        // Fast path: per-CPU free-list cache (only useful for sizes >128 KiB
+        // now that everything smaller has its own bucket).
+        if sci.is_none() {
+            let result = percpu_alloc(cpu, effective_size);
+            if !result.is_null() {
+                crate::arch::hal::restore_interrupt_state(flags);
+                return result;
+            }
         }
         crate::arch::hal::restore_interrupt_state(flags);
 
-        // Slow path: acquire global lock
+        // Slow path: global lock. Build a layout that requests the rounded
+        // class size so the free-list returns a block large enough for
+        // bucket recycling.
+        let alloc_layout = Layout::from_size_align_unchecked(
+            effective_size,
+            layout.align().max(16),
+        );
         let flags = self.acquire();
-        let mut result = alloc_inner(layout);
-
-        // If allocation failed, try growing the heap and retry
+        let mut result = alloc_inner(alloc_layout);
         if result.is_null() {
-            let needed = align_up(
-                layout.size().max(core::mem::size_of::<FreeBlock>()),
-                layout.align().max(16),
-            );
-            if grow_heap(needed) {
-                result = alloc_inner(layout);
+            if grow_heap(effective_size) {
+                result = alloc_inner(alloc_layout);
             }
         }
-
         self.release(flags);
         result
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let size = align_up(
+        let raw_size = align_up(
             layout.size().max(core::mem::size_of::<FreeBlock>()),
             layout.align().max(16),
         );
+        // Symmetry with alloc: round to the same size class so the block
+        // lands in the bucket it was allocated from.
+        let (effective_size, sci) = match size_class_index(raw_size) {
+            Some(idx) => (size_class_size(idx), Some(idx)),
+            None => (raw_size, None),
+        };
 
         // Validate: pointer must be within heap bounds
         if !is_in_heap(ptr as usize) {
@@ -500,19 +526,22 @@ unsafe impl GlobalAlloc for LockedHeap {
         // Ultra-fast path: return to size-class bucket (O(1), no lock, IF=0)
         let flags = crate::arch::hal::save_and_disable_interrupts();
         let cpu = crate::arch::hal::cpu_id();
-        if size <= 1024 && bucket_dealloc(cpu, ptr, size) {
-            crate::arch::hal::restore_interrupt_state(flags);
-            return;
+        if let Some(idx) = sci {
+            if bucket_dealloc(cpu, ptr, idx) {
+                crate::arch::hal::restore_interrupt_state(flags);
+                return;
+            }
         }
 
-        // Fast path: add to per-CPU cache (no global lock)
+        // Fast path: add to per-CPU cache (no global lock). Used when the
+        // bucket is full (overflow) or for sizes >128 KiB (no bucket).
         if cpu < PERCPU_MAX_CPUS {
             let cache = &mut PERCPU_CACHES[cpu];
             let block = ptr as *mut FreeBlock;
-            (*block).size = size;
+            (*block).size = effective_size;
             (*block).next = cache.free_list;
             cache.free_list = block;
-            cache.cached_bytes += size;
+            cache.cached_bytes += effective_size;
 
             if cache.cached_bytes > PERCPU_CACHE_MAX {
                 // Need global lock to flush back
@@ -530,9 +559,14 @@ unsafe impl GlobalAlloc for LockedHeap {
         }
         crate::arch::hal::restore_interrupt_state(flags);
 
-        // Fallback: global dealloc
+        // Fallback: global dealloc with the rounded size so the freed
+        // block stays consistent with what alloc handed out.
+        let dealloc_layout = Layout::from_size_align_unchecked(
+            effective_size,
+            layout.align().max(16),
+        );
         let flags = self.acquire();
-        dealloc_inner(ptr, layout);
+        dealloc_inner(ptr, dealloc_layout);
         self.release(flags);
     }
 }
