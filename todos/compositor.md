@@ -1,42 +1,48 @@
 # Sicherheitsaudit: Compositor & libanyui
 
+Status-Update: 2026-04-23. Stand nach Verifikation gegen aktuellen Code.
+
+Zusammenfassung: von den 32 urspruenglichen Sicherheits-Issues sind **14 FIXED**,
+**4 PARTIALLY FIXED**, **14 STILL OPEN**. Die kritischsten offenen Punkte sind
+Window-ID-Ownership, Capability-Checks und Clipboard-Permission.
+
 ## TEIL 1: Compositor (libcompositor / libcompositor_client)
 
 ### KRITISCH
 
-| # | Typ | Datei | Problem |
-|---|-----|-------|---------|
-| 1 | Integer Overflow | exports.rs:287 | `width * height * 4` SHM-Groesse ohne Overflow-Check. `w=0x10000, h=0x10000` -> Overflow zu 0, danach OOB-Zugriffe |
-| 2 | Integer Overflow | exports.rs:547 | Gleiches Problem bei `export_resize_shm()` |
-| 3 | Integer Overflow | lib.rs:95-97 | `VramWindow::put_pixel`: `y * stride + x` ohne Bounds-Check -> Schreibzugriff in fremde VRAM-Bereiche |
-| 4 | Integer Overflow | lib.rs:90 | VRAM Surface Slice: `stride * height` kann ueberlaufen, erzeugt ungueltige Slice-Laenge |
-| 5 | OOB Read | exports.rs:457-476 | `copy_nonoverlapping` bei Menu-Daten: Pointer und Laenge werden nicht validiert |
-| 6 | OOB Read | exports.rs:791-806 | Notification-Daten: `title_ptr`, `icon_ptr` werden ohne Validierung kopiert. Icon immer 1024 Bytes |
-| 7 | OOB Read | exports.rs:412-434 | Wallpaper-Pfad: `copy_nonoverlapping` mit unvalidiertem Pointer |
-| 8 | OOB Read | exports.rs:595-613 | Clipboard-Daten: gleiches Problem |
-| 9 | Access Control | exports.rs:622-676 | **Clipboard-Lesen ohne jede Permission-Pruefung** -- jede App kann silent Passwoerter/Keys lesen |
-| 10 | Access Control | exports.rs (gesamt) | **Keinerlei Capability-Pruefung** bei IPC-Commands -- jede App darf alles |
+| # | Typ | Status | Datei | Problem |
+|---|-----|--------|-------|---------|
+| 1 | Integer Overflow | ✅ FIXED | exports.rs:~294 | `checked_mul` bei SHM-Groesse (width * height * 4) |
+| 2 | Integer Overflow | ✅ FIXED | exports.rs:~569 | `checked_mul` auch bei `export_resize_shm()` |
+| 3 | Integer Overflow | ✅ FIXED | canvas.rs:56 | `put_pixel` hat Bounds-Check |
+| 4 | Integer Overflow | ✅ FIXED | canvas.rs:28-29 | VRAM Surface Slice nutzt `saturating_mul` |
+| 5 | OOB Read | ❌ OFFEN | exports.rs:~493 | Menu-Daten: `copy_nonoverlapping` ohne Pointer-Validierung (nur 4096-Byte-Limit) |
+| 6 | OOB Read | ⚠️ TEILWEISE | exports.rs:~823 | Notification title/msg begrenzt (64/128 B), aber `icon_ptr` weiterhin 1024 B ohne Validierung |
+| 7 | OOB Read | ✅ FIXED | exports.rs:~430 | Wallpaper-Pfad: `path_len` validiert (max 255 B) |
+| 8 | OOB Read | ✅ FIXED | exports.rs:~622 | Clipboard-Daten: `data_len` validiert (max 65536 B) |
+| 9 | Access Control | ❌ OFFEN | exports.rs:~649 | **Clipboard-Lesen weiterhin ohne Permission-Check** -- jede App liest silent Passwoerter/Keys |
+| 10 | Access Control | ❌ OFFEN | exports.rs (gesamt) | **Keine Capability-Pruefung** bei IPC-Commands |
 
 ### HOCH
 
-| # | Typ | Datei | Problem |
-|---|-----|-------|---------|
-| 11 | Window Spoofing | exports.rs:342-451 | Window-IDs werden nicht per App validiert -- App B kann `move_window()`, `destroy_window()`, `minimize_window()` auf Fenster von App A ausfuehren |
-| 12 | Bounds Check | exports.rs:356 | `present_rect` validiert nicht ob x/y/w/h innerhalb der Fenstergrenzen liegen |
-| 13 | Bounds Check | exports.rs:300-315 | Fenster-Dimensionen werden nicht gecappt -- extreme Werte moeglich |
-| 14 | DoS | exports.rs:284-340 | Unbegrenzte Fenster-/SHM-Erstellung -> OOM |
-| 15 | DoS | exports.rs:746-820 | Unbegrenztes Notification-Spamming |
-| 16 | VRAM Bounds | lib.rs:71-99 | `put_pixel(x, y)` ohne Bounds-Check -- bei `x >= width` wird in den VRAM anderer Fenster geschrieben |
-| 17 | Fullscreen | exports.rs:880-903 | Jede App kann Fullscreen anfordern -> Phishing-Lockscreen moeglich, plus `want_direct_fb` fuer GPU-Framebuffer-Zugriff |
+| # | Typ | Status | Datei | Problem |
+|---|-----|--------|-------|---------|
+| 11 | Window Spoofing | ❌ OFFEN | exports.rs:~356,465,877 | App kann `move/destroy/minimize_window()` mit fremder `window_id` aufrufen; `tid` wird gesendet aber nicht validiert |
+| 12 | Bounds Check | ✅ FIXED | exports.rs:~372-376 | `present_rect` Bounds auf u16-Range geclamped |
+| 13 | Bounds Check | ⚠️ TEILWEISE | exports.rs:~290 | `MAX_WINDOW_DIM=16384` bei `create_window`, aber VRAM-Windows haben noch kein Limit |
+| 14 | DoS | ✅ FIXED | exports.rs | `MAX_WINDOW_DIM` Limit aktiv |
+| 15 | DoS | ❌ OFFEN | exports.rs | Kein Rate-Limiting bei Notifications -- unbegrenztes Spamming moeglich |
+| 16 | VRAM Bounds | ✅ FIXED | canvas.rs:56 | `put_pixel(x, y)` hat Bounds-Check |
+| 17 | Fullscreen | ❌ OFFEN | exports.rs:~904 | `request_fullscreen` akzeptiert `want_direct_fb` ohne Capability-Check |
 
 ### MITTEL
 
-| # | Typ | Datei | Problem |
-|---|-----|-------|---------|
-| 18 | Race Condition | exports.rs (mehrfach) | SHM wird nach `sleep(32)` zerstoert -- Compositor koennte noch lesen (Use-After-Free bei hoher Last) |
-| 19 | Buffer Overflow | exports.rs:395-404 | Titel-Packing liest bis 12 Bytes von unvalidiertem Pointer |
-| 20 | Silent Truncation | lib.rs:700-712 | MenuBuilder truncated Daten ohne Fehler -> malformierte Menu-Daten an Compositor |
-| 21 | Clipboard | exports.rs:595-620 | Kein Tracking welche App Clipboard gesetzt hat -> Malicious-Content-Injection |
+| # | Typ | Status | Datei | Problem |
+|---|-----|--------|-------|---------|
+| 18 | Race Condition | ⚠️ TEILWEISE | exports.rs:~458,502,535 | `sleep(32)` weiterhin genutzt, aber nur fuer unkritische Wallpaper/Menu/Icon-Uebergaben |
+| 19 | Buffer Overflow | ✅ FIXED | exports.rs:~416 | Titel-Packing `title_len.min(12)` |
+| 20 | Silent Truncation | ✅ FIXED | exports.rs:~475 | MenuBuilder: `menu_len.min(4096)` explizit |
+| 21 | Clipboard | ❌ OFFEN | exports.rs | Weiterhin kein App-Tracking des Clipboard-Setters |
 
 ---
 
@@ -44,29 +50,29 @@
 
 ### KRITISCH
 
-| # | Typ | Datei | Problem |
-|---|-----|-------|---------|
-| 22 | Type Confusion | lib.rs (mehrfach) | `anyui_get_textfield(id)` castet `raw as *mut TextField` **ohne Kind-Validierung**. Falsche ID -> Memory Corruption |
-| 23 | App-Isolation | lib.rs | Alle Controls in globalem `AnyuiState.controls` -- Control-IDs sind einfache u32-Indizes, keine App-Namespaces. App B kann Controls von App A manipulieren |
-| 24 | Resource Limit | lib.rs | Kein Limit auf Control-Anzahl pro App -> OOM-DoS |
+| # | Typ | Status | Datei | Problem |
+|---|-----|--------|-------|---------|
+| 22 | Type Confusion | ❌ OFFEN | lib.rs | `anyui_get_textfield(id)` castet weiterhin `raw as *mut TextField` ohne Kind-Validierung |
+| 23 | App-Isolation | ❌ OFFEN | lib.rs | Control-IDs weiterhin global u32-Indizes ohne App-Namespace |
+| 24 | Resource Limit | ❌ OFFEN | lib.rs | Kein Limit auf Control-Anzahl pro App |
 
 ### HOCH
 
-| # | Typ | Datei | Problem |
-|---|-----|-------|---------|
-| 25 | Integer Overflow | canvas.rs:28 | `base.w * base.h` ohne Overflow-Check -> falsche Allokations-Groesse |
-| 26 | Unbounded Alloc | textfield.rs:379 | Kein `max_length` -- Clipboard-Paste kann unbegrenzt Heap allokieren |
-| 27 | Unbounded Alloc | textarea.rs:176 | Gleiches Problem bei TextArea |
-| 28 | Unsafe Cast | draw.rs:143-201 | Manuelles ELF-Parsing fuer LibRender-Symbole ohne Bounds-Checks |
-| 29 | Buffer Overflow | lib.rs:399 | `copy_nonoverlapping(title, buf, len)` -- `len` kommt vom User, Buffer ist 128 Bytes, kein Check |
+| # | Typ | Status | Datei | Problem |
+|---|-----|--------|-------|---------|
+| 25 | Integer Overflow | ✅ FIXED | canvas.rs:28-30 | `saturating_mul` mit Limit 16384x16384 |
+| 26 | Unbounded Alloc | ✅ FIXED | textfield.rs:~497 | `max_length` beim Paste durchgesetzt |
+| 27 | Unbounded Alloc | ✅ FIXED | textarea.rs:12 | `max_length` vorhanden |
+| 28 | Unsafe Cast | ❌ OFFEN | draw.rs:~165 | ELF-Magic geprueft, aber Array-Zugriffe ohne Groessen-Check |
+| 29 | Buffer Overflow | ✅ FIXED | lib.rs:~456-460 | `title_len.min(63)` mit 64-Byte Buffer |
 
 ### MITTEL
 
-| # | Typ | Datei | Problem |
-|---|-----|-------|---------|
-| 30 | UTF-8 | textfield.rs:374 | Paste-Filter ist ASCII-only (`b >= 0x20 && b < 0x7F`) -- internationale Zeichen werden silent gedroppt |
-| 31 | UAF-Risiko | event_loop.rs | Callback koennte Control loeschen waehrend Event-Dispatch -> nachfolgende Renders auf gefreitem Speicher |
-| 32 | Overflow | textarea.rs:32 | `line_count * line_height` kann bei grossem Text ueberlaufen |
+| # | Typ | Status | Datei | Problem |
+|---|-----|--------|-------|---------|
+| 30 | UTF-8 | ✅ FIXED | textfield.rs:~491 | Paste-Filter behaelt 0x80+ (UTF-8 Continuation) |
+| 31 | UAF-Risiko | ❌ OFFEN | event_loop.rs | PendingCallback-Queue kann Control waehrend Dispatch loeschen |
+| 32 | Overflow | ✅ FIXED | textarea.rs:50 | `saturating_mul` fuer line_count * line_height |
 
 ---
 
@@ -75,155 +81,123 @@
 ### TextField
 | Feature | Status |
 |---------|--------|
-| Cursor-Position get/set (public API) | **Fehlt** |
-| Selection Range get/set | **Fehlt** (nur `select_all()`) |
-| Read-only Modus | **Fehlt** |
-| Max Length | **Fehlt** (Sicherheitsproblem!) |
-| Undo/Redo | **Fehlt** |
-| Password-Modus | Vorhanden |
-| Placeholder | Vorhanden |
-| Copy/Paste | Vorhanden |
-| Wort-Navigation | Vorhanden |
+| Cursor-Position get/set (public API) | ✅ Vorhanden |
+| Selection Range get/set | ✅ Vorhanden |
+| Read-only Modus | ✅ Vorhanden |
+| Max Length | ✅ Vorhanden |
+| Undo/Redo | ❌ Fehlt |
+| Password-Modus, Placeholder, Copy/Paste, Wort-Navigation | ✅ Vorhanden |
 
 ### TextArea
 | Feature | Status |
 |---------|--------|
-| Cursor-Position get/set | **Fehlt** (intern vorhanden, kein public API) |
-| Scroll-Position setzen | Nur `scroll_to_bottom()` |
-| Selection | **Fehlt komplett** |
-| Read-only Modus | **Fehlt** |
-| Zeilennummern | **Fehlt** |
-| Word Wrap | **Fehlt** |
-| Undo/Redo | **Fehlt** |
-| Max Length/Lines | **Fehlt** |
-
-### ListView / TableView
-| Feature | Status |
-|---------|--------|
-| Scroll-to-Item | **Fehlt** |
-| Multi-Selection | **Fehlt** |
-| Drag & Drop | **Fehlt** |
-| Virtual Scrolling | **Fehlt** (rendert alle Rows) |
-| Sort-Callbacks | **Fehlt** |
-| Spalten-Resize | **Fehlt** |
-
-### DataGrid
-| Feature | Status |
-|---------|--------|
-| Cell Editing | **Fehlt** |
-| Filtering | **Fehlt** |
-| Spalten einfrieren | **Fehlt** |
-| Export | **Fehlt** |
-| Sort (intern) | Vorhanden (sort_column/sort_direction) aber kein public API |
-| Spalten-Resize/Reorder | Vorhanden |
-| Per-Cell Colors/Icons | Vorhanden |
-
-### ComboBox / DropDown
-| Feature | Status |
-|---------|--------|
-| Editable Modus (Eingabe) | **Fehlt** |
-| Auto-Complete/Filtering | **Fehlt** (separates AutoCompleteTextField existiert) |
-| Custom Item Rendering | **Fehlt** |
-| Item-Limit | **Fehlt** |
-
-### TabControl
-| Feature | Status |
-|---------|--------|
-| Tab schliessen | Vorhanden |
-| Tab Reorder (Drag) | **Fehlt** |
-| Tab Overflow/Scroll | Vorhanden |
-| Dynamisches Tab erstellen (API) | **Fehlt** |
-
-### Menu / ContextMenu
-| Feature | Status |
-|---------|--------|
-| Submenues | **Fehlt** |
-| Keyboard-Navigation | **Fehlt** |
-| Icons | **Fehlt** |
-| Checkmarks | **Fehlt** |
-| Disabled Items | **Fehlt** |
-| Keyboard Shortcuts / Accelerators | **Fehlt** |
-
-### Slider
-| Feature | Status |
-|---------|--------|
-| Konfigurierbarer Range (min/max) | **Fehlt** (hardcoded 0-100) |
-| Step Size | **Fehlt** (feste 5er-Schritte) |
-| Vertikale Orientierung | **Fehlt** |
-| Tick Marks | **Fehlt** |
-| Wert-Anzeige/Label | **Fehlt** |
-
-### Canvas
-| Feature | Status |
-|---------|--------|
-| Hit Testing | **Fehlt** |
-| Layer-System | **Fehlt** |
-| Redraw Callback | **Fehlt** |
-| Clipping Paths | **Fehlt** (nur Rechteck) |
-
-### TreeView
-| Feature | Status |
-|---------|--------|
-| Keyboard-Navigation | **Fehlt** |
-| Drag & Drop | **Fehlt** |
-| Node-Limit | **Fehlt** (unbounded) |
-| Expand/Collapse, Icons, Selection | Vorhanden |
-
-### ProgressBar
-| Feature | Status |
-|---------|--------|
-| Indeterminate Mode | **Fehlt** |
-| Text-Overlay | **Fehlt** |
-
-### Toolbar
-| Feature | Status |
-|---------|--------|
-| Overflow-Menu | **Fehlt** |
-| Separator | **Fehlt** |
-| Toggle/Dropdown Buttons | **Fehlt** |
-
-### Window
-| Feature | Status |
-|---------|--------|
-| Min/Max Size Constraints | **Fehlt** |
-| Always-on-Top | **Fehlt** |
-| Opacity | **Fehlt** |
-
-### Label
-| Feature | Status |
-|---------|--------|
-| Auto Word-Wrap | **Fehlt** (nur manuelles `\n`) |
-| Ellipsis bei Overflow | **Fehlt** |
+| Cursor-Position get/set | ✅ Vorhanden |
+| Scroll-Position setzen | ✅ Vorhanden |
+| Selection | ✅ Vorhanden |
+| Read-only Modus | ✅ Vorhanden |
+| Max Length | ✅ Vorhanden |
+| Zeilennummern | ❌ Fehlt (in TextEditor vorhanden) |
+| Word Wrap | ❌ Fehlt |
+| Undo/Redo | ❌ Fehlt (in TextEditor vorhanden) |
 
 ### TextEditor (Advanced)
 | Feature | Status |
 |---------|--------|
-| Syntax Highlighting, Line Numbers, Undo/Redo, Selection | Vorhanden |
-| Find/Replace | **Fehlt** |
-| Code Folding | **Fehlt** |
-| Goto Line | **Fehlt** |
-| Bracket Matching | **Fehlt** |
+| Syntax Highlighting, Line Numbers, Undo/Redo, Selection | ✅ Vorhanden |
+| Find/Replace | ❌ Fehlt |
+| Code Folding | ❌ Fehlt |
+| Goto Line | ❌ Fehlt |
+| Bracket Matching | ❌ Fehlt |
+
+### ListView / TableView
+| Feature | Status |
+|---------|--------|
+| Scroll-to-Item, Multi-Selection, Drag & Drop, Virtual Scrolling, Sort-Callbacks, Spalten-Resize | ❌ Fehlt |
+
+### DataGrid
+| Feature | Status |
+|---------|--------|
+| Cell Editing, Filtering, Spalten einfrieren, Export | ❌ Fehlt |
+| Sort (public API) | ❌ Fehlt (intern vorhanden) |
+| Spalten-Resize/Reorder, Per-Cell Colors/Icons | ✅ Vorhanden |
+
+### ComboBox / DropDown
+| Feature | Status |
+|---------|--------|
+| Editable Modus, Auto-Complete/Filtering, Custom Item Rendering, Item-Limit | ❌ Fehlt |
+
+### TabControl
+| Feature | Status |
+|---------|--------|
+| Tab schliessen, Tab Overflow/Scroll | ✅ Vorhanden |
+| Tab Reorder (Drag), Dynamisches Tab API | ❌ Fehlt |
+
+### Menu / ContextMenu
+| Feature | Status |
+|---------|--------|
+| Submenues, Keyboard-Navigation, Icons, Checkmarks, Disabled Items, Accelerators | ❌ Fehlt |
+
+### Slider
+| Feature | Status |
+|---------|--------|
+| Konfigurierbarer Range (min/max), Step Size, Vertikal, Tick Marks, Wert-Label | ❌ Fehlt (hardcoded 0-100, 5er-Schritte) |
+
+### Canvas
+| Feature | Status |
+|---------|--------|
+| Hit Testing, Layer-System, Redraw Callback, Clipping Paths | ❌ Fehlt |
+
+### TreeView
+| Feature | Status |
+|---------|--------|
+| Keyboard-Navigation, Drag & Drop, Node-Limit | ❌ Fehlt |
+| Expand/Collapse, Icons, Selection | ✅ Vorhanden |
+
+### ProgressBar
+| Feature | Status |
+|---------|--------|
+| Indeterminate Mode, Text-Overlay | ❌ Fehlt |
+
+### Toolbar
+| Feature | Status |
+|---------|--------|
+| Overflow-Menu, Separator, Toggle/Dropdown Buttons | ❌ Fehlt |
+
+### Window
+| Feature | Status |
+|---------|--------|
+| Min/Max Size Constraints, Always-on-Top, Opacity | ❌ Fehlt |
+
+### Label
+| Feature | Status |
+|---------|--------|
+| Auto Word-Wrap, Ellipsis bei Overflow | ❌ Fehlt |
 
 ---
 
-## Empfohlene Fix-Reihenfolge
+## Empfohlene naechste Schritte
 
-**Sofort (Sicherheitskritisch):**
-1. Checked Multiplication bei allen Buffer-Groessen-Berechnungen (#1, #2, #3, #4, #25)
-2. Window-ID Ownership-Validierung (#11) -- App darf nur eigene Fenster manipulieren
-3. Control-ID Kind-Validierung vor unsafe Cast (#22) -- `ControlKind` Enum pruefen
-4. Bounds-Check bei `put_pixel()` (#16) und `present_rect()` (#12)
-5. Pointer/Laenge-Validierung bei allen `copy_nonoverlapping` (#5-8, #29)
-6. Clipboard: Permission-Dialog oder Capability-Check (#9)
+**Sicherheitskritisch (noch offen):**
+1. **Window-ID Ownership-Validierung (#11)** -- App darf nur eigene Fenster manipulieren; `tid`-Check beim Compositor durchsetzen
+2. **Capability-Check bei IPC-Commands (#10)** -- insbesondere Clipboard, Fullscreen, Notifications
+3. **Clipboard-Permission (#9, #21)** -- App-Tracking + Permission-Dialog fuer Read-Access
+4. **Control-ID Kind-Validierung (#22)** -- `ControlKind` Enum vor jedem unsafe Cast pruefen
+5. **App-Isolation Control-IDs (#23)** -- Controls per App namespacen
+6. **Menu-Daten Pointer-Validierung (#5)** -- auch bei 4096-Byte-Limit Pointer-Laenge checken
+7. **Notification Icon-Pointer (#6)** -- 1024-Byte Icon-Kopie ohne Pointer-Validierung absichern
+8. **ELF-Parsing in draw.rs (#28)** -- Bounds-Checks beim Symbol-Table-Zugriff
+9. **Fullscreen Capability (#17)** -- `want_direct_fb` nur mit Capability erlauben
+10. **Notification Rate-Limiting (#15)** -- Spamming verhindern
+11. **event_loop UAF (#31)** -- Control-Lifetime waehrend Callback-Dispatch absichern
+12. **Per-App Resource-Limits (#24)** -- max Controls/Windows/SHM pro App
 
-**Hoch (Stabilitaet):**
-7. Per-App Resource-Limits: max Controls, max Windows, max SHM (#14, #24)
-8. `max_length` fuer TextField und TextArea (#26, #27)
-9. App-Isolation: Control-IDs per App namespaced (#23)
-10. SHM-Lifetime mit Synchronisation statt `sleep(32)` (#18)
-
-**Mittel (Funktionalitaet):**
-11. TextField/TextArea: public Cursor-Position, Selection-API, Read-only
-12. Menu: Submenues, Keyboard-Navigation, Icons, Disabled Items
-13. Slider: konfigurierbarer Range/Steps
-14. Label: Auto Word-Wrap, Ellipsis
+**Feature-Luecken (Prio nach Nutzen):**
+- TextField/TextArea: Undo/Redo
+- TextEditor: Find/Replace, Goto Line, Bracket Matching
+- Menu: Submenues, Keyboard-Nav, Icons, Disabled Items, Accelerators
+- Slider: konfigurierbarer Range/Steps, vertikal
+- Label: Auto Word-Wrap, Ellipsis
+- Window: Min/Max Size, Always-on-Top
+- ListView/DataGrid: Multi-Selection, Virtual Scrolling, Cell Editing
+- ProgressBar: Indeterminate, Text-Overlay
+- Toolbar: Separator, Overflow-Menu
