@@ -123,7 +123,8 @@ if(ANYOS_DUAL_PARTITION)
       --boot-font ${BOOT_FONT_BIN}
       --dual-partition
       --boot-partition-size-mib ${ANYOS_BOOT_PARTITION_SIZE_MIB}
-      ${DUAL_ROOT_FS_ARGS})
+      ${DUAL_ROOT_FS_ARGS}
+      ${MKIMAGE_RESET_FLAG})
   set(IMAGE_BUILD_DEP ${MKIMAGE_EXECUTABLE})
   if(ANYOS_SYSTEM_FS STREQUAL "corefs")
     set(IMAGE_COMMENT "Creating dual-partition image (/boot ${ANYOS_BOOT_PARTITION_SIZE_MIB} MiB exFAT + / CoreFS)")
