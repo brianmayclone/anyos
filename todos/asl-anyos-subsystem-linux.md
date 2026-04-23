@@ -37,6 +37,15 @@ Der Architekturansatz fuer ASL lautet daher:
 - **Integration erfolgt ueber klar definierte Host-Services und paravirtuale Kanaele**
 - **Datei-, Terminal- und Netzwerk-UX werden systemisch gelost, nicht app-lokal**
 
+Die bereits festgezogenen Leitentscheidungen sind:
+
+- ASL ist ausschliesslich WSL2-artig
+- Linux-Instanzen werden als verwaltete Distributionen modelliert
+- Rootfs wird geschichtet aus Base- und Overlay-Layer aufgebaut
+- NAT ist der Standard-Netzwerkmodus
+- Shared Folders sind explizite, brokered Exportpunkte
+- `asl-agent` ist Standardbestandteil offizieller Distros, aber nicht bootkritisch
+
 ASL sollte in drei Produktstufen gebaut werden:
 
 1. **ASL Foundation**
@@ -77,9 +86,10 @@ Linux-GUI-Apps, Clipboard, Notifications, ggf. Wayland/X11-Bridge
 
 ## Architekturprinzipien
 
-1. **VM-first statt ABI-Shim**
-Ein WSL1-artiger Syscall-Kompatibilitaetslayer waere fuer anyOS drastisch
-teurer und riskanter als eine sauber kontrollierte Linux-Utility-VM.
+1. **Ausschliesslich WSL2-artig**
+ASL wird ausschliesslich als kontrollierte Linux-Utility-VM gebaut. Ein
+WSL1-artiger Syscall-/ABI-Kompatibilitaetslayer gehoert nicht zur Architektur
+und wird auch nicht als spaeterer Alternativpfad verfolgt.
 
 2. **Host owns policy**
 Ressourcen, Mounts, Netzfreigaben, Lifecycle und Rechte werden durch anyOS
@@ -178,13 +188,18 @@ Leichtgewichtiger Linux-Gastagent fuer:
 
 - Session-/Console-Multiplexing
 - Heartbeats und Readiness
-- Port- und Prozessinventar
 - Mount-Metadaten
-- Clipboard, Notifications, spaeter GUI-Hooks
 - saubere Shutdown-/Suspend-Koordination
+- einfaches Gastinventar fuer Status und Diagnose
 
-Der Agent darf nicht die primitivste Bootfaehigkeit blockieren. Linux muss auch
-ohne Agent noch booten und via Fallback-Konsole erreichbar sein.
+Spaeter optional:
+
+- Clipboard, Notifications, GUI-Hooks
+- detaillierteres Port- und Prozessinventar
+
+Der Agent ist Standardbestandteil offizieller ASL-Distributionen, darf aber
+nicht die Grundfunktion blockieren. Linux muss auch ohne funktionsfaehigen
+Agent noch booten und via Fallback-Konsole erreichbar sein.
 
 #### 4. `aslfsd` - Shared Filesystem Broker
 
@@ -261,7 +276,10 @@ Empfohlene Ablage:
   distros/
     ubuntu-dev/
       config.json
-      disk/
+      images/
+        base.img
+        overlay.img
+        state.img
       runtime/
       logs/
       sockets/
@@ -292,6 +310,12 @@ Bootfolge:
 6. `asl-agent` meldet Readiness
 7. `aslconsoled`, `aslfsd`, `aslnetd` haengen Integrationskanaele an
 8. Distribution wird als `running` markiert
+
+Wichtig:
+
+- der Gast darf auch ohne Agent in einen degradierten, aber erreichbaren Zustand
+  booten
+- `running` und `agent=ready` sind bewusst nicht dasselbe
 
 State Machine:
 
@@ -377,6 +401,7 @@ Empfehlung fuer v1:
 
 - read-only Base Image
 - separater writable Overlay-/Diff-Layer
+- optional separater State-/Data-Layer
 - klare Trennung zwischen:
   - importiertem Linux-Image
   - persistenten Gastaenderungen
@@ -397,6 +422,14 @@ Ziele:
 - Reparierbarkeit
 - kleinere Delta-Backups
 
+Betriebsregeln:
+
+- `base.img` wird nie in-place beschrieben
+- `overlay.img` ist exklusiv an eine Distribution gebunden
+- `state.img` ist fuer mutable Laufzeit- und Benutzerdaten reservierbar
+- Distributionen werden logisch exportiert und geklont, nicht nur als rohe
+  Einzeldateien behandelt
+
 ### Host <-> Guest Shared Folders
 
 Empfehlung fuer v1:
@@ -404,13 +437,45 @@ Empfehlung fuer v1:
 - explizit deklarierte Mounts
 - Standardmount nur nach Benutzerfreigabe
 - kein pauschaler Vollzugriff auf Host-Home
+- Broker-Modell ueber `aslfsd`
+- keine direkte CoreFS-Durchreichung in den Gast
 
-Mount-Klassen:
+Mount-Objekte enthalten mindestens:
+
+- `host_path`
+- `guest_path`
+- `mode`
+- `metadata_mode`
+- `case_mode`
+- `exec_policy`
+- `watch_policy`
+
+Mount-Modi:
 
 - `readonly`
 - `readwrite`
-- `metadata-relaxed`
-- `case-sensitive` oder `case-folded`
+
+Metadata-Modi:
+
+- `strict`
+- `relaxed`
+
+Case-Modi:
+
+- `host-native`
+- `case-sensitive`
+- `case-folded`
+
+Exec-Policies:
+
+- `inherit`
+- `noexec`
+- `host-metadata`
+
+Watch-Policies:
+
+- `best-effort`
+- `off`
 
 Wichtige Designfragen:
 
@@ -425,6 +490,9 @@ Empfehlung:
 
 - v1 klare Dokumentation, dass Host-Shared-Folders nicht 100 Prozent POSIX-
   identisch sind
+- Shared Folders als POSIX-nahe Entwicklungsfreigaben positionieren, nicht als
+  vollstaendige Linux-Dateisysteme
+- `aslfsd` bleibt Sicherheits- und Semantikgrenze
 - fuer Build-Systeme und Paketmanager eigene Linux-native Verzeichnisse im
   Gast empfehlen
 
@@ -449,6 +517,8 @@ Standardmodus:
 - Gast erhaelt private IP
 - ausgehende Verbindungen erlaubt
 - eingehende Verbindungen nur ueber explizite Port-Freigaben
+- DNS-Aufloesung ueber den Host-Broker
+- Default-Exponierung nur lokal ueber `127.0.0.1`
 
 Vorteile:
 
@@ -489,12 +559,15 @@ nutzbar sein.
 1. **Interactive shell**
 `aslctl shell ubuntu-dev`
 
+Fallback:
+`aslctl shell ubuntu-dev --fallback-console`
+
 2. **Single command execution**
 `aslctl exec ubuntu-dev -- cargo test`
 
 3. **Persistent named sessions**
 vergleichbar mit gemanagtem `tmux`-artigen Verhalten, aber systemisch
-kontrolliert
+kontrolliert, z. B. `aslctl shell ubuntu-dev --session dev`
 
 ### Integrationspunkte
 
@@ -516,6 +589,8 @@ Wichtig:
 
 - PTY/TTY-Semantik nicht im Terminal-UI verstecken
 - Sitzungen muessen bei UI-Absturz erhalten bleiben koennen
+- agent-sensitive und agent-unabhaengige Pfade sauber unterscheiden
+- degradiertes Shell-Verhalten sichtbar machen statt generisch zu scheitern
 
 ---
 
@@ -559,7 +634,8 @@ folgende Grenzen:
 - Linux-Gast ist kein privilegierter Hostbestandteil
 - Gast darf ohne explizite Freigabe nicht auf Host-Dateien zugreifen
 - Gastports sind nicht automatisch nach aussen exponiert
-- Gastagent ist funktional, aber nicht allmaechtig
+- Gastagent ist funktional, aber nicht allmaechtig und kein
+  Vertrauensanker fuer Host-Sicherheit
 
 ### Berechtigungsmodell
 
@@ -671,7 +747,8 @@ Beispiel:
 - Rootfs konsistent
 - Mount-Pfade erreichbar
 - Netzpfad gesund
-- Agent-Heartbeat intakt
+- Agent-Status sauber zwischen `ready`, `degraded` und `disconnected`
+  unterscheidbar
 - Port-Broker aktiv
 
 ### Restart-Strategie
@@ -762,10 +839,11 @@ Arbeitspakete:
 
 - Namens- und Produktentscheidung `ASL`
 - Distro-Lifecycle und Statusmodell definieren
-- Disk-/Rootfs-Modell festlegen
+- geschichtetes Distro-/Rootfs-Modell festlegen
 - minimale Geraetematrix fuer v1 festlegen
 - Host-zu-Gast Protokollgrenzen definieren
 - Security Baseline dokumentieren
+- Rolle des `asl-agent` und Fallback-Konsole festziehen
 
 Ergebnisse:
 
@@ -804,6 +882,7 @@ Ziel:
 Arbeitspakete:
 
 - `aslctl shell` und `aslctl exec`
+- degradierten Fallback fuer Shell-Zugriff
 - NAT-Netzwerk
 - DNS-Aufloesung
 - Import von Rootfs-Tarball oder Image
@@ -828,6 +907,7 @@ Arbeitspakete:
 - Port-Forwarding
 - Session-Reconnect
 - Tooling fuer Diagnose
+- konkrete Mount-Policies fuer Metadata/Case/Exec/Watch
 - evtl. Editor-Integration
 
 Akzeptanzkriterien:
@@ -969,12 +1049,14 @@ praktischen Nutzen zu beweisen.
 
 ## Konkrete naechste Schritte
 
-1. `ASL` als offiziellen Namen und VM-first-Ansatz festschreiben.
-2. ADR fuer Distro-Modell, Rootfs-Modell und Netzwerk-Default verfassen.
+1. `ASL` als offiziellen Namen und ausschliesslich WSL2-artigen Ansatz festschreiben.
+2. ADRs fuer Distro-/Rootfs-Modell, Netzwerk-Default, Shared Folders und
+   `asl-agent` als Basisdokumente pflegen.
 3. `asld` und `aslctl` als neue Systemkomponenten anlegen.
 4. Minimalen Linux-Bootpfad ueber bestehende VM-Syscalls implementieren.
-5. Paravirt-Konsole und Heartbeat-Agent als erste Integrationsschicht bauen.
-6. Danach erst Shared Folders und Port-Forwarding angehen.
+5. Paravirt-Konsole plus degradierten Fallback-Pfad bauen.
+6. Minimalen `asl-agent` fuer Heartbeat und Session-Komfort aufsetzen.
+7. Danach Shared Folders und Port-Forwarding entlang der ADRs umsetzen.
 
 ---
 

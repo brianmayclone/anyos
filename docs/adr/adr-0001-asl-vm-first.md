@@ -1,4 +1,4 @@
-# ADR-0001 - ASL uses a VM-first architecture
+# ADR-0001 - ASL is WSL2-style only
 
 ## Status
 
@@ -11,12 +11,9 @@ Accepted
 ## Context
 
 anyOS soll mit ASL eine produktiv nutzbare Linux-Kompatibilitaetsplattform
-erhalten. Die zentrale Architekturfrage ist, ob Linux-Unterstuetzung ueber:
-
-- einen direkten Linux-Syscall-Kompatibilitaetslayer auf anyOS
-- oder ueber eine kontrollierte Linux-Utility-VM
-
-bereitgestellt werden soll.
+erhalten. Dabei soll es genau einen Architekturpfad geben: eine kontrollierte
+Linux-Utility-VM nach WSL2-artigem Modell. Ein WSL1-artiger
+Syscall-/ABI-Kompatibilitaetslayer ist nicht Teil der Produktstrategie.
 
 anyOS besitzt bereits relevante Vorleistungen fuer den zweiten Ansatz:
 
@@ -25,12 +22,13 @@ anyOS besitzt bereits relevante Vorleistungen fuer den zweiten Ansatz:
 - bestehende Service-Orchestrierung via `svc`
 - vorhandene Integrationsmuster fuer Host/Guest-Kommunikation
 
-Gleichzeitig waere ein WSL1-artiger ABI-/Syscall-Kompatibilitaetslayer fuer
-Linux semantisch breit, fehleranfaellig und langfristig teuer zu pflegen.
+Diese Festlegung verhindert, dass ASL in zwei konkurrierende
+Kompatibilitaetsmodelle zerfaellt. Der WSL1-artige Pfad wird fuer anyOS nicht
+verfolgt.
 
 ## Decision
 
-ASL wird als **VM-first Subsystem** gebaut.
+ASL wird als **ausschliesslich WSL2-artiges, VM-first Subsystem** gebaut.
 
 Linux laeuft in einer von anyOS kontrollierten Utility-VM. anyOS bleibt Host,
 Policy-Owner und Integrationsplattform.
@@ -42,6 +40,9 @@ systemisches Subsystem mit:
 - klaren Ressourcen- und Sicherheitsgrenzen
 - kontrollierten Integrationskanaelen fuer Console, Filesystem, Netzwerk und
   spaeter Desktop-Features
+
+Ein WSL1-artiger Linux-Syscall-Kompatibilitaetslayer auf dem anyOS-Kernel wird
+weder parallel entwickelt noch spaeter als zweite Betriebsart eingefuehrt.
 
 ## Decision Drivers
 
@@ -76,25 +77,12 @@ systemisches Subsystem mit:
 - fuer das MVP wird NAT, Terminal und kontrolliertes Shared-Foldering priorisiert
 - Snapshots, GPU und Linux-GUI-Apps werden explizit nachgelagert
 
-## Rejected Alternatives
+## Non-Goals
 
-### 1. Linux-Syscall-Kompatibilitaetslayer auf anyOS
-
-Verworfen wegen:
-
-- hoher Implementierungsbreite
-- schwieriger ABI- und POSIX-Semantik
-- grosser Kernel-Oberflaeche
-- schlechterer Sicherheits- und Testbarkeit
-
-### 2. Externe Voll-VM ohne tiefe Systemintegration
-
-Verworfen wegen:
-
-- schlechter UX
-- schwacher Dateisystem- und Portintegration
-- fehlendem Subsystem-Charakter
-- unklarer Betriebs- und Policy-Verantwortung
+- Linux-Syscall-Kompatibilitaetslayer auf anyOS
+- duales Modell aus WSL1-artigem und WSL2-artigem Betrieb
+- externe Voll-VM ohne tiefe Systemintegration
+- unkontrollierte Linux-Laufzeit ausserhalb des ASL-Control-Plane-Modells
 
 ## Follow-up Decisions
 

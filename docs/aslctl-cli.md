@@ -88,6 +88,8 @@ Ziel:
 
 ```text
 aslctl shell <name>
+aslctl shell <name> --fallback-console
+aslctl shell <name> --session <session-name>
 aslctl exec <name> -- <command> [args...]
 aslctl run <name> --cwd <path> --env KEY=VALUE -- <command> [args...]
 ```
@@ -95,23 +97,76 @@ aslctl run <name> --cwd <path> --env KEY=VALUE -- <command> [args...]
 Verhalten:
 
 - `shell` startet interaktive Sitzung mit PTY
+- `shell --fallback-console` versucht einen degradierten Zugriffspfad ohne volle
+  Agent-Integration
+- `shell --session <session-name>` adressiert oder erzeugt eine benannte
+  persistente Sitzung
 - `exec` fuehrt einmaligen Befehl aus
 - `run` ist die erweiterte Variante mit Arbeitsverzeichnis und Umgebungsvariablen
+
+Hinweis:
+
+- `shell` und `exec` sollen klar anzeigen, ob sie ueber den Agent-Pfad oder
+  einen degradierten Fallback laufen
 
 ### Filesystem and Mounts
 
 ```text
 aslctl mount list <name>
-aslctl mount add <name> --host <path> --guest <path> --mode <mode>
+aslctl mount add <name> --host <path> --guest <path> --mode <mode> [options]
 aslctl mount remove <name> --guest <path>
 aslctl mount validate <name>
+aslctl mount show <name> --guest <path>
 ```
 
-Modi:
+Zentrale Optionen fuer `mount add`:
+
+- `--mode readonly|readwrite`
+- `--metadata strict|relaxed`
+- `--case host-native|case-sensitive|case-folded`
+- `--exec inherit|noexec|host-metadata`
+- `--watch best-effort|off`
+- `--description <text>`
+
+Mount-Modi:
 
 - `readonly`
 - `readwrite`
-- `metadata-relaxed`
+
+Metadata-Modi:
+
+- `strict`
+- `relaxed`
+
+Case-Modi:
+
+- `host-native`
+- `case-sensitive`
+- `case-folded`
+
+Exec-Policies:
+
+- `inherit`
+- `noexec`
+- `host-metadata`
+
+Watch-Policies:
+
+- `best-effort`
+- `off`
+
+Beispiel:
+
+```text
+aslctl mount add ubuntu-dev \
+  --host /Users/strati/projects \
+  --guest /mnt/projects \
+  --mode readwrite \
+  --metadata relaxed \
+  --case host-native \
+  --exec inherit \
+  --watch best-effort
+```
 
 ### Network and Ports
 
@@ -141,6 +196,8 @@ aslctl logs <name> --follow
 aslctl doctor <name>
 aslctl inspect <name>
 aslctl events <name>
+aslctl agent status <name>
+aslctl agent restart <name>
 ```
 
 Ziel:
@@ -190,6 +247,20 @@ Last Error:     none
 }
 ```
 
+### `aslctl mount show ubuntu-dev --guest /mnt/projects`
+
+```text
+Host Path:       /Users/strati/projects
+Guest Path:      /mnt/projects
+Mode:            readwrite
+Metadata:        relaxed
+Case:            host-native
+Exec:            inherit
+Watch:           best-effort
+Health:          ready
+Last Error:      none
+```
+
 ## Exit Codes
 
 - `0`
@@ -235,6 +306,7 @@ aslctl status <name>
 aslctl shell <name>
 aslctl exec <name> -- <command>
 aslctl mount add <name> --host <path> --guest <path> --mode readonly
+aslctl mount validate <name>
 aslctl port list <name>
 aslctl logs <name>
 aslctl doctor <name>
@@ -251,6 +323,7 @@ aslctl doctor <name>
 ## Offene Punkte
 
 - wie `aslctl config edit` Editor-Integration genau loest
-- ob `shell` den Gastagent zwingend voraussetzt
+- ob `shell` in v1 standardmaessig ueber Agent, Fallback-Konsole oder adaptiv
+  entscheidet
 - wie stark Port-Freigaben automatisch vorgeschlagen werden sollen
 - ob es einen Alias wie `asl` statt `aslctl` geben soll
