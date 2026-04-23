@@ -590,7 +590,7 @@ extern "C" fn idle_thread_entry() {
 impl Scheduler {
     #[cfg(target_arch = "aarch64")]
     #[inline]
-    fn arm64_has_pinned_kernel_continuation(&self, idx: usize) -> bool {
+    fn has_pinned_kernel_continuation(&self, idx: usize) -> bool {
         let t = &self.threads[idx];
         let pc = t.context.get_pc();
         let sp = t.context.get_sp();
@@ -613,7 +613,7 @@ impl Scheduler {
 
     #[cfg(target_arch = "aarch64")]
     #[inline]
-    fn arm64_needs_inflight_continuation_pin(&self, idx: usize) -> bool {
+    fn needs_inflight_continuation_pin(&self, idx: usize) -> bool {
         let t = &self.threads[idx];
         t.is_user && t.state == ThreadState::Blocked && t.context.save_complete == 0
     }
@@ -955,7 +955,7 @@ impl Scheduler {
             let tid = self.pick_eligible(victim)?;
             #[cfg(target_arch = "aarch64")]
             if let Some(idx) = self.find_idx(tid) {
-                if self.arm64_has_pinned_kernel_continuation(idx) {
+                if self.has_pinned_kernel_continuation(idx) {
                     let pri = self.threads[idx].priority;
                     self.per_cpu[victim].run_queue.enqueue(tid, pri);
                     return None;
@@ -984,9 +984,9 @@ impl Scheduler {
                 #[cfg(target_arch = "aarch64")]
                 {
                     let mut pinned_cpu: Option<usize> = None;
-                    if self.arm64_has_pinned_kernel_continuation(idx) {
+                    if self.has_pinned_kernel_continuation(idx) {
                         pinned_cpu = Some(self.threads[idx].last_cpu);
-                    } else if self.arm64_needs_inflight_continuation_pin(idx) {
+                    } else if self.needs_inflight_continuation_pin(idx) {
                         pinned_cpu = Some(self.threads[idx].last_cpu);
                     }
                     if let Some(cpu) = pinned_cpu {
@@ -1029,9 +1029,9 @@ impl Scheduler {
                 let mut cpu = self.threads[idx].affinity_cpu;
                 #[cfg(target_arch = "aarch64")]
                 {
-                    if self.arm64_has_pinned_kernel_continuation(idx) {
+                    if self.has_pinned_kernel_continuation(idx) {
                         cpu = self.threads[idx].last_cpu;
-                    } else if self.arm64_needs_inflight_continuation_pin(idx) {
+                    } else if self.needs_inflight_continuation_pin(idx) {
                         cpu = self.threads[idx].last_cpu;
                     }
                 }
@@ -1255,9 +1255,9 @@ pub fn schedule_tick_from_user_irq(frame_ptr: *mut ExceptionFrame) {
                         let mut cpu = sched.threads[i].affinity_cpu;
                         #[cfg(target_arch = "aarch64")]
                         {
-                            if sched.arm64_has_pinned_kernel_continuation(i) {
+                            if sched.has_pinned_kernel_continuation(i) {
                                 cpu = sched.threads[i].last_cpu;
-                            } else if sched.arm64_needs_inflight_continuation_pin(i) {
+                            } else if sched.needs_inflight_continuation_pin(i) {
                                 cpu = sched.threads[i].last_cpu;
                             }
                         }
@@ -1656,9 +1656,9 @@ fn schedule_inner(from_timer: bool) {
                             let mut cpu = sched.threads[i].affinity_cpu;
                             #[cfg(target_arch = "aarch64")]
                             {
-                                if sched.arm64_has_pinned_kernel_continuation(i) {
+                                if sched.has_pinned_kernel_continuation(i) {
                                     cpu = sched.threads[i].last_cpu;
-                                } else if sched.arm64_needs_inflight_continuation_pin(i) {
+                                } else if sched.needs_inflight_continuation_pin(i) {
                                     cpu = sched.threads[i].last_cpu;
                                 }
                             }

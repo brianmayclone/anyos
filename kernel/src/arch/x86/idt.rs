@@ -448,6 +448,12 @@ fn try_kill_faulting_thread(signal: u32, frame: &InterruptFrame) -> bool {
         crate::drivers::serial::flush_blocking();
         crate::serial_println!("--- Thread Crash Report ---");
         crate::serial_println!("  TID:    {}", tid);
+        {
+            let name_buf = crate::task::scheduler::debug_current_thread_name();
+            let name_len = name_buf.iter().position(|&b| b == 0).unwrap_or(name_buf.len());
+            let name = core::str::from_utf8(&name_buf[..name_len]).unwrap_or("<invalid>");
+            crate::serial_println!("  Name:   \"{}\"", name);
+        }
         crate::serial_println!("  Signal: {} ({})", signal, signal_name(signal));
         crate::serial_println!("  RIP:    {:#018x}", frame.rip);
         crate::serial_println!("  RSP:    {:#018x}  RBP: {:#018x}", frame.rsp, frame.rbp);
