@@ -59,6 +59,15 @@ exclude = [
   "bin/make",
   "bin/ssh",
   "bin/sshd",
+  # Legacy per-program build output directories; the real daemons live under system/.
+  "bin/crond",
+  "bin/ftpd",
+  "bin/httpd",
+  "bin/logd",
+  "bin/ntpd",
+  "bin/svc",
+  "bin/vdagent",
+  "bin/vncd",
   # Host-native tools (built with cargo +stable, not part of anyOS image)
   "tools/surf-host",
   "tools/test262-runner",
