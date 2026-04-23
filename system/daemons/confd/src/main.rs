@@ -369,16 +369,54 @@ fn main() {
         schema_rows,
         state.next_audit_seq,
     );
+    let entries_detail = alloc::format!("{}", state.entries.len());
+    let mut ready_notified = false;
     if let Some(svc) = lifecycle.as_mut() {
         let _ = svc.set_detail("pipe", PIPE_NAME);
         let _ = svc.set_detail("db", DB_PATH);
-        let _ = svc.set_detail("entries", &alloc::format!("{}", state.entries.len()));
-        let _ = svc.notify_ready();
+        let _ = svc.set_detail("entries", &entries_detail);
+        if svc.notify_ready().is_ok() {
+            ready_notified = true;
+        }
+    }
+    if !ready_notified {
+        anyos_std::println!(
+            "[confd] ready notification deferred (AMID unavailable), will retry in background"
+        );
     }
 
     let mut pipe_buf = [0u8; 4096];
+    let mut retry_counter: u32 = 0;
     loop {
         let active = ipc::handle_requests(&db, &mut state, pipe_id, &mut pipe_buf);
+
+        if !ready_notified {
+            retry_counter = retry_counter.saturating_add(1);
+            // Retry roughly every ~500ms regardless of pipe activity.
+            let threshold = if active { 25 } else { 5 };
+            if retry_counter >= threshold {
+                retry_counter = 0;
+                if lifecycle.is_none() {
+                    if let Ok(svc) = ServiceLifecycle::connect("confd") {
+                        lifecycle = Some(svc);
+                        if let Some(svc) = lifecycle.as_mut() {
+                            let _ = svc.notify_starting();
+                        }
+                        anyos_std::println!("[confd] AMID lifecycle connected late");
+                    }
+                }
+                if let Some(svc) = lifecycle.as_mut() {
+                    let _ = svc.set_detail("pipe", PIPE_NAME);
+                    let _ = svc.set_detail("db", DB_PATH);
+                    let _ = svc.set_detail("entries", &entries_detail);
+                    if svc.notify_ready().is_ok() {
+                        ready_notified = true;
+                        anyos_std::println!("[confd] ready notification sent (late)");
+                    }
+                }
+            }
+        }
+
         anyos_std::process::sleep(if active { 20 } else { 100 });
     }
 }
