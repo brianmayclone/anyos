@@ -8,6 +8,7 @@ members = [
   "system/svc",
   "system/textmode_console",
   "system/daemons/amid",
+  "system/daemons/asld",
   "system/daemons/confd",
   "system/daemons/crond",
   "system/daemons/dnsd",
