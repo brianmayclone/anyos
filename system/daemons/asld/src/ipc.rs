@@ -4,7 +4,9 @@ use alloc::vec::Vec;
 
 use crate::config::ConfigStore;
 use crate::errors::AsldError;
-use crate::model::{ExecInvocation, MountSpec, PortForwardSpec, ShellSession};
+use crate::model::{
+    ExecInvocation, MountSpec, PortForwardSpec, ShellSession, VmExitEvent, VmStatusSummary,
+};
 use crate::runtime::RuntimeService;
 
 pub struct IpcState {
@@ -116,6 +118,20 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             Ok(status) => format!("OK\t1\nagent\t{}\n\n", status.agent_state.as_str()),
             Err(err) => err_line(&err),
         },
+        "VM_STATUS" | "vm_status" => {
+            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            match runtime.vm_status(name) {
+                Ok(status) => ok_lines(format_vm_status_lines(&status)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "VM_EVENTS" | "vm_events" => {
+            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            match runtime.vm_events(name) {
+                Ok(events) => ok_lines(format_vm_event_lines(&events)),
+                Err(err) => err_line(&err),
+            }
+        }
         "SHELL_OPEN" | "shell_open" => {
             let fields = split_tab_fields(rest);
             if fields.is_empty() {
@@ -380,6 +396,35 @@ fn format_port_lines(rules: &[PortForwardSpec]) -> Vec<String> {
     out
 }
 
+fn format_vm_status_lines(status: &VmStatusSummary) -> Vec<String> {
+    alloc::vec![
+        format!("backend\t{}", status.backend),
+        format!("run_state\t{}", status.run_state.as_str()),
+        format!("guest_memory_mb\t{}", status.guest_memory_mb),
+        format!("boot_summary\t{}", status.boot_summary),
+        format!("last_exit_summary\t{}", status.last_exit_summary),
+        format!("total_exits\t{}", status.total_exits),
+        format!("recent_exit_count\t{}", status.recent_exit_count),
+    ]
+}
+
+fn format_vm_event_lines(events: &[VmExitEvent]) -> Vec<String> {
+    let mut out = Vec::new();
+    for event in events {
+        out.push(format!(
+            "{}\t{}\t{}\t{}\t{:#x}\t{:#x}\t{:#x}",
+            event.seq,
+            event.reason,
+            if event.fatal { "fatal" } else { "info" },
+            event.summary,
+            event.qualification,
+            event.guest_phys_addr,
+            event.guest_virt_addr
+        ));
+    }
+    out
+}
+
 fn parse_u32(s: &str) -> Option<u32> {
     let mut out = 0u32;
     if s.is_empty() {
@@ -471,5 +516,18 @@ mod tests {
         assert!(exec.contains("exec-"));
         assert!(exec.contains("cargo test"));
         assert!(exec.contains("asl-agent-exec-stdout-"));
+    }
+
+    #[test]
+    fn vm_status_and_events_roundtrip() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(&mut runtime, &mut store, "START ubuntu-dev");
+        let status = dispatch(&mut runtime, &mut store, "VM_STATUS ubuntu-dev");
+        assert!(status.contains("backend\t"));
+        assert!(status.contains("boot_summary\t"));
+        let events = dispatch(&mut runtime, &mut store, "VM_EVENTS ubuntu-dev");
+        assert!(events.starts_with("OK\t0"));
     }
 }

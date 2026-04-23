@@ -10,7 +10,7 @@ use crate::distro::build_distro_config;
 use crate::errors::AsldError;
 use crate::model::{
     DistroHealth, DistroState, DistroStatus, ExecInvocation, MountSpec, PortForwardSpec,
-    SessionMode, ShellSession,
+    SessionMode, ShellSession, VmExitEvent, VmStatusSummary,
 };
 use crate::status::{degraded_status, stopped_status};
 use crate::store::RuntimeStore;
@@ -20,6 +20,9 @@ use crate::vm;
 struct RuntimeBackend {
     name: String,
     vm: vm::VmInstance,
+    boot_summary: String,
+    exit_history: Vec<VmExitEvent>,
+    total_exits: u64,
     shell_sessions: Vec<ShellSession>,
     execs: Vec<ExecInvocation>,
 }
@@ -29,6 +32,7 @@ pub struct RuntimeService {
     backends: Vec<RuntimeBackend>,
     next_shell_seq: u32,
     next_exec_seq: u32,
+    next_exit_seq: u64,
 }
 
 impl RuntimeService {
@@ -38,6 +42,29 @@ impl RuntimeService {
             backends: Vec::new(),
             next_shell_seq: 1,
             next_exec_seq: 1,
+            next_exit_seq: 1,
+        }
+    }
+
+    pub fn tick(&mut self) {
+        for index in 0..self.backends.len() {
+            let name = self.backends[index].name.clone();
+            let poll_result = {
+                let backend = &mut self.backends[index];
+                vm::poll_runtime(&mut backend.vm)
+            };
+            match poll_result {
+                Ok(Some(exit)) => self.record_vm_exit(index, &name, exit),
+                Ok(None) => {}
+                Err(err) => {
+                    if let Some(status) = self.store.get_mut(&name) {
+                        status.state = DistroState::Degraded;
+                        status.health = DistroHealth::Degraded;
+                        status.agent_state = crate::model::AgentState::Degraded;
+                        status.last_error = Some(err.message());
+                    }
+                }
+            }
         }
     }
 
@@ -86,11 +113,43 @@ impl RuntimeService {
 
         match vm::start_vm(&cfg) {
             Ok(vm_instance) => {
-                let mut status = stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone());
-                status.state = DistroState::Ready;
-                status.health = DistroHealth::Ready;
-                status.agent_state = inferred_agent_state(&cfg.agent, DistroState::Ready);
                 self.upsert_backend(&cfg.name, vm_instance);
+                let boot_report = {
+                    let backend = self
+                        .backend_mut(&cfg.name)
+                        .ok_or(AsldError::InvalidState("distro runtime missing"))?;
+                    vm::boot_probe(&mut backend.vm)
+                };
+
+                let mut status = stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone());
+                match boot_report {
+                    Ok(report) if report.ready => {
+                        if let Some(backend) = self.backend_mut(&cfg.name) {
+                            backend.boot_summary = report.summary.clone();
+                        }
+                        status.state = DistroState::Ready;
+                        status.health = DistroHealth::Ready;
+                        status.agent_state = inferred_agent_state(&cfg.agent, DistroState::Ready);
+                    }
+                    Ok(report) => {
+                        if let Some(backend) = self.backend_mut(&cfg.name) {
+                            backend.boot_summary = report.summary.clone();
+                        }
+                        status.state = DistroState::Degraded;
+                        status.health = DistroHealth::Degraded;
+                        status.agent_state = inferred_agent_state(&cfg.agent, DistroState::Degraded);
+                        status.last_error = Some(report.summary);
+                    }
+                    Err(err) => {
+                        if let Some(backend) = self.backend_mut(&cfg.name) {
+                            backend.boot_summary = err.message();
+                        }
+                        status.state = DistroState::Degraded;
+                        status.health = DistroHealth::Degraded;
+                        status.agent_state = inferred_agent_state(&cfg.agent, DistroState::Degraded);
+                        status.last_error = Some(err.message());
+                    }
+                }
                 self.store.upsert(status.clone());
                 Ok(status)
             }
@@ -173,6 +232,38 @@ impl RuntimeService {
     ) -> Result<Vec<PortForwardSpec>, AsldError> {
         add_port_forward(store, distro_name, rule)?;
         self.list_port_forwards(store, distro_name)
+    }
+
+    pub fn vm_status(&self, name: &str) -> Result<VmStatusSummary, AsldError> {
+        let backend = self
+            .backends
+            .iter()
+            .find(|backend| backend.name == name)
+            .ok_or(AsldError::InvalidState("distro runtime missing"))?;
+        let guest_memory_mb = (backend.vm.guest_memory_size / (1024 * 1024)) as u32;
+        let last_exit_summary = backend
+            .exit_history
+            .last()
+            .map(|event| event.summary.clone())
+            .unwrap_or_default();
+        Ok(VmStatusSummary {
+            backend: backend.vm.backend.clone(),
+            run_state: backend.vm.run_state,
+            guest_memory_mb,
+            boot_summary: backend.boot_summary.clone(),
+            last_exit_summary,
+            total_exits: backend.total_exits,
+            recent_exit_count: backend.exit_history.len(),
+        })
+    }
+
+    pub fn vm_events(&self, name: &str) -> Result<Vec<VmExitEvent>, AsldError> {
+        let backend = self
+            .backends
+            .iter()
+            .find(|backend| backend.name == name)
+            .ok_or(AsldError::InvalidState("distro runtime missing"))?;
+        Ok(backend.exit_history.clone())
     }
 
     pub fn remove_port_forward<S: ConfigStore>(
@@ -286,6 +377,9 @@ impl RuntimeService {
     fn upsert_backend(&mut self, name: &str, vm: vm::VmInstance) {
         if let Some(existing) = self.backends.iter_mut().find(|backend| backend.name == name) {
             existing.vm = vm;
+            existing.boot_summary.clear();
+            existing.exit_history.clear();
+            existing.total_exits = 0;
             existing.shell_sessions.clear();
             existing.execs.clear();
             return;
@@ -293,6 +387,9 @@ impl RuntimeService {
         self.backends.push(RuntimeBackend {
             name: String::from(name),
             vm,
+            boot_summary: String::new(),
+            exit_history: Vec::new(),
+            total_exits: 0,
             shell_sessions: Vec::new(),
             execs: Vec::new(),
         });
@@ -308,6 +405,42 @@ impl RuntimeService {
             return Err(AsldError::InvalidState("distro is not running"));
         }
         Ok(status)
+    }
+
+    fn record_vm_exit(&mut self, index: usize, name: &str, exit: vm::VmRuntimeEvent) {
+        let seq = self.next_exit_seq;
+        self.next_exit_seq = self.next_exit_seq.wrapping_add(1);
+        let event = VmExitEvent {
+            seq,
+            reason: exit.reason.clone(),
+            summary: exit.summary.clone(),
+            fatal: exit.fatal,
+            qualification: exit.qualification,
+            guest_phys_addr: exit.guest_phys_addr,
+            guest_virt_addr: exit.guest_virt_addr,
+        };
+
+        let backend = &mut self.backends[index];
+        backend.total_exits = backend.total_exits.saturating_add(1);
+        backend.exit_history.push(event.clone());
+        if backend.exit_history.len() > 32 {
+            backend.exit_history.remove(0);
+        }
+
+        if let Some(status) = self.store.get_mut(name) {
+            if exit.fatal {
+                status.state = DistroState::Degraded;
+                status.health = DistroHealth::Degraded;
+                status.agent_state = crate::model::AgentState::Degraded;
+                status.last_error = Some(exit.summary);
+            } else {
+                status.state = DistroState::Ready;
+                status.health = DistroHealth::Ready;
+                if exit.halted {
+                    status.last_error = None;
+                }
+            }
+        }
     }
 }
 
@@ -460,5 +593,30 @@ mod tests {
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "web");
         assert!(runtime.remove_port_forward(&mut store, "ubuntu-dev", "web").unwrap().is_empty());
+    }
+
+    #[test]
+    fn vm_status_exposes_boot_summary() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+        let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
+        let vm_status = runtime.vm_status("ubuntu-dev").unwrap();
+        assert!(vm_status.backend.contains("stub") || vm_status.backend.contains("kernel"));
+        assert!(vm_status.boot_summary.contains("boot"));
+    }
+
+    #[test]
+    fn tick_keeps_host_stub_without_exit_history() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+        let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
+        runtime.tick();
+        assert!(runtime.vm_events("ubuntu-dev").unwrap().is_empty());
     }
 }

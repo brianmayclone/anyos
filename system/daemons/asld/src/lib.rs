@@ -81,6 +81,7 @@ pub fn run() {
 
     loop {
         let active = ipc::handle_requests(&mut runtime, &mut store, &mut ipc_state, pipe_id, &mut pipe_buf);
+        runtime.tick();
         process::sleep(if active { 20 } else { 100 });
     }
 }

@@ -20,6 +20,10 @@ impl RuntimeStore {
         self.statuses.iter().find(|s| s.name == name)
     }
 
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut DistroStatus> {
+        self.statuses.iter_mut().find(|s| s.name == name)
+    }
+
     pub fn upsert(&mut self, status: DistroStatus) {
         if let Some(existing) = self.statuses.iter_mut().find(|s| s.name == status.name) {
             *existing = status;

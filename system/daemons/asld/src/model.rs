@@ -88,6 +88,27 @@ impl DistroHealth {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VmRunState {
+    Provisioned,
+    BootReady,
+    Running,
+    Halted,
+    Degraded,
+}
+
+impl VmRunState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Provisioned => "provisioned",
+            Self::BootReady => "boot-ready",
+            Self::Running => "running",
+            Self::Halted => "halted",
+            Self::Degraded => "degraded",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resources {
     pub memory_mb: u32,
@@ -256,6 +277,28 @@ pub struct ExecInvocation {
     pub stdout_pipe_name: String,
     pub stdin_pipe_name: String,
     pub attached_pid: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VmStatusSummary {
+    pub backend: String,
+    pub run_state: VmRunState,
+    pub guest_memory_mb: u32,
+    pub boot_summary: String,
+    pub last_exit_summary: String,
+    pub total_exits: u64,
+    pub recent_exit_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VmExitEvent {
+    pub seq: u64,
+    pub reason: String,
+    pub summary: String,
+    pub fatal: bool,
+    pub qualification: u64,
+    pub guest_phys_addr: u64,
+    pub guest_virt_addr: u64,
 }
 
 pub fn is_valid_distro_name(name: &str) -> bool {

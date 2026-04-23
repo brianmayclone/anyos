@@ -17,6 +17,8 @@ pub enum ClientCommand<'a> {
     Start(&'a str),
     Stop(&'a str),
     AgentStatus(&'a str),
+    VmStatus(&'a str),
+    VmEvents(&'a str),
     Shell {
         distro: &'a str,
         fallback_console: bool,
@@ -117,6 +119,8 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         "start" => Some(ClientCommand::Start(args.pos(1)?)),
         "stop" => Some(ClientCommand::Stop(args.pos(1)?)),
         "agent-status" => Some(ClientCommand::AgentStatus(args.pos(1)?)),
+        "vm-status" => Some(ClientCommand::VmStatus(args.pos(1)?)),
+        "vm-events" => Some(ClientCommand::VmEvents(args.pos(1)?)),
         "mount" => parse_mount_command(args),
         "port" => parse_port_command(args),
         _ => None,
@@ -373,9 +377,26 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             | ClientCommand::Create { .. }
             | ClientCommand::Start(_)
             | ClientCommand::Stop(_)
-            | ClientCommand::AgentStatus(_) => {
+            | ClientCommand::AgentStatus(_)
+            | ClientCommand::VmStatus(_) => {
                 for line in lines {
                     println!("{}", line);
+                }
+            }
+            ClientCommand::VmEvents(_) => {
+                println!("vm-events: {}", count);
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    println!(
+                        "{}\treason={}\tlevel={}\tsummary={}\tqual={}\tgpa={}\tgva={}",
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                    );
                 }
             }
             ClientCommand::Shell { .. } => {
@@ -431,6 +452,8 @@ fn print_usage() {
     println!("  aslctl start <name>");
     println!("  aslctl stop <name>");
     println!("  aslctl agent-status <name>");
+    println!("  aslctl vm-status <name>");
+    println!("  aslctl vm-events <name>");
     println!("  aslctl shell <name> [--fallback-console] [--session <name>]");
     println!("  aslctl exec <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE] -- <command> [args...]");
     println!("  aslctl mount list <name>");
@@ -455,6 +478,8 @@ impl ClientCommand<'_> {
             Self::Start(name) => format!("START {}", name),
             Self::Stop(name) => format!("STOP {}", name),
             Self::AgentStatus(name) => format!("AGENT_STATUS {}", name),
+            Self::VmStatus(name) => format!("VM_STATUS {}", name),
+            Self::VmEvents(name) => format!("VM_EVENTS {}", name),
             Self::Shell {
                 distro,
                 fallback_console,
@@ -683,6 +708,15 @@ mod tests {
                 assert_eq!(description, "Web");
             }
             _ => panic!("expected port add command"),
+        }
+    }
+
+    #[test]
+    fn parses_vm_status_command() {
+        let args = anyos_std::args::parse("vm-status ubuntu-dev", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::VmStatus(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected vm status command"),
         }
     }
 
