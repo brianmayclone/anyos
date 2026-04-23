@@ -9,7 +9,7 @@ libsyscall = { path = "../libsyscall" }
 
 [features]
 default = []
-host = []
+host = ["anyos_std/host"]
 
 [lib]
 name = "libconf"

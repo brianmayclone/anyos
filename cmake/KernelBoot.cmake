@@ -97,6 +97,11 @@ file(GLOB_RECURSE KERNEL_RS_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_SOURCE_DIR}/kernel/src/*.rs"
 )
 
+set(ANYOS_BUILD_STD_ARGS
+  "-Zbuild-std=core,alloc"
+  "-Zbuild-std-features=compiler-builtins-mem"
+)
+
 # ── x86_64 kernel build ──────────────────────────────────────────────
 add_custom_command(
   OUTPUT ${CMAKE_BINARY_DIR}/kernel/x86_64-anyos/release/anyos_kernel.elf
@@ -109,6 +114,7 @@ add_custom_command(
     --manifest-path ${CMAKE_SOURCE_DIR}/kernel/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/x86_64-anyos.json
     --target-dir ${CMAKE_BINARY_DIR}/kernel
+    ${ANYOS_BUILD_STD_ARGS}
     ${CARGO_FEATURES_ARG}
   DEPENDS
     ${KERNEL_ASM_OBJECTS}
@@ -160,6 +166,7 @@ add_custom_command(
     --manifest-path ${CMAKE_SOURCE_DIR}/kernel/Cargo.toml
     --target ${CMAKE_SOURCE_DIR}/aarch64-anyos.json
     --target-dir ${CMAKE_BINARY_DIR}/kernel
+    ${ANYOS_BUILD_STD_ARGS}
     ${CARGO_FEATURES_ARG}
   DEPENDS
     ${KERNEL_ARM64_ASM_OBJECTS}

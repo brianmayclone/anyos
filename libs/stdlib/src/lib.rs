@@ -28,6 +28,12 @@ pub mod io;
 pub mod io;
 
 #[cfg(not(feature = "host"))]
+pub mod ipc;
+#[cfg(feature = "host")]
+#[path = "host/ipc.rs"]
+pub mod ipc;
+
+#[cfg(not(feature = "host"))]
 pub mod process;
 #[cfg(feature = "host")]
 #[path = "host/process.rs"]
@@ -84,8 +90,6 @@ pub mod debug;
 pub mod dll;
 #[cfg(not(feature = "host"))]
 pub mod icons;
-#[cfg(not(feature = "host"))]
-pub mod ipc;
 #[cfg(not(feature = "host"))]
 pub mod kbd;
 #[cfg(not(feature = "host"))]
@@ -230,4 +234,12 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
 fn alloc_error(_layout: core::alloc::Layout) -> ! {
     io::_print_str("ALLOC ERROR: out of memory\n");
     process::exit(2);
+}
+
+#[cfg(all(test, feature = "host"))]
+mod tests {
+    #[test]
+    fn host_smoke_test() {
+        assert_eq!(2 + 2, 4);
+    }
 }

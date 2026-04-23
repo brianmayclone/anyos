@@ -1,4 +1,11 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
+
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if target_os != "none" {
+        return;
+    }
+
     println!("cargo:rerun-if-env-changed=ANYOS_VERSION");
     if let Ok(ver) = std::env::var("ANYOS_VERSION") {
         println!("cargo:rustc-env=ANYOS_VERSION={}", ver);

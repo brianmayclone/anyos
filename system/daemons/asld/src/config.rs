@@ -514,6 +514,7 @@ impl ConfigStore for FakeStore {
 mod tests {
     use alloc::string::String;
 
+    use crate::config::ConfigStore;
     use crate::distro::build_distro_config;
     use crate::model::{MountSpec, PortForwardSpec};
 

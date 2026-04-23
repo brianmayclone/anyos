@@ -16,6 +16,10 @@ else()
   set(KERNEL_TARGET_JSON "${CMAKE_SOURCE_DIR}/x86_64-anyos.json")
   set(KERNEL_TARGET_TRIPLE "x86_64-anyos")
 endif()
+set(ANYOS_BUILD_STD_ARGS
+  "-Zbuild-std=core,alloc"
+  "-Zbuild-std-features=compiler-builtins-mem"
+)
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/bin")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/sbin")
@@ -346,6 +350,7 @@ add_custom_command(
     --release --quiet
     --target ${USER_TARGET_JSON}
     --target-dir ${USER_TARGET_DIR}
+    ${ANYOS_BUILD_STD_ARGS}
     ${_WS_FEATURES}
   COMMAND ${CMAKE_COMMAND} -E touch ${WORKSPACE_STAMP}
   DEPENDS
@@ -542,6 +547,7 @@ function(add_driver NAME SRC_DIR DISPLAY_NAME CATEGORY)
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${KERNEL_TARGET_JSON}
       --target-dir ${CMAKE_BINARY_DIR}/drivers/${NAME}
+      ${ANYOS_BUILD_STD_ARGS}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${_DRV_RS}
@@ -586,7 +592,7 @@ function(add_shared_lib NAME SRC_DIR)
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${USER_TARGET_JSON}
       --target-dir ${SHLIB_TARGET_DIR}
-      -Z build-std=core,alloc
+      ${ANYOS_BUILD_STD_ARGS}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${_SL_RS}
@@ -628,7 +634,7 @@ function(add_gpu_driver NAME SRC_DIR)
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${USER_TARGET_JSON}
       --target-dir ${DRV_TARGET_DIR}
-      -Z build-std=core,alloc
+      ${ANYOS_BUILD_STD_ARGS}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${_DRV_RS}
@@ -728,7 +734,7 @@ if(NOT ANYOS_ARCH STREQUAL "arm64")
       --manifest-path ${_LIBHTTP_SRC}/Cargo.toml
       --target ${USER_TARGET_JSON}
       --target-dir ${SHLIB_TARGET_DIR}
-      -Z build-std=core,alloc
+      ${ANYOS_BUILD_STD_ARGS}
     DEPENDS
       ${_LIBHTTP_SRC}/Cargo.toml
       ${_LIBHTTP_SRC}/build.rs
@@ -1099,6 +1105,7 @@ add_custom_command(
     --manifest-path ${FONTD_SRC_DIR}/Cargo.toml
     --target ${KERNEL_TARGET_JSON}
     --target-dir ${CMAKE_BINARY_DIR}/kernel
+    ${ANYOS_BUILD_STD_ARGS}
   DEPENDS
     ${FONTD_SRC_DIR}/Cargo.toml
     ${FONTD_SRC_DIR}/build.rs
@@ -1130,6 +1137,7 @@ add_custom_command(
     --manifest-path ${SESSIONHOST_SRC_DIR}/Cargo.toml
     --target ${KERNEL_TARGET_JSON}
     --target-dir ${CMAKE_BINARY_DIR}/kernel
+    ${ANYOS_BUILD_STD_ARGS}
   DEPENDS
     ${SESSIONHOST_SRC_DIR}/Cargo.toml
     ${SESSIONHOST_SRC_DIR}/build.rs
@@ -1158,6 +1166,7 @@ add_custom_command(
     --manifest-path ${DESKTOPD_SRC_DIR}/Cargo.toml
     --target ${KERNEL_TARGET_JSON}
     --target-dir ${CMAKE_BINARY_DIR}/kernel
+    ${ANYOS_BUILD_STD_ARGS}
   DEPENDS
     ${DESKTOPD_SRC_DIR}/Cargo.toml
     ${DESKTOPD_SRC_DIR}/build.rs
@@ -1187,6 +1196,7 @@ add_custom_command(
     --manifest-path ${CRASHDIALOG_SRC_DIR}/Cargo.toml
     --target ${KERNEL_TARGET_JSON}
     --target-dir ${CMAKE_BINARY_DIR}/kernel
+    ${ANYOS_BUILD_STD_ARGS}
   DEPENDS
     ${CRASHDIALOG_SRC_DIR}/Cargo.toml
     ${CRASHDIALOG_SRC_DIR}/build.rs
@@ -1231,6 +1241,7 @@ add_custom_command(
     --manifest-path ${DOCK_SRC_DIR}/Cargo.toml
     --target ${KERNEL_TARGET_JSON}
     --target-dir ${CMAKE_BINARY_DIR}/kernel
+    ${ANYOS_BUILD_STD_ARGS}
   DEPENDS
     ${DOCK_SRC_DIR}/Cargo.toml
     ${DOCK_SRC_DIR}/build.rs

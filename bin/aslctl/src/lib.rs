@@ -1,0 +1,514 @@
+#![cfg_attr(not(target_os = "linux"), no_std)]
+
+use anyos_std::{format, println, process, String, Vec};
+
+const ASLD_PIPE: &str = "asld";
+const RESPONSE_TIMEOUT_TICKS: u32 = 100;
+const RESPONSE_SLEEP_MS: u32 = 20;
+
+pub enum ClientCommand<'a> {
+    List,
+    Status(&'a str),
+    Create {
+        name: &'a str,
+        image_ref: &'a str,
+        owner: &'a str,
+    },
+    Start(&'a str),
+    Stop(&'a str),
+    AgentStatus(&'a str),
+    MountList(&'a str),
+    MountShow {
+        distro: &'a str,
+        mount_id: &'a str,
+    },
+    MountAdd {
+        distro: &'a str,
+        mount_id: &'a str,
+        host_path: &'a str,
+        guest_path: &'a str,
+        mode: &'a str,
+        metadata_mode: &'a str,
+        case_mode: &'a str,
+        exec_policy: &'a str,
+        watch_policy: &'a str,
+        description: &'a str,
+    },
+    MountRemove {
+        distro: &'a str,
+        mount_id: &'a str,
+    },
+    PortList(&'a str),
+    PortAdd {
+        distro: &'a str,
+        rule_id: &'a str,
+        listen_address: &'a str,
+        listen_port: &'a str,
+        guest_port: &'a str,
+        protocol: &'a str,
+        description: &'a str,
+    },
+    PortRemove {
+        distro: &'a str,
+        rule_id: &'a str,
+    },
+}
+
+pub enum WireResponse {
+    Ok {
+        count: usize,
+        lines: Vec<String>,
+    },
+    Err {
+        code: String,
+        message: String,
+    },
+}
+
+pub fn run() {
+    let mut args_buf = [0u8; 256];
+    let raw = process::args(&mut args_buf);
+    let args = anyos_std::args::parse(raw, b"");
+
+    let Some(command) = parse_command(&args) else {
+        print_usage();
+        return;
+    };
+
+    match send_command(&command) {
+        Ok(response) => print_response(&command, &response),
+        Err(message) => println!("aslctl: {}", message),
+    }
+}
+
+pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
+    let cmd = args.pos(0)?;
+    match cmd {
+        "list" => Some(ClientCommand::List),
+        "status" => Some(ClientCommand::Status(args.pos(1)?)),
+        "create" => Some(ClientCommand::Create {
+            name: args.pos(1)?,
+            image_ref: args.pos(2)?,
+            owner: args.pos(3)?,
+        }),
+        "start" => Some(ClientCommand::Start(args.pos(1)?)),
+        "stop" => Some(ClientCommand::Stop(args.pos(1)?)),
+        "agent-status" => Some(ClientCommand::AgentStatus(args.pos(1)?)),
+        "mount" => parse_mount_command(args),
+        "port" => parse_port_command(args),
+        _ => None,
+    }
+}
+
+fn parse_mount_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
+    match args.pos(1)? {
+        "list" => Some(ClientCommand::MountList(args.pos(2)?)),
+        "show" => Some(ClientCommand::MountShow {
+            distro: args.pos(2)?,
+            mount_id: args.pos(3)?,
+        }),
+        "add" => Some(ClientCommand::MountAdd {
+            distro: args.pos(2)?,
+            mount_id: args.pos(3)?,
+            host_path: args.pos(4)?,
+            guest_path: args.pos(5)?,
+            mode: args.pos(6)?,
+            metadata_mode: args.pos(7)?,
+            case_mode: args.pos(8)?,
+            exec_policy: args.pos(9)?,
+            watch_policy: args.pos(10)?,
+            description: args.pos(11).unwrap_or(""),
+        }),
+        "remove" => Some(ClientCommand::MountRemove {
+            distro: args.pos(2)?,
+            mount_id: args.pos(3)?,
+        }),
+        _ => None,
+    }
+}
+
+fn parse_port_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
+    match args.pos(1)? {
+        "list" => Some(ClientCommand::PortList(args.pos(2)?)),
+        "add" => Some(ClientCommand::PortAdd {
+            distro: args.pos(2)?,
+            rule_id: args.pos(3)?,
+            listen_address: args.pos(4)?,
+            listen_port: args.pos(5)?,
+            guest_port: args.pos(6)?,
+            protocol: args.pos(7)?,
+            description: args.pos(8).unwrap_or(""),
+        }),
+        "remove" => Some(ClientCommand::PortRemove {
+            distro: args.pos(2)?,
+            rule_id: args.pos(3)?,
+        }),
+        _ => None,
+    }
+}
+
+fn send_command(command: &ClientCommand<'_>) -> Result<WireResponse, &'static str> {
+    let pid = process::getpid();
+    let reply_name = format!("asld-{}", pid);
+
+    let old_reply = anyos_std::ipc::pipe_open(&reply_name);
+    if old_reply != 0 {
+        let _ = anyos_std::ipc::pipe_close(old_reply);
+    }
+
+    let reply_pipe = anyos_std::ipc::pipe_create(&reply_name);
+    if reply_pipe == 0 || reply_pipe == u32::MAX {
+        return Err("failed to create reply pipe");
+    }
+
+    let request_pipe = anyos_std::ipc::pipe_open(ASLD_PIPE);
+    if request_pipe == 0 || request_pipe == u32::MAX {
+        let _ = anyos_std::ipc::pipe_close(reply_pipe);
+        return Err("asld is not running");
+    }
+
+    let request = format!("{}\t{}\n", pid, command.as_wire());
+    if anyos_std::ipc::pipe_write(request_pipe, request.as_bytes()) == u32::MAX {
+        let _ = anyos_std::ipc::pipe_close(request_pipe);
+        let _ = anyos_std::ipc::pipe_close(reply_pipe);
+        return Err("failed to write request");
+    }
+    let _ = anyos_std::ipc::pipe_close(request_pipe);
+
+    let mut raw = String::new();
+    let mut buf = [0u8; 1024];
+    let mut ticks = 0;
+    while ticks < RESPONSE_TIMEOUT_TICKS {
+        let n = anyos_std::ipc::pipe_read(reply_pipe, &mut buf);
+        if n == u32::MAX {
+            let _ = anyos_std::ipc::pipe_close(reply_pipe);
+            return Err("failed to read response");
+        }
+        if n > 0 {
+            let chunk = core::str::from_utf8(&buf[..n as usize]).map_err(|_| "response was not valid UTF-8")?;
+            raw.push_str(chunk);
+            if raw.ends_with("\n\n") {
+                let _ = anyos_std::ipc::pipe_close(reply_pipe);
+                return parse_response(&raw);
+            }
+        }
+        process::sleep(RESPONSE_SLEEP_MS);
+        ticks += 1;
+    }
+
+    let _ = anyos_std::ipc::pipe_close(reply_pipe);
+    Err("timed out waiting for asld response")
+}
+
+pub fn parse_response(raw: &str) -> Result<WireResponse, &'static str> {
+    let trimmed = raw.trim_matches('\n');
+    let mut lines = trimmed.split('\n');
+    let header = lines.next().ok_or("empty response")?;
+    let mut header_parts = header.split('\t');
+    match header_parts.next() {
+        Some("OK") => {
+            let count = parse_usize(header_parts.next().unwrap_or("0")).ok_or("invalid OK header")?;
+            let mut body = Vec::new();
+            for line in lines {
+                if !line.is_empty() {
+                    body.push(String::from(line));
+                }
+            }
+            Ok(WireResponse::Ok { count, lines: body })
+        }
+        Some("ERR") => {
+            let code = String::from(header_parts.next().unwrap_or("unknown"));
+            let message = join_tab_fields(&mut header_parts);
+            Ok(WireResponse::Err { code, message })
+        }
+        _ => Err("unknown response header"),
+    }
+}
+
+fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
+    match response {
+        WireResponse::Err { code, message } => {
+            if message.is_empty() {
+                println!("ERR {}", code);
+            } else {
+                println!("ERR {} {}", code, message);
+            }
+        }
+        WireResponse::Ok { count, lines } => match command {
+            ClientCommand::List => {
+                println!("distros: {}", count);
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    let name = parts.next().unwrap_or("-");
+                    let state = parts.next().unwrap_or("-");
+                    let health = parts.next().unwrap_or("-");
+                    println!("{}\t{}\t{}", name, state, health);
+                }
+            }
+            ClientCommand::MountList(_)
+            | ClientCommand::MountShow { .. }
+            | ClientCommand::MountAdd { .. }
+            | ClientCommand::MountRemove { .. } => {
+                println!("mounts: {}", count);
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    println!(
+                        "{}\thost={}\tguest={}\tmode={}\tmetadata={}\tcase={}\texec={}\twatch={}\tdesc={}",
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or(""),
+                    );
+                }
+            }
+            ClientCommand::PortList(_) | ClientCommand::PortAdd { .. } | ClientCommand::PortRemove { .. } => {
+                println!("ports: {}", count);
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    println!(
+                        "{}\tlisten={}:{}\tguest={}\tproto={}\tdesc={}",
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or(""),
+                    );
+                }
+            }
+            ClientCommand::Status(_)
+            | ClientCommand::Create { .. }
+            | ClientCommand::Start(_)
+            | ClientCommand::Stop(_)
+            | ClientCommand::AgentStatus(_) => {
+                for line in lines {
+                    println!("{}", line);
+                }
+            }
+        },
+    }
+}
+
+fn print_usage() {
+    println!("aslctl - control ASL distros");
+    println!();
+    println!("Usage:");
+    println!("  aslctl list");
+    println!("  aslctl status <name>");
+    println!("  aslctl create <name> <image-ref> <owner>");
+    println!("  aslctl start <name>");
+    println!("  aslctl stop <name>");
+    println!("  aslctl agent-status <name>");
+    println!("  aslctl mount list <name>");
+    println!("  aslctl mount show <name> <mount-id>");
+    println!("  aslctl mount add <name> <mount-id> <host> <guest> <mode> <metadata> <case> <exec> <watch> [description]");
+    println!("  aslctl mount remove <name> <mount-id>");
+    println!("  aslctl port list <name>");
+    println!("  aslctl port add <name> <rule-id> <listen-address> <listen-port> <guest-port> <protocol> [description]");
+    println!("  aslctl port remove <name> <rule-id>");
+}
+
+impl ClientCommand<'_> {
+    fn as_wire(&self) -> String {
+        match self {
+            Self::List => String::from("LIST"),
+            Self::Status(name) => format!("STATUS {}", name),
+            Self::Create {
+                name,
+                image_ref,
+                owner,
+            } => format!("CREATE {} {} {}", name, image_ref, owner),
+            Self::Start(name) => format!("START {}", name),
+            Self::Stop(name) => format!("STOP {}", name),
+            Self::AgentStatus(name) => format!("AGENT_STATUS {}", name),
+            Self::MountList(distro) => format!("MOUNT_LIST {}", distro),
+            Self::MountShow { distro, mount_id } => format!("MOUNT_SHOW {}\t{}", distro, mount_id),
+            Self::MountAdd {
+                distro,
+                mount_id,
+                host_path,
+                guest_path,
+                mode,
+                metadata_mode,
+                case_mode,
+                exec_policy,
+                watch_policy,
+                description,
+            } => format!(
+                "MOUNT_ADD {}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                distro,
+                mount_id,
+                host_path,
+                guest_path,
+                mode,
+                metadata_mode,
+                case_mode,
+                exec_policy,
+                watch_policy,
+                description
+            ),
+            Self::MountRemove { distro, mount_id } => format!("MOUNT_REMOVE {}\t{}", distro, mount_id),
+            Self::PortList(distro) => format!("PORT_LIST {}", distro),
+            Self::PortAdd {
+                distro,
+                rule_id,
+                listen_address,
+                listen_port,
+                guest_port,
+                protocol,
+                description,
+            } => format!(
+                "PORT_ADD {}\t{}\t{}\t{}\t{}\t{}\t{}",
+                distro,
+                rule_id,
+                listen_address,
+                listen_port,
+                guest_port,
+                protocol,
+                description
+            ),
+            Self::PortRemove { distro, rule_id } => format!("PORT_REMOVE {}\t{}", distro, rule_id),
+        }
+    }
+}
+
+fn parse_usize(s: &str) -> Option<usize> {
+    let mut out = 0usize;
+    if s.is_empty() {
+        return None;
+    }
+    for b in s.bytes() {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        out = out.checked_mul(10)?.checked_add((b - b'0') as usize)?;
+    }
+    Some(out)
+}
+
+fn join_tab_fields<'a, I>(parts: &mut I) -> String
+where
+    I: Iterator<Item = &'a str>,
+{
+    let mut out = String::new();
+    for part in parts {
+        if !out.is_empty() {
+            out.push('\t');
+        }
+        out.push_str(part);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_command, parse_response, ClientCommand, WireResponse};
+
+    #[test]
+    fn parses_list_command() {
+        let args = anyos_std::args::parse("list", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::List) => {}
+            _ => panic!("expected list command"),
+        }
+    }
+
+    #[test]
+    fn parses_create_command() {
+        let args = anyos_std::args::parse("create ubuntu-dev ubuntu-24.04-x86_64-v1 strati", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::Create {
+                name,
+                image_ref,
+                owner,
+            }) => {
+                assert_eq!(name, "ubuntu-dev");
+                assert_eq!(image_ref, "ubuntu-24.04-x86_64-v1");
+                assert_eq!(owner, "strati");
+            }
+            _ => panic!("expected create command"),
+        }
+    }
+
+    #[test]
+    fn parses_mount_add_command() {
+        let args = anyos_std::args::parse(
+            "mount add ubuntu-dev workspace /Users/strati/work /mnt/work readwrite relaxed host-native inherit best-effort Workspace",
+            b"",
+        );
+        match parse_command(&args) {
+            Some(ClientCommand::MountAdd {
+                distro,
+                mount_id,
+                host_path,
+                guest_path,
+                mode,
+                description,
+                ..
+            }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(mount_id, "workspace");
+                assert_eq!(host_path, "/Users/strati/work");
+                assert_eq!(guest_path, "/mnt/work");
+                assert_eq!(mode, "readwrite");
+                assert_eq!(description, "Workspace");
+            }
+            _ => panic!("expected mount add command"),
+        }
+    }
+
+    #[test]
+    fn parses_port_add_command() {
+        let args = anyos_std::args::parse("port add ubuntu-dev web 127.0.0.1 3000 3000 tcp Web", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::PortAdd {
+                distro,
+                rule_id,
+                listen_address,
+                listen_port,
+                guest_port,
+                protocol,
+                description,
+            }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(rule_id, "web");
+                assert_eq!(listen_address, "127.0.0.1");
+                assert_eq!(listen_port, "3000");
+                assert_eq!(guest_port, "3000");
+                assert_eq!(protocol, "tcp");
+                assert_eq!(description, "Web");
+            }
+            _ => panic!("expected port add command"),
+        }
+    }
+
+    #[test]
+    fn parses_ok_wire_response() {
+        let response = parse_response("OK\t1\nname\tubuntu-dev\nstate\tcreated\n\n").unwrap();
+        match response {
+            WireResponse::Ok { count, lines } => {
+                assert_eq!(count, 1);
+                assert_eq!(lines.len(), 2);
+                assert_eq!(lines[0], "name\tubuntu-dev");
+            }
+            _ => panic!("expected OK response"),
+        }
+    }
+
+    #[test]
+    fn parses_error_wire_response() {
+        let response = parse_response("ERR\tnot_found\tdistro missing\n\n").unwrap();
+        match response {
+            WireResponse::Err { code, message } => {
+                assert_eq!(code, "not_found");
+                assert_eq!(message, "distro missing");
+            }
+            _ => panic!("expected error response"),
+        }
+    }
+}

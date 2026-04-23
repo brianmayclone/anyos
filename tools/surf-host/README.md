@@ -29,7 +29,7 @@ cd tools/surf-host
 
 Das Binary wird unter `target/x86_64-unknown-linux-gnu/release/surf-host` erstellt.
 
-Wichtig: Muss mit `cargo +stable` gebaut werden (nicht nightly), da die anyOS-Root `.cargo/config.toml` das nightly-only `build-std` Feature aktiviert, das fuer den Host-Build nicht benoetigt wird.
+Wichtig: Wird mit `cargo +stable` gebaut. Die anyOS-spezifischen `build-std`-Flags werden im Repository nur noch an den echten OS-Buildstellen gesetzt, nicht mehr global fuer alle Cargo-Aufrufe.
 
 ## Benutzung
 

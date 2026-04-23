@@ -37,6 +37,16 @@ An **AArch64 port** targeting Raspberry Pi 4/5 is in active development.
 
 > **A learning project** created purely for fun and curiosity. It demonstrates how operating systems work under the hood — from bootloader to desktop environment — all without relying on any existing OS or standard library. **Contributions are welcome!**
 
+## Cargo Build Modes
+
+The repository now defaults to the normal host Cargo mode.
+That prevents host-side `cargo test` runs from accidentally sharing
+custom-target `build-std` artifacts with anyOS builds.
+
+- Host-side commands: use plain `cargo test`, `cargo check`, or `cargo +stable build`
+- anyOS kernel and userspace builds: use the CMake build, or pass an explicit target such as `--target x86_64-anyos.json` or `--target x86_64-anyos-user.json`
+- If you alternate between host and anyOS Cargo commands manually, prefer separate target dirs such as `CARGO_TARGET_DIR=target-host` and `CARGO_TARGET_DIR=target-anyos`
+
 ---
 
 ## Screenshots
