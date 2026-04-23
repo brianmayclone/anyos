@@ -99,6 +99,22 @@ impl RunQueue {
         self.bits[0] == 0 && self.bits[1] == 0
     }
 
+    #[cfg(feature = "kunit")]
+    pub(super) fn count_tid(&self, tid: u32) -> usize {
+        let mut count = 0usize;
+        let mut remaining = self.bits;
+        for word_idx in 0..2 {
+            let mut word = remaining[word_idx];
+            while word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                let p = word_idx * 64 + bit;
+                word &= word - 1;
+                count += self.levels[p].iter().filter(|&&queued| queued == tid).count();
+            }
+        }
+        count
+    }
+
     /// Highest priority level that has queued threads.
     fn highest_priority(&self) -> Option<usize> {
         if self.bits[1] != 0 {

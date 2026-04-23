@@ -20,6 +20,10 @@ pub static SUITE: TestSuite = TestSuite {
         TestCase { name: "deferred_wake_no_crash",       run: test_deferred_wake_noop },
         TestCase { name: "pinned_continuation_wakes_on_last_cpu", run: test_pinned_wake_cpu },
         TestCase { name: "pinned_continuation_not_stolen",        run: test_pinned_not_stolen },
+        TestCase { name: "runqueue_state_invariants",            run: test_runqueue_state_invariants },
+        TestCase { name: "wake_thread_no_duplicate_ready_tid",    run: test_wake_no_duplicate },
+        TestCase { name: "save_incomplete_thread_not_picked",     run: test_save_incomplete_not_picked },
+        TestCase { name: "reaper_keeps_referenced_kernel_stack",  run: test_reaper_keeps_referenced_stack },
     ],
 };
 
@@ -114,5 +118,33 @@ fn test_pinned_not_stolen(ctx: &mut TestContext) {
     ctx.expect_true(
         scheduler::kunit_pinned_continuation_not_stolen(),
         "work stealing leaves pinned kernel continuation on last_cpu",
+    );
+}
+
+fn test_runqueue_state_invariants(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_runqueue_state_invariants_hold(),
+        "only Ready threads are queued, and only once",
+    );
+}
+
+fn test_wake_no_duplicate(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_wake_thread_does_not_duplicate_ready_tid(),
+        "repeated wake_thread does not duplicate an already Ready TID",
+    );
+}
+
+fn test_save_incomplete_not_picked(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_save_incomplete_thread_is_not_picked(),
+        "Ready thread with save_complete=0 remains queued but is not selected",
+    );
+}
+
+fn test_reaper_keeps_referenced_stack(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_reaper_keeps_referenced_kernel_stack(),
+        "terminated thread is not reaped while any CPU still references its kernel stack",
     );
 }

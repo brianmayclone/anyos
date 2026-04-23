@@ -1125,6 +1125,108 @@ pub fn kunit_pinned_continuation_not_stolen() -> bool {
     stolen.is_none() && repaired_pick == Some(tid) && wrong_pick.is_none()
 }
 
+#[cfg(feature = "kunit")]
+fn kunit_count_tid_in_runqueues(sched: &Scheduler, tid: u32) -> usize {
+    let mut count = 0usize;
+    for cpu in 0..sched.num_cpus() {
+        count += sched.per_cpu[cpu].run_queue.count_tid(tid);
+    }
+    count
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_runqueue_state_invariants_hold() -> bool {
+    let mut sched = Scheduler::new();
+
+    let ready = kunit_make_pinned_user_thread(ThreadState::Blocked, 0, 0);
+    let ready_tid = ready.tid;
+    sched.threads.push(ready);
+    let _ = sched.wake_thread_inner(ready_tid);
+
+    let blocked = kunit_make_pinned_user_thread(ThreadState::Blocked, 0, 0);
+    let blocked_tid = blocked.tid;
+    sched.threads.push(blocked);
+
+    let running = kunit_make_pinned_user_thread(ThreadState::Running, 0, 0);
+    let running_tid = running.tid;
+    sched.threads.push(running);
+
+    let terminated = kunit_make_pinned_user_thread(ThreadState::Terminated, 0, 0);
+    let terminated_tid = terminated.tid;
+    sched.threads.push(terminated);
+
+    kunit_count_tid_in_runqueues(&sched, ready_tid) == 1
+        && kunit_count_tid_in_runqueues(&sched, blocked_tid) == 0
+        && kunit_count_tid_in_runqueues(&sched, running_tid) == 0
+        && kunit_count_tid_in_runqueues(&sched, terminated_tid) == 0
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_wake_thread_does_not_duplicate_ready_tid() -> bool {
+    let mut sched = Scheduler::new();
+
+    let thread = kunit_make_pinned_user_thread(ThreadState::Blocked, 0, 0);
+    let tid = thread.tid;
+    sched.threads.push(thread);
+
+    let _ = sched.wake_thread_inner(tid);
+    let _ = sched.wake_thread_inner(tid);
+
+    kunit_count_tid_in_runqueues(&sched, tid) == 1
+        && sched
+            .find_idx(tid)
+            .map(|idx| sched.threads[idx].state == ThreadState::Ready)
+            .unwrap_or(false)
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_save_incomplete_thread_is_not_picked() -> bool {
+    let mut sched = Scheduler::new();
+
+    let mut thread = kunit_make_pinned_user_thread(ThreadState::Ready, 0, 0);
+    thread.context.save_complete = 0;
+    let tid = thread.tid;
+    sched.threads.push(thread);
+    sched.per_cpu[0].run_queue.enqueue(tid, 42);
+
+    let picked = sched.pick_eligible(0);
+
+    picked.is_none()
+        && kunit_count_tid_in_runqueues(&sched, tid) == 1
+        && sched
+            .find_idx(tid)
+            .map(|idx| sched.threads[idx].state == ThreadState::Ready)
+            .unwrap_or(false)
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_reaper_keeps_referenced_kernel_stack() -> bool {
+    let mut sched = Scheduler::new();
+    let current_tick = crate::arch::hal::timer_current_ticks();
+
+    let mut thread = kunit_make_pinned_user_thread(ThreadState::Terminated, 0, 0);
+    thread.exit_code = None;
+    thread.terminated_at_tick = Some(current_tick.wrapping_sub(1_000));
+    thread.context.save_complete = 1;
+
+    let tid = thread.tid;
+    let stack_bottom = thread.kernel_stack_bottom();
+    let stack_top = thread.kernel_stack_top();
+    sched.threads.push(thread);
+
+    let old_bottom = PER_CPU_STACK_BOTTOM[0].swap(stack_bottom, Ordering::SeqCst);
+    let old_top = PER_CPU_STACK_TOP[0].swap(stack_top, Ordering::SeqCst);
+
+    let reaped = sched.reap_terminated();
+    let still_present = sched.find_idx(tid).is_some();
+    let any_reaped = reaped.iter().any(|slot| slot.is_some());
+
+    PER_CPU_STACK_BOTTOM[0].store(old_bottom, Ordering::SeqCst);
+    PER_CPU_STACK_TOP[0].store(old_top, Ordering::SeqCst);
+
+    still_present && !any_reaped
+}
+
 // =============================================================================
 // Public API — Init
 // =============================================================================
