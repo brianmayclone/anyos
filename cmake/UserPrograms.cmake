@@ -514,6 +514,7 @@ function(add_dll NAME SRC_DIR)
       --manifest-path ${SRC_DIR}/Cargo.toml
       --target ${USER_TARGET_JSON}
       --target-dir ${DLL_TARGET_DIR}
+      ${ANYOS_BUILD_STD_ARGS}
     DEPENDS
       ${SRC_DIR}/Cargo.toml
       ${SRC_DIR}/build.rs
