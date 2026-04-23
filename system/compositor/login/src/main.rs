@@ -27,11 +27,13 @@ fn login_schema() -> ServiceSchema<'static> {
 mod assets;
 
 const DIALOG_W: u32 = 340;
-const DIALOG_H: u32 = 340;
+const DIALOG_H: u32 = 400;
 const FIELD_W: u32 = 280;
 const FIELD_H: u32 = 28;
 const BTN_W: u32 = 280;
 const BTN_H: u32 = 34;
+const POWER_BTN_W: u32 = 134;
+const POWER_BTN_H: u32 = 30;
 const PAD: i32 = 30;
 
 /// Set by the login callback on success; read after ui::run() returns.
@@ -115,6 +117,25 @@ fn main() -> u32 {
     login_btn.set_size(BTN_W, BTN_H);
     login_btn.set_state(0); // disabled initially (username empty)
     win.add(&login_btn);
+    y_cursor += BTN_H as i32 + 16;
+
+    // ── Shutdown / Restart row ──
+    let shutdown_btn = ui::Button::new(i18n::t("Shutdown"));
+    shutdown_btn.set_position(PAD, y_cursor);
+    shutdown_btn.set_size(POWER_BTN_W, POWER_BTN_H);
+    win.add(&shutdown_btn);
+
+    let restart_btn = ui::Button::new(i18n::t("Restart"));
+    restart_btn.set_position(PAD + POWER_BTN_W as i32 + 12, y_cursor);
+    restart_btn.set_size(POWER_BTN_W, POWER_BTN_H);
+    win.add(&restart_btn);
+
+    shutdown_btn.on_click(|_| {
+        process::shutdown();
+    });
+    restart_btn.on_click(|_| {
+        process::reboot();
+    });
 
     // Pre-fill last username if available
     let mut has_last_user = false;
