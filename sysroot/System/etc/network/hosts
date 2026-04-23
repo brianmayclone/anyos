@@ -1,0 +1,5 @@
+# anyOS hosts file
+# Format: <ip> <hostname> [aliases...]
+# Changes are picked up automatically.
+
+127.0.0.1   localhost
