@@ -371,7 +371,30 @@ fn sched_diag_dump_sleep_switch(diag: SleepSwitchDiag) {
     let w2 = unsafe { *((cur_rsp + 16) as *const u64) };
     let w3 = unsafe { *((cur_rsp + 24) as *const u64) };
 
-    sched_diag_puts("+slp-sw cpu=");
+    let cur_rsp_in_old_stack =
+        cur_rsp >= diag.old_stack_bottom && cur_rsp <= diag.old_stack_top;
+    let old_stack_bounds_valid =
+        diag.old_stack_bottom >= KERNEL_ADDR_MIN && diag.old_stack_bottom < diag.old_stack_top;
+    let new_rsp_kernel = diag.new_rsp >= KERNEL_ADDR_MIN;
+    let new_rip_kernel = diag.new_rip >= KERNEL_PC_MIN && diag.new_rip < KERNEL_PC_MAX;
+    let old_stack_margin = if cur_rsp_in_old_stack {
+        let from_bottom = cur_rsp.saturating_sub(diag.old_stack_bottom);
+        let from_top = diag.old_stack_top.saturating_sub(cur_rsp);
+        core::cmp::min(from_bottom, from_top)
+    } else {
+        0
+    };
+    let severity = if !old_stack_bounds_valid || !cur_rsp_in_old_stack || !new_rsp_kernel || !new_rip_kernel {
+        "RED"
+    } else if old_stack_margin < 4096 {
+        "YELLOW"
+    } else {
+        "GREEN"
+    };
+
+    sched_diag_puts("+slp-sw[");
+    sched_diag_puts(severity);
+    sched_diag_puts("] cpu=");
     sched_diag_dec(diag.cpu);
     sched_diag_puts(" out=");
     sched_diag_dec(diag.out_tid);

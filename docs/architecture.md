@@ -239,6 +239,32 @@ The ARM64 port boots to kernel_main with working MMU, GICv3 interrupts, Generic 
 - Per-CPU idle threads, one scheduler lock with `try_lock()` contention handling
 - POSIX process model: `fork`, `exec`, `waitpid`, `pipe`, `dup2`, `signals`
 
+#### Scheduler Debug Trace: `+slp-sw[...]`
+
+On x86-64, the scheduler can emit a compact sleep/context-switch trace in this form:
+
+```text
++slp-sw[GREEN] cpu=1 out=18 next=19 old_ctx=0x... new_ctx=0x... cur_rsp=0x... old_bottom=0x... old_top=0x... new_rsp=0x... new_rip=0x... wake=3288 stk=[0x...,0x...,0x...,0x...]
+```
+
+- `GREEN`: all quick checks look healthy. `cur_rsp` is inside the old kernel stack bounds, the bounds themselves look valid, `new_rsp` is a kernel address, and `new_rip` points into the kernel text range.
+- `YELLOW`: the switch is still valid, but `cur_rsp` is within 4 KiB of a stack boundary. This is an early warning that the outgoing kernel stack is getting tight.
+- `RED`: at least one strong corruption signal was seen. Typical causes are `cur_rsp` outside `old_bottom..old_top`, invalid stack bounds, a non-kernel `new_rsp`, or a `new_rip` outside the kernel code window.
+
+Quick field guide:
+
+- `cpu`: CPU performing the switch
+- `out`: TID leaving the CPU
+- `next`: TID selected to run next
+- `old_ctx` / `new_ctx`: saved scheduler context records
+- `cur_rsp`: live kernel stack pointer of the outgoing thread
+- `old_bottom` / `old_top`: expected bounds of the outgoing kernel stack
+- `new_rsp` / `new_rip`: stack pointer and resume PC for the incoming thread
+- `wake`: scheduler wakeup timestamp/debug tick
+- `stk=[...]`: 4-word snapshot from the outgoing stack top for quick triage
+
+Fast triage rule: if `cur_rsp` stays inside `old_bottom..old_top` and the line is `GREEN`, the trace is usually a normal context switch. `YELLOW` deserves observation. `RED` should be treated as a likely scheduler/stack integrity problem and correlated with fault logs such as `GARBLED InterruptFrame`, `rsp_in_bounds=0`, or `Frame is OUTSIDE kernel stack bounds`.
+
 ### Ring 3 User Mode
 
 - **GDT segments**: Kernel Code (0x08), Kernel Data (0x10), User Code (0x1B), User Data (0x23), TSS (0x28)

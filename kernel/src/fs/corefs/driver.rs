@@ -49,10 +49,12 @@ use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
 #[cfg(test)]
 use corefs_core::storage::ondisk::native::save_state_native;
 use corefs_core::storage::ondisk::native::{
-    load_native_inode_slot_index, load_state_native, save_state_native_incremental,
-    save_state_native_incremental_dirty_with_slots, InodeSlotMapping,
+    load_native_inode_slot_index, load_state_native, load_state_native_lossy,
+    save_state_native_incremental, save_state_native_incremental_dirty_with_slots,
+    InodeSlotMapping,
 };
 use corefs_core::storage::ondisk::journal::Journal;
+use corefs_core::storage::ondisk::journal_capture::JournalCapture;
 use corefs_core::storage::ondisk::journaled::recover_pending_transactions;
 use corefs_core::storage::ondisk::volume::read_sb_with_fallbacks;
 use corefs_core::storage::persisted_state::PersistedState;
@@ -320,8 +322,27 @@ impl CoreFsDriver {
     /// Schreibende `Filesystem`-Operationen geben [`FsError::PermissionDenied`]
     /// zurück; `flush` ist ein No-op.
     pub fn mount_read_only(device: BlockDeviceAdapter) -> Result<Self, FsError> {
-        let mut state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
-        let inode_slots = load_inode_slot_map(&device)?;
+        let (mut state, load_warnings) = load_state_native_lossy(&device).map_err(|e| {
+            crate::serial_println!("[corefs] load_state_native failed: {:?}", e);
+            corefs_to_fs_error(&e)
+        })?;
+        for w in &load_warnings {
+            crate::serial_println!(
+                "[corefs] WARN inode slot {} skipped: {}",
+                w.slot,
+                w.reason
+            );
+        }
+        if !load_warnings.is_empty() {
+            crate::serial_println!(
+                "[corefs] mount continued despite {} bad inode slot(s); run fsck to reclaim",
+                load_warnings.len()
+            );
+        }
+        let inode_slots = load_inode_slot_map(&device).map_err(|e| {
+            crate::serial_println!("[corefs] load_inode_slot_map failed: {:?}", e);
+            e
+        })?;
         // Frisch formatierte Volumes haben keinen Root-Inode. In-Memory
         // synthesieren, damit lookup("/") / readdir funktionieren.
         ensure_root_directory(&mut state);
@@ -373,7 +394,23 @@ impl CoreFsDriver {
             }
         }
 
-        let mut state = load_state_native(&device).map_err(|e| corefs_to_fs_error(&e))?;
+        let (mut state, load_warnings) = load_state_native_lossy(&device).map_err(|e| {
+            crate::serial_println!("[corefs] load_state_native failed: {:?}", e);
+            corefs_to_fs_error(&e)
+        })?;
+        for w in &load_warnings {
+            crate::serial_println!(
+                "[corefs] WARN inode slot {} skipped: {}",
+                w.slot,
+                w.reason
+            );
+        }
+        if !load_warnings.is_empty() {
+            crate::serial_println!(
+                "[corefs] mount continued despite {} bad inode slot(s); run fsck to reclaim",
+                load_warnings.len()
+            );
+        }
         if journal_needs_format {
             match read_sb_with_fallbacks(&device)
                 .and_then(|sb| Journal::format(&mut device, &sb).map(|_| ()))
@@ -386,7 +423,10 @@ impl CoreFsDriver {
                 }
             }
         }
-        let inode_slots = load_inode_slot_map(&device)?;
+        let inode_slots = load_inode_slot_map(&device).map_err(|e| {
+            crate::serial_println!("[corefs] load_inode_slot_map failed: {:?}", e);
+            e
+        })?;
         let mut needs_persist = false;
 
         // Unclean-Mount-Recovery: Falls der vorherige Unmount nicht clean
@@ -509,7 +549,18 @@ impl CoreFsDriver {
         if inner.dirty_inodes.is_empty() && inner.removed_inodes.is_empty() {
             let refreshed_slots = {
                 let Inner { device, state, .. } = &mut *inner;
-                save_state_native_incremental(device, state).map_err(|e| corefs_to_fs_error(&e))?;
+                // Route all save writes through JournalCapture so the
+                // whole metadata flush lands atomically (or rolls back
+                // on crash-before-commit; on crash-after-commit the next
+                // mount's recover_pending_transactions replays it).
+                {
+                    let mut capture = JournalCapture::new(device);
+                    save_state_native_incremental(&mut capture, state)
+                        .map_err(|e| corefs_to_fs_error(&e))?;
+                    capture
+                        .commit_journaled()
+                        .map_err(|e| corefs_to_fs_error(&e))?;
+                }
                 load_native_inode_slot_index(device).map_err(|e| corefs_to_fs_error(&e))?
             };
             inner.inode_slots = slot_map_from_mappings(refreshed_slots);
@@ -519,14 +570,19 @@ impl CoreFsDriver {
             let slot_hints = inner.slot_hints_for_pending_flush();
             let report = {
                 let Inner { device, state, .. } = &mut *inner;
-                save_state_native_incremental_dirty_with_slots(
-                    device,
+                let mut capture = JournalCapture::new(device);
+                let report = save_state_native_incremental_dirty_with_slots(
+                    &mut capture,
                     state,
                     &touched,
                     &removed,
                     &slot_hints,
                 )
-                .map_err(|e| corefs_to_fs_error(&e))?
+                .map_err(|e| corefs_to_fs_error(&e))?;
+                capture
+                    .commit_journaled()
+                    .map_err(|e| corefs_to_fs_error(&e))?;
+                report
             };
             if report.incremental.fell_back_to_full_save {
                 inner.inode_slots = slot_map_from_mappings(report.assigned_slots);
@@ -837,7 +893,10 @@ fn compute_first_data_block(
     device: &BlockDeviceAdapter,
     state: &PersistedState,
 ) -> Result<u64, FsError> {
-    let sb = read_sb_with_fallbacks(device).map_err(|e| corefs_to_fs_error(&e))?;
+    let sb = read_sb_with_fallbacks(device).map_err(|e| {
+        crate::serial_println!("[corefs] read_sb_with_fallbacks failed: {:?}", e);
+        corefs_to_fs_error(&e)
+    })?;
     let data_start = sb.geometry().data_start;
     let highest = state
         .block_records
