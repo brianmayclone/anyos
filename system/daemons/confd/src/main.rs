@@ -297,17 +297,31 @@ impl ConfState {
 }
 
 fn main() {
-    anyos_std::println!("[confd] starting central configuration registry");
-    let mut lifecycle = connect_lifecycle();
+    let t_start = anyos_std::sys::uptime_ms();
+    anyos_std::println!(
+        "[confd] starting central configuration registry (t={}ms)",
+        t_start
+    );
+    // Non-blocking: only a single attempt. Real retry happens in the main loop.
+    let mut lifecycle = ServiceLifecycle::connect("confd").ok();
     if let Some(svc) = lifecycle.as_mut() {
         let _ = svc.notify_starting();
     }
+    anyos_std::println!(
+        "[confd] lifecycle={} (t={}ms)",
+        if lifecycle.is_some() { "ok" } else { "deferred" },
+        anyos_std::sys::uptime_ms().wrapping_sub(t_start)
+    );
 
     if !libdb_client::init() {
         anyos_std::println!("[confd] failed to load libdb.so");
         notify_failed(&mut lifecycle, "libdb_init_failed");
         return;
     }
+    anyos_std::println!(
+        "[confd] libdb loaded (t={}ms)",
+        anyos_std::sys::uptime_ms().wrapping_sub(t_start)
+    );
 
     anyos_std::fs::mkdir(DB_DIR);
     let db_preexisting = ensure_db_file();
@@ -321,10 +335,19 @@ fn main() {
             return;
         }
     };
+    anyos_std::println!(
+        "[confd] db opened (t={}ms)",
+        anyos_std::sys::uptime_ms().wrapping_sub(t_start)
+    );
 
     schema::init_tables(&db);
     log_db_file_state("after-init");
     let entries = schema::load_entries(&db);
+    anyos_std::println!(
+        "[confd] entries loaded: {} (t={}ms)",
+        entries.len(),
+        anyos_std::sys::uptime_ms().wrapping_sub(t_start)
+    );
     let next_audit_seq = schema::load_next_audit_seq(&db);
     let registry_rows = schema::count_rows(&db, "registry");
     let audit_rows = schema::count_rows(&db, "audit");
@@ -459,17 +482,6 @@ fn log_db_file_state(stage: &str) {
         stat_buf[5],
         stat_buf[6],
     );
-}
-
-fn connect_lifecycle() -> Option<ServiceLifecycle> {
-    for _ in 0..100 {
-        match ServiceLifecycle::connect("confd") {
-            Ok(svc) => return Some(svc),
-            Err(_) => anyos_std::process::sleep(20),
-        }
-    }
-    anyos_std::println!("[confd] WARNING - AMID not reachable for service lifecycle");
-    None
 }
 
 fn notify_failed(lifecycle: &mut Option<ServiceLifecycle>, reason: &str) {
