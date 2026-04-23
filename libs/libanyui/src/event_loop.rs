@@ -665,14 +665,19 @@ pub fn run_once() -> u32 {
                         }
                     }
 
-                    // Update cursor shape (check SplitView dividers etc.)
-                    let desired_cursor =
-                        control::cursor_at_point(&st.controls, win_id, mx, my, 0, 0);
-                    if desired_cursor != st.current_cursor {
-                        st.current_cursor = desired_cursor;
-                        // CMD_SET_CURSOR = 0x1018
-                        let cmd: [u32; 5] = [0x1018, comp_window_id, desired_cursor, 0, 0];
-                        crate::syscall::evt_chan_emit(st.channel_id, &cmd);
+                    // Update cursor shape (check SplitView dividers etc.).
+                    // Skip while a drag is in progress — the drag code owns
+                    // the cursor (Move shape) until the drop or cancel.
+                    if st.drag.is_none() {
+                        let desired_cursor =
+                            control::cursor_at_point(&st.controls, win_id, mx, my, 0, 0);
+                        if desired_cursor != st.current_cursor {
+                            st.current_cursor = desired_cursor;
+                            // CMD_SET_CURSOR = 0x1018
+                            let cmd: [u32; 5] =
+                                [0x1018, comp_window_id, desired_cursor, 0, 0];
+                            crate::syscall::evt_chan_emit(st.channel_id, &cmd);
+                        }
                     }
 
                     // Dispatch mouse_move to hovered control — always call
@@ -735,7 +740,7 @@ pub fn run_once() -> u32 {
                         }
                     }
 
-                    maybe_begin_drag(st, win_id, mx, my, &mut pending_cbs);
+                    maybe_begin_drag(st, win_id, comp_window_id, mx, my, &mut pending_cbs);
                     if st.drag.is_some() {
                         update_drag_target(st, win_id, mx, my, &mut pending_cbs);
                     }
@@ -800,6 +805,13 @@ pub fn run_once() -> u32 {
                     st.pressed_button = button;
                     st.press_mouse_x = mx;
                     st.press_mouse_y = my;
+                    crate::log!(
+                        "[dnd] MOUSE_DOWN hit={} button={} mx={} my={}",
+                        hit_id.unwrap_or(0),
+                        button,
+                        mx,
+                        my
+                    );
 
                     if let Some(target_id) = hit_id {
                         if let Some(idx) = control::find_idx(&st.controls, target_id) {
@@ -846,12 +858,19 @@ pub fn run_once() -> u32 {
 
                     if let Some(drag) = st.drag.take() {
                         if let Some(target_id) = drag.target_id {
-                            fire_event_callback(
-                                &st.controls,
-                                target_id,
-                                control::EVENT_DROP,
-                                &mut pending_cbs,
-                            );
+                            set_drop_hover(&mut st.controls, target_id, false);
+                            // Only dispatch DROP when the target opted in via
+                            // anyui_drag_accept during ENTER/DRAG. Rejected
+                            // drops still fire DRAG_LEAVE + DRAG_END so apps
+                            // can cleanly tear down any preview state.
+                            if drag.target_accepted {
+                                fire_event_callback(
+                                    &st.controls,
+                                    target_id,
+                                    control::EVENT_DROP,
+                                    &mut pending_cbs,
+                                );
+                            }
                             fire_event_callback(
                                 &st.controls,
                                 target_id,
@@ -865,6 +884,12 @@ pub fn run_once() -> u32 {
                             control::EVENT_DRAG_END,
                             &mut pending_cbs,
                         );
+                        // Restore default cursor.
+                        if st.current_cursor != 0 {
+                            st.current_cursor = 0;
+                            let cmd: [u32; 5] = [0x1018, comp_window_id, 0, 0, 0];
+                            crate::syscall::evt_chan_emit(st.channel_id, &cmd);
+                        }
                         st.pressed = None;
                         st.pressed_button = 0;
                         continue;
@@ -2488,14 +2513,44 @@ fn fire_event_callback(
     }
 }
 
-fn nearest_drop_target(
+/// Walk up the ancestor chain of `id`, returning the nearest control that
+/// is enabled, visible, and marked as `draggable`. Lets a child (e.g. a
+/// non-interactive Label inside a draggable Card) transparently trigger
+/// the drag on its parent.
+fn nearest_draggable(
     controls: &[Box<dyn Control>],
     mut id: Option<ControlId>,
 ) -> Option<ControlId> {
     while let Some(cur) = id {
         if let Some(idx) = control::find_idx(controls, cur) {
             let base = controls[idx].base();
-            if base.drop_target && base.visible && !base.disabled {
+            if base.draggable && base.visible && !base.disabled {
+                return Some(cur);
+            }
+            id = if base.parent == 0 { None } else { Some(base.parent) };
+        } else {
+            return None;
+        }
+    }
+    None
+}
+
+/// Walk up the ancestor chain of `id`, returning the nearest control that
+/// is enabled, visible, and marked as a drop target whose `drop_formats`
+/// mask accepts the current drag payload format.
+fn nearest_drop_target(
+    controls: &[Box<dyn Control>],
+    mut id: Option<ControlId>,
+    payload_format: u32,
+) -> Option<ControlId> {
+    while let Some(cur) = id {
+        if let Some(idx) = control::find_idx(controls, cur) {
+            let base = controls[idx].base();
+            if base.drop_target
+                && base.visible
+                && !base.disabled
+                && crate::dnd::format_mask_contains(base.drop_formats, payload_format)
+            {
                 return Some(cur);
             }
             id = if base.parent == 0 { None } else { Some(base.parent) };
@@ -2511,48 +2566,113 @@ fn drop_target_at_point(
     win_id: ControlId,
     mx: i32,
     my: i32,
+    payload_format: u32,
 ) -> Option<ControlId> {
     let hovered = control::hit_test_any(controls, win_id, mx, my, 0, 0);
-    nearest_drop_target(controls, hovered)
+    nearest_drop_target(controls, hovered, payload_format)
+}
+
+/// Modifier bits as expected by `dnd::negotiate_effect`: bit 0 = Ctrl, bit 1 = Shift.
+fn dnd_modifier_bits(st: &crate::AnyuiState) -> u32 {
+    let mut bits = 0u32;
+    if (st.last_modifiers & control::MOD_CTRL) != 0 {
+        bits |= 1;
+    }
+    if (st.last_modifiers & control::MOD_SHIFT) != 0 {
+        bits |= 2;
+    }
+    bits
+}
+
+fn set_drop_hover(controls: &mut [Box<dyn Control>], id: ControlId, hovered: bool) {
+    if let Some(idx) = control::find_idx(&*controls, id) {
+        let base = controls[idx].base_mut();
+        if base.drop_hover != hovered {
+            base.drop_hover = hovered;
+            base.mark_dirty();
+        }
+    }
 }
 
 fn maybe_begin_drag(
     st: &mut crate::AnyuiState,
     win_id: ControlId,
+    comp_window_id: u32,
     mx: i32,
     my: i32,
     pending: &mut Vec<PendingCallback>,
 ) {
-    if st.drag.is_some() || (st.pressed_button & 0x01) == 0 {
+    if st.drag.is_some() {
+        return;
+    }
+    if (st.pressed_button & 0x01) == 0 {
         return;
     }
     let pressed_id = match st.pressed {
         Some(id) => id,
-        None => return,
+        None => {
+            crate::log!("[dnd] maybe_begin_drag: no pressed");
+            return;
+        }
     };
-    if (mx - st.press_mouse_x).abs() <= 4 && (my - st.press_mouse_y).abs() <= 4 {
+    let dx = mx - st.press_mouse_x;
+    let dy = my - st.press_mouse_y;
+    if !crate::dnd::drag_threshold_exceeded(dx, dy) {
         return;
     }
-    let idx = match control::find_idx(&st.controls, pressed_id) {
-        Some(i) => i,
-        None => return,
+    crate::log!(
+        "[dnd] threshold crossed pressed={} dx={} dy={} btn={}",
+        pressed_id, dx, dy, st.pressed_button
+    );
+    // Resolve the actual drag source: walk up from the pressed control
+    // until we find a draggable ancestor. Lets a child widget (e.g. a
+    // Label painted inside a draggable Card) initiate the drag on its
+    // parent without having to be draggable itself.
+    let source_id = match nearest_draggable(&st.controls, Some(pressed_id)) {
+        Some(id) => id,
+        None => {
+            crate::log!("[dnd] no draggable ancestor for pressed={}", pressed_id);
+            return;
+        }
     };
-    if !st.controls[idx].base().draggable {
-        return;
-    }
+    crate::log!("[dnd] starting drag source={}", source_id);
 
     st.drag = Some(crate::DragSession {
-        source_id: pressed_id,
+        source_id,
         target_id: None,
         data: Vec::new(),
+        // Default to text + copy|move. The source's DRAG_START callback can
+        // override these via anyui_drag_set_payload / anyui_drag_set_text.
+        format: crate::dnd::DND_FORMAT_TEXT,
+        allowed_effects: crate::dnd::DND_EFFECT_COPY | crate::dnd::DND_EFFECT_MOVE,
+        negotiated_effect: crate::dnd::DND_EFFECT_NONE,
+        target_accepted: false,
+        pointer_x: mx,
+        pointer_y: my,
+        modifiers: dnd_modifier_bits(st),
     });
-    fire_event_callback(&st.controls, pressed_id, control::EVENT_DRAG_START, pending);
+    fire_event_callback(&st.controls, source_id, control::EVENT_DRAG_START, pending);
 
-    let new_target = drop_target_at_point(&st.controls, win_id, mx, my);
+    // Switch cursor to Move while dragging (see cursors::CursorShape::Move = 5).
+    if st.current_cursor != 5 {
+        st.current_cursor = 5;
+        let cmd: [u32; 5] = [0x1018, comp_window_id, 5, 0, 0];
+        crate::syscall::evt_chan_emit(st.channel_id, &cmd);
+    }
+
+    let payload_format = st
+        .drag
+        .as_ref()
+        .map(|d| d.format)
+        .unwrap_or(crate::dnd::DND_FORMAT_TEXT);
+    let new_target = drop_target_at_point(&st.controls, win_id, mx, my, payload_format);
     if let Some(drag) = st.drag.as_mut() {
         drag.target_id = new_target;
+        drag.target_accepted = false;
+        drag.negotiated_effect = crate::dnd::DND_EFFECT_NONE;
     }
     if let Some(target_id) = new_target {
+        set_drop_hover(&mut st.controls, target_id, true);
         fire_event_callback(&st.controls, target_id, control::EVENT_DRAG_ENTER, pending);
     }
 }
@@ -2564,24 +2684,89 @@ fn update_drag_target(
     my: i32,
     pending: &mut Vec<PendingCallback>,
 ) {
-    let new_target = drop_target_at_point(&st.controls, win_id, mx, my);
+    // Refresh per-event session fields so callbacks reading
+    // anyui_drag_get_pos / effect state see current values.
+    if let Some(drag) = st.drag.as_mut() {
+        drag.pointer_x = mx;
+        drag.pointer_y = my;
+        drag.modifiers = 0; // set after borrow below
+    }
+    let mods = dnd_modifier_bits(st);
+    if let Some(drag) = st.drag.as_mut() {
+        drag.modifiers = mods;
+    }
+
+    let payload_format = st
+        .drag
+        .as_ref()
+        .map(|d| d.format)
+        .unwrap_or(crate::dnd::DND_FORMAT_TEXT);
+    let new_target = drop_target_at_point(&st.controls, win_id, mx, my, payload_format);
     let old_target = st.drag.as_ref().and_then(|d| d.target_id);
     if new_target != old_target {
         if let Some(old_id) = old_target {
+            set_drop_hover(&mut st.controls, old_id, false);
             fire_event_callback(&st.controls, old_id, control::EVENT_DRAG_LEAVE, pending);
-        }
-        if let Some(new_id) = new_target {
-            fire_event_callback(&st.controls, new_id, control::EVENT_DRAG_ENTER, pending);
         }
         if let Some(drag) = st.drag.as_mut() {
             drag.target_id = new_target;
+            drag.target_accepted = false;
+            drag.negotiated_effect = crate::dnd::DND_EFFECT_NONE;
         }
+        if let Some(new_id) = new_target {
+            set_drop_hover(&mut st.controls, new_id, true);
+            fire_event_callback(&st.controls, new_id, control::EVENT_DRAG_ENTER, pending);
+        }
+    } else if let Some(target_id) = new_target {
+        // Same target: reset acceptance per event so the target must re-opt-in.
+        // This lets the target reject mid-drag based on modifiers or position.
+        if let Some(drag) = st.drag.as_mut() {
+            drag.target_accepted = false;
+            drag.negotiated_effect = crate::dnd::DND_EFFECT_NONE;
+        }
+        // Fire a DRAG (over) event so the target can re-accept.
+        fire_event_callback(&st.controls, target_id, control::EVENT_DRAG, pending);
     }
 
     if let Some(source_id) = st.drag.as_ref().map(|d| d.source_id) {
         fire_event_callback(&st.controls, source_id, control::EVENT_DRAG, pending);
     }
+
+    drag_autoscroll(st, mx, my);
 }
+
+/// Walk up from the current drop target and apply scroll to the nearest
+/// ancestor whose control opts in as a drag-autoscroll target. Quiet when
+/// no drag is active or no scrollable ancestor exists.
+fn drag_autoscroll(st: &mut crate::AnyuiState, mx: i32, my: i32) {
+    let mut cur = st
+        .drag
+        .as_ref()
+        .and_then(|d| d.target_id)
+        .or(st.hovered);
+    while let Some(id) = cur {
+        let idx = match control::find_idx(&st.controls, id) {
+            Some(i) => i,
+            None => break,
+        };
+        let parent = st.controls[idx].base().parent;
+        if st.controls[idx].is_drag_autoscroll_target() {
+            let (ax, ay) = control::abs_position(&st.controls, id);
+            let local_y = my - ay;
+            let local_x = mx - ax;
+            let h = st.controls[idx].base().h as i32;
+            let w = st.controls[idx].base().w as i32;
+            let dx = crate::dnd::autoscroll_delta(local_x, w);
+            let dy = crate::dnd::autoscroll_delta(local_y, h);
+            if dx != 0 || dy != 0 {
+                st.controls[idx].drag_autoscroll(dx, dy);
+            }
+            break;
+        }
+        cur = if parent == 0 { None } else { Some(parent) };
+    }
+}
+
 
 /// Build a cascaded tab sort key for a control: (parent_tab_index, own_tab_index, insertion_order).
 /// This ensures controls are grouped by parent tab_index first, then sorted within the group.

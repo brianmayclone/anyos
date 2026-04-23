@@ -25,7 +25,7 @@ fn main() {
     nav.set_size(520, 36);
     win.add(&nav);
 
-    let tabs = ui::TabBar::new("Basics|Desktop|Advanced");
+    let tabs = ui::TabBar::new("Basics|Desktop|Advanced|DnD");
     tabs.set_position(0, 36);
     tabs.set_size(520, 34);
     win.add(&tabs);
@@ -81,7 +81,27 @@ fn main() {
     misc_content.set_padding(20, 10, 20, 20);
     misc_scroll.add(&misc_content);
 
-    tabs.connect_panels(&[&controls_panel, &desktop_panel, &misc_panel]);
+    // ── DnD tab — drag & drop showcase ────────────────────────────────
+    let dnd_panel = ui::View::new();
+    dnd_panel.set_position(0, 72);
+    dnd_panel.set_size(520, 548);
+    win.add(&dnd_panel);
+
+    let dnd_scroll = ui::ScrollView::new();
+    dnd_scroll.set_position(0, 0);
+    dnd_scroll.set_size(520, 548);
+    dnd_scroll.set_dock(ui::DOCK_FILL);
+    dnd_panel.add(&dnd_scroll);
+
+    let dnd_content = ui::StackPanel::vertical();
+    dnd_content.set_position(0, 0);
+    dnd_content.set_size(500, 1300);
+    dnd_content.set_padding(20, 10, 20, 20);
+    dnd_scroll.add(&dnd_content);
+
+    build_dnd_tab(&dnd_content);
+
+    tabs.connect_panels(&[&controls_panel, &desktop_panel, &misc_panel, &dnd_panel]);
 
     // ════════════════════════════════════════════════════════════════
     //  Header
@@ -746,4 +766,327 @@ fn main() {
 
     // ── Run event loop ──
     ui::run();
+}
+
+// ════════════════════════════════════════════════════════════════════════
+//  DnD tab — generic drag & drop showcase
+// ════════════════════════════════════════════════════════════════════════
+
+/// Shared state for the DnD tab. Stored in a `static mut` singleton because
+/// callback closures must be `'static` and the widgets they mutate need to
+/// outlive each closure individually.
+struct DndState {
+    // Section 1 — text drag
+    text_sink: ui::Label,
+    text_status: ui::Label,
+    // Section 2 — list reorder
+    reorder_cards: [ui::Card; 4],
+    reorder_labels: [ui::Label; 4],
+    reorder_values: [&'static str; 4],
+    // Section 3 — URI list
+    file_sink: ui::Label,
+    // Section 4 — effect negotiation
+    custom_sink: ui::Label,
+}
+
+static mut DND: Option<DndState> = None;
+fn dnd_state() -> &'static mut DndState {
+    unsafe { DND.as_mut().expect("DnD state not initialised") }
+}
+
+fn build_dnd_tab(dnd_content: &ui::StackPanel) {
+    // ── Header ────────────────────────────────────────────────────────
+    let title = ui::Label::new("Drag & Drop Framework");
+    title.set_color(0xFF167CFF);
+    title.set_text_color(0xFFFFFFFF);
+    title.set_text_align(ui::TEXT_ALIGN_CENTER);
+    title.set_size(460, 28);
+    title.set_margin(0, 0, 0, 4);
+    dnd_content.add(&title);
+
+    let subtitle = ui::Label::new(
+        "Text / URI-list / custom payloads with copy-move-link effect negotiation",
+    );
+    subtitle.set_color(0xFF252C38);
+    subtitle.set_text_color(0xFFD8DEE8);
+    subtitle.set_text_align(ui::TEXT_ALIGN_CENTER);
+    subtitle.set_size(460, 22);
+    subtitle.set_margin(0, 0, 0, 10);
+    dnd_content.add(&subtitle);
+
+    // ── Section 1: Text payload ──────────────────────────────────────
+    let exp_text = ui::Expander::new("1. Text payload (drag & drop strings)");
+    exp_text.set_size(460, 150);
+    exp_text.set_margin(0, 0, 0, 8);
+    dnd_content.add(&exp_text);
+
+    let text_row = ui::StackPanel::horizontal();
+    text_row.set_position(0, 0);
+    text_row.set_size(460, 120);
+    text_row.set_padding(6, 6, 6, 6);
+    exp_text.add(&text_row);
+
+    let text_src = ui::Label::new("Drag me!");
+    text_src.set_color(0xFF167CFF);
+    text_src.set_text_color(0xFFFFFFFF);
+    text_src.set_text_align(ui::TEXT_ALIGN_CENTER);
+    text_src.set_size(140, 60);
+    text_src.set_margin(0, 20, 10, 0);
+    text_src.set_draggable(true);
+    text_row.add(&text_src);
+
+    let text_sink = ui::Label::new("Drop zone");
+    text_sink.set_color(0xFF252C38);
+    text_sink.set_text_color(0xFF9AA4B8);
+    text_sink.set_text_align(ui::TEXT_ALIGN_CENTER);
+    text_sink.set_size(260, 100);
+    text_sink.set_drop_target(true);
+    text_sink.set_drop_formats(ui::dnd_format_mask(ui::DND_FORMAT_TEXT));
+    text_row.add(&text_sink);
+
+    let text_status = ui::Label::new("Tip: hold Ctrl to copy, Shift to move.");
+    text_status.set_color(0xFF1B2029);
+    text_status.set_text_color(0xFF9AA4B8);
+    text_status.set_size(460, 20);
+    dnd_content.add(&text_status);
+
+    // ── Section 2: List reorder (custom payload carrying an index) ────
+    let exp_reorder = ui::Expander::new("2. Reorder list (custom payload = item index)");
+    exp_reorder.set_size(460, 230);
+    exp_reorder.set_margin(0, 0, 0, 8);
+    dnd_content.add(&exp_reorder);
+
+    let reorder_stack = ui::StackPanel::vertical();
+    reorder_stack.set_position(0, 0);
+    reorder_stack.set_size(460, 200);
+    reorder_stack.set_padding(6, 4, 6, 6);
+    exp_reorder.add(&reorder_stack);
+
+    let palette = [0xFFE53935u32, 0xFF24B04A, 0xFF167CFF, 0xFF7A35D8];
+    let labels = ["Alpha", "Beta", "Gamma", "Delta"];
+    let mut cards: [core::mem::MaybeUninit<ui::Card>; 4] =
+        unsafe { core::mem::MaybeUninit::uninit().assume_init() };
+    let mut card_labels: [core::mem::MaybeUninit<ui::Label>; 4] =
+        unsafe { core::mem::MaybeUninit::uninit().assume_init() };
+    for i in 0..4usize {
+        let card = ui::Card::new();
+        card.set_size(440, 40);
+        card.set_margin(0, 0, 0, 4);
+        card.set_color(palette[i]);
+        card.set_draggable(true);
+        card.set_drop_target(true);
+        card.set_drop_formats(ui::dnd_format_mask(ui::DND_FORMAT_CUSTOM));
+        let lbl = ui::Label::new(labels[i]);
+        lbl.set_position(12, 10);
+        lbl.set_size(400, 20);
+        lbl.set_text_color(0xFFFFFFFF);
+        card.add(&lbl);
+        reorder_stack.add(&card);
+        cards[i].write(card);
+        card_labels[i].write(lbl);
+    }
+    let cards: [ui::Card; 4] = unsafe { core::mem::transmute(cards) };
+    let card_labels_arr: [ui::Label; 4] = unsafe { core::mem::transmute(card_labels) };
+
+    // ── Section 3: URI list payload ───────────────────────────────────
+    let exp_files = ui::Expander::new("3. URI list payload (multi-file drag)");
+    exp_files.set_size(460, 150);
+    exp_files.set_margin(0, 0, 0, 8);
+    dnd_content.add(&exp_files);
+
+    let files_row = ui::StackPanel::horizontal();
+    files_row.set_position(0, 0);
+    files_row.set_size(460, 120);
+    files_row.set_padding(6, 6, 6, 6);
+    exp_files.add(&files_row);
+
+    let files_src = ui::Label::new("readme.md\nnotes.txt\nicon.png");
+    files_src.set_color(0xFF24B04A);
+    files_src.set_text_color(0xFFFFFFFF);
+    files_src.set_text_align(ui::TEXT_ALIGN_CENTER);
+    files_src.set_size(160, 100);
+    files_src.set_margin(0, 0, 10, 0);
+    files_src.set_draggable(true);
+    files_row.add(&files_src);
+
+    let file_sink = ui::Label::new("Drop URI list here");
+    file_sink.set_color(0xFF252C38);
+    file_sink.set_text_color(0xFF9AA4B8);
+    file_sink.set_text_align(ui::TEXT_ALIGN_CENTER);
+    file_sink.set_size(250, 100);
+    file_sink.set_drop_target(true);
+    file_sink.set_drop_formats(ui::dnd_format_mask(ui::DND_FORMAT_URI_LIST));
+    files_row.add(&file_sink);
+
+    // ── Section 4: Effect negotiation ────────────────────────────────
+    let exp_effect = ui::Expander::new("4. Effect negotiation (copy / move / link)");
+    exp_effect.set_size(460, 150);
+    exp_effect.set_margin(0, 0, 0, 8);
+    dnd_content.add(&exp_effect);
+
+    let effect_row = ui::StackPanel::horizontal();
+    effect_row.set_position(0, 0);
+    effect_row.set_size(460, 120);
+    effect_row.set_padding(6, 6, 6, 6);
+    exp_effect.add(&effect_row);
+
+    let effect_src = ui::Label::new("Widget X\n(allows all)");
+    effect_src.set_color(0xFF7A35D8);
+    effect_src.set_text_color(0xFFFFFFFF);
+    effect_src.set_text_align(ui::TEXT_ALIGN_CENTER);
+    effect_src.set_size(140, 100);
+    effect_src.set_margin(0, 0, 10, 0);
+    effect_src.set_draggable(true);
+    effect_row.add(&effect_src);
+
+    let custom_sink = ui::Label::new(
+        "Drop with:\n  plain = Move\n  Ctrl  = Copy\n  Shift = Move\n  Ctrl+Shift = Link",
+    );
+    custom_sink.set_color(0xFF252C38);
+    custom_sink.set_text_color(0xFFD8DEE8);
+    custom_sink.set_text_align(ui::TEXT_ALIGN_LEFT);
+    custom_sink.set_size(270, 100);
+    custom_sink.set_drop_target(true);
+    custom_sink.set_drop_formats(ui::dnd_format_mask(ui::DND_FORMAT_CUSTOM));
+    effect_row.add(&custom_sink);
+
+    // ── Persist state for closures ────────────────────────────────────
+    unsafe {
+        DND = Some(DndState {
+            text_sink,
+            text_status,
+            reorder_cards: cards,
+            reorder_labels: card_labels_arr,
+            reorder_values: labels,
+            file_sink,
+            custom_sink,
+        });
+    }
+
+    // ── Wire callbacks ────────────────────────────────────────────────
+
+    // Section 1: plain text
+    text_src.on_drag_start(move |_| {
+        ui::drag_set_payload(
+            ui::DND_FORMAT_TEXT,
+            b"Hello from the DnD demo!",
+            ui::DND_EFFECT_COPY | ui::DND_EFFECT_MOVE,
+        );
+    });
+    text_sink.on_drag_enter(move |_| {
+        ui::drag_accept(ui::DND_EFFECT_COPY | ui::DND_EFFECT_MOVE);
+    });
+    text_sink.on_event_raw(ui::EVENT_DRAG, text_over_thunk_c, 0);
+    text_sink.on_drop(move |_| {
+        let (bytes, _fmt) = ui::drag_get_payload();
+        let s = alloc::string::String::from_utf8_lossy(&bytes).into_owned();
+        dnd_state().text_sink.set_text(&s);
+        let effect = ui::drag_effect();
+        let st = dnd_state();
+        let mut msg = alloc::string::String::from("Dropped: effect=");
+        msg.push_str(ui::drag_effect_label(effect));
+        st.text_status.set_text(&msg);
+    });
+    text_sink.on_drag_leave(move |_| {
+        // No-op; the framework clears drop_hover automatically.
+    });
+
+    // Section 2: reorder
+    for i in 0..4usize {
+        let cards_ref = cards;
+        let src_idx = i as u32;
+        cards[i].on_drag_start(move |_| {
+            // Payload is the index as 4 little-endian bytes.
+            let bytes = src_idx.to_le_bytes();
+            ui::drag_set_payload(
+                ui::DND_FORMAT_CUSTOM,
+                &bytes,
+                ui::DND_EFFECT_MOVE,
+            );
+            let _ = cards_ref;
+        });
+        cards[i].on_drag_enter(move |_| {
+            ui::drag_accept(ui::DND_EFFECT_MOVE);
+        });
+        let target_idx = i;
+        cards[i].on_drop(move |_| {
+            let (bytes, fmt) = ui::drag_get_payload();
+            if fmt != ui::DND_FORMAT_CUSTOM || bytes.len() != 4 {
+                return;
+            }
+            let src_idx = u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+                as usize;
+            if src_idx == target_idx || src_idx >= 4 {
+                return;
+            }
+            let st = dnd_state();
+            st.reorder_values.swap(src_idx, target_idx);
+            for (j, lbl) in st.reorder_labels.iter().enumerate() {
+                lbl.set_text(st.reorder_values[j]);
+            }
+        });
+    }
+
+    // Section 3: URI list
+    files_src.on_drag_start(move |_| {
+        let payload = b"file:///home/user/readme.md\nfile:///home/user/notes.txt\nfile:///home/user/icon.png";
+        ui::drag_set_payload(
+            ui::DND_FORMAT_URI_LIST,
+            payload,
+            ui::DND_EFFECT_COPY | ui::DND_EFFECT_LINK,
+        );
+    });
+    file_sink.on_drag_enter(move |_| {
+        ui::drag_accept(ui::DND_EFFECT_COPY | ui::DND_EFFECT_LINK);
+    });
+    file_sink.on_drop(move |_| {
+        let (bytes, _) = ui::drag_get_payload();
+        let text = alloc::string::String::from_utf8_lossy(&bytes);
+        let mut out = alloc::string::String::from("Received:\n");
+        for (i, line) in text.lines().enumerate() {
+            if i >= 6 { break; }
+            out.push_str(line);
+            out.push('\n');
+        }
+        dnd_state().file_sink.set_text(out.trim_end());
+    });
+
+    // Section 4: custom with all-effects source
+    effect_src.on_drag_start(move |_| {
+        // Magic bytes identify this as "Widget X".
+        ui::drag_set_payload(
+            ui::DND_FORMAT_CUSTOM,
+            b"WIDGET_X",
+            ui::DND_EFFECT_ALL,
+        );
+    });
+    // Re-negotiate effect on every over event so that holding Ctrl / Shift
+    // mid-drag updates the displayed effect live.
+    custom_sink.on_drag_enter(|id| custom_update(id));
+    custom_sink.on_event_raw(ui::EVENT_DRAG, custom_update_thunk_c, 0);
+    custom_sink.on_drop(move |_| {
+        let (bytes, _) = ui::drag_get_payload();
+        let effect = ui::drag_effect();
+        let mut msg = alloc::string::String::from("Dropped Widget X with effect=");
+        msg.push_str(ui::drag_effect_label(effect));
+        msg.push_str("\npayload=");
+        msg.push_str(&alloc::string::String::from_utf8_lossy(&bytes));
+        dnd_state().custom_sink.set_text(&msg);
+    });
+}
+
+fn custom_update(_id: u32) {
+    let effect = ui::drag_accept(ui::DND_EFFECT_ALL);
+    let mut msg = alloc::string::String::from("Hovering — effect will be: ");
+    msg.push_str(ui::drag_effect_label(effect));
+    dnd_state().custom_sink.set_text(&msg);
+}
+
+extern "C" fn custom_update_thunk_c(id: u32, _ev: u32, _ud: u64) {
+    custom_update(id);
+}
+
+extern "C" fn text_over_thunk_c(_id: u32, _ev: u32, _ud: u64) {
+    // Re-accept on every over event so modifier changes update the effect.
+    ui::drag_accept(ui::DND_EFFECT_COPY | ui::DND_EFFECT_MOVE);
 }

@@ -1,0 +1,13 @@
+[package]
+name = "libanyui_dnd_tests"
+version = "0.1.0"
+edition = "2021"
+description = "Host-native unit tests for the libanyui drag & drop framework primitives"
+
+# No anyos_std dependency — re-includes the pure-logic dnd module via #[path].
+# Runs on any host (Linux/macOS/Windows) via `cargo test`.
+
+[workspace]
+
+[lib]
+name = "libanyui_dnd_tests"

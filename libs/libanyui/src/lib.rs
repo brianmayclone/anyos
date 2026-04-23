@@ -64,6 +64,7 @@ mod compositor;
 mod control;
 mod controls;
 mod dialogs;
+pub mod dnd;
 pub mod draw;
 mod event_loop;
 pub mod font_bitmap;
@@ -160,8 +161,24 @@ pub(crate) struct DragSession {
     pub source_id: ControlId,
     /// Current active drop target under the pointer, if any.
     pub target_id: Option<ControlId>,
-    /// Opaque text payload provided by the source app.
+    /// Opaque payload bytes set by the source (any `dnd::DND_FORMAT_*`).
     pub data: Vec<u8>,
+    /// Payload format identifier (see `dnd::DND_FORMAT_*`).
+    pub format: u32,
+    /// Bitmask of effects the source is willing to allow (`dnd::DND_EFFECT_*`).
+    pub allowed_effects: u32,
+    /// Effect the current target accepted; `DND_EFFECT_NONE` until the target
+    /// calls `anyui_drag_accept`. Reset on every enter / over event.
+    pub negotiated_effect: u32,
+    /// True after the current target called `anyui_drag_accept` for this
+    /// enter/over cycle. Drops are silently rejected if this is false.
+    pub target_accepted: bool,
+    /// Current pointer position in logical window-relative pixels.
+    pub pointer_x: i32,
+    pub pointer_y: i32,
+    /// Ctrl/Shift modifier bits from the latest pointer event (bit 0 = Ctrl,
+    /// bit 1 = Shift). Used by `dnd::negotiate_effect`.
+    pub modifiers: u32,
 }
 
 // ── Modal dialog tracking ─────────────────────────────────────────────
@@ -2791,7 +2808,148 @@ pub extern "C" fn anyui_set_draggable(id: ControlId, draggable: u32) {
 pub extern "C" fn anyui_set_drop_target(id: ControlId, drop_target: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        ctrl.base_mut().drop_target = drop_target != 0;
+        let base = ctrl.base_mut();
+        base.drop_target = drop_target != 0;
+        if base.drop_target && base.drop_formats == 0 {
+            // Default policy: newly marked drop targets accept any format.
+            // Callers can narrow this via anyui_set_drop_formats.
+            base.drop_formats = dnd::DND_FORMAT_ACCEPT_ANY;
+        }
+    }
+}
+
+/// Restrict which payload formats this drop target accepts. The `mask`
+/// is built client-side via `dnd::format_mask()` (or `DND_FORMAT_ACCEPT_ANY`
+/// for "accept anything"). Only targets whose mask contains the current
+/// drag payload's format receive DRAG_ENTER/DROP events.
+#[no_mangle]
+pub extern "C" fn anyui_set_drop_formats(id: ControlId, mask: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().drop_formats = mask;
+    }
+}
+
+/// Install a binary payload for the active drag. Safe to call only from a
+/// DRAG_START callback on the source control. `allowed_effects` is a bitmask
+/// of `dnd::DND_EFFECT_*` describing which semantics the source permits.
+#[no_mangle]
+pub extern "C" fn anyui_drag_set_payload(
+    format: u32,
+    data: *const u8,
+    len: u32,
+    allowed_effects: u32,
+) {
+    let st = state();
+    if let Some(drag) = st.drag.as_mut() {
+        drag.format = format;
+        drag.allowed_effects = allowed_effects;
+        drag.data.clear();
+        if !data.is_null() && len > 0 {
+            let src = unsafe { core::slice::from_raw_parts(data, len as usize) };
+            drag.data.extend_from_slice(src);
+        }
+    }
+}
+
+/// Read the current drag payload's raw bytes into `buf`. Returns the total
+/// length (not the number copied — use `min(return, cap)` to know the
+/// copied slice). Writes the payload's format to `*format_out` when
+/// `format_out` is non-null.
+#[no_mangle]
+pub extern "C" fn anyui_drag_get_payload(
+    buf: *mut u8,
+    cap: u32,
+    format_out: *mut u32,
+) -> u32 {
+    let st = state();
+    let drag = match st.drag.as_ref() {
+        Some(d) => d,
+        None => return 0,
+    };
+    if !format_out.is_null() {
+        unsafe { *format_out = drag.format; }
+    }
+    let n = core::cmp::min(drag.data.len(), cap as usize);
+    if !buf.is_null() && n > 0 {
+        unsafe { core::ptr::copy_nonoverlapping(drag.data.as_ptr(), buf, n); }
+    }
+    drag.data.len() as u32
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_drag_get_format() -> u32 {
+    state()
+        .drag
+        .as_ref()
+        .map(|d| d.format)
+        .unwrap_or(dnd::DND_FORMAT_NONE)
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_drag_get_allowed_effects() -> u32 {
+    state()
+        .drag
+        .as_ref()
+        .map(|d| d.allowed_effects)
+        .unwrap_or(dnd::DND_EFFECT_NONE)
+}
+
+/// Drop target opt-in. Call from a DRAG_ENTER or DRAG (over) callback.
+/// `requested_effects` is a bitmask of effects this target is willing to
+/// perform; the framework negotiates against the source's allowed effects
+/// and current modifier keys (Ctrl = Copy, Shift = Move, Ctrl+Shift = Link).
+/// Returns the negotiated effect (also stored for `anyui_drag_get_effect`),
+/// or `DND_EFFECT_NONE` when no overlap exists (effectively a rejection).
+#[no_mangle]
+pub extern "C" fn anyui_drag_accept(requested_effects: u32) -> u32 {
+    let st = state();
+    let (allowed, mods) = match st.drag.as_ref() {
+        Some(d) => (d.allowed_effects, d.modifiers),
+        None => return dnd::DND_EFFECT_NONE,
+    };
+    let effect = dnd::negotiate_effect(allowed, requested_effects, mods);
+    if let Some(drag) = st.drag.as_mut() {
+        drag.negotiated_effect = effect;
+        drag.target_accepted = effect != dnd::DND_EFFECT_NONE;
+    }
+    effect
+}
+
+/// Explicitly reject the current drag from a drop-target callback. Not
+/// required (the default is rejected) but useful for clarity when a target
+/// opts out after a conditional check.
+#[no_mangle]
+pub extern "C" fn anyui_drag_reject() {
+    let st = state();
+    if let Some(drag) = st.drag.as_mut() {
+        drag.target_accepted = false;
+        drag.negotiated_effect = dnd::DND_EFFECT_NONE;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn anyui_drag_get_effect() -> u32 {
+    state()
+        .drag
+        .as_ref()
+        .map(|d| d.negotiated_effect)
+        .unwrap_or(dnd::DND_EFFECT_NONE)
+}
+
+/// Report the current pointer position (logical, window-relative) via out
+/// parameters. Returns 1 when a drag is active and coords were written,
+/// 0 otherwise.
+#[no_mangle]
+pub extern "C" fn anyui_drag_get_pos(x_out: *mut i32, y_out: *mut i32) -> u32 {
+    let st = state();
+    match st.drag.as_ref() {
+        Some(d) => {
+            if !x_out.is_null() { unsafe { *x_out = d.pointer_x; } }
+            if !y_out.is_null() { unsafe { *y_out = d.pointer_y; } }
+            1
+        }
+        None => 0,
     }
 }
 
@@ -2814,6 +2972,7 @@ pub extern "C" fn anyui_drag_get_target() -> u32 {
 pub extern "C" fn anyui_drag_set_text(text: *const u8, len: u32) {
     let st = state();
     if let Some(drag) = st.drag.as_mut() {
+        drag.format = dnd::DND_FORMAT_TEXT;
         drag.data.clear();
         if !text.is_null() && len > 0 {
             let src = unsafe { core::slice::from_raw_parts(text, len as usize) };

@@ -227,6 +227,15 @@ struct AnyuiLib {
     drag_get_target: extern "C" fn() -> u32,
     drag_set_text: extern "C" fn(*const u8, u32),
     drag_get_text: extern "C" fn(*mut u8, u32) -> u32,
+    set_drop_formats: extern "C" fn(u32, u32),
+    drag_set_payload: extern "C" fn(u32, *const u8, u32, u32),
+    drag_get_payload: extern "C" fn(*mut u8, u32, *mut u32) -> u32,
+    drag_get_format: extern "C" fn() -> u32,
+    drag_get_allowed_effects: extern "C" fn() -> u32,
+    drag_accept: extern "C" fn(u32) -> u32,
+    drag_reject: extern "C" fn(),
+    drag_get_effect: extern "C" fn() -> u32,
+    drag_get_pos: extern "C" fn(*mut i32, *mut i32) -> u32,
     open_popup: extern "C" fn(u32),
     // Tooltip
     set_tooltip: extern "C" fn(u32, *const u8, u32),
@@ -525,6 +534,15 @@ pub fn init() -> bool {
             drag_get_target: resolve(&handle, "anyui_drag_get_target"),
             drag_set_text: resolve(&handle, "anyui_drag_set_text"),
             drag_get_text: resolve(&handle, "anyui_drag_get_text"),
+            set_drop_formats: resolve(&handle, "anyui_set_drop_formats"),
+            drag_set_payload: resolve(&handle, "anyui_drag_set_payload"),
+            drag_get_payload: resolve(&handle, "anyui_drag_get_payload"),
+            drag_get_format: resolve(&handle, "anyui_drag_get_format"),
+            drag_get_allowed_effects: resolve(&handle, "anyui_drag_get_allowed_effects"),
+            drag_accept: resolve(&handle, "anyui_drag_accept"),
+            drag_reject: resolve(&handle, "anyui_drag_reject"),
+            drag_get_effect: resolve(&handle, "anyui_drag_get_effect"),
+            drag_get_pos: resolve(&handle, "anyui_drag_get_pos"),
             open_popup: resolve(&handle, "anyui_open_popup"),
             // Tooltip
             set_tooltip: resolve(&handle, "anyui_set_tooltip"),
@@ -1033,8 +1051,20 @@ impl Control {
     }
 
     /// Allow this control to receive drag enter/leave/drop callbacks.
+    ///
+    /// Newly enabled drop targets accept all payload formats by default;
+    /// narrow with [`set_drop_formats`](Control::set_drop_formats).
     pub fn set_drop_target(&self, drop_target: bool) {
         (lib().set_drop_target)(self.id, drop_target as u32);
+    }
+
+    /// Restrict which payload formats this drop target accepts. Build
+    /// `mask` with [`dnd_format_mask`] (OR several together for multiple
+    /// formats) or pass [`DND_FORMAT_ACCEPT_ANY`] for the default.
+    ///
+    /// Non-matching drags never fire DRAG_ENTER/DROP on this control.
+    pub fn set_drop_formats(&self, mask: u32) {
+        (lib().set_drop_formats)(self.id, mask);
     }
 
     /// Open this control's context menu below the control (for left-click popups).
@@ -1122,6 +1152,103 @@ pub fn drag_source() -> u32 {
 /// Get the current drag target control ID, or 0 if no target is active.
 pub fn drag_target() -> u32 {
     (lib().drag_get_target)()
+}
+
+// ── Drag & Drop constants (mirror libanyui::dnd) ────────────────────────
+
+pub const DND_FORMAT_NONE: u32 = 0;
+pub const DND_FORMAT_TEXT: u32 = 1;
+pub const DND_FORMAT_URI_LIST: u32 = 2;
+pub const DND_FORMAT_FILES: u32 = 3;
+pub const DND_FORMAT_CUSTOM: u32 = 0x1000;
+pub const DND_FORMAT_ACCEPT_ANY: u32 = 0xFFFF_FFFF;
+
+pub const DND_EFFECT_NONE: u32 = 0;
+pub const DND_EFFECT_COPY: u32 = 1;
+pub const DND_EFFECT_MOVE: u32 = 2;
+pub const DND_EFFECT_LINK: u32 = 4;
+pub const DND_EFFECT_ALL: u32 =
+    DND_EFFECT_COPY | DND_EFFECT_MOVE | DND_EFFECT_LINK;
+
+/// Build a format mask accepting a single format (convenience for
+/// `Control::set_drop_formats`).
+pub const fn dnd_format_mask(fmt: u32) -> u32 {
+    if fmt == 0 { 0 } else { 1u32 << (fmt & 31) }
+}
+
+/// Install a typed payload on the currently active drag session. Call from
+/// a DRAG_START callback on the source control. `allowed_effects` is a
+/// bitmask of `DND_EFFECT_*` bits describing what the source permits; the
+/// framework intersects this with the target's requested effects and the
+/// modifier keys to pick the final effect.
+pub fn drag_set_payload(format: u32, data: &[u8], allowed_effects: u32) {
+    (lib().drag_set_payload)(format, data.as_ptr(), data.len() as u32, allowed_effects);
+}
+
+/// Read the current drag payload. Returns the raw bytes and the format.
+/// Returns `(Vec::new(), DND_FORMAT_NONE)` when no drag is active.
+pub fn drag_get_payload() -> (alloc::vec::Vec<u8>, u32) {
+    let mut fmt: u32 = 0;
+    let len = (lib().drag_get_payload)(core::ptr::null_mut(), 0, &mut fmt) as usize;
+    if len == 0 {
+        return (alloc::vec::Vec::new(), fmt);
+    }
+    let mut buf = alloc::vec![0u8; len];
+    let n = (lib().drag_get_payload)(buf.as_mut_ptr(), buf.len() as u32, &mut fmt) as usize;
+    buf.truncate(core::cmp::min(n, buf.len()));
+    (buf, fmt)
+}
+
+/// Current drag payload format identifier.
+pub fn drag_format() -> u32 {
+    (lib().drag_get_format)()
+}
+
+/// Effect bits the source is willing to permit.
+pub fn drag_allowed_effects() -> u32 {
+    (lib().drag_get_allowed_effects)()
+}
+
+/// Drop-target opt-in. Call this from a DRAG_ENTER (or DRAG / over) callback
+/// to accept the drop and negotiate an effect. Returns the effect that was
+/// actually negotiated (0 = rejected).
+pub fn drag_accept(requested_effects: u32) -> u32 {
+    (lib().drag_accept)(requested_effects)
+}
+
+/// Reject the drop from a drop-target callback. Equivalent to "do not call
+/// `drag_accept`" but explicit.
+pub fn drag_reject() {
+    (lib().drag_reject)();
+}
+
+/// Currently negotiated drop effect (0 while no target has accepted).
+pub fn drag_effect() -> u32 {
+    (lib().drag_get_effect)()
+}
+
+/// Current pointer position during an active drag (logical,
+/// window-relative). Returns `None` when no drag is in progress.
+pub fn drag_pos() -> Option<(i32, i32)> {
+    let mut x: i32 = 0;
+    let mut y: i32 = 0;
+    if (lib().drag_get_pos)(&mut x, &mut y) != 0 {
+        Some((x, y))
+    } else {
+        None
+    }
+}
+
+/// Human-readable label for an effect bitmask. Mirrors
+/// `libanyui::dnd::effect_label`.
+pub fn drag_effect_label(effect: u32) -> &'static str {
+    match effect {
+        DND_EFFECT_COPY => "copy",
+        DND_EFFECT_MOVE => "move",
+        DND_EFFECT_LINK => "link",
+        DND_EFFECT_NONE => "none",
+        _ => "multi",
+    }
 }
 
 impl Widget for Container {

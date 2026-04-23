@@ -427,6 +427,14 @@ pub struct ControlBase {
     pub draggable: bool,
     /// Whether this control may receive drag enter/leave/drop events.
     pub drop_target: bool,
+    /// Bitmask of payload formats this drop target accepts. Set via
+    /// `anyui_set_drop_formats`; defaults to `dnd::DND_FORMAT_ACCEPT_ANY`
+    /// when `drop_target` is enabled, matching the previous text-only behaviour.
+    pub drop_formats: u32,
+    /// Framework-managed flag, set to `true` while this control is the active
+    /// drop target during an in-progress drag. Controls read this in `render`
+    /// to draw a drop-hover highlight.
+    pub drop_hover: bool,
 
     /// Callback table indexed by event type (EVENT_CLICK=1 .. EVENT_MOUSE_MOVE=16).
     /// Index 0 is unused. Each slot has its own userdata.
@@ -479,6 +487,8 @@ impl ControlBase {
             tab_index: 0,
             draggable: false,
             drop_target: false,
+            drop_formats: 0,
+            drop_hover: false,
             callbacks: [None; NUM_CALLBACK_SLOTS],
         }
     }
@@ -766,6 +776,23 @@ pub trait Control {
         None
     }
 
+    /// Apply a drag-driven auto-scroll step. The framework calls this on the
+    /// nearest scrollable ancestor of the drop target once per pointer move
+    /// event while a drag is active. `delta_x` / `delta_y` are pre-computed
+    /// scroll amounts (positive = forward); the control is expected to clamp
+    /// against its content bounds. Default is a no-op.
+    fn drag_autoscroll(&mut self, _delta_x: i32, _delta_y: i32) -> bool {
+        false
+    }
+
+    /// Whether this control acts as a scrollable container during a drag.
+    /// The framework walks ancestors of the drop target looking for the
+    /// first control that returns `true` here and then invokes
+    /// [`drag_autoscroll`](Control::drag_autoscroll) on it.
+    fn is_drag_autoscroll_target(&self) -> bool {
+        false
+    }
+
     /// If the control has a built-in divider (e.g. SplitView), returns true
     /// when the click at (lx, ly) — in local coordinates — hits the divider zone.
     /// When true, `hit_test()` returns this control instead of recursing into children.
@@ -1034,8 +1061,13 @@ pub fn hit_test(
 
     // This node is the target if interactive or has any relevant callback.
     // Disabled controls are never hit targets, even if they have callbacks.
+    // Draggable / drop-target controls also count — otherwise a non-
+    // interactive Label/Card marked `set_draggable(true)` would never
+    // receive mouse_down, and `maybe_begin_drag` would never fire.
     if !b.disabled
         && (controls[idx].is_interactive()
+            || b.draggable
+            || b.drop_target
             || b.get_callback(EVENT_CLICK).is_some()
             || b.get_callback(EVENT_MOUSE_DOWN).is_some())
     {

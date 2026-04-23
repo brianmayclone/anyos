@@ -101,6 +101,15 @@ anyui_marshal_set_text
     anyui_drag_get_target
     anyui_drag_set_text
     anyui_drag_get_text
+    anyui_set_drop_formats
+    anyui_drag_set_payload
+    anyui_drag_get_payload
+    anyui_drag_get_format
+    anyui_drag_get_allowed_effects
+    anyui_drag_accept
+    anyui_drag_reject
+    anyui_drag_get_effect
+    anyui_drag_get_pos
     anyui_open_popup
     anyui_set_tooltip
     anyui_message_box

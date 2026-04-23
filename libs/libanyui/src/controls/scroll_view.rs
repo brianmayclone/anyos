@@ -31,6 +31,29 @@ impl ScrollView {
         }
     }
 
+    /// Apply a vertical scroll delta (positive = down), clamped to the
+    /// current scrollable range. Called by the framework during drag
+    /// auto-scroll; safe to invoke even when there is nothing to scroll.
+    pub(crate) fn apply_scroll_delta(&mut self, dy: i32) -> bool {
+        if dy == 0 {
+            return false;
+        }
+        let max_scroll = if self.content_height > self.base.h {
+            (self.content_height - self.base.h) as i32
+        } else {
+            0
+        };
+        let prev = self.scroll_y;
+        self.scroll_y = (self.scroll_y + dy).max(0).min(max_scroll);
+        if self.scroll_y != prev {
+            self.base.state = self.scroll_y as u32;
+            self.base.mark_dirty();
+            true
+        } else {
+            false
+        }
+    }
+
     /// Returns (track_h, thumb_h, max_scroll) if the scrollbar is visible.
     fn scrollbar_metrics(&self) -> Option<(i32, i32, i32)> {
         let h = self.base.h;
@@ -138,6 +161,15 @@ impl Control for ScrollView {
         } else {
             None
         }
+    }
+
+    fn is_drag_autoscroll_target(&self) -> bool {
+        // Only makes sense when the content overflows.
+        self.content_height > self.base.h
+    }
+
+    fn drag_autoscroll(&mut self, _delta_x: i32, delta_y: i32) -> bool {
+        self.apply_scroll_delta(delta_y)
     }
 
     fn handle_mouse_down(&mut self, local_x: i32, local_y: i32, _button: u32) -> EventResponse {

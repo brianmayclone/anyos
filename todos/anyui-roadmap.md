@@ -51,8 +51,7 @@ Bereits umgesetzt (aus "angelaufen" inzwischen fertig):
 
 Noch nicht angefangen (trotz Roadmap-Erwähnung):
 
-- generisches Drag & Drop-Framework (Drag source / Drop target / typisierte
-  Payloads / auto-scroll)
+- (keine — Drag & Drop-Framework ist inzwischen implementiert, siehe P1 §7)
 
 ---
 
@@ -249,18 +248,33 @@ Apps mit Nutzen:
 - Launcher / Runner
 - Settings-Listen
 
-### 7. Drag & Drop als Systemmodell
+### 7. Drag & Drop als Systemmodell ✅
 
-Nicht nur ein einzelnes Control, sondern ein Framework-Subsystem.
+Framework-Subsystem, inzwischen vorhanden.
 
-Fehlend:
+Implementiert:
 
-- Drag source
-- Drop target
-- Drag payloads (`text`, `uri-list`, intern)
-- Hover-Feedback
-- copy/move/link negotiation
-- auto-scroll bei ScrollView/ListView/TreeView
+- ✅ Drag source (`Control::set_draggable`)
+- ✅ Drop target (`Control::set_drop_target`, `set_drop_formats`)
+- ✅ Typisierte Payloads (`DND_FORMAT_TEXT`/`URI_LIST`/`FILES`/`CUSTOM`,
+  `drag_set_payload` / `drag_get_payload`)
+- ✅ Hover-Feedback (framework-gesetztes `drop_hover`, blaue Umrandung auf
+  aktivem Drop-Target)
+- ✅ Copy/Move/Link-Negotiation (`drag_accept(effects)`, Ctrl=Copy /
+  Shift=Move / Ctrl+Shift=Link, Auflösung in `dnd::negotiate_effect`)
+- ✅ Auto-Scroll bei ScrollView (Edge-Zone 24 px, linearer Ramp via
+  `dnd::autoscroll_delta`, Trait-Hook `Control::drag_autoscroll`)
+- ✅ Cursor-Feedback (Compositor `CursorShape::Move` während aktiver Drag)
+- ✅ Host-Testcrate (`libs/libanyui_dnd_tests/`, 22 Tests für Payload-Mask,
+  Effect-Negotiation und Auto-Scroll-Mathematik)
+- ✅ Referenz-Demo (`apps/demo_anyui` Tab "DnD" mit 4 Sektionen: Text-Drag,
+  List-Reorder, URI-List, Effect-Negotiation)
+
+Noch offen:
+
+- Drag-Image-Ghost (visuelles Preview-Rendering am Cursor während Drag)
+- Cross-Window-DnD über Compositor-Protokoll
+- Horizontales Auto-Scroll (derzeit nur vertikal)
 
 Apps mit Nutzen:
 
