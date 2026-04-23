@@ -307,11 +307,13 @@ fn parse_env_fields(s: &str) -> Vec<(&str, &str)> {
 fn format_shell_lines(session: &ShellSession) -> Vec<String> {
     alloc::vec![
         format!(
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}",
             session.session_id,
             session.session_name,
             session.mode.as_str(),
-            session.console_pipe_name
+            session.console_pipe_name,
+            session.stdin_pipe_name,
+            session.attached_pid
         ),
         format!("reused\t{}", if session.reused { "true" } else { "false" }),
     ]
@@ -320,13 +322,16 @@ fn format_shell_lines(session: &ShellSession) -> Vec<String> {
 fn format_exec_lines(exec: &ExecInvocation) -> Vec<String> {
     alloc::vec![
         format!(
-            "{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
             exec.exec_id,
             exec.mode.as_str(),
             exec.cwd,
             exec.env_count,
-            exec.command_line
+            exec.command_line,
+            exec.stdout_pipe_name,
+            exec.stdin_pipe_name
         ),
+        format!("pid\t{}", exec.attached_pid),
     ]
 }
 
@@ -457,6 +462,7 @@ mod tests {
         let shell = dispatch(&mut runtime, &mut store, "SHELL_OPEN ubuntu-dev\tdev\t0");
         assert!(shell.contains("sh-"));
         assert!(shell.contains("agent"));
+        assert!(shell.contains("asl-shell-stdin-"));
         let exec = dispatch(
             &mut runtime,
             &mut store,
@@ -464,5 +470,6 @@ mod tests {
         );
         assert!(exec.contains("exec-"));
         assert!(exec.contains("cargo test"));
+        assert!(exec.contains("asl-agent-exec-stdout-"));
     }
 }

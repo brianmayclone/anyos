@@ -241,6 +241,8 @@ pub struct ShellSession {
     pub session_name: String,
     pub mode: SessionMode,
     pub console_pipe_name: String,
+    pub stdin_pipe_name: String,
+    pub attached_pid: u32,
     pub reused: bool,
 }
 
@@ -251,6 +253,9 @@ pub struct ExecInvocation {
     pub cwd: String,
     pub env_count: usize,
     pub command_line: String,
+    pub stdout_pipe_name: String,
+    pub stdin_pipe_name: String,
+    pub attached_pid: u32,
 }
 
 pub fn is_valid_distro_name(name: &str) -> bool {

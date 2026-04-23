@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 use alloc::{format, string::String};
 
-use crate::agent::inferred_agent_state;
+use crate::agent::{inferred_agent_state, provision_exec_io, provision_shell_io};
 use crate::config::{
     add_mount, add_port_forward, ensure_distro_tree, list_distros, load_distro, remove_mount,
     remove_port_forward, ConfigStore,
@@ -229,8 +229,17 @@ impl RuntimeService {
             session_id: next_shell_id,
             session_name: requested_name,
             mode,
-            console_pipe_name: backend.vm.console_pipe_name.clone(),
+            console_pipe_name: String::new(),
+            stdin_pipe_name: String::new(),
+            attached_pid: 0,
             reused: false,
+        };
+        let io = provision_shell_io(&session.session_id, session.mode, &backend.vm.console_pipe_name)?;
+        let session = ShellSession {
+            console_pipe_name: io.console_pipe_name,
+            stdin_pipe_name: io.stdin_pipe_name,
+            attached_pid: io.attached_pid,
+            ..session
         };
         backend.shell_sessions.push(session.clone());
         Ok(session)
@@ -256,13 +265,20 @@ impl RuntimeService {
         let backend = self
             .backend_mut(name)
             .ok_or(AsldError::InvalidState("distro runtime missing"))?;
-        let exec = ExecInvocation {
+        let mut exec = ExecInvocation {
             exec_id: next_exec_id,
             mode,
             cwd: String::from(cwd.unwrap_or("/")),
             env_count: env.len(),
             command_line: join_command(argv),
+            stdout_pipe_name: String::new(),
+            stdin_pipe_name: String::new(),
+            attached_pid: 0,
         };
+        let io = provision_exec_io(&exec.exec_id, exec.mode)?;
+        exec.stdout_pipe_name = io.stdout_pipe_name;
+        exec.stdin_pipe_name = io.stdin_pipe_name;
+        exec.attached_pid = io.attached_pid;
         backend.execs.push(exec.clone());
         Ok(exec)
     }
@@ -366,6 +382,7 @@ mod tests {
             .unwrap();
         assert_eq!(first.session_id, second.session_id);
         assert!(second.reused);
+        assert!(first.stdin_pipe_name.contains("sh-"));
     }
 
     #[test]
@@ -390,6 +407,7 @@ mod tests {
         assert_eq!(exec.mode.as_str(), "agent");
         assert_eq!(exec.cwd, "/workspace");
         assert_eq!(exec.command_line, "cargo test");
+        assert!(exec.stdout_pipe_name.contains("exec-"));
     }
 
     #[test]
