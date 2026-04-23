@@ -119,6 +119,8 @@ fn main() {
 
     let mut cfg = load_config();
     let mut state = NetworkState::new();
+    sync_hosts_projection();
+    let _ = net::reload_hosts();
     // Announce readiness as soon as the IPC pipe is open — a DHCP failure must
     // not block `svc start-all` and therefore the entire boot chain.  A still-
     // configuring interface keeps trying in the background via periodic_check.
@@ -171,9 +173,6 @@ fn load_config() -> NetworkdConfig {
 }
 
 fn apply_interfaces(cfg: &NetworkdConfig, state: &mut NetworkState, force: bool) -> bool {
-    sync_hosts_projection();
-    let _ = net::reload_hosts();
-
     let mut iface_buf = [0u8; 1024];
     let count = net::get_interfaces(&mut iface_buf) as usize;
     if count == 0 || count == usize::MAX {
@@ -194,12 +193,23 @@ fn apply_interfaces(cfg: &NetworkdConfig, state: &mut NetworkState, force: bool)
 
         let ok = if method == 0 {
             let now = sys::uptime_ms();
-            if !force && now.wrapping_sub(state.last_apply_ms) < cfg.dhcp_retry_ms {
+            let link_up = read_link_up();
+            if !force && !link_up {
+                // Kein Link -> kein Sinn einen DISCOVER zu broadcasten.
+                state.last_link_up = false;
+                write_status(state, false);
                 return false;
+            }
+            if !force {
+                let backoff = dhcp_backoff_ms(cfg.dhcp_retry_ms, state.dhcp_failures);
+                if now.wrapping_sub(state.last_apply_ms) < backoff {
+                    return false;
+                }
             }
             let mut result = [0u8; 16];
             if net::dhcp(&mut result) != 0 {
                 state.dhcp_failures = state.dhcp_failures.wrapping_add(1);
+                state.last_apply_ms = sys::uptime_ms();
                 write_status(state, false);
                 return false;
             }
@@ -207,6 +217,7 @@ fn apply_interfaces(cfg: &NetworkdConfig, state: &mut NetworkState, force: bool)
             state.mask.copy_from_slice(&result[4..8]);
             state.gateway.copy_from_slice(&result[8..12]);
             state.dns.copy_from_slice(&result[12..16]);
+            state.dhcp_failures = 0;
             true
         } else {
             let mut static_cfg = [0u8; 16];
@@ -261,8 +272,11 @@ fn periodic_check(
     let link_up = read_link_up();
     let ip_zero = state.ip == [0, 0, 0, 0];
     if link_up && !state.last_link_up {
+        // Link-Up-Flanke: Backoff zuruecksetzen und sofort versuchen.
+        state.dhcp_failures = 0;
+        state.last_apply_ms = 0;
         let _ = apply_and_publish(cfg, state, true, lifecycle, ready_announced);
-    } else if state.method == 0 && ip_zero {
+    } else if state.method == 0 && ip_zero && link_up {
         let _ = apply_and_publish(cfg, state, false, lifecycle, ready_announced);
     }
     state.last_link_up = link_up;
@@ -393,6 +407,10 @@ fn apply_and_publish(
     ready_announced: &mut bool,
 ) -> bool {
     let ok = apply_interfaces(cfg, state, force);
+    if ok {
+        sync_hosts_projection();
+        let _ = net::reload_hosts();
+    }
     if let Some(lifecycle) = lifecycle {
         if ok {
             if !*ready_announced {
@@ -407,6 +425,14 @@ fn apply_and_publish(
         }
     }
     ok
+}
+
+/// Exponential backoff fuer DHCP-Retries.
+/// 0 Fehler -> base, dann verdoppeln bis 5 min Cap.
+fn dhcp_backoff_ms(base: u32, failures: u32) -> u32 {
+    const CAP_MS: u32 = 5 * 60 * 1000;
+    let shift = failures.min(8);
+    base.saturating_mul(1u32 << shift).min(CAP_MS)
 }
 
 fn read_link_up() -> bool {
