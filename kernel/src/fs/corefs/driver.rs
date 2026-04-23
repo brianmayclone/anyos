@@ -951,6 +951,43 @@ fn compute_next_id(state: &PersistedState) -> u64 {
 /// nutzte `.max(256)` als Fallback — bei kleinen Volumes (z.B. 447 MiB:
 /// journal_start ≈ 134, Journal bis ~390) landete Block 256 mitten im
 /// Journal und invalidierte dessen Header-CRC.
+/// Walk a CoreFS block-allocation bitmap high-to-low and return
+/// `(highest data-block bit + 1)`, or `0` if no data-block bit is set.
+///
+/// `total_blocks` is the on-disk geometry's `total_blocks` field.  The
+/// bitmap buffer is typically padded to a multiple of `BLOCK_SIZE`, so bits
+/// past `total_blocks` must be ignored.  Additionally, CoreFS places the
+/// secondary superblock at `total_blocks - 1` and the tertiary copy at
+/// `total_blocks / 2` — both are marked in the bitmap by mkfs, but they
+/// are NOT data blocks and must not push the allocator tail, since using
+/// them as tail would let the very next allocation write past the device
+/// end (secondary SB) or collide with the tertiary SB copy.
+fn highest_allocated_data_block(bytes: &[u8], total_blocks: u64) -> u64 {
+    let secondary_sb = total_blocks.saturating_sub(1);
+    let tertiary_sb = total_blocks / 2;
+    let is_reserved_metadata = |idx: u64| -> bool {
+        idx >= total_blocks || idx == secondary_sb || idx == tertiary_sb
+    };
+
+    let mut highest: u64 = 0;
+    'scan: for byte_idx in (0..bytes.len()).rev() {
+        let mut b = bytes[byte_idx];
+        if b == 0 {
+            continue;
+        }
+        while b != 0 {
+            let bit_in_byte = 7 - b.leading_zeros() as u64;
+            let bit_index = (byte_idx as u64) * 8 + bit_in_byte;
+            if !is_reserved_metadata(bit_index) {
+                highest = bit_index + 1;
+                break 'scan;
+            }
+            b &= !(1u8 << bit_in_byte);
+        }
+    }
+    highest
+}
+
 fn compute_first_data_block(
     device: &BlockDeviceAdapter,
     state: &PersistedState,
@@ -981,24 +1018,7 @@ fn compute_first_data_block(
         geom.block_bitmap_start * BLOCK_SIZE,
         geom.block_bitmap_blocks * BLOCK_SIZE,
     ) {
-        Ok(bytes) => {
-            let mut highest: u64 = 0;
-            // Iterate bytes high-to-low, return one past the topmost set bit.
-            for byte_idx in (0..bytes.len()).rev() {
-                let b = bytes[byte_idx];
-                if b == 0 {
-                    continue;
-                }
-                // Find the highest set bit in this byte.
-                let bit_in_byte = 7 - b.leading_zeros() as u64;
-                let bit_index = (byte_idx as u64) * 8 + bit_in_byte;
-                if bit_index < geom.total_blocks {
-                    highest = bit_index + 1;
-                }
-                break;
-            }
-            highest
-        }
+        Ok(bytes) => highest_allocated_data_block(&bytes, geom.total_blocks),
         Err(e) => {
             crate::serial_println!(
                 "[corefs] compute_first_data_block: bitmap read failed ({:?}), \
@@ -1017,7 +1037,13 @@ fn compute_first_data_block(
         .max()
         .unwrap_or(0);
 
-    Ok(bitmap_highest.max(data_extent_highest).max(data_start))
+    let result = bitmap_highest.max(data_extent_highest).max(data_start);
+    crate::serial_println!(
+        "[corefs] compute_first_data_block: total_blocks={} data_start={} \
+         bitmap_highest={} data_extent_highest={} -> next_device_block={}",
+        geom.total_blocks, data_start, bitmap_highest, data_extent_highest, result
+    );
+    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,7 +1104,13 @@ impl Filesystem for CoreFsDriver {
         let n = inner
             .blocks
             .read_bytes(&inner.device, inode_id, offset as u64, buf)
-            .map_err(|_| FsError::IoError)?;
+            .map_err(|e| {
+                crate::serial_println!(
+                    "[corefs] read failed inode={} offset={} len={}: {:?}",
+                    inode, offset, buf.len(), e
+                );
+                FsError::IoError
+            })?;
         Ok(n)
     }
 
@@ -1102,7 +1134,13 @@ impl Filesystem for CoreFsDriver {
             let Inner { blocks, device, .. } = &mut *inner;
             blocks
                 .write_at(device, id, offset as u64, buf)
-                .map_err(|_| FsError::IoError)?;
+                .map_err(|e| {
+                    crate::serial_println!(
+                        "[corefs] write failed inode={} id={:?} offset={} len={}: {:?}",
+                        inode, id, offset, buf.len(), e
+                    );
+                    FsError::IoError
+                })?;
         }
 
         // Update inode size field to reflect highest written offset.
@@ -1123,7 +1161,10 @@ impl Filesystem for CoreFsDriver {
         }
         let mut inner = self.inner.lock();
         inner.refresh_indexes_for_tests();
-        let i = inner.inode_by_path(path).ok_or(FsError::NotFound)?;
+        let i = inner.inode_by_path(path).ok_or_else(|| {
+            crate::serial_println!("[corefs] lookup NotFound path='{}'", path);
+            FsError::NotFound
+        })?;
         Ok((
             CoreFsDriver::inode_u32_from_id(i.id),
             kind_to_file_type(i.kind),
@@ -1135,11 +1176,20 @@ impl Filesystem for CoreFsDriver {
         let mut inner = self.inner.lock();
         inner.refresh_indexes_for_tests();
         // Find the parent path.
-        let parent_id = inner.inode_id_for_vfs(inode).ok_or(FsError::NotFound)?;
-        let parent = inner.inode_by_id(parent_id).ok_or(FsError::NotFound)?;
+        let parent_id = inner.inode_id_for_vfs(inode).ok_or_else(|| {
+            crate::serial_println!("[corefs] readdir: no parent_id for vfs inode={}", inode);
+            FsError::NotFound
+        })?;
+        let parent = inner.inode_by_id(parent_id).ok_or_else(|| {
+            crate::serial_println!("[corefs] readdir: parent inode not found id={:?}", parent_id);
+            FsError::NotFound
+        })?;
         if !matches!(parent.kind, InodeKind::Directory) {
+            crate::serial_println!("[corefs] readdir: not a directory path='{}' kind={:?}", parent.path, parent.kind);
             return Err(FsError::NotADirectory);
         }
+        let child_count = inner.indexes.children_by_parent.get(&parent_id.0).map(|c| c.len()).unwrap_or(0);
+        crate::serial_println!("[corefs] readdir path='{}' children={}", parent.path, child_count);
         let mut entries: Vec<DirEntry> = Vec::new();
         if let Some(children) = inner.indexes.children_by_parent.get(&parent_id.0) {
             for child_id in children {
@@ -1184,17 +1234,25 @@ impl Filesystem for CoreFsDriver {
         // Resolve parent path.
         let parent_id = inner
             .inode_id_for_vfs(parent_inode)
-            .ok_or(FsError::NotFound)?;
+            .ok_or_else(|| {
+                crate::serial_println!("[corefs] create: no parent_id for vfs inode={} name='{}'", parent_inode, name);
+                FsError::NotFound
+            })?;
         let parent_path = inner
             .inode_by_id(parent_id)
             .map(|i| i.path.clone())
-            .ok_or(FsError::NotFound)?;
+            .ok_or_else(|| {
+                crate::serial_println!("[corefs] create: parent inode not found id={:?} name='{}'", parent_id, name);
+                FsError::NotFound
+            })?;
         let new_path = join_path(&parent_path, name);
 
         // Reject duplicates.
         if inner.inode_id_by_path(&new_path).is_some() {
+            crate::serial_println!("[corefs] create: duplicate path='{}'", new_path);
             return Err(FsError::AlreadyExists);
         }
+        crate::serial_println!("[corefs] create path='{}' kind={:?}", new_path, kind);
 
         let id = InodeId(inner.next_id);
         inner.next_id += 1;
@@ -1423,6 +1481,121 @@ mod tests {
     fn corefs_invalid_input_maps_to_invalid_path() {
         let e = CoreFsError::InvalidInput(format!("bad"));
         assert!(matches!(corefs_to_fs_error(&e), FsError::InvalidPath));
+    }
+
+    // --- highest_allocated_data_block ---------------------------------------
+
+    /// Build a bitmap buffer of `bitmap_bytes` length with the given bit
+    /// indices set (LSB-first within each byte, matching CoreFS on-disk).
+    fn make_bitmap(bitmap_bytes: usize, set_bits: &[u64]) -> Vec<u8> {
+        let mut buf = vec![0u8; bitmap_bytes];
+        for &bit in set_bits {
+            let byte_idx = (bit / 8) as usize;
+            let bit_in_byte = (bit % 8) as u8;
+            buf[byte_idx] |= 1u8 << bit_in_byte;
+        }
+        buf
+    }
+
+    #[test]
+    fn bitmap_empty_returns_zero() {
+        let buf = vec![0u8; 64];
+        assert_eq!(highest_allocated_data_block(&buf, 512), 0);
+    }
+
+    #[test]
+    fn bitmap_single_bit_returns_index_plus_one() {
+        // Bit 42 set inside a 512-block fs — 42 is a plain data block.
+        let buf = make_bitmap(64, &[42]);
+        assert_eq!(highest_allocated_data_block(&buf, 512), 43);
+    }
+
+    #[test]
+    fn bitmap_ignores_secondary_superblock_at_total_blocks_minus_one() {
+        // This is the regression: mkfs sets total_blocks-1 (secondary SB)
+        // in the bitmap.  The old implementation returned total_blocks,
+        // which as next_device_block causes the next allocation to write
+        // past the device end.  The scan must skip it.
+        let total_blocks = 512u64;
+        let buf = make_bitmap(64, &[42, total_blocks - 1]);
+        assert_eq!(highest_allocated_data_block(&buf, total_blocks), 43);
+    }
+
+    #[test]
+    fn bitmap_ignores_tertiary_superblock_at_half() {
+        // Tertiary SB copy lives at total_blocks / 2; also reserved metadata.
+        let total_blocks = 512u64;
+        let buf = make_bitmap(64, &[42, total_blocks / 2]);
+        assert_eq!(highest_allocated_data_block(&buf, total_blocks), 43);
+    }
+
+    #[test]
+    fn bitmap_ignores_both_superblock_copies() {
+        // Combined worst case: both SB copies set, plus a real data bit.
+        let total_blocks = 512u64;
+        let buf = make_bitmap(64, &[27, total_blocks / 2, total_blocks - 1]);
+        assert_eq!(highest_allocated_data_block(&buf, total_blocks), 28);
+    }
+
+    #[test]
+    fn bitmap_ignores_bits_past_total_blocks() {
+        // Bitmap is padded to BLOCK_SIZE, so there may be set bits at
+        // positions >= total_blocks — those must be ignored.
+        // (bit 51 is picked deliberately: tertiary_sb = total_blocks/2 = 50,
+        // so using 51 avoids colliding with the reserved-metadata case.)
+        let total_blocks = 100u64;
+        // 16-byte buffer has 128 addressable bits; set bit 120 (past end).
+        let buf = make_bitmap(16, &[51, 120]);
+        assert_eq!(highest_allocated_data_block(&buf, total_blocks), 52);
+    }
+
+    #[test]
+    fn bitmap_only_reserved_metadata_returns_zero() {
+        // If the only set bits are the reserved SB copies, no data is
+        // allocated — the allocator tail should be driven by data_start,
+        // not by any bitmap bit.
+        let total_blocks = 512u64;
+        let buf = make_bitmap(64, &[total_blocks / 2, total_blocks - 1]);
+        assert_eq!(highest_allocated_data_block(&buf, total_blocks), 0);
+    }
+
+    #[test]
+    fn bitmap_picks_topmost_data_bit_below_reserved() {
+        // Secondary SB at 511 (set) and a data bit at 400 (set).
+        // Without the reserved-metadata skip, the scan would stop at 511
+        // and return 512 (past end).  It must return 401 instead.
+        let total_blocks = 512u64;
+        let buf = make_bitmap(64, &[400, total_blocks - 1]);
+        assert_eq!(highest_allocated_data_block(&buf, total_blocks), 401);
+    }
+
+    #[test]
+    fn bitmap_realistic_mkfs_pattern() {
+        // Mirror the actual observed production geometry:
+        //   total_blocks = 114672, data extent highest bit = 27822
+        //   mkfs also sets bits 0..data_start (metadata), tertiary SB at
+        //   57336, secondary SB at 114671.
+        let total_blocks: u64 = 114672;
+        let data_start: u64 = 327;
+        let mut set_bits: Vec<u64> = (0..data_start).collect();        // metadata
+        set_bits.extend(data_start..27823);                             // user data
+        set_bits.push(total_blocks / 2);                                // tertiary SB
+        set_bits.push(total_blocks - 1);                                // secondary SB
+        let bitmap_bytes = (total_blocks as usize).div_ceil(8);
+        let buf = make_bitmap(bitmap_bytes, &set_bits);
+        // Highest real data block is 27822, so tail must be 27823.
+        assert_eq!(highest_allocated_data_block(&buf, total_blocks), 27823);
+    }
+
+    #[test]
+    fn bitmap_high_byte_multiple_reserved_bits_clears_and_continues() {
+        // Both reserved bits sit in the same high byte; the scan must
+        // clear both and fall through to a lower byte.
+        // total_blocks = 16 → secondary_sb = 15, tertiary_sb = 8.
+        // Both are in byte 1 (bits 0 and 7).
+        let total_blocks = 16u64;
+        let buf = make_bitmap(2, &[5, 8, 15]);
+        assert_eq!(highest_allocated_data_block(&buf, total_blocks), 6);
     }
 
     #[test]
