@@ -31,6 +31,7 @@ use corefs_core::storage::block_device::BlockDevice;
 use corefs_core::storage::block_store::{AllocatorPolicy, BlockStore};
 use corefs_core::storage::ondisk::layout::BLOCK_SIZE;
 use corefs_core::storage::ondisk::native::{load_state_native, save_state_native};
+use corefs_core::storage::ondisk::volume::read_sb_with_fallbacks;
 use corefs_core::storage::persisted_state::PersistedState;
 
 /// Summary of a populate operation (shown in CLI output / returned from
@@ -121,7 +122,7 @@ pub fn populate_volume(
         ));
     }
 
-    let first_data_block = compute_first_data_block(&state);
+    let first_data_block = compute_first_data_block(device, &state)?;
     let mut blocks = BlockStore::from_records_with_allocator_and_start(
         state.block_records.clone(),
         BLOCK_SIZE as usize,
@@ -334,7 +335,20 @@ fn compute_next_id(state: &PersistedState) -> u64 {
 
 /// Mirror of `compute_first_data_block` in
 /// kernel/src/fs/corefs/driver.rs:524.
-fn compute_first_data_block(state: &PersistedState) -> u64 {
+/// Pick the first block number the data allocator may hand out.
+///
+/// Must be at or beyond `geom.data_start` — otherwise the allocator
+/// walks into the reserved regions (superblocks, bitmaps, inode table,
+/// journal) and `BlockStore::write_at` silently corrupts them.  An
+/// earlier version used a hardcoded `.max(256)` fallback which landed
+/// inside the journal on small volumes (447 MiB → journal_start ≈ 134,
+/// journal spans ~134..390) and invalidated the journal header CRC.
+fn compute_first_data_block(
+    device: &dyn BlockDevice,
+    state: &PersistedState,
+) -> Result<u64, CoreFsError> {
+    let sb = read_sb_with_fallbacks(device)?;
+    let data_start = sb.geometry().data_start;
     let highest = state
         .block_records
         .iter()
@@ -342,7 +356,7 @@ fn compute_first_data_block(state: &PersistedState) -> u64 {
         .map(|e| e.physical_block + u64::from(e.length_blocks))
         .max()
         .unwrap_or(0);
-    highest.max(256)
+    Ok(highest.max(data_start))
 }
 
 // Suppress "unused" warning when AllocatorPolicy is only referenced

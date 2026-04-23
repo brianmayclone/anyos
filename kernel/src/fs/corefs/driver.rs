@@ -326,7 +326,7 @@ impl CoreFsDriver {
         // synthesieren, damit lookup("/") / readdir funktionieren.
         ensure_root_directory(&mut state);
         let next_id = compute_next_id(&state);
-        let first_data_block = compute_first_data_block(&state);
+        let first_data_block = compute_first_data_block(&device, &state)?;
         let blocks = BlockStore::from_records_with_allocator_and_start(
             state.block_records.clone(),
             BLOCK_SIZE as usize,
@@ -423,7 +423,7 @@ impl CoreFsDriver {
         needs_persist |= root_added;
 
         let next_id = compute_next_id(&state);
-        let first_data_block = compute_first_data_block(&state);
+        let first_data_block = compute_first_data_block(&device, &state)?;
         let blocks = BlockStore::from_records_with_allocator_and_start(
             state.block_records.clone(),
             BLOCK_SIZE as usize,
@@ -826,9 +826,19 @@ fn compute_next_id(state: &PersistedState) -> u64 {
 }
 
 /// Berechnet den ersten sicheren physischen Block für Datei-Schreibvorgänge.
-/// Ist der erste Block hinter dem Ende aller bekannten Extents,
-/// oder 256 (sicher hinter dem ODF-Metadaten-Bereich) — je nachdem, was größer ist.
-fn compute_first_data_block(state: &PersistedState) -> u64 {
+///
+/// Muss mindestens `geom.data_start` sein — sonst läuft der Allocator in
+/// reservierte Bereiche (Superblöcke, Bitmaps, Inode-Table, Journal) und
+/// `BlockStore::write_at` korrumpiert sie still. Eine frühere Version
+/// nutzte `.max(256)` als Fallback — bei kleinen Volumes (z.B. 447 MiB:
+/// journal_start ≈ 134, Journal bis ~390) landete Block 256 mitten im
+/// Journal und invalidierte dessen Header-CRC.
+fn compute_first_data_block(
+    device: &BlockDeviceAdapter,
+    state: &PersistedState,
+) -> Result<u64, FsError> {
+    let sb = read_sb_with_fallbacks(device).map_err(|e| corefs_to_fs_error(&e))?;
+    let data_start = sb.geometry().data_start;
     let highest = state
         .block_records
         .iter()
@@ -836,8 +846,7 @@ fn compute_first_data_block(state: &PersistedState) -> u64 {
         .map(|e| e.physical_block + u64::from(e.length_blocks))
         .max()
         .unwrap_or(0);
-    // 256 blocks × 4096 bytes = 1 MiB — sicher hinter jedem ODF-Metadaten-Bereich.
-    highest.max(256)
+    Ok(highest.max(data_start))
 }
 
 // ---------------------------------------------------------------------------
