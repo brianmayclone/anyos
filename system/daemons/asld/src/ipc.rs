@@ -132,6 +132,20 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
                 Err(err) => err_line(&err),
             }
         }
+        "VM_EVENTS_CLEAR" | "vm_events_clear" => {
+            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            match runtime.clear_vm_events(name) {
+                Ok(count) => ok_lines(alloc::vec![format!("cleared\t{}", count)]),
+                Err(err) => err_line(&err),
+            }
+        }
+        "DIAGNOSE" | "diagnose" => {
+            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            match runtime.diagnose(name) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
         "SHELL_OPEN" | "shell_open" => {
             let fields = split_tab_fields(rest);
             if fields.is_empty() {
@@ -148,6 +162,23 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
                 Err(err) => err_line(&err),
             }
         }
+        "SHELL_LIST" | "shell_list" => {
+            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            match runtime.list_shell_sessions(name) {
+                Ok(sessions) => ok_lines(format_shell_collection_lines(&sessions)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "SHELL_CLOSE" | "shell_close" => {
+            let fields = split_tab_fields(rest);
+            if fields.len() < 2 {
+                return err_line(&AsldError::InvalidArgument("shell_close"));
+            }
+            match runtime.close_shell_session(fields[0], fields[1]) {
+                Ok(sessions) => ok_lines(format_shell_collection_lines(&sessions)),
+                Err(err) => err_line(&err),
+            }
+        }
         "EXEC" | "exec" => {
             let fields = split_tab_fields(rest);
             if fields.len() < 2 {
@@ -159,6 +190,13 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             let argv = parse_list_field(fields.get(4).copied().unwrap_or(""));
             match runtime.exec_command(store, fields[0], &argv, cwd, &env_pairs, fallback_console) {
                 Ok(exec) => ok_lines(format_exec_lines(&exec)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "EXEC_LIST" | "exec_list" => {
+            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            match runtime.list_execs(name) {
+                Ok(execs) => ok_lines(format_exec_collection_lines(&execs)),
                 Err(err) => err_line(&err),
             }
         }
@@ -335,6 +373,22 @@ fn format_shell_lines(session: &ShellSession) -> Vec<String> {
     ]
 }
 
+fn format_shell_collection_lines(sessions: &[ShellSession]) -> Vec<String> {
+    let mut out = Vec::new();
+    for session in sessions {
+        out.push(format!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            session.session_id,
+            session.session_name,
+            session.mode.as_str(),
+            session.console_pipe_name,
+            session.stdin_pipe_name,
+            session.attached_pid
+        ));
+    }
+    out
+}
+
 fn format_exec_lines(exec: &ExecInvocation) -> Vec<String> {
     alloc::vec![
         format!(
@@ -349,6 +403,24 @@ fn format_exec_lines(exec: &ExecInvocation) -> Vec<String> {
         ),
         format!("pid\t{}", exec.attached_pid),
     ]
+}
+
+fn format_exec_collection_lines(execs: &[ExecInvocation]) -> Vec<String> {
+    let mut out = Vec::new();
+    for exec in execs {
+        out.push(format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            exec.exec_id,
+            exec.mode.as_str(),
+            exec.cwd,
+            exec.env_count,
+            exec.command_line,
+            exec.stdout_pipe_name,
+            exec.stdin_pipe_name,
+            exec.attached_pid
+        ));
+    }
+    out
 }
 
 fn ok_lines(lines: Vec<String>) -> String {
@@ -529,5 +601,37 @@ mod tests {
         assert!(status.contains("boot_summary\t"));
         let events = dispatch(&mut runtime, &mut store, "VM_EVENTS ubuntu-dev");
         assert!(events.starts_with("OK\t0"));
+    }
+
+    #[test]
+    fn shell_exec_and_diagnose_roundtrip() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(&mut runtime, &mut store, "START ubuntu-dev");
+        let shell = dispatch(&mut runtime, &mut store, "SHELL_OPEN ubuntu-dev\tops\t0");
+        assert!(shell.contains("sh-"));
+        let shells = dispatch(&mut runtime, &mut store, "SHELL_LIST ubuntu-dev");
+        assert!(shells.contains("ops"));
+        let shell_id = shells
+            .lines()
+            .nth(1)
+            .and_then(|line| line.split('\t').next())
+            .unwrap_or("");
+        let close = dispatch(&mut runtime, &mut store, &format!("SHELL_CLOSE ubuntu-dev\t{}", shell_id));
+        assert!(close.starts_with("OK\t0"));
+
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "EXEC ubuntu-dev\t0\t/workspace\tRUST_BACKTRACE=1\tcargo\x1ftest",
+        );
+        let execs = dispatch(&mut runtime, &mut store, "EXEC_LIST ubuntu-dev");
+        assert!(execs.contains("cargo test"));
+
+        let diagnose = dispatch(&mut runtime, &mut store, "DIAGNOSE ubuntu-dev");
+        assert!(diagnose.contains("vm_backend\t"));
+        let cleared = dispatch(&mut runtime, &mut store, "VM_EVENTS_CLEAR ubuntu-dev");
+        assert!(cleared.contains("cleared\t0"));
     }
 }

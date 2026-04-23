@@ -19,11 +19,19 @@ pub enum ClientCommand<'a> {
     AgentStatus(&'a str),
     VmStatus(&'a str),
     VmEvents(&'a str),
+    VmEventsClear(&'a str),
+    Diagnose(&'a str),
+    ShellList(&'a str),
+    ShellClose {
+        distro: &'a str,
+        session_id: &'a str,
+    },
     Shell {
         distro: &'a str,
         fallback_console: bool,
         session_name: &'a str,
     },
+    ExecList(&'a str),
     Exec {
         distro: &'a str,
         fallback_console: bool,
@@ -97,7 +105,13 @@ pub fn parse_cli_command<'a>(raw: &'a str) -> Option<ClientCommand<'a>> {
     let tokens = tokenize(raw);
     let first = *tokens.first()?;
     match first {
+        "shell-list" => Some(ClientCommand::ShellList(*tokens.get(1)?)),
+        "shell-close" => Some(ClientCommand::ShellClose {
+            distro: *tokens.get(1)?,
+            session_id: *tokens.get(2)?,
+        }),
         "shell" => parse_shell_tokens(&tokens),
+        "exec-list" => Some(ClientCommand::ExecList(*tokens.get(1)?)),
         "exec" => parse_exec_tokens(&tokens),
         _ => {
             let args = anyos_std::args::parse(raw, b"");
@@ -121,6 +135,8 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         "agent-status" => Some(ClientCommand::AgentStatus(args.pos(1)?)),
         "vm-status" => Some(ClientCommand::VmStatus(args.pos(1)?)),
         "vm-events" => Some(ClientCommand::VmEvents(args.pos(1)?)),
+        "vm-events-clear" => Some(ClientCommand::VmEventsClear(args.pos(1)?)),
+        "diagnose" => Some(ClientCommand::Diagnose(args.pos(1)?)),
         "mount" => parse_mount_command(args),
         "port" => parse_port_command(args),
         _ => None,
@@ -399,6 +415,26 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                     );
                 }
             }
+            ClientCommand::VmEventsClear(_) | ClientCommand::Diagnose(_) => {
+                for line in lines {
+                    println!("{}", line);
+                }
+            }
+            ClientCommand::ShellList(_) | ClientCommand::ShellClose { .. } => {
+                println!("shell-sessions: {}", count);
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    println!(
+                        "{}\tname={}\tmode={}\tstdout={}\tstdin={}\tpid={}",
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                    );
+                }
+            }
             ClientCommand::Shell { .. } => {
                 for line in lines {
                     let mut parts = line.split('\t');
@@ -438,6 +474,23 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                     );
                 }
             }
+            ClientCommand::ExecList(_) => {
+                println!("execs: {}", count);
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    println!(
+                        "{}\tmode={}\tcwd={}\tenv={}\tcmd={}\tstdout={}\tstdin={}\tpid={}",
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                    );
+                }
+            }
         },
     }
 }
@@ -454,7 +507,12 @@ fn print_usage() {
     println!("  aslctl agent-status <name>");
     println!("  aslctl vm-status <name>");
     println!("  aslctl vm-events <name>");
+    println!("  aslctl vm-events-clear <name>");
+    println!("  aslctl diagnose <name>");
+    println!("  aslctl shell-list <name>");
+    println!("  aslctl shell-close <name> <session-id>");
     println!("  aslctl shell <name> [--fallback-console] [--session <name>]");
+    println!("  aslctl exec-list <name>");
     println!("  aslctl exec <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE] -- <command> [args...]");
     println!("  aslctl mount list <name>");
     println!("  aslctl mount show <name> <mount-id>");
@@ -480,6 +538,10 @@ impl ClientCommand<'_> {
             Self::AgentStatus(name) => format!("AGENT_STATUS {}", name),
             Self::VmStatus(name) => format!("VM_STATUS {}", name),
             Self::VmEvents(name) => format!("VM_EVENTS {}", name),
+            Self::VmEventsClear(name) => format!("VM_EVENTS_CLEAR {}", name),
+            Self::Diagnose(name) => format!("DIAGNOSE {}", name),
+            Self::ShellList(name) => format!("SHELL_LIST {}", name),
+            Self::ShellClose { distro, session_id } => format!("SHELL_CLOSE {}\t{}", distro, session_id),
             Self::Shell {
                 distro,
                 fallback_console,
@@ -504,6 +566,7 @@ impl ClientCommand<'_> {
                 join_control_field(env),
                 join_control_field(argv)
             ),
+            Self::ExecList(distro) => format!("EXEC_LIST {}", distro),
             Self::MountList(distro) => format!("MOUNT_LIST {}", distro),
             Self::MountShow { distro, mount_id } => format!("MOUNT_SHOW {}\t{}", distro, mount_id),
             Self::MountAdd {
@@ -717,6 +780,18 @@ mod tests {
         match parse_command(&args) {
             Some(ClientCommand::VmStatus(name)) => assert_eq!(name, "ubuntu-dev"),
             _ => panic!("expected vm status command"),
+        }
+    }
+
+    #[test]
+    fn parses_shell_list_and_exec_list_commands() {
+        match parse_cli_command("shell-list ubuntu-dev") {
+            Some(ClientCommand::ShellList(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected shell-list command"),
+        }
+        match parse_cli_command("exec-list ubuntu-dev") {
+            Some(ClientCommand::ExecList(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected exec-list command"),
         }
     }
 
