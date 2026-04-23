@@ -18,6 +18,8 @@ pub static SUITE: TestSuite = TestSuite {
         TestCase { name: "stack_bounds_set",             run: test_stack_bounds },
         TestCase { name: "idle_ticks_not_exceed_total",  run: test_idle_le_total },
         TestCase { name: "deferred_wake_no_crash",       run: test_deferred_wake_noop },
+        TestCase { name: "pinned_continuation_wakes_on_last_cpu", run: test_pinned_wake_cpu },
+        TestCase { name: "pinned_continuation_not_stolen",        run: test_pinned_not_stolen },
     ],
 };
 
@@ -99,4 +101,18 @@ fn test_deferred_wake_noop(ctx: &mut TestContext) {
     // TID 0 is the "no thread" sentinel — safe to poke.
     scheduler::deferred_wake(0);
     ctx.expect_true(true, "deferred_wake(0) did not panic");
+}
+
+fn test_pinned_wake_cpu(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_pinned_continuation_wake_targets_last_cpu(),
+        "blocked user thread with kernel continuation wakes on last_cpu",
+    );
+}
+
+fn test_pinned_not_stolen(ctx: &mut TestContext) {
+    ctx.expect_true(
+        scheduler::kunit_pinned_continuation_not_stolen(),
+        "work stealing leaves pinned kernel continuation on last_cpu",
+    );
 }

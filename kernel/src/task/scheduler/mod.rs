@@ -1062,6 +1062,69 @@ impl Scheduler {
     }
 }
 
+#[cfg(feature = "kunit")]
+fn kunit_make_pinned_user_thread(
+    state: ThreadState,
+    last_cpu: usize,
+    affinity_cpu: usize,
+) -> Box<Thread> {
+    extern "C" fn never_run() {}
+
+    let mut thread = Box::new(Thread::new(never_run, 42, "kunit/pinned-cont"));
+    thread.is_user = true;
+    thread.state = state;
+    thread.last_cpu = last_cpu;
+    thread.affinity_cpu = affinity_cpu;
+    let stack_top = thread.kernel_stack_top();
+    thread.context.set_pc(schedule as *const () as u64);
+    thread.context.set_sp(stack_top - 64);
+    thread.context.save_complete = 1;
+    thread.context.checksum = thread.context.compute_checksum();
+    thread
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_pinned_continuation_wake_targets_last_cpu() -> bool {
+    let mut sched = Scheduler::new();
+    if sched.num_cpus() < 2 {
+        return true;
+    }
+
+    let last_cpu = 0usize;
+    let affinity_cpu = 1usize;
+    let thread = kunit_make_pinned_user_thread(ThreadState::Blocked, last_cpu, affinity_cpu);
+    let tid = thread.tid;
+    sched.threads.push(thread);
+
+    let _ = sched.wake_thread_inner(tid);
+
+    let affinity_pick = sched.pick_eligible(affinity_cpu);
+    let last_pick = sched.pick_eligible(last_cpu);
+
+    affinity_pick.is_none() && last_pick == Some(tid)
+}
+
+#[cfg(feature = "kunit")]
+pub fn kunit_pinned_continuation_not_stolen() -> bool {
+    let mut sched = Scheduler::new();
+    if sched.num_cpus() < 2 {
+        return true;
+    }
+
+    let last_cpu = 0usize;
+    let wrong_cpu = 1usize;
+    let thread = kunit_make_pinned_user_thread(ThreadState::Ready, last_cpu, wrong_cpu);
+    let tid = thread.tid;
+    sched.threads.push(thread);
+    sched.per_cpu[wrong_cpu].run_queue.enqueue(tid, 42);
+
+    let stolen = sched.pick_next(last_cpu);
+    let repaired_pick = sched.pick_eligible(last_cpu);
+    let wrong_pick = sched.pick_eligible(wrong_cpu);
+
+    stolen.is_none() && repaired_pick == Some(tid) && wrong_pick.is_none()
+}
+
 // =============================================================================
 // Public API — Init
 // =============================================================================

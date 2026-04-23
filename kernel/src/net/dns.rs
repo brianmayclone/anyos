@@ -31,7 +31,13 @@ pub fn load_hosts() {
     let data = match crate::fs::vfs::read_file_to_vec(HOSTS_PATH) {
         Ok(d) => d,
         Err(_) => {
-            crate::serial_verbose_println!("[NET] hosts file not found: {}", HOSTS_PATH);
+            // Early boot: networkd hasn't projected the hosts blob from
+            // confd yet. It will call SYS_NET_CONFIG reload_hosts once
+            // the projection is written. Not an error.
+            crate::serial_verbose_println!(
+                "[NET] hosts file not yet present (networkd will populate): {}",
+                HOSTS_PATH
+            );
             return;
         }
     };
