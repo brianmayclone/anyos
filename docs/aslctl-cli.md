@@ -188,6 +188,13 @@ aslctl profile list
 aslctl profile show <profile>
 ```
 
+Hinweis:
+
+- diese Befehle arbeiten fachlich gegen `asld`
+- `asld` persistiert autoritative ASL-Konfiguration ueber `confd`
+- `aslctl` soll nicht am Control Plane vorbei direkt im ASL-Namespace von
+  `confd` schreiben
+
 ### Diagnostics
 
 ```text
@@ -322,6 +329,8 @@ aslctl doctor <name>
 
 ## Offene Punkte
 
+- wie `aslctl config edit` eine `confd`-gestuetzte Bearbeitung ergonomisch
+  abbildet
 - wie `aslctl config edit` Editor-Integration genau loest
 - ob `shell` in v1 standardmaessig ueber Agent, Fallback-Konsole oder adaptiv
   entscheidet

@@ -146,7 +146,7 @@ Zentrale Steuerinstanz fuer:
 - Ressourcenprofile
 - Session-Verwaltung
 - Sicherheits-Policy
-- Konfigurationspersistenz
+- Konfigurationsowner ueber `confd`
 - Health-State des Subsystems
 
 Verantwortung:
@@ -275,7 +275,6 @@ Empfohlene Ablage:
 /System/var/asl/
   distros/
     ubuntu-dev/
-      config.json
       images/
         base.img
         overlay.img
@@ -284,6 +283,16 @@ Empfohlene Ablage:
       logs/
       sockets/
 ```
+
+Autoritative Konfiguration liegt nicht als lose Datei im Distro-Verzeichnis,
+sondern in `confd` unter:
+
+```text
+system/platform/asl/distros/<name>/...
+```
+
+Das Distro-Verzeichnis bleibt fuer Images, Runtime-Artefakte, Logs und Sockets
+zustaendig.
 
 ### VM-Modell
 
