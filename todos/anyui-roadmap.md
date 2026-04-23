@@ -19,20 +19,40 @@ Produktivitaet.
 anyUI hat bereits eine breite Basis mit 44 Controls, Dialogen, Menubar,
 TrayIcon, Windowing, Accessibility und Popup-/Modal-Grundlagen.
 
+Status-Update 2026-04-23 nach Code-Verifikation: ~35% der Roadmap umgesetzt.
+Stark: Text-Controls (Cursor, Selection, read_only, max_length, Clipboard).
+Kollection-Controls (Multi-Selection, Sort-API, Scroll-to-item in DataGrid).
+ComboBox existiert bereits. Schwach: Undo/Redo, Submenues, Accelerators,
+Popover/Sheet/Drawer, generisches Drag&Drop, Virtualisierung, RichText,
+Command-System, Validation.
+
 Es fehlen aber vor allem:
 
-- ausgereifte Text- und Menu-Interaktion
-- datengetriebene Collection-Controls
-- Drag & Drop und Command-Patterns
-- fortgeschrittene Desktop-Controls wie ComboBox, BreadcrumbBar, PropertyGrid
-- konsistente Interaktionsmodelle fuer Auswahl, Fokus, Editing, Validation
+- Undo/Redo in Text-Controls, Word-Wrap, public scroll-to-caret
+- Submenues, Checkmarks, Accelerator-Anzeige und -Verarbeitung in Menues
+- Virtualisierung und Inline-Editing in Kollection-Controls
+- generisches Drag & Drop-Framework (nur DataGrid-interne DragMode vorhanden)
+- fortgeschrittene Desktop-Controls: `ListView`, `CollectionView`, `Popover`,
+  `Sheet`, `Drawer`, `PropertyGrid`, `BreadcrumbBar`, `RichText`
+- konsistente Interaktionsmodelle fuer Fokus, Editing, Validation
+- Command-System (zentrale Registry, Shortcut-Bindings)
 
-Bereits angelaufen oder teilweise umgesetzt:
+Bereits umgesetzt (aus "angelaufen" inzwischen fertig):
 
-- `TextField`/`TextArea`: `read_only`, Cursor-/Selection-Grundlagen
-- `ContextMenu`: Disabled-Items und Keyboard-Bedienung
-- Framework-Drag-&-Drop-Grundlagen
-- Finder und anyOS Code als erste DnD-Referenz-Apps
+- `TextField`/`TextArea`/`TextEditor`: `read_only`, `max_length`, Cursor
+  get/set, Selection-Range get/set (public API)
+- `ContextMenu`: Disabled-Items (`\x1D` Prefix), Icons (`\x1F` Separator)
+- `ComboBox`: eigenes Control in libanyui + libanyui_client vorhanden
+- `DataGrid`: Multi-Selection, Sort-API (`sort_by`, `set_column_sort_type`),
+  `scroll_to_row`, Column-Reorder/Resize
+- `ListBox`: Multi-Select-Flag, Keyboard-Nav (Up/Down/Space/Enter)
+- `TreeView`: Keyboard-Navigation (Up/Down)
+- einheitliche Clipboard-Semantik via `compositor::clipboard_set/get`
+
+Noch nicht angefangen (trotz Roadmap-Erwähnung):
+
+- generisches Drag & Drop-Framework (Drag source / Drop target / typisierte
+  Payloads / auto-scroll)
 
 ---
 
@@ -50,17 +70,17 @@ Betroffene Controls:
 - `SearchField`
 - `AutoCompleteTextField`
 
-Fehlend:
+Status:
 
-- `read_only`
-- `max_length`
-- Cursor get/set API
-- Selection range get/set API
-- Undo/Redo
-- Word wrap fuer `TextArea`
-- Zeilen-/Spaltenposition sauber querybar
-- scroll-to-caret
-- einheitliche Clipboard-/Selection-Semantik
+- ✅ `read_only` (TextField/TextArea/TextEditor)
+- ✅ `max_length` (TextField/TextArea)
+- ✅ Cursor get/set API (public)
+- ✅ Selection range get/set API (public)
+- ✅ einheitliche Clipboard-Semantik (`compositor::clipboard_*`)
+- ❌ Undo/Redo
+- ❌ Word wrap fuer `TextArea`
+- ❌ Zeilen-/Spaltenposition sauber querybar
+- ⚠️ scroll-to-caret — `ensure_cursor_visible()` intern vorhanden, nicht public
 
 Apps mit Sofortnutzen:
 
@@ -84,16 +104,16 @@ Betroffene Controls:
 - `ContextMenu`
 - popup-basierte Menues
 
-Fehlend:
+Status:
 
-- Submenues
-- Disabled items
-- Checkmarks
-- Icons
-- Shortcut-Anzeige
-- Keyboard-Navigation
-- Accelerator-Verarbeitung
-- bessere Fokus-/Dismiss-Logik
+- ✅ Disabled items (ContextMenu mit `\x1D` Prefix)
+- ✅ Icons (ContextMenu mit `\x1F` Separator)
+- ✅ Keyboard-Navigation (Up/Down in TreeView/Menus)
+- ❌ Submenues
+- ❌ Checkmarks
+- ❌ Shortcut-Anzeige (Accelerator-Text rechts)
+- ❌ Accelerator-Verarbeitung (Alt+Key / globale Shortcuts)
+- ❌ bessere Fokus-/Dismiss-Logik
 
 Apps mit Sofortnutzen:
 
@@ -119,15 +139,16 @@ Betroffene Controls:
 - `DataGrid`
 - `ListBox`
 
-Fehlend:
+Status:
 
-- Keyboard-Navigation
-- Multi-Selection
-- Scroll-to-item
-- Sort callbacks / Sort API
-- Inline editing
-- Drag & Drop hooks
-- Virtualisierung bei grossen Datenmengen
+- ✅ Keyboard-Navigation (TreeView/ListBox: Up/Down/Space/Enter)
+- ✅ Multi-Selection (DataGrid `SelectionMode::Multi`, ListBox multi-flag)
+- ✅ Scroll-to-item (DataGrid `scroll_to_row`)
+- ✅ Sort API (DataGrid `sort_by`, `set_column_sort_type`)
+- ⚠️ Drag & Drop hooks — nur DataGrid-interne DragMode (Reorder/Resize)
+- ❌ Inline editing
+- ❌ Virtualisierung bei grossen Datenmengen
+- ❌ generischer Drag&Drop mit Payloads
 
 Apps mit Sofortnutzen:
 
@@ -150,17 +171,17 @@ Warum P0:
 
 Diese Punkte sind die naechste Schicht fuer eine moderne und skalierbare GUI.
 
-### 4. Echte ComboBox bauen
+### 4. ComboBox (✅ Control existiert, Feinschliff offen)
 
 Heute vorhanden:
 
 - `DropDown`
 - `AutoCompleteTextField`
+- ✅ `ComboBox` (libanyui/combobox.rs + libanyui_client/combobox.rs)
 
-Es fehlt:
+Noch zu pruefen / haerten:
 
-- ein gemeinsames `ComboBox`-Control mit
-- optional editierbarer Eingabe
+- optional editierbare Eingabe
 - Filtering
 - Selection + freier Eingabe
 - Keyboard-Navigation
@@ -378,8 +399,7 @@ Apps mit Nutzen:
 
 ### Klar fehlend
 
-- `ComboBox`
-- `ListView`
+- `ListView` (nicht mit `ListBox` zu verwechseln)
 - `PropertyGrid`
 - `BreadcrumbBar`
 - `TokenField`
@@ -442,7 +462,7 @@ Diese Reihenfolge ist an zwei Dingen ausgerichtet:
 
 ### Jetzt als naechstes
 
-1. `ComboBox`
+1. ~~`ComboBox`~~ ✅ erledigt -- nur noch Feinschliff (Filter/Validation)
 2. `ListView`
 3. `CollectionView` / `ItemsControl`
 4. `Popover` / `Sheet`
@@ -584,10 +604,14 @@ Direkter Nutzen:
 
 ### Was parallel weiterlaufen sollte
 
-- Text-Controls weiter vervollstaendigen: `max_length`, Undo/Redo, Wrap, scroll-to-caret
-- Menues weiter ausbauen: Checkmarks, Icons, Shortcut-Anzeige, Submenues
-- `TreeView`/`TableView`/`DataGrid` auf Multi-Selection, bessere Keyboard-Navigation und Auto-scroll ziehen
-- DnD von reinem Text auf typisierte Payloads wie `uri-list` und Copy/Move-Aushandlung erweitern
+- Text-Controls weiter vervollstaendigen: Undo/Redo, Word-Wrap (TextArea),
+  scroll-to-caret als public API (`max_length` ist bereits fertig)
+- Menues weiter ausbauen: Checkmarks, Shortcut-Anzeige, Submenues, Accelerators
+  (Icons und Disabled Items sind bereits fertig)
+- `TreeView`/`TableView`/`DataGrid`: Inline-Editing, Virtualisierung,
+  Auto-scroll waehrend Drag (Multi-Selection, Sort und Keyboard-Nav fertig)
+- DnD-Framework von Null aufbauen: Drag-source/Drop-target, typisierte
+  Payloads (`text`, `uri-list`), Copy/Move-Aushandlung
 
 ---
 
