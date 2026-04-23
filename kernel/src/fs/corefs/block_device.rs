@@ -66,7 +66,13 @@ pub trait SectorIo: fmt::Debug + Send + Sync {
     /// Schreibt `count` 512-Byte-Sektoren ab absoluter `lba` aus `buf`.
     fn write_sectors(&self, disk_id: u8, lba: u32, count: u32, buf: &[u8]) -> bool;
     /// Flusht Write-Caches auf persistentes Medium.
-    fn flush(&self);
+    ///
+    /// `disk_id` identifiziert die Platte deren Write-Back-Blockcache
+    /// rausgespült werden muss — sonst würde der Host-Flush-Befehl am
+    /// AHCI-/NVMe-Device nur Daten betreffen die schon im Controller
+    /// angekommen sind, während Dirty-Einträge im Kernel-Blockcache noch
+    /// im RAM warten (→ Crash-Korruption).
+    fn flush(&self, disk_id: u8);
 }
 
 /// Produktions-`SectorIo`, delegiert an [`crate::drivers::storage`].
@@ -82,7 +88,14 @@ impl SectorIo for AnyOsSectorIo {
         crate::drivers::storage::write_sectors_on_disk(disk_id, lba, count, buf)
     }
 
-    fn flush(&self) {
+    fn flush(&self, disk_id: u8) {
+        // Reihenfolge ist kritisch: erst den kernelseitigen Write-Back-
+        // Blockcache auf die Platte spülen, danach dem Disk-Controller ein
+        // FLUSH CACHE senden. Umgekehrt wäre der Disk-Flush wirkungslos für
+        // alle Dirty-Einträge die noch gar nicht am Controller angekommen
+        // sind, und CoreFS-Journal-/Commit-Record-Ordering würde auf einem
+        // unzuverlässigen `device.sync()` aufsetzen.
+        crate::fs::blockcache::writeback_flush(disk_id);
         crate::drivers::storage::flush();
     }
 }
@@ -238,7 +251,7 @@ impl BlockDevice for BlockDeviceAdapter {
     }
 
     fn sync(&mut self) -> CoreFsResult<()> {
-        self.io.flush();
+        self.io.flush(self.disk_id);
         Ok(())
     }
 
@@ -312,7 +325,7 @@ impl SectorIo for MemSectorIo {
         true
     }
 
-    fn flush(&self) {}
+    fn flush(&self, _disk_id: u8) {}
 }
 
 #[cfg(test)]

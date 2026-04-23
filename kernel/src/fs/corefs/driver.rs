@@ -51,7 +51,7 @@ use corefs_core::storage::ondisk::native::save_state_native;
 use corefs_core::storage::ondisk::native::{
     load_native_inode_slot_index, load_state_native, load_state_native_lossy,
     save_state_native_incremental, save_state_native_incremental_dirty_with_slots,
-    InodeSlotMapping,
+    InodeSlotMapping, InodeSlotWarning,
 };
 use corefs_core::storage::ondisk::journal::Journal;
 use corefs_core::storage::ondisk::journal_capture::JournalCapture;
@@ -64,6 +64,76 @@ use crate::fs::vfs::{Filesystem, FsError, StatFs, StatResult};
 use crate::sync::mutex::Mutex;
 
 use super::block_device::BlockDeviceAdapter;
+
+/// Log a per-slot load warning.  If the warning carries a corruption
+/// diagnostic (unreadable attr block) the raw on-disk pattern is dumped
+/// too so `[corefs]` log readers can tell lost-write / torn-write /
+/// cross-overwrite apart.
+fn log_slot_warning(w: &InodeSlotWarning) {
+    crate::serial_println!(
+        "[corefs] WARN inode slot {} skipped: {}",
+        w.slot,
+        w.reason
+    );
+    if let Some(d) = &w.diagnostic {
+        let kind = classify_attr_pattern(&d.first_bytes, d.magic_found, d.magic_expected);
+        crate::serial_println!(
+            "  attr_block_addr={} magic_found=0x{:08X} expected=0x{:08X} \
+             stored_crc=0x{:08X} computed_crc=0x{:08X} kind={}",
+            d.attr_block_addr,
+            d.magic_found,
+            d.magic_expected,
+            d.stored_crc,
+            d.computed_crc,
+            kind,
+        );
+        let b = &d.first_bytes;
+        crate::serial_println!(
+            "  first64: {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
+             {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
+             {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
+             {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x}",
+            b[0],  b[1],  b[2],  b[3],  b[4],  b[5],  b[6],  b[7],
+            b[8],  b[9],  b[10], b[11], b[12], b[13], b[14], b[15],
+            b[16], b[17], b[18], b[19], b[20], b[21], b[22], b[23],
+            b[24], b[25], b[26], b[27], b[28], b[29], b[30], b[31],
+        );
+        crate::serial_println!(
+            "          {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
+             {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
+             {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x} \
+             {:02x}{:02x}{:02x}{:02x} {:02x}{:02x}{:02x}{:02x}",
+            b[32], b[33], b[34], b[35], b[36], b[37], b[38], b[39],
+            b[40], b[41], b[42], b[43], b[44], b[45], b[46], b[47],
+            b[48], b[49], b[50], b[51], b[52], b[53], b[54], b[55],
+            b[56], b[57], b[58], b[59], b[60], b[61], b[62], b[63],
+        );
+    }
+}
+
+/// Characterise the on-disk pattern so the log line tells at-a-glance
+/// which crash-failure class this is.
+fn classify_attr_pattern(first_bytes: &[u8; 64], magic_found: u32, magic_expected: u32) -> &'static str {
+    if first_bytes.iter().all(|&b| b == 0) {
+        return "all-zeros (lost write)";
+    }
+    if first_bytes.iter().all(|&b| b == 0xFF) {
+        return "all-ones (erased/trimmed)";
+    }
+    if magic_found == magic_expected {
+        return "torn-write (good magic, bad CRC)";
+    }
+    // Common magics in CoreFS so we can recognise cross-overwrite sources.
+    match magic_found {
+        0x42434653 => "CoreFS superblock magic",
+        0x4A524E4C => "CoreFS journal magic",
+        // Printable ASCII prefix → likely file content.
+        _ if first_bytes[0..4].iter().all(|&b| (0x20..0x7F).contains(&b)) => {
+            "looks like ASCII text (file content overwrite)"
+        }
+        _ => "foreign bytes (overwritten by unrelated block)",
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Error mapping
@@ -327,11 +397,7 @@ impl CoreFsDriver {
             corefs_to_fs_error(&e)
         })?;
         for w in &load_warnings {
-            crate::serial_println!(
-                "[corefs] WARN inode slot {} skipped: {}",
-                w.slot,
-                w.reason
-            );
+            log_slot_warning(w);
         }
         if !load_warnings.is_empty() {
             crate::serial_println!(
@@ -399,11 +465,7 @@ impl CoreFsDriver {
             corefs_to_fs_error(&e)
         })?;
         for w in &load_warnings {
-            crate::serial_println!(
-                "[corefs] WARN inode slot {} skipped: {}",
-                w.slot,
-                w.reason
-            );
+            log_slot_warning(w);
         }
         if !load_warnings.is_empty() {
             crate::serial_println!(
@@ -897,15 +959,65 @@ fn compute_first_data_block(
         crate::serial_println!("[corefs] read_sb_with_fallbacks failed: {:?}", e);
         corefs_to_fs_error(&e)
     })?;
-    let data_start = sb.geometry().data_start;
-    let highest = state
+    let geom = sb.geometry();
+    let data_start = geom.data_start;
+
+    // Highest block referenced by BlockRecord data extents.  This is what
+    // the old implementation used exclusively — insufficient on its own
+    // because it misses metadata blocks (attr blocks, extent-index blocks,
+    // ancillary payload extents) that sit past the highest data extent.
+    // When BlockStore's tail pointer is derived from this alone and the
+    // layout places attr blocks after the highest data block (which is
+    // what mkfs-corefs-host does), the very next user-file write hands
+    // out physical blocks that are in fact attr blocks of existing
+    // inodes — overwriting them silently.
+    //
+    // Use the block-allocation bitmap as the authoritative "what's
+    // actually in use" source and return (highest set bit + 1).  That
+    // covers data, metadata, and anything else the on-disk allocator
+    // tracked.  Fallback to the data-extent scan if the bitmap cannot
+    // be read for any reason.
+    let bitmap_highest = match device.read_at(
+        geom.block_bitmap_start * BLOCK_SIZE,
+        geom.block_bitmap_blocks * BLOCK_SIZE,
+    ) {
+        Ok(bytes) => {
+            let mut highest: u64 = 0;
+            // Iterate bytes high-to-low, return one past the topmost set bit.
+            for byte_idx in (0..bytes.len()).rev() {
+                let b = bytes[byte_idx];
+                if b == 0 {
+                    continue;
+                }
+                // Find the highest set bit in this byte.
+                let bit_in_byte = 7 - b.leading_zeros() as u64;
+                let bit_index = (byte_idx as u64) * 8 + bit_in_byte;
+                if bit_index < geom.total_blocks {
+                    highest = bit_index + 1;
+                }
+                break;
+            }
+            highest
+        }
+        Err(e) => {
+            crate::serial_println!(
+                "[corefs] compute_first_data_block: bitmap read failed ({:?}), \
+                 falling back to data-extent scan",
+                e
+            );
+            0
+        }
+    };
+
+    let data_extent_highest = state
         .block_records
         .iter()
         .flat_map(|r| r.extents.iter())
         .map(|e| e.physical_block + u64::from(e.length_blocks))
         .max()
         .unwrap_or(0);
-    Ok(highest.max(data_start))
+
+    Ok(bitmap_highest.max(data_extent_highest).max(data_start))
 }
 
 // ---------------------------------------------------------------------------
