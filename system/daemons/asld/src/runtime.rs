@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use alloc::{format, string::String};
 
 use crate::agent::inferred_agent_state;
 use crate::config::{
@@ -7,19 +8,36 @@ use crate::config::{
 };
 use crate::distro::build_distro_config;
 use crate::errors::AsldError;
-use crate::model::{DistroStatus, DistroState, MountSpec, PortForwardSpec};
+use crate::model::{
+    DistroHealth, DistroState, DistroStatus, ExecInvocation, MountSpec, PortForwardSpec,
+    SessionMode, ShellSession,
+};
 use crate::status::{degraded_status, stopped_status};
 use crate::store::RuntimeStore;
 use crate::vm;
 
+#[derive(Clone)]
+struct RuntimeBackend {
+    name: String,
+    vm: vm::VmInstance,
+    shell_sessions: Vec<ShellSession>,
+    execs: Vec<ExecInvocation>,
+}
+
 pub struct RuntimeService {
     store: RuntimeStore,
+    backends: Vec<RuntimeBackend>,
+    next_shell_seq: u32,
+    next_exec_seq: u32,
 }
 
 impl RuntimeService {
     pub fn new() -> Self {
         Self {
             store: RuntimeStore::new(),
+            backends: Vec::new(),
+            next_shell_seq: 1,
+            next_exec_seq: 1,
         }
     }
 
@@ -67,11 +85,12 @@ impl RuntimeService {
         }
 
         match vm::start_vm(&cfg) {
-            Ok(()) => {
+            Ok(vm_instance) => {
                 let mut status = stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone());
                 status.state = DistroState::Ready;
-                status.health = crate::model::DistroHealth::Ready;
+                status.health = DistroHealth::Ready;
                 status.agent_state = inferred_agent_state(&cfg.agent, DistroState::Ready);
+                self.upsert_backend(&cfg.name, vm_instance);
                 self.store.upsert(status.clone());
                 Ok(status)
             }
@@ -90,6 +109,11 @@ impl RuntimeService {
 
     pub fn stop<S: ConfigStore>(&mut self, store: &mut S, name: &str) -> Result<DistroStatus, AsldError> {
         let cfg = load_distro(store, name)?;
+        if let Some(index) = self.backends.iter().position(|backend| backend.name == name) {
+            let instance = self.backends[index].vm.clone();
+            vm::stop_vm(&instance)?;
+            self.backends.remove(index);
+        }
         let status = stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone());
         self.store.upsert(status.clone());
         Ok(status)
@@ -167,6 +191,138 @@ impl RuntimeService {
         remove_port_forward(store, distro_name, rule_id)?;
         self.list_port_forwards(store, distro_name)
     }
+
+    pub fn open_shell_session<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+        session_name: Option<&str>,
+        fallback_console: bool,
+    ) -> Result<ShellSession, AsldError> {
+        let cfg = load_distro(store, name)?;
+        let _ = self.require_running(name)?;
+        let mode = select_session_mode(&cfg.agent, fallback_console)?;
+        let requested_name = String::from(session_name.unwrap_or("default"));
+        if let Some(existing) = self
+            .backends
+            .iter()
+            .find(|backend| backend.name == name)
+            .and_then(|backend| {
+                backend
+                    .shell_sessions
+                    .iter()
+                    .find(|session| session.session_name == requested_name && session.mode == mode)
+            })
+        {
+            let mut reused = existing.clone();
+            reused.reused = true;
+            return Ok(reused);
+        }
+
+        let next_shell_id = format!("sh-{:08x}", self.next_shell_seq);
+        self.next_shell_seq = self.next_shell_seq.wrapping_add(1);
+        let backend = self
+            .backend_mut(name)
+            .ok_or(AsldError::InvalidState("distro runtime missing"))?;
+
+        let session = ShellSession {
+            session_id: next_shell_id,
+            session_name: requested_name,
+            mode,
+            console_pipe_name: backend.vm.console_pipe_name.clone(),
+            reused: false,
+        };
+        backend.shell_sessions.push(session.clone());
+        Ok(session)
+    }
+
+    pub fn exec_command<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+        argv: &[String],
+        cwd: Option<&str>,
+        env: &[(&str, &str)],
+        fallback_console: bool,
+    ) -> Result<ExecInvocation, AsldError> {
+        if argv.is_empty() {
+            return Err(AsldError::InvalidArgument("argv"));
+        }
+        let cfg = load_distro(store, name)?;
+        let _ = self.require_running(name)?;
+        let mode = select_session_mode(&cfg.agent, fallback_console)?;
+        let next_exec_id = format!("exec-{:08x}", self.next_exec_seq);
+        self.next_exec_seq = self.next_exec_seq.wrapping_add(1);
+        let backend = self
+            .backend_mut(name)
+            .ok_or(AsldError::InvalidState("distro runtime missing"))?;
+        let exec = ExecInvocation {
+            exec_id: next_exec_id,
+            mode,
+            cwd: String::from(cwd.unwrap_or("/")),
+            env_count: env.len(),
+            command_line: join_command(argv),
+        };
+        backend.execs.push(exec.clone());
+        Ok(exec)
+    }
+
+    fn upsert_backend(&mut self, name: &str, vm: vm::VmInstance) {
+        if let Some(existing) = self.backends.iter_mut().find(|backend| backend.name == name) {
+            existing.vm = vm;
+            existing.shell_sessions.clear();
+            existing.execs.clear();
+            return;
+        }
+        self.backends.push(RuntimeBackend {
+            name: String::from(name),
+            vm,
+            shell_sessions: Vec::new(),
+            execs: Vec::new(),
+        });
+    }
+
+    fn backend_mut(&mut self, name: &str) -> Option<&mut RuntimeBackend> {
+        self.backends.iter_mut().find(|backend| backend.name == name)
+    }
+
+    fn require_running(&self, name: &str) -> Result<&DistroStatus, AsldError> {
+        let status = self.store.get(name).ok_or(AsldError::NotFound)?;
+        if !matches!(status.state, DistroState::Ready | DistroState::Degraded) {
+            return Err(AsldError::InvalidState("distro is not running"));
+        }
+        Ok(status)
+    }
+}
+
+fn select_session_mode(
+    policy: &crate::model::AgentPolicy,
+    fallback_console: bool,
+) -> Result<SessionMode, AsldError> {
+    if fallback_console {
+        if policy.fallback_console_enabled {
+            return Ok(SessionMode::FallbackConsole);
+        }
+        return Err(AsldError::PolicyDenied);
+    }
+    if policy.enabled {
+        return Ok(SessionMode::Agent);
+    }
+    if policy.fallback_console_enabled {
+        return Ok(SessionMode::FallbackConsole);
+    }
+    Err(AsldError::PolicyDenied)
+}
+
+fn join_command(argv: &[String]) -> String {
+    let mut out = String::new();
+    for part in argv {
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(part);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -187,13 +343,53 @@ mod tests {
     }
 
     #[test]
-    fn start_enters_degraded_until_vm_backend_exists() {
+    fn start_creates_running_backend_status() {
         let mut store = FakeStore::default();
         let mut runtime = RuntimeService::new();
         let _ = runtime.create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
         let status = runtime.start(&mut store, "ubuntu-dev").unwrap();
-        assert_eq!(status.state.as_str(), "degraded");
-        assert!(status.last_error.unwrap().contains("not implemented"));
+        assert_eq!(status.state.as_str(), "ready");
+        assert!(status.last_error.is_none());
+    }
+
+    #[test]
+    fn shell_session_reuses_named_session() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime.create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
+        let first = runtime
+            .open_shell_session(&mut store, "ubuntu-dev", Some("dev"), false)
+            .unwrap();
+        let second = runtime
+            .open_shell_session(&mut store, "ubuntu-dev", Some("dev"), false)
+            .unwrap();
+        assert_eq!(first.session_id, second.session_id);
+        assert!(second.reused);
+    }
+
+    #[test]
+    fn exec_command_tracks_mode_and_command_line() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime.create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
+        let exec = runtime
+            .exec_command(
+                &mut store,
+                "ubuntu-dev",
+                &alloc::vec![
+                    alloc::string::String::from("cargo"),
+                    alloc::string::String::from("test"),
+                ],
+                Some("/workspace"),
+                &[("RUST_BACKTRACE", "1")],
+                false,
+            )
+            .unwrap();
+        assert_eq!(exec.mode.as_str(), "agent");
+        assert_eq!(exec.cwd, "/workspace");
+        assert_eq!(exec.command_line, "cargo test");
     }
 
     #[test]

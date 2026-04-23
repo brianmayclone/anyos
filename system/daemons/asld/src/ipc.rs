@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::config::ConfigStore;
 use crate::errors::AsldError;
-use crate::model::{MountSpec, PortForwardSpec};
+use crate::model::{ExecInvocation, MountSpec, PortForwardSpec, ShellSession};
 use crate::runtime::RuntimeService;
 
 pub struct IpcState {
@@ -116,6 +116,36 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             Ok(status) => format!("OK\t1\nagent\t{}\n\n", status.agent_state.as_str()),
             Err(err) => err_line(&err),
         },
+        "SHELL_OPEN" | "shell_open" => {
+            let fields = split_tab_fields(rest);
+            if fields.is_empty() {
+                return err_line(&AsldError::InvalidArgument("shell_open"));
+            }
+            let fallback_console = fields.get(2).copied().unwrap_or("0") == "1";
+            match runtime.open_shell_session(
+                store,
+                fields[0],
+                fields.get(1).copied().filter(|name| !name.is_empty()),
+                fallback_console,
+            ) {
+                Ok(session) => ok_lines(format_shell_lines(&session)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "EXEC" | "exec" => {
+            let fields = split_tab_fields(rest);
+            if fields.len() < 2 {
+                return err_line(&AsldError::InvalidArgument("exec"));
+            }
+            let fallback_console = fields.get(1).copied().unwrap_or("0") == "1";
+            let cwd = fields.get(2).copied().filter(|value| !value.is_empty());
+            let env_pairs = parse_env_fields(fields.get(3).copied().unwrap_or(""));
+            let argv = parse_list_field(fields.get(4).copied().unwrap_or(""));
+            match runtime.exec_command(store, fields[0], &argv, cwd, &env_pairs, fallback_console) {
+                Ok(exec) => ok_lines(format_exec_lines(&exec)),
+                Err(err) => err_line(&err),
+            }
+        }
         "MOUNT_LIST" | "mount_list" => {
             let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
             match runtime.list_mounts(store, name) {
@@ -258,6 +288,48 @@ fn parse_u16(s: &str) -> Option<u16> {
     Some(value as u16)
 }
 
+fn parse_list_field(s: &str) -> Vec<String> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    s.split('\x1f').map(String::from).collect()
+}
+
+fn parse_env_fields(s: &str) -> Vec<(&str, &str)> {
+    if s.is_empty() {
+        return Vec::new();
+    }
+    s.split('\x1f')
+        .filter_map(|field| field.split_once('='))
+        .collect()
+}
+
+fn format_shell_lines(session: &ShellSession) -> Vec<String> {
+    alloc::vec![
+        format!(
+            "{}\t{}\t{}\t{}",
+            session.session_id,
+            session.session_name,
+            session.mode.as_str(),
+            session.console_pipe_name
+        ),
+        format!("reused\t{}", if session.reused { "true" } else { "false" }),
+    ]
+}
+
+fn format_exec_lines(exec: &ExecInvocation) -> Vec<String> {
+    alloc::vec![
+        format!(
+            "{}\t{}\t{}\t{}\t{}",
+            exec.exec_id,
+            exec.mode.as_str(),
+            exec.cwd,
+            exec.env_count,
+            exec.command_line
+        ),
+    ]
+}
+
 fn ok_lines(lines: Vec<String>) -> String {
     let mut out = format!("OK\t{}\n", lines.len());
     for line in lines {
@@ -374,5 +446,23 @@ mod tests {
         assert!(list.contains("web\t127.0.0.1"));
         let remove = dispatch(&mut runtime, &mut store, "PORT_REMOVE ubuntu-dev\tweb");
         assert!(remove.starts_with("OK\t0"));
+    }
+
+    #[test]
+    fn shell_and_exec_roundtrip() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(&mut runtime, &mut store, "START ubuntu-dev");
+        let shell = dispatch(&mut runtime, &mut store, "SHELL_OPEN ubuntu-dev\tdev\t0");
+        assert!(shell.contains("sh-"));
+        assert!(shell.contains("agent"));
+        let exec = dispatch(
+            &mut runtime,
+            &mut store,
+            "EXEC ubuntu-dev\t0\t/workspace\tRUST_BACKTRACE=1\x1fTERM=xterm\tcargo\x1ftest",
+        );
+        assert!(exec.contains("exec-"));
+        assert!(exec.contains("cargo test"));
     }
 }

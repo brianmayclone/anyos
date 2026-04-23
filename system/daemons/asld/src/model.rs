@@ -55,6 +55,21 @@ impl AgentState {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionMode {
+    Agent,
+    FallbackConsole,
+}
+
+impl SessionMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::FallbackConsole => "fallback-console",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DistroHealth {
     Ready,
     Degraded,
@@ -218,6 +233,24 @@ pub struct DistroStatus {
     pub last_error: Option<String>,
     pub resources: Resources,
     pub network: NetworkPolicy,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellSession {
+    pub session_id: String,
+    pub session_name: String,
+    pub mode: SessionMode,
+    pub console_pipe_name: String,
+    pub reused: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecInvocation {
+    pub exec_id: String,
+    pub mode: SessionMode,
+    pub cwd: String,
+    pub env_count: usize,
+    pub command_line: String,
 }
 
 pub fn is_valid_distro_name(name: &str) -> bool {

@@ -21,3 +21,4 @@ anyos_std = { path = "../../../libs/stdlib" }
 libconf = { path = "../../../libs/libconf" }
 libconf_schema = { path = "../../../libs/libconf_schema" }
 libsvc = { path = "../../../libs/libsvc" }
+libsyscall = { path = "../../../libs/libsyscall" }

@@ -216,6 +216,7 @@ dependencies = [
  "libconf",
  "libconf_schema",
  "libsvc",
+ "libsyscall",
 ]
 
 [[package]]

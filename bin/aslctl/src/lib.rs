@@ -17,6 +17,18 @@ pub enum ClientCommand<'a> {
     Start(&'a str),
     Stop(&'a str),
     AgentStatus(&'a str),
+    Shell {
+        distro: &'a str,
+        fallback_console: bool,
+        session_name: &'a str,
+    },
+    Exec {
+        distro: &'a str,
+        fallback_console: bool,
+        cwd: &'a str,
+        env: Vec<&'a str>,
+        argv: Vec<&'a str>,
+    },
     MountList(&'a str),
     MountShow {
         distro: &'a str,
@@ -68,9 +80,7 @@ pub enum WireResponse {
 pub fn run() {
     let mut args_buf = [0u8; 256];
     let raw = process::args(&mut args_buf);
-    let args = anyos_std::args::parse(raw, b"");
-
-    let Some(command) = parse_command(&args) else {
+    let Some(command) = parse_cli_command(raw) else {
         print_usage();
         return;
     };
@@ -78,6 +88,19 @@ pub fn run() {
     match send_command(&command) {
         Ok(response) => print_response(&command, &response),
         Err(message) => println!("aslctl: {}", message),
+    }
+}
+
+pub fn parse_cli_command<'a>(raw: &'a str) -> Option<ClientCommand<'a>> {
+    let tokens = tokenize(raw);
+    let first = *tokens.first()?;
+    match first {
+        "shell" => parse_shell_tokens(&tokens),
+        "exec" => parse_exec_tokens(&tokens),
+        _ => {
+            let args = anyos_std::args::parse(raw, b"");
+            parse_command(&args)
+        }
     }
 }
 
@@ -98,6 +121,71 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         "port" => parse_port_command(args),
         _ => None,
     }
+}
+
+fn parse_shell_tokens<'a>(tokens: &[&'a str]) -> Option<ClientCommand<'a>> {
+    let distro = *tokens.get(1)?;
+    let mut fallback_console = false;
+    let mut session_name = "";
+    let mut i = 2;
+    while i < tokens.len() {
+        match tokens[i] {
+            "--fallback-console" => fallback_console = true,
+            "--session" => {
+                session_name = *tokens.get(i + 1)?;
+                i += 1;
+            }
+            _ => return None,
+        }
+        i += 1;
+    }
+    Some(ClientCommand::Shell {
+        distro,
+        fallback_console,
+        session_name,
+    })
+}
+
+fn parse_exec_tokens<'a>(tokens: &[&'a str]) -> Option<ClientCommand<'a>> {
+    let distro = *tokens.get(1)?;
+    let mut fallback_console = false;
+    let mut cwd = "";
+    let mut env = Vec::new();
+    let mut argv = Vec::new();
+    let mut passthrough = false;
+    let mut i = 2;
+    while i < tokens.len() {
+        let token = tokens[i];
+        if passthrough {
+            argv.push(token);
+            i += 1;
+            continue;
+        }
+        match token {
+            "--fallback-console" => fallback_console = true,
+            "--cwd" => {
+                cwd = *tokens.get(i + 1)?;
+                i += 1;
+            }
+            "--env" => {
+                env.push(*tokens.get(i + 1)?);
+                i += 1;
+            }
+            "--" => passthrough = true,
+            _ => return None,
+        }
+        i += 1;
+    }
+    if argv.is_empty() {
+        return None;
+    }
+    Some(ClientCommand::Exec {
+        distro,
+        fallback_console,
+        cwd,
+        env,
+        argv,
+    })
 }
 
 fn parse_mount_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
@@ -285,7 +373,9 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             | ClientCommand::Create { .. }
             | ClientCommand::Start(_)
             | ClientCommand::Stop(_)
-            | ClientCommand::AgentStatus(_) => {
+            | ClientCommand::AgentStatus(_)
+            | ClientCommand::Shell { .. }
+            | ClientCommand::Exec { .. } => {
                 for line in lines {
                     println!("{}", line);
                 }
@@ -304,6 +394,8 @@ fn print_usage() {
     println!("  aslctl start <name>");
     println!("  aslctl stop <name>");
     println!("  aslctl agent-status <name>");
+    println!("  aslctl shell <name> [--fallback-console] [--session <name>]");
+    println!("  aslctl exec <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE] -- <command> [args...]");
     println!("  aslctl mount list <name>");
     println!("  aslctl mount show <name> <mount-id>");
     println!("  aslctl mount add <name> <mount-id> <host> <guest> <mode> <metadata> <case> <exec> <watch> [description]");
@@ -326,6 +418,30 @@ impl ClientCommand<'_> {
             Self::Start(name) => format!("START {}", name),
             Self::Stop(name) => format!("STOP {}", name),
             Self::AgentStatus(name) => format!("AGENT_STATUS {}", name),
+            Self::Shell {
+                distro,
+                fallback_console,
+                session_name,
+            } => format!(
+                "SHELL_OPEN {}\t{}\t{}",
+                distro,
+                session_name,
+                if *fallback_console { 1 } else { 0 }
+            ),
+            Self::Exec {
+                distro,
+                fallback_console,
+                cwd,
+                env,
+                argv,
+            } => format!(
+                "EXEC {}\t{}\t{}\t{}\t{}",
+                distro,
+                if *fallback_console { 1 } else { 0 },
+                cwd,
+                join_control_field(env),
+                join_control_field(argv)
+            ),
             Self::MountList(distro) => format!("MOUNT_LIST {}", distro),
             Self::MountShow { distro, mount_id } => format!("MOUNT_SHOW {}\t{}", distro, mount_id),
             Self::MountAdd {
@@ -377,6 +493,52 @@ impl ClientCommand<'_> {
     }
 }
 
+fn tokenize<'a>(raw: &'a str) -> Vec<&'a str> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            break;
+        }
+        let start;
+        let end;
+        if bytes[i] == b'"' {
+            i += 1;
+            start = i;
+            while i < bytes.len() && bytes[i] != b'"' {
+                i += 1;
+            }
+            end = i;
+            if i < bytes.len() {
+                i += 1;
+            }
+        } else {
+            start = i;
+            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            end = i;
+        }
+        out.push(&raw[start..end]);
+    }
+    out
+}
+
+fn join_control_field(parts: &[&str]) -> String {
+    let mut out = String::new();
+    for part in parts {
+        if !out.is_empty() {
+            out.push('\x1f');
+        }
+        out.push_str(part);
+    }
+    out
+}
+
 fn parse_usize(s: &str) -> Option<usize> {
     let mut out = 0usize;
     if s.is_empty() {
@@ -407,7 +569,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_command, parse_response, ClientCommand, WireResponse};
+    use super::{parse_cli_command, parse_command, parse_response, ClientCommand, WireResponse};
 
     #[test]
     fn parses_list_command() {
@@ -509,6 +671,41 @@ mod tests {
                 assert_eq!(message, "distro missing");
             }
             _ => panic!("expected error response"),
+        }
+    }
+
+    #[test]
+    fn parses_shell_command_with_session() {
+        match parse_cli_command("shell ubuntu-dev --session dev --fallback-console") {
+            Some(ClientCommand::Shell {
+                distro,
+                fallback_console,
+                session_name,
+            }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert!(fallback_console);
+                assert_eq!(session_name, "dev");
+            }
+            _ => panic!("expected shell command"),
+        }
+    }
+
+    #[test]
+    fn parses_exec_command_with_env_and_cwd() {
+        match parse_cli_command("exec ubuntu-dev --cwd /workspace --env RUST_BACKTRACE=1 -- cargo test") {
+            Some(ClientCommand::Exec {
+                distro,
+                cwd,
+                env,
+                argv,
+                ..
+            }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(cwd, "/workspace");
+                assert_eq!(env.len(), 1);
+                assert_eq!(argv, Vec::from(["cargo", "test"]));
+            }
+            _ => panic!("expected exec command"),
         }
     }
 }
