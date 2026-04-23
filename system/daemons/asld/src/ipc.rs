@@ -1,8 +1,10 @@
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use crate::config::ConfigStore;
 use crate::errors::AsldError;
+use crate::model::{MountSpec, PortForwardSpec};
 use crate::runtime::RuntimeService;
 
 pub struct IpcState {
@@ -114,6 +116,70 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             Ok(status) => format!("OK\t1\nagent\t{}\n\n", status.agent_state.as_str()),
             Err(err) => err_line(&err),
         },
+        "MOUNT_LIST" | "mount_list" => {
+            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            match runtime.list_mounts(store, name) {
+                Ok(mounts) => ok_lines(format_mount_lines(&mounts)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "MOUNT_SHOW" | "mount_show" => {
+            let fields = split_tab_fields(rest);
+            if fields.len() < 2 {
+                return err_line(&AsldError::InvalidArgument("mount_show"));
+            }
+            match runtime.show_mount(store, fields[0], fields[1]) {
+                Ok(mount) => ok_lines(format_mount_lines(&alloc::vec![mount])),
+                Err(err) => err_line(&err),
+            }
+        }
+        "MOUNT_ADD" | "mount_add" => {
+            let fields = split_tab_fields(rest);
+            match parse_mount_add(&fields) {
+                Ok((name, mount)) => match runtime.add_mount(store, name, &mount) {
+                    Ok(mounts) => ok_lines(format_mount_lines(&mounts)),
+                    Err(err) => err_line(&err),
+                },
+                Err(err) => err_line(&err),
+            }
+        }
+        "MOUNT_REMOVE" | "mount_remove" => {
+            let fields = split_tab_fields(rest);
+            if fields.len() < 2 {
+                return err_line(&AsldError::InvalidArgument("mount_remove"));
+            }
+            match runtime.remove_mount(store, fields[0], fields[1]) {
+                Ok(mounts) => ok_lines(format_mount_lines(&mounts)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "PORT_LIST" | "port_list" => {
+            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            match runtime.list_port_forwards(store, name) {
+                Ok(rules) => ok_lines(format_port_lines(&rules)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "PORT_ADD" | "port_add" => {
+            let fields = split_tab_fields(rest);
+            match parse_port_add(&fields) {
+                Ok((name, rule)) => match runtime.add_port_forward(store, name, &rule) {
+                    Ok(rules) => ok_lines(format_port_lines(&rules)),
+                    Err(err) => err_line(&err),
+                },
+                Err(err) => err_line(&err),
+            }
+        }
+        "PORT_REMOVE" | "port_remove" => {
+            let fields = split_tab_fields(rest);
+            if fields.len() < 2 {
+                return err_line(&AsldError::InvalidArgument("port_remove"));
+            }
+            match runtime.remove_port_forward(store, fields[0], fields[1]) {
+                Ok(rules) => ok_lines(format_port_lines(&rules)),
+                Err(err) => err_line(&err),
+            }
+        }
         _ => String::from("ERR\tunknown_command\n\n"),
     }
 }
@@ -128,6 +194,113 @@ fn split_first_word(s: &str) -> (&str, &str) {
     } else {
         (s.trim(), "")
     }
+}
+
+fn first_tab_field(s: &str) -> Option<&str> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        None
+    } else if let Some((first, _)) = trimmed.split_once('\t') {
+        Some(first)
+    } else {
+        Some(trimmed)
+    }
+}
+
+fn split_tab_fields(s: &str) -> Vec<&str> {
+    s.split('\t').filter(|field| !field.is_empty()).collect()
+}
+
+fn parse_mount_add<'a>(fields: &[&'a str]) -> Result<(&'a str, MountSpec), AsldError> {
+    if fields.len() < 9 {
+        return Err(AsldError::InvalidArgument("mount_add"));
+    }
+    Ok((
+        fields[0],
+        MountSpec {
+            id: String::from(fields[1]),
+            host_path: String::from(fields[2]),
+            guest_path: String::from(fields[3]),
+            mode: String::from(fields[4]),
+            metadata_mode: String::from(fields[5]),
+            case_mode: String::from(fields[6]),
+            exec_policy: String::from(fields[7]),
+            watch_policy: String::from(fields[8]),
+            description: String::from(fields.get(9).copied().unwrap_or("")),
+        },
+    ))
+}
+
+fn parse_port_add<'a>(fields: &[&'a str]) -> Result<(&'a str, PortForwardSpec), AsldError> {
+    if fields.len() < 6 {
+        return Err(AsldError::InvalidArgument("port_add"));
+    }
+    let listen_port = parse_u16(fields[3]).ok_or(AsldError::InvalidArgument("listen_port"))?;
+    let guest_port = parse_u16(fields[4]).ok_or(AsldError::InvalidArgument("guest_port"))?;
+    Ok((
+        fields[0],
+        PortForwardSpec {
+            id: String::from(fields[1]),
+            listen_address: String::from(fields[2]),
+            listen_port,
+            guest_port,
+            protocol: String::from(fields[5]),
+            description: String::from(fields.get(6).copied().unwrap_or("")),
+        },
+    ))
+}
+
+fn parse_u16(s: &str) -> Option<u16> {
+    let value = parse_u32(s)?;
+    if value == 0 || value > u16::MAX as u32 {
+        return None;
+    }
+    Some(value as u16)
+}
+
+fn ok_lines(lines: Vec<String>) -> String {
+    let mut out = format!("OK\t{}\n", lines.len());
+    for line in lines {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out.push('\n');
+    out
+}
+
+fn format_mount_lines(mounts: &[MountSpec]) -> Vec<String> {
+    let mut out = Vec::new();
+    for mount in mounts {
+        out.push(format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            mount.id,
+            mount.host_path,
+            mount.guest_path,
+            mount.mode,
+            mount.metadata_mode,
+            mount.case_mode,
+            mount.exec_policy,
+            mount.watch_policy,
+            mount.description
+        ));
+    }
+    out
+}
+
+fn format_port_lines(rules: &[PortForwardSpec]) -> Vec<String> {
+    let mut out = Vec::new();
+    for rule in rules {
+        out.push(format!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            rule.id,
+            rule.listen_address,
+            rule.listen_port,
+            rule.guest_port,
+            rule.protocol,
+            rule.description
+        ));
+    }
+    out
 }
 
 fn parse_u32(s: &str) -> Option<u32> {
@@ -167,5 +340,39 @@ mod tests {
         assert!(create.starts_with("OK"));
         let status = dispatch(&mut runtime, &mut store, "STATUS ubuntu-dev");
         assert!(status.contains("name\tubuntu-dev"));
+    }
+
+    #[test]
+    fn mount_commands_roundtrip() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let add = dispatch(
+            &mut runtime,
+            &mut store,
+            "MOUNT_ADD ubuntu-dev\tworkspace\t/Users/strati/work\t/mnt/work\treadwrite\trelaxed\thost-native\tinherit\tbest-effort\tWorkspace",
+        );
+        assert!(add.contains("workspace\t/Users/strati/work"));
+        let show = dispatch(&mut runtime, &mut store, "MOUNT_SHOW ubuntu-dev\tworkspace");
+        assert!(show.contains("/mnt/work"));
+        let remove = dispatch(&mut runtime, &mut store, "MOUNT_REMOVE ubuntu-dev\tworkspace");
+        assert!(remove.starts_with("OK\t0"));
+    }
+
+    #[test]
+    fn port_commands_roundtrip() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let add = dispatch(
+            &mut runtime,
+            &mut store,
+            "PORT_ADD ubuntu-dev\tweb\t127.0.0.1\t3000\t3000\ttcp\tWeb",
+        );
+        assert!(add.contains("web\t127.0.0.1\t3000\t3000\ttcp"));
+        let list = dispatch(&mut runtime, &mut store, "PORT_LIST ubuntu-dev");
+        assert!(list.contains("web\t127.0.0.1"));
+        let remove = dispatch(&mut runtime, &mut store, "PORT_REMOVE ubuntu-dev\tweb");
+        assert!(remove.starts_with("OK\t0"));
     }
 }

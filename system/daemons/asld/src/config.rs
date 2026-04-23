@@ -4,13 +4,17 @@ use alloc::vec::Vec;
 use libconf::{ConfClient, ConfError, ConfItem, ConfValue, RegistryScope};
 
 use crate::errors::AsldError;
-use crate::model::{AgentPolicy, DistroConfig, DistroMetadata, LifecyclePolicy, NetworkPolicy, Resources, StorageSpec};
+use crate::model::{
+    AgentPolicy, DistroConfig, DistroMetadata, LifecyclePolicy, MountSpec, NetworkPolicy,
+    PortForwardSpec, Resources, StorageSpec,
+};
 use crate::{mounts, network};
 
 const DISTROS_ROOT: &str = "platform/asl/distros";
 
 pub trait ConfigStore {
     fn mkdir(&mut self, path: &str) -> Result<(), AsldError>;
+    fn del(&mut self, path: &str) -> Result<(), AsldError>;
     fn set_string(&mut self, path: &str, value: &str) -> Result<(), AsldError>;
     fn set_int(&mut self, path: &str, value: i64) -> Result<(), AsldError>;
     fn set_bool(&mut self, path: &str, value: bool) -> Result<(), AsldError>;
@@ -35,6 +39,11 @@ impl ConfdStore {
 impl ConfigStore for ConfdStore {
     fn mkdir(&mut self, path: &str) -> Result<(), AsldError> {
         self.client.mkdir(RegistryScope::System, path)?;
+        Ok(())
+    }
+
+    fn del(&mut self, path: &str) -> Result<(), AsldError> {
+        self.client.del(RegistryScope::System, path)?;
         Ok(())
     }
 
@@ -167,6 +176,8 @@ pub fn load_distro<S: ConfigStore>(store: &mut S, name: &str) -> Result<DistroCo
         distro_version: store.get_string(&alloc::format!("{root}/metadata/distro_version"))?.unwrap_or_default(),
         notes: store.get_string(&alloc::format!("{root}/metadata/notes"))?.unwrap_or_default(),
     };
+    let mounts = load_mounts(store, &root)?;
+    let port_forwards = load_port_forwards(store, &root)?;
 
     Ok(DistroConfig {
         schema_version: 1,
@@ -178,12 +189,67 @@ pub fn load_distro<S: ConfigStore>(store: &mut S, name: &str) -> Result<DistroCo
         resources,
         storage,
         network,
-        mounts: Vec::new(),
-        port_forwards: Vec::new(),
+        mounts,
+        port_forwards,
         agent,
         lifecycle,
         metadata,
     })
+}
+
+pub fn add_mount<S: ConfigStore>(store: &mut S, distro_name: &str, mount: &MountSpec) -> Result<(), AsldError> {
+    mounts::validate_mount(mount)?;
+    let root = distro_root(distro_name);
+    required_string(store, &alloc::format!("{root}/id"), "id")?;
+    let mount_root = alloc::format!("{root}/mounts/{}", mount.id);
+    store.mkdir(&alloc::format!("{root}/mounts"))?;
+    store.mkdir(&mount_root)?;
+    store.set_string(&alloc::format!("{mount_root}/host_path"), &mount.host_path)?;
+    store.set_string(&alloc::format!("{mount_root}/guest_path"), &mount.guest_path)?;
+    store.set_string(&alloc::format!("{mount_root}/mode"), &mount.mode)?;
+    store.set_string(&alloc::format!("{mount_root}/metadata_mode"), &mount.metadata_mode)?;
+    store.set_string(&alloc::format!("{mount_root}/case_mode"), &mount.case_mode)?;
+    store.set_string(&alloc::format!("{mount_root}/exec_policy"), &mount.exec_policy)?;
+    store.set_string(&alloc::format!("{mount_root}/watch_policy"), &mount.watch_policy)?;
+    store.set_string(&alloc::format!("{mount_root}/description"), &mount.description)?;
+    Ok(())
+}
+
+pub fn remove_mount<S: ConfigStore>(store: &mut S, distro_name: &str, mount_id: &str) -> Result<(), AsldError> {
+    let root = distro_root(distro_name);
+    required_string(store, &alloc::format!("{root}/id"), "id")?;
+    let mount_root = alloc::format!("{root}/mounts/{mount_id}");
+    delete_mount_subtree(store, &mount_root)
+}
+
+pub fn add_port_forward<S: ConfigStore>(
+    store: &mut S,
+    distro_name: &str,
+    rule: &PortForwardSpec,
+) -> Result<(), AsldError> {
+    network::validate_port_forward(rule)?;
+    let root = distro_root(distro_name);
+    required_string(store, &alloc::format!("{root}/id"), "id")?;
+    let rule_root = alloc::format!("{root}/port_forwards/{}", rule.id);
+    store.mkdir(&alloc::format!("{root}/port_forwards"))?;
+    store.mkdir(&rule_root)?;
+    store.set_string(&alloc::format!("{rule_root}/listen_address"), &rule.listen_address)?;
+    store.set_int(&alloc::format!("{rule_root}/listen_port"), rule.listen_port as i64)?;
+    store.set_int(&alloc::format!("{rule_root}/guest_port"), rule.guest_port as i64)?;
+    store.set_string(&alloc::format!("{rule_root}/protocol"), &rule.protocol)?;
+    store.set_string(&alloc::format!("{rule_root}/description"), &rule.description)?;
+    Ok(())
+}
+
+pub fn remove_port_forward<S: ConfigStore>(
+    store: &mut S,
+    distro_name: &str,
+    rule_id: &str,
+) -> Result<(), AsldError> {
+    let root = distro_root(distro_name);
+    required_string(store, &alloc::format!("{root}/id"), "id")?;
+    let rule_root = alloc::format!("{root}/port_forwards/{rule_id}");
+    delete_port_forward_subtree(store, &rule_root)
 }
 
 fn write_scalar_fields<S: ConfigStore>(store: &mut S, root: &str, config: &DistroConfig) -> Result<(), AsldError> {
@@ -224,6 +290,103 @@ fn write_scalar_fields<S: ConfigStore>(store: &mut S, root: &str, config: &Distr
 
 fn required_string<S: ConfigStore>(store: &mut S, path: &str, field: &'static str) -> Result<String, AsldError> {
     store.get_string(path)?.ok_or(AsldError::MissingField(field))
+}
+
+fn delete_mount_subtree<S: ConfigStore>(store: &mut S, mount_root: &str) -> Result<(), AsldError> {
+    let keys = [
+        "host_path",
+        "guest_path",
+        "mode",
+        "metadata_mode",
+        "case_mode",
+        "exec_policy",
+        "watch_policy",
+        "description",
+    ];
+    for key in keys {
+        store.del(&alloc::format!("{mount_root}/{key}"))?;
+    }
+    store.del(mount_root)
+}
+
+fn delete_port_forward_subtree<S: ConfigStore>(store: &mut S, rule_root: &str) -> Result<(), AsldError> {
+    let keys = [
+        "listen_address",
+        "listen_port",
+        "guest_port",
+        "protocol",
+        "description",
+    ];
+    for key in keys {
+        store.del(&alloc::format!("{rule_root}/{key}"))?;
+    }
+    store.del(rule_root)
+}
+
+fn load_mounts<S: ConfigStore>(store: &mut S, root: &str) -> Result<Vec<MountSpec>, AsldError> {
+    let mounts_root = alloc::format!("{root}/mounts");
+    let mut mounts = Vec::new();
+    for id in store.list_children(&mounts_root)? {
+        let item_root = alloc::format!("{mounts_root}/{id}");
+        let mount = MountSpec {
+            id,
+            host_path: required_string(store, &alloc::format!("{item_root}/host_path"), "mount.host_path")?,
+            guest_path: required_string(store, &alloc::format!("{item_root}/guest_path"), "mount.guest_path")?,
+            mode: required_string(store, &alloc::format!("{item_root}/mode"), "mount.mode")?,
+            metadata_mode: store
+                .get_string(&alloc::format!("{item_root}/metadata_mode"))?
+                .unwrap_or_else(|| String::from("relaxed")),
+            case_mode: store
+                .get_string(&alloc::format!("{item_root}/case_mode"))?
+                .unwrap_or_else(|| String::from("host-native")),
+            exec_policy: store
+                .get_string(&alloc::format!("{item_root}/exec_policy"))?
+                .unwrap_or_else(|| String::from("inherit")),
+            watch_policy: store
+                .get_string(&alloc::format!("{item_root}/watch_policy"))?
+                .unwrap_or_else(|| String::from("best-effort")),
+            description: store
+                .get_string(&alloc::format!("{item_root}/description"))?
+                .unwrap_or_default(),
+        };
+        mounts::validate_mount(&mount)?;
+        mounts.push(mount);
+    }
+    Ok(mounts)
+}
+
+fn load_port_forwards<S: ConfigStore>(store: &mut S, root: &str) -> Result<Vec<PortForwardSpec>, AsldError> {
+    let forwards_root = alloc::format!("{root}/port_forwards");
+    let mut forwards = Vec::new();
+    for id in store.list_children(&forwards_root)? {
+        let item_root = alloc::format!("{forwards_root}/{id}");
+        let listen_port = required_int(store, &alloc::format!("{item_root}/listen_port"), "port_forward.listen_port")?;
+        let guest_port = required_int(store, &alloc::format!("{item_root}/guest_port"), "port_forward.guest_port")?;
+        if !(1..=u16::MAX as i64).contains(&listen_port) || !(1..=u16::MAX as i64).contains(&guest_port) {
+            return Err(AsldError::InvalidArgument("port value"));
+        }
+        let rule = PortForwardSpec {
+            id,
+            listen_address: store
+                .get_string(&alloc::format!("{item_root}/listen_address"))?
+                .unwrap_or_else(|| String::from("127.0.0.1")),
+            listen_port: listen_port as u16,
+            guest_port: guest_port as u16,
+            protocol: store
+                .get_string(&alloc::format!("{item_root}/protocol"))?
+                .unwrap_or_else(|| String::from("tcp")),
+            description: store
+                .get_string(&alloc::format!("{item_root}/description"))?
+                .unwrap_or_default(),
+        };
+        network::validate_port_forward(&rule)?;
+        forwards.push(rule);
+    }
+    Ok(forwards)
+}
+
+fn required_int<S: ConfigStore>(store: &mut S, path: &str, field: &'static str) -> Result<i64, AsldError> {
+    store.get_int(path)?.ok_or(AsldError::MissingField(field))
 }
 
 fn get_string_item(result: Result<ConfItem, ConfError>) -> Result<Option<String>, AsldError> {
@@ -288,6 +451,10 @@ impl ConfigStore for FakeStore {
         Ok(())
     }
 
+    fn del(&mut self, path: &str) -> Result<(), AsldError> {
+        self.entries.remove(path).map(|_| ()).ok_or(AsldError::NotFound)
+    }
+
     fn set_string(&mut self, path: &str, value: &str) -> Result<(), AsldError> {
         self.entries.insert(String::from(path), FakeValue::String(String::from(value)));
         Ok(())
@@ -345,9 +512,15 @@ impl ConfigStore for FakeStore {
 
 #[cfg(test)]
 mod tests {
-    use crate::distro::build_distro_config;
+    use alloc::string::String;
 
-    use super::{distro_root, ensure_distro_tree, list_distros, load_distro, FakeStore};
+    use crate::distro::build_distro_config;
+    use crate::model::{MountSpec, PortForwardSpec};
+
+    use super::{
+        add_mount, add_port_forward, distro_root, ensure_distro_tree, list_distros, load_distro,
+        remove_mount, remove_port_forward, FakeStore,
+    };
 
     #[test]
     fn materializes_and_loads_distro_tree() {
@@ -362,6 +535,37 @@ mod tests {
     }
 
     #[test]
+    fn roundtrips_mounts_and_port_forwards() {
+        let mut cfg = build_distro_config("ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        cfg.mounts.push(MountSpec {
+            id: String::from("workspace"),
+            host_path: String::from("/Users/strati/work"),
+            guest_path: String::from("/mnt/work"),
+            mode: String::from("readwrite"),
+            metadata_mode: String::from("relaxed"),
+            case_mode: String::from("host-native"),
+            exec_policy: String::from("inherit"),
+            watch_policy: String::from("best-effort"),
+            description: String::from("Developer workspace"),
+        });
+        cfg.port_forwards.push(PortForwardSpec {
+            id: String::from("web"),
+            listen_address: String::from("127.0.0.1"),
+            listen_port: 3000,
+            guest_port: 3000,
+            protocol: String::from("tcp"),
+            description: String::from("Local web preview"),
+        });
+        let mut store = FakeStore::default();
+
+        ensure_distro_tree(&mut store, &cfg).unwrap();
+        let loaded = load_distro(&mut store, "ubuntu-dev").unwrap();
+
+        assert_eq!(loaded.mounts, cfg.mounts);
+        assert_eq!(loaded.port_forwards, cfg.port_forwards);
+    }
+
+    #[test]
     fn lists_known_distros() {
         let cfg = build_distro_config("ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
         let mut store = FakeStore::default();
@@ -369,5 +573,53 @@ mod tests {
         store.mkdir(&distro_root("ubuntu-dev")).unwrap();
         ensure_distro_tree(&mut store, &cfg).unwrap();
         assert_eq!(list_distros(&mut store).unwrap(), alloc::vec![alloc::string::String::from("ubuntu-dev")]);
+    }
+
+    #[test]
+    fn adds_and_removes_mount_without_rewriting_distro() {
+        let cfg = build_distro_config("ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let mut store = FakeStore::default();
+        ensure_distro_tree(&mut store, &cfg).unwrap();
+        let mount = MountSpec {
+            id: String::from("workspace"),
+            host_path: String::from("/Users/strati/work"),
+            guest_path: String::from("/mnt/work"),
+            mode: String::from("readwrite"),
+            metadata_mode: String::from("relaxed"),
+            case_mode: String::from("host-native"),
+            exec_policy: String::from("inherit"),
+            watch_policy: String::from("best-effort"),
+            description: String::from("Workspace"),
+        };
+
+        add_mount(&mut store, "ubuntu-dev", &mount).unwrap();
+        assert_eq!(load_distro(&mut store, "ubuntu-dev").unwrap().mounts, alloc::vec![mount.clone()]);
+
+        remove_mount(&mut store, "ubuntu-dev", "workspace").unwrap();
+        assert!(load_distro(&mut store, "ubuntu-dev").unwrap().mounts.is_empty());
+    }
+
+    #[test]
+    fn adds_and_removes_port_forward_without_rewriting_distro() {
+        let cfg = build_distro_config("ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let mut store = FakeStore::default();
+        ensure_distro_tree(&mut store, &cfg).unwrap();
+        let rule = PortForwardSpec {
+            id: String::from("web"),
+            listen_address: String::from("127.0.0.1"),
+            listen_port: 3000,
+            guest_port: 3000,
+            protocol: String::from("tcp"),
+            description: String::from("Web"),
+        };
+
+        add_port_forward(&mut store, "ubuntu-dev", &rule).unwrap();
+        assert_eq!(
+            load_distro(&mut store, "ubuntu-dev").unwrap().port_forwards,
+            alloc::vec![rule.clone()]
+        );
+
+        remove_port_forward(&mut store, "ubuntu-dev", "web").unwrap();
+        assert!(load_distro(&mut store, "ubuntu-dev").unwrap().port_forwards.is_empty());
     }
 }
