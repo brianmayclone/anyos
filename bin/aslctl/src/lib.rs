@@ -373,11 +373,48 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             | ClientCommand::Create { .. }
             | ClientCommand::Start(_)
             | ClientCommand::Stop(_)
-            | ClientCommand::AgentStatus(_)
-            | ClientCommand::Shell { .. }
-            | ClientCommand::Exec { .. } => {
+            | ClientCommand::AgentStatus(_) => {
                 for line in lines {
                     println!("{}", line);
+                }
+            }
+            ClientCommand::Shell { .. } => {
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    let head = parts.next().unwrap_or("");
+                    if head == "reused" {
+                        println!("reused\t{}", parts.next().unwrap_or("false"));
+                        continue;
+                    }
+                    println!(
+                        "session\t{}\tname={}\tmode={}\tstdout={}\tstdin={}\tpid={}",
+                        head,
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                    );
+                }
+            }
+            ClientCommand::Exec { .. } => {
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    let head = parts.next().unwrap_or("");
+                    if head == "pid" {
+                        println!("pid\t{}", parts.next().unwrap_or("0"));
+                        continue;
+                    }
+                    println!(
+                        "exec\t{}\tmode={}\tcwd={}\tenv={}\tcmd={}\tstdout={}\tstdin={}",
+                        head,
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                    );
                 }
             }
         },

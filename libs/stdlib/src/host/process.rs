@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: MIT
 //! Host-mode process functions — delegates to std.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static NEXT_FAKE_PID: AtomicU32 = AtomicU32::new(10_000);
+
 pub fn exit(code: u32) -> ! {
     std::process::exit(code as i32);
 }
@@ -42,7 +46,11 @@ pub fn spawn(_path: &str, _args: &str) -> u32 {
 }
 
 pub fn spawn_piped(_path: &str, _args: &str, _pipe_fd: u32) -> u32 {
-    u32::MAX
+    NEXT_FAKE_PID.fetch_add(1, Ordering::Relaxed)
+}
+
+pub fn spawn_piped_full(_path: &str, _args: &str, _stdout_pipe: u32, _stdin_pipe: u32) -> u32 {
+    NEXT_FAKE_PID.fetch_add(1, Ordering::Relaxed)
 }
 
 pub fn launch_app(_path: &str, _args: &str) -> u32 {

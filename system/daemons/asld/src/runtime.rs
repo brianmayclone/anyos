@@ -275,7 +275,7 @@ impl RuntimeService {
             stdin_pipe_name: String::new(),
             attached_pid: 0,
         };
-        let io = provision_exec_io(&exec.exec_id, exec.mode)?;
+        let io = provision_exec_io(&exec.exec_id, exec.mode, &exec.cwd, env, argv)?;
         exec.stdout_pipe_name = io.stdout_pipe_name;
         exec.stdin_pipe_name = io.stdin_pipe_name;
         exec.attached_pid = io.attached_pid;
@@ -408,6 +408,7 @@ mod tests {
         assert_eq!(exec.cwd, "/workspace");
         assert_eq!(exec.command_line, "cargo test");
         assert!(exec.stdout_pipe_name.contains("exec-"));
+        assert_eq!(exec.attached_pid, 0);
     }
 
     #[test]
