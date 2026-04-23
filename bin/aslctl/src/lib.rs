@@ -15,13 +15,22 @@ pub enum ClientCommand<'a> {
         owner: &'a str,
     },
     Start(&'a str),
+    Restart(&'a str),
     Stop(&'a str),
     AgentStatus(&'a str),
     VmStatus(&'a str),
     VmEvents(&'a str),
+    VmEventsTail {
+        distro: &'a str,
+        limit: &'a str,
+    },
     VmEventsClear(&'a str),
     Diagnose(&'a str),
     ShellList(&'a str),
+    ShellShow {
+        distro: &'a str,
+        session_id: &'a str,
+    },
     ShellClose {
         distro: &'a str,
         session_id: &'a str,
@@ -32,6 +41,11 @@ pub enum ClientCommand<'a> {
         session_name: &'a str,
     },
     ExecList(&'a str),
+    ExecShow {
+        distro: &'a str,
+        exec_id: &'a str,
+    },
+    ExecClear(&'a str),
     Exec {
         distro: &'a str,
         fallback_console: bool,
@@ -106,12 +120,20 @@ pub fn parse_cli_command<'a>(raw: &'a str) -> Option<ClientCommand<'a>> {
     let first = *tokens.first()?;
     match first {
         "shell-list" => Some(ClientCommand::ShellList(*tokens.get(1)?)),
+        "shell-show" => Some(ClientCommand::ShellShow {
+            distro: *tokens.get(1)?,
+            session_id: *tokens.get(2)?,
+        }),
         "shell-close" => Some(ClientCommand::ShellClose {
             distro: *tokens.get(1)?,
             session_id: *tokens.get(2)?,
         }),
         "shell" => parse_shell_tokens(&tokens),
         "exec-list" => Some(ClientCommand::ExecList(*tokens.get(1)?)),
+        "exec-show" => Some(ClientCommand::ExecShow {
+            distro: *tokens.get(1)?,
+            exec_id: *tokens.get(2)?,
+        }),
         "exec" => parse_exec_tokens(&tokens),
         _ => {
             let args = anyos_std::args::parse(raw, b"");
@@ -131,12 +153,18 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
             owner: args.pos(3)?,
         }),
         "start" => Some(ClientCommand::Start(args.pos(1)?)),
+        "restart" => Some(ClientCommand::Restart(args.pos(1)?)),
         "stop" => Some(ClientCommand::Stop(args.pos(1)?)),
         "agent-status" => Some(ClientCommand::AgentStatus(args.pos(1)?)),
         "vm-status" => Some(ClientCommand::VmStatus(args.pos(1)?)),
         "vm-events" => Some(ClientCommand::VmEvents(args.pos(1)?)),
+        "vm-events-tail" => Some(ClientCommand::VmEventsTail {
+            distro: args.pos(1)?,
+            limit: args.pos(2).unwrap_or("10"),
+        }),
         "vm-events-clear" => Some(ClientCommand::VmEventsClear(args.pos(1)?)),
         "diagnose" => Some(ClientCommand::Diagnose(args.pos(1)?)),
+        "exec-clear" => Some(ClientCommand::ExecClear(args.pos(1)?)),
         "mount" => parse_mount_command(args),
         "port" => parse_port_command(args),
         _ => None,
@@ -392,6 +420,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             ClientCommand::Status(_)
             | ClientCommand::Create { .. }
             | ClientCommand::Start(_)
+            | ClientCommand::Restart(_)
             | ClientCommand::Stop(_)
             | ClientCommand::AgentStatus(_)
             | ClientCommand::VmStatus(_) => {
@@ -399,7 +428,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                     println!("{}", line);
                 }
             }
-            ClientCommand::VmEvents(_) => {
+            ClientCommand::VmEvents(_) | ClientCommand::VmEventsTail { .. } => {
                 println!("vm-events: {}", count);
                 for line in lines {
                     let mut parts = line.split('\t');
@@ -433,6 +462,11 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                         parts.next().unwrap_or("-"),
                         parts.next().unwrap_or("-"),
                     );
+                }
+            }
+            ClientCommand::ShellShow { .. } => {
+                for line in lines {
+                    println!("{}", line);
                 }
             }
             ClientCommand::Shell { .. } => {
@@ -474,6 +508,11 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                     );
                 }
             }
+            ClientCommand::ExecShow { .. } | ClientCommand::ExecClear(_) => {
+                for line in lines {
+                    println!("{}", line);
+                }
+            }
             ClientCommand::ExecList(_) => {
                 println!("execs: {}", count);
                 for line in lines {
@@ -503,16 +542,21 @@ fn print_usage() {
     println!("  aslctl status <name>");
     println!("  aslctl create <name> <image-ref> <owner>");
     println!("  aslctl start <name>");
+    println!("  aslctl restart <name>");
     println!("  aslctl stop <name>");
     println!("  aslctl agent-status <name>");
     println!("  aslctl vm-status <name>");
     println!("  aslctl vm-events <name>");
+    println!("  aslctl vm-events-tail <name> [limit]");
     println!("  aslctl vm-events-clear <name>");
     println!("  aslctl diagnose <name>");
     println!("  aslctl shell-list <name>");
+    println!("  aslctl shell-show <name> <session-id>");
     println!("  aslctl shell-close <name> <session-id>");
     println!("  aslctl shell <name> [--fallback-console] [--session <name>]");
     println!("  aslctl exec-list <name>");
+    println!("  aslctl exec-show <name> <exec-id>");
+    println!("  aslctl exec-clear <name>");
     println!("  aslctl exec <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE] -- <command> [args...]");
     println!("  aslctl mount list <name>");
     println!("  aslctl mount show <name> <mount-id>");
@@ -534,13 +578,16 @@ impl ClientCommand<'_> {
                 owner,
             } => format!("CREATE {} {} {}", name, image_ref, owner),
             Self::Start(name) => format!("START {}", name),
+            Self::Restart(name) => format!("RESTART {}", name),
             Self::Stop(name) => format!("STOP {}", name),
             Self::AgentStatus(name) => format!("AGENT_STATUS {}", name),
             Self::VmStatus(name) => format!("VM_STATUS {}", name),
             Self::VmEvents(name) => format!("VM_EVENTS {}", name),
+            Self::VmEventsTail { distro, limit } => format!("VM_EVENTS_TAIL {}\t{}", distro, limit),
             Self::VmEventsClear(name) => format!("VM_EVENTS_CLEAR {}", name),
             Self::Diagnose(name) => format!("DIAGNOSE {}", name),
             Self::ShellList(name) => format!("SHELL_LIST {}", name),
+            Self::ShellShow { distro, session_id } => format!("SHELL_SHOW {}\t{}", distro, session_id),
             Self::ShellClose { distro, session_id } => format!("SHELL_CLOSE {}\t{}", distro, session_id),
             Self::Shell {
                 distro,
@@ -567,6 +614,8 @@ impl ClientCommand<'_> {
                 join_control_field(argv)
             ),
             Self::ExecList(distro) => format!("EXEC_LIST {}", distro),
+            Self::ExecShow { distro, exec_id } => format!("EXEC_SHOW {}\t{}", distro, exec_id),
+            Self::ExecClear(distro) => format!("EXEC_CLEAR {}", distro),
             Self::MountList(distro) => format!("MOUNT_LIST {}", distro),
             Self::MountShow { distro, mount_id } => format!("MOUNT_SHOW {}\t{}", distro, mount_id),
             Self::MountAdd {
@@ -789,9 +838,34 @@ mod tests {
             Some(ClientCommand::ShellList(name)) => assert_eq!(name, "ubuntu-dev"),
             _ => panic!("expected shell-list command"),
         }
+        match parse_cli_command("shell-show ubuntu-dev sh-00000001") {
+            Some(ClientCommand::ShellShow { distro, session_id }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(session_id, "sh-00000001");
+            }
+            _ => panic!("expected shell-show command"),
+        }
         match parse_cli_command("exec-list ubuntu-dev") {
             Some(ClientCommand::ExecList(name)) => assert_eq!(name, "ubuntu-dev"),
             _ => panic!("expected exec-list command"),
+        }
+        match parse_cli_command("exec-show ubuntu-dev exec-00000001") {
+            Some(ClientCommand::ExecShow { distro, exec_id }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(exec_id, "exec-00000001");
+            }
+            _ => panic!("expected exec-show command"),
+        }
+        match parse_cli_command("restart ubuntu-dev") {
+            Some(ClientCommand::Restart(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected restart command"),
+        }
+        match parse_cli_command("vm-events-tail ubuntu-dev 5") {
+            Some(ClientCommand::VmEventsTail { distro, limit }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(limit, "5");
+            }
+            _ => panic!("expected vm-events-tail command"),
         }
     }
 

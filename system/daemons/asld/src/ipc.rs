@@ -110,6 +110,10 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             Ok(status) => format!("OK\t1\nstate\t{}\nhealth\t{}\n\n", status.state.as_str(), status.health.as_str()),
             Err(err) => err_line(&err),
         },
+        "RESTART" | "restart" => match runtime.restart(store, rest) {
+            Ok(status) => format!("OK\t1\nstate\t{}\nhealth\t{}\n\n", status.state.as_str(), status.health.as_str()),
+            Err(err) => err_line(&err),
+        },
         "STOP" | "stop" => match runtime.stop(store, rest) {
             Ok(status) => format!("OK\t1\nstate\t{}\n\n", status.state.as_str()),
             Err(err) => err_line(&err),
@@ -128,6 +132,20 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
         "VM_EVENTS" | "vm_events" => {
             let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
             match runtime.vm_events(name) {
+                Ok(events) => ok_lines(format_vm_event_lines(&events)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "VM_EVENTS_TAIL" | "vm_events_tail" => {
+            let fields = split_tab_fields(rest);
+            if fields.is_empty() {
+                return err_line(&AsldError::InvalidArgument("vm_events_tail"));
+            }
+            let limit = fields
+                .get(1)
+                .and_then(|raw| raw.parse::<usize>().ok())
+                .unwrap_or(10);
+            match runtime.vm_events_tail(fields[0], limit) {
                 Ok(events) => ok_lines(format_vm_event_lines(&events)),
                 Err(err) => err_line(&err),
             }
@@ -169,6 +187,16 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
                 Err(err) => err_line(&err),
             }
         }
+        "SHELL_SHOW" | "shell_show" => {
+            let fields = split_tab_fields(rest);
+            if fields.len() < 2 {
+                return err_line(&AsldError::InvalidArgument("shell_show"));
+            }
+            match runtime.show_shell_session(fields[0], fields[1]) {
+                Ok(session) => ok_lines(format_shell_lines(&session)),
+                Err(err) => err_line(&err),
+            }
+        }
         "SHELL_CLOSE" | "shell_close" => {
             let fields = split_tab_fields(rest);
             if fields.len() < 2 {
@@ -197,6 +225,23 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
             match runtime.list_execs(name) {
                 Ok(execs) => ok_lines(format_exec_collection_lines(&execs)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "EXEC_SHOW" | "exec_show" => {
+            let fields = split_tab_fields(rest);
+            if fields.len() < 2 {
+                return err_line(&AsldError::InvalidArgument("exec_show"));
+            }
+            match runtime.show_exec(fields[0], fields[1]) {
+                Ok(exec) => ok_lines(format_exec_lines(&exec)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "EXEC_CLEAR" | "exec_clear" => {
+            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            match runtime.clear_execs(name) {
+                Ok(count) => ok_lines(alloc::vec![format!("cleared\t{}", count)]),
                 Err(err) => err_line(&err),
             }
         }
@@ -633,5 +678,42 @@ mod tests {
         assert!(diagnose.contains("vm_backend\t"));
         let cleared = dispatch(&mut runtime, &mut store, "VM_EVENTS_CLEAR ubuntu-dev");
         assert!(cleared.contains("cleared\t0"));
+    }
+
+    #[test]
+    fn restart_show_and_clear_roundtrip() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(&mut runtime, &mut store, "START ubuntu-dev");
+        let restart = dispatch(&mut runtime, &mut store, "RESTART ubuntu-dev");
+        assert!(restart.contains("state\tready"));
+
+        let shell = dispatch(&mut runtime, &mut store, "SHELL_OPEN ubuntu-dev\tops\t0");
+        let shell_id = shell
+            .lines()
+            .nth(1)
+            .and_then(|line| line.split('\t').next())
+            .unwrap_or("");
+        let shell_show = dispatch(&mut runtime, &mut store, &format!("SHELL_SHOW ubuntu-dev\t{}", shell_id));
+        assert!(shell_show.contains("\tops\t"));
+
+        let exec = dispatch(
+            &mut runtime,
+            &mut store,
+            "EXEC ubuntu-dev\t0\t/workspace\tRUST_BACKTRACE=1\tcargo\x1ftest",
+        );
+        let exec_id = exec
+            .lines()
+            .nth(1)
+            .and_then(|line| line.split('\t').next())
+            .unwrap_or("");
+        let exec_show = dispatch(&mut runtime, &mut store, &format!("EXEC_SHOW ubuntu-dev\t{}", exec_id));
+        assert!(exec_show.contains("\tcargo test\t"));
+
+        let exec_clear = dispatch(&mut runtime, &mut store, "EXEC_CLEAR ubuntu-dev");
+        assert!(exec_clear.contains("cleared\t1"));
+        let events_tail = dispatch(&mut runtime, &mut store, "VM_EVENTS_TAIL ubuntu-dev\t5");
+        assert!(events_tail.starts_with("OK\t0"));
     }
 }

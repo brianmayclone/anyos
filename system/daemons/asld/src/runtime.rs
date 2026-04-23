@@ -166,6 +166,11 @@ impl RuntimeService {
         }
     }
 
+    pub fn restart<S: ConfigStore>(&mut self, store: &mut S, name: &str) -> Result<DistroStatus, AsldError> {
+        let _ = self.stop(store, name)?;
+        self.start(store, name)
+    }
+
     pub fn stop<S: ConfigStore>(&mut self, store: &mut S, name: &str) -> Result<DistroStatus, AsldError> {
         let cfg = load_distro(store, name)?;
         if let Some(index) = self.backends.iter().position(|backend| backend.name == name) {
@@ -266,6 +271,14 @@ impl RuntimeService {
         Ok(backend.exit_history.clone())
     }
 
+    pub fn vm_events_tail(&self, name: &str, limit: usize) -> Result<Vec<VmExitEvent>, AsldError> {
+        let events = self.vm_events(name)?;
+        if limit == 0 || events.len() <= limit {
+            return Ok(events);
+        }
+        Ok(events[events.len() - limit..].to_vec())
+    }
+
     pub fn clear_vm_events(&mut self, name: &str) -> Result<usize, AsldError> {
         let backend = self
             .backend_mut(name)
@@ -354,6 +367,13 @@ impl RuntimeService {
         Ok(backend.shell_sessions.clone())
     }
 
+    pub fn show_shell_session(&self, name: &str, session_id: &str) -> Result<ShellSession, AsldError> {
+        self.list_shell_sessions(name)?
+            .into_iter()
+            .find(|session| session.session_id == session_id)
+            .ok_or(AsldError::NotFound)
+    }
+
     pub fn close_shell_session(&mut self, name: &str, session_id: &str) -> Result<Vec<ShellSession>, AsldError> {
         let backend = self
             .backend_mut(name)
@@ -413,6 +433,22 @@ impl RuntimeService {
             .find(|backend| backend.name == name)
             .ok_or(AsldError::InvalidState("distro runtime missing"))?;
         Ok(backend.execs.clone())
+    }
+
+    pub fn show_exec(&self, name: &str, exec_id: &str) -> Result<ExecInvocation, AsldError> {
+        self.list_execs(name)?
+            .into_iter()
+            .find(|exec| exec.exec_id == exec_id)
+            .ok_or(AsldError::NotFound)
+    }
+
+    pub fn clear_execs(&mut self, name: &str) -> Result<usize, AsldError> {
+        let backend = self
+            .backend_mut(name)
+            .ok_or(AsldError::InvalidState("distro runtime missing"))?;
+        let cleared = backend.execs.len();
+        backend.execs.clear();
+        Ok(cleared)
     }
 
     pub fn diagnose(&self, name: &str) -> Result<Vec<String>, AsldError> {
@@ -721,5 +757,71 @@ mod tests {
         assert_eq!(runtime.list_execs("ubuntu-dev").unwrap().len(), 1);
         assert_eq!(runtime.clear_vm_events("ubuntu-dev").unwrap(), 0);
         assert!(runtime.diagnose("ubuntu-dev").unwrap().iter().any(|line| line.starts_with("vm_backend\t")));
+    }
+
+    #[test]
+    fn restart_rebuilds_running_backend() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+        let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
+        let restarted = runtime.restart(&mut store, "ubuntu-dev").unwrap();
+        assert_eq!(restarted.state.as_str(), "ready");
+    }
+
+    #[test]
+    fn shell_and_exec_show_roundtrip() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+        let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
+        let shell = runtime
+            .open_shell_session(&mut store, "ubuntu-dev", Some("ops"), false)
+            .unwrap();
+        let exec = runtime
+            .exec_command(
+                &mut store,
+                "ubuntu-dev",
+                &alloc::vec![alloc::string::String::from("uname")],
+                None,
+                &[],
+                false,
+            )
+            .unwrap();
+        assert_eq!(
+            runtime.show_shell_session("ubuntu-dev", &shell.session_id).unwrap().session_name,
+            "ops"
+        );
+        assert_eq!(
+            runtime.show_exec("ubuntu-dev", &exec.exec_id).unwrap().command_line,
+            "uname"
+        );
+    }
+
+    #[test]
+    fn vm_event_tail_and_exec_clear_roundtrip() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+        let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
+        let _ = runtime
+            .exec_command(
+                &mut store,
+                "ubuntu-dev",
+                &alloc::vec![alloc::string::String::from("uname")],
+                None,
+                &[],
+                false,
+            )
+            .unwrap();
+        assert!(runtime.vm_events_tail("ubuntu-dev", 5).unwrap().is_empty());
+        assert_eq!(runtime.clear_execs("ubuntu-dev").unwrap(), 1);
+        assert!(runtime.list_execs("ubuntu-dev").unwrap().is_empty());
     }
 }
