@@ -17,15 +17,7 @@ const MAX_THREADS: usize = 256;
 const WATCH_POLL_MS: u32 = 100;
 
 const SERVICE_NAMES: &[&str] = &[
-    "crond",
-    "dnsd",
-    "ftpd",
-    "httpd",
-    "logd",
-    "networkd",
-    "sshd",
-    "vdagent",
-    "vncd",
+    "crond", "dnsd", "ftpd", "httpd", "logd", "networkd", "sshd", "vdagent", "vncd",
 ];
 
 const SVC_DIRS: &[&str] = &[
@@ -126,6 +118,7 @@ const SVC_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
 
 const SVC_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("svc", &SVC_MANIFEST);
 
+#[derive(Clone)]
 struct ServiceConfig {
     exec: String,
     args: String,
@@ -136,10 +129,23 @@ struct ServiceConfig {
     startup_timeout_ms: u32,
 }
 
-fn register_manifest() {
+struct ServicePlan {
+    name: String,
+    config: ServiceConfig,
+}
+
+fn register_manifest() -> bool {
     anyos_std::println!("svc: register_manifest begin");
-    let _ = SVC_SCHEMA.register();
-    anyos_std::println!("svc: register_manifest end");
+    match SVC_SCHEMA.register() {
+        Ok(_) => {
+            anyos_std::println!("svc: register_manifest end");
+            true
+        }
+        Err(err) => {
+            anyos_std::println!("svc: register_manifest failed: {:?}", err);
+            false
+        }
+    }
 }
 
 fn service_path(name: &str, field: &str) -> String {
@@ -147,7 +153,11 @@ fn service_path(name: &str, field: &str) -> String {
 }
 
 fn read_service_string(client: &mut ConfClient, name: &str, field: &str) -> Option<String> {
-    match client.get(RegistryScope::System, &service_path(name, field)).ok()?.value {
+    match client
+        .get(RegistryScope::System, &service_path(name, field))
+        .ok()?
+        .value
+    {
         Some(libconf::ConfValue::String(value)) => Some(value),
         Some(libconf::ConfValue::ExternalRef(value)) => Some(value),
         _ => None,
@@ -155,14 +165,22 @@ fn read_service_string(client: &mut ConfClient, name: &str, field: &str) -> Opti
 }
 
 fn read_service_u32(client: &mut ConfClient, name: &str, field: &str) -> Option<u32> {
-    match client.get(RegistryScope::System, &service_path(name, field)).ok()?.value {
+    match client
+        .get(RegistryScope::System, &service_path(name, field))
+        .ok()?
+        .value
+    {
         Some(libconf::ConfValue::Int(value)) if value >= 0 => Some(value as u32),
         _ => None,
     }
 }
 
 fn read_service_bool(client: &mut ConfClient, name: &str, field: &str) -> Option<bool> {
-    match client.get(RegistryScope::System, &service_path(name, field)).ok()?.value {
+    match client
+        .get(RegistryScope::System, &service_path(name, field))
+        .ok()?
+        .value
+    {
         Some(libconf::ConfValue::Bool(value)) => Some(value),
         Some(libconf::ConfValue::Int(value)) => Some(value != 0),
         _ => None,
@@ -171,7 +189,9 @@ fn read_service_bool(client: &mut ConfClient, name: &str, field: &str) -> Option
 
 fn read_config(name: &str) -> Option<ServiceConfig> {
     anyos_std::println!("svc: read_config('{}') begin", name);
-    register_manifest();
+    if !register_manifest() {
+        return None;
+    }
     anyos_std::println!("svc: read_config('{}') connect", name);
     let mut client = ConfClient::connect("svc").ok()?;
     anyos_std::println!("svc: read_config('{}') connected", name);
@@ -251,7 +271,9 @@ fn list_service_names(client: &mut ConfClient) -> Vec<String> {
 
 fn for_each_service(mut f: impl FnMut(&str)) {
     anyos_std::println!("svc: for_each_service begin");
-    register_manifest();
+    if !register_manifest() {
+        return;
+    }
     anyos_std::println!("svc: for_each_service connect");
     let Ok(mut client) = ConfClient::connect("svc") else {
         anyos_std::println!("svc: for_each_service connect FAILED");
@@ -266,34 +288,42 @@ fn for_each_service(mut f: impl FnMut(&str)) {
     anyos_std::println!("svc: for_each_service end");
 }
 
-fn collect_enabled_service_names() -> Vec<String> {
-    anyos_std::println!("svc: collect_enabled_service_names begin");
-    let mut names = Vec::new();
-    register_manifest();
+fn collect_service_plan() -> Vec<ServicePlan> {
+    anyos_std::println!("svc: collect_service_plan begin");
+    let mut plan = Vec::new();
+    if !register_manifest() {
+        return plan;
+    }
     let mut client = match ConfClient::connect("svc") {
         Ok(client) => client,
-        Err(_) => return names,
+        Err(_) => return plan,
     };
     let discovered = list_service_names(&mut client);
     for name in &discovered {
-        if read_config_with_client(&mut client, name)
-            .map(|config| config.enabled)
-            .unwrap_or(false)
-        {
-            names.push(name.clone());
+        if let Some(config) = read_config_with_client(&mut client, name) {
+            plan.push(ServicePlan {
+                name: name.clone(),
+                config,
+            });
         }
     }
-    anyos_std::println!("svc: collect_enabled_service_names -> {}", names.len());
-    names
+    anyos_std::println!("svc: collect_service_plan -> {}", plan.len());
+    plan
 }
 
-fn topo_sort_services(names: &[String]) -> Option<Vec<String>> {
+fn find_plan_config<'a>(plan: &'a [ServicePlan], name: &str) -> Option<&'a ServiceConfig> {
+    plan.iter()
+        .find(|service| service.name == name)
+        .map(|service| &service.config)
+}
+
+fn topo_sort_services_with_plan(names: &[String], plan: &[ServicePlan]) -> Option<Vec<String>> {
     let mut order = Vec::new();
     let mut visiting = Vec::new();
     let mut visited = Vec::new();
 
     for name in names {
-        if !visit_service(name, names, &mut visiting, &mut visited, &mut order) {
+        if !visit_service(name, names, plan, &mut visiting, &mut visited, &mut order) {
             return None;
         }
     }
@@ -304,6 +334,7 @@ fn topo_sort_services(names: &[String]) -> Option<Vec<String>> {
 fn visit_service(
     name: &str,
     names: &[String],
+    plan: &[ServicePlan],
     visiting: &mut Vec<String>,
     visited: &mut Vec<String>,
     order: &mut Vec<String>,
@@ -321,7 +352,16 @@ fn visit_service(
 
     visiting.push(String::from(name));
 
-    if let Some(config) = read_config(name) {
+    let planned_config = find_plan_config(plan, name);
+    let fallback_config;
+    let config = if let Some(config) = planned_config {
+        Some(config)
+    } else {
+        fallback_config = read_config(name);
+        fallback_config.as_ref()
+    };
+
+    if let Some(config) = config {
         let mut edges = parse_list(&config.depends);
         for want in parse_list(&config.wants) {
             push_unique(&mut edges, &want);
@@ -332,7 +372,7 @@ fn visit_service(
 
         for dep in edges {
             if contains_name(names, &dep)
-                && !visit_service(&dep, names, visiting, visited, order)
+                && !visit_service(&dep, names, plan, visiting, visited, order)
             {
                 return false;
             }
@@ -355,8 +395,9 @@ fn dependencies_satisfied_for_wave(
     name: &str,
     active_names: &[String],
     finished: &[String],
+    plan: &[ServicePlan],
 ) -> bool {
-    let Some(config) = read_config(name) else {
+    let Some(config) = find_plan_config(plan, name) else {
         return false;
     };
     let mut predecessors = parse_list(&config.depends);
@@ -377,31 +418,36 @@ fn check_service_preconditions(
     config: &ServiceConfig,
     finished: &[String],
     succeeded: &[String],
+    plan: &[ServicePlan],
 ) -> bool {
     for dep in parse_list(&config.depends) {
-        let dep_config = match read_config(&dep) {
+        let dep_config = match find_plan_config(plan, &dep) {
             Some(dep_config) => dep_config,
             None => {
                 anyos_std::println!("svc: required dependency '{}' has no config", dep);
                 return false;
             }
         };
-        if !dep_config.enabled && find_thread_by_name(&dep) == 0 {
+        if !dep_config.enabled && running_service_tid(&dep) == 0 {
             anyos_std::println!("svc: required dependency '{}' is disabled", dep);
             return false;
         }
-        if !contains_name(succeeded, &dep) && find_thread_by_name(&dep) == 0 {
+        if !contains_name(succeeded, &dep) && running_service_tid(&dep) == 0 {
             anyos_std::println!("svc: dependency '{}' for '{}' is not ready", dep, name);
             return false;
         }
     }
 
     for dep in parse_list(&config.after) {
-        if contains_name(finished, &dep) || find_thread_by_name(&dep) != 0 {
+        if contains_name(finished, &dep) || running_service_tid(&dep) != 0 {
             continue;
         }
-        if read_config(&dep).is_some() {
-            anyos_std::println!("svc: after dependency '{}' for '{}' is not ready", dep, name);
+        if find_plan_config(plan, &dep).is_some() {
+            anyos_std::println!(
+                "svc: after dependency '{}' for '{}' is not ready",
+                dep,
+                name
+            );
             return false;
         }
     }
@@ -417,11 +463,7 @@ fn wait_for_wave(
     already_count: &mut u32,
 ) {
     for service in wave {
-        let ok = if service.was_running {
-            wait_for_service_start(&service.name, &service.config)
-        } else {
-            wait_for_service_start(&service.name, &service.config)
-        };
+        let ok = wait_for_service_start(&service.name, &service.config);
 
         push_unique(finished, &service.name);
         if ok {
@@ -436,8 +478,16 @@ fn wait_for_wave(
 }
 
 fn cmd_start_all_parallel() {
-    let names = collect_enabled_service_names();
-    let order = match topo_sort_services(&names) {
+    let plan = collect_service_plan();
+    let mut names = Vec::new();
+    for service in &plan {
+        if service.config.enabled {
+            names.push(service.name.clone());
+        }
+    }
+    anyos_std::println!("svc: start-all enabled -> {}", names.len());
+
+    let order = match topo_sort_services_with_plan(&names, &plan) {
         Some(order) => order,
         None => return,
     };
@@ -452,7 +502,7 @@ fn cmd_start_all_parallel() {
         let active_names = remaining.clone();
         let mut wave_names = Vec::new();
         for name in &remaining {
-            if dependencies_satisfied_for_wave(name, &active_names, &finished) {
+            if dependencies_satisfied_for_wave(name, &active_names, &finished, &plan) {
                 wave_names.push(name.clone());
             }
         }
@@ -470,17 +520,21 @@ fn cmd_start_all_parallel() {
 
         let mut wave = Vec::new();
         for name in &wave_names {
-            let Some(config) = read_config(name) else {
-                anyos_std::println!("svc: unknown service '{}' (no registry config in {})", name, SVC_NAMESPACE);
+            let Some(config) = find_plan_config(&plan, name).cloned() else {
+                anyos_std::println!(
+                    "svc: unknown service '{}' (no registry config in {})",
+                    name,
+                    SVC_NAMESPACE
+                );
                 push_unique(&mut finished, name);
                 continue;
             };
-            if !check_service_preconditions(name, &config, &finished, &succeeded) {
+            if !check_service_preconditions(name, &config, &finished, &succeeded, &plan) {
                 push_unique(&mut finished, name);
                 continue;
             }
 
-            let was_running = find_thread_by_name(name) != 0;
+            let was_running = running_service_tid(name) != 0;
             if !was_running && spawn_service(name, &config, "").is_none() {
                 push_unique(&mut finished, name);
                 continue;
@@ -493,7 +547,13 @@ fn cmd_start_all_parallel() {
             });
         }
 
-        wait_for_wave(&wave, &mut finished, &mut succeeded, &mut started, &mut already);
+        wait_for_wave(
+            &wave,
+            &mut finished,
+            &mut succeeded,
+            &mut started,
+            &mut already,
+        );
     }
 
     anyos_std::println!("svc: {} started, {} already running", started, already);
@@ -519,7 +579,11 @@ fn ensure_service_started(
     let config = match read_config(name) {
         Some(cfg) => cfg,
         None => {
-            anyos_std::println!("svc: unknown service '{}' (no registry config in {})", name, SVC_NAMESPACE);
+            anyos_std::println!(
+                "svc: unknown service '{}' (no registry config in {})",
+                name,
+                SVC_NAMESPACE
+            );
             return false;
         }
     };
@@ -544,7 +608,7 @@ fn ensure_service_started(
         }
     }
 
-    let result = if find_thread_by_name(name) != 0 {
+    let result = if running_service_tid(name) != 0 {
         wait_for_service_start(name, &config)
     } else {
         match spawn_service(name, &config, extra_args) {
@@ -588,7 +652,7 @@ fn ensure_named_dependency(
         return true;
     }
 
-    if find_thread_by_name(name) != 0 && !wait_for_service_start(name, &config) {
+    if running_service_tid(name) != 0 && !wait_for_service_start(name, &config) {
         if required {
             anyos_std::println!("svc: dependency '{}' is not ready", name);
             return false;
@@ -626,13 +690,14 @@ fn spawn_service(name: &str, config: &ServiceConfig, extra_args: &str) -> Option
     }
 
     anyos_std::process::detach(tid);
+    publish_spawned_tid(name, tid);
     anyos_std::println!("{}: started (TID {})", name, tid);
     Some(tid)
 }
 
 fn wait_for_service_start(name: &str, config: &ServiceConfig) -> bool {
     if config.startup_timeout_ms == 0 {
-        return find_thread_by_name(name) != 0;
+        return running_service_tid(name) != 0;
     }
     wait_for_service_ready(name, config.startup_timeout_ms)
 }
@@ -658,7 +723,7 @@ fn wait_for_service_ready(name: &str, timeout_ms: u32) -> bool {
 
     let deadline = anyos_std::sys::uptime_ms().wrapping_add(timeout_ms);
     loop {
-        if find_thread_by_name(name) == 0 {
+        if running_service_tid(name) == 0 {
             anyos_std::println!("svc: '{}' exited before becoming ready", name);
             if let Some(id) = watch_id {
                 let _ = ami.unwatch(id);
@@ -787,6 +852,57 @@ fn find_thread_by_name(name: &str) -> u32 {
     0
 }
 
+fn running_service_tid(name: &str) -> u32 {
+    if let Some(tid) = read_service_tid(name) {
+        if is_thread_alive(tid) {
+            return tid;
+        }
+    }
+    find_thread_by_name(name)
+}
+
+fn read_service_tid(name: &str) -> Option<u32> {
+    let mut ami = AmiClient::connect("svc").ok()?;
+    let key = format!("svc.{}.tid", name);
+    match ami.get(&key).ok()?.value {
+        AmiValue::Int(tid) if tid > 0 && tid <= u32::MAX as i64 => Some(tid as u32),
+        _ => None,
+    }
+}
+
+fn is_thread_alive(tid: u32) -> bool {
+    let mut buf = [0u8; THREAD_ENTRY_SIZE * MAX_THREADS];
+    let count = anyos_std::sys::sysinfo(1, &mut buf);
+    if count == u32::MAX {
+        return false;
+    }
+
+    for i in 0..count as usize {
+        let off = i * THREAD_ENTRY_SIZE;
+        if off + THREAD_ENTRY_SIZE > buf.len() {
+            break;
+        }
+        let entry_tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        if entry_tid == tid {
+            let state = buf[off + 5];
+            return state <= 2;
+        }
+    }
+    false
+}
+
+fn publish_spawned_tid(name: &str, tid: u32) {
+    let Ok(mut ami) = AmiClient::connect("svc") else {
+        return;
+    };
+    let _ = ami.set(&format!("svc.{}.tid", name), AmiValue::Int(tid as i64));
+    let _ = ami.set(
+        &format!("svc.{}.state", name),
+        AmiValue::String(String::from("starting")),
+    );
+    let _ = ami.set(&format!("svc.{}.ready", name), AmiValue::Bool(false));
+}
+
 fn read_service_state(name: &str) -> Option<String> {
     let mut ami = AmiClient::connect("svc").ok()?;
     let key = format!("svc.{}.state", name);
@@ -806,7 +922,7 @@ fn cmd_list() {
             Some(cfg) => cfg.exec,
             None => String::from("(invalid config)"),
         };
-        let tid = find_thread_by_name(name);
+        let tid = running_service_tid(name);
         let status = match read_config(name) {
             Some(cfg) if !cfg.enabled && tid == 0 => String::from("disabled"),
             _ if tid == 0 => String::from("stopped"),
@@ -820,44 +936,22 @@ fn cmd_list() {
 }
 
 fn cmd_start_all() {
-    anyos_std::println!("svc: start-all begin");
-    let names = collect_enabled_service_names();
-    anyos_std::println!("svc: start-all names collected");
-    let order = match topo_sort_services(&names) {
-        Some(order) => order,
-        None => return,
-    };
-    anyos_std::println!("svc: start-all topo order -> {}", order.len());
-
-    let mut started = Vec::new();
-    let mut started_count = 0u32;
-    let mut already_count = 0u32;
-    for name in &order {
-        let was_running = find_thread_by_name(name) != 0;
-        if ensure_service_started(name, "", &mut started, &mut Vec::new()) {
-            if was_running {
-                already_count = already_count.wrapping_add(1);
-            } else {
-                started_count = started_count.wrapping_add(1);
-            }
-        }
-    }
-
-    anyos_std::println!(
-        "svc: {} started, {} already running",
-        started_count,
-        already_count,
-    );
+    anyos_std::println!("svc: start-all begin (wave)");
+    cmd_start_all_parallel();
 }
 
 fn cmd_start(name: &str, extra_args: &str) {
-    let existing = find_thread_by_name(name);
+    let existing = running_service_tid(name);
     if existing != 0 {
         if let Some(config) = read_config(name) {
             anyos_std::println!("{}: already running (TID {})", name, existing);
             let _ = wait_for_service_start(name, &config);
         } else {
-            anyos_std::println!("svc: unknown service '{}' (no registry config in {})", name, SVC_NAMESPACE);
+            anyos_std::println!(
+                "svc: unknown service '{}' (no registry config in {})",
+                name,
+                SVC_NAMESPACE
+            );
         }
         return;
     }
@@ -872,7 +966,7 @@ fn cmd_start(name: &str, extra_args: &str) {
 }
 
 fn cmd_stop(name: &str) {
-    let tid = find_thread_by_name(name);
+    let tid = running_service_tid(name);
     if tid == 0 {
         anyos_std::println!("{}: not running", name);
         return;
@@ -883,7 +977,7 @@ fn cmd_stop(name: &str) {
 }
 
 fn cmd_status(name: &str) {
-    let tid = find_thread_by_name(name);
+    let tid = running_service_tid(name);
     if tid != 0 {
         if let Some(state) = read_service_state(name) {
             anyos_std::println!("{}: {} (TID {})", name, state, tid);
@@ -901,7 +995,10 @@ fn cmd_restart(name: &str, extra_args: &str) {
 }
 
 fn ensure_service_dirs(client: &mut ConfClient, name: &str) -> bool {
-    for path in [format!("{}/{}", SVC_NAMESPACE, name), format!("{}/{}/config", SVC_NAMESPACE, name)] {
+    for path in [
+        format!("{}/{}", SVC_NAMESPACE, name),
+        format!("{}/{}/config", SVC_NAMESPACE, name),
+    ] {
         if client.mkdir(RegistryScope::System, &path).is_err() {
             let exists = client
                 .get(RegistryScope::System, &path)
@@ -923,7 +1020,9 @@ fn write_service_value(client: &mut ConfClient, name: &str, field: &str, value: 
 }
 
 fn cmd_install(name: &str, exec: &str, extra_args: &str) {
-    register_manifest();
+    if !register_manifest() {
+        return;
+    }
     let mut client = match ConfClient::connect("svc") {
         Ok(client) => client,
         Err(_) => {
@@ -942,7 +1041,10 @@ fn cmd_install(name: &str, exec: &str, extra_args: &str) {
     } else if let Some(cfg) = existing.as_ref() {
         cfg.exec.as_str()
     } else {
-        anyos_std::println!("svc: install for new service '{}' requires an executable path", name);
+        anyos_std::println!(
+            "svc: install for new service '{}' requires an executable path",
+            name
+        );
         return;
     };
 
@@ -955,16 +1057,36 @@ fn cmd_install(name: &str, exec: &str, extra_args: &str) {
     };
 
     let mut ok = true;
-    ok &= write_service_value(&mut client, name, "exec", ConfValue::String(String::from(effective_exec)));
-    ok &= write_service_value(&mut client, name, "args", ConfValue::String(String::from(effective_args)));
+    ok &= write_service_value(
+        &mut client,
+        name,
+        "exec",
+        ConfValue::String(String::from(effective_exec)),
+    );
+    ok &= write_service_value(
+        &mut client,
+        name,
+        "args",
+        ConfValue::String(String::from(effective_args)),
+    );
     ok &= write_service_value(&mut client, name, "enabled", ConfValue::Bool(true));
     ok &= write_service_value(&mut client, name, "removed", ConfValue::Bool(false));
 
     if existing.is_none() {
-        ok &= write_service_value(&mut client, name, "depends", ConfValue::String(String::new()));
+        ok &= write_service_value(
+            &mut client,
+            name,
+            "depends",
+            ConfValue::String(String::new()),
+        );
         ok &= write_service_value(&mut client, name, "wants", ConfValue::String(String::new()));
         ok &= write_service_value(&mut client, name, "after", ConfValue::String(String::new()));
-        ok &= write_service_value(&mut client, name, "startup_timeout_ms", ConfValue::Int(5_000));
+        ok &= write_service_value(
+            &mut client,
+            name,
+            "startup_timeout_ms",
+            ConfValue::Int(5_000),
+        );
     }
 
     if ok {
@@ -975,7 +1097,9 @@ fn cmd_install(name: &str, exec: &str, extra_args: &str) {
 }
 
 fn cmd_uninstall(name: &str) {
-    register_manifest();
+    if !register_manifest() {
+        return;
+    }
     let mut client = match ConfClient::connect("svc") {
         Ok(client) => client,
         Err(_) => {
@@ -985,18 +1109,28 @@ fn cmd_uninstall(name: &str) {
     };
 
     if read_config(name).is_none() {
-        anyos_std::println!("svc: unknown service '{}' (no registry config in {})", name, SVC_NAMESPACE);
+        anyos_std::println!(
+            "svc: unknown service '{}' (no registry config in {})",
+            name,
+            SVC_NAMESPACE
+        );
         return;
     }
 
-    match client.set(RegistryScope::System, &service_path(name, "enabled"), ConfValue::Bool(false)) {
+    match client.set(
+        RegistryScope::System,
+        &service_path(name, "enabled"),
+        ConfValue::Bool(false),
+    ) {
         Ok(_) => anyos_std::println!("svc: '{}' uninstalled from startup", name),
         Err(_) => anyos_std::println!("svc: failed to uninstall '{}'", name),
     }
 }
 
 fn cmd_set_enabled(name: &str, enabled: bool) {
-    register_manifest();
+    if !register_manifest() {
+        return;
+    }
     let mut client = match ConfClient::connect("svc") {
         Ok(client) => client,
         Err(_) => {
@@ -1006,7 +1140,11 @@ fn cmd_set_enabled(name: &str, enabled: bool) {
     };
 
     if read_config(name).is_none() {
-        anyos_std::println!("svc: unknown service '{}' (no registry config in {})", name, SVC_NAMESPACE);
+        anyos_std::println!(
+            "svc: unknown service '{}' (no registry config in {})",
+            name,
+            SVC_NAMESPACE
+        );
         return;
     }
 
@@ -1030,7 +1168,11 @@ fn cmd_set_enabled(name: &str, enabled: bool) {
         anyos_std::println!(
             "svc: '{}' {}",
             name,
-            if enabled { "enabled for auto-start" } else { "disabled for auto-start" }
+            if enabled {
+                "enabled for auto-start"
+            } else {
+                "disabled for auto-start"
+            }
         );
     } else {
         anyos_std::println!("svc: failed to update '{}'", name);
@@ -1038,7 +1180,9 @@ fn cmd_set_enabled(name: &str, enabled: bool) {
 }
 
 fn cmd_remove(name: &str) {
-    register_manifest();
+    if !register_manifest() {
+        return;
+    }
     let mut client = match ConfClient::connect("svc") {
         Ok(client) => client,
         Err(_) => {
@@ -1049,14 +1193,21 @@ fn cmd_remove(name: &str) {
 
     let existed = read_config(name).is_some()
         || client
-            .get(RegistryScope::System, &format!("{}/{}", SVC_NAMESPACE, name))
+            .get(
+                RegistryScope::System,
+                &format!("{}/{}", SVC_NAMESPACE, name),
+            )
             .is_ok();
     if !existed {
-        anyos_std::println!("svc: unknown service '{}' (no registry config in {})", name, SVC_NAMESPACE);
+        anyos_std::println!(
+            "svc: unknown service '{}' (no registry config in {})",
+            name,
+            SVC_NAMESPACE
+        );
         return;
     }
 
-    if find_thread_by_name(name) != 0 {
+    if running_service_tid(name) != 0 {
         cmd_stop(name);
     }
 

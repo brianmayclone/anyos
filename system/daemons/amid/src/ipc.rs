@@ -7,6 +7,9 @@ use libdb_client::Database;
 
 use crate::{schema, AmiState, AmiValue, StateEntry};
 
+const MAX_PENDING_REQUEST_BYTES: usize = 16 * 1024;
+const MAX_REQUEST_LINE_BYTES: usize = 4 * 1024;
+
 pub fn handle_requests(db: &Database, state: &mut AmiState, pipe_id: u32, buf: &mut [u8]) -> bool {
     let n = anyos_std::ipc::pipe_read(pipe_id, buf);
     if n == 0 || n == u32::MAX {
@@ -17,11 +20,18 @@ pub fn handle_requests(db: &Database, state: &mut AmiState, pipe_id: u32, buf: &
         Ok(text) => text,
         Err(_) => return true,
     };
+    if state.pending_request.len().saturating_add(data.len()) > MAX_PENDING_REQUEST_BYTES {
+        state.pending_request.clear();
+        return true;
+    }
     state.pending_request.push_str(data);
 
     while let Some(pos) = state.pending_request.find('\n') {
         let mut line = state.pending_request[..pos].to_string();
         state.pending_request.drain(..=pos);
+        if line.len() > MAX_REQUEST_LINE_BYTES {
+            continue;
+        }
         if line.ends_with('\r') {
             line.pop();
         }
@@ -59,8 +69,12 @@ fn dispatch(db: &Database, state: &mut AmiState, tid: u32, cmd: &str) {
         "LIST" | "list" => cmd_list(state, tid, rest),
         "WATCH" | "watch" => cmd_watch(state, tid, rest),
         "UNWATCH" | "unwatch" => cmd_unwatch(state, tid, rest),
-        "PING" | "ping" => send_line(tid, "PONG"),
-        _ => send_line(tid, "ERR unknown_command"),
+        "PING" | "ping" => {
+            let _ = send_line(tid, "PONG");
+        }
+        _ => {
+            let _ = send_line(tid, "ERR unknown_command");
+        }
     }
 }
 
@@ -204,6 +218,10 @@ fn cmd_watch(state: &mut AmiState, tid: u32, prefix: &str) {
         return;
     }
     let watch_id = state.add_watch(tid, prefix);
+    if watch_id == 0 {
+        send_line(tid, "ERR watch_limit");
+        return;
+    }
     let mut resp = String::from("OK watch ");
     push_u32(&mut resp, watch_id);
     send_line(tid, &resp);
@@ -223,7 +241,7 @@ fn cmd_unwatch(state: &mut AmiState, tid: u32, raw_id: &str) {
     send_line(tid, &resp);
 }
 
-fn emit_set_events(state: &AmiState, entry: &StateEntry) {
+fn emit_set_events(state: &mut AmiState, entry: &StateEntry) {
     let watchers = state.matching_watch_ids(&entry.key);
     if watchers.is_empty() {
         return;
@@ -243,11 +261,13 @@ fn emit_set_events(state: &AmiState, entry: &StateEntry) {
         push_u64(&mut msg, entry.version);
         msg.push(' ');
         push_u64(&mut msg, entry.updated_at);
-        send_line(tid, &msg);
+        if !send_line(tid, &msg) {
+            state.remove_client(tid);
+        }
     }
 }
 
-fn emit_delete_events(state: &AmiState, key: &str, version: u64, updated_at: u64) {
+fn emit_delete_events(state: &mut AmiState, key: &str, version: u64, updated_at: u64) {
     let watchers = state.matching_watch_ids(key);
     if watchers.is_empty() {
         return;
@@ -262,7 +282,9 @@ fn emit_delete_events(state: &AmiState, key: &str, version: u64, updated_at: u64
         push_u64(&mut msg, version);
         msg.push(' ');
         push_u64(&mut msg, updated_at);
-        send_line(tid, &msg);
+        if !send_line(tid, &msg) {
+            state.remove_client(tid);
+        }
     }
 }
 
@@ -282,14 +304,15 @@ fn format_value_line(kind: &str, entry: &StateEntry) -> String {
     line
 }
 
-fn send_line(tid: u32, line: &str) {
+fn send_line(tid: u32, line: &str) -> bool {
     let reply_pipe_name = format!("ami-{}", tid);
     let reply_pipe = anyos_std::ipc::pipe_open(&reply_pipe_name);
     if reply_pipe == 0 || reply_pipe == u32::MAX {
-        return;
+        return false;
     }
-    let _ = anyos_std::ipc::pipe_write(reply_pipe, line.as_bytes());
-    let _ = anyos_std::ipc::pipe_write(reply_pipe, b"\n");
+    let ok = anyos_std::ipc::pipe_write(reply_pipe, line.as_bytes()) != u32::MAX
+        && anyos_std::ipc::pipe_write(reply_pipe, b"\n") != u32::MAX;
+    ok
 }
 
 fn split_first_word(input: &str) -> (&str, &str) {
@@ -317,7 +340,14 @@ fn encode_value(value: &AmiValue) -> (&'static str, String) {
     match value {
         AmiValue::String(s) => ("string", String::from(s.as_str())),
         AmiValue::Int(v) => ("int", format!("{}", *v)),
-        AmiValue::Bool(v) => ("bool", if *v { String::from("true") } else { String::from("false") }),
+        AmiValue::Bool(v) => (
+            "bool",
+            if *v {
+                String::from("true")
+            } else {
+                String::from("false")
+            },
+        ),
     }
 }
 
@@ -346,7 +376,9 @@ fn service_can_write(service: &str, key: &str) -> bool {
 
 fn is_valid_service(service: &str) -> bool {
     !service.is_empty()
-        && service.bytes().all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
+        && service
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
 fn is_valid_key(key: &str) -> bool {
@@ -379,7 +411,11 @@ fn parse_i64(s: &str) -> Option<i64> {
         return None;
     }
     let bytes = s.as_bytes();
-    let (negative, start) = if bytes[0] == b'-' { (true, 1usize) } else { (false, 0usize) };
+    let (negative, start) = if bytes[0] == b'-' {
+        (true, 1usize)
+    } else {
+        (false, 0usize)
+    };
     if start >= bytes.len() {
         return None;
     }

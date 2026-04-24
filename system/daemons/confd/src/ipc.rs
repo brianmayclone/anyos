@@ -5,6 +5,9 @@ use libdb_client::Database;
 
 use crate::{schema, ConfState, ConfValue, NodeKind, RegistryEntry, Scope};
 
+const MAX_PENDING_REQUEST_BYTES: usize = 32 * 1024;
+const MAX_REQUEST_LINE_BYTES: usize = 8 * 1024;
+
 pub fn handle_requests(db: &Database, state: &mut ConfState, pipe_id: u32, buf: &mut [u8]) -> bool {
     let n = anyos_std::ipc::pipe_read(pipe_id, buf);
     if n == 0 || n == u32::MAX {
@@ -15,11 +18,18 @@ pub fn handle_requests(db: &Database, state: &mut ConfState, pipe_id: u32, buf: 
         Ok(text) => text,
         Err(_) => return true,
     };
+    if state.pending_request.len().saturating_add(data.len()) > MAX_PENDING_REQUEST_BYTES {
+        state.pending_request.clear();
+        return true;
+    }
     state.pending_request.push_str(data);
 
     while let Some(pos) = state.pending_request.find('\n') {
         let mut line = state.pending_request[..pos].to_string();
         state.pending_request.drain(..=pos);
+        if line.len() > MAX_REQUEST_LINE_BYTES {
+            continue;
+        }
         if line.ends_with('\r') {
             line.pop();
         }
@@ -54,7 +64,9 @@ fn dispatch(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &st
     let (verb, rest) = split_first_word(cmd);
     match verb {
         "HELLO" | "hello" => cmd_hello(state, tid, reply_pipe_name, rest),
-        "PING" | "ping" => send_line(reply_pipe_name, tid, "PONG"),
+        "PING" | "ping" => {
+            let _ = send_line(reply_pipe_name, tid, "PONG");
+        }
         "REGISTER" | "register" => cmd_register(db, state, tid, reply_pipe_name, rest),
         "MKDIR" | "mkdir" => cmd_mkdir(db, state, tid, reply_pipe_name, rest),
         "SET" | "set" => cmd_set(db, state, tid, reply_pipe_name, rest),
@@ -67,7 +79,9 @@ fn dispatch(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &st
         "AUDIT" | "audit" => cmd_audit(db, state, tid, reply_pipe_name, rest),
         "WATCH" | "watch" => cmd_watch(state, tid, reply_pipe_name, rest),
         "UNWATCH" | "unwatch" => cmd_unwatch(state, tid, reply_pipe_name, rest),
-        _ => send_line(reply_pipe_name, tid, "ERR unknown_command"),
+        _ => {
+            let _ = send_line(reply_pipe_name, tid, "ERR unknown_command");
+        }
     }
 }
 
@@ -96,11 +110,49 @@ fn cmd_mkdir(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &s
 
     if !can_write(scope, actor_uid, owner_uid) {
         send_line(reply_pipe_name, tid, "ERR forbidden");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "mkdir", scope, &logical_path, "forbidden", "", 0);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "mkdir",
+            scope,
+            &logical_path,
+            "forbidden",
+            "",
+            0,
+        );
         return;
     }
 
-    ensure_parent_dirs(db, state, scope, owner_uid, actor_uid, &logical_path, &actor_name);
+    if !ensure_parent_dirs(
+        db,
+        state,
+        scope,
+        owner_uid,
+        actor_uid,
+        &logical_path,
+        &actor_name,
+    ) {
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "mkdir",
+            scope,
+            &logical_path,
+            "persist_failed",
+            "parents",
+            0,
+        );
+        return;
+    }
 
     let now = now_ms();
     let (entry, changed) = state.upsert_dir(
@@ -114,7 +166,20 @@ fn cmd_mkdir(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &s
     );
     if changed && schema::persist_entry(db, &entry).is_err() {
         send_line(reply_pipe_name, tid, "ERR persist_failed");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "mkdir", scope, &logical_path, "persist_failed", "", entry.version);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "mkdir",
+            scope,
+            &logical_path,
+            "persist_failed",
+            "",
+            entry.version,
+        );
         return;
     }
 
@@ -128,7 +193,20 @@ fn cmd_mkdir(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &s
     push_u64(&mut resp, entry.updated_at);
     send_line(reply_pipe_name, tid, &resp);
 
-    audit(state, db, actor_uid, owner_uid, &actor_name, tid, "mkdir", scope, &logical_path, "ok", "", entry.version);
+    audit(
+        state,
+        db,
+        actor_uid,
+        owner_uid,
+        &actor_name,
+        tid,
+        "mkdir",
+        scope,
+        &logical_path,
+        "ok",
+        "",
+        entry.version,
+    );
     if changed {
         emit_change_events(state, &entry, "mkdir");
     }
@@ -168,12 +246,72 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
     let owner_uid = owner_uid_for_scope(scope, actor_uid, requested_owner_uid);
     if !can_write(scope, actor_uid, owner_uid) {
         send_line(reply_pipe_name, tid, "ERR forbidden");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "register", scope, namespace, "forbidden", "", 0);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "register",
+            scope,
+            namespace,
+            "forbidden",
+            "",
+            0,
+        );
         return;
     }
 
+    let original_entries = state.entries.clone();
+    if db.exec("BEGIN").is_err() {
+        send_line(reply_pipe_name, tid, "ERR transaction_unavailable");
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "register",
+            scope,
+            namespace,
+            "transaction_unavailable",
+            "",
+            0,
+        );
+        return;
+    }
+    let tx_started = true;
+
     let namespace_root = canonical_path(scope, owner_uid, namespace);
-    ensure_parent_dirs(db, state, scope, owner_uid, actor_uid, namespace, &actor_name);
+    if !ensure_parent_dirs(
+        db,
+        state,
+        scope,
+        owner_uid,
+        actor_uid,
+        namespace,
+        &actor_name,
+    ) {
+        rollback_register(db, state, original_entries, tx_started);
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "register",
+            scope,
+            namespace,
+            "persist_failed",
+            "parents",
+            0,
+        );
+        return;
+    }
     let now = now_ms();
     let (root_entry, root_changed) = state.upsert_dir(
         scope,
@@ -184,26 +322,62 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
         &actor_name,
         now,
     );
-    if root_changed {
-        let _ = schema::persist_entry(db, &root_entry);
+    if root_changed && schema::persist_entry(db, &root_entry).is_err() {
+        rollback_register(db, state, original_entries, tx_started);
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "register",
+            scope,
+            namespace,
+            "persist_failed",
+            "namespace_root",
+            root_entry.version,
+        );
+        return;
     }
 
     let (_stored_schema_version, mut applied_version) =
         schema::load_schema_versions(db, scope, owner_uid, namespace);
 
+    let mut persist_failed = false;
+    let mut persist_failed_detail = "";
+
     for op in manifest_text.split(';') {
+        if persist_failed {
+            break;
+        }
         if op.is_empty() {
             continue;
         }
         let mut fields = op.split('|');
         match fields.next() {
             Some("D") => {
-                let Some(rel_path) = fields.next() else { continue; };
+                let Some(rel_path) = fields.next() else {
+                    continue;
+                };
                 if !is_valid_logical_path(rel_path) {
                     continue;
                 }
                 let full_path = join_namespace(namespace, rel_path);
-                ensure_parent_dirs(db, state, scope, owner_uid, actor_uid, &full_path, &actor_name);
+                if !ensure_parent_dirs(
+                    db,
+                    state,
+                    scope,
+                    owner_uid,
+                    actor_uid,
+                    &full_path,
+                    &actor_name,
+                ) {
+                    persist_failed = true;
+                    persist_failed_detail = "dir_parents";
+                    continue;
+                }
                 let canonical = canonical_path(scope, owner_uid, &full_path);
                 let (entry, changed) = state.upsert_dir(
                     scope,
@@ -215,13 +389,22 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     now_ms(),
                 );
                 if changed {
-                    let _ = schema::persist_entry(db, &entry);
+                    if schema::persist_entry(db, &entry).is_err() {
+                        persist_failed = true;
+                        persist_failed_detail = "dir";
+                    }
                 }
             }
             Some("K") => {
-                let Some(rel_path) = fields.next() else { continue; };
-                let Some(value_type) = fields.next() else { continue; };
-                let Some(raw_value) = fields.next() else { continue; };
+                let Some(rel_path) = fields.next() else {
+                    continue;
+                };
+                let Some(value_type) = fields.next() else {
+                    continue;
+                };
+                let Some(raw_value) = fields.next() else {
+                    continue;
+                };
                 if !is_valid_logical_path(rel_path) {
                     continue;
                 }
@@ -233,7 +416,19 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                 if state.find_entry(&canonical).is_some() {
                     continue;
                 }
-                ensure_parent_dirs(db, state, scope, owner_uid, actor_uid, &full_path, &actor_name);
+                if !ensure_parent_dirs(
+                    db,
+                    state,
+                    scope,
+                    owner_uid,
+                    actor_uid,
+                    &full_path,
+                    &actor_name,
+                ) {
+                    persist_failed = true;
+                    persist_failed_detail = "default_parents";
+                    continue;
+                }
                 let (entry, _) = state.upsert_value(
                     scope,
                     owner_uid,
@@ -244,14 +439,27 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     &actor_name,
                     now_ms(),
                 );
-                let _ = schema::persist_entry(db, &entry);
+                if schema::persist_entry(db, &entry).is_err() {
+                    persist_failed = true;
+                    persist_failed_detail = "default";
+                }
             }
             Some("M") => {
-                let Some(step_version_raw) = fields.next() else { continue; };
-                let Some(rel_path) = fields.next() else { continue; };
-                let Some(value_type) = fields.next() else { continue; };
-                let Some(raw_value) = fields.next() else { continue; };
-                let Some(step_version) = parse_u32(step_version_raw) else { continue; };
+                let Some(step_version_raw) = fields.next() else {
+                    continue;
+                };
+                let Some(rel_path) = fields.next() else {
+                    continue;
+                };
+                let Some(value_type) = fields.next() else {
+                    continue;
+                };
+                let Some(raw_value) = fields.next() else {
+                    continue;
+                };
+                let Some(step_version) = parse_u32(step_version_raw) else {
+                    continue;
+                };
                 if step_version <= applied_version || step_version > schema_version {
                     continue;
                 }
@@ -262,7 +470,19 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     continue;
                 };
                 let full_path = join_namespace(namespace, rel_path);
-                ensure_parent_dirs(db, state, scope, owner_uid, actor_uid, &full_path, &actor_name);
+                if !ensure_parent_dirs(
+                    db,
+                    state,
+                    scope,
+                    owner_uid,
+                    actor_uid,
+                    &full_path,
+                    &actor_name,
+                ) {
+                    persist_failed = true;
+                    persist_failed_detail = "migration_parents";
+                    continue;
+                }
                 let canonical = canonical_path(scope, owner_uid, &full_path);
                 let (entry, _) = state.upsert_value(
                     scope,
@@ -274,13 +494,23 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     &actor_name,
                     now_ms(),
                 );
-                let _ = schema::persist_entry(db, &entry);
+                if schema::persist_entry(db, &entry).is_err() {
+                    persist_failed = true;
+                    persist_failed_detail = "migration_set";
+                    continue;
+                }
                 applied_version = step_version;
             }
             Some("X") => {
-                let Some(step_version_raw) = fields.next() else { continue; };
-                let Some(rel_path) = fields.next() else { continue; };
-                let Some(step_version) = parse_u32(step_version_raw) else { continue; };
+                let Some(step_version_raw) = fields.next() else {
+                    continue;
+                };
+                let Some(rel_path) = fields.next() else {
+                    continue;
+                };
+                let Some(step_version) = parse_u32(step_version_raw) else {
+                    continue;
+                };
                 if step_version <= applied_version || step_version > schema_version {
                     continue;
                 }
@@ -288,14 +518,26 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     continue;
                 }
                 let full_path = join_namespace(namespace, rel_path);
-                delete_registry_subtree(db, state, scope, owner_uid, &full_path);
+                if !delete_registry_subtree(db, state, scope, owner_uid, &full_path) {
+                    persist_failed = true;
+                    persist_failed_detail = "migration_delete";
+                    continue;
+                }
                 applied_version = step_version;
             }
             Some("R") => {
-                let Some(step_version_raw) = fields.next() else { continue; };
-                let Some(from_rel) = fields.next() else { continue; };
-                let Some(to_rel) = fields.next() else { continue; };
-                let Some(step_version) = parse_u32(step_version_raw) else { continue; };
+                let Some(step_version_raw) = fields.next() else {
+                    continue;
+                };
+                let Some(from_rel) = fields.next() else {
+                    continue;
+                };
+                let Some(to_rel) = fields.next() else {
+                    continue;
+                };
+                let Some(step_version) = parse_u32(step_version_raw) else {
+                    continue;
+                };
                 if step_version <= applied_version || step_version > schema_version {
                     continue;
                 }
@@ -304,7 +546,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                 }
                 let from_full = join_namespace(namespace, from_rel);
                 let to_full = join_namespace(namespace, to_rel);
-                rename_registry_subtree(
+                if !rename_registry_subtree(
                     db,
                     state,
                     scope,
@@ -313,14 +555,26 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     &actor_name,
                     &from_full,
                     &to_full,
-                );
+                ) {
+                    persist_failed = true;
+                    persist_failed_detail = "migration_rename";
+                    continue;
+                }
                 applied_version = step_version;
             }
             Some("C") => {
-                let Some(step_version_raw) = fields.next() else { continue; };
-                let Some(from_rel) = fields.next() else { continue; };
-                let Some(to_rel) = fields.next() else { continue; };
-                let Some(step_version) = parse_u32(step_version_raw) else { continue; };
+                let Some(step_version_raw) = fields.next() else {
+                    continue;
+                };
+                let Some(from_rel) = fields.next() else {
+                    continue;
+                };
+                let Some(to_rel) = fields.next() else {
+                    continue;
+                };
+                let Some(step_version) = parse_u32(step_version_raw) else {
+                    continue;
+                };
                 if step_version <= applied_version || step_version > schema_version {
                     continue;
                 }
@@ -329,7 +583,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                 }
                 let from_full = join_namespace(namespace, from_rel);
                 let to_full = join_namespace(namespace, to_rel);
-                copy_registry_subtree(
+                if !copy_registry_subtree(
                     db,
                     state,
                     scope,
@@ -338,11 +592,35 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     &actor_name,
                     &from_full,
                     &to_full,
-                );
+                ) {
+                    persist_failed = true;
+                    persist_failed_detail = "migration_copy";
+                    continue;
+                }
                 applied_version = step_version;
             }
             _ => {}
         }
+    }
+
+    if persist_failed {
+        rollback_register(db, state, original_entries, tx_started);
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "register",
+            scope,
+            namespace,
+            "persist_failed",
+            persist_failed_detail,
+            schema_version as u64,
+        );
+        return;
     }
 
     if applied_version < schema_version {
@@ -361,8 +639,43 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
     )
     .is_err()
     {
+        rollback_register(db, state, original_entries, tx_started);
         send_line(reply_pipe_name, tid, "ERR persist_failed");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "register", scope, namespace, "persist_failed", "", schema_version as u64);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "register",
+            scope,
+            namespace,
+            "persist_failed",
+            "",
+            schema_version as u64,
+        );
+        return;
+    }
+
+    if tx_started && db.exec("COMMIT").is_err() {
+        state.entries = original_entries;
+        let _ = db.exec("ROLLBACK");
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "register",
+            scope,
+            namespace,
+            "persist_failed",
+            "commit",
+            schema_version as u64,
+        );
         return;
     }
 
@@ -419,17 +732,68 @@ fn cmd_set(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str
     };
     if !can_write(scope, actor_uid, owner_uid) {
         send_line(reply_pipe_name, tid, "ERR forbidden");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "set", scope, &logical_path, "forbidden", "", 0);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "set",
+            scope,
+            &logical_path,
+            "forbidden",
+            "",
+            0,
+        );
         return;
     }
 
     let Some(value) = decode_value(type_name, raw_value) else {
         send_line(reply_pipe_name, tid, "ERR invalid_value");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "set", scope, &logical_path, "invalid_value", type_name, 0);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "set",
+            scope,
+            &logical_path,
+            "invalid_value",
+            type_name,
+            0,
+        );
         return;
     };
 
-    ensure_parent_dirs(db, state, scope, owner_uid, actor_uid, &logical_path, &actor_name);
+    if !ensure_parent_dirs(
+        db,
+        state,
+        scope,
+        owner_uid,
+        actor_uid,
+        &logical_path,
+        &actor_name,
+    ) {
+        send_line(reply_pipe_name, tid, "ERR persist_failed");
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "set",
+            scope,
+            &logical_path,
+            "persist_failed",
+            "parents",
+            0,
+        );
+        return;
+    }
 
     let now = now_ms();
     let (entry, changed) = state.upsert_value(
@@ -444,7 +808,20 @@ fn cmd_set(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str
     );
     if changed && schema::persist_entry(db, &entry).is_err() {
         send_line(reply_pipe_name, tid, "ERR persist_failed");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "set", scope, &logical_path, "persist_failed", "", entry.version);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "set",
+            scope,
+            &logical_path,
+            "persist_failed",
+            "",
+            entry.version,
+        );
         return;
     }
 
@@ -458,7 +835,20 @@ fn cmd_set(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str
     push_u64(&mut resp, entry.updated_at);
     send_line(reply_pipe_name, tid, &resp);
 
-    audit(state, db, actor_uid, owner_uid, &actor_name, tid, "set", scope, &logical_path, "ok", "", entry.version);
+    audit(
+        state,
+        db,
+        actor_uid,
+        owner_uid,
+        &actor_name,
+        tid,
+        "set",
+        scope,
+        &logical_path,
+        "ok",
+        "",
+        entry.version,
+    );
     if changed {
         emit_change_events(state, &entry, "set");
     }
@@ -474,7 +864,11 @@ fn cmd_get(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
         send_line(reply_pipe_name, tid, "ERR not_found");
         return;
     };
-    send_line(reply_pipe_name, tid, &format_entry_line("ITEM", scope, entry));
+    send_line(
+        reply_pipe_name,
+        tid,
+        &format_entry_line("ITEM", scope, entry),
+    );
 }
 
 fn cmd_del(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
@@ -485,20 +879,59 @@ fn cmd_del(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str
     };
     if !can_write(scope, actor_uid, owner_uid) {
         send_line(reply_pipe_name, tid, "ERR forbidden");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "del", scope, &logical_path, "forbidden", "", 0);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "del",
+            scope,
+            &logical_path,
+            "forbidden",
+            "",
+            0,
+        );
         return;
     }
 
     let Some(old_entry) = state.remove_entry(&canonical_path) else {
         send_line(reply_pipe_name, tid, "ERR not_found");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "del", scope, &logical_path, "not_found", "", 0);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "del",
+            scope,
+            &logical_path,
+            "not_found",
+            "",
+            0,
+        );
         return;
     };
 
     if schema::delete_entry(db, &canonical_path).is_err() {
         state.entries.push(old_entry);
         send_line(reply_pipe_name, tid, "ERR persist_failed");
-        audit(state, db, actor_uid, owner_uid, &actor_name, tid, "del", scope, &logical_path, "persist_failed", "", 0);
+        audit(
+            state,
+            db,
+            actor_uid,
+            owner_uid,
+            &actor_name,
+            tid,
+            "del",
+            scope,
+            &logical_path,
+            "persist_failed",
+            "",
+            0,
+        );
         return;
     }
 
@@ -514,8 +947,28 @@ fn cmd_del(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name: &str
     push_u64(&mut resp, updated_at);
     send_line(reply_pipe_name, tid, &resp);
 
-    audit(state, db, actor_uid, owner_uid, &actor_name, tid, "del", scope, &logical_path, "ok", "", version);
-    emit_delete_events(state, scope, &logical_path, &canonical_path, version, updated_at);
+    audit(
+        state,
+        db,
+        actor_uid,
+        owner_uid,
+        &actor_name,
+        tid,
+        "del",
+        scope,
+        &logical_path,
+        "ok",
+        "",
+        version,
+    );
+    emit_delete_events(
+        state,
+        scope,
+        &logical_path,
+        &canonical_path,
+        version,
+        updated_at,
+    );
 }
 
 fn cmd_list(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
@@ -526,7 +979,11 @@ fn cmd_list(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     };
     let items = state.list_prefix(&canonical_path);
     for entry in &items {
-        send_line(reply_pipe_name, tid, &format_entry_line("ITEM", scope, entry));
+        send_line(
+            reply_pipe_name,
+            tid,
+            &format_entry_line("ITEM", scope, entry),
+        );
     }
     send_line(reply_pipe_name, tid, "END");
 }
@@ -539,19 +996,28 @@ fn cmd_list_children(state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &
     };
     let items = state.list_direct_children(&canonical_path);
     for entry in &items {
-        send_line(reply_pipe_name, tid, &format_entry_line("ITEM", scope, entry));
+        send_line(
+            reply_pipe_name,
+            tid,
+            &format_entry_line("ITEM", scope, entry),
+        );
     }
     send_line(reply_pipe_name, tid, "END");
 }
 
-fn cmd_audit(db: &Database, state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
+fn cmd_audit(db: &Database, _state: &ConfState, tid: u32, reply_pipe_name: &str, rest: &str) {
     let mut parts = rest.split_whitespace();
     let Some(scope_token) = parts.next() else {
         send_line(reply_pipe_name, tid, "ERR invalid_audit");
         return;
     };
     let path = parts.next().unwrap_or("");
-    let limit = parts.next().and_then(parse_u32).unwrap_or(100).max(1).min(500);
+    let limit = parts
+        .next()
+        .and_then(parse_u32)
+        .unwrap_or(100)
+        .max(1)
+        .min(500);
 
     if !is_valid_logical_path(path) {
         send_line(reply_pipe_name, tid, "ERR invalid_path");
@@ -583,6 +1049,10 @@ fn cmd_watch(state: &mut ConfState, tid: u32, reply_pipe_name: &str, rest: &str)
         return;
     };
     let watch_id = state.add_watch(tid, reply_pipe_name, scope, &canonical_path);
+    if watch_id == 0 {
+        send_line(reply_pipe_name, tid, "ERR watch_limit");
+        return;
+    }
     let mut resp = String::from("OK watch ");
     push_u32(&mut resp, watch_id);
     send_line(reply_pipe_name, tid, &resp);
@@ -629,7 +1099,14 @@ fn parse_scope_and_path(
     }
     let logical_path = String::from(path);
     let canonical_path = canonical_path(scope, owner_uid, &logical_path);
-    Some((scope, logical_path, canonical_path, actor_uid, actor_name, owner_uid))
+    Some((
+        scope,
+        logical_path,
+        canonical_path,
+        actor_uid,
+        actor_name,
+        owner_uid,
+    ))
 }
 
 fn ensure_parent_dirs(
@@ -640,7 +1117,7 @@ fn ensure_parent_dirs(
     actor_uid: u16,
     logical_path: &str,
     actor_name: &str,
-) {
+) -> bool {
     let mut current = String::new();
     for segment in logical_path.split('/') {
         if segment.is_empty() {
@@ -656,16 +1133,13 @@ fn ensure_parent_dirs(
         }
         let now = now_ms();
         let (entry, _) = state.upsert_dir(
-            scope,
-            owner_uid,
-            &canonical,
-            &current,
-            actor_uid,
-            actor_name,
-            now,
+            scope, owner_uid, &canonical, &current, actor_uid, actor_name, now,
         );
-        let _ = schema::persist_entry(db, &entry);
+        if schema::persist_entry(db, &entry).is_err() {
+            return false;
+        }
     }
+    true
 }
 
 fn delete_registry_subtree(
@@ -674,13 +1148,16 @@ fn delete_registry_subtree(
     scope: Scope,
     owner_uid: u16,
     logical_path: &str,
-) {
+) -> bool {
     let canonical = canonical_path(scope, owner_uid, logical_path);
     let entries = collect_subtree_entries(state, &canonical);
     for entry in entries {
         state.remove_entry(&entry.canonical_path);
-        let _ = schema::delete_entry(db, &entry.canonical_path);
+        if schema::delete_entry(db, &entry.canonical_path).is_err() {
+            return false;
+        }
     }
+    true
 }
 
 fn rename_registry_subtree(
@@ -692,31 +1169,55 @@ fn rename_registry_subtree(
     actor_name: &str,
     from_logical_path: &str,
     to_logical_path: &str,
-) {
+) -> bool {
     if from_logical_path == to_logical_path {
-        return;
+        return true;
     }
 
     let from_canonical = canonical_path(scope, owner_uid, from_logical_path);
     let entries = collect_subtree_entries(state, &from_canonical);
     if entries.is_empty() {
-        return;
+        return true;
     }
 
-    ensure_parent_dirs(db, state, scope, owner_uid, actor_uid, to_logical_path, actor_name);
-    delete_registry_subtree(db, state, scope, owner_uid, to_logical_path);
+    if !ensure_parent_dirs(
+        db,
+        state,
+        scope,
+        owner_uid,
+        actor_uid,
+        to_logical_path,
+        actor_name,
+    ) || !delete_registry_subtree(db, state, scope, owner_uid, to_logical_path)
+    {
+        return false;
+    }
 
     for entry in &entries {
         state.remove_entry(&entry.canonical_path);
-        let _ = schema::delete_entry(db, &entry.canonical_path);
+        if schema::delete_entry(db, &entry.canonical_path).is_err() {
+            return false;
+        }
     }
 
     let now = now_ms();
     for entry in entries {
-        let moved = remap_entry(entry, scope, owner_uid, actor_uid, actor_name, now, from_logical_path, to_logical_path);
+        let moved = remap_entry(
+            entry,
+            scope,
+            owner_uid,
+            actor_uid,
+            actor_name,
+            now,
+            from_logical_path,
+            to_logical_path,
+        );
         state.entries.push(moved.clone());
-        let _ = schema::persist_entry(db, &moved);
+        if schema::persist_entry(db, &moved).is_err() {
+            return false;
+        }
     }
+    true
 }
 
 fn copy_registry_subtree(
@@ -728,26 +1229,48 @@ fn copy_registry_subtree(
     actor_name: &str,
     from_logical_path: &str,
     to_logical_path: &str,
-) {
+) -> bool {
     if from_logical_path == to_logical_path {
-        return;
+        return true;
     }
 
     let from_canonical = canonical_path(scope, owner_uid, from_logical_path);
     let entries = collect_subtree_entries(state, &from_canonical);
     if entries.is_empty() {
-        return;
+        return true;
     }
 
-    ensure_parent_dirs(db, state, scope, owner_uid, actor_uid, to_logical_path, actor_name);
-    delete_registry_subtree(db, state, scope, owner_uid, to_logical_path);
+    if !ensure_parent_dirs(
+        db,
+        state,
+        scope,
+        owner_uid,
+        actor_uid,
+        to_logical_path,
+        actor_name,
+    ) || !delete_registry_subtree(db, state, scope, owner_uid, to_logical_path)
+    {
+        return false;
+    }
 
     let now = now_ms();
     for entry in entries {
-        let copied = remap_entry(entry, scope, owner_uid, actor_uid, actor_name, now, from_logical_path, to_logical_path);
+        let copied = remap_entry(
+            entry,
+            scope,
+            owner_uid,
+            actor_uid,
+            actor_name,
+            now,
+            from_logical_path,
+            to_logical_path,
+        );
         state.entries.push(copied.clone());
-        let _ = schema::persist_entry(db, &copied);
+        if schema::persist_entry(db, &copied).is_err() {
+            return false;
+        }
     }
+    true
 }
 
 fn collect_subtree_entries(state: &ConfState, canonical_prefix: &str) -> Vec<RegistryEntry> {
@@ -787,7 +1310,7 @@ fn remap_entry(
     entry
 }
 
-fn emit_change_events(state: &ConfState, entry: &RegistryEntry, action: &str) {
+fn emit_change_events(state: &mut ConfState, entry: &RegistryEntry, action: &str) {
     let watchers = state.matching_watch_ids(entry.scope, &entry.canonical_path);
     if watchers.is_empty() {
         return;
@@ -813,12 +1336,14 @@ fn emit_change_events(state: &ConfState, entry: &RegistryEntry, action: &str) {
         push_u64(&mut msg, entry.version);
         msg.push(' ');
         push_u64(&mut msg, entry.updated_at);
-        send_line(reply_pipe_name, tid, &msg);
+        if !send_line(&reply_pipe_name, tid, &msg) {
+            state.remove_client(tid, &reply_pipe_name);
+        }
     }
 }
 
 fn emit_delete_events(
-    state: &ConfState,
+    state: &mut ConfState,
     scope: Scope,
     logical_path: &str,
     canonical_path: &str,
@@ -841,7 +1366,21 @@ fn emit_delete_events(
         push_u64(&mut msg, version);
         msg.push(' ');
         push_u64(&mut msg, updated_at);
-        send_line(reply_pipe_name, tid, &msg);
+        if !send_line(&reply_pipe_name, tid, &msg) {
+            state.remove_client(tid, &reply_pipe_name);
+        }
+    }
+}
+
+fn rollback_register(
+    db: &Database,
+    state: &mut ConfState,
+    original_entries: Vec<RegistryEntry>,
+    tx_started: bool,
+) {
+    state.entries = original_entries;
+    if tx_started {
+        let _ = db.exec("ROLLBACK");
     }
 }
 
@@ -883,7 +1422,10 @@ fn parse_scope_spec(raw: &str) -> Option<(Scope, Option<u16>)> {
         "system" | "SYSTEM" => Some((Scope::System, None)),
         "user" | "USER" => Some((Scope::User, None)),
         _ => {
-            if let Some(uid_raw) = raw.strip_prefix("user@").or_else(|| raw.strip_prefix("USER@")) {
+            if let Some(uid_raw) = raw
+                .strip_prefix("user@")
+                .or_else(|| raw.strip_prefix("USER@"))
+            {
                 return parse_u32(uid_raw).map(|uid| (Scope::User, Some(uid as u16)));
             }
             None
@@ -1016,7 +1558,14 @@ fn encode_value(value: Option<&ConfValue>) -> (&'static str, String) {
     match value {
         Some(ConfValue::String(s)) => ("string", escape_value(s)),
         Some(ConfValue::Int(v)) => ("int", format!("{}", *v)),
-        Some(ConfValue::Bool(v)) => ("bool", if *v { String::from("1") } else { String::from("0") }),
+        Some(ConfValue::Bool(v)) => (
+            "bool",
+            if *v {
+                String::from("1")
+            } else {
+                String::from("0")
+            },
+        ),
         Some(ConfValue::ExternalRef(path)) => ("external_ref", escape_value(path)),
         None => ("none", String::from("-")),
     }
@@ -1100,8 +1649,7 @@ fn uid_for_tid(tid: u32) -> Option<u16> {
         if off + ENTRY_SIZE > buf.len() {
             break;
         }
-        let entry_tid =
-            u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        let entry_tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
         if entry_tid == tid {
             return Some(u16::from_le_bytes([buf[off + 56], buf[off + 57]]));
         }
@@ -1115,9 +1663,9 @@ fn now_ms() -> u64 {
 
 fn is_valid_client_name(name: &str) -> bool {
     !name.is_empty()
-        && name
-            .bytes()
-            .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'/' | b'_' | b'-'))
+        && name.bytes().all(
+            |b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'/' | b'_' | b'-'),
+        )
 }
 
 fn is_valid_logical_path(path: &str) -> bool {
@@ -1135,7 +1683,7 @@ fn is_valid_logical_path(path: &str) -> bool {
     })
 }
 
-fn send_line(reply_pipe_name: &str, tid: u32, line: &str) {
+fn send_line(reply_pipe_name: &str, tid: u32, line: &str) -> bool {
     let resolved_reply_name;
     let reply_pipe_name = if reply_pipe_name.is_empty() {
         resolved_reply_name = format!("confd-{}", tid);
@@ -1143,54 +1691,15 @@ fn send_line(reply_pipe_name: &str, tid: u32, line: &str) {
     } else {
         reply_pipe_name
     };
-    let reply_pipe = cached_reply_pipe(reply_pipe_name);
+    let reply_pipe = anyos_std::ipc::pipe_open(reply_pipe_name);
     if reply_pipe == 0 || reply_pipe == u32::MAX {
-        return;
+        return false;
     }
     let mut msg = String::from(line);
     msg.push('\n');
     let written = anyos_std::ipc::pipe_write(reply_pipe, msg.as_bytes());
-    if written == 0 || written == u32::MAX {
-        invalidate_cached_reply_pipe(reply_pipe_name, reply_pipe);
-    }
+    written != 0 && written != u32::MAX
 }
-
-fn cached_reply_pipe(reply_pipe_name: &str) -> u32 {
-    unsafe {
-        let cache = REPLY_PIPE_CACHE.get_or_insert_with(Vec::new);
-        if let Some((_, pipe_id)) = cache
-            .iter()
-            .find(|(name, _)| name.as_str() == reply_pipe_name)
-        {
-            return *pipe_id;
-        }
-
-        let pipe_id = anyos_std::ipc::pipe_open(reply_pipe_name);
-        if pipe_id != 0 && pipe_id != u32::MAX {
-            cache.push((String::from(reply_pipe_name), pipe_id));
-        }
-        pipe_id
-    }
-}
-
-fn invalidate_cached_reply_pipe(reply_pipe_name: &str, pipe_id: u32) {
-    unsafe {
-        let Some(cache) = REPLY_PIPE_CACHE.as_mut() else {
-            return;
-        };
-        if let Some(pos) = cache
-            .iter()
-            .position(|(name, cached_id)| name.as_str() == reply_pipe_name && *cached_id == pipe_id)
-        {
-            let (_, cached_id) = cache.remove(pos);
-            if cached_id != 0 && cached_id != u32::MAX {
-                let _ = anyos_std::ipc::pipe_close(cached_id);
-            }
-        }
-    }
-}
-
-static mut REPLY_PIPE_CACHE: Option<Vec<(String, u32)>> = None;
 
 fn split_first_word(input: &str) -> (&str, &str) {
     let trimmed = input.trim();

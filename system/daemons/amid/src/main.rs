@@ -16,19 +16,14 @@ anyos_std::entry!(main);
 
 pub(crate) const DB_PATH: &str = ":memory:";
 pub(crate) const PIPE_NAME: &str = "ami";
+const THREAD_ENTRY_SIZE: usize = 80;
+const MAX_THREADS: usize = 256;
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum AmiValue {
     String(String),
     Int(i64),
     Bool(bool),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AmiValueType {
-    String = 1,
-    Int = 2,
-    Bool = 3,
 }
 
 #[derive(Clone)]
@@ -135,6 +130,18 @@ impl AmiState {
     }
 
     pub fn add_watch(&mut self, tid: u32, prefix: &str) -> u32 {
+        const MAX_WATCHES_PER_TID: usize = 32;
+
+        let mut existing_for_tid = 0usize;
+        for watch in &self.watches {
+            if watch.tid == tid {
+                existing_for_tid += 1;
+            }
+        }
+        if existing_for_tid >= MAX_WATCHES_PER_TID {
+            return 0;
+        }
+
         let id = self.next_watch_id;
         self.next_watch_id = self.next_watch_id.wrapping_add(1).max(1);
         self.watches.push(Watch {
@@ -166,6 +173,16 @@ impl AmiState {
             }
         }
         matches
+    }
+
+    pub fn remove_client(&mut self, tid: u32) {
+        self.clients.retain(|client| client.tid != tid);
+        self.watches.retain(|watch| watch.tid != tid);
+    }
+
+    pub fn prune_dead_clients(&mut self) {
+        self.clients.retain(|client| is_tid_alive(client.tid));
+        self.watches.retain(|watch| is_tid_alive(watch.tid));
     }
 
     pub fn list_prefix(&self, prefix: &str) -> Vec<StateEntry> {
@@ -221,6 +238,28 @@ fn main() {
     let mut pipe_buf = [0u8; 4096];
     loop {
         let active = ipc::handle_requests(&db, &mut state, pipe_id, &mut pipe_buf);
+        state.prune_dead_clients();
         anyos_std::process::sleep(if active { 20 } else { 100 });
     }
+}
+
+fn is_tid_alive(tid: u32) -> bool {
+    let mut buf = [0u8; THREAD_ENTRY_SIZE * MAX_THREADS];
+    let count = anyos_std::sys::sysinfo(1, &mut buf);
+    if count == u32::MAX {
+        return false;
+    }
+
+    for i in 0..count as usize {
+        let off = i * THREAD_ENTRY_SIZE;
+        if off + THREAD_ENTRY_SIZE > buf.len() {
+            break;
+        }
+        let entry_tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        if entry_tid == tid {
+            let state = buf[off + 5];
+            return state <= 2;
+        }
+    }
+    false
 }

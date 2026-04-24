@@ -20,6 +20,8 @@ anyos_std::entry!(main);
 pub(crate) const DB_DIR: &str = "/System/sysdb";
 pub(crate) const DB_PATH: &str = "/System/sysdb/config.db";
 pub(crate) const PIPE_NAME: &str = "confd";
+const THREAD_ENTRY_SIZE: usize = 80;
+const MAX_THREADS: usize = 256;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Scope {
@@ -251,6 +253,18 @@ impl ConfState {
         scope: Scope,
         canonical_prefix: &str,
     ) -> u32 {
+        const MAX_WATCHES_PER_CLIENT: usize = 32;
+
+        let mut existing_for_client = 0usize;
+        for watch in &self.watches {
+            if watch.tid == tid && watch.reply_pipe_name == reply_pipe_name {
+                existing_for_client += 1;
+            }
+        }
+        if existing_for_client >= MAX_WATCHES_PER_CLIENT {
+            return 0;
+        }
+
         let id = self.next_watch_id;
         self.next_watch_id = self.next_watch_id.wrapping_add(1).max(1);
         self.watches.push(Watch {
@@ -264,15 +278,9 @@ impl ConfState {
     }
 
     pub fn remove_watch(&mut self, tid: u32, reply_pipe_name: &str, watch_id: u32) -> bool {
-        let Some(pos) = self
-            .watches
-            .iter()
-            .position(|watch| {
-                watch.tid == tid
-                    && watch.reply_pipe_name == reply_pipe_name
-                    && watch.id == watch_id
-            })
-        else {
+        let Some(pos) = self.watches.iter().position(|watch| {
+            watch.tid == tid && watch.reply_pipe_name == reply_pipe_name && watch.id == watch_id
+        }) else {
             return false;
         };
         self.watches.remove(pos);
@@ -283,16 +291,33 @@ impl ConfState {
         &self,
         scope: Scope,
         canonical_path: &str,
-    ) -> Vec<(u32, &str, u32, Scope)> {
+    ) -> Vec<(u32, String, u32, Scope)> {
         let mut matches = Vec::new();
         for watch in &self.watches {
             if watch.scope == scope
                 && path_matches_prefix(canonical_path, watch.canonical_prefix.as_str())
             {
-                matches.push((watch.tid, watch.reply_pipe_name.as_str(), watch.id, watch.scope));
+                matches.push((
+                    watch.tid,
+                    watch.reply_pipe_name.clone(),
+                    watch.id,
+                    watch.scope,
+                ));
             }
         }
         matches
+    }
+
+    pub fn remove_client(&mut self, tid: u32, reply_pipe_name: &str) {
+        self.clients
+            .retain(|client| client.tid != tid || client.reply_pipe_name != reply_pipe_name);
+        self.watches
+            .retain(|watch| watch.tid != tid || watch.reply_pipe_name != reply_pipe_name);
+    }
+
+    pub fn prune_dead_clients(&mut self) {
+        self.clients.retain(|client| is_tid_alive(client.tid));
+        self.watches.retain(|watch| is_tid_alive(watch.tid));
     }
 }
 
@@ -309,7 +334,11 @@ fn main() {
     }
     anyos_std::println!(
         "[confd] lifecycle={} (t={}ms)",
-        if lifecycle.is_some() { "ok" } else { "deferred" },
+        if lifecycle.is_some() {
+            "ok"
+        } else {
+            "deferred"
+        },
         anyos_std::sys::uptime_ms().wrapping_sub(t_start)
     );
 
@@ -412,6 +441,7 @@ fn main() {
     let mut retry_counter: u32 = 0;
     loop {
         let active = ipc::handle_requests(&db, &mut state, pipe_id, &mut pipe_buf);
+        state.prune_dead_clients();
 
         if !ready_notified {
             retry_counter = retry_counter.saturating_add(1);
@@ -488,6 +518,27 @@ fn notify_failed(lifecycle: &mut Option<ServiceLifecycle>, reason: &str) {
     if let Some(svc) = lifecycle.as_mut() {
         let _ = svc.notify_failed(reason);
     }
+}
+
+fn is_tid_alive(tid: u32) -> bool {
+    let mut buf = [0u8; THREAD_ENTRY_SIZE * MAX_THREADS];
+    let count = anyos_std::sys::sysinfo(1, &mut buf);
+    if count == u32::MAX {
+        return false;
+    }
+
+    for i in 0..count as usize {
+        let off = i * THREAD_ENTRY_SIZE;
+        if off + THREAD_ENTRY_SIZE > buf.len() {
+            break;
+        }
+        let entry_tid = u32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]]);
+        if entry_tid == tid {
+            let state = buf[off + 5];
+            return state <= 2;
+        }
+    }
+    false
 }
 
 fn path_matches_prefix(path: &str, prefix: &str) -> bool {
