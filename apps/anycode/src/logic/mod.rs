@@ -8,6 +8,7 @@ pub mod git;
 pub mod language;
 pub mod tasks;
 pub mod symbols;
+pub mod symbol_index;
 pub mod diagnostics;
 pub mod live_analysis;
 pub mod diagnostic_pipeline;

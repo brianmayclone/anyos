@@ -257,6 +257,33 @@ fn self_output_uses_current_impl_associated_type() {
 }
 
 #[test]
+fn method_resolution_uses_argument_types_for_same_receiver_impls() {
+    assert_type_ok(r#"
+        trait BitOr<Rhs> {
+            type Output;
+            fn bitor(self, rhs: Rhs) -> Self::Output;
+        }
+
+        struct B0 {}
+        struct B1 {}
+
+        impl BitOr<B0> for B0 {
+            type Output = B0;
+            fn bitor(self, _: B0) -> Self::Output { B0 {} }
+        }
+
+        impl BitOr<B1> for B0 {
+            type Output = B1;
+            fn bitor(self, _: B1) -> Self::Output { B1 {} }
+        }
+
+        fn f(lhs: B0, rhs: B1) -> B1 {
+            lhs.bitor(rhs)
+        }
+    "#);
+}
+
+#[test]
 fn qualified_module_types_do_not_collide_by_leaf_name() {
     assert_type_ok(r#"
         mod fallback {

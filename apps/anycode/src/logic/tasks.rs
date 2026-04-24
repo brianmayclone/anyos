@@ -2,7 +2,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::format;
 
-use crate::logic::project::{Project, ProjectType, TargetKind};
+use crate::logic::project::{BuildConfiguration, Project, ProjectType, TargetKind};
 
 // ════════════════════════════════════════════════════════════════
 //  Task definitions — run configurations for the IDE
@@ -130,15 +130,34 @@ impl TaskManager {
             return;
         }
 
-        // Build
-        let mut build = Task::new("Build", TaskCategory::Build, &ccargo, "build", root);
-        build.display_label = String::from("ccargo build");
+        // Build configurations
+        let active_build_args = match project.active_configuration {
+            BuildConfiguration::Debug => "build",
+            BuildConfiguration::Release => "build --release",
+        };
+        let mut build = Task::new(
+            &format!("Build ({})", project.active_configuration.display_name()),
+            TaskCategory::Build,
+            &ccargo,
+            active_build_args,
+            root,
+        );
+        build.display_label = format!("ccargo {}", active_build_args);
         self.tasks.push(build);
 
-        // Build --release
-        let mut build_rel = Task::new("Build (Release)", TaskCategory::Build, &ccargo, "build --release", root);
-        build_rel.display_label = String::from("ccargo build --release");
-        self.tasks.push(build_rel);
+        let alternate = match project.active_configuration {
+            BuildConfiguration::Debug => (BuildConfiguration::Release, "build --release"),
+            BuildConfiguration::Release => (BuildConfiguration::Debug, "build"),
+        };
+        let mut build_alt = Task::new(
+            &format!("Build ({})", alternate.0.display_name()),
+            TaskCategory::Build,
+            &ccargo,
+            alternate.1,
+            root,
+        );
+        build_alt.display_label = format!("ccargo {}", alternate.1);
+        self.tasks.push(build_alt);
 
         // Check
         let mut check = Task::new("Check", TaskCategory::Check, &ccargo, "check", root);

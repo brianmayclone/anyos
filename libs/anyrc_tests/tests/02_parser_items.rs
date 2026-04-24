@@ -142,6 +142,18 @@ fn parse_trait_supertraits_with_lifetime_bound() {
 }
 
 #[test]
+fn parse_explicit_self_parameter_type() {
+    let krate = parse("impl<'a, T> IntoIterator for &'a GenericArray<T> { fn into_iter(self: &'a GenericArray<T>) -> Self::IntoIter; }");
+    match &krate.items[0] {
+        Item::Impl(impl_block) => match &impl_block.items[0] {
+            Item::Fn(f) => assert_eq!(f.params.len(), 1),
+            _ => panic!("expected fn"),
+        },
+        _ => panic!("expected impl"),
+    }
+}
+
+#[test]
 fn parse_struct() {
     let krate = parse("pub struct Point { pub x: i32, pub y: i32 }");
     match &krate.items[0] {

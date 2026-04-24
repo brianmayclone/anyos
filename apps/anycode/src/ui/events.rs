@@ -209,8 +209,7 @@ pub fn wire_sidebar() {
         let s = app();
         if s.sidebar.move_drag_payload_to_hovered_dir().is_some() {
             if let Some(ref proj) = s.current_project {
-                let root = proj.root.clone();
-                s.sidebar.refresh(&root);
+                s.sidebar.populate_project(proj, &s.task_mgr);
             }
             commands::update_status();
         }
@@ -220,7 +219,7 @@ pub fn wire_sidebar() {
     app().sidebar.tree.on_selection_changed(|e| {
         let s = app();
         let idx = e.index;
-        if idx != u32::MAX && !s.sidebar.is_directory(idx) {
+        if idx != u32::MAX && s.sidebar.is_file_node(idx) {
             if let Some(p) = s.sidebar.path_for_node(idx) {
                 let owned = String::from(p);
                 commands::open_file(&owned);
@@ -237,8 +236,7 @@ pub fn wire_sidebar() {
         if len == 0 {
             // Empty filter → refresh full tree
             if let Some(ref proj) = s.current_project {
-                let root = proj.root.clone();
-                s.sidebar.populate(&root);
+                s.sidebar.populate_project(proj, &s.task_mgr);
             }
         } else if let Ok(filter) = core::str::from_utf8(&buf[..len as usize]) {
             s.sidebar.filter_tree(filter);
@@ -257,14 +255,14 @@ pub fn wire_sidebar() {
                 let new_path = path::join(&dir, "untitled.txt");
                 let _ = anyos_std::fs::write_bytes(&new_path, b"");
                 if let Some(ref proj) = s.current_project {
-                    s.sidebar.refresh(&proj.root);
+                    s.sidebar.populate_project(proj, &s.task_mgr);
                 }
             }
             1 => {
                 let new_path = path::join(&dir, "new_folder");
                 let _ = anyos_std::fs::mkdir(&new_path);
                 if let Some(ref proj) = s.current_project {
-                    s.sidebar.refresh(&proj.root);
+                    s.sidebar.populate_project(proj, &s.task_mgr);
                 }
             }
             3 => {
@@ -274,7 +272,7 @@ pub fn wire_sidebar() {
                         let owned = String::from(p);
                         anyos_std::fs::unlink(&owned);
                         if let Some(ref proj) = s.current_project {
-                            s.sidebar.refresh(&proj.root);
+                            s.sidebar.populate_project(proj, &s.task_mgr);
                         }
                     }
                 }
@@ -291,7 +289,7 @@ pub fn wire_sidebar() {
         let s = app();
         s.sidebar.finish_rename();
         if let Some(ref proj) = s.current_project {
-            s.sidebar.refresh(&proj.root);
+            s.sidebar.populate_project(proj, &s.task_mgr);
         }
     });
 }
@@ -714,6 +712,8 @@ fn execute_palette_command(cmd_id: u32) {
         113 => commands::check(),
         114 => commands::clean(),
         115 => commands::stop(),
+        141 => commands::set_build_configuration(crate::logic::project::BuildConfiguration::Debug),
+        142 => commands::set_build_configuration(crate::logic::project::BuildConfiguration::Release),
         116 => commands::analyze_active_file(),
         117 => commands::restart_live_analysis(),
         118 => commands::clear_problems(),

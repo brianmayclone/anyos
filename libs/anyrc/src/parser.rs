@@ -1715,6 +1715,23 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if self.at_kw(Keyword::SelfValue) && self.peek_kind() == &TokenKind::Colon {
+                self.bump(); // self
+                self.expect_exact(&TokenKind::Colon);
+                let self_sym = self.interner.intern("self");
+                let pat = Pattern::Ident(self_sym, Mutability::Immutable, None, self.span_from(p_start));
+                let ty = self.parse_ty();
+                params.push(Param {
+                    pat,
+                    ty,
+                    span: self.span_from(p_start),
+                });
+                if !self.eat_exact(&TokenKind::Comma) {
+                    break;
+                }
+                continue;
+            }
+
             if self.at_kw(Keyword::SelfValue) {
                 self.bump();
                 let self_sym = self.interner.intern("self");

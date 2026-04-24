@@ -134,6 +134,8 @@ impl CommandPalette {
             (113, "Check", "Build", ""),
             (114, "Clean", "Build", ""),
             (115, "Stop", "Build", "Shift+F5"),
+            (141, "Configuration: Debug", "Build", ""),
+            (142, "Configuration: Release", "Build", ""),
             (116, "Analyze Active File", "Analyze", ""),
             (117, "Restart Live Analysis", "Analyze", ""),
             (118, "Clear Problems", "Analyze", ""),

@@ -1,7 +1,10 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use libanyui_client as ui;
 
+use crate::logic::project::{Project, TargetKind};
+use crate::logic::tasks::{TaskCategory, TaskManager};
 use crate::util::{path, syntax_map};
 
 const STYLE_BOLD: u32 = 1;
@@ -44,6 +47,7 @@ pub struct Sidebar {
     pub rename_field: ui::TextField,
     pub rename_node: u32,
     pub paths: Vec<String>,
+    pub virtual_nodes: Vec<bool>,
     mime_db: anyos_std::icons::MimeDb,
     icon_cache: IconCache,
 }
@@ -110,20 +114,64 @@ impl Sidebar {
             rename_field,
             rename_node: u32::MAX,
             paths: Vec::new(),
+            virtual_nodes: Vec::new(),
             mime_db: anyos_std::icons::MimeDb::load(),
             icon_cache: IconCache::new(),
         }
+    }
+
+    pub fn populate_project(&mut self, project: &Project, task_mgr: &TaskManager) {
+        self.tree.clear();
+        self.paths.clear();
+        self.virtual_nodes.clear();
+
+        let tc = ui::theme::colors();
+        let solution_label = format!("Solution '{}'", project.name);
+        let solution = self.tree.add_root(&solution_label);
+        self.remember_virtual(solution);
+        self.tree.set_node_style(solution, STYLE_BOLD);
+        self.tree.set_node_text_color(solution, tc.text);
+        self.tree.set_expanded(solution, true);
+
+        let project_label = format!("{} ({})", project.name, project.project_type.display_name());
+        let project_node = self.tree.add_child(solution, &project_label);
+        self.remember_virtual(project_node);
+        self.tree.set_node_style(project_node, STYLE_BOLD);
+        self.tree.set_node_text_color(project_node, tc.text);
+        self.tree.set_expanded(project_node, true);
+        self.set_folder_icon(project_node);
+
+        self.add_config_nodes(project_node, project);
+        self.add_target_nodes(project_node, project);
+        self.add_task_nodes(project_node, task_mgr);
+
+        let files_node = self.tree.add_child(project_node, "Files");
+        self.remember_virtual(files_node);
+        self.tree.set_node_style(files_node, STYLE_BOLD);
+        self.tree.set_node_text_color(files_node, tc.text);
+        self.set_folder_icon(files_node);
+        self.tree.set_expanded(files_node, true);
+
+        let root_name = path::basename(&project.root);
+        let root_node = self.tree.add_child(files_node, root_name);
+        self.remember_path(root_node, &project.root, false);
+        self.tree.set_node_style(root_node, STYLE_BOLD);
+        self.tree.set_node_text_color(root_node, tc.text);
+        self.set_folder_icon(root_node);
+        self.add_dir_entries(root_node, &project.root, 0);
+        self.tree.set_expanded(root_node, true);
     }
 
     /// Populate the tree from a root directory.
     pub fn populate(&mut self, root: &str) {
         self.tree.clear();
         self.paths.clear();
+        self.virtual_nodes.clear();
 
         let dir_name = path::basename(root);
         let tc = ui::theme::colors();
         let root_node = self.tree.add_root(dir_name);
-        self.paths.push(String::from(root));
+        self.remember_path(root_node, root, false);
         self.tree.set_node_style(root_node, STYLE_BOLD);
         self.tree.set_node_text_color(root_node, tc.text);
         // Folder icon for root
@@ -143,8 +191,26 @@ impl Sidebar {
         self.paths.get(index as usize).map(|s| s.as_str())
     }
 
+    pub fn is_virtual_node(&self, index: u32) -> bool {
+        self.virtual_nodes
+            .get(index as usize)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    pub fn is_file_node(&self, index: u32) -> bool {
+        !self.is_virtual_node(index)
+            && self
+                .path_for_node(index)
+                .map(|p| !p.is_empty() && !path::is_directory(p))
+                .unwrap_or(false)
+    }
+
     /// Check if the given node index is a directory.
     pub fn is_directory(&self, index: u32) -> bool {
+        if self.is_virtual_node(index) {
+            return false;
+        }
         match self.path_for_node(index) {
             Some(p) => path::is_directory(p),
             None => false,
@@ -160,6 +226,9 @@ impl Sidebar {
         }
         match self.path_for_node(sel) {
             Some(p) => {
+                if self.is_virtual_node(sel) {
+                    return None;
+                }
                 if path::is_directory(p) {
                     Some(String::from(p))
                 } else {
@@ -187,6 +256,7 @@ impl Sidebar {
             return None;
         }
         match self.path_for_node(hovered) {
+            Some(_) if self.is_virtual_node(hovered) => None,
             Some(p) if path::is_directory(p) => Some(String::from(p)),
             Some(p) => Some(String::from(path::parent(p))),
             None => None,
@@ -200,7 +270,11 @@ impl Sidebar {
             return;
         }
         if let Some(p) = self.path_for_node(sel) {
-            ui::drag_set_text(p);
+            if self.is_virtual_node(sel) {
+                ui::drag_set_text("");
+            } else {
+                ui::drag_set_text(p);
+            }
         } else {
             ui::drag_set_text("");
         }
@@ -243,8 +317,9 @@ impl Sidebar {
             return;
         }
         let name = match self.path_for_node(sel) {
-            Some(p) => String::from(path::basename(p)),
+            Some(p) if !self.is_virtual_node(sel) => String::from(path::basename(p)),
             None => return,
+            _ => return,
         };
         self.rename_node = sel;
         self.rename_field.set_text(&name);
@@ -299,11 +374,12 @@ impl Sidebar {
         let root = self.paths[0].clone();
         self.tree.clear();
         self.paths.clear();
+        self.virtual_nodes.clear();
 
         let tc = ui::theme::colors();
         let dir_name = path::basename(&root);
         let root_node = self.tree.add_root(dir_name);
-        self.paths.push(root.clone());
+        self.remember_path(root_node, &root, false);
         self.tree.set_node_style(root_node, STYLE_BOLD);
         self.tree.set_node_text_color(root_node, tc.text);
         self.set_folder_icon(root_node);
@@ -337,7 +413,7 @@ impl Sidebar {
 
             if entry.is_dir() {
                 let node = self.tree.add_child(parent_node, &entry.name);
-                self.paths.push(full.clone());
+                self.remember_path(node, &full, false);
                 self.tree.set_node_style(node, STYLE_BOLD);
                 self.tree.set_node_text_color(node, tc.text);
                 self.set_folder_icon(node);
@@ -347,7 +423,7 @@ impl Sidebar {
                 let name_lower = ascii_lower(&entry.name);
                 if name_lower.contains(filter_lower.as_str()) {
                     let node = self.tree.add_child(parent_node, &entry.name);
-                    self.paths.push(full);
+                    self.remember_path(node, &full, false);
                     let icon_color = language_icon_color(syntax_map::language_for_filename(&entry.name));
                     if icon_color != 0 {
                         self.tree.set_node_text_color(node, icon_color);
@@ -420,7 +496,7 @@ impl Sidebar {
         let tc = ui::theme::colors();
         for (name, full_path) in &dirs {
             let node = self.tree.add_child(parent_node, name);
-            self.paths.push(full_path.clone());
+            self.remember_path(node, full_path, false);
             self.tree.set_node_style(node, STYLE_BOLD);
             self.tree.set_node_text_color(node, tc.text);
             self.set_folder_icon(node);
@@ -429,7 +505,7 @@ impl Sidebar {
 
         for (name, full_path) in &files {
             let node = self.tree.add_child(parent_node, name);
-            self.paths.push(full_path.clone());
+            self.remember_path(node, full_path, false);
 
             let icon_color = language_icon_color(syntax_map::language_for_filename(name));
             if icon_color != 0 {
@@ -439,6 +515,146 @@ impl Sidebar {
             }
             self.set_file_icon(node, name);
         }
+    }
+
+    fn add_config_nodes(&mut self, project_node: u32, project: &Project) {
+        let tc = ui::theme::colors();
+        let root = self.tree.add_child(project_node, "Configurations");
+        self.remember_virtual(root);
+        self.tree.set_node_style(root, STYLE_BOLD);
+        self.tree.set_node_text_color(root, tc.text);
+        self.tree.set_expanded(root, true);
+
+        for config in &project.configurations {
+            let prefix = if *config == project.active_configuration {
+                "* "
+            } else {
+                "  "
+            };
+            let label = format!("{}{}", prefix, config.display_name());
+            let node = self.tree.add_child(root, &label);
+            self.remember_virtual(node);
+            self.tree.set_node_text_color(
+                node,
+                if *config == project.active_configuration {
+                    tc.accent
+                } else {
+                    tc.text_secondary
+                },
+            );
+        }
+    }
+
+    fn add_target_nodes(&mut self, project_node: u32, project: &Project) {
+        let tc = ui::theme::colors();
+        let count = project.target_count();
+        let label = format!("Targets ({})", count);
+        let root = self.tree.add_child(project_node, &label);
+        self.remember_virtual(root);
+        self.tree.set_node_style(root, STYLE_BOLD);
+        self.tree.set_node_text_color(root, tc.text);
+        self.tree.set_expanded(root, true);
+
+        for target in &project.cargo_targets {
+            let label = format!("{} {}", target.kind.label(), target.name);
+            let node = self.tree.add_child(root, &label);
+            self.remember_virtual(node);
+            self.tree.set_node_text_color(node, target_color(&target.kind));
+        }
+
+        for member in &project.workspace_members {
+            let member_label = format!("member {}", member.name);
+            let member_node = self.tree.add_child(root, &member_label);
+            self.remember_virtual(member_node);
+            self.tree.set_node_style(member_node, STYLE_BOLD);
+            self.tree.set_node_text_color(member_node, tc.text_secondary);
+            for target in &member.targets {
+                let label = format!("{} {}", target.kind.label(), target.name);
+                let node = self.tree.add_child(member_node, &label);
+                self.remember_virtual(node);
+                self.tree.set_node_text_color(node, target_color(&target.kind));
+            }
+            self.tree.set_expanded(member_node, true);
+        }
+
+        for target in &project.make_targets {
+            let label = if target.is_phony {
+                format!("make {} (phony)", target.name)
+            } else {
+                format!("make {}", target.name)
+            };
+            let node = self.tree.add_child(root, &label);
+            self.remember_virtual(node);
+            self.tree.set_node_text_color(node, tc.text_secondary);
+        }
+
+        for script in &project.npm_scripts {
+            let label = format!("npm {} - {}", script.name, script.command);
+            let node = self.tree.add_child(root, &label);
+            self.remember_virtual(node);
+            self.tree.set_node_text_color(node, tc.text_secondary);
+        }
+    }
+
+    fn add_task_nodes(&mut self, project_node: u32, task_mgr: &TaskManager) {
+        let tc = ui::theme::colors();
+        let label = format!("Build & Run ({})", task_mgr.tasks.len());
+        let root = self.tree.add_child(project_node, &label);
+        self.remember_virtual(root);
+        self.tree.set_node_style(root, STYLE_BOLD);
+        self.tree.set_node_text_color(root, tc.text);
+        self.tree.set_expanded(root, true);
+
+        for category in [
+            TaskCategory::Build,
+            TaskCategory::Run,
+            TaskCategory::Test,
+            TaskCategory::Check,
+            TaskCategory::Clean,
+            TaskCategory::Custom,
+        ] {
+            let tasks = task_mgr.tasks_by_category(category);
+            if tasks.is_empty() {
+                continue;
+            }
+            let cat_label = format!("{} ({})", category.label(), tasks.len());
+            let cat_node = self.tree.add_child(root, &cat_label);
+            self.remember_virtual(cat_node);
+            self.tree.set_node_style(cat_node, STYLE_BOLD);
+            self.tree.set_node_text_color(cat_node, tc.text_secondary);
+            self.tree.set_expanded(cat_node, true);
+            for task in tasks {
+                let node = self.tree.add_child(cat_node, &task.display_label);
+                self.remember_virtual(node);
+                self.tree.set_node_text_color(node, tc.text_secondary);
+            }
+        }
+    }
+
+    fn remember_path(&mut self, node: u32, path: &str, is_virtual: bool) {
+        let idx = node as usize;
+        while self.paths.len() <= idx {
+            self.paths.push(String::new());
+        }
+        while self.virtual_nodes.len() <= idx {
+            self.virtual_nodes.push(true);
+        }
+        self.paths[idx] = String::from(path);
+        self.virtual_nodes[idx] = is_virtual;
+    }
+
+    fn remember_virtual(&mut self, node: u32) {
+        self.remember_path(node, "", true);
+    }
+}
+
+fn target_color(kind: &TargetKind) -> u32 {
+    match kind {
+        TargetKind::Binary => 0xFF4EC9B0,
+        TargetKind::Library => 0xFF569CD6,
+        TargetKind::Example => 0xFFDCDCAA,
+        TargetKind::Test => 0xFFB5CEA8,
+        TargetKind::Bench => 0xFFC586C0,
     }
 }
 

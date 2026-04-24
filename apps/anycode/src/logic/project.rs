@@ -1,4 +1,5 @@
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use alloc::format;
 use crate::util::path;
@@ -114,6 +115,8 @@ pub struct Project {
     pub root: String,
     pub project_type: ProjectType,
     pub name: String,
+    pub configurations: Vec<BuildConfiguration>,
+    pub active_configuration: BuildConfiguration,
 
     // Cargo-specific
     pub cargo_targets: Vec<CargoTarget>,
@@ -137,6 +140,21 @@ pub enum BuildType {
     SingleFile,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum BuildConfiguration {
+    Debug,
+    Release,
+}
+
+impl BuildConfiguration {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Debug => "Debug",
+            Self::Release => "Release",
+        }
+    }
+}
+
 impl Project {
     /// Open a folder as a project — auto-detects type and parses metadata.
     pub fn open(root_path: &str) -> Self {
@@ -145,6 +163,8 @@ impl Project {
             root: String::from(root_path),
             project_type,
             name: String::from(path::basename(root_path)),
+            configurations: vec![BuildConfiguration::Debug, BuildConfiguration::Release],
+            active_configuration: BuildConfiguration::Debug,
             cargo_targets: Vec::new(),
             workspace_members: Vec::new(),
             is_workspace: false,
@@ -157,6 +177,30 @@ impl Project {
         };
         proj.scan_metadata();
         proj
+    }
+
+    pub fn display_context(&self) -> String {
+        format!(
+            "{} | {} | {}",
+            self.name,
+            self.project_type.display_name(),
+            self.active_configuration.display_name()
+        )
+    }
+
+    pub fn target_count(&self) -> usize {
+        self.cargo_targets.len()
+            + self.make_targets.len()
+            + self.npm_scripts.len()
+            + self
+                .workspace_members
+                .iter()
+                .map(|member| member.targets.len())
+                .sum::<usize>()
+    }
+
+    pub fn set_active_configuration(&mut self, config: BuildConfiguration) {
+        self.active_configuration = config;
     }
 
     /// Re-scan project metadata (e.g. after file changes).

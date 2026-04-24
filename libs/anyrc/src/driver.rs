@@ -1433,6 +1433,9 @@ fn use_item_supports_interface(
     if root_name == "crate" || root_name == "self" || root_name == "super" {
         return true;
     }
+    if !local_names.iter().any(|name| *name == root) {
+        return true;
+    }
     local_names.iter().any(|name| *name == root)
 }
 

@@ -2095,8 +2095,9 @@ impl<'a> TypeChecker<'a> {
                 }
 
                 if let TyKind::Adt(def_id, _) = &inner_ty {
-                    if let Some(methods) = self.impl_methods_by_type.get(def_id) {
-                        if let Some((_, method_def_id)) = methods.iter().find(|(n, _)| *n == *method_name) {
+                    if let Some(methods) = self.impl_methods_by_type.get(def_id).cloned() {
+                        let mut fallback: Option<(Vec<TyKind>, TyKind)> = None;
+                        for (_, method_def_id) in methods.iter().filter(|(n, _)| *n == *method_name) {
                             if let Some((param_tys, ret_ty)) = self.fn_sigs.get(method_def_id).cloned() {
                                 let (param_tys, ret_ty) = if let Some(self_param_ty) = param_tys.first() {
                                     let impl_substs = self
@@ -2117,21 +2118,39 @@ impl<'a> TypeChecker<'a> {
                                     (param_tys, ret_ty)
                                 };
                                 let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
-                                if args.len() != user_params.len() {
-                                    self.error(expr.span, &format!(
-                                        "wrong number of arguments for method {}: expected {}, found {}",
-                                        self.interner.resolve(*method_name),
-                                        user_params.len(),
-                                        args.len(),
-                                    ));
-                                } else {
+                                if fallback.is_none() {
+                                    fallback = Some((param_tys.clone(), ret_ty.clone()));
+                                }
+                                if args.len() == user_params.len()
+                                    && args.iter().zip(user_params.iter()).all(|(arg, pty)| {
+                                        let aty = self.get_expr_ty_cached(arg);
+                                        self.ty_matches_for_candidate(pty, &aty)
+                                    })
+                                {
                                     for (arg, pty) in args.iter().zip(user_params.iter()) {
                                         let aty = self.get_expr_ty_cached(arg);
                                         self.unify(pty, &aty, arg.span);
                                     }
+                                    return ret_ty;
                                 }
-                                return ret_ty;
                             }
+                        }
+                        if let Some((param_tys, ret_ty)) = fallback {
+                            let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
+                            if args.len() != user_params.len() {
+                                self.error(expr.span, &format!(
+                                    "wrong number of arguments for method {}: expected {}, found {}",
+                                    self.interner.resolve(*method_name),
+                                    user_params.len(),
+                                    args.len(),
+                                ));
+                            } else {
+                                for (arg, pty) in args.iter().zip(user_params.iter()) {
+                                    let aty = self.get_expr_ty_cached(arg);
+                                    self.unify(pty, &aty, arg.span);
+                                }
+                            }
+                            return ret_ty;
                         }
                     }
 

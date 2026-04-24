@@ -927,15 +927,38 @@ pub fn show_recent_projects() {
         .show_recent_projects(&s.config.recent_projects);
 }
 
+pub fn set_build_configuration(config: project::BuildConfiguration) {
+    let s = app();
+    let project_context = {
+        let proj = match s.current_project.as_mut() {
+            Some(proj) => proj,
+            None => {
+                s.status.set_analysis_status("No workspace open");
+                return;
+            }
+        };
+        proj.set_active_configuration(config);
+        proj.display_context()
+    };
+
+    if let Some(ref proj) = s.current_project {
+        s.task_mgr.detect_from_project(proj);
+        s.run_panel.update(&s.task_mgr);
+        s.sidebar.populate_project(proj, &s.task_mgr);
+        s.status.set_project_type(&project_context);
+    }
+}
+
 pub fn open_workspace(folder: &str, should_restore_session: bool) {
     let s = app();
     reset_workspace_views();
-    s.sidebar.populate(folder);
     let proj = project::Project::open(folder);
-    s.status.set_project_type(proj.project_type.display_name());
+    let project_context = proj.display_context();
 
     s.task_mgr.detect_from_project(&proj);
     s.run_panel.update(&s.task_mgr);
+    s.sidebar.populate_project(&proj, &s.task_mgr);
+    s.status.set_project_type(&project_context);
 
     s.git_state.is_repo = git::is_git_repo(folder);
     if s.git_state.is_repo {

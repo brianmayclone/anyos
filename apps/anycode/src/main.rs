@@ -412,7 +412,7 @@ fn build_and_run(
         s.extensions_panel.update(&s.plugin_mgr);
 
         if let Some(ref proj) = s.current_project {
-            s.status.set_project_type(proj.project_type.display_name());
+            s.status.set_project_type(&proj.display_context());
             s.output.start_shell(&proj.root);
         }
 
