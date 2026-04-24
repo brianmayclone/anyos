@@ -1,6 +1,6 @@
-use alloc::vec::Vec;
-use crate::{Control, Widget, lib, events, KIND_DATA_GRID};
 use crate::events::SelectionChangedEvent;
+use crate::{events, lib, Control, Widget, KIND_DATA_GRID};
+use alloc::vec::Vec;
 
 leaf_control!(DataGrid, KIND_DATA_GRID);
 
@@ -63,19 +63,25 @@ impl DataGrid {
     pub fn new(w: u32, h: u32) -> Self {
         let id = (lib().create_control)(KIND_DATA_GRID, core::ptr::null(), 0);
         (lib().set_size)(id, w, h);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Wrap an existing control ID as a DataGrid.
     pub fn from_id(id: u32) -> Self {
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Define columns from a slice of ColumnDef builders.
     pub fn set_columns(&self, cols: &[ColumnDef]) {
         let mut buf = Vec::new();
         for (i, col) in cols.iter().enumerate() {
-            if i > 0 { buf.push(0x1E); } // record separator
+            if i > 0 {
+                buf.push(0x1E);
+            } // record separator
             buf.extend_from_slice(&col.header);
             buf.push(0x1F); // unit separator
             write_u32_ascii(&mut buf, col.width);
@@ -107,9 +113,13 @@ impl DataGrid {
     pub fn set_data(&self, rows: &[Vec<&str>]) {
         let mut buf = Vec::new();
         for (ri, row) in rows.iter().enumerate() {
-            if ri > 0 { buf.push(0x1E); }
+            if ri > 0 {
+                buf.push(0x1E);
+            }
             for (ci, cell) in row.iter().enumerate() {
-                if ci > 0 { buf.push(0x1F); }
+                if ci > 0 {
+                    buf.push(0x1F);
+                }
                 buf.extend_from_slice(cell.as_bytes());
             }
         }
@@ -273,7 +283,9 @@ impl DataGrid {
             buf.extend_from_slice(&end.to_le_bytes());
             buf.extend_from_slice(&color.to_le_bytes());
             buf.push(filled);
-            buf.push(0); buf.push(0); buf.push(0); // padding
+            buf.push(0);
+            buf.push(0);
+            buf.push(0); // padding
         }
         (lib().datagrid_set_connectors)(self.ctrl.id, buf.as_ptr(), lines.len() as u32);
     }

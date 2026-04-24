@@ -1,4 +1,4 @@
-use crate::{lib, events};
+use crate::{events, lib};
 
 /// Menu item flags.
 pub const MENU_FLAG_DISABLED: u32 = 0x01;

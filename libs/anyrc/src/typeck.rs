@@ -4468,6 +4468,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 TyKind::Error
             }
+            HirTy::MacroCall(_, _) => TyKind::Error,
             HirTy::Never(_) => TyKind::Never,
             HirTy::Infer(_) => TyKind::Error,
         }

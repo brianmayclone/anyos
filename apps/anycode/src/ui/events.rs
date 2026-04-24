@@ -326,12 +326,18 @@ pub fn wire_search_panel() {
 
 pub fn wire_run_panel() {
     app().run_panel.btn_run.on_click(|_| commands::run());
-    app().run_panel.btn_debug.on_click(|_| commands::start_debugging());
+    app()
+        .run_panel
+        .btn_debug
+        .on_click(|_| commands::start_debugging());
     app()
         .run_panel
         .btn_continue
         .on_click(|_| commands::debug_continue());
-    app().run_panel.btn_pause.on_click(|_| commands::debug_pause());
+    app()
+        .run_panel
+        .btn_pause
+        .on_click(|_| commands::debug_pause());
     app()
         .run_panel
         .btn_step_over
@@ -456,18 +462,15 @@ pub fn wire_problems_panel() {
         .problems_panel
         .btn_all
         .on_click(|_| commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::All));
-    app()
-        .problems_panel
-        .btn_errors
-        .on_click(|_| commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Errors));
-    app()
-        .problems_panel
-        .btn_warnings
-        .on_click(|_| commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Warnings));
-    app()
-        .problems_panel
-        .btn_current_file
-        .on_click(|_| commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::CurrentFile));
+    app().problems_panel.btn_errors.on_click(|_| {
+        commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Errors)
+    });
+    app().problems_panel.btn_warnings.on_click(|_| {
+        commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Warnings)
+    });
+    app().problems_panel.btn_current_file.on_click(|_| {
+        commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::CurrentFile)
+    });
 
     app().problems_panel.tree.on_selection_changed(|e| {
         let s = app();
@@ -600,6 +603,27 @@ pub fn wire_editor() {
         commands::close_tab(e.index as usize);
     });
 
+    app()
+        .editor_view
+        .context_menu
+        .on_item_click(|e| match e.index {
+            0 => commands::show_completion_list(),
+            1 => commands::go_to_definition_at_cursor(),
+            2 => commands::peek_symbol_at_cursor(),
+            3 => commands::fold_block_at_cursor(),
+            4 => commands::editor_cut(),
+            5 => commands::editor_copy(),
+            6 => commands::editor_paste(),
+            7 => commands::editor_select_all(),
+            8 => commands::ai_action(ai::CodeAction::Explain),
+            _ => {}
+        });
+
+    app().editor_view.completion_list.on_selection_changed(|e| {
+        commands::update_completion_detail(e.index as usize);
+        commands::accept_completion(e.index as usize);
+    });
+
     app().side_editor_view.tab_bar.on_active_changed(|e| {
         let s = app();
         let idx = e.index as usize;
@@ -619,6 +643,25 @@ pub fn wire_editor() {
 pub fn wire_editor_text_changed(editor_index: usize) {
     let s = app();
     if let Some(editor) = s.editor_view.editor_widget(editor_index) {
+        editor.on_key_down(move |e| {
+            if editor_index != app().file_mgr.active {
+                return;
+            }
+            if e.ctrl() && e.keycode == anyui::KEY_SPACE {
+                commands::show_completion_list();
+            } else if e.ctrl() && e.keycode == b'M' as u32 {
+                commands::fold_block_at_cursor();
+            } else if e.keycode == anyui::KEY_F12 {
+                commands::go_to_definition_at_cursor();
+            } else if e.keycode == anyui::KEY_ESCAPE {
+                app().editor_view.hide_completions();
+            }
+        });
+        editor.on_mouse_enter(move |_| {
+            if editor_index == app().file_mgr.active {
+                commands::update_editor_hover();
+            }
+        });
         editor.on_text_changed(move |_| {
             let s = app();
             s.file_mgr.mark_modified(editor_index);
@@ -632,6 +675,7 @@ pub fn wire_editor_text_changed(editor_index: usize) {
                 commands::autosave_editor(editor_index);
             }
             commands::schedule_live_check(editor_index);
+            s.editor_view.hide_completions();
         });
     }
 }
@@ -734,7 +778,9 @@ fn execute_palette_command(cmd_id: u32) {
         114 => commands::clean(),
         115 => commands::stop(),
         141 => commands::set_build_configuration(crate::logic::project::BuildConfiguration::Debug),
-        142 => commands::set_build_configuration(crate::logic::project::BuildConfiguration::Release),
+        142 => {
+            commands::set_build_configuration(crate::logic::project::BuildConfiguration::Release)
+        }
         144 => commands::start_debugging(),
         145 => commands::toggle_breakpoint_at_cursor(),
         146 => commands::debug_continue(),

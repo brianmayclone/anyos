@@ -16,7 +16,9 @@ struct IconCache {
 
 impl IconCache {
     fn new() -> Self {
-        Self { entries: Vec::new() }
+        Self {
+            entries: Vec::new(),
+        }
     }
 
     /// Get or load an icon from an ICO file. Returns (pixels, w, h) or None.
@@ -28,7 +30,12 @@ impl IconCache {
         }
         // Load from disk
         if let Some(icon) = ui::Icon::load(icon_path, 16) {
-            self.entries.push((String::from(icon_path), icon.pixels, icon.width, icon.height));
+            self.entries.push((
+                String::from(icon_path),
+                icon.pixels,
+                icon.width,
+                icon.height,
+            ));
             let e = self.entries.last().unwrap();
             Some((&e.1, e.2, e.3))
         } else {
@@ -424,7 +431,8 @@ impl Sidebar {
                 if name_lower.contains(filter_lower.as_str()) {
                     let node = self.tree.add_child(parent_node, &entry.name);
                     self.remember_path(node, &full, false);
-                    let icon_color = language_icon_color(syntax_map::language_for_filename(&entry.name));
+                    let icon_color =
+                        language_icon_color(syntax_map::language_for_filename(&entry.name));
                     if icon_color != 0 {
                         self.tree.set_node_text_color(node, icon_color);
                     } else {
@@ -559,7 +567,8 @@ impl Sidebar {
             let label = format!("{} {}", target.kind.label(), target.name);
             let node = self.tree.add_child(root, &label);
             self.remember_virtual(node);
-            self.tree.set_node_text_color(node, target_color(&target.kind));
+            self.tree
+                .set_node_text_color(node, target_color(&target.kind));
         }
 
         for member in &project.workspace_members {
@@ -567,12 +576,14 @@ impl Sidebar {
             let member_node = self.tree.add_child(root, &member_label);
             self.remember_virtual(member_node);
             self.tree.set_node_style(member_node, STYLE_BOLD);
-            self.tree.set_node_text_color(member_node, tc.text_secondary);
+            self.tree
+                .set_node_text_color(member_node, tc.text_secondary);
             for target in &member.targets {
                 let label = format!("{} {}", target.kind.label(), target.name);
                 let node = self.tree.add_child(member_node, &label);
                 self.remember_virtual(node);
-                self.tree.set_node_text_color(node, target_color(&target.kind));
+                self.tree
+                    .set_node_text_color(node, target_color(&target.kind));
             }
             self.tree.set_expanded(member_node, true);
         }
@@ -672,10 +683,21 @@ fn ascii_lower(s: &str) -> String {
 
 /// Directories to hide from the explorer tree.
 fn is_hidden_dir(name: &str) -> bool {
-    matches!(name,
-        ".git" | ".svn" | ".hg" | ".vscode" | ".idea" |
-        "target" | "build" | "node_modules" | "__pycache__" |
-        ".cache" | ".npm" | "dist" | ".next"
+    matches!(
+        name,
+        ".git"
+            | ".svn"
+            | ".hg"
+            | ".vscode"
+            | ".idea"
+            | "target"
+            | "build"
+            | "node_modules"
+            | "__pycache__"
+            | ".cache"
+            | ".npm"
+            | "dist"
+            | ".next"
     )
 }
 

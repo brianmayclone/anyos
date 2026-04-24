@@ -1227,7 +1227,8 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
         st.controls.push(sidebar_title);
         add_child_to_parent(sidebar_id, sidebar_title_id);
 
-        for (index, (&btn_id, &label)) in place_btn_ids.iter().zip(PLACE_LABELS.iter()).enumerate() {
+        for (index, (&btn_id, &label)) in place_btn_ids.iter().zip(PLACE_LABELS.iter()).enumerate()
+        {
             let mut btn = controls::create_control(
                 ControlKind::Button,
                 btn_id,
@@ -1276,7 +1277,11 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
             0,
             120,
             24,
-            if show_files { b"Folders and files" } else { b"Folders" },
+            if show_files {
+                b"Folders and files"
+            } else {
+                b"Folders"
+            },
         );
         main_title.base_mut().dock = DockStyle::Top;
         main_title.base_mut().margin.left = 16;

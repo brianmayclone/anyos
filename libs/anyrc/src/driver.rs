@@ -1283,7 +1283,9 @@ fn collect_const_refs_in_ty(
                 collect_const_refs_in_path(&bound.path, out);
             }
         }
-        crate::hir::HirTy::Infer(_) | crate::hir::HirTy::Never(_) => {}
+        crate::hir::HirTy::MacroCall(_, _)
+        | crate::hir::HirTy::Infer(_)
+        | crate::hir::HirTy::Never(_) => {}
     }
 }
 
@@ -1611,6 +1613,12 @@ fn render_ty(ty: &crate::hir::HirTy, interner: &Interner) -> String {
                 .map(|b| render_path(&b.path, interner))
                 .collect();
             format!("dyn {}", rendered.join(" + "))
+        }
+        crate::hir::HirTy::MacroCall(name, _) => {
+            let mut out = String::new();
+            out.push_str(interner.resolve(*name));
+            out.push_str("![..]");
+            out
         }
         crate::hir::HirTy::Infer(_) => "_".to_string(),
         crate::hir::HirTy::Never(_) => "!".to_string(),

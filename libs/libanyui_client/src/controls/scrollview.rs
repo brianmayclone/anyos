@@ -1,12 +1,16 @@
-use crate::{Container, Control, Widget, lib, events, KIND_SCROLL_VIEW};
 use crate::events::ScrollChangedEvent;
+use crate::{events, lib, Container, Control, Widget, KIND_SCROLL_VIEW};
 
 container_control!(ScrollView, KIND_SCROLL_VIEW);
 
 impl ScrollView {
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_SCROLL_VIEW, core::ptr::null(), 0);
-        Self { container: Container { ctrl: Control { id } } }
+        Self {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
     }
 
     pub fn on_scroll(&self, mut f: impl FnMut(&ScrollChangedEvent) + 'static) {

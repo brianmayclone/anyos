@@ -235,7 +235,10 @@ impl OutputPanel {
 
         anyos_std::fs::chdir(working_dir);
         let tid = anyos_std::process::spawn_piped_full(
-            "/System/bin/sh", "sh -i", stdout_pipe, stdin_pipe,
+            "/System/bin/sh",
+            "sh -i",
+            stdout_pipe,
+            stdin_pipe,
         );
         if tid == u32::MAX {
             anyos_std::ipc::pipe_close(stdout_pipe);

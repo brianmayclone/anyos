@@ -90,15 +90,22 @@ impl Control for PlainButton {
             let ix = x + (w as i32 - self.icon_w as i32) / 2;
             let iy = y + (h as i32 - self.icon_h as i32) / 2;
             super::icon_button::blit_alpha_opacity(
-                surface, ix, iy,
-                self.icon_w, self.icon_h,
+                surface,
+                ix,
+                iy,
+                self.icon_w,
+                self.icon_h,
                 &self.icon_pixels,
                 icon_opacity,
             );
         } else if b.state > 0 {
             // Legacy pixel-art icon
             let default_icon_sz = crate::theme::scale_i32(16);
-            let icon_color = if disabled { tc.text_disabled } else { tc.text_secondary };
+            let icon_color = if disabled {
+                tc.text_disabled
+            } else {
+                tc.text_secondary
+            };
             let ix = x + (w as i32 - default_icon_sz) / 2;
             let iy = y + (h as i32 - default_icon_sz) / 2;
             crate::icons::draw_icon(surface, ix, iy, b.state, icon_color);
@@ -115,7 +122,14 @@ impl Control for PlainButton {
             let (tw, _) = crate::draw::text_size_at(&self.text_base.text, font_size);
             let tx = x + (w as i32 - tw as i32) / 2;
             let ty = y + (h as i32 - font_size as i32) / 2;
-            crate::draw::draw_text_sized(surface, tx, ty, text_color, &self.text_base.text, font_size);
+            crate::draw::draw_text_sized(
+                surface,
+                tx,
+                ty,
+                text_color,
+                &self.text_base.text,
+                font_size,
+            );
         }
     }
 

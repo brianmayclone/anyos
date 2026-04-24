@@ -13,6 +13,8 @@
 //! if args.has(b'l') { /* long format */ }
 //! ```
 
+use crate::{String, Vec};
+
 const MAX_FLAGS: usize = 16;
 const MAX_POSITIONAL: usize = 32;
 const MAX_OPTS: usize = 8;
@@ -150,6 +152,67 @@ fn tokenize_quoted<'a>(raw: &'a str, out: &mut [&'a str], max: usize) -> usize {
     }
 
     count
+}
+
+/// Tokenize a raw argument string respecting POSIX shell quoting.
+///
+/// Unlike [`parse`], this preserves long options and argument order exactly,
+/// making it suitable for Cargo-like command lines.
+pub fn tokenize(raw: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let bytes = raw.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+
+    while i < len {
+        if bytes[i] == b' ' || bytes[i] == b'\t' {
+            i += 1;
+            continue;
+        }
+
+        let mut token = String::new();
+        while i < len && bytes[i] != b' ' && bytes[i] != b'\t' {
+            if bytes[i] == b'\'' {
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    token.push(bytes[i] as char);
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
+            } else if bytes[i] == b'"' {
+                i += 1;
+                while i < len && bytes[i] != b'"' {
+                    if bytes[i] == b'\\' && i + 1 < len {
+                        let next = bytes[i + 1];
+                        if next == b'"' || next == b'\\' {
+                            token.push(next as char);
+                            i += 2;
+                            continue;
+                        }
+                    }
+                    token.push(bytes[i] as char);
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
+            } else if bytes[i] == b'\\' && i + 1 < len {
+                i += 1;
+                token.push(bytes[i] as char);
+                i += 1;
+            } else {
+                token.push(bytes[i] as char);
+                i += 1;
+            }
+        }
+        if !token.is_empty() {
+            tokens.push(token);
+        }
+    }
+
+    tokens
 }
 
 /// Parse a raw argument string into flags, options, and positional args.

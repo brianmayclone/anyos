@@ -1,4 +1,4 @@
-use crate::{lib, events};
+use crate::{events, lib};
 
 /// A system tray icon (16×16 ARGB, displayed in the menu bar).
 ///

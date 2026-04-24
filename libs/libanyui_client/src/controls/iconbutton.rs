@@ -1,6 +1,6 @@
-use crate::{Control, Widget, lib, events, KIND_ICON_BUTTON};
 use crate::events::ClickEvent;
 use crate::icon::IconType;
+use crate::{events, lib, Control, Widget, KIND_ICON_BUTTON};
 
 // ── Legacy Icon ID constants (kept for backwards compatibility) ──────
 pub const ICON_NEW_FILE: u32 = 1;
@@ -20,8 +20,11 @@ leaf_control!(IconButton, KIND_ICON_BUTTON);
 
 impl IconButton {
     pub fn new(icon_text: &str) -> Self {
-        let id = (lib().create_control)(KIND_ICON_BUTTON, icon_text.as_ptr(), icon_text.len() as u32);
-        Self { ctrl: Control { id } }
+        let id =
+            (lib().create_control)(KIND_ICON_BUTTON, icon_text.as_ptr(), icon_text.len() as u32);
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Set a system SVG icon by name from ico.pak.
@@ -35,7 +38,12 @@ impl IconButton {
     /// ```
     pub fn set_system_icon(&self, name: &str, icon_type: IconType, color: u32, size: u32) {
         if let Some(icon) = crate::icon::Icon::system(name, icon_type, color, size) {
-            (lib().iconbutton_set_pixels)(self.ctrl.id, icon.pixels.as_ptr(), icon.width, icon.height);
+            (lib().iconbutton_set_pixels)(
+                self.ctrl.id,
+                icon.pixels.as_ptr(),
+                icon.width,
+                icon.height,
+            );
         }
     }
 

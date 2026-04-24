@@ -22,13 +22,13 @@ const ICON_SZ: u32 = 24;
 const BUTTON_COUNT: usize = 7;
 
 const ICON_NAMES: [&str; BUTTON_COUNT] = [
-    "files",        // 0: Explorer
-    "git-branch",   // 1: Source Control
-    "search",       // 2: Search
-    "player-play",  // 3: Run & Debug
-    "list-tree",    // 4: Outline
-    "sparkles",     // 5: AI Assistant
-    "puzzle",       // 6: Extensions
+    "files",       // 0: Explorer
+    "git-branch",  // 1: Source Control
+    "search",      // 2: Search
+    "player-play", // 3: Run & Debug
+    "list-tree",   // 4: Outline
+    "sparkles",    // 5: AI Assistant
+    "puzzle",      // 6: Extensions
 ];
 
 const TOOLTIP_KEYS: [&str; BUTTON_COUNT] = [
@@ -110,15 +110,28 @@ impl ActivityBar {
         self.active_index = index;
         let tc = ui::theme::colors();
         let btns: [&ui::PlainButton; BUTTON_COUNT] = [
-            &self.btn_files, &self.btn_git, &self.btn_search,
-            &self.btn_run, &self.btn_outline, &self.btn_ai, &self.btn_extensions,
+            &self.btn_files,
+            &self.btn_git,
+            &self.btn_search,
+            &self.btn_run,
+            &self.btn_outline,
+            &self.btn_ai,
+            &self.btn_extensions,
         ];
         for (i, btn) in btns.iter().enumerate() {
-            let color = if i as u32 == index { tc.text } else { tc.text_secondary };
+            let color = if i as u32 == index {
+                tc.text
+            } else {
+                tc.text_secondary
+            };
             btn.set_system_icon(ICON_NAMES[i], IconType::Outline, color, ICON_SZ);
         }
         for (i, ind) in self.indicators.iter().enumerate() {
-            ind.set_color(if i as u32 == index { tc.check_mark } else { 0x00000000 });
+            ind.set_color(if i as u32 == index {
+                tc.check_mark
+            } else {
+                0x00000000
+            });
         }
     }
 }

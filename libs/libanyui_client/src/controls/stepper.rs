@@ -1,12 +1,14 @@
-use crate::{Control, Widget, lib, events, KIND_STEPPER};
 use crate::events::ValueChangedEvent;
+use crate::{events, lib, Control, Widget, KIND_STEPPER};
 
 leaf_control!(Stepper, KIND_STEPPER);
 
 impl Stepper {
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_STEPPER, core::ptr::null(), 0);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     pub fn on_value_changed(&self, mut f: impl FnMut(&ValueChangedEvent) + 'static) {

@@ -1,12 +1,16 @@
-use crate::{Container, Control, Widget, lib, events, KIND_TABLE_VIEW};
 use crate::events::SelectionChangedEvent;
+use crate::{events, lib, Container, Control, Widget, KIND_TABLE_VIEW};
 
 container_control!(TableView, KIND_TABLE_VIEW);
 
 impl TableView {
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_TABLE_VIEW, core::ptr::null(), 0);
-        Self { container: Container { ctrl: Control { id } } }
+        Self {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
     }
 
     pub fn on_selection_changed(&self, mut f: impl FnMut(&SelectionChangedEvent) + 'static) {

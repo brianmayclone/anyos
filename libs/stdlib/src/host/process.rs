@@ -83,7 +83,7 @@ pub fn send_signal(_tid: u32, _sig: u32) -> u32 {
 
 pub fn getargs(buf: &mut [u8]) -> usize {
     let args: Vec<std::string::String> = std::env::args().collect();
-    let joined = args.join(" ");
+    let joined = quote_join_args(&args);
     let bytes = joined.as_bytes();
     let len = bytes.len().min(buf.len());
     buf[..len].copy_from_slice(&bytes[..len]);
@@ -92,11 +92,37 @@ pub fn getargs(buf: &mut [u8]) -> usize {
 
 pub fn args(buf: &mut [u8; 256]) -> &str {
     let args: Vec<std::string::String> = std::env::args().skip(1).collect();
-    let joined = args.join(" ");
+    let joined = quote_join_args(&args);
     let bytes = joined.as_bytes();
     let len = bytes.len().min(255);
     buf[..len].copy_from_slice(&bytes[..len]);
     core::str::from_utf8(&buf[..len]).unwrap_or("")
+}
+
+fn quote_join_args(args: &[std::string::String]) -> std::string::String {
+    let mut out = std::string::String::new();
+    for (idx, arg) in args.iter().enumerate() {
+        if idx > 0 {
+            out.push(' ');
+        }
+        if arg
+            .as_bytes()
+            .iter()
+            .any(|b| matches!(*b, b' ' | b'\t' | b'"' | b'\'' | b'\\'))
+        {
+            out.push('"');
+            for ch in arg.chars() {
+                if ch == '"' || ch == '\\' {
+                    out.push('\\');
+                }
+                out.push(ch);
+            }
+            out.push('"');
+        } else {
+            out.push_str(arg);
+        }
+    }
+    out
 }
 
 pub fn shutdown() -> ! {

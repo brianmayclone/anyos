@@ -1,5 +1,5 @@
-use crate::{Control, Widget, lib, events, KIND_CANVAS};
 use crate::events::ClickEvent;
+use crate::{events, lib, Control, Widget, KIND_CANVAS};
 
 leaf_control!(Canvas, KIND_CANVAS);
 
@@ -7,7 +7,9 @@ impl Canvas {
     pub fn new(w: u32, h: u32) -> Self {
         let id = (lib().create_control)(KIND_CANVAS, core::ptr::null(), 0);
         (lib().set_size)(id, w, h);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     pub fn set_pixel(&self, x: i32, y: i32, color: u32) {
@@ -104,7 +106,16 @@ impl Canvas {
     ///
     /// `font_id`: 0 = system, 1 = bold, 2 = thin, 3 = italic, 4 = mono (Andale Mono).
     pub fn draw_text(&self, x: i32, y: i32, color: u32, font_id: u32, size: u16, text: &str) {
-        (lib().canvas_draw_text)(self.ctrl.id, x, y, color, font_id, size, text.as_ptr(), text.len() as u32);
+        (lib().canvas_draw_text)(
+            self.ctrl.id,
+            x,
+            y,
+            color,
+            font_id,
+            size,
+            text.as_ptr(),
+            text.len() as u32,
+        );
     }
 
     /// Register callback for click events.

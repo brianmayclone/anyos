@@ -331,6 +331,7 @@ pub enum Ty {
     Slice(Box<Ty>, Span),
     FnPtr(Vec<Ty>, Option<Box<Ty>>, Span),
     DynTrait(Vec<TraitBound>, Span),
+    MacroCall(Symbol, Vec<TokenTree>, Span),
     Infer(Span),
     Never(Span),
 }

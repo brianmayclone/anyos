@@ -509,6 +509,7 @@ impl<'a> LoweringContext<'a> {
                 bounds.iter().map(|b| self.lower_trait_bound(b)).collect(),
                 *span,
             ),
+            ast::Ty::MacroCall(name, _, span) => HirTy::MacroCall(*name, *span),
             ast::Ty::Infer(span) => HirTy::Infer(*span),
             ast::Ty::Never(span) => HirTy::Never(*span),
         }

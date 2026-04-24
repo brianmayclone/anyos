@@ -1,12 +1,14 @@
 use crate::events::SelectionChangedEvent;
-use crate::{Control, Widget, events, lib, KIND_COMBO_BOX};
+use crate::{events, lib, Control, Widget, KIND_COMBO_BOX};
 
 leaf_control!(ComboBox, KIND_COMBO_BOX);
 
 impl ComboBox {
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_COMBO_BOX, core::ptr::null(), 0);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     pub fn set_items(&self, items: &str) {
@@ -31,7 +33,11 @@ impl ComboBox {
 
     pub fn selected_index(&self) -> Option<u32> {
         let idx = (lib().combobox_get_selected_index)(self.ctrl.id);
-        if idx == u32::MAX { None } else { Some(idx) }
+        if idx == u32::MAX {
+            None
+        } else {
+            Some(idx)
+        }
     }
 
     pub fn on_selection_changed(&self, mut f: impl FnMut(&SelectionChangedEvent) + 'static) {

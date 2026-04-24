@@ -1,8 +1,8 @@
+use crate::util::path;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::format;
-use crate::util::path;
 
 // ════════════════════════════════════════════════════════════════
 //  Project type detection and metadata
@@ -11,12 +11,12 @@ use crate::util::path;
 /// Detected project type — determines available tasks, build commands, and UI behavior.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ProjectType {
-    Cargo,       // Rust project (Cargo.toml)
-    CMake,       // C/C++ project (CMakeLists.txt)
-    Make,        // Makefile-based project
-    Python,      // Python project (setup.py, pyproject.toml, requirements.txt)
-    NodeJS,      // Node.js project (package.json)
-    Generic,     // Unknown / single-file project
+    Cargo,   // Rust project (Cargo.toml)
+    CMake,   // C/C++ project (CMakeLists.txt)
+    Make,    // Makefile-based project
+    Python,  // Python project (setup.py, pyproject.toml, requirements.txt)
+    NodeJS,  // Node.js project (package.json)
+    Generic, // Unknown / single-file project
 }
 
 impl ProjectType {
@@ -255,7 +255,11 @@ impl Project {
         self.parse_cargo_bin_targets(&content);
 
         // If no explicit [[bin]], check for src/main.rs (implicit binary)
-        if self.cargo_targets.iter().all(|t| t.kind != TargetKind::Binary) {
+        if self
+            .cargo_targets
+            .iter()
+            .all(|t| t.kind != TargetKind::Binary)
+        {
             let main_rs = format!("{}/src/main.rs", self.root);
             if path::exists(&main_rs) {
                 self.cargo_targets.push(CargoTarget {
@@ -559,7 +563,9 @@ impl Project {
             if trimmed.starts_with("project(") || trimmed.starts_with("PROJECT(") {
                 if let Some(start) = trimmed.find('(') {
                     let rest = &trimmed[start + 1..];
-                    let name_end = rest.find(|c: char| c == ' ' || c == ')').unwrap_or(rest.len());
+                    let name_end = rest
+                        .find(|c: char| c == ' ' || c == ')')
+                        .unwrap_or(rest.len());
                     let project_name = &rest[..name_end];
                     if !project_name.is_empty() {
                         self.name = String::from(project_name);
@@ -723,9 +729,7 @@ fn has_project_marker(root: &str) -> bool {
 
 /// Legacy compat: detect_build_system
 pub fn detect_build_system(root: &str) -> BuildType {
-    if path::exists(&format!("{}/Makefile", root))
-        || path::exists(&format!("{}/makefile", root))
-    {
+    if path::exists(&format!("{}/Makefile", root)) || path::exists(&format!("{}/makefile", root)) {
         BuildType::Make
     } else {
         BuildType::SingleFile

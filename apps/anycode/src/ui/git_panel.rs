@@ -1,9 +1,9 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 use libanyui_client as ui;
 
-use crate::logic::git::{GitState, FileStatus, ChangedFile};
+use crate::logic::git::{ChangedFile, FileStatus, GitState};
 
 const STYLE_BOLD: u32 = 1;
 
@@ -122,7 +122,8 @@ impl GitPanel {
         self.file_paths.clear();
 
         let staged: Vec<&ChangedFile> = state.changed_files.iter().filter(|f| f.staged).collect();
-        let unstaged: Vec<&ChangedFile> = state.changed_files.iter().filter(|f| !f.staged).collect();
+        let unstaged: Vec<&ChangedFile> =
+            state.changed_files.iter().filter(|f| !f.staged).collect();
 
         // Staged changes section
         if !staged.is_empty() {
@@ -182,7 +183,9 @@ impl GitPanel {
         self.branch_label.set_text(t("git not found"));
         self.tree.clear();
         self.file_paths.clear();
-        let node = self.tree.add_root(t("Install git to enable source control"));
+        let node = self
+            .tree
+            .add_root(t("Install git to enable source control"));
         self.tree.set_node_text_color(node, tc.text_secondary);
         self.file_paths.push(String::new());
     }

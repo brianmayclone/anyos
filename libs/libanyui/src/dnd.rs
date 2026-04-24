@@ -58,8 +58,7 @@ pub const DND_EFFECT_NONE: u32 = 0;
 pub const DND_EFFECT_COPY: u32 = 1;
 pub const DND_EFFECT_MOVE: u32 = 2;
 pub const DND_EFFECT_LINK: u32 = 4;
-pub const DND_EFFECT_ALL: u32 =
-    DND_EFFECT_COPY | DND_EFFECT_MOVE | DND_EFFECT_LINK;
+pub const DND_EFFECT_ALL: u32 = DND_EFFECT_COPY | DND_EFFECT_MOVE | DND_EFFECT_LINK;
 
 /// Preference order when the source allows multiple effects and the target
 /// does not pick one explicitly: Move > Copy > Link.
@@ -167,7 +166,13 @@ fn scale_step(depth: i32) -> i32 {
     }
     // Linear ramp across the 24-pixel edge zone.
     let step = (depth * DND_AUTOSCROLL_STEP) / DND_AUTOSCROLL_EDGE;
-    if step < 2 { 2 } else if step > DND_AUTOSCROLL_STEP { DND_AUTOSCROLL_STEP } else { step }
+    if step < 2 {
+        2
+    } else if step > DND_AUTOSCROLL_STEP {
+        DND_AUTOSCROLL_STEP
+    } else {
+        step
+    }
 }
 
 // ── Drag threshold ──────────────────────────────────────────────────────

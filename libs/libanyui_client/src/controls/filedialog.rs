@@ -1,5 +1,5 @@
-use alloc::string::String;
 use crate::lib;
+use alloc::string::String;
 
 pub struct FileDialog;
 
@@ -8,7 +8,9 @@ impl FileDialog {
     pub fn open_folder() -> Option<String> {
         let mut buf = [0u8; 257];
         let len = (lib().open_folder_fn)(buf.as_mut_ptr(), buf.len() as u32);
-        if len == 0 { return None; }
+        if len == 0 {
+            return None;
+        }
         let s = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
         Some(String::from(s))
     }
@@ -17,7 +19,9 @@ impl FileDialog {
     pub fn open_file() -> Option<String> {
         let mut buf = [0u8; 257];
         let len = (lib().open_file_fn)(buf.as_mut_ptr(), buf.len() as u32);
-        if len == 0 { return None; }
+        if len == 0 {
+            return None;
+        }
         let s = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
         Some(String::from(s))
     }
@@ -31,7 +35,9 @@ impl FileDialog {
             default_name.as_ptr(),
             default_name.len() as u32,
         );
-        if len == 0 { return None; }
+        if len == 0 {
+            return None;
+        }
         let s = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
         Some(String::from(s))
     }
@@ -40,7 +46,9 @@ impl FileDialog {
     pub fn create_folder() -> Option<String> {
         let mut buf = [0u8; 257];
         let len = (lib().create_folder_fn)(buf.as_mut_ptr(), buf.len() as u32);
-        if len == 0 { return None; }
+        if len == 0 {
+            return None;
+        }
         let s = core::str::from_utf8(&buf[..len as usize]).unwrap_or("");
         Some(String::from(s))
     }

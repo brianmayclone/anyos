@@ -170,6 +170,11 @@ impl TextEditor {
         (lib().texteditor_ensure_line_visible)(self.ctrl.id, line);
     }
 
+    /// Toggle folding for the block around the current cursor line.
+    pub fn toggle_fold_at_cursor(&self) {
+        (lib().texteditor_toggle_fold_at_cursor)(self.ctrl.id);
+    }
+
     /// Register a typed key-down handler.
     pub fn on_key_down(&self, mut f: impl FnMut(&KeyEvent) + 'static) {
         let (thunk, ud) = events::register(move |_id, _| {

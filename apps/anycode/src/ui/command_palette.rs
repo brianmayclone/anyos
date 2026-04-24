@@ -188,7 +188,8 @@ impl CommandPalette {
         self.visible = true;
         self.overlay.set_visible(true);
         self.title_label.set_text("Command Palette");
-        self.hint_label.set_text("Run editor, workspace and AI commands");
+        self.hint_label
+            .set_text("Run editor, workspace and AI commands");
         self.input_field.set_placeholder("> Type a command...");
         self.input_field.set_text("");
         self.input_field.focus();
@@ -200,8 +201,10 @@ impl CommandPalette {
         self.visible = true;
         self.overlay.set_visible(true);
         self.title_label.set_text("Quick Open");
-        self.hint_label.set_text("Jump to files in the current workspace");
-        self.input_field.set_placeholder("Type a file name or path...");
+        self.hint_label
+            .set_text("Jump to files in the current workspace");
+        self.input_field
+            .set_placeholder("Type a file name or path...");
         self.input_field.set_text("");
         self.files.clear();
         if let Some(root) = root {
@@ -216,7 +219,8 @@ impl CommandPalette {
         self.visible = true;
         self.overlay.set_visible(true);
         self.title_label.set_text("Open Recent");
-        self.hint_label.set_text("Switch between recently used workspaces");
+        self.hint_label
+            .set_text("Switch between recently used workspaces");
         self.input_field.set_placeholder("Type a workspace path...");
         self.input_field.set_text("");
         self.projects.clear();
@@ -244,7 +248,9 @@ impl CommandPalette {
                     if !filter.is_empty() {
                         let label_lower = ascii_lower(&cmd.label);
                         let cat_lower = ascii_lower(&cmd.category);
-                        if !label_lower.contains(&filter_lower) && !cat_lower.contains(&filter_lower) {
+                        if !label_lower.contains(&filter_lower)
+                            && !cat_lower.contains(&filter_lower)
+                        {
                             continue;
                         }
                     }
@@ -264,7 +270,9 @@ impl CommandPalette {
                     if !filter.is_empty() {
                         let display_lower = ascii_lower(&file.display);
                         let path_lower = ascii_lower(&file.path);
-                        if !display_lower.contains(&filter_lower) && !path_lower.contains(&filter_lower) {
+                        if !display_lower.contains(&filter_lower)
+                            && !path_lower.contains(&filter_lower)
+                        {
                             continue;
                         }
                     }
@@ -378,7 +386,10 @@ fn collect_project_files(
             }
         } else {
             let display = relativize(root, &full);
-            out.push(PaletteFile { display, path: full });
+            out.push(PaletteFile {
+                display,
+                path: full,
+            });
             if out.len() >= limit {
                 return;
             }

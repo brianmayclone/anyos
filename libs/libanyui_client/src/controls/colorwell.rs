@@ -1,12 +1,14 @@
-use crate::{Control, Widget, lib, events, KIND_COLOR_WELL};
 use crate::events::ColorSelectedEvent;
+use crate::{events, lib, Control, Widget, KIND_COLOR_WELL};
 
 leaf_control!(ColorWell, KIND_COLOR_WELL);
 
 impl ColorWell {
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_COLOR_WELL, core::ptr::null(), 0);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     pub fn set_selected_color(&self, color: u32) {

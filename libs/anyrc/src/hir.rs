@@ -301,6 +301,7 @@ pub enum HirTy {
     Slice(Box<HirTy>, Span),
     FnPtr(Vec<HirTy>, Option<Box<HirTy>>, Span),
     DynTrait(Vec<HirTraitBound>, Span),
+    MacroCall(Symbol, Span),
     Infer(Span),
     Never(Span),
 }

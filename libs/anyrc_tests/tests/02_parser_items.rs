@@ -56,6 +56,20 @@ fn parse_type_position_macro_in_cast_ty() {
 }
 
 #[test]
+fn parse_bracketed_type_macro_in_generic_arg() {
+    let krate = parse("impl From<Token![_]> for Ident {}");
+    match &krate.items[0] {
+        Item::Impl(impl_block) => {
+            let trait_ref = impl_block.trait_ref.as_ref().expect("expected trait impl");
+            let args = trait_ref.segments[0].args.as_ref().expect("expected generic args");
+            assert_eq!(args.args.len(), 1);
+            assert!(matches!(args.args[0], GenericArg::Type(Ty::MacroCall(_, _, _))));
+        }
+        _ => panic!("expected impl"),
+    }
+}
+
+#[test]
 fn parse_inner_key_value_attributes() {
     let krate = parse(r#"#![crate_name = "libc"] fn main() {}"#);
     assert_eq!(krate.attrs.len(), 1);

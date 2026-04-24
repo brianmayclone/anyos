@@ -1,5 +1,5 @@
-use crate::{Control, Widget, lib, events, KIND_LIST_BOX};
 use crate::events::SelectionChangedEvent;
+use crate::{events, lib, Control, Widget, KIND_LIST_BOX};
 
 leaf_control!(ListBox, KIND_LIST_BOX);
 
@@ -8,7 +8,9 @@ impl ListBox {
     /// For multi-select mode, prefix with `"multi:"`, e.g. `"multi:Item A|Item B"`.
     pub fn new(items: &str) -> Self {
         let id = (lib().create_control)(KIND_LIST_BOX, items.as_ptr(), items.len() as u32);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Replace the item list (pipe-separated).

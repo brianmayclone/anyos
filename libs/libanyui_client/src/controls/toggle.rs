@@ -1,5 +1,5 @@
-use crate::{Control, Widget, lib, events, KIND_TOGGLE};
 use crate::events::CheckedChangedEvent;
+use crate::{events, lib, Control, Widget, KIND_TOGGLE};
 
 leaf_control!(Toggle, KIND_TOGGLE);
 
@@ -9,7 +9,9 @@ impl Toggle {
         if on {
             (lib().set_state)(id, 1);
         }
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     pub fn on_checked_changed(&self, mut f: impl FnMut(&CheckedChangedEvent) + 'static) {

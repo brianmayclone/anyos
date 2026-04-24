@@ -1,7 +1,7 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
-use anyos_std::json::{Value, Number};
+use anyos_std::json::{Number, Value};
 use libconf_schema::{default_int, default_string, manifest, RegistryScope, ServiceSchema};
 
 // ════════════════════════════════════════════════════════════════
@@ -14,8 +14,8 @@ use libconf_schema::{default_int, default_string, manifest, RegistryScope, Servi
 /// Which AI provider to use.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum AiProvider {
-    OpenAI,      // api.openai.com
-    Anthropic,   // api.anthropic.com
+    OpenAI,    // api.openai.com
+    Anthropic, // api.anthropic.com
 }
 
 impl AiProvider {
@@ -199,18 +199,25 @@ fn load_from_confd() -> Option<AiConfig> {
         .read_string("config/model")
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| String::from(provider.default_model()));
-    let max_tokens = ai_schema().read_i64("config/max_tokens").unwrap_or(4096).max(0) as u32;
+    let max_tokens = ai_schema()
+        .read_i64("config/max_tokens")
+        .unwrap_or(4096)
+        .max(0) as u32;
     let temperature = ai_schema()
         .read_string("config/temperature")
         .and_then(|v| v.parse::<f64>().ok())
         .unwrap_or(0.7);
     Some(AiConfig {
         provider,
-        api_key: ai_schema().read_string("config/api_key").unwrap_or_default(),
+        api_key: ai_schema()
+            .read_string("config/api_key")
+            .unwrap_or_default(),
         model,
         max_tokens,
         temperature,
-        custom_endpoint: ai_schema().read_string("config/endpoint").unwrap_or_default(),
+        custom_endpoint: ai_schema()
+            .read_string("config/endpoint")
+            .unwrap_or_default(),
     })
 }
 
@@ -243,7 +250,9 @@ impl AiClient {
     /// This is blocking — call from a timer-polled background process.
     pub fn chat(&mut self, user_message: &str) -> Result<String, String> {
         if !self.config.is_configured() {
-            return Err(String::from("API key not configured. Open Settings > AI to set your API key."));
+            return Err(String::from(
+                "API key not configured. Open Settings > AI to set your API key.",
+            ));
         }
 
         // Add user message to history
@@ -271,15 +280,17 @@ impl AiClient {
     }
 
     /// Send a code action request with context.
-    pub fn code_action(&mut self, action: CodeAction, code: &str, language: &str) -> Result<String, String> {
+    pub fn code_action(
+        &mut self,
+        action: CodeAction,
+        code: &str,
+        language: &str,
+    ) -> Result<String, String> {
         if !self.config.is_configured() {
             return Err(String::from("API key not configured."));
         }
 
-        let user_msg = format!(
-            "Language: {}\n\n```{}\n{}\n```",
-            language, language, code
-        );
+        let user_msg = format!("Language: {}\n\n```{}\n{}\n```", language, language, code);
 
         let system = action.system_prompt();
 
@@ -306,17 +317,15 @@ impl AiClient {
 
     fn send_openai_request(&self, system_override: Option<&str>) -> Result<String, String> {
         let body = self.build_openai_body(system_override);
-        let headers = format!(
-            "Authorization: Bearer {}\r\n",
-            self.config.api_key
-        );
+        let headers = format!("Authorization: Bearer {}\r\n", self.config.api_key);
 
         let response = libhttp_client::post_with_headers(
             self.config.api_url(),
             body.as_bytes(),
             "application/json",
             &headers,
-        ).ok_or_else(|| {
+        )
+        .ok_or_else(|| {
             let err = libhttp_client::last_error();
             let status = libhttp_client::last_status();
             format!("HTTP error: status={}, error={}", status, err)
@@ -327,12 +336,16 @@ impl AiClient {
             .map_err(|_| String::from("Invalid UTF-8 in response"))?;
 
         if status != 200 {
-            return Err(format!("API error ({}): {}", status, truncate(resp_str, 200)));
+            return Err(format!(
+                "API error ({}): {}",
+                status,
+                truncate(resp_str, 200)
+            ));
         }
 
         // Parse OpenAI response
-        let val = Value::parse(resp_str)
-            .map_err(|_| String::from("Failed to parse API response"))?;
+        let val =
+            Value::parse(resp_str).map_err(|_| String::from("Failed to parse API response"))?;
 
         // Extract: choices[0].message.content
         if let Some(choices) = val["choices"].as_array() {
@@ -358,7 +371,7 @@ impl AiClient {
         let system_content = system_override.unwrap_or(
             "You are an expert programming assistant integrated into anyOS Code IDE. \
              Help the user with coding tasks. Be concise and provide code when appropriate. \
-             Use markdown code blocks with language tags for code."
+             Use markdown code blocks with language tags for code.",
         );
         let mut sys_msg = Value::new_object();
         sys_msg.set("role", Value::String(String::from("system")));
@@ -376,8 +389,14 @@ impl AiClient {
         let mut body = Value::new_object();
         body.set("model", Value::String(self.config.model.clone()));
         body.set("messages", messages);
-        body.set("max_tokens", Value::Number(Number::Int(self.config.max_tokens as i64)));
-        body.set("temperature", Value::Number(Number::Float(self.config.temperature)));
+        body.set(
+            "max_tokens",
+            Value::Number(Number::Int(self.config.max_tokens as i64)),
+        );
+        body.set(
+            "temperature",
+            Value::Number(Number::Float(self.config.temperature)),
+        );
 
         body.to_json_string()
     }
@@ -396,7 +415,8 @@ impl AiClient {
             body.as_bytes(),
             "application/json",
             &headers,
-        ).ok_or_else(|| {
+        )
+        .ok_or_else(|| {
             let err = libhttp_client::last_error();
             let status = libhttp_client::last_status();
             format!("HTTP error: status={}, error={}", status, err)
@@ -407,12 +427,16 @@ impl AiClient {
             .map_err(|_| String::from("Invalid UTF-8 in response"))?;
 
         if status != 200 {
-            return Err(format!("API error ({}): {}", status, truncate(resp_str, 200)));
+            return Err(format!(
+                "API error ({}): {}",
+                status,
+                truncate(resp_str, 200)
+            ));
         }
 
         // Parse Anthropic response
-        let val = Value::parse(resp_str)
-            .map_err(|_| String::from("Failed to parse API response"))?;
+        let val =
+            Value::parse(resp_str).map_err(|_| String::from("Failed to parse API response"))?;
 
         // Extract: content[0].text
         if let Some(content) = val["content"].as_array() {
@@ -435,7 +459,7 @@ impl AiClient {
         let system_content = system_override.unwrap_or(
             "You are an expert programming assistant integrated into anyOS Code IDE. \
              Help the user with coding tasks. Be concise and provide code when appropriate. \
-             Use markdown code blocks with language tags for code."
+             Use markdown code blocks with language tags for code.",
         );
 
         let mut messages = Value::new_array();
@@ -451,7 +475,10 @@ impl AiClient {
 
         let mut body = Value::new_object();
         body.set("model", Value::String(self.config.model.clone()));
-        body.set("max_tokens", Value::Number(Number::Int(self.config.max_tokens as i64)));
+        body.set(
+            "max_tokens",
+            Value::Number(Number::Int(self.config.max_tokens as i64)),
+        );
         body.set("system", Value::String(String::from(system_content)));
         body.set("messages", messages);
 
@@ -460,5 +487,9 @@ impl AiClient {
 }
 
 fn truncate(s: &str, max: usize) -> &str {
-    if s.len() <= max { s } else { &s[..max] }
+    if s.len() <= max {
+        s
+    } else {
+        &s[..max]
+    }
 }

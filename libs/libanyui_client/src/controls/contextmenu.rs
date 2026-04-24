@@ -1,5 +1,5 @@
-use crate::{Container, Control, Widget, lib, events, KIND_CONTEXT_MENU};
 use crate::events::SelectionChangedEvent;
+use crate::{events, lib, Container, Control, Widget, KIND_CONTEXT_MENU};
 
 container_control!(ContextMenu, KIND_CONTEXT_MENU);
 
@@ -8,7 +8,11 @@ impl ContextMenu {
     /// Prefix an item with `\u{1d}` to mark it disabled, e.g. `"\u{1d}Paste"`.
     pub fn new(items: &str) -> Self {
         let id = (lib().create_control)(KIND_CONTEXT_MENU, items.as_ptr(), items.len() as u32);
-        Self { container: Container { ctrl: Control { id } } }
+        Self {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
     }
 
     /// Called when a menu item is clicked. `index` is the 0-based item position.

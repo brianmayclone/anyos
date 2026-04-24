@@ -159,10 +159,8 @@ impl ProblemsPanel {
             warnings,
             if warnings == 1 { "" } else { "s" }
         ));
-        self.visible_label.set_text(&format!(
-            "{} Visible",
-            visible_count,
-        ));
+        self.visible_label
+            .set_text(&format!("{} Visible", visible_count,));
 
         if diagnostics.diagnostics.is_empty() {
             self.summary_label.set_text("No problems");
@@ -181,8 +179,11 @@ impl ProblemsPanel {
             return;
         }
 
-        self.summary_label
-            .set_text(&format!("{} - {}", diagnostics.summary(), self.filter_label()));
+        self.summary_label.set_text(&format!(
+            "{} - {}",
+            diagnostics.summary(),
+            self.filter_label()
+        ));
 
         let globals = diagnostics.global();
         let mut visible_globals: Vec<_> = globals
@@ -362,7 +363,11 @@ fn filter_button(label: &str, x: i32) -> ui::Button {
 
 fn mark_filter(button: &ui::Button, active: bool) {
     let tc = ui::theme::colors();
-    button.set_color(if active { tc.accent } else { tc.tab_inactive_bg });
+    button.set_color(if active {
+        tc.accent
+    } else {
+        tc.tab_inactive_bg
+    });
     button.set_text_color(if active { tc.window_bg } else { tc.text });
 }
 

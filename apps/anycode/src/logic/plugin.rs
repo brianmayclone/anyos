@@ -1,6 +1,6 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 use anyos_std::json::Value;
 
 // ════════════════════════════════════════════════════════════════
@@ -10,14 +10,14 @@ use anyos_std::json::Value;
 /// Plugin capability flags — what a plugin provides.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum PluginCapability {
-    Syntax,         // Provides syntax highlighting (.syn files)
-    Language,       // Provides language support (keywords, snippets)
-    Build,          // Provides build/run commands
-    Theme,          // Provides color theme
-    Formatter,      // Provides code formatting
-    Linter,         // Provides linting/diagnostics
-    Snippets,       // Provides code snippets
-    ProjectType,    // Recognizes a project type
+    Syntax,      // Provides syntax highlighting (.syn files)
+    Language,    // Provides language support (keywords, snippets)
+    Build,       // Provides build/run commands
+    Theme,       // Provides color theme
+    Formatter,   // Provides code formatting
+    Linter,      // Provides linting/diagnostics
+    Snippets,    // Provides code snippets
+    ProjectType, // Recognizes a project type
 }
 
 /// Plugin state in the extension manager.
@@ -87,7 +87,7 @@ pub struct Plugin {
     pub theme_path: Option<String>,
 
     // Project detection
-    pub project_files: Vec<String>,     // files that indicate this project type (e.g. "Cargo.toml")
+    pub project_files: Vec<String>, // files that indicate this project type (e.g. "Cargo.toml")
     pub project_type_name: Option<String>,
 }
 
@@ -136,7 +136,10 @@ impl PluginManager {
 
     /// Get all active plugins.
     pub fn active_plugins(&self) -> Vec<&Plugin> {
-        self.plugins.iter().filter(|p| p.state == PluginState::Active || p.state == PluginState::Installed).collect()
+        self.plugins
+            .iter()
+            .filter(|p| p.state == PluginState::Active || p.state == PluginState::Installed)
+            .collect()
     }
 
     /// Find a plugin that handles a specific file extension.
@@ -148,16 +151,12 @@ impl PluginManager {
 
     /// Get syntax file path from plugins for a given extension.
     pub fn syntax_for_extension(&self, ext: &str) -> Option<&str> {
-        self.plugin_for_extension(ext)?
-            .syntax_path
-            .as_deref()
+        self.plugin_for_extension(ext)?.syntax_path.as_deref()
     }
 
     /// Get build configuration from a plugin for a given extension.
     pub fn build_config_for_extension(&self, ext: &str) -> Option<&PluginBuildConfig> {
-        self.plugin_for_extension(ext)?
-            .build_config
-            .as_ref()
+        self.plugin_for_extension(ext)?.build_config.as_ref()
     }
 
     /// Get all snippets for a file extension (merged from all active plugins).
@@ -194,9 +193,10 @@ impl PluginManager {
 
     /// Build display labels for extension list.
     pub fn display_labels(&self) -> Vec<String> {
-        self.plugins.iter().map(|p| {
-            format!("{} v{} — {}", p.display_name, p.version, p.description)
-        }).collect()
+        self.plugins
+            .iter()
+            .map(|p| format!("{} v{} — {}", p.display_name, p.version, p.description))
+            .collect()
     }
 }
 
@@ -212,7 +212,11 @@ fn load_plugin(base_dir: &str, dir_name: &str) -> Option<Plugin> {
     let val = Value::parse(&data).ok()?;
 
     let name = String::from(val["name"].as_str().unwrap_or(dir_name));
-    let display_name = String::from(val["displayName"].as_str().unwrap_or(val["name"].as_str().unwrap_or(dir_name)));
+    let display_name = String::from(
+        val["displayName"]
+            .as_str()
+            .unwrap_or(val["name"].as_str().unwrap_or(dir_name)),
+    );
     let version = String::from(val["version"].as_str().unwrap_or("1.0.0"));
     let description = String::from(val["description"].as_str().unwrap_or(""));
     let author = String::from(val["author"].as_str().unwrap_or(""));
@@ -247,7 +251,9 @@ fn load_plugin(base_dir: &str, dir_name: &str) -> Option<Plugin> {
         }
     }
     // Auto-detect capabilities from available files
-    let syntax_path = val["syntax"].as_str().map(|s| format!("{}/{}", plugin_dir, s));
+    let syntax_path = val["syntax"]
+        .as_str()
+        .map(|s| format!("{}/{}", plugin_dir, s));
     if syntax_path.is_some() && !capabilities.contains(&PluginCapability::Syntax) {
         capabilities.push(PluginCapability::Syntax);
     }
@@ -305,7 +311,9 @@ fn load_plugin(base_dir: &str, dir_name: &str) -> Option<Plugin> {
     }
 
     // Theme support
-    let theme_path = val["theme"].as_str().map(|s| format!("{}/{}", plugin_dir, s));
+    let theme_path = val["theme"]
+        .as_str()
+        .map(|s| format!("{}/{}", plugin_dir, s));
     if theme_path.is_some() && !capabilities.contains(&PluginCapability::Theme) {
         capabilities.push(PluginCapability::Theme);
     }

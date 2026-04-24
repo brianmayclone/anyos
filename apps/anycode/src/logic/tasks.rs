@@ -1,6 +1,6 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
 use crate::logic::config::Config;
 use crate::logic::project::{BuildConfiguration, Project, ProjectType, TargetKind};
@@ -72,7 +72,12 @@ impl Task {
         let display_label = if args.is_empty() {
             format!("{} {}", category.label(), name)
         } else {
-            format!("{}: {} {}", category.label(), command_basename(command), args)
+            format!(
+                "{}: {} {}",
+                category.label(),
+                command_basename(command),
+                args
+            )
         };
         Self {
             name: String::from(name),
@@ -231,17 +236,28 @@ impl TaskManager {
                     let label = format!("Run: {} ({})", target.name, member.name);
                     let mut task = Task::new(&label, TaskCategory::Run, &ccargo, &args, root);
                     task.target_name = Some(target.name.clone());
-                    task.display_label = format!("{} run -p {} --bin {}", cargo_name, member.name, target.name);
+                    task.display_label = format!(
+                        "{} run -p {} --bin {}",
+                        cargo_name, member.name, target.name
+                    );
                     self.tasks.push(task);
                 }
             }
         }
 
         // Set defaults — first build task and first run task
-        if let Some(idx) = self.tasks.iter().position(|t| t.category == TaskCategory::Build) {
+        if let Some(idx) = self
+            .tasks
+            .iter()
+            .position(|t| t.category == TaskCategory::Build)
+        {
             self.selected_build_task = idx;
         }
-        if let Some(idx) = self.tasks.iter().position(|t| t.category == TaskCategory::Run) {
+        if let Some(idx) = self
+            .tasks
+            .iter()
+            .position(|t| t.category == TaskCategory::Run)
+        {
             self.selected_run_task = idx;
         }
     }
@@ -255,7 +271,13 @@ impl TaskManager {
         // cmake configure
         let cmake = find_tool_path("cmake", config);
         if !cmake.is_empty() {
-            let mut configure = Task::new("Configure", TaskCategory::Build, &cmake, ".. -G Ninja", root);
+            let mut configure = Task::new(
+                "Configure",
+                TaskCategory::Build,
+                &cmake,
+                ".. -G Ninja",
+                root,
+            );
             configure.display_label = String::from("cmake .. -G Ninja");
             configure.working_dir = format!("{}/build", root);
             self.tasks.push(configure);
@@ -321,10 +343,18 @@ impl TaskManager {
         }
 
         // Set defaults
-        if let Some(idx) = self.tasks.iter().position(|t| t.category == TaskCategory::Build) {
+        if let Some(idx) = self
+            .tasks
+            .iter()
+            .position(|t| t.category == TaskCategory::Build)
+        {
             self.selected_build_task = idx;
         }
-        if let Some(idx) = self.tasks.iter().position(|t| t.category == TaskCategory::Run) {
+        if let Some(idx) = self
+            .tasks
+            .iter()
+            .position(|t| t.category == TaskCategory::Run)
+        {
             self.selected_run_task = idx;
         }
     }
@@ -405,7 +435,13 @@ impl TaskManager {
         // C single file
         let cc = find_tool_path("cc", config);
         if crate::util::path::exists(&format!("{}/main.c", root)) && !cc.is_empty() {
-            let mut build = Task::new("Build (C)", TaskCategory::Build, &cc, "main.c -o main", root);
+            let mut build = Task::new(
+                "Build (C)",
+                TaskCategory::Build,
+                &cc,
+                "main.c -o main",
+                root,
+            );
             build.display_label = format!("{} main.c -o main", command_basename(&cc));
             self.tasks.push(build);
 
@@ -417,8 +453,13 @@ impl TaskManager {
         // C++ single file
         let cxx = find_first_tool_path(&["c++", "g++", "clang++"], config);
         if crate::util::path::exists(&format!("{}/main.cpp", root)) && !cxx.is_empty() {
-            let mut build =
-                Task::new("Build (C++)", TaskCategory::Build, &cxx, "main.cpp -o main", root);
+            let mut build = Task::new(
+                "Build (C++)",
+                TaskCategory::Build,
+                &cxx,
+                "main.cpp -o main",
+                root,
+            );
             build.display_label = format!("{} main.cpp -o main", command_basename(&cxx));
             self.tasks.push(build);
 
@@ -432,7 +473,10 @@ impl TaskManager {
 
     /// Get all tasks of a given category.
     pub fn tasks_by_category(&self, category: TaskCategory) -> Vec<&Task> {
-        self.tasks.iter().filter(|t| t.category == category).collect()
+        self.tasks
+            .iter()
+            .filter(|t| t.category == category)
+            .collect()
     }
 
     /// Get the currently selected run task.
@@ -440,7 +484,11 @@ impl TaskManager {
         self.tasks
             .get(self.selected_run_task)
             .filter(|task| task.category == TaskCategory::Run)
-            .or_else(|| self.tasks.iter().find(|task| task.category == TaskCategory::Run))
+            .or_else(|| {
+                self.tasks
+                    .iter()
+                    .find(|task| task.category == TaskCategory::Run)
+            })
     }
 
     /// Get the currently selected build task.
@@ -448,7 +496,11 @@ impl TaskManager {
         self.tasks
             .get(self.selected_build_task)
             .filter(|task| task.category == TaskCategory::Build)
-            .or_else(|| self.tasks.iter().find(|task| task.category == TaskCategory::Build))
+            .or_else(|| {
+                self.tasks
+                    .iter()
+                    .find(|task| task.category == TaskCategory::Build)
+            })
     }
 
     /// Build the run configuration label string for dropdown display.
@@ -468,7 +520,11 @@ impl TaskManager {
 
     /// Select a run task by name.
     pub fn select_run_by_name(&mut self, name: &str) {
-        if let Some(idx) = self.tasks.iter().position(|t| t.category == TaskCategory::Run && t.name == name) {
+        if let Some(idx) = self
+            .tasks
+            .iter()
+            .position(|t| t.category == TaskCategory::Run && t.name == name)
+        {
             self.selected_run_task = idx;
         }
     }
@@ -527,9 +583,7 @@ fn find_tool_path(name: &str, config: &Config) -> String {
         "ccargo" | "cargo" | "acargo" if !config.ccargo_path.is_empty() => {
             config.ccargo_path.clone()
         }
-        "crust" | "rustc" | "anyrc" if !config.crust_path.is_empty() => {
-            config.crust_path.clone()
-        }
+        "crust" | "rustc" | "anyrc" if !config.crust_path.is_empty() => config.crust_path.clone(),
         "make" if !config.make_path.is_empty() => config.make_path.clone(),
         "cc" | "gcc" if !config.cc_path.is_empty() => config.cc_path.clone(),
         "git" if !config.git_path.is_empty() => config.git_path.clone(),

@@ -101,6 +101,28 @@ fn expand_macro_with_ident_arg() {
 }
 
 #[test]
+fn expand_syn_style_ast_struct_keyword_idents_and_meta_attrs() {
+    let krate = parse_and_expand(r#"
+        macro_rules! ast_struct {
+            (
+                $(#[$attr:meta])*
+                $pub:ident $struct:ident $name:ident $body:tt
+            ) => {
+                $(#[$attr])* $pub $struct $name $body
+            };
+        }
+
+        ast_struct! {
+            #[doc = "demo"]
+            pub struct LitStr {
+                repr: usize,
+            }
+        }
+    "#);
+    assert!(krate.items.iter().any(|item| matches!(item, Item::Struct(s) if s.fields.len() == 1)));
+}
+
+#[test]
 fn macro_not_found_is_preserved() {
     // Unknown macros should remain as MacroCall (or could be an error)
     let krate = parse_and_expand(r#"

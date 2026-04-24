@@ -150,8 +150,12 @@ impl DateTimePicker {
     fn adjust(&mut self, delta: i32) {
         let (mut year, mut month, mut day, mut hour, mut minute) =
             unpack(self.text_base.base.state);
-        if month == 0 { month = 1; }
-        if day == 0 { day = 1; }
+        if month == 0 {
+            month = 1;
+        }
+        if day == 0 {
+            day = 1;
+        }
 
         let seg = self.segment_at(self.active_segment);
         match seg {
@@ -162,13 +166,17 @@ impl DateTimePicker {
             Segment::Month => {
                 month = wrap_add(month, delta, 1, 12);
                 let max = days_in_month(month, year);
-                if day > max { day = max; }
+                if day > max {
+                    day = max;
+                }
             }
             Segment::Year => {
                 let ny = year as i32 + delta;
                 year = ny.clamp(0, 4095) as u32;
                 let max = days_in_month(month, year);
-                if day > max { day = max; }
+                if day > max {
+                    day = max;
+                }
             }
             Segment::Hour => {
                 hour = wrap_add(hour, delta, 0, 23);
@@ -309,14 +317,26 @@ impl Control for DateTimePicker {
             13
         };
         let font_size = crate::draw::scale_font(logical_fs);
-        let text_color = if ctx.disabled { tc.text_disabled } else { tc.text };
-        let sep_color = if ctx.disabled { tc.text_disabled } else { tc.text_secondary };
+        let text_color = if ctx.disabled {
+            tc.text_disabled
+        } else {
+            tc.text
+        };
+        let sep_color = if ctx.disabled {
+            tc.text_disabled
+        } else {
+            tc.text_secondary
+        };
         let sel_bg = if ctx.focused && !ctx.disabled {
             tc.accent
         } else {
             crate::theme::darken(tc.control_bg, 12)
         };
-        let sel_fg = if ctx.focused && !ctx.disabled { 0xFFFFFFFF } else { text_color };
+        let sel_fg = if ctx.focused && !ctx.disabled {
+            0xFFFFFFFF
+        } else {
+            text_color
+        };
 
         let (year, month, day, hour, minute) = unpack(b.state);
         let mode = self.mode();
@@ -358,31 +378,68 @@ impl Control for DateTimePicker {
             *cx += tw as i32;
         };
 
-        let draw_sep =
-            |surface: &crate::draw::Surface, cx: &mut i32, text: &[u8], ty: i32, font_size: u16, color: u32| {
-                let (tw, _) = crate::draw::text_size_at(text, font_size);
-                crate::draw::draw_text_sized(surface, *cx, ty, color, text, font_size);
-                *cx += tw as i32;
-            };
+        let draw_sep = |surface: &crate::draw::Surface,
+                        cx: &mut i32,
+                        text: &[u8],
+                        ty: i32,
+                        font_size: u16,
+                        color: u32| {
+            let (tw, _) = crate::draw::text_size_at(text, font_size);
+            crate::draw::draw_text_sized(surface, *cx, ty, color, text, font_size);
+            *cx += tw as i32;
+        };
 
         if mode == Mode::Date || mode == Mode::DateTime {
             let mut buf2 = [0u8; 2];
             // Day
             fmt_2(day, &mut buf2);
-            draw_seg(surface, &mut cx, &buf2, seg_idx, self.active_segment, ty, font_size, text_color, sel_bg, sel_fg);
+            draw_seg(
+                surface,
+                &mut cx,
+                &buf2,
+                seg_idx,
+                self.active_segment,
+                ty,
+                font_size,
+                text_color,
+                sel_bg,
+                sel_fg,
+            );
             draw_sep(surface, &mut cx, b".", ty, font_size, sep_color);
             seg_idx += 1;
 
             // Month
             fmt_2(month, &mut buf2);
-            draw_seg(surface, &mut cx, &buf2, seg_idx, self.active_segment, ty, font_size, text_color, sel_bg, sel_fg);
+            draw_seg(
+                surface,
+                &mut cx,
+                &buf2,
+                seg_idx,
+                self.active_segment,
+                ty,
+                font_size,
+                text_color,
+                sel_bg,
+                sel_fg,
+            );
             draw_sep(surface, &mut cx, b".", ty, font_size, sep_color);
             seg_idx += 1;
 
             // Year
             let mut buf4 = [0u8; 4];
             fmt_4(year, &mut buf4);
-            draw_seg(surface, &mut cx, &buf4, seg_idx, self.active_segment, ty, font_size, text_color, sel_bg, sel_fg);
+            draw_seg(
+                surface,
+                &mut cx,
+                &buf4,
+                seg_idx,
+                self.active_segment,
+                ty,
+                font_size,
+                text_color,
+                sel_bg,
+                sel_fg,
+            );
             seg_idx += 1;
 
             if mode == Mode::DateTime {
@@ -394,13 +451,35 @@ impl Control for DateTimePicker {
             let mut buf2 = [0u8; 2];
             // Hour
             fmt_2(hour, &mut buf2);
-            draw_seg(surface, &mut cx, &buf2, seg_idx, self.active_segment, ty, font_size, text_color, sel_bg, sel_fg);
+            draw_seg(
+                surface,
+                &mut cx,
+                &buf2,
+                seg_idx,
+                self.active_segment,
+                ty,
+                font_size,
+                text_color,
+                sel_bg,
+                sel_fg,
+            );
             draw_sep(surface, &mut cx, b":", ty, font_size, sep_color);
             seg_idx += 1;
 
             // Minute
             fmt_2(minute, &mut buf2);
-            draw_seg(surface, &mut cx, &buf2, seg_idx, self.active_segment, ty, font_size, text_color, sel_bg, sel_fg);
+            draw_seg(
+                surface,
+                &mut cx,
+                &buf2,
+                seg_idx,
+                self.active_segment,
+                ty,
+                font_size,
+                text_color,
+                sel_bg,
+                sel_fg,
+            );
             let _ = seg_idx;
         }
 
@@ -506,19 +585,35 @@ impl DateTimePicker {
     fn type_digit(&mut self, digit: u32) {
         let (mut year, mut month, mut day, mut hour, mut minute) =
             unpack(self.text_base.base.state);
-        if month == 0 { month = 1; }
-        if day == 0 { day = 1; }
+        if month == 0 {
+            month = 1;
+        }
+        if day == 0 {
+            day = 1;
+        }
 
         let seg = self.segment_at(self.active_segment);
         match seg {
             Segment::Day => {
                 let new = (day % 10) * 10 + digit;
                 let max = days_in_month(month, year);
-                day = if new >= 1 && new <= max { new } else if digit >= 1 && digit <= 9 { digit } else { day };
+                day = if new >= 1 && new <= max {
+                    new
+                } else if digit >= 1 && digit <= 9 {
+                    digit
+                } else {
+                    day
+                };
             }
             Segment::Month => {
                 let new = (month % 10) * 10 + digit;
-                month = if new >= 1 && new <= 12 { new } else if digit >= 1 && digit <= 9 { digit } else { month };
+                month = if new >= 1 && new <= 12 {
+                    new
+                } else if digit >= 1 && digit <= 9 {
+                    digit
+                } else {
+                    month
+                };
             }
             Segment::Year => {
                 year = (year % 1000) * 10 + digit;

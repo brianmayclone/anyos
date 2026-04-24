@@ -37,12 +37,7 @@ impl Control for View {
 /// it is the active drop target during a drag. Placed here (rather than on
 /// `ControlBase`) so every container that wants to opt in can call it from
 /// its own `render` override without paying the cost when no drag is active.
-pub fn draw_drop_hover_border(
-    surface: &crate::draw::Surface,
-    ax: i32,
-    ay: i32,
-    b: &ControlBase,
-) {
+pub fn draw_drop_hover_border(surface: &crate::draw::Surface, ax: i32, ay: i32, b: &ControlBase) {
     const BORDER: u32 = 0xFF2E8BFF; // accent blue, fully opaque
     const THICKNESS: u32 = 2;
     let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);

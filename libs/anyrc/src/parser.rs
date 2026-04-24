@@ -2601,11 +2601,12 @@ impl<'a> Parser<'a> {
             unreachable!()
         };
         self.expect_exact(&TokenKind::Not);
-        self.expect_exact(&TokenKind::LParen);
-        let arg_ty = self.parse_ty();
-        self.expect_exact(&TokenKind::RParen);
 
-        if self.interner.resolve(macro_name) == "to_signed_int" {
+        let macro_name_str = self.interner.resolve(macro_name);
+        if macro_name_str == "to_signed_int" && self.at_exact(&TokenKind::LParen) {
+            self.bump();
+            let arg_ty = self.parse_ty();
+            self.expect_exact(&TokenKind::RParen);
             if let Ty::Path(path) = &arg_ty {
                 if path.segments.len() == 1 {
                     let name = self.interner.resolve(path.segments[0].ident);
@@ -2634,10 +2635,9 @@ impl<'a> Parser<'a> {
             });
         }
 
-        Ty::Path(Path {
-            segments: vec![PathSegment { ident: macro_name, args: None }],
-            span: self.span_from(start),
-        })
+        let args = self.parse_macro_args();
+
+        Ty::MacroCall(macro_name, args, self.span_from(start))
     }
 
     fn parse_trait_object_ty(&mut self, start: Span) -> Ty {

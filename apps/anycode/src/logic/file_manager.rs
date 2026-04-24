@@ -1,7 +1,7 @@
+use crate::util::path;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
-use crate::util::path;
 
 /// Data model for an open file (no UI dependencies).
 pub struct OpenFileData {

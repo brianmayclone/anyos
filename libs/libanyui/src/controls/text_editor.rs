@@ -177,6 +177,12 @@ struct DiagnosticMark {
     severity: u32,
 }
 
+#[derive(Clone)]
+struct FoldRange {
+    start: usize,
+    end: usize,
+}
+
 pub struct TextEditor {
     pub(crate) base: ControlBase,
     lines: Vec<Vec<u8>>,
@@ -199,6 +205,7 @@ pub struct TextEditor {
     /// Per-line background highlights (e.g., current RIP in a debugger).
     highlighted_lines: Vec<LineHighlight>,
     diagnostic_marks: Vec<DiagnosticMark>,
+    folded_ranges: Vec<FoldRange>,
     /// When true, text cannot be edited (navigation and copy still work).
     pub(crate) read_only: bool,
 }
@@ -228,6 +235,7 @@ impl TextEditor {
             redo_stack: Vec::new(),
             highlighted_lines: Vec::new(),
             diagnostic_marks: Vec::new(),
+            folded_ranges: Vec::new(),
             read_only: false,
         }
     }
@@ -304,6 +312,7 @@ impl TextEditor {
         self.scroll_y = 0;
         self.scroll_x = 0;
         self.selection = None;
+        self.folded_ranges.clear();
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.update_gutter_width();
@@ -364,7 +373,7 @@ impl TextEditor {
         }
         let line_h = self.line_height as i32;
         let visible_h = self.base.h as i32 - 2;
-        let row_top = row as i32 * line_h;
+        let row_top = self.visible_index_for_row(row) as i32 * line_h;
         let row_bottom = row_top + line_h;
         if row_top < self.scroll_y || row_bottom > self.scroll_y + visible_h {
             // Center the line
@@ -435,6 +444,31 @@ impl TextEditor {
         self.lines.len()
     }
 
+    pub fn toggle_fold_at_cursor(&mut self) {
+        let start = self
+            .fold_start_for_row(self.cursor_row)
+            .unwrap_or(self.cursor_row);
+        if let Some(pos) = self.folded_ranges.iter().position(|r| r.start == start) {
+            self.folded_ranges.remove(pos);
+            self.base.mark_dirty();
+            return;
+        }
+
+        let Some(end) = self.fold_end_for_start(start) else {
+            return;
+        };
+        if end <= start {
+            return;
+        }
+        self.folded_ranges.push(FoldRange { start, end });
+        if self.cursor_row > start && self.cursor_row <= end {
+            self.cursor_row = start;
+            self.cursor_col = self.cursor_col.min(self.lines[start].len());
+        }
+        self.ensure_cursor_visible();
+        self.base.mark_dirty();
+    }
+
     fn update_gutter_width(&mut self) {
         if !self.show_line_numbers {
             self.gutter_width = 0;
@@ -455,7 +489,7 @@ impl TextEditor {
     }
 
     fn ensure_cursor_visible(&mut self) {
-        let cursor_y = (self.cursor_row as i32) * self.line_height as i32;
+        let cursor_y = self.visible_index_for_row(self.cursor_row) as i32 * self.line_height as i32;
         let visible_h = self.base.h as i32 - 2;
         if cursor_y < self.scroll_y {
             self.scroll_y = cursor_y;
@@ -476,7 +510,7 @@ impl TextEditor {
     }
 
     fn content_height(&self) -> i32 {
-        (self.lines.len() as i32) * self.line_height as i32
+        (self.visible_line_count() as i32) * self.line_height as i32
     }
 
     pub fn clamp_cursor(&mut self) {
@@ -490,12 +524,142 @@ impl TextEditor {
 
     /// Convert local pixel coordinates to (row, col) in the buffer.
     fn pixel_to_cursor(&self, lx: i32, ly: i32) -> (usize, usize) {
-        let row = ((ly - 1 + self.scroll_y) / self.line_height as i32).max(0) as usize;
-        let row = row.min(self.lines.len().saturating_sub(1));
+        let visible_row = ((ly - 1 + self.scroll_y) / self.line_height as i32).max(0) as usize;
+        let row = self.row_for_visible_index(visible_row);
         let text_lx = lx - self.gutter_width as i32 - 1 + self.scroll_x;
         let col = (text_lx / self.char_width as i32).max(0) as usize;
         let col = col.min(self.lines[row].len());
         (row, col)
+    }
+
+    fn is_line_hidden(&self, row: usize) -> bool {
+        self.folded_ranges
+            .iter()
+            .any(|range| row > range.start && row <= range.end)
+    }
+
+    fn folded_range_at_start(&self, row: usize) -> Option<&FoldRange> {
+        self.folded_ranges.iter().find(|range| range.start == row)
+    }
+
+    fn visible_line_count(&self) -> usize {
+        self.lines
+            .iter()
+            .enumerate()
+            .filter(|(row, _)| !self.is_line_hidden(*row))
+            .count()
+            .max(1)
+    }
+
+    fn row_for_visible_index(&self, visible_index: usize) -> usize {
+        let mut visible = 0usize;
+        for row in 0..self.lines.len() {
+            if self.is_line_hidden(row) {
+                continue;
+            }
+            if visible == visible_index {
+                return row;
+            }
+            visible += 1;
+        }
+        self.lines.len().saturating_sub(1)
+    }
+
+    fn visible_index_for_row(&self, row: usize) -> usize {
+        let target = if self.is_line_hidden(row) {
+            self.folded_ranges
+                .iter()
+                .find(|range| row > range.start && row <= range.end)
+                .map(|range| range.start)
+                .unwrap_or(row)
+        } else {
+            row
+        };
+        let mut visible = 0usize;
+        for current in 0..self.lines.len() {
+            if self.is_line_hidden(current) {
+                continue;
+            }
+            if current == target {
+                return visible;
+            }
+            visible += 1;
+        }
+        visible.saturating_sub(1)
+    }
+
+    fn previous_visible_row(&self, row: usize) -> usize {
+        let mut candidate = row.saturating_sub(1);
+        while candidate > 0 && self.is_line_hidden(candidate) {
+            candidate = candidate.saturating_sub(1);
+        }
+        candidate
+    }
+
+    fn next_visible_row(&self, row: usize) -> usize {
+        let mut candidate = row + 1;
+        while candidate < self.lines.len() && self.is_line_hidden(candidate) {
+            candidate += 1;
+        }
+        if candidate < self.lines.len() {
+            candidate
+        } else {
+            row
+        }
+    }
+
+    fn fold_start_for_row(&self, row: usize) -> Option<usize> {
+        let mut current = row.min(self.lines.len().saturating_sub(1));
+        loop {
+            if self.line_can_start_fold(current) {
+                return Some(current);
+            }
+            if current == 0 {
+                return None;
+            }
+            current -= 1;
+        }
+    }
+
+    fn line_can_start_fold(&self, row: usize) -> bool {
+        self.lines
+            .get(row)
+            .map(|line| line.iter().any(|b| *b == b'{') || line_ends_with_colon(line))
+            .unwrap_or(false)
+    }
+
+    fn fold_end_for_start(&self, start: usize) -> Option<usize> {
+        let line = self.lines.get(start)?;
+        if line.iter().any(|b| *b == b'{') {
+            let mut depth = 0i32;
+            for row in start..self.lines.len() {
+                for b in &self.lines[row] {
+                    if *b == b'{' {
+                        depth += 1;
+                    } else if *b == b'}' {
+                        depth -= 1;
+                        if depth == 0 && row > start {
+                            return Some(row);
+                        }
+                    }
+                }
+            }
+        }
+
+        if line_ends_with_colon(line) {
+            let base_indent = leading_spaces(line);
+            for row in start + 1..self.lines.len() {
+                let current = &self.lines[row];
+                if current.iter().all(|b| *b == b' ' || *b == b'\t') {
+                    continue;
+                }
+                if leading_spaces(current) <= base_indent {
+                    return Some(row.saturating_sub(1));
+                }
+            }
+            return Some(self.lines.len().saturating_sub(1));
+        }
+        None
     }
 
     /// Extract selected text as bytes. Returns None if no selection.
@@ -639,15 +803,16 @@ impl Control for TextEditor {
         let clipped = surface.with_clip(x + 1, y + 1, w.saturating_sub(2), h.saturating_sub(2));
 
         let visible_start = (s_scroll_y / s_line_h as i32).max(0) as usize;
-        let visible_end =
-            ((s_scroll_y + h as i32) / s_line_h as i32 + 1).min(self.lines.len() as i32) as usize;
+        let visible_end = ((s_scroll_y + h as i32) / s_line_h as i32 + 1)
+            .min(self.visible_line_count() as i32) as usize;
 
         let text_x_base = x + 1 + s_gutter_w as i32;
 
         // Track block comment state: pre-scan lines before visible_start
         let mut in_block_comment = false;
         if self.syntax.is_some() {
-            for i in 0..visible_start {
+            let first_row = self.row_for_visible_index(visible_start);
+            for i in 0..first_row {
                 if let Some(ref syn) = self.syntax {
                     let (_, still_in) = tokenize_line(&self.lines[i], in_block_comment, syn);
                     in_block_comment = still_in;
@@ -655,8 +820,9 @@ impl Control for TextEditor {
             }
         }
 
-        for row in visible_start..visible_end {
-            let row_y = y + 1 + (row as i32) * s_line_h as i32 - s_scroll_y;
+        for visible_row in visible_start..visible_end {
+            let row = self.row_for_visible_index(visible_row);
+            let row_y = y + 1 + (visible_row as i32) * s_line_h as i32 - s_scroll_y;
 
             // Per-line highlights (debugger breakpoints, current RIP, etc.)
             for hl in &self.highlighted_lines {
@@ -747,6 +913,23 @@ impl Control for TextEditor {
                     self.font_id,
                     s_font_size,
                 );
+
+                if self.line_can_start_fold(row) {
+                    let marker: &[u8] = if self.folded_range_at_start(row).is_some() {
+                        b"+"
+                    } else {
+                        b"-"
+                    };
+                    crate::draw::draw_text_ex(
+                        &clipped,
+                        x + crate::theme::scale_i32(4),
+                        row_y + s_text_pad,
+                        tc.text_secondary,
+                        marker,
+                        self.font_id,
+                        s_font_size,
+                    );
+                }
             }
 
             // Text content
@@ -777,6 +960,36 @@ impl Control for TextEditor {
                         row_y + s_text_pad,
                         tc.text,
                         line,
+                        self.font_id,
+                        s_font_size,
+                    );
+                }
+                if let Some(range) = self.folded_range_at_start(row) {
+                    let suffix = b"  ...";
+                    let suffix_x = text_x_base + (line.len() as i32) * s_char_w as i32 - s_scroll_x;
+                    crate::draw::draw_text_ex(
+                        &clipped,
+                        suffix_x,
+                        row_y + s_text_pad,
+                        tc.text_secondary,
+                        suffix,
+                        self.font_id,
+                        s_font_size,
+                    );
+
+                    let folded_count = range.end.saturating_sub(range.start);
+                    let count_text: &[u8] = if folded_count < 10 {
+                        b" folded"
+                    } else {
+                        b" folded block"
+                    };
+                    let folded_x = suffix_x + (suffix.len() as i32) * s_char_w as i32;
+                    crate::draw::draw_text_ex(
+                        &clipped,
+                        folded_x,
+                        row_y + s_text_pad,
+                        tc.text_disabled,
+                        count_text,
                         self.font_id,
                         s_font_size,
                     );
@@ -1063,13 +1276,13 @@ impl Control for TextEditor {
                 }
                 KEY_UP => {
                     if self.cursor_row > 0 {
-                        self.cursor_row -= 1;
+                        self.cursor_row = self.previous_visible_row(self.cursor_row);
                         self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
                     }
                 }
                 KEY_DOWN => {
                     if self.cursor_row + 1 < self.lines.len() {
-                        self.cursor_row += 1;
+                        self.cursor_row = self.next_visible_row(self.cursor_row);
                         self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
                     }
                 }
@@ -1243,7 +1456,7 @@ impl Control for TextEditor {
         // Up arrow
         if keycode == KEY_UP {
             if self.cursor_row > 0 {
-                self.cursor_row -= 1;
+                self.cursor_row = self.previous_visible_row(self.cursor_row);
                 self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             }
             self.ensure_cursor_visible();
@@ -1253,7 +1466,7 @@ impl Control for TextEditor {
         // Down arrow
         if keycode == KEY_DOWN {
             if self.cursor_row + 1 < self.lines.len() {
-                self.cursor_row += 1;
+                self.cursor_row = self.next_visible_row(self.cursor_row);
                 self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             }
             self.ensure_cursor_visible();
@@ -1278,7 +1491,10 @@ impl Control for TextEditor {
         if keycode == KEY_PAGE_UP {
             self.selection = None;
             let page = (self.base.h / self.line_height).max(1) as usize;
-            self.cursor_row = self.cursor_row.saturating_sub(page);
+            let visible = self
+                .visible_index_for_row(self.cursor_row)
+                .saturating_sub(page);
+            self.cursor_row = self.row_for_visible_index(visible);
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             self.ensure_cursor_visible();
             self.base.mark_dirty();
@@ -1288,7 +1504,9 @@ impl Control for TextEditor {
         if keycode == KEY_PAGE_DOWN {
             self.selection = None;
             let page = (self.base.h / self.line_height).max(1) as usize;
-            self.cursor_row = (self.cursor_row + page).min(self.lines.len().saturating_sub(1));
+            let visible = (self.visible_index_for_row(self.cursor_row) + page)
+                .min(self.visible_line_count().saturating_sub(1));
+            self.cursor_row = self.row_for_visible_index(visible);
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
             self.ensure_cursor_visible();
             self.base.mark_dirty();
@@ -1322,6 +1540,21 @@ fn diagnostic_color(severity: u32) -> u32 {
         2 => 0xFF3794FF,
         _ => 0xFF75BEFF,
     }
+}
+
+fn leading_spaces(line: &[u8]) -> usize {
+    line.iter()
+        .take_while(|b| **b == b' ' || **b == b'\t')
+        .count()
+}
+
+fn line_ends_with_colon(line: &[u8]) -> bool {
+    let trimmed_end = line
+        .iter()
+        .rposition(|b| !(*b == b' ' || *b == b'\t' || *b == b'\r'))
+        .map(|idx| idx + 1)
+        .unwrap_or(0);
+    trimmed_end > 0 && line[trimmed_end - 1] == b':'
 }
 
 // ── Tokenizer ────────────────────────────────────────────────────────

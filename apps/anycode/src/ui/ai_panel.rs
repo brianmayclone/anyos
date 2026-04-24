@@ -1,6 +1,6 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 use libanyui_client as ui;
 
 use crate::logic::ai::{AiProvider, ChatMessage, MessageRole};
@@ -172,11 +172,16 @@ impl AiPanel {
             "────────────────────────────────────",
             "I can help you write, understand, and improve code.",
             "Quick actions (select code first):",
-            "Explain", "Explain what selected code does",
-            "Refactor", "Improve code structure",
-            "Fix", "Find and fix bugs",
-            "Generate", "Generate new code from description",
-            "Tests", "Generate unit tests",
+            "Explain",
+            "Explain what selected code does",
+            "Refactor",
+            "Improve code structure",
+            "Fix",
+            "Find and fix bugs",
+            "Generate",
+            "Generate new code from description",
+            "Tests",
+            "Generate unit tests",
         );
         chat_area.set_text(&welcome);
 

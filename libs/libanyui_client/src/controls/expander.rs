@@ -1,5 +1,5 @@
-use crate::{Container, Control, Widget, lib, events, KIND_EXPANDER};
 use crate::events::CheckedChangedEvent;
+use crate::{events, lib, Container, Control, Widget, KIND_EXPANDER};
 
 container_control!(Expander, KIND_EXPANDER);
 
@@ -7,7 +7,11 @@ impl Expander {
     /// Create an expander with the given header title. Starts expanded.
     pub fn new(title: &str) -> Self {
         let id = (lib().create_control)(KIND_EXPANDER, title.as_ptr(), title.len() as u32);
-        Self { container: Container { ctrl: Control { id } } }
+        Self {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
     }
 
     /// Whether the expander is currently expanded.

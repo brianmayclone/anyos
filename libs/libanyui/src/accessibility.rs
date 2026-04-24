@@ -42,9 +42,9 @@
 //! Fields are separated by a single tab `\t`; `<text>` is the last field and
 //! may contain spaces.  A tab inside text is escaped as `\t` (two chars).
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
 use crate::control::{self, ControlId, ControlKind};
 
@@ -54,10 +54,10 @@ mod ipc {
     use libsyscall::{syscall1, syscall3};
 
     const SYS_PIPE_CREATE: u32 = 45;
-    const SYS_PIPE_READ:   u32 = 46;
-    const SYS_PIPE_CLOSE:  u32 = 47;
-    const SYS_PIPE_WRITE:  u32 = 48;
-    const SYS_PIPE_OPEN:   u32 = 49;
+    const SYS_PIPE_READ: u32 = 46;
+    const SYS_PIPE_CLOSE: u32 = 47;
+    const SYS_PIPE_WRITE: u32 = 48;
+    const SYS_PIPE_OPEN: u32 = 49;
 
     pub fn pipe_create(name: &str) -> u32 {
         let mut buf = [0u8; 65];
@@ -76,11 +76,21 @@ mod ipc {
     }
 
     pub fn pipe_read(pipe_id: u32, buf: &mut [u8]) -> u32 {
-        syscall3(SYS_PIPE_READ, pipe_id as u64, buf.as_mut_ptr() as u64, buf.len() as u64) as u32
+        syscall3(
+            SYS_PIPE_READ,
+            pipe_id as u64,
+            buf.as_mut_ptr() as u64,
+            buf.len() as u64,
+        ) as u32
     }
 
     pub fn pipe_write(pipe_id: u32, data: &[u8]) -> u32 {
-        syscall3(SYS_PIPE_WRITE, pipe_id as u64, data.as_ptr() as u64, data.len() as u64) as u32
+        syscall3(
+            SYS_PIPE_WRITE,
+            pipe_id as u64,
+            data.as_ptr() as u64,
+            data.len() as u64,
+        ) as u32
     }
 
     pub fn pipe_close(pipe_id: u32) -> u32 {
@@ -97,15 +107,18 @@ pub fn req_pipe_name(pid: u32) -> String {
 // ── State kept in AnyuiState ─────────────────────────────────────────────────
 
 pub struct AccState {
-    pub req_pipe_id: u32,   // created at init, app reads commands from here
-    pub rsp_pipe_id: u32,   // 0 = no session open
+    pub req_pipe_id: u32, // created at init, app reads commands from here
+    pub rsp_pipe_id: u32, // 0 = no session open
 }
 
 impl AccState {
     pub fn new(pid: u32) -> Self {
         let name = req_pipe_name(pid);
         let id = ipc::pipe_create(&name);
-        AccState { req_pipe_id: id, rsp_pipe_id: 0 }
+        AccState {
+            req_pipe_id: id,
+            rsp_pipe_id: 0,
+        }
     }
 }
 
@@ -150,7 +163,9 @@ pub fn poll_and_handle(
     let mut start = 0usize;
     for i in 0..n as usize {
         if data[i] == b'\n' {
-            let line = core::str::from_utf8(&data[start..i]).unwrap_or("").trim_end_matches('\r');
+            let line = core::str::from_utf8(&data[start..i])
+                .unwrap_or("")
+                .trim_end_matches('\r');
             if !line.is_empty() {
                 handle_line(acc, st, line, pending_events);
             }
@@ -379,10 +394,15 @@ fn ctrl_line(
     let _ = st; // reserved for future use
     Some(format!(
         "CTRL\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-        id, base.parent,
+        id,
+        base.parent,
         kind_name(kind),
-        ax, ay, base.w, base.h,
-        vis, dis,
+        ax,
+        ay,
+        base.w,
+        base.h,
+        vis,
+        dis,
         base.state,
         escaped,
     ))
@@ -399,7 +419,10 @@ fn find_by_text(acc: &mut AccState, st: &crate::AnyuiState, needle: &str) {
             if let Some(idx) = control::find_idx(&st.controls, id) {
                 let kind = st.controls[idx].kind();
                 let escaped = escape_tab(&text);
-                send(acc, &format!("MATCH\t{}\t{}\t{}\n", id, kind_name(kind), escaped));
+                send(
+                    acc,
+                    &format!("MATCH\t{}\t{}\t{}\n", id, kind_name(kind), escaped),
+                );
             }
         }
     }
@@ -512,11 +535,21 @@ fn unescape_tab(s: &str) -> String {
 }
 
 fn to_lowercase(s: &str) -> String {
-    s.chars().map(|c| if c >= 'A' && c <= 'Z' { (c as u8 + 32) as char } else { c }).collect()
+    s.chars()
+        .map(|c| {
+            if c >= 'A' && c <= 'Z' {
+                (c as u8 + 32) as char
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 fn contains_ignore_case(haystack: &str, needle_lower: &str) -> bool {
-    if needle_lower.is_empty() { return true; }
+    if needle_lower.is_empty() {
+        return true;
+    }
     let h = to_lowercase(haystack);
     h.contains(&needle_lower[..])
 }

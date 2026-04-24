@@ -1,5 +1,5 @@
-use crate::{Control, Widget, lib, events, KIND_SEGMENTED};
 use crate::events::SelectionChangedEvent;
+use crate::{events, lib, Control, Widget, KIND_SEGMENTED};
 
 leaf_control!(SegmentedControl, KIND_SEGMENTED);
 
@@ -7,7 +7,9 @@ impl SegmentedControl {
     /// Create a segmented control. Labels are pipe-separated, e.g. "Tab 1|Tab 2|Tab 3".
     pub fn new(labels: &str) -> Self {
         let id = (lib().create_control)(KIND_SEGMENTED, labels.as_ptr(), labels.len() as u32);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Register a callback for when the active segment changes.

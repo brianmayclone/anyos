@@ -298,6 +298,7 @@ struct AnyuiLib {
     texteditor_clear_diagnostics: extern "C" fn(u32),
     texteditor_set_read_only: extern "C" fn(u32, u32),
     texteditor_ensure_line_visible: extern "C" fn(u32, u32),
+    texteditor_toggle_fold_at_cursor: extern "C" fn(u32),
     // TreeView
     treeview_add_node: extern "C" fn(u32, u32, *const u8, u32) -> u32,
     treeview_remove_node: extern "C" fn(u32, u32),
@@ -612,6 +613,10 @@ pub fn init() -> bool {
             texteditor_ensure_line_visible: resolve(
                 &handle,
                 "anyui_texteditor_ensure_line_visible",
+            ),
+            texteditor_toggle_fold_at_cursor: resolve(
+                &handle,
+                "anyui_texteditor_toggle_fold_at_cursor",
             ),
             // TreeView
             treeview_add_node: resolve(&handle, "anyui_treeview_add_node"),

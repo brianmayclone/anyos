@@ -1,12 +1,14 @@
-use crate::{Control, Widget, lib, events, KIND_TEXT_AREA};
 use crate::events::TextChangedEvent;
+use crate::{events, lib, Control, Widget, KIND_TEXT_AREA};
 
 leaf_control!(TextArea, KIND_TEXT_AREA);
 
 impl TextArea {
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_TEXT_AREA, core::ptr::null(), 0);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     pub fn set_read_only(&self, enabled: bool) {

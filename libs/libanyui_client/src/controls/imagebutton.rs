@@ -3,9 +3,9 @@
 //! Composed client-side from a View + ImageView.  The View handles click events
 //! and provides the button background; the ImageView renders the icon.
 
-use crate::{Control, Widget, lib, events, KIND_VIEW, KIND_IMAGE_VIEW};
-use crate::events::ClickEvent;
 use crate::controls::imageview::SCALE_FIT;
+use crate::events::ClickEvent;
+use crate::{events, lib, Control, Widget, KIND_IMAGE_VIEW, KIND_VIEW};
 
 /// A clickable image button.  Behaves like a toolbar button but displays
 /// a raster image (PNG, ICO, BMP, …) instead of a vector icon.
@@ -61,8 +61,20 @@ impl ImageButton {
                 let pixel_count = (info.width as usize) * (info.height as usize);
                 let mut pixels = alloc::vec![0u32; pixel_count];
                 let mut scratch = alloc::vec![0u8; info.scratch_needed as usize];
-                if libimage_client::decode_ico_size(&data, preferred_size, &mut pixels, &mut scratch).is_ok() {
-                    (lib().imageview_set_pixels)(self.iv_id, pixels.as_ptr(), info.width, info.height);
+                if libimage_client::decode_ico_size(
+                    &data,
+                    preferred_size,
+                    &mut pixels,
+                    &mut scratch,
+                )
+                .is_ok()
+                {
+                    (lib().imageview_set_pixels)(
+                        self.iv_id,
+                        pixels.as_ptr(),
+                        info.width,
+                        info.height,
+                    );
                 }
             }
         }
@@ -86,7 +98,9 @@ impl ImageButton {
 }
 
 impl Widget for ImageButton {
-    fn id(&self) -> u32 { self.view_id }
+    fn id(&self) -> u32 {
+        self.view_id
+    }
 }
 
 impl core::ops::Deref for ImageButton {

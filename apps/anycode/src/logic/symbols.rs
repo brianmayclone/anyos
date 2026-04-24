@@ -1,6 +1,6 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
 use crate::logic::language::LanguageId;
 
@@ -51,17 +51,17 @@ impl SymbolKind {
 
     pub fn icon_color(&self) -> u32 {
         match self {
-            Self::Function | Self::Method => 0xFFDCDCAA,    // Yellow
-            Self::Struct | Self::Class => 0xFF4EC9B0,       // Teal
-            Self::Enum => 0xFF4EC9B0,                       // Teal
-            Self::Trait | Self::Interface => 0xFF4EC9B0,    // Teal
-            Self::Impl => 0xFF9CDCFE,                       // Light blue
-            Self::Constant => 0xFF569CD6,                   // Blue
-            Self::Variable => 0xFF9CDCFE,                   // Light blue
-            Self::Module | Self::Import => 0xFFCE9178,      // Orange
-            Self::Macro => 0xFFD19A66,                      // Dark orange
-            Self::TypeAlias => 0xFF4EC9B0,                  // Teal
-            Self::Field => 0xFF9CDCFE,                      // Light blue
+            Self::Function | Self::Method => 0xFFDCDCAA, // Yellow
+            Self::Struct | Self::Class => 0xFF4EC9B0,    // Teal
+            Self::Enum => 0xFF4EC9B0,                    // Teal
+            Self::Trait | Self::Interface => 0xFF4EC9B0, // Teal
+            Self::Impl => 0xFF9CDCFE,                    // Light blue
+            Self::Constant => 0xFF569CD6,                // Blue
+            Self::Variable => 0xFF9CDCFE,                // Light blue
+            Self::Module | Self::Import => 0xFFCE9178,   // Orange
+            Self::Macro => 0xFFD19A66,                   // Dark orange
+            Self::TypeAlias => 0xFF4EC9B0,               // Teal
+            Self::Field => 0xFF9CDCFE,                   // Light blue
         }
     }
 }
@@ -135,7 +135,11 @@ fn extract_rust_symbols(content: &str) -> Vec<Symbol> {
         if let Some(fn_info) = try_extract_rust_fn(trimmed) {
             symbols.push(Symbol {
                 name: fn_info.0,
-                kind: if current_impl.is_some() { SymbolKind::Method } else { SymbolKind::Function },
+                kind: if current_impl.is_some() {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                },
                 line: line_no as u32,
                 parent: current_impl.clone(),
                 detail: fn_info.1,
@@ -201,10 +205,16 @@ fn extract_rust_symbols(content: &str) -> Vec<Symbol> {
         }
 
         // const / static
-        if trimmed.starts_with("pub const ") || trimmed.starts_with("const ")
-            || trimmed.starts_with("pub static ") || trimmed.starts_with("static ")
+        if trimmed.starts_with("pub const ")
+            || trimmed.starts_with("const ")
+            || trimmed.starts_with("pub static ")
+            || trimmed.starts_with("static ")
         {
-            let kw = if trimmed.contains("const ") { "const" } else { "static" };
+            let kw = if trimmed.contains("const ") {
+                "const"
+            } else {
+                "static"
+            };
             if let Some(name) = extract_ident_after(trimmed, kw) {
                 let name = String::from(name.trim_end_matches(':'));
                 symbols.push(Symbol {
@@ -236,7 +246,9 @@ fn extract_rust_symbols(content: &str) -> Vec<Symbol> {
         // macro_rules!
         if trimmed.starts_with("macro_rules!") {
             let rest = &trimmed["macro_rules!".len()..].trim();
-            let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+            let name_end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
             if name_end > 0 {
                 symbols.push(Symbol {
                     name: String::from(&rest[..name_end]),
@@ -254,7 +266,11 @@ fn extract_rust_symbols(content: &str) -> Vec<Symbol> {
 fn try_extract_rust_fn(line: &str) -> Option<(String, String)> {
     // Match: (pub )?(async )?(unsafe )?fn name
     let fn_pos = line.find(" fn ").or_else(|| {
-        if line.starts_with("fn ") { Some(0) } else { None }
+        if line.starts_with("fn ") {
+            Some(0)
+        } else {
+            None
+        }
     })?;
 
     let after_fn = if line.starts_with("fn ") {
@@ -263,7 +279,9 @@ fn try_extract_rust_fn(line: &str) -> Option<(String, String)> {
         &line[fn_pos + 4..]
     };
 
-    let name_end = after_fn.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after_fn.len());
+    let name_end = after_fn
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(after_fn.len());
     if name_end == 0 {
         return None;
     }
@@ -286,7 +304,9 @@ fn extract_impl_name(line: &str) -> String {
     };
 
     let rest = rest.trim();
-    let end = rest.find(|c: char| c == '{' || c == '<').unwrap_or(rest.len());
+    let end = rest
+        .find(|c: char| c == '{' || c == '<')
+        .unwrap_or(rest.len());
     let name_part = rest[..end].trim();
 
     // Check for "for" keyword  →  "TraitName for TypeName"
@@ -313,7 +333,9 @@ fn skip_angle_brackets(s: &str) -> &str {
 fn extract_ident_after(line: &str, keyword: &str) -> Option<String> {
     let pos = line.find(keyword)?;
     let after = &line[pos + keyword.len()..].trim_start();
-    let end = after.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after.len());
+    let end = after
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(after.len());
     if end == 0 {
         return None;
     }
@@ -374,7 +396,9 @@ fn extract_c_symbols(content: &str) -> Vec<Symbol> {
         // #define NAME
         if trimmed.starts_with("#define ") {
             let rest = &trimmed[8..];
-            let end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+            let end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
             if end > 0 {
                 symbols.push(Symbol {
                     name: String::from(&rest[..end]),
@@ -397,17 +421,20 @@ fn try_extract_c_function(line: &str, line_no: u32) -> Option<Symbol> {
     }
 
     // Must not start with control flow keywords
-    let first_word_end = line.find(|c: char| !c.is_alphanumeric() && c != '_' && c != '*').unwrap_or(0);
+    let first_word_end = line
+        .find(|c: char| !c.is_alphanumeric() && c != '_' && c != '*')
+        .unwrap_or(0);
     let first_word = &line[..first_word_end];
     match first_word {
-        "if" | "for" | "while" | "switch" | "return" | "else" | "#define"
-        | "#include" | "#ifdef" | "#ifndef" | "typedef" => return None,
+        "if" | "for" | "while" | "switch" | "return" | "else" | "#define" | "#include"
+        | "#ifdef" | "#ifndef" | "typedef" => return None,
         _ => {}
     }
 
     // Extract function name (word before the parenthesis)
     let before_paren = &line[..paren_pos];
-    let name_start = before_paren.rfind(|c: char| !c.is_alphanumeric() && c != '_')
+    let name_start = before_paren
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
         .map(|p| p + 1)
         .unwrap_or(0);
     let name = &before_paren[name_start..];
@@ -459,7 +486,9 @@ fn extract_python_symbols(content: &str) -> Vec<Symbol> {
         // class Foo:
         if trimmed.starts_with("class ") {
             let rest = &trimmed[6..];
-            let name_end = rest.find(|c: char| c == '(' || c == ':' || c == ' ').unwrap_or(rest.len());
+            let name_end = rest
+                .find(|c: char| c == '(' || c == ':' || c == ' ')
+                .unwrap_or(rest.len());
             if name_end > 0 {
                 let name = String::from(&rest[..name_end]);
                 current_class = Some(name.clone());
@@ -487,9 +516,17 @@ fn extract_python_symbols(content: &str) -> Vec<Symbol> {
                 let is_method = !line.starts_with("def") && !line.starts_with("async def");
                 symbols.push(Symbol {
                     name,
-                    kind: if is_method { SymbolKind::Method } else { SymbolKind::Function },
+                    kind: if is_method {
+                        SymbolKind::Method
+                    } else {
+                        SymbolKind::Function
+                    },
                     line: line_no as u32,
-                    parent: if is_method { current_class.clone() } else { None },
+                    parent: if is_method {
+                        current_class.clone()
+                    } else {
+                        None
+                    },
                     detail: String::from(trimmed.trim_end_matches(':')),
                 });
             }
@@ -537,7 +574,9 @@ fn extract_js_symbols(content: &str) -> Vec<Symbol> {
         }
 
         // const name = (...) => or const name = function
-        if (trimmed.starts_with("const ") || trimmed.starts_with("let ") || trimmed.starts_with("var "))
+        if (trimmed.starts_with("const ")
+            || trimmed.starts_with("let ")
+            || trimmed.starts_with("var "))
             && (trimmed.contains("=>") || trimmed.contains("function"))
         {
             let rest = trimmed.split_whitespace().nth(1).unwrap_or("");
@@ -609,7 +648,9 @@ fn extract_shell_symbols(content: &str) -> Vec<Symbol> {
         // function name() or name()
         if trimmed.starts_with("function ") {
             let rest = &trimmed[9..];
-            let name_end = rest.find(|c: char| c == '(' || c == ' ' || c == '{').unwrap_or(rest.len());
+            let name_end = rest
+                .find(|c: char| c == '(' || c == ' ' || c == '{')
+                .unwrap_or(rest.len());
             if name_end > 0 {
                 symbols.push(Symbol {
                     name: String::from(&rest[..name_end]),
@@ -646,8 +687,11 @@ fn extract_makefile_symbols(content: &str) -> Vec<Symbol> {
 
         // Target: "name: deps"
         if let Some(colon) = trimmed.find(':') {
-            if colon == 0 || trimmed.starts_with('#') || trimmed.starts_with('\t')
-                || trimmed.contains('=') || trimmed.starts_with('.')
+            if colon == 0
+                || trimmed.starts_with('#')
+                || trimmed.starts_with('\t')
+                || trimmed.contains('=')
+                || trimmed.starts_with('.')
             {
                 continue;
             }

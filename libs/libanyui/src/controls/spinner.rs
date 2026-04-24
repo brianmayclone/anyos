@@ -50,8 +50,12 @@ impl Control for Spinner {
 
         // Sine/cosine lookup (fixed-point, 12 positions around circle)
         // Pre-computed: cos(i * 2π/12), sin(i * 2π/12) * 1024
-        const COS12: [i32; 12] = [1024, 887, 512, 0, -512, -887, -1024, -887, -512, 0, 512, 887];
-        const SIN12: [i32; 12] = [0, -512, -887, -1024, -887, -512, 0, 512, 887, 1024, 887, 512];
+        const COS12: [i32; 12] = [
+            1024, 887, 512, 0, -512, -887, -1024, -887, -512, 0, 512, 887,
+        ];
+        const SIN12: [i32; 12] = [
+            0, -512, -887, -1024, -887, -512, 0, 512, 887, 1024, 887, 512,
+        ];
 
         let active_dot = (frame / 4) % DOT_COUNT;
 

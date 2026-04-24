@@ -1,7 +1,7 @@
-use alloc::string::String;
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::json::{Value, Number};
+use anyos_std::json::{Number, Value};
 use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 
 use crate::util::path;
@@ -82,7 +82,11 @@ impl Config {
             tab_width: json_u32(&val, "tab_width", defaults.tab_width),
             show_line_numbers: json_bool(&val, "show_line_numbers", defaults.show_line_numbers),
             auto_save: json_bool(&val, "auto_save", defaults.auto_save),
-            reopen_last_project: json_bool(&val, "reopen_last_project", defaults.reopen_last_project),
+            reopen_last_project: json_bool(
+                &val,
+                "reopen_last_project",
+                defaults.reopen_last_project,
+            ),
             terminal_font_size: json_u32(&val, "terminal_font_size", defaults.terminal_font_size),
             sidebar_width: json_u32(&val, "sidebar_width", defaults.sidebar_width),
             output_height: json_u32(&val, "output_height", defaults.output_height),
@@ -118,16 +122,34 @@ impl Config {
     /// Save settings to disk.
     pub fn save(&self) {
         let mut obj = Value::new_object();
-        obj.set("font_size", Value::Number(Number::Int(self.font_size as i64)));
-        obj.set("line_height", Value::Number(Number::Int(self.line_height as i64)));
+        obj.set(
+            "font_size",
+            Value::Number(Number::Int(self.font_size as i64)),
+        );
+        obj.set(
+            "line_height",
+            Value::Number(Number::Int(self.line_height as i64)),
+        );
         obj.set("font_id", Value::Number(Number::Int(self.font_id as i64)));
-        obj.set("tab_width", Value::Number(Number::Int(self.tab_width as i64)));
+        obj.set(
+            "tab_width",
+            Value::Number(Number::Int(self.tab_width as i64)),
+        );
         obj.set("show_line_numbers", Value::Bool(self.show_line_numbers));
         obj.set("auto_save", Value::Bool(self.auto_save));
         obj.set("reopen_last_project", Value::Bool(self.reopen_last_project));
-        obj.set("terminal_font_size", Value::Number(Number::Int(self.terminal_font_size as i64)));
-        obj.set("sidebar_width", Value::Number(Number::Int(self.sidebar_width as i64)));
-        obj.set("output_height", Value::Number(Number::Int(self.output_height as i64)));
+        obj.set(
+            "terminal_font_size",
+            Value::Number(Number::Int(self.terminal_font_size as i64)),
+        );
+        obj.set(
+            "sidebar_width",
+            Value::Number(Number::Int(self.sidebar_width as i64)),
+        );
+        obj.set(
+            "output_height",
+            Value::Number(Number::Int(self.output_height as i64)),
+        );
         obj.set("settings_path", Value::String(self.settings_path.clone()));
         obj.set("syntax_dir", Value::String(self.syntax_dir.clone()));
         obj.set("plugin_dir", Value::String(self.plugin_dir.clone()));
@@ -139,9 +161,15 @@ impl Config {
         obj.set("git_path", Value::String(self.git_path.clone()));
         obj.set("last_project", Value::String(self.last_project.clone()));
         obj.set("recent_projects", json_string_array(&self.recent_projects));
-        obj.set("session_project", Value::String(self.session_project.clone()));
+        obj.set(
+            "session_project",
+            Value::String(self.session_project.clone()),
+        );
         obj.set("session_files", json_string_array(&self.session_files));
-        obj.set("session_active_file", Value::String(self.session_active_file.clone()));
+        obj.set(
+            "session_active_file",
+            Value::String(self.session_active_file.clone()),
+        );
         let json = obj.to_json_string_pretty();
         let _ = ANYCODE_SCHEMA.write_string("config/settings_json", &json);
     }

@@ -1,9 +1,9 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 use libanyui_client as ui;
 
-use crate::logic::plugin::{PluginManager, PluginState, PluginCapability};
+use crate::logic::plugin::{PluginCapability, PluginManager, PluginState};
 
 const STYLE_BOLD: u32 = 1;
 
@@ -119,14 +119,17 @@ impl ExtensionsPanel {
 
         for plugin in &plugin_mgr.plugins {
             let state_badge = match plugin.state {
-                PluginState::Active => "\u{2713}",   // ✓
+                PluginState::Active => "\u{2713}",    // ✓
                 PluginState::Installed => "\u{2713}", // ✓
                 PluginState::Disabled => "\u{2717}",  // ✗
                 PluginState::Error => "\u{2716}",     // ✖
             };
 
             let caps = format_capabilities(&plugin.capabilities);
-            let label = format!("{} {} v{}", state_badge, plugin.display_name, plugin.version);
+            let label = format!(
+                "{} {} v{}",
+                state_badge, plugin.display_name, plugin.version
+            );
             let node = self.tree.add_child(installed_node, &label);
 
             let color = match plugin.state {
@@ -146,12 +149,16 @@ impl ExtensionsPanel {
 
             // Show file extensions
             if !plugin.extensions.is_empty() {
-                let exts = plugin.extensions.iter()
+                let exts = plugin
+                    .extensions
+                    .iter()
                     .map(|e| format!(".{}", e))
                     .collect::<Vec<_>>();
                 let mut ext_str = String::from("  Files: ");
                 for (i, e) in exts.iter().enumerate() {
-                    if i > 0 { ext_str.push_str(", "); }
+                    if i > 0 {
+                        ext_str.push_str(", ");
+                    }
                     ext_str.push_str(e);
                 }
                 let ext_node = self.tree.add_child(node, &ext_str);
@@ -172,10 +179,15 @@ impl ExtensionsPanel {
     /// Show detail for the selected extension.
     pub fn show_detail(&self, plugin_mgr: &PluginManager, name: &str) {
         if let Some(plugin) = plugin_mgr.plugins.iter().find(|p| p.name == name) {
-            let detail = format!("{}\n{}\nby {}",
+            let detail = format!(
+                "{}\n{}\nby {}",
                 plugin.display_name,
                 plugin.description,
-                if plugin.author.is_empty() { "Unknown" } else { &plugin.author },
+                if plugin.author.is_empty() {
+                    "Unknown"
+                } else {
+                    &plugin.author
+                },
             );
             self.detail_label.set_text(&detail);
         }
@@ -199,7 +211,9 @@ fn format_capabilities(caps: &[PluginCapability]) -> String {
     }
     let mut result = String::new();
     for (i, p) in parts.iter().enumerate() {
-        if i > 0 { result.push_str(", "); }
+        if i > 0 {
+            result.push_str(", ");
+        }
         result.push_str(p);
     }
     result

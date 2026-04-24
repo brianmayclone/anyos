@@ -41,10 +41,11 @@ use anyos_std::println;
 fn main() {
     let mut args_buf = [0u8; 256];
     let raw = anyos_std::process::args(&mut args_buf);
-    let mut args: Vec<&str> = raw.split_whitespace().collect();
+    let arg_tokens = anyos_std::args::tokenize(raw);
+    let mut args: Vec<&str> = arg_tokens.iter().map(|arg| arg.as_str()).collect();
 
     if let Some(first) = args.first().copied() {
-        if matches!(first, "ccargo" | "cargo" | "acargo") {
+        if is_ccargo_argv0(first) {
             args.remove(0);
         }
     }
@@ -172,6 +173,11 @@ fn main() {
             print_usage();
         }
     }
+}
+
+fn is_ccargo_argv0(arg: &str) -> bool {
+    let name = arg.rsplit('/').next().unwrap_or(arg);
+    matches!(name, "ccargo" | "cargo" | "acargo")
 }
 
 fn make_config(release: bool, features: &[String], target: Option<String>) -> build::BuildConfig {

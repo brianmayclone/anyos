@@ -1138,7 +1138,7 @@ impl<'a> Resolver<'a> {
                     self.resolve_trait_bound_path(&bound.path);
                 }
             }
-            HirTy::Infer(_) | HirTy::Never(_) => {}
+            HirTy::MacroCall(_, _) | HirTy::Infer(_) | HirTy::Never(_) => {}
         }
     }
 

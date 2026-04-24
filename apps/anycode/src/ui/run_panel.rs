@@ -1,9 +1,9 @@
-use alloc::vec::Vec;
 use alloc::format;
+use alloc::vec::Vec;
 use libanyui_client as ui;
 
 use crate::logic::debug_session::{DebugSession, DebugSessionStatus};
-use crate::logic::tasks::{TaskManager, TaskCategory};
+use crate::logic::tasks::{TaskCategory, TaskManager};
 use crate::util::path;
 
 const STYLE_BOLD: u32 = 1;
@@ -15,15 +15,15 @@ const STYLE_BOLD: u32 = 1;
 pub struct RunPanel {
     pub panel: ui::View,
     pub tree: ui::TreeView,
-    pub btn_run: ui::Button,
-    pub btn_debug: ui::Button,
-    pub btn_continue: ui::Button,
-    pub btn_pause: ui::Button,
-    pub btn_step_over: ui::Button,
-    pub btn_build: ui::Button,
-    pub btn_test: ui::Button,
-    pub btn_stop: ui::Button,
-    pub btn_configure: ui::Button,
+    pub btn_run: ui::PlainButton,
+    pub btn_debug: ui::PlainButton,
+    pub btn_continue: ui::PlainButton,
+    pub btn_pause: ui::PlainButton,
+    pub btn_step_over: ui::PlainButton,
+    pub btn_build: ui::PlainButton,
+    pub btn_test: ui::PlainButton,
+    pub btn_stop: ui::PlainButton,
+    pub btn_configure: ui::PlainButton,
     pub run_config_label: ui::Label,
     pub run_command_label: ui::Label,
     pub debug_status_label: ui::Label,
@@ -41,89 +41,93 @@ impl RunPanel {
 
         let t = anyos_std::i18n::t;
 
-        // Header
         let header = ui::Label::new(t("RUN AND DEBUG"));
         header.set_dock(ui::DOCK_TOP);
-        header.set_size(200, 20);
+        header.set_size(200, 24);
         header.set_font_size(11);
         header.set_text_color(tc.text_secondary);
-        header.set_margin(8, 6, 0, 2);
+        header.set_margin(10, 8, 0, 2);
         panel.add(&header);
 
-        // Run configuration label
+        let active_heading = section_label(t("ACTIVE TARGET"));
+        panel.add(&active_heading);
+
         let run_config_label = ui::Label::new(t("Select a run target"));
         run_config_label.set_dock(ui::DOCK_TOP);
-        run_config_label.set_size(200, 18);
-        run_config_label.set_font_size(12);
+        run_config_label.set_size(200, 22);
+        run_config_label.set_font_size(13);
         run_config_label.set_text_color(tc.text);
-        run_config_label.set_margin(8, 2, 0, 4);
+        run_config_label.set_margin(10, 2, 8, 0);
         panel.add(&run_config_label);
 
         let run_command_label = ui::Label::new("");
         run_command_label.set_dock(ui::DOCK_TOP);
-        run_command_label.set_size(200, 18);
+        run_command_label.set_size(200, 22);
         run_command_label.set_font_size(10);
         run_command_label.set_text_color(tc.text_secondary);
-        run_command_label.set_margin(8, 0, 0, 6);
+        run_command_label.set_margin(10, 0, 8, 2);
         panel.add(&run_command_label);
 
         let configure_bar = ui::FlowPanel::new();
         configure_bar.set_dock(ui::DOCK_TOP);
-        configure_bar.set_size(200, 30);
+        configure_bar.set_size(200, 28);
         configure_bar.set_color(tc.sidebar_bg);
+        configure_bar.set_padding(6, 0, 6, 0);
         panel.add(&configure_bar);
 
-        let btn_configure = ui::Button::new(t("Configure..."));
-        btn_configure.set_size(112, 24);
-        btn_configure.set_color(tc.control_bg);
+        let btn_configure = plain_text_button(t("Configure Toolchain..."), 168, tc.text);
         configure_bar.add(&btn_configure);
+
+        let action_heading = section_label(t("ACTIONS"));
+        panel.add(&action_heading);
 
         let btn_bar = ui::FlowPanel::new();
         btn_bar.set_dock(ui::DOCK_TOP);
         btn_bar.set_size(200, 34);
         btn_bar.set_color(tc.sidebar_bg);
+        btn_bar.set_padding(6, 0, 6, 0);
         panel.add(&btn_bar);
 
-        let btn_run = ui::Button::new(t("Run"));
-        btn_run.set_size(50, 26);
-        btn_run.set_color(tc.success);
+        let btn_run = plain_text_button(t("Run"), 44, tc.success);
+        btn_run.set_tooltip(t("Run selected target"));
         btn_bar.add(&btn_run);
 
-        let btn_build = ui::Button::new(t("Build"));
-        btn_build.set_size(50, 26);
-        btn_build.set_color(tc.accent);
+        let btn_build = plain_text_button(t("Build"), 50, tc.accent);
+        btn_build.set_tooltip(t("Build selected target"));
         btn_bar.add(&btn_build);
 
-        let btn_test = ui::Button::new(t("Test"));
-        btn_test.set_size(45, 26);
+        let btn_test = plain_text_button(t("Test"), 44, tc.warning);
+        btn_test.set_tooltip(t("Run tests"));
         btn_bar.add(&btn_test);
 
-        let btn_stop = ui::Button::new(t("Stop"));
-        btn_stop.set_size(45, 26);
-        btn_stop.set_color(tc.destructive);
+        let btn_stop = plain_text_button(t("Stop"), 44, tc.destructive);
+        btn_stop.set_tooltip(t("Stop current process"));
         btn_bar.add(&btn_stop);
+
+        let debug_heading = section_label(t("DEBUGGER"));
+        panel.add(&debug_heading);
 
         let debug_status_label = ui::Label::new("Debugger: Idle");
         debug_status_label.set_dock(ui::DOCK_TOP);
-        debug_status_label.set_size(200, 18);
+        debug_status_label.set_size(200, 20);
         debug_status_label.set_font_size(11);
         debug_status_label.set_text_color(tc.text_secondary);
-        debug_status_label.set_margin(8, 2, 0, 0);
+        debug_status_label.set_margin(10, 0, 8, 0);
         panel.add(&debug_status_label);
 
         let debug_bar = ui::FlowPanel::new();
         debug_bar.set_dock(ui::DOCK_TOP);
         debug_bar.set_size(200, 30);
         debug_bar.set_color(tc.sidebar_bg);
+        debug_bar.set_padding(6, 0, 6, 0);
         panel.add(&debug_bar);
 
-        let btn_debug = ui::Button::new(t("Debug"));
-        btn_debug.set_size(62, 24);
-        btn_debug.set_color(tc.accent);
+        let btn_debug = plain_text_button(t("Debug"), 58, tc.accent);
+        btn_debug.set_tooltip(t("Start debugging"));
         debug_bar.add(&btn_debug);
 
         let breakpoint_label = ui::Label::new("0 breakpoints");
-        breakpoint_label.set_size(126, 24);
+        breakpoint_label.set_size(120, 24);
         breakpoint_label.set_font_size(11);
         breakpoint_label.set_text_color(tc.text_secondary);
         debug_bar.add(&breakpoint_label);
@@ -132,18 +136,16 @@ impl RunPanel {
         control_bar.set_dock(ui::DOCK_TOP);
         control_bar.set_size(200, 30);
         control_bar.set_color(tc.sidebar_bg);
+        control_bar.set_padding(6, 0, 6, 0);
         panel.add(&control_bar);
 
-        let btn_continue = ui::Button::new(t("Continue"));
-        btn_continue.set_size(68, 24);
+        let btn_continue = plain_text_button(t("Continue"), 70, tc.text);
         control_bar.add(&btn_continue);
 
-        let btn_pause = ui::Button::new(t("Pause"));
-        btn_pause.set_size(54, 24);
+        let btn_pause = plain_text_button(t("Pause"), 54, tc.text);
         control_bar.add(&btn_pause);
 
-        let btn_step_over = ui::Button::new(t("Step"));
-        btn_step_over.set_size(50, 24);
+        let btn_step_over = plain_text_button(t("Step"), 46, tc.text);
         control_bar.add(&btn_step_over);
 
         let content_split = ui::SplitView::new();
@@ -158,13 +160,8 @@ impl RunPanel {
         debug_section.set_color(tc.sidebar_bg);
         content_split.add(&debug_section);
 
-        let debug_heading = ui::Label::new(t("DEBUG DETAILS"));
-        debug_heading.set_dock(ui::DOCK_TOP);
-        debug_heading.set_size(200, 20);
-        debug_heading.set_font_size(10);
-        debug_heading.set_text_color(tc.text_secondary);
-        debug_heading.set_margin(8, 4, 0, 0);
-        debug_section.add(&debug_heading);
+        let debug_details_heading = section_label(t("DEBUG DETAILS"));
+        debug_section.add(&debug_details_heading);
 
         let debug_tree = ui::TreeView::new(200, 320);
         debug_tree.set_dock(ui::DOCK_FILL);
@@ -176,12 +173,7 @@ impl RunPanel {
         task_section.set_color(tc.sidebar_bg);
         content_split.add(&task_section);
 
-        let task_heading = ui::Label::new(t("TASKS"));
-        task_heading.set_dock(ui::DOCK_TOP);
-        task_heading.set_size(200, 20);
-        task_heading.set_font_size(10);
-        task_heading.set_text_color(tc.text_secondary);
-        task_heading.set_margin(8, 4, 0, 0);
+        let task_heading = section_label(t("TASKS"));
         task_section.add(&task_heading);
 
         // Tasks tree
@@ -252,7 +244,9 @@ impl RunPanel {
         ];
 
         for category in &categories {
-            let tasks: Vec<(usize, &crate::logic::tasks::Task)> = task_mgr.tasks.iter()
+            let tasks: Vec<(usize, &crate::logic::tasks::Task)> = task_mgr
+                .tasks
+                .iter()
                 .enumerate()
                 .filter(|(_, t)| t.category == *category)
                 .collect();
@@ -285,7 +279,14 @@ impl RunPanel {
                     TaskCategory::Test => tc.warning,
                     _ => tc.text_secondary,
                 };
-                self.tree.set_node_text_color(node, if is_selected { color } else { tc.text_secondary });
+                self.tree.set_node_text_color(
+                    node,
+                    if is_selected {
+                        color
+                    } else {
+                        tc.text_secondary
+                    },
+                );
                 self.task_indices.push(Some(*task_idx));
             }
         }
@@ -336,7 +337,12 @@ impl RunPanel {
         self.debug_tree.set_expanded(bps, true);
         for bp in &debug.breakpoints {
             let marker = if bp.enabled { "enabled" } else { "disabled" };
-            let label = format!("{}:{} ({})", path::basename(&bp.file_path), bp.line + 1, marker);
+            let label = format!(
+                "{}:{} ({})",
+                path::basename(&bp.file_path),
+                bp.line + 1,
+                marker
+            );
             self.debug_tree.add_child(bps, &label);
         }
 
@@ -401,7 +407,12 @@ impl RunPanel {
         for row in &debug.memory_rows {
             self.debug_tree.add_child(
                 memory,
-                &format!("{}  {:<24} {}", compact_hex(&row.address), row.bytes, row.ascii),
+                &format!(
+                    "{}  {:<24} {}",
+                    compact_hex(&row.address),
+                    row.bytes,
+                    row.ascii
+                ),
             );
         }
     }
@@ -430,4 +441,23 @@ fn compact_hex(value: &str) -> &str {
     } else {
         value
     }
+}
+
+fn section_label(text: &str) -> ui::Label {
+    let tc = ui::theme::colors();
+    let label = ui::Label::new(text);
+    label.set_dock(ui::DOCK_TOP);
+    label.set_size(200, 20);
+    label.set_font_size(10);
+    label.set_text_color(tc.text_secondary);
+    label.set_margin(10, 8, 0, 0);
+    label
+}
+
+fn plain_text_button(text: &str, width: u32, color: u32) -> ui::PlainButton {
+    let btn = ui::PlainButton::new(text);
+    btn.set_size(width, 24);
+    btn.set_font_size(11);
+    btn.set_text_color(color);
+    btn
 }

@@ -1,12 +1,16 @@
-use crate::{Container, Control, Widget, lib, events, KIND_TAB_BAR};
 use crate::events::SelectionChangedEvent;
+use crate::{events, lib, Container, Control, Widget, KIND_TAB_BAR};
 
 container_control!(TabBar, KIND_TAB_BAR);
 
 impl TabBar {
     pub fn new(labels: &str) -> Self {
         let id = (lib().create_control)(KIND_TAB_BAR, labels.as_ptr(), labels.len() as u32);
-        Self { container: Container { ctrl: Control { id } } }
+        Self {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
     }
 
     pub fn on_active_changed(&self, mut f: impl FnMut(&SelectionChangedEvent) + 'static) {
