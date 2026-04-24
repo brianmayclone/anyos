@@ -137,6 +137,11 @@ Die naechsten Schnitte sollen diese APIs sichtbar machen:
    - `.rlib`-Metadaten duerfen nicht nur gerenderte Rust-Interface-Strings sein.
    - Ziel: strukturierte Symboltabellen fuer Types, Traits, Impls, Aliases,
      Associated Items und Funktionssignaturen.
+   - Aktueller Stand: `.rlib` speichert neben dem kompatiblen
+     `interface_source` eine strukturierte Interface-Tabelle mit Name, Kind und
+     Signatur pro exportiertem Item. Resolver und Typeck konsumieren noch den
+     alten Source-Pfad; die Tabelle ist der neue Contract, der jetzt
+     schrittweise ausgebaut wird.
 
 2. **Type Database Extrahieren**
    - aus `typeck.rs` eine eigene `tydb`-Schicht machen

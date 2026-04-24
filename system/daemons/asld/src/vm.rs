@@ -22,6 +22,35 @@ const UART_LSR: u16 = COM1_BASE + 5;
 const UART_MSR: u16 = COM1_BASE + 6;
 const UART_SCR: u16 = COM1_BASE + 7;
 const UART_LCR_DLAB: u8 = 0x80;
+const IO_PORT_POST_DELAY: u16 = 0x80;
+const IO_PORT_PIC1_CMD: u16 = 0x20;
+const IO_PORT_PIC1_DATA: u16 = 0x21;
+const IO_PORT_PIC2_CMD: u16 = 0xa0;
+const IO_PORT_PIC2_DATA: u16 = 0xa1;
+const IO_PORT_PIT_CH0: u16 = 0x40;
+const IO_PORT_PIT_CH1: u16 = 0x41;
+const IO_PORT_PIT_CH2: u16 = 0x42;
+const IO_PORT_PIT_CMD: u16 = 0x43;
+const IO_PORT_CMOS_INDEX: u16 = 0x70;
+const IO_PORT_CMOS_DATA: u16 = 0x71;
+const IO_PORT_KBD_DATA: u16 = 0x60;
+const IO_PORT_KBD_STATUS: u16 = 0x64;
+const MSR_IA32_TSC: u32 = 0x10;
+const MSR_IA32_APIC_BASE: u32 = 0x1b;
+const MSR_IA32_SYSENTER_CS: u32 = 0x174;
+const MSR_IA32_SYSENTER_ESP: u32 = 0x175;
+const MSR_IA32_SYSENTER_EIP: u32 = 0x176;
+const MSR_IA32_PAT: u32 = 0x277;
+const MSR_IA32_MTRR_DEF_TYPE: u32 = 0x2ff;
+const MSR_IA32_EFER: u32 = 0xc000_0080;
+const MSR_IA32_STAR: u32 = 0xc000_0081;
+const MSR_IA32_LSTAR: u32 = 0xc000_0082;
+const MSR_IA32_CSTAR: u32 = 0xc000_0083;
+const MSR_IA32_FMASK: u32 = 0xc000_0084;
+const MSR_IA32_FS_BASE: u32 = 0xc000_0100;
+const MSR_IA32_GS_BASE: u32 = 0xc000_0101;
+const MSR_IA32_KERNEL_GS_BASE: u32 = 0xc000_0102;
+const MSR_IA32_TSC_AUX: u32 = 0xc000_0103;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmInstance {
@@ -37,6 +66,8 @@ pub struct VmInstance {
     pub run_state: VmRunState,
     pub halted: bool,
     serial: SerialPortState,
+    platform_io: PlatformIoState,
+    msrs: MsrState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +102,79 @@ struct SerialIoAction {
     read_value: Option<u32>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PlatformIoState {
+    pic1_cmd: u8,
+    pic1_data: u8,
+    pic2_cmd: u8,
+    pic2_data: u8,
+    pit_cmd: u8,
+    pit_data: [u8; 3],
+    cmos_index: u8,
+}
+
+impl Default for PlatformIoState {
+    fn default() -> Self {
+        Self {
+            pic1_cmd: 0,
+            pic1_data: 0xff,
+            pic2_cmd: 0,
+            pic2_data: 0xff,
+            pit_cmd: 0,
+            pit_data: [0; 3],
+            cmos_index: 0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct PlatformIoAction {
+    read_value: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MsrState {
+    apic_base: u64,
+    sysenter_cs: u64,
+    sysenter_esp: u64,
+    sysenter_eip: u64,
+    pat: u64,
+    mtrr_def_type: u64,
+    efer: u64,
+    star: u64,
+    lstar: u64,
+    cstar: u64,
+    fmask: u64,
+    fs_base: u64,
+    gs_base: u64,
+    kernel_gs_base: u64,
+    tsc_aux: u64,
+    xcr0: u64,
+}
+
+impl Default for MsrState {
+    fn default() -> Self {
+        Self {
+            apic_base: 0xfee0_0800,
+            sysenter_cs: 0,
+            sysenter_esp: 0,
+            sysenter_eip: 0,
+            pat: 0x0007_0406_0007_0406,
+            mtrr_def_type: 0,
+            efer: 0,
+            star: 0,
+            lstar: 0,
+            cstar: 0,
+            fmask: 0,
+            fs_base: 0,
+            gs_base: 0,
+            kernel_gs_base: 0,
+            tsc_aux: 0,
+            xcr0: 1,
+        }
+    }
+}
+
 pub fn start_vm(config: &DistroConfig) -> Result<VmInstance, AsldError> {
     start_vm_impl(config)
 }
@@ -103,6 +207,8 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         run_state: VmRunState::Provisioned,
         halted: false,
         serial: SerialPortState::default(),
+        platform_io: PlatformIoState::default(),
+        msrs: MsrState::default(),
     })
 }
 
@@ -217,6 +323,8 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         run_state: VmRunState::Provisioned,
         halted: false,
         serial: SerialPortState::default(),
+        platform_io: PlatformIoState::default(),
+        msrs: MsrState::default(),
     })
 }
 
@@ -231,7 +339,7 @@ fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError>
         if vcpu.run(&mut exit).is_err() {
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
-        if handle_serial_io_exit(instance, &vcpu, &exit)? {
+        if handle_emulated_exit(instance, &vcpu, &exit)? {
             continue;
         }
         let assessment = assess_boot_exit(&exit);
@@ -282,7 +390,7 @@ fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>
             instance.run_state = VmRunState::Degraded;
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
-        if handle_serial_io_exit(instance, &vcpu, &exit)? {
+        if handle_emulated_exit(instance, &vcpu, &exit)? {
             continue;
         }
         match assess_runtime_exit(&exit) {
@@ -614,6 +722,27 @@ fn write_u64(page: &mut [u8], index: usize, value: u64) {
 }
 
 #[cfg(not(target_os = "linux"))]
+fn handle_emulated_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    if handle_serial_io_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
+    if handle_platform_io_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
+    if handle_msr_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
+    if handle_xsetbv_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+#[cfg(not(target_os = "linux"))]
 fn handle_serial_io_exit(
     instance: &mut VmInstance,
     vcpu: &libavm::AvmVcpu,
@@ -630,7 +759,63 @@ fn handle_serial_io_exit(
     if let Some(value) = action.read_value {
         write_io_read_value(vcpu, exit.access_size, value)?;
     }
-    advance_io_rip(vcpu, exit.instruction_len)?;
+    advance_guest_rip(vcpu, exit.instruction_len)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_platform_io_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    let Some(action) = platform_io_action(&mut instance.platform_io, exit) else {
+        return Ok(false);
+    };
+
+    if let Some(value) = action.read_value {
+        write_io_read_value(vcpu, exit.access_size, value)?;
+    }
+    advance_guest_rip(vcpu, exit.instruction_len)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_msr_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    match exit.reason {
+        exit_reason::RDMSR => {
+            let value = msr_read(&instance.msrs, exit.msr_index);
+            write_msr_read_value(vcpu, value)?;
+            advance_guest_rip(vcpu, exit.instruction_len)?;
+            Ok(true)
+        }
+        exit_reason::WRMSR => {
+            msr_write(&mut instance.msrs, exit.msr_index, exit.io_data);
+            sync_guest_msr_side_effects(vcpu, exit.msr_index, &instance.msrs)?;
+            advance_guest_rip(vcpu, exit.instruction_len)?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_xsetbv_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    if exit.reason != exit_reason::XSETBV {
+        return Ok(false);
+    }
+    if exit.msr_index == 0 {
+        instance.msrs.xcr0 = exit.io_data;
+    }
+    advance_guest_rip(vcpu, exit.instruction_len)?;
     Ok(true)
 }
 
@@ -695,6 +880,130 @@ fn is_com1_port(port: u16) -> bool {
     (COM1_BASE..=UART_SCR).contains(&port)
 }
 
+fn platform_io_action(state: &mut PlatformIoState, exit: &VmExitInfo) -> Option<PlatformIoAction> {
+    if exit.reason != exit_reason::IO_INSTRUCTION || !is_platform_io_port(exit.io_port) {
+        return None;
+    }
+
+    if exit.is_read != 0 {
+        return Some(PlatformIoAction {
+            read_value: Some(platform_io_read(state, exit.io_port)),
+        });
+    }
+
+    let value = (exit.io_data & 0xff) as u8;
+    match exit.io_port {
+        IO_PORT_PIC1_CMD => state.pic1_cmd = value,
+        IO_PORT_PIC1_DATA => state.pic1_data = value,
+        IO_PORT_PIC2_CMD => state.pic2_cmd = value,
+        IO_PORT_PIC2_DATA => state.pic2_data = value,
+        IO_PORT_PIT_CH0 => state.pit_data[0] = value,
+        IO_PORT_PIT_CH1 => state.pit_data[1] = value,
+        IO_PORT_PIT_CH2 => state.pit_data[2] = value,
+        IO_PORT_PIT_CMD => state.pit_cmd = value,
+        IO_PORT_CMOS_INDEX => state.cmos_index = value & 0x7f,
+        IO_PORT_POST_DELAY | IO_PORT_CMOS_DATA | IO_PORT_KBD_DATA | IO_PORT_KBD_STATUS => {}
+        _ => {}
+    }
+    Some(PlatformIoAction { read_value: None })
+}
+
+fn platform_io_read(state: &PlatformIoState, port: u16) -> u32 {
+    match port {
+        IO_PORT_PIC1_CMD => state.pic1_cmd as u32,
+        IO_PORT_PIC1_DATA => state.pic1_data as u32,
+        IO_PORT_PIC2_CMD => state.pic2_cmd as u32,
+        IO_PORT_PIC2_DATA => state.pic2_data as u32,
+        IO_PORT_PIT_CH0 => state.pit_data[0] as u32,
+        IO_PORT_PIT_CH1 => state.pit_data[1] as u32,
+        IO_PORT_PIT_CH2 => state.pit_data[2] as u32,
+        IO_PORT_PIT_CMD => state.pit_cmd as u32,
+        IO_PORT_CMOS_INDEX => state.cmos_index as u32,
+        IO_PORT_CMOS_DATA => cmos_read(state.cmos_index),
+        IO_PORT_KBD_DATA => 0,
+        IO_PORT_KBD_STATUS => 0x10,
+        IO_PORT_POST_DELAY => 0,
+        _ => 0,
+    }
+}
+
+fn cmos_read(index: u8) -> u32 {
+    match index {
+        0x0a => 0x26,
+        0x0b => 0x02,
+        0x0c => 0,
+        0x0d => 0x80,
+        0x15 => 0,
+        0x16 => 0,
+        0x17 => 0,
+        0x18 => 0,
+        _ => 0,
+    }
+}
+
+fn is_platform_io_port(port: u16) -> bool {
+    matches!(
+        port,
+        IO_PORT_POST_DELAY
+            | IO_PORT_PIC1_CMD
+            | IO_PORT_PIC1_DATA
+            | IO_PORT_PIC2_CMD
+            | IO_PORT_PIC2_DATA
+            | IO_PORT_PIT_CH0
+            | IO_PORT_PIT_CH1
+            | IO_PORT_PIT_CH2
+            | IO_PORT_PIT_CMD
+            | IO_PORT_CMOS_INDEX
+            | IO_PORT_CMOS_DATA
+            | IO_PORT_KBD_DATA
+            | IO_PORT_KBD_STATUS
+    )
+}
+
+fn msr_read(state: &MsrState, msr: u32) -> u64 {
+    match msr {
+        MSR_IA32_TSC => 0,
+        MSR_IA32_APIC_BASE => state.apic_base,
+        MSR_IA32_SYSENTER_CS => state.sysenter_cs,
+        MSR_IA32_SYSENTER_ESP => state.sysenter_esp,
+        MSR_IA32_SYSENTER_EIP => state.sysenter_eip,
+        MSR_IA32_PAT => state.pat,
+        MSR_IA32_MTRR_DEF_TYPE => state.mtrr_def_type,
+        MSR_IA32_EFER => state.efer,
+        MSR_IA32_STAR => state.star,
+        MSR_IA32_LSTAR => state.lstar,
+        MSR_IA32_CSTAR => state.cstar,
+        MSR_IA32_FMASK => state.fmask,
+        MSR_IA32_FS_BASE => state.fs_base,
+        MSR_IA32_GS_BASE => state.gs_base,
+        MSR_IA32_KERNEL_GS_BASE => state.kernel_gs_base,
+        MSR_IA32_TSC_AUX => state.tsc_aux,
+        _ => 0,
+    }
+}
+
+fn msr_write(state: &mut MsrState, msr: u32, value: u64) {
+    match msr {
+        MSR_IA32_TSC => {}
+        MSR_IA32_APIC_BASE => state.apic_base = value,
+        MSR_IA32_SYSENTER_CS => state.sysenter_cs = value,
+        MSR_IA32_SYSENTER_ESP => state.sysenter_esp = value,
+        MSR_IA32_SYSENTER_EIP => state.sysenter_eip = value,
+        MSR_IA32_PAT => state.pat = value,
+        MSR_IA32_MTRR_DEF_TYPE => state.mtrr_def_type = value,
+        MSR_IA32_EFER => state.efer = value,
+        MSR_IA32_STAR => state.star = value,
+        MSR_IA32_LSTAR => state.lstar = value,
+        MSR_IA32_CSTAR => state.cstar = value,
+        MSR_IA32_FMASK => state.fmask = value,
+        MSR_IA32_FS_BASE => state.fs_base = value,
+        MSR_IA32_GS_BASE => state.gs_base = value,
+        MSR_IA32_KERNEL_GS_BASE => state.kernel_gs_base = value,
+        MSR_IA32_TSC_AUX => state.tsc_aux = value,
+        _ => {}
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 fn write_io_read_value(
     vcpu: &libavm::AvmVcpu,
@@ -716,7 +1025,40 @@ fn write_io_read_value(
 }
 
 #[cfg(not(target_os = "linux"))]
-fn advance_io_rip(vcpu: &libavm::AvmVcpu, instruction_len: u32) -> Result<(), AsldError> {
+fn write_msr_read_value(vcpu: &libavm::AvmVcpu, value: u64) -> Result<(), AsldError> {
+    let mut regs = vcpu
+        .regs()
+        .map_err(|_| AsldError::BackendUnavailable("avm get_regs failed"))?;
+    regs.rax = (regs.rax & !0xffff_ffffu64) | (value & 0xffff_ffffu64);
+    regs.rdx = (regs.rdx & !0xffff_ffffu64) | ((value >> 32) & 0xffff_ffffu64);
+    vcpu.set_regs(&regs)
+        .map_err(|_| AsldError::BackendUnavailable("avm set_regs failed"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn sync_guest_msr_side_effects(
+    vcpu: &libavm::AvmVcpu,
+    msr: u32,
+    state: &MsrState,
+) -> Result<(), AsldError> {
+    if !matches!(msr, MSR_IA32_EFER | MSR_IA32_FS_BASE | MSR_IA32_GS_BASE) {
+        return Ok(());
+    }
+    let mut sregs = vcpu
+        .sregs()
+        .map_err(|_| AsldError::BackendUnavailable("avm get_sregs failed"))?;
+    match msr {
+        MSR_IA32_EFER => sregs.efer = state.efer,
+        MSR_IA32_FS_BASE => sregs.fs_base = state.fs_base,
+        MSR_IA32_GS_BASE => sregs.gs_base = state.gs_base,
+        _ => {}
+    }
+    vcpu.set_sregs(&sregs)
+        .map_err(|_| AsldError::BackendUnavailable("avm set_sregs failed"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn advance_guest_rip(vcpu: &libavm::AvmVcpu, instruction_len: u32) -> Result<(), AsldError> {
     let mut sregs = vcpu
         .sregs()
         .map_err(|_| AsldError::BackendUnavailable("avm get_sregs failed"))?;
@@ -935,11 +1277,13 @@ mod tests {
 
     use super::{
         align_guest_memory_size, assess_boot_exit, assess_runtime_exit, boot_probe, bootstrap_gprs,
-        bootstrap_sregs, direct_linux_gprs, direct_linux_sregs, page_mut, poll_runtime,
-        serial_io_action, start_vm, stop_vm, write_bootstrap_image, BootstrapLayout,
-        RuntimeExitAssessment, SerialPortState, VmBootReport, VmExitInfo, VmRunState,
-        BOOT_CODE_ADDR, BOOT_PDPT_ADDR, BOOT_PD_ADDR, BOOT_PML4_ADDR, UART_LCR, UART_LCR_DLAB,
-        UART_LSR, UART_RBR_THR_DLL,
+        bootstrap_sregs, direct_linux_gprs, direct_linux_sregs, msr_read, msr_write, page_mut,
+        platform_io_action, poll_runtime, serial_io_action, start_vm, stop_vm,
+        write_bootstrap_image, BootstrapLayout, MsrState, PlatformIoState, RuntimeExitAssessment,
+        SerialPortState, VmBootReport, VmExitInfo, VmRunState, BOOT_CODE_ADDR, BOOT_PDPT_ADDR,
+        BOOT_PD_ADDR, BOOT_PML4_ADDR, IO_PORT_CMOS_DATA, IO_PORT_CMOS_INDEX, IO_PORT_KBD_STATUS,
+        IO_PORT_PIC1_DATA, IO_PORT_POST_DELAY, MSR_IA32_EFER, MSR_IA32_FS_BASE, UART_LCR,
+        UART_LCR_DLAB, UART_LSR, UART_RBR_THR_DLL,
     };
 
     #[test]
@@ -1132,6 +1476,101 @@ mod tests {
         )
         .unwrap();
         assert!(action.output.is_empty());
+    }
+
+    #[test]
+    fn platform_io_action_handles_early_pc_ports() {
+        let mut state = PlatformIoState::default();
+        assert!(platform_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: IO_PORT_POST_DELAY,
+                access_size: 1,
+                is_read: 0,
+                io_data: 0xaa,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        )
+        .is_some());
+
+        let _ = platform_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: IO_PORT_PIC1_DATA,
+                access_size: 1,
+                is_read: 0,
+                io_data: 0xfb,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        );
+        let pic = platform_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: IO_PORT_PIC1_DATA,
+                access_size: 1,
+                is_read: 1,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(pic.read_value, Some(0xfb));
+
+        let _ = platform_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: IO_PORT_CMOS_INDEX,
+                access_size: 1,
+                is_read: 0,
+                io_data: 0x0d,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        );
+        let cmos = platform_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: IO_PORT_CMOS_DATA,
+                access_size: 1,
+                is_read: 1,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(cmos.read_value, Some(0x80));
+
+        let keyboard = platform_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: IO_PORT_KBD_STATUS,
+                access_size: 1,
+                is_read: 1,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(keyboard.read_value, Some(0x10));
+    }
+
+    #[test]
+    fn msr_state_tracks_linux_boot_msrs() {
+        let mut state = MsrState::default();
+        msr_write(&mut state, MSR_IA32_EFER, 0x500);
+        msr_write(&mut state, MSR_IA32_FS_BASE, 0x1234_5000);
+
+        assert_eq!(msr_read(&state, MSR_IA32_EFER), 0x500);
+        assert_eq!(msr_read(&state, MSR_IA32_FS_BASE), 0x1234_5000);
+        assert_eq!(msr_read(&state, 0xdead_beef), 0);
     }
 
     #[test]

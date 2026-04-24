@@ -183,6 +183,10 @@ pub struct CrateMetadata {
     pub deps: Vec<String>,
     /// Public interface source for downstream name resolution/type checking.
     pub interface_source: String,
+    /// Structured public interface. This is the long-term compiler contract;
+    /// `interface_source` remains as a compatibility bridge until resolver and
+    /// type checking consume structured crate metadata directly.
+    pub interface: CrateInterface,
 }
 
 #[derive(Clone)]
@@ -197,6 +201,33 @@ pub enum ExportKind {
     Static,
     Type,
     Const,
+}
+
+#[derive(Clone, Default)]
+pub struct CrateInterface {
+    pub items: Vec<InterfaceItem>,
+}
+
+#[derive(Clone)]
+pub struct InterfaceItem {
+    pub name: String,
+    pub kind: InterfaceItemKind,
+    pub signature: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InterfaceItemKind {
+    Function,
+    Struct,
+    Enum,
+    Trait,
+    TypeAlias,
+    Const,
+    Static,
+    Impl,
+    Use,
+    Module,
+    ExternBlock,
 }
 
 /// Serialize crate metadata to bytes (simple binary format).
@@ -232,6 +263,7 @@ pub fn serialize_metadata(meta: &CrateMetadata) -> Vec<u8> {
     let iface_bytes = meta.interface_source.as_bytes();
     buf.extend_from_slice(&(iface_bytes.len() as u32).to_le_bytes());
     buf.extend_from_slice(iface_bytes);
+    serialize_interface(&meta.interface, &mut buf);
     buf
 }
 
@@ -288,10 +320,14 @@ pub fn deserialize_metadata(data: &[u8]) -> Option<CrateMetadata> {
         if pos + len > data.len() {
             return None;
         }
-        core::str::from_utf8(&data[pos..pos + len]).ok()?.to_string()
+        let s = core::str::from_utf8(&data[pos..pos + len]).ok()?.to_string();
+        pos += len;
+        s
     } else {
         String::new()
     };
+
+    let interface = deserialize_interface(data, pos)?;
 
     Some(CrateMetadata {
         name,
@@ -299,7 +335,111 @@ pub fn deserialize_metadata(data: &[u8]) -> Option<CrateMetadata> {
         exports,
         deps,
         interface_source,
+        interface,
     })
+}
+
+fn write_str16(buf: &mut Vec<u8>, s: &str) {
+    let bytes = s.as_bytes();
+    buf.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+    buf.extend_from_slice(bytes);
+}
+
+fn write_str32(buf: &mut Vec<u8>, s: &str) {
+    let bytes = s.as_bytes();
+    buf.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    buf.extend_from_slice(bytes);
+}
+
+fn serialize_interface(interface: &CrateInterface, buf: &mut Vec<u8>) {
+    buf.extend_from_slice(b"ARCI");
+    buf.extend_from_slice(&(interface.items.len() as u16).to_le_bytes());
+    for item in &interface.items {
+        buf.push(interface_item_kind_to_u8(item.kind));
+        write_str16(buf, &item.name);
+        write_str32(buf, &item.signature);
+    }
+}
+
+fn deserialize_interface(data: &[u8], mut pos: usize) -> Option<CrateInterface> {
+    if pos >= data.len() {
+        return Some(CrateInterface::default());
+    }
+    if pos + 4 > data.len() || &data[pos..pos + 4] != b"ARCI" {
+        return Some(CrateInterface::default());
+    }
+    pos += 4;
+    if pos + 2 > data.len() {
+        return None;
+    }
+    let count = u16::from_le_bytes(data[pos..pos + 2].try_into().ok()?) as usize;
+    pos += 2;
+
+    let read_str16 = |data: &[u8], pos: &mut usize| -> Option<String> {
+        if *pos + 2 > data.len() { return None; }
+        let len = u16::from_le_bytes(data[*pos..*pos + 2].try_into().ok()?) as usize;
+        *pos += 2;
+        if *pos + len > data.len() { return None; }
+        let s = core::str::from_utf8(&data[*pos..*pos + len]).ok()?.to_string();
+        *pos += len;
+        Some(s)
+    };
+    let read_str32 = |data: &[u8], pos: &mut usize| -> Option<String> {
+        if *pos + 4 > data.len() { return None; }
+        let len = u32::from_le_bytes(data[*pos..*pos + 4].try_into().ok()?) as usize;
+        *pos += 4;
+        if *pos + len > data.len() { return None; }
+        let s = core::str::from_utf8(&data[*pos..*pos + len]).ok()?.to_string();
+        *pos += len;
+        Some(s)
+    };
+
+    let mut items = Vec::new();
+    for _ in 0..count {
+        if pos >= data.len() {
+            return None;
+        }
+        let kind = interface_item_kind_from_u8(data[pos])?;
+        pos += 1;
+        let name = read_str16(data, &mut pos)?;
+        let signature = read_str32(data, &mut pos)?;
+        items.push(InterfaceItem { name, kind, signature });
+    }
+
+    Some(CrateInterface { items })
+}
+
+fn interface_item_kind_to_u8(kind: InterfaceItemKind) -> u8 {
+    match kind {
+        InterfaceItemKind::Function => 0,
+        InterfaceItemKind::Struct => 1,
+        InterfaceItemKind::Enum => 2,
+        InterfaceItemKind::Trait => 3,
+        InterfaceItemKind::TypeAlias => 4,
+        InterfaceItemKind::Const => 5,
+        InterfaceItemKind::Static => 6,
+        InterfaceItemKind::Impl => 7,
+        InterfaceItemKind::Use => 8,
+        InterfaceItemKind::Module => 9,
+        InterfaceItemKind::ExternBlock => 10,
+    }
+}
+
+fn interface_item_kind_from_u8(raw: u8) -> Option<InterfaceItemKind> {
+    match raw {
+        0 => Some(InterfaceItemKind::Function),
+        1 => Some(InterfaceItemKind::Struct),
+        2 => Some(InterfaceItemKind::Enum),
+        3 => Some(InterfaceItemKind::Trait),
+        4 => Some(InterfaceItemKind::TypeAlias),
+        5 => Some(InterfaceItemKind::Const),
+        6 => Some(InterfaceItemKind::Static),
+        7 => Some(InterfaceItemKind::Impl),
+        8 => Some(InterfaceItemKind::Use),
+        9 => Some(InterfaceItemKind::Module),
+        10 => Some(InterfaceItemKind::ExternBlock),
+        _ => None,
+    }
 }
 
 /// An .rlib file: object code + metadata packed together.

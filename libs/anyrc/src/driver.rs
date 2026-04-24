@@ -146,10 +146,13 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     let loader = crate::loader::OsFileLoader;
     let _loaded_modules = crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
     crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
-    let public_interface_source = {
+    let (public_interface_source, public_interface) = {
         let mut interface_lower_ctx = LoweringContext::new(&mut interner);
         let interface_hir = interface_lower_ctx.lower_crate(&krate);
-        build_public_interface_source(&interface_hir, &interner)
+        (
+            build_public_interface_source(&interface_hir, &interner),
+            build_public_interface(&interface_hir, &interner),
+        )
     };
     inject_extern_crate_interfaces(&mut krate, &options.extern_crates, &mut interner, &loader);
 
@@ -328,6 +331,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
                 exports,
                 deps: options.extern_crates.iter().map(|e| e.name.clone()).collect(),
                 interface_source: public_interface_source,
+                interface: public_interface,
             };
             Ok(crate::loader::pack_rlib(&obj_bytes, &meta))
         }
@@ -559,6 +563,95 @@ fn build_public_interface_source(hir: &crate::hir::HirCrate, interner: &Interner
     let mut out = String::new();
     render_items(&mut out, &hir.items, interner, 0, false);
     out
+}
+
+fn build_public_interface(
+    hir: &crate::hir::HirCrate,
+    interner: &Interner,
+) -> crate::loader::CrateInterface {
+    let mut items = Vec::new();
+    collect_interface_items(&mut items, &hir.items, interner, 0, false);
+    crate::loader::CrateInterface { items }
+}
+
+fn collect_interface_items(
+    out: &mut Vec<crate::loader::InterfaceItem>,
+    items: &[crate::hir::HirItem],
+    interner: &Interner,
+    indent: usize,
+    in_trait: bool,
+) {
+    let local_names = local_item_names(items);
+    for item in items {
+        if !item_is_exported(item, in_trait, &local_names, interner) {
+            continue;
+        }
+        let mut signature = String::new();
+        render_item(&mut signature, item, interner, indent, in_trait);
+        if let Some((name, kind)) = interface_item_name_and_kind(item, interner) {
+            out.push(crate::loader::InterfaceItem {
+                name,
+                kind,
+                signature,
+            });
+        }
+    }
+}
+
+fn interface_item_name_and_kind(
+    item: &crate::hir::HirItem,
+    interner: &Interner,
+) -> Option<(String, crate::loader::InterfaceItemKind)> {
+    use crate::hir::HirItemKind;
+    use crate::loader::InterfaceItemKind;
+
+    match &item.kind {
+        HirItemKind::Fn(f) => Some((
+            interner.resolve(f.name).to_string(),
+            InterfaceItemKind::Function,
+        )),
+        HirItemKind::Struct(s) => Some((
+            interner.resolve(s.name).to_string(),
+            InterfaceItemKind::Struct,
+        )),
+        HirItemKind::Enum(e) => Some((
+            interner.resolve(e.name).to_string(),
+            InterfaceItemKind::Enum,
+        )),
+        HirItemKind::Trait(t) => Some((
+            interner.resolve(t.name).to_string(),
+            InterfaceItemKind::Trait,
+        )),
+        HirItemKind::TypeAlias(ta) => Some((
+            interner.resolve(ta.name).to_string(),
+            InterfaceItemKind::TypeAlias,
+        )),
+        HirItemKind::Const(c) => Some((
+            interner.resolve(c.name).to_string(),
+            InterfaceItemKind::Const,
+        )),
+        HirItemKind::Static(s) => Some((
+            interner.resolve(s.name).to_string(),
+            InterfaceItemKind::Static,
+        )),
+        HirItemKind::Impl(ib) => Some((
+            format!("impl {}", render_ty(&ib.self_ty, interner)),
+            InterfaceItemKind::Impl,
+        )),
+        HirItemKind::Use(u) => {
+            let mut rendered = String::new();
+            render_use_tree(&mut rendered, u, interner);
+            Some((rendered, InterfaceItemKind::Use))
+        }
+        HirItemKind::Mod(m) => Some((
+            interner.resolve(m.name).to_string(),
+            InterfaceItemKind::Module,
+        )),
+        HirItemKind::ExternBlock(_) => Some((
+            "extern".to_string(),
+            InterfaceItemKind::ExternBlock,
+        )),
+    }
 }
 
 fn render_items(
