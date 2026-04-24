@@ -93,6 +93,20 @@ fn macro_not_found_is_preserved() {
 }
 
 #[test]
+fn empty_expr_macro_expansion_is_not_parsed_as_expr() {
+    let krate = parse_and_expand(r#"
+        macro_rules! maybe_empty {
+            () => {}
+        }
+
+        fn main() {
+            maybe_empty!();
+        }
+    "#);
+    assert_eq!(krate.items.len(), 2);
+}
+
+#[test]
 fn expand_cfg_if_items() {
     let krate = parse_and_expand(r#"
         cfg_if::cfg_if! {

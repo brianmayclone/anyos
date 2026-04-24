@@ -95,6 +95,25 @@ fn execute_command_line(
         return ExecResult::Continue(0);
     }
 
+    if let Some(chain) = libshellcommon::split_logical_operators(line_trimmed) {
+        let mut last_status = 0u32;
+        for (op, command) in chain {
+            let should_run = match op {
+                libshellcommon::LogicalOp::None | libshellcommon::LogicalOp::Semicolon => true,
+                libshellcommon::LogicalOp::And => last_status == 0,
+                libshellcommon::LogicalOp::Or => last_status != 0,
+            };
+            if !should_run || command.trim().is_empty() {
+                continue;
+            }
+            match execute_command_line(command.trim(), cwd, pipe_counter, script_depth) {
+                ExecResult::Continue(status) => last_status = status,
+                exit @ ExecResult::Exit(_) => return exit,
+            }
+        }
+        return ExecResult::Continue(last_status);
+    }
+
     // ── Parse redirects ────────────────────────────────────────────────────
     let (line_no_out, redirect)    = shell::parse_redirects(line_trimmed, cwd);
     let (cmd_line, input_redirect) = shell::parse_input_redirect(&line_no_out, cwd);
@@ -151,6 +170,17 @@ fn execute_command_line(
         "unset" => {
             for arg in args_expanded { env::unset(arg.as_str()); }
             return ExecResult::Continue(0);
+        }
+
+        "shift" => {
+            let count = args_expanded.first()
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(1);
+            let status = libshellcommon::shift_positional_args(count);
+            if status != 0 {
+                println("shift: can't shift that many");
+            }
+            return ExecResult::Continue(status);
         }
 
         "sh" | "source" | "." => {
@@ -263,6 +293,7 @@ fn run_shell_script(
             println("sh: break/continue outside loop");
             ExecResult::Continue(2)
         }
+        libshellcommon::ScriptControl::Return => ExecResult::Continue(result.status),
         libshellcommon::ScriptControl::None => ExecResult::Continue(result.status),
     }
 }

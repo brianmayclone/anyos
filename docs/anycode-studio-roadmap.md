@@ -238,6 +238,8 @@ Status:
   externe Check-Auswahl laufen ueber ein erstes `language_service.rs`.
 - Gestartet: Command Palette besitzt Analyse-Kommandos fuer aktive Datei,
   Live-Analyse-Neustart und das gezielte Leeren der Problemansicht.
+- Gestartet: Problemnavigation via Command Palette (`Next Problem`/`Previous Problem`)
+  springt dateiuebergreifend zu Diagnosepositionen.
 
 ### Phase 4: Project Model und Build Backends
 

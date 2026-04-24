@@ -437,6 +437,14 @@ pub fn autosave_editor(index: usize) {
 //  Live analysis
 // ════════════════════════════════════════════════════════════════
 
+#[derive(Clone)]
+struct ProblemTarget {
+    file_path: String,
+    line: u32,
+    column: u32,
+    message: String,
+}
+
 pub fn schedule_live_check(editor_index: usize) {
     run_static_analysis_for_editor(editor_index);
 
@@ -507,6 +515,128 @@ pub fn clear_problems() {
     refresh_problem_views();
     update_status();
     app().output.show_problems();
+}
+
+pub fn next_problem() {
+    navigate_problem(ProblemDirection::Next);
+}
+
+pub fn previous_problem() {
+    navigate_problem(ProblemDirection::Previous);
+}
+
+#[derive(Clone, Copy)]
+enum ProblemDirection {
+    Next,
+    Previous,
+}
+
+fn navigate_problem(direction: ProblemDirection) {
+    let (targets, active_file, cursor_line, cursor_col) = {
+        let s = app();
+        let project_root = s.current_project.as_ref().map(|p| p.root.as_str());
+        let mut targets = Vec::new();
+        for diag in &s.diagnostics.diagnostics {
+            if !diag.has_location() {
+                continue;
+            }
+            targets.push(ProblemTarget {
+                file_path: resolve_diagnostic_path(&diag.file_path, project_root),
+                line: diag.line,
+                column: diag.column,
+                message: diag.message.clone(),
+            });
+        }
+        targets.sort_by(|a, b| {
+            a.file_path
+                .cmp(&b.file_path)
+                .then(a.line.cmp(&b.line))
+                .then(a.column.cmp(&b.column))
+        });
+
+        let active_file = s.file_mgr.active_file().map(|f| f.path.clone());
+        let (row, col) = if active_file.is_some() {
+            s.editor_view.get_cursor(s.file_mgr.active)
+        } else {
+            (0, 0)
+        };
+        (targets, active_file, row + 1, col + 1)
+    };
+
+    if targets.is_empty() {
+        let s = app();
+        s.status.set_analysis_status("No problems");
+        s.output.show_problems();
+        return;
+    }
+
+    let idx = select_problem_target(&targets, active_file.as_deref(), cursor_line, cursor_col, direction);
+    open_problem_target(&targets[idx]);
+}
+
+fn select_problem_target(
+    targets: &[ProblemTarget],
+    active_file: Option<&str>,
+    cursor_line: u32,
+    cursor_col: u32,
+    direction: ProblemDirection,
+) -> usize {
+    let active_file = match active_file {
+        Some(file) => file,
+        None => {
+            return match direction {
+                ProblemDirection::Next => 0,
+                ProblemDirection::Previous => targets.len() - 1,
+            };
+        }
+    };
+
+    match direction {
+        ProblemDirection::Next => targets
+            .iter()
+            .position(|target| problem_after(target, active_file, cursor_line, cursor_col))
+            .unwrap_or(0),
+        ProblemDirection::Previous => targets
+            .iter()
+            .rposition(|target| problem_before(target, active_file, cursor_line, cursor_col))
+            .unwrap_or(targets.len() - 1),
+    }
+}
+
+fn problem_after(target: &ProblemTarget, file_path: &str, line: u32, column: u32) -> bool {
+    target.file_path.as_str() > file_path
+        || (target.file_path == file_path
+            && (target.line > line || (target.line == line && target.column > column)))
+}
+
+fn problem_before(target: &ProblemTarget, file_path: &str, line: u32, column: u32) -> bool {
+    target.file_path.as_str() < file_path
+        || (target.file_path == file_path
+            && (target.line < line || (target.line == line && target.column < column)))
+}
+
+fn open_problem_target(target: &ProblemTarget) {
+    open_file(&target.file_path);
+    {
+        let s = app();
+        if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+            editor.set_cursor(target.line.saturating_sub(1), target.column.saturating_sub(1));
+        }
+        let label = format!("Problem: {}", target.message);
+        s.status.set_analysis_status(&label);
+        s.output.show_problems();
+    }
+    update_status();
+}
+
+fn resolve_diagnostic_path(file_path: &str, project_root: Option<&str>) -> String {
+    if file_path.starts_with('/') {
+        return String::from(file_path);
+    }
+    if let Some(root) = project_root {
+        return path::join(root, file_path);
+    }
+    String::from(file_path)
 }
 
 pub fn poll_live_check() {

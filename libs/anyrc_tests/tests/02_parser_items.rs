@@ -56,6 +56,26 @@ fn parse_type_position_macro_in_cast_ty() {
 }
 
 #[test]
+fn parse_inner_key_value_attributes() {
+    let krate = parse(r#"#![crate_name = "libc"] fn main() {}"#);
+    assert_eq!(krate.attrs.len(), 1);
+    assert!(matches!(krate.attrs[0].args, AttrArgs::Eq(_)));
+    assert_eq!(krate.items.len(), 1);
+}
+
+#[test]
+fn parse_extern_c_variadic_function() {
+    let krate = parse(r#"extern "C" { fn sem_open(name: *const u8, oflag: c_int, ...) -> *mut sem_t; }"#);
+    match &krate.items[0] {
+        Item::ExternBlock(block) => match &block.items[0] {
+            Item::Fn(f) => assert_eq!(f.params.len(), 2),
+            _ => panic!("expected extern fn"),
+        },
+        _ => panic!("expected extern block"),
+    }
+}
+
+#[test]
 fn parse_struct() {
     let krate = parse("pub struct Point { pub x: i32, pub y: i32 }");
     match &krate.items[0] {

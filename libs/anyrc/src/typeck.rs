@@ -1231,8 +1231,10 @@ impl<'a> TypeChecker<'a> {
             }
 
             HirExprKind::Binary(op, lhs, rhs) => {
-                let lty = self.check_expr(lhs);
-                let rty = self.check_expr(rhs);
+                let raw_lty = self.check_expr(lhs);
+                let raw_rty = self.check_expr(rhs);
+                let lty = self.binary_operand_ty(raw_lty);
+                let rty = self.binary_operand_ty(raw_rty);
                 match op {
                     BinOp::And | BinOp::Or => {
                         self.unify(&TyKind::Bool, &lty, lhs.span);
@@ -3303,6 +3305,32 @@ impl<'a> TypeChecker<'a> {
             }
             _ => ty,
         }
+    }
+
+    fn binary_operand_ty(&self, ty: TyKind) -> TyKind {
+        let resolved = self.shallow_resolve(ty);
+        match resolved {
+            TyKind::Ref(inner, Mutability::Immutable) => {
+                let inner = self.shallow_resolve(*inner);
+                if Self::is_primitive_scalar_ty(&inner) {
+                    inner
+                } else {
+                    TyKind::Ref(Box::new(inner), Mutability::Immutable)
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn is_primitive_scalar_ty(ty: &TyKind) -> bool {
+        matches!(
+            ty,
+            TyKind::Bool
+                | TyKind::Char
+                | TyKind::Int(_)
+                | TyKind::Uint(_)
+                | TyKind::Float(_)
+        )
     }
 
     fn resolve_ty_full(&self, ty: TyKind) -> TyKind {

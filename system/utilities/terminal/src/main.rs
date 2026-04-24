@@ -2984,6 +2984,15 @@ impl Shell {
             "set" => self.cmd_set(args, buf),
             "export" => self.cmd_export(args, buf),
             "unset" => self.cmd_unset(args, buf),
+            "shift" => {
+                let count = tokens.first()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .unwrap_or(1);
+                if libshellcommon::shift_positional_args(count) != 0 {
+                    buf.current_fg = COLOR_FG;
+                    buf.write_str("shift: can't shift that many\n");
+                }
+            }
             "alias" => self.cmd_alias(args, buf),
             "unalias" => self.cmd_unalias(args, buf),
             "eval" => {
@@ -3395,6 +3404,7 @@ impl Shell {
                 buf.write_str("sh: break/continue outside loop\n");
                 (true, None, None)
             }
+            libshellcommon::ScriptControl::Return => (true, None, None),
             libshellcommon::ScriptControl::None => (true, None, None),
         }
     }
@@ -3867,6 +3877,29 @@ impl<'a> libshellcommon::ScriptExecutor for TerminalScriptExecutor<'a> {
             return libshellcommon::ScriptExecResult {
                 status: 0,
                 control: libshellcommon::ScriptControl::Continue,
+            };
+        }
+        if trimmed == "return" || trimmed.starts_with("return ") {
+            let status = trimmed.split_whitespace().nth(1)
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            return libshellcommon::ScriptExecResult {
+                status,
+                control: libshellcommon::ScriptControl::Return,
+            };
+        }
+        if trimmed == "shift" || trimmed.starts_with("shift ") {
+            let count = trimmed.split_whitespace().nth(1)
+                .and_then(|s| s.parse::<usize>().ok())
+                .unwrap_or(1);
+            let status = libshellcommon::shift_positional_args(count);
+            if status != 0 {
+                self.buf.current_fg = COLOR_FG;
+                self.buf.write_str("shift: can't shift that many\n");
+            }
+            return libshellcommon::ScriptExecResult {
+                status,
+                control: libshellcommon::ScriptControl::None,
             };
         }
         if trimmed == "exit" || trimmed.starts_with("exit ") {

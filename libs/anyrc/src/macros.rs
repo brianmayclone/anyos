@@ -1704,6 +1704,9 @@ fn try_expand_to_expr(def: &MacroDef, args: &[TokenTree], interner: &mut Interne
             if has_unexpanded_dollar(&src) {
                 return None;
             }
+            if src.trim().is_empty() {
+                return None;
+            }
             let mut parser = Parser::new(&src, interner);
             return Some(parser.parse_expr());
         }

@@ -182,6 +182,24 @@ fn shift_rhs_accepts_usize_without_forcing_lhs_type() {
 }
 
 #[test]
+fn binary_ops_autoderef_shared_primitive_refs() {
+    assert_type_ok(r#"
+        fn f(a: &u8, b: &u8) -> u8 {
+            a ^ b
+        }
+    "#);
+}
+
+#[test]
+fn binary_ops_autoderef_mixed_primitive_ref_and_value() {
+    assert_type_ok(r#"
+        fn f(a: &u8, b: u8) -> u8 {
+            a ^ b
+        }
+    "#);
+}
+
+#[test]
 fn qualified_module_types_do_not_collide_by_leaf_name() {
     assert_type_ok(r#"
         mod fallback {

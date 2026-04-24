@@ -1370,6 +1370,8 @@ impl<'a> Parser<'a> {
                 let tts = self.collect_token_trees(&TokenKind::RParen);
                 self.expect_exact(&TokenKind::RParen);
                 AttrArgs::Delimited(tts)
+            } else if self.eat_exact(&TokenKind::Eq) {
+                AttrArgs::Eq(Box::new(self.parse_expr()))
             } else {
                 AttrArgs::Empty
             };
@@ -1622,6 +1624,14 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
             let p_start = self.current().span;
+
+            // C variadics in extern function declarations: `...`.
+            if self.at_exact(&TokenKind::DotDot) && self.peek_kind() == &TokenKind::Dot {
+                self.bump(); // ..
+                self.bump(); // .
+                let _ = self.eat_exact(&TokenKind::Comma);
+                break;
+            }
 
             // &self, &mut self, self, mut self
             if self.at_exact(&TokenKind::Amp)
