@@ -264,6 +264,7 @@ pub struct FieldExpr {
 }
 
 pub struct MatchArm {
+    pub attrs: Vec<Attribute>,
     pub pat: Pattern,
     pub guard: Option<Box<Expr>>,
     pub body: Box<Expr>,

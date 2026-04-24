@@ -59,6 +59,7 @@ pub enum ClientCommand<'a> {
     VmEventsClear(&'a str),
     Diagnose(&'a str),
     Doctor(&'a str),
+    SelfCheck,
     ConsoleCanvas(&'a str),
     ShellList(&'a str),
     ShellShow {
@@ -156,6 +157,7 @@ pub fn parse_cli_command<'a>(raw: &'a str) -> Option<ClientCommand<'a>> {
         "config" => parse_config_tokens(&tokens),
         "network" => parse_network_tokens(&tokens),
         "doctor" => Some(ClientCommand::Doctor(*tokens.get(1)?)),
+        "self-check" | "service-check" => Some(ClientCommand::SelfCheck),
         "console-canvas" | "canvas" => Some(ClientCommand::ConsoleCanvas(*tokens.get(1)?)),
         "shell-list" => Some(ClientCommand::ShellList(*tokens.get(1)?)),
         "shell-show" => Some(ClientCommand::ShellShow {
@@ -220,6 +222,7 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         "vm-events-clear" => Some(ClientCommand::VmEventsClear(args.pos(1)?)),
         "diagnose" => Some(ClientCommand::Diagnose(args.pos(1)?)),
         "doctor" => Some(ClientCommand::Doctor(args.pos(1)?)),
+        "self-check" | "service-check" => Some(ClientCommand::SelfCheck),
         "console-canvas" | "canvas" => Some(ClientCommand::ConsoleCanvas(args.pos(1)?)),
         "exec-clear" => Some(ClientCommand::ExecClear(args.pos(1)?)),
         "mount" => parse_mount_command(args),
@@ -722,7 +725,8 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             }
             ClientCommand::VmEventsClear(_)
             | ClientCommand::Diagnose(_)
-            | ClientCommand::Doctor(_) => {
+            | ClientCommand::Doctor(_)
+            | ClientCommand::SelfCheck => {
                 for line in lines {
                     println!("{}", line);
                 }
@@ -853,6 +857,7 @@ fn print_usage() {
     println!("  aslctl vm-events-clear <name>");
     println!("  aslctl diagnose <name>");
     println!("  aslctl doctor <name>");
+    println!("  aslctl self-check");
     println!("  aslctl console-canvas <name>");
     println!("  aslctl shell-list <name>");
     println!("  aslctl shell-show <name> <session-id>");
@@ -947,6 +952,7 @@ impl ClientCommand<'_> {
             Self::VmEventsClear(name) => format!("VM_EVENTS_CLEAR {}", name),
             Self::Diagnose(name) => format!("DIAGNOSE {}", name),
             Self::Doctor(name) => format!("DIAGNOSE {}", name),
+            Self::SelfCheck => String::from("SELF_CHECK"),
             Self::ConsoleCanvas(name) => format!("CONSOLE_CANVAS {}", name),
             Self::ShellList(name) => format!("SHELL_LIST {}", name),
             Self::ShellShow { distro, session_id } => {
@@ -1162,6 +1168,10 @@ mod tests {
         match parse_cli_command("doctor ubuntu-dev") {
             Some(ClientCommand::Doctor(name)) => assert_eq!(name, "ubuntu-dev"),
             _ => panic!("expected doctor command"),
+        }
+        match parse_cli_command("self-check") {
+            Some(ClientCommand::SelfCheck) => {}
+            _ => panic!("expected self-check command"),
         }
     }
 

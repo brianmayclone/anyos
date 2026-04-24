@@ -390,6 +390,7 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
         }
         Expr::Match(scrutinee, arms, _) => {
             strip_expr(scrutinee, ctx, interner);
+            arms.retain(|arm| should_keep_item_attrs(&arm.attrs, ctx, interner));
             for arm in arms {
                 strip_pattern(&mut arm.pat, ctx, interner);
                 if let Some(guard) = &mut arm.guard {

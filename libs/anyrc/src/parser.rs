@@ -700,6 +700,7 @@ impl<'a> Parser<'a> {
         self.expect_exact(&TokenKind::LBrace);
         let mut arms = Vec::new();
         while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
+            let attrs = self.parse_attrs();
             let arm_start = self.current().span;
             let pat = self.parse_pattern();
             let guard = if self.at_kw(Keyword::If) {
@@ -711,7 +712,7 @@ impl<'a> Parser<'a> {
             self.expect_exact(&TokenKind::FatArrow);
             let body = Box::new(self.parse_expr());
             let span = self.span_from(arm_start);
-            arms.push(MatchArm { pat, guard, body, span });
+            arms.push(MatchArm { attrs, pat, guard, body, span });
             if self.eat_exact(&TokenKind::Comma) {
                 continue;
             }
@@ -1267,12 +1268,14 @@ impl<'a> Parser<'a> {
             Box::new(init_expr),
             vec![
                 MatchArm {
+                    attrs: Vec::new(),
                     pat: original_pat,
                     guard: None,
                     body: Box::new(success_expr),
                     span,
                 },
                 MatchArm {
+                    attrs: Vec::new(),
                     pat: Pattern::Wildcard(span),
                     guard: None,
                     body: Box::new(Expr::Block(else_block)),
@@ -2541,26 +2544,52 @@ impl<'a> Parser<'a> {
         }
 
         let ident = self.expect_ident_or_self();
-        let args = if self.at_exact(&TokenKind::Lt) {
-            Some(self.parse_generic_args())
-        } else {
-            None
-        };
+        let args = self.parse_path_segment_type_args(ident);
         segments.push(PathSegment { ident, args });
 
         while self.at_exact(&TokenKind::ColonColon) {
             self.bump();
             let ident = self.expect_ident_or_self();
-            let args = if self.at_exact(&TokenKind::Lt) {
-                Some(self.parse_generic_args())
-            } else {
-                None
-            };
+            let args = self.parse_path_segment_type_args(ident);
             segments.push(PathSegment { ident, args });
         }
 
         Path {
             segments,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_path_segment_type_args(&mut self, ident: Symbol) -> Option<GenericArgs> {
+        if self.at_exact(&TokenKind::Lt) {
+            return Some(self.parse_generic_args());
+        }
+        if self.at_exact(&TokenKind::LParen) && self.is_callable_trait_ident(ident) {
+            return Some(self.parse_callable_trait_args());
+        }
+        None
+    }
+
+    fn is_callable_trait_ident(&self, ident: Symbol) -> bool {
+        matches!(self.interner.resolve(ident), "Fn" | "FnMut" | "FnOnce")
+    }
+
+    fn parse_callable_trait_args(&mut self) -> GenericArgs {
+        let start = self.current().span;
+        self.expect_exact(&TokenKind::LParen);
+        let mut args = Vec::new();
+        while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
+            args.push(GenericArg::Type(self.parse_fn_ptr_param_ty()));
+            if !self.eat_exact(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect_exact(&TokenKind::RParen);
+        if self.eat_exact(&TokenKind::Arrow) {
+            args.push(GenericArg::Type(self.parse_ty()));
+        }
+        GenericArgs {
+            args,
             span: self.span_from(start),
         }
     }

@@ -806,6 +806,10 @@ impl RuntimeService {
         store: &mut S,
         name: &str,
     ) -> Result<Vec<String>, AsldError> {
+        if matches!(name, "asld" | "service" | "self") {
+            return Ok(crate::diagnostics::run_self_check().lines);
+        }
+
         let cfg = load_distro(store, name)?;
         let status = self.store.get(name).cloned().unwrap_or_else(|| {
             stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone())
@@ -890,6 +894,10 @@ impl RuntimeService {
         }
 
         Ok(lines)
+    }
+
+    pub fn self_check(&self) -> Vec<String> {
+        crate::diagnostics::run_self_check().lines
     }
 
     fn upsert_backend(&mut self, name: &str, vm: vm::VmInstance) {
@@ -1561,6 +1569,15 @@ mod tests {
         assert!(lines
             .iter()
             .any(|line| line.starts_with("boot_cmdline\tconsole=ttyS0")));
+    }
+
+    #[test]
+    fn diagnose_asld_exposes_self_check() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let lines = runtime.diagnose(&mut store, "asld").unwrap();
+        assert!(lines.iter().any(|line| line == "service\tasld"));
+        assert!(lines.iter().any(|line| line.starts_with("self_check\t")));
     }
 
     #[test]

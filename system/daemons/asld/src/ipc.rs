@@ -351,6 +351,7 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
                 Err(err) => err_line(&err),
             }
         }
+        "SELF_CHECK" | "self_check" => ok_lines(runtime.self_check()),
         "CONSOLE_CANVAS" | "console_canvas" => {
             let Some(name) = first_tab_field(rest) else {
                 return err_line(&AsldError::InvalidArgument("name"));

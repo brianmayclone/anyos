@@ -289,6 +289,22 @@ fn parse_type_alias() {
 }
 
 #[test]
+fn parse_dyn_callable_trait_alias() {
+    let krate = parse("type PanicHook = dyn Fn(&PanicInfo) + Sync + Send + 'static;");
+    match &krate.items[0] {
+        Item::TypeAlias(alias) => match alias.ty.as_deref() {
+            Some(Ty::DynTrait(bounds, _)) => {
+                assert_eq!(bounds.len(), 3);
+                let args = bounds[0].path.segments[0].args.as_ref().expect("Fn args");
+                assert_eq!(args.args.len(), 1);
+            }
+            _ => panic!("expected dyn trait alias"),
+        },
+        _ => panic!("expected type alias"),
+    }
+}
+
+#[test]
 fn parse_trait_associated_type_bounds() {
     let krate = parse(
         "trait KnownLayout { type MaybeUninit: ?Sized + KnownLayout<PointerMetadata = Self::PointerMetadata>; }",
@@ -340,7 +356,38 @@ fn parse_restricted_visibility_use_items() {
 #[test]
 fn parse_attributed_match_arm_pattern() {
     let krate = parse("fn f(v: u8) { match v { #[cfg(any())] 0 => 1, _ => 2 } }");
-    assert!(matches!(&krate.items[0], Item::Fn(_)));
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().expect("body");
+            match &body.stmts[0] {
+                Stmt::Expr(Expr::Match(_, arms, _)) => assert_eq!(arms[0].attrs.len(), 1),
+                _ => panic!("expected match expression"),
+            }
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
+fn cfg_strips_disabled_match_arm() {
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(
+        "fn f(v: u8) { match v { #[cfg(proc_macro_span)] 0 => missing(), _ => 2 } }",
+        &mut interner,
+    );
+    let mut krate = parser.parse_crate();
+    let cfg = anyrc::cfg::CfgContext::from_flags(&[]);
+    anyrc::cfg::strip_cfg(&mut krate, &cfg, &interner);
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().expect("body");
+            match &body.stmts[0] {
+                Stmt::Expr(Expr::Match(_, arms, _)) => assert_eq!(arms.len(), 1),
+                _ => panic!("expected match expression"),
+            }
+        }
+        _ => panic!("expected fn"),
+    }
 }
 
 #[test]

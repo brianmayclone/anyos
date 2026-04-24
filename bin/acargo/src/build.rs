@@ -136,6 +136,7 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
             &norm_name,
             &build_dir,
             config.release,
+            &resolved_features,
         );
 
         // Merge build script outputs into our compile options

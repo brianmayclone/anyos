@@ -2338,17 +2338,20 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn resolve_qualified_type_path(&self, path: &str) -> Option<DefId> {
-        if let Some(&def_id) = self.qualified_type_names.get(path) {
-            return Some(def_id);
+        if let Some((first, rest)) = path.split_once("::") {
+            if let Some(alias_target) = self.module_aliases.get(first) {
+                let expanded = format!("{}::{}", alias_target, rest);
+                if let Some(def_id) = self.qualified_type_names
+                    .get(&expanded)
+                    .or_else(|| self.qualified_type_names.get(&format!("crate::{}", expanded)))
+                    .copied()
+                {
+                    return Some(def_id);
+                }
+            }
         }
 
-        let (first, rest) = path.split_once("::")?;
-        let alias_target = self.module_aliases.get(first)?;
-        let expanded = format!("{}::{}", alias_target, rest);
-        self.qualified_type_names
-            .get(&expanded)
-            .or_else(|| self.qualified_type_names.get(&format!("crate::{}", expanded)))
-            .copied()
+        self.qualified_type_names.get(path).copied()
     }
 
     fn resolve_scoped_type_name(&self, name: Symbol) -> Option<DefId> {
@@ -2373,21 +2376,6 @@ impl<'a> TypeChecker<'a> {
             .or_else(|| self.type_name_to_def.get(&name).copied())
     }
 
-    fn resolve_assoc_fn_on_path(&self, path: &HirPath) -> Option<DefId> {
-        if path.segments.len() < 2 {
-            return None;
-        }
-        let method_name = path.segments.last()?.ident;
-        let self_ty = self.path_segments_to_ty(&path.segments[..path.segments.len() - 1]);
-        let TyKind::Adt(def_id, _) = self.shallow_resolve(self_ty) else {
-            return None;
-        };
-        self.impl_methods_by_type
-            .get(&def_id)?
-            .iter()
-            .find_map(|(name, method_def_id)| (*name == method_name).then_some(*method_def_id))
-    }
-
     fn assoc_fn_candidates_on_path(&self, path: &HirPath) -> Option<Vec<DefId>> {
         if path.segments.len() < 2 {
             return None;
@@ -2410,17 +2398,11 @@ impl<'a> TypeChecker<'a> {
         path: &HirPath,
         args: &[HirExpr],
         span: Span,
-        callee: &HirExpr,
+        _callee: &HirExpr,
     ) -> Option<TyKind> {
         let method_name = path.segments.last()?.ident;
         let method_name_str = self.interner.resolve(method_name);
-        let desc = self.describe_callee(callee);
-
         let candidates = self.assoc_fn_candidates_on_path(path).unwrap_or_default();
-        if candidates.len() == 1 {
-            return Some(self.check_direct_fn_call(candidates[0], args, span, &desc));
-        }
-
         if !candidates.is_empty() {
             let arg_tys = args.iter().map(|arg| self.check_expr(arg)).collect::<Vec<_>>();
             let mut fallback: Option<(DefId, Vec<TyKind>, TyKind)> = None;
@@ -2453,10 +2435,18 @@ impl<'a> TypeChecker<'a> {
             }
             if let Some((_def_id, param_tys, ret_ty)) = fallback {
                 if param_tys.len() == arg_tys.len() {
-                    for (arg, param) in arg_tys.iter().zip(param_tys.iter()) {
-                        self.unify(param, arg, span);
+                    let has_ambiguous_arg = arg_tys.iter().any(|ty| {
+                        matches!(
+                            self.shallow_resolve(ty.clone()),
+                            TyKind::Error | TyKind::Infer(_) | TyKind::Param(_)
+                        )
+                    });
+                    if has_ambiguous_arg {
+                        for (arg, param) in arg_tys.iter().zip(param_tys.iter()) {
+                            self.unify(param, arg, span);
+                        }
+                        return Some(ret_ty);
                     }
-                    return Some(ret_ty);
                 }
             }
         }
@@ -2521,55 +2511,6 @@ impl<'a> TypeChecker<'a> {
             (TyKind::Slice(a), TyKind::Slice(b)) => self.ty_matches_for_candidate(a, b),
             _ => expected == actual,
         }
-    }
-
-    fn check_direct_fn_call(
-        &mut self,
-        def_id: DefId,
-        args: &[HirExpr],
-        span: Span,
-        callee_desc: &str,
-    ) -> TyKind {
-        let Some((param_tys, ret_ty)) = self.fn_sigs.get(&def_id).cloned() else {
-            for arg in args {
-                self.check_expr(arg);
-            }
-            return self.fresh_infer(InferKind::General);
-        };
-
-        let n_generics = self.generic_fn_defs.get(&def_id).copied().unwrap_or(0);
-        let (param_tys, ret_ty) = if n_generics > 0 {
-            let infer_vars: Vec<TyKind> = (0..n_generics)
-                .map(|_| self.fresh_infer(InferKind::General))
-                .collect();
-            (
-                param_tys
-                    .iter()
-                    .map(|t| self.substitute_params(t, &infer_vars))
-                    .collect(),
-                self.substitute_params(&ret_ty, &infer_vars),
-            )
-        } else {
-            (param_tys, ret_ty)
-        };
-
-        if args.len() != param_tys.len() {
-            self.error(span, &format!(
-                "wrong number of arguments for {}: expected {}, found {}",
-                callee_desc,
-                param_tys.len(),
-                args.len(),
-            ));
-            for arg in args {
-                self.check_expr(arg);
-            }
-        } else {
-            for (arg, pty) in args.iter().zip(param_tys.iter()) {
-                let aty = self.check_expr(arg);
-                self.unify(pty, &aty, arg.span);
-            }
-        }
-        ret_ty
     }
 
     fn path_segments_to_ty(&self, segments: &[HirPathSegment]) -> TyKind {

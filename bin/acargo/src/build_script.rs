@@ -42,6 +42,7 @@ pub fn run_build_script(
     crate_name: &str,
     target_dir: &str,
     release: bool,
+    features: &[String],
 ) -> Option<BuildScriptOutput> {
     let build_rs = format!("{}/build.rs", manifest_dir);
     if !fs::file_exists(&build_rs) {
@@ -56,9 +57,13 @@ pub fn run_build_script(
     anyos_std::env::set("HOST", "x86_64-anyos");
     anyos_std::env::set("PROFILE", if release { "release" } else { "debug" });
     anyos_std::env::set("OPT_LEVEL", if release { "2" } else { "0" });
+    for feature in features {
+        let key = format!("CARGO_FEATURE_{}", feature_env_name(feature));
+        anyos_std::env::set(&key, "1");
+    }
     fs::mkdir_p(&format!("{}/out", target_dir));
 
-    Some(emulate_build_script_output(&source, manifest_dir, crate_name))
+    Some(emulate_build_script_output(&source, manifest_dir, crate_name, features))
 }
 
 /// Parse cargo: directives from build script stdout.
@@ -110,6 +115,7 @@ fn emulate_build_script_output(
     source: &str,
     manifest_dir: &str,
     crate_name: &str,
+    features: &[String],
 ) -> BuildScriptOutput {
     let mut result = BuildScriptOutput::default();
 
@@ -132,6 +138,8 @@ fn emulate_build_script_output(
         }
     }
 
+    emulate_known_cfg_build_script(source, crate_name, features, &mut result);
+
     if result.cfg_flags.is_empty()
         && result.link_args.is_empty()
         && result.env_vars.is_empty()
@@ -145,6 +153,38 @@ fn emulate_build_script_output(
     }
 
     result
+}
+
+fn emulate_known_cfg_build_script(
+    _source: &str,
+    crate_name: &str,
+    features: &[String],
+    result: &mut BuildScriptOutput,
+) {
+    if crate_name == "proc_macro2" || crate_name == "proc-macro2" {
+        let has_proc_macro_feature = features.iter().any(|feature| feature == "proc-macro");
+        let has_span_locations_feature = features.iter().any(|feature| feature == "span-locations");
+        if has_proc_macro_feature {
+            push_cfg_once(&mut result.cfg_flags, "wrap_proc_macro");
+        }
+        if has_span_locations_feature {
+            push_cfg_once(&mut result.cfg_flags, "span_locations");
+        }
+    }
+}
+
+fn push_cfg_once(cfg_flags: &mut Vec<String>, flag: &str) {
+    if !cfg_flags.iter().any(|existing| existing == flag) {
+        cfg_flags.push(String::from(flag));
+    }
+}
+
+fn feature_env_name(feature: &str) -> String {
+    feature
+        .chars()
+        .map(|ch| if ch == '-' { '_' } else { ch })
+        .flat_map(|ch| ch.to_uppercase())
+        .collect()
 }
 
 fn find_stdlib_linker_script(manifest_dir: &str) -> Option<String> {

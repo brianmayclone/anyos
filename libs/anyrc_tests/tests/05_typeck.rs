@@ -158,6 +158,28 @@ fn assoc_from_identity_uses_target_type() {
 }
 
 #[test]
+fn assoc_from_identity_wins_when_single_impl_does_not_match() {
+    assert_type_ok(r#"
+        mod fallback {
+            pub struct Foreign {}
+            pub struct TokenStream {}
+
+            impl TokenStream {
+                pub fn from(value: Foreign) -> TokenStream {
+                    TokenStream {}
+                }
+            }
+        }
+
+        use crate::fallback as imp;
+
+        fn wrap(inner: fallback::TokenStream) -> fallback::TokenStream {
+            imp::TokenStream::from(inner)
+        }
+    "#);
+}
+
+#[test]
 fn cfg_selects_module_alias_before_wrapper_module() {
     let (result, _) = typecheck_with_cfg(r#"
         mod fallback {
@@ -224,6 +246,171 @@ fn cfg_wrapper_module_assoc_from_uses_wrapper_impl() {
                 TokenStream {
                     inner: imp::TokenStream::from(inner),
                 }
+            }
+        }
+    "#, &["wrap_proc_macro"]);
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn proc_macro2_style_fallback_wrappers_typecheck() {
+    let (result, _) = typecheck_with_cfg(r#"
+        trait From<T> {
+            fn from(value: T) -> Self;
+        }
+
+        pub enum TokenTree {
+            Group,
+        }
+
+        pub mod fallback {
+            use crate::TokenTree;
+
+            pub struct TokenStream {}
+            pub struct Span {}
+            pub struct Ident {}
+
+            impl TokenStream {
+                pub fn new() -> TokenStream { TokenStream {} }
+            }
+
+            impl From<TokenTree> for TokenStream {
+                fn from(token: TokenTree) -> TokenStream {
+                    TokenStream {}
+                }
+            }
+
+            impl Ident {
+                pub fn new_checked(string: &str, span: Span) -> Ident {
+                    Ident {}
+                }
+            }
+        }
+
+        #[cfg(not(wrap_proc_macro))]
+        use crate::fallback as imp;
+
+        #[cfg(wrap_proc_macro)]
+        mod imp {
+            pub struct TokenStream {}
+            pub struct Span {}
+            pub struct Ident {}
+        }
+
+        pub struct TokenStream {
+            inner: imp::TokenStream,
+        }
+
+        impl TokenStream {
+            fn _new(inner: imp::TokenStream) -> Self {
+                TokenStream { inner }
+            }
+
+            pub fn new() -> Self {
+                TokenStream::_new(imp::TokenStream::new())
+            }
+        }
+
+        impl From<TokenTree> for TokenStream {
+            fn from(token: TokenTree) -> Self {
+                TokenStream::_new(imp::TokenStream::from(token))
+            }
+        }
+
+        pub struct Span {
+            inner: imp::Span,
+        }
+
+        pub struct Ident {
+            inner: imp::Ident,
+        }
+
+        impl Ident {
+            fn _new(inner: imp::Ident) -> Self {
+                Ident { inner }
+            }
+
+            pub fn new(string: &str, span: Span) -> Self {
+                Ident::_new(imp::Ident::new_checked(string, span.inner))
+            }
+        }
+    "#, &[]);
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn proc_macro2_style_wrapper_from_overloads_typecheck() {
+    let (result, _) = typecheck_with_cfg(r#"
+        trait From<T> {
+            fn from(value: T) -> Self;
+        }
+
+        pub enum TokenTree {
+            Group,
+        }
+
+        pub mod fallback {
+            use crate::TokenTree;
+
+            pub struct TokenStream {}
+
+            impl From<TokenTree> for TokenStream {
+                fn from(token: TokenTree) -> TokenStream {
+                    TokenStream {}
+                }
+            }
+        }
+
+        #[cfg(not(wrap_proc_macro))]
+        use crate::fallback as imp;
+
+        #[cfg(wrap_proc_macro)]
+        mod imp {
+            use crate::{fallback, TokenTree};
+
+            pub struct TokenStream {}
+            pub struct CompilerTokenStream {}
+
+            impl From<CompilerTokenStream> for TokenStream {
+                fn from(inner: CompilerTokenStream) -> TokenStream {
+                    TokenStream {}
+                }
+            }
+
+            impl From<fallback::TokenStream> for TokenStream {
+                fn from(inner: fallback::TokenStream) -> TokenStream {
+                    TokenStream {}
+                }
+            }
+
+            impl From<TokenTree> for TokenStream {
+                fn from(token: TokenTree) -> TokenStream {
+                    TokenStream::from(fallback::TokenStream::from(token))
+                }
+            }
+        }
+
+        pub struct TokenStream {
+            inner: imp::TokenStream,
+        }
+
+        impl TokenStream {
+            fn _new(inner: imp::TokenStream) -> Self {
+                TokenStream { inner }
+            }
+
+            fn _new_fallback(inner: fallback::TokenStream) -> Self {
+                TokenStream {
+                    inner: imp::TokenStream::from(inner),
+                }
+            }
+        }
+
+        impl From<TokenTree> for TokenStream {
+            fn from(token: TokenTree) -> Self {
+                TokenStream::_new(imp::TokenStream::from(token))
             }
         }
     "#, &["wrap_proc_macro"]);
