@@ -58,12 +58,42 @@ fn parse_generic_struct() {
 }
 
 #[test]
+fn parse_struct_field_attrs() {
+    let krate = parse(r#"struct Wire { #[serde(rename = "secs")] secs: u64, #[cfg(anyos)] pub nanos: u32 }"#);
+    match &krate.items[0] {
+        Item::Struct(s) => {
+            assert_eq!(s.fields.len(), 2);
+            assert_eq!(s.fields[0].attrs.len(), 1);
+            assert_eq!(s.fields[1].attrs.len(), 1);
+            assert_eq!(s.fields[1].vis, Visibility::Public);
+        }
+        _ => panic!("expected struct"),
+    }
+}
+
+#[test]
 fn parse_enum_with_data() {
     let krate = parse("enum Option<T> { Some(T), None }");
     match &krate.items[0] {
         Item::Enum(e) => {
             assert_eq!(e.variants.len(), 2);
             assert_eq!(e.generics.params.len(), 1);
+        }
+        _ => panic!("expected enum"),
+    }
+}
+
+#[test]
+fn parse_enum_variant_and_field_attrs() {
+    let krate = parse(r#"enum Event { #[cfg(anyos)] Ready { #[serde(rename = "fd")] fd: u32 }, Data(#[cfg(anyos)] u8) }"#);
+    match &krate.items[0] {
+        Item::Enum(e) => {
+            assert_eq!(e.variants.len(), 2);
+            assert_eq!(e.variants[0].attrs.len(), 1);
+            match &e.variants[0].fields {
+                VariantFields::Struct(fields) => assert_eq!(fields[0].attrs.len(), 1),
+                _ => panic!("expected struct variant"),
+            }
         }
         _ => panic!("expected enum"),
     }
@@ -154,6 +184,24 @@ fn parse_static_def() {
 fn parse_type_alias() {
     let krate = parse("type Result<T> = core::result::Result<T, Error>;");
     assert!(matches!(&krate.items[0], Item::TypeAlias(_)));
+}
+
+#[test]
+fn parse_const_generic_call_args() {
+    let krate = parse("fn f() { Parser::<8>::new(); Parser::<{ 4 + 4 }>::new(); }");
+    assert!(matches!(&krate.items[0], Item::Fn(_)));
+}
+
+#[test]
+fn parse_macro_rules_inside_block() {
+    let krate = parse("fn f() { macro_rules! local { ($x:expr) => {{ $x }} } local!(1); }");
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().expect("body");
+            assert!(matches!(&body.stmts[0], Stmt::Item(Item::MacroDef(_))));
+        }
+        _ => panic!("expected fn"),
+    }
 }
 
 #[test]

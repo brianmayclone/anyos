@@ -44,6 +44,15 @@ pub const DATA_PAGE_HEADER: usize = 8;
 /// Usable data area per page.
 pub const DATA_AREA_SIZE: usize = PAGE_SIZE - DATA_PAGE_HEADER;
 
+/// Row payload is stored in a private overflow page chain.
+pub const ROW_OVERFLOW: u8 = 0xFE;
+
+/// Overflow page header: next page (u32) + bytes used in this page (u32).
+pub const OVERFLOW_PAGE_HEADER: usize = 8;
+
+/// Usable payload bytes per overflow page.
+pub const OVERFLOW_DATA_SIZE: usize = PAGE_SIZE - OVERFLOW_PAGE_HEADER;
+
 // ── Row tags ─────────────────────────────────────────────────────────────────
 
 /// Row is active (first byte of row).
@@ -196,7 +205,7 @@ pub enum DbError {
     TypeMismatch(String),
     /// Too many columns.
     TooManyColumns,
-    /// Value too large (text > 4096 bytes).
+    /// Value too large for the row encoding.
     ValueTooLarge,
     /// Corrupt database file.
     Corrupt(String),
@@ -244,7 +253,7 @@ impl DbError {
                 m
             }
             DbError::TooManyColumns => String::from("Too many columns (max 1024)"),
-            DbError::ValueTooLarge => String::from("Value too large (text max 4096 bytes)"),
+            DbError::ValueTooLarge => String::from("Value too large (text/blob max 65535 bytes)"),
             DbError::Corrupt(s) => {
                 let mut m = String::from("Corrupt database: ");
                 m.push_str(s);

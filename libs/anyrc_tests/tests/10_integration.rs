@@ -94,6 +94,31 @@ fn cfg_all_false_strips_item() {
 }
 
 #[test]
+fn cfg_false_strips_impl_block() {
+    let source = r#"
+        struct S;
+
+        #[cfg(feature = "std")]
+        impl MissingTrait for S {
+            fn missing(&self) -> MissingType { missing_symbol }
+        }
+
+        fn main() -> i32 { 0 }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(result.is_ok(), "cfg-disabled impl was typechecked: {:?}", result.err());
+}
+
+#[test]
 fn compile_emit_obj() {
     let source = "fn foo() -> i32 { 42 }";
     let options = CompileOptions {

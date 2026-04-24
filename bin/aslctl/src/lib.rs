@@ -13,6 +13,7 @@ pub enum ClientCommand<'a> {
         name: &'a str,
         image_ref: &'a str,
         owner: &'a str,
+        kernel_profile: Option<&'a str>,
     },
     Delete {
         name: &'a str,
@@ -143,6 +144,7 @@ pub fn parse_cli_command<'a>(raw: &'a str) -> Option<ClientCommand<'a>> {
     let tokens = tokenize(raw);
     let first = *tokens.first()?;
     match first {
+        "create" => parse_create_tokens(&tokens),
         "delete" => parse_delete_tokens(&tokens),
         "clone" => parse_clone_tokens(&tokens),
         "export" => Some(ClientCommand::Export(*tokens.get(1)?)),
@@ -181,6 +183,7 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
             name: args.pos(1)?,
             image_ref: args.pos(2)?,
             owner: args.pos(3)?,
+            kernel_profile: None,
         }),
         "delete" => Some(ClientCommand::Delete {
             name: args.pos(1)?,
@@ -216,6 +219,30 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         "port" => parse_port_command(args),
         _ => None,
     }
+}
+
+fn parse_create_tokens<'a>(tokens: &[&'a str]) -> Option<ClientCommand<'a>> {
+    let name = *tokens.get(1)?;
+    let image_ref = *tokens.get(2)?;
+    let owner = *tokens.get(3)?;
+    let mut kernel_profile = None;
+    let mut i = 4;
+    while i < tokens.len() {
+        match tokens[i] {
+            "--kernel-profile" => {
+                kernel_profile = Some(*tokens.get(i + 1)?);
+                i += 1;
+            }
+            _ => return None,
+        }
+        i += 1;
+    }
+    Some(ClientCommand::Create {
+        name,
+        image_ref,
+        owner,
+        kernel_profile,
+    })
 }
 
 fn parse_shell_tokens<'a>(tokens: &[&'a str]) -> Option<ClientCommand<'a>> {
@@ -781,7 +808,7 @@ fn print_usage() {
     println!("Usage:");
     println!("  aslctl list");
     println!("  aslctl status <name>");
-    println!("  aslctl create <name> <image-ref> <owner>");
+    println!("  aslctl create <name> <image-ref> <owner> [--kernel-profile <profile>]");
     println!("  aslctl delete <name> [--force]");
     println!("  aslctl clone <source> <target> [--owner <owner>] [--no-mounts]");
     println!("  aslctl export <name>");
@@ -832,7 +859,14 @@ impl ClientCommand<'_> {
                 name,
                 image_ref,
                 owner,
-            } => format!("CREATE {} {} {}", name, image_ref, owner),
+                kernel_profile,
+            } => format!(
+                "CREATE {}\t{}\t{}\t{}",
+                name,
+                image_ref,
+                owner,
+                kernel_profile.unwrap_or("-")
+            ),
             Self::Delete { name, force } => {
                 format!("DELETE {}\t{}", name, if *force { 1 } else { 0 })
             }
@@ -1064,12 +1098,23 @@ mod tests {
                 name,
                 image_ref,
                 owner,
+                kernel_profile,
             }) => {
                 assert_eq!(name, "ubuntu-dev");
                 assert_eq!(image_ref, "ubuntu-24.04-x86_64-v1");
                 assert_eq!(owner, "strati");
+                assert_eq!(kernel_profile, None);
             }
             _ => panic!("expected create command"),
+        }
+
+        match parse_cli_command(
+            "create pcboot ubuntu-24.04-x86_64-v1 strati --kernel-profile seabios-x86_64",
+        ) {
+            Some(ClientCommand::Create { kernel_profile, .. }) => {
+                assert_eq!(kernel_profile, Some("seabios-x86_64"));
+            }
+            _ => panic!("expected create command with kernel profile"),
         }
     }
 

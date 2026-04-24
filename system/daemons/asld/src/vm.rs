@@ -290,6 +290,8 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
 
     let boot_result = if crate::boot::is_smoke_test(config) {
         configure_boot_vcpu(&vcpu, guest_memory, guest_memory_size)
+    } else if crate::boot::is_seabios(config) {
+        configure_seabios_vcpu(&vcpu, guest_memory, guest_memory_size)
     } else {
         configure_direct_linux_vcpu(config, &vcpu, guest_memory, guest_memory_size)
     };
@@ -434,6 +436,25 @@ fn configure_direct_linux_vcpu(
 }
 
 #[cfg(not(target_os = "linux"))]
+fn configure_seabios_vcpu(
+    vcpu: &libavm::AvmVcpu,
+    guest_memory: *mut u8,
+    guest_memory_size: usize,
+) -> Result<(), AsldError> {
+    let layout = crate::boot::prepare_seabios_boot(guest_memory, guest_memory_size)?;
+    let regs = seabios_gprs(&layout);
+    let sregs = seabios_sregs(&layout);
+
+    if vcpu.set_regs(&regs).is_err() {
+        return Err(AsldError::BackendUnavailable("avm set_regs failed"));
+    }
+    if vcpu.set_sregs(&sregs).is_err() {
+        return Err(AsldError::BackendUnavailable("avm set_sregs failed"));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
 fn configure_boot_vcpu(
     vcpu: &libavm::AvmVcpu,
     guest_memory: *mut u8,
@@ -545,6 +566,64 @@ fn direct_linux_gprs(layout: &crate::boot::DirectLinuxLayout) -> GuestGprs {
     regs.rsi = layout.boot_params_addr as u64;
     regs.rsp = 0x90000;
     regs
+}
+
+fn seabios_gprs(_layout: &crate::boot::SeaBiosLayout) -> GuestGprs {
+    GuestGprs::default()
+}
+
+fn seabios_sregs(layout: &crate::boot::SeaBiosLayout) -> GuestSregs {
+    const REAL_CODE_AR: u32 = 0x009B;
+    const REAL_DATA_AR: u32 = 0x0093;
+    const REAL_TSS_AR: u32 = 0x008B;
+    const NULL_SEGMENT_AR: u32 = 0x10000;
+    const CR0_RESET: u64 = 0x6000_0010;
+
+    GuestSregs {
+        cs_selector: 0xf000,
+        cs_base: 0xf0000,
+        cs_limit: 0xffff,
+        cs_ar: REAL_CODE_AR,
+        ds_selector: 0,
+        ds_base: 0,
+        ds_limit: 0xffff,
+        ds_ar: REAL_DATA_AR,
+        es_selector: 0,
+        es_base: 0,
+        es_limit: 0xffff,
+        es_ar: REAL_DATA_AR,
+        fs_selector: 0,
+        fs_base: 0,
+        fs_limit: 0xffff,
+        fs_ar: REAL_DATA_AR,
+        gs_selector: 0,
+        gs_base: 0,
+        gs_limit: 0xffff,
+        gs_ar: REAL_DATA_AR,
+        ss_selector: 0,
+        ss_base: 0,
+        ss_limit: 0xffff,
+        ss_ar: REAL_DATA_AR,
+        tr_selector: 0,
+        tr_base: 0,
+        tr_limit: 0xffff,
+        tr_ar: REAL_TSS_AR,
+        ldtr_selector: 0,
+        ldtr_base: 0,
+        ldtr_limit: 0,
+        ldtr_ar: NULL_SEGMENT_AR,
+        gdtr_base: 0,
+        gdtr_limit: 0xffff,
+        idtr_base: 0,
+        idtr_limit: 0x03ff,
+        cr0: CR0_RESET,
+        cr3: 0,
+        cr4: 0,
+        efer: 0,
+        rip: (layout.reset_vector - 0xf0000) as u64,
+        rsp: 0,
+        rflags: 0x2,
+    }
 }
 
 fn direct_linux_sregs(layout: &crate::boot::DirectLinuxLayout) -> GuestSregs {
@@ -1278,12 +1357,12 @@ mod tests {
     use super::{
         align_guest_memory_size, assess_boot_exit, assess_runtime_exit, boot_probe, bootstrap_gprs,
         bootstrap_sregs, direct_linux_gprs, direct_linux_sregs, msr_read, msr_write, page_mut,
-        platform_io_action, poll_runtime, serial_io_action, start_vm, stop_vm,
-        write_bootstrap_image, BootstrapLayout, MsrState, PlatformIoState, RuntimeExitAssessment,
-        SerialPortState, VmBootReport, VmExitInfo, VmRunState, BOOT_CODE_ADDR, BOOT_PDPT_ADDR,
-        BOOT_PD_ADDR, BOOT_PML4_ADDR, IO_PORT_CMOS_DATA, IO_PORT_CMOS_INDEX, IO_PORT_KBD_STATUS,
-        IO_PORT_PIC1_DATA, IO_PORT_POST_DELAY, MSR_IA32_EFER, MSR_IA32_FS_BASE, UART_LCR,
-        UART_LCR_DLAB, UART_LSR, UART_RBR_THR_DLL,
+        platform_io_action, poll_runtime, seabios_gprs, seabios_sregs, serial_io_action, start_vm,
+        stop_vm, write_bootstrap_image, BootstrapLayout, MsrState, PlatformIoState,
+        RuntimeExitAssessment, SerialPortState, VmBootReport, VmExitInfo, VmRunState,
+        BOOT_CODE_ADDR, BOOT_PDPT_ADDR, BOOT_PD_ADDR, BOOT_PML4_ADDR, IO_PORT_CMOS_DATA,
+        IO_PORT_CMOS_INDEX, IO_PORT_KBD_STATUS, IO_PORT_PIC1_DATA, IO_PORT_POST_DELAY,
+        MSR_IA32_EFER, MSR_IA32_FS_BASE, UART_LCR, UART_LCR_DLAB, UART_LSR, UART_RBR_THR_DLL,
     };
 
     #[test]
@@ -1365,6 +1444,23 @@ mod tests {
         assert_eq!(sregs.cr4, 0);
         assert_eq!(sregs.cr0 & 1, 1);
         assert_eq!(sregs.cr0 & (1 << 31), 0);
+    }
+
+    #[test]
+    fn seabios_sregs_target_real_mode_reset_vector() {
+        let layout = crate::boot::SeaBiosLayout {
+            firmware_addr: 0xe0000,
+            firmware_size: 128 * 1024,
+            reset_vector: crate::boot::SEABIOS_RESET_VECTOR,
+        };
+        let regs = seabios_gprs(&layout);
+        let sregs = seabios_sregs(&layout);
+        assert_eq!(regs, Default::default());
+        assert_eq!(sregs.cs_selector, 0xf000);
+        assert_eq!(sregs.cs_base, 0xf0000);
+        assert_eq!(sregs.rip, 0xfff0);
+        assert_eq!(sregs.cr0, 0x6000_0010);
+        assert_eq!(sregs.efer, 0);
     }
 
     #[test]

@@ -1,11 +1,15 @@
 #![no_std]
-#![no_main]
+#![cfg_attr(not(feature = "host"), no_main)]
 
 //! ccargo — Rust build system for anyOS
 //!
 //! Compatible subset of Cargo functionality for building Rust projects
 //! natively on anyOS using the crust compiler.
 
+#[cfg(feature = "host")]
+extern crate alloc;
+
+#[cfg(not(feature = "host"))]
 anyos_std::entry!(main);
 
 /// Prelude: common types from alloc for no_std usage.

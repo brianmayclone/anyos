@@ -6,7 +6,7 @@ use crate::config::{
     add_mount, add_port_forward, clone_distro, delete_distro, ensure_distro_tree, list_distros,
     load_distro, remove_mount, remove_port_forward, update_network, update_resources, ConfigStore,
 };
-use crate::distro::build_distro_config;
+use crate::distro::build_distro_config_with_kernel_profile;
 use crate::errors::AsldError;
 use crate::model::{
     AgentState, DistroConfig, DistroHealth, DistroState, DistroStatus, ExecInvocation, MountSpec,
@@ -101,7 +101,23 @@ impl RuntimeService {
         image_ref: &str,
         owner: &str,
     ) -> Result<DistroStatus, AsldError> {
-        let cfg = build_distro_config(name, image_ref, owner)?;
+        self.create_with_kernel_profile(store, name, image_ref, owner, None)
+    }
+
+    pub fn create_with_kernel_profile<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+        image_ref: &str,
+        owner: &str,
+        kernel_profile: Option<&str>,
+    ) -> Result<DistroStatus, AsldError> {
+        let cfg = build_distro_config_with_kernel_profile(
+            name,
+            image_ref,
+            owner,
+            kernel_profile.unwrap_or("linux-x86_64-generic"),
+        )?;
         ensure_distro_tree(store, &cfg)?;
         let status = stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone());
         self.store.upsert(status.clone());
@@ -790,6 +806,8 @@ impl RuntimeService {
                 cfg.network.mode, cfg.network.dns_mode, cfg.network.allow_outbound
             ),
             format!("boot_mode\t{}", boot_plan.mode),
+            format!("boot_rootfs\t{}", boot_plan.rootfs_mode),
+            format!("boot_firmware\t{}", boot_plan.firmware_path),
             format!("boot_ready\t{}", boot_plan.startable),
             format!("boot_kernel\t{}", boot_plan.kernel_path),
             format!("boot_initrd\t{}", boot_plan.initrd_path),

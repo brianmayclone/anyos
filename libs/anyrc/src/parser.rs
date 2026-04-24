@@ -1182,7 +1182,7 @@ impl<'a> Parser<'a> {
     }
 
     fn at_item_start(&self) -> bool {
-        matches!(
+        if matches!(
             &self.current().kind,
             TokenKind::Kw(Keyword::Fn)
                 | TokenKind::Kw(Keyword::Struct)
@@ -1198,7 +1198,13 @@ impl<'a> Parser<'a> {
                 | TokenKind::Kw(Keyword::Pub)
                 | TokenKind::Kw(Keyword::Unsafe)
                 | TokenKind::Hash
-        )
+        ) {
+            return true;
+        }
+        match &self.current().kind {
+            TokenKind::Ident(sym) => self.interner.resolve(*sym) == "macro_rules",
+            _ => false,
+        }
     }
 
     fn at_item_start_after_leading(&self) -> bool {
@@ -1283,7 +1289,7 @@ impl<'a> Parser<'a> {
             TokenKind::Kw(Keyword::Enum) => {
                 Some(Item::Enum(self.parse_enum_def(vis, attrs, start)))
             }
-            TokenKind::Kw(Keyword::Impl) => Some(Item::Impl(self.parse_impl_block(start))),
+            TokenKind::Kw(Keyword::Impl) => Some(Item::Impl(self.parse_impl_block(attrs, start))),
             TokenKind::Kw(Keyword::Trait) => {
                 Some(Item::Trait(self.parse_trait_def(vis, false, start)))
             }
@@ -1346,7 +1352,7 @@ impl<'a> Parser<'a> {
                 } else if self.at_kw(Keyword::Trait) {
                     Some(Item::Trait(self.parse_trait_def(vis, true, start)))
                 } else if self.at_kw(Keyword::Impl) {
-                    let mut ib = self.parse_impl_block(start);
+                    let mut ib = self.parse_impl_block(attrs, start);
                     ib.is_unsafe = true;
                     Some(Item::Impl(ib))
                 } else if self.at_kw(Keyword::Extern) {
@@ -1601,6 +1607,7 @@ impl<'a> Parser<'a> {
             let mut idx = 0u32;
             while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
                 let f_start = self.current().span;
+                let f_attrs = self.parse_attrs();
                 let f_vis = self.parse_visibility();
                 let f_ty = self.parse_ty();
                 let f_name = self.interner.intern(&idx.to_string());
@@ -1609,6 +1616,7 @@ impl<'a> Parser<'a> {
                     name: f_name,
                     ty: f_ty,
                     vis: f_vis,
+                    attrs: f_attrs,
                     span: self.span_from(f_start),
                 });
                 if !self.eat_exact(&TokenKind::Comma) {
@@ -1623,6 +1631,7 @@ impl<'a> Parser<'a> {
             self.expect_exact(&TokenKind::LBrace);
             while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
                 let f_start = self.current().span;
+                let f_attrs = self.parse_attrs();
                 let f_vis = self.parse_visibility();
                 let f_name = self.expect_ident();
                 self.expect_exact(&TokenKind::Colon);
@@ -1631,6 +1640,7 @@ impl<'a> Parser<'a> {
                     name: f_name,
                     ty: f_ty,
                     vis: f_vis,
+                    attrs: f_attrs,
                     span: self.span_from(f_start),
                 });
                 if !self.eat_exact(&TokenKind::Comma) {
@@ -1657,11 +1667,13 @@ impl<'a> Parser<'a> {
         let mut variants = Vec::new();
         while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
             let v_start = self.current().span;
+            let v_attrs = self.parse_attrs();
             let v_name = self.expect_ident();
             let fields = if self.at_exact(&TokenKind::LParen) {
                 self.bump();
                 let mut tys = Vec::new();
                 while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
+                    let _field_attrs = self.parse_attrs();
                     tys.push(self.parse_ty());
                     if !self.eat_exact(&TokenKind::Comma) {
                         break;
@@ -1674,6 +1686,7 @@ impl<'a> Parser<'a> {
                 let mut flds = Vec::new();
                 while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
                     let f_start = self.current().span;
+                    let f_attrs = self.parse_attrs();
                     let f_name = self.expect_ident();
                     self.expect_exact(&TokenKind::Colon);
                     let f_ty = self.parse_ty();
@@ -1681,6 +1694,7 @@ impl<'a> Parser<'a> {
                         name: f_name,
                         ty: f_ty,
                         vis: Visibility::Private,
+                        attrs: f_attrs,
                         span: self.span_from(f_start),
                     });
                     if !self.eat_exact(&TokenKind::Comma) {
@@ -1701,6 +1715,7 @@ impl<'a> Parser<'a> {
                 name: v_name,
                 fields,
                 discriminant,
+                attrs: v_attrs,
                 span: self.span_from(v_start),
             });
             if !self.eat_exact(&TokenKind::Comma) {
@@ -1718,7 +1733,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_impl_block(&mut self, start: Span) -> ImplBlock {
+    fn parse_impl_block(&mut self, attrs: Vec<Attribute>, start: Span) -> ImplBlock {
         self.expect_exact(&TokenKind::Kw(Keyword::Impl));
         let generics = self.parse_generics();
 
@@ -1755,6 +1770,7 @@ impl<'a> Parser<'a> {
             trait_ref,
             self_ty,
             items,
+            attrs,
             is_unsafe: false,
             span: self.span_from(start),
         }
@@ -2409,6 +2425,8 @@ impl<'a> Parser<'a> {
                 self.bump(); // binding name
                 self.bump(); // =
                 args.push(GenericArg::Type(self.parse_ty()));
+            } else if self.at_const_generic_arg_start() {
+                args.push(GenericArg::Const(self.parse_const_generic_arg()));
             } else {
                 args.push(GenericArg::Type(self.parse_ty()));
             }
@@ -2435,6 +2453,27 @@ impl<'a> Parser<'a> {
             args,
             span: self.span_from(start),
         }
+    }
+
+    fn at_const_generic_arg_start(&self) -> bool {
+        matches!(
+            self.current().kind,
+            TokenKind::IntLit(_, _)
+                | TokenKind::FloatLit(_)
+                | TokenKind::StringLit(_)
+                | TokenKind::CharLit(_)
+                | TokenKind::ByteStringLit(_)
+                | TokenKind::LBrace
+                | TokenKind::Minus
+                | TokenKind::Kw(Keyword::True)
+                | TokenKind::Kw(Keyword::False)
+        )
+    }
+
+    fn parse_const_generic_arg(&mut self) -> Expr {
+        // Avoid parsing the closing `>` as a greater-than operator for simple
+        // const arguments like `foo::<8>()`.
+        self.parse_prefix_expr()
     }
 
     fn parse_where_clause(&mut self) -> WhereClause {

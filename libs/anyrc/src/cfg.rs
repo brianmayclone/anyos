@@ -222,6 +222,7 @@ fn item_attrs(item: &Item) -> &[Attribute] {
         Item::Fn(f) => &f.attrs,
         Item::Struct(s) => &s.attrs,
         Item::Enum(e) => &e.attrs,
+        Item::Impl(i) => &i.attrs,
         Item::Mod(m) => &m.attrs,
         Item::Trait(_) => &[],
         _ => &[],
@@ -249,6 +250,17 @@ fn strip_items(items: &mut Vec<Item>, ctx: &CfgContext, interner: &Interner) {
             }
             Item::Trait(td) => {
                 strip_items(&mut td.items, ctx, interner);
+            }
+            Item::Struct(s) => {
+                s.fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
+            }
+            Item::Enum(e) => {
+                e.variants.retain(|variant| should_keep_item_attrs(&variant.attrs, ctx, interner));
+                for variant in &mut e.variants {
+                    if let VariantFields::Struct(fields) = &mut variant.fields {
+                        fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
+                    }
+                }
             }
             Item::Fn(f) => {
                 if let Some(ref mut body) = f.body {
@@ -292,6 +304,17 @@ fn strip_stmt(stmt: &mut Stmt, ctx: &CfgContext, interner: &Interner) {
                 }
             }
             Item::Impl(ib) => strip_items(&mut ib.items, ctx, interner),
+            Item::Struct(s) => {
+                s.fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
+            }
+            Item::Enum(e) => {
+                e.variants.retain(|variant| should_keep_item_attrs(&variant.attrs, ctx, interner));
+                for variant in &mut e.variants {
+                    if let VariantFields::Struct(fields) = &mut variant.fields {
+                        fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
+                    }
+                }
+            }
             Item::Fn(f) => {
                 if let Some(ref mut body) = f.body {
                     strip_block(body, ctx, interner);

@@ -59,6 +59,7 @@ pub struct FieldDef {
     pub name: Symbol,
     pub ty: Ty,
     pub vis: Visibility,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -75,6 +76,7 @@ pub struct Variant {
     pub name: Symbol,
     pub fields: VariantFields,
     pub discriminant: Option<Box<Expr>>,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -89,6 +91,7 @@ pub struct ImplBlock {
     pub trait_ref: Option<Path>,
     pub self_ty: Ty,
     pub items: Vec<Item>,
+    pub attrs: Vec<Attribute>,
     pub is_unsafe: bool,
     pub span: Span,
 }

@@ -103,17 +103,19 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             Err(err) => err_line(&err),
         },
         "CREATE" | "create" => {
-            let mut parts = rest.split_whitespace();
-            let Some(name) = parts.next() else {
+            let fields = parse_create_fields(rest);
+            let Some(name) = fields.first().copied() else {
                 return err_line(&AsldError::InvalidArgument("name"));
             };
-            let Some(image_ref) = parts.next() else {
+            let Some(image_ref) = fields.get(1).copied() else {
                 return err_line(&AsldError::InvalidArgument("image_ref"));
             };
-            let Some(owner) = parts.next() else {
+            let Some(owner) = fields.get(2).copied() else {
                 return err_line(&AsldError::InvalidArgument("owner"));
             };
-            match runtime.create(store, name, image_ref, owner) {
+            let kernel_profile = fields.get(3).copied().filter(|value| *value != "-");
+            match runtime.create_with_kernel_profile(store, name, image_ref, owner, kernel_profile)
+            {
                 Ok(status) => format!(
                     "OK\t1\ncreated\t{}\nstate\t{}\n\n",
                     status.name,
@@ -532,6 +534,14 @@ fn first_tab_field(s: &str) -> Option<&str> {
 
 fn split_tab_fields(s: &str) -> Vec<&str> {
     s.split('\t').filter(|field| !field.is_empty()).collect()
+}
+
+fn parse_create_fields(s: &str) -> Vec<&str> {
+    if s.contains('\t') {
+        split_tab_fields(s)
+    } else {
+        s.split_whitespace().collect()
+    }
 }
 
 fn agent_update<S: ConfigStore>(

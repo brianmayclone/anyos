@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Accepted, amended by ADR-0007
 
 ## Date
 
@@ -26,7 +26,7 @@ ASL verwendet fuer normale Distributionen einen direkten Linux-Bootpfad in
 
 - `asld` liest das Kernel-Artifact aus
   `/System/var/asl/distros/<name>/boot/vmlinuz`
-- optional wird
+- fuer den MVP wird zwingend
   `/System/var/asl/distros/<name>/boot/initrd.img` geladen
 - `asld` baut die Linux-Zero-Page/`boot_params`
 - `asld` schreibt Kernel, Cmdline und initrd in den Guest-Speicher
@@ -34,9 +34,18 @@ ASL verwendet fuer normale Distributionen einen direkten Linux-Bootpfad in
   Linux-Entry
 - AVM fuehrt danach den Gast aus
 
+Bis ein ASL-Blockdevice implementiert ist, ist die initrd der erste
+Rootfs-/Bootstrap-Pfad. `asld` setzt deshalb keine falsche `root=/dev/vda`
+Cmdline, sondern startet den Gast mit `rdinit=/init` und ASL-Metadaten auf der
+Kernel-Cmdline.
+
 Ein BIOS oder eine PC-Firmware ist fuer ASL kein Bestandteil des
 MVP-Bootpfads. Der vorhandene AVM-HLT-Bootstrap bleibt nur als ausdrueckliches
 `avm-smoke-test` Profil fuer Hypervisor-Selbsttests erhalten.
+
+ADR-0007 ergaenzt diese Entscheidung um einen SeaBIOS-basierten
+Userspace-Firmware-Pfad fuer Profile, die ein PC-kompatibles Bootmodell
+brauchen. AVM bleibt dabei weiterhin nur das KVM-artige Kernel-Interface.
 
 ## Consequences
 
@@ -46,7 +55,8 @@ MVP-Bootpfads. Der vorhandene AVM-HLT-Bootstrap bleibt nur als ausdrueckliches
 - weniger Geraeteemulation vor dem ersten Linux-Start erforderlich
 - klare KVM-aehnliche Trennung: AVM stellt VM-Primitives, `asld` stellt den
   Userland-VMM/Loader
-- Boot-Diagnose kann explizit melden, ob Kernel/initrd-Artefakte vorhanden sind
+- Boot-Diagnose kann explizit melden, ob Kernel/initrd-Artefakte und der
+  aktive Rootfs-Modus vorhanden sind
 
 ### Negative
 
@@ -58,7 +68,7 @@ MVP-Bootpfads. Der vorhandene AVM-HLT-Bootstrap bleibt nur als ausdrueckliches
 ### Follow-up
 
 - serielle Konsole bzw. virtio-console Exit-Handling an `aslconsoled` anbinden
-- Rootfs als initiale initrd oder als blockorientiertes ASL-Rootdevice
-  bereitstellen
+- blockorientiertes ASL-Rootdevice bereitstellen und dann optional
+  `root=/dev/vda` nutzen
 - Netzwerkpfad zwischen Linux-Gast und `aslnetd` implementieren
 - Boot-Probe von "Kernel gestartet" zu "Guest-Agent ready" weiterentwickeln

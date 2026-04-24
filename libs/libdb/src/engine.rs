@@ -515,6 +515,40 @@ impl Database {
         Ok(())
     }
 
+    fn free_table_data_chain(&mut self, mut page_num: u32) -> DbResult<()> {
+        while page_num != 0 {
+            let mut page = [0u8; PAGE_SIZE];
+            self.read_page(page_num, &mut page)?;
+            let next = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
+            let data_end = u16::from_le_bytes([page[6], page[7]]) as usize;
+            let data_end = if data_end == 0 { DATA_PAGE_HEADER } else { data_end };
+
+            let mut offset = DATA_PAGE_HEADER;
+            while offset < data_end {
+                if page[offset] == ROW_OVERFLOW {
+                    if let Some((first_page, _total_len, consumed)) =
+                        Self::overflow_stub_info(&page, offset)
+                    {
+                        if first_page != 0 {
+                            self.free_page_chain(first_page)?;
+                        }
+                        offset += consumed;
+                        continue;
+                    }
+                }
+
+                match Self::deserialize_row(&page, offset, 0) {
+                    Some((_row, consumed)) if consumed > 0 => offset += consumed,
+                    _ => break,
+                }
+            }
+
+            self.free_page(page_num)?;
+            page_num = next;
+        }
+        Ok(())
+    }
+
     fn load_table_directory(&mut self, mut page_num: u32) -> DbResult<Vec<TableSchema>> {
         let mut tables = Vec::new();
         while page_num != 0 {
@@ -786,7 +820,7 @@ impl Database {
         let idx = schema::find_table(&self.tables, name)
             .ok_or_else(|| DbError::TableNotFound(String::from(name)))?;
 
-        self.free_page_chain(self.tables[idx].first_data_page)?;
+        self.free_table_data_chain(self.tables[idx].first_data_page)?;
         self.free_page_chain(self.tables[idx].schema_page)?;
         if self.tables[idx].dir_page != 0 {
             self.free_page(self.tables[idx].dir_page)?;
@@ -878,7 +912,7 @@ impl Database {
 
         let old_first_data_page = self.tables[table_idx].first_data_page;
         if old_first_data_page != 0 {
-            self.free_page_chain(old_first_data_page)?;
+            self.free_table_data_chain(old_first_data_page)?;
         }
 
         self.tables[table_idx].columns.remove(column_idx);

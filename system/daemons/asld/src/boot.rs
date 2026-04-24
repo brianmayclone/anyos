@@ -6,9 +6,12 @@ use crate::errors::AsldError;
 use crate::model::{DistroConfig, DISTRO_IMAGES_ROOT};
 
 pub const SMOKE_TEST_KERNEL_PROFILE: &str = "avm-smoke-test";
+pub const SEABIOS_KERNEL_PROFILE: &str = "seabios-x86_64";
+pub const SEABIOS_FIRMWARE_PATH: &str = "/System/var/asl/firmware/seabios.bin";
 pub const LINUX_BOOT_PARAMS_ADDR: usize = 0x7000;
 pub const LINUX_CMDLINE_ADDR: usize = 0x20_000;
 pub const LINUX_KERNEL_LOAD_ADDR: usize = 0x10_0000;
+pub const SEABIOS_RESET_VECTOR: usize = 0x0f_fff0;
 
 const LINUX_BOOT_PARAMS_SIZE: usize = 4096;
 const LINUX_SETUP_HEADER_MIN: usize = 0x240;
@@ -26,10 +29,15 @@ const LINUX_CMDLINE_SIZE_OFFSET: usize = 0x238;
 const LINUX_BOOT_MAGIC: u32 = 0x5372_6448;
 const LINUX_BOOT_FLAG: u16 = 0xaa55;
 const DEFAULT_SETUP_SECTORS: usize = 4;
+const SEABIOS_LOAD_TOP: usize = 0x10_0000;
+const SEABIOS_MAX_SIZE: usize = 0x40_000;
+const SEABIOS_MIN_ADDR: usize = 0x0c_0000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BootPlan {
     pub mode: String,
+    pub rootfs_mode: String,
+    pub firmware_path: String,
     pub kernel_path: String,
     pub initrd_path: String,
     pub cmdline: String,
@@ -63,11 +71,31 @@ pub fn build_boot_plan(config: &DistroConfig) -> BootPlan {
     if config.kernel_profile == SMOKE_TEST_KERNEL_PROFILE {
         return BootPlan {
             mode: String::from("avm-smoke-test"),
+            rootfs_mode: String::from("builtin"),
+            firmware_path: String::from("-"),
             kernel_path: String::from("builtin://avm/hlt-bootstrap"),
             initrd_path: String::from("-"),
             cmdline: String::from("-"),
             startable: true,
             message: String::from("built-in AVM bootstrap smoke test"),
+        };
+    }
+
+    if config.kernel_profile == SEABIOS_KERNEL_PROFILE {
+        let firmware_present = file_exists(SEABIOS_FIRMWARE_PATH);
+        return BootPlan {
+            mode: String::from("firmware-seabios"),
+            rootfs_mode: String::from("firmware"),
+            firmware_path: String::from(SEABIOS_FIRMWARE_PATH),
+            kernel_path: String::from("-"),
+            initrd_path: String::from("-"),
+            cmdline: String::from("-"),
+            startable: firmware_present,
+            message: if firmware_present {
+                String::from("SeaBIOS firmware artifact is present")
+            } else {
+                String::from("SeaBIOS firmware artifact is missing")
+            },
         };
     }
 
@@ -77,14 +105,16 @@ pub fn build_boot_plan(config: &DistroConfig) -> BootPlan {
     let initrd_present = file_exists(&initrd_path);
     BootPlan {
         mode: String::from("direct-linux"),
+        rootfs_mode: String::from("initrd"),
+        firmware_path: String::from("-"),
         kernel_path,
         initrd_path,
         cmdline: build_linux_cmdline(config),
-        startable: kernel_present,
+        startable: kernel_present && initrd_present,
         message: if kernel_present && initrd_present {
-            String::from("direct Linux boot artifacts are present")
+            String::from("direct Linux kernel and ASL initrd are present")
         } else if kernel_present {
-            String::from("direct Linux kernel is present; initrd is optional but missing")
+            String::from("direct Linux initrd is required until ASL block storage is available")
         } else {
             String::from("direct Linux kernel image is missing")
         },
@@ -93,6 +123,27 @@ pub fn build_boot_plan(config: &DistroConfig) -> BootPlan {
 
 pub fn is_smoke_test(config: &DistroConfig) -> bool {
     config.kernel_profile == SMOKE_TEST_KERNEL_PROFILE
+}
+
+pub fn is_seabios(config: &DistroConfig) -> bool {
+    config.kernel_profile == SEABIOS_KERNEL_PROFILE
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeaBiosLayout {
+    pub firmware_addr: usize,
+    pub firmware_size: usize,
+    pub reset_vector: usize,
+}
+
+pub fn prepare_seabios_boot(
+    guest_memory: *mut u8,
+    guest_memory_size: usize,
+) -> Result<SeaBiosLayout, AsldError> {
+    let firmware = read_file_bytes(SEABIOS_FIRMWARE_PATH)?;
+    let layout = build_seabios_layout(firmware.len(), guest_memory_size)?;
+    write_seabios_guest_memory(guest_memory, guest_memory_size, &firmware, &layout)?;
+    Ok(layout)
 }
 
 pub fn prepare_direct_linux_boot(
@@ -105,9 +156,15 @@ pub fn prepare_direct_linux_boot(
         return Err(AsldError::InvalidState("not a direct Linux boot plan"));
     }
 
+    if !plan.startable {
+        return Err(AsldError::InvalidState(
+            "direct Linux kernel and ASL initrd are required",
+        ));
+    }
+
     let kernel = read_file_bytes(&plan.kernel_path)?;
     let image = parse_direct_linux_image(&kernel)?;
-    let initrd = read_file_bytes(&plan.initrd_path).unwrap_or_default();
+    let initrd = read_file_bytes(&plan.initrd_path)?;
     let layout =
         build_direct_linux_layout(&image, plan.cmdline.len(), initrd.len(), guest_memory_size)?;
     write_direct_linux_guest_memory(
@@ -158,11 +215,49 @@ pub fn parse_direct_linux_image(data: &[u8]) -> Result<DirectLinuxImage, AsldErr
     })
 }
 
+fn build_seabios_layout(
+    firmware_len: usize,
+    guest_memory_size: usize,
+) -> Result<SeaBiosLayout, AsldError> {
+    if firmware_len == 0 || firmware_len > SEABIOS_MAX_SIZE {
+        return Err(AsldError::InvalidArgument("SeaBIOS firmware size"));
+    }
+    if guest_memory_size < SEABIOS_LOAD_TOP {
+        return Err(AsldError::InvalidState(
+            "guest memory too small for SeaBIOS",
+        ));
+    }
+    let firmware_addr = SEABIOS_LOAD_TOP
+        .checked_sub(firmware_len)
+        .ok_or(AsldError::InvalidState("SeaBIOS layout overflow"))?;
+    if firmware_addr < SEABIOS_MIN_ADDR {
+        return Err(AsldError::InvalidState("SeaBIOS firmware is too large"));
+    }
+    Ok(SeaBiosLayout {
+        firmware_addr,
+        firmware_size: firmware_len,
+        reset_vector: SEABIOS_RESET_VECTOR,
+    })
+}
+
+fn write_seabios_guest_memory(
+    guest_memory: *mut u8,
+    guest_memory_size: usize,
+    firmware: &[u8],
+    layout: &SeaBiosLayout,
+) -> Result<(), AsldError> {
+    let memory = unsafe { core::slice::from_raw_parts_mut(guest_memory, guest_memory_size) };
+    memory.fill(0);
+    copy_to_guest(memory, layout.firmware_addr, firmware)?;
+    Ok(())
+}
+
 fn build_linux_cmdline(config: &DistroConfig) -> String {
     format!(
-        "console=ttyS0 panic=-1 root=/dev/vda rw asl.name={} asl.agent={}",
+        "console=ttyS0 earlycon=uart,io,0x3f8 panic=-1 rdinit=/init asl.name={} asl.agent={} asl.rootfs=initrd asl.storage={}",
         config.name,
-        if config.agent.enabled { "1" } else { "0" }
+        if config.agent.enabled { "1" } else { "0" },
+        config.storage.layout
     )
 }
 
@@ -323,7 +418,8 @@ mod tests {
 
     use super::{
         build_boot_plan, parse_direct_linux_image, LINUX_BOOT_PARAMS_ADDR, LINUX_CMDLINE_ADDR,
-        LINUX_KERNEL_LOAD_ADDR, SMOKE_TEST_KERNEL_PROFILE,
+        LINUX_KERNEL_LOAD_ADDR, SEABIOS_KERNEL_PROFILE, SEABIOS_RESET_VECTOR,
+        SMOKE_TEST_KERNEL_PROFILE,
     };
     use crate::distro::build_distro_config;
 
@@ -335,6 +431,10 @@ mod tests {
         assert!(!plan.startable);
         assert!(plan.kernel_path.ends_with("/ubuntu-dev/boot/vmlinuz"));
         assert!(plan.cmdline.contains("console=ttyS0"));
+        assert!(plan.cmdline.contains("rdinit=/init"));
+        assert!(!plan.cmdline.contains("/dev/vda"));
+        assert_eq!(plan.rootfs_mode, "initrd");
+        assert_eq!(plan.firmware_path, "-");
     }
 
     #[test]
@@ -344,7 +444,20 @@ mod tests {
         let plan = build_boot_plan(&cfg);
         assert_eq!(plan.mode, "avm-smoke-test");
         assert!(plan.startable);
+        assert_eq!(plan.rootfs_mode, "builtin");
+        assert_eq!(plan.firmware_path, "-");
         assert_eq!(plan.kernel_path, "builtin://avm/hlt-bootstrap");
+    }
+
+    #[test]
+    fn seabios_profile_uses_userspace_firmware_artifact() {
+        let mut cfg = build_distro_config("pcboot", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        cfg.kernel_profile = SEABIOS_KERNEL_PROFILE.into();
+        let plan = build_boot_plan(&cfg);
+        assert_eq!(plan.mode, "firmware-seabios");
+        assert_eq!(plan.rootfs_mode, "firmware");
+        assert_eq!(plan.kernel_path, "-");
+        assert_eq!(plan.firmware_path, super::SEABIOS_FIRMWARE_PATH);
     }
 
     #[test]
@@ -393,6 +506,20 @@ mod tests {
         );
         assert_eq!(memory[LINUX_CMDLINE_ADDR], b'c');
         assert_eq!(memory[LINUX_BOOT_PARAMS_ADDR + 0x210], 0xff);
+    }
+
+    #[test]
+    fn writes_seabios_at_top_of_low_memory() {
+        let firmware = alloc::vec![0x5au8; 128 * 1024];
+        let mut memory = alloc::vec![0xccu8; 2 * 1024 * 1024];
+        let layout = super::build_seabios_layout(firmware.len(), memory.len()).unwrap();
+        super::write_seabios_guest_memory(memory.as_mut_ptr(), memory.len(), &firmware, &layout)
+            .unwrap();
+        assert_eq!(layout.firmware_addr, 0xe0000);
+        assert_eq!(layout.reset_vector, SEABIOS_RESET_VECTOR);
+        assert_eq!(memory[0], 0);
+        assert_eq!(memory[0xe0000], 0x5a);
+        assert_eq!(memory[0xfffff], 0x5a);
     }
 
     fn fake_bzimage() -> Vec<u8> {
