@@ -32,6 +32,10 @@ pub enum ClientCommand<'a> {
         memory_mb: Option<&'a str>,
         vcpu_count: Option<&'a str>,
     },
+    StorageImport {
+        distro: &'a str,
+        source_path: &'a str,
+    },
     StorageValidate(&'a str),
     NetworkShow(&'a str),
     NetworkSet {
@@ -356,6 +360,10 @@ fn parse_agent_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Cli
 
 fn parse_storage_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
     match args.pos(1)? {
+        "import" => Some(ClientCommand::StorageImport {
+            distro: args.pos(2)?,
+            source_path: args.pos(3)?,
+        }),
         "validate" => Some(ClientCommand::StorageValidate(args.pos(2)?)),
         _ => None,
     }
@@ -680,6 +688,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             | ClientCommand::Export(_)
             | ClientCommand::Config(_)
             | ClientCommand::ConfigSetResources { .. }
+            | ClientCommand::StorageImport { .. }
             | ClientCommand::NetworkShow(_)
             | ClientCommand::NetworkSet { .. }
             | ClientCommand::Start(_)
@@ -812,6 +821,7 @@ fn print_usage() {
     println!("  aslctl export <name>");
     println!("  aslctl config <name>");
     println!("  aslctl config set-resources <name> [--memory-mb <MiB>] [--vcpus <count>]");
+    println!("  aslctl storage import <name> <source-raw-image>");
     println!("  aslctl storage validate <name>");
     println!("  aslctl network show <name>");
     println!("  aslctl network set <name> [--mode nat] [--dns-mode host-broker] [--allow-outbound true|false]");
@@ -892,6 +902,10 @@ impl ClientCommand<'_> {
                 memory_mb.unwrap_or("-"),
                 vcpu_count.unwrap_or("-")
             ),
+            Self::StorageImport {
+                distro,
+                source_path,
+            } => format!("STORAGE_IMPORT {}\t{}", distro, source_path),
             Self::StorageValidate(name) => format!("STORAGE_VALIDATE {}", name),
             Self::NetworkShow(name) => format!("NETWORK_SHOW {}", name),
             Self::NetworkSet {
@@ -1159,6 +1173,17 @@ mod tests {
         match parse_command(&args) {
             Some(ClientCommand::StorageValidate(name)) => assert_eq!(name, "ubuntu-copy"),
             _ => panic!("expected storage validate command"),
+        }
+        let args = anyos_std::args::parse("storage import ubuntu-copy /Users/Shared/debian.raw", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::StorageImport {
+                distro,
+                source_path,
+            }) => {
+                assert_eq!(distro, "ubuntu-copy");
+                assert_eq!(source_path, "/Users/Shared/debian.raw");
+            }
+            _ => panic!("expected storage import command"),
         }
     }
 

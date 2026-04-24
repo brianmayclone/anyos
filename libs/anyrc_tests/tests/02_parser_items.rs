@@ -146,6 +146,27 @@ fn parse_root_nested_use_tree() {
 }
 
 #[test]
+fn parse_nested_use_globs() {
+    let krate = parse("use crate::{layout::*, testutil::*, *};");
+    match &krate.items[0] {
+        Item::Use(u) => match &u.kind {
+            UseTreeKind::Nested(items) => {
+                assert_eq!(items.len(), 3);
+                assert!(matches!(items[2].kind, UseTreeKind::Glob));
+            }
+            _ => panic!("expected nested use"),
+        },
+        _ => panic!("expected use"),
+    }
+}
+
+#[test]
+fn parse_macro_crate_use_path() {
+    let krate = parse("fn f() { use $crate::util::macro_util::assert_dst_is_not_zst; }");
+    assert!(matches!(&krate.items[0], Item::Fn(_)));
+}
+
+#[test]
 fn parse_trait_def() {
     let krate = parse("trait Drawable { fn draw(&self); fn color(&self) -> u32; }");
     match &krate.items[0] {
@@ -239,6 +260,50 @@ fn parse_tuple_struct_trailing_where_clause() {
 }
 
 #[test]
+fn parse_union_item() {
+    let krate = parse("union Transmute<Src, Dst> { src: Src, dst: Dst }");
+    match &krate.items[0] {
+        Item::Struct(s) => {
+            assert!(s.is_union);
+            assert_eq!(s.fields.len(), 2);
+        }
+        _ => panic!("expected union-backed adt"),
+    }
+}
+
+#[test]
+fn parse_unsafe_fn_pointer_type() {
+    let krate = parse(
+        r#"fn f(allocate: unsafe extern "C" fn(Layout) -> *mut u8, deallocate: unsafe fn(*mut u8)) {}"#,
+    );
+    assert!(matches!(&krate.items[0], Item::Fn(_)));
+}
+
+#[test]
+fn parse_attributed_closure_expression() {
+    let krate = parse("fn f() { ptr.try_with(#[inline(always)] |ptr| ptr.cast()); }");
+    assert!(matches!(&krate.items[0], Item::Fn(_)));
+}
+
+#[test]
+fn parse_restricted_visibility_use_items() {
+    let krate = parse("mod m { pub(super) use rand::Rng; pub(in crate::m) struct S { value: u8 } }");
+    assert!(matches!(&krate.items[0], Item::Mod(_)));
+}
+
+#[test]
+fn parse_attributed_match_arm_pattern() {
+    let krate = parse("fn f(v: u8) { match v { #[cfg(any())] 0 => 1, _ => 2 } }");
+    assert!(matches!(&krate.items[0], Item::Fn(_)));
+}
+
+#[test]
+fn parse_tuple_struct_rest_pattern() {
+    let krate = parse("fn f(value: SizeInfo) { match value { SizeInfo::SliceDst(..) => 1, _ => 0 } }");
+    assert!(matches!(&krate.items[0], Item::Fn(_)));
+}
+
+#[test]
 fn parse_qualified_path_expr() {
     let krate = parse("fn f(len: usize) { <[Self]>::new_box_zeroed_with_elems(len); }");
     assert!(matches!(&krate.items[0], Item::Fn(_)));
@@ -248,6 +313,18 @@ fn parse_qualified_path_expr() {
 fn parse_qualified_path_type() {
     let krate = parse("type Item = <Self as Iterator>::Item;");
     assert!(matches!(&krate.items[0], Item::TypeAlias(_)));
+}
+
+#[test]
+fn parse_macro_crate_path_type_bound() {
+    let krate = parse("fn cast<Src, Dst>() where Src: $crate::IntoBytes, Dst: $crate::FromBytes {}");
+    assert!(matches!(&krate.items[0], Item::Fn(_)));
+}
+
+#[test]
+fn parse_macro_crate_path_expression() {
+    let krate = parse("fn f() { $crate::util::macro_util::assert_dst_is_not_zst::<T>(); }");
+    assert!(matches!(&krate.items[0], Item::Fn(_)));
 }
 
 #[test]

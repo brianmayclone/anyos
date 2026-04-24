@@ -58,6 +58,9 @@ aslctl create <name> <image-ref> <owner> --kernel-profile seabios-x86_64
   nebeneinander getestet und diagnostiziert werden
 - die KVM-aehnliche Trennung bleibt klar: Kernel stellt Virtualisierung,
   `asld` stellt Firmware, Geraetemodell und Bootpolitik
+- reproduzierbare Bring-up-Images koennen hostseitig mit
+  `scripts/asl-debootstrap-image.sh` als BIOS-bootbare Raw-Disk-Images
+  erzeugt werden
 
 ### Negative
 

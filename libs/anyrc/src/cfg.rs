@@ -224,7 +224,13 @@ fn item_attrs(item: &Item) -> &[Attribute] {
         Item::Enum(e) => &e.attrs,
         Item::Impl(i) => &i.attrs,
         Item::Mod(m) => &m.attrs,
-        Item::Trait(_) => &[],
+        Item::Trait(t) => &t.attrs,
+        Item::TypeAlias(t) => &t.attrs,
+        Item::Const(c) => &c.attrs,
+        Item::Static(s) => &s.attrs,
+        Item::Use(u) => &u.attrs,
+        Item::MacroDef(m) => &m.attrs,
+        Item::ExternBlock(e) => &e.attrs,
         _ => &[],
     }
 }

@@ -2554,7 +2554,7 @@ impl<'a> TypeChecker<'a> {
                     _ => {}
                 }
             }
-            HirPattern::Wildcard(_) => {}
+            HirPattern::Wildcard(_) | HirPattern::Rest(_) => {}
             HirPattern::Ref(inner, _, _) => {
                 if let TyKind::Ref(inner_ty, _) = resolved_ty {
                     self.bind_pattern(inner, *inner_ty);
@@ -2592,7 +2592,7 @@ impl<'a> TypeChecker<'a> {
                 match &resolved_ty {
                     TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
                         if let Some(field_tys) = self.pattern_variant_tys(path, inner.as_ref()) {
-                            for (pat, field_ty) in pats.iter().zip(field_tys.iter()) {
+                            for (pat, field_ty) in pats.iter().filter(|p| !matches!(p, HirPattern::Rest(_))).zip(field_tys.iter()) {
                                 let wrapped =
                                     self.wrap_pattern_binding_ty(&resolved_ty, field_ty.clone());
                                 self.bind_pattern(pat, wrapped);
@@ -2601,7 +2601,7 @@ impl<'a> TypeChecker<'a> {
                     }
                     _ => {
                         if let Some(field_tys) = self.pattern_variant_tys(path, &ty) {
-                            for (pat, field_ty) in pats.iter().zip(field_tys.iter()) {
+                            for (pat, field_ty) in pats.iter().filter(|p| !matches!(p, HirPattern::Rest(_))).zip(field_tys.iter()) {
                                 self.bind_pattern(pat, field_ty.clone());
                             }
                         }

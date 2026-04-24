@@ -214,6 +214,31 @@ impl RuntimeService {
         Ok(crate::storage::validate_storage(&cfg.name, &cfg.storage))
     }
 
+    pub fn import_base_image<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+        source_path: &str,
+    ) -> Result<Vec<String>, AsldError> {
+        if let Some(status) = self.store.get(name) {
+            if !matches!(status.state, DistroState::Created | DistroState::Stopped) {
+                return Err(AsldError::InvalidState(
+                    "storage import requires a stopped distro",
+                ));
+            }
+        }
+        let cfg = load_distro(store, name)?;
+        import_base_image_file(&cfg, source_path)?;
+        let report = crate::storage::validate_storage(&cfg.name, &cfg.storage);
+        let valid = report.iter().all(|item| item.valid);
+        Ok(alloc::vec![
+            format!("imported\t{}", cfg.name),
+            format!("source\t{}", source_path),
+            format!("base_image_path\t{}", cfg.storage.base_image_path),
+            format!("storage_valid\t{}", valid),
+        ])
+    }
+
     pub fn update_resources<S: ConfigStore>(
         &mut self,
         store: &mut S,
@@ -1047,6 +1072,95 @@ fn join_command(argv: &[String]) -> String {
         out.push_str(part);
     }
     out
+}
+
+#[cfg(target_os = "linux")]
+fn import_base_image_file(_cfg: &DistroConfig, _source_path: &str) -> Result<(), AsldError> {
+    Err(AsldError::NotImplemented(
+        "storage import is available inside anyOS",
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn import_base_image_file(cfg: &DistroConfig, source_path: &str) -> Result<(), AsldError> {
+    if !is_safe_absolute_path(source_path) {
+        return Err(AsldError::InvalidPath);
+    }
+    if source_path == cfg.storage.base_image_path {
+        return Err(AsldError::InvalidArgument("source and destination match"));
+    }
+
+    let mut source_stat = [0u32; 7];
+    if anyos_std::fs::stat(source_path, &mut source_stat) != 0 || source_stat[0] != 0 {
+        return Err(AsldError::NotFound);
+    }
+
+    ensure_distro_image_dirs(&cfg.name)?;
+    copy_file(source_path, &cfg.storage.base_image_path)?;
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_distro_image_dirs(name: &str) -> Result<(), AsldError> {
+    for dir in [
+        String::from("/System/var"),
+        String::from("/System/var/asl"),
+        String::from("/System/var/asl/distros"),
+        format!("/System/var/asl/distros/{name}"),
+        format!("/System/var/asl/distros/{name}/images"),
+    ] {
+        let _ = anyos_std::fs::mkdir(&dir);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn copy_file(source: &str, dest: &str) -> Result<(), AsldError> {
+    let input = anyos_std::fs::open(source, 0);
+    if input == 0 || input == u32::MAX {
+        return Err(AsldError::NotFound);
+    }
+
+    let output = anyos_std::fs::open(
+        dest,
+        anyos_std::fs::O_WRITE | anyos_std::fs::O_CREATE | anyos_std::fs::O_TRUNC,
+    );
+    if output == 0 || output == u32::MAX {
+        let _ = anyos_std::fs::close(input);
+        return Err(AsldError::InvalidState("could not create ASL base image"));
+    }
+
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = anyos_std::fs::read(input, &mut buf);
+        if n == u32::MAX {
+            let _ = anyos_std::fs::close(input);
+            let _ = anyos_std::fs::close(output);
+            return Err(AsldError::InvalidState("image import read failed"));
+        }
+        if n == 0 {
+            break;
+        }
+        let written = anyos_std::fs::write(output, &buf[..n as usize]);
+        if written != n {
+            let _ = anyos_std::fs::close(input);
+            let _ = anyos_std::fs::close(output);
+            return Err(AsldError::InvalidState("image import write failed"));
+        }
+    }
+
+    let _ = anyos_std::fs::close(input);
+    let _ = anyos_std::fs::close(output);
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn is_safe_absolute_path(path: &str) -> bool {
+    path.starts_with('/')
+        && !path.is_empty()
+        && !path.contains('\0')
+        && !path.contains("/../")
+        && !path.ends_with("/..")
 }
 
 fn format_config_lines(cfg: &DistroConfig) -> Vec<String> {

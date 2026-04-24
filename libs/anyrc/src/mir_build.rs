@@ -338,6 +338,7 @@ impl<'a> MirBuilder<'a> {
                 }
             }
             HirPattern::Wildcard(_)
+            | HirPattern::Rest(_)
             | HirPattern::Literal(_, _)
             | HirPattern::Struct(_, _, _, _)
             | HirPattern::TupleStruct(_, _, _)

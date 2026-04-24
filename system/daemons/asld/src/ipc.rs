@@ -200,6 +200,16 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
                 Err(err) => err_line(&err),
             }
         }
+        "STORAGE_IMPORT" | "storage_import" => {
+            let fields = split_tab_fields(rest);
+            if fields.len() < 2 {
+                return err_line(&AsldError::InvalidArgument("storage_import"));
+            }
+            match runtime.import_base_image(store, fields[0], fields[1]) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
         "NETWORK_SHOW" | "network_show" => {
             let Some(name) = first_tab_field(rest) else {
                 return err_line(&AsldError::InvalidArgument("name"));
@@ -943,6 +953,16 @@ mod tests {
         let storage = dispatch(&mut runtime, &mut store, "STORAGE_VALIDATE ubuntu-copy");
         assert!(storage
             .contains("overlay\t/System/var/asl/distros/ubuntu-copy/images/overlay.img\ttrue"));
+
+        let import_missing_arg = dispatch(&mut runtime, &mut store, "STORAGE_IMPORT ubuntu-copy");
+        assert!(import_missing_arg.starts_with("ERR\tINVALID_ARGUMENT"));
+
+        let import = dispatch(
+            &mut runtime,
+            &mut store,
+            "STORAGE_IMPORT ubuntu-copy\t/Users/Shared/debian.raw",
+        );
+        assert!(import.starts_with("ERR\tNOT_IMPLEMENTED"));
     }
 
     #[test]

@@ -130,6 +130,29 @@ impl IdeController {
         Some(IdeIoAction { read_value: None })
     }
 
+    pub(super) fn data_string_read_into(
+        &mut self,
+        exit: &VmExitInfo,
+        buffer: &mut [u8],
+    ) -> Option<usize> {
+        if exit.reason != exit_reason::IO_INSTRUCTION
+            || exit.io_port != PRIMARY_DATA
+            || exit.is_read == 0
+            || exit.access_size != 2
+        {
+            return None;
+        }
+
+        let words = buffer.len() / 2;
+        for index in 0..words {
+            let value = self.read_data_word().to_le_bytes();
+            let offset = index * 2;
+            buffer[offset] = value[0];
+            buffer[offset + 1] = value[1];
+        }
+        Some(words * 2)
+    }
+
     fn read_port(&mut self, port: u16) -> u32 {
         match port {
             PRIMARY_DATA => self.read_data_word() as u32,
@@ -395,5 +418,20 @@ mod tests {
             ..VmExitInfo::default()
         });
         assert_eq!(boot_word0.unwrap().read_value, Some(0x3ceb));
+
+        let mut buffer = [0u8; 4];
+        let copied = state.data_string_read_into(
+            &VmExitInfo {
+                reason: exit_reason::IO_INSTRUCTION,
+                io_port: PRIMARY_DATA,
+                access_size: 2,
+                is_read: 1,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+            &mut buffer,
+        );
+        assert_eq!(copied, Some(4));
+        assert_eq!(buffer, [0, 0, 0, 0]);
     }
 }

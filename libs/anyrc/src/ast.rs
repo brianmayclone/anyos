@@ -52,6 +52,7 @@ pub struct StructDef {
     pub fields: Vec<FieldDef>,
     pub vis: Visibility,
     pub attrs: Vec<Attribute>,
+    pub is_union: bool,
     pub span: Span,
 }
 
@@ -103,6 +104,7 @@ pub struct TraitDef {
     pub items: Vec<Item>,
     pub vis: Visibility,
     pub is_unsafe: bool,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -111,6 +113,7 @@ pub struct TypeAliasDef {
     pub generics: Generics,
     pub ty: Option<Box<Ty>>,
     pub vis: Visibility,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -119,6 +122,7 @@ pub struct ConstDef {
     pub ty: Ty,
     pub value: Option<Box<Expr>>,
     pub vis: Visibility,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -128,6 +132,7 @@ pub struct StaticDef {
     pub value: Option<Box<Expr>>,
     pub vis: Visibility,
     pub is_mut: bool,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -135,6 +140,7 @@ pub struct UseTree {
     pub vis: Visibility,
     pub path: Vec<Symbol>,
     pub kind: UseTreeKind,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -161,6 +167,7 @@ pub struct ExternCrateDef {
 pub struct MacroRulesDef {
     pub name: Symbol,
     pub rules: Vec<MacroRule>,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -186,6 +193,7 @@ pub enum Delimiter {
 pub struct ExternBlockDef {
     pub abi: Option<String>,
     pub items: Vec<Item>,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -293,6 +301,7 @@ pub enum Pattern {
     Struct(Path, Vec<FieldPat>, bool, Span),
     TupleStruct(Path, Vec<Pattern>, Span),
     Wildcard(Span),
+    Rest(Span),
     Ref(Box<Pattern>, Mutability, Span),
     Or(Vec<Pattern>, Span),
     Range(Option<Box<Expr>>, Option<Box<Expr>>, bool, Span),
@@ -386,6 +395,9 @@ pub enum Visibility {
     Private,
     Public,
     PubCrate,
+    PubSuper,
+    PubSelf,
+    PubIn,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

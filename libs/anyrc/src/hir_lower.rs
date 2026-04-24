@@ -91,6 +91,7 @@ impl<'a> LoweringContext<'a> {
             generics: self.lower_generics(&s.generics),
             fields: s.fields.iter().map(|f| self.lower_field_def(f)).collect(),
             vis: s.vis,
+            is_union: s.is_union,
         }
     }
 
@@ -509,6 +510,7 @@ impl<'a> LoweringContext<'a> {
                 self.lower_path(path), ps.iter().map(|p| self.lower_pattern(p)).collect(), *span,
             ),
             ast::Pattern::Wildcard(span) => HirPattern::Wildcard(*span),
+            ast::Pattern::Rest(span) => HirPattern::Rest(*span),
             ast::Pattern::Ref(p, m, span) => HirPattern::Ref(Box::new(self.lower_pattern(p)), *m, *span),
             ast::Pattern::Or(ps, span) => HirPattern::Or(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span),
             ast::Pattern::Range(a, b, inc, span) => HirPattern::Range(

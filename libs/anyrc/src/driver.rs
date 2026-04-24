@@ -961,6 +961,9 @@ fn render_visibility(vis: crate::ast::Visibility) -> &'static str {
         crate::ast::Visibility::Private => "",
         crate::ast::Visibility::Public => "pub ",
         crate::ast::Visibility::PubCrate => "pub(crate) ",
+        crate::ast::Visibility::PubSuper
+        | crate::ast::Visibility::PubSelf
+        | crate::ast::Visibility::PubIn => "pub(crate) ",
     }
 }
 

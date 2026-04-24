@@ -111,10 +111,11 @@ impl<'a> Parser<'a> {
             self.bump()
         } else {
             panic!(
-                "expected {:?}, got {:?} at {:?}",
+                "expected {:?}, got {:?} at {:?}; near {}",
                 kind,
                 self.current().kind,
-                self.current().span
+                self.current().span,
+                self.token_window()
             );
         }
     }
@@ -124,10 +125,11 @@ impl<'a> Parser<'a> {
             self.bump()
         } else {
             panic!(
-                "expected {:?}, got {:?} at {:?}",
+                "expected {:?}, got {:?} at {:?}; near {}",
                 kind,
                 self.current().kind,
-                self.current().span
+                self.current().span,
+                self.token_window()
             );
         }
     }
@@ -139,9 +141,10 @@ impl<'a> Parser<'a> {
                 sym
             }
             _ => panic!(
-                "expected identifier, got {:?} at {:?}",
+                "expected identifier, got {:?} at {:?}; near {}",
                 self.current().kind,
-                self.current().span
+                self.current().span,
+                self.token_window()
             ),
         }
     }
@@ -157,7 +160,19 @@ impl<'a> Parser<'a> {
             if idx == self.pos {
                 out.push_str(">>");
             }
-            out.push_str(&format!("{:?}@{:?}", self.tokens[idx].kind, self.tokens[idx].span));
+            match self.tokens[idx].kind {
+                TokenKind::Ident(sym) => out.push_str(&format!(
+                    "Ident({})@{:?}",
+                    self.interner.resolve(sym),
+                    self.tokens[idx].span
+                )),
+                TokenKind::Lifetime(sym) => out.push_str(&format!(
+                    "Lifetime({})@{:?}",
+                    self.interner.resolve(sym),
+                    self.tokens[idx].span
+                )),
+                _ => out.push_str(&format!("{:?}@{:?}", self.tokens[idx].kind, self.tokens[idx].span)),
+            }
             if idx == self.pos {
                 out.push_str("<<");
             }
@@ -167,6 +182,11 @@ impl<'a> Parser<'a> {
 
     fn expect_ident_or_self(&mut self) -> Symbol {
         match self.current().kind {
+            TokenKind::Dollar if matches!(self.peek_kind(), TokenKind::Kw(Keyword::Crate)) => {
+                self.bump();
+                self.bump();
+                self.interner.intern("crate")
+            }
             TokenKind::Ident(sym) => {
                 self.bump();
                 sym
@@ -188,9 +208,10 @@ impl<'a> Parser<'a> {
                 self.interner.intern("crate")
             }
             _ => panic!(
-                "expected identifier, got {:?} at {:?}",
+                "expected identifier, got {:?} at {:?}; near {}",
                 self.current().kind,
-                self.current().span
+                self.current().span,
+                self.token_window()
             ),
         }
     }
@@ -273,6 +294,12 @@ impl<'a> Parser<'a> {
 
     fn parse_prefix_expr(&mut self) -> Expr {
         let start = self.current().span;
+
+        // Outer expression attributes, e.g. `foo(#[inline(always)] |x| x)`.
+        if self.at_exact(&TokenKind::Hash) {
+            let _attrs = self.parse_attrs();
+            return self.parse_prefix_expr();
+        }
 
         // Unary minus
         if self.at_exact(&TokenKind::Minus) {
@@ -573,6 +600,7 @@ impl<'a> Parser<'a> {
             || self.at_kw(Keyword::SelfType)
             || self.at_kw(Keyword::Super)
             || self.at_kw(Keyword::Crate)
+            || self.at_exact(&TokenKind::Dollar)
             || self.at_exact(&TokenKind::ColonColon)
         {
             let path = self.parse_path_expr();
@@ -1247,7 +1275,7 @@ impl<'a> Parser<'a> {
             return true;
         }
         match &self.current().kind {
-            TokenKind::Ident(sym) => self.interner.resolve(*sym) == "macro_rules",
+            TokenKind::Ident(sym) => matches!(self.interner.resolve(*sym), "macro_rules" | "union"),
             _ => false,
         }
     }
@@ -1272,7 +1300,7 @@ impl<'a> Parser<'a> {
                     | TokenKind::Kw(Keyword::Impl)
                     | TokenKind::Kw(Keyword::Extern)
             ),
-            TokenKind::Ident(sym) => self.interner.resolve(*sym) == "macro_rules",
+            TokenKind::Ident(sym) => matches!(self.interner.resolve(*sym), "macro_rules" | "union"),
             _ => false,
         }
     }
@@ -1329,16 +1357,16 @@ impl<'a> Parser<'a> {
                 Some(Item::Fn(self.parse_fn_def(vis, attrs, false, false, None, start)))
             }
             TokenKind::Kw(Keyword::Struct) => {
-                Some(Item::Struct(self.parse_struct_def(vis, attrs, start)))
+                Some(Item::Struct(self.parse_struct_def(vis, attrs, start, false)))
             }
             TokenKind::Kw(Keyword::Enum) => {
                 Some(Item::Enum(self.parse_enum_def(vis, attrs, start)))
             }
             TokenKind::Kw(Keyword::Impl) => Some(Item::Impl(self.parse_impl_block(attrs, start))),
             TokenKind::Kw(Keyword::Trait) => {
-                Some(Item::Trait(self.parse_trait_def(vis, false, start)))
+                Some(Item::Trait(self.parse_trait_def(vis, attrs, false, start)))
             }
-            TokenKind::Kw(Keyword::Use) => Some(Item::Use(self.parse_use_tree_item(vis, start))),
+            TokenKind::Kw(Keyword::Use) => Some(Item::Use(self.parse_use_tree_item(vis, attrs, start))),
             TokenKind::Kw(Keyword::Mod) => Some(Item::Mod(self.parse_mod_def(vis, attrs, start))),
             TokenKind::Kw(Keyword::Const) => {
                 // `const fn` → parse as function with is_const=true
@@ -1352,11 +1380,11 @@ impl<'a> Parser<'a> {
                     self.bump(); // eat `unsafe`
                     Some(Item::Fn(self.parse_fn_def(vis, attrs, true, true, None, start)))
                 } else {
-                    Some(Item::Const(self.parse_const_def(vis, start)))
+                    Some(Item::Const(self.parse_const_def(vis, attrs, start)))
                 }
             }
             TokenKind::Kw(Keyword::Static) => {
-                Some(Item::Static(self.parse_static_def(vis, start)))
+                Some(Item::Static(self.parse_static_def(vis, attrs, start)))
             }
             TokenKind::Kw(Keyword::Extern) => {
                 self.bump();
@@ -1386,7 +1414,7 @@ impl<'a> Parser<'a> {
                     None
                 };
                 if self.at_exact(&TokenKind::LBrace) {
-                    Some(Item::ExternBlock(self.parse_extern_block(abi, start)))
+                    Some(Item::ExternBlock(self.parse_extern_block(abi, attrs, start)))
                 } else if self.at_kw(Keyword::Fn) {
                     Some(Item::Fn(self.parse_fn_def(vis, attrs, false, false, abi, start)))
                 } else {
@@ -1394,14 +1422,14 @@ impl<'a> Parser<'a> {
                 }
             }
             TokenKind::Kw(Keyword::Type) => {
-                Some(Item::TypeAlias(self.parse_type_alias(vis, start)))
+                Some(Item::TypeAlias(self.parse_type_alias(vis, attrs, start)))
             }
             TokenKind::Kw(Keyword::Unsafe) => {
                 self.bump();
                 if self.at_kw(Keyword::Fn) {
                     Some(Item::Fn(self.parse_fn_def(vis, attrs, true, false, None, start)))
                 } else if self.at_kw(Keyword::Trait) {
-                    Some(Item::Trait(self.parse_trait_def(vis, true, start)))
+                    Some(Item::Trait(self.parse_trait_def(vis, attrs, true, start)))
                 } else if self.at_kw(Keyword::Impl) {
                     let mut ib = self.parse_impl_block(attrs, start);
                     ib.is_unsafe = true;
@@ -1418,7 +1446,7 @@ impl<'a> Parser<'a> {
                         None
                     };
                     if self.at_exact(&TokenKind::LBrace) {
-                        Some(Item::ExternBlock(self.parse_extern_block(abi, start)))
+                        Some(Item::ExternBlock(self.parse_extern_block(abi, attrs, start)))
                     } else if self.at_kw(Keyword::Fn) {
                         Some(Item::Fn(self.parse_fn_def(vis, attrs, true, false, abi, start)))
                     } else {
@@ -1430,7 +1458,10 @@ impl<'a> Parser<'a> {
             }
             // macro_rules! name { ... }
             TokenKind::Ident(sym) if self.interner.resolve(*sym) == "macro_rules" => {
-                Some(self.parse_macro_rules_def(start))
+                Some(self.parse_macro_rules_def(attrs, start))
+            }
+            TokenKind::Ident(sym) if self.interner.resolve(*sym) == "union" => {
+                Some(Item::Struct(self.parse_struct_def(vis, attrs, start, true)))
             }
             // Macro invocation at item position: name!(...)
             TokenKind::Ident(_) => {
@@ -1450,7 +1481,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_macro_rules_def(&mut self, start: Span) -> Item {
+    fn parse_macro_rules_def(&mut self, attrs: Vec<Attribute>, start: Span) -> Item {
         self.bump(); // eat `macro_rules`
         self.expect_exact(&TokenKind::Not);
         let name = self.expect_ident();
@@ -1470,6 +1501,7 @@ impl<'a> Parser<'a> {
         Item::MacroDef(MacroRulesDef {
             name,
             rules,
+            attrs,
             span: self.span_from(start),
         })
     }
@@ -1645,14 +1677,25 @@ impl<'a> Parser<'a> {
         params
     }
 
-    fn parse_struct_def(&mut self, vis: Visibility, attrs: Vec<Attribute>, start: Span) -> StructDef {
-        self.expect_exact(&TokenKind::Kw(Keyword::Struct));
+    fn parse_struct_def(
+        &mut self,
+        vis: Visibility,
+        attrs: Vec<Attribute>,
+        start: Span,
+        is_union: bool,
+    ) -> StructDef {
+        if is_union {
+            let keyword = self.expect_ident();
+            debug_assert_eq!(self.interner.resolve(keyword), "union");
+        } else {
+            self.expect_exact(&TokenKind::Kw(Keyword::Struct));
+        }
         let name = self.expect_ident();
         let generics = self.parse_generics();
         let where_clause = self.parse_where_clause();
         let _ = where_clause; // stored in generics implicitly for now
         let mut fields = Vec::new();
-        if self.at_exact(&TokenKind::LParen) {
+        if !is_union && self.at_exact(&TokenKind::LParen) {
             // Tuple struct: struct Foo(pub i32, u64);
             self.bump();
             let mut idx = 0u32;
@@ -1677,7 +1720,7 @@ impl<'a> Parser<'a> {
             self.expect_exact(&TokenKind::RParen);
             let _where_clause = self.parse_where_clause();
             self.expect_exact(&TokenKind::Semi);
-        } else if self.eat_exact(&TokenKind::Semi) {
+        } else if !is_union && self.eat_exact(&TokenKind::Semi) {
             // Unit struct: struct Foo;
         } else {
             self.expect_exact(&TokenKind::LBrace);
@@ -1707,6 +1750,7 @@ impl<'a> Parser<'a> {
             fields,
             vis,
             attrs,
+            is_union,
             span: self.span_from(start),
         }
     }
@@ -1828,7 +1872,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_trait_def(&mut self, vis: Visibility, is_unsafe: bool, start: Span) -> TraitDef {
+    fn parse_trait_def(&mut self, vis: Visibility, attrs: Vec<Attribute>, is_unsafe: bool, start: Span) -> TraitDef {
         self.expect_exact(&TokenKind::Kw(Keyword::Trait));
         let name = self.expect_ident();
         let generics = self.parse_generics();
@@ -1868,15 +1912,17 @@ impl<'a> Parser<'a> {
             items,
             vis,
             is_unsafe,
+            attrs,
             span: self.span_from(start),
         }
     }
 
-    fn parse_use_tree_item(&mut self, vis: Visibility, start: Span) -> UseTree {
+    fn parse_use_tree_item(&mut self, vis: Visibility, attrs: Vec<Attribute>, start: Span) -> UseTree {
         self.expect_exact(&TokenKind::Kw(Keyword::Use));
         let tree = self.parse_use_tree(vis);
         self.expect_exact(&TokenKind::Semi);
         UseTree {
+            attrs,
             span: self.span_from(start),
             ..tree
         }
@@ -1900,6 +1946,18 @@ impl<'a> Parser<'a> {
                 vis,
                 path,
                 kind: UseTreeKind::Nested(nested),
+                attrs: Vec::new(),
+                span: self.span_from(start),
+            };
+        }
+
+        if self.at_exact(&TokenKind::Star) {
+            self.bump();
+            return UseTree {
+                vis,
+                path,
+                kind: UseTreeKind::Glob,
+                attrs: Vec::new(),
                 span: self.span_from(start),
             };
         }
@@ -1910,6 +1968,7 @@ impl<'a> Parser<'a> {
                 || self.at_kw(Keyword::SelfValue)
                 || self.at_kw(Keyword::Super)
                 || self.at_kw(Keyword::Crate)
+                || self.at_exact(&TokenKind::Dollar)
             {
                 path.push(self.expect_ident_or_self());
             } else {
@@ -1927,6 +1986,7 @@ impl<'a> Parser<'a> {
                     vis,
                     path,
                     kind: UseTreeKind::Simple(alias),
+                    attrs: Vec::new(),
                     span: self.span_from(start),
                 };
             }
@@ -1937,6 +1997,7 @@ impl<'a> Parser<'a> {
                     vis,
                     path,
                     kind: UseTreeKind::Glob,
+                    attrs: Vec::new(),
                     span: self.span_from(start),
                 };
             }
@@ -1954,6 +2015,7 @@ impl<'a> Parser<'a> {
                     vis,
                     path,
                     kind: UseTreeKind::Nested(nested),
+                    attrs: Vec::new(),
                     span: self.span_from(start),
                 };
             }
@@ -1971,6 +2033,7 @@ impl<'a> Parser<'a> {
             vis,
             path,
             kind: UseTreeKind::Simple(alias),
+            attrs: Vec::new(),
             span: self.span_from(start),
         }
     }
@@ -2003,7 +2066,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_const_def(&mut self, vis: Visibility, start: Span) -> ConstDef {
+    fn parse_const_def(&mut self, vis: Visibility, attrs: Vec<Attribute>, start: Span) -> ConstDef {
         self.expect_exact(&TokenKind::Kw(Keyword::Const));
         let name = self.expect_ident();
         self.expect_exact(&TokenKind::Colon);
@@ -2019,11 +2082,12 @@ impl<'a> Parser<'a> {
             ty,
             value,
             vis,
+            attrs,
             span: self.span_from(start),
         }
     }
 
-    fn parse_static_def(&mut self, vis: Visibility, start: Span) -> StaticDef {
+    fn parse_static_def(&mut self, vis: Visibility, attrs: Vec<Attribute>, start: Span) -> StaticDef {
         self.expect_exact(&TokenKind::Kw(Keyword::Static));
         let is_mut = self.eat_exact(&TokenKind::Kw(Keyword::Mut));
         let name = self.expect_ident();
@@ -2041,11 +2105,12 @@ impl<'a> Parser<'a> {
             value,
             vis,
             is_mut,
+            attrs,
             span: self.span_from(start),
         }
     }
 
-    fn parse_extern_block(&mut self, abi: Option<String>, start: Span) -> ExternBlockDef {
+    fn parse_extern_block(&mut self, abi: Option<String>, attrs: Vec<Attribute>, start: Span) -> ExternBlockDef {
         self.expect_exact(&TokenKind::LBrace);
         let mut items = Vec::new();
         while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
@@ -2059,11 +2124,12 @@ impl<'a> Parser<'a> {
         ExternBlockDef {
             abi,
             items,
+            attrs,
             span: self.span_from(start),
         }
     }
 
-    fn parse_type_alias(&mut self, vis: Visibility, start: Span) -> TypeAliasDef {
+    fn parse_type_alias(&mut self, vis: Visibility, attrs: Vec<Attribute>, start: Span) -> TypeAliasDef {
         self.expect_exact(&TokenKind::Kw(Keyword::Type));
         let name = self.expect_ident();
         let generics = self.parse_generics();
@@ -2081,6 +2147,7 @@ impl<'a> Parser<'a> {
             generics,
             ty,
             vis,
+            attrs,
             span: self.span_from(start),
         }
     }
@@ -2116,13 +2183,28 @@ impl<'a> Parser<'a> {
         if self.at_kw(Keyword::Pub) {
             self.bump();
             if self.at_exact(&TokenKind::LParen) {
-                // pub(crate)
-                if self.peek_kind() == &TokenKind::Kw(Keyword::Crate) {
-                    self.bump(); // (
-                    self.bump(); // crate
-                    self.expect_exact(&TokenKind::RParen);
-                    return Visibility::PubCrate;
+                self.bump(); // (
+                let vis = if self.at_kw(Keyword::Crate) {
+                    self.bump();
+                    Visibility::PubCrate
+                } else if self.at_kw(Keyword::Super) {
+                    self.bump();
+                    Visibility::PubSuper
+                } else if self.at_kw(Keyword::SelfValue) {
+                    self.bump();
+                    Visibility::PubSelf
+                } else if self.at_kw(Keyword::In) {
+                    self.bump();
+                    let _path = self.parse_path_ty();
+                    Visibility::PubIn
+                } else {
+                    Visibility::Public
+                };
+                while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
+                    self.bump();
                 }
+                self.expect_exact(&TokenKind::RParen);
+                return vis;
             }
             Visibility::Public
         } else {
@@ -2280,7 +2362,8 @@ impl<'a> Parser<'a> {
             return Ty::DynTrait(path, self.span_from(start));
         }
 
-        // extern "C" fn(A, B) -> C / fn(A, B) -> C
+        // unsafe extern "C" fn(A, B) -> C / extern "C" fn(A, B) -> C / fn(A, B) -> C
+        let saw_unsafe = self.eat_exact(&TokenKind::Kw(Keyword::Unsafe));
         let saw_extern = if self.at_kw(Keyword::Extern) {
             self.bump();
             if let TokenKind::StringLit(_) = &self.current().kind {
@@ -2309,9 +2392,9 @@ impl<'a> Parser<'a> {
             };
             return Ty::FnPtr(param_tys, ret, self.span_from(start));
         }
-        if saw_extern {
+        if saw_unsafe || saw_extern {
             panic!(
-                "expected `fn` after `extern` in type position at {:?}",
+                "expected `fn` after function pointer qualifier in type position at {:?}",
                 self.current().span
             );
         }
@@ -2689,6 +2772,11 @@ impl<'a> Parser<'a> {
     fn parse_pattern_atom(&mut self, allow_or: bool) -> Pattern {
         let start = self.current().span;
 
+        if self.at_exact(&TokenKind::Hash) {
+            let _attrs = self.parse_attrs();
+            return self.parse_pattern_atom(allow_or);
+        }
+
         // Wildcard _
         // We need to check for _ which is an identifier with text "_"
         if self.at_ident() {
@@ -2701,6 +2789,11 @@ impl<'a> Parser<'a> {
                 self.bump();
                 return Pattern::Wildcard(self.span_from(start));
             }
+        }
+
+        if self.at_exact(&TokenKind::DotDot) {
+            self.bump();
+            return Pattern::Rest(self.span_from(start));
         }
 
         // &pat, &mut pat / ref pat / ref mut pat
@@ -2897,9 +2990,10 @@ impl<'a> Parser<'a> {
         }
 
         panic!(
-            "unexpected token in pattern: {:?} at {:?}",
+            "unexpected token in pattern: {:?} at {:?}; near {}",
             self.current().kind,
-            self.current().span
+            self.current().span,
+            self.token_window()
         );
     }
 
@@ -3136,6 +3230,7 @@ fn collect_pattern_bindings(pat: &Pattern, out: &mut Vec<(Symbol, Mutability, Sp
         Pattern::Ref(inner, _, _) => collect_pattern_bindings(inner, out),
         Pattern::Literal(_, _)
         | Pattern::Wildcard(_)
+        | Pattern::Rest(_)
         | Pattern::Range(_, _, _, _)
         | Pattern::Path(_) => {}
     }

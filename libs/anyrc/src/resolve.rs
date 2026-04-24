@@ -374,6 +374,7 @@ impl<'a> Resolver<'a> {
                         vis: sub.vis,
                         path: full_path,
                         kind: sub.kind.clone(),
+                        attrs: Vec::new(),
                         span: sub.span,
                     };
                     self.process_use_tree(&combined);
@@ -961,7 +962,10 @@ impl<'a> Resolver<'a> {
             HirPattern::Path(path) => {
                 self.resolve_path(path, Namespace::Value, HirId(u32::MAX));
             }
-            HirPattern::Wildcard(_) | HirPattern::Literal(_, _) | HirPattern::Range(_, _, _, _) => {}
+            HirPattern::Wildcard(_)
+            | HirPattern::Rest(_)
+            | HirPattern::Literal(_, _)
+            | HirPattern::Range(_, _, _, _) => {}
         }
     }
 

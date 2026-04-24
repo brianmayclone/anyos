@@ -15,6 +15,7 @@ use serial::{serial_io_action, SerialPortState};
 
 const PAGE_SIZE: usize = 0x1000;
 const MIN_GUEST_MEMORY_MB: usize = 16;
+const MAX_STRING_IO_BYTES: usize = 512;
 const BOOT_PML4_ADDR: usize = 0x1000;
 const BOOT_PDPT_ADDR: usize = 0x2000;
 const BOOT_PD_ADDR: usize = 0x3000;
@@ -750,6 +751,10 @@ fn handle_ide_io_exit(
     vcpu: &libavm::AvmVcpu,
     exit: &VmExitInfo,
 ) -> Result<bool, AsldError> {
+    if handle_ide_string_io_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
+
     let Some(action) = instance.ide.io_action(exit) else {
         return Ok(false);
     };
@@ -758,6 +763,74 @@ fn handle_ide_io_exit(
         write_io_read_value(vcpu, exit.access_size, value)?;
     }
     advance_guest_rip(vcpu, exit.instruction_len)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_ide_string_io_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    let Some(string_io) = io_string_info(exit) else {
+        return Ok(false);
+    };
+    if exit.is_read == 0 || exit.access_size != 2 {
+        return Ok(false);
+    }
+
+    let mut regs = vcpu
+        .regs()
+        .map_err(|_| AsldError::BackendUnavailable("avm get_regs failed"))?;
+    let sregs = vcpu
+        .sregs()
+        .map_err(|_| AsldError::BackendUnavailable("avm get_sregs failed"))?;
+
+    let requested_units = if string_io.rep {
+        address_register_value(regs.rcx, string_io.address_size) as usize
+    } else {
+        1
+    };
+    if requested_units == 0 {
+        advance_guest_rip(vcpu, exit.instruction_len)?;
+        return Ok(true);
+    }
+
+    let max_units = MAX_STRING_IO_BYTES / exit.access_size as usize;
+    let units = requested_units.min(max_units);
+    let byte_count = units * exit.access_size as usize;
+    let mut buffer = [0u8; MAX_STRING_IO_BYTES];
+    let Some(copied) = instance
+        .ide
+        .data_string_read_into(exit, &mut buffer[..byte_count])
+    else {
+        return Ok(false);
+    };
+    let copied_units = copied / exit.access_size as usize;
+
+    let mut index = address_register_value(regs.rdi, string_io.address_size);
+    let step = exit.access_size as u64;
+    for chunk in buffer[..copied].chunks_exact(exit.access_size as usize) {
+        let linear = sregs.es_base.wrapping_add(index);
+        write_guest_bytes(instance, vcpu, linear, chunk)?;
+        index = if (sregs.rflags & (1 << 10)) != 0 {
+            index.wrapping_sub(step)
+        } else {
+            index.wrapping_add(step)
+        };
+    }
+
+    regs.rdi = update_address_register(regs.rdi, string_io.address_size, index);
+    if string_io.rep {
+        let remaining = requested_units.saturating_sub(copied_units) as u64;
+        regs.rcx = update_address_register(regs.rcx, string_io.address_size, remaining);
+    }
+    vcpu.set_regs(&regs)
+        .map_err(|_| AsldError::BackendUnavailable("avm set_regs failed"))?;
+
+    if !string_io.rep || copied_units >= requested_units {
+        advance_guest_rip(vcpu, exit.instruction_len)?;
+    }
     Ok(true)
 }
 
@@ -868,6 +941,94 @@ fn sync_guest_msr_side_effects(
     }
     vcpu.set_sregs(&sregs)
         .map_err(|_| AsldError::BackendUnavailable("avm set_sregs failed"))
+}
+
+#[cfg(not(target_os = "linux"))]
+#[derive(Clone, Copy)]
+struct IoStringInfo {
+    rep: bool,
+    address_size: u8,
+}
+
+#[cfg(not(target_os = "linux"))]
+fn io_string_info(exit: &VmExitInfo) -> Option<IoStringInfo> {
+    if exit.reason != exit_reason::IO_INSTRUCTION {
+        return None;
+    }
+
+    let (is_string, rep, address_code) = match exit.hw_reason {
+        30 => (
+            (exit.qualification & (1 << 4)) != 0,
+            (exit.qualification & (1 << 5)) != 0,
+            (exit.qualification >> 7) & 0x7,
+        ),
+        0x7b => (
+            (exit.qualification & (1 << 2)) != 0,
+            (exit.qualification & (1 << 3)) != 0,
+            (exit.qualification >> 7) & 0x7,
+        ),
+        _ => (false, false, 0),
+    };
+    if !is_string {
+        return None;
+    }
+
+    Some(IoStringInfo {
+        rep,
+        address_size: match address_code {
+            0 => 2,
+            1 => 4,
+            2 => 8,
+            _ => 2,
+        },
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn address_register_value(value: u64, address_size: u8) -> u64 {
+    match address_size {
+        2 => value & 0xffff,
+        4 => value & 0xffff_ffff,
+        _ => value,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn update_address_register(original: u64, address_size: u8, value: u64) -> u64 {
+    match address_size {
+        2 => (original & !0xffff) | (value & 0xffff),
+        4 => value & 0xffff_ffff,
+        _ => value,
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_guest_bytes(
+    instance: &VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    guest_linear: u64,
+    bytes: &[u8],
+) -> Result<(), AsldError> {
+    let gpa = vcpu
+        .translate(guest_linear)
+        .map_err(|_| AsldError::BackendUnavailable("avm translate failed"))?
+        .unwrap_or(guest_linear);
+    let start = gpa as usize;
+    let end = start
+        .checked_add(bytes.len())
+        .ok_or(AsldError::InvalidState("guest I/O buffer overflow"))?;
+    if end > instance.guest_memory_size {
+        return Err(AsldError::InvalidState("guest I/O buffer out of bounds"));
+    }
+
+    unsafe {
+        let dest = core::slice::from_raw_parts_mut(
+            (instance.guest_memory_addr + start) as *mut u8,
+            bytes.len(),
+        );
+        dest.copy_from_slice(bytes);
+    }
+    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]

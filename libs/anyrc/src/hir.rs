@@ -65,6 +65,7 @@ pub struct HirStructDef {
     pub generics: HirGenerics,
     pub fields: Vec<HirFieldDef>,
     pub vis: Visibility,
+    pub is_union: bool,
 }
 
 pub struct HirFieldDef {
@@ -270,6 +271,7 @@ pub enum HirPattern {
     Struct(HirPath, Vec<HirFieldPat>, bool, Span),
     TupleStruct(HirPath, Vec<HirPattern>, Span),
     Wildcard(Span),
+    Rest(Span),
     Ref(Box<HirPattern>, Mutability, Span),
     Or(Vec<HirPattern>, Span),
     Range(Option<Box<HirExpr>>, Option<Box<HirExpr>>, bool, Span),
