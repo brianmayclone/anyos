@@ -2529,7 +2529,7 @@ impl<'a> TypeChecker<'a> {
         path: &HirPath,
         args: &[HirExpr],
         span: Span,
-        _callee: &HirExpr,
+        callee: &HirExpr,
     ) -> Option<TyKind> {
         let method_name = path.segments.last()?.ident;
         let method_name_str = self.interner.resolve(method_name);
@@ -2555,6 +2555,7 @@ impl<'a> TypeChecker<'a> {
                     for (arg, param) in arg_tys.iter().zip(param_tys.iter()) {
                         self.unify(param, arg, span);
                     }
+                    self.expr_types.insert(callee.id, TyKind::FnDef(def_id, vec![]));
                     return Some(ret_ty);
                 }
             }
@@ -2576,6 +2577,7 @@ impl<'a> TypeChecker<'a> {
                         for (arg, param) in arg_tys.iter().zip(param_tys.iter()) {
                             self.unify(param, arg, span);
                         }
+                        self.expr_types.insert(callee.id, TyKind::FnDef(_def_id, vec![]));
                         return Some(ret_ty);
                     }
                 }
