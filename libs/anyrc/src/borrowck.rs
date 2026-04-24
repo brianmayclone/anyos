@@ -161,6 +161,10 @@ pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<
                 for arg in args {
                     check_operand_not_moved(arg, &moved, &body.locals, &mut errors, body.span);
                 }
+                record_operand_move(func, &mut moved, &body.locals, struct_defs);
+                for arg in args {
+                    record_operand_move(arg, &mut moved, &body.locals, struct_defs);
+                }
                 // Temporary borrows for call args end when the call returns
                 borrows.clear();
             }
@@ -240,19 +244,8 @@ fn check_operand_not_moved(
 }
 
 fn record_moves(rvalue: &Rvalue, moved: &mut HashSet<usize>, locals: &[LocalDecl], struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>) {
-    // Move tracking requires a real Copy/Drop/borrow model. Until trait metadata
-    // is available here, keep borrow checking active but do not reject generic
-    // code for apparent moves that may actually be reborrows or Copy values.
-    let _ = (rvalue, moved, locals, struct_defs);
-    return;
-
     let mut check_op = |op: &Operand| {
-        if let Operand::Move(place) = op {
-            let ty = &locals[place.local.0].ty;
-            if !is_copy_type(ty, struct_defs) {
-                moved.insert(place.local.0);
-            }
-        }
+        record_operand_move(op, moved, locals, struct_defs);
     };
     match rvalue {
         Rvalue::Use(op) => check_op(op),
@@ -271,13 +264,26 @@ fn record_moves(rvalue: &Rvalue, moved: &mut HashSet<usize>, locals: &[LocalDecl
     }
 }
 
+fn record_operand_move(
+    op: &Operand,
+    moved: &mut HashSet<usize>,
+    locals: &[LocalDecl],
+    struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
+) {
+    if let Operand::Move(place) = op {
+        let ty = &locals[place.local.0].ty;
+        if !is_copy_type(ty, struct_defs) {
+            moved.insert(place.local.0);
+        }
+    }
+}
+
 fn is_copy_type(ty: &TyKind, struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>) -> bool {
     match ty {
         TyKind::Bool | TyKind::Char => true,
         TyKind::Int(_) | TyKind::Uint(_) | TyKind::Float(_) => true,
-        // MIR currently does not model reborrows precisely enough to distinguish
-        // moves of `&mut T` from temporary reborrow uses.
-        TyKind::Ref(_, _) => true,
+        TyKind::Ref(_, crate::ast::Mutability::Immutable) => true,
+        TyKind::Ref(_, crate::ast::Mutability::Mut) => false,
         TyKind::RawPtr(_, _) => true,
         TyKind::Unit | TyKind::Never | TyKind::Error | TyKind::Infer(_) | TyKind::Param(_) => true,
         TyKind::Projection(_, _, _) | TyKind::DynTrait(_) => true,
