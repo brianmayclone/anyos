@@ -1,9 +1,17 @@
 use alloc::format;
 use alloc::string::String;
-use alloc::vec::Vec;
 
 use crate::errors::AsldError;
 use crate::model::{DistroConfig, VmRunState};
+
+mod ide;
+mod msr;
+mod platform;
+mod serial;
+use ide::IdeController;
+use msr::{msr_read, msr_write, MsrState, MSR_IA32_EFER, MSR_IA32_FS_BASE, MSR_IA32_GS_BASE};
+use platform::{platform_io_action, PlatformIoState};
+use serial::{serial_io_action, SerialPortState};
 
 const PAGE_SIZE: usize = 0x1000;
 const MIN_GUEST_MEMORY_MB: usize = 16;
@@ -12,58 +20,6 @@ const BOOT_PDPT_ADDR: usize = 0x2000;
 const BOOT_PD_ADDR: usize = 0x3000;
 const BOOT_CODE_ADDR: usize = 0x20_0000;
 const BOOT_STACK_GUARD: usize = 0x2000;
-const COM1_BASE: u16 = 0x3f8;
-const UART_RBR_THR_DLL: u16 = COM1_BASE;
-const UART_IER_DLM: u16 = COM1_BASE + 1;
-const UART_IIR_FCR: u16 = COM1_BASE + 2;
-const UART_LCR: u16 = COM1_BASE + 3;
-const UART_MCR: u16 = COM1_BASE + 4;
-const UART_LSR: u16 = COM1_BASE + 5;
-const UART_MSR: u16 = COM1_BASE + 6;
-const UART_SCR: u16 = COM1_BASE + 7;
-const UART_LCR_DLAB: u8 = 0x80;
-const IO_PORT_POST_DELAY: u16 = 0x80;
-const IO_PORT_PIC1_CMD: u16 = 0x20;
-const IO_PORT_PIC1_DATA: u16 = 0x21;
-const IO_PORT_PIC2_CMD: u16 = 0xa0;
-const IO_PORT_PIC2_DATA: u16 = 0xa1;
-const IO_PORT_PIT_CH0: u16 = 0x40;
-const IO_PORT_PIT_CH1: u16 = 0x41;
-const IO_PORT_PIT_CH2: u16 = 0x42;
-const IO_PORT_PIT_CMD: u16 = 0x43;
-const IO_PORT_CMOS_INDEX: u16 = 0x70;
-const IO_PORT_CMOS_DATA: u16 = 0x71;
-const IO_PORT_KBD_DATA: u16 = 0x60;
-const IO_PORT_KBD_STATUS: u16 = 0x64;
-const IDE_PRIMARY_DATA: u16 = 0x1f0;
-const IDE_PRIMARY_ERROR_FEATURES: u16 = 0x1f1;
-const IDE_PRIMARY_SECTOR_COUNT: u16 = 0x1f2;
-const IDE_PRIMARY_LBA_LOW: u16 = 0x1f3;
-const IDE_PRIMARY_LBA_MID: u16 = 0x1f4;
-const IDE_PRIMARY_LBA_HIGH: u16 = 0x1f5;
-const IDE_PRIMARY_DRIVE_HEAD: u16 = 0x1f6;
-const IDE_PRIMARY_STATUS_COMMAND: u16 = 0x1f7;
-const IDE_PRIMARY_ALT_STATUS_CONTROL: u16 = 0x3f6;
-const IDE_SECTOR_SIZE: usize = 512;
-const IDE_STATUS_ERR: u8 = 0x01;
-const IDE_STATUS_DRQ: u8 = 0x08;
-const IDE_STATUS_DRDY: u8 = 0x40;
-const MSR_IA32_TSC: u32 = 0x10;
-const MSR_IA32_APIC_BASE: u32 = 0x1b;
-const MSR_IA32_SYSENTER_CS: u32 = 0x174;
-const MSR_IA32_SYSENTER_ESP: u32 = 0x175;
-const MSR_IA32_SYSENTER_EIP: u32 = 0x176;
-const MSR_IA32_PAT: u32 = 0x277;
-const MSR_IA32_MTRR_DEF_TYPE: u32 = 0x2ff;
-const MSR_IA32_EFER: u32 = 0xc000_0080;
-const MSR_IA32_STAR: u32 = 0xc000_0081;
-const MSR_IA32_LSTAR: u32 = 0xc000_0082;
-const MSR_IA32_CSTAR: u32 = 0xc000_0083;
-const MSR_IA32_FMASK: u32 = 0xc000_0084;
-const MSR_IA32_FS_BASE: u32 = 0xc000_0100;
-const MSR_IA32_GS_BASE: u32 = 0xc000_0101;
-const MSR_IA32_KERNEL_GS_BASE: u32 = 0xc000_0102;
-const MSR_IA32_TSC_AUX: u32 = 0xc000_0103;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmInstance {
@@ -100,301 +56,6 @@ pub struct VmRuntimeEvent {
     pub guest_phys_addr: u64,
     pub guest_virt_addr: u64,
     pub halted: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct SerialPortState {
-    lcr: u8,
-    ier: u8,
-    mcr: u8,
-    scratch: u8,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SerialIoAction {
-    output: Vec<u8>,
-    read_value: Option<u32>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PlatformIoState {
-    pic1_cmd: u8,
-    pic1_data: u8,
-    pic2_cmd: u8,
-    pic2_data: u8,
-    pit_cmd: u8,
-    pit_data: [u8; 3],
-    cmos_index: u8,
-}
-
-impl Default for PlatformIoState {
-    fn default() -> Self {
-        Self {
-            pic1_cmd: 0,
-            pic1_data: 0xff,
-            pic2_cmd: 0,
-            pic2_data: 0xff,
-            pit_cmd: 0,
-            pit_data: [0; 3],
-            cmos_index: 0,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct PlatformIoAction {
-    read_value: Option<u32>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum IdeStorage {
-    None,
-    Memory(Vec<u8>),
-    File { fd: u32, sectors: u32 },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct IdeController {
-    storage: IdeStorage,
-    error: u8,
-    sector_count: u8,
-    lba_low: u8,
-    lba_mid: u8,
-    lba_high: u8,
-    drive_head: u8,
-    status: u8,
-    data: Vec<u8>,
-    data_offset: usize,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct IdeIoAction {
-    read_value: Option<u32>,
-}
-
-impl IdeController {
-    fn disabled() -> Self {
-        Self {
-            storage: IdeStorage::None,
-            error: 0,
-            sector_count: 0,
-            lba_low: 0,
-            lba_mid: 0,
-            lba_high: 0,
-            drive_head: 0xe0,
-            status: 0,
-            data: Vec::new(),
-            data_offset: 0,
-        }
-    }
-
-    fn with_memory_disk(bytes: Vec<u8>) -> Self {
-        let mut controller = Self::disabled();
-        controller.storage = IdeStorage::Memory(bytes);
-        controller.status = IDE_STATUS_DRDY;
-        controller
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn open_read_only(path: &str) -> Result<Self, AsldError> {
-        let mut stat_buf = [0u32; 7];
-        if anyos_std::fs::stat(path, &mut stat_buf) != 0 || stat_buf[0] != 0 {
-            return Err(AsldError::InvalidState("SeaBIOS boot disk is missing"));
-        }
-        let size = stat_buf[1] as usize;
-        if size < IDE_SECTOR_SIZE {
-            return Err(AsldError::InvalidState("SeaBIOS boot disk is too small"));
-        }
-        let fd = anyos_std::fs::open(path, 0);
-        if fd == 0 || fd == u32::MAX {
-            return Err(AsldError::InvalidState(
-                "SeaBIOS boot disk is not readable",
-            ));
-        }
-
-        let mut controller = Self::disabled();
-        controller.storage = IdeStorage::File {
-            fd,
-            sectors: (size / IDE_SECTOR_SIZE) as u32,
-        };
-        controller.status = IDE_STATUS_DRDY;
-        Ok(controller)
-    }
-
-    fn sector_count(&self) -> u32 {
-        match &self.storage {
-            IdeStorage::None => 0,
-            IdeStorage::Memory(bytes) => (bytes.len() / IDE_SECTOR_SIZE) as u32,
-            IdeStorage::File { sectors, .. } => *sectors,
-        }
-    }
-
-    fn selected_lba(&self) -> u32 {
-        ((self.drive_head as u32 & 0x0f) << 24)
-            | ((self.lba_high as u32) << 16)
-            | ((self.lba_mid as u32) << 8)
-            | self.lba_low as u32
-    }
-
-    fn selected_sector_count(&self) -> u32 {
-        if self.sector_count == 0 {
-            256
-        } else {
-            self.sector_count as u32
-        }
-    }
-
-    fn has_disk(&self) -> bool {
-        !matches!(self.storage, IdeStorage::None)
-    }
-
-    fn read_sectors(&mut self) {
-        let lba = self.selected_lba();
-        let count = self.selected_sector_count();
-        let byte_count = (count as usize).saturating_mul(IDE_SECTOR_SIZE);
-        let offset = (lba as usize).saturating_mul(IDE_SECTOR_SIZE);
-        let end = offset.saturating_add(byte_count);
-        if !self.has_disk() || end > (self.sector_count() as usize * IDE_SECTOR_SIZE) {
-            self.set_error(0x04);
-            return;
-        }
-
-        self.data.resize(byte_count, 0);
-        let ok = match &mut self.storage {
-            IdeStorage::Memory(bytes) => {
-                self.data.copy_from_slice(&bytes[offset..end]);
-                true
-            }
-            IdeStorage::File { fd, .. } => {
-                if anyos_std::fs::lseek(*fd, offset as i32, anyos_std::fs::SEEK_SET) == u32::MAX {
-                    false
-                } else {
-                    let read = anyos_std::fs::read(*fd, &mut self.data);
-                    read == byte_count as u32
-                }
-            }
-            IdeStorage::None => false,
-        };
-        if ok {
-            self.data_offset = 0;
-            self.error = 0;
-            self.status = IDE_STATUS_DRDY | IDE_STATUS_DRQ;
-        } else {
-            self.set_error(0x04);
-        }
-    }
-
-    fn identify(&mut self) {
-        if !self.has_disk() {
-            self.set_error(0x04);
-            return;
-        }
-
-        self.data.clear();
-        self.data.resize(IDE_SECTOR_SIZE, 0);
-        write_ide_word(&mut self.data, 0, 0x0040);
-        write_ide_ascii(&mut self.data, 10, 20, "ANYOS0000000000000000");
-        write_ide_ascii(&mut self.data, 23, 8, "1.0");
-        write_ide_ascii(&mut self.data, 27, 40, "anyOS ASL ATA disk");
-        write_ide_word(&mut self.data, 49, 1 << 9);
-        write_ide_word(&mut self.data, 53, 1);
-        write_ide_word(&mut self.data, 60, (self.sector_count() & 0xffff) as u16);
-        write_ide_word(&mut self.data, 61, (self.sector_count() >> 16) as u16);
-        write_ide_word(&mut self.data, 80, 0x007e);
-        write_ide_word(&mut self.data, 83, 1 << 10);
-        write_ide_word(&mut self.data, 86, 1 << 10);
-        self.data_offset = 0;
-        self.error = 0;
-        self.status = IDE_STATUS_DRDY | IDE_STATUS_DRQ;
-    }
-
-    fn finish_data_if_needed(&mut self) {
-        if self.data_offset >= self.data.len() {
-            self.data.clear();
-            self.data_offset = 0;
-            self.status = if self.has_disk() { IDE_STATUS_DRDY } else { 0 };
-        }
-    }
-
-    fn read_data_word(&mut self) -> u16 {
-        if self.data_offset + 1 >= self.data.len() {
-            self.finish_data_if_needed();
-            return 0;
-        }
-        let value = u16::from_le_bytes([
-            self.data[self.data_offset],
-            self.data[self.data_offset + 1],
-        ]);
-        self.data_offset += 2;
-        self.finish_data_if_needed();
-        value
-    }
-
-    fn execute_command(&mut self, command: u8) {
-        match command {
-            0x20 | 0x24 => self.read_sectors(),
-            0x90 | 0x91 | 0xe7 => {
-                self.error = 0;
-                self.status = if self.has_disk() { IDE_STATUS_DRDY } else { 0 };
-            }
-            0xec => self.identify(),
-            _ => self.set_error(0x04),
-        }
-    }
-
-    fn set_error(&mut self, error: u8) {
-        self.error = error;
-        self.data.clear();
-        self.data_offset = 0;
-        self.status = if self.has_disk() {
-            IDE_STATUS_DRDY | IDE_STATUS_ERR
-        } else {
-            IDE_STATUS_ERR
-        };
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct MsrState {
-    apic_base: u64,
-    sysenter_cs: u64,
-    sysenter_esp: u64,
-    sysenter_eip: u64,
-    pat: u64,
-    mtrr_def_type: u64,
-    efer: u64,
-    star: u64,
-    lstar: u64,
-    cstar: u64,
-    fmask: u64,
-    fs_base: u64,
-    gs_base: u64,
-    kernel_gs_base: u64,
-    tsc_aux: u64,
-    xcr0: u64,
-}
-
-impl Default for MsrState {
-    fn default() -> Self {
-        Self {
-            apic_base: 0xfee0_0800,
-            sysenter_cs: 0,
-            sysenter_esp: 0,
-            sysenter_eip: 0,
-            pat: 0x0007_0406_0007_0406,
-            mtrr_def_type: 0,
-            efer: 0,
-            star: 0,
-            lstar: 0,
-            cstar: 0,
-            fmask: 0,
-            fs_base: 0,
-            gs_base: 0,
-            kernel_gs_base: 0,
-            tsc_aux: 0,
-            xcr0: 1,
-        }
-    }
 }
 
 pub fn start_vm(config: &DistroConfig) -> Result<VmInstance, AsldError> {
@@ -721,6 +382,7 @@ fn stop_vm_impl(instance: &VmInstance) -> Result<(), AsldError> {
             instance.guest_memory_size,
         );
     }
+    instance.ide.close();
     let vm = libavm::AvmVm::from_raw_handle(instance.vm_handle);
     if vm.destroy().is_err() {
         return Err(AsldError::BackendUnavailable("avm destroy_vm failed"));
@@ -1088,7 +750,7 @@ fn handle_ide_io_exit(
     vcpu: &libavm::AvmVcpu,
     exit: &VmExitInfo,
 ) -> Result<bool, AsldError> {
-    let Some(action) = ide_io_action(&mut instance.ide, exit) else {
+    let Some(action) = instance.ide.io_action(exit) else {
         return Ok(false);
     };
 
@@ -1153,191 +815,6 @@ fn handle_xsetbv_exit(
     }
     advance_guest_rip(vcpu, exit.instruction_len)?;
     Ok(true)
-}
-
-fn serial_io_action(state: &mut SerialPortState, exit: &VmExitInfo) -> Option<SerialIoAction> {
-    if exit.reason != exit_reason::IO_INSTRUCTION || !is_com1_port(exit.io_port) {
-        return None;
-    }
-
-    if exit.is_read != 0 {
-        return Some(SerialIoAction {
-            output: Vec::new(),
-            read_value: Some(serial_read(state, exit.io_port)),
-        });
-    }
-
-    let value = (exit.io_data & 0xff) as u8;
-    let mut output = Vec::new();
-    match exit.io_port {
-        UART_RBR_THR_DLL => {
-            if state.lcr & UART_LCR_DLAB == 0 {
-                output.push(value);
-            }
-        }
-        UART_IER_DLM => {
-            if state.lcr & UART_LCR_DLAB == 0 {
-                state.ier = value;
-            }
-        }
-        UART_LCR => state.lcr = value,
-        UART_MCR => state.mcr = value,
-        UART_SCR => state.scratch = value,
-        UART_IIR_FCR | UART_LSR | UART_MSR => {}
-        _ => {}
-    }
-    Some(SerialIoAction {
-        output,
-        read_value: None,
-    })
-}
-
-fn serial_read(state: &SerialPortState, port: u16) -> u32 {
-    match port {
-        UART_RBR_THR_DLL => 0,
-        UART_IER_DLM => {
-            if state.lcr & UART_LCR_DLAB == 0 {
-                state.ier as u32
-            } else {
-                0
-            }
-        }
-        UART_IIR_FCR => 0x01,
-        UART_LCR => state.lcr as u32,
-        UART_MCR => state.mcr as u32,
-        UART_LSR => 0x60,
-        UART_MSR => 0xb0,
-        UART_SCR => state.scratch as u32,
-        _ => 0,
-    }
-}
-
-fn is_com1_port(port: u16) -> bool {
-    (COM1_BASE..=UART_SCR).contains(&port)
-}
-
-fn platform_io_action(state: &mut PlatformIoState, exit: &VmExitInfo) -> Option<PlatformIoAction> {
-    if exit.reason != exit_reason::IO_INSTRUCTION || !is_platform_io_port(exit.io_port) {
-        return None;
-    }
-
-    if exit.is_read != 0 {
-        return Some(PlatformIoAction {
-            read_value: Some(platform_io_read(state, exit.io_port)),
-        });
-    }
-
-    let value = (exit.io_data & 0xff) as u8;
-    match exit.io_port {
-        IO_PORT_PIC1_CMD => state.pic1_cmd = value,
-        IO_PORT_PIC1_DATA => state.pic1_data = value,
-        IO_PORT_PIC2_CMD => state.pic2_cmd = value,
-        IO_PORT_PIC2_DATA => state.pic2_data = value,
-        IO_PORT_PIT_CH0 => state.pit_data[0] = value,
-        IO_PORT_PIT_CH1 => state.pit_data[1] = value,
-        IO_PORT_PIT_CH2 => state.pit_data[2] = value,
-        IO_PORT_PIT_CMD => state.pit_cmd = value,
-        IO_PORT_CMOS_INDEX => state.cmos_index = value & 0x7f,
-        IO_PORT_POST_DELAY | IO_PORT_CMOS_DATA | IO_PORT_KBD_DATA | IO_PORT_KBD_STATUS => {}
-        _ => {}
-    }
-    Some(PlatformIoAction { read_value: None })
-}
-
-fn platform_io_read(state: &PlatformIoState, port: u16) -> u32 {
-    match port {
-        IO_PORT_PIC1_CMD => state.pic1_cmd as u32,
-        IO_PORT_PIC1_DATA => state.pic1_data as u32,
-        IO_PORT_PIC2_CMD => state.pic2_cmd as u32,
-        IO_PORT_PIC2_DATA => state.pic2_data as u32,
-        IO_PORT_PIT_CH0 => state.pit_data[0] as u32,
-        IO_PORT_PIT_CH1 => state.pit_data[1] as u32,
-        IO_PORT_PIT_CH2 => state.pit_data[2] as u32,
-        IO_PORT_PIT_CMD => state.pit_cmd as u32,
-        IO_PORT_CMOS_INDEX => state.cmos_index as u32,
-        IO_PORT_CMOS_DATA => cmos_read(state.cmos_index),
-        IO_PORT_KBD_DATA => 0,
-        IO_PORT_KBD_STATUS => 0x10,
-        IO_PORT_POST_DELAY => 0,
-        _ => 0,
-    }
-}
-
-fn cmos_read(index: u8) -> u32 {
-    match index {
-        0x0a => 0x26,
-        0x0b => 0x02,
-        0x0c => 0,
-        0x0d => 0x80,
-        0x15 => 0,
-        0x16 => 0,
-        0x17 => 0,
-        0x18 => 0,
-        _ => 0,
-    }
-}
-
-fn is_platform_io_port(port: u16) -> bool {
-    matches!(
-        port,
-        IO_PORT_POST_DELAY
-            | IO_PORT_PIC1_CMD
-            | IO_PORT_PIC1_DATA
-            | IO_PORT_PIC2_CMD
-            | IO_PORT_PIC2_DATA
-            | IO_PORT_PIT_CH0
-            | IO_PORT_PIT_CH1
-            | IO_PORT_PIT_CH2
-            | IO_PORT_PIT_CMD
-            | IO_PORT_CMOS_INDEX
-            | IO_PORT_CMOS_DATA
-            | IO_PORT_KBD_DATA
-            | IO_PORT_KBD_STATUS
-    )
-}
-
-fn msr_read(state: &MsrState, msr: u32) -> u64 {
-    match msr {
-        MSR_IA32_TSC => 0,
-        MSR_IA32_APIC_BASE => state.apic_base,
-        MSR_IA32_SYSENTER_CS => state.sysenter_cs,
-        MSR_IA32_SYSENTER_ESP => state.sysenter_esp,
-        MSR_IA32_SYSENTER_EIP => state.sysenter_eip,
-        MSR_IA32_PAT => state.pat,
-        MSR_IA32_MTRR_DEF_TYPE => state.mtrr_def_type,
-        MSR_IA32_EFER => state.efer,
-        MSR_IA32_STAR => state.star,
-        MSR_IA32_LSTAR => state.lstar,
-        MSR_IA32_CSTAR => state.cstar,
-        MSR_IA32_FMASK => state.fmask,
-        MSR_IA32_FS_BASE => state.fs_base,
-        MSR_IA32_GS_BASE => state.gs_base,
-        MSR_IA32_KERNEL_GS_BASE => state.kernel_gs_base,
-        MSR_IA32_TSC_AUX => state.tsc_aux,
-        _ => 0,
-    }
-}
-
-fn msr_write(state: &mut MsrState, msr: u32, value: u64) {
-    match msr {
-        MSR_IA32_TSC => {}
-        MSR_IA32_APIC_BASE => state.apic_base = value,
-        MSR_IA32_SYSENTER_CS => state.sysenter_cs = value,
-        MSR_IA32_SYSENTER_ESP => state.sysenter_esp = value,
-        MSR_IA32_SYSENTER_EIP => state.sysenter_eip = value,
-        MSR_IA32_PAT => state.pat = value,
-        MSR_IA32_MTRR_DEF_TYPE => state.mtrr_def_type = value,
-        MSR_IA32_EFER => state.efer = value,
-        MSR_IA32_STAR => state.star = value,
-        MSR_IA32_LSTAR => state.lstar = value,
-        MSR_IA32_CSTAR => state.cstar = value,
-        MSR_IA32_FMASK => state.fmask = value,
-        MSR_IA32_FS_BASE => state.fs_base = value,
-        MSR_IA32_GS_BASE => state.gs_base = value,
-        MSR_IA32_KERNEL_GS_BASE => state.kernel_gs_base = value,
-        MSR_IA32_TSC_AUX => state.tsc_aux = value,
-        _ => {}
-    }
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1611,15 +1088,20 @@ mod tests {
         StorageSpec,
     };
 
+    use super::msr::{msr_read, msr_write, MsrState, MSR_IA32_EFER, MSR_IA32_FS_BASE};
+    use super::platform::{
+        platform_io_action, PlatformIoState, IO_PORT_CMOS_DATA, IO_PORT_CMOS_INDEX,
+        IO_PORT_KBD_STATUS, IO_PORT_PIC1_DATA, IO_PORT_POST_DELAY,
+    };
+    use super::serial::{
+        serial_io_action, SerialPortState, UART_LCR, UART_LCR_DLAB, UART_LSR, UART_RBR_THR_DLL,
+    };
     use super::{
         align_guest_memory_size, assess_boot_exit, assess_runtime_exit, boot_probe, bootstrap_gprs,
-        bootstrap_sregs, direct_linux_gprs, direct_linux_sregs, msr_read, msr_write, page_mut,
-        platform_io_action, poll_runtime, seabios_gprs, seabios_sregs, serial_io_action, start_vm,
-        stop_vm, write_bootstrap_image, BootstrapLayout, MsrState, PlatformIoState,
-        RuntimeExitAssessment, SerialPortState, VmBootReport, VmExitInfo, VmRunState,
-        BOOT_CODE_ADDR, BOOT_PDPT_ADDR, BOOT_PD_ADDR, BOOT_PML4_ADDR, IO_PORT_CMOS_DATA,
-        IO_PORT_CMOS_INDEX, IO_PORT_KBD_STATUS, IO_PORT_PIC1_DATA, IO_PORT_POST_DELAY,
-        MSR_IA32_EFER, MSR_IA32_FS_BASE, UART_LCR, UART_LCR_DLAB, UART_LSR, UART_RBR_THR_DLL,
+        bootstrap_sregs, direct_linux_gprs, direct_linux_sregs, page_mut, poll_runtime,
+        seabios_gprs, seabios_sregs, start_vm, stop_vm, write_bootstrap_image, BootstrapLayout,
+        RuntimeExitAssessment, VmBootReport, VmExitInfo, VmRunState, BOOT_CODE_ADDR,
+        BOOT_PDPT_ADDR, BOOT_PD_ADDR, BOOT_PML4_ADDR,
     };
 
     #[test]

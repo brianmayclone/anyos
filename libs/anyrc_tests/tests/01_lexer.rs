@@ -175,6 +175,16 @@ fn lex_raw_string() {
 }
 
 #[test]
+fn lex_raw_identifier() {
+    let tokens = lex("mod r#ref; use crate::r#type::*;");
+    assert_eq!(tokens[0], TokenKind::Kw(Keyword::Mod));
+    assert!(matches!(tokens[1], TokenKind::Ident(_)));
+    assert_eq!(tokens[2], TokenKind::Semi);
+    assert_eq!(tokens[5], TokenKind::ColonColon);
+    assert!(matches!(tokens[6], TokenKind::Ident(_)));
+}
+
+#[test]
 fn lex_all_keywords() {
     let tokens = lex("fn let mut pub struct enum impl trait type use mod crate self Self super as in for while loop if else match return break continue where const static unsafe extern ref move true false");
     for tok in &tokens {

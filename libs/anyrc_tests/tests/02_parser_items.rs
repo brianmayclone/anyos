@@ -123,6 +123,29 @@ fn parse_trait_impl() {
 }
 
 #[test]
+fn parse_extern_crate_self_alias() {
+    let krate = parse("extern crate self as zerocopy;");
+    match &krate.items[0] {
+        Item::ExternCrate(ext) => {
+            assert!(ext.alias.is_some());
+        }
+        _ => panic!("expected extern crate"),
+    }
+}
+
+#[test]
+fn parse_root_nested_use_tree() {
+    let krate = parse("use {FromZeros as FromZeroes, IntoBytes as AsBytes, Ref as LayoutVerified};");
+    match &krate.items[0] {
+        Item::Use(u) => match &u.kind {
+            UseTreeKind::Nested(items) => assert_eq!(items.len(), 3),
+            _ => panic!("expected nested use"),
+        },
+        _ => panic!("expected use"),
+    }
+}
+
+#[test]
 fn parse_trait_def() {
     let krate = parse("trait Drawable { fn draw(&self); fn color(&self) -> u32; }");
     match &krate.items[0] {
@@ -160,6 +183,18 @@ fn parse_unsafe_fn() {
 }
 
 #[test]
+fn parse_const_unsafe_fn() {
+    let krate = parse("pub const unsafe fn dangerous() { }");
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            assert!(f.is_const);
+            assert!(f.is_unsafe);
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
 fn parse_extern_block() {
     let krate = parse(r#"extern "C" { fn malloc(size: usize) -> *mut u8; }"#);
     assert!(matches!(&krate.items[0], Item::ExternBlock(_)));
@@ -183,6 +218,35 @@ fn parse_static_def() {
 #[test]
 fn parse_type_alias() {
     let krate = parse("type Result<T> = core::result::Result<T, Error>;");
+    assert!(matches!(&krate.items[0], Item::TypeAlias(_)));
+}
+
+#[test]
+fn parse_trait_associated_type_bounds() {
+    let krate = parse(
+        "trait KnownLayout { type MaybeUninit: ?Sized + KnownLayout<PointerMetadata = Self::PointerMetadata>; }",
+    );
+    match &krate.items[0] {
+        Item::Trait(t) => assert_eq!(t.items.len(), 1),
+        _ => panic!("expected trait"),
+    }
+}
+
+#[test]
+fn parse_tuple_struct_trailing_where_clause() {
+    let krate = parse("struct Projection<T>(T) where T: ?Sized + KnownLayout;");
+    assert!(matches!(&krate.items[0], Item::Struct(_)));
+}
+
+#[test]
+fn parse_qualified_path_expr() {
+    let krate = parse("fn f(len: usize) { <[Self]>::new_box_zeroed_with_elems(len); }");
+    assert!(matches!(&krate.items[0], Item::Fn(_)));
+}
+
+#[test]
+fn parse_qualified_path_type() {
+    let krate = parse("type Item = <Self as Iterator>::Item;");
     assert!(matches!(&krate.items[0], Item::TypeAlias(_)));
 }
 

@@ -537,6 +537,17 @@ impl<'a> Parser<'a> {
             return Expr::Array(elems, self.span_from(start));
         }
 
+        // Qualified path: <T as Trait>::Assoc or <[T]>::method
+        if self.at_exact(&TokenKind::Lt) {
+            let path = self.parse_qualified_path(start);
+            if self.at_exact(&TokenKind::Not) {
+                self.bump();
+                let tts = self.parse_macro_args();
+                return Expr::MacroCall(path, tts, self.span_from(start));
+            }
+            return Expr::Path(path);
+        }
+
         // Path or struct literal or macro call
         if self.at_ident()
             || self.at_kw(Keyword::SelfValue)
@@ -825,6 +836,20 @@ impl<'a> Parser<'a> {
             segments,
             span: self.span_from(start),
         }
+    }
+
+    fn parse_qualified_path(&mut self, start: Span) -> Path {
+        self.expect_exact(&TokenKind::Lt);
+        let _self_ty = self.parse_ty();
+        if self.at_kw(Keyword::As) {
+            self.bump();
+            let _trait_path = self.parse_path_ty();
+        }
+        self.expect_exact(&TokenKind::Gt);
+        self.expect_exact(&TokenKind::ColonColon);
+        let mut path = self.parse_path_expr();
+        path.span = self.span_from(start);
+        path
     }
 
     fn postfix_bp(&self) -> Option<u8> {
@@ -1300,6 +1325,12 @@ impl<'a> Parser<'a> {
                 if self.peek_kind() == &TokenKind::Kw(Keyword::Fn) {
                     self.bump(); // eat `const`
                     Some(Item::Fn(self.parse_fn_def(vis, attrs, false, true, None, start)))
+                } else if self.peek_kind() == &TokenKind::Kw(Keyword::Unsafe)
+                    && self.peek_kind_at(2) == Some(&TokenKind::Kw(Keyword::Fn))
+                {
+                    self.bump(); // eat `const`
+                    self.bump(); // eat `unsafe`
+                    Some(Item::Fn(self.parse_fn_def(vis, attrs, true, true, None, start)))
                 } else {
                     Some(Item::Const(self.parse_const_def(vis, start)))
                 }
@@ -1311,7 +1342,7 @@ impl<'a> Parser<'a> {
                 self.bump();
                 if self.at_kw(Keyword::Crate) {
                     self.bump();
-                    let name = self.expect_ident();
+                    let name = self.expect_ident_or_self();
                     let alias = if self.at_kw(Keyword::As) {
                         self.bump();
                         Some(self.expect_ident())
@@ -1624,6 +1655,7 @@ impl<'a> Parser<'a> {
                 }
             }
             self.expect_exact(&TokenKind::RParen);
+            let _where_clause = self.parse_where_clause();
             self.expect_exact(&TokenKind::Semi);
         } else if self.eat_exact(&TokenKind::Semi) {
             // Unit struct: struct Foo;
@@ -1834,6 +1866,24 @@ impl<'a> Parser<'a> {
         let start = self.current().span;
         let mut path = Vec::new();
 
+        if self.at_exact(&TokenKind::LBrace) {
+            self.bump();
+            let mut nested = Vec::new();
+            while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
+                nested.push(self.parse_use_tree(vis));
+                if !self.eat_exact(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect_exact(&TokenKind::RBrace);
+            return UseTree {
+                vis,
+                path,
+                kind: UseTreeKind::Nested(nested),
+                span: self.span_from(start),
+            };
+        }
+
         // Collect path segments
         loop {
             if self.at_ident()
@@ -1997,11 +2047,14 @@ impl<'a> Parser<'a> {
         self.expect_exact(&TokenKind::Kw(Keyword::Type));
         let name = self.expect_ident();
         let generics = self.parse_generics();
+        self.parse_type_alias_bounds();
+        let _where_clause = self.parse_where_clause();
         let ty = if self.eat_exact(&TokenKind::Eq) {
             Some(Box::new(self.parse_ty()))
         } else {
             None
         };
+        let _where_clause = self.parse_where_clause();
         self.expect_exact(&TokenKind::Semi);
         TypeAliasDef {
             name,
@@ -2009,6 +2062,33 @@ impl<'a> Parser<'a> {
             ty,
             vis,
             span: self.span_from(start),
+        }
+    }
+
+    fn parse_type_alias_bounds(&mut self) {
+        if !self.eat_exact(&TokenKind::Colon) {
+            return;
+        }
+        loop {
+            if self.at_kw(Keyword::Where)
+                || self.at_exact(&TokenKind::Eq)
+                || self.at_exact(&TokenKind::Semi)
+                || self.at_exact(&TokenKind::Comma)
+                || self.at_exact(&TokenKind::RBrace)
+                || self.at_exact(&TokenKind::Eof)
+            {
+                break;
+            }
+            if matches!(self.current().kind, TokenKind::Lifetime(_)) {
+                self.bump();
+            } else {
+                let _relaxed_bound = self.eat_exact(&TokenKind::Question);
+                let _ = self.parse_path_ty();
+                self.parse_callable_trait_suffix();
+            }
+            if !self.eat_exact(&TokenKind::Plus) {
+                break;
+            }
         }
     }
 
@@ -2214,6 +2294,11 @@ impl<'a> Parser<'a> {
                 "expected `fn` after `extern` in type position at {:?}",
                 self.current().span
             );
+        }
+
+        if self.at_exact(&TokenKind::Lt) {
+            let path = self.parse_qualified_path(start);
+            return Ty::Path(path);
         }
 
         // Infer: _

@@ -429,6 +429,19 @@ impl<'a> Lexer<'a> {
         let kind = match b {
             // Identifiers and keywords
             _ if Self::is_ident_start(b) => {
+                if b == b'r' && self.peek() == b'#' && Self::is_ident_start(self.peek_at(1)) {
+                    self.pos += 1; // skip '#'
+                    let ident_start = self.pos;
+                    while self.pos < self.src.len() && Self::is_ident_cont(self.peek()) {
+                        self.pos += 1;
+                    }
+                    let text = core::str::from_utf8(&self.src[ident_start..self.pos]).unwrap();
+                    let sym = self.interner.intern(text);
+                    return Token {
+                        kind: TokenKind::Ident(sym),
+                        span: Span::new(start as u32, self.pos as u32),
+                    };
+                }
                 // check for raw string r"..." or r#"..."#
                 if b == b'r' && (self.peek() == b'"' || self.peek() == b'#') {
                     let s = self.lex_raw_string();

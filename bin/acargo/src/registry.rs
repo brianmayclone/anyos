@@ -306,7 +306,7 @@ fn collect_cached_sources(name: &str, root: &str, out: &mut Vec<(Version, String
 
 fn list_dir_names(path: &str) -> Vec<String> {
     let mut names = Vec::new();
-    let mut buf = [0u8; 64 * 256];
+    let mut buf = vec![0u8; 64 * 8192];
     let count = anyos_std::fs::readdir(path, &mut buf);
     if count == u32::MAX {
         return names;
