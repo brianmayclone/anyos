@@ -480,6 +480,8 @@ fn poll_build_output() {
 
             if s.debug_session.status != debug_session::DebugSessionStatus::Idle {
                 s.debug_session.stop();
+                s.output
+                    .append_debug_line(&format!("process exited with code {}", exit_code));
                 s.run_panel.update_debug_session(&s.debug_session);
             }
 

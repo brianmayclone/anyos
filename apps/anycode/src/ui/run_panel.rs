@@ -4,6 +4,7 @@ use libanyui_client as ui;
 
 use crate::logic::debug_session::{DebugSession, DebugSessionStatus};
 use crate::logic::tasks::{TaskManager, TaskCategory};
+use crate::util::path;
 
 const STYLE_BOLD: u32 = 1;
 
@@ -16,12 +17,16 @@ pub struct RunPanel {
     pub tree: ui::TreeView,
     pub btn_run: ui::Button,
     pub btn_debug: ui::Button,
+    pub btn_continue: ui::Button,
+    pub btn_pause: ui::Button,
+    pub btn_step_over: ui::Button,
     pub btn_build: ui::Button,
     pub btn_test: ui::Button,
     pub btn_stop: ui::Button,
     pub run_config_label: ui::Label,
     pub debug_status_label: ui::Label,
     pub breakpoint_label: ui::Label,
+    pub debug_tree: ui::TreeView,
     task_indices: Vec<Option<usize>>, // maps tree node → task index
 }
 
@@ -98,10 +103,35 @@ impl RunPanel {
         debug_bar.add(&btn_debug);
 
         let breakpoint_label = ui::Label::new("0 breakpoints");
-        breakpoint_label.set_size(126, 22);
+        breakpoint_label.set_size(126, 24);
         breakpoint_label.set_font_size(11);
         breakpoint_label.set_text_color(tc.text_secondary);
         debug_bar.add(&breakpoint_label);
+
+        let control_bar = ui::FlowPanel::new();
+        control_bar.set_dock(ui::DOCK_TOP);
+        control_bar.set_size(200, 30);
+        control_bar.set_color(tc.sidebar_bg);
+        panel.add(&control_bar);
+
+        let btn_continue = ui::Button::new(t("Continue"));
+        btn_continue.set_size(68, 24);
+        control_bar.add(&btn_continue);
+
+        let btn_pause = ui::Button::new(t("Pause"));
+        btn_pause.set_size(54, 24);
+        control_bar.add(&btn_pause);
+
+        let btn_step_over = ui::Button::new(t("Step"));
+        btn_step_over.set_size(50, 24);
+        control_bar.add(&btn_step_over);
+
+        let debug_tree = ui::TreeView::new(200, 150);
+        debug_tree.set_dock(ui::DOCK_TOP);
+        debug_tree.set_size(200, 150);
+        debug_tree.set_indent_width(16);
+        debug_tree.set_row_height(20);
+        panel.add(&debug_tree);
 
         // Separator
         let sep = ui::View::new();
@@ -123,12 +153,16 @@ impl RunPanel {
             tree,
             btn_run,
             btn_debug,
+            btn_continue,
+            btn_pause,
+            btn_step_over,
             btn_build,
             btn_test,
             btn_stop,
             run_config_label,
             debug_status_label,
             breakpoint_label,
+            debug_tree,
             task_indices: Vec::new(),
         }
     }
@@ -220,6 +254,68 @@ impl RunPanel {
         self.debug_status_label.set_text_color(status_color);
         self.breakpoint_label
             .set_text(&format!("{} breakpoints", debug.breakpoint_count()));
+
+        self.debug_tree.clear();
+        let session = self.debug_tree.add_root("Debug Session");
+        self.debug_tree.set_node_style(session, STYLE_BOLD);
+        self.debug_tree.set_node_text_color(session, status_color);
+        self.debug_tree.set_expanded(session, true);
+        self.debug_tree
+            .add_child(session, &format!("State: {}", debug.status_label()));
+        if !debug.paused_reason.is_empty() {
+            self.debug_tree
+                .add_child(session, &format!("Reason: {}", debug.paused_reason));
+        }
+        if !debug.target.is_empty() {
+            self.debug_tree
+                .add_child(session, &format!("Target: {}", debug.target));
+        }
+
+        let bps = self
+            .debug_tree
+            .add_root(&format!("Breakpoints ({})", debug.breakpoint_count()));
+        self.debug_tree.set_node_style(bps, STYLE_BOLD);
+        self.debug_tree.set_expanded(bps, true);
+        for bp in &debug.breakpoints {
+            let marker = if bp.enabled { "enabled" } else { "disabled" };
+            let label = format!("{}:{} ({})", path::basename(&bp.file_path), bp.line + 1, marker);
+            self.debug_tree.add_child(bps, &label);
+        }
+
+        let frames = self
+            .debug_tree
+            .add_root(&format!("Call Stack ({})", debug.call_stack.len()));
+        self.debug_tree.set_node_style(frames, STYLE_BOLD);
+        self.debug_tree.set_expanded(frames, true);
+        for frame in &debug.call_stack {
+            let label = format!(
+                "{} - {}:{}",
+                frame.function,
+                path::basename(&frame.file_path),
+                frame.line + 1
+            );
+            self.debug_tree.add_child(frames, &label);
+        }
+
+        let vars = self
+            .debug_tree
+            .add_root(&format!("Variables ({})", debug.variables.len()));
+        self.debug_tree.set_node_style(vars, STYLE_BOLD);
+        for var in &debug.variables {
+            self.debug_tree.add_child(
+                vars,
+                &format!("{}: {} = {}", var.name, var.type_name, var.value),
+            );
+        }
+
+        let regs = self
+            .debug_tree
+            .add_root(&format!("Registers ({})", debug.registers.len()));
+        self.debug_tree.set_node_style(regs, STYLE_BOLD);
+        for reg in &debug.registers {
+            self.debug_tree
+                .add_child(regs, &format!("{} = {}", reg.name, reg.value));
+        }
     }
 
     /// Show a "no project" message.
@@ -234,5 +330,6 @@ impl RunPanel {
         self.run_config_label.set_text(t("No run configuration"));
         self.debug_status_label.set_text("Debugger: Idle");
         self.breakpoint_label.set_text("0 breakpoints");
+        self.debug_tree.clear();
     }
 }

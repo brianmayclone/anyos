@@ -3013,16 +3013,17 @@ impl<'a> TypeChecker<'a> {
             (TyKind::Projection(_, _, _), _) | (_, TyKind::Projection(_, _, _)) => return,
             (TyKind::Param(_), _) | (_, TyKind::Param(_)) => return,
             (TyKind::DynTrait(_), TyKind::Param(_)) | (TyKind::Param(_), TyKind::DynTrait(_)) => return,
-            _ if Self::contains_deferred_ty(&expected) || Self::contains_deferred_ty(&actual) => return,
 
             (TyKind::Infer(v), _) => {
-                self.substitutions.insert(*v, actual);
+                self.bind_infer_var(*v, &expected, actual, span);
                 return;
             }
             (_, TyKind::Infer(v)) => {
-                self.substitutions.insert(*v, expected);
+                self.bind_infer_var(*v, &actual, expected, span);
                 return;
             }
+
+            _ if Self::contains_deferred_ty(&expected) || Self::contains_deferred_ty(&actual) => return,
 
             (TyKind::Ref(a, am), TyKind::Ref(b, bm)) if am == bm => {
                 if let TyKind::Ref(nested, _) = b.as_ref() {
@@ -3236,6 +3237,33 @@ impl<'a> TypeChecker<'a> {
             self.describe_ty(&expected),
             self.describe_ty(&actual),
         ));
+    }
+
+    fn bind_infer_var(&mut self, var: InferVar, infer_ty: &TyKind, concrete_ty: TyKind, span: Span) {
+        if self.infer_var_accepts(var, &concrete_ty) {
+            self.substitutions.insert(var, concrete_ty);
+            return;
+        }
+
+        self.error(span, &format!(
+            "type mismatch: expected {}, found {}",
+            self.describe_ty(infer_ty),
+            self.describe_ty(&concrete_ty),
+        ));
+    }
+
+    fn infer_var_accepts(&self, var: InferVar, ty: &TyKind) -> bool {
+        match self.infer_kinds.get(&var).copied().unwrap_or(InferKind::General) {
+            InferKind::General => true,
+            InferKind::Integer => matches!(
+                self.shallow_resolve(ty.clone()),
+                TyKind::Int(_) | TyKind::Uint(_) | TyKind::Infer(_)
+            ),
+            InferKind::Float => matches!(
+                self.shallow_resolve(ty.clone()),
+                TyKind::Float(_) | TyKind::Infer(_)
+            ),
+        }
     }
 
     fn describe_ty(&self, ty: &TyKind) -> String {

@@ -327,6 +327,15 @@ pub fn wire_search_panel() {
 pub fn wire_run_panel() {
     app().run_panel.btn_run.on_click(|_| commands::run());
     app().run_panel.btn_debug.on_click(|_| commands::start_debugging());
+    app()
+        .run_panel
+        .btn_continue
+        .on_click(|_| commands::debug_continue());
+    app().run_panel.btn_pause.on_click(|_| commands::debug_pause());
+    app()
+        .run_panel
+        .btn_step_over
+        .on_click(|_| commands::debug_step_over());
     app().run_panel.btn_build.on_click(|_| commands::build());
     app().run_panel.btn_test.on_click(|_| commands::test());
     app().run_panel.btn_stop.on_click(|_| commands::stop());
@@ -724,6 +733,9 @@ fn execute_palette_command(cmd_id: u32) {
         142 => commands::set_build_configuration(crate::logic::project::BuildConfiguration::Release),
         144 => commands::start_debugging(),
         145 => commands::toggle_breakpoint_at_cursor(),
+        146 => commands::debug_continue(),
+        147 => commands::debug_pause(),
+        148 => commands::debug_step_over(),
         116 => commands::analyze_active_file(),
         117 => commands::restart_live_analysis(),
         118 => commands::clear_problems(),
@@ -738,6 +750,7 @@ fn execute_palette_command(cmd_id: u32) {
         127 => app().output.show_output(),
         128 => app().output.show_problems(),
         129 => app().output.show_terminal(),
+        149 => app().output.show_debug_console(),
         130 => commands::ai_action(ai::CodeAction::Explain),
         131 => commands::ai_action(ai::CodeAction::Refactor),
         132 => commands::ai_action(ai::CodeAction::Fix),

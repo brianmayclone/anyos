@@ -335,10 +335,15 @@ Akzeptanz:
 Status:
 
 - Gestartet: `debug_session.rs` haelt Debug-Status, Launch-Ziel und
-  Breakpoints.
+  Breakpoints, Call-Stack-Frames, Variables und Registerwerte.
 - Gestartet: Run-and-Debug-Panel besitzt einen Debug-Start, Session-Status und
   Breakpoint-Zaehler; F9 toggelt Breakpoints an der aktuellen Editorzeile.
-- Step/Continue funktionieren.
+- Gestartet: Run-and-Debug-Panel zeigt einen eigenen Debug-State-Tree fuer
+  Session, Breakpoints, Call Stack, Variables und Registers.
+- Gestartet: Bottom Panel besitzt eine eigene Debug Console; Debug-Kommandos
+  schreiben dort Launch-, Breakpoint-, Pause-, Continue-, Step- und Exit-Events.
+- Gestartet: Continue, Pause und Step Over sind als Buttons und Command-Palette-
+  Kommandos vorhanden.
 
 ### Phase 7: Git und Review Workflow
 

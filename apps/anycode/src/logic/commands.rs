@@ -184,6 +184,7 @@ pub fn stop() {
     s.live_check_process = None;
     s.live_check.reset();
     s.debug_session.stop();
+    s.output.append_debug_line("stop");
     s.run_panel.update_debug_session(&s.debug_session);
     crate::stop_build_timer();
     crate::stop_live_check_timer();
@@ -534,12 +535,21 @@ pub fn start_debugging() {
 
     let s = app();
     s.output.clear();
+    s.output.clear_debug_console();
     s.diagnostics.clear();
     s.build_output_buffer.clear();
     s.debug_session.start_launch(&task);
     s.run_panel.update_debug_session(&s.debug_session);
     s.output
         .append_line(&format!("[Debug] Launching {}", task.display_label));
+    s.output
+        .append_debug_line(&format!("launch {}", task.display_label));
+    if s.debug_session.breakpoint_count() > 0 {
+        s.output.append_debug_line(&format!(
+            "{} breakpoint(s) armed",
+            s.debug_session.breakpoint_count()
+        ));
+    }
     s.output.show_output();
 
     if !task.working_dir.is_empty() {
@@ -550,12 +560,41 @@ pub fn start_debugging() {
     if s.build_process.is_some() {
         s.debug_session.mark_running();
         s.status.set_analysis_status("Debug session running");
+        s.output.append_debug_line("process started");
         crate::start_build_timer();
     } else {
         s.debug_session.stop();
         s.status.set_analysis_status("Debug launch failed");
+        s.output.append_debug_line("launch failed");
     }
     s.run_panel.update_debug_session(&s.debug_session);
+}
+
+pub fn debug_continue() {
+    let s = app();
+    s.debug_session.continue_execution();
+    s.status.set_analysis_status("Debug continue");
+    s.output.append_debug_line("continue");
+    s.run_panel.update_debug_session(&s.debug_session);
+    s.output.show_debug_console();
+}
+
+pub fn debug_pause() {
+    let s = app();
+    s.debug_session.pause("user pause");
+    s.status.set_analysis_status("Debug paused");
+    s.output.append_debug_line("pause");
+    s.run_panel.update_debug_session(&s.debug_session);
+    s.output.show_debug_console();
+}
+
+pub fn debug_step_over() {
+    let s = app();
+    s.debug_session.step_over();
+    s.status.set_analysis_status("Debug step over");
+    s.output.append_debug_line("step over");
+    s.run_panel.update_debug_session(&s.debug_session);
+    s.output.show_debug_console();
 }
 
 pub fn toggle_breakpoint_at_cursor() {
@@ -574,6 +613,12 @@ pub fn toggle_breakpoint_at_cursor() {
         .set_analysis_status(&format!("{} breakpoint at line {}", action, line + 1));
     s.output.append_line(&format!(
         "[Debug] {} breakpoint: {}:{}",
+        action,
+        path::basename(&file_path),
+        line + 1
+    ));
+    s.output.append_debug_line(&format!(
+        "{} breakpoint {}:{}",
         action,
         path::basename(&file_path),
         line + 1
