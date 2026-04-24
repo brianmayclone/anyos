@@ -175,6 +175,8 @@ pub struct TypeChecker<'a> {
     trait_assoc_consts: HashMap<DefId, Vec<(Symbol, TyKind)>>,
     /// Trait bounds on current function's generic params: param_index -> list of trait DefIds
     current_generic_bounds: HashMap<u32, Vec<DefId>>,
+    /// Associated type equalities from bounds such as `I: IntoIterator<Item = T>`.
+    current_generic_assoc_bindings: HashMap<(u32, DefId, Symbol), TyKind>,
     /// Default trait method bodies: method DefId -> true if body exists in trait def
     trait_default_methods: HashMap<DefId, bool>,
     /// `impl core::ops::Index<I> for T { type Output = O; }` summaries.
@@ -230,6 +232,7 @@ impl<'a> TypeChecker<'a> {
             trait_assoc_types: HashMap::new(),
             trait_assoc_consts: HashMap::new(),
             current_generic_bounds: HashMap::new(),
+            current_generic_assoc_bindings: HashMap::new(),
             trait_default_methods: HashMap::new(),
             index_impls: Vec::new(),
             deref_impls: Vec::new(),
@@ -372,9 +375,15 @@ impl<'a> TypeChecker<'a> {
     fn push_generic_scope(
         &mut self,
         params: &[HirGenericParam],
-    ) -> (HashMap<Symbol, u32>, HashMap<u32, Vec<DefId>>, usize) {
+    ) -> (
+        HashMap<Symbol, u32>,
+        HashMap<u32, Vec<DefId>>,
+        HashMap<(u32, DefId, Symbol), TyKind>,
+        usize,
+    ) {
         let old_generics = self.current_generic_params.clone();
         let old_bounds = self.current_generic_bounds.clone();
+        let old_assoc_bindings = self.current_generic_assoc_bindings.clone();
         let mut next_idx = self
             .current_generic_params
             .values()
@@ -390,6 +399,10 @@ impl<'a> TypeChecker<'a> {
                 for bound in bounds {
                     if let Some(trait_def_id) = self.resolve_trait_bound_def(&bound.path) {
                         bound_def_ids.push(trait_def_id);
+                        for (assoc_name, assoc_ty) in self.trait_bound_assoc_bindings(&bound.path) {
+                            self.current_generic_assoc_bindings
+                                .insert((next_idx, trait_def_id, assoc_name), assoc_ty);
+                        }
                     }
                 }
                 if !bound_def_ids.is_empty() {
@@ -399,16 +412,34 @@ impl<'a> TypeChecker<'a> {
                 added += 1;
             }
         }
-        (old_generics, old_bounds, added)
+        (old_generics, old_bounds, old_assoc_bindings, added)
     }
 
     fn pop_generic_scope(
         &mut self,
         old_generics: HashMap<Symbol, u32>,
         old_bounds: HashMap<u32, Vec<DefId>>,
+        old_assoc_bindings: HashMap<(u32, DefId, Symbol), TyKind>,
     ) {
         self.current_generic_params = old_generics;
         self.current_generic_bounds = old_bounds;
+        self.current_generic_assoc_bindings = old_assoc_bindings;
+    }
+
+    fn trait_bound_assoc_bindings(&self, path: &HirPath) -> Vec<(Symbol, TyKind)> {
+        let Some(segment) = path.segments.last() else {
+            return Vec::new();
+        };
+        let Some(args) = &segment.args else {
+            return Vec::new();
+        };
+        args.args
+            .iter()
+            .filter_map(|arg| match arg {
+                HirGenericArg::AssocTypeBinding(name, ty) => Some((*name, self.hir_ty_to_ty(ty))),
+                _ => None,
+            })
+            .collect()
     }
 
     fn collect_param_substs(
