@@ -61,7 +61,10 @@ pub fn export_manifest_lines(cfg: &DistroConfig) -> Vec<String> {
         format!("resources.autostart\t{}", cfg.resources.autostart),
         format!("storage.layout\t{}", cfg.storage.layout),
         format!("storage.base_image_path\t{}", cfg.storage.base_image_path),
-        format!("storage.overlay_image_path\t{}", cfg.storage.overlay_image_path),
+        format!(
+            "storage.overlay_image_path\t{}",
+            cfg.storage.overlay_image_path
+        ),
         format!("storage.state_image_path\t{}", cfg.storage.state_image_path),
         format!(
             "storage.state_image_enabled\t{}",

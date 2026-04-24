@@ -42,6 +42,26 @@ pub struct CompileOptions {
     pub features: Vec<String>,
 }
 
+impl Default for CompileOptions {
+    fn default() -> Self {
+        Self {
+            input: String::new(),
+            output: String::from("a.out"),
+            emit: EmitKind::Exe,
+            opt_level: 0,
+            crate_type: CrateType::Bin,
+            crate_name: None,
+            src_dir: None,
+            extern_crates: Vec::new(),
+            cfg_flags: vec![String::from("target_os=\"linux\"")],
+            linker_script: None,
+            link_args: Vec::new(),
+            env_vars: Vec::new(),
+            features: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ExternCrateSpec {
     pub name: String,
@@ -264,6 +284,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
             }
             let no_main_flag = no_main || options.crate_type == CrateType::StaticLib;
             // Use extended linker if linker script or link args are provided
+            let target_abi = target_abi_from_cfg(&options.cfg_flags);
             if options.linker_script.is_some() || !options.link_args.is_empty() {
                 let mut extra_objects = Vec::new();
                 for arg in &options.link_args {
@@ -279,11 +300,12 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
                     extra_objects,
                     base_address: None,
                     entry_symbol: None,
+                    target_abi,
                 };
                 let exe = link::link_ext(&all_objects, &options.output, no_main_flag, &link_opts);
                 Ok(exe)
             } else {
-                let exe = link::link(&all_objects, &options.output, no_main_flag);
+                let exe = link::link_for_target(&all_objects, &options.output, no_main_flag, target_abi);
                 Ok(exe)
             }
         }
@@ -317,6 +339,14 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
             // Stub
             Ok(vec![])
         }
+    }
+}
+
+fn target_abi_from_cfg(cfg_flags: &[String]) -> link::TargetAbi {
+    if cfg_flags.iter().any(|flag| flag == "target_os=\"linux\"" || flag == "target_os=linux") {
+        link::TargetAbi::Linux
+    } else {
+        link::TargetAbi::AnyOs
     }
 }
 

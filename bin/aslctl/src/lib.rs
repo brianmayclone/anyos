@@ -44,6 +44,7 @@ pub enum ClientCommand<'a> {
     Restart(&'a str),
     Stop(&'a str),
     AgentStatus(&'a str),
+    AgentRestart(&'a str),
     VmStatus(&'a str),
     VmEvents(&'a str),
     VmEventsTail {
@@ -199,6 +200,7 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         "restart" => Some(ClientCommand::Restart(args.pos(1)?)),
         "stop" => Some(ClientCommand::Stop(args.pos(1)?)),
         "agent-status" => Some(ClientCommand::AgentStatus(args.pos(1)?)),
+        "agent-restart" => Some(ClientCommand::AgentRestart(args.pos(1)?)),
         "vm-status" => Some(ClientCommand::VmStatus(args.pos(1)?)),
         "vm-events" => Some(ClientCommand::VmEvents(args.pos(1)?)),
         "vm-events-tail" => Some(ClientCommand::VmEventsTail {
@@ -650,6 +652,7 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             | ClientCommand::Restart(_)
             | ClientCommand::Stop(_)
             | ClientCommand::AgentStatus(_)
+            | ClientCommand::AgentRestart(_)
             | ClientCommand::VmStatus(_) => {
                 for line in lines {
                     println!("{}", line);
@@ -783,6 +786,7 @@ fn print_usage() {
     println!("  aslctl restart <name>");
     println!("  aslctl stop <name>");
     println!("  aslctl agent-status <name>");
+    println!("  aslctl agent-restart <name>");
     println!("  aslctl vm-status <name>");
     println!("  aslctl vm-events <name>");
     println!("  aslctl vm-events-tail <name> [limit]");
@@ -864,6 +868,7 @@ impl ClientCommand<'_> {
             Self::Restart(name) => format!("RESTART {}", name),
             Self::Stop(name) => format!("STOP {}", name),
             Self::AgentStatus(name) => format!("AGENT_STATUS {}", name),
+            Self::AgentRestart(name) => format!("AGENT_RESTART {}", name),
             Self::VmStatus(name) => format!("VM_STATUS {}", name),
             Self::VmEvents(name) => format!("VM_EVENTS {}", name),
             Self::VmEventsTail { distro, limit } => format!("VM_EVENTS_TAIL {}\t{}", distro, limit),
@@ -1224,6 +1229,11 @@ mod tests {
         match parse_command(&args) {
             Some(ClientCommand::VmStatus(name)) => assert_eq!(name, "ubuntu-dev"),
             _ => panic!("expected vm status command"),
+        }
+        let args = anyos_std::args::parse("agent-restart ubuntu-dev", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::AgentRestart(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected agent restart command"),
         }
     }
 

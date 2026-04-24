@@ -543,7 +543,9 @@ pub fn clone_distro<S: ConfigStore>(
     let mut cloned = source.clone();
     cloned.id = alloc::format!("distro-{target_name}");
     cloned.name = String::from(target_name);
-    cloned.owner = owner.map(String::from).unwrap_or_else(|| source.owner.clone());
+    cloned.owner = owner
+        .map(String::from)
+        .unwrap_or_else(|| source.owner.clone());
     cloned.storage = default_storage_for(target_name);
     cloned.metadata.notes = if cloned.metadata.notes.is_empty() {
         alloc::format!("cloned from {source_name}")
@@ -958,8 +960,7 @@ mod tests {
     use super::{
         add_mount, add_port_forward, clone_distro, delete_distro, distro_root, ensure_distro_tree,
         list_distros, load_distro, remove_mount, remove_port_forward, update_network,
-        update_resources,
-        FakeStore,
+        update_resources, FakeStore,
     };
 
     #[test]

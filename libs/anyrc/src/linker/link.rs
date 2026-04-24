@@ -3,7 +3,7 @@ use anyos_std::collections::HashMap;
 use super::elf;
 
 /// Extended link options for kernel-level linking.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LinkOptions {
     /// Linker script path (parsed for ENTRY point and section layout).
     pub linker_script: Option<String>,
@@ -13,6 +13,26 @@ pub struct LinkOptions {
     pub base_address: Option<u64>,
     /// Custom entry point symbol name (default: "_start").
     pub entry_symbol: Option<String>,
+    /// Startup/exit syscall ABI for the generated `_start` stub.
+    pub target_abi: TargetAbi,
+}
+
+impl Default for LinkOptions {
+    fn default() -> Self {
+        Self {
+            linker_script: None,
+            extra_objects: Vec::new(),
+            base_address: None,
+            entry_symbol: None,
+            target_abi: TargetAbi::AnyOs,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetAbi {
+    AnyOs,
+    Linux,
 }
 
 /// Link one or more ELF object files into an executable (extended version).
@@ -38,16 +58,20 @@ pub fn link_ext(objects: &[Vec<u8>], _output_name: &str, no_main: bool, opts: &L
         }
     }
 
-    link_impl(&all_objects, no_main, base_addr, &entry_name)
+    link_impl(&all_objects, no_main, base_addr, &entry_name, opts.target_abi)
 }
 
 /// Link one or more ELF object files into an executable.
 /// Returns the raw bytes of the ELF executable.
 pub fn link(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Vec<u8> {
-    link_impl(objects, no_main, 0x400000, "_start")
+    link_impl(objects, no_main, 0x400000, "_start", TargetAbi::AnyOs)
 }
 
-fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &str) -> Vec<u8> {
+pub fn link_for_target(objects: &[Vec<u8>], _output_name: &str, no_main: bool, target_abi: TargetAbi) -> Vec<u8> {
+    link_impl(objects, no_main, 0x400000, "_start", target_abi)
+}
+
+fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &str, target_abi: TargetAbi) -> Vec<u8> {
     let mut merged_code = Vec::new();
     let mut merged_data = Vec::new();
 
@@ -61,18 +85,24 @@ fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &st
     if !no_main {
         // call main
         // mov rdi, rax  (exit code = return value of main)
-        // mov rax, 1    (SYS_EXIT on anyOS)
-        // int 0x80
         let start_offset = merged_code.len() as u64;
         // CALL rel32 (placeholder, will be patched)
         merged_code.push(0xE8);
         merged_code.extend_from_slice(&[0, 0, 0, 0]); // rel32 placeholder
         // mov rdi, rax
         merged_code.extend_from_slice(&[0x48, 0x89, 0xC7]);
-        // mov rax, 1 (SYS_EXIT)
-        merged_code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]);
-        // INT 0x80 (anyOS syscall)
-        merged_code.extend_from_slice(&[0xCD, 0x80]);
+        match target_abi {
+            TargetAbi::AnyOs => {
+                // mov rax, 1 (SYS_EXIT), int 0x80
+                merged_code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]);
+                merged_code.extend_from_slice(&[0xCD, 0x80]);
+            }
+            TargetAbi::Linux => {
+                // mov rax, 60 (SYS_exit), syscall
+                merged_code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x3C, 0x00, 0x00, 0x00]);
+                merged_code.extend_from_slice(&[0x0F, 0x05]);
+            }
+        }
 
         // Add _start->main relocation
         pending_relocs.push((start_offset + 1, "main".to_string(), 2 /* R_X86_64_PC32 */, -4));

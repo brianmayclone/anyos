@@ -260,6 +260,15 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             Ok(status) => format!("OK\t1\nagent\t{}\n\n", status.agent_state.as_str()),
             Err(err) => err_line(&err),
         },
+        "AGENT_RESTART" | "agent_restart" => {
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match runtime.restart_agent(store, name) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
         "VM_STATUS" | "vm_status" => {
             let Some(name) = first_tab_field(rest) else {
                 return err_line(&AsldError::InvalidArgument("name"));
@@ -885,7 +894,8 @@ mod tests {
         assert!(export.contains("format\tasl-export-v1"));
 
         let storage = dispatch(&mut runtime, &mut store, "STORAGE_VALIDATE ubuntu-copy");
-        assert!(storage.contains("overlay\t/System/var/asl/distros/ubuntu-copy/images/overlay.img\ttrue"));
+        assert!(storage
+            .contains("overlay\t/System/var/asl/distros/ubuntu-copy/images/overlay.img\ttrue"));
     }
 
     #[test]
@@ -1002,6 +1012,10 @@ mod tests {
         assert!(status.contains("boot_summary\t"));
         let events = dispatch(&mut runtime, &mut store, "VM_EVENTS ubuntu-dev");
         assert!(events.starts_with("OK\t0"));
+        let agent = dispatch(&mut runtime, &mut store, "AGENT_RESTART ubuntu-dev");
+        assert!(agent.contains("restart\trequested"));
+        let agent_status = dispatch(&mut runtime, &mut store, "AGENT_STATUS ubuntu-dev");
+        assert!(agent_status.contains("agent\tstarting"));
     }
 
     #[test]

@@ -32,7 +32,7 @@ fn lex_let_binding() {
     assert_eq!(tokens[3], TokenKind::Colon);
     assert!(matches!(tokens[4], TokenKind::Ident(_)));
     assert_eq!(tokens[5], TokenKind::Eq);
-    assert_eq!(tokens[6], TokenKind::IntLit(42));
+    assert_eq!(tokens[6], TokenKind::IntLit(42, None));
     assert_eq!(tokens[7], TokenKind::Semi);
     assert_eq!(tokens.len(), 8);
 }
@@ -70,11 +70,11 @@ fn lex_string_escapes() {
 fn lex_integer_literals() {
     let tokens = lex("42 0xFF 0b1010 1_000_000 0o77");
     assert_eq!(tokens.len(), 5);
-    assert_eq!(tokens[0], TokenKind::IntLit(42));
-    assert_eq!(tokens[1], TokenKind::IntLit(255));
-    assert_eq!(tokens[2], TokenKind::IntLit(10));
-    assert_eq!(tokens[3], TokenKind::IntLit(1_000_000));
-    assert_eq!(tokens[4], TokenKind::IntLit(63));
+    assert_eq!(tokens[0], TokenKind::IntLit(42, None));
+    assert_eq!(tokens[1], TokenKind::IntLit(255, None));
+    assert_eq!(tokens[2], TokenKind::IntLit(10, None));
+    assert_eq!(tokens[3], TokenKind::IntLit(1_000_000, None));
+    assert_eq!(tokens[4], TokenKind::IntLit(63, None));
 }
 
 #[test]

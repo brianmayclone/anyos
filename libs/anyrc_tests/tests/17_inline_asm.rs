@@ -60,6 +60,7 @@ fn assert_compiles(src: &str) {
         opt_level: 0,
         crate_type: CrateType::Bin,
         crate_name: None,
+        ..CompileOptions::default()
     };
     compile(src, "test.rs", &options).expect("compilation failed");
 }
@@ -137,6 +138,7 @@ fn codegen_nop_bytes() {
         opt_level: 0,
         crate_type: CrateType::Bin,
         crate_name: None,
+        ..CompileOptions::default()
     };
     let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     // The object file should contain a 0x90 (nop) byte somewhere in the .text section
@@ -162,6 +164,7 @@ fn codegen_cli_sti_bytes() {
         opt_level: 0,
         crate_type: CrateType::Bin,
         crate_name: None,
+        ..CompileOptions::default()
     };
     let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     // Should contain CLI (0xFA) followed by STI (0xFB) somewhere
@@ -184,6 +187,7 @@ fn codegen_port_io_bytes() {
         opt_level: 0,
         crate_type: CrateType::Bin,
         crate_name: None,
+        ..CompileOptions::default()
     };
     let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
     // Should contain OUT DX, AL (0xEE) somewhere

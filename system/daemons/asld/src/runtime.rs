@@ -264,6 +264,31 @@ impl RuntimeService {
         Ok(format_config_lines(&cfg))
     }
 
+    pub fn restart_agent<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<Vec<String>, AsldError> {
+        let cfg = load_distro(store, name)?;
+        if !cfg.agent.enabled {
+            return Err(AsldError::PolicyDenied);
+        }
+        let status = self
+            .store
+            .get_mut(name)
+            .ok_or(AsldError::InvalidState("distro is not running"))?;
+        if !matches!(status.state, DistroState::Ready | DistroState::Degraded) {
+            return Err(AsldError::InvalidState("distro is not running"));
+        }
+        status.agent_state = crate::model::AgentState::Starting;
+        status.last_error = None;
+        Ok(alloc::vec![
+            format!("agent\t{}", status.agent_state.as_str()),
+            String::from("restart\trequested"),
+            format!("fallback_console\t{}", cfg.agent.fallback_console_enabled),
+        ])
+    }
+
     pub fn start<S: ConfigStore>(
         &mut self,
         store: &mut S,
@@ -986,6 +1011,27 @@ mod tests {
     }
 
     #[test]
+    fn agent_restart_marks_agent_starting_without_restarting_distro() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+        let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
+
+        let lines = runtime.restart_agent(&mut store, "ubuntu-dev").unwrap();
+        assert!(lines.iter().any(|line| line == "restart\trequested"));
+        assert_eq!(
+            runtime
+                .status(&mut store, "ubuntu-dev")
+                .unwrap()
+                .agent_state
+                .as_str(),
+            "starting"
+        );
+    }
+
+    #[test]
     fn shell_session_reuses_named_session() {
         let mut store = FakeStore::default();
         let mut runtime = RuntimeService::new();
@@ -1138,13 +1184,7 @@ mod tests {
             .unwrap();
 
         let cloned = runtime
-            .clone(
-                &mut store,
-                "ubuntu-dev",
-                "ubuntu-copy",
-                Some("ops"),
-                true,
-            )
+            .clone(&mut store, "ubuntu-dev", "ubuntu-copy", Some("ops"), true)
             .unwrap();
         assert!(cloned.iter().any(|line| line == "name\tubuntu-copy"));
         assert!(cloned

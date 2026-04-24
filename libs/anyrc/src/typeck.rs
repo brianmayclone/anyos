@@ -1229,7 +1229,8 @@ impl<'a> TypeChecker<'a> {
 
             HirExprKind::Index(base, idx) => {
                 let base_ty = self.check_expr(base);
-                let idx_ty = self.check_expr(idx);
+                let idx_ty_raw = self.check_expr(idx);
+                let idx_ty = self.shallow_resolve(idx_ty_raw);
                 let resolved = self.shallow_resolve(base_ty);
                 let resolved = match resolved {
                     TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
@@ -1237,7 +1238,10 @@ impl<'a> TypeChecker<'a> {
                 };
                 let is_range = matches!(idx.kind, HirExprKind::Range(_, _, _));
                 if !is_range {
-                    self.unify(&TyKind::Uint(UintTy::Usize), &idx_ty, idx.span);
+                    match idx_ty {
+                        TyKind::Int(_) | TyKind::Uint(_) => {}
+                        other => self.unify(&TyKind::Uint(UintTy::Usize), &other, idx.span),
+                    }
                 }
                 match resolved {
                     TyKind::Array(elem, _) | TyKind::Slice(elem) => {

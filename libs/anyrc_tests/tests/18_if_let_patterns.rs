@@ -1,3 +1,4 @@
+mod common;
 use anyrc::parser::Parser;
 use anyrc::intern::Interner;
 use anyrc::ast::*;
@@ -32,6 +33,7 @@ fn assert_run_returns(src: &str, expected: i32) {
         opt_level: 0,
         crate_type: CrateType::Bin,
         crate_name: None,
+        ..CompileOptions::default()
     };
     let exe_bytes = compile(src, "test.rs", &options)
         .expect("compilation failed");
@@ -50,9 +52,7 @@ fn assert_run_returns(src: &str, expected: i32) {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&exe_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let status = std::process::Command::new(&exe_path)
-        .status()
-        .expect("failed to execute compiled binary");
+    let status = common::run_executable(&exe_path);
     let _ = std::fs::remove_dir_all(&dir);
     let code = status.code().unwrap_or(-1);
     assert_eq!(code, expected, "expected exit code {}, got {}", expected, code);
@@ -66,6 +66,7 @@ fn assert_compiles(src: &str) {
         opt_level: 0,
         crate_type: CrateType::Bin,
         crate_name: None,
+        ..CompileOptions::default()
     };
     compile(src, "test.rs", &options).expect("compilation failed");
 }

@@ -25,8 +25,8 @@ fn compile_to_object(src: &str) -> Vec<u8> {
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
 
-    let struct_sizes = std::collections::HashMap::new();
-    let field_offsets = std::collections::HashMap::new();
+    let struct_sizes = regalloc::StructSizes::new();
+    let field_offsets = regalloc::StructFieldOffsets::new();
     for body in &bodies {
         let alloc = regalloc::allocate(body, &struct_sizes);
         let (code, _relocs) = CodeEmitter::emit_fn(body, &alloc, &interner, &field_offsets);
@@ -62,6 +62,7 @@ fn compile_and_link(src: &str) -> Vec<u8> {
         opt_level: 0,
         crate_type: CrateType::Bin,
         crate_name: None,
+        ..CompileOptions::default()
     };
     compile(src, "test.rs", &options).unwrap()
 }

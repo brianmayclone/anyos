@@ -1,3 +1,4 @@
+mod common;
 use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
 use anyrc::parser::Parser;
 use anyrc::intern::Interner;
@@ -42,6 +43,7 @@ fn compile_and_run(source: &str) -> i32 {
         opt_level: 0,
         crate_type: CrateType::Bin,
         crate_name: None,
+        ..CompileOptions::default()
     };
     let exe_bytes = compile(source, "test.rs", &options)
         .expect("compilation failed");
@@ -60,9 +62,7 @@ fn compile_and_run(source: &str) -> i32 {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&exe_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let status = std::process::Command::new(&exe_path)
-        .status()
-        .expect("failed to execute compiled binary");
+    let status = common::run_executable(&exe_path);
     let _ = std::fs::remove_dir_all(&dir);
     status.code().unwrap_or(-1)
 }
@@ -116,6 +116,7 @@ fn compile_bounded_generic() {
         opt_level: 0,
         crate_type: CrateType::Bin,
         crate_name: None,
+        ..CompileOptions::default()
     };
     let _exe_bytes = compile(src, "test.rs", &options).expect("compilation failed");
 }
