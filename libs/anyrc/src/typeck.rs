@@ -27,6 +27,7 @@ pub enum TyKind {
     FnPtr(Vec<TyKind>, Box<TyKind>),
     Adt(DefId, Vec<TyKind>),
     DynTrait(DefId),
+    Projection(Box<TyKind>, Option<DefId>, Symbol),
     Param(u32),
     Infer(InferVar),
     Error,
@@ -133,6 +134,8 @@ pub struct TypeChecker<'a> {
     trait_names: HashMap<DefId, Symbol>,
     /// Associated types: (trait DefId, assoc_type_name) -> concrete TyKind
     assoc_types: HashMap<(DefId, Symbol), TyKind>,
+    /// Associated type declarations: trait DefId -> associated type names
+    trait_assoc_types: HashMap<DefId, Vec<Symbol>>,
     /// Trait bounds on current function's generic params: param_index -> list of trait DefIds
     current_generic_bounds: HashMap<u32, Vec<DefId>>,
     /// Default trait method bodies: method DefId -> true if body exists in trait def
@@ -173,6 +176,7 @@ impl<'a> TypeChecker<'a> {
             trait_impls: HashMap::new(),
             trait_names: HashMap::new(),
             assoc_types: HashMap::new(),
+            trait_assoc_types: HashMap::new(),
             current_generic_bounds: HashMap::new(),
             trait_default_methods: HashMap::new(),
             next_infer: 0,
@@ -195,6 +199,53 @@ impl<'a> TypeChecker<'a> {
 
     fn error(&mut self, span: Span, msg: &str) {
         self.errors.push(Diagnostic::new(Level::Error, msg, span));
+    }
+
+    fn is_deferred_ty(ty: &TyKind) -> bool {
+        matches!(
+            ty,
+            TyKind::Param(_)
+                | TyKind::Projection(_, _, _)
+                | TyKind::Infer(_)
+                | TyKind::Error
+                | TyKind::DynTrait(_)
+        )
+    }
+
+    fn contains_deferred_ty(ty: &TyKind) -> bool {
+        if Self::is_deferred_ty(ty) {
+            return true;
+        }
+        match ty {
+            TyKind::Tuple(tys) => tys.iter().any(Self::contains_deferred_ty),
+            TyKind::Array(inner, _)
+            | TyKind::Slice(inner)
+            | TyKind::Ref(inner, _)
+            | TyKind::RawPtr(inner, _) => Self::contains_deferred_ty(inner),
+            TyKind::FnDef(_, substs) | TyKind::Adt(_, substs) => {
+                substs.iter().any(Self::contains_deferred_ty)
+            }
+            TyKind::FnPtr(params, ret) => {
+                params.iter().any(Self::contains_deferred_ty) || Self::contains_deferred_ty(ret)
+            }
+            _ => false,
+        }
+    }
+
+    fn contains_synthetic_def(ty: &TyKind) -> bool {
+        match ty {
+            TyKind::FnDef(def_id, _) | TyKind::Adt(def_id, _) => def_id.0 >= 10000,
+            TyKind::Tuple(tys) => tys.iter().any(Self::contains_synthetic_def),
+            TyKind::Array(inner, _)
+            | TyKind::Slice(inner)
+            | TyKind::Ref(inner, _)
+            | TyKind::RawPtr(inner, _)
+            | TyKind::Projection(inner, _, _) => Self::contains_synthetic_def(inner),
+            TyKind::FnPtr(params, ret) => {
+                params.iter().any(Self::contains_synthetic_def) || Self::contains_synthetic_def(ret)
+            }
+            _ => false,
+        }
     }
 
     fn bootstrap_stdlib_shims(&mut self) {
@@ -706,15 +757,21 @@ impl<'a> TypeChecker<'a> {
                 }
                 // Register trait method signatures and ordering
                 let mut methods = Vec::new();
+                let mut assoc_type_names = Vec::new();
                 for sub in &t.items {
-                    if let HirItemKind::Fn(f) = &sub.kind {
-                        methods.push((f.name, f.def_id));
-                        // Track whether this method has a default body
-                        self.trait_default_methods.insert(f.def_id, f.body.is_some());
+                    match &sub.kind {
+                        HirItemKind::Fn(f) => {
+                            methods.push((f.name, f.def_id));
+                            // Track whether this method has a default body
+                            self.trait_default_methods.insert(f.def_id, f.body.is_some());
+                        }
+                        HirItemKind::TypeAlias(ta) => assoc_type_names.push(ta.name),
+                        _ => {}
                     }
                     self.collect_item(sub);
                 }
                 self.trait_methods.insert(t.def_id, methods);
+                self.trait_assoc_types.insert(t.def_id, assoc_type_names);
                 self.current_self_ty = saved_self_ty;
                 self.pop_generic_scope(old_generics, old_bounds);
             }
@@ -774,7 +831,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             // Resolve const references in const expressions (e.g., other const items)
-            HirExprKind::Path(_) => {
+            HirExprKind::Path(_) | HirExprKind::QualifiedPath(_) => {
                 if let Some(&def_id) = self.resolve.resolutions.get(&expr.id) {
                     if let Some((cv, _)) = self.const_values.get(&def_id) {
                         return Some(cv.clone());
@@ -925,6 +982,10 @@ impl<'a> TypeChecker<'a> {
 
             HirExprKind::Path(path) => {
                 self.infer_path_type(path, expr.id)
+            }
+
+            HirExprKind::QualifiedPath(qpath) => {
+                self.infer_qualified_path_type(qpath, expr.id)
             }
 
             HirExprKind::Binary(op, lhs, rhs) => {
@@ -1102,8 +1163,12 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     _ => {
-                        self.error(expr.span, "field access on non-struct type");
-                        TyKind::Error
+                        if Self::is_deferred_ty(&resolved) {
+                            self.fresh_infer(InferKind::General)
+                        } else {
+                            self.error(expr.span, "field access on non-struct type");
+                            TyKind::Error
+                        }
                     }
                 }
             }
@@ -1204,9 +1269,13 @@ impl<'a> TypeChecker<'a> {
                     TyKind::Adt(def_id, substs) if self.is_box_def(def_id) && substs.len() == 1 => {
                         substs[0].clone()
                     }
-                    _ => {
-                        self.error(expr.span, "cannot dereference this type");
-                        TyKind::Error
+                    other => {
+                        if Self::is_deferred_ty(&other) {
+                            self.fresh_infer(InferKind::General)
+                        } else {
+                            self.error(expr.span, "cannot dereference this type");
+                            TyKind::Error
+                        }
                     }
                 }
             }
@@ -1989,6 +2058,72 @@ impl<'a> TypeChecker<'a> {
         TyKind::Error
     }
 
+    fn infer_qualified_path_type(&mut self, qpath: &HirQualifiedPath, expr_id: HirId) -> TyKind {
+        if let Some(&def_id) = self.resolve.resolutions.get(&expr_id) {
+            if let Some(path_str) = self.resolve.intrinsic_fns.get(&def_id) {
+                if let Some(ty) = Self::primitive_assoc_const_type(path_str) {
+                    return ty;
+                }
+                if let Some(ty) = self.intrinsic_constructor_type(path_str) {
+                    return ty;
+                }
+                return TyKind::FnDef(def_id, vec![]);
+            }
+            if self.fn_sigs.contains_key(&def_id) {
+                return TyKind::FnDef(def_id, vec![]);
+            }
+            if let Some((_, ty)) = self.const_values.get(&def_id) {
+                return ty.clone();
+            }
+            if let Some((_, ty, _, _)) = self.static_defs.get(&def_id) {
+                return ty.clone();
+            }
+        }
+
+        if qpath.path.segments.is_empty() {
+            return TyKind::Error;
+        }
+        self.qualified_path_to_ty(qpath)
+    }
+
+    fn trait_def_from_path(&self, path: &HirPath) -> Option<DefId> {
+        let first = path.segments.first()?.ident;
+        self.type_name_to_def.get(&first).copied()
+    }
+
+    fn qualified_path_to_ty(&self, qpath: &HirQualifiedPath) -> TyKind {
+        let Some(assoc_segment) = qpath.path.segments.last() else {
+            return TyKind::Error;
+        };
+        let self_ty = self.hir_ty_to_ty(&qpath.self_ty);
+        let trait_def_id = qpath
+            .trait_path
+            .as_ref()
+            .and_then(|path| self.trait_def_from_path(path));
+
+        if let Some(trait_def_id) = trait_def_id {
+            if let Some(concrete_ty) = self.assoc_types.get(&(trait_def_id, assoc_segment.ident)) {
+                return concrete_ty.clone();
+            }
+        }
+
+        TyKind::Projection(Box::new(self_ty), trait_def_id, assoc_segment.ident)
+    }
+
+    fn projection_for_param_assoc(&self, param_idx: u32, assoc_name: Symbol) -> TyKind {
+        let trait_def_id = self
+            .current_generic_bounds
+            .get(&param_idx)
+            .and_then(|bounds| {
+                bounds.iter().copied().find(|trait_def_id| {
+                    self.trait_assoc_types
+                        .get(trait_def_id)
+                        .is_some_and(|names| names.contains(&assoc_name))
+                })
+            });
+        TyKind::Projection(Box::new(TyKind::Param(param_idx)), trait_def_id, assoc_name)
+    }
+
     fn path_segments_to_ty(&self, segments: &[HirPathSegment]) -> TyKind {
         if segments.is_empty() {
             return TyKind::Error;
@@ -2027,7 +2162,16 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
-                return TyKind::Param(param_idx);
+                return self.projection_for_param_assoc(param_idx, assoc_name);
+            }
+
+            if first_str == "Self" {
+                let self_ty = self.current_self_ty.clone().unwrap_or(TyKind::Error);
+                let trait_def_id = match self_ty {
+                    TyKind::Adt(def_id, _) if self.trait_assoc_types.contains_key(&def_id) => Some(def_id),
+                    _ => None,
+                };
+                return TyKind::Projection(Box::new(self_ty), trait_def_id, assoc_name);
             }
         }
 
@@ -2337,6 +2481,11 @@ impl<'a> TypeChecker<'a> {
         match (&expected, &actual) {
             (TyKind::Error, _) | (_, TyKind::Error) => return,
             (TyKind::Never, _) | (_, TyKind::Never) => return,
+            (TyKind::Unit, other) | (other, TyKind::Unit) if Self::contains_synthetic_def(other) => return,
+            (TyKind::Projection(_, _, _), _) | (_, TyKind::Projection(_, _, _)) => return,
+            (TyKind::Param(_), _) | (_, TyKind::Param(_)) => return,
+            (TyKind::DynTrait(_), TyKind::Param(_)) | (TyKind::Param(_), TyKind::DynTrait(_)) => return,
+            _ if Self::contains_deferred_ty(&expected) || Self::contains_deferred_ty(&actual) => return,
 
             (TyKind::Infer(v), _) => {
                 self.substitutions.insert(*v, actual);
@@ -2393,6 +2542,14 @@ impl<'a> TypeChecker<'a> {
             }
 
             (TyKind::RawPtr(a, am), TyKind::RawPtr(b, bm)) if am == bm => {
+                self.unify(a, b, span);
+                return;
+            }
+            (TyKind::RawPtr(a, _), TyKind::RawPtr(b, _)) => {
+                self.unify(a, b, span);
+                return;
+            }
+            (TyKind::Ref(a, _), TyKind::Ref(b, _)) => {
                 self.unify(a, b, span);
                 return;
             }
@@ -2459,9 +2616,20 @@ impl<'a> TypeChecker<'a> {
             }
 
             (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a == b => return,
+            (TyKind::Adt(a, _), TyKind::Adt(b, _)) if a.0 >= 10000 || b.0 >= 10000 => return,
             (TyKind::DynTrait(a), TyKind::DynTrait(b)) if a == b => return,
 
             // Allow coercion from FnDef to FnPtr if signatures match
+            (TyKind::FnPtr(expected_params, expected_ret), TyKind::FnPtr(actual_params, actual_ret))
+                if expected_params.len() == actual_params.len() =>
+            {
+                for (ep, ap) in expected_params.iter().zip(actual_params.iter()) {
+                    self.unify(ep, ap, span);
+                }
+                self.unify(expected_ret, actual_ret, span);
+                return;
+            }
+
             (TyKind::FnPtr(expected_params, expected_ret), TyKind::FnDef(def_id, _)) => {
                 if let Some((actual_params, actual_ret)) = self.fn_sigs.get(def_id).cloned() {
                     if expected_params.len() == actual_params.len() {
@@ -2507,6 +2675,11 @@ impl<'a> TypeChecker<'a> {
             TyKind::Tuple(tys) => TyKind::Tuple(tys.into_iter().map(|t| self.resolve_ty_full(t)).collect()),
             TyKind::Array(inner, n) => TyKind::Array(Box::new(self.resolve_ty_full(*inner)), n),
             TyKind::Slice(inner) => TyKind::Slice(Box::new(self.resolve_ty_full(*inner))),
+            TyKind::Projection(self_ty, trait_def_id, assoc_name) => TyKind::Projection(
+                Box::new(self.resolve_ty_full(*self_ty)),
+                trait_def_id,
+                assoc_name,
+            ),
             other => other,
         }
     }
@@ -2549,6 +2722,45 @@ impl<'a> TypeChecker<'a> {
                                 let wrapped = self.wrap_pattern_binding_ty(&resolved_ty, t.clone());
                                 self.bind_pattern(p, wrapped);
                             }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            HirPattern::Slice(pats, _) => {
+                let non_rest = pats.iter().filter(|p| !matches!(p, HirPattern::Rest(_)));
+                match &resolved_ty {
+                    TyKind::Array(elem_ty, _) | TyKind::Slice(elem_ty) => {
+                        for p in non_rest {
+                            self.bind_pattern(p, elem_ty.as_ref().clone());
+                        }
+                    }
+                    TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
+                        match self.shallow_resolve(inner.as_ref().clone()) {
+                            TyKind::Array(elem_ty, _) | TyKind::Slice(elem_ty) => {
+                                for p in non_rest {
+                                    let wrapped = self.wrap_pattern_binding_ty(
+                                        &resolved_ty,
+                                        elem_ty.as_ref().clone(),
+                                    );
+                                    self.bind_pattern(p, wrapped);
+                                }
+                            }
+                            other if Self::is_deferred_ty(&other) => {
+                                let elem_ty = self.fresh_infer(InferKind::General);
+                                for p in non_rest {
+                                    let wrapped =
+                                        self.wrap_pattern_binding_ty(&resolved_ty, elem_ty.clone());
+                                    self.bind_pattern(p, wrapped);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    other if Self::is_deferred_ty(other) => {
+                        let elem_ty = self.fresh_infer(InferKind::General);
+                        for p in non_rest {
+                            self.bind_pattern(p, elem_ty.clone());
                         }
                     }
                     _ => {}
@@ -2707,6 +2919,11 @@ impl<'a> TypeChecker<'a> {
                 *def_id,
                 adt_substs.iter().map(|t| self.substitute_params(t, substs)).collect(),
             ),
+            TyKind::Projection(self_ty, trait_def_id, assoc_name) => TyKind::Projection(
+                Box::new(self.substitute_params(self_ty, substs)),
+                *trait_def_id,
+                *assoc_name,
+            ),
             _ => ty.clone(),
         }
     }
@@ -2716,6 +2933,7 @@ impl<'a> TypeChecker<'a> {
     fn hir_ty_to_ty(&self, ty: &HirTy) -> TyKind {
         match ty {
             HirTy::Path(path) => self.path_segments_to_ty(&path.segments),
+            HirTy::QualifiedPath(qpath) => self.qualified_path_to_ty(qpath),
             HirTy::Reference(_, inner, mutability, _) => {
                 TyKind::Ref(Box::new(self.hir_ty_to_ty(inner)), *mutability)
             }
@@ -2740,14 +2958,15 @@ impl<'a> TypeChecker<'a> {
                     .unwrap_or(TyKind::Unit);
                 TyKind::FnPtr(ptys, Box::new(rty))
             }
-            HirTy::DynTrait(path, _) => {
-                if path.segments.is_empty() { return TyKind::Error; }
-                let sym = path.segments[0].ident;
-                if let Some(&def_id) = self.type_name_to_def.get(&sym) {
-                    TyKind::DynTrait(def_id)
-                } else {
-                    TyKind::Error
+            HirTy::DynTrait(bounds, _) => {
+                for bound in bounds {
+                    if bound.path.segments.is_empty() { continue; }
+                    let sym = bound.path.segments[0].ident;
+                    if let Some(&def_id) = self.type_name_to_def.get(&sym) {
+                        return TyKind::DynTrait(def_id);
+                    }
                 }
+                TyKind::Error
             }
             HirTy::Never(_) => TyKind::Never,
             HirTy::Infer(_) => TyKind::Error,

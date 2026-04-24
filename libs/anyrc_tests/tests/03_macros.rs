@@ -91,3 +91,26 @@ fn macro_not_found_is_preserved() {
     // Should not crash
     assert_eq!(krate.items.len(), 1);
 }
+
+#[test]
+fn expand_cfg_if_items() {
+    let krate = parse_and_expand(r#"
+        cfg_if::cfg_if! {
+            if #[cfg(target_arch = "x86_64")] {
+                pub use crate::fallback::AHasher;
+            } else if #[cfg(target_arch = "aarch64")] {
+                mod aes_hash;
+            } else {
+                mod fallback_hash;
+            }
+        }
+    "#);
+    assert_eq!(krate.items.len(), 3);
+    for item in &krate.items {
+        match item {
+            Item::Use(u) => assert_eq!(u.attrs.len(), 1),
+            Item::Mod(m) => assert_eq!(m.attrs.len(), 1),
+            _ => panic!("expected cfg_if expansion item"),
+        }
+    }
+}

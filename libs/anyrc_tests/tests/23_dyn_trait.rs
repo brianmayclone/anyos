@@ -57,6 +57,21 @@ fn parse_dyn_trait_type() {
 }
 
 #[test]
+fn parse_dyn_trait_multi_bound_type() {
+    let src = r#"
+        trait MyTrait {
+            fn do_thing(&self) -> i32;
+        }
+        fn foo(x: alloc::boxed::Box<dyn MyTrait + Send + Sync>) -> i32 { 0 }
+        fn main() -> i32 { 0 }
+    "#;
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(src, &mut interner);
+    let krate = parser.parse_crate();
+    assert!(krate.items.len() >= 3);
+}
+
+#[test]
 fn parse_dyn_trait_ref() {
     let src = r#"
         trait Foo {

@@ -3,9 +3,7 @@
 //! AVM exposes one ioctl-like syscall. Userspace talks to a system handle,
 //! VM handles, and vCPU handles. VMX/SVM remain raw backend internals.
 
-use super::{
-    CpuidEntry, DirtyLogRequest, GuestFpuState, GuestGprs, GuestSregs, TranslateRequest,
-};
+use super::{CpuidEntry, DirtyLogRequest, GuestFpuState, GuestGprs, GuestSregs, TranslateRequest};
 
 pub const AVM_API_VERSION: u32 = 1;
 pub const AVM_SYSTEM_HANDLE: u64 = 0;
@@ -20,6 +18,7 @@ pub const AVM_EXT_DIRTY_LOG: u32 = 1;
 pub const AVM_EXT_MP_STATE: u32 = 2;
 pub const AVM_EXT_GVA_TRANSLATE: u32 = 3;
 pub const AVM_EXT_FPU_STATE: u32 = 4;
+pub const AVM_EXT_IRQ_INJECTION: u32 = 5;
 
 pub const AVMIO_GET_API_VERSION: u32 = 0xAE00;
 pub const AVMIO_CHECK_EXTENSION: u32 = 0xAE01;
@@ -44,6 +43,9 @@ pub const AVMIO_SET_FPU: u32 = 0xAE88;
 pub const AVMIO_GET_MP_STATE: u32 = 0xAE89;
 pub const AVMIO_SET_MP_STATE: u32 = 0xAE8A;
 pub const AVMIO_TRANSLATE: u32 = 0xAE8B;
+pub const AVMIO_INJECT_IRQ: u32 = 0xAE8C;
+pub const AVMIO_INJECT_EXCEPTION: u32 = 0xAE8D;
+pub const AVMIO_INJECT_NMI: u32 = 0xAE8E;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -83,31 +85,60 @@ pub fn sys_avm_ioctl(handle: u64, request: u32, arg: u64, flags: u64) -> u64 {
         AVMIO_SET_USER_MEMORY_REGION => with_vm(handle, |vm_id| set_user_memory_region(vm_id, arg)),
         AVMIO_CREATE_VCPU => with_vm(handle, |vm_id| create_vcpu(vm_id, arg as u32)),
         AVMIO_SET_CPUID2 => with_vm(handle, |vm_id| set_cpuid(vm_id, arg, flags as u32)),
-        AVMIO_GET_DIRTY_LOG => with_vm(handle, |vm_id| super::syscalls::sys_vm_get_dirty_log(vm_id, arg) as u64),
-        AVMIO_DESTROY_VM => with_vm(handle, |vm_id| super::syscalls::sys_vm_destroy(vm_id) as u64),
-        AVMIO_RUN => with_vcpu(handle, |vm_id, vcpu_id| super::syscalls::sys_vcpu_run(vm_id, vcpu_id, arg) as u64),
+        AVMIO_GET_DIRTY_LOG => with_vm(handle, |vm_id| {
+            super::syscalls::sys_vm_get_dirty_log(vm_id, arg) as u64
+        }),
+        AVMIO_DESTROY_VM => with_vm(handle, |vm_id| {
+            super::syscalls::sys_vm_destroy(vm_id) as u64
+        }),
+        AVMIO_RUN => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_run(vm_id, vcpu_id, arg) as u64
+        }),
         AVMIO_GET_REGS => with_vcpu(handle, |vm_id, vcpu_id| {
             let _ = core::mem::size_of::<GuestGprs>();
             super::syscalls::sys_vcpu_get_regs(vm_id, vcpu_id, arg) as u64
         }),
-        AVMIO_SET_REGS => with_vcpu(handle, |vm_id, vcpu_id| super::syscalls::sys_vcpu_set_regs(vm_id, vcpu_id, arg) as u64),
+        AVMIO_SET_REGS => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_set_regs(vm_id, vcpu_id, arg) as u64
+        }),
         AVMIO_GET_SREGS => with_vcpu(handle, |vm_id, vcpu_id| {
             let _ = core::mem::size_of::<GuestSregs>();
             super::syscalls::sys_vcpu_get_sregs(vm_id, vcpu_id, arg) as u64
         }),
-        AVMIO_SET_SREGS => with_vcpu(handle, |vm_id, vcpu_id| super::syscalls::sys_vcpu_set_sregs(vm_id, vcpu_id, arg) as u64),
-        AVMIO_PAUSE => with_vcpu(handle, |vm_id, vcpu_id| super::syscalls::sys_vcpu_pause(vm_id, vcpu_id) as u64),
-        AVMIO_RESUME => with_vcpu(handle, |vm_id, vcpu_id| super::syscalls::sys_vcpu_resume(vm_id, vcpu_id) as u64),
+        AVMIO_SET_SREGS => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_set_sregs(vm_id, vcpu_id, arg) as u64
+        }),
+        AVMIO_PAUSE => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_pause(vm_id, vcpu_id) as u64
+        }),
+        AVMIO_RESUME => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_resume(vm_id, vcpu_id) as u64
+        }),
         AVMIO_GET_FPU => with_vcpu(handle, |vm_id, vcpu_id| {
             let _ = core::mem::size_of::<GuestFpuState>();
             super::syscalls::sys_vcpu_get_fpu(vm_id, vcpu_id, arg) as u64
         }),
-        AVMIO_SET_FPU => with_vcpu(handle, |vm_id, vcpu_id| super::syscalls::sys_vcpu_set_fpu(vm_id, vcpu_id, arg) as u64),
-        AVMIO_GET_MP_STATE => with_vcpu(handle, |vm_id, vcpu_id| super::syscalls::sys_vcpu_get_mp_state(vm_id, vcpu_id) as u64),
-        AVMIO_SET_MP_STATE => with_vcpu(handle, |vm_id, vcpu_id| super::syscalls::sys_vcpu_set_mp_state(vm_id, vcpu_id, arg as u32) as u64),
+        AVMIO_SET_FPU => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_set_fpu(vm_id, vcpu_id, arg) as u64
+        }),
+        AVMIO_GET_MP_STATE => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_get_mp_state(vm_id, vcpu_id) as u64
+        }),
+        AVMIO_SET_MP_STATE => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_set_mp_state(vm_id, vcpu_id, arg as u32) as u64
+        }),
         AVMIO_TRANSLATE => with_vcpu(handle, |vm_id, vcpu_id| {
             let _ = core::mem::size_of::<TranslateRequest>();
             super::syscalls::sys_vcpu_translate(vm_id, vcpu_id, arg) as u64
+        }),
+        AVMIO_INJECT_IRQ => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_inject_irq(vm_id, vcpu_id, arg as u32) as u64
+        }),
+        AVMIO_INJECT_EXCEPTION => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_inject_exception(vm_id, vcpu_id, arg as u32) as u64
+        }),
+        AVMIO_INJECT_NMI => with_vcpu(handle, |vm_id, vcpu_id| {
+            super::syscalls::sys_vcpu_inject_nmi(vm_id, vcpu_id) as u64
         }),
         _ => u64::MAX,
     }
@@ -147,11 +178,8 @@ fn set_user_memory_region(vm_id: u32, arg: u64) -> u64 {
         size: region.memory_size,
         host_phys: region.userspace_addr,
     };
-    super::syscalls::sys_vm_set_memory(
-        vm_id,
-        region.slot,
-        (&raw as *const RawMemoryRegion) as u64,
-    ) as u64
+    super::syscalls::sys_vm_set_memory(vm_id, region.slot, (&raw as *const RawMemoryRegion) as u64)
+        as u64
 }
 
 fn set_cpuid(vm_id: u32, arg: u64, count: u32) -> u64 {
@@ -188,11 +216,16 @@ fn feature_bits() -> u64 {
         | (1u64 << AVM_EXT_MP_STATE)
         | (1u64 << AVM_EXT_GVA_TRANSLATE)
         | (1u64 << AVM_EXT_FPU_STATE)
+        | (1u64 << AVM_EXT_IRQ_INJECTION)
 }
 
 fn check_extension(ext: u32) -> u32 {
     match ext {
-        AVM_EXT_DIRTY_LOG | AVM_EXT_MP_STATE | AVM_EXT_GVA_TRANSLATE | AVM_EXT_FPU_STATE => 1,
+        AVM_EXT_DIRTY_LOG
+        | AVM_EXT_MP_STATE
+        | AVM_EXT_GVA_TRANSLATE
+        | AVM_EXT_FPU_STATE
+        | AVM_EXT_IRQ_INJECTION => 1,
         _ => 0,
     }
 }

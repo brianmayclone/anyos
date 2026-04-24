@@ -182,6 +182,7 @@ pub struct HirExpr {
 pub enum HirExprKind {
     Lit(Literal),
     Path(HirPath),
+    QualifiedPath(HirQualifiedPath),
     Binary(BinOp, Box<HirExpr>, Box<HirExpr>),
     Unary(UnOp, Box<HirExpr>),
     Call(Box<HirExpr>, Vec<HirExpr>),
@@ -268,6 +269,7 @@ pub enum HirPattern {
     Ident(HirId, Symbol, Mutability, Option<Box<HirPattern>>, Span),
     Literal(Literal, Span),
     Tuple(Vec<HirPattern>, Span),
+    Slice(Vec<HirPattern>, Span),
     Struct(HirPath, Vec<HirFieldPat>, bool, Span),
     TupleStruct(HirPath, Vec<HirPattern>, Span),
     Wildcard(Span),
@@ -288,13 +290,14 @@ pub struct HirFieldPat {
 
 pub enum HirTy {
     Path(HirPath),
+    QualifiedPath(HirQualifiedPath),
     Reference(Option<Symbol>, Box<HirTy>, Mutability, Span),
     RawPtr(Box<HirTy>, Mutability, Span),
     Tuple(Vec<HirTy>, Span),
     Array(Box<HirTy>, Box<HirExpr>, Span),
     Slice(Box<HirTy>, Span),
     FnPtr(Vec<HirTy>, Option<Box<HirTy>>, Span),
-    DynTrait(HirPath, Span),
+    DynTrait(Vec<HirTraitBound>, Span),
     Infer(Span),
     Never(Span),
 }
@@ -319,6 +322,13 @@ pub struct HirTraitBound {
 
 pub struct HirPath {
     pub segments: Vec<HirPathSegment>,
+    pub span: Span,
+}
+
+pub struct HirQualifiedPath {
+    pub self_ty: Box<HirTy>,
+    pub trait_path: Option<HirPath>,
+    pub path: HirPath,
     pub span: Span,
 }
 

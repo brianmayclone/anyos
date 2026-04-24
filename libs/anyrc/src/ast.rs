@@ -201,6 +201,7 @@ pub struct ExternBlockDef {
 pub enum Expr {
     Lit(Literal, Span),
     Path(Path),
+    QualifiedPath(QualifiedPath),
     Binary(BinOp, Box<Expr>, Box<Expr>, Span),
     Unary(UnOp, Box<Expr>, Span),
     Call(Box<Expr>, Vec<Expr>, Span),
@@ -258,6 +259,7 @@ pub enum AsmReg {
 pub struct FieldExpr {
     pub name: Symbol,
     pub value: Expr,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -298,6 +300,7 @@ pub enum Pattern {
     Ident(Symbol, Mutability, Option<Box<Pattern>>, Span),
     Literal(Literal, Span),
     Tuple(Vec<Pattern>, Span),
+    Slice(Vec<Pattern>, Span),
     Struct(Path, Vec<FieldPat>, bool, Span),
     TupleStruct(Path, Vec<Pattern>, Span),
     Wildcard(Span),
@@ -311,19 +314,21 @@ pub enum Pattern {
 pub struct FieldPat {
     pub name: Symbol,
     pub pat: Pattern,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
 // Types
 pub enum Ty {
     Path(Path),
+    QualifiedPath(QualifiedPath),
     Reference(Option<Symbol>, Box<Ty>, Mutability, Span),
     RawPtr(Box<Ty>, Mutability, Span),
     Tuple(Vec<Ty>, Span),
     Array(Box<Ty>, Box<Expr>, Span),
     Slice(Box<Ty>, Span),
     FnPtr(Vec<Ty>, Option<Box<Ty>>, Span),
-    DynTrait(Path, Span),
+    DynTrait(Vec<TraitBound>, Span),
     Infer(Span),
     Never(Span),
 }
@@ -358,6 +363,13 @@ pub enum WherePredicate {
 // Common
 pub struct Path {
     pub segments: Vec<PathSegment>,
+    pub span: Span,
+}
+
+pub struct QualifiedPath {
+    pub self_ty: Box<Ty>,
+    pub trait_path: Option<Path>,
+    pub path: Path,
     pub span: Span,
 }
 

@@ -297,7 +297,8 @@ fn strip_stmts(stmts: &mut Vec<Stmt>, ctx: &CfgContext, interner: &Interner) {
 
 fn strip_stmt(stmt: &mut Stmt, ctx: &CfgContext, interner: &Interner) {
     match stmt {
-        Stmt::Let(_, _, init, _) => {
+        Stmt::Let(pat, _, init, _) => {
+            strip_pattern(pat, ctx, interner);
             if let Some(init) = init {
                 strip_expr(init, ctx, interner);
             }
@@ -374,6 +375,7 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
         Expr::Match(scrutinee, arms, _) => {
             strip_expr(scrutinee, ctx, interner);
             for arm in arms {
+                strip_pattern(&mut arm.pat, ctx, interner);
                 if let Some(guard) = &mut arm.guard {
                     strip_expr(guard, ctx, interner);
                 }
@@ -384,17 +386,24 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
             strip_expr(cond, ctx, interner);
             strip_block(body, ctx, interner);
         }
-        Expr::For(_, iter, body, _, _) => {
+        Expr::For(pat, iter, body, _, _) => {
+            strip_pattern(pat, ctx, interner);
             strip_expr(iter, ctx, interner);
             strip_block(body, ctx, interner);
         }
-        Expr::Closure(_, _, body, _, _) => strip_expr(body, ctx, interner),
+        Expr::Closure(params, _, body, _, _) => {
+            for param in params {
+                strip_pattern(&mut param.pat, ctx, interner);
+            }
+            strip_expr(body, ctx, interner);
+        }
         Expr::Break(_, value, _) => {
             if let Some(value) = value {
                 strip_expr(value, ctx, interner);
             }
         }
         Expr::Struct(_, fields, base, _) => {
+            fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
             for field in fields {
                 strip_expr(&mut field.value, ctx, interner);
             }
@@ -419,14 +428,16 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
                 strip_expr(end, ctx, interner);
             }
         }
-        Expr::IfLet(_, scrutinee, then_block, else_branch, _) => {
+        Expr::IfLet(pat, scrutinee, then_block, else_branch, _) => {
+            strip_pattern(pat, ctx, interner);
             strip_expr(scrutinee, ctx, interner);
             strip_block(then_block, ctx, interner);
             if let Some(else_expr) = else_branch {
                 strip_expr(else_expr, ctx, interner);
             }
         }
-        Expr::WhileLet(_, scrutinee, body, _, _) => {
+        Expr::WhileLet(pat, scrutinee, body, _, _) => {
+            strip_pattern(pat, ctx, interner);
             strip_expr(scrutinee, ctx, interner);
             strip_block(body, ctx, interner);
         }
@@ -448,8 +459,46 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
         }
         Expr::Lit(_, _)
         | Expr::Path(_)
+        | Expr::QualifiedPath(_)
         | Expr::Continue(_, _)
         | Expr::Return(None, _)
         | Expr::MacroCall(_, _, _) => {}
+    }
+}
+
+fn strip_pattern(pat: &mut Pattern, ctx: &CfgContext, interner: &Interner) {
+    match pat {
+        Pattern::Ident(_, _, sub, _) => {
+            if let Some(sub) = sub {
+                strip_pattern(sub, ctx, interner);
+            }
+        }
+        Pattern::Tuple(pats, _)
+        | Pattern::Slice(pats, _)
+        | Pattern::TupleStruct(_, pats, _)
+        | Pattern::Or(pats, _) => {
+            for pat in pats {
+                strip_pattern(pat, ctx, interner);
+            }
+        }
+        Pattern::Struct(_, fields, _, _) => {
+            fields.retain(|field| should_keep_item_attrs(&field.attrs, ctx, interner));
+            for field in fields {
+                strip_pattern(&mut field.pat, ctx, interner);
+            }
+        }
+        Pattern::Ref(inner, _, _) => strip_pattern(inner, ctx, interner),
+        Pattern::Range(start, end, _, _) => {
+            if let Some(start) = start {
+                strip_expr(start, ctx, interner);
+            }
+            if let Some(end) = end {
+                strip_expr(end, ctx, interner);
+            }
+        }
+        Pattern::Literal(_, _)
+        | Pattern::Wildcard(_)
+        | Pattern::Rest(_)
+        | Pattern::Path(_) => {}
     }
 }

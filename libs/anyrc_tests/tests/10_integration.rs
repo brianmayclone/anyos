@@ -1,5 +1,5 @@
 mod common;
-use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType, ExternCrateSpec};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -71,6 +71,201 @@ fn compile_with_error_returns_err() {
 }
 
 #[test]
+fn extern_interface_preserves_private_scope_imports() {
+    let lib_source = r#"
+        mod hidden {
+            pub trait Marker {}
+        }
+
+        pub mod api {
+            use super::hidden::Marker;
+            pub trait Api: Marker {}
+        }
+    "#;
+    let lib_options = CompileOptions {
+        input: "provider.rs".to_string(),
+        output: "libprovider.rlib".to_string(),
+        emit: EmitKind::Rlib,
+        crate_type: CrateType::Lib,
+        crate_name: Some("provider".to_string()),
+        ..CompileOptions::default()
+    };
+    let rlib = compile(lib_source, "provider.rs", &lib_options)
+        .expect("provider compilation failed");
+
+    static COUNTER: AtomicU64 = AtomicU64::new(1000);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("anyrc_iface_test_{}_{}", std::process::id(), id));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rlib_path = dir.join("libprovider.rlib");
+    {
+        let mut f = std::fs::File::create(&rlib_path).unwrap();
+        f.write_all(&rlib).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    let use_options = CompileOptions {
+        input: "consumer.rs".to_string(),
+        output: "consumer.o".to_string(),
+        emit: EmitKind::Obj,
+        crate_type: CrateType::Lib,
+        crate_name: Some("consumer".to_string()),
+        extern_crates: vec![ExternCrateSpec {
+            name: "provider".to_string(),
+            rlib_path: rlib_path.to_string_lossy().into_owned(),
+        }],
+        ..CompileOptions::default()
+    };
+    let result = compile("fn touch() {}", "consumer.rs", &use_options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_ok(),
+        "extern interface lost private use imports: {:?}",
+        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+    );
+}
+
+#[test]
+fn nested_module_can_use_extern_crate_item() {
+    let lib_source = r#"
+        pub mod race {
+            pub use self::once_box::OnceBox;
+            mod once_box {
+                pub struct OnceBox<T> {
+                    __private: (),
+                }
+                impl<T> OnceBox<T> {
+                    pub const fn new() -> Self {
+                        loop {}
+                    }
+                }
+            }
+        }
+    "#;
+    let lib_options = CompileOptions {
+        input: "once_cell.rs".to_string(),
+        output: "libonce_cell.rlib".to_string(),
+        emit: EmitKind::Rlib,
+        crate_type: CrateType::Lib,
+        crate_name: Some("once_cell".to_string()),
+        ..CompileOptions::default()
+    };
+    let rlib = compile(lib_source, "once_cell.rs", &lib_options)
+        .expect("once_cell provider compilation failed");
+
+    static COUNTER: AtomicU64 = AtomicU64::new(2000);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("anyrc_extern_use_test_{}_{}", std::process::id(), id));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rlib_path = dir.join("libonce_cell.rlib");
+    {
+        let mut f = std::fs::File::create(&rlib_path).unwrap();
+        f.write_all(&rlib).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    let consumer = r#"
+        mod random_state {
+            use once_cell::race::OnceBox;
+            static SEEDS: OnceBox<u8> = OnceBox::new();
+        }
+    "#;
+    let use_options = CompileOptions {
+        input: "consumer.rs".to_string(),
+        output: "consumer.o".to_string(),
+        emit: EmitKind::Obj,
+        crate_type: CrateType::Lib,
+        crate_name: Some("consumer".to_string()),
+        extern_crates: vec![ExternCrateSpec {
+            name: "once_cell".to_string(),
+            rlib_path: rlib_path.to_string_lossy().into_owned(),
+        }],
+        ..CompileOptions::default()
+    };
+    let result = compile(consumer, "consumer.rs", &use_options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_ok(),
+        "nested module extern use failed: {:?}",
+        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+    );
+}
+
+#[test]
+fn cfg_if_keeps_extern_use_in_nested_module() {
+    let lib_source = r#"
+        pub mod race {
+            pub use self::once_box::OnceBox;
+            mod once_box {
+                pub struct OnceBox<T> {
+                    __private: (),
+                }
+                impl<T> OnceBox<T> {
+                    pub const fn new() -> Self {
+                        loop {}
+                    }
+                }
+            }
+        }
+    "#;
+    let lib_options = CompileOptions {
+        input: "once_cell.rs".to_string(),
+        output: "libonce_cell.rlib".to_string(),
+        emit: EmitKind::Rlib,
+        crate_type: CrateType::Lib,
+        crate_name: Some("once_cell".to_string()),
+        ..CompileOptions::default()
+    };
+    let rlib = compile(lib_source, "once_cell.rs", &lib_options)
+        .expect("once_cell provider compilation failed");
+
+    static COUNTER: AtomicU64 = AtomicU64::new(3000);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("anyrc_cfg_if_extern_use_test_{}_{}", std::process::id(), id));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rlib_path = dir.join("libonce_cell.rlib");
+    {
+        let mut f = std::fs::File::create(&rlib_path).unwrap();
+        f.write_all(&rlib).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    let consumer = r#"
+        mod random_state {
+            cfg_if::cfg_if! {
+                if #[cfg(not(all(target_arch = "arm", target_os = "none")))] {
+                    use once_cell::race::OnceBox;
+                }
+            }
+            static SEEDS: OnceBox<u8> = OnceBox::new();
+        }
+    "#;
+    let use_options = CompileOptions {
+        input: "consumer.rs".to_string(),
+        output: "consumer.o".to_string(),
+        emit: EmitKind::Obj,
+        crate_type: CrateType::Lib,
+        crate_name: Some("consumer".to_string()),
+        extern_crates: vec![ExternCrateSpec {
+            name: "once_cell".to_string(),
+            rlib_path: rlib_path.to_string_lossy().into_owned(),
+        }],
+        cfg_flags: vec![
+            "target_arch=\"x86_64\"".to_string(),
+            "target_os=\"anyos\"".to_string(),
+        ],
+        ..CompileOptions::default()
+    };
+    let result = compile(consumer, "consumer.rs", &use_options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_ok(),
+        "cfg_if extern use failed: {:?}",
+        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+    );
+}
+
+#[test]
 fn cfg_all_false_strips_item() {
     let source = r#"
         #[cfg(all(test, feature = "host"))]
@@ -116,6 +311,86 @@ fn cfg_false_strips_impl_block() {
     };
     let result = compile(source, "test.rs", &options);
     assert!(result.is_ok(), "cfg-disabled impl was typechecked: {:?}", result.err());
+}
+
+#[test]
+fn cfg_false_strips_const_and_macro_items() {
+    let source = r#"
+        #[cfg(feature = "nightly-only")]
+        const BAD: MissingType = missing_symbol;
+
+        #[cfg(feature = "nightly-only")]
+        macro_rules! bad_macro {
+            () => { missing_symbol }
+        }
+
+        fn main() -> i32 { 0 }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(result.is_ok(), "cfg-disabled const/macro item was typechecked: {:?}", result.err());
+}
+
+#[test]
+fn cfg_false_strips_struct_literal_fields() {
+    let source = r#"
+        struct Cursor {
+            rest: i32,
+            #[cfg(span_locations)]
+            off: u32,
+        }
+
+        fn make(rest: i32) -> Cursor {
+            Cursor {
+                rest,
+                #[cfg(span_locations)]
+                off: missing_symbol,
+            }
+        }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test.o".to_string(),
+        emit: EmitKind::Obj,
+        opt_level: 0,
+        crate_type: CrateType::Lib,
+        crate_name: Some("test".to_string()),
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(result.is_ok(), "cfg-disabled struct literal field was typechecked: {:?}", result.err());
+}
+
+#[test]
+fn block_items_are_visible_before_declaration() {
+    let source = r#"
+        fn main() -> i32 {
+            struct UsesLater {
+                field: Later,
+            }
+            enum Later { Value }
+            0
+        }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(result.is_ok(), "block item forward reference failed: {:?}", result.err());
 }
 
 #[test]

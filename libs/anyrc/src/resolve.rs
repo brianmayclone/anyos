@@ -62,6 +62,8 @@ pub struct Resolver<'a> {
     module_stack: Vec<usize>,
     /// Intrinsic DefIds: maps synthetic DefId to full path string
     intrinsic_fns: HashMap<DefId, String>,
+    /// Extern module aliases imported with `use core::foo::bar;`.
+    extern_path_aliases: HashMap<(usize, Symbol), String>,
     /// Current impl self type symbol for resolving `Self::assoc` within impls.
     current_impl_self_ty: Option<Symbol>,
 }
@@ -84,6 +86,7 @@ impl<'a> Resolver<'a> {
             root_scope: 0,
             module_stack: vec![0],
             intrinsic_fns: HashMap::new(),
+            extern_path_aliases: HashMap::new(),
             current_impl_self_ty: None,
         };
         this.bootstrap_prelude_intrinsics();
@@ -241,8 +244,13 @@ impl<'a> Resolver<'a> {
         // Second pass: collect impl methods (recursing into modules)
         self.collect_impls_recursive(&krate.items);
 
-        // Process use items
-        self.process_use_items_recursive(&krate.items);
+        // Process use items to a fixed enough point. Interfaces from extern
+        // crates often contain re-export chains (`pub use self::inner::Item`);
+        // downstream uses may appear before those re-exports in the combined
+        // synthetic crate, so a single source-order pass is not sufficient.
+        for _ in 0..8 {
+            self.process_use_items_recursive(&krate.items);
+        }
 
         // Third pass: resolve all items
         for item in &krate.items {
@@ -348,6 +356,14 @@ impl<'a> Resolver<'a> {
                 if self.is_extern_crate_path(&full_path) {
                     let full_path = self.path_to_string(&full_path);
                     let def_id = self.alloc_synthetic_def_id();
+                    self.intrinsic_fns.insert(def_id, full_path.clone());
+                    self.define(local_name, Namespace::Value, def_id);
+                    self.define(local_name, Namespace::Type, def_id);
+                    self.extern_path_aliases.insert((self.current_scope, local_name), full_path);
+                    return;
+                }
+                if let Some(full_path) = self.resolve_extern_alias_use_path(&full_path) {
+                    let def_id = self.alloc_synthetic_def_id();
                     self.intrinsic_fns.insert(def_id, full_path);
                     self.define(local_name, Namespace::Value, def_id);
                     self.define(local_name, Namespace::Type, def_id);
@@ -374,7 +390,6 @@ impl<'a> Resolver<'a> {
                         vis: sub.vis,
                         path: full_path,
                         kind: sub.kind.clone(),
-                        attrs: Vec::new(),
                         span: sub.span,
                     };
                     self.process_use_tree(&combined);
@@ -422,6 +437,25 @@ impl<'a> Resolver<'a> {
             .map(|s| self.interner.resolve(*s).to_string())
             .collect::<Vec<_>>()
             .join("::")
+    }
+
+    fn resolve_extern_alias_use_path(&self, path: &[Symbol]) -> Option<String> {
+        let (&first, rest) = path.split_first()?;
+        let mut scope = Some(self.current_scope);
+        while let Some(scope_idx) = scope {
+            if let Some(prefix) = self.extern_path_aliases.get(&(scope_idx, first)) {
+                if rest.is_empty() {
+                    return Some(prefix.clone());
+                }
+                let suffix = rest.iter()
+                    .map(|s| self.interner.resolve(*s).to_string())
+                    .collect::<Vec<_>>()
+                    .join("::");
+                return Some(format!("{}::{}", prefix, suffix));
+            }
+            scope = self.scopes[scope_idx].parent;
+        }
+        None
     }
 
     fn resolve_use_path_ns(&self, path: &[Symbol], ns: Namespace) -> Option<(DefId, Namespace)> {
@@ -829,6 +863,9 @@ impl<'a> Resolver<'a> {
             HirExprKind::Path(path) => {
                 self.resolve_path(path, Namespace::Value, expr.id);
             }
+            HirExprKind::QualifiedPath(qpath) => {
+                self.resolve_qualified_path(qpath, Namespace::Value, expr.id);
+            }
             HirExprKind::Binary(_, l, r) => {
                 self.resolve_expr(l);
                 self.resolve_expr(r);
@@ -944,7 +981,7 @@ impl<'a> Resolver<'a> {
                 self.resolutions.insert(*hir_id, did);
                 if let Some(sub) = sub { self.resolve_pattern_binding(sub); }
             }
-            HirPattern::Tuple(pats, _) => {
+            HirPattern::Tuple(pats, _) | HirPattern::Slice(pats, _) => {
                 for p in pats { self.resolve_pattern_binding(p); }
             }
             HirPattern::Struct(path, fields, _, _) => {
@@ -971,6 +1008,18 @@ impl<'a> Resolver<'a> {
 
     fn resolve_block(&mut self, block: &HirBlock) {
         self.push_scope();
+        // Rust item declarations are visible throughout the containing block,
+        // independent of textual order. Register them before resolving
+        // expressions so local structs/enums can refer to sibling items that
+        // appear later in the block.
+        for stmt in &block.stmts {
+            if let HirStmt::Item(item) = stmt {
+                self.register_item(item);
+                if let HirItemKind::Use(u) = &item.kind {
+                    self.process_use_tree(u);
+                }
+            }
+        }
         for stmt in &block.stmts {
             match stmt {
                 HirStmt::Let(_, pat, ty, init, _) => {
@@ -981,10 +1030,6 @@ impl<'a> Resolver<'a> {
                 }
                 HirStmt::Expr(e) | HirStmt::Semi(e, _) => self.resolve_expr(e),
                 HirStmt::Item(item) => {
-                    self.register_item(item);
-                    if let HirItemKind::Use(u) = &item.kind {
-                        self.process_use_tree(u);
-                    }
                     self.resolve_item(item);
                 }
             }
@@ -996,6 +1041,9 @@ impl<'a> Resolver<'a> {
         match ty {
             HirTy::Path(path) => {
                 self.resolve_path(path, Namespace::Type, HirId(u32::MAX));
+            }
+            HirTy::QualifiedPath(qpath) => {
+                self.resolve_qualified_path(qpath, Namespace::Type, HirId(u32::MAX));
             }
             HirTy::Reference(_, t, _, _) | HirTy::RawPtr(t, _, _) | HirTy::Slice(t, _) => {
                 self.resolve_ty(t);
@@ -1011,10 +1059,64 @@ impl<'a> Resolver<'a> {
                 for p in params { self.resolve_ty(p); }
                 if let Some(r) = ret { self.resolve_ty(r); }
             }
-            HirTy::DynTrait(path, _) => {
-                self.resolve_path(path, Namespace::Type, HirId(u32::MAX));
+            HirTy::DynTrait(bounds, _) => {
+                for bound in bounds {
+                    self.resolve_trait_bound_path(&bound.path);
+                }
             }
             HirTy::Infer(_) | HirTy::Never(_) => {}
+        }
+    }
+
+    fn resolve_qualified_path(&mut self, qpath: &HirQualifiedPath, ns: Namespace, hir_id: HirId) {
+        self.resolve_ty(&qpath.self_ty);
+        if let Some(trait_path) = &qpath.trait_path {
+            self.resolve_trait_bound_path(trait_path);
+        }
+        for seg in &qpath.path.segments {
+            if let Some(args) = &seg.args {
+                for arg in &args.args {
+                    match arg {
+                        HirGenericArg::Type(ty) => self.resolve_ty(ty),
+                        HirGenericArg::Const(e) => self.resolve_expr(e),
+                        HirGenericArg::Lifetime(_) => {}
+                    }
+                }
+            }
+        }
+
+        let Some(last) = qpath.path.segments.last() else {
+            return;
+        };
+        if let Some(trait_path) = &qpath.trait_path {
+            if let Some(trait_name) = trait_path.segments.last().map(|seg| seg.ident) {
+                if self.resolve_assoc_item_on_type(trait_name, last.ident, hir_id) {
+                    return;
+                }
+                if let Some(trait_def_id) = self.lookup(trait_name, Namespace::Type) {
+                    if self.intrinsic_fns.contains_key(&trait_def_id) {
+                        let trait_path_str = self.path_to_string(
+                            &trait_path.segments.iter().map(|seg| seg.ident).collect::<Vec<_>>()
+                        );
+                        let assoc_str = self.interner.resolve(last.ident).to_string();
+                        let def_id = self.alloc_synthetic_def_id();
+                        self.intrinsic_fns.insert(def_id, format!("{}::{}", trait_path_str, assoc_str));
+                        if hir_id != HirId(u32::MAX) {
+                            self.resolutions.insert(hir_id, def_id);
+                        }
+                        return;
+                    }
+                    // A qualified associated item may be resolved by type checking once
+                    // trait obligations are known.
+                    return;
+                }
+            }
+        }
+
+        // `<T>::Assoc` is a projection on the self type. The resolver leaves it
+        // for type checking instead of treating `Assoc` as a free name.
+        if ns == Namespace::Type || hir_id != HirId(u32::MAX) {
+            return;
         }
     }
 
@@ -1131,6 +1233,13 @@ impl<'a> Resolver<'a> {
                     name
                 };
                 if self.resolve_assoc_item_on_type(type_name, second_name, hir_id) {
+                    return;
+                }
+
+                // Generic and trait-associated projections such as `T::Item`
+                // are type-level names whose final meaning depends on bounds.
+                // Leave them for type checking once the left side is a type.
+                if self.lookup(type_name, Namespace::Type).is_some() {
                     return;
                 }
 
@@ -1261,6 +1370,10 @@ impl<'a> Resolver<'a> {
                             if self.resolve_assoc_item_on_type(seg.ident, method_name, hir_id) {
                                 return;
                             }
+                            // Trait/type associated paths reached through a module
+                            // prefix (`crate::m::Trait::item`) are resolved by
+                            // type checking if no concrete impl item is known yet.
+                            return;
                         }
                         let seg_str = self.interner.resolve(seg.ident);
                         self.errors.push(Diagnostic::new(

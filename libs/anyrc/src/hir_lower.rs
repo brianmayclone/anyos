@@ -220,6 +220,10 @@ impl<'a> LoweringContext<'a> {
         let (kind, span) = match expr {
             ast::Expr::Lit(lit, span) => (HirExprKind::Lit(lit.clone()), *span),
             ast::Expr::Path(p) => (HirExprKind::Path(self.lower_path(p)), p.span),
+            ast::Expr::QualifiedPath(qp) => (
+                HirExprKind::QualifiedPath(self.lower_qualified_path(qp)),
+                qp.span,
+            ),
             ast::Expr::Binary(op, l, r, span) => (
                 HirExprKind::Binary(*op, Box::new(self.lower_expr(l)), Box::new(self.lower_expr(r))),
                 *span,
@@ -475,6 +479,7 @@ impl<'a> LoweringContext<'a> {
     fn lower_ty(&mut self, ty: &ast::Ty) -> HirTy {
         match ty {
             ast::Ty::Path(p) => HirTy::Path(self.lower_path(p)),
+            ast::Ty::QualifiedPath(qp) => HirTy::QualifiedPath(self.lower_qualified_path(qp)),
             ast::Ty::Reference(lt, t, m, span) => HirTy::Reference(*lt, Box::new(self.lower_ty(t)), *m, *span),
             ast::Ty::RawPtr(t, m, span) => HirTy::RawPtr(Box::new(self.lower_ty(t)), *m, *span),
             ast::Ty::Tuple(ts, span) => HirTy::Tuple(ts.iter().map(|t| self.lower_ty(t)).collect(), *span),
@@ -485,7 +490,10 @@ impl<'a> LoweringContext<'a> {
                 ret.as_ref().map(|t| Box::new(self.lower_ty(t))),
                 *span,
             ),
-            ast::Ty::DynTrait(path, span) => HirTy::DynTrait(self.lower_path(path), *span),
+            ast::Ty::DynTrait(bounds, span) => HirTy::DynTrait(
+                bounds.iter().map(|b| self.lower_trait_bound(b)).collect(),
+                *span,
+            ),
             ast::Ty::Infer(span) => HirTy::Infer(*span),
             ast::Ty::Never(span) => HirTy::Never(*span),
         }
@@ -501,6 +509,7 @@ impl<'a> LoweringContext<'a> {
             ),
             ast::Pattern::Literal(lit, span) => HirPattern::Literal(lit.clone(), *span),
             ast::Pattern::Tuple(ps, span) => HirPattern::Tuple(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span),
+            ast::Pattern::Slice(ps, span) => HirPattern::Slice(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span),
             ast::Pattern::Struct(path, fps, dots, span) => HirPattern::Struct(
                 self.lower_path(path),
                 fps.iter().map(|fp| HirFieldPat { name: fp.name, pat: self.lower_pattern(&fp.pat), span: fp.span }).collect(),
@@ -538,6 +547,15 @@ impl<'a> LoweringContext<'a> {
                 }),
             }).collect(),
             span: path.span,
+        }
+    }
+
+    fn lower_qualified_path(&mut self, qpath: &ast::QualifiedPath) -> HirQualifiedPath {
+        HirQualifiedPath {
+            self_ty: Box::new(self.lower_ty(&qpath.self_ty)),
+            trait_path: qpath.trait_path.as_ref().map(|path| self.lower_path(path)),
+            path: self.lower_path(&qpath.path),
+            span: qpath.span,
         }
     }
 

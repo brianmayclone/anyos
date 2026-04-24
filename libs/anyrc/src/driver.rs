@@ -146,6 +146,8 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     let loader = crate::loader::OsFileLoader;
     let _loaded_modules = crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
     crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    expand_macros(&mut krate, &mut interner);
+    crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
     let (public_interface_source, public_interface) = {
         let mut interface_lower_ctx = LoweringContext::new(&mut interner);
         let interface_hir = interface_lower_ctx.lower_crate(&krate);
@@ -552,11 +554,16 @@ fn inject_extern_crate_interfaces(
             continue;
         }
 
-        let wrapper_src = format!("mod {} {{\n{}\n}}", ext.name, meta.interface_source);
+        let interface_source = relativize_extern_interface_source(&meta.interface_source, &ext.name);
+        let wrapper_src = format!("mod {} {{\n{}\n}}", ext.name, interface_source);
         let mut parser = Parser::new(&wrapper_src, interner);
         let mut iface_krate = parser.parse_crate();
         krate.items.append(&mut iface_krate.items);
     }
+}
+
+fn relativize_extern_interface_source(source: &str, crate_name: &str) -> String {
+    source.replace("crate::", &format!("crate::{}::", crate_name))
 }
 
 fn build_public_interface_source(hir: &crate::hir::HirCrate, interner: &Interner) -> String {
@@ -986,7 +993,16 @@ fn item_is_exported(
         crate::hir::HirItemKind::Const(c) => is_public_vis(c.vis),
         crate::hir::HirItemKind::Static(s) => is_public_vis(s.vis),
         crate::hir::HirItemKind::Use(u) => use_item_supports_interface(u, local_names, interner),
-        crate::hir::HirItemKind::Mod(m) => is_public_vis(m.vis),
+        crate::hir::HirItemKind::Mod(m) => {
+            if is_public_vis(m.vis) {
+                return true;
+            }
+            let Some(items) = &m.items else {
+                return false;
+            };
+            let nested_local_names = local_item_names(items);
+            items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
+        }
         crate::hir::HirItemKind::Impl(ib) => {
             let nested_local_names = local_item_names(&ib.items);
             ib.items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
@@ -1032,9 +1048,9 @@ fn use_item_supports_interface(
         return true;
     }
     if root_name == "crate" || root_name == "self" || root_name == "super" {
-        return false;
+        return true;
     }
-    !local_names.iter().any(|name| *name == root)
+    local_names.iter().any(|name| *name == root)
 }
 
 fn render_generics(generics: &crate::hir::HirGenerics, interner: &Interner) -> String {
@@ -1072,14 +1088,14 @@ fn render_generic_param(param: &crate::hir::HirGenericParam, interner: &Interner
             out
         }
         crate::hir::HirGenericParam::Lifetime(name, bounds, _) => {
-            let mut out = interner.resolve(*name).to_string();
+            let mut out = render_lifetime(*name, interner);
             if !bounds.is_empty() {
                 out.push_str(": ");
                 for (idx, bound) in bounds.iter().enumerate() {
                     if idx > 0 {
                         out.push_str(" + ");
                     }
-                    out.push_str(interner.resolve(*bound));
+                    out.push_str(&render_lifetime(*bound, interner));
                 }
             }
             out
@@ -1093,10 +1109,21 @@ fn render_generic_param(param: &crate::hir::HirGenericParam, interner: &Interner
 fn render_ty(ty: &crate::hir::HirTy, interner: &Interner) -> String {
     match ty {
         crate::hir::HirTy::Path(path) => render_path(path, interner),
+        crate::hir::HirTy::QualifiedPath(qpath) => {
+            let mut out = String::from("<");
+            out.push_str(&render_ty(&qpath.self_ty, interner));
+            if let Some(trait_path) = &qpath.trait_path {
+                out.push_str(" as ");
+                out.push_str(&render_path(trait_path, interner));
+            }
+            out.push_str(">::");
+            out.push_str(&render_path(&qpath.path, interner));
+            out
+        }
         crate::hir::HirTy::Reference(lifetime, inner, mutability, _) => {
             let mut out = String::from("&");
             if let Some(lifetime) = lifetime {
-                out.push_str(interner.resolve(*lifetime));
+                out.push_str(&render_lifetime(*lifetime, interner));
                 out.push(' ');
             }
             if *mutability == crate::ast::Mutability::Mut {
@@ -1144,7 +1171,12 @@ fn render_ty(ty: &crate::hir::HirTy, interner: &Interner) -> String {
             }
             out
         }
-        crate::hir::HirTy::DynTrait(path, _) => format!("dyn {}", render_path(path, interner)),
+        crate::hir::HirTy::DynTrait(bounds, _) => {
+            let rendered: Vec<String> = bounds.iter()
+                .map(|b| render_path(&b.path, interner))
+                .collect();
+            format!("dyn {}", rendered.join(" + "))
+        }
         crate::hir::HirTy::Infer(_) => "_".to_string(),
         crate::hir::HirTy::Never(_) => "!".to_string(),
     }
@@ -1165,7 +1197,7 @@ fn render_path(path: &crate::hir::HirPath, interner: &Interner) -> String {
                 }
                 match arg {
                     crate::hir::HirGenericArg::Type(ty) => out.push_str(&render_ty(ty, interner)),
-                    crate::hir::HirGenericArg::Lifetime(sym) => out.push_str(interner.resolve(*sym)),
+                    crate::hir::HirGenericArg::Lifetime(sym) => out.push_str(&render_lifetime(*sym, interner)),
                     crate::hir::HirGenericArg::Const(expr) => out.push_str(&render_expr(expr, interner)),
                 }
             }
@@ -1173,6 +1205,15 @@ fn render_path(path: &crate::hir::HirPath, interner: &Interner) -> String {
         }
     }
     out
+}
+
+fn render_lifetime(sym: crate::intern::Symbol, interner: &Interner) -> String {
+    let name = interner.resolve(sym);
+    if name.starts_with('\'') {
+        name.to_string()
+    } else {
+        format!("'{}", name)
+    }
 }
 
 fn render_use_tree(out: &mut String, use_tree: &crate::hir::HirUseTree, interner: &Interner) {
@@ -1191,7 +1232,10 @@ fn render_use_tree(out: &mut String, use_tree: &crate::hir::HirUseTree, interner
         }
         crate::hir::HirUseTreeKind::Glob => out.push_str("::*"),
         crate::hir::HirUseTreeKind::Nested(trees) => {
-            out.push_str("::{");
+            if !use_tree.path.is_empty() {
+                out.push_str("::");
+            }
+            out.push('{');
             for (idx, tree) in trees.iter().enumerate() {
                 if idx > 0 {
                     out.push_str(", ");

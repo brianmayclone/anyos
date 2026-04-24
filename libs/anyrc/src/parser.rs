@@ -140,6 +140,10 @@ impl<'a> Parser<'a> {
                 self.bump();
                 sym
             }
+            TokenKind::Kw(Keyword::Ref) => {
+                self.bump();
+                self.interner.intern("ref")
+            }
             _ => panic!(
                 "expected identifier, got {:?} at {:?}; near {}",
                 self.current().kind,
@@ -206,6 +210,10 @@ impl<'a> Parser<'a> {
             TokenKind::Kw(Keyword::Crate) => {
                 self.bump();
                 self.interner.intern("crate")
+            }
+            TokenKind::Kw(Keyword::Ref) => {
+                self.bump();
+                self.interner.intern("ref")
             }
             _ => panic!(
                 "expected identifier, got {:?} at {:?}; near {}",
@@ -320,6 +328,15 @@ impl<'a> Parser<'a> {
             self.bump();
             let operand = self.parse_expr_bp(27);
             return Expr::Deref(Box::new(operand), self.span_from(start));
+        }
+
+        // Tokenized `&&expr` is two immutable borrows in expression position.
+        if self.at_exact(&TokenKind::AndAnd) {
+            self.bump();
+            let inner_start = self.current().span;
+            let operand = self.parse_expr_bp(27);
+            let inner = Expr::Ref(Box::new(operand), Mutability::Immutable, self.span_from(inner_start));
+            return Expr::Ref(Box::new(inner), Mutability::Immutable, self.span_from(start));
         }
 
         // Reference & and &mut
@@ -585,13 +602,16 @@ impl<'a> Parser<'a> {
 
         // Qualified path: <T as Trait>::Assoc or <[T]>::method
         if self.at_exact(&TokenKind::Lt) {
-            let path = self.parse_qualified_path(start);
-            if self.at_exact(&TokenKind::Not) {
+            let qpath = self.parse_qualified_path(start);
+            if qpath.trait_path.is_none()
+                && qpath.path.segments.len() == 1
+                && self.at_exact(&TokenKind::Not)
+            {
                 self.bump();
                 let tts = self.parse_macro_args();
-                return Expr::MacroCall(path, tts, self.span_from(start));
+                return Expr::MacroCall(qpath.path, tts, self.span_from(start));
             }
-            return Expr::Path(path);
+            return Expr::QualifiedPath(qpath);
         }
 
         // Path or struct literal or macro call
@@ -743,6 +763,7 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         let mut base = None;
         while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
+            let attrs = self.parse_attrs();
             if self.at_exact(&TokenKind::DotDot) {
                 self.bump();
                 base = Some(Box::new(self.parse_expr()));
@@ -761,6 +782,7 @@ impl<'a> Parser<'a> {
             fields.push(FieldExpr {
                 name,
                 value,
+                attrs,
                 span: self.span_from(f_start),
             });
             if !self.eat_exact(&TokenKind::Comma) {
@@ -886,18 +908,25 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_qualified_path(&mut self, start: Span) -> Path {
+    fn parse_qualified_path(&mut self, start: Span) -> QualifiedPath {
         self.expect_exact(&TokenKind::Lt);
-        let _self_ty = self.parse_ty();
-        if self.at_kw(Keyword::As) {
+        let self_ty = self.parse_ty();
+        let trait_path = if self.at_kw(Keyword::As) {
             self.bump();
-            let _trait_path = self.parse_path_ty();
-        }
+            Some(self.parse_path_ty())
+        } else {
+            None
+        };
         self.expect_exact(&TokenKind::Gt);
         self.expect_exact(&TokenKind::ColonColon);
         let mut path = self.parse_path_expr();
         path.span = self.span_from(start);
-        path
+        QualifiedPath {
+            self_ty: Box::new(self_ty),
+            trait_path,
+            path,
+            span: self.span_from(start),
+        }
     }
 
     fn postfix_bp(&self) -> Option<u8> {
@@ -1076,6 +1105,7 @@ impl<'a> Parser<'a> {
                 | TokenKind::Pipe
                 | TokenKind::OrOr
                 | TokenKind::Amp
+                | TokenKind::AndAnd
                 | TokenKind::Star
                 | TokenKind::Minus
                 | TokenKind::Not
@@ -1456,6 +1486,16 @@ impl<'a> Parser<'a> {
                     None
                 }
             }
+            // Specialization associated items use `default fn`, `default type`,
+            // etc. Keep parsing the associated item normally; type checking can
+            // model defaultness once specialization semantics become relevant.
+            TokenKind::Ident(sym)
+                if self.interner.resolve(*sym) == "default"
+                    && Self::can_start_default_item(self.peek_kind()) =>
+            {
+                self.bump();
+                self.parse_item_after_leading(attrs, vis, start)
+            }
             // macro_rules! name { ... }
             TokenKind::Ident(sym) if self.interner.resolve(*sym) == "macro_rules" => {
                 Some(self.parse_macro_rules_def(attrs, start))
@@ -1479,6 +1519,16 @@ impl<'a> Parser<'a> {
             }
             _ => None,
         }
+    }
+
+    fn can_start_default_item(kind: &TokenKind) -> bool {
+        matches!(
+            kind,
+            TokenKind::Kw(Keyword::Fn)
+                | TokenKind::Kw(Keyword::Type)
+                | TokenKind::Kw(Keyword::Const)
+                | TokenKind::Kw(Keyword::Unsafe)
+        )
     }
 
     fn parse_macro_rules_def(&mut self, attrs: Vec<Attribute>, start: Span) -> Item {
@@ -1932,6 +1982,11 @@ impl<'a> Parser<'a> {
         let start = self.current().span;
         let mut path = Vec::new();
 
+        // Absolute use paths: `use ::foo::bar;` or grouped `use ::{a, b};`.
+        // The AST currently stores logical segments only; resolution treats an
+        // empty prefix with nested entries the same as a crate-root group.
+        self.eat_exact(&TokenKind::ColonColon);
+
         if self.at_exact(&TokenKind::LBrace) {
             self.bump();
             let mut nested = Vec::new();
@@ -1968,9 +2023,10 @@ impl<'a> Parser<'a> {
                 || self.at_kw(Keyword::SelfValue)
                 || self.at_kw(Keyword::Super)
                 || self.at_kw(Keyword::Crate)
+                || self.at_kw(Keyword::Ref)
                 || self.at_exact(&TokenKind::Dollar)
             {
-                path.push(self.expect_ident_or_self());
+                path.push(self.expect_use_tree_segment());
             } else {
                 break;
             }
@@ -2035,6 +2091,15 @@ impl<'a> Parser<'a> {
             kind: UseTreeKind::Simple(alias),
             attrs: Vec::new(),
             span: self.span_from(start),
+        }
+    }
+
+    fn expect_use_tree_segment(&mut self) -> Symbol {
+        if self.at_kw(Keyword::Ref) {
+            self.bump();
+            self.interner.intern("ref")
+        } else {
+            self.expect_ident_or_self()
         }
     }
 
@@ -2351,15 +2416,7 @@ impl<'a> Parser<'a> {
                     return Ty::FnPtr(param_tys, ret, self.span_from(start));
                 }
             }
-            let path = self.parse_path_ty();
-            while self.eat_exact(&TokenKind::Plus) {
-                if matches!(self.current().kind, TokenKind::Lifetime(_)) {
-                    self.bump();
-                } else {
-                    let _ = self.parse_path_ty();
-                }
-            }
-            return Ty::DynTrait(path, self.span_from(start));
+            return self.parse_trait_object_ty(start);
         }
 
         // unsafe extern "C" fn(A, B) -> C / extern "C" fn(A, B) -> C / fn(A, B) -> C
@@ -2400,8 +2457,7 @@ impl<'a> Parser<'a> {
         }
 
         if self.at_exact(&TokenKind::Lt) {
-            let path = self.parse_qualified_path(start);
-            return Ty::Path(path);
+            return Ty::QualifiedPath(self.parse_qualified_path(start));
         }
 
         // Infer: _
@@ -2428,13 +2484,35 @@ impl<'a> Parser<'a> {
         // dyn Trait
         if self.at_kw(Keyword::Dyn) {
             self.bump();
-            let path = self.parse_path_ty();
-            return Ty::DynTrait(path, self.span_from(start));
+            return self.parse_trait_object_ty(start);
         }
 
         // Path type
         let path = self.parse_path_ty();
         Ty::Path(path)
+    }
+
+    fn parse_trait_object_ty(&mut self, start: Span) -> Ty {
+        let first_start = self.current().span;
+        let first = self.parse_path_ty();
+        let mut bounds = vec![TraitBound {
+            path: first,
+            span: self.span_from(first_start),
+        }];
+        while self.eat_exact(&TokenKind::Plus) {
+            if matches!(self.current().kind, TokenKind::Lifetime(_)) {
+                self.bump();
+                continue;
+            }
+            let bound_start = self.current().span;
+            let path = self.parse_path_ty();
+            self.parse_callable_trait_suffix();
+            bounds.push(TraitBound {
+                path,
+                span: self.span_from(bound_start),
+            });
+        }
+        Ty::DynTrait(bounds, self.span_from(start))
     }
 
     fn parse_fn_ptr_param_ty(&mut self) -> Ty {
@@ -2829,14 +2907,15 @@ impl<'a> Parser<'a> {
         match &self.current().kind {
             TokenKind::IntLit(_, _) => {
                 if let TokenKind::IntLit(v, _) = self.bump().kind {
-                    // Check for range pattern: 0..=9
-                    if self.at_exact(&TokenKind::DotDotEq) {
+                    // Check for range pattern: 0..9 or 0..=9
+                    if self.at_exact(&TokenKind::DotDot) || self.at_exact(&TokenKind::DotDotEq) {
+                        let inclusive = self.at_exact(&TokenKind::DotDotEq);
                         self.bump();
                         if let TokenKind::IntLit(hi, _) = self.bump().kind {
                             return Pattern::Range(
                                 Some(Box::new(Expr::Lit(Literal::Int(v), self.span_from(start)))),
                                 Some(Box::new(Expr::Lit(Literal::Int(hi), self.span_from(start)))),
-                                true,
+                                inclusive,
                                 self.span_from(start),
                             );
                         }
@@ -2851,6 +2930,18 @@ impl<'a> Parser<'a> {
             }
             TokenKind::CharLit(_) => {
                 if let TokenKind::CharLit(c) = self.bump().kind {
+                    if self.at_exact(&TokenKind::DotDot) || self.at_exact(&TokenKind::DotDotEq) {
+                        let inclusive = self.at_exact(&TokenKind::DotDotEq);
+                        self.bump();
+                        if let TokenKind::CharLit(hi) = self.bump().kind {
+                            return Pattern::Range(
+                                Some(Box::new(Expr::Lit(Literal::Char(c), self.span_from(start)))),
+                                Some(Box::new(Expr::Lit(Literal::Char(hi), self.span_from(start)))),
+                                inclusive,
+                                self.span_from(start),
+                            );
+                        }
+                    }
                     return Pattern::Literal(Literal::Char(c), self.span_from(start));
                 }
             }
@@ -2891,6 +2982,20 @@ impl<'a> Parser<'a> {
             }
             self.expect_exact(&TokenKind::RParen);
             return Pattern::Tuple(pats, self.span_from(start));
+        }
+
+        // Slice/array pattern: [a, b, ..]
+        if self.at_exact(&TokenKind::LBracket) {
+            self.bump();
+            let mut pats = Vec::new();
+            while !self.at_exact(&TokenKind::RBracket) && !self.at_exact(&TokenKind::Eof) {
+                pats.push(self.parse_pattern_with_or(allow_or));
+                if !self.eat_exact(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.expect_exact(&TokenKind::RBracket);
+            return Pattern::Slice(pats, self.span_from(start));
         }
 
         // mut ident
@@ -3002,6 +3107,7 @@ impl<'a> Parser<'a> {
         let mut fields = Vec::new();
         let mut has_rest = false;
         while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
+            let attrs = self.parse_attrs();
             if self.at_exact(&TokenKind::DotDot) {
                 self.bump();
                 has_rest = true;
@@ -3018,6 +3124,7 @@ impl<'a> Parser<'a> {
             fields.push(FieldPat {
                 name,
                 pat,
+                attrs,
                 span: self.span_from(f_start),
             });
             if !self.eat_exact(&TokenKind::Comma) {
@@ -3217,7 +3324,10 @@ fn collect_pattern_bindings(pat: &Pattern, out: &mut Vec<(Symbol, Mutability, Sp
                 collect_pattern_bindings(sub, out);
             }
         }
-        Pattern::Tuple(pats, _) | Pattern::TupleStruct(_, pats, _) | Pattern::Or(pats, _) => {
+        Pattern::Tuple(pats, _)
+        | Pattern::Slice(pats, _)
+        | Pattern::TupleStruct(_, pats, _)
+        | Pattern::Or(pats, _) => {
             for pat in pats {
                 collect_pattern_bindings(pat, out);
             }

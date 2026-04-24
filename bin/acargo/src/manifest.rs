@@ -139,11 +139,31 @@ fn parse_dependencies(toml: &Table) -> Vec<Dependency> {
     if let Some(dt) = dep_table {
         for (dep_name, dep_val) in dt.iter() {
             let dep = parse_single_dep(dep_name, dep_val);
-            deps.push(dep);
+            push_dependency(&mut deps, dep);
+        }
+    }
+
+    if let Some(targets) = toml.get("target").and_then(|v| v.as_table()) {
+        for (_target_cfg, target_val) in targets.iter() {
+            let Some(target_table) = target_val.as_table() else {
+                continue;
+            };
+            let Some(dep_table) = target_table.get("dependencies").and_then(|v| v.as_table()) else {
+                continue;
+            };
+            for (dep_name, dep_val) in dep_table.iter() {
+                push_dependency(&mut deps, parse_single_dep(dep_name, dep_val));
+            }
         }
     }
 
     deps
+}
+
+fn push_dependency(deps: &mut Vec<Dependency>, dep: Dependency) {
+    if !deps.iter().any(|existing| existing.name == dep.name) {
+        deps.push(dep);
+    }
 }
 
 pub fn parse_workspace_dependencies(toml: &Table) -> Vec<Dependency> {

@@ -1,10 +1,10 @@
 use super::{exit_reason, VmExitInfo};
 
 pub(super) const IO_PORT_POST_DELAY: u16 = 0x80;
-const IO_PORT_PIC1_CMD: u16 = 0x20;
+pub(super) const IO_PORT_PIC1_CMD: u16 = 0x20;
 pub(super) const IO_PORT_PIC1_DATA: u16 = 0x21;
-const IO_PORT_PIC2_CMD: u16 = 0xa0;
-const IO_PORT_PIC2_DATA: u16 = 0xa1;
+pub(super) const IO_PORT_PIC2_CMD: u16 = 0xa0;
+pub(super) const IO_PORT_PIC2_DATA: u16 = 0xa1;
 const IO_PORT_PIT_CH0: u16 = 0x40;
 const IO_PORT_PIT_CH1: u16 = 0x41;
 const IO_PORT_PIT_CH2: u16 = 0x42;
@@ -16,25 +16,95 @@ pub(super) const IO_PORT_KBD_STATUS: u16 = 0x64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct PlatformIoState {
-    pic1_cmd: u8,
-    pic1_data: u8,
-    pic2_cmd: u8,
-    pic2_data: u8,
+    pic1: PicChip,
+    pic2: PicChip,
     pit_cmd: u8,
     pit_data: [u8; 3],
     cmos_index: u8,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PicChip {
+    command: u8,
+    mask: u8,
+    vector_offset: u8,
+    init_step: u8,
+    expect_icw4: bool,
+}
+
+impl PicChip {
+    const fn new(vector_offset: u8) -> Self {
+        Self {
+            command: 0,
+            mask: 0xff,
+            vector_offset,
+            init_step: 0,
+            expect_icw4: false,
+        }
+    }
+
+    fn command_write(&mut self, value: u8) {
+        self.command = value;
+        if value & 0x10 != 0 {
+            self.init_step = 1;
+            self.expect_icw4 = value & 0x01 != 0;
+        }
+    }
+
+    fn data_write(&mut self, value: u8) {
+        match self.init_step {
+            1 => {
+                self.vector_offset = value & 0xf8;
+                self.init_step = 2;
+            }
+            2 => {
+                self.init_step = if self.expect_icw4 { 3 } else { 0 };
+            }
+            3 => {
+                self.init_step = 0;
+            }
+            _ => self.mask = value,
+        }
+    }
+
+    fn data_read(&self) -> u8 {
+        self.mask
+    }
+}
+
 impl Default for PlatformIoState {
     fn default() -> Self {
         Self {
-            pic1_cmd: 0,
-            pic1_data: 0xff,
-            pic2_cmd: 0,
-            pic2_data: 0xff,
+            pic1: PicChip::new(0x08),
+            pic2: PicChip::new(0x70),
             pit_cmd: 0,
             pit_data: [0; 3],
             cmos_index: 0,
+        }
+    }
+}
+
+impl PlatformIoState {
+    pub(super) fn irq_vector(&self, irq: u8) -> Option<u8> {
+        match irq {
+            0..=7 => {
+                if self.pic1.mask & (1 << irq) == 0 {
+                    Some(self.pic1.vector_offset.wrapping_add(irq))
+                } else {
+                    None
+                }
+            }
+            8..=15 => {
+                let slave_irq = irq - 8;
+                let cascade_unmasked = self.pic1.mask & (1 << 2) == 0;
+                let slave_unmasked = self.pic2.mask & (1 << slave_irq) == 0;
+                if cascade_unmasked && slave_unmasked {
+                    Some(self.pic2.vector_offset.wrapping_add(slave_irq))
+                } else {
+                    None
+                }
+            }
+            _ => None,
         }
     }
 }
@@ -60,10 +130,10 @@ pub(super) fn platform_io_action(
 
     let value = (exit.io_data & 0xff) as u8;
     match exit.io_port {
-        IO_PORT_PIC1_CMD => state.pic1_cmd = value,
-        IO_PORT_PIC1_DATA => state.pic1_data = value,
-        IO_PORT_PIC2_CMD => state.pic2_cmd = value,
-        IO_PORT_PIC2_DATA => state.pic2_data = value,
+        IO_PORT_PIC1_CMD => state.pic1.command_write(value),
+        IO_PORT_PIC1_DATA => state.pic1.data_write(value),
+        IO_PORT_PIC2_CMD => state.pic2.command_write(value),
+        IO_PORT_PIC2_DATA => state.pic2.data_write(value),
         IO_PORT_PIT_CH0 => state.pit_data[0] = value,
         IO_PORT_PIT_CH1 => state.pit_data[1] = value,
         IO_PORT_PIT_CH2 => state.pit_data[2] = value,
@@ -77,10 +147,10 @@ pub(super) fn platform_io_action(
 
 fn platform_io_read(state: &PlatformIoState, port: u16) -> u32 {
     match port {
-        IO_PORT_PIC1_CMD => state.pic1_cmd as u32,
-        IO_PORT_PIC1_DATA => state.pic1_data as u32,
-        IO_PORT_PIC2_CMD => state.pic2_cmd as u32,
-        IO_PORT_PIC2_DATA => state.pic2_data as u32,
+        IO_PORT_PIC1_CMD => state.pic1.command as u32,
+        IO_PORT_PIC1_DATA => state.pic1.data_read() as u32,
+        IO_PORT_PIC2_CMD => state.pic2.command as u32,
+        IO_PORT_PIC2_DATA => state.pic2.data_read() as u32,
         IO_PORT_PIT_CH0 => state.pit_data[0] as u32,
         IO_PORT_PIT_CH1 => state.pit_data[1] as u32,
         IO_PORT_PIT_CH2 => state.pit_data[2] as u32,

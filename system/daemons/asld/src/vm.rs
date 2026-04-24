@@ -4,12 +4,18 @@ use alloc::string::String;
 use crate::errors::AsldError;
 use crate::model::{DistroConfig, VmRunState};
 
+mod aslnet;
+mod e1000;
 mod ide;
 mod msr;
+mod pci;
 mod platform;
 mod serial;
+use aslnet::AslNetDevice;
+use e1000::E1000Device;
 use ide::IdeController;
 use msr::{msr_read, msr_write, MsrState, MSR_IA32_EFER, MSR_IA32_FS_BASE, MSR_IA32_GS_BASE};
+use pci::PciBus;
 use platform::{platform_io_action, PlatformIoState};
 use serial::{serial_io_action, SerialPortState};
 
@@ -21,6 +27,7 @@ const BOOT_PDPT_ADDR: usize = 0x2000;
 const BOOT_PD_ADDR: usize = 0x3000;
 const BOOT_CODE_ADDR: usize = 0x20_0000;
 const BOOT_STACK_GUARD: usize = 0x2000;
+const E1000_IRQ: u8 = 11;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmInstance {
@@ -37,7 +44,10 @@ pub struct VmInstance {
     pub halted: bool,
     serial: SerialPortState,
     platform_io: PlatformIoState,
+    pci: PciBus,
     ide: IdeController,
+    net: AslNetDevice,
+    e1000: E1000Device,
     msrs: MsrState,
 }
 
@@ -92,7 +102,10 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         halted: false,
         serial: SerialPortState::default(),
         platform_io: PlatformIoState::default(),
+        pci: PciBus::default(),
         ide: IdeController::disabled(),
+        net: AslNetDevice::default(),
+        e1000: E1000Device::default(),
         msrs: MsrState::default(),
     })
 }
@@ -224,7 +237,10 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         halted: false,
         serial: SerialPortState::default(),
         platform_io: PlatformIoState::default(),
+        pci: PciBus::default(),
         ide,
+        net: AslNetDevice::default(),
+        e1000: E1000Device::default(),
         msrs: MsrState::default(),
     })
 }
@@ -236,11 +252,15 @@ fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError>
     let mut last_exit = VmExitInfo::default();
     let vcpu = libavm::AvmVcpu::from_raw_handle(instance.vcpu_handle);
     for _ in 0..MAX_BOOT_EXITS {
+        poll_e1000_rx(instance, &vcpu)?;
         let mut exit = VmExitInfo::default();
         if vcpu.run(&mut exit).is_err() {
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
         if handle_emulated_exit(instance, &vcpu, &exit)? {
+            continue;
+        }
+        if exit.reason == exit_reason::HLT && inject_pending_device_irqs(instance, &vcpu)? {
             continue;
         }
         let assessment = assess_boot_exit(&exit);
@@ -286,12 +306,16 @@ fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>
 
     let vcpu = libavm::AvmVcpu::from_raw_handle(instance.vcpu_handle);
     for _ in 0..MAX_RUNTIME_EXITS {
+        poll_e1000_rx(instance, &vcpu)?;
         let mut exit = VmExitInfo::default();
         if vcpu.run(&mut exit).is_err() {
             instance.run_state = VmRunState::Degraded;
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
         if handle_emulated_exit(instance, &vcpu, &exit)? {
+            continue;
+        }
+        if exit.reason == exit_reason::HLT && inject_pending_device_irqs(instance, &vcpu)? {
             continue;
         }
         match assess_runtime_exit(&exit) {
@@ -712,7 +736,16 @@ fn handle_emulated_exit(
     if handle_ide_io_exit(instance, vcpu, exit)? {
         return Ok(true);
     }
+    if handle_asl_net_io_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
+    if handle_pci_io_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
     if handle_platform_io_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
+    if handle_e1000_mmio_exit(instance, vcpu, exit)? {
         return Ok(true);
     }
     if handle_msr_exit(instance, vcpu, exit)? {
@@ -742,6 +775,7 @@ fn handle_serial_io_exit(
         write_io_read_value(vcpu, exit.access_size, value)?;
     }
     advance_guest_rip(vcpu, exit.instruction_len)?;
+    let _ = inject_pending_device_irqs(instance, vcpu)?;
     Ok(true)
 }
 
@@ -835,6 +869,48 @@ fn handle_ide_string_io_exit(
 }
 
 #[cfg(not(target_os = "linux"))]
+fn handle_asl_net_io_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    let Some(action) = instance.net.io_action(exit) else {
+        return Ok(false);
+    };
+
+    if let Some(frame) = action.tx_frame {
+        crate::broker::network_tx_frame(&instance.distro_name, &frame)?;
+    }
+    if action.rx_poll {
+        if let Some(frame) = crate::broker::network_rx_frame(&instance.distro_name, 1518)? {
+            instance.net.load_rx_frame(frame);
+        }
+    }
+    if let Some(value) = action.read_value {
+        write_io_read_value(vcpu, exit.access_size, value)?;
+    }
+    advance_guest_rip(vcpu, exit.instruction_len)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_pci_io_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    let Some(action) = instance.pci.io_action(exit) else {
+        return Ok(false);
+    };
+
+    if let Some(value) = action.read_value {
+        write_io_read_value(vcpu, exit.access_size, value)?;
+    }
+    advance_guest_rip(vcpu, exit.instruction_len)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
 fn handle_platform_io_exit(
     instance: &mut VmInstance,
     vcpu: &libavm::AvmVcpu,
@@ -848,6 +924,92 @@ fn handle_platform_io_exit(
         write_io_read_value(vcpu, exit.access_size, value)?;
     }
     advance_guest_rip(vcpu, exit.instruction_len)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_e1000_mmio_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    let memory_addr = instance.guest_memory_addr;
+    let memory_size = instance.guest_memory_size;
+    let Some(action) = instance.e1000.mmio_action(
+        exit,
+        |gpa, dest| read_guest_physical(memory_addr, memory_size, gpa, dest),
+        |gpa, bytes| write_guest_physical(memory_addr, memory_size, gpa, bytes),
+    ) else {
+        return Ok(false);
+    };
+
+    for frame in action.tx_frames {
+        crate::broker::network_tx_frame(&instance.distro_name, &frame)?;
+    }
+    if action.rx_poll {
+        if let Some(frame) = crate::broker::network_rx_frame(&instance.distro_name, 1518)? {
+            let memory_addr = instance.guest_memory_addr;
+            let memory_size = instance.guest_memory_size;
+            let _ = instance.e1000.inject_rx_frame(
+                &frame,
+                |gpa, dest| read_guest_physical(memory_addr, memory_size, gpa, dest),
+                |gpa, bytes| write_guest_physical(memory_addr, memory_size, gpa, bytes),
+            );
+        }
+    }
+    if action.interrupt {
+        let _ = inject_device_irq(instance, vcpu, E1000_IRQ)?;
+    }
+    if let Some(value) = action.read_value {
+        write_io_read_value(vcpu, exit.access_size, value)?;
+    }
+    advance_guest_rip(vcpu, exit.instruction_len)?;
+    let _ = inject_pending_device_irqs(instance, vcpu)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn poll_e1000_rx(instance: &mut VmInstance, vcpu: &libavm::AvmVcpu) -> Result<(), AsldError> {
+    if !instance.e1000.wants_rx_poll() {
+        return Ok(());
+    }
+    if let Some(frame) = crate::broker::network_rx_frame(&instance.distro_name, 1518)? {
+        let memory_addr = instance.guest_memory_addr;
+        let memory_size = instance.guest_memory_size;
+        let injected = instance.e1000.inject_rx_frame(
+            &frame,
+            |gpa, dest| read_guest_physical(memory_addr, memory_size, gpa, dest),
+            |gpa, bytes| write_guest_physical(memory_addr, memory_size, gpa, bytes),
+        );
+        if injected {
+            let _ = inject_pending_device_irqs(instance, vcpu)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn inject_pending_device_irqs(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+) -> Result<bool, AsldError> {
+    if instance.e1000.interrupt_pending() {
+        return inject_device_irq(instance, vcpu, E1000_IRQ);
+    }
+    Ok(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn inject_device_irq(
+    instance: &VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    irq: u8,
+) -> Result<bool, AsldError> {
+    let Some(vector) = instance.platform_io.irq_vector(irq) else {
+        return Ok(false);
+    };
+    vcpu.inject_irq(vector)
+        .map_err(|_| AsldError::BackendUnavailable("avm inject_irq failed"))?;
     Ok(true)
 }
 
@@ -1029,6 +1191,49 @@ fn write_guest_bytes(
         dest.copy_from_slice(bytes);
     }
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_guest_physical(
+    guest_memory_addr: usize,
+    guest_memory_size: usize,
+    guest_phys: u64,
+    dest: &mut [u8],
+) -> bool {
+    let start = guest_phys as usize;
+    let Some(end) = start.checked_add(dest.len()) else {
+        return false;
+    };
+    if guest_memory_addr == 0 || end > guest_memory_size {
+        return false;
+    }
+    unsafe {
+        let src = core::slice::from_raw_parts((guest_memory_addr + start) as *const u8, dest.len());
+        dest.copy_from_slice(src);
+    }
+    true
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_guest_physical(
+    guest_memory_addr: usize,
+    guest_memory_size: usize,
+    guest_phys: u64,
+    bytes: &[u8],
+) -> bool {
+    let start = guest_phys as usize;
+    let Some(end) = start.checked_add(bytes.len()) else {
+        return false;
+    };
+    if guest_memory_addr == 0 || end > guest_memory_size {
+        return false;
+    }
+    unsafe {
+        let dest =
+            core::slice::from_raw_parts_mut((guest_memory_addr + start) as *mut u8, bytes.len());
+        dest.copy_from_slice(bytes);
+    }
+    true
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -1252,7 +1457,8 @@ mod tests {
     use super::msr::{msr_read, msr_write, MsrState, MSR_IA32_EFER, MSR_IA32_FS_BASE};
     use super::platform::{
         platform_io_action, PlatformIoState, IO_PORT_CMOS_DATA, IO_PORT_CMOS_INDEX,
-        IO_PORT_KBD_STATUS, IO_PORT_PIC1_DATA, IO_PORT_POST_DELAY,
+        IO_PORT_KBD_STATUS, IO_PORT_PIC1_CMD, IO_PORT_PIC1_DATA, IO_PORT_PIC2_CMD,
+        IO_PORT_PIC2_DATA, IO_PORT_POST_DELAY,
     };
     use super::serial::{
         serial_io_action, SerialPortState, UART_LCR, UART_LCR_DLAB, UART_LSR, UART_RBR_THR_DLL,
@@ -1516,6 +1722,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(pic.read_value, Some(0xfb));
+        assert_eq!(state.irq_vector(2), Some(0x0a));
+        assert_eq!(state.irq_vector(11), None);
+
+        for (port, value) in [
+            (IO_PORT_PIC1_CMD, 0x11),
+            (IO_PORT_PIC2_CMD, 0x11),
+            (IO_PORT_PIC1_DATA, 0x20),
+            (IO_PORT_PIC2_DATA, 0x28),
+            (IO_PORT_PIC1_DATA, 0x04),
+            (IO_PORT_PIC2_DATA, 0x02),
+            (IO_PORT_PIC1_DATA, 0x01),
+            (IO_PORT_PIC2_DATA, 0x01),
+            (IO_PORT_PIC1_DATA, 0xfb),
+            (IO_PORT_PIC2_DATA, 0xf7),
+        ] {
+            let _ = platform_io_action(
+                &mut state,
+                &VmExitInfo {
+                    reason: super::exit_reason::IO_INSTRUCTION,
+                    io_port: port,
+                    access_size: 1,
+                    is_read: 0,
+                    io_data: value,
+                    instruction_len: 1,
+                    ..VmExitInfo::default()
+                },
+            );
+        }
+        assert_eq!(state.irq_vector(11), Some(0x2b));
 
         let _ = platform_io_action(
             &mut state,

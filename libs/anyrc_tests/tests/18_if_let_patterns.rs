@@ -109,6 +109,19 @@ fn parse_range_pattern() {
     }
 }
 
+#[test]
+fn parse_char_range_pattern() {
+    let (expr, _) = parse_expr_src("match ch { '0'..='9' => 1, _ => 2 }");
+    match expr {
+        Expr::Match(_, arms, _) => {
+            assert_eq!(arms.len(), 2);
+            assert!(matches!(&arms[0].pat, Pattern::Range(Some(_), Some(_), true, _)));
+            assert!(matches!(&arms[1].pat, Pattern::Wildcard(_)));
+        }
+        _ => panic!("expected Match"),
+    }
+}
+
 // ── Compile tests ──
 
 #[test]

@@ -9,6 +9,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "cfg-if",
  "zerocopy",
+ "once_cell",
 ]
 
 [[package]]
@@ -74,6 +75,11 @@ name = "libheap"
 version = "0.1.0"
 
 [[package]]
+name = "once_cell"
+version = "1.21.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -102,6 +108,9 @@ dependencies = [
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
+dependencies = [
+ "serde_derive",
+]
 
 [[package]]
 name = "serde_derive"

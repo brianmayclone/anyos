@@ -106,6 +106,10 @@ pub const PRELUDE_TYPES: &[KnownItem] = &[
         local_name: "Sync",
         full_path: "Sync",
     },
+    KnownItem {
+        local_name: "Sized",
+        full_path: "Sized",
+    },
 ];
 
 pub const PRELUDE_VALUES: &[KnownItem] = &[
@@ -144,6 +148,10 @@ pub const PRELUDE_VALUES: &[KnownItem] = &[
     KnownItem {
         local_name: "exit",
         full_path: "exit",
+    },
+    KnownItem {
+        local_name: "drop",
+        full_path: "drop",
     },
 ];
 

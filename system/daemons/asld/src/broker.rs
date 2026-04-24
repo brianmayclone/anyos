@@ -46,6 +46,27 @@ pub fn write_console_bytes(name: &str, bytes: &[u8]) -> Result<(), AsldError> {
     )
 }
 
+pub fn network_tx_frame(name: &str, bytes: &[u8]) -> Result<(), AsldError> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    request("aslnetd", &format!("TX {}\t{}", name, encode_hex(bytes)))
+}
+
+pub fn network_rx_frame(name: &str, max_bytes: usize) -> Result<Option<Vec<u8>>, AsldError> {
+    let lines = request_lines("aslnetd", &format!("RX_POLL {}\t{}", name, max_bytes))?;
+    let mut has_packet = false;
+    let mut data = None;
+    for line in lines {
+        if line == "packet\ttrue" {
+            has_packet = true;
+        } else if let Some(raw) = line.strip_prefix("data\t") {
+            data = decode_hex(raw);
+        }
+    }
+    Ok(if has_packet { data } else { None })
+}
+
 pub fn status(pipe_name: &'static str) -> Result<Vec<String>, AsldError> {
     request_lines(pipe_name, "STATUS")
 }
@@ -200,12 +221,46 @@ fn encode_hex(bytes: &[u8]) -> String {
     out
 }
 
+fn decode_hex(input: &str) -> Option<Vec<u8>> {
+    if input.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::new();
+    let bytes = input.as_bytes();
+    let mut index = 0usize;
+    while index < bytes.len() {
+        let high = hex_nibble(bytes[index])?;
+        let low = hex_nibble(bytes[index + 1])?;
+        out.push((high << 4) | low);
+        index += 2;
+    }
+    Some(out)
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::encode_hex;
+    use super::{decode_hex, encode_hex};
 
     #[test]
     fn encodes_console_bytes_as_hex() {
         assert_eq!(encode_hex(b"A\n"), "410a");
+    }
+
+    #[test]
+    fn decodes_packet_hex() {
+        assert_eq!(
+            decode_hex("deadBEEF"),
+            Some(alloc::vec![0xde, 0xad, 0xbe, 0xef])
+        );
+        assert_eq!(decode_hex("abc"), None);
     }
 }

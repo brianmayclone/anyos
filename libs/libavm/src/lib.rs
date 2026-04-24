@@ -13,6 +13,7 @@ pub const AVM_EXT_DIRTY_LOG: u32 = 1;
 pub const AVM_EXT_MP_STATE: u32 = 2;
 pub const AVM_EXT_GVA_TRANSLATE: u32 = 3;
 pub const AVM_EXT_FPU_STATE: u32 = 4;
+pub const AVM_EXT_IRQ_INJECTION: u32 = 5;
 
 pub const AVMIO_GET_API_VERSION: u32 = 0xAE00;
 pub const AVMIO_CHECK_EXTENSION: u32 = 0xAE01;
@@ -37,6 +38,9 @@ pub const AVMIO_SET_FPU: u32 = 0xAE88;
 pub const AVMIO_GET_MP_STATE: u32 = 0xAE89;
 pub const AVMIO_SET_MP_STATE: u32 = 0xAE8A;
 pub const AVMIO_TRANSLATE: u32 = 0xAE8B;
+pub const AVMIO_INJECT_IRQ: u32 = 0xAE8C;
+pub const AVMIO_INJECT_EXCEPTION: u32 = 0xAE8D;
+pub const AVMIO_INJECT_NMI: u32 = 0xAE8E;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AvmError {
@@ -257,7 +261,10 @@ impl AvmVm {
         self.handle
     }
 
-    pub fn set_user_memory_region(&self, region: &AvmUserspaceMemoryRegion) -> Result<(), AvmError> {
+    pub fn set_user_memory_region(
+        &self,
+        region: &AvmUserspaceMemoryRegion,
+    ) -> Result<(), AvmError> {
         ioctl_ptr_const(self.handle, AVMIO_SET_USER_MEMORY_REGION, region)
     }
 
@@ -343,7 +350,27 @@ impl AvmVcpu {
             ..AvmTranslate::default()
         };
         ioctl_ptr(self.handle, AVMIO_TRANSLATE, &mut req)?;
-        Ok(if req.out_valid != 0 { Some(req.out_gpa) } else { None })
+        Ok(if req.out_valid != 0 {
+            Some(req.out_gpa)
+        } else {
+            None
+        })
+    }
+
+    pub fn inject_irq(&self, vector: u8) -> Result<(), AvmError> {
+        avm_ioctl(self.handle, AVMIO_INJECT_IRQ, vector as u64, 0)?;
+        Ok(())
+    }
+
+    pub fn inject_exception(&self, vector: u8, error_code: u32) -> Result<(), AvmError> {
+        let info = (vector as u32) | (error_code << 8);
+        avm_ioctl(self.handle, AVMIO_INJECT_EXCEPTION, info as u64, 0)?;
+        Ok(())
+    }
+
+    pub fn inject_nmi(&self) -> Result<(), AvmError> {
+        avm_ioctl(self.handle, AVMIO_INJECT_NMI, 0, 0)?;
+        Ok(())
     }
 }
 
@@ -387,6 +414,7 @@ mod tests {
         assert_eq!(AVM_SYSTEM_HANDLE, 0);
         assert!(AVMIO_GET_API_VERSION < AVMIO_SET_USER_MEMORY_REGION);
         assert!(AVMIO_SET_USER_MEMORY_REGION < AVMIO_RUN);
+        assert!(AVMIO_RUN < AVMIO_INJECT_IRQ);
     }
 
     #[test]

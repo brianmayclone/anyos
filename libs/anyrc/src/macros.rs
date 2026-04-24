@@ -83,13 +83,26 @@ pub fn expand_macros(krate: &mut Crate, interner: &mut Interner) {
 }
 
 fn collect_macro_defs(krate: &Crate) -> Vec<MacroDef> {
-    krate.items.iter().filter_map(|item| {
-        if let Item::MacroDef(md) = item {
-            Some(MacroDef { name: md.name, rules: md.rules.clone() })
-        } else {
-            None
+    let mut defs = Vec::new();
+    collect_macro_defs_from_items(&krate.items, &mut defs);
+    defs
+}
+
+fn collect_macro_defs_from_items(items: &[Item], defs: &mut Vec<MacroDef>) {
+    for item in items {
+        match item {
+            Item::MacroDef(md) => defs.push(MacroDef { name: md.name, rules: md.rules.clone() }),
+            Item::Mod(md) => {
+                if let Some(items) = &md.items {
+                    collect_macro_defs_from_items(items, defs);
+                }
+            }
+            Item::Impl(ib) => collect_macro_defs_from_items(&ib.items, defs),
+            Item::Trait(td) => collect_macro_defs_from_items(&td.items, defs),
+            Item::ExternBlock(eb) => collect_macro_defs_from_items(&eb.items, defs),
+            _ => {}
         }
-    }).collect()
+    }
 }
 
 // ── AST walking and expansion ──
@@ -138,6 +151,22 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                     }
                 }
 
+                if macro_name == "define_cast" {
+                    if let Some(expanded) = expand_builtin_define_cast(args, interner) {
+                        items.splice(i..=i, expanded);
+                        *changed = true;
+                        continue;
+                    }
+                }
+
+                if macro_name == "cfg_if" {
+                    if let Some(expanded) = expand_builtin_cfg_if(args, interner) {
+                        items.splice(i..=i, expanded);
+                        *changed = true;
+                        continue;
+                    }
+                }
+
                 if let Some(def) = find_macro(defs, path) {
                     if let Some(expanded) = try_expand_to_items(def, args, interner) {
                         items.splice(i..=i, expanded);
@@ -165,6 +194,16 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                         expand_items(items, defs, interner, changed);
                     }
                 }
+                Item::Const(ref mut c) => {
+                    if let Some(ref mut value) = c.value {
+                        expand_expr(value, defs, interner, changed);
+                    }
+                }
+                Item::Static(ref mut s) => {
+                    if let Some(ref mut value) = s.value {
+                        expand_expr(value, defs, interner, changed);
+                    }
+                }
                 _ => {}
             }
         });
@@ -178,8 +217,32 @@ fn take_and_modify(item: &mut Item, f: impl FnOnce(&mut Item)) {
 }
 
 fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, changed: &mut bool) {
-    for stmt in &mut block.stmts {
-        expand_stmt(stmt, defs, interner, changed);
+    let mut i = 0;
+    while i < block.stmts.len() {
+        if let Stmt::Semi(Expr::MacroCall(path, args, _), _) = &block.stmts[i] {
+            let macro_name = if !path.segments.is_empty() {
+                interner.resolve(path.segments.last().unwrap().ident).to_string()
+            } else {
+                String::new()
+            };
+            if macro_name == "define_cast" {
+                if let Some(items) = expand_builtin_define_cast(args, interner) {
+                    block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
+                    *changed = true;
+                    continue;
+                }
+            }
+            if let Some(def) = find_macro(defs, path) {
+                if let Some(items) = try_expand_to_items(def, args, interner) {
+                    block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
+                    *changed = true;
+                    continue;
+                }
+            }
+        }
+
+        expand_stmt(&mut block.stmts[i], defs, interner, changed);
+        i += 1;
     }
 }
 
@@ -514,6 +577,233 @@ fn find_macro<'a>(defs: &'a [MacroDef], path: &Path) -> Option<&'a MacroDef> {
 fn expand_builtin_dll_exports(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
     let spec = parse_dll_exports_spec(args, interner)?;
     let src = render_dll_exports_source(&spec);
+    let mut parser = Parser::new(&src, interner);
+    Some(parser.parse_crate().items)
+}
+
+fn expand_builtin_cfg_if(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
+    let branches = parse_cfg_if_branches(args, interner)?;
+    let mut expanded = Vec::new();
+    let mut prev_conds: Vec<Vec<TokenTree>> = Vec::new();
+
+    for branch in branches {
+        let branch_cfg = cfg_if_branch_predicate(branch.cond.clone(), &prev_conds, interner);
+        let src = token_trees_to_string(&branch.body, interner);
+        let mut parser = Parser::new(&src, interner);
+        let krate = parser.parse_crate();
+        for mut item in krate.items {
+            if let Some(pred) = &branch_cfg {
+                prepend_cfg_attr(&mut item, cfg_attr(pred.clone(), interner));
+            }
+            expanded.push(item);
+        }
+        if let Some(cond) = branch.cond {
+            prev_conds.push(cond);
+        }
+    }
+
+    Some(expanded)
+}
+
+#[derive(Clone)]
+struct CfgIfBranch {
+    cond: Option<Vec<TokenTree>>,
+    body: Vec<TokenTree>,
+}
+
+fn parse_cfg_if_branches(args: &[TokenTree], interner: &Interner) -> Option<Vec<CfgIfBranch>> {
+    let mut branches = Vec::new();
+    let mut idx = 0;
+    let mut expect_if = true;
+
+    loop {
+        if expect_if {
+            if !matches_token_kind(args.get(idx), |kind| *kind == TokenKind::Kw(Keyword::If)) {
+                return None;
+            }
+            idx += 1;
+            let cond = parse_cfg_if_condition(args, &mut idx, interner)?;
+            let body = parse_cfg_if_body(args, &mut idx)?;
+            branches.push(CfgIfBranch { cond: Some(cond), body });
+            expect_if = false;
+        }
+
+        if idx >= args.len() {
+            break;
+        }
+
+        if !matches_token_kind(args.get(idx), |kind| *kind == TokenKind::Kw(Keyword::Else)) {
+            return None;
+        }
+        idx += 1;
+
+        if matches_token_kind(args.get(idx), |kind| *kind == TokenKind::Kw(Keyword::If)) {
+            expect_if = true;
+            continue;
+        }
+
+        let body = parse_cfg_if_body(args, &mut idx)?;
+        branches.push(CfgIfBranch { cond: None, body });
+        break;
+    }
+
+    Some(branches)
+}
+
+fn parse_cfg_if_condition(
+    args: &[TokenTree],
+    idx: &mut usize,
+    interner: &Interner,
+) -> Option<Vec<TokenTree>> {
+    if !matches_token_kind(args.get(*idx), |kind| *kind == TokenKind::Hash) {
+        return None;
+    }
+    *idx += 1;
+    let TokenTree::Delimited(Delimiter::Bracket, attr_tokens) = args.get(*idx)? else {
+        return None;
+    };
+    *idx += 1;
+    if attr_tokens.len() != 2 {
+        return None;
+    }
+    let TokenTree::Token(name_tok) = &attr_tokens[0] else {
+        return None;
+    };
+    let TokenKind::Ident(sym) = name_tok.kind else {
+        return None;
+    };
+    if interner.resolve(sym) != "cfg" {
+        return None;
+    }
+    let TokenTree::Delimited(Delimiter::Paren, cfg_tokens) = &attr_tokens[1] else {
+        return None;
+    };
+    Some(cfg_tokens.clone())
+}
+
+fn parse_cfg_if_body(args: &[TokenTree], idx: &mut usize) -> Option<Vec<TokenTree>> {
+    let TokenTree::Delimited(Delimiter::Brace, body) = args.get(*idx)? else {
+        return None;
+    };
+    *idx += 1;
+    Some(body.clone())
+}
+
+fn matches_token_kind<F>(tt: Option<&TokenTree>, pred: F) -> bool
+where
+    F: FnOnce(&TokenKind) -> bool,
+{
+    matches!(tt, Some(TokenTree::Token(tok)) if pred(&tok.kind))
+}
+
+fn cfg_if_branch_predicate(
+    cond: Option<Vec<TokenTree>>,
+    prev_conds: &[Vec<TokenTree>],
+    interner: &mut Interner,
+) -> Option<Vec<TokenTree>> {
+    let pred = if prev_conds.is_empty() {
+        cond?
+    } else {
+        let mut all_parts = Vec::new();
+        for prev in prev_conds {
+            if !all_parts.is_empty() {
+                all_parts.push(comma_tt());
+            }
+            all_parts.extend(not_predicate(prev.clone(), interner));
+        }
+        if let Some(cond) = cond {
+            if !all_parts.is_empty() {
+                all_parts.push(comma_tt());
+            }
+            all_parts.extend(cond);
+        }
+        vec![
+            ident_tt("all", interner),
+            TokenTree::Delimited(Delimiter::Paren, all_parts),
+        ]
+    };
+
+    Some(pred)
+}
+
+fn cfg_attr(pred: Vec<TokenTree>, interner: &mut Interner) -> Attribute {
+    Attribute {
+        path: Path {
+            segments: vec![PathSegment {
+                ident: interner.intern("cfg"),
+                args: None,
+            }],
+            span: Span::dummy(),
+        },
+        args: AttrArgs::Delimited(pred),
+        span: Span::dummy(),
+    }
+}
+
+fn not_predicate(pred: Vec<TokenTree>, interner: &mut Interner) -> Vec<TokenTree> {
+    vec![
+        ident_tt("not", interner),
+        TokenTree::Delimited(Delimiter::Paren, pred),
+    ]
+}
+
+fn ident_tt(name: &str, interner: &mut Interner) -> TokenTree {
+    TokenTree::Token(Token {
+        kind: TokenKind::Ident(interner.intern(name)),
+        span: Span::dummy(),
+    })
+}
+
+fn comma_tt() -> TokenTree {
+    TokenTree::Token(Token {
+        kind: TokenKind::Comma,
+        span: Span::dummy(),
+    })
+}
+
+fn prepend_cfg_attr(item: &mut Item, attr: Attribute) {
+    match item {
+        Item::Fn(f) => f.attrs.insert(0, attr),
+        Item::Struct(s) => s.attrs.insert(0, attr),
+        Item::Enum(e) => e.attrs.insert(0, attr),
+        Item::Impl(i) => i.attrs.insert(0, attr),
+        Item::Trait(t) => t.attrs.insert(0, attr),
+        Item::TypeAlias(t) => t.attrs.insert(0, attr),
+        Item::Const(c) => c.attrs.insert(0, attr),
+        Item::Static(s) => s.attrs.insert(0, attr),
+        Item::Use(u) => u.attrs.insert(0, attr),
+        Item::Mod(m) => m.attrs.insert(0, attr),
+        Item::MacroDef(m) => m.attrs.insert(0, attr),
+        Item::ExternBlock(e) => e.attrs.insert(0, attr),
+        Item::ExternCrate(_) | Item::MacroCall(_, _, _) => {}
+    }
+}
+
+fn expand_builtin_define_cast(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
+    let TokenTree::Token(Token { kind: TokenKind::Kw(Keyword::Unsafe), .. }) = args.first()? else {
+        return None;
+    };
+    let TokenTree::Delimited(Delimiter::Brace, body) = args.get(1)? else {
+        return None;
+    };
+
+    let mut is_pub = false;
+    let mut name = None;
+    for tt in body {
+        match tt {
+            TokenTree::Token(Token { kind: TokenKind::Kw(Keyword::Pub), .. }) => {
+                is_pub = true;
+            }
+            TokenTree::Token(Token { kind: TokenKind::Ident(sym), .. }) => {
+                name = Some(*sym);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let name = name?;
+    let vis = if is_pub { "pub " } else { "" };
+    let src = format!("{}enum {} {{}}", vis, interner.resolve(name));
     let mut parser = Parser::new(&src, interner);
     Some(parser.parse_crate().items)
 }
@@ -1050,6 +1340,10 @@ impl<'a> PatternMatcher<'a> {
                             }
                         }
 
+                        if kleene == '?' {
+                            break;
+                        }
+
                         // Try to eat separator
                         if let Some(ref sep_tok) = sep {
                             if ii < input.len() {
@@ -1091,7 +1385,7 @@ impl<'a> PatternMatcher<'a> {
                                 if let TokenTree::Token(frag_tok) = &pattern[pi + 3] {
                                     if let TokenKind::Ident(frag_sym) = frag_tok.kind {
                                         let frag = self.interner.resolve(frag_sym);
-                                        if matches!(frag, "expr" | "ident" | "ty" | "pat" | "tt" | "literal" | "stmt" | "block") {
+                                        if matches!(frag, "expr" | "ident" | "ty" | "pat" | "tt" | "literal" | "stmt" | "block" | "vis") {
                                             pi += 4;
                                             // Capture based on fragment type
                                             let captured = self.capture_fragment(frag, &input[ii..]);
@@ -1192,7 +1486,7 @@ impl<'a> PatternMatcher<'a> {
                     match tt {
                         TokenTree::Token(t) => {
                             match t.kind {
-                                TokenKind::Comma | TokenKind::Semi if depth == 0 => break,
+                                TokenKind::Comma | TokenKind::Semi | TokenKind::FatArrow if depth == 0 => break,
                                 TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket if depth == 0 => break,
                                 TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => depth += 1,
                                 TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => depth -= 1,
@@ -1206,6 +1500,18 @@ impl<'a> PatternMatcher<'a> {
                 if end == 0 { return None; }
                 Some((input[..end].to_vec(), end))
             }
+            "vis" => {
+                if let TokenTree::Token(t) = &input[0] {
+                    if t.kind == TokenKind::Kw(Keyword::Pub) {
+                        let mut end = 1;
+                        if matches!(input.get(1), Some(TokenTree::Delimited(Delimiter::Paren, _))) {
+                            end = 2;
+                        }
+                        return Some((input[..end].to_vec(), end));
+                    }
+                }
+                Some((Vec::new(), 0))
+            }
             _ => None,
         }
     }
@@ -1216,20 +1522,22 @@ fn is_dollar(tt: &TokenTree) -> bool {
 }
 
 fn parse_rep_suffix(tts: &[TokenTree]) -> (Option<Token>, char, usize) {
-    // After $(...), expect optional separator then * or +
+    // After $(...), expect optional separator then *, +, or ?
     if tts.is_empty() { return (None, '*', 0); }
 
-    // Check if first token is * or +
+    // Check if first token is *, +, or ?
     if let TokenTree::Token(t) = &tts[0] {
         if t.kind == TokenKind::Star { return (None, '*', 1); }
         if t.kind == TokenKind::Plus { return (None, '+', 1); }
+        if t.kind == TokenKind::Question { return (None, '?', 1); }
     }
 
-    // Otherwise first is separator, second is * or +
+    // Otherwise first is separator, second is *, +, or ?
     if tts.len() >= 2 {
         if let (TokenTree::Token(sep), TokenTree::Token(kleene)) = (&tts[0], &tts[1]) {
             let k = if kleene.kind == TokenKind::Star { '*' }
                     else if kleene.kind == TokenKind::Plus { '+' }
+                    else if kleene.kind == TokenKind::Question { '?' }
                     else { '*' };
             return (Some(sep.clone()), k, 2);
         }
@@ -1308,6 +1616,21 @@ fn substitute_rep(body: &[TokenTree], captures: &HashMap<Symbol, Capture>, inter
     let mut i = 0;
     while i < body.len() {
         if i + 1 < body.len() && is_dollar(&body[i]) {
+            if let TokenTree::Delimited(Delimiter::Paren, rep_body) = &body[i + 1] {
+                let (sep, _kleene, skip) = parse_rep_suffix(&body[i + 2..]);
+                i += 2 + skip;
+
+                let rep_count = find_rep_count(rep_body, captures, interner);
+                for nested_iter in 0..rep_count {
+                    if nested_iter > 0 {
+                        if let Some(ref sep_tok) = sep {
+                            out.push(TokenTree::Token(sep_tok.clone()));
+                        }
+                    }
+                    out.extend(substitute_rep(rep_body, captures, interner, nested_iter));
+                }
+                continue;
+            }
             if let TokenTree::Token(Token { kind: TokenKind::Ident(name), .. }) = &body[i + 1] {
                 if let Some(cap) = captures.get(name) {
                     match cap {
@@ -1368,7 +1691,13 @@ fn try_expand_to_expr(def: &MacroDef, args: &[TokenTree], interner: &mut Interne
         let mut captures = HashMap::new();
         if match_pattern(&rule.pattern, args, interner, &mut captures) {
             let expanded = substitute(&rule.body, &captures, interner);
+            if has_unexpanded_dollar_tts(&expanded) {
+                return None;
+            }
             let src = token_trees_to_string(&expanded, interner);
+            if has_unexpanded_dollar(&src) {
+                return None;
+            }
             let mut parser = Parser::new(&src, interner);
             return Some(parser.parse_expr());
         }
@@ -1381,13 +1710,61 @@ fn try_expand_to_items(def: &MacroDef, args: &[TokenTree], interner: &mut Intern
         let mut captures = HashMap::new();
         if match_pattern(&rule.pattern, args, interner, &mut captures) {
             let expanded = substitute(&rule.body, &captures, interner);
+            if has_unexpanded_dollar_tts(&expanded) {
+                return None;
+            }
             let src = token_trees_to_string(&expanded, interner);
+            if has_unexpanded_dollar(&src) {
+                return None;
+            }
             let mut parser = Parser::new(&src, interner);
             let krate = parser.parse_crate();
             return Some(krate.items);
         }
     }
     None
+}
+
+fn has_unexpanded_dollar(src: &str) -> bool {
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'$' {
+            if src[i..].starts_with("$crate") {
+                i += "$crate".len();
+                continue;
+            }
+            return true;
+        }
+        i += 1;
+    }
+    false
+}
+
+fn has_unexpanded_dollar_tts(tts: &[TokenTree]) -> bool {
+    let mut i = 0;
+    while i < tts.len() {
+        match &tts[i] {
+            TokenTree::Token(Token { kind: TokenKind::Dollar, .. }) => {
+                if matches!(
+                    tts.get(i + 1),
+                    Some(TokenTree::Token(Token { kind: TokenKind::Kw(Keyword::Crate), .. }))
+                ) {
+                    i += 2;
+                    continue;
+                }
+                return true;
+            }
+            TokenTree::Delimited(_, inner) => {
+                if has_unexpanded_dollar_tts(inner) {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 // ── Token tree to string conversion ──

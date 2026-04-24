@@ -332,6 +332,27 @@ impl<'a> MirBuilder<'a> {
                     }
                 }
             }
+            HirPattern::Slice(pats, _) => {
+                let elem_ty = match ty {
+                    TyKind::Array(elem_ty, _) | TyKind::Slice(elem_ty) => Some(elem_ty.as_ref()),
+                    _ => None,
+                };
+                if let Some(elem_ty) = elem_ty {
+                    for (idx, pat) in pats.iter().filter(|p| !matches!(p, HirPattern::Rest(_))).enumerate() {
+                        let mut projections = source.projections.clone();
+                        projections.push(Projection::Field(idx));
+                        self.bind_let_pattern(
+                            pat,
+                            Place {
+                                local: source.local,
+                                projections,
+                            },
+                            elem_ty,
+                            span,
+                        );
+                    }
+                }
+            }
             HirPattern::Ref(inner, _, _) => {
                 if let TyKind::Ref(inner_ty, _) = ty {
                     self.bind_let_pattern(inner, source, inner_ty, span);
@@ -354,6 +375,8 @@ impl<'a> MirBuilder<'a> {
             HirExprKind::Lit(lit) => self.lower_literal(lit, expr),
 
             HirExprKind::Path(path) => self.lower_path(path, expr),
+
+            HirExprKind::QualifiedPath(qpath) => self.lower_path(&qpath.path, expr),
 
             HirExprKind::Binary(op, lhs, rhs) => {
                 let l = self.lower_expr(lhs);
@@ -1845,6 +1868,10 @@ impl<'a> MirBuilder<'a> {
                 self.resolve_path_to_local(path, expr.id)
                     .map(|local| Place::local(local))
             }
+            HirExprKind::QualifiedPath(qpath) => {
+                self.resolve_path_to_local(&qpath.path, expr.id)
+                    .map(|local| Place::local(local))
+            }
             HirExprKind::Field(base, field_name) => {
                 let mut place = self.try_lower_to_place(base)?;
                 let base_ty = self.get_expr_ty(base);
@@ -2143,6 +2170,7 @@ impl<'a> MirBuilder<'a> {
             TyKind::Int(IntTy::I128) | TyKind::Uint(UintTy::U128) => 16,
             TyKind::Array(inner, n) => self.estimate_ty_size(inner.as_ref()) * *n,
             TyKind::Slice(_) | TyKind::Str => 16,
+            TyKind::Projection(_, _, _) => 8,
             TyKind::Tuple(tys) => tys.iter().map(|ty| self.estimate_ty_size(ty)).sum(),
             TyKind::Adt(def_id, _) => self.typeck
                 .struct_defs

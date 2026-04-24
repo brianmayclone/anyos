@@ -72,6 +72,52 @@ fn parse_struct_field_attrs() {
 }
 
 #[test]
+fn parse_struct_literal_field_attrs() {
+    let krate = parse(r#"fn f(rest: i32) { let _ = Cursor { rest, #[cfg(span_locations)] off: 1 }; }"#);
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().expect("expected body");
+            match &body.stmts[0] {
+                Stmt::Let(_, _, Some(init), _) => {
+                    if let Expr::Struct(_, fields, _, _) = init.as_ref() {
+                        assert_eq!(fields.len(), 2);
+                        assert_eq!(fields[0].attrs.len(), 0);
+                        assert_eq!(fields[1].attrs.len(), 1);
+                    } else {
+                        panic!("expected struct literal");
+                    }
+                }
+                _ => panic!("expected struct literal"),
+            }
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
+fn parse_struct_pattern_field_attrs() {
+    let krate = parse(r#"fn f(lit: Literal) { match lit { Literal { #[cfg(wrap_proc_macro)] inner, repr } => repr } }"#);
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().expect("expected body");
+            match &body.stmts[0] {
+                Stmt::Expr(Expr::Match(_, arms, _)) => {
+                    if let Pattern::Struct(_, fields, _, _) = &arms[0].pat {
+                        assert_eq!(fields.len(), 2);
+                        assert_eq!(fields[0].attrs.len(), 1);
+                        assert_eq!(fields[1].attrs.len(), 0);
+                    } else {
+                        panic!("expected struct pattern");
+                    }
+                }
+                _ => panic!("expected match expression"),
+            }
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
 fn parse_enum_with_data() {
     let krate = parse("enum Option<T> { Some(T), None }");
     match &krate.items[0] {
@@ -304,15 +350,80 @@ fn parse_tuple_struct_rest_pattern() {
 }
 
 #[test]
+fn parse_ref_slice_pattern() {
+    let krate = parse("fn f(xs: &[u64; 4]) { let &[a, b, c, d] = xs; }");
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().expect("body");
+            match &body.stmts[0] {
+                Stmt::Let(pat, _, _, _) => match pat {
+                    Pattern::Ref(inner, _, _) => {
+                        assert!(matches!(inner.as_ref(), Pattern::Slice(pats, _) if pats.len() == 4));
+                    }
+                    _ => panic!("expected ref slice pattern"),
+                },
+                _ => panic!("expected let statement"),
+            }
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
+fn parse_default_impl_fn() {
+    let krate = parse("impl T { #[inline] default fn get_hash() -> u64 { 0 } }");
+    match &krate.items[0] {
+        Item::Impl(impl_block) => {
+            assert!(matches!(impl_block.items.first(), Some(Item::Fn(_))));
+        }
+        _ => panic!("expected impl"),
+    }
+}
+
+#[test]
+fn parse_absolute_grouped_use() {
+    let krate = parse("pub use ::{inner::PtrInner, outer::PtrOuter};");
+    assert!(matches!(&krate.items[0], Item::Use(_)));
+}
+
+#[test]
+fn parse_keyword_segment_use_tree() {
+    let krate = parse("pub use core::{error::*, ref::*, split_at::*};");
+    assert!(matches!(&krate.items[0], Item::Use(_)));
+}
+
+#[test]
+fn parse_ref_named_module() {
+    let krate = parse("mod ref { pub struct Item; }");
+    assert!(matches!(&krate.items[0], Item::Mod(_)));
+}
+
+#[test]
 fn parse_qualified_path_expr() {
     let krate = parse("fn f(len: usize) { <[Self]>::new_box_zeroed_with_elems(len); }");
-    assert!(matches!(&krate.items[0], Item::Fn(_)));
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().expect("body");
+            match &body.stmts[0] {
+                Stmt::Semi(Expr::Call(callee, _, _), _) => {
+                    assert!(matches!(callee.as_ref(), Expr::QualifiedPath(_)));
+                }
+                _ => panic!("expected qualified path call"),
+            }
+        }
+        _ => panic!("expected fn"),
+    }
 }
 
 #[test]
 fn parse_qualified_path_type() {
     let krate = parse("type Item = <Self as Iterator>::Item;");
-    assert!(matches!(&krate.items[0], Item::TypeAlias(_)));
+    match &krate.items[0] {
+        Item::TypeAlias(alias) => {
+            assert!(matches!(alias.ty.as_deref(), Some(Ty::QualifiedPath(_))));
+        }
+        _ => panic!("expected type alias"),
+    }
 }
 
 #[test]
