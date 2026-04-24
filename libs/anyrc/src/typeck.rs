@@ -3,6 +3,7 @@ use crate::hir::*;
 use crate::ast::{BinOp, Literal, Mutability};
 use crate::resolve::ResolveResult;
 use crate::intern::{Interner, Symbol};
+use crate::coerce::{self, CoercionKind};
 use crate::diagnostics::{Span, Diagnostic, Level};
 use anyos_std::collections::HashMap;
 
@@ -2393,6 +2394,13 @@ impl<'a> TypeChecker<'a> {
 
             (TyKind::RawPtr(a, am), TyKind::RawPtr(b, bm)) if am == bm => {
                 self.unify(a, b, span);
+                return;
+            }
+
+            (TyKind::RawPtr(expected_inner, _), TyKind::Ref(actual_inner, _))
+                if coerce::classify(&expected, &actual) == Some(CoercionKind::RefToRawPtr) =>
+            {
+                self.unify(expected_inner, actual_inner, span);
                 return;
             }
 

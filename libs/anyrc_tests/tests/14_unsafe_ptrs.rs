@@ -100,6 +100,16 @@ fn typecheck_ptr_cast() {
     assert_typechecks("fn main() { let x: i32 = 5; let p: *const i32 = &x as *const i32; }");
 }
 
+#[test]
+fn typecheck_ref_to_const_raw_ptr_coercion() {
+    assert_typechecks("fn take(_: *const i32) {} fn main() { let x: i32 = 5; take(&x); }");
+}
+
+#[test]
+fn typecheck_mut_ref_to_mut_raw_ptr_coercion() {
+    assert_typechecks("fn take(_: *mut i32) {} fn main() { let mut x: i32 = 5; take(&mut x); }");
+}
+
 // ── Compile tests ──
 
 #[test]

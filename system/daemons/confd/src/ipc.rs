@@ -322,24 +322,31 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
         &actor_name,
         now,
     );
-    if root_changed && schema::persist_entry(db, &root_entry).is_err() {
-        rollback_register(db, state, original_entries, tx_started);
-        send_line(reply_pipe_name, tid, "ERR persist_failed");
-        audit(
-            state,
-            db,
-            actor_uid,
-            owner_uid,
-            &actor_name,
-            tid,
-            "register",
-            scope,
-            namespace,
-            "persist_failed",
-            "namespace_root",
-            root_entry.version,
-        );
-        return;
+    if root_changed {
+        if let Err(err) = schema::persist_entry(db, &root_entry) {
+            anyos_std::println!(
+                "confd: REGISTER persist namespace_root '{}' failed: {}",
+                namespace,
+                err
+            );
+            rollback_register(db, state, original_entries, tx_started);
+            send_line(reply_pipe_name, tid, "ERR persist_failed");
+            audit(
+                state,
+                db,
+                actor_uid,
+                owner_uid,
+                &actor_name,
+                tid,
+                "register",
+                scope,
+                namespace,
+                "persist_failed",
+                "namespace_root",
+                root_entry.version,
+            );
+            return;
+        }
     }
 
     let (_stored_schema_version, mut applied_version) =
@@ -389,7 +396,12 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     now_ms(),
                 );
                 if changed {
-                    if schema::persist_entry(db, &entry).is_err() {
+                    if let Err(err) = schema::persist_entry(db, &entry) {
+                        anyos_std::println!(
+                            "confd: REGISTER persist dir '{}' failed: {}",
+                            full_path,
+                            err
+                        );
                         persist_failed = true;
                         persist_failed_detail = "dir";
                     }
@@ -439,7 +451,12 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     &actor_name,
                     now_ms(),
                 );
-                if schema::persist_entry(db, &entry).is_err() {
+                if let Err(err) = schema::persist_entry(db, &entry) {
+                    anyos_std::println!(
+                        "confd: REGISTER persist default '{}' failed: {}",
+                        full_path,
+                        err
+                    );
                     persist_failed = true;
                     persist_failed_detail = "default";
                 }
@@ -494,7 +511,12 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
                     &actor_name,
                     now_ms(),
                 );
-                if schema::persist_entry(db, &entry).is_err() {
+                if let Err(err) = schema::persist_entry(db, &entry) {
+                    anyos_std::println!(
+                        "confd: REGISTER persist migration set '{}' failed: {}",
+                        full_path,
+                        err
+                    );
                     persist_failed = true;
                     persist_failed_detail = "migration_set";
                     continue;
@@ -626,7 +648,7 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
     if applied_version < schema_version {
         applied_version = schema_version;
     }
-    if schema::persist_schema(
+    if let Err(err) = schema::persist_schema(
         db,
         scope,
         owner_uid,
@@ -637,8 +659,12 @@ fn cmd_register(db: &Database, state: &mut ConfState, tid: u32, reply_pipe_name:
         now_ms(),
         &actor_name,
     )
-    .is_err()
     {
+        anyos_std::println!(
+            "confd: REGISTER persist schema '{}' failed: {}",
+            namespace,
+            err
+        );
         rollback_register(db, state, original_entries, tx_started);
         send_line(reply_pipe_name, tid, "ERR persist_failed");
         audit(

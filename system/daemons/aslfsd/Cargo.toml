@@ -1,0 +1,21 @@
+[package]
+name = "aslfsd"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[[bin]]
+name = "aslfsd"
+path = "src/main.rs"
+test = false
+bench = false
+
+[target.'cfg(target_os = "linux")'.dependencies]
+anyos_std = { path = "../../../libs/stdlib", features = ["host"] }
+libconf_schema = { path = "../../../libs/libconf_schema" }
+libsvc = { path = "../../../libs/libsvc", features = ["host"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+anyos_std = { path = "../../../libs/stdlib" }
+libconf_schema = { path = "../../../libs/libconf_schema" }
+libsvc = { path = "../../../libs/libsvc" }

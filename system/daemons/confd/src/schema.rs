@@ -15,7 +15,12 @@ const CREATE_STATEMENTS: &[&str] = &[
 ];
 
 const ALTER_STATEMENTS: &[&str] = &[
+    "ALTER TABLE registry ADD COLUMN owner_uid INTEGER",
     "ALTER TABLE audit ADD COLUMN owner_uid INTEGER",
+    "ALTER TABLE schemas ADD COLUMN applied_version INTEGER",
+    "ALTER TABLE schemas ADD COLUMN manifest_text TEXT",
+    "ALTER TABLE schemas ADD COLUMN updated_at INTEGER",
+    "ALTER TABLE schemas ADD COLUMN writer_name TEXT",
 ];
 
 #[derive(Clone)]

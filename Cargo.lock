@@ -202,6 +202,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aslconsoled"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libconf_schema",
+ "libsvc",
+]
+
+[[package]]
 name = "aslctl"
 version = "0.1.0"
 dependencies = [
@@ -215,6 +224,33 @@ dependencies = [
  "anyos_std",
  "libavm",
  "libconf",
+ "libconf_schema",
+ "libsvc",
+]
+
+[[package]]
+name = "aslfsd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libconf_schema",
+ "libsvc",
+]
+
+[[package]]
+name = "aslnetd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libconf_schema",
+ "libsvc",
+]
+
+[[package]]
+name = "aslobsd"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
  "libconf_schema",
  "libsvc",
 ]

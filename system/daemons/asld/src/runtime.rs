@@ -9,7 +9,7 @@ use crate::config::{
 use crate::distro::build_distro_config;
 use crate::errors::AsldError;
 use crate::model::{
-    DistroConfig, DistroHealth, DistroState, DistroStatus, ExecInvocation, MountSpec,
+    AgentState, DistroConfig, DistroHealth, DistroState, DistroStatus, ExecInvocation, MountSpec,
     MountValidation, NetworkPolicy, NetworkValidation, PortForwardSpec, SessionMode, ShellSession,
     StorageValidation, VmExitEvent, VmStatusSummary,
 };
@@ -128,6 +128,7 @@ impl RuntimeService {
             self.backends.remove(index);
         }
         let deleted = delete_distro(store, &cfg.name)?;
+        let _ = crate::broker::clear_distro(&cfg.name);
         let _ = self.store.remove(&cfg.name);
         Ok(deleted)
     }
@@ -289,6 +290,39 @@ impl RuntimeService {
         ])
     }
 
+    pub fn update_agent_state<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+        next_state: AgentState,
+        version: Option<&str>,
+    ) -> Result<Vec<String>, AsldError> {
+        let cfg = load_distro(store, name)?;
+        if !cfg.agent.enabled {
+            return Err(AsldError::PolicyDenied);
+        }
+        let status = self
+            .store
+            .get_mut(name)
+            .ok_or(AsldError::InvalidState("distro is not running"))?;
+        if !matches!(
+            status.state,
+            DistroState::Starting
+                | DistroState::Booting
+                | DistroState::Ready
+                | DistroState::Degraded
+        ) {
+            return Err(AsldError::InvalidState("distro is not running"));
+        }
+        status.agent_state = next_state;
+        let _ = crate::broker::record_observation(name, next_state.as_str());
+        Ok(alloc::vec![
+            format!("agent\t{}", status.agent_state.as_str()),
+            format!("version\t{}", version.unwrap_or("-")),
+            format!("fallback_console\t{}", cfg.agent.fallback_console_enabled),
+        ])
+    }
+
     pub fn start<S: ConfigStore>(
         &mut self,
         store: &mut S,
@@ -346,6 +380,12 @@ impl RuntimeService {
                         status.last_error = Some(err.message());
                     }
                 }
+                if let Err(err) = crate::broker::sync_distro(&cfg) {
+                    status.state = DistroState::Degraded;
+                    status.health = DistroHealth::Degraded;
+                    status.last_error = Some(err.message());
+                }
+                let _ = crate::broker::record_observation(&cfg.name, status.health.as_str());
                 self.store.upsert(status.clone());
                 Ok(status)
             }
@@ -387,6 +427,8 @@ impl RuntimeService {
             self.backends.remove(index);
         }
         let status = stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone());
+        let _ = crate::broker::clear_distro(&cfg.name);
+        let _ = crate::broker::record_observation(&cfg.name, "stopped");
         self.store.upsert(status.clone());
         Ok(status)
     }
@@ -428,6 +470,11 @@ impl RuntimeService {
         mount: &MountSpec,
     ) -> Result<Vec<MountSpec>, AsldError> {
         add_mount(store, distro_name, mount)?;
+        if self.is_active(distro_name) {
+            let cfg = load_distro(store, distro_name)?;
+            crate::broker::sync_filesystem(&cfg)?;
+        }
+        let _ = crate::broker::record_observation(distro_name, "mount_changed");
         self.list_mounts(store, distro_name)
     }
 
@@ -439,6 +486,11 @@ impl RuntimeService {
     ) -> Result<Vec<MountSpec>, AsldError> {
         let _ = self.show_mount(store, distro_name, mount_id)?;
         remove_mount(store, distro_name, mount_id)?;
+        if self.is_active(distro_name) {
+            let cfg = load_distro(store, distro_name)?;
+            crate::broker::sync_filesystem(&cfg)?;
+        }
+        let _ = crate::broker::record_observation(distro_name, "mount_changed");
         self.list_mounts(store, distro_name)
     }
 
@@ -458,6 +510,11 @@ impl RuntimeService {
     ) -> Result<Vec<PortForwardSpec>, AsldError> {
         ensure_port_listener_available(store, distro_name, rule)?;
         add_port_forward(store, distro_name, rule)?;
+        if self.is_active(distro_name) {
+            let cfg = load_distro(store, distro_name)?;
+            crate::broker::sync_network(&cfg)?;
+        }
+        let _ = crate::broker::record_observation(distro_name, "port_changed");
         self.list_port_forwards(store, distro_name)
     }
 
@@ -535,6 +592,11 @@ impl RuntimeService {
             return Err(AsldError::NotFound);
         }
         remove_port_forward(store, distro_name, rule_id)?;
+        if self.is_active(distro_name) {
+            let cfg = load_distro(store, distro_name)?;
+            crate::broker::sync_network(&cfg)?;
+        }
+        let _ = crate::broker::record_observation(distro_name, "port_changed");
         self.list_port_forwards(store, distro_name)
     }
 
@@ -590,6 +652,8 @@ impl RuntimeService {
             attached_pid: io.attached_pid,
             ..session
         };
+        crate::broker::attach_console_session(name, &session)?;
+        let _ = crate::broker::record_observation(name, "shell_opened");
         backend.shell_sessions.push(session.clone());
         Ok(session)
     }
@@ -666,6 +730,7 @@ impl RuntimeService {
         exec.stdout_pipe_name = io.stdout_pipe_name;
         exec.stdin_pipe_name = io.stdin_pipe_name;
         exec.attached_pid = io.attached_pid;
+        let _ = crate::broker::record_observation(name, "exec_opened");
         backend.execs.push(exec.clone());
         Ok(exec)
     }
@@ -710,6 +775,7 @@ impl RuntimeService {
         let unhealthy_storage = storage_report.iter().filter(|item| !item.valid).count();
         let network_report = self.validate_network(store, name)?;
         let unhealthy_network = network_report.iter().filter(|item| !item.valid).count();
+        let boot_plan = crate::boot::build_boot_plan(&cfg);
         let mut lines = alloc::vec![
             format!("name\t{}", status.name),
             format!("state\t{}", status.state.as_str()),
@@ -723,10 +789,29 @@ impl RuntimeService {
                 "network\t{}\tdns={}\toutbound={}",
                 cfg.network.mode, cfg.network.dns_mode, cfg.network.allow_outbound
             ),
+            format!("boot_mode\t{}", boot_plan.mode),
+            format!("boot_ready\t{}", boot_plan.startable),
+            format!("boot_kernel\t{}", boot_plan.kernel_path),
+            format!("boot_initrd\t{}", boot_plan.initrd_path),
+            format!("boot_cmdline\t{}", boot_plan.cmdline),
+            format!("boot_message\t{}", boot_plan.message),
+            format!(
+                "network_broker\taslnetd\tmode={}\tdns={}\tforwards={}",
+                cfg.network.mode,
+                cfg.network.dns_mode,
+                cfg.port_forwards.len()
+            ),
             format!(
                 "storage_layout\t{}\tunhealthy={}",
                 cfg.storage.layout, unhealthy_storage
             ),
+            format!(
+                "fs_broker\taslfsd\texports={}\tunhealthy={}",
+                cfg.mounts.len(),
+                unhealthy_mounts
+            ),
+            String::from("console_broker\taslconsoled"),
+            String::from("observability_broker\taslobsd"),
             format!(
                 "mounts\t{}\tunhealthy={}",
                 cfg.mounts.len(),
@@ -738,6 +823,10 @@ impl RuntimeService {
                 unhealthy_network
             ),
         ];
+        append_broker_status(&mut lines, "aslnetd");
+        append_broker_status(&mut lines, "aslfsd");
+        append_broker_status(&mut lines, "aslconsoled");
+        append_broker_status(&mut lines, "aslobsd");
 
         if let Ok(vm) = self.vm_status(name) {
             let shells = self.list_shell_sessions(name).unwrap_or_default();
@@ -789,6 +878,18 @@ impl RuntimeService {
         self.backends
             .iter_mut()
             .find(|backend| backend.name == name)
+    }
+
+    fn is_active(&self, name: &str) -> bool {
+        self.store.get(name).is_some_and(|status| {
+            matches!(
+                status.state,
+                DistroState::Ready
+                    | DistroState::Starting
+                    | DistroState::Booting
+                    | DistroState::Degraded
+            )
+        })
     }
 
     fn require_running(&self, name: &str) -> Result<&DistroStatus, AsldError> {
@@ -880,6 +981,24 @@ fn annotate_cross_distro_port_conflicts<S: ConfigStore>(
         }
     }
     Ok(())
+}
+
+fn append_broker_status(lines: &mut Vec<String>, broker: &'static str) {
+    match crate::broker::status(broker) {
+        Ok(status_lines) => {
+            lines.push(format!("broker\t{}\tavailable\ttrue", broker));
+            for line in status_lines {
+                lines.push(format!("broker_status\t{}\t{}", broker, line));
+            }
+        }
+        Err(err) => {
+            lines.push(format!(
+                "broker\t{}\tavailable\tfalse\t{}",
+                broker,
+                err.message()
+            ));
+        }
+    }
 }
 
 fn select_session_mode(
@@ -1291,6 +1410,25 @@ mod tests {
             .unwrap()
             .iter()
             .any(|line| line.starts_with("vm_backend\t")));
+    }
+
+    #[test]
+    fn diagnose_exposes_boot_plan() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+
+        let lines = runtime.diagnose(&mut store, "ubuntu-dev").unwrap();
+        assert!(lines.iter().any(|line| line == "boot_mode\tdirect-linux"));
+        assert!(lines.iter().any(|line| line == "boot_ready\tfalse"));
+        assert!(lines
+            .iter()
+            .any(|line| line == "boot_kernel\t/System/var/asl/distros/ubuntu-dev/boot/vmlinuz"));
+        assert!(lines
+            .iter()
+            .any(|line| line.starts_with("boot_cmdline\tconsole=ttyS0")));
     }
 
     #[test]

@@ -71,6 +71,29 @@ fn compile_with_error_returns_err() {
 }
 
 #[test]
+fn cfg_all_false_strips_item() {
+    let source = r#"
+        #[cfg(all(test, feature = "host"))]
+        fn host_only() -> i32 {
+            missing.field
+        }
+
+        fn main() -> i32 { 0 }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "test.rs", &options);
+    assert!(result.is_ok(), "cfg-disabled item was typechecked: {:?}", result.err());
+}
+
+#[test]
 fn compile_emit_obj() {
     let source = "fn foo() -> i32 { 42 }";
     let options = CompileOptions {

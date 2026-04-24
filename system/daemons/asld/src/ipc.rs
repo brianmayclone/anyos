@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 use crate::config::ConfigStore;
 use crate::errors::AsldError;
 use crate::model::{
-    ExecInvocation, MountSpec, MountValidation, NetworkPolicy, NetworkValidation, PortForwardSpec,
-    ShellSession, StorageValidation, VmExitEvent, VmStatusSummary,
+    AgentState, ExecInvocation, MountSpec, MountValidation, NetworkPolicy, NetworkValidation,
+    PortForwardSpec, ShellSession, StorageValidation, VmExitEvent, VmStatusSummary,
 };
 use crate::runtime::RuntimeService;
 
@@ -269,6 +269,26 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
                 Err(err) => err_line(&err),
             }
         }
+        "AGENT_HELLO" | "agent_hello" => {
+            agent_update(runtime, store, rest, AgentState::Connected, "agent_hello")
+        }
+        "AGENT_READY" | "agent_ready" => {
+            agent_update(runtime, store, rest, AgentState::Ready, "agent_ready")
+        }
+        "AGENT_HEARTBEAT" | "agent_heartbeat" => agent_update(
+            runtime,
+            store,
+            rest,
+            AgentState::Connected,
+            "agent_heartbeat",
+        ),
+        "AGENT_DISCONNECT" | "agent_disconnect" => agent_update(
+            runtime,
+            store,
+            rest,
+            AgentState::Disconnected,
+            "agent_disconnect",
+        ),
         "VM_STATUS" | "vm_status" => {
             let Some(name) = first_tab_field(rest) else {
                 return err_line(&AsldError::InvalidArgument("name"));
@@ -512,6 +532,23 @@ fn first_tab_field(s: &str) -> Option<&str> {
 
 fn split_tab_fields(s: &str) -> Vec<&str> {
     s.split('\t').filter(|field| !field.is_empty()).collect()
+}
+
+fn agent_update<S: ConfigStore>(
+    runtime: &mut RuntimeService,
+    store: &mut S,
+    rest: &str,
+    next_state: AgentState,
+    arg_name: &'static str,
+) -> String {
+    let fields = split_tab_fields(rest);
+    let Some(name) = fields.first().copied() else {
+        return err_line(&AsldError::InvalidArgument(arg_name));
+    };
+    match runtime.update_agent_state(store, name, next_state, fields.get(1).copied()) {
+        Ok(lines) => ok_lines(lines),
+        Err(err) => err_line(&err),
+    }
 }
 
 fn parse_mount_add<'a>(fields: &[&'a str]) -> Result<(&'a str, MountSpec), AsldError> {
@@ -1016,6 +1053,13 @@ mod tests {
         assert!(agent.contains("restart\trequested"));
         let agent_status = dispatch(&mut runtime, &mut store, "AGENT_STATUS ubuntu-dev");
         assert!(agent_status.contains("agent\tstarting"));
+        let hello = dispatch(&mut runtime, &mut store, "AGENT_HELLO ubuntu-dev\t1");
+        assert!(hello.contains("agent\tconnected"));
+        assert!(hello.contains("version\t1"));
+        let ready = dispatch(&mut runtime, &mut store, "AGENT_READY ubuntu-dev\t1");
+        assert!(ready.contains("agent\tready"));
+        let disconnected = dispatch(&mut runtime, &mut store, "AGENT_DISCONNECT ubuntu-dev\t1");
+        assert!(disconnected.contains("agent\tdisconnected"));
     }
 
     #[test]

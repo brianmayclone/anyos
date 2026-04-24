@@ -3,6 +3,8 @@
 extern crate alloc;
 
 pub mod agent;
+pub mod boot;
+pub mod broker;
 pub mod config;
 pub mod distro;
 pub mod errors;

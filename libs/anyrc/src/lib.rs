@@ -18,6 +18,8 @@ pub mod ast;
 pub mod parser;
 pub mod macros;
 pub mod cfg;
+pub mod lang_items;
+pub mod coerce;
 pub mod hir;
 pub mod hir_lower;
 pub mod resolve;

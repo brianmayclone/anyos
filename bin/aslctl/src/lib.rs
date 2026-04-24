@@ -196,6 +196,7 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         "config" => Some(ClientCommand::Config(args.pos(1)?)),
         "storage" => parse_storage_command(args),
         "network" => parse_network_command(args),
+        "agent" => parse_agent_command(args),
         "start" => Some(ClientCommand::Start(args.pos(1)?)),
         "restart" => Some(ClientCommand::Restart(args.pos(1)?)),
         "stop" => Some(ClientCommand::Stop(args.pos(1)?)),
@@ -314,6 +315,14 @@ fn parse_network_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<C
     match args.pos(1)? {
         "show" => Some(ClientCommand::NetworkShow(args.pos(2)?)),
         "validate" => Some(ClientCommand::NetworkValidate(args.pos(2)?)),
+        _ => None,
+    }
+}
+
+fn parse_agent_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
+    match args.pos(1)? {
+        "status" => Some(ClientCommand::AgentStatus(args.pos(2)?)),
+        "restart" => Some(ClientCommand::AgentRestart(args.pos(2)?)),
         _ => None,
     }
 }
@@ -787,6 +796,8 @@ fn print_usage() {
     println!("  aslctl stop <name>");
     println!("  aslctl agent-status <name>");
     println!("  aslctl agent-restart <name>");
+    println!("  aslctl agent status <name>");
+    println!("  aslctl agent restart <name>");
     println!("  aslctl vm-status <name>");
     println!("  aslctl vm-events <name>");
     println!("  aslctl vm-events-tail <name> [limit]");
@@ -1234,6 +1245,11 @@ mod tests {
         match parse_command(&args) {
             Some(ClientCommand::AgentRestart(name)) => assert_eq!(name, "ubuntu-dev"),
             _ => panic!("expected agent restart command"),
+        }
+        let args = anyos_std::args::parse("agent status ubuntu-dev", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::AgentStatus(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected agent status command"),
         }
     }
 

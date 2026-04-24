@@ -1,5 +1,6 @@
 use alloc::format;
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::errors::AsldError;
 use crate::model::{DistroConfig, VmRunState};
@@ -11,9 +12,20 @@ const BOOT_PDPT_ADDR: usize = 0x2000;
 const BOOT_PD_ADDR: usize = 0x3000;
 const BOOT_CODE_ADDR: usize = 0x20_0000;
 const BOOT_STACK_GUARD: usize = 0x2000;
+const COM1_BASE: u16 = 0x3f8;
+const UART_RBR_THR_DLL: u16 = COM1_BASE;
+const UART_IER_DLM: u16 = COM1_BASE + 1;
+const UART_IIR_FCR: u16 = COM1_BASE + 2;
+const UART_LCR: u16 = COM1_BASE + 3;
+const UART_MCR: u16 = COM1_BASE + 4;
+const UART_LSR: u16 = COM1_BASE + 5;
+const UART_MSR: u16 = COM1_BASE + 6;
+const UART_SCR: u16 = COM1_BASE + 7;
+const UART_LCR_DLAB: u8 = 0x80;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmInstance {
+    pub distro_name: String,
     pub vm_id: u32,
     pub vcpu_id: u32,
     pub vm_handle: u64,
@@ -24,6 +36,7 @@ pub struct VmInstance {
     pub guest_memory_size: usize,
     pub run_state: VmRunState,
     pub halted: bool,
+    serial: SerialPortState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,6 +55,20 @@ pub struct VmRuntimeEvent {
     pub guest_phys_addr: u64,
     pub guest_virt_addr: u64,
     pub halted: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SerialPortState {
+    lcr: u8,
+    ier: u8,
+    mcr: u8,
+    scratch: u8,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SerialIoAction {
+    output: Vec<u8>,
+    read_value: Option<u32>,
 }
 
 pub fn start_vm(config: &DistroConfig) -> Result<VmInstance, AsldError> {
@@ -64,6 +91,7 @@ pub fn stop_vm(instance: &VmInstance) -> Result<(), AsldError> {
 fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
     ensure_pipe(&format!("asl-console-{}", config.name))?;
     Ok(VmInstance {
+        distro_name: config.name.clone(),
         vm_id: 1,
         vcpu_id: 0,
         vm_handle: 1,
@@ -74,6 +102,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         guest_memory_size: align_guest_memory_size(config.resources.memory_mb),
         run_state: VmRunState::Provisioned,
         halted: false,
+        serial: SerialPortState::default(),
     })
 }
 
@@ -153,7 +182,12 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         }
     };
 
-    if let Err(err) = configure_boot_vcpu(&vcpu, guest_memory, guest_memory_size) {
+    let boot_result = if crate::boot::is_smoke_test(config) {
+        configure_boot_vcpu(&vcpu, guest_memory, guest_memory_size)
+    } else {
+        configure_direct_linux_vcpu(config, &vcpu, guest_memory, guest_memory_size)
+    };
+    if let Err(err) = boot_result {
         let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
         let _ = vm.destroy();
         return Err(err);
@@ -167,6 +201,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
     }
 
     Ok(VmInstance {
+        distro_name: config.name.clone(),
         vm_id,
         vcpu_id,
         vm_handle: vm.raw_handle(),
@@ -181,12 +216,13 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         guest_memory_size,
         run_state: VmRunState::Provisioned,
         halted: false,
+        serial: SerialPortState::default(),
     })
 }
 
 #[cfg(not(target_os = "linux"))]
 fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError> {
-    const MAX_BOOT_EXITS: usize = 8;
+    const MAX_BOOT_EXITS: usize = 512;
 
     let mut last_exit = VmExitInfo::default();
     let vcpu = libavm::AvmVcpu::from_raw_handle(instance.vcpu_handle);
@@ -194,6 +230,9 @@ fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError>
         let mut exit = VmExitInfo::default();
         if vcpu.run(&mut exit).is_err() {
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
+        }
+        if handle_serial_io_exit(instance, &vcpu, &exit)? {
+            continue;
         }
         let assessment = assess_boot_exit(&exit);
         last_exit = exit;
@@ -243,6 +282,9 @@ fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>
             instance.run_state = VmRunState::Degraded;
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
+        if handle_serial_io_exit(instance, &vcpu, &exit)? {
+            continue;
+        }
         match assess_runtime_exit(&exit) {
             RuntimeExitAssessment::Continue => continue,
             RuntimeExitAssessment::Record(event) => {
@@ -261,6 +303,26 @@ fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>
 
     instance.run_state = VmRunState::Running;
     Ok(None)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_direct_linux_vcpu(
+    config: &DistroConfig,
+    vcpu: &libavm::AvmVcpu,
+    guest_memory: *mut u8,
+    guest_memory_size: usize,
+) -> Result<(), AsldError> {
+    let layout = crate::boot::prepare_direct_linux_boot(config, guest_memory, guest_memory_size)?;
+    let regs = direct_linux_gprs(&layout);
+    let sregs = direct_linux_sregs(&layout);
+
+    if vcpu.set_regs(&regs).is_err() {
+        return Err(AsldError::BackendUnavailable("avm set_regs failed"));
+    }
+    if vcpu.set_sregs(&sregs).is_err() {
+        return Err(AsldError::BackendUnavailable("avm set_sregs failed"));
+    }
+    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -368,6 +430,70 @@ type GuestSregs = libavm::AvmSregs;
 
 fn bootstrap_gprs() -> GuestGprs {
     GuestGprs::default()
+}
+
+fn direct_linux_gprs(layout: &crate::boot::DirectLinuxLayout) -> GuestGprs {
+    let mut regs = GuestGprs::default();
+    regs.rsi = layout.boot_params_addr as u64;
+    regs.rsp = 0x90000;
+    regs
+}
+
+fn direct_linux_sregs(layout: &crate::boot::DirectLinuxLayout) -> GuestSregs {
+    const CODE_SEGMENT_AR: u32 = 0xC09B;
+    const DATA_SEGMENT_AR: u32 = 0xC093;
+    const TSS_SEGMENT_AR: u32 = 0x808B;
+    const NULL_SEGMENT_AR: u32 = 0x10000;
+    const CR0_PE: u64 = 1 << 0;
+    const CR0_ET: u64 = 1 << 4;
+    const CR0_NE: u64 = 1 << 5;
+    const SEGMENT_LIMIT: u32 = 0xFFFFF;
+
+    GuestSregs {
+        cs_selector: 0x08,
+        cs_base: 0,
+        cs_limit: SEGMENT_LIMIT,
+        cs_ar: CODE_SEGMENT_AR,
+        ds_selector: 0x10,
+        ds_base: 0,
+        ds_limit: SEGMENT_LIMIT,
+        ds_ar: DATA_SEGMENT_AR,
+        es_selector: 0x10,
+        es_base: 0,
+        es_limit: SEGMENT_LIMIT,
+        es_ar: DATA_SEGMENT_AR,
+        fs_selector: 0x10,
+        fs_base: 0,
+        fs_limit: SEGMENT_LIMIT,
+        fs_ar: DATA_SEGMENT_AR,
+        gs_selector: 0x10,
+        gs_base: 0,
+        gs_limit: SEGMENT_LIMIT,
+        gs_ar: DATA_SEGMENT_AR,
+        ss_selector: 0x10,
+        ss_base: 0,
+        ss_limit: SEGMENT_LIMIT,
+        ss_ar: DATA_SEGMENT_AR,
+        tr_selector: 0x18,
+        tr_base: 0,
+        tr_limit: 0x67,
+        tr_ar: TSS_SEGMENT_AR,
+        ldtr_selector: 0,
+        ldtr_base: 0,
+        ldtr_limit: 0,
+        ldtr_ar: NULL_SEGMENT_AR,
+        gdtr_base: 0,
+        gdtr_limit: 0,
+        idtr_base: 0,
+        idtr_limit: 0,
+        cr0: CR0_PE | CR0_ET | CR0_NE,
+        cr3: 0,
+        cr4: 0,
+        efer: 0,
+        rip: layout.kernel_entry_addr as u64,
+        rsp: 0x90000,
+        rflags: 0x2,
+    }
 }
 
 fn bootstrap_sregs(layout: &BootstrapLayout) -> GuestSregs {
@@ -485,6 +611,122 @@ fn zero_page(page: &mut [u8]) {
 fn write_u64(page: &mut [u8], index: usize, value: u64) {
     let offset = index * core::mem::size_of::<u64>();
     page[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_serial_io_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    let Some(action) = serial_io_action(&mut instance.serial, exit) else {
+        return Ok(false);
+    };
+
+    if !action.output.is_empty() {
+        let _ = crate::broker::write_console_bytes(&instance.distro_name, &action.output);
+    }
+
+    if let Some(value) = action.read_value {
+        write_io_read_value(vcpu, exit.access_size, value)?;
+    }
+    advance_io_rip(vcpu, exit.instruction_len)?;
+    Ok(true)
+}
+
+fn serial_io_action(state: &mut SerialPortState, exit: &VmExitInfo) -> Option<SerialIoAction> {
+    if exit.reason != exit_reason::IO_INSTRUCTION || !is_com1_port(exit.io_port) {
+        return None;
+    }
+
+    if exit.is_read != 0 {
+        return Some(SerialIoAction {
+            output: Vec::new(),
+            read_value: Some(serial_read(state, exit.io_port)),
+        });
+    }
+
+    let value = (exit.io_data & 0xff) as u8;
+    let mut output = Vec::new();
+    match exit.io_port {
+        UART_RBR_THR_DLL => {
+            if state.lcr & UART_LCR_DLAB == 0 {
+                output.push(value);
+            }
+        }
+        UART_IER_DLM => {
+            if state.lcr & UART_LCR_DLAB == 0 {
+                state.ier = value;
+            }
+        }
+        UART_LCR => state.lcr = value,
+        UART_MCR => state.mcr = value,
+        UART_SCR => state.scratch = value,
+        UART_IIR_FCR | UART_LSR | UART_MSR => {}
+        _ => {}
+    }
+    Some(SerialIoAction {
+        output,
+        read_value: None,
+    })
+}
+
+fn serial_read(state: &SerialPortState, port: u16) -> u32 {
+    match port {
+        UART_RBR_THR_DLL => 0,
+        UART_IER_DLM => {
+            if state.lcr & UART_LCR_DLAB == 0 {
+                state.ier as u32
+            } else {
+                0
+            }
+        }
+        UART_IIR_FCR => 0x01,
+        UART_LCR => state.lcr as u32,
+        UART_MCR => state.mcr as u32,
+        UART_LSR => 0x60,
+        UART_MSR => 0xb0,
+        UART_SCR => state.scratch as u32,
+        _ => 0,
+    }
+}
+
+fn is_com1_port(port: u16) -> bool {
+    (COM1_BASE..=UART_SCR).contains(&port)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn write_io_read_value(
+    vcpu: &libavm::AvmVcpu,
+    access_size: u8,
+    value: u32,
+) -> Result<(), AsldError> {
+    let mut regs = vcpu
+        .regs()
+        .map_err(|_| AsldError::BackendUnavailable("avm get_regs failed"))?;
+    let mask = match access_size {
+        1 => 0xffu64,
+        2 => 0xffffu64,
+        4 => 0xffff_ffffu64,
+        _ => 0xffu64,
+    };
+    regs.rax = (regs.rax & !mask) | ((value as u64) & mask);
+    vcpu.set_regs(&regs)
+        .map_err(|_| AsldError::BackendUnavailable("avm set_regs failed"))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn advance_io_rip(vcpu: &libavm::AvmVcpu, instruction_len: u32) -> Result<(), AsldError> {
+    let mut sregs = vcpu
+        .sregs()
+        .map_err(|_| AsldError::BackendUnavailable("avm get_sregs failed"))?;
+    sregs.rip = sregs.rip.wrapping_add(if instruction_len == 0 {
+        1
+    } else {
+        instruction_len as u64
+    });
+    vcpu.set_sregs(&sregs)
+        .map_err(|_| AsldError::BackendUnavailable("avm set_sregs failed"))
 }
 
 fn assess_boot_exit(exit: &VmExitInfo) -> ExitAssessment {
@@ -693,9 +935,11 @@ mod tests {
 
     use super::{
         align_guest_memory_size, assess_boot_exit, assess_runtime_exit, boot_probe, bootstrap_gprs,
-        bootstrap_sregs, page_mut, poll_runtime, start_vm, stop_vm, write_bootstrap_image,
-        BootstrapLayout, RuntimeExitAssessment, VmBootReport, VmExitInfo, VmRunState,
-        BOOT_CODE_ADDR, BOOT_PDPT_ADDR, BOOT_PD_ADDR, BOOT_PML4_ADDR,
+        bootstrap_sregs, direct_linux_gprs, direct_linux_sregs, page_mut, poll_runtime,
+        serial_io_action, start_vm, stop_vm, write_bootstrap_image, BootstrapLayout,
+        RuntimeExitAssessment, SerialPortState, VmBootReport, VmExitInfo, VmRunState,
+        BOOT_CODE_ADDR, BOOT_PDPT_ADDR, BOOT_PD_ADDR, BOOT_PML4_ADDR, UART_LCR, UART_LCR_DLAB,
+        UART_LSR, UART_RBR_THR_DLL,
     };
 
     #[test]
@@ -756,6 +1000,30 @@ mod tests {
     }
 
     #[test]
+    fn direct_linux_sregs_target_32bit_protected_entry() {
+        let layout = crate::boot::DirectLinuxLayout {
+            boot_params_addr: crate::boot::LINUX_BOOT_PARAMS_ADDR,
+            kernel_load_addr: crate::boot::LINUX_KERNEL_LOAD_ADDR,
+            kernel_entry_addr: crate::boot::LINUX_KERNEL_LOAD_ADDR,
+            kernel_size: 4096,
+            cmdline_addr: crate::boot::LINUX_CMDLINE_ADDR,
+            cmdline_size: 64,
+            initrd_addr: 0,
+            initrd_size: 0,
+        };
+        let regs = direct_linux_gprs(&layout);
+        let sregs = direct_linux_sregs(&layout);
+        assert_eq!(regs.rsi, crate::boot::LINUX_BOOT_PARAMS_ADDR as u64);
+        assert_eq!(sregs.rip, crate::boot::LINUX_KERNEL_LOAD_ADDR as u64);
+        assert_eq!(sregs.cs_selector, 0x08);
+        assert_eq!(sregs.ss_selector, 0x10);
+        assert_eq!(sregs.efer, 0);
+        assert_eq!(sregs.cr4, 0);
+        assert_eq!(sregs.cr0 & 1, 1);
+        assert_eq!(sregs.cr0 & (1 << 31), 0);
+    }
+
+    #[test]
     fn bootstrap_image_writes_page_tables_and_hlt_stub() {
         let guest_memory_size = align_guest_memory_size(16);
         let layout = BootstrapLayout::new(guest_memory_size).unwrap();
@@ -799,6 +1067,71 @@ mod tests {
         assert!(!result.should_continue);
         assert!(result.halted);
         assert!(result.summary.contains("halt"));
+    }
+
+    #[test]
+    fn serial_io_action_captures_com1_output_and_status_reads() {
+        let mut state = SerialPortState::default();
+        let action = serial_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: UART_RBR_THR_DLL,
+                access_size: 1,
+                is_read: 0,
+                io_data: b'A' as u64,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(action.output, alloc::vec![b'A']);
+        assert_eq!(action.read_value, None);
+
+        let status = serial_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: UART_LSR,
+                access_size: 1,
+                is_read: 1,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(status.read_value, Some(0x60));
+    }
+
+    #[test]
+    fn serial_io_action_suppresses_divisor_latch_writes() {
+        let mut state = SerialPortState::default();
+        let _ = serial_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: UART_LCR,
+                access_size: 1,
+                is_read: 0,
+                io_data: UART_LCR_DLAB as u64,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        );
+        let action = serial_io_action(
+            &mut state,
+            &VmExitInfo {
+                reason: super::exit_reason::IO_INSTRUCTION,
+                io_port: UART_RBR_THR_DLL,
+                access_size: 1,
+                is_read: 0,
+                io_data: 1,
+                instruction_len: 1,
+                ..VmExitInfo::default()
+            },
+        )
+        .unwrap();
+        assert!(action.output.is_empty());
     }
 
     #[test]

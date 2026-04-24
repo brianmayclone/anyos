@@ -1,6 +1,7 @@
 use crate::prelude::*;
 use crate::hir::*;
 use crate::intern::{Interner, Symbol};
+use crate::lang_items;
 use crate::diagnostics::{Span, Diagnostic, Level};
 use anyos_std::collections::HashMap;
 
@@ -75,11 +76,7 @@ impl<'a> Resolver<'a> {
             interner,
             enum_variants: HashMap::new(),
             next_synthetic_def_id: 10000,
-            primitives: vec![
-                "i8", "i16", "i32", "i64", "i128", "isize",
-                "u8", "u16", "u32", "u64", "u128", "usize",
-                "f32", "f64", "bool", "char", "str",
-            ],
+            primitives: lang_items::PRIMITIVE_TYPES.to_vec(),
             impl_methods: HashMap::new(),
             impl_assoc_values: HashMap::new(),
             impl_assoc_types: HashMap::new(),
@@ -94,41 +91,13 @@ impl<'a> Resolver<'a> {
     }
 
     fn bootstrap_prelude_intrinsics(&mut self) {
-        self.define_intrinsic_type("Option", "Option");
-        self.define_intrinsic_type("Result", "Result");
-        self.define_intrinsic_type("Vec", "Vec");
-        self.define_intrinsic_type("String", "String");
-        self.define_intrinsic_type("Arguments", "Arguments");
-        self.define_intrinsic_type("Box", "Box");
-        self.define_intrinsic_type("Clone", "Clone");
-        self.define_intrinsic_type("Copy", "Copy");
-        self.define_intrinsic_type("Debug", "Debug");
-        self.define_intrinsic_type("Drop", "Drop");
-        self.define_intrinsic_type("Eq", "Eq");
-        self.define_intrinsic_type("From", "From");
-        self.define_intrinsic_type("Into", "Into");
-        self.define_intrinsic_type("Iterator", "Iterator");
-        self.define_intrinsic_type("IntoIterator", "IntoIterator");
-        self.define_intrinsic_type("FromIterator", "FromIterator");
-        self.define_intrinsic_type("ExactSizeIterator", "ExactSizeIterator");
-        self.define_intrinsic_type("DoubleEndedIterator", "DoubleEndedIterator");
-        self.define_intrinsic_type("Default", "Default");
-        self.define_intrinsic_type("PartialEq", "PartialEq");
-        self.define_intrinsic_type("PartialOrd", "PartialOrd");
-        self.define_intrinsic_type("Ord", "Ord");
-        self.define_intrinsic_type("Send", "Send");
-        self.define_intrinsic_type("Sync", "Sync");
+        for item in lang_items::PRELUDE_TYPES {
+            self.define_intrinsic_type(item.local_name, item.full_path);
+        }
 
-        self.define_intrinsic_value("Some", "Option::Some");
-        self.define_intrinsic_value("None", "Option::None");
-        self.define_intrinsic_value("Ok", "Result::Ok");
-        self.define_intrinsic_value("Err", "Result::Err");
-
-        self.define_intrinsic_value("__anyrc_println", "__anyrc_println");
-        self.define_intrinsic_value("__anyrc_format", "__anyrc_format");
-        self.define_intrinsic_value("__anyrc_format_args", "__anyrc_format_args");
-        self.define_intrinsic_value("Vec::new", "Vec::new");
-        self.define_intrinsic_value("exit", "exit");
+        for item in lang_items::PRELUDE_VALUES {
+            self.define_intrinsic_value(item.local_name, item.full_path);
+        }
     }
 
     fn define_intrinsic_type(&mut self, local_name: &str, full_path: &str) {
