@@ -667,6 +667,14 @@ impl<'a> CodeEmitter<'a> {
     /// Try to emit an intrinsic call. Returns true if the function was recognized as an intrinsic.
     fn try_emit_intrinsic(&mut self, fn_name: &str, args: &[Operand], dest: &Place) -> bool {
         match fn_name {
+            "u8::from" | "u16::from" | "u32::from" | "u64::from" | "u128::from" | "usize::from"
+            | "i8::from" | "i16::from" | "i32::from" | "i64::from" | "i128::from" | "isize::from" => {
+                if !args.is_empty() {
+                    self.asm.mov_rr(Reg::RAX, Reg::RDI);
+                    self.store_place(dest, Reg::RAX);
+                }
+                true
+            }
             // core::ptr
             "null_mut" | "null" => {
                 // Return null pointer (0)

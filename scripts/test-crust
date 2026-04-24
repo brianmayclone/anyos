@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/test-crust [MODE] [cargo-test-args...]
+
+Modes:
+  all          cargo check anyrc, then run libs/anyrc_tests (default)
+  check        cargo check libs/anyrc only
+  quick        run the current compiler-gap regression subset
+
+Examples:
+  scripts/test-crust
+  scripts/test-crust check
+  scripts/test-crust quick
+  scripts/test-crust --test 05_typeck primitive_assoc
+EOF
+}
+
+mode="all"
+case "${1:-}" in
+  -h|--help)
+    usage
+    exit 0
+    ;;
+  all|check|quick)
+    mode="$1"
+    shift
+    ;;
+esac
+
+case "$mode" in
+  check)
+    cargo check --manifest-path libs/anyrc/Cargo.toml "$@"
+    ;;
+  quick)
+    cargo check --manifest-path libs/anyrc/Cargo.toml
+    cargo test --manifest-path libs/anyrc_tests/Cargo.toml --test 05_typeck primitive_assoc
+    cargo test --manifest-path libs/anyrc_tests/Cargo.toml --test 05_typeck qualified_module_types_do_not_collide_by_leaf_name
+    cargo test --manifest-path libs/anyrc_tests/Cargo.toml --test 05_typeck qualified_assoc_fns_do_not_collide_by_leaf_name
+    cargo test --manifest-path libs/anyrc_tests/Cargo.toml --test 05_typeck root_unqualified_types_do_not_collide_with_nested_leaf_names
+    cargo test --manifest-path libs/anyrc_tests/Cargo.toml --test 05_typeck struct_like_enum_variant_construction_resolves_parent_enum
+    cargo test --manifest-path libs/anyrc_tests/Cargo.toml --test 05_typeck panic_macro_diverges_in_match_arm
+    cargo test --manifest-path libs/anyrc_tests/Cargo.toml --test 05_typeck cfg_attributed_panic_macro_is_expanded_after_strip
+    cargo test --manifest-path libs/anyrc_tests/Cargo.toml --test 24_core_intrinsics run_primitive_assoc_from
+    ;;
+  all)
+    cargo check --manifest-path libs/anyrc/Cargo.toml
+    cargo test --manifest-path libs/anyrc_tests/Cargo.toml "$@"
+    ;;
+esac

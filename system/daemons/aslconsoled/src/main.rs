@@ -17,6 +17,10 @@ anyos_std::entry!(main);
 
 const PIPE_NAME: &str = "aslconsoled";
 const STATUS_PATH: &str = "/System/var/asl/aslconsoled.status";
+const DEFAULT_CANVAS_WIDTH: usize = 80;
+const DEFAULT_CANVAS_HEIGHT: usize = 25;
+const MAX_CANVAS_WIDTH: usize = 240;
+const MAX_CANVAS_HEIGHT: usize = 100;
 
 const DIRS: &[&str] = &["config"];
 const DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
@@ -44,12 +48,34 @@ struct ConsoleSession {
 
 struct ConsoleState {
     sessions: Vec<ConsoleSession>,
+    canvases: Vec<TextCanvas>,
     attach_count: u32,
     rejected_count: u32,
     write_count: u32,
+    canvas_update_count: u32,
     output_bytes: u64,
     last_attach_ms: u32,
     last_write_ms: u32,
+}
+
+#[derive(Clone)]
+struct TextCanvas {
+    distro: String,
+    width: usize,
+    height: usize,
+    cursor_x: usize,
+    cursor_y: usize,
+    cells: Vec<u8>,
+    ansi: AnsiState,
+}
+
+#[derive(Clone)]
+struct AnsiState {
+    in_escape: bool,
+    in_csi: bool,
+    params: Vec<u16>,
+    current: u16,
+    has_current: bool,
 }
 
 fn main() {
@@ -73,9 +99,11 @@ fn main() {
     }
     let mut state = ConsoleState {
         sessions: Vec::new(),
+        canvases: Vec::new(),
         attach_count: 0,
         rejected_count: 0,
         write_count: 0,
+        canvas_update_count: 0,
         output_bytes: 0,
         last_attach_ms: 0,
         last_write_ms: 0,
@@ -141,9 +169,11 @@ fn dispatch(state: &mut ConsoleState, cmd: &str) -> String {
     match verb {
         "STATUS" | "status" => ok_lines(alloc::vec![
             format!("sessions\t{}", state.sessions.len()),
+            format!("canvases\t{}", state.canvases.len()),
             format!("attach_count\t{}", state.attach_count),
             format!("rejected_count\t{}", state.rejected_count),
             format!("write_count\t{}", state.write_count),
+            format!("canvas_update_count\t{}", state.canvas_update_count),
             format!("output_bytes\t{}", state.output_bytes),
             format!("last_attach_ms\t{}", state.last_attach_ms),
             format!("last_write_ms\t{}", state.last_write_ms),
@@ -176,7 +206,9 @@ fn dispatch(state: &mut ConsoleState, cmd: &str) -> String {
                 return err("invalid_write");
             };
             let delivered = deliver_console_bytes(state, distro, &bytes);
+            canvas_for_distro(state, distro).write_bytes(&bytes);
             state.write_count = state.write_count.wrapping_add(1);
+            state.canvas_update_count = state.canvas_update_count.wrapping_add(1);
             state.output_bytes = state.output_bytes.wrapping_add(bytes.len() as u64);
             state.last_write_ms = sys::uptime_ms();
             write_status(state);
@@ -185,9 +217,31 @@ fn dispatch(state: &mut ConsoleState, cmd: &str) -> String {
                 format!("bytes\t{}", bytes.len()),
             ])
         }
+        "CANVAS" | "canvas" => {
+            let distro = rest.trim();
+            if !valid_token(distro) {
+                state.rejected_count = state.rejected_count.wrapping_add(1);
+                return err("invalid_canvas");
+            }
+            ok_lines(canvas_for_distro(state, distro).snapshot_lines())
+        }
+        "RESIZE" | "resize" => {
+            let Some((distro, width, height)) = parse_resize(rest) else {
+                state.rejected_count = state.rejected_count.wrapping_add(1);
+                return err("invalid_resize");
+            };
+            canvas_for_distro(state, distro).resize(width, height);
+            state.canvas_update_count = state.canvas_update_count.wrapping_add(1);
+            write_status(state);
+            ok_lines(alloc::vec![
+                format!("width\t{}", width),
+                format!("height\t{}", height),
+            ])
+        }
         "CLEAR" | "clear" => {
             let distro = rest.trim();
             state.sessions.retain(|session| session.distro != distro);
+            state.canvases.retain(|canvas| canvas.distro != distro);
             write_status(state);
             ok_lines(alloc::vec![format!("sessions\t{}", state.sessions.len())])
         }
@@ -199,11 +253,13 @@ fn write_status(state: &ConsoleState) {
     let _ = fs::mkdir("/System/var");
     let _ = fs::mkdir("/System/var/asl");
     let mut text = format!(
-        "health=ready\nsessions={}\nattach_count={}\nrejected_count={}\nwrite_count={}\noutput_bytes={}\nlast_attach_ms={}\nlast_write_ms={}\n",
+        "health=ready\nsessions={}\ncanvases={}\nattach_count={}\nrejected_count={}\nwrite_count={}\ncanvas_update_count={}\noutput_bytes={}\nlast_attach_ms={}\nlast_write_ms={}\n",
         state.sessions.len(),
+        state.canvases.len(),
         state.attach_count,
         state.rejected_count,
         state.write_count,
+        state.canvas_update_count,
         state.output_bytes,
         state.last_attach_ms,
         state.last_write_ms
@@ -220,6 +276,32 @@ fn parse_write(rest: &str) -> Option<(&str, Vec<u8>)> {
         return None;
     }
     Some((fields[0], decode_hex(fields[1])?))
+}
+
+fn parse_resize(rest: &str) -> Option<(&str, usize, usize)> {
+    let fields = split_tab_fields(rest);
+    if fields.len() != 3 || !valid_token(fields[0]) {
+        return None;
+    }
+    let width = parse_usize(fields[1])?;
+    let height = parse_usize(fields[2])?;
+    if !(1..=MAX_CANVAS_WIDTH).contains(&width) || !(1..=MAX_CANVAS_HEIGHT).contains(&height) {
+        return None;
+    }
+    Some((fields[0], width, height))
+}
+
+fn canvas_for_distro<'a>(state: &'a mut ConsoleState, distro: &str) -> &'a mut TextCanvas {
+    if let Some(index) = state
+        .canvases
+        .iter()
+        .position(|canvas| canvas.distro == distro)
+    {
+        return &mut state.canvases[index];
+    }
+    state.canvases.push(TextCanvas::new(distro));
+    let last = state.canvases.len().saturating_sub(1);
+    &mut state.canvases[last]
 }
 
 fn deliver_console_bytes(state: &ConsoleState, distro: &str, bytes: &[u8]) -> u32 {
@@ -275,7 +357,7 @@ fn valid_session(session: &ConsoleSession) -> bool {
         && valid_token(&session.session_id)
         && matches!(
             session.mode.as_str(),
-            "agent" | "fallback-console" | "unknown"
+            "agent" | "fallback-console" | "canvas" | "unknown"
         )
         && valid_pipe(&session.console_pipe)
         && valid_pipe(&session.stdin_pipe)
@@ -339,6 +421,270 @@ fn format_session(session: &ConsoleSession) -> String {
     )
 }
 
+impl TextCanvas {
+    fn new(distro: &str) -> Self {
+        let width = DEFAULT_CANVAS_WIDTH;
+        let height = DEFAULT_CANVAS_HEIGHT;
+        Self {
+            distro: String::from(distro),
+            width,
+            height,
+            cursor_x: 0,
+            cursor_y: 0,
+            cells: alloc::vec![b' '; width * height],
+            ansi: AnsiState::default(),
+        }
+    }
+
+    fn resize(&mut self, width: usize, height: usize) {
+        let mut cells = alloc::vec![b' '; width * height];
+        let copy_width = core::cmp::min(self.width, width);
+        let copy_height = core::cmp::min(self.height, height);
+        for row in 0..copy_height {
+            let old_start = row * self.width;
+            let new_start = row * width;
+            cells[new_start..new_start + copy_width]
+                .copy_from_slice(&self.cells[old_start..old_start + copy_width]);
+        }
+        self.width = width;
+        self.height = height;
+        self.cursor_x = core::cmp::min(self.cursor_x, width.saturating_sub(1));
+        self.cursor_y = core::cmp::min(self.cursor_y, height.saturating_sub(1));
+        self.cells = cells;
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_byte(byte);
+        }
+    }
+
+    fn write_byte(&mut self, byte: u8) {
+        if self.ansi.in_escape || self.ansi.in_csi {
+            self.write_ansi_byte(byte);
+            return;
+        }
+
+        match byte {
+            0x1b => self.ansi.start_escape(),
+            b'\r' => self.cursor_x = 0,
+            b'\n' => self.newline(),
+            0x08 => self.cursor_x = self.cursor_x.saturating_sub(1),
+            b'\t' => {
+                let next = ((self.cursor_x / 8) + 1) * 8;
+                while self.cursor_x < next {
+                    self.put_printable(b' ');
+                }
+            }
+            0x20..=0x7e => self.put_printable(byte),
+            _ => {}
+        }
+    }
+
+    fn write_ansi_byte(&mut self, byte: u8) {
+        if self.ansi.in_escape && !self.ansi.in_csi {
+            if byte == b'[' {
+                self.ansi.start_csi();
+            } else {
+                self.ansi.reset();
+            }
+            return;
+        }
+
+        match byte {
+            b'0'..=b'9' => self.ansi.push_digit(byte - b'0'),
+            b';' => self.ansi.finish_param(),
+            final_byte => {
+                let params = self.ansi.params_with_current();
+                self.apply_csi(final_byte, &params);
+                self.ansi.reset();
+            }
+        }
+    }
+
+    fn apply_csi(&mut self, final_byte: u8, params: &[u16]) {
+        match final_byte {
+            b'H' | b'f' => {
+                let row = params.first().copied().unwrap_or(1).max(1) as usize;
+                let col = params.get(1).copied().unwrap_or(1).max(1) as usize;
+                self.cursor_y = core::cmp::min(row - 1, self.height.saturating_sub(1));
+                self.cursor_x = core::cmp::min(col - 1, self.width.saturating_sub(1));
+            }
+            b'J' => {
+                if params.first().copied().unwrap_or(0) == 2 {
+                    self.clear();
+                }
+            }
+            b'K' => self.clear_line_from_cursor(),
+            b'A' => self.cursor_y = self.cursor_y.saturating_sub(param_or_one(params, 0)),
+            b'B' => {
+                self.cursor_y = core::cmp::min(
+                    self.cursor_y.saturating_add(param_or_one(params, 0)),
+                    self.height.saturating_sub(1),
+                );
+            }
+            b'C' => {
+                self.cursor_x = core::cmp::min(
+                    self.cursor_x.saturating_add(param_or_one(params, 0)),
+                    self.width.saturating_sub(1),
+                );
+            }
+            b'D' => self.cursor_x = self.cursor_x.saturating_sub(param_or_one(params, 0)),
+            b'm' => {}
+            _ => {}
+        }
+    }
+
+    fn put_printable(&mut self, byte: u8) {
+        if self.cursor_x >= self.width {
+            self.newline();
+        }
+        let offset = self.cursor_y * self.width + self.cursor_x;
+        if let Some(cell) = self.cells.get_mut(offset) {
+            *cell = byte;
+        }
+        self.cursor_x += 1;
+        if self.cursor_x >= self.width {
+            self.newline();
+        }
+    }
+
+    fn newline(&mut self) {
+        self.cursor_x = 0;
+        if self.cursor_y + 1 >= self.height {
+            self.scroll_up();
+        } else {
+            self.cursor_y += 1;
+        }
+    }
+
+    fn scroll_up(&mut self) {
+        if self.height <= 1 {
+            self.clear();
+            return;
+        }
+        let row_len = self.width;
+        let total = self.cells.len();
+        self.cells.copy_within(row_len..total, 0);
+        let last_row = (self.height - 1) * row_len;
+        for cell in &mut self.cells[last_row..last_row + row_len] {
+            *cell = b' ';
+        }
+    }
+
+    fn clear(&mut self) {
+        self.cells.fill(b' ');
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+    }
+
+    fn clear_line_from_cursor(&mut self) {
+        let start = self.cursor_y * self.width + self.cursor_x;
+        let end = (self.cursor_y + 1) * self.width;
+        for cell in &mut self.cells[start..end] {
+            *cell = b' ';
+        }
+    }
+
+    fn snapshot_lines(&self) -> Vec<String> {
+        let mut lines = alloc::vec![
+            String::from("kind\ttext"),
+            format!("width\t{}", self.width),
+            format!("height\t{}", self.height),
+            format!("cursor_x\t{}", self.cursor_x),
+            format!("cursor_y\t{}", self.cursor_y),
+        ];
+        for row in 0..self.height {
+            let start = row * self.width;
+            let end = start + self.width;
+            lines.push(format!(
+                "row\t{}\t{}",
+                row,
+                row_string(&self.cells[start..end])
+            ));
+        }
+        lines
+    }
+}
+
+impl Default for AnsiState {
+    fn default() -> Self {
+        Self {
+            in_escape: false,
+            in_csi: false,
+            params: Vec::new(),
+            current: 0,
+            has_current: false,
+        }
+    }
+}
+
+impl AnsiState {
+    fn start_escape(&mut self) {
+        self.reset();
+        self.in_escape = true;
+    }
+
+    fn start_csi(&mut self) {
+        self.in_csi = true;
+        self.params.clear();
+        self.current = 0;
+        self.has_current = false;
+    }
+
+    fn push_digit(&mut self, digit: u8) {
+        self.current = self.current.saturating_mul(10).saturating_add(digit as u16);
+        self.has_current = true;
+    }
+
+    fn finish_param(&mut self) {
+        self.params
+            .push(if self.has_current { self.current } else { 0 });
+        self.current = 0;
+        self.has_current = false;
+    }
+
+    fn params_with_current(&self) -> Vec<u16> {
+        let mut params = self.params.clone();
+        if self.has_current || params.is_empty() {
+            params.push(if self.has_current { self.current } else { 0 });
+        }
+        params
+    }
+
+    fn reset(&mut self) {
+        self.in_escape = false;
+        self.in_csi = false;
+        self.params.clear();
+        self.current = 0;
+        self.has_current = false;
+    }
+}
+
+fn param_or_one(params: &[u16], index: usize) -> usize {
+    params
+        .get(index)
+        .copied()
+        .filter(|value| *value != 0)
+        .unwrap_or(1) as usize
+}
+
+fn row_string(row: &[u8]) -> String {
+    let mut end = row.len();
+    while end > 0 && row[end - 1] == b' ' {
+        end -= 1;
+    }
+    let mut out = String::new();
+    for &byte in &row[..end] {
+        out.push(if byte.is_ascii_graphic() || byte == b' ' {
+            byte as char
+        } else {
+            ' '
+        });
+    }
+    out
+}
+
 fn ok_lines(lines: Vec<String>) -> String {
     let mut out = format!("OK\t{}\n", lines.len());
     for line in lines {
@@ -373,6 +719,17 @@ fn parse_u32(s: &str) -> Option<u32> {
             return None;
         }
         value = value.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+    }
+    Some(value)
+}
+
+fn parse_usize(s: &str) -> Option<usize> {
+    let mut value = 0usize;
+    for b in s.bytes() {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add((b - b'0') as usize)?;
     }
     Some(value)
 }

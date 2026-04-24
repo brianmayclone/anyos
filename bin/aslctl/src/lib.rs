@@ -59,6 +59,7 @@ pub enum ClientCommand<'a> {
     VmEventsClear(&'a str),
     Diagnose(&'a str),
     Doctor(&'a str),
+    ConsoleCanvas(&'a str),
     ShellList(&'a str),
     ShellShow {
         distro: &'a str,
@@ -155,6 +156,7 @@ pub fn parse_cli_command<'a>(raw: &'a str) -> Option<ClientCommand<'a>> {
         "config" => parse_config_tokens(&tokens),
         "network" => parse_network_tokens(&tokens),
         "doctor" => Some(ClientCommand::Doctor(*tokens.get(1)?)),
+        "console-canvas" | "canvas" => Some(ClientCommand::ConsoleCanvas(*tokens.get(1)?)),
         "shell-list" => Some(ClientCommand::ShellList(*tokens.get(1)?)),
         "shell-show" => Some(ClientCommand::ShellShow {
             distro: *tokens.get(1)?,
@@ -218,6 +220,7 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         "vm-events-clear" => Some(ClientCommand::VmEventsClear(args.pos(1)?)),
         "diagnose" => Some(ClientCommand::Diagnose(args.pos(1)?)),
         "doctor" => Some(ClientCommand::Doctor(args.pos(1)?)),
+        "console-canvas" | "canvas" => Some(ClientCommand::ConsoleCanvas(args.pos(1)?)),
         "exec-clear" => Some(ClientCommand::ExecClear(args.pos(1)?)),
         "mount" => parse_mount_command(args),
         "port" => parse_port_command(args),
@@ -724,6 +727,17 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                     println!("{}", line);
                 }
             }
+            ClientCommand::ConsoleCanvas(_) => {
+                for line in lines {
+                    if let Some(row) = line.strip_prefix("row\t") {
+                        let mut parts = row.splitn(2, '\t');
+                        let _ = parts.next();
+                        println!("{}", parts.next().unwrap_or(""));
+                    } else {
+                        println!("{}", line);
+                    }
+                }
+            }
             ClientCommand::ShellList(_) | ClientCommand::ShellClose { .. } => {
                 println!("shell-sessions: {}", count);
                 for line in lines {
@@ -839,6 +853,7 @@ fn print_usage() {
     println!("  aslctl vm-events-clear <name>");
     println!("  aslctl diagnose <name>");
     println!("  aslctl doctor <name>");
+    println!("  aslctl console-canvas <name>");
     println!("  aslctl shell-list <name>");
     println!("  aslctl shell-show <name> <session-id>");
     println!("  aslctl shell-close <name> <session-id>");
@@ -932,6 +947,7 @@ impl ClientCommand<'_> {
             Self::VmEventsClear(name) => format!("VM_EVENTS_CLEAR {}", name),
             Self::Diagnose(name) => format!("DIAGNOSE {}", name),
             Self::Doctor(name) => format!("DIAGNOSE {}", name),
+            Self::ConsoleCanvas(name) => format!("CONSOLE_CANVAS {}", name),
             Self::ShellList(name) => format!("SHELL_LIST {}", name),
             Self::ShellShow { distro, session_id } => {
                 format!("SHELL_SHOW {}\t{}", distro, session_id)
@@ -1174,7 +1190,8 @@ mod tests {
             Some(ClientCommand::StorageValidate(name)) => assert_eq!(name, "ubuntu-copy"),
             _ => panic!("expected storage validate command"),
         }
-        let args = anyos_std::args::parse("storage import ubuntu-copy /Users/Shared/debian.raw", b"");
+        let args =
+            anyos_std::args::parse("storage import ubuntu-copy /Users/Shared/debian.raw", b"");
         match parse_command(&args) {
             Some(ClientCommand::StorageImport {
                 distro,

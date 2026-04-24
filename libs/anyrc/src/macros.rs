@@ -250,6 +250,7 @@ fn expand_stmt(stmt: &mut Stmt, defs: &[MacroDef], interner: &mut Interner, chan
     match stmt {
         Stmt::Expr(expr) | Stmt::Semi(expr, _) => expand_expr(expr, defs, interner, changed),
         Stmt::Let(_, _, Some(init), _) => expand_expr(init, defs, interner, changed),
+        Stmt::Attributed(_, inner, _) => expand_stmt(inner, defs, interner, changed),
         Stmt::Item(item) => take_and_modify(item, |item| {
             if let Item::Fn(ref mut f) = item {
                 if let Some(ref mut body) = f.body {
@@ -373,6 +374,11 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                 "assert" | "assert_eq" | "debug_assert" | "debug_assert_eq" => {
                     // Expand to a no-op or simple check (for bootstrap)
                     *expr = Expr::Tuple(vec![], *span);
+                    *changed = true;
+                    return;
+                }
+                "panic" => {
+                    *expr = Expr::Loop(Block { stmts: Vec::new(), span: *span }, None, *span);
                     *changed = true;
                     return;
                 }

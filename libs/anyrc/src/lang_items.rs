@@ -75,6 +75,10 @@ pub const PRELUDE_TYPES: &[KnownItem] = &[
         full_path: "FromIterator",
     },
     KnownItem {
+        local_name: "Extend",
+        full_path: "Extend",
+    },
+    KnownItem {
         local_name: "ExactSizeIterator",
         full_path: "ExactSizeIterator",
     },

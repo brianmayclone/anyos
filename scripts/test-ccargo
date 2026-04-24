@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  scripts/test-ccargo [ccargo-args...]
+
+Default:
+  scripts/test-ccargo
+    runs: ccargo build kernel --target x86_64-anyos
+
+Examples:
+  scripts/test-ccargo
+  scripts/test-ccargo build kernel --target x86_64-anyos
+  scripts/test-ccargo check kernel --target x86_64-anyos
+
+Environment:
+  CCARGO_FILTER=0    show full output instead of the compact error/progress view
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ "$#" -eq 0 ]]; then
+  set -- build kernel --target x86_64-anyos
+fi
+
+cmd=(
+  cargo run
+  --manifest-path bin/acargo/Cargo.toml
+  --features host
+  --bin ccargo
+  --
+  "$@"
+)
+
+if [[ "${CCARGO_FILTER:-1}" == "0" ]]; then
+  "${cmd[@]}"
+else
+  "${cmd[@]}" 2>&1 | rg -n "^(error:|  -->|   \\||note:|ccargo:|thread 'main'|   Compiling|    Finished|warning:)"
+fi

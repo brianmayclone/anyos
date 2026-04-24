@@ -19,6 +19,26 @@ fn typecheck(src: &str) -> (TypeckResult, Interner) {
     (result, interner)
 }
 
+fn typecheck_with_cfg(src: &str, cfg_flags: &[&str]) -> (TypeckResult, Interner) {
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(src, &mut interner);
+    let mut krate = parser.parse_crate();
+    let flags = cfg_flags.iter().map(|flag| flag.to_string()).collect::<Vec<_>>();
+    let cfg_ctx = anyrc::cfg::CfgContext::from_flags(&flags);
+    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    expand_macros(&mut krate, &mut interner);
+    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    expand_macros(&mut krate, &mut interner);
+    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    let mut lower_ctx = LoweringContext::new(&mut interner);
+    let hir = lower_ctx.lower_crate(&krate);
+    let mut resolver = Resolver::new(&mut interner);
+    let resolve_result = resolver.resolve_crate(&hir);
+    let mut checker = TypeChecker::new(&interner, &resolve_result);
+    let result = checker.check_crate(&hir);
+    (result, interner)
+}
+
 fn assert_type_ok(src: &str) {
     let (result, _) = typecheck(src);
     assert!(result.errors.is_empty(), "unexpected errors: {:?}",
@@ -46,6 +66,272 @@ fn infer_from_annotation() {
 #[test]
 fn infer_bool() {
     assert_type_ok("fn main() { let x: bool = true; }");
+}
+
+#[test]
+fn primitive_assoc_from_is_typed() {
+    assert_type_ok("fn main() { let b: u8 = 7; let x: u32 = u32::from(b); }");
+}
+
+#[test]
+fn primitive_assoc_try_from_is_result_typed() {
+    assert_type_ok("fn main() { let n: usize = 7; let x = u32::try_from(n); }");
+}
+
+#[test]
+fn qualified_module_types_do_not_collide_by_leaf_name() {
+    assert_type_ok(r#"
+        mod fallback {
+            pub struct TokenStream {}
+            pub fn make() -> TokenStream { TokenStream {} }
+        }
+
+        use crate::fallback as imp;
+
+        pub struct TokenStream {
+            inner: imp::TokenStream,
+        }
+
+        fn wrap(inner: fallback::TokenStream) -> TokenStream {
+            TokenStream { inner }
+        }
+    "#);
+}
+
+#[test]
+fn qualified_assoc_fns_do_not_collide_by_leaf_name() {
+    assert_type_ok(r#"
+        mod fallback {
+            pub struct TokenStream {}
+            impl TokenStream {
+                pub fn new() -> TokenStream { TokenStream {} }
+            }
+        }
+
+        use crate::fallback as imp;
+
+        pub struct TokenStream {
+            inner: imp::TokenStream,
+        }
+
+        fn wrap() -> TokenStream {
+            TokenStream { inner: imp::TokenStream::new() }
+        }
+    "#);
+}
+
+#[test]
+fn assoc_from_selects_matching_impl_on_module_alias() {
+    assert_type_ok(r#"
+        mod fallback {
+            pub struct TokenTree {}
+            pub struct TokenStream {}
+
+            impl TokenStream {
+                pub fn from(tree: TokenTree) -> TokenStream {
+                    TokenStream {}
+                }
+            }
+        }
+
+        use crate::fallback as imp;
+
+        fn wrap(tree: fallback::TokenTree) -> fallback::TokenStream {
+            imp::TokenStream::from(tree)
+        }
+    "#);
+}
+
+#[test]
+fn assoc_from_identity_uses_target_type() {
+    assert_type_ok(r#"
+        mod fallback {
+            pub struct TokenStream {}
+        }
+
+        use crate::fallback as imp;
+
+        fn wrap(inner: fallback::TokenStream) -> fallback::TokenStream {
+            imp::TokenStream::from(inner)
+        }
+    "#);
+}
+
+#[test]
+fn cfg_selects_module_alias_before_wrapper_module() {
+    let (result, _) = typecheck_with_cfg(r#"
+        mod fallback {
+            pub struct TokenStream {}
+        }
+
+        #[cfg(not(wrap_proc_macro))]
+        use crate::fallback as imp;
+
+        #[cfg(wrap_proc_macro)]
+        mod imp {
+            pub struct TokenStream {}
+        }
+
+        pub struct TokenStream {
+            inner: imp::TokenStream,
+        }
+
+        impl TokenStream {
+            fn _new_fallback(inner: fallback::TokenStream) -> Self {
+                TokenStream {
+                    inner: imp::TokenStream::from(inner),
+                }
+            }
+        }
+    "#, &[]);
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn cfg_wrapper_module_assoc_from_uses_wrapper_impl() {
+    let (result, _) = typecheck_with_cfg(r#"
+        trait From<T> {
+            fn from(value: T) -> Self;
+        }
+
+        mod fallback {
+            pub struct TokenStream {}
+        }
+
+        #[cfg(not(wrap_proc_macro))]
+        use crate::fallback as imp;
+
+        #[cfg(wrap_proc_macro)]
+        mod imp {
+            use crate::fallback;
+
+            pub struct TokenStream {}
+
+            impl crate::From<fallback::TokenStream> for TokenStream {
+                fn from(inner: fallback::TokenStream) -> TokenStream {
+                    TokenStream {}
+                }
+            }
+        }
+
+        pub struct TokenStream {
+            inner: imp::TokenStream,
+        }
+
+        impl TokenStream {
+            fn _new_fallback(inner: fallback::TokenStream) -> Self {
+                TokenStream {
+                    inner: imp::TokenStream::from(inner),
+                }
+            }
+        }
+    "#, &["wrap_proc_macro"]);
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn root_unqualified_types_do_not_collide_with_nested_leaf_names() {
+    assert_type_ok(r#"
+        mod fallback {
+            pub struct Span {}
+            impl Span {
+                pub fn call_site() -> Span { Span {} }
+            }
+        }
+
+        use crate::fallback as imp;
+
+        pub struct Span {
+            inner: imp::Span,
+        }
+
+        impl Span {
+            fn _new(inner: imp::Span) -> Self {
+                Span { inner }
+            }
+
+            pub fn call_site() -> Self {
+                Span::_new(imp::Span::call_site())
+            }
+        }
+
+        fn get() -> Span {
+            Span::call_site()
+        }
+    "#);
+}
+
+#[test]
+fn struct_like_enum_variant_construction_resolves_parent_enum() {
+    assert_type_ok(r#"
+        mod helper {
+            pub trait Sized {}
+        }
+
+        enum SizeInfo {
+            Sized { size: usize },
+            Other,
+        }
+
+        fn make() -> SizeInfo {
+            SizeInfo::Sized { size: 0 }
+        }
+
+        fn read(info: SizeInfo) -> usize {
+            match info {
+                SizeInfo::Sized { size } => size,
+                SizeInfo::Other => 0,
+            }
+        }
+    "#);
+}
+
+#[test]
+fn panic_macro_diverges_in_match_arm() {
+    assert_type_ok(r#"
+        enum SizeInfo {
+            Sized { size: usize },
+            Slice,
+        }
+
+        fn unpack(info: SizeInfo) -> (usize, SizeInfo) {
+            match info {
+                SizeInfo::Slice => panic!("cannot unpack"),
+                SizeInfo::Sized { size } => (size, SizeInfo::Sized { size }),
+            }
+        }
+    "#);
+}
+
+#[test]
+fn cfg_attributed_panic_macro_is_expanded_after_strip() {
+    let (result, _) = typecheck_with_cfg(r#"
+        enum SizeInfo {
+            Sized { size: usize },
+            Slice,
+        }
+
+        macro_rules! const_panic {
+            ($($arg:tt)+) => {{
+                #[cfg(not(no_panic))]
+                panic!($($arg)+);
+                #[cfg(no_panic)]
+                ()
+            }};
+        }
+
+        fn unpack(info: SizeInfo) -> (usize, SizeInfo) {
+            match info {
+                SizeInfo::Slice => const_panic!("cannot unpack"),
+                SizeInfo::Sized { size } => (size, SizeInfo::Sized { size }),
+            }
+        }
+    "#, &[]);
+
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
 }
 
 #[test]

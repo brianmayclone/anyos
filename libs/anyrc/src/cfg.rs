@@ -291,6 +291,22 @@ fn strip_stmts(stmts: &mut Vec<Stmt>, ctx: &CfgContext, interner: &Interner) {
         }
     });
     for stmt in stmts.iter_mut() {
+        loop {
+            let replacement = match stmt {
+                Stmt::Attributed(_, inner, span) => {
+                    let placeholder = Stmt::Expr(Expr::Tuple(Vec::new(), *span));
+                    Some(core::mem::replace(inner, Box::new(placeholder)))
+                }
+                _ => None,
+            };
+            if let Some(inner) = replacement {
+                *stmt = *inner;
+            } else {
+                break;
+            }
+        }
+    }
+    for stmt in stmts.iter_mut() {
         strip_stmt(stmt, ctx, interner);
     }
 }

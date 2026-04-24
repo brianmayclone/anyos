@@ -2055,9 +2055,11 @@ impl<'a> MirBuilder<'a> {
                                 value: ConstValue::Int(val),
                             });
                         }
-                        // For atomic Type::method paths, use the full path so codegen
-                        // can distinguish them. For other intrinsics, use last segment.
-                        let fn_name = if intrinsic_path.contains("Atomic") {
+                        // Keep full names where the final segment is too generic
+                        // or where codegen needs the owning primitive/ADT.
+                        let fn_name = if intrinsic_path.contains("Atomic")
+                            || Self::is_primitive_assoc_fn_path(&intrinsic_path)
+                        {
                             self.interner.intern(&intrinsic_path)
                         } else {
                             path.segments.last().unwrap().ident
@@ -2256,6 +2258,24 @@ impl<'a> MirBuilder<'a> {
             s if s.ends_with("::MIN") && s.starts_with('u') => Some((ConstValue::Uint(0), TyKind::Uint(UintTy::U8))), // all unsigned MIN = 0
             _ => None,
         }
+    }
+
+    fn is_primitive_assoc_fn_path(path: &str) -> bool {
+        let Some((base, assoc)) = path.split_once("::") else {
+            return false;
+        };
+        let is_primitive = matches!(
+            base,
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+                | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+                | "f32" | "f64" | "bool" | "char"
+        );
+        is_primitive
+            && matches!(
+                assoc,
+                "from" | "try_from" | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes"
+                    | "from_str_radix" | "from_u32"
+            )
     }
 
     fn is_copy_type(&self, ty: &TyKind) -> bool {

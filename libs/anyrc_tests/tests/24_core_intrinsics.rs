@@ -95,6 +95,17 @@ fn compile_use_import() {
 }
 
 #[test]
+fn run_primitive_assoc_from() {
+    assert_run_returns(r#"
+        fn main() -> i32 {
+            let b: u8 = 7;
+            let n: u32 = u32::from(b);
+            n as i32
+        }
+    "#, 7);
+}
+
+#[test]
 fn compile_null_mut_with_typed_raw_ptr_field_access() {
     assert_compiles(r#"
         struct Node {

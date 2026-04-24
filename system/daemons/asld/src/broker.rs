@@ -46,6 +46,10 @@ pub fn write_console_bytes(name: &str, bytes: &[u8]) -> Result<(), AsldError> {
     )
 }
 
+pub fn console_canvas_snapshot(name: &str) -> Result<Vec<String>, AsldError> {
+    request_lines("aslconsoled", &format!("CANVAS {}", name))
+}
+
 pub fn network_tx_frame(name: &str, bytes: &[u8]) -> Result<(), AsldError> {
     if bytes.is_empty() {
         return Ok(());

@@ -351,6 +351,15 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
                 Err(err) => err_line(&err),
             }
         }
+        "CONSOLE_CANVAS" | "console_canvas" => {
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match crate::broker::console_canvas_snapshot(name) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
         "SHELL_OPEN" | "shell_open" => {
             let fields = split_tab_fields(rest);
             if fields.is_empty() {

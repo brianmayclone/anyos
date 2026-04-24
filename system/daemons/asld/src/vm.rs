@@ -4,6 +4,7 @@ use alloc::string::String;
 use crate::errors::AsldError;
 use crate::model::{DistroConfig, VmRunState};
 
+mod apic;
 mod aslnet;
 mod e1000;
 mod ide;
@@ -11,6 +12,7 @@ mod msr;
 mod pci;
 mod platform;
 mod serial;
+use apic::{apic_mmio_action, ApicState};
 use aslnet::AslNetDevice;
 use e1000::E1000Device;
 use ide::IdeController;
@@ -48,6 +50,7 @@ pub struct VmInstance {
     ide: IdeController,
     net: AslNetDevice,
     e1000: E1000Device,
+    apic: ApicState,
     msrs: MsrState,
 }
 
@@ -106,6 +109,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         ide: IdeController::disabled(),
         net: AslNetDevice::default(),
         e1000: E1000Device::default(),
+        apic: ApicState::default(),
         msrs: MsrState::default(),
     })
 }
@@ -241,6 +245,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         ide,
         net: AslNetDevice::default(),
         e1000: E1000Device::default(),
+        apic: ApicState::default(),
         msrs: MsrState::default(),
     })
 }
@@ -748,6 +753,9 @@ fn handle_emulated_exit(
     if handle_e1000_mmio_exit(instance, vcpu, exit)? {
         return Ok(true);
     }
+    if handle_apic_mmio_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
     if handle_msr_exit(instance, vcpu, exit)? {
         return Ok(true);
     }
@@ -928,6 +936,24 @@ fn handle_platform_io_exit(
 }
 
 #[cfg(not(target_os = "linux"))]
+fn handle_apic_mmio_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    let Some(action) = apic_mmio_action(&mut instance.apic, exit) else {
+        return Ok(false);
+    };
+
+    if let Some(value) = action.read_value {
+        write_io_read_value(vcpu, exit.access_size, value)?;
+    }
+    advance_guest_rip(vcpu, exit.instruction_len)?;
+    let _ = inject_pending_device_irqs(instance, vcpu)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
 fn handle_e1000_mmio_exit(
     instance: &mut VmInstance,
     vcpu: &libavm::AvmVcpu,
@@ -1005,7 +1031,11 @@ fn inject_device_irq(
     vcpu: &libavm::AvmVcpu,
     irq: u8,
 ) -> Result<bool, AsldError> {
-    let Some(vector) = instance.platform_io.irq_vector(irq) else {
+    let Some(vector) = instance
+        .apic
+        .irq_vector(irq)
+        .or_else(|| instance.platform_io.irq_vector(irq))
+    else {
         return Ok(false);
     };
     vcpu.inject_irq(vector)

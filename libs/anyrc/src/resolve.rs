@@ -208,7 +208,10 @@ impl<'a> Resolver<'a> {
                 | ("f32", "INFINITY") | ("f32", "NEG_INFINITY") | ("f32", "NAN")
                 | ("f64", "INFINITY") | ("f64", "NEG_INFINITY") | ("f64", "NAN")
             );
-            let is_assoc_fn = matches!(assoc_str, "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_str_radix")
+            let is_assoc_fn = matches!(
+                assoc_str,
+                "from" | "try_from" | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_str_radix"
+            )
                 || (type_name_str == "char" && assoc_str == "from_u32");
             if is_assoc_const || is_assoc_fn {
                 let full_path = format!("{}::{}", type_name_str, assoc_str);
@@ -424,11 +427,11 @@ impl<'a> Resolver<'a> {
         None
     }
 
-    /// Check if a path represents an external known module (core, alloc)
+    /// Check if a path represents an external known module.
     fn is_extern_crate_path(&self, path: &[Symbol]) -> bool {
         if path.is_empty() { return false; }
         let first = self.interner.resolve(path[0]);
-        first == "core" || first == "alloc"
+        matches!(first, "core" | "alloc" | "std" | "anyos_std" | "proc_macro")
     }
 
     /// Build a full path string like "core::ptr::null_mut" from symbols
@@ -1166,8 +1169,10 @@ impl<'a> Resolver<'a> {
             }
         }
 
-        // Handle core::, alloc::, and anyos_std:: paths as intrinsics
-        if path.segments.len() >= 2 && (name_str == "core" || name_str == "alloc" || name_str == "anyos_std") {
+        // Handle sysroot and anyOS runtime crate paths as compiler-known intrinsics.
+        if path.segments.len() >= 2
+            && matches!(name_str.as_str(), "core" | "alloc" | "std" | "anyos_std" | "proc_macro")
+        {
             let full_path = path.segments.iter()
                 .map(|s| self.interner.resolve(s.ident).to_string())
                 .collect::<Vec<_>>()
