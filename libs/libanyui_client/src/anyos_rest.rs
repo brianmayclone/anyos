@@ -298,7 +298,7 @@ struct AnyuiLib {
     texteditor_clear_diagnostics: extern "C" fn(u32),
     texteditor_set_read_only: extern "C" fn(u32, u32),
     texteditor_ensure_line_visible: extern "C" fn(u32, u32),
-    texteditor_toggle_fold_at_cursor: extern "C" fn(u32),
+    texteditor_toggle_fold_at_cursor: Option<extern "C" fn(u32)>,
     // TreeView
     treeview_add_node: extern "C" fn(u32, u32, *const u8, u32) -> u32,
     treeview_remove_node: extern "C" fn(u32, u32),
@@ -398,6 +398,16 @@ unsafe fn resolve<T: Copy>(handle: &DlHandle, name: &str) -> T {
         None => panic!("symbol '{}' not found in libanyui.so", name),
     };
     core::mem::transmute_copy::<*const (), T>(&ptr)
+}
+
+/// Resolve an optional function pointer from libanyui.so.
+///
+/// This is used for newly added ABI surface so newer clients can still start
+/// against an older system library. The feature becomes a no-op until the
+/// matching libanyui.so is installed.
+unsafe fn resolve_optional<T: Copy>(handle: &DlHandle, name: &str) -> Option<T> {
+    let ptr = dl_sym(handle, name)?;
+    Some(core::mem::transmute_copy::<*const (), T>(&ptr))
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -614,7 +624,7 @@ pub fn init() -> bool {
                 &handle,
                 "anyui_texteditor_ensure_line_visible",
             ),
-            texteditor_toggle_fold_at_cursor: resolve(
+            texteditor_toggle_fold_at_cursor: resolve_optional(
                 &handle,
                 "anyui_texteditor_toggle_fold_at_cursor",
             ),

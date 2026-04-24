@@ -172,7 +172,9 @@ impl TextEditor {
 
     /// Toggle folding for the block around the current cursor line.
     pub fn toggle_fold_at_cursor(&self) {
-        (lib().texteditor_toggle_fold_at_cursor)(self.ctrl.id);
+        if let Some(toggle_fold) = lib().texteditor_toggle_fold_at_cursor {
+            toggle_fold(self.ctrl.id);
+        }
     }
 
     /// Register a typed key-down handler.

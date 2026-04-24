@@ -136,6 +136,142 @@ fn aliased_core_slice_iter_does_not_fall_back_to_local_iter() {
 }
 
 #[test]
+fn ref_to_box_str_coerces_to_ref_str() {
+    assert_type_ok(r#"
+        struct Box<T> {}
+
+        struct Repr {
+            suffix: Box<str>,
+        }
+
+        struct Lit {
+            repr: Box<Repr>,
+        }
+
+        impl Lit {
+            fn suffix(&self) -> &str {
+                &self.repr.suffix
+            }
+        }
+    "#);
+}
+
+#[test]
+fn question_operator_unwraps_option_for_tuple_patterns() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct Box<T> {}
+
+        fn parse_inner(input: &str) -> Option<(Box<str>, Box<str>)> {
+            loop {}
+        }
+
+        fn parse_outer(input: &str) -> Option<(Box<str>, Box<str>)> {
+            let (value, suffix) = parse_inner(input)?;
+            Some((value, suffix))
+        }
+    "#);
+}
+
+#[test]
+fn syn_lit_style_option_parser_uses_question_on_string_get() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct Box<T> {}
+        struct String {}
+
+        impl String {
+            fn new() -> Self { String {} }
+            fn push(&mut self, ch: char) {}
+            fn into_boxed_str(self) -> Box<str> { loop {} }
+        }
+
+        impl str {
+            fn get(&self, range: core::ops::RangeFrom<usize>) -> Option<&str> { loop {} }
+        }
+
+        fn byte(s: &str, offset: usize) -> u8 { 0 }
+        fn next_chr(s: &str) -> char { 'x' }
+
+        fn parse_lit_str_cooked(mut s: &str) -> Option<(Box<str>, Box<str>)> {
+            s = s.get(1..)?;
+
+            let mut content = String::new();
+            loop {
+                let ch = match byte(s, 0) {
+                    b'"' => break,
+                    _ => {
+                        let ch = next_chr(s);
+                        s = s.get(1..)?;
+                        ch
+                    }
+                };
+                content.push(ch);
+            }
+
+            let content = content.into_boxed_str();
+            let suffix = s.get(1..)?.to_owned().into_boxed_str();
+            Some((content, suffix))
+        }
+    "#);
+}
+
+#[test]
+fn option_some_and_none_in_loop_parser_infer_same_payload() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct Box<T> {}
+        struct String {}
+
+        impl String {
+            fn new() -> Self { String {} }
+            fn push(&mut self, ch: char) {}
+            fn into_boxed_str(self) -> Box<str> { loop {} }
+        }
+
+        fn byte(s: &str, offset: usize) -> u8 { 0 }
+        fn next_chr(s: &str) -> char { 'x' }
+
+        fn parse_lit_str_cooked(mut s: &str) -> Option<(Box<str>, Box<str>)> {
+            let mut content = String::new();
+            loop {
+                let ch = match byte(s, 0) {
+                    b'"' => break,
+                    b'\\' => {
+                        let b = byte(s, 1);
+                        match b {
+                            b'n' => '\n',
+                            _ => return None,
+                        }
+                    }
+                    _ => {
+                        let ch = next_chr(s);
+                        ch
+                    }
+                };
+                content.push(ch);
+            }
+
+            let content = content.into_boxed_str();
+            let suffix = content;
+            Some((content, suffix))
+        }
+    "#);
+}
+
+#[test]
 fn impl_method_body_resolves_self_enum_variants_against_impl_type() {
     assert_type_ok(r#"
         enum First {

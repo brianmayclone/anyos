@@ -1786,7 +1786,36 @@ impl<'a> TypeChecker<'a> {
                     TyKind::Adt(enum_def_id, _) => {
                         // Enum variant constructor call, e.g. Option::Some(42)
                         // Check args against variant field types
-                        for a in args { self.check_expr(a); }
+                        let arg_tys = args.iter().map(|a| self.check_expr(a)).collect::<Vec<_>>();
+                        if let HirExprKind::Path(path) = &callee.kind {
+                            if let Some(last) = path.segments.last() {
+                                let variant = self.interner.resolve(last.ident);
+                                if self.is_option_def(enum_def_id) {
+                                    return match (variant, arg_tys.first()) {
+                                        ("Some", Some(value_ty)) => {
+                                            TyKind::Adt(enum_def_id, vec![value_ty.clone()])
+                                        }
+                                        ("None", _) => {
+                                            TyKind::Adt(enum_def_id, vec![self.fresh_infer(InferKind::General)])
+                                        }
+                                        _ => TyKind::Adt(enum_def_id, vec![]),
+                                    };
+                                }
+                                if self.is_result_def(enum_def_id) {
+                                    return match (variant, arg_tys.first()) {
+                                        ("Ok", Some(value_ty)) => TyKind::Adt(
+                                            enum_def_id,
+                                            vec![value_ty.clone(), self.fresh_infer(InferKind::General)],
+                                        ),
+                                        ("Err", Some(err_ty)) => TyKind::Adt(
+                                            enum_def_id,
+                                            vec![self.fresh_infer(InferKind::General), err_ty.clone()],
+                                        ),
+                                        _ => TyKind::Adt(enum_def_id, vec![]),
+                                    };
+                                }
+                            }
+                        }
                         TyKind::Adt(enum_def_id, vec![])
                     }
                     _ => {
@@ -2128,6 +2157,18 @@ impl<'a> TypeChecker<'a> {
                     TyKind::Ref(inner, _) => self.shallow_resolve(inner.as_ref().clone()),
                     other => other.clone(),
                 };
+
+                if method_str == "?" && args.is_empty() {
+                    if let Some(inner_option_ty) = self.option_inner_ty(&inner_ty) {
+                        return inner_option_ty;
+                    }
+                    if let TyKind::Adt(def_id, substs) = &inner_ty {
+                        if self.is_result_def(*def_id) && substs.len() == 2 {
+                            return substs[0].clone();
+                        }
+                    }
+                    return self.fresh_infer(InferKind::General);
+                }
 
                 let inner_is_string_like = matches!(&inner_ty, TyKind::Str)
                     || matches!(&inner_ty, TyKind::Adt(def_id, _) if self.is_string_def(*def_id));
@@ -3938,6 +3979,16 @@ impl<'a> TypeChecker<'a> {
                             }
                             _ => {}
                         }
+                    }
+                    if self.is_box_def(*def_id) && substs.len() == 1 {
+                        self.unify(a, &substs[0], span);
+                        return;
+                    }
+                }
+                if let TyKind::Adt(def_id, substs) = a.as_ref() {
+                    if self.is_box_def(*def_id) && substs.len() == 1 {
+                        self.unify(&substs[0], b, span);
+                        return;
                     }
                 }
                 self.unify(a, b, span);

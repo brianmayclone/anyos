@@ -160,6 +160,7 @@ anyui_marshal_set_text
     anyui_texteditor_clear_diagnostics
     anyui_texteditor_set_read_only
     anyui_texteditor_ensure_line_visible
+    anyui_texteditor_toggle_fold_at_cursor
     anyui_treeview_add_node
     anyui_treeview_remove_node
     anyui_treeview_set_node_text
