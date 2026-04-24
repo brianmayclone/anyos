@@ -4,9 +4,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::app;
-use crate::AppState;
-use crate::logic::{ai, build, file_manager, git, language, project, search, symbols, tasks};
+use crate::logic::{
+    ai, build, config, diagnostics, file_manager, git, language, live_analysis, project, search,
+    symbols, tasks,
+};
 use crate::util::path;
+use crate::AppState;
 
 // ════════════════════════════════════════════════════════════════
 //  IDE commands — each function implements one user action
@@ -19,7 +22,8 @@ pub fn new_file() {
     let count = s.file_mgr.count();
     s.editor_view.set_active(count - 1);
     s.file_mgr.set_active(count - 1);
-    s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+    s.editor_view
+        .update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
     update_status();
 }
 
@@ -31,14 +35,22 @@ pub fn open_folder() {
 
 pub fn save() {
     let s = app();
+    let active = s.file_mgr.active;
     save_current(s);
-    s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+    s.editor_view
+        .update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+    schedule_live_check(active);
 }
 
 pub fn save_all() {
     let s = app();
+    let count = s.file_mgr.count();
     save_all_files(s);
-    s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+    s.editor_view
+        .update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+    for idx in 0..count {
+        schedule_live_check(idx);
+    }
 }
 
 pub fn build() {
@@ -54,8 +66,15 @@ pub fn build() {
         s.output.clear();
         s.diagnostics.clear();
         s.build_output_buffer.clear();
-        let active_file = s.file_mgr.active_file().map(|f| f.path.as_str()).unwrap_or("");
-        let (cmd, args) = if let Some(ca) = s.build_rules.build_command(active_file, &proj.root, &s.config) {
+        let active_file = s
+            .file_mgr
+            .active_file()
+            .map(|f| f.path.as_str())
+            .unwrap_or("");
+        let (cmd, args) = if let Some(ca) =
+            s.build_rules
+                .build_command(active_file, &proj.root, &s.config)
+        {
             ca
         } else {
             build::build_command(proj.build_type, &s.config)
@@ -81,8 +100,15 @@ pub fn run() {
     // Legacy fallback
     if let Some(ref proj) = s.current_project {
         s.output.clear();
-        let active_file = s.file_mgr.active_file().map(|f| f.path.as_str()).unwrap_or("");
-        let (cmd, args) = if let Some(ca) = s.build_rules.run_command(active_file, &proj.root, &s.config) {
+        let active_file = s
+            .file_mgr
+            .active_file()
+            .map(|f| f.path.as_str())
+            .unwrap_or("");
+        let (cmd, args) = if let Some(ca) =
+            s.build_rules
+                .run_command(active_file, &proj.root, &s.config)
+        {
             ca
         } else {
             build::run_command(proj.build_type, &s.config)
@@ -100,7 +126,10 @@ pub fn run() {
 
 pub fn test() {
     let s = app();
-    let test_tasks: Vec<usize> = s.task_mgr.tasks.iter()
+    let test_tasks: Vec<usize> = s
+        .task_mgr
+        .tasks
+        .iter()
         .enumerate()
         .filter(|(_, t)| t.category == tasks::TaskCategory::Test)
         .map(|(i, _)| i)
@@ -112,7 +141,10 @@ pub fn test() {
 
 pub fn check() {
     let s = app();
-    let check_tasks: Vec<usize> = s.task_mgr.tasks.iter()
+    let check_tasks: Vec<usize> = s
+        .task_mgr
+        .tasks
+        .iter()
         .enumerate()
         .filter(|(_, t)| t.category == tasks::TaskCategory::Check)
         .map(|(i, _)| i)
@@ -124,7 +156,10 @@ pub fn check() {
 
 pub fn clean() {
     let s = app();
-    let clean_tasks: Vec<usize> = s.task_mgr.tasks.iter()
+    let clean_tasks: Vec<usize> = s
+        .task_mgr
+        .tasks
+        .iter()
         .enumerate()
         .filter(|(_, t)| t.category == tasks::TaskCategory::Clean)
         .map(|(i, _)| i)
@@ -140,8 +175,20 @@ pub fn stop() {
         proc.kill();
         s.output.append_line("\n[Process killed]");
     }
+    if let Some(ref mut proc) = s.live_check_process {
+        proc.kill();
+        s.status.set_analysis_status("Live check stopped");
+    }
     s.build_process = None;
+    s.live_check_process = None;
+    s.live_check_pending_editor = None;
+    s.live_check_pending_version = 0;
+    s.live_check_running_file.clear();
+    s.live_check_running_version = 0;
+    s.live_check_output_buffer.clear();
+    s.live_check_label.clear();
     crate::stop_build_timer();
+    crate::stop_live_check_timer();
 }
 
 pub fn search_in_project() {
@@ -227,9 +274,13 @@ pub fn ai_action(action: ai::CodeAction) {
     switch_sidebar_view(5);
     s.ai_panel.set_status(&format!("{}...", action.label()));
 
-    match s.ai_client.code_action(action, code, lang.id.display_name()) {
+    match s
+        .ai_client
+        .code_action(action, code, lang.id.display_name())
+    {
         Ok(response) => {
-            s.ai_panel.append_user_message(&format!("[{}] {}", action.label(), filename));
+            s.ai_panel
+                .append_user_message(&format!("[{}] {}", action.label(), filename));
             s.ai_panel.append_ai_response(&response);
             s.ai_panel.set_status("");
         }
@@ -257,14 +308,19 @@ pub fn open_file(file_path: &str) {
     if let Some(idx) = s.file_mgr.find_open(file_path) {
         s.file_mgr.set_active(idx);
         s.editor_view.set_active(idx);
+        schedule_live_check(idx);
         return;
     }
     let content = file_manager::read_file(file_path);
     let idx = s.file_mgr.add_file(file_path);
-    s.editor_view.create_editor(file_path, content.as_deref(), &s.config);
+    s.editor_view
+        .create_editor(file_path, content.as_deref(), &s.config);
     s.file_mgr.set_active(idx);
     s.editor_view.set_active(idx);
-    s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+    s.editor_view
+        .update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+    refresh_editor_diagnostics();
+    schedule_live_check(idx);
     persist_session();
 }
 
@@ -308,7 +364,8 @@ pub fn close_tab(index: usize) {
     let new_active = s.file_mgr.remove(index);
     if s.file_mgr.count() > 0 {
         s.editor_view.set_active(new_active);
-        s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), new_active);
+        s.editor_view
+            .update_tab_labels(&s.file_mgr.tab_labels(), new_active);
     } else {
         s.editor_view.update_tab_labels("", 0);
     }
@@ -377,7 +434,322 @@ pub fn autosave_editor(index: usize) {
         return;
     }
     save_index(s, index);
-    s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+    s.editor_view
+        .update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Live analysis
+// ════════════════════════════════════════════════════════════════
+
+pub fn schedule_live_check(editor_index: usize) {
+    run_static_analysis_for_editor(editor_index);
+
+    let s = app();
+    let file = match s.file_mgr.files.get(editor_index) {
+        Some(file) => file,
+        None => return,
+    };
+    let file_path = file.path.clone();
+    let file_version = file.version;
+    s.diagnostics
+        .remove_source_for_file(live_analysis::LIVE_CHECK_SOURCE, &file_path);
+    s.live_check_pending_editor = Some(editor_index);
+    s.live_check_pending_version = file_version;
+    s.live_check_debounce_ticks = 3;
+    refresh_problem_views();
+    crate::start_live_check_timer();
+}
+
+pub fn poll_live_check() {
+    let mut finished_output: Option<String> = None;
+
+    {
+        let s = app();
+        if let Some(ref mut proc) = s.live_check_process {
+            let mut buf = [0u8; 1024];
+            while let Some(n) = proc.poll_output(&mut buf) {
+                if let Ok(text) = core::str::from_utf8(&buf[..n]) {
+                    s.live_check_output_buffer.push_str(text);
+                }
+            }
+            if proc.check_finished().is_some() {
+                finished_output = Some(s.live_check_output_buffer.clone());
+                s.live_check_process = None;
+                s.live_check_output_buffer.clear();
+            }
+        }
+    }
+
+    if let Some(output) = finished_output {
+        finish_external_live_check(&output);
+    }
+
+    let s = app();
+    if s.live_check_process.is_some() {
+        return;
+    }
+
+    if s.live_check_debounce_ticks > 0 {
+        s.live_check_debounce_ticks -= 1;
+        return;
+    }
+
+    if let Some(editor_idx) = s.live_check_pending_editor.take() {
+        let expected_version = s.live_check_pending_version;
+        if s.build_process.is_some() {
+            s.live_check_pending_editor = Some(editor_idx);
+            s.live_check_pending_version = expected_version;
+            s.live_check_debounce_ticks = 2;
+            s.status.set_analysis_status("Analysis waiting");
+            return;
+        }
+        if start_external_live_check(editor_idx, expected_version) {
+            return;
+        }
+    }
+
+    if s.live_check_pending_editor.is_none() && s.live_check_process.is_none() {
+        crate::stop_live_check_timer();
+    }
+}
+
+fn run_static_analysis_for_editor(editor_index: usize) {
+    let s = app();
+    let file = match s.file_mgr.files.get(editor_index) {
+        Some(file) => file,
+        None => return,
+    };
+    let file_path = file.path.clone();
+    let filename = path::basename(&file_path);
+    let lang = language::language_for_filename(filename);
+
+    let mut buf = vec![0u8; 256 * 1024];
+    let len = s.editor_view.get_editor_text(editor_index, &mut buf);
+    let text = match core::str::from_utf8(&buf[..len as usize]) {
+        Ok(text) => text,
+        Err(_) => {
+            s.diagnostics
+                .remove_source_for_file(live_analysis::LIVE_SOURCE, &file_path);
+            s.diagnostics.diagnostics.push(diagnostics::Diagnostic {
+                severity: diagnostics::Severity::Error,
+                file_path,
+                line: 1,
+                column: 1,
+                end_line: 1,
+                end_column: 1,
+                message: String::from("file is not valid UTF-8"),
+                code: None,
+                source: String::from(live_analysis::LIVE_SOURCE),
+            });
+            refresh_problem_views();
+            return;
+        }
+    };
+
+    let live_diags = live_analysis::analyze_buffer(&file_path, text, lang.id);
+    s.diagnostics
+        .remove_source_for_file(live_analysis::LIVE_SOURCE, &file_path);
+    s.diagnostics.append_many(live_diags);
+    refresh_problem_views();
+}
+
+fn start_external_live_check(editor_index: usize, expected_version: u32) -> bool {
+    let s = app();
+    let file = match s.file_mgr.files.get(editor_index) {
+        Some(file) => file,
+        None => return false,
+    };
+    if file.version != expected_version {
+        s.live_check_pending_editor = Some(editor_index);
+        s.live_check_pending_version = file.version;
+        s.live_check_debounce_ticks = 2;
+        s.status.set_analysis_status("Analysis queued");
+        crate::start_live_check_timer();
+        return true;
+    }
+    if file.is_untitled {
+        s.status.set_analysis_status("Live analysis");
+        return false;
+    }
+    if file.modified {
+        s.status.set_analysis_status("Live analysis: unsaved");
+        return false;
+    }
+
+    let cmd = match external_check_command_for_file(&file.path) {
+        Some(cmd) => cmd,
+        None => {
+            s.status.set_analysis_status("Live analysis");
+            return false;
+        }
+    };
+
+    if !cmd.working_dir.is_empty() {
+        anyos_std::fs::chdir(&cmd.working_dir);
+    }
+    s.live_check_output_buffer.clear();
+    s.live_check_label = cmd.label.clone();
+    s.live_check_running_file = file.path.clone();
+    s.live_check_running_version = file.version;
+    s.live_check_process = build::BuildProcess::spawn(&cmd.command, &cmd.args);
+    if s.live_check_process.is_some() {
+        s.status
+            .set_analysis_status(&format!("Checking: {}", cmd.label));
+        true
+    } else {
+        s.status.set_analysis_status("Live check failed");
+        s.live_check_running_file.clear();
+        s.live_check_running_version = 0;
+        false
+    }
+}
+
+fn finish_external_live_check(output: &str) {
+    let s = app();
+    let running_file = s.live_check_running_file.clone();
+    let running_version = s.live_check_running_version;
+    let is_stale = !running_file.is_empty()
+        && s.file_mgr
+            .files
+            .iter()
+            .any(|file| file.path == running_file && file.version != running_version);
+    if is_stale {
+        s.live_check_running_file.clear();
+        s.live_check_running_version = 0;
+        s.live_check_label.clear();
+        s.status.set_analysis_status("Stale check discarded");
+        refresh_problem_views();
+        return;
+    }
+
+    s.diagnostics.remove_source(live_analysis::LIVE_CHECK_SOURCE);
+    if !output.trim().is_empty() {
+        let mut parsed = diagnostics::DiagnosticSet::new();
+        parsed.parse_output(output);
+        for diag in &mut parsed.diagnostics {
+            diag.source = String::from(live_analysis::LIVE_CHECK_SOURCE);
+        }
+        s.diagnostics.append_many(parsed.diagnostics);
+    }
+
+    let label = if s.live_check_label.is_empty() {
+        String::from("Live analysis")
+    } else {
+        format!("Checked: {}", s.live_check_label)
+    };
+    s.status.set_analysis_status(&label);
+    s.live_check_label.clear();
+    s.live_check_running_file.clear();
+    s.live_check_running_version = 0;
+    refresh_problem_views();
+}
+
+fn external_check_command_for_file(file_path: &str) -> Option<live_analysis::CheckCommand> {
+    let s = app();
+    if let Some(task) = s
+        .task_mgr
+        .tasks
+        .iter()
+        .find(|task| task.category == tasks::TaskCategory::Check)
+    {
+        return Some(live_analysis::CheckCommand {
+            command: task.command.clone(),
+            args: task.args.clone(),
+            working_dir: task.working_dir.clone(),
+            label: task.display_label.clone(),
+        });
+    }
+
+    let filename = path::basename(file_path);
+    let lang = language::language_for_filename(filename);
+    match lang.id {
+        language::LanguageId::C | language::LanguageId::Cpp => {
+            if s.config.cc_path.is_empty() {
+                return None;
+            }
+            Some(live_analysis::CheckCommand {
+                command: s.config.cc_path.clone(),
+                args: format!("-fsyntax-only {}", file_path),
+                working_dir: project_root_or_parent(file_path),
+                label: String::from("cc -fsyntax-only"),
+            })
+        }
+        language::LanguageId::Python => {
+            let python = find_first_tool(&["python3", "python"]);
+            if python.is_empty() {
+                return None;
+            }
+            Some(live_analysis::CheckCommand {
+                command: python,
+                args: format!("-m py_compile {}", file_path),
+                working_dir: project_root_or_parent(file_path),
+                label: String::from("python py_compile"),
+            })
+        }
+        language::LanguageId::Shell => {
+            let shell = find_first_tool(&["sh", "bash"]);
+            if shell.is_empty() {
+                return None;
+            }
+            Some(live_analysis::CheckCommand {
+                command: shell,
+                args: format!("-n {}", file_path),
+                working_dir: project_root_or_parent(file_path),
+                label: String::from("shell syntax"),
+            })
+        }
+        language::LanguageId::JavaScript => {
+            let node = config::find_tool("node");
+            if node.is_empty() {
+                return None;
+            }
+            Some(live_analysis::CheckCommand {
+                command: node,
+                args: format!("--check {}", file_path),
+                working_dir: project_root_or_parent(file_path),
+                label: String::from("node --check"),
+            })
+        }
+        language::LanguageId::TypeScript => {
+            let tsc = config::find_tool("tsc");
+            if tsc.is_empty() {
+                return None;
+            }
+            Some(live_analysis::CheckCommand {
+                command: tsc,
+                args: format!("--noEmit {}", file_path),
+                working_dir: project_root_or_parent(file_path),
+                label: String::from("tsc --noEmit"),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn find_first_tool(names: &[&str]) -> String {
+    for name in names {
+        let path = config::find_tool(name);
+        if !path.is_empty() {
+            return path;
+        }
+    }
+    String::new()
+}
+
+fn project_root_or_parent(file_path: &str) -> String {
+    let s = app();
+    if let Some(ref proj) = s.current_project {
+        return proj.root.clone();
+    }
+    String::from(path::parent(file_path))
+}
+
+fn refresh_problem_views() {
+    let s = app();
+    s.problems_panel.update(&s.diagnostics);
+    refresh_editor_diagnostics();
+    update_status();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -430,12 +802,14 @@ pub fn update_status() {
         s.editor_view.set_breadcrumb("No file open");
     }
     s.status.set_branch(&s.git_state.branch);
-    s.status.set_problems(s.diagnostics.error_count(), s.diagnostics.warning_count());
+    s.status
+        .set_problems(s.diagnostics.error_count(), s.diagnostics.warning_count());
 }
 
 pub fn show_recent_projects() {
     let s = app();
-    s.command_palette.show_recent_projects(&s.config.recent_projects);
+    s.command_palette
+        .show_recent_projects(&s.config.recent_projects);
 }
 
 pub fn open_workspace(folder: &str, should_restore_session: bool) {
@@ -503,7 +877,9 @@ pub fn restore_session() {
 
 pub fn persist_session() {
     let s = app();
-    s.config.session_project = s.current_project.as_ref()
+    s.config.session_project = s
+        .current_project
+        .as_ref()
         .map(|proj| proj.root.clone())
         .unwrap_or_else(String::new);
     s.config.session_files.clear();
@@ -512,7 +888,9 @@ pub fn persist_session() {
             s.config.session_files.push(file.path.clone());
         }
     }
-    s.config.session_active_file = s.file_mgr.active_file()
+    s.config.session_active_file = s
+        .file_mgr
+        .active_file()
         .map(|f| f.path.clone())
         .unwrap_or_else(String::new);
     s.config.save();
@@ -529,6 +907,21 @@ fn ensure_split_visible() {
 
 fn reset_workspace_views() {
     let s = app();
+    if let Some(ref mut proc) = s.live_check_process {
+        proc.kill();
+    }
+    s.live_check_process = None;
+    s.live_check_pending_editor = None;
+    s.live_check_pending_version = 0;
+    s.live_check_running_file.clear();
+    s.live_check_running_version = 0;
+    s.live_check_output_buffer.clear();
+    s.live_check_label.clear();
+    s.diagnostics.remove_source(live_analysis::LIVE_SOURCE);
+    s.diagnostics.remove_source(live_analysis::LIVE_CHECK_SOURCE);
+    s.status.set_analysis_status("");
+    crate::stop_live_check_timer();
+
     while s.file_mgr.count() > 0 {
         s.editor_view.remove_editor(s.file_mgr.count() - 1);
         s.file_mgr.remove(s.file_mgr.count() - 1);
@@ -537,7 +930,8 @@ fn reset_workspace_views() {
     s.editor_view.set_breadcrumb("No file open");
 
     while s.side_file_mgr.count() > 0 {
-        s.side_editor_view.remove_editor(s.side_file_mgr.count() - 1);
+        s.side_editor_view
+            .remove_editor(s.side_file_mgr.count() - 1);
         s.side_file_mgr.remove(s.side_file_mgr.count() - 1);
     }
     s.side_editor_view.update_tab_labels("", 0);
@@ -561,6 +955,53 @@ pub fn refresh_symbols() {
         }
     } else {
         s.symbols_panel.clear();
+    }
+}
+
+pub fn refresh_editor_diagnostics() {
+    let s = app();
+    let project_root = s.current_project.as_ref().map(|p| p.root.as_str());
+    for (idx, file) in s.file_mgr.files.iter().enumerate() {
+        let editor = match s.editor_view.editor_widget(idx) {
+            Some(editor) => editor,
+            None => continue,
+        };
+        editor.clear_diagnostics();
+        for diag in &s.diagnostics.diagnostics {
+            if !diag.has_location()
+                || !diagnostic_matches_file(&diag.file_path, &file.path, project_root)
+            {
+                continue;
+            }
+            editor.add_diagnostic(
+                diag.line.saturating_sub(1),
+                diag.column.saturating_sub(1),
+                diag.end_line.saturating_sub(1),
+                diag.end_column.saturating_sub(1),
+                severity_to_editor(diag.severity),
+            );
+        }
+    }
+}
+
+fn diagnostic_matches_file(diag_path: &str, file_path: &str, project_root: Option<&str>) -> bool {
+    if diag_path == file_path {
+        return true;
+    }
+    if let Some(root) = project_root {
+        if path::join(root, diag_path) == file_path {
+            return true;
+        }
+    }
+    false
+}
+
+fn severity_to_editor(severity: diagnostics::Severity) -> u32 {
+    match severity {
+        diagnostics::Severity::Error => 0,
+        diagnostics::Severity::Warning => 1,
+        diagnostics::Severity::Info => 2,
+        diagnostics::Severity::Hint => 3,
     }
 }
 

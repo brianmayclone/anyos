@@ -1,6 +1,6 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
 // ════════════════════════════════════════════════════════════════
 //  Diagnostics — compiler output parsing for errors/warnings
@@ -27,10 +27,10 @@ impl Severity {
 
     pub fn icon_color(&self) -> u32 {
         match self {
-            Self::Error => 0xFFF44747,    // Red
-            Self::Warning => 0xFFCCA700,  // Yellow/orange
-            Self::Info => 0xFF3794FF,     // Blue
-            Self::Hint => 0xFF75BEFF,     // Light blue
+            Self::Error => 0xFFF44747,   // Red
+            Self::Warning => 0xFFCCA700, // Yellow/orange
+            Self::Info => 0xFF3794FF,    // Blue
+            Self::Hint => 0xFF75BEFF,    // Light blue
         }
     }
 
@@ -51,9 +51,13 @@ pub struct Diagnostic {
     pub file_path: String,
     pub line: u32,
     pub column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
     pub message: String,
     /// Optional error code (e.g. "E0308" for Rust).
     pub code: Option<String>,
+    /// Tool or subsystem that produced the diagnostic.
+    pub source: String,
 }
 
 /// Aggregated diagnostics from a build run.
@@ -72,37 +76,113 @@ impl DiagnosticSet {
         self.diagnostics.clear();
     }
 
+    pub fn remove_source(&mut self, source: &str) {
+        self.diagnostics.retain(|d| d.source != source);
+    }
+
+    pub fn remove_source_for_file(&mut self, source: &str, file_path: &str) {
+        self.diagnostics
+            .retain(|d| d.source != source || d.file_path != file_path);
+    }
+
+    pub fn append_many(&mut self, mut diagnostics: Vec<Diagnostic>) {
+        self.diagnostics.append(&mut diagnostics);
+        self.deduplicate();
+    }
+
+    pub fn deduplicate(&mut self) {
+        let mut unique: Vec<Diagnostic> = Vec::new();
+        for diag in &self.diagnostics {
+            if !unique.iter().any(|existing| existing.same_identity(diag)) {
+                unique.push(diag.clone());
+            }
+        }
+        self.diagnostics = unique;
+    }
+
     /// Parse compiler output and append any detected diagnostics.
     pub fn parse_output(&mut self, output: &str) {
+        let mut pending_rust: Option<usize> = None;
+        let mut pending_python: Option<usize> = None;
+
         for line in output.split('\n') {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
 
-            // Try each parser in order
+            if let Some((file, line_no, col)) = parse_rust_location(trimmed) {
+                if let Some(idx) = pending_rust {
+                    if let Some(diag) = self.diagnostics.get_mut(idx) {
+                        if !diag.has_location() {
+                            diag.file_path = file;
+                            diag.line = line_no;
+                            diag.column = col;
+                            diag.end_line = line_no;
+                            diag.end_column = col;
+                        }
+                    }
+                }
+                continue;
+            }
+
             if let Some(diag) = try_parse_rust(trimmed) {
                 self.diagnostics.push(diag);
+                pending_rust = Some(self.diagnostics.len() - 1);
+                pending_python = None;
             } else if let Some(diag) = try_parse_gcc(trimmed) {
                 self.diagnostics.push(diag);
+                pending_rust = None;
+                pending_python = None;
             } else if let Some(diag) = try_parse_python(trimmed) {
+                let is_trace_location = diag.message.is_empty() && diag.has_location();
                 self.diagnostics.push(diag);
+                pending_python = if is_trace_location {
+                    Some(self.diagnostics.len() - 1)
+                } else {
+                    None
+                };
+                pending_rust = None;
+            } else if let Some(idx) = pending_python {
+                if is_python_error_line(trimmed) {
+                    if let Some(diag) = self.diagnostics.get_mut(idx) {
+                        diag.message = String::from(trimmed);
+                    }
+                    pending_python = None;
+                }
             }
         }
+        self.deduplicate();
     }
 
     /// Count diagnostics by severity.
     pub fn error_count(&self) -> usize {
-        self.diagnostics.iter().filter(|d| d.severity == Severity::Error).count()
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Error)
+            .count()
     }
 
     pub fn warning_count(&self) -> usize {
-        self.diagnostics.iter().filter(|d| d.severity == Severity::Warning).count()
+        self.diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .count()
     }
 
     /// Get diagnostics for a specific file.
     pub fn for_file(&self, file_path: &str) -> Vec<&Diagnostic> {
-        self.diagnostics.iter().filter(|d| d.file_path == file_path).collect()
+        self.diagnostics
+            .iter()
+            .filter(|d| d.file_path == file_path)
+            .collect()
+    }
+
+    pub fn global(&self) -> Vec<&Diagnostic> {
+        self.diagnostics
+            .iter()
+            .filter(|d| !d.has_location())
+            .collect()
     }
 
     /// Build a summary string: "2 errors, 3 warnings"
@@ -114,10 +194,18 @@ impl DiagnosticSet {
         }
         let mut parts = Vec::new();
         if errors > 0 {
-            parts.push(format!("{} error{}", errors, if errors == 1 { "" } else { "s" }));
+            parts.push(format!(
+                "{} error{}",
+                errors,
+                if errors == 1 { "" } else { "s" }
+            ));
         }
         if warnings > 0 {
-            parts.push(format!("{} warning{}", warnings, if warnings == 1 { "" } else { "s" }));
+            parts.push(format!(
+                "{} warning{}",
+                warnings,
+                if warnings == 1 { "" } else { "s" }
+            ));
         }
         let mut result = String::new();
         for (i, part) in parts.iter().enumerate() {
@@ -127,6 +215,24 @@ impl DiagnosticSet {
             result.push_str(part);
         }
         result
+    }
+}
+
+impl Diagnostic {
+    pub fn has_location(&self) -> bool {
+        !self.file_path.is_empty() && self.line > 0
+    }
+
+    fn same_identity(&self, other: &Diagnostic) -> bool {
+        self.severity == other.severity
+            && self.file_path == other.file_path
+            && self.line == other.line
+            && self.column == other.column
+            && self.end_line == other.end_line
+            && self.end_column == other.end_column
+            && self.message == other.message
+            && self.code == other.code
+            && self.source == other.source
     }
 }
 
@@ -169,8 +275,11 @@ fn try_parse_rust(line: &str) -> Option<Diagnostic> {
         file_path: String::new(),
         line: 0,
         column: 0,
+        end_line: 0,
+        end_column: 0,
         message: String::from(rest),
         code,
+        source: String::from("rust"),
     })
 }
 
@@ -182,32 +291,30 @@ fn try_parse_rust(line: &str) -> Option<Diagnostic> {
 ///   file.c:10:5: error: expected ';'
 ///   file.c:10:5: warning: unused variable
 fn try_parse_gcc(line: &str) -> Option<Diagnostic> {
-    // Format: file:line:col: severity: message
-    let parts: Vec<&str> = line.splitn(5, ':').collect();
-    if parts.len() < 5 {
+    let (prefix, severity, message) = if let Some(i) = line.find(": fatal error:") {
+        (&line[..i], Severity::Error, line[i + 15..].trim())
+    } else if let Some(i) = line.find(": error:") {
+        (&line[..i], Severity::Error, line[i + 8..].trim())
+    } else if let Some(i) = line.find(": warning:") {
+        (&line[..i], Severity::Warning, line[i + 10..].trim())
+    } else if let Some(i) = line.find(": note:") {
+        (&line[..i], Severity::Info, line[i + 7..].trim())
+    } else {
         return None;
-    }
-
-    let file = parts[0].trim();
-    let line_no: u32 = parse_u32(parts[1].trim())?;
-    let col: u32 = parse_u32(parts[2].trim())?;
-    let severity_str = parts[3].trim();
-    let message = parts[4].trim();
-
-    let severity = match severity_str {
-        "error" | "fatal error" => Severity::Error,
-        "warning" => Severity::Warning,
-        "note" => Severity::Info,
-        _ => return None,
     };
+
+    let (file, line_no, col) = parse_file_line_col(prefix)?;
 
     Some(Diagnostic {
         severity,
-        file_path: String::from(file),
+        file_path: file,
         line: line_no,
         column: col,
+        end_line: line_no,
+        end_column: col,
         message: String::from(message),
         code: None,
+        source: String::from("c/c++"),
     })
 }
 
@@ -226,9 +333,13 @@ fn try_parse_python(line: &str) -> Option<Diagnostic> {
         let file = &line[start..end];
 
         let after_quote = &line[end..];
-        if !after_quote.starts_with("\", line ") { return None; }
+        if !after_quote.starts_with("\", line ") {
+            return None;
+        }
         let line_str = &after_quote[8..];
-        let line_end = line_str.find(|c: char| !c.is_ascii_digit()).unwrap_or(line_str.len());
+        let line_end = line_str
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(line_str.len());
         let line_no: u32 = parse_u32(&line_str[..line_end])?;
 
         return Some(Diagnostic {
@@ -236,13 +347,16 @@ fn try_parse_python(line: &str) -> Option<Diagnostic> {
             file_path: String::from(file),
             line: line_no,
             column: 0,
+            end_line: line_no,
+            end_column: 0,
             message: String::new(), // Message comes on the next line
             code: None,
+            source: String::from("python"),
         });
     }
 
     // "SyntaxError: message" or "NameError: message"
-    if line.contains("Error:") && !line.starts_with(' ') {
+    if is_python_error_line(line) {
         let colon = line.find(':')?;
         let error_type = &line[..colon];
         let message = &line[colon + 1..].trim();
@@ -251,21 +365,61 @@ fn try_parse_python(line: &str) -> Option<Diagnostic> {
             file_path: String::new(),
             line: 0,
             column: 0,
+            end_line: 0,
+            end_column: 0,
             message: format!("{}: {}", error_type, message),
             code: None,
+            source: String::from("python"),
         });
     }
 
     None
 }
 
+fn is_python_error_line(line: &str) -> bool {
+    line.contains("Error:") && !line.starts_with(' ')
+}
+
+fn parse_rust_location(line: &str) -> Option<(String, u32, u32)> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with("--> ") {
+        return None;
+    }
+    parse_file_line_col(trimmed[4..].trim())
+}
+
+fn parse_file_line_col(loc: &str) -> Option<(String, u32, u32)> {
+    let last_sep = loc.rfind(':')?;
+    let last_num = parse_u32(&loc[last_sep + 1..])?;
+    let before_last = &loc[..last_sep];
+
+    let (file, line_no, col) = if let Some(line_sep) = before_last.rfind(':') {
+        if let Some(line_no) = parse_u32(&before_last[line_sep + 1..]) {
+            (before_last[..line_sep].trim(), line_no, last_num)
+        } else {
+            (before_last.trim(), last_num, 0)
+        }
+    } else {
+        (before_last.trim(), last_num, 0)
+    };
+
+    if file.is_empty() {
+        return None;
+    }
+    Some((String::from(file), line_no, col))
+}
+
 /// Simple string-to-u32 parser (no_std safe).
 fn parse_u32(s: &str) -> Option<u32> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut result: u32 = 0;
     for b in s.bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         result = result.checked_mul(10)?.checked_add((b - b'0') as u32)?;
     }
     Some(result)
@@ -273,30 +427,64 @@ fn parse_u32(s: &str) -> Option<u32> {
 
 /// Update diagnostics with file location from a " --> file:line:col" line.
 /// This is called during incremental output parsing.
+#[allow(dead_code)]
 pub fn try_parse_location(line: &str, diagnostics: &mut Vec<Diagnostic>) {
-    let trimmed = line.trim();
-    if !trimmed.starts_with("--> ") {
-        return;
-    }
-    let loc = &trimmed[4..];
-    let parts: Vec<&str> = loc.splitn(3, ':').collect();
-    if parts.len() >= 2 {
-        let file = parts[0];
-        let line_no: u32 = parse_u32(parts[1]).unwrap_or(0);
-        let col: u32 = if parts.len() >= 3 {
-            parse_u32(parts[2]).unwrap_or(0)
-        } else {
-            0
-        };
-
+    if let Some((file, line_no, col)) = parse_rust_location(line) {
         // Update the most recent diagnostic that has no file path
         for diag in diagnostics.iter_mut().rev() {
-            if diag.file_path.is_empty() {
-                diag.file_path = String::from(file);
+            if !diag.has_location() {
+                diag.file_path = file;
                 diag.line = line_no;
                 diag.column = col;
+                diag.end_line = line_no;
+                diag.end_column = col;
                 break;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rust_message_and_location_are_merged() {
+        let mut set = DiagnosticSet::new();
+        set.parse_output("error[E0308]: mismatched types\n  --> src/main.rs:10:5\n");
+
+        assert_eq!(set.diagnostics.len(), 1);
+        let diag = &set.diagnostics[0];
+        assert_eq!(diag.severity, Severity::Error);
+        assert_eq!(diag.code.as_deref(), Some("E0308"));
+        assert_eq!(diag.file_path.as_str(), "src/main.rs");
+        assert_eq!(diag.line, 10);
+        assert_eq!(diag.column, 5);
+        assert_eq!(diag.message.as_str(), "mismatched types");
+    }
+
+    #[test]
+    fn gcc_path_line_column_is_parsed_from_right() {
+        let mut set = DiagnosticSet::new();
+        set.parse_output("/tmp/foo:bar/main.c:22:9: warning: unused variable 'x'\n");
+
+        assert_eq!(set.diagnostics.len(), 1);
+        let diag = &set.diagnostics[0];
+        assert_eq!(diag.severity, Severity::Warning);
+        assert_eq!(diag.file_path.as_str(), "/tmp/foo:bar/main.c");
+        assert_eq!(diag.line, 22);
+        assert_eq!(diag.column, 9);
+    }
+
+    #[test]
+    fn python_traceback_location_gets_error_message() {
+        let mut set = DiagnosticSet::new();
+        set.parse_output("  File \"script.py\", line 7\n    bad\nSyntaxError: invalid syntax\n");
+
+        assert_eq!(set.diagnostics.len(), 1);
+        let diag = &set.diagnostics[0];
+        assert_eq!(diag.file_path.as_str(), "script.py");
+        assert_eq!(diag.line, 7);
+        assert_eq!(diag.message.as_str(), "SyntaxError: invalid syntax");
     }
 }

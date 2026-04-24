@@ -1,12 +1,19 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 #[allow(unused_imports)]
 use libanyui_client as ui;
 
 use crate::logic::diagnostics::{DiagnosticSet, Severity};
 
 const STYLE_BOLD: u32 = 1;
+
+#[derive(Clone)]
+struct ProblemLocation {
+    file_path: String,
+    line: u32,
+    column: u32,
+}
 
 // ════════════════════════════════════════════════════════════════
 //  Problems panel — displays compiler errors and warnings
@@ -18,7 +25,7 @@ pub struct ProblemsPanel {
     pub summary_label: ui::Label,
     pub error_label: ui::Label,
     pub warning_label: ui::Label,
-    file_locations: Vec<(String, u32)>, // (file_path, line) per tree node
+    file_locations: Vec<ProblemLocation>, // indexed by TreeView node id
 }
 
 impl ProblemsPanel {
@@ -79,68 +86,102 @@ impl ProblemsPanel {
         let errors = diagnostics.error_count();
         let warnings = diagnostics.warning_count();
 
-        self.error_label.set_text(&format!("{} Error{}", errors, if errors == 1 { "" } else { "s" }));
-        self.warning_label.set_text(&format!("{} Warning{}", warnings, if warnings == 1 { "" } else { "s" }));
+        self.error_label.set_text(&format!(
+            "{} Error{}",
+            errors,
+            if errors == 1 { "" } else { "s" }
+        ));
+        self.warning_label.set_text(&format!(
+            "{} Warning{}",
+            warnings,
+            if warnings == 1 { "" } else { "s" }
+        ));
 
         if diagnostics.diagnostics.is_empty() {
             self.summary_label.set_text("No problems");
             let t = anyos_std::i18n::t;
             let node = self.tree.add_root(t("No problems detected"));
             self.tree.set_node_text_color(node, tc.text_secondary);
-            self.file_locations.push((String::new(), 0));
+            self.remember_location(node, "", 0, 0);
             return;
         }
 
         self.summary_label.set_text(&diagnostics.summary());
 
-        // Group by file
-        let mut current_file = String::new();
-        let mut file_node: u32 = 0;
+        let globals = diagnostics.global();
+        if !globals.is_empty() {
+            let root = self
+                .tree
+                .add_root(&format!("Build messages ({})", globals.len()));
+            self.tree.set_node_style(root, STYLE_BOLD);
+            self.tree.set_node_text_color(root, tc.text);
+            self.remember_location(root, "", 0, 0);
+            self.tree.set_expanded(root, true);
+
+            for diag in globals {
+                let code_str = match &diag.code {
+                    Some(c) => format!(" [{}]", c),
+                    None => String::new(),
+                };
+                let label = format!(
+                    "{} [{}] {}{}",
+                    severity_marker(diag.severity),
+                    diag.source,
+                    diag.message,
+                    code_str,
+                );
+                let node = self.tree.add_child(root, &label);
+                self.tree
+                    .set_node_text_color(node, diag.severity.icon_color());
+                self.remember_location(node, "", 0, 0);
+            }
+        }
+
+        let mut file_nodes: Vec<(String, u32)> = Vec::new();
 
         for diag in &diagnostics.diagnostics {
             // Skip diagnostics without file location
-            if diag.file_path.is_empty() && diag.line == 0 {
+            if !diag.has_location() {
                 continue;
             }
 
-            if diag.file_path != current_file {
-                current_file = diag.file_path.clone();
-                let basename = if current_file.is_empty() {
-                    "<unknown>"
-                } else {
-                    crate::util::path::basename(&current_file)
-                };
-                let file_diags: Vec<_> = diagnostics.diagnostics.iter()
-                    .filter(|d| d.file_path == current_file)
-                    .collect();
-                let label = format!("{} ({})", basename, file_diags.len());
-                file_node = self.tree.add_root(&label);
-                self.tree.set_node_style(file_node, STYLE_BOLD);
-                self.tree.set_node_text_color(file_node, tc.text);
-                self.file_locations.push((current_file.clone(), 0));
-                self.tree.set_expanded(file_node, true);
-            }
+            let file_node = match file_nodes.iter().position(|(p, _)| p == &diag.file_path) {
+                Some(idx) => file_nodes[idx].1,
+                None => {
+                    let basename = crate::util::path::basename(&diag.file_path);
+                    let file_diag_count = diagnostics
+                        .diagnostics
+                        .iter()
+                        .filter(|d| d.file_path == diag.file_path && d.has_location())
+                        .count();
+                    let label = format!("{} ({})", basename, file_diag_count);
+                    let node = self.tree.add_root(&label);
+                    self.tree.set_node_style(node, STYLE_BOLD);
+                    self.tree.set_node_text_color(node, tc.text);
+                    self.remember_location(node, &diag.file_path, 0, 0);
+                    self.tree.set_expanded(node, true);
+                    file_nodes.push((diag.file_path.clone(), node));
+                    node
+                }
+            };
 
             // Build diagnostic line
-            let severity_icon = match diag.severity {
-                Severity::Error => "\u{2716}", // ✖
-                Severity::Warning => "\u{26A0}", // ⚠
-                Severity::Info => "\u{2139}", // ℹ
-                Severity::Hint => "\u{2022}", // •
-            };
             let code_str = match &diag.code {
                 Some(c) => format!(" [{}]", c),
                 None => String::new(),
             };
-            let label = format!("{} Ln {}, Col {} — {}{}",
-                severity_icon,
-                diag.line, diag.column,
+            let label = format!(
+                "{} {} [{}] - {}{}",
+                severity_marker(diag.severity),
+                range_label(diag.line, diag.column, diag.end_line, diag.end_column),
+                diag.source,
                 diag.message,
                 code_str,
             );
             let node = self.tree.add_child(file_node, &label);
-            self.tree.set_node_text_color(node, diag.severity.icon_color());
-            self.file_locations.push((diag.file_path.clone(), diag.line));
+            self.tree
+                .set_node_text_color(node, diag.severity.icon_color());
+            self.remember_location(node, &diag.file_path, diag.line, diag.column);
         }
     }
 
@@ -154,10 +195,43 @@ impl ProblemsPanel {
     }
 
     /// Get the file path and line for a tree node selection.
-    pub fn location_for_node(&self, index: u32) -> Option<(&str, u32)> {
+    pub fn location_for_node(&self, index: u32) -> Option<(&str, u32, u32)> {
         self.file_locations
             .get(index as usize)
-            .filter(|(p, _)| !p.is_empty())
-            .map(|(p, l)| (p.as_str(), *l))
+            .filter(|loc| !loc.file_path.is_empty())
+            .map(|loc| (loc.file_path.as_str(), loc.line, loc.column))
+    }
+
+    fn remember_location(&mut self, node: u32, file_path: &str, line: u32, column: u32) {
+        let idx = node as usize;
+        while self.file_locations.len() <= idx {
+            self.file_locations.push(ProblemLocation {
+                file_path: String::new(),
+                line: 0,
+                column: 0,
+            });
+        }
+        self.file_locations[idx] = ProblemLocation {
+            file_path: String::from(file_path),
+            line,
+            column,
+        };
+    }
+}
+
+fn severity_marker(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
+        Severity::Hint => "hint",
+    }
+}
+
+fn range_label(line: u32, column: u32, end_line: u32, end_column: u32) -> String {
+    if end_line > 0 && (end_line != line || end_column != column) {
+        format!("Ln {}, Col {}-{}:{}", line, column, end_line, end_column)
+    } else {
+        format!("Ln {}, Col {}", line, column)
     }
 }

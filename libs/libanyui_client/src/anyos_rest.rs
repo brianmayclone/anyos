@@ -294,6 +294,8 @@ struct AnyuiLib {
     texteditor_select_all: extern "C" fn(u32),
     texteditor_highlight_line: extern "C" fn(u32, u32, u32),
     texteditor_clear_highlights: extern "C" fn(u32),
+    texteditor_add_diagnostic: extern "C" fn(u32, u32, u32, u32, u32, u32),
+    texteditor_clear_diagnostics: extern "C" fn(u32),
     texteditor_set_read_only: extern "C" fn(u32, u32),
     texteditor_ensure_line_visible: extern "C" fn(u32, u32),
     // TreeView
@@ -591,7 +593,10 @@ pub fn init() -> bool {
             texteditor_get_cursor: resolve(&handle, "anyui_texteditor_get_cursor"),
             texteditor_set_line_height: resolve(&handle, "anyui_texteditor_set_line_height"),
             texteditor_set_tab_width: resolve(&handle, "anyui_texteditor_set_tab_width"),
-            texteditor_set_show_line_numbers: resolve(&handle, "anyui_texteditor_set_show_line_numbers"),
+            texteditor_set_show_line_numbers: resolve(
+                &handle,
+                "anyui_texteditor_set_show_line_numbers",
+            ),
             texteditor_set_font: resolve(&handle, "anyui_texteditor_set_font"),
             texteditor_insert_text: resolve(&handle, "anyui_texteditor_insert_text"),
             texteditor_get_line_count: resolve(&handle, "anyui_texteditor_get_line_count"),
@@ -601,8 +606,13 @@ pub fn init() -> bool {
             texteditor_select_all: resolve(&handle, "anyui_texteditor_select_all"),
             texteditor_highlight_line: resolve(&handle, "anyui_texteditor_highlight_line"),
             texteditor_clear_highlights: resolve(&handle, "anyui_texteditor_clear_highlights"),
+            texteditor_add_diagnostic: resolve(&handle, "anyui_texteditor_add_diagnostic"),
+            texteditor_clear_diagnostics: resolve(&handle, "anyui_texteditor_clear_diagnostics"),
             texteditor_set_read_only: resolve(&handle, "anyui_texteditor_set_read_only"),
-            texteditor_ensure_line_visible: resolve(&handle, "anyui_texteditor_ensure_line_visible"),
+            texteditor_ensure_line_visible: resolve(
+                &handle,
+                "anyui_texteditor_ensure_line_visible",
+            ),
             // TreeView
             treeview_add_node: resolve(&handle, "anyui_treeview_add_node"),
             treeview_remove_node: resolve(&handle, "anyui_treeview_remove_node"),
@@ -791,12 +801,16 @@ pub struct Control {
 }
 
 impl Widget for Control {
-    fn id(&self) -> u32 { self.id }
+    fn id(&self) -> u32 {
+        self.id
+    }
 }
 
 impl Control {
     /// Wrap a raw control ID.
-    pub fn from_id(id: u32) -> Self { Self { id } }
+    pub fn from_id(id: u32) -> Self {
+        Self { id }
+    }
 
     // ── Position / Size ──
 
@@ -1167,13 +1181,16 @@ pub const DND_EFFECT_NONE: u32 = 0;
 pub const DND_EFFECT_COPY: u32 = 1;
 pub const DND_EFFECT_MOVE: u32 = 2;
 pub const DND_EFFECT_LINK: u32 = 4;
-pub const DND_EFFECT_ALL: u32 =
-    DND_EFFECT_COPY | DND_EFFECT_MOVE | DND_EFFECT_LINK;
+pub const DND_EFFECT_ALL: u32 = DND_EFFECT_COPY | DND_EFFECT_MOVE | DND_EFFECT_LINK;
 
 /// Build a format mask accepting a single format (convenience for
 /// `Control::set_drop_formats`).
 pub const fn dnd_format_mask(fmt: u32) -> u32 {
-    if fmt == 0 { 0 } else { 1u32 << (fmt & 31) }
+    if fmt == 0 {
+        0
+    } else {
+        1u32 << (fmt & 31)
+    }
 }
 
 /// Install a typed payload on the currently active drag session. Call from
@@ -1252,12 +1269,16 @@ pub fn drag_effect_label(effect: u32) -> &'static str {
 }
 
 impl Widget for Container {
-    fn id(&self) -> u32 { self.ctrl.id }
+    fn id(&self) -> u32 {
+        self.ctrl.id
+    }
 }
 
 impl core::ops::Deref for Container {
     type Target = Control;
-    fn deref(&self) -> &Control { &self.ctrl }
+    fn deref(&self) -> &Control {
+        &self.ctrl
+    }
 }
 
 impl Container {
@@ -1286,15 +1307,21 @@ impl Container {
 macro_rules! leaf_control {
     ($name:ident, $kind:expr) => {
         #[derive(Clone, Copy)]
-        pub struct $name { ctrl: Control }
+        pub struct $name {
+            ctrl: Control,
+        }
 
         impl Widget for $name {
-            fn id(&self) -> u32 { self.ctrl.id }
+            fn id(&self) -> u32 {
+                self.ctrl.id
+            }
         }
 
         impl core::ops::Deref for $name {
             type Target = Control;
-            fn deref(&self) -> &Control { &self.ctrl }
+            fn deref(&self) -> &Control {
+                &self.ctrl
+            }
         }
     };
 }
@@ -1303,15 +1330,21 @@ macro_rules! leaf_control {
 macro_rules! container_control {
     ($name:ident, $kind:expr) => {
         #[derive(Clone, Copy)]
-        pub struct $name { container: Container }
+        pub struct $name {
+            container: Container,
+        }
 
         impl Widget for $name {
-            fn id(&self) -> u32 { self.container.ctrl.id }
+            fn id(&self) -> u32 {
+                self.container.ctrl.id
+            }
         }
 
         impl core::ops::Deref for $name {
             type Target = Container;
-            fn deref(&self) -> &Container { &self.container }
+            fn deref(&self) -> &Container {
+                &self.container
+            }
         }
     };
 }
@@ -1456,9 +1489,12 @@ pub fn show_notification(title: &str, message: &str, icon: Option<&[u32; 256]>, 
         None => core::ptr::null(),
     };
     (lib().show_notification)(
-        title.as_ptr(), title.len() as u32,
-        message.as_ptr(), message.len() as u32,
-        icon_ptr, timeout_ms,
+        title.as_ptr(),
+        title.len() as u32,
+        message.as_ptr(),
+        message.len() as u32,
+        icon_ptr,
+        timeout_ms,
     );
 }
 
@@ -1467,37 +1503,37 @@ pub fn show_notification(title: &str, message: &str, icon: Option<&[u32; 256]>, 
 // ══════════════════════════════════════════════════════════════════════
 
 // Key codes (must match libanyui's control.rs constants)
-pub const KEY_ENTER: u32     = 0x100;
+pub const KEY_ENTER: u32 = 0x100;
 pub const KEY_BACKSPACE: u32 = 0x101;
-pub const KEY_TAB: u32       = 0x102;
-pub const KEY_ESCAPE: u32    = 0x103;
-pub const KEY_SPACE: u32     = 0x104;
-pub const KEY_UP: u32        = 0x105;
-pub const KEY_DOWN: u32      = 0x106;
-pub const KEY_LEFT: u32      = 0x107;
-pub const KEY_RIGHT: u32     = 0x108;
-pub const KEY_DELETE: u32    = 0x120;
-pub const KEY_HOME: u32      = 0x121;
-pub const KEY_END: u32       = 0x122;
-pub const KEY_PAGE_UP: u32   = 0x123;
+pub const KEY_TAB: u32 = 0x102;
+pub const KEY_ESCAPE: u32 = 0x103;
+pub const KEY_SPACE: u32 = 0x104;
+pub const KEY_UP: u32 = 0x105;
+pub const KEY_DOWN: u32 = 0x106;
+pub const KEY_LEFT: u32 = 0x107;
+pub const KEY_RIGHT: u32 = 0x108;
+pub const KEY_DELETE: u32 = 0x120;
+pub const KEY_HOME: u32 = 0x121;
+pub const KEY_END: u32 = 0x122;
+pub const KEY_PAGE_UP: u32 = 0x123;
 pub const KEY_PAGE_DOWN: u32 = 0x124;
-pub const KEY_F1: u32        = 0x130;
-pub const KEY_F2: u32        = 0x131;
-pub const KEY_F3: u32        = 0x132;
-pub const KEY_F4: u32        = 0x133;
-pub const KEY_F5: u32        = 0x134;
-pub const KEY_F6: u32        = 0x135;
-pub const KEY_F7: u32        = 0x136;
-pub const KEY_F8: u32        = 0x137;
-pub const KEY_F9: u32        = 0x138;
-pub const KEY_F10: u32       = 0x139;
-pub const KEY_F11: u32       = 0x13A;
-pub const KEY_F12: u32       = 0x13B;
+pub const KEY_F1: u32 = 0x130;
+pub const KEY_F2: u32 = 0x131;
+pub const KEY_F3: u32 = 0x132;
+pub const KEY_F4: u32 = 0x133;
+pub const KEY_F5: u32 = 0x134;
+pub const KEY_F6: u32 = 0x135;
+pub const KEY_F7: u32 = 0x136;
+pub const KEY_F8: u32 = 0x137;
+pub const KEY_F9: u32 = 0x138;
+pub const KEY_F10: u32 = 0x139;
+pub const KEY_F11: u32 = 0x13A;
+pub const KEY_F12: u32 = 0x13B;
 
 // Modifier flags
 pub const MOD_SHIFT: u32 = 1;
-pub const MOD_CTRL: u32  = 2;
-pub const MOD_ALT: u32   = 4;
+pub const MOD_CTRL: u32 = 2;
+pub const MOD_ALT: u32 = 4;
 
 /// Information about a keyboard event.
 #[derive(Clone, Copy, Debug)]
@@ -1511,9 +1547,15 @@ pub struct KeyEvent {
 }
 
 impl KeyEvent {
-    pub fn shift(&self) -> bool { self.modifiers & MOD_SHIFT != 0 }
-    pub fn ctrl(&self) -> bool { self.modifiers & MOD_CTRL != 0 }
-    pub fn alt(&self) -> bool { self.modifiers & MOD_ALT != 0 }
+    pub fn shift(&self) -> bool {
+        self.modifiers & MOD_SHIFT != 0
+    }
+    pub fn ctrl(&self) -> bool {
+        self.modifiers & MOD_CTRL != 0
+    }
+    pub fn alt(&self) -> bool {
+        self.modifiers & MOD_ALT != 0
+    }
 }
 
 /// Query the most recent key event info.
@@ -1523,7 +1565,11 @@ pub fn get_key_info() -> KeyEvent {
     let mut char_code: u32 = 0;
     let mut modifiers: u32 = 0;
     (lib().get_key_info)(&mut keycode, &mut char_code, &mut modifiers);
-    KeyEvent { keycode, char_code, modifiers }
+    KeyEvent {
+        keycode,
+        char_code,
+        modifiers,
+    }
 }
 
 /// Query the current modifier key state (Shift=1, Ctrl=2, Alt=4).

@@ -90,6 +90,13 @@ pub struct TypeckResult {
     pub trait_default_methods: HashMap<DefId, bool>,
 }
 
+#[derive(Debug, Clone)]
+struct IndexImpl {
+    self_def_id: DefId,
+    index_ty: TyKind,
+    output_ty: TyKind,
+}
+
 /// Compile-time evaluated constant value
 #[derive(Debug, Clone)]
 pub enum ConstVal {
@@ -149,12 +156,15 @@ pub struct TypeChecker<'a> {
     current_generic_bounds: HashMap<u32, Vec<DefId>>,
     /// Default trait method bodies: method DefId -> true if body exists in trait def
     trait_default_methods: HashMap<DefId, bool>,
+    /// `impl core::ops::Index<I> for T { type Output = O; }` summaries.
+    index_impls: Vec<IndexImpl>,
 
     next_infer: u32,
     infer_kinds: HashMap<InferVar, InferKind>,
     substitutions: HashMap<InferVar, TyKind>,
 
     current_fn_ret: Option<TyKind>,
+    current_fn_name: Option<Symbol>,
     current_self_ty: Option<TyKind>,
     errors: Vec<Diagnostic>,
 
@@ -193,10 +203,12 @@ impl<'a> TypeChecker<'a> {
             trait_assoc_types: HashMap::new(),
             current_generic_bounds: HashMap::new(),
             trait_default_methods: HashMap::new(),
+            index_impls: Vec::new(),
             next_infer: 0,
             infer_kinds: HashMap::new(),
             substitutions: HashMap::new(),
             current_fn_ret: None,
+            current_fn_name: None,
             current_self_ty: None,
             errors: Vec::new(),
             closure_defs: HashMap::new(),
@@ -212,7 +224,18 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn error(&mut self, span: Span, msg: &str) {
-        self.errors.push(Diagnostic::new(Level::Error, msg, span));
+        let msg = if let Some(fn_name) = self.current_fn_name {
+            let mut path = self
+                .current_module_path
+                .iter()
+                .map(|sym| self.interner.resolve(*sym).to_string())
+                .collect::<Vec<_>>();
+            path.push(self.interner.resolve(fn_name).to_string());
+            format!("in {}: {}", path.join("::"), msg)
+        } else {
+            msg.to_string()
+        };
+        self.errors.push(Diagnostic::new(Level::Error, &msg, span));
     }
 
     fn is_deferred_ty(ty: &TyKind) -> bool {
@@ -445,7 +468,18 @@ impl<'a> TypeChecker<'a> {
 
     fn iterable_elem_ty(&mut self, iter: &HirExpr, iter_ty: TyKind) -> TyKind {
         let resolved = match self.shallow_resolve(iter_ty) {
-            TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
+            TyKind::Ref(inner, mutability) => {
+                match self.shallow_resolve(*inner) {
+                    TyKind::Array(elem, _) | TyKind::Slice(elem) => {
+                        return TyKind::Ref(elem, mutability);
+                    }
+                    TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.len() == 1 => {
+                        return TyKind::Ref(Box::new(substs[0].clone()), mutability);
+                    }
+                    other => other,
+                }
+            }
+            TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
             other => other,
         };
         match resolved {
@@ -837,6 +871,7 @@ impl<'a> TypeChecker<'a> {
                         }
                         // If this is a trait impl, record the mapping
                         if let Some(trait_ref) = &ib.trait_ref {
+                            self.collect_index_impl(ib, trait_ref);
                             if !trait_ref.segments.is_empty() {
                                 let trait_name = trait_ref.segments[0].ident;
                                 if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
@@ -922,6 +957,60 @@ impl<'a> TypeChecker<'a> {
                 self.pop_generic_scope(old_generics, old_bounds);
             }
             _ => {}
+        }
+    }
+
+    fn collect_index_impl(&mut self, ib: &HirImplBlock, trait_ref: &HirPath) {
+        let Some(last) = trait_ref.segments.last() else {
+            return;
+        };
+        if self.interner.resolve(last.ident) != "Index" {
+            return;
+        }
+        let TyKind::Adt(self_def_id, _) = self.shallow_resolve(self.hir_ty_to_ty(&ib.self_ty)) else {
+            return;
+        };
+        let Some(args) = &last.args else {
+            return;
+        };
+        let Some(HirGenericArg::Type(index_hir_ty)) = args.args.first() else {
+            return;
+        };
+        let Some(output_sym) = self.interner.lookup("Output") else {
+            return;
+        };
+        let Some(output_hir_ty) = ib.items.iter().find_map(|item| {
+            if let HirItemKind::TypeAlias(ta) = &item.kind {
+                if ta.name == output_sym {
+                    return ta.ty.as_ref();
+                }
+            }
+            None
+        }) else {
+            return;
+        };
+        let index_ty = self.hir_ty_to_ty(index_hir_ty);
+        let output_ty = self.hir_ty_to_ty(output_hir_ty);
+        self.index_impls.push(IndexImpl { self_def_id, index_ty, output_ty });
+    }
+
+    fn lookup_index_output(&self, self_def_id: DefId, index_ty: &TyKind) -> Option<TyKind> {
+        self.index_impls
+            .iter()
+            .find(|impl_info| {
+                impl_info.self_def_id == self_def_id
+                    && self.ty_matches_for_candidate(&impl_info.index_ty, index_ty)
+            })
+            .map(|impl_info| impl_info.output_ty.clone())
+    }
+
+    fn check_builtin_index_ty(&mut self, index_ty: &TyKind, span: Span, is_range: bool) {
+        if is_range {
+            return;
+        }
+        match index_ty {
+            TyKind::Int(_) | TyKind::Uint(_) => {}
+            other => self.unify(&TyKind::Uint(UintTy::Usize), other, span),
         }
     }
 
@@ -1044,6 +1133,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         let old_ret = self.current_fn_ret.replace(ret_ty.clone());
+        let old_fn_name = self.current_fn_name.replace(f.name);
 
         if let Some(body) = &f.body {
             let body_ty = self.check_block(body);
@@ -1053,6 +1143,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         self.current_fn_ret = old_ret;
+        self.current_fn_name = old_fn_name;
         self.current_generic_params = old_generics;
         self.current_generic_bounds = old_bounds;
     }
@@ -1210,6 +1301,12 @@ impl<'a> TypeChecker<'a> {
                                 let type_name = intrinsic_path.rsplit("::").nth(1).unwrap_or("");
                                 if let Some(sym) = self.interner.lookup(type_name) {
                                     if let Some(&type_def_id) = self.type_name_to_def.get(&sym) {
+                                        if type_name == "Vec" {
+                                            return TyKind::Adt(
+                                                type_def_id,
+                                                vec![self.fresh_infer(InferKind::General)],
+                                            );
+                                        }
                                         return TyKind::Adt(type_def_id, vec![]);
                                     }
                                 }
@@ -1446,7 +1543,7 @@ impl<'a> TypeChecker<'a> {
                         if Self::is_deferred_ty(&other) {
                             self.fresh_infer(InferKind::General)
                         } else {
-                            self.error(expr.span, "cannot dereference this type");
+                            self.error(expr.span, &format!("cannot dereference this type: {}", self.describe_ty(&other)));
                             TyKind::Error
                         }
                     }
@@ -1480,14 +1577,10 @@ impl<'a> TypeChecker<'a> {
                     other => other,
                 };
                 let is_range = matches!(idx.kind, HirExprKind::Range(_, _, _));
-                if !is_range {
-                    match idx_ty {
-                        TyKind::Int(_) | TyKind::Uint(_) => {}
-                        other => self.unify(&TyKind::Uint(UintTy::Usize), &other, idx.span),
-                    }
-                }
+                let resolved_desc = self.describe_ty(&resolved);
                 match resolved {
                     TyKind::Array(elem, _) | TyKind::Slice(elem) => {
+                        self.check_builtin_index_ty(&idx_ty, idx.span, is_range);
                         if is_range {
                             TyKind::Slice(elem)
                         } else {
@@ -1498,12 +1591,13 @@ impl<'a> TypeChecker<'a> {
                         if is_range {
                             TyKind::Str
                         } else {
-                            self.error(expr.span, "cannot index this type");
+                            self.error(expr.span, &format!("cannot index this type: {}", resolved_desc));
                             TyKind::Error
                         }
                     }
                     TyKind::Adt(def_id, substs) => {
                         if self.is_vec_def(def_id) && substs.len() == 1 {
+                            self.check_builtin_index_ty(&idx_ty, idx.span, is_range);
                             let elem_ty = self.resolve_ty_full(substs[0].clone());
                             if is_range {
                                 TyKind::Slice(Box::new(elem_ty))
@@ -1514,17 +1608,28 @@ impl<'a> TypeChecker<'a> {
                             if is_range {
                                 TyKind::Str
                             } else {
-                                self.error(expr.span, "cannot index this type");
+                                self.error(expr.span, &format!("cannot index this type: {}", resolved_desc));
+                                TyKind::Error
+                            }
+                        } else if !is_range {
+                            if let Some(output_ty) = self.lookup_index_output(def_id, &idx_ty) {
+                                output_ty
+                            } else {
+                                self.error(expr.span, &format!("cannot index this type: {}", resolved_desc));
                                 TyKind::Error
                             }
                         } else {
-                            self.error(expr.span, "cannot index this type");
+                            self.error(expr.span, &format!("cannot index this type: {}", resolved_desc));
                             TyKind::Error
                         }
                     }
                     _ => {
-                        self.error(expr.span, "cannot index this type");
-                        TyKind::Error
+                        if Self::is_deferred_ty(&resolved) {
+                            self.fresh_infer(InferKind::General)
+                        } else {
+                            self.error(expr.span, &format!("cannot index this type: {}", resolved_desc));
+                            TyKind::Error
+                        }
                     }
                 }
             }
@@ -1655,6 +1760,12 @@ impl<'a> TypeChecker<'a> {
                                 Box::new(elem.as_ref().clone()),
                                 Mutability::Mut,
                             )));
+                        }
+                        "enumerate" if args.is_empty() => {
+                            return TyKind::Slice(Box::new(TyKind::Tuple(vec![
+                                TyKind::Uint(UintTy::Usize),
+                                elem.as_ref().clone(),
+                            ])));
                         }
                         "copy_from_slice" if args.len() == 1 => return TyKind::Unit,
                         "to_vec" if args.is_empty() => {

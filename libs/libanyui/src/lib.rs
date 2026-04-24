@@ -883,10 +883,9 @@ pub extern "C" fn anyui_set_orientation(id: ControlId, orientation: u32) {
 pub extern "C" fn anyui_set_columns(id: ControlId, columns: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(tl) = control::cast_mut::<controls::table_layout::TableLayout>(
-            ctrl,
-            ControlKind::TableLayout,
-        ) {
+        if let Some(tl) =
+            control::cast_mut::<controls::table_layout::TableLayout>(ctrl, ControlKind::TableLayout)
+        {
             tl.columns = columns;
         }
     }
@@ -896,10 +895,9 @@ pub extern "C" fn anyui_set_columns(id: ControlId, columns: u32) {
 pub extern "C" fn anyui_set_row_height(id: ControlId, row_height: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(tl) = control::cast_mut::<controls::table_layout::TableLayout>(
-            ctrl,
-            ControlKind::TableLayout,
-        ) {
+        if let Some(tl) =
+            control::cast_mut::<controls::table_layout::TableLayout>(ctrl, ControlKind::TableLayout)
+        {
             tl.row_height = row_height;
         }
     }
@@ -914,10 +912,9 @@ pub extern "C" fn anyui_set_row_height(id: ControlId, row_height: u32) {
 pub extern "C" fn anyui_set_column_widths(id: ControlId, widths: *const u32, len: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(tl) = control::cast_mut::<controls::table_layout::TableLayout>(
-            ctrl,
-            ControlKind::TableLayout,
-        ) {
+        if let Some(tl) =
+            control::cast_mut::<controls::table_layout::TableLayout>(ctrl, ControlKind::TableLayout)
+        {
             if len == 0 || widths.is_null() {
                 tl.col_widths.clear();
             } else {
@@ -1348,10 +1345,9 @@ pub extern "C" fn anyui_combobox_get_selected_index(id: ControlId) -> u32 {
 pub extern "C" fn anyui_canvas_set_pixel(id: ControlId, x: i32, y: i32, color: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
-            ctrl,
-            ControlKind::Canvas,
-        ) {
+        if let Some(canvas) =
+            control::cast_mut::<controls::canvas::Canvas>(ctrl, ControlKind::Canvas)
+        {
             canvas.set_pixel(x, y, color);
         }
     }
@@ -1361,10 +1357,9 @@ pub extern "C" fn anyui_canvas_set_pixel(id: ControlId, x: i32, y: i32, color: u
 pub extern "C" fn anyui_canvas_clear(id: ControlId, color: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
-            ctrl,
-            ControlKind::Canvas,
-        ) {
+        if let Some(canvas) =
+            control::cast_mut::<controls::canvas::Canvas>(ctrl, ControlKind::Canvas)
+        {
             canvas.clear(color);
             canvas.base.mark_dirty();
         }
@@ -1382,10 +1377,9 @@ pub extern "C" fn anyui_canvas_fill_rect(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
-            ctrl,
-            ControlKind::Canvas,
-        ) {
+        if let Some(canvas) =
+            control::cast_mut::<controls::canvas::Canvas>(ctrl, ControlKind::Canvas)
+        {
             canvas.fill_rect(x, y, w, h, color);
         }
     }
@@ -1402,10 +1396,9 @@ pub extern "C" fn anyui_canvas_draw_line(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
-            ctrl,
-            ControlKind::Canvas,
-        ) {
+        if let Some(canvas) =
+            control::cast_mut::<controls::canvas::Canvas>(ctrl, ControlKind::Canvas)
+        {
             canvas.draw_line(x0, y0, x1, y1, color);
         }
     }
@@ -1423,10 +1416,9 @@ pub extern "C" fn anyui_canvas_draw_rect(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
-            ctrl,
-            ControlKind::Canvas,
-        ) {
+        if let Some(canvas) =
+            control::cast_mut::<controls::canvas::Canvas>(ctrl, ControlKind::Canvas)
+        {
             canvas.draw_rect(x, y, w, h, color, thickness);
         }
     }
@@ -1442,10 +1434,9 @@ pub extern "C" fn anyui_canvas_draw_circle(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
-            ctrl,
-            ControlKind::Canvas,
-        ) {
+        if let Some(canvas) =
+            control::cast_mut::<controls::canvas::Canvas>(ctrl, ControlKind::Canvas)
+        {
             canvas.draw_circle(cx, cy, radius, color);
         }
     }
@@ -1461,10 +1452,9 @@ pub extern "C" fn anyui_canvas_fill_circle(
 ) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
-            ctrl,
-            ControlKind::Canvas,
-        ) {
+        if let Some(canvas) =
+            control::cast_mut::<controls::canvas::Canvas>(ctrl, ControlKind::Canvas)
+        {
             canvas.fill_circle(cx, cy, radius, color);
         }
     }
@@ -1474,10 +1464,9 @@ pub extern "C" fn anyui_canvas_fill_circle(
 pub extern "C" fn anyui_canvas_get_buffer(id: ControlId) -> *mut u32 {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(canvas) = control::cast_mut::<controls::canvas::Canvas>(
-            ctrl,
-            ControlKind::Canvas,
-        ) {
+        if let Some(canvas) =
+            control::cast_mut::<controls::canvas::Canvas>(ctrl, ControlKind::Canvas)
+        {
             return canvas.pixels.as_mut_ptr();
         }
     }
@@ -1704,10 +1693,9 @@ pub extern "C" fn anyui_canvas_draw_text(
 pub extern "C" fn anyui_imageview_set_pixels(id: ControlId, data: *const u32, w: u32, h: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(iv) = control::cast_mut::<controls::image_view::ImageView>(
-            ctrl,
-            ControlKind::ImageView,
-        ) {
+        if let Some(iv) =
+            control::cast_mut::<controls::image_view::ImageView>(ctrl, ControlKind::ImageView)
+        {
             let count = (w as usize) * (h as usize);
             if !data.is_null() && count > 0 {
                 let slice = unsafe { core::slice::from_raw_parts(data, count) };
@@ -1722,10 +1710,9 @@ pub extern "C" fn anyui_imageview_set_pixels(id: ControlId, data: *const u32, w:
 pub extern "C" fn anyui_imageview_set_scale_mode(id: ControlId, mode: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(iv) = control::cast_mut::<controls::image_view::ImageView>(
-            ctrl,
-            ControlKind::ImageView,
-        ) {
+        if let Some(iv) =
+            control::cast_mut::<controls::image_view::ImageView>(ctrl, ControlKind::ImageView)
+        {
             if iv.scale_mode != mode {
                 iv.scale_mode = mode;
                 iv.base.mark_dirty();
@@ -1743,10 +1730,9 @@ pub extern "C" fn anyui_imageview_get_image_size(
 ) -> u32 {
     let st = state();
     if let Some(ctrl) = st.controls.iter().find(|c| c.id() == id) {
-        if let Some(iv) = control::cast_ref::<controls::image_view::ImageView>(
-            ctrl,
-            ControlKind::ImageView,
-        ) {
+        if let Some(iv) =
+            control::cast_ref::<controls::image_view::ImageView>(ctrl, ControlKind::ImageView)
+        {
             if !out_w.is_null() {
                 unsafe {
                     *out_w = iv.img_w;
@@ -1768,10 +1754,9 @@ pub extern "C" fn anyui_imageview_get_image_size(
 pub extern "C" fn anyui_imageview_clear(id: ControlId) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(iv) = control::cast_mut::<controls::image_view::ImageView>(
-            ctrl,
-            ControlKind::ImageView,
-        ) {
+        if let Some(iv) =
+            control::cast_mut::<controls::image_view::ImageView>(ctrl, ControlKind::ImageView)
+        {
             iv.clear();
         }
     }
@@ -1816,10 +1801,9 @@ pub extern "C" fn anyui_iconbutton_set_pixels(id: ControlId, data: *const u32, w
 pub extern "C" fn anyui_iconbutton_set_flat(id: ControlId, flat: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
-        if let Some(ib) = control::cast_mut::<controls::icon_button::IconButton>(
-            ctrl,
-            ControlKind::IconButton,
-        ) {
+        if let Some(ib) =
+            control::cast_mut::<controls::icon_button::IconButton>(ctrl, ControlKind::IconButton)
+        {
             ib.flat = flat != 0;
             ib.base_mut().mark_dirty();
         }
@@ -2515,6 +2499,35 @@ pub extern "C" fn anyui_texteditor_clear_highlights(id: ControlId) {
     }
 }
 
+/// Add a diagnostic underline/gutter marker. Coordinates are zero-based.
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_add_diagnostic(
+    id: ControlId,
+    line: u32,
+    column: u32,
+    end_line: u32,
+    end_column: u32,
+    severity: u32,
+) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.add_diagnostic(line, column, end_line, end_column, severity);
+        }
+    }
+}
+
+/// Remove all diagnostic underlines/gutter markers.
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_clear_diagnostics(id: ControlId) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.clear_diagnostics();
+        }
+    }
+}
+
 /// Set read-only mode (1 = read-only, 0 = editable).
 #[no_mangle]
 pub extern "C" fn anyui_texteditor_set_read_only(id: ControlId, read_only: u32) {
@@ -2857,22 +2870,22 @@ pub extern "C" fn anyui_drag_set_payload(
 /// copied slice). Writes the payload's format to `*format_out` when
 /// `format_out` is non-null.
 #[no_mangle]
-pub extern "C" fn anyui_drag_get_payload(
-    buf: *mut u8,
-    cap: u32,
-    format_out: *mut u32,
-) -> u32 {
+pub extern "C" fn anyui_drag_get_payload(buf: *mut u8, cap: u32, format_out: *mut u32) -> u32 {
     let st = state();
     let drag = match st.drag.as_ref() {
         Some(d) => d,
         None => return 0,
     };
     if !format_out.is_null() {
-        unsafe { *format_out = drag.format; }
+        unsafe {
+            *format_out = drag.format;
+        }
     }
     let n = core::cmp::min(drag.data.len(), cap as usize);
     if !buf.is_null() && n > 0 {
-        unsafe { core::ptr::copy_nonoverlapping(drag.data.as_ptr(), buf, n); }
+        unsafe {
+            core::ptr::copy_nonoverlapping(drag.data.as_ptr(), buf, n);
+        }
     }
     drag.data.len() as u32
 }
@@ -2945,8 +2958,16 @@ pub extern "C" fn anyui_drag_get_pos(x_out: *mut i32, y_out: *mut i32) -> u32 {
     let st = state();
     match st.drag.as_ref() {
         Some(d) => {
-            if !x_out.is_null() { unsafe { *x_out = d.pointer_x; } }
-            if !y_out.is_null() { unsafe { *y_out = d.pointer_y; } }
+            if !x_out.is_null() {
+                unsafe {
+                    *x_out = d.pointer_x;
+                }
+            }
+            if !y_out.is_null() {
+                unsafe {
+                    *y_out = d.pointer_y;
+                }
+            }
             1
         }
         None => 0,
@@ -2955,7 +2976,11 @@ pub extern "C" fn anyui_drag_get_pos(x_out: *mut i32, y_out: *mut i32) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn anyui_drag_is_active() -> u32 {
-    if state().drag.is_some() { 1 } else { 0 }
+    if state().drag.is_some() {
+        1
+    } else {
+        0
+    }
 }
 
 #[no_mangle]
@@ -2990,7 +3015,9 @@ pub extern "C" fn anyui_drag_get_text(buf: *mut u8, cap: u32) -> u32 {
     };
     let n = core::cmp::min(data.len(), cap as usize);
     if !buf.is_null() && n > 0 {
-        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buf, n); }
+        unsafe {
+            core::ptr::copy_nonoverlapping(data.as_ptr(), buf, n);
+        }
     }
     data.len() as u32
 }

@@ -168,6 +168,15 @@ struct LineHighlight {
     color: u32,
 }
 
+/// A diagnostic range rendered as a colored underline and gutter marker.
+struct DiagnosticMark {
+    line: usize,
+    column: usize,
+    end_line: usize,
+    end_column: usize,
+    severity: u32,
+}
+
 pub struct TextEditor {
     pub(crate) base: ControlBase,
     lines: Vec<Vec<u8>>,
@@ -189,6 +198,7 @@ pub struct TextEditor {
     redo_stack: Vec<UndoState>,
     /// Per-line background highlights (e.g., current RIP in a debugger).
     highlighted_lines: Vec<LineHighlight>,
+    diagnostic_marks: Vec<DiagnosticMark>,
     /// When true, text cannot be edited (navigation and copy still work).
     pub(crate) read_only: bool,
 }
@@ -217,6 +227,7 @@ impl TextEditor {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             highlighted_lines: Vec::new(),
+            diagnostic_marks: Vec::new(),
             read_only: false,
         }
     }
@@ -314,6 +325,33 @@ impl TextEditor {
     pub fn clear_highlights(&mut self) {
         if !self.highlighted_lines.is_empty() {
             self.highlighted_lines.clear();
+            self.base.mark_dirty();
+        }
+    }
+
+    pub fn add_diagnostic(
+        &mut self,
+        line: u32,
+        column: u32,
+        end_line: u32,
+        end_column: u32,
+        severity: u32,
+    ) {
+        let line = line as usize;
+        let end_line = end_line.max(line as u32) as usize;
+        self.diagnostic_marks.push(DiagnosticMark {
+            line,
+            column: column as usize,
+            end_line,
+            end_column: end_column as usize,
+            severity,
+        });
+        self.base.mark_dirty();
+    }
+
+    pub fn clear_diagnostics(&mut self) {
+        if !self.diagnostic_marks.is_empty() {
+            self.diagnostic_marks.clear();
             self.base.mark_dirty();
         }
     }
@@ -746,6 +784,43 @@ impl Control for TextEditor {
             } else if let Some(ref syn) = self.syntax {
                 let (_, still_in) = tokenize_line(line, in_block_comment, syn);
                 in_block_comment = still_in;
+            }
+
+            for diag in &self.diagnostic_marks {
+                if row < diag.line || row > diag.end_line {
+                    continue;
+                }
+                let line_len = self.lines[row].len();
+                let start_col = if row == diag.line {
+                    diag.column.min(line_len)
+                } else {
+                    0
+                };
+                let end_col = if row == diag.end_line {
+                    diag.end_column.min(line_len).max(start_col + 1)
+                } else {
+                    line_len.max(start_col + 1)
+                };
+                let mark_color = diagnostic_color(diag.severity);
+                let mark_x = text_x_base + (start_col as i32) * s_char_w as i32 - s_scroll_x;
+                let mark_w = ((end_col - start_col).max(1) as u32) * s_char_w;
+                let mark_h = crate::theme::scale(2);
+                let mark_y = row_y + s_line_h as i32 - mark_h as i32 - 1;
+                crate::draw::fill_rect(&clipped, mark_x, mark_y, mark_w, mark_h, mark_color);
+
+                if row == diag.line && self.show_line_numbers && s_gutter_w > 0 {
+                    let marker_size = crate::theme::scale(5);
+                    let marker_x = x + crate::theme::scale_i32(4);
+                    let marker_y = row_y + (s_line_h as i32 - marker_size as i32) / 2;
+                    crate::draw::fill_rect(
+                        &clipped,
+                        marker_x,
+                        marker_y,
+                        marker_size,
+                        marker_size,
+                        mark_color,
+                    );
+                }
             }
 
             // Cursor
@@ -1237,6 +1312,15 @@ impl Control for TextEditor {
     fn handle_blur(&mut self) {
         self.focused = false;
         self.base.mark_dirty();
+    }
+}
+
+fn diagnostic_color(severity: u32) -> u32 {
+    match severity {
+        0 => 0xFFF44747,
+        1 => 0xFFCCA700,
+        2 => 0xFF3794FF,
+        _ => 0xFF75BEFF,
     }
 }
 

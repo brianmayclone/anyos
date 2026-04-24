@@ -9,5 +9,6 @@ pub mod language;
 pub mod tasks;
 pub mod symbols;
 pub mod diagnostics;
+pub mod live_analysis;
 pub mod commands;
 pub mod ai;

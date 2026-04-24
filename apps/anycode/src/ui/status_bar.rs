@@ -11,6 +11,7 @@ pub struct StatusBar {
     encoding_label: ui::Label,
     project_label: ui::Label,
     problems_label: ui::Label,
+    analysis_label: ui::Label,
 }
 
 impl StatusBar {
@@ -22,7 +23,7 @@ impl StatusBar {
 
         let left = ui::View::new();
         left.set_dock(ui::DOCK_LEFT);
-        left.set_size(460, 26);
+        left.set_size(560, 26);
         left.set_color(tc.tab_border_active);
         panel.add(&left);
 
@@ -34,7 +35,7 @@ impl StatusBar {
 
         let right = ui::View::new();
         right.set_dock(ui::DOCK_RIGHT);
-        right.set_size(430, 26);
+        right.set_size(340, 26);
         right.set_color(tc.tab_border_active);
         panel.add(&right);
 
@@ -55,6 +56,10 @@ impl StatusBar {
         let project_lbl = make_status_label("", tc.check_mark);
         project_lbl.set_margin(0, 0, 14, 0);
         left_flow.add(&project_lbl);
+
+        let analysis_lbl = make_status_label("", tc.check_mark);
+        analysis_lbl.set_margin(0, 0, 14, 0);
+        left_flow.add(&analysis_lbl);
 
         let cursor_lbl = make_status_label("Ln 1, Col 1", tc.check_mark);
         cursor_lbl.set_margin(0, 0, 0, 0);
@@ -81,6 +86,7 @@ impl StatusBar {
             encoding_label: enc_lbl,
             project_label: project_lbl,
             problems_label: problems_lbl,
+            analysis_label: analysis_lbl,
         }
     }
 
@@ -121,6 +127,10 @@ impl StatusBar {
             self.problems_label
                 .set_text(&format!("\u{2716} {}  \u{26A0} {}", errors, warnings));
         }
+    }
+
+    pub fn set_analysis_status(&self, text: &str) {
+        self.analysis_label.set_text(text);
     }
 }
 

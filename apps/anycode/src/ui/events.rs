@@ -111,10 +111,22 @@ pub fn wire_keyboard(win: &anyui::Window) {
 // ── Activity bar ───────────────────────────────────────────────
 
 pub fn wire_activity_bar() {
-    app().activity_bar.btn_files.on_click(|_| commands::switch_sidebar_view(0));
-    app().activity_bar.btn_git.on_click(|_| commands::switch_sidebar_view(1));
-    app().activity_bar.btn_search.on_click(|_| commands::switch_sidebar_view(2));
-    app().activity_bar.btn_run.on_click(|_| commands::switch_sidebar_view(3));
+    app()
+        .activity_bar
+        .btn_files
+        .on_click(|_| commands::switch_sidebar_view(0));
+    app()
+        .activity_bar
+        .btn_git
+        .on_click(|_| commands::switch_sidebar_view(1));
+    app()
+        .activity_bar
+        .btn_search
+        .on_click(|_| commands::switch_sidebar_view(2));
+    app()
+        .activity_bar
+        .btn_run
+        .on_click(|_| commands::switch_sidebar_view(3));
     app().activity_bar.btn_outline.on_click(|_| {
         commands::refresh_symbols();
         commands::switch_sidebar_view(4);
@@ -127,7 +139,10 @@ pub fn wire_activity_bar() {
         s.ai_panel.set_provider(s.ai_client.config.provider);
         commands::switch_sidebar_view(5);
     });
-    app().activity_bar.btn_extensions.on_click(|_| commands::switch_sidebar_view(6));
+    app()
+        .activity_bar
+        .btn_extensions
+        .on_click(|_| commands::switch_sidebar_view(6));
 }
 
 // ── Toolbar ────────────────────────────────────────────────────
@@ -146,42 +161,40 @@ pub fn wire_toolbar(tb: &AppToolbar) {
 // ── Menu bar ───────────────────────────────────────────────────
 
 pub fn wire_menu(menu: &anyui::MenuBar) {
-    menu.on_item(|e| {
-        match e.item_id {
-            1 => commands::new_file(),
-            2 => commands::open_folder(),
-            3 => commands::save(),
-            4 => commands::save_all(),
-            5 => anyui::quit(),
-            10..=13 => {}
-            14 => commands::switch_sidebar_view(2),
-            20 => commands::switch_sidebar_view(0),
-            21 => commands::switch_sidebar_view(1),
-            22 => commands::switch_sidebar_view(2),
-            23 => commands::switch_sidebar_view(3),
-            24 => commands::switch_sidebar_view(4),
-            25 => commands::switch_sidebar_view(6),
-            26 => app().output.show_output(),
-            27 => app().output.show_problems(),
-            28 => app().output.show_terminal(),
-            30 => commands::build(),
-            31 => commands::run(),
-            32 => commands::test(),
-            33 => commands::check(),
-            34 => commands::stop(),
-            35 => commands::clean(),
-            40 => commands::about(),
-            41 => app().command_palette.show_commands(),
-            50 => commands::switch_sidebar_view(5),
-            51 => commands::ai_action(ai::CodeAction::Explain),
-            52 => commands::ai_action(ai::CodeAction::Refactor),
-            53 => commands::ai_action(ai::CodeAction::Fix),
-            54 => commands::ai_action(ai::CodeAction::Generate),
-            55 => commands::ai_action(ai::CodeAction::Test),
-            56 => commands::ai_action(ai::CodeAction::Review),
-            57 => commands::ai_settings(),
-            _ => {}
-        }
+    menu.on_item(|e| match e.item_id {
+        1 => commands::new_file(),
+        2 => commands::open_folder(),
+        3 => commands::save(),
+        4 => commands::save_all(),
+        5 => anyui::quit(),
+        10..=13 => {}
+        14 => commands::switch_sidebar_view(2),
+        20 => commands::switch_sidebar_view(0),
+        21 => commands::switch_sidebar_view(1),
+        22 => commands::switch_sidebar_view(2),
+        23 => commands::switch_sidebar_view(3),
+        24 => commands::switch_sidebar_view(4),
+        25 => commands::switch_sidebar_view(6),
+        26 => app().output.show_output(),
+        27 => app().output.show_problems(),
+        28 => app().output.show_terminal(),
+        30 => commands::build(),
+        31 => commands::run(),
+        32 => commands::test(),
+        33 => commands::check(),
+        34 => commands::stop(),
+        35 => commands::clean(),
+        40 => commands::about(),
+        41 => app().command_palette.show_commands(),
+        50 => commands::switch_sidebar_view(5),
+        51 => commands::ai_action(ai::CodeAction::Explain),
+        52 => commands::ai_action(ai::CodeAction::Refactor),
+        53 => commands::ai_action(ai::CodeAction::Fix),
+        54 => commands::ai_action(ai::CodeAction::Generate),
+        55 => commands::ai_action(ai::CodeAction::Test),
+        56 => commands::ai_action(ai::CodeAction::Review),
+        57 => commands::ai_settings(),
+        _ => {}
     });
 }
 
@@ -286,8 +299,14 @@ pub fn wire_sidebar() {
 // ── Search panel ───────────────────────────────────────────────
 
 pub fn wire_search_panel() {
-    app().search_panel.btn_search.on_click(|_| commands::search_in_project());
-    app().search_panel.search_field.on_submit(|_| commands::search_in_project());
+    app()
+        .search_panel
+        .btn_search
+        .on_click(|_| commands::search_in_project());
+    app()
+        .search_panel
+        .search_field
+        .on_submit(|_| commands::search_in_project());
 
     app().search_panel.results_tree.on_selection_changed(|e| {
         let s = app();
@@ -351,14 +370,35 @@ pub fn wire_symbols_panel() {
 
 pub fn wire_ai_panel() {
     app().ai_panel.btn_send.on_click(|_| commands::ai_chat());
-    app().ai_panel.input_field.on_submit(|_| commands::ai_chat());
+    app()
+        .ai_panel
+        .input_field
+        .on_submit(|_| commands::ai_chat());
 
-    app().ai_panel.btn_explain.on_click(|_| commands::ai_action(ai::CodeAction::Explain));
-    app().ai_panel.btn_refactor.on_click(|_| commands::ai_action(ai::CodeAction::Refactor));
-    app().ai_panel.btn_fix.on_click(|_| commands::ai_action(ai::CodeAction::Fix));
-    app().ai_panel.btn_generate.on_click(|_| commands::ai_action(ai::CodeAction::Generate));
-    app().ai_panel.btn_test.on_click(|_| commands::ai_action(ai::CodeAction::Test));
-    app().ai_panel.btn_review.on_click(|_| commands::ai_action(ai::CodeAction::Review));
+    app()
+        .ai_panel
+        .btn_explain
+        .on_click(|_| commands::ai_action(ai::CodeAction::Explain));
+    app()
+        .ai_panel
+        .btn_refactor
+        .on_click(|_| commands::ai_action(ai::CodeAction::Refactor));
+    app()
+        .ai_panel
+        .btn_fix
+        .on_click(|_| commands::ai_action(ai::CodeAction::Fix));
+    app()
+        .ai_panel
+        .btn_generate
+        .on_click(|_| commands::ai_action(ai::CodeAction::Generate));
+    app()
+        .ai_panel
+        .btn_test
+        .on_click(|_| commands::ai_action(ai::CodeAction::Test));
+    app()
+        .ai_panel
+        .btn_review
+        .on_click(|_| commands::ai_action(ai::CodeAction::Review));
 
     app().ai_panel.btn_clear.on_click(|_| {
         let s = app();
@@ -366,7 +406,10 @@ pub fn wire_ai_panel() {
         s.ai_panel.clear_chat();
     });
 
-    app().ai_panel.btn_settings.on_click(|_| commands::ai_settings());
+    app()
+        .ai_panel
+        .btn_settings
+        .on_click(|_| commands::ai_settings());
 }
 
 // ── Extensions panel ───────────────────────────────────────────
@@ -392,7 +435,7 @@ pub fn wire_extensions_panel() {
 pub fn wire_problems_panel() {
     app().problems_panel.tree.on_selection_changed(|e| {
         let s = app();
-        if let Some((file_path, line)) = s.problems_panel.location_for_node(e.index) {
+        if let Some((file_path, line, column)) = s.problems_panel.location_for_node(e.index) {
             let owned = String::from(file_path);
             if !owned.is_empty() {
                 let full = if owned.starts_with('/') {
@@ -407,7 +450,7 @@ pub fn wire_problems_panel() {
                 if line > 0 {
                     let s = app();
                     if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
-                        editor.set_cursor(line.saturating_sub(1), 0);
+                        editor.set_cursor(line.saturating_sub(1), column.saturating_sub(1));
                         editor.ensure_line_visible(line.saturating_sub(1));
                     }
                 }
@@ -431,11 +474,16 @@ pub fn wire_git_panel() {
         }
     });
 
-    app().git_panel.btn_refresh.on_click(|_| crate::trigger_git_refresh());
+    app()
+        .git_panel
+        .btn_refresh
+        .on_click(|_| crate::trigger_git_refresh());
 
     app().git_panel.btn_stage_all.on_click(|_| {
         let s = app();
-        if s.git_process.is_some() { return; }
+        if s.git_process.is_some() {
+            return;
+        }
         if let Some(ref proj) = s.current_project {
             anyos_std::fs::chdir(&proj.root);
             s.git_process = git::GitProcess::spawn(&s.config.git_path, "add -A");
@@ -445,15 +493,21 @@ pub fn wire_git_panel() {
 
     app().git_panel.btn_commit.on_click(|_| {
         let s = app();
-        if s.git_process.is_some() { return; }
+        if s.git_process.is_some() {
+            return;
+        }
         let mut msg_buf = [0u8; 512];
         let len = s.git_panel.commit_field.get_text(&mut msg_buf);
-        if len == 0 { return; }
+        if len == 0 {
+            return;
+        }
         let msg = match core::str::from_utf8(&msg_buf[..len as usize]) {
             Ok(m) => m,
             Err(_) => return,
         };
-        if msg.trim().is_empty() { return; }
+        if msg.trim().is_empty() {
+            return;
+        }
         if let Some(ref proj) = s.current_project {
             let args = format!("commit -m \"{}\"", msg.trim());
             anyos_std::fs::chdir(&proj.root);
@@ -465,7 +519,9 @@ pub fn wire_git_panel() {
 
     app().git_panel.btn_push.on_click(|_| {
         let s = app();
-        if s.git_process.is_some() { return; }
+        if s.git_process.is_some() {
+            return;
+        }
         if let Some(ref proj) = s.current_project {
             anyos_std::fs::chdir(&proj.root);
             s.git_process = git::GitProcess::spawn(&s.config.git_path, "push");
@@ -477,7 +533,9 @@ pub fn wire_git_panel() {
 
     app().git_panel.btn_pull.on_click(|_| {
         let s = app();
-        if s.git_process.is_some() { return; }
+        if s.git_process.is_some() {
+            return;
+        }
         if let Some(ref proj) = s.current_project {
             anyos_std::fs::chdir(&proj.root);
             s.git_process = git::GitProcess::spawn(&s.config.git_path, "pull");
@@ -528,7 +586,8 @@ pub fn wire_editor_text_changed(editor_index: usize) {
         editor.on_text_changed(move |_| {
             let s = app();
             s.file_mgr.mark_modified(editor_index);
-            s.editor_view.update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
+            s.editor_view
+                .update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
             if editor_index == s.file_mgr.active {
                 commands::update_status();
                 commands::refresh_symbols();
@@ -536,6 +595,7 @@ pub fn wire_editor_text_changed(editor_index: usize) {
             if s.config.auto_save {
                 commands::autosave_editor(editor_index);
             }
+            commands::schedule_live_check(editor_index);
         });
     }
 }
@@ -543,10 +603,22 @@ pub fn wire_editor_text_changed(editor_index: usize) {
 // ── Welcome tab ────────────────────────────────────────────────
 
 pub fn wire_welcome_tab() {
-    app().welcome.btn_new_file.on_click(|_| commands::new_file());
-    app().welcome.btn_open_folder.on_click(|_| commands::open_folder());
-    app().welcome.btn_open_recent.on_click(|_| commands::show_recent_projects());
-    app().welcome.btn_ai_setup.on_click(|_| commands::ai_settings());
+    app()
+        .welcome
+        .btn_new_file
+        .on_click(|_| commands::new_file());
+    app()
+        .welcome
+        .btn_open_folder
+        .on_click(|_| commands::open_folder());
+    app()
+        .welcome
+        .btn_open_recent
+        .on_click(|_| commands::show_recent_projects());
+    app()
+        .welcome
+        .btn_ai_setup
+        .on_click(|_| commands::ai_settings());
 }
 
 // ── Command palette ────────────────────────────────────────────

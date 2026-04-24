@@ -19,13 +19,15 @@ mod util;
 
 use alloc::format;
 use alloc::string::String;
-use libanyui_client as anyui;
 use anyui::Widget;
+use libanyui_client as anyui;
 
 use crate::logic::{ai, build, config, diagnostics, file_manager, git, plugin, project, tasks};
-use crate::ui::{activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel,
-                git_panel, output_panel, problems_panel, run_panel, search_panel, sidebar,
-                splash, status_bar, symbols_panel, toolbar, welcome_tab};
+use crate::ui::{
+    activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel, git_panel,
+    output_panel, problems_panel, run_panel, search_panel, sidebar, splash, status_bar,
+    symbols_panel, toolbar, welcome_tab,
+};
 use crate::util::path;
 
 // ════════════════════════════════════════════════════════════════
@@ -49,6 +51,17 @@ struct AppState {
     build_rules: build::BuildRules,
     build_timer_id: u32,
     build_output_buffer: String,
+
+    // Live analysis
+    live_check_process: Option<build::BuildProcess>,
+    live_check_timer_id: u32,
+    live_check_debounce_ticks: u32,
+    live_check_pending_editor: Option<usize>,
+    live_check_pending_version: u32,
+    live_check_running_file: String,
+    live_check_running_version: u32,
+    live_check_output_buffer: String,
+    live_check_label: String,
 
     // Git
     git_state: git::GitState,
@@ -265,6 +278,15 @@ fn build_and_run(
             build_rules,
             build_timer_id: 0,
             build_output_buffer: String::new(),
+            live_check_process: None,
+            live_check_timer_id: 0,
+            live_check_debounce_ticks: 0,
+            live_check_pending_editor: None,
+            live_check_pending_version: 0,
+            live_check_running_file: String::new(),
+            live_check_running_version: 0,
+            live_check_output_buffer: String::new(),
+            live_check_label: String::new(),
             git_state,
             git_process: None,
             git_pending_op: None,
@@ -294,7 +316,9 @@ fn build_and_run(
     if let Some(ref proj) = app().current_project {
         app().config.push_recent_project(&proj.root);
         app().config.save();
-        app().status.set_project_type(proj.project_type.display_name());
+        app()
+            .status
+            .set_project_type(proj.project_type.display_name());
         app().output.start_shell(&proj.root);
     } else {
         app().status.set_project_type("");
@@ -303,58 +327,58 @@ fn build_and_run(
     // ── Menu bar ──
     let mut mb = anyui::MenuBarBuilder::new()
         .menu(t("File"))
-            .item(1, t("New"), 0)
-            .item(2, t("Open Folder..."), 0)
-            .separator()
-            .item(3, t("Save"), 0)
-            .item(4, t("Save All"), 0)
-            .separator()
-            .item(5, t("Quit"), 0)
+        .item(1, t("New"), 0)
+        .item(2, t("Open Folder..."), 0)
+        .separator()
+        .item(3, t("Save"), 0)
+        .item(4, t("Save All"), 0)
+        .separator()
+        .item(5, t("Quit"), 0)
         .end_menu()
         .menu(t("Edit"))
-            .item(10, t("Cut"), 0)
-            .item(11, t("Copy"), 0)
-            .item(12, t("Paste"), 0)
-            .separator()
-            .item(13, t("Select All"), 0)
-            .item(14, t("Find in Files..."), 0)
+        .item(10, t("Cut"), 0)
+        .item(11, t("Copy"), 0)
+        .item(12, t("Paste"), 0)
+        .separator()
+        .item(13, t("Select All"), 0)
+        .item(14, t("Find in Files..."), 0)
         .end_menu()
         .menu(t("View"))
-            .item(20, t("Explorer"), 0)
-            .item(21, t("Source Control"), 0)
-            .item(22, t("Search"), 0)
-            .item(23, t("Run and Debug"), 0)
-            .item(24, t("Outline"), 0)
-            .item(25, t("Extensions"), 0)
-            .separator()
-            .item(26, t("Output"), 0)
-            .item(27, t("Problems"), 0)
-            .item(28, t("Terminal"), 0)
+        .item(20, t("Explorer"), 0)
+        .item(21, t("Source Control"), 0)
+        .item(22, t("Search"), 0)
+        .item(23, t("Run and Debug"), 0)
+        .item(24, t("Outline"), 0)
+        .item(25, t("Extensions"), 0)
+        .separator()
+        .item(26, t("Output"), 0)
+        .item(27, t("Problems"), 0)
+        .item(28, t("Terminal"), 0)
         .end_menu()
         .menu(t("Build"))
-            .item(30, t("Build"), 0)
-            .item(31, t("Run"), 0)
-            .item(32, t("Test"), 0)
-            .item(33, t("Check"), 0)
-            .separator()
-            .item(34, t("Stop"), 0)
-            .item(35, t("Clean"), 0)
+        .item(30, t("Build"), 0)
+        .item(31, t("Run"), 0)
+        .item(32, t("Test"), 0)
+        .item(33, t("Check"), 0)
+        .separator()
+        .item(34, t("Stop"), 0)
+        .item(35, t("Clean"), 0)
         .end_menu()
         .menu(t("AI"))
-            .item(50, t("AI Assistant"), 0)
-            .separator()
-            .item(51, t("Explain Code"), 0)
-            .item(52, t("Refactor Code"), 0)
-            .item(53, t("Fix Code"), 0)
-            .item(54, t("Generate Code"), 0)
-            .item(55, t("Generate Tests"), 0)
-            .item(56, t("Review Code"), 0)
-            .separator()
-            .item(57, t("AI Settings..."), 0)
+        .item(50, t("AI Assistant"), 0)
+        .separator()
+        .item(51, t("Explain Code"), 0)
+        .item(52, t("Refactor Code"), 0)
+        .item(53, t("Fix Code"), 0)
+        .item(54, t("Generate Code"), 0)
+        .item(55, t("Generate Tests"), 0)
+        .item(56, t("Review Code"), 0)
+        .separator()
+        .item(57, t("AI Settings..."), 0)
         .end_menu()
         .menu(t("Help"))
-            .item(40, t("About anyOS Code"), 0)
-            .item(41, t("Command Palette"), 0)
+        .item(40, t("About anyOS Code"), 0)
+        .item(41, t("Command Palette"), 0)
         .end_menu();
     let menu_data = mb.build();
     let menu = anyui::MenuBar::set(win.id(), menu_data);
@@ -452,10 +476,8 @@ fn poll_build_output() {
 
             // Parse diagnostics
             s.diagnostics.parse_output(&s.build_output_buffer);
-            for line in s.build_output_buffer.split('\n') {
-                diagnostics::try_parse_location(line, &mut s.diagnostics.diagnostics);
-            }
             s.problems_panel.update(&s.diagnostics);
+            logic::commands::refresh_editor_diagnostics();
             logic::commands::update_status();
 
             if s.diagnostics.error_count() > 0 {
@@ -468,6 +490,29 @@ fn poll_build_output() {
     } else {
         stop_build_timer();
     }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Live analysis timer
+// ════════════════════════════════════════════════════════════════
+
+pub fn start_live_check_timer() {
+    let s = app();
+    if s.live_check_timer_id == 0 {
+        s.live_check_timer_id = anyui::set_timer(250, poll_live_check);
+    }
+}
+
+pub fn stop_live_check_timer() {
+    let s = app();
+    if s.live_check_timer_id != 0 {
+        anyui::kill_timer(s.live_check_timer_id);
+        s.live_check_timer_id = 0;
+    }
+}
+
+fn poll_live_check() {
+    logic::commands::poll_live_check();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -502,9 +547,8 @@ fn poll_git() {
                     s.status.set_branch(&s.git_state.branch);
                     if let Some(ref proj) = s.current_project {
                         anyos_std::fs::chdir(&proj.root);
-                        s.git_process = git::GitProcess::spawn(
-                            &s.config.git_path, "status --porcelain",
-                        );
+                        s.git_process =
+                            git::GitProcess::spawn(&s.config.git_path, "status --porcelain");
                         s.git_pending_op = Some(git::GitOp::Status);
                     }
                 }

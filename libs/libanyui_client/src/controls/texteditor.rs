@@ -1,5 +1,5 @@
-use crate::{Control, Widget, lib, KIND_TEXT_EDITOR, KeyEvent, get_key_info, EVENT_KEY};
 use crate::events;
+use crate::{get_key_info, lib, Control, KeyEvent, Widget, EVENT_KEY, KIND_TEXT_EDITOR};
 
 leaf_control!(TextEditor, KIND_TEXT_EDITOR);
 
@@ -8,7 +8,9 @@ impl TextEditor {
     pub fn new(w: u32, h: u32) -> Self {
         let id = (lib().create_control)(KIND_TEXT_EDITOR, core::ptr::null(), 0);
         (lib().set_size)(id, w, h);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Create a TextEditor and load text from a file.
@@ -129,6 +131,32 @@ impl TextEditor {
     /// Remove all line highlights.
     pub fn clear_highlights(&self) {
         (lib().texteditor_clear_highlights)(self.ctrl.id);
+    }
+
+    /// Add a diagnostic marker. Coordinates are zero-based.
+    ///
+    /// Severity: 0=error, 1=warning, 2=info, 3=hint.
+    pub fn add_diagnostic(
+        &self,
+        line: u32,
+        column: u32,
+        end_line: u32,
+        end_column: u32,
+        severity: u32,
+    ) {
+        (lib().texteditor_add_diagnostic)(
+            self.ctrl.id,
+            line,
+            column,
+            end_line,
+            end_column,
+            severity,
+        );
+    }
+
+    /// Remove all diagnostic markers from this editor.
+    pub fn clear_diagnostics(&self) {
+        (lib().texteditor_clear_diagnostics)(self.ctrl.id);
     }
 
     /// Set read-only mode. When enabled, text cannot be edited

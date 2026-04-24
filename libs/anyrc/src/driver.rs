@@ -187,7 +187,16 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     for body in &mir_bodies {
         let result = check_borrows(body, &interner, &typeck_result.struct_defs);
         if !result.errors.is_empty() {
-            return Err(result.errors);
+            let fn_name = interner.resolve(body.name);
+            let errors = result
+                .errors
+                .into_iter()
+                .map(|mut err| {
+                    err.message = format!("in {}: {}", fn_name, err.message);
+                    err
+                })
+                .collect();
+            return Err(errors);
         }
     }
 

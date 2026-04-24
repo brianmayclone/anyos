@@ -8,6 +8,7 @@ pub struct OpenFileData {
     pub path: String,
     pub modified: bool,
     pub is_untitled: bool,
+    pub version: u32,
 }
 
 /// Manages the list of open files and the active tab index.
@@ -37,6 +38,7 @@ impl FileManager {
             path: String::from(file_path),
             modified: false,
             is_untitled: false,
+            version: 1,
         });
         self.files.len() - 1
     }
@@ -50,6 +52,7 @@ impl FileManager {
             path: p.clone(),
             modified: false,
             is_untitled: true,
+            version: 1,
         });
         (idx, p)
     }
@@ -78,6 +81,7 @@ impl FileManager {
     pub fn mark_modified(&mut self, index: usize) {
         if let Some(f) = self.files.get_mut(index) {
             f.modified = true;
+            f.version = f.version.wrapping_add(1).max(1);
         }
     }
 

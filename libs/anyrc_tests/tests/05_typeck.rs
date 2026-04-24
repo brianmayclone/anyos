@@ -419,6 +419,169 @@ fn proc_macro2_style_wrapper_from_overloads_typecheck() {
 }
 
 #[test]
+fn raw_pointer_add_result_can_initialize_local() {
+    assert_type_ok(r#"
+        struct Header {
+            buckets: *const u32,
+        }
+
+        fn f(hash_ptr: *const u32) -> Header {
+            let buckets = unsafe { hash_ptr.add(2) };
+            Header { buckets }
+        }
+    "#);
+}
+
+#[test]
+fn referenced_raw_struct_array_field_can_be_indexed() {
+    assert_type_ok(r#"
+        struct Elf64Ehdr {
+            e_ident: [u8; 16],
+        }
+
+        fn magic(base: u64) -> bool {
+            let ehdr = unsafe { &*(base as *const Elf64Ehdr) };
+            ehdr.e_ident[0] == 0x7F
+                || ehdr.e_ident[1] == b'E'
+                || ehdr.e_ident[2] == b'L'
+                || ehdr.e_ident[3] == b'F'
+        }
+    "#);
+}
+
+#[test]
+fn str_as_bytes_matches_slice_parameter_after_pointer_add() {
+    assert_type_ok(r#"
+        struct Elf64Sym {
+            st_name: u32,
+        }
+
+        struct Handle {
+            strtab: *const u8,
+        }
+
+        fn cstr_eq(cstr: *const u8, name: &[u8]) -> bool {
+            let _ = cstr;
+            let _ = name;
+            true
+        }
+
+        fn probe(handle: &Handle, sym: &Elf64Sym, name: &str) -> bool {
+            unsafe { cstr_eq(handle.strtab.add(sym.st_name as usize), name.as_bytes()) }
+        }
+    "#);
+}
+
+#[test]
+fn builtin_dll_exports_generated_loader_typechecks() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod mem {
+                pub fn transmute_copy<T, U>(src: &T) -> U { loop {} }
+            }
+        }
+
+        mod anyos_std {
+            pub mod dll {
+                pub fn dll_load(path: &str) -> usize {
+                    let _ = path;
+                    0
+                }
+            }
+        }
+
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        impl<T> Option<T> {
+            fn as_ref(&self) -> Option<&T> { loop {} }
+        }
+
+        impl u64 {
+            const MAX: u64 = 0;
+        }
+
+        dynlink::dll_exports! {
+            lib_path: "/Libraries/libm.so",
+            lib_struct: MathLib,
+            symbols: {
+                math_sqrt(x: f64) -> f64,
+            }
+        }
+    "#);
+}
+
+#[test]
+fn slice_iter_enumerate_binds_index_and_referenced_item() {
+    assert_type_ok(r#"
+        fn sum(bytes: &[u8]) -> usize {
+            let mut out: usize = 0;
+            for (i, &b) in bytes.iter().enumerate() {
+                out = out + i + b as usize;
+            }
+            out
+        }
+    "#);
+}
+
+#[test]
+fn for_loop_over_mut_vec_reference_binds_mut_referenced_tuple_fields() {
+    assert_type_ok(r#"
+        struct String;
+
+        impl String {
+            fn from(s: &str) -> String {
+                let _ = s;
+                String
+            }
+        }
+
+        fn set(attrs: &mut Vec<(String, String)>, name: &str, value: &str) {
+            for (k, v) in attrs {
+                if k == name {
+                    *v = String::from(value);
+                    return;
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn core_index_impl_supplies_index_expression_output() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod ops {
+                pub trait Index<Idx> {
+                    type Output;
+                    fn index(&self, index: Idx) -> &Self::Output;
+                }
+            }
+        }
+
+        struct Value;
+
+        impl core::ops::Index<&str> for Value {
+            type Output = Value;
+            fn index(&self, key: &str) -> &Value {
+                let _ = key;
+                self
+            }
+        }
+
+        impl Value {
+            fn as_bool(&self) -> bool { true }
+        }
+
+        fn get(v: Value) -> bool {
+            v["enabled"].as_bool()
+        }
+    "#);
+}
+
+#[test]
 fn root_unqualified_types_do_not_collide_with_nested_leaf_names() {
     assert_type_ok(r#"
         mod fallback {
@@ -626,5 +789,28 @@ fn infer_enum_variant() {
     assert_type_ok(r#"
         enum Color { Red, Green, Blue }
         fn main() { let c = Color::Red; }
+    "#);
+}
+
+#[test]
+fn block_like_statement_does_not_absorb_following_deref_expr() {
+    assert_type_ok(r#"
+        unsafe fn cstr_eq_sym(strtab: *const u8, offset: usize, name: &[u8]) -> bool {
+            let s = strtab.add(offset);
+            for (i, &b) in name.iter().enumerate() {
+                if *s.add(i) != b { return false; }
+            }
+            *s.add(name.len()) == 0
+        }
+    "#);
+}
+
+#[test]
+fn vec_new_infers_element_type_through_slice_coercion() {
+    assert_type_ok(r#"
+        fn main() {
+            let data = Vec::new();
+            let _text = core::str::from_utf8(&data);
+        }
     "#);
 }

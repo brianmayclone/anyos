@@ -11,6 +11,9 @@ pub struct Parser<'a> {
     interner: &'a mut Interner,
     /// When true, `{` starts a block, not a struct literal (if/while/match/for conditions)
     no_struct_literal: bool,
+    /// Statement parsing uses this to stop after block-like expressions before
+    /// a following token that starts the next statement (for example `} *ptr`).
+    stop_stmt_after_block_expr: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -31,6 +34,7 @@ impl<'a> Parser<'a> {
             prev_span: Span::dummy(),
             interner,
             no_struct_literal: false,
+            stop_stmt_after_block_expr: false,
         }
     }
 
@@ -236,6 +240,11 @@ impl<'a> Parser<'a> {
 
     fn parse_expr_bp(&mut self, min_bp: u8) -> Expr {
         let start = self.current().span;
+        let stmt_boundary = self.stop_stmt_after_block_expr && min_bp == 0;
+        let old_stop_stmt_after_block_expr = self.stop_stmt_after_block_expr;
+        if stmt_boundary {
+            self.stop_stmt_after_block_expr = false;
+        }
         let mut lhs = self.parse_prefix_expr();
 
         loop {
@@ -268,6 +277,9 @@ impl<'a> Parser<'a> {
 
             // Infix operators
             if let Some((l_bp, r_bp, op)) = self.infix_bp() {
+                if stmt_boundary && self.expr_can_end_stmt_without_semicolon(&lhs) {
+                    break;
+                }
                 if l_bp < min_bp {
                     break;
                 }
@@ -297,6 +309,7 @@ impl<'a> Parser<'a> {
             break;
         }
 
+        self.stop_stmt_after_block_expr = old_stop_stmt_after_block_expr;
         lhs
     }
 
@@ -1201,7 +1214,10 @@ impl<'a> Parser<'a> {
         }
 
         // Expression statement
+        let old_stop_stmt_after_block_expr = self.stop_stmt_after_block_expr;
+        self.stop_stmt_after_block_expr = true;
         let expr = self.parse_expr();
+        self.stop_stmt_after_block_expr = old_stop_stmt_after_block_expr;
         if self.eat_exact(&TokenKind::Semi) {
             Stmt::Semi(expr, self.span_from(start))
         } else if self.expr_can_end_stmt_without_semicolon(&expr) && !self.at_exact(&TokenKind::RBrace) {
