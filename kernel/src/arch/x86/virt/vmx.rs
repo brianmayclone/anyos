@@ -85,6 +85,10 @@ const HOST_GDTR_BASE: u32 = 0x6C0C;
 const HOST_IDTR_BASE: u32 = 0x6C0E;
 const HOST_FS_BASE: u32 = 0x6C06;
 const HOST_GS_BASE: u32 = 0x6C08;
+const HOST_TR_BASE: u32 = 0x6C0A;
+const HOST_IA32_SYSENTER_CS: u32 = 0x4C00;
+const HOST_IA32_SYSENTER_ESP: u32 = 0x6C10;
+const HOST_IA32_SYSENTER_EIP: u32 = 0x6C12;
 
 // Control fields
 const PIN_BASED_VM_EXEC_CONTROL: u32 = 0x4000;
@@ -98,6 +102,7 @@ const VIRTUAL_PROCESSOR_ID: u32 = 0x0000; // VPID (16-bit)
 
 // Exit information
 const VM_EXIT_REASON: u32 = 0x4402;
+const VM_INSTRUCTION_ERROR: u32 = 0x4400;
 const EXIT_QUALIFICATION: u32 = 0x6400;
 const VM_EXIT_INSTR_LEN: u32 = 0x440C;
 const GUEST_PHYSICAL_ADDRESS: u32 = 0x2400;
@@ -161,6 +166,9 @@ const IA32_VMX_TRUE_PROCBASED_CTLS: u32 = 0x48E;
 const IA32_VMX_TRUE_EXIT_CTLS: u32 = 0x48F;
 const IA32_VMX_TRUE_ENTRY_CTLS: u32 = 0x490;
 const IA32_EFER: u32 = 0xC0000080;
+const IA32_SYSENTER_CS: u32 = 0x174;
+const IA32_SYSENTER_ESP: u32 = 0x175;
+const IA32_SYSENTER_EIP: u32 = 0x176;
 
 // ── Per-CPU VMXON state ──────────────────────────────────────────────────
 
@@ -715,13 +723,13 @@ unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64, vpid: u16) {
     core::arch::asm!("mov {:x}, gs", out(reg) gs, options(nostack, nomem));
     core::arch::asm!("str {:x}", out(reg) tr, options(nostack, nomem));
 
-    vmwrite(HOST_CS_SELECTOR, cs as u64);
-    vmwrite(HOST_SS_SELECTOR, ss as u64);
-    vmwrite(HOST_DS_SELECTOR, ds as u64);
-    vmwrite(HOST_ES_SELECTOR, es as u64);
-    vmwrite(HOST_FS_SELECTOR, fs as u64);
-    vmwrite(HOST_GS_SELECTOR, gs as u64);
-    vmwrite(HOST_TR_SELECTOR, tr as u64);
+    vmwrite(HOST_CS_SELECTOR, (cs & !0x7) as u64);
+    vmwrite(HOST_SS_SELECTOR, (ss & !0x7) as u64);
+    vmwrite(HOST_DS_SELECTOR, (ds & !0x7) as u64);
+    vmwrite(HOST_ES_SELECTOR, (es & !0x7) as u64);
+    vmwrite(HOST_FS_SELECTOR, (fs & !0x7) as u64);
+    vmwrite(HOST_GS_SELECTOR, (gs & !0x7) as u64);
+    vmwrite(HOST_TR_SELECTOR, (tr & !0x7) as u64);
 
     vmwrite(HOST_CR0, read_cr0());
     vmwrite(HOST_CR3, read_cr3());
@@ -737,13 +745,32 @@ unsafe fn init_vmcs(ept_root: u64, msr_bitmap_phys: u64, vpid: u16) {
     let idt_base = u64::from_le_bytes([idtr[2], idtr[3], idtr[4], idtr[5], idtr[6], idtr[7], idtr[8], idtr[9]]);
     vmwrite(HOST_GDTR_BASE, gdt_base);
     vmwrite(HOST_IDTR_BASE, idt_base);
+    vmwrite(HOST_TR_BASE, host_tss_base(gdt_base, tr));
 
     vmwrite(HOST_FS_BASE, rdmsr(0xC0000100)); // IA32_FS_BASE
     vmwrite(HOST_GS_BASE, rdmsr(0xC0000101)); // IA32_GS_BASE
+    vmwrite(HOST_IA32_SYSENTER_CS, rdmsr(IA32_SYSENTER_CS));
+    vmwrite(HOST_IA32_SYSENTER_ESP, rdmsr(IA32_SYSENTER_ESP));
+    vmwrite(HOST_IA32_SYSENTER_EIP, rdmsr(IA32_SYSENTER_EIP));
 
     // HOST_RIP and HOST_RSP are set dynamically before each VM-entry
     vmwrite(HOST_RIP, vmx_vmexit_stub as u64);
     vmwrite(HOST_RSP, 0); // Will be patched before VM-entry
+}
+
+unsafe fn host_tss_base(gdt_base: u64, tr: u16) -> u64 {
+    let selector_offset = (tr & !0x7) as usize;
+    if selector_offset == 0 {
+        return 0;
+    }
+
+    let desc = (gdt_base as *const u8).add(selector_offset);
+    let base_low = core::ptr::read_unaligned(desc.add(2) as *const u16) as u64;
+    let base_mid = core::ptr::read_unaligned(desc.add(4) as *const u8) as u64;
+    let base_high = core::ptr::read_unaligned(desc.add(7) as *const u8) as u64;
+    let base_upper = core::ptr::read_unaligned(desc.add(8) as *const u32) as u64;
+
+    base_low | (base_mid << 16) | (base_high << 24) | (base_upper << 32)
 }
 
 // ── VM-entry/exit assembly ───────────────────────────────────────────────
@@ -1045,8 +1072,29 @@ pub fn vcpu_run(vm_id: u32, vcpu_id: u32) -> Option<VmExitInfo> {
             Some(info)
         } else {
             // VM-entry failure
-            crate::serial_println!("VMX: VM-entry failed for VM {} vCPU {}", vm_id, vcpu_id);
-            None
+            vmptrld(vcpu.vmcs_phys);
+            let instruction_error = vmread(VM_INSTRUCTION_ERROR);
+            let rip = vmread(GUEST_RIP);
+            let cr0 = vmread(GUEST_CR0);
+            let cr4 = vmread(GUEST_CR4);
+            let efer = vmread(GUEST_IA32_EFER);
+            crate::serial_println!(
+                "VMX: VM-entry failed for VM {} vCPU {} err={} rip={:#x} cr0={:#x} cr4={:#x} efer={:#x}",
+                vm_id,
+                vcpu_id,
+                instruction_error,
+                rip,
+                cr0,
+                cr4,
+                efer
+            );
+            vcpu.mp_state = VcpuMpState::Halted;
+            Some(VmExitInfo {
+                reason: super::exit_reason::INVALID_GUEST_STATE,
+                hw_reason: EXIT_REASON_INVALID_GUEST_STATE,
+                qualification: instruction_error,
+                ..Default::default()
+            })
         }
     }
 }

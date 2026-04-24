@@ -260,6 +260,8 @@ fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError>
         poll_e1000_rx(instance, &vcpu)?;
         let mut exit = VmExitInfo::default();
         if vcpu.run(&mut exit).is_err() {
+            instance.halted = true;
+            instance.run_state = VmRunState::Degraded;
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
         if handle_emulated_exit(instance, &vcpu, &exit)? {
@@ -314,6 +316,7 @@ fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>
         poll_e1000_rx(instance, &vcpu)?;
         let mut exit = VmExitInfo::default();
         if vcpu.run(&mut exit).is_err() {
+            instance.halted = true;
             instance.run_state = VmRunState::Degraded;
             return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
@@ -506,7 +509,7 @@ fn seabios_sregs(layout: &crate::boot::SeaBiosLayout) -> GuestSregs {
     const REAL_DATA_AR: u32 = 0x0093;
     const REAL_TSS_AR: u32 = 0x008B;
     const NULL_SEGMENT_AR: u32 = 0x10000;
-    const CR0_RESET: u64 = 0x6000_0010;
+    const CR0_RESET: u64 = 0x6000_0030;
 
     GuestSregs {
         cs_selector: 0xf000,
@@ -1316,7 +1319,7 @@ fn assess_boot_exit(exit: &VmExitInfo) -> ExitAssessment {
             ExitAssessment {
                 ready: false,
                 should_continue: false,
-                halted: false,
+                halted: true,
                 summary: format!(
                     "guest failed to enter stable boot state ({})",
                     describe_exit(exit)
@@ -1357,7 +1360,7 @@ fn assess_runtime_exit(exit: &VmExitInfo) -> RuntimeExitAssessment {
                 exit,
                 "guest entered fatal virtualization state",
                 true,
-                false,
+                true,
             ))
         }
         _ => RuntimeExitAssessment::Record(build_runtime_event(
@@ -1595,7 +1598,7 @@ mod tests {
         assert_eq!(sregs.cs_selector, 0xf000);
         assert_eq!(sregs.cs_base, 0xf0000);
         assert_eq!(sregs.rip, 0xfff0);
-        assert_eq!(sregs.cr0, 0x6000_0010);
+        assert_eq!(sregs.cr0, 0x6000_0030);
         assert_eq!(sregs.efer, 0);
     }
 
