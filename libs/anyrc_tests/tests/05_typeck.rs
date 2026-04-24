@@ -200,6 +200,63 @@ fn binary_ops_autoderef_mixed_primitive_ref_and_value() {
 }
 
 #[test]
+fn impl_generic_params_are_visible_in_method_bodies() {
+    assert_type_ok(r#"
+        trait Add<Rhs> {
+            type Output;
+        }
+
+        struct B0 {}
+        struct UTerm {}
+        struct UInt<U, B> { msb: U, lsb: B }
+
+        impl<U, B> UInt<U, B> {
+            fn new() -> Self {
+                UInt { msb: UTerm, lsb: B0 }
+            }
+        }
+
+        impl<U, B> Add<B0> for UInt<U, B> {
+            type Output = UInt<U, B>;
+
+            fn add(self, _: B0) -> Self::Output {
+                UInt::new()
+            }
+        }
+    "#);
+}
+
+#[test]
+fn self_output_uses_current_impl_associated_type() {
+    assert_type_ok(r#"
+        trait Trait {
+            type Output;
+        }
+
+        struct A {}
+        struct B {}
+        struct X {}
+        struct Y {}
+
+        impl Trait for A {
+            type Output = X;
+
+            fn get(self) -> Self::Output {
+                X {}
+            }
+        }
+
+        impl Trait for B {
+            type Output = Y;
+
+            fn get(self) -> Self::Output {
+                Y {}
+            }
+        }
+    "#);
+}
+
+#[test]
 fn qualified_module_types_do_not_collide_by_leaf_name() {
     assert_type_ok(r#"
         mod fallback {

@@ -923,7 +923,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_qualified_path(&mut self, start: Span) -> QualifiedPath {
-        self.expect_exact(&TokenKind::Lt);
+        self.expect_type_arg_lt();
         let self_ty = self.parse_ty();
         let trait_path = if self.at_kw(Keyword::As) {
             self.bump();
@@ -1626,10 +1626,7 @@ impl<'a> Parser<'a> {
             let p_start = self.current().span;
 
             // C variadics in extern function declarations: `...`.
-            if self.at_exact(&TokenKind::DotDot) && self.peek_kind() == &TokenKind::Dot {
-                self.bump(); // ..
-                self.bump(); // .
-                let _ = self.eat_exact(&TokenKind::Comma);
+            if self.consume_c_variadic_marker() {
                 break;
             }
 
@@ -1754,6 +1751,17 @@ impl<'a> Parser<'a> {
             }
         }
         params
+    }
+
+    fn consume_c_variadic_marker(&mut self) -> bool {
+        if self.at_exact(&TokenKind::DotDot) && self.peek_kind() == &TokenKind::Dot {
+            self.bump(); // ..
+            self.bump(); // .
+            let _ = self.eat_exact(&TokenKind::Comma);
+            true
+        } else {
+            false
+        }
     }
 
     fn parse_struct_def(
@@ -1959,6 +1967,13 @@ impl<'a> Parser<'a> {
         let mut supertraits = Vec::new();
         if self.eat_exact(&TokenKind::Colon) {
             loop {
+                if matches!(self.current().kind, TokenKind::Lifetime(_)) {
+                    self.bump();
+                    if !self.eat_exact(&TokenKind::Plus) {
+                        break;
+                    }
+                    continue;
+                }
                 let b_start = self.current().span;
                 let path = self.parse_path_ty();
                 supertraits.push(TraitBound {
@@ -2359,6 +2374,38 @@ impl<'a> Parser<'a> {
             return Ty::Reference(lifetime, Box::new(ty), mutability, self.span_from(start));
         }
 
+        // `&&T` lexes as a single AndAnd token but is two shared references in type position.
+        if self.at_exact(&TokenKind::AndAnd) {
+            self.bump();
+            let inner_lifetime = if matches!(self.current().kind, TokenKind::Lifetime(_)) {
+                if let TokenKind::Lifetime(sym) = self.bump().kind {
+                    Some(sym)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let inner_mutability = if self.eat_exact(&TokenKind::Kw(Keyword::Mut)) {
+                Mutability::Mut
+            } else {
+                Mutability::Immutable
+            };
+            let inner_ty = self.parse_ty();
+            let inner_ref = Ty::Reference(
+                inner_lifetime,
+                Box::new(inner_ty),
+                inner_mutability,
+                self.span_from(start),
+            );
+            return Ty::Reference(
+                None,
+                Box::new(inner_ref),
+                Mutability::Immutable,
+                self.span_from(start),
+            );
+        }
+
         // Raw pointer: *const T, *mut T
         if self.at_exact(&TokenKind::Star) {
             self.bump();
@@ -2424,6 +2471,9 @@ impl<'a> Parser<'a> {
                     self.expect_exact(&TokenKind::LParen);
                     let mut param_tys = Vec::new();
                     while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
+                        if self.consume_c_variadic_marker() {
+                            break;
+                        }
                         param_tys.push(self.parse_fn_ptr_param_ty());
                         if !self.eat_exact(&TokenKind::Comma) {
                             break;
@@ -2465,6 +2515,9 @@ impl<'a> Parser<'a> {
             self.expect_exact(&TokenKind::LParen);
             let mut param_tys = Vec::new();
             while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
+                if self.consume_c_variadic_marker() {
+                    break;
+                }
                 param_tys.push(self.parse_fn_ptr_param_ty());
                 if !self.eat_exact(&TokenKind::Comma) {
                     break;
@@ -2485,7 +2538,7 @@ impl<'a> Parser<'a> {
             );
         }
 
-        if self.at_exact(&TokenKind::Lt) {
+        if self.at_exact(&TokenKind::Lt) || self.at_exact(&TokenKind::Shl) {
             return Ty::QualifiedPath(self.parse_qualified_path(start));
         }
 
@@ -2638,7 +2691,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_path_segment_type_args(&mut self, ident: Symbol) -> Option<GenericArgs> {
-        if self.at_exact(&TokenKind::Lt) {
+        if self.at_exact(&TokenKind::Lt) || self.at_exact(&TokenKind::Shl) {
             return Some(self.parse_generic_args());
         }
         if self.at_exact(&TokenKind::LParen) && self.is_callable_trait_ident(ident) {
@@ -2781,7 +2834,7 @@ impl<'a> Parser<'a> {
 
     fn parse_generic_args(&mut self) -> GenericArgs {
         let start = self.current().span;
-        self.expect_exact(&TokenKind::Lt);
+        self.expect_type_arg_lt();
         let mut args = Vec::new();
         while !self.at_exact(&TokenKind::Gt) && !self.at_exact(&TokenKind::Eof) {
             if matches!(self.current().kind, TokenKind::Lifetime(_)) {
@@ -2824,6 +2877,20 @@ impl<'a> Parser<'a> {
         GenericArgs {
             args,
             span: self.span_from(start),
+        }
+    }
+
+    fn expect_type_arg_lt(&mut self) {
+        if self.at_exact(&TokenKind::Shl) {
+            let cur = self.pos;
+            let span = self.tokens[cur].span;
+            self.tokens[cur] = Token {
+                kind: TokenKind::Lt,
+                span: Span::new(span.start() + 1, span.end()),
+            };
+            self.prev_span = Span::new(span.start(), span.start() + 1);
+        } else {
+            self.expect_exact(&TokenKind::Lt);
         }
     }
 

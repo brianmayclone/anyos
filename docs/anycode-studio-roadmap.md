@@ -240,6 +240,8 @@ Status:
   Live-Analyse-Neustart und das gezielte Leeren der Problemansicht.
 - Gestartet: Problemnavigation via Command Palette (`Next Problem`/`Previous Problem`)
   springt dateiuebergreifend zu Diagnosepositionen.
+- Gestartet: Problemansicht hat eine IDE-artige Filterleiste fuer alle Probleme,
+  Fehler, Warnungen und die aktive Datei; Navigation respektiert den Filter.
 
 ### Phase 4: Project Model und Build Backends
 

@@ -8,6 +8,7 @@ use crate::logic::{
     ai, build, diagnostics, file_manager, git, language, language_service, live_analysis, project,
     search, symbols, tasks,
 };
+use crate::ui::problems_panel::ProblemFilter;
 use crate::util::path;
 use crate::AppState;
 
@@ -517,6 +518,26 @@ pub fn clear_problems() {
     app().output.show_problems();
 }
 
+pub fn set_problem_filter(filter: ProblemFilter) {
+    {
+        let s = app();
+        s.problems_panel.set_filter(filter);
+        s.status
+            .set_analysis_status(problem_filter_status(filter));
+    }
+    refresh_problem_views();
+    app().output.show_problems();
+}
+
+fn problem_filter_status(filter: ProblemFilter) -> &'static str {
+    match filter {
+        ProblemFilter::All => "Error List: all problems",
+        ProblemFilter::Errors => "Error List: errors",
+        ProblemFilter::Warnings => "Error List: warnings",
+        ProblemFilter::CurrentFile => "Error List: current file",
+    }
+}
+
 pub fn next_problem() {
     navigate_problem(ProblemDirection::Next);
 }
@@ -535,13 +556,19 @@ fn navigate_problem(direction: ProblemDirection) {
     let (targets, active_file, cursor_line, cursor_col) = {
         let s = app();
         let project_root = s.current_project.as_ref().map(|p| p.root.as_str());
+        let filter = s.problems_panel.filter();
+        let active_path = s.file_mgr.active_file().map(|f| f.path.as_str());
         let mut targets = Vec::new();
         for diag in &s.diagnostics.diagnostics {
             if !diag.has_location() {
                 continue;
             }
+            let resolved = resolve_diagnostic_path(&diag.file_path, project_root);
+            if !problem_filter_accepts(filter, diag.severity, &resolved, active_path) {
+                continue;
+            }
             targets.push(ProblemTarget {
-                file_path: resolve_diagnostic_path(&diag.file_path, project_root),
+                file_path: resolved,
                 line: diag.line,
                 column: diag.column,
                 message: diag.message.clone(),
@@ -627,6 +654,22 @@ fn open_problem_target(target: &ProblemTarget) {
         s.output.show_problems();
     }
     update_status();
+}
+
+fn problem_filter_accepts(
+    filter: ProblemFilter,
+    severity: diagnostics::Severity,
+    file_path: &str,
+    active_file: Option<&str>,
+) -> bool {
+    match filter {
+        ProblemFilter::All => true,
+        ProblemFilter::Errors => severity == diagnostics::Severity::Error,
+        ProblemFilter::Warnings => severity == diagnostics::Severity::Warning,
+        ProblemFilter::CurrentFile => active_file
+            .map(|active| file_path == active || path::basename(file_path) == path::basename(active))
+            .unwrap_or(false),
+    }
 }
 
 fn resolve_diagnostic_path(file_path: &str, project_root: Option<&str>) -> String {
@@ -817,6 +860,8 @@ fn finish_external_live_check(output: &str) {
 
 fn refresh_problem_views() {
     let s = app();
+    let active_path = s.file_mgr.active_file().map(|f| f.path.clone());
+    s.problems_panel.set_current_file(active_path.as_deref());
     s.problems_panel.update(&s.diagnostics);
     refresh_editor_diagnostics();
     update_status();

@@ -63,6 +63,14 @@ pub const PRELUDE_TYPES: &[KnownItem] = &[
         full_path: "Into",
     },
     KnownItem {
+        local_name: "AsRef",
+        full_path: "AsRef",
+    },
+    KnownItem {
+        local_name: "AsMut",
+        full_path: "AsMut",
+    },
+    KnownItem {
         local_name: "Iterator",
         full_path: "Iterator",
     },

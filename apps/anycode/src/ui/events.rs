@@ -433,6 +433,23 @@ pub fn wire_extensions_panel() {
 // ── Problems panel ─────────────────────────────────────────────
 
 pub fn wire_problems_panel() {
+    app()
+        .problems_panel
+        .btn_all
+        .on_click(|_| commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::All));
+    app()
+        .problems_panel
+        .btn_errors
+        .on_click(|_| commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Errors));
+    app()
+        .problems_panel
+        .btn_warnings
+        .on_click(|_| commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Warnings));
+    app()
+        .problems_panel
+        .btn_current_file
+        .on_click(|_| commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::CurrentFile));
+
     app().problems_panel.tree.on_selection_changed(|e| {
         let s = app();
         if let Some((file_path, line, column)) = s.problems_panel.location_for_node(e.index) {
@@ -718,6 +735,10 @@ fn execute_palette_command(cmd_id: u32) {
         134 => commands::ai_action(ai::CodeAction::Test),
         135 => commands::ai_action(ai::CodeAction::Review),
         136 => commands::previous_problem(),
+        137 => commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::All),
+        138 => commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Errors),
+        139 => commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Warnings),
+        140 => commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::CurrentFile),
         160 => commands::open_settings(),
         161 => commands::ai_settings(),
         199 => commands::about(),

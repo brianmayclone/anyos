@@ -857,9 +857,21 @@ impl<'a> Resolver<'a> {
     fn resolve_generics(&mut self, generics: &HirGenerics) {
         for param in &generics.params {
             match param {
-                HirGenericParam::Type(name, bounds, default, _) => {
+                HirGenericParam::Type(name, _, _, _) => {
                     let did = self.alloc_synthetic_def_id();
                     self.define(*name, Namespace::Type, did);
+                }
+                HirGenericParam::Lifetime(_, _, _) => {}
+                HirGenericParam::Const(name, _, _) => {
+                    let did = self.alloc_synthetic_def_id();
+                    self.define(*name, Namespace::Value, did);
+                }
+            }
+        }
+
+        for param in &generics.params {
+            match param {
+                HirGenericParam::Type(_, bounds, default, _) => {
                     // Trait bounds are not enforced — resolve them if possible,
                     // but silently ignore unresolved ones.
                     for bound in bounds {
@@ -870,9 +882,7 @@ impl<'a> Resolver<'a> {
                     }
                 }
                 HirGenericParam::Lifetime(_, _, _) => {}
-                HirGenericParam::Const(name, ty, _) => {
-                    let did = self.alloc_synthetic_def_id();
-                    self.define(*name, Namespace::Value, did);
+                HirGenericParam::Const(_, ty, _) => {
                     self.resolve_ty(ty);
                 }
             }

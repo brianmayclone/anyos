@@ -76,6 +76,72 @@ fn parse_extern_c_variadic_function() {
 }
 
 #[test]
+fn parse_c_variadic_function_pointer_type() {
+    let krate = parse(r#"type F = unsafe extern "C" fn(*const c_char, ...) -> c_int;"#);
+    match &krate.items[0] {
+        Item::TypeAlias(alias) => match alias.ty.as_deref() {
+            Some(Ty::FnPtr(params, _, _)) => assert_eq!(params.len(), 1),
+            _ => panic!("expected function pointer type"),
+        },
+        _ => panic!("expected type alias"),
+    }
+}
+
+#[test]
+fn parse_double_reference_type_token() {
+    let krate = parse("type R<T> = &&mut T;");
+    match &krate.items[0] {
+        Item::TypeAlias(alias) => match alias.ty.as_deref() {
+            Some(Ty::Reference(_, inner, Mutability::Immutable, _)) => match inner.as_ref() {
+                Ty::Reference(_, _, Mutability::Mut, _) => {}
+                _ => panic!("expected inner mutable reference"),
+            },
+            _ => panic!("expected outer shared reference"),
+        },
+        _ => panic!("expected type alias"),
+    }
+}
+
+#[test]
+fn parse_nested_qualified_type_arg_with_shl_token() {
+    let krate = parse("type Sum<Ul, Ur> = PInt<<Ul as Add<Ur>>::Output>;");
+    match &krate.items[0] {
+        Item::TypeAlias(alias) => match alias.ty.as_deref() {
+            Some(Ty::Path(path)) => {
+                let args = path.segments[0].args.as_ref().expect("expected args");
+                assert_eq!(args.args.len(), 1);
+            }
+            _ => panic!("expected path type"),
+        },
+        _ => panic!("expected type alias"),
+    }
+}
+
+#[test]
+fn parse_nested_qualified_path_type_with_shl_token() {
+    let krate = parse("type T = <<crate::consts::U4 as Invert>::Output as Invert>::Output;");
+    match &krate.items[0] {
+        Item::TypeAlias(alias) => match alias.ty.as_deref() {
+            Some(Ty::QualifiedPath(qpath)) => match qpath.self_ty.as_ref() {
+                Ty::QualifiedPath(_) => {}
+                _ => panic!("expected nested qualified path"),
+            },
+            _ => panic!("expected qualified path type"),
+        },
+        _ => panic!("expected type alias"),
+    }
+}
+
+#[test]
+fn parse_trait_supertraits_with_lifetime_bound() {
+    let krate = parse("trait Bit: Sealed + Copy + Default + 'static {}");
+    match &krate.items[0] {
+        Item::Trait(trait_def) => assert_eq!(trait_def.supertraits.len(), 3),
+        _ => panic!("expected trait"),
+    }
+}
+
+#[test]
 fn parse_struct() {
     let krate = parse("pub struct Point { pub x: i32, pub y: i32 }");
     match &krate.items[0] {

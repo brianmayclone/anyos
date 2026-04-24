@@ -106,6 +106,41 @@ fn resolve_generic_params() {
 }
 
 #[test]
+fn resolve_forward_generic_param_in_bounds() {
+    assert_resolves(r#"
+        trait Cmp<Rhs> {}
+        trait Unsigned {}
+        struct PInt<U> { n: U }
+        impl<Pl: Cmp<Pr> + Unsigned, Pr: Unsigned> Cmp<PInt<Pr>> for PInt<Pl> {}
+    "#);
+}
+
+#[test]
+fn resolve_core_convert_prelude_traits() {
+    assert_resolves(r#"
+        struct Wrapper<T> { inner: T }
+
+        impl<T, Z> AsRef<T> for Wrapper<Z>
+        where
+            Z: AsRef<T>,
+        {
+            fn as_ref(&self) -> &T {
+                self.inner.as_ref()
+            }
+        }
+
+        impl<T, Z> AsMut<T> for Wrapper<Z>
+        where
+            Z: AsMut<T>,
+        {
+            fn as_mut(&mut self) -> &mut T {
+                self.inner.as_mut()
+            }
+        }
+    "#);
+}
+
+#[test]
 fn resolve_trait_def() {
     assert_resolves("trait Foo { fn foo(&self) -> i32; }");
 }
