@@ -280,7 +280,7 @@ fn cmd_bench(positional: &[&str], features: &[String], target: Option<String>) {
 
 fn cmd_tree(positional: &[&str]) {
     let dir = if positional.is_empty() { "." } else { positional[0] };
-    let nodes = resolve::resolve(dir);
+    let nodes = resolve::resolve(dir, &[]);
     if nodes.is_empty() {
         println!("ccargo: no packages found");
         return;
@@ -307,7 +307,7 @@ fn cmd_fetch(positional: &[&str]) {
     println!("      Fetching dependencies for {}", dir);
     registry::init_cache();
     // Resolve triggers the fetch automatically
-    let nodes = resolve::resolve(dir);
+    let nodes = resolve::resolve(dir, &[]);
     let reg_count = nodes.iter().filter(|n| n.from_registry).count();
     if reg_count > 0 {
         println!("      Fetched {} registry crate(s)", reg_count);
@@ -345,7 +345,7 @@ fn cmd_update(positional: &[&str]) {
 
     // Re-resolve
     registry::init_cache();
-    let nodes = resolve::resolve(dir);
+    let nodes = resolve::resolve(dir, &[]);
     let reg_count = nodes.iter().filter(|n| n.from_registry).count();
     println!("      Updated {} registry crate(s)", reg_count);
 }

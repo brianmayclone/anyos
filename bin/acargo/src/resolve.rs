@@ -24,12 +24,14 @@ pub struct BuildNode {
     pub deps: Vec<usize>,
     /// Whether this crate was fetched from the registry.
     pub from_registry: bool,
+    /// Cargo features active for this crate.
+    pub active_features: Vec<String>,
 }
 
 /// Resolve the full dependency graph starting from a root directory.
 /// Walks all path-based dependencies recursively, and fetches registry
 /// dependencies from crates.io when no path is specified.
-pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
+pub fn resolve(root_dir: &str, root_features: &[String]) -> Vec<BuildNode> {
     let root_dir = fs::absolutize(root_dir);
 
     // Load existing Cargo.lock for version pinning
@@ -38,11 +40,11 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
     let mut nodes: Vec<BuildNode> = Vec::new();
     let mut name_to_idx: HashMap<String, usize> = HashMap::new();
 
-    // BFS queue: (directory, from_registry)
-    let mut queue: Vec<(String, bool)> = Vec::new();
-    queue.push((root_dir.clone(), false));
+    // DFS queue: (directory, from_registry, requested features, default features)
+    let mut queue: Vec<(String, bool, Vec<String>, bool)> = Vec::new();
+    queue.push((root_dir.clone(), false, root_features.to_vec(), true));
 
-    while let Some((dir, from_registry)) = queue.pop() {
+    while let Some((dir, from_registry, requested_features, use_default_features)) = queue.pop() {
         let manifest_path = format!("{}/Cargo.toml", dir);
         let toml_src = match fs::read_file(&manifest_path) {
             Some(s) => s,
@@ -53,10 +55,12 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
         };
         let toml_table = toml::parse(&toml_src);
         let mut mf = manifest::parse(&toml_table);
+        apply_workspace_dependencies(&mut mf, &dir);
         manifest::infer_crate_layout(&mut mf, &dir);
         if dir == root_dir {
             inject_implicit_anyos_stdlibs(&mut mf, &dir);
         }
+        let active_features = active_features_for(&mf, &requested_features, use_default_features);
 
         // Skip if already processed
         if name_to_idx.contains_key(&mf.name) {
@@ -69,14 +73,19 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
 
         // Queue dependencies
         for dep in &mf.dependencies {
+            if !dependency_is_active(dep, &active_features) {
+                continue;
+            }
             if name_to_idx.contains_key(&dep.name) {
                 continue;
             }
+            let dep_requested_features = dep.features.clone();
+            let dep_default_features = dep.default_features;
 
             if let Some(ref dep_path) = dep.path {
                 // Path-based dependency — resolve relative to manifest dir
                 let resolved_dir = fs::resolve_path(&dir, dep_path);
-                queue.push((resolved_dir, false));
+                queue.push((resolved_dir, false, dep_requested_features, dep_default_features));
             } else if let Some(ref version_req) = dep.version {
                 // Registry dependency — fetch from crates.io
                 let actual_name = dep.name.clone();
@@ -96,7 +105,7 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
 
                 match resolved {
                     Some((src_dir, _entry)) => {
-                        queue.push((src_dir, true));
+                        queue.push((src_dir, true, dep_requested_features, dep_default_features));
                     }
                     None => {
                         println!("ccargo: error: failed to resolve `{}` {}", actual_name, version_req);
@@ -112,6 +121,7 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
             src_file,
             deps: Vec::new(),
             from_registry,
+            active_features,
         });
     }
 
@@ -119,6 +129,9 @@ pub fn resolve(root_dir: &str) -> Vec<BuildNode> {
     for i in 0..nodes.len() {
         let mut dep_indices = Vec::new();
         for dep in &nodes[i].manifest.dependencies {
+            if !dependency_is_active(dep, &nodes[i].active_features) {
+                continue;
+            }
             if let Some(&idx) = name_to_idx.get(&dep.name) {
                 dep_indices.push(idx);
             }
@@ -144,6 +157,8 @@ fn inject_implicit_anyos_stdlibs(manifest: &mut Manifest, manifest_dir: &str) {
                 version: None,
                 optional: false,
                 features: Vec::new(),
+                default_features: true,
+                workspace: false,
             });
         }
     }
@@ -159,8 +174,81 @@ fn inject_implicit_anyos_stdlibs(manifest: &mut Manifest, manifest_dir: &str) {
                 version: None,
                 optional: true,
                 features: Vec::new(),
+                default_features: true,
+                workspace: false,
             });
         }
+    }
+}
+
+fn active_features_for(manifest: &Manifest, requested: &[String], use_default_features: bool) -> Vec<String> {
+    let mut requested_with_default = requested.to_vec();
+    if !use_default_features && !requested_with_default.iter().any(|f| f == "__no_default__") {
+        requested_with_default.push(String::from("__no_default__"));
+    }
+    crate::workspace::resolve_features(manifest, &requested_with_default)
+}
+
+fn dependency_is_active(dep: &manifest::Dependency, active_features: &[String]) -> bool {
+    if !dep.optional {
+        return true;
+    }
+    active_features.iter().any(|feature| {
+        feature == &dep.name || feature == &format!("dep:{}", dep.name)
+    })
+}
+
+fn apply_workspace_dependencies(manifest: &mut Manifest, manifest_dir: &str) {
+    let workspace_deps = load_workspace_dependencies(manifest_dir);
+    if workspace_deps.is_empty() {
+        return;
+    }
+    for dep in &mut manifest.dependencies {
+        if !dep.workspace {
+            continue;
+        }
+        let Some(inherited) = workspace_deps.iter().find(|candidate| candidate.name == dep.name) else {
+            continue;
+        };
+        if dep.path.is_none() {
+            dep.path = inherited.path.clone();
+        }
+        if dep.version.is_none() {
+            dep.version = inherited.version.clone();
+        }
+        if dep.features.is_empty() {
+            dep.features = inherited.features.clone();
+        } else {
+            for feature in &inherited.features {
+                if !dep.features.contains(feature) {
+                    dep.features.push(feature.clone());
+                }
+            }
+        }
+        dep.default_features = inherited.default_features && dep.default_features;
+        dep.optional = dep.optional || inherited.optional;
+    }
+}
+
+fn load_workspace_dependencies(start_dir: &str) -> Vec<manifest::Dependency> {
+    let mut current = fs::absolutize(start_dir);
+    loop {
+        let manifest_path = format!("{}/Cargo.toml", current);
+        if let Some(src) = fs::read_file(&manifest_path) {
+            let table = toml::parse(&src);
+            let deps = manifest::parse_workspace_dependencies(&table);
+            if !deps.is_empty() {
+                return deps;
+            }
+        }
+        if current == "/" || current.is_empty() {
+            return Vec::new();
+        }
+        current = match current.rfind('/') {
+            Some(0) => String::from("/"),
+            Some(pos) => String::from(&current[..pos]),
+            None => return Vec::new(),
+        };
     }
 }
 

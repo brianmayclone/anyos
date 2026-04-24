@@ -227,9 +227,118 @@ pub fn fetch_crate(name: &str, version: &Version) -> Option<String> {
 /// Download and extract a crate, returning the path to its source directory.
 /// Convenience wrapper that combines resolve + fetch.
 pub fn get_crate(name: &str, version_req: &str) -> Option<(String, IndexEntry)> {
+    if let Some(resolved) = find_cached_source(name, version_req) {
+        return Some(resolved);
+    }
+
     let entry = resolve_version(name, version_req)?;
     let src_dir = fetch_crate(name, &entry.version)?;
     Some((src_dir, entry))
+}
+
+fn find_cached_source(name: &str, version_req: &str) -> Option<(String, IndexEntry)> {
+    let req = VersionReq::parse(version_req)?;
+    let mut candidates: Vec<(Version, String)> = Vec::new();
+
+    for root in registry_source_roots() {
+        collect_cached_sources(name, &root, &mut candidates);
+
+        for registry_dir in list_dir_names(&root) {
+            let nested = format!("{}/{}", root, registry_dir);
+            if fs::dir_exists(&nested) {
+                collect_cached_sources(name, &nested, &mut candidates);
+            }
+        }
+    }
+
+    let versions: Vec<(Version, bool)> = candidates
+        .iter()
+        .map(|(version, _)| (version.clone(), false))
+        .collect();
+    let best = crate::semver::resolve_best(&versions, &req)?;
+    let src_dir = candidates
+        .into_iter()
+        .find(|(version, _)| *version == best)
+        .map(|(_, path)| path)?;
+
+    Some((src_dir, IndexEntry {
+        name: name.to_string(),
+        version: best,
+        deps: Vec::new(),
+        checksum: String::new(),
+        features: Vec::new(),
+        yanked: false,
+    }))
+}
+
+fn registry_source_roots() -> Vec<String> {
+    let mut roots = vec![SRC_CACHE_DIR.to_string()];
+
+    if let Some(path) = env_var("CCARGO_REGISTRY_SRC") {
+        roots.push(path);
+    }
+    if let Some(home) = env_var("CARGO_HOME") {
+        roots.push(format!("{}/registry/src", home));
+    }
+    if let Some(home) = env_var("HOME") {
+        roots.push(format!("{}/.cargo/registry/src", home));
+    }
+
+    roots
+}
+
+fn collect_cached_sources(name: &str, root: &str, out: &mut Vec<(Version, String)>) {
+    let prefix = format!("{}-", name);
+    for entry in list_dir_names(root) {
+        if !entry.starts_with(&prefix) {
+            continue;
+        }
+        let version_str = &entry[prefix.len()..];
+        let Some(version) = Version::parse(version_str) else {
+            continue;
+        };
+        let path = format!("{}/{}", root, entry);
+        if fs::file_exists(&format!("{}/Cargo.toml", path)) {
+            out.push((version, path));
+        }
+    }
+}
+
+fn list_dir_names(path: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut buf = [0u8; 64 * 256];
+    let count = anyos_std::fs::readdir(path, &mut buf);
+    if count == u32::MAX {
+        return names;
+    }
+
+    let entry_size = 64;
+    for i in 0..count as usize {
+        let off = i * entry_size;
+        let name_len = buf[off + 1] as usize;
+        if name_len == 0 || off + 8 + name_len > buf.len() {
+            continue;
+        }
+        let name_bytes = &buf[off + 8..off + 8 + name_len];
+        let Ok(name) = core::str::from_utf8(name_bytes) else {
+            continue;
+        };
+        if name != "." && name != ".." {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+fn env_var(key: &str) -> Option<String> {
+    let mut buf = [0u8; 4096];
+    let len = anyos_std::env::get(key, &mut buf);
+    if len == u32::MAX || len as usize > buf.len() {
+        return None;
+    }
+    core::str::from_utf8(&buf[..len as usize])
+        .ok()
+        .map(|value| value.to_string())
 }
 
 // ── Index JSON parsing ──

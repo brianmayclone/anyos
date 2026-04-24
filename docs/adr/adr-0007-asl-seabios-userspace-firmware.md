@@ -28,8 +28,9 @@ ASL fuehrt ein separates Kernel-Profil `seabios-x86_64` ein. Dieses Profil
 bootet nicht ueber einen Kernel-Loader im Kernel, sondern ueber `asld` als
 Userspace-VMM:
 
-- SeaBIOS liegt als Host-Artefakt unter
-  `/System/var/asl/firmware/seabios.bin`
+- SeaBIOS wird im Quellbaum unter `third_party/seabios/seabios.bin`
+  versioniert und vom Build nach `/System/var/asl/firmware/seabios.bin`
+  installiert
 - `asld` prueft dieses Artefakt im Bootplan und meldet es in der Diagnose als
   `boot_firmware`
 - `asld` kopiert das Firmware-Image an das obere Ende des ersten MiB
@@ -69,7 +70,8 @@ aslctl create <name> <image-ref> <owner> --kernel-profile seabios-x86_64
 
 ### Follow-up
 
-- SeaBIOS-Artefakt in das anyOS Packaging aufnehmen
+- SeaBIOS-Artefakt bei Updates bewusst gegen eine neue vendored Version
+  tauschen und die Herkunft dokumentieren
 - Boot-Disk oder virtio-blk/aehnlichen Blockpfad fuer firmwarebasierte Boots
   anbinden
 - Netzwerk- und Konsolenpfade fuer den firmwarebasierten Bootpfad vollstaendig

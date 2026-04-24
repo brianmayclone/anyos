@@ -33,6 +33,8 @@ pub struct Dependency {
     pub version: Option<String>,
     pub optional: bool,
     pub features: Vec<String>,
+    pub default_features: bool,
+    pub workspace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,6 +146,20 @@ fn parse_dependencies(toml: &Table) -> Vec<Dependency> {
     deps
 }
 
+pub fn parse_workspace_dependencies(toml: &Table) -> Vec<Dependency> {
+    let mut deps = Vec::new();
+    let Some(workspace) = toml.get("workspace").and_then(|v| v.as_table()) else {
+        return deps;
+    };
+    let Some(dep_table) = workspace.get("dependencies").and_then(|v| v.as_table()) else {
+        return deps;
+    };
+    for (dep_name, dep_val) in dep_table.iter() {
+        deps.push(parse_single_dep(dep_name, dep_val));
+    }
+    deps
+}
+
 fn parse_single_dep(name: &str, val: &Value) -> Dependency {
     match val {
         Value::String(v) => Dependency {
@@ -152,11 +168,19 @@ fn parse_single_dep(name: &str, val: &Value) -> Dependency {
             version: Some(v.clone()),
             optional: false,
             features: Vec::new(),
+            default_features: true,
+            workspace: false,
         },
         Value::Table(t) => {
             let path = t.get("path").and_then(|v| v.as_str()).map(|s| s.to_string());
             let version = t.get("version").and_then(|v| v.as_str()).map(|s| s.to_string());
             let optional = t.get("optional").and_then(|v| v.as_bool()).unwrap_or(false);
+            let default_features = t
+                .get("default-features")
+                .or_else(|| t.get("default_features"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let workspace = t.get("workspace").and_then(|v| v.as_bool()).unwrap_or(false);
             let mut features = Vec::new();
             if let Some(arr) = t.get("features").and_then(|v| v.as_array()) {
                 for f in arr {
@@ -171,6 +195,8 @@ fn parse_single_dep(name: &str, val: &Value) -> Dependency {
                 version,
                 optional,
                 features,
+                default_features,
+                workspace,
             }
         }
         _ => Dependency {
@@ -179,6 +205,8 @@ fn parse_single_dep(name: &str, val: &Value) -> Dependency {
             version: None,
             optional: false,
             features: Vec::new(),
+            default_features: true,
+            workspace: false,
         },
     }
 }

@@ -53,6 +53,7 @@ file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/input")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/audio")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/bus")
 file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/Drivers/system")
+file(MAKE_DIRECTORY "${SYSROOT_DIR}/System/var/asl/firmware")
 
 # Copy buildsystem tool sources to sysroot for self-hosting on anyOS
 add_custom_command(
@@ -1034,6 +1035,24 @@ add_rust_user_program(aslconsoled)
 add_rust_user_program(aslfsd)
 add_rust_user_program(aslnetd)
 add_rust_user_program(aslobsd)
+
+# ASL PC boot firmware. Keep SeaBIOS in user space, mirroring KVM/WSL-style VMM
+# ownership: AVM provides virtualization primitives, asld provides firmware.
+if(NOT ANYOS_ARCH STREQUAL "arm64")
+  set(_ASL_SEABIOS_SOURCE "${CMAKE_SOURCE_DIR}/third_party/seabios/seabios.bin")
+  set(_ASL_SEABIOS_SYSROOT "${SYSROOT_DIR}/System/var/asl/firmware/seabios.bin")
+  add_custom_command(
+    OUTPUT ${_ASL_SEABIOS_SYSROOT}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${SYSROOT_DIR}/System/var/asl/firmware
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      ${_ASL_SEABIOS_SOURCE}
+      ${_ASL_SEABIOS_SYSROOT}
+    DEPENDS ${_ASL_SEABIOS_SOURCE}
+    COMMENT "Installing ASL SeaBIOS firmware to sysroot"
+  )
+  add_custom_target(asl_seabios_firmware ALL DEPENDS ${_ASL_SEABIOS_SYSROOT})
+  list(APPEND SYSTEM_BINS ${_ASL_SEABIOS_SYSROOT})
+endif()
 add_rust_user_program(confd)
 add_rust_user_program(searchd)
 add_rust_user_program(dnsd)

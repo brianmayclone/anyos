@@ -35,6 +35,19 @@ const IO_PORT_CMOS_INDEX: u16 = 0x70;
 const IO_PORT_CMOS_DATA: u16 = 0x71;
 const IO_PORT_KBD_DATA: u16 = 0x60;
 const IO_PORT_KBD_STATUS: u16 = 0x64;
+const IDE_PRIMARY_DATA: u16 = 0x1f0;
+const IDE_PRIMARY_ERROR_FEATURES: u16 = 0x1f1;
+const IDE_PRIMARY_SECTOR_COUNT: u16 = 0x1f2;
+const IDE_PRIMARY_LBA_LOW: u16 = 0x1f3;
+const IDE_PRIMARY_LBA_MID: u16 = 0x1f4;
+const IDE_PRIMARY_LBA_HIGH: u16 = 0x1f5;
+const IDE_PRIMARY_DRIVE_HEAD: u16 = 0x1f6;
+const IDE_PRIMARY_STATUS_COMMAND: u16 = 0x1f7;
+const IDE_PRIMARY_ALT_STATUS_CONTROL: u16 = 0x3f6;
+const IDE_SECTOR_SIZE: usize = 512;
+const IDE_STATUS_ERR: u8 = 0x01;
+const IDE_STATUS_DRQ: u8 = 0x08;
+const IDE_STATUS_DRDY: u8 = 0x40;
 const MSR_IA32_TSC: u32 = 0x10;
 const MSR_IA32_APIC_BASE: u32 = 0x1b;
 const MSR_IA32_SYSENTER_CS: u32 = 0x174;
@@ -67,6 +80,7 @@ pub struct VmInstance {
     pub halted: bool,
     serial: SerialPortState,
     platform_io: PlatformIoState,
+    ide: IdeController,
     msrs: MsrState,
 }
 
@@ -130,6 +144,214 @@ impl Default for PlatformIoState {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PlatformIoAction {
     read_value: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum IdeStorage {
+    None,
+    Memory(Vec<u8>),
+    File { fd: u32, sectors: u32 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IdeController {
+    storage: IdeStorage,
+    error: u8,
+    sector_count: u8,
+    lba_low: u8,
+    lba_mid: u8,
+    lba_high: u8,
+    drive_head: u8,
+    status: u8,
+    data: Vec<u8>,
+    data_offset: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct IdeIoAction {
+    read_value: Option<u32>,
+}
+
+impl IdeController {
+    fn disabled() -> Self {
+        Self {
+            storage: IdeStorage::None,
+            error: 0,
+            sector_count: 0,
+            lba_low: 0,
+            lba_mid: 0,
+            lba_high: 0,
+            drive_head: 0xe0,
+            status: 0,
+            data: Vec::new(),
+            data_offset: 0,
+        }
+    }
+
+    fn with_memory_disk(bytes: Vec<u8>) -> Self {
+        let mut controller = Self::disabled();
+        controller.storage = IdeStorage::Memory(bytes);
+        controller.status = IDE_STATUS_DRDY;
+        controller
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn open_read_only(path: &str) -> Result<Self, AsldError> {
+        let mut stat_buf = [0u32; 7];
+        if anyos_std::fs::stat(path, &mut stat_buf) != 0 || stat_buf[0] != 0 {
+            return Err(AsldError::InvalidState("SeaBIOS boot disk is missing"));
+        }
+        let size = stat_buf[1] as usize;
+        if size < IDE_SECTOR_SIZE {
+            return Err(AsldError::InvalidState("SeaBIOS boot disk is too small"));
+        }
+        let fd = anyos_std::fs::open(path, 0);
+        if fd == 0 || fd == u32::MAX {
+            return Err(AsldError::InvalidState(
+                "SeaBIOS boot disk is not readable",
+            ));
+        }
+
+        let mut controller = Self::disabled();
+        controller.storage = IdeStorage::File {
+            fd,
+            sectors: (size / IDE_SECTOR_SIZE) as u32,
+        };
+        controller.status = IDE_STATUS_DRDY;
+        Ok(controller)
+    }
+
+    fn sector_count(&self) -> u32 {
+        match &self.storage {
+            IdeStorage::None => 0,
+            IdeStorage::Memory(bytes) => (bytes.len() / IDE_SECTOR_SIZE) as u32,
+            IdeStorage::File { sectors, .. } => *sectors,
+        }
+    }
+
+    fn selected_lba(&self) -> u32 {
+        ((self.drive_head as u32 & 0x0f) << 24)
+            | ((self.lba_high as u32) << 16)
+            | ((self.lba_mid as u32) << 8)
+            | self.lba_low as u32
+    }
+
+    fn selected_sector_count(&self) -> u32 {
+        if self.sector_count == 0 {
+            256
+        } else {
+            self.sector_count as u32
+        }
+    }
+
+    fn has_disk(&self) -> bool {
+        !matches!(self.storage, IdeStorage::None)
+    }
+
+    fn read_sectors(&mut self) {
+        let lba = self.selected_lba();
+        let count = self.selected_sector_count();
+        let byte_count = (count as usize).saturating_mul(IDE_SECTOR_SIZE);
+        let offset = (lba as usize).saturating_mul(IDE_SECTOR_SIZE);
+        let end = offset.saturating_add(byte_count);
+        if !self.has_disk() || end > (self.sector_count() as usize * IDE_SECTOR_SIZE) {
+            self.set_error(0x04);
+            return;
+        }
+
+        self.data.resize(byte_count, 0);
+        let ok = match &mut self.storage {
+            IdeStorage::Memory(bytes) => {
+                self.data.copy_from_slice(&bytes[offset..end]);
+                true
+            }
+            IdeStorage::File { fd, .. } => {
+                if anyos_std::fs::lseek(*fd, offset as i32, anyos_std::fs::SEEK_SET) == u32::MAX {
+                    false
+                } else {
+                    let read = anyos_std::fs::read(*fd, &mut self.data);
+                    read == byte_count as u32
+                }
+            }
+            IdeStorage::None => false,
+        };
+        if ok {
+            self.data_offset = 0;
+            self.error = 0;
+            self.status = IDE_STATUS_DRDY | IDE_STATUS_DRQ;
+        } else {
+            self.set_error(0x04);
+        }
+    }
+
+    fn identify(&mut self) {
+        if !self.has_disk() {
+            self.set_error(0x04);
+            return;
+        }
+
+        self.data.clear();
+        self.data.resize(IDE_SECTOR_SIZE, 0);
+        write_ide_word(&mut self.data, 0, 0x0040);
+        write_ide_ascii(&mut self.data, 10, 20, "ANYOS0000000000000000");
+        write_ide_ascii(&mut self.data, 23, 8, "1.0");
+        write_ide_ascii(&mut self.data, 27, 40, "anyOS ASL ATA disk");
+        write_ide_word(&mut self.data, 49, 1 << 9);
+        write_ide_word(&mut self.data, 53, 1);
+        write_ide_word(&mut self.data, 60, (self.sector_count() & 0xffff) as u16);
+        write_ide_word(&mut self.data, 61, (self.sector_count() >> 16) as u16);
+        write_ide_word(&mut self.data, 80, 0x007e);
+        write_ide_word(&mut self.data, 83, 1 << 10);
+        write_ide_word(&mut self.data, 86, 1 << 10);
+        self.data_offset = 0;
+        self.error = 0;
+        self.status = IDE_STATUS_DRDY | IDE_STATUS_DRQ;
+    }
+
+    fn finish_data_if_needed(&mut self) {
+        if self.data_offset >= self.data.len() {
+            self.data.clear();
+            self.data_offset = 0;
+            self.status = if self.has_disk() { IDE_STATUS_DRDY } else { 0 };
+        }
+    }
+
+    fn read_data_word(&mut self) -> u16 {
+        if self.data_offset + 1 >= self.data.len() {
+            self.finish_data_if_needed();
+            return 0;
+        }
+        let value = u16::from_le_bytes([
+            self.data[self.data_offset],
+            self.data[self.data_offset + 1],
+        ]);
+        self.data_offset += 2;
+        self.finish_data_if_needed();
+        value
+    }
+
+    fn execute_command(&mut self, command: u8) {
+        match command {
+            0x20 | 0x24 => self.read_sectors(),
+            0x90 | 0x91 | 0xe7 => {
+                self.error = 0;
+                self.status = if self.has_disk() { IDE_STATUS_DRDY } else { 0 };
+            }
+            0xec => self.identify(),
+            _ => self.set_error(0x04),
+        }
+    }
+
+    fn set_error(&mut self, error: u8) {
+        self.error = error;
+        self.data.clear();
+        self.data_offset = 0;
+        self.status = if self.has_disk() {
+            IDE_STATUS_DRDY | IDE_STATUS_ERR
+        } else {
+            IDE_STATUS_ERR
+        };
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -208,6 +430,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         halted: false,
         serial: SerialPortState::default(),
         platform_io: PlatformIoState::default(),
+        ide: IdeController::disabled(),
         msrs: MsrState::default(),
     })
 }
@@ -308,6 +531,19 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         return Err(err);
     }
 
+    let ide = if crate::boot::is_seabios(config) {
+        match IdeController::open_read_only(&config.storage.base_image_path) {
+            Ok(ide) => ide,
+            Err(err) => {
+                let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
+                let _ = vm.destroy();
+                return Err(err);
+            }
+        }
+    } else {
+        IdeController::disabled()
+    };
+
     Ok(VmInstance {
         distro_name: config.name.clone(),
         vm_id,
@@ -326,6 +562,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         halted: false,
         serial: SerialPortState::default(),
         platform_io: PlatformIoState::default(),
+        ide,
         msrs: MsrState::default(),
     })
 }
@@ -809,6 +1046,9 @@ fn handle_emulated_exit(
     if handle_serial_io_exit(instance, vcpu, exit)? {
         return Ok(true);
     }
+    if handle_ide_io_exit(instance, vcpu, exit)? {
+        return Ok(true);
+    }
     if handle_platform_io_exit(instance, vcpu, exit)? {
         return Ok(true);
     }
@@ -834,6 +1074,23 @@ fn handle_serial_io_exit(
     if !action.output.is_empty() {
         let _ = crate::broker::write_console_bytes(&instance.distro_name, &action.output);
     }
+
+    if let Some(value) = action.read_value {
+        write_io_read_value(vcpu, exit.access_size, value)?;
+    }
+    advance_guest_rip(vcpu, exit.instruction_len)?;
+    Ok(true)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn handle_ide_io_exit(
+    instance: &mut VmInstance,
+    vcpu: &libavm::AvmVcpu,
+    exit: &VmExitInfo,
+) -> Result<bool, AsldError> {
+    let Some(action) = ide_io_action(&mut instance.ide, exit) else {
+        return Ok(false);
+    };
 
     if let Some(value) = action.read_value {
         write_io_read_value(vcpu, exit.access_size, value)?;

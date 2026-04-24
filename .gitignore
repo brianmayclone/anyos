@@ -5,6 +5,7 @@ buildsystem/build/
 *.bin
 !kernel/src/graphics/boot_logo.bin
 !kernel/src/graphics/font_8x16.bin
+!third_party/seabios/seabios.bin
 !stdlib/src/ui/font_8x16.bin
 !config.h
 !corevm/vmmanager/assets/bios/*.bin

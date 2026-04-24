@@ -1119,7 +1119,7 @@ impl Database {
         for location in locations {
             let mut page = [0u8; PAGE_SIZE];
             self.read_page(location.page_num, &mut page)?;
-            if let Some((row, _)) = Self::deserialize_row(&page, location.offset, col_count) {
+            if let Some((row, _)) = self.deserialize_row_at(&page, location.offset, col_count)? {
                 if !row.values.is_empty() {
                     rows.push((location.page_num, location.offset, row));
                 }
@@ -1135,7 +1135,7 @@ impl Database {
         let total_size: usize = values.iter().map(|v| v.serialized_size()).sum();
         // Row format: flag(1) + row_len(2) + value data
         let row_size = 1 + 2 + total_size;
-        if row_size > DATA_AREA_SIZE {
+        if total_size > u16::MAX as usize {
             return Err(DbError::RowTooLarge);
         }
 
@@ -1152,7 +1152,7 @@ impl Database {
                     buf.extend_from_slice(&v.to_le_bytes());
                 }
                 Value::Text(s) => {
-                    if s.len() > 4096 {
+                    if s.len() > u16::MAX as usize {
                         return Err(DbError::ValueTooLarge);
                     }
                     buf.push(TAG_TEXT);
@@ -1161,7 +1161,7 @@ impl Database {
                     buf.extend_from_slice(s.as_bytes());
                 }
                 Value::Blob(b) => {
-                    if b.len() > 4096 {
+                    if b.len() > u16::MAX as usize {
                         return Err(DbError::ValueTooLarge);
                     }
                     buf.push(TAG_BLOB);
@@ -1172,6 +1172,117 @@ impl Database {
             }
         }
         Ok(buf)
+    }
+
+    fn serialize_overflow_stub(first_page: u32, total_len: usize) -> DbResult<Vec<u8>> {
+        if total_len > u32::MAX as usize {
+            return Err(DbError::RowTooLarge);
+        }
+        let mut buf = Vec::with_capacity(11);
+        buf.push(ROW_OVERFLOW);
+        buf.extend_from_slice(&8u16.to_le_bytes());
+        buf.extend_from_slice(&first_page.to_le_bytes());
+        buf.extend_from_slice(&(total_len as u32).to_le_bytes());
+        Ok(buf)
+    }
+
+    fn overflow_stub_info(data: &[u8], offset: usize) -> Option<(u32, usize, usize)> {
+        if offset + 11 > data.len() || data[offset] != ROW_OVERFLOW {
+            return None;
+        }
+        let row_len = u16::from_le_bytes([data[offset + 1], data[offset + 2]]) as usize;
+        if row_len != 8 || offset + 3 + row_len > data.len() {
+            return None;
+        }
+        let first_page = u32::from_le_bytes([
+            data[offset + 3],
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+        ]);
+        let total_len = u32::from_le_bytes([
+            data[offset + 7],
+            data[offset + 8],
+            data[offset + 9],
+            data[offset + 10],
+        ]) as usize;
+        Some((first_page, total_len, 3 + row_len))
+    }
+
+    fn write_overflow_payload(&mut self, data: &[u8]) -> DbResult<u32> {
+        let mut first_page = 0;
+        let mut prev_page = 0;
+        let mut pos = 0;
+
+        while pos < data.len() {
+            let page_num = self.alloc_page()?;
+            if first_page == 0 {
+                first_page = page_num;
+            }
+            if prev_page != 0 {
+                let mut prev = [0u8; PAGE_SIZE];
+                self.read_page(prev_page, &mut prev)?;
+                prev[0..4].copy_from_slice(&page_num.to_le_bytes());
+                self.write_page(prev_page, &prev)?;
+            }
+
+            let remaining = data.len() - pos;
+            let used = core::cmp::min(remaining, OVERFLOW_DATA_SIZE);
+            let mut page = [0u8; PAGE_SIZE];
+            page[4..8].copy_from_slice(&(used as u32).to_le_bytes());
+            page[OVERFLOW_PAGE_HEADER..OVERFLOW_PAGE_HEADER + used]
+                .copy_from_slice(&data[pos..pos + used]);
+            self.write_page(page_num, &page)?;
+
+            pos += used;
+            prev_page = page_num;
+        }
+
+        Ok(first_page)
+    }
+
+    fn read_overflow_payload(&mut self, mut page_num: u32, total_len: usize) -> DbResult<Vec<u8>> {
+        let mut out = Vec::with_capacity(total_len);
+        let mut remaining = total_len;
+
+        while remaining > 0 {
+            if page_num == 0 {
+                return Err(DbError::Corrupt(String::from("Truncated overflow row")));
+            }
+            let mut page = [0u8; PAGE_SIZE];
+            self.read_page(page_num, &mut page)?;
+            let next = u32::from_le_bytes([page[0], page[1], page[2], page[3]]);
+            let used =
+                u32::from_le_bytes([page[4], page[5], page[6], page[7]]) as usize;
+            if used > OVERFLOW_DATA_SIZE {
+                return Err(DbError::Corrupt(String::from("Invalid overflow page")));
+            }
+            let take = core::cmp::min(used, remaining);
+            out.extend_from_slice(
+                &page[OVERFLOW_PAGE_HEADER..OVERFLOW_PAGE_HEADER + take],
+            );
+            remaining -= take;
+            page_num = next;
+        }
+
+        Ok(out)
+    }
+
+    fn deserialize_row_at(
+        &mut self,
+        data: &[u8],
+        offset: usize,
+        col_count: usize,
+    ) -> DbResult<Option<(Row, usize)>> {
+        if data.get(offset).copied() != Some(ROW_OVERFLOW) {
+            return Ok(Self::deserialize_row(data, offset, col_count));
+        }
+        let Some((first_page, total_len, consumed)) = Self::overflow_stub_info(data, offset) else {
+            return Err(DbError::Corrupt(String::from("Invalid overflow row stub")));
+        };
+        let payload = self.read_overflow_payload(first_page, total_len)?;
+        Ok(Self::deserialize_row(&payload, 0, col_count)
+            .map(|(row, _payload_consumed)| (row, consumed)))
     }
 
     /// Deserialize a row from bytes at the given offset.
@@ -1253,7 +1364,7 @@ impl Database {
 
             let mut offset = DATA_PAGE_HEADER;
             while offset < data_end {
-                match Self::deserialize_row(&page, offset, col_count) {
+                match self.deserialize_row_at(&page, offset, col_count)? {
                     Some((row, consumed)) => {
                         if !row.values.is_empty() {
                             results.push((page_num, offset, row));
@@ -1274,9 +1385,31 @@ impl Database {
 
     /// Insert a row into a table. Updates page chain and row count.
     pub fn insert_row(&mut self, table_idx: usize, values: &[Value]) -> DbResult<()> {
-        let row_data = Self::serialize_row(values)?;
-        let row_len = row_data.len();
         self.check_unique_constraints(table_idx, values)?;
+        let mut row_data = Self::serialize_row(values)?;
+        let mut overflow_first_page = 0;
+        if row_data.len() > DATA_AREA_SIZE {
+            overflow_first_page = self.write_overflow_payload(&row_data)?;
+            row_data = Self::serialize_overflow_stub(overflow_first_page, row_data.len())?;
+        }
+        match self.insert_row_data(table_idx, &row_data, values) {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                if overflow_first_page != 0 {
+                    let _ = self.free_page_chain(overflow_first_page);
+                }
+                Err(err)
+            }
+        }
+    }
+
+    fn insert_row_data(
+        &mut self,
+        table_idx: usize,
+        row_data: &[u8],
+        values: &[Value],
+    ) -> DbResult<()> {
+        let row_len = row_data.len();
 
         let table = &self.tables[table_idx];
         let mut page_num = table.first_data_page;
@@ -1292,7 +1425,7 @@ impl Database {
 
             if data_end + row_len <= PAGE_SIZE {
                 let row_offset = data_end;
-                page[data_end..data_end + row_len].copy_from_slice(&row_data);
+                page[data_end..data_end + row_len].copy_from_slice(row_data);
                 let new_end = (data_end + row_len) as u16;
                 page[6..8].copy_from_slice(&new_end.to_le_bytes());
                 let rc = u16::from_le_bytes([page[4], page[5]]);
@@ -1322,7 +1455,7 @@ impl Database {
         new_page[4..6].copy_from_slice(&1u16.to_le_bytes());
         let data_end = DATA_PAGE_HEADER + row_len;
         new_page[6..8].copy_from_slice(&(data_end as u16).to_le_bytes());
-        new_page[DATA_PAGE_HEADER..DATA_PAGE_HEADER + row_len].copy_from_slice(&row_data);
+        new_page[DATA_PAGE_HEADER..DATA_PAGE_HEADER + row_len].copy_from_slice(row_data);
         self.write_page(new_page_num, &new_page)?;
 
         if prev_page_num != 0 {
@@ -1353,7 +1486,12 @@ impl Database {
         let mut page = [0u8; PAGE_SIZE];
         self.read_page(page_num, &mut page)?;
         let col_count = self.tables[table_idx].columns.len();
-        let existing_row = Self::deserialize_row(&page, offset, col_count)
+        let overflow_page = if page.get(offset).copied() == Some(ROW_OVERFLOW) {
+            Self::overflow_stub_info(&page, offset).map(|(first_page, _total_len, _consumed)| first_page)
+        } else {
+            None
+        };
+        let existing_row = self.deserialize_row_at(&page, offset, col_count)?
             .and_then(|(row, _)| if row.values.is_empty() { None } else { Some(row) });
 
         page[offset] = ROW_DELETED;
@@ -1364,6 +1502,11 @@ impl Database {
         }
 
         self.write_page(page_num, &page)?;
+        if let Some(first_page) = overflow_page {
+            if first_page != 0 {
+                self.free_page_chain(first_page)?;
+            }
+        }
         if let Some(row) = existing_row {
             self.remove_row_from_indexes(
                 table_idx,

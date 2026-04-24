@@ -44,7 +44,7 @@ pub struct BuildResult {
 /// Build all crates in a project.
 pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
     let root_dir = fs::absolutize(root_dir);
-    let nodes = resolve::resolve(&root_dir);
+    let nodes = resolve::resolve(&root_dir, &config.features);
     if nodes.is_empty() {
         println!("ccargo: error: no packages found");
         return BuildResult { success: false, bin_path: None, compiled: 0 };
@@ -73,19 +73,8 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
     fs::mkdir_p(&build_dir);
     fs::mkdir_p(&fp_dir);
 
-    // Resolve features for the root crate
-    let root_node = nodes.last();
-    let resolved_features = if let Some(root) = root_node {
-        workspace::resolve_features(&root.manifest, &config.features)
-    } else {
-        Vec::new()
-    };
-
-    // Build cfg flags: combine user-provided flags with feature flags
+    // Build cfg flags shared by all crates. Cargo feature cfgs are added per crate.
     let mut all_cfg_flags = config.cfg_flags.clone();
-    for feat in &resolved_features {
-        all_cfg_flags.push(format!("feature=\"{}\"", feat));
-    }
     // Add target_arch cfg if target is specified
     if let Some(ref target) = config.target {
         if target.starts_with("x86_64") {
@@ -118,6 +107,7 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
 
     for &idx in &order {
         let node = &nodes[idx];
+        let resolved_features = node.active_features.clone();
         let is_lib = node.manifest.crate_type == CrateKind::Lib;
         let norm_name = node.name.replace('-', "_");
 
@@ -147,6 +137,9 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
 
         // Merge build script outputs into our compile options
         let mut crate_cfg_flags = all_cfg_flags.clone();
+        for feat in &resolved_features {
+            crate_cfg_flags.push(format!("feature=\"{}\"", feat));
+        }
         let mut crate_link_args = Vec::new();
         let mut crate_env_vars = global_env_vars.clone();
         let mut crate_linker_script = global_linker_script.clone();

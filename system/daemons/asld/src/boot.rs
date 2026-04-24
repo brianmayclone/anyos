@@ -83,16 +83,19 @@ pub fn build_boot_plan(config: &DistroConfig) -> BootPlan {
 
     if config.kernel_profile == SEABIOS_KERNEL_PROFILE {
         let firmware_present = file_exists(SEABIOS_FIRMWARE_PATH);
+        let disk_present = file_exists(&config.storage.base_image_path);
         return BootPlan {
             mode: String::from("firmware-seabios"),
-            rootfs_mode: String::from("firmware"),
+            rootfs_mode: String::from("pc-disk"),
             firmware_path: String::from(SEABIOS_FIRMWARE_PATH),
             kernel_path: String::from("-"),
             initrd_path: String::from("-"),
             cmdline: String::from("-"),
-            startable: firmware_present,
-            message: if firmware_present {
-                String::from("SeaBIOS firmware artifact is present")
+            startable: firmware_present && disk_present,
+            message: if firmware_present && disk_present {
+                String::from("SeaBIOS firmware and boot disk are present")
+            } else if firmware_present {
+                String::from("SeaBIOS boot disk is missing")
             } else {
                 String::from("SeaBIOS firmware artifact is missing")
             },
@@ -455,7 +458,7 @@ mod tests {
         cfg.kernel_profile = SEABIOS_KERNEL_PROFILE.into();
         let plan = build_boot_plan(&cfg);
         assert_eq!(plan.mode, "firmware-seabios");
-        assert_eq!(plan.rootfs_mode, "firmware");
+        assert_eq!(plan.rootfs_mode, "pc-disk");
         assert_eq!(plan.kernel_path, "-");
         assert_eq!(plan.firmware_path, super::SEABIOS_FIRMWARE_PATH);
     }
