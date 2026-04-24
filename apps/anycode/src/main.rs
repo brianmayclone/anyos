@@ -23,7 +23,8 @@ use anyui::Widget;
 use libanyui_client as anyui;
 
 use crate::logic::{
-    ai, build, config, diagnostic_pipeline, diagnostics, file_manager, git, plugin, project, tasks,
+    ai, build, config, diagnostic_pipeline, diagnostics, file_manager, git, plugin, project,
+    symbol_index, tasks,
 };
 use crate::ui::{
     activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel, git_panel,
@@ -45,6 +46,7 @@ struct AppState {
     // Subsystems
     task_mgr: tasks::TaskManager,
     diagnostics: diagnostics::DiagnosticSet,
+    symbol_index: symbol_index::SymbolIndex,
     plugin_mgr: plugin::PluginManager,
     ai_client: ai::AiClient,
 
@@ -267,6 +269,7 @@ fn build_and_run(
             current_project,
             task_mgr,
             diagnostics: diagnostics::DiagnosticSet::new(),
+            symbol_index: symbol_index::SymbolIndex::new(),
             plugin_mgr,
             ai_client: ai::AiClient::new(),
             build_process: None,
