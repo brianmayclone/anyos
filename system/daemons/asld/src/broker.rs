@@ -5,6 +5,13 @@ use alloc::vec::Vec;
 use crate::errors::AsldError;
 use crate::model::{DistroConfig, ShellSession};
 
+// Per-broker reply timeout. Each STATUS/APPLY request polls the reply pipe up
+// to BROKER_REPLY_POLLS times with BROKER_REPLY_SLEEP_MS between polls.
+// 20 * 10 = 200 ms per broker. `diagnose` fans out to 4 brokers, so the worst
+// case is ~800 ms — safely inside the aslctl 2 s client timeout.
+const BROKER_REPLY_POLLS: usize = 20;
+const BROKER_REPLY_SLEEP_MS: u32 = 10;
+
 pub fn sync_distro(cfg: &DistroConfig) -> Result<(), AsldError> {
     sync_network(cfg)?;
     sync_filesystem(cfg)?;
@@ -162,10 +169,11 @@ fn request_lines(pipe_name: &'static str, command: &str) -> Result<Vec<String>, 
 
     let mut data = alloc::vec::Vec::new();
     let mut chunk = [0u8; 512];
-    for _ in 0..50 {
+    for _ in 0..BROKER_REPLY_POLLS {
         let n = anyos_std::ipc::pipe_read(reply_pipe, &mut chunk);
         if n == u32::MAX {
             anyos_std::ipc::pipe_close(reply_pipe);
+            crate::log::warn("broker", &format!("{}: pipe_read failed", pipe_name));
             return Err(broker_error(pipe_name));
         }
         if n > 0 {
@@ -175,10 +183,19 @@ fn request_lines(pipe_name: &'static str, command: &str) -> Result<Vec<String>, 
                 return parse_response(pipe_name, &data);
             }
         } else {
-            anyos_std::process::sleep(10);
+            anyos_std::process::sleep(BROKER_REPLY_SLEEP_MS);
         }
     }
     anyos_std::ipc::pipe_close(reply_pipe);
+    crate::log::warn(
+        "broker",
+        &format!(
+            "{}: timeout after {} ms waiting for reply to '{}'",
+            pipe_name,
+            BROKER_REPLY_POLLS as u32 * BROKER_REPLY_SLEEP_MS,
+            command
+        ),
+    );
     Err(broker_error(pipe_name))
 }
 

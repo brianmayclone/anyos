@@ -1,14 +1,58 @@
 #![no_std]
 #![no_main]
 
-use anyos_std::{print, println, vec, String, Vec};
+use anyos_std::{println, vec, String, Vec};
 use anyos_std::{fs, ipc, process, sys};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 anyos_std::entry!(main);
 
-const VERSION: &str = "1.0";
+const VERSION: &str = "1.1";
 const TEST_DIR: &str = "/tmp/kstress";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Profile {
+    Normal,
+    Heavy,
+    Brutal,
+}
+
+#[derive(Clone, Copy)]
+struct Config {
+    repeat: u32,
+    seconds: u32,
+    threads: u32,
+    mem_mb: u32,
+    profile: Profile,
+}
+
+impl Config {
+    fn default() -> Self {
+        Self {
+            repeat: 1,
+            seconds: 0,
+            threads: 16,
+            mem_mb: 32,
+            profile: Profile::Normal,
+        }
+    }
+
+    fn profile_name(&self) -> &'static str {
+        match self.profile {
+            Profile::Normal => "normal",
+            Profile::Heavy => "heavy",
+            Profile::Brutal => "brutal",
+        }
+    }
+
+    fn scale(&self) -> u32 {
+        match self.profile {
+            Profile::Normal => 1,
+            Profile::Heavy => 4,
+            Profile::Brutal => 10,
+        }
+    }
+}
 
 // ── Global counters for thread tests ───────────────────────────────────────
 
@@ -17,6 +61,14 @@ static THREAD_ERRORS: AtomicU32 = AtomicU32::new(0);
 static SCHED_YIELD_COUNT: AtomicU32 = AtomicU32::new(0);
 static MEM_ALLOC_OK: AtomicU32 = AtomicU32::new(0);
 static MEM_ALLOC_FAIL: AtomicU32 = AtomicU32::new(0);
+
+static DEEP_OPS: AtomicU32 = AtomicU32::new(0);
+static DEEP_ERRORS: AtomicU32 = AtomicU32::new(0);
+static DEEP_ROUNDS: AtomicU32 = AtomicU32::new(0);
+static DEEP_VM_ERRORS: AtomicU32 = AtomicU32::new(0);
+static DEEP_VFS_ERRORS: AtomicU32 = AtomicU32::new(0);
+static DEEP_IPC_ERRORS: AtomicU32 = AtomicU32::new(0);
+static DEEP_SCHED_ERRORS: AtomicU32 = AtomicU32::new(0);
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -41,14 +93,137 @@ fn print_metric(name: &str, value: u32, unit: &str) {
     println!("         {} = {} {}", name, value, unit);
 }
 
+fn print_usage() {
+    println!("kstress - Kernel-Stresstest");
+    println!();
+    println!("Usage: kstress [options]");
+    println!();
+    println!("Options:");
+    println!("  --repeat N       komplette Testsuite N-mal ausfuehren (default: 1)");
+    println!("  --seconds N      mindestens N Sekunden lang wiederholen");
+    println!("  --profile P      normal | heavy | brutal (default: normal)");
+    println!("  --threads N      Thread-Fanout fuer Deep-Stress (default: 16)");
+    println!("  --mem-mb N       Ziel fuer mmap-Speicherdruck in MiB (default: 32)");
+    println!("  --help, -h       diese Hilfe anzeigen");
+    println!();
+    println!("Beispiele:");
+    println!("  kstress --repeat 10 --profile heavy --threads 48 --mem-mb 128");
+    println!("  kstress --seconds 300 --profile brutal --threads 96 --mem-mb 256");
+}
+
+fn parse_u32(s: &str) -> Option<u32> {
+    if s.is_empty() {
+        return None;
+    }
+    let mut val = 0u32;
+    for b in s.bytes() {
+        if b < b'0' || b > b'9' {
+            return None;
+        }
+        val = val.saturating_mul(10).saturating_add((b - b'0') as u32);
+    }
+    Some(val)
+}
+
+fn clamp_u32(v: u32, min: u32, max: u32) -> u32 {
+    if v < min {
+        min
+    } else if v > max {
+        max
+    } else {
+        v
+    }
+}
+
+fn parse_config() -> Option<Config> {
+    let mut buf = [0u8; 256];
+    let raw = process::args(&mut buf);
+    if raw.contains("--help") || raw.contains("-h") {
+        print_usage();
+        return None;
+    }
+
+    let mut cfg = Config::default();
+    let args: Vec<&str> = raw.split_ascii_whitespace().collect();
+    let mut i = 0usize;
+    while i < args.len() {
+        match args[i] {
+            "--repeat" | "-r" => {
+                i += 1;
+                if i >= args.len() {
+                    println!("kstress: --repeat braucht eine Zahl");
+                    return None;
+                }
+                cfg.repeat = clamp_u32(parse_u32(args[i]).unwrap_or(1), 1, 1_000_000);
+            }
+            "--seconds" | "-s" => {
+                i += 1;
+                if i >= args.len() {
+                    println!("kstress: --seconds braucht eine Zahl");
+                    return None;
+                }
+                cfg.seconds = parse_u32(args[i]).unwrap_or(0);
+            }
+            "--threads" | "-t" => {
+                i += 1;
+                if i >= args.len() {
+                    println!("kstress: --threads braucht eine Zahl");
+                    return None;
+                }
+                cfg.threads = clamp_u32(parse_u32(args[i]).unwrap_or(16), 1, 192);
+            }
+            "--mem-mb" | "-m" => {
+                i += 1;
+                if i >= args.len() {
+                    println!("kstress: --mem-mb braucht eine Zahl");
+                    return None;
+                }
+                cfg.mem_mb = clamp_u32(parse_u32(args[i]).unwrap_or(32), 1, 1024);
+            }
+            "--profile" | "-p" => {
+                i += 1;
+                if i >= args.len() {
+                    println!("kstress: --profile braucht normal, heavy oder brutal");
+                    return None;
+                }
+                cfg.profile = match args[i] {
+                    "normal" => Profile::Normal,
+                    "heavy" => Profile::Heavy,
+                    "brutal" => Profile::Brutal,
+                    _ => {
+                        println!("kstress: unbekanntes Profil '{}'", args[i]);
+                        return None;
+                    }
+                };
+            }
+            other => {
+                println!("kstress: unbekannte Option '{}'", other);
+                print_usage();
+                return None;
+            }
+        }
+        i += 1;
+    }
+
+    if cfg.profile == Profile::Heavy {
+        cfg.threads = cfg.threads.max(32);
+        cfg.mem_mb = cfg.mem_mb.max(96);
+    } else if cfg.profile == Profile::Brutal {
+        cfg.threads = cfg.threads.max(64);
+        cfg.mem_mb = cfg.mem_mb.max(192);
+    }
+
+    Some(cfg)
+}
+
 fn get_free_pages() -> u32 {
-    let mut buf = [0u8; 12];
+    let mut buf = [0u8; 16];
     sys::sysinfo(0, &mut buf);
-    u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]])
+    u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]])
 }
 
 fn get_total_pages() -> u32 {
-    let mut buf = [0u8; 12];
+    let mut buf = [0u8; 16];
     sys::sysinfo(0, &mut buf);
     u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]])
 }
@@ -693,9 +868,6 @@ fn test_vfs() -> (u32, u32) {
 // TEST 4: IPC (Pipes + Event Channels)
 // ════════════════════════════════════════════════════════════════════════════
 
-static PIPE_RECV_BYTES: AtomicU32 = AtomicU32::new(0);
-static PIPE_RECV_ERRORS: AtomicU32 = AtomicU32::new(0);
-
 fn test_ipc() -> (u32, u32) {
     print_header("Test 4: IPC (Pipes / Events)");
     let mut pass = 0u32;
@@ -1156,6 +1328,333 @@ fn stress_yield_fn() {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// TEST 8: DEEP STRESS (VM + Scheduler + VFS + IPC parallel)
+// ════════════════════════════════════════════════════════════════════════════
+
+fn test_deep_stress(cfg: Config) -> (u32, u32) {
+    print_header("Test 8: Deep Kernel Stress");
+    let mut pass = 0u32;
+    let mut fail = 0u32;
+
+    fs::mkdir("/tmp");
+    fs::mkdir(TEST_DIR);
+
+    // 8a: Thread-Churn in Wellen. Das trifft Scheduler, Wait/Join und
+    // Stack-mmap/munmap in schneller Folge.
+    {
+        THREAD_COUNTER.store(0, Ordering::SeqCst);
+        THREAD_ERRORS.store(0, Ordering::SeqCst);
+        let t0 = sys::uptime_ms();
+        let waves = 2u32.saturating_mul(cfg.scale()).max(1);
+        let per_wave = clamp_u32(cfg.threads, 4, 128);
+        let mut spawned = 0u32;
+        let mut spawn_fail = 0u32;
+
+        for _ in 0..waves {
+            let mut threads = Vec::new();
+            for _ in 0..per_wave {
+                match process::Thread::spawn(sched_thread_fn, "kstress-churn") {
+                    Ok(t) => {
+                        spawned += 1;
+                        threads.push(t);
+                    }
+                    Err(_) => {
+                        spawn_fail += 1;
+                    }
+                }
+            }
+            for t in threads {
+                t.join();
+            }
+        }
+
+        let dt = elapsed_ms(t0);
+        let done = THREAD_COUNTER.load(Ordering::SeqCst);
+        let ok = spawn_fail == 0 && done == spawned && spawned == waves * per_wave;
+        print_result("Thread-Churn Wellen", ok, "");
+        print_metric("Wellen", waves, "");
+        print_metric("Threads", spawned, "");
+        print_metric("Spawn-Fehler", spawn_fail, "");
+        print_metric("Dauer", dt, "ms");
+        if ok { pass += 1; } else { fail += 1; }
+    }
+
+    // 8b: Hoher mmap-Speicherdruck. kstress ist absichtlich aggressiv:
+    // das angeforderte Ziel wird versucht, und jeder Alloc-/Verify-/Leak-Fehler
+    // zaehlt als echter Kernel-Stressfund.
+    {
+        let free_before = get_free_pages();
+        let target_mb = cfg.mem_mb.max(1);
+        let chunk_size = 1024 * 1024usize;
+        let t0 = sys::uptime_ms();
+        let mut ptrs: Vec<*mut u8> = Vec::new();
+        let mut alloc_fail = 0u32;
+        let mut verify_errors = 0u32;
+
+        for mb in 0..target_mb {
+            let ptr = process::mmap(chunk_size);
+            if ptr.is_null() {
+                alloc_fail += 1;
+                break;
+            }
+            unsafe {
+                for off in (0..chunk_size).step_by(4096) {
+                    *ptr.add(off) = (mb as u8).wrapping_add((off / 4096) as u8);
+                }
+                *ptr.add(chunk_size - 1) = (mb as u8) ^ 0xA5;
+            }
+            ptrs.push(ptr);
+        }
+
+        for (mb, &ptr) in ptrs.iter().enumerate() {
+            unsafe {
+                for off in (0..chunk_size).step_by(4096) {
+                    let expected = (mb as u8).wrapping_add((off / 4096) as u8);
+                    if *ptr.add(off) != expected {
+                        verify_errors += 1;
+                        break;
+                    }
+                }
+                if *ptr.add(chunk_size - 1) != ((mb as u8) ^ 0xA5) {
+                    verify_errors += 1;
+                }
+            }
+        }
+
+        for &ptr in ptrs.iter().rev() {
+            if !process::munmap(ptr, chunk_size) {
+                verify_errors += 1;
+            }
+        }
+
+        let dt = elapsed_ms(t0);
+        let free_after = get_free_pages();
+        let leaked = if free_before > free_after { free_before - free_after } else { 0 };
+        let ok = alloc_fail == 0 && verify_errors == 0 && leaked == 0;
+        print_result("Hoher mmap-Druck", ok, "");
+        print_metric("Ziel", target_mb, "MiB");
+        print_metric("Allokiert", ptrs.len() as u32, "MiB");
+        print_metric("Alloc-Fehler", alloc_fail, "");
+        print_metric("Verify-Fehler", verify_errors, "");
+        print_metric("Mem-Leak", leaked, "Seiten");
+        print_metric("Dauer", dt, "ms");
+        if ok { pass += 1; } else { fail += 1; }
+    }
+
+    // 8c: Prozesswellen. Das belastet Loader, Prozesslisten, Waitpid und
+    // Parent/Child-Cleanup ohne viel Konsolenausgabe.
+    {
+        let t0 = sys::uptime_ms();
+        let count = clamp_u32(cfg.threads / 2, 4, 48);
+        let mut tids = Vec::new();
+        let mut spawn_fail = 0u32;
+        let mut exit_errors = 0u32;
+
+        for _ in 0..count {
+            let tid = process::spawn("/System/bin/true", "");
+            if tid != 0 && tid != u32::MAX {
+                tids.push(tid);
+            } else {
+                spawn_fail += 1;
+            }
+        }
+        for &tid in tids.iter() {
+            if process::waitpid(tid) != 0 {
+                exit_errors += 1;
+            }
+        }
+
+        let dt = elapsed_ms(t0);
+        let ok = spawn_fail == 0 && exit_errors == 0 && tids.len() as u32 == count;
+        print_result("Prozess-Welle (/System/bin/true)", ok, "");
+        print_metric("Prozesse", tids.len() as u32, "");
+        print_metric("Spawn-Fehler", spawn_fail, "");
+        print_metric("Exit-Fehler", exit_errors, "");
+        print_metric("Dauer", dt, "ms");
+        if ok { pass += 1; } else { fail += 1; }
+    }
+
+    // 8d: Gemischter Parallelstress. Mehrere Worker-Typen laufen gleichzeitig
+    // und reizen VM, VFS, IPC, Timer und Scheduler in derselben Zeitspanne.
+    {
+        DEEP_OPS.store(0, Ordering::SeqCst);
+        DEEP_ERRORS.store(0, Ordering::SeqCst);
+        DEEP_ROUNDS.store(60u32.saturating_mul(cfg.scale()), Ordering::SeqCst);
+        DEEP_VM_ERRORS.store(0, Ordering::SeqCst);
+        DEEP_VFS_ERRORS.store(0, Ordering::SeqCst);
+        DEEP_IPC_ERRORS.store(0, Ordering::SeqCst);
+        DEEP_SCHED_ERRORS.store(0, Ordering::SeqCst);
+
+        let t0 = sys::uptime_ms();
+        let mut threads = Vec::new();
+        let count = clamp_u32(cfg.threads, 4, 128);
+        let mut spawn_fail = 0u32;
+        for i in 0..count {
+            let entry = match i % 4 {
+                0 => deep_vm_worker,
+                1 => deep_vfs_worker,
+                2 => deep_ipc_worker,
+                _ => deep_sched_worker,
+            };
+            match process::Thread::spawn(entry, "kstress-deep") {
+                Ok(t) => threads.push(t),
+                Err(_) => spawn_fail += 1,
+            }
+        }
+        for t in threads {
+            t.join();
+        }
+
+        let dt = elapsed_ms(t0);
+        let ops = DEEP_OPS.load(Ordering::SeqCst);
+        let errors = DEEP_ERRORS.load(Ordering::SeqCst);
+        let ok = spawn_fail == 0 && errors == 0 && ops > 0;
+        print_result("Gemischter Parallelstress", ok, "");
+        print_metric("Threads", count.saturating_sub(spawn_fail), "");
+        print_metric("Spawn-Fehler", spawn_fail, "");
+        print_metric("Operationen", ops, "");
+        print_metric("Fehler", errors, "");
+        print_metric("VM-Fehler", DEEP_VM_ERRORS.load(Ordering::SeqCst), "");
+        print_metric("VFS-Fehler", DEEP_VFS_ERRORS.load(Ordering::SeqCst), "");
+        print_metric("IPC-Fehler", DEEP_IPC_ERRORS.load(Ordering::SeqCst), "");
+        print_metric("Sched-Fehler", DEEP_SCHED_ERRORS.load(Ordering::SeqCst), "");
+        print_metric("Dauer", dt, "ms");
+        print_metric("Ops/s", if dt > 0 { ops.saturating_mul(1000) / dt } else { 0 }, "");
+        if ok { pass += 1; } else { fail += 1; }
+    }
+
+    (pass, fail)
+}
+
+fn deep_vm_worker() {
+    let rounds = DEEP_ROUNDS.load(Ordering::Relaxed);
+    for r in 0..rounds {
+        let size = 16 * 4096usize;
+        let ptr = process::mmap(size);
+        if ptr.is_null() {
+            DEEP_VM_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        unsafe {
+            for off in (0..size).step_by(4096) {
+                *ptr.add(off) = (r as u8).wrapping_add((off / 4096) as u8);
+            }
+            for off in (0..size).step_by(4096) {
+                let expected = (r as u8).wrapping_add((off / 4096) as u8);
+                if *ptr.add(off) != expected {
+                    DEEP_VM_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+            }
+        }
+        if !process::munmap(ptr, size) {
+            DEEP_VM_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+        }
+
+        let mut v = Vec::with_capacity(4096);
+        for i in 0..4096 {
+            v.push((i as u8).wrapping_add(r as u8));
+        }
+        if v[0] != (r as u8) || v[4095] != (255u8).wrapping_add(r as u8) {
+            DEEP_VM_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+        }
+        DEEP_OPS.fetch_add(2, Ordering::Relaxed);
+    }
+}
+
+fn deep_vfs_worker() {
+    let tid = process::getpid();
+    let mut path = String::from("/tmp/kstress/deep_vfs_");
+    push_u32(&mut path, tid);
+    path.push_str(".bin");
+
+    let rounds = DEEP_ROUNDS.load(Ordering::Relaxed);
+    for r in 0..rounds {
+        let fd = fs::open(&path, fs::O_WRITE | fs::O_CREATE | fs::O_TRUNC);
+        if fd == u32::MAX {
+            DEEP_VFS_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        let mut data = [0u8; 512];
+        for i in 0..data.len() {
+            data[i] = (r as u8).wrapping_add(i as u8);
+        }
+        if fs::write(fd, &data) != data.len() as u32 {
+            DEEP_VFS_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+        }
+        fs::close(fd);
+
+        let fd2 = fs::open(&path, 0);
+        if fd2 == u32::MAX {
+            DEEP_VFS_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        let mut buf = [0u8; 512];
+        let n = fs::read(fd2, &mut buf);
+        fs::close(fd2);
+        if n != buf.len() as u32 || buf[0] != r as u8 || buf[511] != (r as u8).wrapping_add(255) {
+            DEEP_VFS_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+        }
+        DEEP_OPS.fetch_add(1, Ordering::Relaxed);
+    }
+    fs::unlink(&path);
+}
+
+fn deep_ipc_worker() {
+    let tid = process::getpid();
+    let mut name = String::from("ks_ipc_");
+    push_u32(&mut name, tid);
+
+    let rounds = DEEP_ROUNDS.load(Ordering::Relaxed);
+    for r in 0..rounds {
+        let pipe = ipc::pipe_create(&name);
+        if pipe == 0 {
+            DEEP_IPC_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+        let mut data = [0u8; 128];
+        for i in 0..data.len() {
+            data[i] = (r as u8) ^ (i as u8);
+        }
+        if ipc::pipe_write(pipe, &data) != data.len() as u32 {
+            DEEP_IPC_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+        }
+        let mut buf = [0u8; 128];
+        let n = ipc::pipe_read(pipe, &mut buf);
+        if n != buf.len() as u32 || buf[0] != (r as u8) || buf[127] != ((r as u8) ^ 127) {
+            DEEP_IPC_ERRORS.fetch_add(1, Ordering::Relaxed);
+            DEEP_ERRORS.fetch_add(1, Ordering::Relaxed);
+        }
+        ipc::pipe_close(pipe);
+        DEEP_OPS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+fn deep_sched_worker() {
+    let rounds = DEEP_ROUNDS.load(Ordering::Relaxed);
+    for i in 0..rounds.saturating_mul(20) {
+        let _ = sys::uptime_ms();
+        if i % 8 == 0 {
+            process::yield_cpu();
+        }
+        if i % 257 == 0 {
+            process::sleep_us(50);
+        }
+        DEEP_OPS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 // ── Utility ────────────────────────────────────────────────────────────────
 
 fn push_u32(s: &mut String, val: u32) {
@@ -1182,45 +1681,79 @@ fn push_u32(s: &mut String, val: u32) {
 // ════════════════════════════════════════════════════════════════════════════
 
 fn main() {
+    let cfg = match parse_config() {
+        Some(cfg) => cfg,
+        None => return,
+    };
+
     println!();
     println!("========================================");
     println!(" kstress v{} — Kernel-Stresstest", VERSION);
     println!("========================================");
+    println!(" Profil:     {}", cfg.profile_name());
+    println!(" Repeat:     {}", cfg.repeat);
+    if cfg.seconds > 0 {
+        println!(" Mindestzeit: {}s", cfg.seconds);
+    }
+    println!(" Deep Threads: {}", cfg.threads);
+    println!(" Memory-Ziel:  {} MiB", cfg.mem_mb);
 
     print_sysinfo();
 
     let mut total_pass = 0u32;
     let mut total_fail = 0u32;
+    let mut passes_done = 0u32;
 
     let t_global = sys::uptime_ms();
 
-    let (p, f) = test_scheduler();
-    total_pass += p;
-    total_fail += f;
+    loop {
+        passes_done += 1;
+        println!();
+        println!("========================================");
+        println!(" DURCHLAUF {}", passes_done);
+        println!("========================================");
 
-    let (p, f) = test_memory();
-    total_pass += p;
-    total_fail += f;
+        let (p, f) = test_scheduler();
+        total_pass += p;
+        total_fail += f;
 
-    let (p, f) = test_vfs();
-    total_pass += p;
-    total_fail += f;
+        let (p, f) = test_memory();
+        total_pass += p;
+        total_fail += f;
 
-    let (p, f) = test_ipc();
-    total_pass += p;
-    total_fail += f;
+        let (p, f) = test_vfs();
+        total_pass += p;
+        total_fail += f;
 
-    let (p, f) = test_timer();
-    total_pass += p;
-    total_fail += f;
+        let (p, f) = test_ipc();
+        total_pass += p;
+        total_fail += f;
 
-    let (p, f) = test_process();
-    total_pass += p;
-    total_fail += f;
+        let (p, f) = test_timer();
+        total_pass += p;
+        total_fail += f;
 
-    let (p, f) = test_combined_stress();
-    total_pass += p;
-    total_fail += f;
+        let (p, f) = test_process();
+        total_pass += p;
+        total_fail += f;
+
+        let (p, f) = test_combined_stress();
+        total_pass += p;
+        total_fail += f;
+
+        let (p, f) = test_deep_stress(cfg);
+        total_pass += p;
+        total_fail += f;
+
+        let elapsed_s = elapsed_ms(t_global) / 1000;
+        let repeat_done = passes_done >= cfg.repeat;
+        let time_done = cfg.seconds == 0 || elapsed_s >= cfg.seconds;
+        if repeat_done && time_done {
+            break;
+        }
+        println!();
+        println!("Weiter: Durchlauf {}, elapsed {}s", passes_done + 1, elapsed_s);
+    }
 
     let total_time = elapsed_ms(t_global);
 
@@ -1232,6 +1765,7 @@ fn main() {
     println!("  Bestanden: {}", total_pass);
     println!("  Fehlgeschlagen: {}", total_fail);
     println!("  Gesamt: {}", total_pass + total_fail);
+    println!("  Durchlaeufe: {}", passes_done);
     println!("  Dauer: {}.{} s", total_time / 1000, (total_time % 1000) / 100);
     println!();
 

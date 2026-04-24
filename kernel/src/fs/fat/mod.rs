@@ -298,21 +298,77 @@ impl Filesystem for FatFsDriver {
         self.inner.lock().read_dir(inode)
     }
 
-    // --- write path stubbed ---
+    // --- write path ---
+    //
+    // `write(inode, …)` still needs (parent_cluster, old_size) that the
+    // VFS's OpenFile currently carries — stays NotSupported until the
+    // OpenFile refactor.  Namespace ops translate directly since FAT
+    // encodes inode == start_cluster.
 
     fn write(&self, _inode: u32, _offset: u32, _buf: &[u8]) -> Result<usize, FsError> {
-        Err(FsError::PermissionDenied)
+        Err(FsError::NotSupported)
     }
+
     fn create(
         &self,
-        _parent_inode: u32,
-        _name: &str,
-        _file_type: FileType,
+        parent_inode: u32,
+        name: &str,
+        file_type: FileType,
     ) -> Result<u32, FsError> {
-        Err(FsError::PermissionDenied)
+        let mut fs = self.inner.lock();
+        match file_type {
+            FileType::Directory => fs.create_dir(parent_inode, name),
+            _ => {
+                // Empty files start with cluster 0 — allocation is deferred
+                // until the first write extends the file.
+                fs.create_file(parent_inode, name)?;
+                Ok(0)
+            }
+        }
     }
-    fn delete(&self, _parent_inode: u32, _name: &str) -> Result<(), FsError> {
-        Err(FsError::PermissionDenied)
+
+    fn delete(&self, parent_inode: u32, name: &str) -> Result<(), FsError> {
+        self.inner.lock().delete_file(parent_inode, name)
+    }
+
+    fn rename(&self, old_path: &str, new_path: &str) -> Result<(), FsError> {
+        fn split<'a>(p: &'a str) -> Result<(&'a str, &'a str), FsError> {
+            let trimmed = p.trim_end_matches('/');
+            let (parent, name) = match trimmed.rfind('/') {
+                Some(0) => ("/", &trimmed[1..]),
+                Some(pos) => (&trimmed[..pos], &trimmed[pos + 1..]),
+                None => ("/", trimmed),
+            };
+            if name.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            Ok((parent, name))
+        }
+        let (op, on) = split(old_path)?;
+        let (np, nn) = split(new_path)?;
+        let mut fs = self.inner.lock();
+        let (op_cluster, _, _) = fs.lookup(op)?;
+        let (np_cluster, _, _) = fs.lookup(np)?;
+        fs.rename_entry(op_cluster, on, np_cluster, nn)
+    }
+
+    fn truncate_by_path(&self, path: &str) -> Result<(), FsError> {
+        fn split<'a>(p: &'a str) -> Result<(&'a str, &'a str), FsError> {
+            let trimmed = p.trim_end_matches('/');
+            let (parent, name) = match trimmed.rfind('/') {
+                Some(0) => ("/", &trimmed[1..]),
+                Some(pos) => (&trimmed[..pos], &trimmed[pos + 1..]),
+                None => ("/", trimmed),
+            };
+            if name.is_empty() {
+                return Err(FsError::InvalidPath);
+            }
+            Ok((parent, name))
+        }
+        let (parent_path, filename) = split(path)?;
+        let mut fs = self.inner.lock();
+        let (parent_cluster, _, _) = fs.lookup(parent_path)?;
+        fs.truncate_file(parent_cluster, filename)
     }
 
     // --- metadata ---

@@ -154,7 +154,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
     let vm_id = (vm.raw_handle() & 0xFFFF_FFFF) as u32;
 
     let guest_memory_size = align_guest_memory_size(config.resources.memory_mb);
-    let guest_memory = anyos_std::process::mmap(guest_memory_size);
+    let guest_memory = anyos_std::process::mmap_large(guest_memory_size);
     if guest_memory.is_null() {
         let _ = vm.destroy();
         return Err(AsldError::BackendUnavailable(
@@ -173,7 +173,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         userspace_addr: guest_memory as u64,
     };
     if vm.set_user_memory_region(&memory_region).is_err() {
-        let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
+        let _ = anyos_std::process::munmap_large(guest_memory, guest_memory_size);
         let _ = vm.destroy();
         return Err(AsldError::BackendUnavailable(
             "avm set_user_memory_region failed",
@@ -184,7 +184,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
     let vcpu = match vm.create_vcpu(vcpu_id) {
         Ok(vcpu) => vcpu,
         Err(_) => {
-            let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
+            let _ = anyos_std::process::munmap_large(guest_memory, guest_memory_size);
             let _ = vm.destroy();
             return Err(AsldError::BackendUnavailable("avm create_vcpu failed"));
         }
@@ -198,14 +198,14 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         configure_direct_linux_vcpu(config, &vcpu, guest_memory, guest_memory_size)
     };
     if let Err(err) = boot_result {
-        let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
+        let _ = anyos_std::process::munmap_large(guest_memory, guest_memory_size);
         let _ = vm.destroy();
         return Err(err);
     }
 
     let console_pipe_name = format!("asl-console-{}", config.name);
     if let Err(err) = ensure_pipe(&console_pipe_name) {
-        let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
+        let _ = anyos_std::process::munmap_large(guest_memory, guest_memory_size);
         let _ = vm.destroy();
         return Err(err);
     }
@@ -214,7 +214,7 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
         match IdeController::open_read_only(&config.storage.base_image_path) {
             Ok(ide) => ide,
             Err(err) => {
-                let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
+                let _ = anyos_std::process::munmap_large(guest_memory, guest_memory_size);
                 let _ = vm.destroy();
                 return Err(err);
             }
@@ -407,7 +407,7 @@ fn configure_boot_vcpu(
 #[cfg(not(target_os = "linux"))]
 fn stop_vm_impl(instance: &VmInstance) -> Result<(), AsldError> {
     if instance.guest_memory_addr != 0 && instance.guest_memory_size != 0 {
-        let _ = anyos_std::process::munmap(
+        let _ = anyos_std::process::munmap_large(
             instance.guest_memory_addr as *mut u8,
             instance.guest_memory_size,
         );

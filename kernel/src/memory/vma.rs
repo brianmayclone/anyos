@@ -13,18 +13,22 @@ use alloc::vec::Vec;
 use crate::memory::address::PhysAddr;
 use crate::sync::spinlock::Spinlock;
 
-/// Start of the user-space mmap virtual address region.
-const MMAP_BASE: u32 = 0x7000_0000;
-/// End (exclusive) of the user-space mmap virtual address region.
-const MMAP_LIMIT: u32 = 0xBF00_0000;
+/// Start of the legacy 32-bit-compatible user-space mmap region.
+const MMAP_BASE: u64 = 0x7000_0000;
+/// End (exclusive) of the legacy 32-bit-compatible user-space mmap region.
+const MMAP_LIMIT: u64 = 0xBF00_0000;
+/// Start of the native 64-bit high mmap region.
+const MMAP64_BASE: u64 = 0x0000_0001_0000_0000;
+/// End (exclusive) of the native 64-bit high mmap region.
+const MMAP64_LIMIT: u64 = 0x0000_4000_0000_0000;
 
 /// A single contiguous mapped region in user virtual address space.
 #[derive(Clone)]
 pub struct Vma {
     /// Page-aligned start address.
-    pub start: u32,
+    pub start: u64,
     /// Size in bytes (page-aligned, >0).
-    pub size: u32,
+    pub size: u64,
     /// Page table flags used when mapping (PAGE_WRITABLE | PAGE_USER, etc.).
     pub flags: u32,
 }
@@ -34,9 +38,11 @@ struct ProcessVmas {
     /// Page directory physical address (unique per process).
     pd: PhysAddr,
     /// All mmap regions, keyed by start address.
-    vmas: BTreeMap<u32, Vma>,
+    vmas: BTreeMap<u64, Vma>,
     /// Hint for next allocation search (replaces the old mmap_next bump pointer).
-    mmap_hint: u32,
+    mmap_hint: u64,
+    /// Hint for native 64-bit high mmap allocations.
+    mmap64_hint: u64,
 }
 
 /// Global registry of per-process VMA tables.
@@ -62,7 +68,8 @@ pub fn init_process(pd: PhysAddr, mmap_hint: u32) {
     reg.push(ProcessVmas {
         pd,
         vmas: BTreeMap::new(),
-        mmap_hint: mmap_hint.max(MMAP_BASE),
+        mmap_hint: (mmap_hint as u64).max(MMAP_BASE),
+        mmap64_hint: MMAP64_BASE,
     });
 }
 
@@ -73,23 +80,45 @@ pub fn init_process(pd: PhysAddr, mmap_hint: u32) {
 /// Returns the start address on success, or `None` if the address space is
 /// truly exhausted.
 pub fn alloc_region(pd: PhysAddr, size: u32) -> Option<u32> {
+    alloc_region_in(pd, size as u64, false).and_then(|addr| u32::try_from(addr).ok())
+}
+
+/// Allocate a native 64-bit mapping above 4 GiB.
+pub fn alloc_region64(pd: PhysAddr, size: u64) -> Option<u64> {
+    alloc_region_in(pd, size, true)
+}
+
+fn alloc_region_in(pd: PhysAddr, size: u64, high: bool) -> Option<u64> {
     if size == 0 {
         return None;
     }
     let mut reg = VMA_REGISTRY.lock();
     let proc = reg.iter_mut().find(|p| p.pd == pd)?;
+    let (base, limit, hint) = if high {
+        (MMAP64_BASE, MMAP64_LIMIT, proc.mmap64_hint)
+    } else {
+        (MMAP_BASE, MMAP_LIMIT, proc.mmap_hint)
+    };
 
     // Try from hint first, then wrap around.
-    if let Some(addr) = find_gap(&proc.vmas, proc.mmap_hint, size) {
+    if let Some(addr) = find_gap(&proc.vmas, hint, size, base, limit) {
         proc.vmas.insert(addr, Vma { start: addr, size, flags: 0x02 | 0x04 });
-        proc.mmap_hint = addr + size;
+        if high {
+            proc.mmap64_hint = addr + size;
+        } else {
+            proc.mmap_hint = addr + size;
+        }
         return Some(addr);
     }
     // Wrap-around: search from MMAP_BASE up to the original hint.
-    if proc.mmap_hint > MMAP_BASE {
-        if let Some(addr) = find_gap(&proc.vmas, MMAP_BASE, size) {
+    if hint > base {
+        if let Some(addr) = find_gap(&proc.vmas, base, size, base, hint.min(limit)) {
             proc.vmas.insert(addr, Vma { start: addr, size, flags: 0x02 | 0x04 });
-            proc.mmap_hint = addr + size;
+            if high {
+                proc.mmap64_hint = addr + size;
+            } else {
+                proc.mmap_hint = addr + size;
+            }
             return Some(addr);
         }
     }
@@ -101,6 +130,11 @@ pub fn alloc_region(pd: PhysAddr, size: u32) -> Option<u32> {
 /// The physical page unmap + free is done by the caller (`sys_munmap`); this
 /// function only updates the bookkeeping.
 pub fn free_region(pd: PhysAddr, addr: u32, size: u32) {
+    free_region64(pd, addr as u64, size as u64);
+}
+
+/// Remove a VMA allocation in either mmap region.
+pub fn free_region64(pd: PhysAddr, addr: u64, size: u64) {
     if size == 0 {
         return;
     }
@@ -113,7 +147,7 @@ pub fn free_region(pd: PhysAddr, addr: u32, size: u32) {
     let free_end = addr + size;
 
     // Collect keys of VMAs that overlap [addr, free_end).
-    let overlapping: Vec<u32> = proc.vmas.range(..free_end)
+    let overlapping: Vec<u64> = proc.vmas.range(..free_end)
         .filter(|(_, v)| v.start + v.size > addr)
         .map(|(&k, _)| k)
         .collect();
@@ -150,9 +184,9 @@ pub fn free_region(pd: PhysAddr, addr: u32, size: u32) {
 pub fn clone_for_fork(src_pd: PhysAddr, dst_pd: PhysAddr) {
     let mut reg = VMA_REGISTRY.lock();
     // Find source and clone its data.
-    let (cloned_vmas, hint) = match reg.iter().find(|p| p.pd == src_pd) {
-        Some(src) => (src.vmas.clone(), src.mmap_hint),
-        None => (BTreeMap::new(), MMAP_BASE),
+    let (cloned_vmas, hint, hint64) = match reg.iter().find(|p| p.pd == src_pd) {
+        Some(src) => (src.vmas.clone(), src.mmap_hint, src.mmap64_hint),
+        None => (BTreeMap::new(), MMAP_BASE, MMAP64_BASE),
     };
     // Remove stale entry for dst_pd if one exists (shouldn't, but be safe).
     reg.retain(|p| p.pd != dst_pd);
@@ -160,6 +194,7 @@ pub fn clone_for_fork(src_pd: PhysAddr, dst_pd: PhysAddr) {
         pd: dst_pd,
         vmas: cloned_vmas,
         mmap_hint: hint,
+        mmap64_hint: hint64,
     });
 }
 
@@ -174,14 +209,16 @@ pub fn destroy_process(pd: PhysAddr) {
 /// Read the current mmap_hint for a process (used by fork snapshot).
 pub fn get_mmap_hint(pd: PhysAddr) -> u32 {
     let reg = VMA_REGISTRY.lock();
-    reg.iter().find(|p| p.pd == pd).map_or(MMAP_BASE, |p| p.mmap_hint)
+    reg.iter()
+        .find(|p| p.pd == pd)
+        .map_or(MMAP_BASE as u32, |p| p.mmap_hint as u32)
 }
 
 /// Set the mmap_hint for a process (used after fork child setup).
 pub fn set_mmap_hint(pd: PhysAddr, hint: u32) {
     let mut reg = VMA_REGISTRY.lock();
     if let Some(proc) = reg.iter_mut().find(|p| p.pd == pd) {
-        proc.mmap_hint = hint;
+        proc.mmap_hint = hint as u64;
     }
 }
 
@@ -193,8 +230,14 @@ pub fn set_mmap_hint(pd: PhysAddr, hint: u32) {
 ///
 /// Walks the sorted VMA map and looks for gaps between consecutive regions
 /// (and before the first / after the last region) that can fit `size` bytes.
-fn find_gap(vmas: &BTreeMap<u32, Vma>, start_from: u32, size: u32) -> Option<u32> {
-    let start_from = start_from.max(MMAP_BASE);
+fn find_gap(
+    vmas: &BTreeMap<u64, Vma>,
+    start_from: u64,
+    size: u64,
+    base: u64,
+    limit: u64,
+) -> Option<u64> {
+    let start_from = start_from.max(base);
 
     // Check gap before the first VMA (or the entire range if empty).
     let mut cursor = start_from;
@@ -206,7 +249,7 @@ fn find_gap(vmas: &BTreeMap<u32, Vma>, start_from: u32, size: u32) -> Option<u32
         let vma_end = vma.start + vma.size;
 
         // Skip VMAs entirely before our cursor.
-        if vma_end <= cursor {
+        if vma_end <= cursor || vma.start >= limit {
             continue;
         }
 
@@ -223,8 +266,8 @@ fn find_gap(vmas: &BTreeMap<u32, Vma>, start_from: u32, size: u32) -> Option<u32
     }
 
     // Check trailing gap after all VMAs.
-    if cursor < MMAP_LIMIT {
-        let gap = MMAP_LIMIT - cursor;
+    if cursor < limit {
+        let gap = limit - cursor;
         if gap >= size {
             return Some(cursor);
         }

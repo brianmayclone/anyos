@@ -96,12 +96,32 @@ pub fn mmap(size: usize) -> *mut u8 {
     }
 }
 
+/// Map anonymous pages in the native 64-bit high address range.
+///
+/// Use this only for buffers that are never passed to legacy syscalls taking
+/// `u32` user pointers. It exists for large VM guest RAM allocations.
+#[cfg(target_pointer_width = "64")]
+pub fn mmap_large(size: usize) -> *mut u8 {
+    let result = syscall1_u64(SYS_MMAP64, size as u64);
+    if result == u64::MAX {
+        core::ptr::null_mut()
+    } else {
+        result as *mut u8
+    }
+}
+
 /// Unmap pages previously mapped with `mmap`, freeing the physical memory.
 /// `addr` must be the value returned by `mmap` (page-aligned).
 /// `size` is the original size passed to `mmap`.
 /// Returns true on success.
 pub fn munmap(addr: *mut u8, size: usize) -> bool {
     syscall2(SYS_MUNMAP, addr as u64, size as u64) == 0
+}
+
+/// Unmap pages returned by [`mmap_large`].
+#[cfg(target_pointer_width = "64")]
+pub fn munmap_large(addr: *mut u8, size: usize) -> bool {
+    syscall2_u64(SYS_MUNMAP64, addr as u64, size as u64) == 0
 }
 
 pub fn waitpid(tid: u32) -> u32 {

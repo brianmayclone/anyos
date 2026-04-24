@@ -2199,32 +2199,143 @@ impl Filesystem for ExFatFsDriver {
     }
 
     // -----------------------------------------------------------------
-    // Required (stubbed): write path
+    // Write path
     //
-    // exFAT's write/create/delete/truncate APIs key off
-    // (parent_cluster, name) or take an `old_size`.  Mapping those onto
-    // the trait's (inode, …) shape needs an inode→(parent_cluster,
-    // entry_position) lookup we don't have yet.  Until the VfsState
-    // refactor (Phase 6 Step 6) decides the final API shape, we defer
-    // by returning PermissionDenied — and the legacy VFS direct-call
-    // paths continue to handle these operations as today.
+    // `write(inode, offset, buf)` still needs (parent_cluster, old_size)
+    // context that only the VFS OpenFile carries — leave it NotSupported
+    // until OpenFile is refactored.  The namespace ops below (create /
+    // delete / rename) translate cleanly because `parent_inode` already
+    // encodes the directory's first cluster.
     // -----------------------------------------------------------------
 
     fn write(&self, _inode: u32, _offset: u32, _buf: &[u8]) -> Result<usize, VfsFsError> {
-        Err(VfsFsError::PermissionDenied)
+        Err(VfsFsError::NotSupported)
     }
 
     fn create(
         &self,
-        _parent_inode: u32,
-        _name: &str,
-        _file_type: FileType,
+        parent_inode: u32,
+        name: &str,
+        file_type: FileType,
     ) -> Result<u32, VfsFsError> {
-        Err(VfsFsError::PermissionDenied)
+        let (parent_cluster, _) = decode_inode(parent_inode);
+        let mut fs = self.inner.lock();
+        match file_type {
+            FileType::Directory => fs.create_dir(parent_cluster, name),
+            _ => {
+                fs.create_file(parent_cluster, name)?;
+                // create_file returns (), re-lookup the new child's inode.
+                let (child_inode, _, _, _, _, _, _, _) =
+                    fs.lookup_in_dir(parent_cluster, name)?;
+                Ok(child_inode)
+            }
+        }
     }
 
-    fn delete(&self, _parent_inode: u32, _name: &str) -> Result<(), VfsFsError> {
-        Err(VfsFsError::PermissionDenied)
+    fn delete(&self, parent_inode: u32, name: &str) -> Result<(), VfsFsError> {
+        let (parent_cluster, _) = decode_inode(parent_inode);
+        self.inner.lock().delete_file(parent_cluster, name)
+    }
+
+    fn rename(&self, old_path: &str, new_path: &str) -> Result<(), VfsFsError> {
+        // exFAT's rename_entry takes (parent_cluster, name) × 2.  We
+        // resolve both sides under a single lock to keep the op atomic.
+        fn split<'a>(p: &'a str) -> Result<(&'a str, &'a str), VfsFsError> {
+            let trimmed = p.trim_end_matches('/');
+            let (parent, name) = match trimmed.rfind('/') {
+                Some(0) => ("/", &trimmed[1..]),
+                Some(pos) => (&trimmed[..pos], &trimmed[pos + 1..]),
+                None => ("/", trimmed),
+            };
+            if name.is_empty() {
+                return Err(VfsFsError::InvalidPath);
+            }
+            Ok((parent, name))
+        }
+        let (old_parent, old_name) = split(old_path)?;
+        let (new_parent, new_name) = split(new_path)?;
+        let mut fs = self.inner.lock();
+        let (op_inode, _, _) = fs.lookup(old_parent)?;
+        let (np_inode, _, _) = fs.lookup(new_parent)?;
+        let (op_cluster, _) = decode_inode(op_inode);
+        let (np_cluster, _) = decode_inode(np_inode);
+        fs.rename_entry(op_cluster, old_name, np_cluster, new_name)
+    }
+
+    fn set_mode(&self, _inode: u32, _mode: u16) -> Result<(), VfsFsError> {
+        // exFAT stores permission bits on the directory entry, which is
+        // keyed by (parent_cluster, name) — not recoverable from the
+        // encoded inode alone.  Prefer `set_mode_by_path`.
+        Err(VfsFsError::NotSupported)
+    }
+
+    fn set_owner(&self, _inode: u32, _uid: u16, _gid: u16) -> Result<(), VfsFsError> {
+        Err(VfsFsError::NotSupported)
+    }
+
+    fn create_symlink(&self, link_path: &str, target: &str) -> Result<(), VfsFsError> {
+        fn split<'a>(p: &'a str) -> Result<(&'a str, &'a str), VfsFsError> {
+            let trimmed = p.trim_end_matches('/');
+            let (parent, name) = match trimmed.rfind('/') {
+                Some(0) => ("/", &trimmed[1..]),
+                Some(pos) => (&trimmed[..pos], &trimmed[pos + 1..]),
+                None => ("/", trimmed),
+            };
+            if name.is_empty() {
+                return Err(VfsFsError::InvalidPath);
+            }
+            Ok((parent, name))
+        }
+        let (parent_path, link_name) = split(link_path)?;
+        let mut fs = self.inner.lock();
+        let (pr_inode, pr_type, _) = fs.lookup(parent_path)?;
+        if pr_type != FileType::Directory {
+            return Err(VfsFsError::NotADirectory);
+        }
+        let (pc, _) = decode_inode(pr_inode);
+        fs.create_symlink(pc, link_name, target)
+    }
+
+    fn readlink(&self, inode: u32) -> Result<String, VfsFsError> {
+        // ExFatFs stores the target bytes in the file's cluster chain and
+        // needs the size to know how many bytes to read.  Use the
+        // cluster→size map we can derive from the dir walk at the top
+        // level where `stat` already gave us both.  Here we have inode
+        // only — re-read the first cluster and use the dirent size
+        // recorded during open/lstat.  To keep this simple, look up the
+        // inode's size by scanning common roots isn't feasible; instead
+        // return NotSupported and let callers use the path-based
+        // `resolve_exfat_path` variant surfaced via the legacy VFS path
+        // (the root-dispatch site has `readlink_by_path` context).
+        Err(VfsFsError::NotSupported)
+    }
+
+    fn truncate_by_path(&self, path: &str) -> Result<(), VfsFsError> {
+        fn split<'a>(p: &'a str) -> Result<(&'a str, &'a str), VfsFsError> {
+            let trimmed = p.trim_end_matches('/');
+            let (parent, name) = match trimmed.rfind('/') {
+                Some(0) => ("/", &trimmed[1..]),
+                Some(pos) => (&trimmed[..pos], &trimmed[pos + 1..]),
+                None => ("/", trimmed),
+            };
+            if name.is_empty() {
+                return Err(VfsFsError::InvalidPath);
+            }
+            Ok((parent, name))
+        }
+        let (parent_path, filename) = split(path)?;
+        let mut fs = self.inner.lock();
+        let (pr_inode, _, _) = fs.lookup(parent_path)?;
+        let (pc, _) = decode_inode(pr_inode);
+        fs.truncate_file(pc, filename)
+    }
+
+    fn set_mode_by_path(&self, path: &str, mode: u16) -> Result<(), VfsFsError> {
+        self.inner.lock().set_mode(path, mode)
+    }
+
+    fn set_owner_by_path(&self, path: &str, uid: u16, gid: u16) -> Result<(), VfsFsError> {
+        self.inner.lock().set_owner(path, uid, gid)
     }
 
     // -----------------------------------------------------------------

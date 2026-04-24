@@ -54,6 +54,6 @@ if [ "$NEED_RECONF" = "1" ]; then
 fi
 
 exec scripts/run.sh \
-    --kvm --kbd ch --fwd 2121:21 --virtio --tempdisk --clipboard \
-    --disk "/tmp/data.img:4G" \
+    --kvm --kbd ch --fwd 2121:21 --ram 12G --virtio --tempdisk --clipboard \
+    --disk "/daten1/development/brian/anyos/scripts/debian.corefs.img" \
     --system-fs corefs

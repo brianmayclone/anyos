@@ -29,6 +29,8 @@
 #define SYS_KILL            13
 #define SYS_MMAP            14
 #define SYS_MUNMAP          15
+#define SYS_MMAP64         631
+#define SYS_MUNMAP64       632
 
 /* ---- Device management ---- */
 #define SYS_DEVLIST         16

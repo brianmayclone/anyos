@@ -11,6 +11,7 @@ pub mod distro;
 pub mod errors;
 pub mod image;
 pub mod ipc;
+pub mod log;
 pub mod model;
 pub mod mounts;
 pub mod network;
@@ -32,6 +33,7 @@ pub const PIPE_NAME: &str = "asld";
 
 pub fn run() {
     println!("asld: starting");
+    log::info("service", "asld starting");
 
     let mut lifecycle = ServiceLifecycle::connect("asld").ok();
     if let Some(lifecycle) = lifecycle.as_mut() {
@@ -81,8 +83,13 @@ pub fn run() {
     let self_check = diagnostics::run_self_check();
     diagnostics::write_status(&self_check);
     println!("asld: self-check {}", self_check.summary());
+    log::info(
+        "service",
+        &alloc::format!("self-check {}", self_check.summary()),
+    );
     for line in &self_check.lines {
         println!("asld: check: {}", line);
+        log::info("self-check", line);
     }
 
     if let Some(lifecycle) = lifecycle.as_mut() {

@@ -29,11 +29,14 @@ fn main() {
         anyos_std::println!("              corefs        CoreFS filesystem");
         anyos_std::println!("");
         anyos_std::println!("Examples:");
-        anyos_std::println!("  mount -t corefs 3 /mnt/data     Mount CoreFS partition (device 3)");
-        anyos_std::println!("  mount -t fat 2 /mnt/usb         Mount FAT partition (device 2)");
+        anyos_std::println!("  mount -t corefs 3 /mnt/data         Mount CoreFS partition (device ID)");
+        anyos_std::println!("  mount -t corefs /dev/sdc1 /mnt/data Mount CoreFS partition (device path)");
+        anyos_std::println!("  mount -t fat 2 /mnt/usb             Mount FAT partition (device ID)");
+        anyos_std::println!("  mount -t fat /dev/sdb1 /mnt/usb     Mount FAT partition (device path)");
         anyos_std::println!("  mount -t smb //10.0.0.1/share /mnt/share");
         anyos_std::println!("");
-        anyos_std::println!("Device IDs can be found with 'lsblk' or 'sysinfo --disks'.");
+        anyos_std::println!("Devices can be given as numeric IDs ('lsblk', 'sysinfo --disks')");
+        anyos_std::println!("or as paths like /dev/sda1, /dev/sdc, /dev/hd0p1.");
         return;
     }
 

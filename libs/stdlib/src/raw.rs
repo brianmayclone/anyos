@@ -35,6 +35,8 @@ pub(crate) const SYS_EXEC: u32 = 11;
 pub(crate) const SYS_WAITPID: u32 = 12;
 pub(crate) const SYS_MMAP: u32 = 14;
 pub(crate) const SYS_MUNMAP: u32 = 15;
+pub(crate) const SYS_MMAP64: u32 = 631;
+pub(crate) const SYS_MUNMAP64: u32 = 632;
 pub(crate) const SYS_KILL: u32 = 13;
 pub(crate) const SYS_SPAWN: u32 = 27;
 pub(crate) const SYS_DETACH: u32 = 314;
@@ -336,6 +338,12 @@ pub(crate) fn syscall0(num: u32) -> u32 {
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
+    syscall1_u64(num, a1) as u32
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) fn syscall1_u64(num: u32, a1: u64) -> u64 {
     let ret: u64;
     unsafe {
         asm!(
@@ -349,12 +357,18 @@ pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
             out("r11") _,
         );
     }
-    ret as u32
+    ret
 }
 
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
+    syscall2_u64(num, a1, a2) as u32
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub(crate) fn syscall2_u64(num: u32, a1: u64, a2: u64) -> u64 {
     let ret: u64;
     unsafe {
         asm!(
@@ -369,7 +383,7 @@ pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
             out("r11") _,
         );
     }
-    ret as u32
+    ret
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -454,6 +468,12 @@ pub(crate) fn syscall0(num: u32) -> u32 {
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
+    syscall1_u64(num, a1) as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+pub(crate) fn syscall1_u64(num: u32, a1: u64) -> u64 {
     let ret: u64;
     unsafe {
         asm!("svc #0",
@@ -463,12 +483,18 @@ pub(crate) fn syscall1(num: u32, a1: u64) -> u32 {
             options(nostack),
         );
     }
-    ret as u32
+    ret
 }
 
 #[cfg(target_arch = "aarch64")]
 #[inline(never)]
 pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
+    syscall2_u64(num, a1, a2) as u32
+}
+
+#[cfg(target_arch = "aarch64")]
+#[inline(never)]
+pub(crate) fn syscall2_u64(num: u32, a1: u64, a2: u64) -> u64 {
     let ret: u64;
     unsafe {
         asm!("svc #0",
@@ -479,7 +505,7 @@ pub(crate) fn syscall2(num: u32, a1: u64, a2: u64) -> u32 {
             options(nostack),
         );
     }
-    ret as u32
+    ret
 }
 
 #[cfg(target_arch = "aarch64")]

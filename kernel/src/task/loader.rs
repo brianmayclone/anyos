@@ -150,13 +150,15 @@ fn counter_entropy() -> u64 {
 ///
 /// This must comfortably exceed bursty thread/process creation patterns such as
 /// kstress, browser worker fan-out, and parallel child spawns at boot.
-const MAX_PENDING: usize = 64;
-const PENDING_LOOKUP_SPIN_LIMIT: usize = 4096;
+const MAX_PENDING_PROGRAMS: usize = 256;
+const MAX_PENDING_FORKS: usize = 64;
+const PENDING_LOOKUP_SPIN_LIMIT: usize = 65536;
 
 /// Slot holding the entry point and stack pointer for a newly spawned user thread.
 ///
 /// The trampoline thread looks up its TID in this table to learn where to jump
 /// after the context switch into the new address space.
+#[derive(Clone, Copy)]
 struct PendingSlot {
     tid: u32,
     entry: u64,
@@ -172,25 +174,8 @@ impl PendingSlot {
     }
 }
 
-static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING]> =
-    Spinlock::new([
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-        PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(), PendingSlot::empty(),
-    ]);
+static PENDING_PROGRAMS: Spinlock<[PendingSlot; MAX_PENDING_PROGRAMS]> =
+    Spinlock::new([PendingSlot::empty(); MAX_PENDING_PROGRAMS]);
 
 fn try_store_pending_program(
     tid: u32,
@@ -247,7 +232,16 @@ fn take_pending_program(
                         slot.is_compat32,
                     );
                 }
-                panic!("No pending program for {}", trampoline_name);
+                drop(slots);
+                crate::serial_println!(
+                    "[loader] terminating tid={} after missing pending-program slot ({})",
+                    tid,
+                    trampoline_name,
+                );
+                crate::task::scheduler::kill_thread(tid);
+                loop {
+                    crate::task::scheduler::schedule();
+                }
             }
         }
 
@@ -354,7 +348,7 @@ impl ForkPendingSlot {
 }
 
 #[cfg(target_arch = "x86_64")]
-static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
+static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING_FORKS]> =
     Spinlock::new([
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
@@ -391,7 +385,7 @@ static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
     ]);
 
 #[cfg(target_arch = "aarch64")]
-static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING]> =
+static PENDING_FORKS: Spinlock<[ForkPendingSlot; MAX_PENDING_FORKS]> =
     Spinlock::new([
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
         ForkPendingSlot::empty(), ForkPendingSlot::empty(),
@@ -509,6 +503,7 @@ pub extern "C" fn fork_child_trampoline() {
 /// silent corruption of the pointer operand.
 #[cfg(target_arch = "x86_64")]
 unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
+    crate::arch::x86::syscall_msr::debug_assert_gs_is_kernel();
     core::arch::asm!(
         "cli",
         // Set data segments for user mode — use {seg} operand, NEVER hardcode ax
@@ -541,7 +536,9 @@ unsafe fn fork_return_to_user(regs: *const ForkChildRegs) -> ! {
         "mov rdx, [{p} + 16]",
         "mov rcx, [{p} + 8]",
         "mov rbx, [{p}]",
-        // {p} is now dead — safe to clobber any register
+        // {p} is now dead — safe to clobber any register.
+        // Preserve PERCPU invariant across ring 3 transition.
+        crate::prepare_gs_for_ring3_asm!(),
         "xor eax, eax",             // RAX = 0 (fork child return value)
         "iretq",
         p = in(reg) regs,
@@ -1718,6 +1715,7 @@ pub extern "C" fn thread_create_trampoline() {
 /// On AArch64: sets ELR_EL1/SP_EL0/SPSR_EL1 and issues `eret` to EL0.
 #[cfg(target_arch = "x86_64")]
 unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
+    crate::arch::x86::syscall_msr::debug_assert_gs_is_kernel();
     // Use explicit R14/R15 to avoid `mov ax, 0x23` clobbering an in(reg) operand
     // (MEMORY.md: hardcoded AX in asm! corrupts any in(reg) that the compiler
     //  allocates to RAX — and `pop rax` would clobber it too)
@@ -1739,6 +1737,9 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64) -> ! {
         "push rax",
         "push 0x2B",       // CS = user code 64-bit segment
         "push r15",        // RIP = program entry point
+        // Preserve the PERCPU invariant across the ring 3 transition:
+        // KERNEL_GS_BASE ← PERCPU, GS.base ← 0. See CLAUDE.md.
+        crate::prepare_gs_for_ring3_asm!(),
         // Clear all GPRs to prevent kernel address leaks to user mode
         // (critical for exec: INT 0x80 frame leaves kernel values in regs)
         "xor eax, eax",
@@ -1840,6 +1841,7 @@ unsafe fn jump_to_user_mode(entry: u64, user_stack: u64, user_lr: u64) -> ! {
 /// in this kernel. Callers must not invoke this on ARM64.
 #[cfg(target_arch = "x86_64")]
 unsafe fn jump_to_user_mode_compat32(entry: u64, user_stack: u64) -> ! {
+    crate::arch::x86::syscall_msr::debug_assert_gs_is_kernel();
     core::arch::asm!(
         "cli",
         // Set data segment registers to user data segment
@@ -1858,6 +1860,8 @@ unsafe fn jump_to_user_mode_compat32(entry: u64, user_stack: u64) -> ! {
         "push rax",
         "push 0x1B",       // CS = user code 32-bit compat segment
         "push r15",        // EIP = program entry point (32-bit)
+        // Preserve the PERCPU invariant across the ring 3 transition.
+        crate::prepare_gs_for_ring3_asm!(),
         // Clear all GPRs to prevent kernel address leaks to user mode
         "xor eax, eax",
         "xor ebx, ebx",

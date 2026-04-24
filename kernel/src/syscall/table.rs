@@ -200,6 +200,8 @@ pub const SYSCALL_TABLE: &[(u32, &str)] = &[
     (SYS_VCPU_SET_MP_STATE, "vcpu_set_mp_state"),
     (SYS_VCPU_TRANSLATE, "vcpu_translate"),
     (SYS_AVM_IOCTL, "avm_ioctl"),
+    (SYS_MMAP64, "mmap64"),
+    (SYS_MUNMAP64, "munmap64"),
 ];
 
 /// Look up the human-readable name for a syscall number.

@@ -325,6 +325,8 @@ pub const SYS_VCPU_TRANSLATE: u32 = 621;
 
 // AVM (anyOS Virtual Machine) KVM-style ioctl ABI.
 pub const SYS_AVM_IOCTL: u32 = 630;
+pub const SYS_MMAP64: u32 = 631;
+pub const SYS_MUNMAP64: u32 = 632;
 
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///

@@ -116,10 +116,12 @@ pub struct Resources {
     pub autostart: bool,
 }
 
+pub const DEFAULT_GUEST_MEMORY_MB: u32 = 2048;
+
 impl Default for Resources {
     fn default() -> Self {
         Self {
-            memory_mb: 2048,
+            memory_mb: DEFAULT_GUEST_MEMORY_MB,
             vcpu_count: 2,
             autostart: false,
         }

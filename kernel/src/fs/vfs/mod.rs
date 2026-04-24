@@ -206,10 +206,13 @@ struct VfsState {
     mounted_exfat: Vec<(String, ExFatFs)>,
     /// OverlayFS: writable RAM layer over ISO 9660 (active when booting from CD).
     overlay_fs: Option<OverlayFs>,
-    /// CoreFS-Treiber (read-only Mount via corefs-core). Optional, weil noch
-    /// nicht alle VFS-Pfade das Dispatch auf diesen Treiber ausrollen — siehe
-    /// `fs::corefs::CoreFsDriver`.
+    /// CoreFS-Root-Treiber. Aktiv nur wenn die Root-Partition CoreFS ist.
+    /// Für zusätzliche CoreFS-Sub-Mounts siehe `mounted_corefs`.
     corefs_driver: Option<crate::fs::corefs::CoreFsDriver>,
+    /// Zusätzliche CoreFS-Sub-Mounts (mount_path, driver). Analog zu
+    /// `mounted_exfat` — jede Partition bekommt ihren eigenen Treiber, so
+    /// dass `statfs` und File-I/O pro Mountpunkt korrekt dispatchen.
+    mounted_corefs: Vec<(String, crate::fs::corefs::CoreFsDriver)>,
     // -----------------------------------------------------------------
     // Per-FS typed root drivers (Phase 6).
     //
@@ -258,6 +261,45 @@ impl VfsState {
             || self.ntfs_fs.is_some()
             || self.corefs_driver.is_some()
             || self.root_other.is_some()
+    }
+
+    /// Find the CoreFS driver serving `mount_path`. `mount_path` must be
+    /// the *exact* mount point string (e.g. "/", "/mnt/corefs", "/System").
+    /// Returns `None` if no CoreFS is mounted at that path.
+    fn corefs_for_mount(&self, mount_path: &str) -> Option<&crate::fs::corefs::CoreFsDriver> {
+        if mount_path == "/" {
+            if self.root_fs_type == Some(FsType::CoreFs) {
+                return self.corefs_driver.as_ref();
+            }
+            return None;
+        }
+        self.mounted_corefs
+            .iter()
+            .find(|(p, _)| p == mount_path)
+            .map(|(_, d)| d)
+    }
+
+    /// Find the CoreFS driver that serves the absolute file path `path`.
+    /// Uses sub-mount dispatch when applicable and otherwise falls back to
+    /// the CoreFS root driver. Returns `None` if no CoreFS driver owns the
+    /// path (including when the root is not CoreFS and the path lives on
+    /// another filesystem).
+    fn corefs_for_path(&self, path: &str) -> Option<&crate::fs::corefs::CoreFsDriver> {
+        if let Some((mp, _rel, t)) = path::find_submount(path, &self.mount_points) {
+            if t == FsType::CoreFs {
+                return self
+                    .mounted_corefs
+                    .iter()
+                    .find(|(p, _)| p == mp)
+                    .map(|(_, d)| d);
+            }
+            return None;
+        }
+        if self.root_fs_type == Some(FsType::CoreFs) {
+            self.corefs_driver.as_ref()
+        } else {
+            None
+        }
     }
 
     /// Allocate a free slot in the global open_files table. O(1) via free stack.
@@ -315,6 +357,7 @@ pub fn init() {
         devfs: None,
         smbfs: Vec::new(),
         mounted_exfat: Vec::new(),
+        mounted_corefs: Vec::new(),
         overlay_fs: None,
         corefs_driver: None,
         exfat_fs: None,
@@ -534,22 +577,23 @@ pub fn mount_corefs(
     let driver = crate::fs::corefs::CoreFsDriver::mount_writable(adapter)?;
     let mut vfs = VFS.lock();
     let state = vfs.as_mut().ok_or(FsError::IoError)?;
-    // Single-slot limitation: `state.corefs_driver` is reused by both the
-    // root mount and any /mnt/corefs* sub-mounts via `FsType::CoreFs`
-    // dispatch.  If the root is already CoreFS, overwriting the slot
-    // would redirect *all* root-relative file reads to the sub-mount's
-    // device — every subsequent `/Libraries/*` read would hit the wrong
-    // partition and return NotFound.  Refuse the sub-mount until a
-    // proper `mounted_corefs: Vec<(path, driver)>` Vec exists.
-    if state.root_fs_type == Some(FsType::CoreFs) && path != "/" {
-        crate::serial_println!(
-            "  [corefs] skipping sub-mount at '{}' — root already serves CoreFS \
-             (multi-CoreFS dispatch not yet implemented)",
-            path
-        );
-        return Err(FsError::AlreadyExists);
+    if path == "/" {
+        // Root mount — populated by the generic `probe_mount_corefs` path
+        // during boot, or explicitly via root-level dispatch.
+        if state.corefs_driver.is_some() {
+            return Err(FsError::AlreadyExists);
+        }
+        state.corefs_driver = Some(driver);
+    } else {
+        // Sub-mount — each partition lives in its own driver slot so that
+        // statfs / read / write dispatch per mount path.
+        if state.mounted_corefs.iter().any(|(p, _)| p == path)
+            || state.mount_points.iter().any(|mp| mp.path == path)
+        {
+            return Err(FsError::AlreadyExists);
+        }
+        state.mounted_corefs.push((String::from(path), driver));
     }
-    state.corefs_driver = Some(driver);
     state.mount_points.push(MountPoint {
         path: String::from(path),
         fs_type: FsType::CoreFs,
@@ -611,13 +655,16 @@ pub fn mount_fuse(mount_path: &str, session_id: u32) -> Result<(), FsError> {
 pub fn sync_corefs() -> Result<bool, FsError> {
     let vfs = VFS.lock();
     let state = vfs.as_ref().ok_or(FsError::IoError)?;
-    match state.corefs_driver.as_ref() {
-        Some(driver) => {
-            driver.flush()?;
-            Ok(true)
-        }
-        None => Ok(false),
+    let mut any = false;
+    if let Some(driver) = state.corefs_driver.as_ref() {
+        driver.flush()?;
+        any = true;
     }
+    for (_, driver) in &state.mounted_corefs {
+        driver.flush()?;
+        any = true;
+    }
+    Ok(any)
 }
 
 /// Mount the device filesystem at /dev, bridging built-in virtual devices
@@ -814,7 +861,7 @@ pub fn open(path: &str, flags: FileFlags) -> Result<FileDescriptor, FsError> {
                 return Ok(slot_id);
             }
             FsType::CoreFs => {
-                let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+                let driver = state.corefs_for_mount(mount_path).ok_or(FsError::NotFound)?;
                 let q = if relative_path.is_empty() { "/" } else { relative_path };
                 let lookup_result = Filesystem::lookup(driver, q);
                 let (inode, file_type, size) = match lookup_result {
@@ -1223,8 +1270,13 @@ pub fn close(slot_id: FileDescriptor) -> Result<(), FsError> {
                 do_writeback = true;
             }
             if was_writable && fs_id == 8 {
-                if let Some(driver) = state.corefs_driver.as_ref() {
-                    let _ = driver.flush();
+                if let Some(path) = state.open_files.get(slot_id as usize)
+                    .and_then(|e| e.as_ref())
+                    .map(|f| f.path.clone())
+                {
+                    if let Some(driver) = state.corefs_for_path(&path) {
+                        let _ = driver.flush();
+                    }
                 }
             }
             if fs_id == 9 {
@@ -1288,8 +1340,13 @@ pub fn decref(slot_id: u32) {
                     do_writeback = true;
                 }
                 if was_writable && fs_id == 8 {
-                    if let Some(driver) = state.corefs_driver.as_ref() {
-                        let _ = driver.flush();
+                    if let Some(path) = state.open_files.get(slot_id as usize)
+                        .and_then(|e| e.as_ref())
+                        .map(|f| f.path.clone())
+                    {
+                        if let Some(driver) = state.corefs_for_path(&path) {
+                            let _ = driver.flush();
+                        }
                     }
                 }
                 if fs_id == 9 {
@@ -1411,7 +1468,8 @@ pub fn read(slot_id: FileDescriptor, buf: &mut [u8]) -> Result<usize, FsError> {
         let to_read = buf.len().min(remaining);
         let file_inode = file.inode;
         let file_position = file.position;
-        let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
+        let file_path = file.path.clone();
+        let driver = state.corefs_for_path(&file_path).ok_or(FsError::IoError)?;
         let bytes_read = Filesystem::read(driver, file_inode, file_position, &mut buf[..to_read])?;
         let file = state.open_files.get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
@@ -1591,20 +1649,21 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         let file_inode = file.inode;
         let file_position = file.position;
         let sync_write = file.flags.sync;
-        let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
+        let file_path = file.path.clone();
+        let driver = state.corefs_for_path(&file_path).ok_or(FsError::IoError)?;
         let bytes_written = Filesystem::write(driver, file_inode, file_position, buf)?;
         // Re-query the driver for the updated size — the write may have
         // extended the file beyond its previous end.
         let new_size = {
-            // We have the driver reference above; fetch path, then lookup.
-            let file = state.open_files.get(slot_id as usize)
-                .and_then(|e| e.as_ref())
-                .ok_or(FsError::BadFd)?;
-            let mount_rel = find_submount(&file.path, &state.mount_points)
+            let mount_rel = find_submount(&file_path, &state.mount_points)
                 .map(|(_, rel, _)| String::from(rel))
                 .unwrap_or_else(|| String::from("/"));
-            let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
-            Filesystem::lookup(driver, &mount_rel).map(|(_, _, s)| s).unwrap_or(file.size)
+            let driver = state.corefs_for_path(&file_path).ok_or(FsError::IoError)?;
+            let prev_size = state.open_files.get(slot_id as usize)
+                .and_then(|e| e.as_ref())
+                .map(|f| f.size)
+                .unwrap_or(0);
+            Filesystem::lookup(driver, &mount_rel).map(|(_, _, s)| s).unwrap_or(prev_size)
         };
         let file = state.open_files.get_mut(slot_id as usize)
             .and_then(|e| e.as_mut())
@@ -1612,7 +1671,7 @@ pub fn write(slot_id: FileDescriptor, buf: &[u8]) -> Result<usize, FsError> {
         file.position += bytes_written as u32;
         file.size = core::cmp::max(new_size, file.position);
         if sync_write {
-            let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
+            let driver = state.corefs_for_path(&file_path).ok_or(FsError::IoError)?;
             driver.flush()?;
         }
         return Ok(bytes_written);
@@ -1829,7 +1888,7 @@ pub fn read_dir(path: &str) -> Result<Vec<DirEntry>, FsError> {
                 return smb.read_dir(inode);
             }
             FsType::CoreFs => {
-                let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+                let driver = state.corefs_for_mount(mount_path).ok_or(FsError::NotFound)?;
                 let q = if relative_path.is_empty() { "/" } else { relative_path };
                 let (inode, file_type, _size) = Filesystem::lookup(driver, q)?;
                 if file_type != FileType::Directory {
@@ -2120,7 +2179,7 @@ pub fn delete(path: &str) -> Result<(), FsError> {
     // --- Mount point path (SMB / CoreFS delete) ---
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
-            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let driver = state.corefs_for_mount(mount_path).ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
             let rel = rel.trim_end_matches('/');
             let (parent, name) = match rel.rfind('/') {
@@ -2198,20 +2257,11 @@ pub fn delete(path: &str) -> Result<(), FsError> {
         return overlay.delete(iso, path);
     }
 
+    // --- Generic root-FS dispatch via Filesystem trait (Phase 6 Step 6). ---
+    let driver = state.root_fs().ok_or(FsError::IoError)?;
     let (parent_path, filename) = split_parent_name(path)?;
-    if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-        let mut exfat_guard = exfat_drv.lock_inner();
-        let exfat = &mut *exfat_guard;
-        // Resolve parent with symlink following, but the filename itself is not followed
-        let pr = resolve_exfat_path(exfat, parent_path, true)?;
-        let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
-        return exfat.delete_file(pc, filename);
-    }
-    let fat_drv = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
-        let mut fat_guard = fat_drv.lock_inner();
-        let fat = &mut *fat_guard;
-    let (parent_cluster, _, _) = fat.lookup(parent_path)?;
-    fat.delete_file(parent_cluster, filename)
+    let (parent_inode, _, _) = driver.lookup(parent_path)?;
+    driver.delete(parent_inode, filename)
 }
 
 /// Rename (move) a file or directory from old_path to new_path.
@@ -2232,7 +2282,7 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
         .map(|(mp, rel, _)| (String::from(mp), String::from(rel)));
     match (corefs_old, corefs_new) {
         (Some((mp_old, rel_old)), Some((mp_new, rel_new))) if mp_old == mp_new => {
-            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let driver = state.corefs_for_mount(&mp_old).ok_or(FsError::NotFound)?;
             fn split_rel(rel: &str) -> Result<(String, String), FsError> {
                 let rel_owned: String = if rel.is_empty() {
                     String::from("/")
@@ -2308,24 +2358,10 @@ pub fn rename(old_path: &str, new_path: &str) -> Result<(), FsError> {
         return overlay.rename(iso, old_path, new_path);
     }
 
-    let (old_parent, old_name) = split_parent_name(old_path)?;
-    let (new_parent, new_name) = split_parent_name(new_path)?;
-
-    if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-        let mut exfat_guard = exfat_drv.lock_inner();
-        let exfat = &mut *exfat_guard;
-        let old_pr = resolve_exfat_path(exfat, old_parent, true)?;
-        let (old_pc, _) = crate::fs::exfat::decode_inode(old_pr.inode);
-        let new_pr = resolve_exfat_path(exfat, new_parent, true)?;
-        let (new_pc, _) = crate::fs::exfat::decode_inode(new_pr.inode);
-        return exfat.rename_entry(old_pc, old_name, new_pc, new_name);
-    }
-    let fat_drv = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
-        let mut fat_guard = fat_drv.lock_inner();
-        let fat = &mut *fat_guard;
-    let (old_pc, _, _) = fat.lookup(old_parent)?;
-    let (new_pc, _, _) = fat.lookup(new_parent)?;
-    fat.rename_entry(old_pc, old_name, new_pc, new_name)
+    // --- Generic root-FS dispatch via Filesystem trait (Phase 6 Step 6). ---
+    state.root_fs()
+        .ok_or(FsError::IoError)?
+        .rename(old_path, new_path)
 }
 
 /// Create a directory at the given path.
@@ -2337,7 +2373,7 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
     // --- Mount point path (e.g. /mnt/target/...) ---
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
-            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let driver = state.corefs_for_mount(mount_path).ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
             let rel = rel.trim_end_matches('/');
             let (parent, name) = match rel.rfind('/') {
@@ -2396,46 +2432,21 @@ pub fn mkdir(path: &str) -> Result<(), FsError> {
         return overlay.mkdir(path);
     }
 
-    // --- CoreFS-as-root ---
+    // --- Generic root-FS dispatch via Filesystem trait (Phase 6 Step 6).
     //
-    // In dual-partition + --root-fs=corefs mode (Phase 6) the root filesystem
-    // is CoreFS, not exFAT/FAT. Without this branch, mkdir on a top-level
-    // path like `/System/users` falls through to the FAT fallback below,
-    // which finds `state.fat_fs == None` and returns IoError — silently
-    // masked by the `let _ =` swallow in ensure_perm_dir(), leaving apps
-    // unable to persist per-user data (observed: Surf launch failing because
-    // `/System/users/perm/{uid}/{app}` couldn't be created).
-    if state.root_fs_type == Some(FsType::CoreFs) {
-        let driver = state.corefs_driver.as_ref().ok_or(FsError::IoError)?;
-        let (parent_path, dirname) = split_parent_name(path)?;
-        let (parent_inode, parent_type, _) = Filesystem::lookup(driver, parent_path)?;
-        if parent_type != FileType::Directory {
-            return Err(FsError::NotADirectory);
-        }
-        Filesystem::create(driver, parent_inode, dirname, FileType::Directory)?;
-        return Ok(());
-    }
-
+    // Previously this had per-FS branches for CoreFS / exFAT / FAT; the
+    // exFAT branch followed intermediate symlinks in the parent via
+    // `resolve_exfat_path`, the others did not.  Trait lookup is a plain
+    // path walk for all four root FSes — mkdir through a symlinked
+    // parent on exFAT is no longer auto-resolved (unusual in practice,
+    // callers can resolve the path first if they need it).
+    let driver = state.root_fs().ok_or(FsError::IoError)?;
     let (parent_path, dirname) = split_parent_name(path)?;
-    if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-        let mut exfat_guard = exfat_drv.lock_inner();
-        let exfat = &mut *exfat_guard;
-        let pr = resolve_exfat_path(exfat, parent_path, true)?;
-        if pr.file_type != FileType::Directory {
-            return Err(FsError::NotADirectory);
-        }
-        let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
-        exfat.create_dir(pc, dirname)?;
-        return Ok(());
-    }
-    let fat_drv = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
-        let mut fat_guard = fat_drv.lock_inner();
-        let fat = &mut *fat_guard;
-    let (parent_cluster, parent_type, _) = fat.lookup(parent_path)?;
+    let (parent_inode, parent_type, _) = driver.lookup(parent_path)?;
     if parent_type != FileType::Directory {
         return Err(FsError::NotADirectory);
     }
-    fat.create_dir(parent_cluster, dirname)?;
+    driver.create(parent_inode, dirname, FileType::Directory)?;
     Ok(())
 }
 
@@ -2558,7 +2569,7 @@ fn stat_inner(path: &str, follow_last: bool) -> Result<StatResult, FsError> {
                 return Ok(default_stat(file_type, size, false));
             }
             FsType::CoreFs => {
-                let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+                let driver = state.corefs_for_mount(mount_path).ok_or(FsError::NotFound)?;
                 // Rewrite relative_path so that the CoreFsDriver's internal
                 // path layout ("/foo/bar") matches — CoreFS stores everything
                 // under "/", so the relative-to-mount path already starts
@@ -2708,7 +2719,7 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
     // CoreFS truncate-to-zero via driver.
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
-            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let driver = state.corefs_for_mount(mount_path).ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
             let (inode, ft, _sz) = Filesystem::lookup(driver, rel)?;
             if ft == FileType::Directory {
@@ -2743,26 +2754,44 @@ pub fn truncate(path: &str) -> Result<(), FsError> {
         return overlay.truncate(iso, path);
     }
 
-    let (parent_path, filename) = split_parent_name(path)?;
-    if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-        let mut exfat_guard = exfat_drv.lock_inner();
-        let exfat = &mut *exfat_guard;
-        let pr = resolve_exfat_path(exfat, parent_path, true)?;
-        let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
-        return exfat.truncate_file(pc, filename);
+    // --- Generic root-FS dispatch (Phase 6 Step 6). ---
+    state.root_fs()
+        .ok_or(FsError::IoError)?
+        .truncate_by_path(path)
+}
+
+/// Resolve a mount device spec to a BlockDevice.
+///
+/// Accepts either a decimal device ID (e.g. `"3"` from SYS_DISK_LIST) or a
+/// device path (e.g. `"/dev/sda1"`, `"/dev/hd0p1"`).
+fn resolve_mount_device(device: &str) -> Result<crate::drivers::storage::blockdev::BlockDevice, FsError> {
+    use crate::drivers::storage::blockdev;
+    if device.starts_with("/dev/") {
+        let (disk_id, partition) = blockdev::parse_device_path(device).ok_or_else(|| {
+            crate::serial_verbose_println!("  mount_fs: invalid device path '{}'", device);
+            FsError::InvalidPath
+        })?;
+        blockdev::find_device(disk_id, partition).ok_or_else(|| {
+            crate::serial_verbose_println!("  mount_fs: device '{}' not found", device);
+            FsError::NotFound
+        })
+    } else {
+        let dev_id: u8 = device.parse::<u8>().map_err(|_| {
+            crate::serial_verbose_println!("  mount_fs: invalid device '{}' (expected numeric device_id or /dev/ path)", device);
+            FsError::InvalidPath
+        })?;
+        blockdev::get_device(dev_id).ok_or_else(|| {
+            crate::serial_verbose_println!("  mount_fs: device {} not found", dev_id);
+            FsError::NotFound
+        })
     }
-    let fat_drv = state.fat_fs.as_ref().ok_or(FsError::IoError)?;
-        let mut fat_guard = fat_drv.lock_inner();
-        let fat = &mut *fat_guard;
-    let (parent_cluster, _, _) = fat.lookup(parent_path)?;
-    fat.truncate_file(parent_cluster, filename)
 }
 
 /// Mount a filesystem at the given path from userspace (syscall handler).
 ///
 /// `mount_path`: where to mount (e.g. "/mnt/cdrom0")
-/// `device`: device path (e.g. "/dev/cdrom0" or "//ip/share" for SMB)
-/// `fs_type_id`: 0=FAT, 1=ISO9660, 4=NTFS, 5=SMB
+/// `device`: device ID ("3"), device path ("/dev/sda1"), or "//ip/share" (SMB)
+/// `fs_type_id`: 0=FAT, 1=ISO9660, 4=NTFS, 5=SMB, 6=CoreFS, 7=exFAT
 ///
 /// Returns Ok(()) on success.
 pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), FsError> {
@@ -2778,17 +2807,9 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
 
     match fs_type_id {
         0 | 7 => {
-            // exFAT/FAT mount by device ID
-            // device string = decimal device_id (from SYS_DISK_LIST)
-            let dev_id: u8 = device.parse::<u8>().map_err(|_| {
-                crate::serial_verbose_println!("  mount_fs: invalid device '{}' (expected numeric device_id)", device);
-                FsError::InvalidPath
-            })?;
-            let bdev = crate::drivers::storage::blockdev::get_device(dev_id)
-                .ok_or_else(|| {
-                    crate::serial_verbose_println!("  mount_fs: device {} not found", dev_id);
-                    FsError::NotFound
-                })?;
+            // exFAT/FAT mount by device ID ("3") or device path ("/dev/sda1")
+            let bdev = resolve_mount_device(device)?;
+            let dev_id = bdev.id;
             let start_lba = bdev.start_lba as u32;
             crate::serial_verbose_println!(
                 "  mount_fs: exFAT device={} disk={} start_lba={}",
@@ -2877,17 +2898,9 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
             Ok(())
         }
         6 => {
-            // CoreFS mount by device ID
-            // device string = decimal device_id (from SYS_DISK_LIST)
-            let dev_id: u8 = device.parse::<u8>().map_err(|_| {
-                crate::serial_verbose_println!("  mount_fs: invalid device '{}' (expected numeric device_id)", device);
-                FsError::InvalidPath
-            })?;
-            let bdev = crate::drivers::storage::blockdev::get_device(dev_id)
-                .ok_or_else(|| {
-                    crate::serial_verbose_println!("  mount_fs: device {} not found", dev_id);
-                    FsError::NotFound
-                })?;
+            // CoreFS mount by device ID ("3") or device path ("/dev/sda1")
+            let bdev = resolve_mount_device(device)?;
+            let dev_id = bdev.id;
             // Partition-only: whole-disk devices cannot be CoreFS-mounted
             if bdev.partition.is_none() {
                 crate::serial_verbose_println!("  mount_fs: device {} is a whole disk, not a partition", dev_id);
@@ -2903,9 +2916,12 @@ pub fn mount_fs(mount_path: &str, device: &str, fs_type_id: u32) -> Result<(), F
                 );
                 return Err(FsError::InvalidPath);
             }
-            // Only one CoreFS volume can be mounted at a time
-            if state.corefs_driver.is_some() {
-                crate::serial_verbose_println!("  mount_fs: a CoreFS volume is already mounted");
+            // Reject duplicate mount at the same path; multiple CoreFS
+            // partitions at distinct paths are allowed (mounted_corefs Vec).
+            if state.mount_points.iter().any(|mp| mp.path == mount_path) {
+                crate::serial_verbose_println!(
+                    "  mount_fs: already mounted at '{}'", mount_path
+                );
                 return Err(FsError::AlreadyExists);
             }
             // Drop VFS lock — mount_corefs acquires it internally
@@ -2981,6 +2997,9 @@ pub fn sync_all() {
         if let Some(driver) = state.corefs_driver.as_ref() {
             let _ = driver.flush();
         }
+        for (_, driver) in &state.mounted_corefs {
+            let _ = driver.flush();
+        }
     }
     drop(vfs);
     // Flush write-back block cache to disk (coalesced writes)
@@ -3020,11 +3039,19 @@ pub fn umount_fs(mount_path: &str) -> Result<(), FsError> {
             }
         }
 
-        // If it was CoreFS, flush pending writes and drop the driver
+        // If it was CoreFS, flush pending writes and drop the driver.
+        // Sub-mounts live in `mounted_corefs`; only the root mount ("/")
+        // uses the typed `corefs_driver` slot.
         if mp.fs_type == FsType::CoreFs {
-            if let Some(driver) = state.corefs_driver.take() {
+            if let Some(idx) = state.mounted_corefs.iter().position(|(p, _)| p == mount_path) {
+                let (_, driver) = state.mounted_corefs.remove(idx);
                 let _ = driver.flush();
                 crate::serial_verbose_println!("  Unmounted CoreFS '{}'", mount_path);
+            } else if mount_path == "/" {
+                if let Some(driver) = state.corefs_driver.take() {
+                    let _ = driver.flush();
+                    crate::serial_verbose_println!("  Unmounted CoreFS '/'");
+                }
             }
         }
 
@@ -3058,7 +3085,7 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
     // CoreFS symlinks via driver.
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(link_path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
-            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let driver = state.corefs_for_mount(mount_path).ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
             let rel = rel.trim_end_matches('/');
             let (parent, name) = match rel.rfind('/') {
@@ -3095,19 +3122,12 @@ pub fn create_symlink(link_path: &str, target: &str) -> Result<(), FsError> {
         }
     }
 
-    let (parent_path, link_name) = split_parent_name(link_path)?;
-    if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-        let mut exfat_guard = exfat_drv.lock_inner();
-        let exfat = &mut *exfat_guard;
-        let pr = resolve_exfat_path(exfat, parent_path, true)?;
-        if pr.file_type != FileType::Directory {
-            return Err(FsError::NotADirectory);
-        }
-        let (pc, _) = crate::fs::exfat::decode_inode(pr.inode);
-        return exfat.create_symlink(pc, link_name, target);
-    }
-    // FAT16 does not support symlinks
-    Err(FsError::PermissionDenied)
+    // --- Generic root-FS dispatch (Phase 6 Step 6).  FAT/NTFS inherit
+    // the trait default `NotSupported` since they have no symlink
+    // support; ExFat and CoreFS override with actual implementations.
+    state.root_fs()
+        .ok_or(FsError::PermissionDenied)?
+        .create_symlink(link_path, target)
 }
 
 /// Read the target of a symbolic link WITHOUT following it.
@@ -3159,17 +3179,18 @@ pub fn get_permissions(path: &str) -> Result<(u16, u16, u16), FsError> {
         return Ok((0, 0, 0xFFF));
     }
 
-    if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-        let exfat_guard = exfat_drv.lock_inner();
-        let exfat = &*exfat_guard;
-        return exfat.get_permissions(path);
-    }
-
-    // CoreFS root path — derive (uid, gid, mode) from stat().
-    if let Some(driver) = state.corefs_driver.as_ref() {
+    // --- Generic root-FS dispatch via Filesystem::stat (Phase 6 Step 6).
+    //
+    // Previously: exFAT used its inherent `get_permissions(path)`, CoreFS
+    // used `Filesystem::stat(path)`, FAT/NTFS fell through to defaults.
+    // All three now derive from `stat(path)`, which carries uid/gid/mode
+    // when the driver populates them (ExFat: dirent, CoreFS: inode
+    // metadata; FAT/NTFS return the trait's `0o777` default).
+    if let Some(driver) = state.root_fs() {
         let q = if path.is_empty() { "/" } else { path };
-        let st = Filesystem::stat(driver, q)?;
-        return Ok((st.uid, st.gid, st.mode));
+        if let Ok(st) = driver.stat(q) {
+            return Ok((st.uid, st.gid, st.mode));
+        }
     }
 
     // FAT16 / other: no permission support
@@ -3183,7 +3204,7 @@ pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
 
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
-            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let driver = state.corefs_for_mount(mount_path).ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
             let (inode, _, _) = Filesystem::lookup(driver, rel)?;
             return driver.set_mode(inode, mode as u32);
@@ -3205,12 +3226,10 @@ pub fn set_mode(path: &str, mode: u16) -> Result<(), FsError> {
         }
     }
 
-    if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-        let mut exfat_guard = exfat_drv.lock_inner();
-        let exfat = &mut *exfat_guard;
-        return exfat.set_mode(path, mode);
-    }
-    Err(FsError::PermissionDenied)
+    // --- Generic root-FS dispatch (Phase 6 Step 6). ---
+    state.root_fs()
+        .ok_or(FsError::PermissionDenied)?
+        .set_mode_by_path(path, mode)
 }
 
 /// Set the owner (uid, gid) for a path.
@@ -3220,7 +3239,7 @@ pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
 
     if let Some((mount_path, relative_path, mnt_fs_type)) = find_submount(path, &state.mount_points) {
         if mnt_fs_type == FsType::CoreFs {
-            let driver = state.corefs_driver.as_ref().ok_or(FsError::NotFound)?;
+            let driver = state.corefs_for_mount(mount_path).ok_or(FsError::NotFound)?;
             let rel = if relative_path.is_empty() { "/" } else { relative_path };
             let (inode, _, _) = Filesystem::lookup(driver, rel)?;
             return driver.set_owner(inode, uid as u32, gid as u32);
@@ -3243,12 +3262,10 @@ pub fn set_owner(path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
         }
     }
 
-    if let Some(exfat_drv) = state.exfat_fs.as_ref() {
-        let mut exfat_guard = exfat_drv.lock_inner();
-        let exfat = &mut *exfat_guard;
-        return exfat.set_owner(path, uid, gid);
-    }
-    Err(FsError::PermissionDenied)
+    // --- Generic root-FS dispatch (Phase 6 Step 6). ---
+    state.root_fs()
+        .ok_or(FsError::PermissionDenied)?
+        .set_owner_by_path(path, uid, gid)
 }
 
 /// Returns `true` if the root filesystem is ISO 9660 (live-CD / read-only boot).
@@ -3312,15 +3329,34 @@ pub fn statfs(path: &str) -> Option<StatFs> {
                 })
             }
             FsType::DevFs | FsType::Smb | FsType::Overlay => None,
-            FsType::CoreFs => state.corefs_driver.as_ref().and_then(|driver| {
+            FsType::CoreFs => state.corefs_for_mount(path).and_then(|driver| {
                 driver.statfs().ok().map(|(total, used, free)| StatFs {
                     total_bytes: total,
                     used_bytes: used,
                     free_bytes: free,
                 })
             }),
-            // FUSE — statfs müsste via Request an den Daemon gehen; TODO Phase 5.7+.
-            FsType::Fuse => None,
+            FsType::Fuse => {
+                // Round-trip Statfs to the userspace daemon. Session lives
+                // behind an Arc — we can release the VFS lock during the
+                // (potentially blocking) call but for now keep it simple.
+                fuse_session_id_for(state, mp.path.as_str())
+                    .and_then(crate::fs::fuse::session)
+                    .and_then(|session| {
+                        let req = fuse_proto::Request::Statfs;
+                        crate::fs::fuse::fuse_call(&session, &req).ok()
+                    })
+                    .and_then(|reply| match reply {
+                        fuse_proto::Reply::Statfs(s) => Some(s),
+                        _ => None,
+                    })
+                    .map(|s| {
+                        let total = s.blocks.saturating_mul(s.bsize as u64);
+                        let free = s.bfree.saturating_mul(s.bsize as u64);
+                        let used = total.saturating_sub(free);
+                        StatFs { total_bytes: total, used_bytes: used, free_bytes: free }
+                    })
+            }
         };
         if result.is_some() {
             return result;

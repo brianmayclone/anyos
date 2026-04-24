@@ -1420,10 +1420,19 @@ pub extern "C" fn irq_handler(frame: &InterruptFrame) {
                 }
             }
 
-            // Refresh KERNEL_GS_BASE MSR to ensure SYSCALL always loads the
-            // correct per-CPU data. Without this, a corrupted MSR could cause
-            // SYSCALL to load the wrong kernel RSP → crash.
-            crate::arch::x86::syscall_msr::refresh_kernel_gs_base();
+            // Historical note: a `refresh_kernel_gs_base()` call lived here
+            // to compensate for QEMU TCG MSR leaks. Under the old invariant
+            // (swapgs back to user inside the syscall handler, Phase 3) the
+            // call was harmless: during kernel residency KERNEL_GS_BASE was
+            // supposed to equal PERCPU, so overwriting it was a no-op.
+            //
+            // Post-commit 241b1475 the invariant flipped — GS.base stays at
+            // PERCPU for the whole kernel residency and KERNEL_GS_BASE holds
+            // the user's saved GS (typically 0). A refresh in that state
+            // would clobber KERNEL_GS_BASE with PERCPU, making the final
+            // Phase 6 `swapgs` a no-op and leaking GS.base=PERCPU to ring 3.
+            // MSR-leak recovery now lives in the Phase 1b LAPIC-ID check
+            // inside syscall_fast.asm, which is immune to this ambiguity.
         }
     }
 

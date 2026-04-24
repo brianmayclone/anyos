@@ -14,7 +14,64 @@ const MSR_EFER: u32 = 0xC000_0080;
 const MSR_STAR: u32 = 0xC000_0081;
 const MSR_LSTAR: u32 = 0xC000_0082;
 const MSR_SFMASK: u32 = 0xC000_0084;
-const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
+pub const MSR_GS_BASE: u32 = 0xC000_0101;
+pub const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
+
+/// Expands to a NASM-Intel instruction sequence that prepares the GS state
+/// for a transition from CPL 0 to CPL 3.
+///
+/// Invariant before expansion: `GS.base = current CPU's PERCPU pointer`
+/// (the invariant maintained by [`crate::arch::x86::syscall_msr`] and the
+/// post-commit syscall entry path).
+///
+/// Effect after expansion:
+///   * `IA32_KERNEL_GS_BASE ← GS.base` (so the user's next `swapgs` on
+///     SYSCALL re-loads this CPU's PERCPU).
+///   * `IA32_GS_BASE ← 0` (the user starts with a clean GS base; no kernel
+///     pointer leak).
+///
+/// Clobbers `EAX`, `ECX`, `EDX`. Must be expanded inside an `asm!` block
+/// with interrupts disabled, immediately before the `iretq` that transitions
+/// to ring 3. See the "GS.base / KERNEL_GS_BASE Invariant" section in
+/// `CLAUDE.md` for the rationale.
+#[macro_export]
+macro_rules! prepare_gs_for_ring3_asm {
+    () => {
+        concat!(
+            "mov ecx, 0xC0000101\n",   // IA32_GS_BASE
+            "rdmsr\n",                 // EDX:EAX = current GS.base (PERCPU)
+            "mov ecx, 0xC0000102\n",   // IA32_KERNEL_GS_BASE
+            "wrmsr\n",                 // KERNEL_GS_BASE = PERCPU
+            "xor eax, eax\n",
+            "xor edx, edx\n",
+            "mov ecx, 0xC0000101\n",   // IA32_GS_BASE
+            "wrmsr\n",                 // GS.base = 0 (user)
+        )
+    };
+}
+
+/// Debug-only sanity check that GS.base is a kernel higher-half pointer.
+///
+/// Any ring-3 transition expects `GS.base = current CPU's PERCPU`. If this
+/// invariant is broken (for example because a new code path entered with
+/// user-GS still loaded), calling [`prepare_gs_for_ring3_asm!`] would copy
+/// garbage into `KERNEL_GS_BASE` and bring back the very bug the macro is
+/// meant to prevent. Fail loudly at the source in debug builds.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+pub unsafe fn debug_assert_gs_is_kernel() {
+    #[cfg(debug_assertions)]
+    {
+        let gs_base = rdmsr(MSR_GS_BASE);
+        if gs_base < 0xFFFF_8000_0000_0000 {
+            panic!(
+                "ring-3 transition with non-kernel GS.base={:#x} — caller violated the \
+                 'GS.base = PERCPU throughout kernel residency' invariant",
+                gs_base
+            );
+        }
+    }
+}
 
 // EFER bits
 const EFER_SCE: u64 = 1 << 0;  // Syscall Enable
@@ -188,36 +245,30 @@ pub fn set_kernel_rsp(cpu_id: usize, rsp: u64) {
     }
 }
 
-/// Unconditionally reset KERNEL_GS_BASE to the correct PERCPU address for the
-/// calling CPU.  Uses the hardware LAPIC ID (immune to software cpu_id bugs)
-/// to determine the correct slot.
+/// DEPRECATED — do not call.
 ///
-/// Called on every timer tick (before scheduling) and during context switch
-/// to ensure KERNEL_GS_BASE is always correct. This closes the window where
-/// a corrupted MSR could cause SYSCALL to load the wrong kernel RSP.
+/// Under the pre-241b1475 invariant (Phase 3 `swapgs` back to user GS inside
+/// the SYSCALL handler) this function safely re-asserted
+/// `KERNEL_GS_BASE = PERCPU` during kernel residency, which was also the
+/// expected state back then.
 ///
-/// IMPORTANT: This function must run with interrupts disabled (inside an IRQ
-/// handler or with CLI) to prevent re-entrant corruption.
-pub fn refresh_kernel_gs_base() {
-    if !INITIALIZED.load(Ordering::Acquire) {
-        return;
-    }
-    let cpu_id = crate::arch::x86::smp::current_cpu_id() as usize;
-    if cpu_id >= MAX_CPUS {
-        return;
-    }
-    unsafe {
-        let correct_base = &PERCPU[cpu_id] as *const SyscallPerCpu as u64;
-        let actual_base = rdmsr(MSR_KERNEL_GS_BASE);
-        if actual_base != correct_base {
-            crate::serial_verbose_println!(
-                "KERNEL_GS_BASE repair: CPU{} had {:#x}, expected {:#x}",
-                cpu_id, actual_base, correct_base,
-            );
-            wrmsr(MSR_KERNEL_GS_BASE, correct_base);
-        }
-    }
-}
+/// Post-241b1475 the invariant inverted: during kernel residency
+/// `GS.base = PERCPU` and `KERNEL_GS_BASE = user_gs` (usually 0). Overwriting
+/// `KERNEL_GS_BASE` with PERCPU from an IRQ handler now *breaks* the
+/// invariant: the final Phase 6 `swapgs` degenerates into a no-op and user
+/// space inherits `GS.base = PERCPU`, leaking the per-CPU pointer into
+/// ring 3.
+///
+/// MSR-leak recovery lives in the Phase 1b LAPIC-ID check inside
+/// `syscall_fast.asm`, which inspects hardware state rather than a software
+/// shadow and is therefore immune to this ambiguity. Do not re-introduce a
+/// timer-tick MSR refresh without rethinking the invariant end-to-end.
+#[deprecated(
+    note = "Breaks the post-241b1475 GS invariant; see syscall_fast.asm \
+            Phase 1b for the correct leak-recovery mechanism."
+)]
+#[allow(dead_code)]
+pub fn refresh_kernel_gs_base() {}
 
 /// Read the kernel RSP for SYSCALL on the specified CPU (diagnostic use).
 /// Reads directly from `PERCPU[cpu_id]` for consistency with `set_kernel_rsp`.

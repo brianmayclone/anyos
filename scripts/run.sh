@@ -141,6 +141,8 @@ SYSTEM_FS_OPT=""
 SYSTEM_FS_SIZE_OPT=""
 EXPECT_SYSTEM_FS=false
 EXPECT_SYSTEM_FS_SIZE=false
+RAM_MB=4096
+EXPECT_RAM=false
 MIN_RES_W=1024
 MIN_RES_H=768
 
@@ -248,6 +250,22 @@ for arg in "$@"; do
         continue
     fi
 
+    if [ "$EXPECT_RAM" = true ]; then
+        EXPECT_RAM=false
+        if [[ "$arg" =~ ^([0-9]+)([MmGg]?)$ ]]; then
+            num="${BASH_REMATCH[1]}"
+            unit="${BASH_REMATCH[2]}"
+            case "$unit" in
+                G|g) RAM_MB=$((num * 1024)) ;;
+                *)   RAM_MB="$num" ;;
+            esac
+        else
+            echo "Error: --ram expects e.g. 8192, 8192M, or 8G, got '$arg'"
+            exit 1
+        fi
+        continue
+    fi
+
     case "$arg" in
         --vmware-ws)
             VMWARE_WS=true
@@ -295,6 +313,9 @@ for arg in "$@"; do
             ;;
         --system-fs-size)
             EXPECT_SYSTEM_FS_SIZE=true
+            ;;
+        --ram|-m)
+            EXPECT_RAM=true
             ;;
         --audio)
             if [ "$(uname -s)" = "Darwin" ]; then
@@ -1018,7 +1039,7 @@ QEMU_CMD="$QEMU_BIN_ESC \
     $DRIVE_FLAGS \
     $TEMPDISK_FLAGS \
     $EXTRA_DISK_FLAGS \
-    -m 4096M \
+    -m ${RAM_MB}M \
     -smp cpus=4 \
     -serial stdio \
     $VGA_FLAGS \

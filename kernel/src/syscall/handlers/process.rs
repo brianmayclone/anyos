@@ -290,6 +290,25 @@ pub fn sys_sbrk(increment: i32) -> u32 {
 /// Virtual addresses are found via the per-process VMA gap-finder, which reuses
 /// freed regions (unlike the old bump-pointer allocator).
 pub fn sys_mmap(size: u32) -> u32 {
+    let addr = sys_mmap_impl(size as u64, false);
+    if addr > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        addr as u32
+    }
+}
+
+/// sys_mmap64 - Map anonymous pages above 4 GiB for native 64-bit callers.
+///
+/// This is intentionally separate from `sys_mmap`: many existing syscalls still
+/// take user pointers as `u32`, so the general allocator must keep returning
+/// low addresses. Large native-only buffers, such as ASL guest RAM, can use this
+/// high-VA path and pass the resulting pointer to 64-bit-aware syscalls.
+pub fn sys_mmap64(size: u64) -> u64 {
+    sys_mmap_impl(size, true)
+}
+
+fn sys_mmap_impl(size: u64, high: bool) -> u64 {
     use crate::memory::address::VirtAddr;
     use crate::memory::physical;
     use crate::memory::virtual_mem;
@@ -298,12 +317,15 @@ pub fn sys_mmap(size: u32) -> u32 {
 
     if size == 0 {
         mmap_diag_mark(b'Z');
-        return u32::MAX;
+        return u64::MAX;
     }
 
-    const PAGE_SIZE: u32 = 4096;
+    const PAGE_SIZE: u64 = 4096;
 
-    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+    let aligned_size = match size.checked_add(PAGE_SIZE - 1) {
+        Some(v) => v & !(PAGE_SIZE - 1),
+        None => return u64::MAX,
+    };
     let num_pages = aligned_size / PAGE_SIZE;
     let tid = crate::task::scheduler::debug_current_tid();
     mmap_diag_mark(b'B');
@@ -313,30 +335,45 @@ pub fn sys_mmap(size: u32) -> u32 {
         Some(pd) => pd,
         None => {
             crate::serial_verbose_println!("sys_mmap: no page directory for current thread");
-            mmap_diag_log(b"!mm-no-pd", tid, aligned_size, 0, u32::MAX);
-            return u32::MAX;
+            mmap_diag_log(b"!mm-no-pd", tid, aligned_size as u32, 0, u32::MAX);
+            return u64::MAX;
         }
     };
     mmap_diag_mark(b'C');
-    let base = match crate::memory::vma::alloc_region(pd, aligned_size) {
+    let base = match if high {
+        crate::memory::vma::alloc_region64(pd, aligned_size)
+    } else {
+        crate::memory::vma::alloc_region(pd, aligned_size as u32).map(|addr| addr as u64)
+    } {
         Some(addr) => addr,
         None => {
             crate::serial_verbose_println!("sys_mmap: out of mmap virtual address space");
-            mmap_diag_log(b"!mm-vma-full", tid, aligned_size, pd.as_u64(), u32::MAX);
-            return u32::MAX;
+            mmap_diag_log(b"!mm-vma-full", tid, aligned_size as u32, pd.as_u64(), u32::MAX);
+            return u64::MAX;
         }
     };
     mmap_diag_mark(b'D');
-    if base < 0x7000_0000 || base.checked_add(aligned_size).map_or(true, |end| end > 0xBF00_0000) {
+    let valid_range = if high {
+        base >= 0x0000_0001_0000_0000
+            && base
+                .checked_add(aligned_size)
+                .map_or(false, |end| end <= 0x0000_4000_0000_0000)
+    } else {
+        base >= 0x7000_0000
+            && base
+                .checked_add(aligned_size)
+                .map_or(false, |end| end <= 0xBF00_0000)
+    };
+    if !valid_range {
         crate::serial_println!(
             "sys_mmap: BUG: VMA returned invalid range base={:#x} size={:#x} pd={:#x}",
             base,
             aligned_size,
             pd.as_u64()
         );
-        crate::memory::vma::free_region(pd, base, aligned_size);
-        mmap_diag_log(b"!mm-vma-bad", tid, aligned_size, pd.as_u64(), base);
-        return u32::MAX;
+        crate::memory::vma::free_region64(pd, base, aligned_size);
+        mmap_diag_log(b"!mm-vma-bad", tid, aligned_size as u32, pd.as_u64(), base as u32);
+        return u64::MAX;
     }
 
     // Allocate and map physical pages.
@@ -361,7 +398,7 @@ pub fn sys_mmap(size: u32) -> u32 {
                     }
                     cleanup += PAGE_SIZE;
                 }
-                crate::memory::vma::free_region(pd, base, aligned_size);
+                crate::memory::vma::free_region64(pd, base, aligned_size);
                 crate::serial_println!(
                     "sys_mmap: map_page failed base={:#x} addr={:#x} size={:#x} pd={:#x}",
                     base,
@@ -369,8 +406,8 @@ pub fn sys_mmap(size: u32) -> u32 {
                     aligned_size,
                     pd.as_u64()
                 );
-                mmap_diag_log(b"!mm-map-fail", tid, aligned_size, pd.as_u64(), addr);
-                return u32::MAX;
+                mmap_diag_log(b"!mm-map-fail", tid, aligned_size as u32, pd.as_u64(), addr as u32);
+                return u64::MAX;
             }
         } else {
             // Out of physical memory — unmap what we already mapped and free VMA.
@@ -384,10 +421,10 @@ pub fn sys_mmap(size: u32) -> u32 {
                 }
                 cleanup += PAGE_SIZE;
             }
-            crate::memory::vma::free_region(pd, base, aligned_size);
+            crate::memory::vma::free_region64(pd, base, aligned_size);
             crate::serial_verbose_println!("sys_mmap: out of physical memory");
-            mmap_diag_log(b"!mm-phys-oom", tid, aligned_size, pd.as_u64(), addr);
-            return u32::MAX;
+            mmap_diag_log(b"!mm-phys-oom", tid, aligned_size as u32, pd.as_u64(), addr as u32);
+            return u64::MAX;
         }
         addr += PAGE_SIZE;
     }
@@ -395,9 +432,11 @@ pub fn sys_mmap(size: u32) -> u32 {
     mmap_diag_mark(b'E');
     crate::task::scheduler::adjust_current_user_pages(num_pages as i32);
     // Keep mmap_next in sync (threads sharing this PD read it).
-    crate::task::scheduler::set_current_thread_mmap_next(base + aligned_size);
+    if !high {
+        crate::task::scheduler::set_current_thread_mmap_next((base + aligned_size) as u32);
+    }
     mmap_diag_mark(b'F');
-    mmap_diag_log(b"+mm-ok", tid, aligned_size, pd.as_u64(), base);
+    mmap_diag_log(b"+mm-ok", tid, aligned_size as u32, pd.as_u64(), base as u32);
 
     // No TLB shootdown needed for mmap: x86-64 does not cache non-present
     // TLB entries (Intel SDM Vol. 3A §4.10.2.1).  When a sibling thread on
@@ -412,25 +451,51 @@ pub fn sys_mmap(size: u32) -> u32 {
 /// arg1=addr (must be page-aligned), arg2=size (bytes, rounded up to pages).
 /// Returns 0 on success, u32::MAX on error.
 pub fn sys_munmap(addr: u32, size: u32) -> u32 {
+    if sys_munmap_impl(addr as u64, size as u64, false) == 0 {
+        0
+    } else {
+        u32::MAX
+    }
+}
+
+/// sys_munmap64 - Unmap pages from the native 64-bit high mmap region.
+pub fn sys_munmap64(addr: u64, size: u64) -> u64 {
+    sys_munmap_impl(addr, size, true)
+}
+
+fn sys_munmap_impl(addr: u64, size: u64, high: bool) -> u64 {
     use crate::memory::address::VirtAddr;
     use crate::memory::physical;
     use crate::memory::virtual_mem;
 
-    const MMAP_BASE: u32 = 0x7000_0000;
-    const MMAP_LIMIT: u32 = 0xBF00_0000;
-    const PAGE_SIZE: u32 = 4096;
+    const MMAP_BASE: u64 = 0x7000_0000;
+    const MMAP_LIMIT: u64 = 0xBF00_0000;
+    const MMAP64_BASE: u64 = 0x0000_0001_0000_0000;
+    const MMAP64_LIMIT: u64 = 0x0000_4000_0000_0000;
+    const PAGE_SIZE: u64 = 4096;
 
     if size == 0 || addr & (PAGE_SIZE - 1) != 0 {
-        return u32::MAX;
+        return u64::MAX;
     }
 
     // Validate the range is within the mmap region
-    if addr < MMAP_BASE || addr >= MMAP_LIMIT {
-        return u32::MAX;
+    let (range_base, range_limit) = if high {
+        (MMAP64_BASE, MMAP64_LIMIT)
+    } else {
+        (MMAP_BASE, MMAP_LIMIT)
+    };
+    if addr < range_base || addr >= range_limit {
+        return u64::MAX;
     }
-    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    if addr.checked_add(aligned_size).map_or(true, |end| end > MMAP_LIMIT) {
-        return u32::MAX;
+    let aligned_size = match size.checked_add(PAGE_SIZE - 1) {
+        Some(v) => v & !(PAGE_SIZE - 1),
+        None => return u64::MAX,
+    };
+    if addr
+        .checked_add(aligned_size)
+        .map_or(true, |end| end > range_limit)
+    {
+        return u64::MAX;
     }
 
     let num_pages = aligned_size / PAGE_SIZE;
@@ -449,12 +514,16 @@ pub fn sys_munmap(addr: u32, size: u32) -> u32 {
     }
 
     if freed > 0 {
+        virtual_mem::reclaim_empty_user_tables(VirtAddr::new(addr as u64), aligned_size as u64);
+    }
+
+    if freed > 0 {
         crate::task::scheduler::adjust_current_user_pages(-(freed as i32));
     }
 
     // Update VMA bookkeeping so the freed virtual addresses can be reused.
     if let Some(pd) = crate::task::scheduler::current_thread_page_directory() {
-        crate::memory::vma::free_region(pd, addr, aligned_size);
+        crate::memory::vma::free_region64(pd, addr, aligned_size);
     }
 
     // Only shared address spaces need a remote shootdown. `unmap_page()`

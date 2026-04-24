@@ -3,11 +3,13 @@ use libconf_schema::{
     default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema,
 };
 
+use crate::model::DEFAULT_GUEST_MEMORY_MB;
+
 pub const ASL_DIRS: &[&str] = &["images", "distros", "profiles", "profiles/default"];
 pub const ASL_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
     default_string("profiles/default/network_mode", "nat"),
     default_string("profiles/default/dns_mode", "host-broker"),
-    default_int("profiles/default/memory_mb", 2048),
+    default_int("profiles/default/memory_mb", DEFAULT_GUEST_MEMORY_MB as i64),
     default_int("profiles/default/vcpu_count", 2),
     default_bool("profiles/default/agent_enabled", true),
     default_bool("profiles/default/fallback_console_enabled", true),

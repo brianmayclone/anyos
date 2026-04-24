@@ -65,11 +65,30 @@ fn handle_single_request<S: ConfigStore>(runtime: &mut RuntimeService, store: &m
     if cmd.is_empty() {
         return;
     }
+    let (verb, _) = split_first_word(cmd);
+    crate::log::info("ipc", &format!("rx tid={} verb={}", tid, verb));
     let response = dispatch(runtime, store, cmd);
+    let ok = response.starts_with("OK");
     let reply_pipe_name = format!("asld-{}", tid);
     let reply_pipe = anyos_std::ipc::pipe_open(&reply_pipe_name);
-    if reply_pipe != 0 {
-        anyos_std::ipc::pipe_write(reply_pipe, response.as_bytes());
+    if reply_pipe == 0 || reply_pipe == u32::MAX {
+        crate::log::warn(
+            "ipc",
+            &format!("reply pipe '{}' not open; tid={}", reply_pipe_name, tid),
+        );
+        return;
+    }
+    let written = anyos_std::ipc::pipe_write(reply_pipe, response.as_bytes());
+    if written == u32::MAX {
+        crate::log::warn(
+            "ipc",
+            &format!("reply pipe_write failed tid={} verb={}", tid, verb),
+        );
+    } else if !ok {
+        // First line carries the error code; log it so CLI failures are
+        // visible server-side without having to rerun with more verbosity.
+        let first = response.split('\n').next().unwrap_or("");
+        crate::log::warn("ipc", &format!("tx tid={} verb={} {}", tid, verb, first));
     }
 }
 
@@ -93,13 +112,36 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             Err(err) => err_line(&err),
         },
         "STATUS" | "status" => match runtime.status(store, rest) {
-            Ok(status) => format!(
-                "OK\t1\nname\t{}\nstate\t{}\nhealth\t{}\nagent\t{}\n\n",
-                status.name,
-                status.state.as_str(),
-                status.health.as_str(),
-                status.agent_state.as_str()
-            ),
+            Ok(status) => {
+                let mut out = format!(
+                    "OK\t1\nname\t{}\nstate\t{}\nhealth\t{}\nagent\t{}\n",
+                    status.name,
+                    status.state.as_str(),
+                    status.health.as_str(),
+                    status.agent_state.as_str()
+                );
+                if let Some(err) = &status.last_error {
+                    if !err.is_empty() {
+                        out.push_str(&format!("last_error\t{}\n", sanitize_line(err)));
+                    }
+                }
+                if let Ok(vm) = runtime.vm_status(rest) {
+                    if !vm.boot_summary.is_empty() {
+                        out.push_str(&format!(
+                            "boot_summary\t{}\n",
+                            sanitize_line(&vm.boot_summary)
+                        ));
+                    }
+                    if !vm.last_exit_summary.is_empty() && vm.last_exit_summary != "none" {
+                        out.push_str(&format!(
+                            "last_exit\t{}\n",
+                            sanitize_line(&vm.last_exit_summary)
+                        ));
+                    }
+                }
+                out.push('\n');
+                out
+            }
             Err(err) => err_line(&err),
         },
         "CREATE" | "create" => {
@@ -740,6 +782,18 @@ fn format_exec_collection_lines(execs: &[ExecInvocation]) -> Vec<String> {
             exec.stdin_pipe_name,
             exec.attached_pid
         ));
+    }
+    out
+}
+
+fn sanitize_line(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\n' | '\r' => out.push(' '),
+            '\t' => out.push(' '),
+            _ => out.push(ch),
+        }
     }
     out
 }

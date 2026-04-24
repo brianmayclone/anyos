@@ -564,6 +564,91 @@ pub fn unmap_page(virt: VirtAddr) {
     unlock_page_table_mutation(saved_flags);
 }
 
+#[inline]
+unsafe fn table_is_zero(table: *mut u64) -> bool {
+    for i in 0..ENTRIES_PER_TABLE {
+        if table.add(i).read_volatile() != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Reclaim empty user page-table pages after a range has been unmapped.
+///
+/// `unmap_page()` clears leaf PTEs only. Large mmap/munmap bursts can otherwise
+/// keep one empty PT page around per 2 MiB of address space, which is exactly the
+/// leak pattern kstress reports as 96 pages after a 192 MiB mmap cycle.
+pub fn reclaim_empty_user_tables(start: VirtAddr, size: u64) {
+    if size == 0 {
+        return;
+    }
+
+    const USER_PML4_LIMIT: usize = 256;
+
+    let saved_flags = lock_page_table_mutation();
+    let start_addr = start.as_u64();
+    let end_addr = start_addr.saturating_add(size);
+    let mut addr = start_addr & !((FRAME_SIZE as u64 * ENTRIES_PER_TABLE as u64) - 1);
+
+    unsafe {
+        while addr < end_addr {
+            let virt = VirtAddr::new(addr);
+            let pml4i = virt.pml4_index();
+            let pdpti = virt.pdpt_index();
+            let pdi = virt.pd_index();
+
+            if pml4i >= USER_PML4_LIMIT {
+                addr = addr.saturating_add(FRAME_SIZE as u64 * ENTRIES_PER_TABLE as u64);
+                continue;
+            }
+
+            let pml4_ptr = RECURSIVE_PML4_BASE as *mut u64;
+            let pml4e = pml4_ptr.add(pml4i).read_volatile();
+            if pml4e & PAGE_PRESENT == 0 {
+                addr = addr.saturating_add(FRAME_SIZE as u64 * ENTRIES_PER_TABLE as u64);
+                continue;
+            }
+
+            let pdpt_ptr = recursive_pdpt_base(virt) as *mut u64;
+            let pdpte = pdpt_ptr.add(pdpti).read_volatile();
+            if pdpte & PAGE_PRESENT == 0 {
+                addr = addr.saturating_add(FRAME_SIZE as u64 * ENTRIES_PER_TABLE as u64);
+                continue;
+            }
+
+            let pd_ptr = recursive_pd_base(virt) as *mut u64;
+            let pde = pd_ptr.add(pdi).read_volatile();
+            if pde & PAGE_PRESENT != 0 {
+                let pt_ptr = recursive_pt_base(virt) as *mut u64;
+                if table_is_zero(pt_ptr) {
+                    pd_ptr.add(pdi).write_volatile(0);
+                    asm!("invlpg [{}]", in(reg) recursive_pt_base(virt), options(nostack, preserves_flags));
+                    physical::free_frame(PhysAddr::new(pde & ADDR_MASK));
+                }
+            }
+
+            let pdpte_after = pdpt_ptr.add(pdpti).read_volatile();
+            if pdpte_after & PAGE_PRESENT != 0 && table_is_zero(pd_ptr) {
+                pdpt_ptr.add(pdpti).write_volatile(0);
+                asm!("invlpg [{}]", in(reg) recursive_pd_base(virt), options(nostack, preserves_flags));
+                physical::free_frame(PhysAddr::new(pdpte_after & ADDR_MASK));
+            }
+
+            let pml4e_after = pml4_ptr.add(pml4i).read_volatile();
+            if pml4e_after & PAGE_PRESENT != 0 && table_is_zero(pdpt_ptr) {
+                pml4_ptr.add(pml4i).write_volatile(0);
+                asm!("invlpg [{}]", in(reg) recursive_pdpt_base(virt), options(nostack, preserves_flags));
+                physical::free_frame(PhysAddr::new(pml4e_after & ADDR_MASK));
+            }
+
+            addr = addr.saturating_add(FRAME_SIZE as u64 * ENTRIES_PER_TABLE as u64);
+        }
+    }
+
+    unlock_page_table_mutation(saved_flags);
+}
+
 /// Check if a virtual address is mapped in the current page directory.
 /// Walks the 4-level page table via recursive mapping.
 pub fn is_page_mapped(virt: VirtAddr) -> bool {

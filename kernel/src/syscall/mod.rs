@@ -597,6 +597,20 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     let arg4_64: u64 = regs.rsi;
     let arg5_64: u64 = regs.rdi;
 
+    match syscall_num {
+        SYS_MMAP64 => {
+            let r = handlers::sys_mmap64(arg1_64);
+            handlers::deliver_pending_signal_default();
+            return r;
+        }
+        SYS_MUNMAP64 => {
+            let r = handlers::sys_munmap64(arg1_64, arg2_64);
+            handlers::deliver_pending_signal_default();
+            return r;
+        }
+        _ => {}
+    }
+
     // Hardware virtualization syscalls require full 64-bit pointer args — dispatch
     // them before the u32 truncation below so kernel addresses are preserved.
     #[cfg(target_arch = "x86_64")]

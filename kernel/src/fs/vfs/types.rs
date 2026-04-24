@@ -108,10 +108,9 @@ pub trait Filesystem: Send + Sync {
     }
 
     /// Volume-level statistics (total / used / free).  Drivers that
-    /// cannot compute this cheaply return
-    /// [`FsError::PermissionDenied`] by default.
+    /// cannot compute this cheaply return [`FsError::NotSupported`].
     fn statfs(&self) -> Result<StatFs, FsError> {
-        Err(FsError::PermissionDenied)
+        Err(FsError::NotSupported)
     }
 
     // -----------------------------------------------------------------
@@ -120,23 +119,51 @@ pub trait Filesystem: Send + Sync {
 
     /// Move / rename an entry.  Cross-directory renames are allowed.
     fn rename(&self, _old_path: &str, _new_path: &str) -> Result<(), FsError> {
-        Err(FsError::PermissionDenied)
+        Err(FsError::NotSupported)
     }
 
     /// Resize a file.  Growing is expected to zero-fill; shrinking
     /// releases any storage past `size`.
     fn truncate(&self, _inode: u32, _size: u32) -> Result<(), FsError> {
-        Err(FsError::PermissionDenied)
+        Err(FsError::NotSupported)
+    }
+
+    /// Path-based variant of [`Filesystem::truncate`] (shrink to zero
+    /// only — matches POSIX `truncate(path, 0)` use case).  Default impl
+    /// resolves the path and delegates; overridden by filesystems whose
+    /// on-disk layout keys off (parent, name).
+    fn truncate_by_path(&self, path: &str) -> Result<(), FsError> {
+        let (inode, ft, _) = self.lookup(path)?;
+        if ft == FileType::Directory {
+            return Err(FsError::IsADirectory);
+        }
+        self.truncate(inode, 0)
     }
 
     /// Update the POSIX mode bits (permissions + type flags).
     fn set_mode(&self, _inode: u32, _mode: u16) -> Result<(), FsError> {
-        Err(FsError::PermissionDenied)
+        Err(FsError::NotSupported)
     }
 
     /// Update the owner / group of an inode.
     fn set_owner(&self, _inode: u32, _uid: u16, _gid: u16) -> Result<(), FsError> {
-        Err(FsError::PermissionDenied)
+        Err(FsError::NotSupported)
+    }
+
+    /// Path-based variant of [`Filesystem::set_mode`].  Default impl
+    /// resolves the path to an inode and delegates — filesystems whose
+    /// on-disk layout keys metadata off `(parent, name)` (exFAT) can
+    /// override to skip the intermediate inode encoding.
+    fn set_mode_by_path(&self, path: &str, mode: u16) -> Result<(), FsError> {
+        let (inode, _, _) = self.lookup(path)?;
+        self.set_mode(inode, mode)
+    }
+
+    /// Path-based variant of [`Filesystem::set_owner`]; see
+    /// [`Filesystem::set_mode_by_path`].
+    fn set_owner_by_path(&self, path: &str, uid: u16, gid: u16) -> Result<(), FsError> {
+        let (inode, _, _) = self.lookup(path)?;
+        self.set_owner(inode, uid, gid)
     }
 
     // -----------------------------------------------------------------
@@ -145,12 +172,12 @@ pub trait Filesystem: Send + Sync {
 
     /// Create a symbolic link at `link_path` pointing to `target`.
     fn create_symlink(&self, _link_path: &str, _target: &str) -> Result<(), FsError> {
-        Err(FsError::PermissionDenied)
+        Err(FsError::NotSupported)
     }
 
     /// Read the target of a symbolic-link inode.
     fn readlink(&self, _inode: u32) -> Result<String, FsError> {
-        Err(FsError::PermissionDenied)
+        Err(FsError::NotSupported)
     }
 
     // -----------------------------------------------------------------
@@ -228,6 +255,11 @@ pub enum FsError {
     BadFd,
     /// Directory is not empty (e.g. rmdir / rename-over-non-empty-dir).
     DirectoryNotEmpty,
+    /// The filesystem does not support the requested operation (e.g.
+    /// symlinks on FAT/NTFS, statfs on FUSE without a Statfs reply).
+    /// Distinct from [`FsError::PermissionDenied`], which implies an
+    /// ACL / mode-bit rejection.
+    NotSupported,
 }
 
 /// Stat result with permission info.

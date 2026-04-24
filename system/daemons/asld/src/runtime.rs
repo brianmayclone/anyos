@@ -379,8 +379,16 @@ impl RuntimeService {
             }
         }
 
+        crate::log::info("runtime", &format!("start: distro='{}'", cfg.name));
         match vm::start_vm(&cfg) {
             Ok(vm_instance) => {
+                crate::log::info(
+                    "runtime",
+                    &format!(
+                        "start: vm created distro='{}' backend='{}'",
+                        cfg.name, vm_instance.backend
+                    ),
+                );
                 self.upsert_backend(&cfg.name, vm_instance);
                 let boot_report = {
                     let backend = self
@@ -393,6 +401,13 @@ impl RuntimeService {
                     stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone());
                 match boot_report {
                     Ok(report) if report.ready => {
+                        crate::log::info(
+                            "runtime",
+                            &format!(
+                                "start: boot ready distro='{}' summary='{}'",
+                                cfg.name, report.summary
+                            ),
+                        );
                         if let Some(backend) = self.backend_mut(&cfg.name) {
                             backend.boot_summary = report.summary.clone();
                         }
@@ -401,6 +416,13 @@ impl RuntimeService {
                         status.agent_state = inferred_agent_state(&cfg.agent, DistroState::Ready);
                     }
                     Ok(report) => {
+                        crate::log::warn(
+                            "runtime",
+                            &format!(
+                                "start: boot degraded distro='{}' summary='{}'",
+                                cfg.name, report.summary
+                            ),
+                        );
                         if let Some(backend) = self.backend_mut(&cfg.name) {
                             backend.boot_summary = report.summary.clone();
                         }
@@ -411,6 +433,14 @@ impl RuntimeService {
                         status.last_error = Some(report.summary);
                     }
                     Err(err) => {
+                        crate::log::error(
+                            "runtime",
+                            &format!(
+                                "start: boot probe failed distro='{}' err='{}'",
+                                cfg.name,
+                                err.message()
+                            ),
+                        );
                         if let Some(backend) = self.backend_mut(&cfg.name) {
                             backend.boot_summary = err.message();
                         }
@@ -422,6 +452,14 @@ impl RuntimeService {
                     }
                 }
                 if let Err(err) = crate::broker::sync_distro(&cfg) {
+                    crate::log::warn(
+                        "runtime",
+                        &format!(
+                            "start: broker sync_distro failed distro='{}' err='{}'",
+                            cfg.name,
+                            err.message()
+                        ),
+                    );
                     status.state = DistroState::Degraded;
                     status.health = DistroHealth::Degraded;
                     status.last_error = Some(err.message());
@@ -431,6 +469,14 @@ impl RuntimeService {
                 Ok(status)
             }
             Err(err) => {
+                crate::log::error(
+                    "runtime",
+                    &format!(
+                        "start: vm::start_vm failed distro='{}' err='{}'",
+                        cfg.name,
+                        err.message()
+                    ),
+                );
                 let status = degraded_status(
                     &cfg.name,
                     cfg.resources.clone(),
