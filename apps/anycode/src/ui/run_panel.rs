@@ -1,8 +1,8 @@
-use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::format;
 use libanyui_client as ui;
 
+use crate::logic::debug_session::{DebugSession, DebugSessionStatus};
 use crate::logic::tasks::{TaskManager, TaskCategory};
 
 const STYLE_BOLD: u32 = 1;
@@ -15,10 +15,13 @@ pub struct RunPanel {
     pub panel: ui::View,
     pub tree: ui::TreeView,
     pub btn_run: ui::Button,
+    pub btn_debug: ui::Button,
     pub btn_build: ui::Button,
     pub btn_test: ui::Button,
     pub btn_stop: ui::Button,
     pub run_config_label: ui::Label,
+    pub debug_status_label: ui::Label,
+    pub breakpoint_label: ui::Label,
     task_indices: Vec<Option<usize>>, // maps tree node → task index
 }
 
@@ -75,6 +78,31 @@ impl RunPanel {
         btn_stop.set_color(tc.destructive);
         btn_bar.add(&btn_stop);
 
+        let debug_status_label = ui::Label::new("Debugger: Idle");
+        debug_status_label.set_dock(ui::DOCK_TOP);
+        debug_status_label.set_size(200, 18);
+        debug_status_label.set_font_size(11);
+        debug_status_label.set_text_color(tc.text_secondary);
+        debug_status_label.set_margin(8, 2, 0, 0);
+        panel.add(&debug_status_label);
+
+        let debug_bar = ui::FlowPanel::new();
+        debug_bar.set_dock(ui::DOCK_TOP);
+        debug_bar.set_size(200, 30);
+        debug_bar.set_color(tc.sidebar_bg);
+        panel.add(&debug_bar);
+
+        let btn_debug = ui::Button::new(t("Debug"));
+        btn_debug.set_size(62, 24);
+        btn_debug.set_color(tc.accent);
+        debug_bar.add(&btn_debug);
+
+        let breakpoint_label = ui::Label::new("0 breakpoints");
+        breakpoint_label.set_size(126, 22);
+        breakpoint_label.set_font_size(11);
+        breakpoint_label.set_text_color(tc.text_secondary);
+        debug_bar.add(&breakpoint_label);
+
         // Separator
         let sep = ui::View::new();
         sep.set_dock(ui::DOCK_TOP);
@@ -94,10 +122,13 @@ impl RunPanel {
             panel,
             tree,
             btn_run,
+            btn_debug,
             btn_build,
             btn_test,
             btn_stop,
             run_config_label,
+            debug_status_label,
+            breakpoint_label,
             task_indices: Vec::new(),
         }
     }
@@ -177,6 +208,20 @@ impl RunPanel {
         self.task_indices.get(node as usize).copied().flatten()
     }
 
+    pub fn update_debug_session(&self, debug: &DebugSession) {
+        let tc = ui::theme::colors();
+        self.debug_status_label.set_text(&debug.status_label());
+        let status_color = match debug.status {
+            DebugSessionStatus::Running => tc.success,
+            DebugSessionStatus::Launching => tc.warning,
+            DebugSessionStatus::Stopped => tc.text,
+            DebugSessionStatus::Idle => tc.text_secondary,
+        };
+        self.debug_status_label.set_text_color(status_color);
+        self.breakpoint_label
+            .set_text(&format!("{} breakpoints", debug.breakpoint_count()));
+    }
+
     /// Show a "no project" message.
     pub fn show_no_project(&mut self) {
         let tc = ui::theme::colors();
@@ -187,5 +232,7 @@ impl RunPanel {
         self.tree.set_node_text_color(node, tc.text_secondary);
         self.task_indices.push(None);
         self.run_config_label.set_text(t("No run configuration"));
+        self.debug_status_label.set_text("Debugger: Idle");
+        self.breakpoint_label.set_text("0 breakpoints");
     }
 }

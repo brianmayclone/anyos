@@ -242,6 +242,8 @@ Status:
   springt dateiuebergreifend zu Diagnosepositionen.
 - Gestartet: Problemansicht hat eine IDE-artige Filterleiste fuer alle Probleme,
   Fehler, Warnungen und die aktive Datei; Navigation respektiert den Filter.
+- Gestartet: Error List sortiert sichtbare Diagnostics stabil nach Schweregrad,
+  Datei, Position, Quelle und Meldung.
 
 ### Phase 4: Project Model und Build Backends
 
@@ -267,6 +269,15 @@ Akzeptanz:
 - Buildfehler erscheinen strukturiert in Problems.
 - Letzter erfolgreicher Build liefert klickbare Artefakte.
 
+Status:
+
+- Gestartet: Solution Explorer zeigt eine Solution-/Projektstruktur statt nur
+  roher Dateien, inklusive Konfigurationen, Targets, Build-/Run-/Test-Tasks und
+  Dateiunterbaum.
+- Gestartet: Debug/Release-Konfigurationen sind im Projektmodell verankert,
+  koennen per Command Palette umgeschaltet werden und beeinflussen Cargo-Build-
+  Tasks.
+
 ### Phase 5: IntelliSense v1
 
 Ziel: Sprachefeatures, die beim echten Arbeiten tragen.
@@ -287,6 +298,13 @@ Akzeptanz:
 - Rust-Funktionen/Structs im Projekt sind completion- und navigierbar.
 - Outline aktualisiert live.
 - Rename erzeugt Vorschau und laesst sich abbrechen.
+
+Status:
+
+- Gestartet: `symbol_index.rs` baut beim Workspace-Oeffnen einen begrenzten
+  Workspace-Symbolindex fuer Rust, C/C++, Python, JS/TS, Shell und Makefiles.
+- Gestartet: Symbolindex kann per Command Palette neu aufgebaut werden und
+  meldet die Symbolzahl in Statusbar/Output.
 
 ### Phase 6: Debug Studio
 
@@ -313,6 +331,13 @@ Akzeptanz:
 - Breakpoint setzen.
 - Prozess haelt am Breakpoint.
 - Register und Memory werden angezeigt.
+
+Status:
+
+- Gestartet: `debug_session.rs` haelt Debug-Status, Launch-Ziel und
+  Breakpoints.
+- Gestartet: Run-and-Debug-Panel besitzt einen Debug-Start, Session-Status und
+  Breakpoint-Zaehler; F9 toggelt Breakpoints an der aktuellen Editorzeile.
 - Step/Continue funktionieren.
 
 ### Phase 7: Git und Review Workflow

@@ -23,8 +23,8 @@ use anyui::Widget;
 use libanyui_client as anyui;
 
 use crate::logic::{
-    ai, build, config, diagnostic_pipeline, diagnostics, file_manager, git, plugin, project,
-    symbol_index, tasks,
+    ai, build, config, debug_session, diagnostic_pipeline, diagnostics, file_manager, git, plugin,
+    project, symbol_index, tasks,
 };
 use crate::ui::{
     activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel, git_panel,
@@ -47,6 +47,7 @@ struct AppState {
     task_mgr: tasks::TaskManager,
     diagnostics: diagnostics::DiagnosticSet,
     symbol_index: symbol_index::SymbolIndex,
+    debug_session: debug_session::DebugSession,
     plugin_mgr: plugin::PluginManager,
     ai_client: ai::AiClient,
 
@@ -270,6 +271,7 @@ fn build_and_run(
             task_mgr,
             diagnostics: diagnostics::DiagnosticSet::new(),
             symbol_index: symbol_index::SymbolIndex::new(),
+            debug_session: debug_session::DebugSession::new(),
             plugin_mgr,
             ai_client: ai::AiClient::new(),
             build_process: None,
@@ -411,6 +413,7 @@ fn build_and_run(
         } else {
             s.run_panel.show_no_project();
         }
+        s.run_panel.update_debug_session(&s.debug_session);
 
         s.extensions_panel.update(&s.plugin_mgr);
 
@@ -473,6 +476,11 @@ fn poll_build_output() {
 
             if s.diagnostics.error_count() > 0 {
                 s.output.show_problems();
+            }
+
+            if s.debug_session.status != debug_session::DebugSessionStatus::Idle {
+                s.debug_session.stop();
+                s.run_panel.update_debug_session(&s.debug_session);
             }
 
             s.build_process = None;

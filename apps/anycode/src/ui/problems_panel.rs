@@ -185,10 +185,16 @@ impl ProblemsPanel {
             .set_text(&format!("{} - {}", diagnostics.summary(), self.filter_label()));
 
         let globals = diagnostics.global();
-        let visible_globals: Vec<_> = globals
+        let mut visible_globals: Vec<_> = globals
             .into_iter()
             .filter(|diag| self.filter_accepts(diag.severity, &diag.file_path))
             .collect();
+        visible_globals.sort_by(|a, b| {
+            severity_rank(a.severity)
+                .cmp(&severity_rank(b.severity))
+                .then(a.source.cmp(&b.source))
+                .then(a.message.cmp(&b.message))
+        });
         if !visible_globals.is_empty() {
             let root = self
                 .tree
@@ -218,28 +224,31 @@ impl ProblemsPanel {
         }
 
         let mut file_nodes: Vec<(String, u32)> = Vec::new();
+        let mut visible_file_diags: Vec<_> = diagnostics
+            .diagnostics
+            .iter()
+            .filter(|diag| {
+                diag.has_location() && self.filter_accepts(diag.severity, &diag.file_path)
+            })
+            .collect();
+        visible_file_diags.sort_by(|a, b| {
+            severity_rank(a.severity)
+                .cmp(&severity_rank(b.severity))
+                .then(a.file_path.cmp(&b.file_path))
+                .then(a.line.cmp(&b.line))
+                .then(a.column.cmp(&b.column))
+                .then(a.source.cmp(&b.source))
+                .then(a.message.cmp(&b.message))
+        });
 
-        for diag in &diagnostics.diagnostics {
-            // Skip diagnostics without file location
-            if !diag.has_location() {
-                continue;
-            }
-            if !self.filter_accepts(diag.severity, &diag.file_path) {
-                continue;
-            }
-
+        for diag in &visible_file_diags {
             let file_node = match file_nodes.iter().position(|(p, _)| p == &diag.file_path) {
                 Some(idx) => file_nodes[idx].1,
                 None => {
                     let basename = crate::util::path::basename(&diag.file_path);
-                    let file_diag_count = diagnostics
-                        .diagnostics
+                    let file_diag_count = visible_file_diags
                         .iter()
-                        .filter(|d| {
-                            d.file_path == diag.file_path
-                                && d.has_location()
-                                && self.filter_accepts(d.severity, &d.file_path)
-                        })
+                        .filter(|d| d.file_path == diag.file_path)
                         .count();
                     let label = format!("{} ({})", basename, file_diag_count);
                     let node = self.tree.add_root(&label);
@@ -363,6 +372,15 @@ fn severity_marker(severity: Severity) -> &'static str {
         Severity::Warning => "warning",
         Severity::Info => "info",
         Severity::Hint => "hint",
+    }
+}
+
+fn severity_rank(severity: Severity) -> u8 {
+    match severity {
+        Severity::Error => 0,
+        Severity::Warning => 1,
+        Severity::Info => 2,
+        Severity::Hint => 3,
     }
 }
 

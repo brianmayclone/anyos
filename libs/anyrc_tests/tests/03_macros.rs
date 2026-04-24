@@ -128,3 +128,15 @@ fn expand_cfg_if_items() {
         }
     }
 }
+
+#[test]
+fn expand_cpufeatures_new_item_macro() {
+    let krate = parse_and_expand(r#"
+        cpufeatures::new!(avx2_cpuid, "avx2");
+    "#);
+    assert_eq!(krate.items.len(), 1);
+    match &krate.items[0] {
+        Item::Mod(m) => assert!(m.items.as_ref().is_some_and(|items| items.len() >= 4)),
+        _ => panic!("expected generated module"),
+    }
+}

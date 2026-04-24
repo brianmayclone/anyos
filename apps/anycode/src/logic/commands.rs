@@ -183,6 +183,8 @@ pub fn stop() {
     s.build_process = None;
     s.live_check_process = None;
     s.live_check.reset();
+    s.debug_session.stop();
+    s.run_panel.update_debug_session(&s.debug_session);
     crate::stop_build_timer();
     crate::stop_live_check_timer();
 }
@@ -516,6 +518,67 @@ pub fn clear_problems() {
     refresh_problem_views();
     update_status();
     app().output.show_problems();
+}
+
+pub fn start_debugging() {
+    let task = {
+        let s = app();
+        match s.task_mgr.selected_run() {
+            Some(task) => task.clone(),
+            None => {
+                s.status.set_analysis_status("No run configuration selected");
+                return;
+            }
+        }
+    };
+
+    let s = app();
+    s.output.clear();
+    s.diagnostics.clear();
+    s.build_output_buffer.clear();
+    s.debug_session.start_launch(&task);
+    s.run_panel.update_debug_session(&s.debug_session);
+    s.output
+        .append_line(&format!("[Debug] Launching {}", task.display_label));
+    s.output.show_output();
+
+    if !task.working_dir.is_empty() {
+        anyos_std::fs::chdir(&task.working_dir);
+    }
+
+    s.build_process = build::BuildProcess::spawn(&task.command, &task.args);
+    if s.build_process.is_some() {
+        s.debug_session.mark_running();
+        s.status.set_analysis_status("Debug session running");
+        crate::start_build_timer();
+    } else {
+        s.debug_session.stop();
+        s.status.set_analysis_status("Debug launch failed");
+    }
+    s.run_panel.update_debug_session(&s.debug_session);
+}
+
+pub fn toggle_breakpoint_at_cursor() {
+    let s = app();
+    let file_path = match s.file_mgr.active_file() {
+        Some(file) if !file.is_untitled => file.path.clone(),
+        _ => {
+            s.status.set_analysis_status("No saved file for breakpoint");
+            return;
+        }
+    };
+    let (line, _col) = s.editor_view.get_cursor(s.file_mgr.active);
+    let enabled = s.debug_session.toggle_breakpoint(&file_path, line);
+    let action = if enabled { "Added" } else { "Removed" };
+    s.status
+        .set_analysis_status(&format!("{} breakpoint at line {}", action, line + 1));
+    s.output.append_line(&format!(
+        "[Debug] {} breakpoint: {}:{}",
+        action,
+        path::basename(&file_path),
+        line + 1
+    ));
+    s.run_panel.update_debug_session(&s.debug_session);
 }
 
 pub fn set_problem_filter(filter: ProblemFilter) {
@@ -944,9 +1007,36 @@ pub fn set_build_configuration(config: project::BuildConfiguration) {
     if let Some(ref proj) = s.current_project {
         s.task_mgr.detect_from_project(proj);
         s.run_panel.update(&s.task_mgr);
+        s.run_panel.update_debug_session(&s.debug_session);
         s.sidebar.populate_project(proj, &s.task_mgr);
         s.status.set_project_type(&project_context);
     }
+}
+
+pub fn rebuild_symbol_index() {
+    let root = {
+        let s = app();
+        match s.current_project.as_ref() {
+            Some(proj) => proj.root.clone(),
+            None => {
+                s.status.set_analysis_status("No workspace open");
+                return;
+            }
+        }
+    };
+
+    let count = {
+        let s = app();
+        s.status.set_analysis_status("Indexing workspace...");
+        s.symbol_index.rebuild(&root);
+        s.symbol_index.count()
+    };
+
+    let s = app();
+    s.status
+        .set_analysis_status(&format!("Symbol index: {} symbols", count));
+    s.output
+        .append_line(&format!("[IntelliSense] Indexed {} symbols", count));
 }
 
 pub fn open_workspace(folder: &str, should_restore_session: bool) {
@@ -957,6 +1047,7 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
 
     s.task_mgr.detect_from_project(&proj);
     s.run_panel.update(&s.task_mgr);
+    s.run_panel.update_debug_session(&s.debug_session);
     s.sidebar.populate_project(&proj, &s.task_mgr);
     s.status.set_project_type(&project_context);
 
@@ -968,6 +1059,10 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     s.output.start_shell(folder);
 
     s.current_project = Some(proj);
+    s.symbol_index.rebuild(folder);
+    let indexed_symbols = s.symbol_index.count();
+    s.status
+        .set_analysis_status(&format!("Symbol index: {} symbols", indexed_symbols));
     s.config.last_project = String::from(folder);
     s.config.push_recent_project(folder);
     s.config.save();
@@ -1070,6 +1165,9 @@ fn reset_workspace_views() {
     s.side_editor_view.update_tab_labels("", 0);
     s.side_editor_view
         .set_breadcrumb("Open a file to the side for reference");
+    s.symbol_index.clear();
+    s.debug_session.reset();
+    s.run_panel.update_debug_session(&s.debug_session);
 }
 
 pub fn refresh_symbols() {

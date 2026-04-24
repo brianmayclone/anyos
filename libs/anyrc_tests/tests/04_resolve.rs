@@ -141,6 +141,17 @@ fn resolve_core_convert_prelude_traits() {
 }
 
 #[test]
+fn resolve_core_arch_intrinsics_as_compiler_known_names() {
+    assert_resolves(r#"
+        use core::arch::x86_64::*;
+
+        fn add(a: __m256i, b: __m256i) {
+            let c = _mm256_add_epi64(a, b);
+        }
+    "#);
+}
+
+#[test]
 fn resolve_trait_def() {
     assert_resolves("trait Foo { fn foo(&self) -> i32; }");
 }

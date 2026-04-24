@@ -85,6 +85,12 @@ pub fn wire_keyboard(win: &anyui::Window) {
             return;
         }
 
+        // Toggle breakpoint: F9
+        if e.keycode == anyui::KEY_F9 {
+            commands::toggle_breakpoint_at_cursor();
+            return;
+        }
+
         // New File: Ctrl+N
         if e.ctrl() && e.keycode == b'N' as u32 {
             commands::new_file();
@@ -320,6 +326,7 @@ pub fn wire_search_panel() {
 
 pub fn wire_run_panel() {
     app().run_panel.btn_run.on_click(|_| commands::run());
+    app().run_panel.btn_debug.on_click(|_| commands::start_debugging());
     app().run_panel.btn_build.on_click(|_| commands::build());
     app().run_panel.btn_test.on_click(|_| commands::test());
     app().run_panel.btn_stop.on_click(|_| commands::stop());
@@ -335,6 +342,7 @@ pub fn wire_run_panel() {
                 }
             }
             s.run_panel.update(&s.task_mgr);
+            s.run_panel.update_debug_session(&s.debug_session);
         }
     });
 
@@ -714,6 +722,8 @@ fn execute_palette_command(cmd_id: u32) {
         115 => commands::stop(),
         141 => commands::set_build_configuration(crate::logic::project::BuildConfiguration::Debug),
         142 => commands::set_build_configuration(crate::logic::project::BuildConfiguration::Release),
+        144 => commands::start_debugging(),
+        145 => commands::toggle_breakpoint_at_cursor(),
         116 => commands::analyze_active_file(),
         117 => commands::restart_live_analysis(),
         118 => commands::clear_problems(),
@@ -739,6 +749,7 @@ fn execute_palette_command(cmd_id: u32) {
         138 => commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Errors),
         139 => commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::Warnings),
         140 => commands::set_problem_filter(crate::ui::problems_panel::ProblemFilter::CurrentFile),
+        143 => commands::rebuild_symbol_index(),
         160 => commands::open_settings(),
         161 => commands::ai_settings(),
         199 => commands::about(),

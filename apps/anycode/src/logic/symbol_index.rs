@@ -106,7 +106,7 @@ impl SymbolIndex {
 fn should_index_file(name: &str) -> bool {
     matches!(
         path::extension(name),
-        "rs" | "c" | "h" | "cpp" | "cc" | "hpp" | "py" | "js" | "ts" | "sh" | "mk"
+        Some("rs" | "c" | "h" | "cpp" | "cc" | "hpp" | "py" | "js" | "ts" | "sh" | "mk")
     ) || name == "Makefile"
 }
 

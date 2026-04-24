@@ -484,6 +484,16 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_use_path_ns(&self, path: &[Symbol], ns: Namespace) -> Option<(DefId, Namespace)> {
+        if let Some(result) = self.resolve_use_path_ns_direct(path, ns) {
+            return Some(result);
+        }
+        if path.len() >= 2 {
+            return self.resolve_use_path_ns_direct(&path[1..], ns);
+        }
+        None
+    }
+
+    fn resolve_use_path_ns_direct(&self, path: &[Symbol], ns: Namespace) -> Option<(DefId, Namespace)> {
         if path.is_empty() { return None; }
 
         // Determine starting scope
@@ -1248,6 +1258,8 @@ impl<'a> Resolver<'a> {
                     if hir_id != HirId(u32::MAX) {
                         self.resolutions.insert(hir_id, def_id);
                     }
+                } else if self.resolve_arch_intrinsic_symbol(name, hir_id) {
+                    return;
                 } else {
                     self.error(path.span, &format!("`{}` not found in this scope", name_str));
                 }
@@ -1286,6 +1298,39 @@ impl<'a> Resolver<'a> {
             }
             // else: 3+ segments without module match - skip (external paths)
         }
+    }
+
+    fn resolve_arch_intrinsic_symbol(&mut self, name: Symbol, hir_id: HirId) -> bool {
+        let name_str = self.interner.resolve(name).to_string();
+        if !Self::is_arch_intrinsic_symbol(&name_str) {
+            return false;
+        }
+        let def_id = self.alloc_synthetic_def_id();
+        self.intrinsic_fns
+            .insert(def_id, format!("core::arch::x86_64::{}", name_str));
+        self.define(name, Namespace::Value, def_id);
+        self.define(name, Namespace::Type, def_id);
+        if hir_id != HirId(u32::MAX) {
+            self.resolutions.insert(hir_id, def_id);
+        }
+        true
+    }
+
+    fn is_arch_intrinsic_symbol(name: &str) -> bool {
+        name.starts_with("_mm")
+            || matches!(
+                name,
+                "__m64"
+                    | "__m128"
+                    | "__m128d"
+                    | "__m128i"
+                    | "__m256"
+                    | "__m256d"
+                    | "__m256i"
+                    | "__m512"
+                    | "__m512d"
+                    | "__m512i"
+            )
     }
 
     /// Try to resolve a path by walking through module scopes.

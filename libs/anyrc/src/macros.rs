@@ -167,6 +167,14 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                     }
                 }
 
+                if macro_name == "new" && is_path_named(path, interner, "cpufeatures::new") {
+                    if let Some(expanded) = expand_builtin_cpufeatures_new(args, interner) {
+                        items.splice(i..=i, expanded);
+                        *changed = true;
+                        continue;
+                    }
+                }
+
                 if let Some(def) = find_macro(defs, path) {
                     if let Some(expanded) = try_expand_to_items(def, args, interner) {
                         items.splice(i..=i, expanded);
@@ -209,6 +217,51 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
         });
         i += 1;
     }
+}
+
+fn is_path_named(path: &Path, interner: &Interner, expected: &str) -> bool {
+    path.segments
+        .iter()
+        .map(|seg| interner.resolve(seg.ident))
+        .collect::<Vec<_>>()
+        .join("::")
+        == expected
+}
+
+fn expand_builtin_cpufeatures_new(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
+    let module_name = args.iter().find_map(|tt| match tt {
+        TokenTree::Token(Token { kind: TokenKind::Ident(sym), .. }) => Some(*sym),
+        _ => None,
+    })?;
+    let module_name = interner.resolve(module_name).to_string();
+    let src = format!(
+        r#"
+        mod {module_name} {{
+            #[derive(Copy, Clone, Debug)]
+            pub struct InitToken(());
+
+            impl InitToken {{
+                pub fn get(&self) -> bool {{
+                    false
+                }}
+            }}
+
+            pub fn init_get() -> (InitToken, bool) {{
+                (InitToken(()), false)
+            }}
+
+            pub fn init() -> InitToken {{
+                init_get().0
+            }}
+
+            pub fn get() -> bool {{
+                init_get().1
+            }}
+        }}
+        "#
+    );
+    let mut parser = Parser::new(&src, interner);
+    Some(parser.parse_crate().items)
 }
 
 /// Helper to modify an item in place without needing to take ownership.
