@@ -33,7 +33,8 @@ pub const DLL_PD_START: usize = 32; // 0x04000000 >> 21 & 0x1FF
 pub const DLL_PD_END: usize = 63; // 0x07FFFFFF >> 21 & 0x1FF
 
 /// Temp virtual addresses for demand-page copy operations.
-/// Used only while LOADED_DLLS lock is held (serialized).
+/// Protected by per-address temp locks because DLL loading can run concurrently
+/// in multiple processes during boot.
 #[cfg(target_arch = "x86_64")]
 const TEMP_COPY_SRC: u64 = 0xFFFF_FFFF_81F2_0000;
 #[cfg(target_arch = "x86_64")]
@@ -42,6 +43,13 @@ const TEMP_COPY_DST: u64 = 0xFFFF_FFFF_81F2_1000;
 const TEMP_COPY_SRC: u64 = 0xFFFF_0000_81F2_0000;
 #[cfg(target_arch = "aarch64")]
 const TEMP_COPY_DST: u64 = 0xFFFF_0000_81F2_1000;
+
+#[cfg(target_arch = "x86_64")]
+static DLL_TEMP_LOAD_LOCK: Spinlock<()> = Spinlock::new(());
+#[cfg(target_arch = "x86_64")]
+static DLL_TEMP_COPY_SRC_LOCK: Spinlock<()> = Spinlock::new(());
+#[cfg(target_arch = "x86_64")]
+static DLL_TEMP_COPY_DST_LOCK: Spinlock<()> = Spinlock::new(());
 
 /// A loaded DLIB: name, base virtual address, section pages, and metadata.
 pub struct LoadedDll {
@@ -124,6 +132,17 @@ fn dll_temp_virt() -> u64 {
     { 0xFFFF_0000_81F1_0000 }
 }
 
+#[cfg(target_arch = "x86_64")]
+#[inline]
+fn temp_lock_for(temp_virt: VirtAddr) -> &'static Spinlock<()> {
+    match temp_virt.as_u64() {
+        v if v == dll_temp_virt() => &DLL_TEMP_LOAD_LOCK,
+        TEMP_COPY_SRC => &DLL_TEMP_COPY_SRC_LOCK,
+        TEMP_COPY_DST => &DLL_TEMP_COPY_DST_LOCK,
+        _ => &DLL_TEMP_LOAD_LOCK,
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[inline]
 fn frame_ptr(frame: PhysAddr) -> *mut u8 {
@@ -160,7 +179,10 @@ unsafe fn sync_executable_frame_icache(frame: PhysAddr) {
 fn with_frame_mut<R>(frame: PhysAddr, temp_virt: VirtAddr, f: impl FnOnce(*mut u8) -> R) -> R {
     #[cfg(target_arch = "x86_64")]
     {
-        virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE);
+        let _temp_guard = temp_lock_for(temp_virt).lock();
+        if !virtual_mem::map_page(temp_virt, frame, PAGE_WRITABLE) {
+            panic!("DLL temp page map failed for {:#x}", temp_virt.as_u64());
+        }
         let ptr = temp_virt.as_u64() as *mut u8;
         let result = f(ptr);
         virtual_mem::unmap_page(temp_virt);

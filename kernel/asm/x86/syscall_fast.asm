@@ -86,8 +86,12 @@ syscall_fast_entry:
     push r14
     push r15
 
-    ; === Phase 3: Restore GS to user state (clean for context switches) ===
-    swapgs                          ; GS.base = user value again
+    ; === Phase 3: Keep GS in kernel state ===
+    ; Do NOT swapgs back before calling Rust. Syscall handlers re-enable
+    ; interrupts below, so a timer IRQ may preempt this kernel frame and even
+    ; context-switch away. Interrupt and scheduler code must see kernel GS for
+    ; the whole kernel residency; user GS is restored only in the final IRET
+    ; epilogue with interrupts disabled.
 
     ; Load kernel data segments (needed for compat mode transitions)
     mov ax, 0x10
@@ -102,6 +106,10 @@ syscall_fast_entry:
 
     mov rdi, rsp                    ; arg0 = &SyscallRegs
     call syscall_dispatch_64
+
+    ; From here on the saved syscall frame is being edited and unwound.
+    ; Keep IRQs masked until IRET restores the user's RFLAGS.
+    cli
 
     ; Store return value (full 64-bit RAX) in saved RAX position (offset 14*8 = 112)
     mov [rsp + 112], rax
@@ -145,7 +153,9 @@ syscall_fast_entry:
     ; if DPL < new CPL, leaving DS/ES=0. While null segments work in
     ; 64-bit mode, explicit 0x23 is required for 32-bit compat processes
     ; and avoids subtle segment-state issues across context switches.
-    cli
+    ; Restore user GS immediately before returning to ring 3.
+    swapgs
+
     push rbx
     mov bx, 0x23
     mov ds, bx

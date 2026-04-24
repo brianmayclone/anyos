@@ -329,8 +329,8 @@ pub fn init(boot_info: &BootInfo) {
     let fb_height = unsafe { core::ptr::addr_of!((*boot_info).framebuffer_height).read_unaligned() } as u64;
 
     if fb_addr != 0 && fb_pitch != 0 && fb_height != 0 {
-        // Map full 16 MiB VRAM
-        let fb_size: u64 = 16 * 1024 * 1024;
+        // Map the full visible framebuffer. 4K-ish framebuffers exceed 16 MiB.
+        let fb_size: u64 = fb_pitch.saturating_mul(fb_height);
         let fb_start = fb_addr & !0xFFF;
         let fb_end = (fb_addr + fb_size + 0xFFF) & !0xFFF;
 

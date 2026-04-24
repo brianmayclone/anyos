@@ -357,11 +357,15 @@ pub fn sys_map_framebuffer(out_info_ptr: u32) -> u32 {
         None => return u32::MAX,
     };
 
-    // Map 16 MiB of VRAM into the compositor's address space at 0x20000000
-    // (covers all resolutions up to 1920x1080 double-buffered)
+    // Map the visible framebuffer into the compositor's address space at 0x20000000.
+    // A fixed 16 MiB mapping is not enough for 4K-ish VirtIO modes
+    // (for example 3828x2030x4 is about 29.6 MiB).
     let fb_user_base: u64 = 0x2000_0000;
-    let fb_map_size: usize = 16 * 1024 * 1024;
-    let pages = fb_map_size / crate::memory::FRAME_SIZE;
+    let fb_total_bytes = (height as usize).saturating_mul(pitch as usize);
+    if fb_total_bytes == 0 {
+        return u32::MAX;
+    }
+    let pages = (fb_total_bytes + crate::memory::FRAME_SIZE - 1) / crate::memory::FRAME_SIZE;
 
     for i in 0..pages {
         let phys_addr = crate::memory::address::PhysAddr::new(

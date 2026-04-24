@@ -1713,33 +1713,16 @@ fn schedule_inner(from_timer: bool) {
             }
         }
     } else {
-        // Voluntary schedule: try a bounded number of times, then fall back
-        // to HLT which sleeps the CPU until the next interrupt (typically
-        // the timer at 1 kHz). The timer ISR will call schedule_inner(true)
-        // with try_lock, so we just need to keep retrying until the lock
-        // holder releases. This avoids burning CPU cycles with pure spinning
-        // and prevents KVM PLE stalls.
+        // Voluntary schedule: keep interrupts disabled until the scheduler
+        // lock is held. This frame is live while the outgoing thread may
+        // already be marked blocked with an unsaved context; allowing an IRQ
+        // here can reuse the same kernel stack and corrupt saved registers.
         'acquire: loop {
-            // Try 256 times with PAUSE backoff (~2-4 µs)
-            for _ in 0..256u32 {
+            for _ in 0..1024u32 {
                 if let Some(s) = SCHEDULER.try_lock() {
                     break 'acquire s;
                 }
                 core::hint::spin_loop();
-            }
-            // Couldn't get the lock — wait for the next interrupt.
-            // STI + HLT is atomic on x86: enables interrupts and halts in one
-            // step, so no interrupt can be missed between STI and HLT.
-            // The timer IRQ (or any IRQ) will wake us, and we retry.
-            #[cfg(target_arch = "x86_64")]
-            unsafe {
-                core::arch::asm!("sti; hlt; cli", options(nomem, nostack));
-            }
-            #[cfg(target_arch = "aarch64")]
-            {
-                crate::arch::hal::enable_interrupts();
-                crate::arch::hal::halt();
-                crate::arch::hal::disable_interrupts();
             }
         }
     };
