@@ -368,6 +368,22 @@ impl<'a> TypeChecker<'a> {
         TyKind::Adt(def_id, vec![])
     }
 
+    fn token_tree_ty(&self) -> TyKind {
+        if let Some(sym) = self.interner.lookup("TokenTree") {
+            if let Some(def_id) = self.resolve_scoped_type_name(sym) {
+                return TyKind::Adt(def_id, vec![]);
+            }
+            if let Some(&def_id) = self.type_name_to_def.get(&sym) {
+                return TyKind::Adt(def_id, vec![]);
+            }
+        }
+        TyKind::Adt(
+            self.lookup_intrinsic_def_by_path("proc_macro::TokenTree")
+                .unwrap_or(SYNTH_PROC_MACRO_TOKEN_TREE_DEF_ID),
+            vec![],
+        )
+    }
+
     fn option_of(&self, inner: TyKind) -> Option<TyKind> {
         let sym = self.interner.lookup("Option")?;
         let def_id = *self.type_name_to_def.get(&sym)?;
@@ -573,6 +589,9 @@ impl<'a> TypeChecker<'a> {
             TyKind::Str => TyKind::Uint(UintTy::U8),
             TyKind::Adt(def_id, substs) if self.is_vec_def(def_id) && substs.len() == 1 => {
                 substs[0].clone()
+            }
+            TyKind::Adt(def_id, _) if self.is_token_stream_def(def_id) => {
+                self.token_tree_ty()
             }
             other => {
                 if let HirExprKind::MethodCall(recv, method_name, _, _) = &iter.kind {
@@ -1969,9 +1988,24 @@ impl<'a> TypeChecker<'a> {
                 first_ty
             }
 
-            HirExprKind::Assign(lhs, rhs) | HirExprKind::AssignOp(_, lhs, rhs) => {
+            HirExprKind::Assign(lhs, rhs) => {
                 let lty = self.check_expr(lhs);
                 let rty = self.check_expr(rhs);
+                self.unify(&lty, &rty, expr.span);
+                TyKind::Unit
+            }
+
+            HirExprKind::AssignOp(op, lhs, rhs) => {
+                let raw_lty = self.check_expr(lhs);
+                let raw_rty = self.check_expr(rhs);
+                let lty = self.binary_operand_ty(raw_lty);
+                let rty = self.binary_operand_ty(raw_rty);
+                if self.generic_operator_output(*op, &lty, &rty).is_some()
+                    || self.lookup_operator_impl(*op, &lty, &rty).is_some()
+                    || matches!(self.shallow_resolve(lty.clone()), TyKind::Adt(_, _))
+                {
+                    return TyKind::Unit;
+                }
                 self.unify(&lty, &rty, expr.span);
                 TyKind::Unit
             }
@@ -3750,6 +3784,24 @@ impl<'a> TypeChecker<'a> {
             .lookup("Box")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
+    }
+
+    fn is_token_stream_def(&self, def_id: DefId) -> bool {
+        self.qualified_type_names
+            .iter()
+            .any(|(path, candidate)| {
+                *candidate == def_id
+                    && (path == "TokenStream"
+                        || path == "crate::TokenStream"
+                        || path == "proc_macro::TokenStream"
+                        || path == "proc_macro2::TokenStream"
+                        || path.ends_with("::TokenStream"))
+            })
+            || self
+                .interner
+                .lookup("TokenStream")
+                .and_then(|sym| self.type_name_to_def.get(&sym).copied())
+                == Some(def_id)
     }
 
     fn option_inner_ty(&self, ty: &TyKind) -> Option<TyKind> {

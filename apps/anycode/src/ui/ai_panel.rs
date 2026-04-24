@@ -41,7 +41,7 @@ pub struct AiPanel {
     pub btn_test: ui::Button,
     pub btn_review: ui::Button,
     // Settings
-    pub btn_settings: ui::Button,
+    pub btn_settings: ui::LinkLabel,
     pub btn_clear: ui::Button,
     // Provider label
     pub provider_label: ui::Label,
@@ -145,9 +145,10 @@ impl AiPanel {
         btn_clear.set_position(4, 2);
         bottom_bar.add(&btn_clear);
 
-        let btn_settings = ui::Button::new(t("Settings"));
-        btn_settings.set_size(60, 22);
+        let btn_settings = ui::LinkLabel::new(t("Settings..."));
+        btn_settings.set_size(76, 22);
         btn_settings.set_position(60, 2);
+        btn_settings.set_font_size(11);
         bottom_bar.add(&btn_settings);
 
         let status_label = ui::Label::new("");

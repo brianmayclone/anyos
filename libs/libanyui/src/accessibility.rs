@@ -560,6 +560,7 @@ fn kind_name(k: ControlKind) -> &'static str {
         ControlKind::Window => "Window",
         ControlKind::View => "View",
         ControlKind::Label => "Label",
+        ControlKind::LinkLabel => "LinkLabel",
         ControlKind::Button => "Button",
         ControlKind::TextField => "TextField",
         ControlKind::Toggle => "Toggle",

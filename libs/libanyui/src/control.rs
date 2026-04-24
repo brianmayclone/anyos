@@ -258,6 +258,7 @@ pub enum ControlKind {
     DateTimePicker = 46,
     ListBox = 47,
     ComboBox = 48,
+    LinkLabel = 49,
 }
 
 impl ControlKind {
@@ -312,6 +313,7 @@ impl ControlKind {
             46 => Self::DateTimePicker,
             47 => Self::ListBox,
             48 => Self::ComboBox,
+            49 => Self::LinkLabel,
             _ => Self::View,
         }
     }
@@ -342,6 +344,7 @@ impl ControlKind {
             Self::DateTimePicker => (200, 28),
             Self::ListBox => (200, 120),
             Self::ComboBox => (200, 32),
+            Self::LinkLabel => (200, 22),
             Self::Toolbar => (0, 36),
             Self::NavigationBar => (0, 44),
             Self::TabBar => (0, 32),

@@ -27,6 +27,7 @@ pub mod groupbox;
 pub mod icon_button;
 pub mod image_view;
 pub mod label;
+pub mod link_label;
 pub mod list_box;
 pub mod navbar;
 pub mod plain_button;
@@ -121,6 +122,9 @@ pub fn create_control(
 
         // Text controls — wrap ControlBase in TextControlBase with text
         ControlKind::Label => Box::new(label::Label::new(
+            TextControlBase::new(base).with_text(text),
+        )),
+        ControlKind::LinkLabel => Box::new(link_label::LinkLabel::new(
             TextControlBase::new(base).with_text(text),
         )),
         ControlKind::Button => Box::new(button::Button::new(

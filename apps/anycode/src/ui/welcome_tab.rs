@@ -10,10 +10,10 @@ use crate::util::path;
 
 pub struct WelcomeTab {
     pub panel: ui::View,
-    pub btn_open_folder: ui::Button,
-    pub btn_new_file: ui::Button,
-    pub btn_open_recent: ui::Button,
-    pub btn_ai_setup: ui::Button,
+    pub btn_open_folder: ui::LinkLabel,
+    pub btn_new_file: ui::LinkLabel,
+    pub btn_open_recent: ui::LinkLabel,
+    pub btn_ai_setup: ui::LinkLabel,
 }
 
 impl WelcomeTab {
@@ -49,22 +49,16 @@ impl WelcomeTab {
         start_label.set_text_color(tc.text);
         panel.add(&start_label);
 
-        let btn_open_folder = ui::Button::new(t("Open Folder..."));
+        let btn_open_folder = make_start_link(t("Open a folder or workspace..."));
         btn_open_folder.set_position(58, 174);
-        btn_open_folder.set_size(210, 30);
-        btn_open_folder.set_color(tc.accent);
         panel.add(&btn_open_folder);
 
-        let btn_new_file = ui::Button::new(t("New File"));
-        btn_new_file.set_position(58, 212);
-        btn_new_file.set_size(210, 30);
-        btn_new_file.set_color(tc.control_bg);
+        let btn_new_file = make_start_link(t("Create a new file..."));
+        btn_new_file.set_position(58, 202);
         panel.add(&btn_new_file);
 
-        let btn_open_recent = ui::Button::new(t("Open Recent..."));
-        btn_open_recent.set_position(58, 250);
-        btn_open_recent.set_size(210, 30);
-        btn_open_recent.set_color(tc.control_bg);
+        let btn_open_recent = make_start_link(t("Open a recent workspace..."));
+        btn_open_recent.set_position(58, 230);
         panel.add(&btn_open_recent);
 
         let tool_label = ui::Label::new(t("Tools"));
@@ -73,10 +67,8 @@ impl WelcomeTab {
         tool_label.set_text_color(tc.text);
         panel.add(&tool_label);
 
-        let btn_ai_setup = ui::Button::new(t("Configure AI..."));
+        let btn_ai_setup = make_start_link(t("Configure AI assistant..."));
         btn_ai_setup.set_position(58, 344);
-        btn_ai_setup.set_size(210, 30);
-        btn_ai_setup.set_color(tc.control_bg);
         panel.add(&btn_ai_setup);
 
         let recent_label = ui::Label::new(t("Recent Workspaces"));
@@ -119,6 +111,13 @@ impl WelcomeTab {
     pub fn hide(&self) {
         self.panel.set_visible(false);
     }
+}
+
+fn make_start_link(text: &str) -> ui::LinkLabel {
+    let link = ui::LinkLabel::new(text);
+    link.set_size(260, 24);
+    link.set_font_size(13);
+    link
 }
 
 fn recent_workspace_text(config: &Config) -> String {

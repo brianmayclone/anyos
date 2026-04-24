@@ -815,6 +815,14 @@ impl<'a> Parser<'a> {
         expr
     }
 
+    fn with_struct_literals_allowed<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let old = self.no_struct_literal;
+        self.no_struct_literal = false;
+        let result = f(self);
+        self.no_struct_literal = old;
+        result
+    }
+
     fn parse_macro_args(&mut self) -> Vec<TokenTree> {
         if self.at_exact(&TokenKind::LParen) {
             self.bump();
@@ -1035,7 +1043,7 @@ impl<'a> Parser<'a> {
     fn parse_call_args(&mut self) -> Vec<Expr> {
         let mut args = Vec::new();
         while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
-            args.push(self.parse_expr());
+            args.push(self.with_struct_literals_allowed(|this| this.parse_expr()));
             if !self.eat_exact(&TokenKind::Comma) {
                 break;
             }

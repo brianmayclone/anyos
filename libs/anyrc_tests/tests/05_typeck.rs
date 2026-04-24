@@ -272,6 +272,76 @@ fn option_some_and_none_in_loop_parser_infer_same_payload() {
 }
 
 #[test]
+fn assign_op_allows_adt_receiver_with_primitive_rhs() {
+    assert_type_ok(r#"
+        struct BigInt {}
+
+        fn parse_lit_int() {
+            let mut value = BigInt {};
+            let digit: u8 = 7;
+            value += digit;
+        }
+    "#);
+}
+
+#[test]
+fn unreachable_macro_diverges_in_match_arm() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct Box<T> {}
+
+        fn cooked(s: &str) -> Option<(Box<str>, Box<str>)> { loop {} }
+        fn raw(s: &str) -> Option<(Box<str>, Box<str>)> { loop {} }
+        fn byte(s: &str, offset: usize) -> u8 { 0 }
+
+        fn parse_lit_str(s: &str) -> Option<(Box<str>, Box<str>)> {
+            match byte(s, 0) {
+                b'"' => cooked(s),
+                b'r' => raw(s),
+                _ => unreachable!(),
+            }
+        }
+    "#);
+}
+
+#[test]
+fn for_loop_over_token_stream_binds_token_tree_items() {
+    assert_type_ok(r#"
+        struct Span {}
+
+        mod proc_macro2 {
+            pub struct TokenStream {}
+            pub enum TokenTree {
+                Group,
+                Ident,
+            }
+        }
+
+        use proc_macro2::{TokenStream, TokenTree};
+
+        trait IntoIterator {
+            type Item;
+            type IntoIter;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+
+        fn respan_token_tree(token: TokenTree, span: Span) -> TokenTree {
+            token
+        }
+
+        fn parse_spanned(tokens: TokenStream, span: Span) {
+            for token in tokens {
+                respan_token_tree(token, span);
+            }
+        }
+    "#);
+}
+
+#[test]
 fn impl_method_body_resolves_self_enum_variants_against_impl_type() {
     assert_type_ok(r#"
         enum First {

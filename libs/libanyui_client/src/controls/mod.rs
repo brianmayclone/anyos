@@ -16,6 +16,7 @@ mod iconbutton;
 mod imagebutton;
 mod imageview;
 mod label;
+mod linklabel;
 mod listbox;
 mod menubar;
 mod plainbutton;
@@ -78,6 +79,7 @@ pub use iconbutton::{
 pub use imagebutton::ImageButton;
 pub use imageview::ImageView;
 pub use label::{Label, TEXT_ALIGN_CENTER, TEXT_ALIGN_LEFT, TEXT_ALIGN_RIGHT};
+pub use linklabel::LinkLabel;
 pub use plainbutton::PlainButton;
 pub use progressbar::ProgressBar;
 pub use radiobutton::RadioButton;

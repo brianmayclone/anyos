@@ -430,7 +430,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     *changed = true;
                     return;
                 }
-                "panic" => {
+                "panic" | "unreachable" => {
                     *expr = Expr::Loop(Block { stmts: Vec::new(), span: *span }, None, *span);
                     *changed = true;
                     return;

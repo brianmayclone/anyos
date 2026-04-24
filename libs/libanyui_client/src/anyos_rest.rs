@@ -52,6 +52,7 @@ pub const KIND_PLAIN_BUTTON: u32 = 45;
 pub const KIND_DATE_TIME_PICKER: u32 = 46;
 pub const KIND_LIST_BOX: u32 = 47;
 pub const KIND_COMBO_BOX: u32 = 48;
+pub const KIND_LINK_LABEL: u32 = 49;
 
 // ── DockStyle constants ─────────────────────────────────────────────
 

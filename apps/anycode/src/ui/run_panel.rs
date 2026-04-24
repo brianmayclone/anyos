@@ -23,7 +23,7 @@ pub struct RunPanel {
     pub btn_build: ui::PlainButton,
     pub btn_test: ui::PlainButton,
     pub btn_stop: ui::PlainButton,
-    pub btn_configure: ui::PlainButton,
+    pub btn_configure: ui::LinkLabel,
     pub run_config_label: ui::Label,
     pub run_command_label: ui::Label,
     pub toolchain_label: ui::Label,
@@ -84,7 +84,9 @@ impl RunPanel {
         configure_bar.set_padding(6, 0, 6, 0);
         panel.add(&configure_bar);
 
-        let btn_configure = plain_text_button(t("Configure Toolchain..."), 168, tc.text);
+        let btn_configure = ui::LinkLabel::new(t("Configure Toolchain..."));
+        btn_configure.set_size(168, 24);
+        btn_configure.set_font_size(11);
         configure_bar.add(&btn_configure);
 
         let action_heading = section_label(t("ACTIONS"));
