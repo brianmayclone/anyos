@@ -5,6 +5,7 @@ edition = "2021"
 
 [features]
 host = [
+  "anyrc/host",
   "anyos_std/host",
   "dynlink/host",
   "libhttp_client/host",

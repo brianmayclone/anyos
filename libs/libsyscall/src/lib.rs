@@ -72,6 +72,9 @@ pub const SYS_GPU_QUERY_TYPE: u32 = 517;
 pub const SYS_GPU_3D_RESOURCE_CREATE: u32 = 518;
 pub const SYS_GPU_3D_RESOURCE_DESTROY: u32 = 519;
 
+// AVM (anyOS Virtual Machine), KVM-style ioctl ABI.
+pub const SYS_AVM_IOCTL: u32 = 630;
+
 // Shared memory
 pub const SYS_SHM_CREATE: u32 = 140;
 pub const SYS_SHM_MAP: u32 = 141;

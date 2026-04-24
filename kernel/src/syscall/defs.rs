@@ -323,6 +323,9 @@ pub const SYS_VCPU_GET_MP_STATE: u32 = 619;
 pub const SYS_VCPU_SET_MP_STATE: u32 = 620;
 pub const SYS_VCPU_TRANSLATE: u32 = 621;
 
+// AVM (anyOS Virtual Machine) KVM-style ioctl ABI.
+pub const SYS_AVM_IOCTL: u32 = 630;
+
 /// Register frame pushed by `syscall_entry.asm` / `syscall_fast.asm`.
 ///
 /// The layout matches the individual GPR pushes (no pushad in 64-bit mode) plus the

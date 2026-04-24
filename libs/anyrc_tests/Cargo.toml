@@ -10,4 +10,4 @@ name = "anyrc_tests"
 path = "src/lib.rs"
 
 [dependencies]
-anyrc = { path = "../anyrc" }
+anyrc = { path = "../anyrc", features = ["host"] }

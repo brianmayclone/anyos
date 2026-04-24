@@ -499,6 +499,8 @@ pub(crate) fn dispatch_inner(syscall_num: u32, arg1: u32, arg2: u32, arg3: u32, 
         SYS_VCPU_SET_MP_STATE => crate::arch::x86::virt::syscalls::sys_vcpu_set_mp_state(arg1, arg2, arg3),
         #[cfg(target_arch = "x86_64")]
         SYS_VCPU_TRANSLATE => crate::arch::x86::virt::syscalls::sys_vcpu_translate(arg1, arg2, arg3 as u64),
+        #[cfg(target_arch = "x86_64")]
+        SYS_AVM_IOCTL => crate::arch::x86::virt::avm::sys_avm_ioctl(arg1 as u64, arg2, arg3 as u64, arg4 as u64) as u32,
 
         _ => {
             crate::serial_println!("Unknown syscall: {}", syscall_num);
@@ -599,6 +601,16 @@ pub extern "C" fn syscall_dispatch_64(regs: &mut SyscallRegs) -> u64 {
     // them before the u32 truncation below so kernel addresses are preserved.
     #[cfg(target_arch = "x86_64")]
     match syscall_num {
+        SYS_AVM_IOCTL => {
+            let r = crate::arch::x86::virt::avm::sys_avm_ioctl(
+                arg1_64,
+                arg2_64 as u32,
+                arg3_64,
+                arg4_64,
+            );
+            handlers::deliver_pending_signal_default();
+            return r;
+        }
         SYS_VM_SET_MEMORY => {
             let r = crate::arch::x86::virt::syscalls::sys_vm_set_memory(
                 arg1_64 as u32, arg2_64 as u32, arg3_64,

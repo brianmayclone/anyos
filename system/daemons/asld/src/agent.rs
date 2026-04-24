@@ -32,7 +32,11 @@ pub fn inferred_agent_state(policy: &AgentPolicy, distro_state: DistroState) -> 
     }
 }
 
-pub fn provision_shell_io(session_id: &str, mode: SessionMode, console_pipe_name: &str) -> Result<ShellIo, AsldError> {
+pub fn provision_shell_io(
+    session_id: &str,
+    mode: SessionMode,
+    console_pipe_name: &str,
+) -> Result<ShellIo, AsldError> {
     let stdin_pipe_name = format!("asl-shell-stdin-{}", session_id);
     ensure_pipe(&stdin_pipe_name)?;
 
@@ -46,9 +50,12 @@ pub fn provision_shell_io(session_id: &str, mode: SessionMode, console_pipe_name
             ensure_pipe(console_pipe_name)?;
             let stdin_pipe = open_pipe(&stdin_pipe_name)?;
             let stdout_pipe = open_pipe(console_pipe_name)?;
-            let pid = anyos_std::process::spawn_piped_full(SHELL_PATH, "sh -i", stdout_pipe, stdin_pipe);
+            let pid =
+                anyos_std::process::spawn_piped_full(SHELL_PATH, "sh -i", stdout_pipe, stdin_pipe);
             if pid == u32::MAX {
-                return Err(AsldError::BackendUnavailable("failed to launch fallback shell"));
+                return Err(AsldError::BackendUnavailable(
+                    "failed to launch fallback shell",
+                ));
             }
             (String::from(console_pipe_name), pid)
         }
@@ -84,9 +91,16 @@ pub fn provision_exec_io(
             let stdin_pipe = open_pipe(&stdin_pipe_name)?;
             let script = build_exec_script(cwd, env, argv);
             let shell_args = format!("sh -lc \"{}\"", escape_double_quoted(&script));
-            let pid = anyos_std::process::spawn_piped_full(SHELL_PATH, &shell_args, stdout_pipe, stdin_pipe);
+            let pid = anyos_std::process::spawn_piped_full(
+                SHELL_PATH,
+                &shell_args,
+                stdout_pipe,
+                stdin_pipe,
+            );
             if pid == u32::MAX {
-                return Err(AsldError::BackendUnavailable("failed to launch fallback exec"));
+                return Err(AsldError::BackendUnavailable(
+                    "failed to launch fallback exec",
+                ));
             }
             pid
         }
@@ -106,7 +120,9 @@ fn ensure_pipe(pipe_name: &str) -> Result<(), AsldError> {
     }
     let created = anyos_std::ipc::pipe_create(pipe_name);
     if created == 0 || created == u32::MAX {
-        return Err(AsldError::BackendUnavailable("failed to create agent or console pipe"));
+        return Err(AsldError::BackendUnavailable(
+            "failed to create agent or console pipe",
+        ));
     }
     Ok(())
 }
@@ -114,7 +130,9 @@ fn ensure_pipe(pipe_name: &str) -> Result<(), AsldError> {
 fn open_pipe(pipe_name: &str) -> Result<u32, AsldError> {
     let pipe_id = anyos_std::ipc::pipe_open(pipe_name);
     if pipe_id == 0 || pipe_id == u32::MAX {
-        return Err(AsldError::BackendUnavailable("failed to open provisioned pipe"));
+        return Err(AsldError::BackendUnavailable(
+            "failed to open provisioned pipe",
+        ));
     }
     Ok(pipe_id)
 }
@@ -122,7 +140,11 @@ fn open_pipe(pipe_name: &str) -> Result<u32, AsldError> {
 fn build_exec_script(cwd: &str, env: &[(&str, &str)], argv: &[String]) -> String {
     let mut script = format!("cd '{}' ", escape_single_quoted(cwd));
     for (key, value) in env {
-        script.push_str(&format!("&& export {}='{}' ", key, escape_single_quoted(value)));
+        script.push_str(&format!(
+            "&& export {}='{}' ",
+            key,
+            escape_single_quoted(value)
+        ));
     }
     script.push_str("&& exec");
     for arg in argv {
@@ -158,9 +180,7 @@ mod tests {
 
     use crate::model::{AgentPolicy, DistroState, SessionMode};
 
-    use super::{
-        build_exec_script, inferred_agent_state, provision_exec_io, provision_shell_io,
-    };
+    use super::{build_exec_script, inferred_agent_state, provision_exec_io, provision_shell_io};
 
     #[test]
     fn disabled_policy_means_not_present() {
@@ -174,7 +194,12 @@ mod tests {
 
     #[test]
     fn fallback_console_shell_uses_console_pipe() {
-        let io = provision_shell_io("sh-00000001", SessionMode::FallbackConsole, "asl-console-ubuntu").unwrap();
+        let io = provision_shell_io(
+            "sh-00000001",
+            SessionMode::FallbackConsole,
+            "asl-console-ubuntu",
+        )
+        .unwrap();
         assert_eq!(io.console_pipe_name, "asl-console-ubuntu");
         assert!(io.stdin_pipe_name.contains("sh-00000001"));
         assert_ne!(io.attached_pid, 0);
@@ -182,7 +207,14 @@ mod tests {
 
     #[test]
     fn exec_provisions_dedicated_stdout_and_stdin_pipes() {
-        let io = provision_exec_io("exec-00000001", SessionMode::Agent, "/workspace", &[], &[String::from("cargo")]).unwrap();
+        let io = provision_exec_io(
+            "exec-00000001",
+            SessionMode::Agent,
+            "/workspace",
+            &[],
+            &[String::from("cargo")],
+        )
+        .unwrap();
         assert!(io.stdout_pipe_name.contains("exec-00000001"));
         assert!(io.stdin_pipe_name.contains("exec-00000001"));
     }

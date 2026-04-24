@@ -1,4 +1,4 @@
-use libconf::{ConfError};
+use libconf::ConfError;
 use libconf_schema::{
     default_bool, default_int, default_string, manifest, RegistryScope, ServiceSchema,
 };
@@ -41,6 +41,8 @@ mod tests {
     fn manifest_contains_required_roots_and_defaults() {
         assert!(ASL_DIRS.contains(&"distros"));
         assert!(ASL_DIRS.contains(&"profiles/default"));
-        assert!(ASL_DEFAULTS.iter().any(|d| d.path == "profiles/default/network_mode"));
+        assert!(ASL_DEFAULTS
+            .iter()
+            .any(|d| d.path == "profiles/default/network_mode"));
     }
 }

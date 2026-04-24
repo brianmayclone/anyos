@@ -2,7 +2,9 @@ use crate::errors::AsldError;
 
 pub fn is_valid_image_ref(image_ref: &str) -> bool {
     !image_ref.is_empty()
-        && image_ref.bytes().all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.'))
+        && image_ref
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.'))
 }
 
 pub fn validate_image_ref(image_ref: &str) -> Result<(), AsldError> {

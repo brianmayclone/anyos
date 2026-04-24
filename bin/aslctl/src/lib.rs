@@ -14,6 +14,32 @@ pub enum ClientCommand<'a> {
         image_ref: &'a str,
         owner: &'a str,
     },
+    Delete {
+        name: &'a str,
+        force: bool,
+    },
+    Clone {
+        source: &'a str,
+        target: &'a str,
+        owner: Option<&'a str>,
+        include_mounts: bool,
+    },
+    Export(&'a str),
+    Config(&'a str),
+    ConfigSetResources {
+        distro: &'a str,
+        memory_mb: Option<&'a str>,
+        vcpu_count: Option<&'a str>,
+    },
+    StorageValidate(&'a str),
+    NetworkShow(&'a str),
+    NetworkSet {
+        distro: &'a str,
+        mode: Option<&'a str>,
+        dns_mode: Option<&'a str>,
+        allow_outbound: Option<&'a str>,
+    },
+    NetworkValidate(&'a str),
     Start(&'a str),
     Restart(&'a str),
     Stop(&'a str),
@@ -26,6 +52,7 @@ pub enum ClientCommand<'a> {
     },
     VmEventsClear(&'a str),
     Diagnose(&'a str),
+    Doctor(&'a str),
     ShellList(&'a str),
     ShellShow {
         distro: &'a str,
@@ -74,6 +101,7 @@ pub enum ClientCommand<'a> {
         distro: &'a str,
         mount_id: &'a str,
     },
+    MountValidate(&'a str),
     PortList(&'a str),
     PortAdd {
         distro: &'a str,
@@ -88,17 +116,12 @@ pub enum ClientCommand<'a> {
         distro: &'a str,
         rule_id: &'a str,
     },
+    PortValidate(&'a str),
 }
 
 pub enum WireResponse {
-    Ok {
-        count: usize,
-        lines: Vec<String>,
-    },
-    Err {
-        code: String,
-        message: String,
-    },
+    Ok { count: usize, lines: Vec<String> },
+    Err { code: String, message: String },
 }
 
 pub fn run() {
@@ -119,6 +142,12 @@ pub fn parse_cli_command<'a>(raw: &'a str) -> Option<ClientCommand<'a>> {
     let tokens = tokenize(raw);
     let first = *tokens.first()?;
     match first {
+        "delete" => parse_delete_tokens(&tokens),
+        "clone" => parse_clone_tokens(&tokens),
+        "export" => Some(ClientCommand::Export(*tokens.get(1)?)),
+        "config" => parse_config_tokens(&tokens),
+        "network" => parse_network_tokens(&tokens),
+        "doctor" => Some(ClientCommand::Doctor(*tokens.get(1)?)),
         "shell-list" => Some(ClientCommand::ShellList(*tokens.get(1)?)),
         "shell-show" => Some(ClientCommand::ShellShow {
             distro: *tokens.get(1)?,
@@ -152,6 +181,20 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
             image_ref: args.pos(2)?,
             owner: args.pos(3)?,
         }),
+        "delete" => Some(ClientCommand::Delete {
+            name: args.pos(1)?,
+            force: false,
+        }),
+        "clone" => Some(ClientCommand::Clone {
+            source: args.pos(1)?,
+            target: args.pos(2)?,
+            owner: args.pos(3),
+            include_mounts: true,
+        }),
+        "export" => Some(ClientCommand::Export(args.pos(1)?)),
+        "config" => Some(ClientCommand::Config(args.pos(1)?)),
+        "storage" => parse_storage_command(args),
+        "network" => parse_network_command(args),
         "start" => Some(ClientCommand::Start(args.pos(1)?)),
         "restart" => Some(ClientCommand::Restart(args.pos(1)?)),
         "stop" => Some(ClientCommand::Stop(args.pos(1)?)),
@@ -164,6 +207,7 @@ pub fn parse_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Clien
         }),
         "vm-events-clear" => Some(ClientCommand::VmEventsClear(args.pos(1)?)),
         "diagnose" => Some(ClientCommand::Diagnose(args.pos(1)?)),
+        "doctor" => Some(ClientCommand::Doctor(args.pos(1)?)),
         "exec-clear" => Some(ClientCommand::ExecClear(args.pos(1)?)),
         "mount" => parse_mount_command(args),
         "port" => parse_port_command(args),
@@ -239,6 +283,7 @@ fn parse_exec_tokens<'a>(tokens: &[&'a str]) -> Option<ClientCommand<'a>> {
 fn parse_mount_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
     match args.pos(1)? {
         "list" => Some(ClientCommand::MountList(args.pos(2)?)),
+        "validate" => Some(ClientCommand::MountValidate(args.pos(2)?)),
         "show" => Some(ClientCommand::MountShow {
             distro: args.pos(2)?,
             mount_id: args.pos(3)?,
@@ -263,9 +308,140 @@ fn parse_mount_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<Cli
     }
 }
 
+fn parse_network_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
+    match args.pos(1)? {
+        "show" => Some(ClientCommand::NetworkShow(args.pos(2)?)),
+        "validate" => Some(ClientCommand::NetworkValidate(args.pos(2)?)),
+        _ => None,
+    }
+}
+
+fn parse_storage_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
+    match args.pos(1)? {
+        "validate" => Some(ClientCommand::StorageValidate(args.pos(2)?)),
+        _ => None,
+    }
+}
+
+fn parse_delete_tokens<'a>(tokens: &[&'a str]) -> Option<ClientCommand<'a>> {
+    let name = *tokens.get(1)?;
+    let mut force = false;
+    let mut i = 2;
+    while i < tokens.len() {
+        match tokens[i] {
+            "--force" | "-f" => force = true,
+            _ => return None,
+        }
+        i += 1;
+    }
+    Some(ClientCommand::Delete { name, force })
+}
+
+fn parse_clone_tokens<'a>(tokens: &[&'a str]) -> Option<ClientCommand<'a>> {
+    let source = *tokens.get(1)?;
+    let target = *tokens.get(2)?;
+    let mut owner = None;
+    let mut include_mounts = true;
+    let mut i = 3;
+    while i < tokens.len() {
+        match tokens[i] {
+            "--owner" => {
+                owner = Some(*tokens.get(i + 1)?);
+                i += 1;
+            }
+            "--no-mounts" => include_mounts = false,
+            _ => return None,
+        }
+        i += 1;
+    }
+    Some(ClientCommand::Clone {
+        source,
+        target,
+        owner,
+        include_mounts,
+    })
+}
+
+fn parse_network_tokens<'a>(tokens: &[&'a str]) -> Option<ClientCommand<'a>> {
+    match *tokens.get(1)? {
+        "show" => Some(ClientCommand::NetworkShow(*tokens.get(2)?)),
+        "validate" => Some(ClientCommand::NetworkValidate(*tokens.get(2)?)),
+        "set" => {
+            let distro = *tokens.get(2)?;
+            let mut mode = None;
+            let mut dns_mode = None;
+            let mut allow_outbound = None;
+            let mut i = 3;
+            while i < tokens.len() {
+                match tokens[i] {
+                    "--mode" => {
+                        mode = Some(*tokens.get(i + 1)?);
+                        i += 1;
+                    }
+                    "--dns-mode" => {
+                        dns_mode = Some(*tokens.get(i + 1)?);
+                        i += 1;
+                    }
+                    "--allow-outbound" => {
+                        allow_outbound = Some(*tokens.get(i + 1)?);
+                        i += 1;
+                    }
+                    _ => return None,
+                }
+                i += 1;
+            }
+            Some(ClientCommand::NetworkSet {
+                distro,
+                mode,
+                dns_mode,
+                allow_outbound,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn parse_config_tokens<'a>(tokens: &[&'a str]) -> Option<ClientCommand<'a>> {
+    match *tokens.get(1)? {
+        "set-resources" => {
+            let distro = *tokens.get(2)?;
+            let mut memory_mb = None;
+            let mut vcpu_count = None;
+            let mut i = 3;
+            while i < tokens.len() {
+                match tokens[i] {
+                    "--memory" | "--memory-mb" => {
+                        memory_mb = Some(*tokens.get(i + 1)?);
+                        i += 1;
+                    }
+                    "--vcpus" | "--vcpu-count" => {
+                        vcpu_count = Some(*tokens.get(i + 1)?);
+                        i += 1;
+                    }
+                    _ => return None,
+                }
+                i += 1;
+            }
+            Some(ClientCommand::ConfigSetResources {
+                distro,
+                memory_mb,
+                vcpu_count,
+            })
+        }
+        name => {
+            if tokens.len() == 2 {
+                Some(ClientCommand::Config(name))
+            } else {
+                None
+            }
+        }
+    }
+}
+
 fn parse_port_command<'a>(args: &anyos_std::args::ParsedArgs<'a>) -> Option<ClientCommand<'a>> {
     match args.pos(1)? {
         "list" => Some(ClientCommand::PortList(args.pos(2)?)),
+        "validate" => Some(ClientCommand::PortValidate(args.pos(2)?)),
         "add" => Some(ClientCommand::PortAdd {
             distro: args.pos(2)?,
             rule_id: args.pos(3)?,
@@ -321,7 +497,8 @@ fn send_command(command: &ClientCommand<'_>) -> Result<WireResponse, &'static st
             return Err("failed to read response");
         }
         if n > 0 {
-            let chunk = core::str::from_utf8(&buf[..n as usize]).map_err(|_| "response was not valid UTF-8")?;
+            let chunk = core::str::from_utf8(&buf[..n as usize])
+                .map_err(|_| "response was not valid UTF-8")?;
             raw.push_str(chunk);
             if raw.ends_with("\n\n") {
                 let _ = anyos_std::ipc::pipe_close(reply_pipe);
@@ -343,7 +520,8 @@ pub fn parse_response(raw: &str) -> Result<WireResponse, &'static str> {
     let mut header_parts = header.split('\t');
     match header_parts.next() {
         Some("OK") => {
-            let count = parse_usize(header_parts.next().unwrap_or("0")).ok_or("invalid OK header")?;
+            let count =
+                parse_usize(header_parts.next().unwrap_or("0")).ok_or("invalid OK header")?;
             let mut body = Vec::new();
             for line in lines {
                 if !line.is_empty() {
@@ -402,7 +580,49 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                     );
                 }
             }
-            ClientCommand::PortList(_) | ClientCommand::PortAdd { .. } | ClientCommand::PortRemove { .. } => {
+            ClientCommand::MountValidate(_) => {
+                println!("mount-validation: {}", count);
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    println!(
+                        "{}\tguest={}\tvalid={}\t{}",
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("false"),
+                        parts.next().unwrap_or(""),
+                    );
+                }
+            }
+            ClientCommand::NetworkValidate(_) | ClientCommand::PortValidate(_) => {
+                println!("network-validation: {}", count);
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    println!(
+                        "{}\tlisten={}\tvalid={}\texposure={}\t{}",
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("false"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or(""),
+                    );
+                }
+            }
+            ClientCommand::StorageValidate(_) => {
+                println!("storage-validation: {}", count);
+                for line in lines {
+                    let mut parts = line.split('\t');
+                    println!(
+                        "{}\tpath={}\tvalid={}\t{}",
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("-"),
+                        parts.next().unwrap_or("false"),
+                        parts.next().unwrap_or(""),
+                    );
+                }
+            }
+            ClientCommand::PortList(_)
+            | ClientCommand::PortAdd { .. }
+            | ClientCommand::PortRemove { .. } => {
                 println!("ports: {}", count);
                 for line in lines {
                     let mut parts = line.split('\t');
@@ -419,6 +639,13 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
             }
             ClientCommand::Status(_)
             | ClientCommand::Create { .. }
+            | ClientCommand::Delete { .. }
+            | ClientCommand::Clone { .. }
+            | ClientCommand::Export(_)
+            | ClientCommand::Config(_)
+            | ClientCommand::ConfigSetResources { .. }
+            | ClientCommand::NetworkShow(_)
+            | ClientCommand::NetworkSet { .. }
             | ClientCommand::Start(_)
             | ClientCommand::Restart(_)
             | ClientCommand::Stop(_)
@@ -444,7 +671,9 @@ fn print_response(command: &ClientCommand<'_>, response: &WireResponse) {
                     );
                 }
             }
-            ClientCommand::VmEventsClear(_) | ClientCommand::Diagnose(_) => {
+            ClientCommand::VmEventsClear(_)
+            | ClientCommand::Diagnose(_)
+            | ClientCommand::Doctor(_) => {
                 for line in lines {
                     println!("{}", line);
                 }
@@ -541,6 +770,15 @@ fn print_usage() {
     println!("  aslctl list");
     println!("  aslctl status <name>");
     println!("  aslctl create <name> <image-ref> <owner>");
+    println!("  aslctl delete <name> [--force]");
+    println!("  aslctl clone <source> <target> [--owner <owner>] [--no-mounts]");
+    println!("  aslctl export <name>");
+    println!("  aslctl config <name>");
+    println!("  aslctl config set-resources <name> [--memory-mb <MiB>] [--vcpus <count>]");
+    println!("  aslctl storage validate <name>");
+    println!("  aslctl network show <name>");
+    println!("  aslctl network set <name> [--mode nat] [--dns-mode host-broker] [--allow-outbound true|false]");
+    println!("  aslctl network validate <name>");
     println!("  aslctl start <name>");
     println!("  aslctl restart <name>");
     println!("  aslctl stop <name>");
@@ -550,6 +788,7 @@ fn print_usage() {
     println!("  aslctl vm-events-tail <name> [limit]");
     println!("  aslctl vm-events-clear <name>");
     println!("  aslctl diagnose <name>");
+    println!("  aslctl doctor <name>");
     println!("  aslctl shell-list <name>");
     println!("  aslctl shell-show <name> <session-id>");
     println!("  aslctl shell-close <name> <session-id>");
@@ -559,10 +798,12 @@ fn print_usage() {
     println!("  aslctl exec-clear <name>");
     println!("  aslctl exec <name> [--fallback-console] [--cwd <path>] [--env KEY=VALUE] -- <command> [args...]");
     println!("  aslctl mount list <name>");
+    println!("  aslctl mount validate <name>");
     println!("  aslctl mount show <name> <mount-id>");
     println!("  aslctl mount add <name> <mount-id> <host> <guest> <mode> <metadata> <case> <exec> <watch> [description]");
     println!("  aslctl mount remove <name> <mount-id>");
     println!("  aslctl port list <name>");
+    println!("  aslctl port validate <name>");
     println!("  aslctl port add <name> <rule-id> <listen-address> <listen-port> <guest-port> <protocol> [description]");
     println!("  aslctl port remove <name> <rule-id>");
 }
@@ -577,6 +818,48 @@ impl ClientCommand<'_> {
                 image_ref,
                 owner,
             } => format!("CREATE {} {} {}", name, image_ref, owner),
+            Self::Delete { name, force } => {
+                format!("DELETE {}\t{}", name, if *force { 1 } else { 0 })
+            }
+            Self::Clone {
+                source,
+                target,
+                owner,
+                include_mounts,
+            } => format!(
+                "CLONE {}\t{}\t{}\t{}",
+                source,
+                target,
+                owner.unwrap_or("-"),
+                if *include_mounts { 1 } else { 0 }
+            ),
+            Self::Export(name) => format!("EXPORT {}", name),
+            Self::Config(name) => format!("CONFIG_SHOW {}", name),
+            Self::ConfigSetResources {
+                distro,
+                memory_mb,
+                vcpu_count,
+            } => format!(
+                "CONFIG_SET_RESOURCES {}\t{}\t{}",
+                distro,
+                memory_mb.unwrap_or("-"),
+                vcpu_count.unwrap_or("-")
+            ),
+            Self::StorageValidate(name) => format!("STORAGE_VALIDATE {}", name),
+            Self::NetworkShow(name) => format!("NETWORK_SHOW {}", name),
+            Self::NetworkSet {
+                distro,
+                mode,
+                dns_mode,
+                allow_outbound,
+            } => format!(
+                "NETWORK_SET {}\t{}\t{}\t{}",
+                distro,
+                mode.unwrap_or("-"),
+                dns_mode.unwrap_or("-"),
+                allow_outbound.unwrap_or("-")
+            ),
+            Self::NetworkValidate(name) => format!("NETWORK_VALIDATE {}", name),
             Self::Start(name) => format!("START {}", name),
             Self::Restart(name) => format!("RESTART {}", name),
             Self::Stop(name) => format!("STOP {}", name),
@@ -586,9 +869,14 @@ impl ClientCommand<'_> {
             Self::VmEventsTail { distro, limit } => format!("VM_EVENTS_TAIL {}\t{}", distro, limit),
             Self::VmEventsClear(name) => format!("VM_EVENTS_CLEAR {}", name),
             Self::Diagnose(name) => format!("DIAGNOSE {}", name),
+            Self::Doctor(name) => format!("DIAGNOSE {}", name),
             Self::ShellList(name) => format!("SHELL_LIST {}", name),
-            Self::ShellShow { distro, session_id } => format!("SHELL_SHOW {}\t{}", distro, session_id),
-            Self::ShellClose { distro, session_id } => format!("SHELL_CLOSE {}\t{}", distro, session_id),
+            Self::ShellShow { distro, session_id } => {
+                format!("SHELL_SHOW {}\t{}", distro, session_id)
+            }
+            Self::ShellClose { distro, session_id } => {
+                format!("SHELL_CLOSE {}\t{}", distro, session_id)
+            }
             Self::Shell {
                 distro,
                 fallback_console,
@@ -642,7 +930,10 @@ impl ClientCommand<'_> {
                 watch_policy,
                 description
             ),
-            Self::MountRemove { distro, mount_id } => format!("MOUNT_REMOVE {}\t{}", distro, mount_id),
+            Self::MountRemove { distro, mount_id } => {
+                format!("MOUNT_REMOVE {}\t{}", distro, mount_id)
+            }
+            Self::MountValidate(distro) => format!("MOUNT_VALIDATE {}", distro),
             Self::PortList(distro) => format!("PORT_LIST {}", distro),
             Self::PortAdd {
                 distro,
@@ -654,15 +945,10 @@ impl ClientCommand<'_> {
                 description,
             } => format!(
                 "PORT_ADD {}\t{}\t{}\t{}\t{}\t{}\t{}",
-                distro,
-                rule_id,
-                listen_address,
-                listen_port,
-                guest_port,
-                protocol,
-                description
+                distro, rule_id, listen_address, listen_port, guest_port, protocol, description
             ),
             Self::PortRemove { distro, rule_id } => format!("PORT_REMOVE {}\t{}", distro, rule_id),
+            Self::PortValidate(distro) => format!("NETWORK_VALIDATE {}", distro),
         }
     }
 }
@@ -772,6 +1058,96 @@ mod tests {
     }
 
     #[test]
+    fn parses_delete_config_and_doctor_commands() {
+        match parse_cli_command("delete ubuntu-dev --force") {
+            Some(ClientCommand::Delete { name, force }) => {
+                assert_eq!(name, "ubuntu-dev");
+                assert!(force);
+            }
+            _ => panic!("expected delete command"),
+        }
+        match parse_cli_command("config ubuntu-dev") {
+            Some(ClientCommand::Config(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected config command"),
+        }
+        match parse_cli_command("doctor ubuntu-dev") {
+            Some(ClientCommand::Doctor(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected doctor command"),
+        }
+    }
+
+    #[test]
+    fn parses_clone_export_and_storage_commands() {
+        match parse_cli_command("clone ubuntu-dev ubuntu-copy --owner ops --no-mounts") {
+            Some(ClientCommand::Clone {
+                source,
+                target,
+                owner,
+                include_mounts,
+            }) => {
+                assert_eq!(source, "ubuntu-dev");
+                assert_eq!(target, "ubuntu-copy");
+                assert_eq!(owner, Some("ops"));
+                assert!(!include_mounts);
+            }
+            _ => panic!("expected clone command"),
+        }
+        match parse_cli_command("export ubuntu-copy") {
+            Some(ClientCommand::Export(name)) => assert_eq!(name, "ubuntu-copy"),
+            _ => panic!("expected export command"),
+        }
+        let args = anyos_std::args::parse("storage validate ubuntu-copy", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::StorageValidate(name)) => assert_eq!(name, "ubuntu-copy"),
+            _ => panic!("expected storage validate command"),
+        }
+    }
+
+    #[test]
+    fn parses_config_set_resources_command() {
+        match parse_cli_command("config set-resources ubuntu-dev --memory-mb 4096 --vcpus 4") {
+            Some(ClientCommand::ConfigSetResources {
+                distro,
+                memory_mb,
+                vcpu_count,
+            }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(memory_mb, Some("4096"));
+                assert_eq!(vcpu_count, Some("4"));
+            }
+            _ => panic!("expected config set-resources command"),
+        }
+    }
+
+    #[test]
+    fn parses_network_commands() {
+        match parse_cli_command("network show ubuntu-dev") {
+            Some(ClientCommand::NetworkShow(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected network show command"),
+        }
+        match parse_cli_command("network validate ubuntu-dev") {
+            Some(ClientCommand::NetworkValidate(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected network validate command"),
+        }
+        match parse_cli_command(
+            "network set ubuntu-dev --mode nat --dns-mode host-broker --allow-outbound false",
+        ) {
+            Some(ClientCommand::NetworkSet {
+                distro,
+                mode,
+                dns_mode,
+                allow_outbound,
+            }) => {
+                assert_eq!(distro, "ubuntu-dev");
+                assert_eq!(mode, Some("nat"));
+                assert_eq!(dns_mode, Some("host-broker"));
+                assert_eq!(allow_outbound, Some("false"));
+            }
+            _ => panic!("expected network set command"),
+        }
+    }
+
+    #[test]
     fn parses_mount_add_command() {
         let args = anyos_std::args::parse(
             "mount add ubuntu-dev workspace /Users/strati/work /mnt/work readwrite relaxed host-native inherit best-effort Workspace",
@@ -799,8 +1175,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_mount_validate_command() {
+        let args = anyos_std::args::parse("mount validate ubuntu-dev", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::MountValidate(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected mount validate command"),
+        }
+    }
+
+    #[test]
     fn parses_port_add_command() {
-        let args = anyos_std::args::parse("port add ubuntu-dev web 127.0.0.1 3000 3000 tcp Web", b"");
+        let args =
+            anyos_std::args::parse("port add ubuntu-dev web 127.0.0.1 3000 3000 tcp Web", b"");
         match parse_command(&args) {
             Some(ClientCommand::PortAdd {
                 distro,
@@ -820,6 +1206,15 @@ mod tests {
                 assert_eq!(description, "Web");
             }
             _ => panic!("expected port add command"),
+        }
+    }
+
+    #[test]
+    fn parses_port_validate_command() {
+        let args = anyos_std::args::parse("port validate ubuntu-dev", b"");
+        match parse_command(&args) {
+            Some(ClientCommand::PortValidate(name)) => assert_eq!(name, "ubuntu-dev"),
+            _ => panic!("expected port validate command"),
         }
     }
 
@@ -912,7 +1307,9 @@ mod tests {
 
     #[test]
     fn parses_exec_command_with_env_and_cwd() {
-        match parse_cli_command("exec ubuntu-dev --cwd /workspace --env RUST_BACKTRACE=1 -- cargo test") {
+        match parse_cli_command(
+            "exec ubuntu-dev --cwd /workspace --env RUST_BACKTRACE=1 -- cargo test",
+        ) {
             Some(ClientCommand::Exec {
                 distro,
                 cwd,

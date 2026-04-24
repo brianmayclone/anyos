@@ -15,10 +15,11 @@ anyos_std = { path = "../../../libs/stdlib", features = ["host"] }
 libconf = { path = "../../../libs/libconf", features = ["host"] }
 libconf_schema = { path = "../../../libs/libconf_schema" }
 libsvc = { path = "../../../libs/libsvc", features = ["host"] }
+libavm = { path = "../../../libs/libavm" }
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 anyos_std = { path = "../../../libs/stdlib" }
 libconf = { path = "../../../libs/libconf" }
 libconf_schema = { path = "../../../libs/libconf_schema" }
 libsvc = { path = "../../../libs/libsvc" }
-libsyscall = { path = "../../../libs/libsyscall" }
+libavm = { path = "../../../libs/libavm" }

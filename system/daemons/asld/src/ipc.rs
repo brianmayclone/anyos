@@ -5,7 +5,8 @@ use alloc::vec::Vec;
 use crate::config::ConfigStore;
 use crate::errors::AsldError;
 use crate::model::{
-    ExecInvocation, MountSpec, PortForwardSpec, ShellSession, VmExitEvent, VmStatusSummary,
+    ExecInvocation, MountSpec, MountValidation, NetworkPolicy, NetworkValidation, PortForwardSpec,
+    ShellSession, StorageValidation, VmExitEvent, VmStatusSummary,
 };
 use crate::runtime::RuntimeService;
 
@@ -79,7 +80,12 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             Ok(items) => {
                 let mut out = format!("OK\t{}\n", items.len());
                 for item in items {
-                    out.push_str(&format!("{}\t{}\t{}\n", item.name, item.state.as_str(), item.health.as_str()));
+                    out.push_str(&format!(
+                        "{}\t{}\t{}\n",
+                        item.name,
+                        item.state.as_str(),
+                        item.health.as_str()
+                    ));
                 }
                 out.push('\n');
                 out
@@ -98,20 +104,152 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
         },
         "CREATE" | "create" => {
             let mut parts = rest.split_whitespace();
-            let Some(name) = parts.next() else { return err_line(&AsldError::InvalidArgument("name")); };
-            let Some(image_ref) = parts.next() else { return err_line(&AsldError::InvalidArgument("image_ref")); };
-            let Some(owner) = parts.next() else { return err_line(&AsldError::InvalidArgument("owner")); };
+            let Some(name) = parts.next() else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            let Some(image_ref) = parts.next() else {
+                return err_line(&AsldError::InvalidArgument("image_ref"));
+            };
+            let Some(owner) = parts.next() else {
+                return err_line(&AsldError::InvalidArgument("owner"));
+            };
             match runtime.create(store, name, image_ref, owner) {
-                Ok(status) => format!("OK\t1\ncreated\t{}\nstate\t{}\n\n", status.name, status.state.as_str()),
+                Ok(status) => format!(
+                    "OK\t1\ncreated\t{}\nstate\t{}\n\n",
+                    status.name,
+                    status.state.as_str()
+                ),
+                Err(err) => err_line(&err),
+            }
+        }
+        "DELETE" | "delete" => {
+            let fields = split_tab_fields(rest);
+            if fields.is_empty() {
+                return err_line(&AsldError::InvalidArgument("delete"));
+            }
+            let force = fields.get(1).copied().unwrap_or("0") == "1";
+            match runtime.delete(store, fields[0], force) {
+                Ok(cfg) => ok_lines(alloc::vec![
+                    format!("deleted\t{}", cfg.name),
+                    format!("base_image_ref\t{}", cfg.base_image_ref),
+                ]),
+                Err(err) => err_line(&err),
+            }
+        }
+        "CLONE" | "clone" => {
+            let fields = split_tab_fields(rest);
+            if fields.len() < 2 {
+                return err_line(&AsldError::InvalidArgument("clone"));
+            }
+            let include_mounts = fields.get(3).copied().unwrap_or("1") != "0";
+            match runtime.clone(
+                store,
+                fields[0],
+                fields[1],
+                optional_field(fields.get(2).copied().unwrap_or("-")),
+                include_mounts,
+            ) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
+        "EXPORT" | "export" => {
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match runtime.export_lines(store, name) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
+        "CONFIG_SHOW" | "config_show" => {
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match runtime.config_lines(store, name) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
+        "CONFIG_SET_RESOURCES" | "config_set_resources" => {
+            let fields = split_tab_fields(rest);
+            if fields.is_empty() {
+                return err_line(&AsldError::InvalidArgument("config_set_resources"));
+            }
+            let memory_mb = match parse_optional_u32(fields.get(1).copied().unwrap_or("-")) {
+                Ok(value) => value,
+                Err(err) => return err_line(&err),
+            };
+            let vcpu_count = match parse_optional_u16(fields.get(2).copied().unwrap_or("-")) {
+                Ok(value) => value,
+                Err(err) => return err_line(&err),
+            };
+            match runtime.update_resources(store, fields[0], memory_mb, vcpu_count) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
+        "STORAGE_VALIDATE" | "storage_validate" => {
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match runtime.validate_storage(store, name) {
+                Ok(report) => ok_lines(format_storage_validation_lines(&report)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "NETWORK_SHOW" | "network_show" => {
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match runtime.network_policy(store, name) {
+                Ok(policy) => ok_lines(format_network_policy_lines(&policy)),
+                Err(err) => err_line(&err),
+            }
+        }
+        "NETWORK_SET" | "network_set" => {
+            let fields = split_tab_fields(rest);
+            if fields.is_empty() {
+                return err_line(&AsldError::InvalidArgument("network_set"));
+            }
+            let allow_outbound = match parse_optional_bool(fields.get(3).copied().unwrap_or("-")) {
+                Ok(value) => value,
+                Err(err) => return err_line(&err),
+            };
+            match runtime.update_network(
+                store,
+                fields[0],
+                optional_field(fields.get(1).copied().unwrap_or("-")),
+                optional_field(fields.get(2).copied().unwrap_or("-")),
+                allow_outbound,
+            ) {
+                Ok(lines) => ok_lines(lines),
+                Err(err) => err_line(&err),
+            }
+        }
+        "NETWORK_VALIDATE" | "network_validate" => {
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match runtime.validate_network(store, name) {
+                Ok(report) => ok_lines(format_network_validation_lines(&report)),
                 Err(err) => err_line(&err),
             }
         }
         "START" | "start" => match runtime.start(store, rest) {
-            Ok(status) => format!("OK\t1\nstate\t{}\nhealth\t{}\n\n", status.state.as_str(), status.health.as_str()),
+            Ok(status) => format!(
+                "OK\t1\nstate\t{}\nhealth\t{}\n\n",
+                status.state.as_str(),
+                status.health.as_str()
+            ),
             Err(err) => err_line(&err),
         },
         "RESTART" | "restart" => match runtime.restart(store, rest) {
-            Ok(status) => format!("OK\t1\nstate\t{}\nhealth\t{}\n\n", status.state.as_str(), status.health.as_str()),
+            Ok(status) => format!(
+                "OK\t1\nstate\t{}\nhealth\t{}\n\n",
+                status.state.as_str(),
+                status.health.as_str()
+            ),
             Err(err) => err_line(&err),
         },
         "STOP" | "stop" => match runtime.stop(store, rest) {
@@ -123,14 +261,18 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             Err(err) => err_line(&err),
         },
         "VM_STATUS" | "vm_status" => {
-            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
             match runtime.vm_status(name) {
                 Ok(status) => ok_lines(format_vm_status_lines(&status)),
                 Err(err) => err_line(&err),
             }
         }
         "VM_EVENTS" | "vm_events" => {
-            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
             match runtime.vm_events(name) {
                 Ok(events) => ok_lines(format_vm_event_lines(&events)),
                 Err(err) => err_line(&err),
@@ -151,15 +293,19 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             }
         }
         "VM_EVENTS_CLEAR" | "vm_events_clear" => {
-            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
             match runtime.clear_vm_events(name) {
                 Ok(count) => ok_lines(alloc::vec![format!("cleared\t{}", count)]),
                 Err(err) => err_line(&err),
             }
         }
         "DIAGNOSE" | "diagnose" => {
-            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
-            match runtime.diagnose(name) {
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match runtime.diagnose(store, name) {
                 Ok(lines) => ok_lines(lines),
                 Err(err) => err_line(&err),
             }
@@ -181,7 +327,9 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             }
         }
         "SHELL_LIST" | "shell_list" => {
-            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
             match runtime.list_shell_sessions(name) {
                 Ok(sessions) => ok_lines(format_shell_collection_lines(&sessions)),
                 Err(err) => err_line(&err),
@@ -222,7 +370,9 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             }
         }
         "EXEC_LIST" | "exec_list" => {
-            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
             match runtime.list_execs(name) {
                 Ok(execs) => ok_lines(format_exec_collection_lines(&execs)),
                 Err(err) => err_line(&err),
@@ -239,14 +389,18 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
             }
         }
         "EXEC_CLEAR" | "exec_clear" => {
-            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
             match runtime.clear_execs(name) {
                 Ok(count) => ok_lines(alloc::vec![format!("cleared\t{}", count)]),
                 Err(err) => err_line(&err),
             }
         }
         "MOUNT_LIST" | "mount_list" => {
-            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
             match runtime.list_mounts(store, name) {
                 Ok(mounts) => ok_lines(format_mount_lines(&mounts)),
                 Err(err) => err_line(&err),
@@ -282,8 +436,19 @@ fn dispatch<S: ConfigStore>(runtime: &mut RuntimeService, store: &mut S, cmd: &s
                 Err(err) => err_line(&err),
             }
         }
+        "MOUNT_VALIDATE" | "mount_validate" => {
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
+            match runtime.validate_mounts(store, name) {
+                Ok(report) => ok_lines(format_mount_validation_lines(&report)),
+                Err(err) => err_line(&err),
+            }
+        }
         "PORT_LIST" | "port_list" => {
-            let Some(name) = first_tab_field(rest) else { return err_line(&AsldError::InvalidArgument("name")); };
+            let Some(name) = first_tab_field(rest) else {
+                return err_line(&AsldError::InvalidArgument("name"));
+            };
             match runtime.list_port_forwards(store, name) {
                 Ok(rules) => ok_lines(format_port_lines(&rules)),
                 Err(err) => err_line(&err),
@@ -385,6 +550,41 @@ fn parse_u16(s: &str) -> Option<u16> {
         return None;
     }
     Some(value as u16)
+}
+
+fn parse_optional_u32(s: &str) -> Result<Option<u32>, AsldError> {
+    if s == "-" || s.is_empty() {
+        return Ok(None);
+    }
+    parse_u32(s)
+        .map(Some)
+        .ok_or(AsldError::InvalidArgument("u32"))
+}
+
+fn parse_optional_u16(s: &str) -> Result<Option<u16>, AsldError> {
+    if s == "-" || s.is_empty() {
+        return Ok(None);
+    }
+    parse_u16(s)
+        .map(Some)
+        .ok_or(AsldError::InvalidArgument("u16"))
+}
+
+fn parse_optional_bool(s: &str) -> Result<Option<bool>, AsldError> {
+    match s {
+        "-" | "" => Ok(None),
+        "true" | "1" | "yes" | "on" => Ok(Some(true)),
+        "false" | "0" | "no" | "off" => Ok(Some(false)),
+        _ => Err(AsldError::InvalidArgument("bool")),
+    }
+}
+
+fn optional_field(value: &str) -> Option<&str> {
+    if value == "-" || value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn parse_list_field(s: &str) -> Vec<String> {
@@ -497,6 +697,57 @@ fn format_mount_lines(mounts: &[MountSpec]) -> Vec<String> {
     out
 }
 
+fn format_mount_validation_lines(report: &[MountValidation]) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in report {
+        out.push(format!(
+            "{}\t{}\t{}\t{}",
+            item.id,
+            item.guest_path,
+            if item.valid { "true" } else { "false" },
+            item.message
+        ));
+    }
+    out
+}
+
+fn format_network_policy_lines(policy: &NetworkPolicy) -> Vec<String> {
+    alloc::vec![
+        format!("network.mode\t{}", policy.mode),
+        format!("network.dns_mode\t{}", policy.dns_mode),
+        format!("network.allow_outbound\t{}", policy.allow_outbound),
+    ]
+}
+
+fn format_network_validation_lines(report: &[NetworkValidation]) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in report {
+        out.push(format!(
+            "{}\t{}\t{}\t{}\t{}",
+            item.id,
+            item.listen,
+            if item.valid { "true" } else { "false" },
+            item.exposure,
+            item.message
+        ));
+    }
+    out
+}
+
+fn format_storage_validation_lines(report: &[StorageValidation]) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in report {
+        out.push(format!(
+            "{}\t{}\t{}\t{}",
+            item.role,
+            item.path,
+            if item.valid { "true" } else { "false" },
+            item.message
+        ));
+    }
+    out
+}
+
 fn format_port_lines(rules: &[PortForwardSpec]) -> Vec<String> {
     let mut out = Vec::new();
     for rule in rules {
@@ -575,17 +826,102 @@ mod tests {
     fn create_then_status_roundtrip() {
         let mut runtime = RuntimeService::new();
         let mut store = FakeStore::default();
-        let create = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let create = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
         assert!(create.starts_with("OK"));
         let status = dispatch(&mut runtime, &mut store, "STATUS ubuntu-dev");
         assert!(status.contains("name\tubuntu-dev"));
     }
 
     #[test]
+    fn config_update_and_delete_roundtrip() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
+
+        let config = dispatch(&mut runtime, &mut store, "CONFIG_SHOW ubuntu-dev");
+        assert!(config.contains("resources.memory_mb\t2048"));
+
+        let updated = dispatch(
+            &mut runtime,
+            &mut store,
+            "CONFIG_SET_RESOURCES ubuntu-dev\t4096\t4",
+        );
+        assert!(updated.contains("resources.memory_mb\t4096"));
+        assert!(updated.contains("resources.vcpu_count\t4"));
+
+        let deleted = dispatch(&mut runtime, &mut store, "DELETE ubuntu-dev\t0");
+        assert!(deleted.contains("deleted\tubuntu-dev"));
+        let status = dispatch(&mut runtime, &mut store, "STATUS ubuntu-dev");
+        assert!(status.starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn clone_export_and_storage_commands_roundtrip() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
+
+        let clone = dispatch(
+            &mut runtime,
+            &mut store,
+            "CLONE ubuntu-dev\tubuntu-copy\tops\t1",
+        );
+        assert!(clone.contains("name\tubuntu-copy"));
+        assert!(clone.contains("owner\tops"));
+
+        let export = dispatch(&mut runtime, &mut store, "EXPORT ubuntu-copy");
+        assert!(export.contains("format\tasl-export-v1"));
+
+        let storage = dispatch(&mut runtime, &mut store, "STORAGE_VALIDATE ubuntu-copy");
+        assert!(storage.contains("overlay\t/System/var/asl/distros/ubuntu-copy/images/overlay.img\ttrue"));
+    }
+
+    #[test]
+    fn network_commands_roundtrip() {
+        let mut runtime = RuntimeService::new();
+        let mut store = FakeStore::default();
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
+
+        let show = dispatch(&mut runtime, &mut store, "NETWORK_SHOW ubuntu-dev");
+        assert!(show.contains("network.mode\tnat"));
+        assert!(show.contains("network.dns_mode\thost-broker"));
+
+        let updated = dispatch(
+            &mut runtime,
+            &mut store,
+            "NETWORK_SET ubuntu-dev\tnat\thost-broker\tfalse",
+        );
+        assert!(updated.contains("network.allow_outbound\tfalse"));
+
+        let validate = dispatch(&mut runtime, &mut store, "NETWORK_VALIDATE ubuntu-dev");
+        assert!(validate.contains("policy\t\ttrue\tnat"));
+    }
+
+    #[test]
     fn mount_commands_roundtrip() {
         let mut runtime = RuntimeService::new();
         let mut store = FakeStore::default();
-        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
         let add = dispatch(
             &mut runtime,
             &mut store,
@@ -594,7 +930,13 @@ mod tests {
         assert!(add.contains("workspace\t/Users/strati/work"));
         let show = dispatch(&mut runtime, &mut store, "MOUNT_SHOW ubuntu-dev\tworkspace");
         assert!(show.contains("/mnt/work"));
-        let remove = dispatch(&mut runtime, &mut store, "MOUNT_REMOVE ubuntu-dev\tworkspace");
+        let validate = dispatch(&mut runtime, &mut store, "MOUNT_VALIDATE ubuntu-dev");
+        assert!(validate.contains("workspace\t/mnt/work\t"));
+        let remove = dispatch(
+            &mut runtime,
+            &mut store,
+            "MOUNT_REMOVE ubuntu-dev\tworkspace",
+        );
         assert!(remove.starts_with("OK\t0"));
     }
 
@@ -602,7 +944,11 @@ mod tests {
     fn port_commands_roundtrip() {
         let mut runtime = RuntimeService::new();
         let mut store = FakeStore::default();
-        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
         let add = dispatch(
             &mut runtime,
             &mut store,
@@ -611,6 +957,8 @@ mod tests {
         assert!(add.contains("web\t127.0.0.1\t3000\t3000\ttcp"));
         let list = dispatch(&mut runtime, &mut store, "PORT_LIST ubuntu-dev");
         assert!(list.contains("web\t127.0.0.1"));
+        let validate = dispatch(&mut runtime, &mut store, "NETWORK_VALIDATE ubuntu-dev");
+        assert!(validate.contains("web\t127.0.0.1:3000\ttrue\tlocal"));
         let remove = dispatch(&mut runtime, &mut store, "PORT_REMOVE ubuntu-dev\tweb");
         assert!(remove.starts_with("OK\t0"));
     }
@@ -619,7 +967,11 @@ mod tests {
     fn shell_and_exec_roundtrip() {
         let mut runtime = RuntimeService::new();
         let mut store = FakeStore::default();
-        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
         let _ = dispatch(&mut runtime, &mut store, "START ubuntu-dev");
         let shell = dispatch(&mut runtime, &mut store, "SHELL_OPEN ubuntu-dev\tdev\t0");
         assert!(shell.contains("sh-"));
@@ -639,7 +991,11 @@ mod tests {
     fn vm_status_and_events_roundtrip() {
         let mut runtime = RuntimeService::new();
         let mut store = FakeStore::default();
-        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
         let _ = dispatch(&mut runtime, &mut store, "START ubuntu-dev");
         let status = dispatch(&mut runtime, &mut store, "VM_STATUS ubuntu-dev");
         assert!(status.contains("backend\t"));
@@ -652,7 +1008,11 @@ mod tests {
     fn shell_exec_and_diagnose_roundtrip() {
         let mut runtime = RuntimeService::new();
         let mut store = FakeStore::default();
-        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
         let _ = dispatch(&mut runtime, &mut store, "START ubuntu-dev");
         let shell = dispatch(&mut runtime, &mut store, "SHELL_OPEN ubuntu-dev\tops\t0");
         assert!(shell.contains("sh-"));
@@ -663,7 +1023,11 @@ mod tests {
             .nth(1)
             .and_then(|line| line.split('\t').next())
             .unwrap_or("");
-        let close = dispatch(&mut runtime, &mut store, &format!("SHELL_CLOSE ubuntu-dev\t{}", shell_id));
+        let close = dispatch(
+            &mut runtime,
+            &mut store,
+            &format!("SHELL_CLOSE ubuntu-dev\t{}", shell_id),
+        );
         assert!(close.starts_with("OK\t0"));
 
         let _ = dispatch(
@@ -684,7 +1048,11 @@ mod tests {
     fn restart_show_and_clear_roundtrip() {
         let mut runtime = RuntimeService::new();
         let mut store = FakeStore::default();
-        let _ = dispatch(&mut runtime, &mut store, "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati");
+        let _ = dispatch(
+            &mut runtime,
+            &mut store,
+            "CREATE ubuntu-dev ubuntu-24.04-x86_64-v1 strati",
+        );
         let _ = dispatch(&mut runtime, &mut store, "START ubuntu-dev");
         let restart = dispatch(&mut runtime, &mut store, "RESTART ubuntu-dev");
         assert!(restart.contains("state\tready"));
@@ -695,7 +1063,11 @@ mod tests {
             .nth(1)
             .and_then(|line| line.split('\t').next())
             .unwrap_or("");
-        let shell_show = dispatch(&mut runtime, &mut store, &format!("SHELL_SHOW ubuntu-dev\t{}", shell_id));
+        let shell_show = dispatch(
+            &mut runtime,
+            &mut store,
+            &format!("SHELL_SHOW ubuntu-dev\t{}", shell_id),
+        );
         assert!(shell_show.contains("\tops\t"));
 
         let exec = dispatch(
@@ -708,7 +1080,11 @@ mod tests {
             .nth(1)
             .and_then(|line| line.split('\t').next())
             .unwrap_or("");
-        let exec_show = dispatch(&mut runtime, &mut store, &format!("EXEC_SHOW ubuntu-dev\t{}", exec_id));
+        let exec_show = dispatch(
+            &mut runtime,
+            &mut store,
+            &format!("EXEC_SHOW ubuntu-dev\t{}", exec_id),
+        );
         assert!(exec_show.contains("\tcargo test\t"));
 
         let exec_clear = dispatch(&mut runtime, &mut store, "EXEC_CLEAR ubuntu-dev");

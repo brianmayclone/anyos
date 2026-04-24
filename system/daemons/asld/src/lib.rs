@@ -14,6 +14,7 @@ pub mod network;
 pub mod runtime;
 pub mod schema;
 pub mod status;
+pub mod storage;
 pub mod store;
 pub mod vm;
 
@@ -80,7 +81,13 @@ pub fn run() {
     println!("asld: ready (pipe='{}')", PIPE_NAME);
 
     loop {
-        let active = ipc::handle_requests(&mut runtime, &mut store, &mut ipc_state, pipe_id, &mut pipe_buf);
+        let active = ipc::handle_requests(
+            &mut runtime,
+            &mut store,
+            &mut ipc_state,
+            pipe_id,
+            &mut pipe_buf,
+        );
         runtime.tick();
         process::sleep(if active { 20 } else { 100 });
     }

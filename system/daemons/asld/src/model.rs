@@ -166,6 +166,14 @@ pub struct MountSpec {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MountValidation {
+    pub id: String,
+    pub guest_path: String,
+    pub valid: bool,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PortForwardSpec {
     pub id: String,
     pub listen_address: String,
@@ -173,6 +181,23 @@ pub struct PortForwardSpec {
     pub guest_port: u16,
     pub protocol: String,
     pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetworkValidation {
+    pub id: String,
+    pub listen: String,
+    pub valid: bool,
+    pub exposure: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StorageValidation {
+    pub role: String,
+    pub path: String,
+    pub valid: bool,
+    pub message: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -303,7 +328,9 @@ pub struct VmExitEvent {
 
 pub fn is_valid_distro_name(name: &str) -> bool {
     !name.is_empty()
-        && name.bytes().all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_'))
+        && name
+            .bytes()
+            .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_'))
 }
 
 pub fn default_storage_for(name: &str) -> StorageSpec {
@@ -332,8 +359,12 @@ mod tests {
     #[test]
     fn builds_predictable_storage_paths() {
         let storage = default_storage_for("ubuntu-dev");
-        assert!(storage.base_image_path.ends_with("/ubuntu-dev/images/base.img"));
-        assert!(storage.overlay_image_path.ends_with("/ubuntu-dev/images/overlay.img"));
+        assert!(storage
+            .base_image_path
+            .ends_with("/ubuntu-dev/images/base.img"));
+        assert!(storage
+            .overlay_image_path
+            .ends_with("/ubuntu-dev/images/overlay.img"));
         assert!(storage.state_image_enabled);
     }
 }

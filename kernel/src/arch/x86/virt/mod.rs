@@ -4,6 +4,7 @@
 //! Feature detection at boot, per-CPU initialization, and VM/vCPU lifecycle.
 
 pub mod ept;
+pub mod avm;
 pub mod svm;
 pub mod syscalls;
 pub mod vmx;

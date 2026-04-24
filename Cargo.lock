@@ -213,10 +213,10 @@ name = "asld"
 version = "0.1.0"
 dependencies = [
  "anyos_std",
+ "libavm",
  "libconf",
  "libconf_schema",
  "libsvc",
- "libsyscall",
 ]
 
 [[package]]
@@ -1188,6 +1188,13 @@ dependencies = [
  "dynlink",
  "libfont_client",
  "libimage_client",
+]
+
+[[package]]
+name = "libavm"
+version = "0.1.0"
+dependencies = [
+ "libsyscall",
 ]
 
 [[package]]

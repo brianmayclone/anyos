@@ -3,14 +3,15 @@ use alloc::{format, string::String};
 
 use crate::agent::{inferred_agent_state, provision_exec_io, provision_shell_io};
 use crate::config::{
-    add_mount, add_port_forward, ensure_distro_tree, list_distros, load_distro, remove_mount,
-    remove_port_forward, ConfigStore,
+    add_mount, add_port_forward, clone_distro, delete_distro, ensure_distro_tree, list_distros,
+    load_distro, remove_mount, remove_port_forward, update_network, update_resources, ConfigStore,
 };
 use crate::distro::build_distro_config;
 use crate::errors::AsldError;
 use crate::model::{
-    DistroHealth, DistroState, DistroStatus, ExecInvocation, MountSpec, PortForwardSpec,
-    SessionMode, ShellSession, VmExitEvent, VmStatusSummary,
+    DistroConfig, DistroHealth, DistroState, DistroStatus, ExecInvocation, MountSpec,
+    MountValidation, NetworkPolicy, NetworkValidation, PortForwardSpec, SessionMode, ShellSession,
+    StorageValidation, VmExitEvent, VmStatusSummary,
 };
 use crate::status::{degraded_status, stopped_status};
 use crate::store::RuntimeStore;
@@ -81,7 +82,11 @@ impl RuntimeService {
         Ok(out)
     }
 
-    pub fn status<S: ConfigStore>(&mut self, store: &mut S, name: &str) -> Result<DistroStatus, AsldError> {
+    pub fn status<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<DistroStatus, AsldError> {
         if let Some(status) = self.store.get(name) {
             return Ok(status.clone());
         }
@@ -103,10 +108,173 @@ impl RuntimeService {
         Ok(status)
     }
 
-    pub fn start<S: ConfigStore>(&mut self, store: &mut S, name: &str) -> Result<DistroStatus, AsldError> {
+    pub fn delete<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+        force: bool,
+    ) -> Result<DistroConfig, AsldError> {
+        let cfg = load_distro(store, name)?;
+        if let Some(index) = self
+            .backends
+            .iter()
+            .position(|backend| backend.name == name)
+        {
+            if !force {
+                return Err(AsldError::InvalidState("distro is running"));
+            }
+            let instance = self.backends[index].vm.clone();
+            vm::stop_vm(&instance)?;
+            self.backends.remove(index);
+        }
+        let deleted = delete_distro(store, &cfg.name)?;
+        let _ = self.store.remove(&cfg.name);
+        Ok(deleted)
+    }
+
+    pub fn clone<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        source_name: &str,
+        target_name: &str,
+        owner: Option<&str>,
+        include_mounts: bool,
+    ) -> Result<Vec<String>, AsldError> {
+        if let Some(status) = self.store.get(source_name) {
+            if matches!(
+                status.state,
+                DistroState::Ready
+                    | DistroState::Starting
+                    | DistroState::Booting
+                    | DistroState::Degraded
+                    | DistroState::Stopping
+            ) {
+                return Err(AsldError::InvalidState(
+                    "clone requires a stopped source distro",
+                ));
+            }
+        }
+        let cfg = clone_distro(
+            store,
+            source_name,
+            target_name,
+            owner,
+            include_mounts,
+            false,
+        )?;
+        self.store.upsert(stopped_status(
+            &cfg.name,
+            cfg.resources.clone(),
+            cfg.network.clone(),
+        ));
+        Ok(format_config_lines(&cfg))
+    }
+
+    pub fn config_lines<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<Vec<String>, AsldError> {
+        let cfg = load_distro(store, name)?;
+        Ok(format_config_lines(&cfg))
+    }
+
+    pub fn export_lines<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<Vec<String>, AsldError> {
+        let cfg = load_distro(store, name)?;
+        Ok(crate::storage::export_manifest_lines(&cfg))
+    }
+
+    pub fn validate_storage<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<Vec<StorageValidation>, AsldError> {
+        let cfg = load_distro(store, name)?;
+        Ok(crate::storage::validate_storage(&cfg.name, &cfg.storage))
+    }
+
+    pub fn update_resources<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+        memory_mb: Option<u32>,
+        vcpu_count: Option<u16>,
+    ) -> Result<Vec<String>, AsldError> {
+        if let Some(status) = self.store.get(name) {
+            if matches!(
+                status.state,
+                DistroState::Ready
+                    | DistroState::Starting
+                    | DistroState::Booting
+                    | DistroState::Degraded
+            ) {
+                return Err(AsldError::InvalidState(
+                    "resource changes require a stopped distro",
+                ));
+            }
+        }
+        let cfg = update_resources(store, name, memory_mb, vcpu_count)?;
+        self.store.upsert(stopped_status(
+            &cfg.name,
+            cfg.resources.clone(),
+            cfg.network.clone(),
+        ));
+        Ok(format_config_lines(&cfg))
+    }
+
+    pub fn network_policy<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<NetworkPolicy, AsldError> {
+        Ok(load_distro(store, name)?.network)
+    }
+
+    pub fn update_network<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+        mode: Option<&str>,
+        dns_mode: Option<&str>,
+        allow_outbound: Option<bool>,
+    ) -> Result<Vec<String>, AsldError> {
+        if let Some(status) = self.store.get(name) {
+            if matches!(
+                status.state,
+                DistroState::Ready
+                    | DistroState::Starting
+                    | DistroState::Booting
+                    | DistroState::Degraded
+            ) {
+                return Err(AsldError::InvalidState(
+                    "network changes require a stopped distro",
+                ));
+            }
+        }
+        let cfg = update_network(store, name, mode, dns_mode, allow_outbound)?;
+        self.store.upsert(stopped_status(
+            &cfg.name,
+            cfg.resources.clone(),
+            cfg.network.clone(),
+        ));
+        Ok(format_config_lines(&cfg))
+    }
+
+    pub fn start<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<DistroStatus, AsldError> {
         let cfg = load_distro(store, name)?;
         if let Some(existing) = self.store.get(name) {
-            if matches!(existing.state, DistroState::Ready | DistroState::Starting | DistroState::Booting) {
+            if matches!(
+                existing.state,
+                DistroState::Ready | DistroState::Starting | DistroState::Booting
+            ) {
                 return Err(AsldError::InvalidState("already running or starting"));
             }
         }
@@ -121,7 +289,8 @@ impl RuntimeService {
                     vm::boot_probe(&mut backend.vm)
                 };
 
-                let mut status = stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone());
+                let mut status =
+                    stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone());
                 match boot_report {
                     Ok(report) if report.ready => {
                         if let Some(backend) = self.backend_mut(&cfg.name) {
@@ -137,7 +306,8 @@ impl RuntimeService {
                         }
                         status.state = DistroState::Degraded;
                         status.health = DistroHealth::Degraded;
-                        status.agent_state = inferred_agent_state(&cfg.agent, DistroState::Degraded);
+                        status.agent_state =
+                            inferred_agent_state(&cfg.agent, DistroState::Degraded);
                         status.last_error = Some(report.summary);
                     }
                     Err(err) => {
@@ -146,7 +316,8 @@ impl RuntimeService {
                         }
                         status.state = DistroState::Degraded;
                         status.health = DistroHealth::Degraded;
-                        status.agent_state = inferred_agent_state(&cfg.agent, DistroState::Degraded);
+                        status.agent_state =
+                            inferred_agent_state(&cfg.agent, DistroState::Degraded);
                         status.last_error = Some(err.message());
                     }
                 }
@@ -166,14 +337,26 @@ impl RuntimeService {
         }
     }
 
-    pub fn restart<S: ConfigStore>(&mut self, store: &mut S, name: &str) -> Result<DistroStatus, AsldError> {
+    pub fn restart<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<DistroStatus, AsldError> {
         let _ = self.stop(store, name)?;
         self.start(store, name)
     }
 
-    pub fn stop<S: ConfigStore>(&mut self, store: &mut S, name: &str) -> Result<DistroStatus, AsldError> {
+    pub fn stop<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<DistroStatus, AsldError> {
         let cfg = load_distro(store, name)?;
-        if let Some(index) = self.backends.iter().position(|backend| backend.name == name) {
+        if let Some(index) = self
+            .backends
+            .iter()
+            .position(|backend| backend.name == name)
+        {
             let instance = self.backends[index].vm.clone();
             vm::stop_vm(&instance)?;
             self.backends.remove(index);
@@ -183,8 +366,21 @@ impl RuntimeService {
         Ok(status)
     }
 
-    pub fn list_mounts<S: ConfigStore>(&mut self, store: &mut S, name: &str) -> Result<Vec<MountSpec>, AsldError> {
+    pub fn list_mounts<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<Vec<MountSpec>, AsldError> {
         Ok(load_distro(store, name)?.mounts)
+    }
+
+    pub fn validate_mounts<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<Vec<MountValidation>, AsldError> {
+        let mounts = self.list_mounts(store, name)?;
+        Ok(crate::mounts::validate_mount_set(&mounts))
     }
 
     pub fn show_mount<S: ConfigStore>(
@@ -235,8 +431,20 @@ impl RuntimeService {
         distro_name: &str,
         rule: &PortForwardSpec,
     ) -> Result<Vec<PortForwardSpec>, AsldError> {
+        ensure_port_listener_available(store, distro_name, rule)?;
         add_port_forward(store, distro_name, rule)?;
         self.list_port_forwards(store, distro_name)
+    }
+
+    pub fn validate_network<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<Vec<NetworkValidation>, AsldError> {
+        let cfg = load_distro(store, name)?;
+        let mut report = crate::network::validate_network_set(&cfg.network, &cfg.port_forwards);
+        annotate_cross_distro_port_conflicts(store, name, &mut report, &cfg.port_forwards)?;
+        Ok(report)
     }
 
     pub fn vm_status(&self, name: &str) -> Result<VmStatusSummary, AsldError> {
@@ -316,16 +524,15 @@ impl RuntimeService {
         let _ = self.require_running(name)?;
         let mode = select_session_mode(&cfg.agent, fallback_console)?;
         let requested_name = String::from(session_name.unwrap_or("default"));
-        if let Some(existing) = self
-            .backends
-            .iter()
-            .find(|backend| backend.name == name)
-            .and_then(|backend| {
-                backend
-                    .shell_sessions
-                    .iter()
-                    .find(|session| session.session_name == requested_name && session.mode == mode)
-            })
+        if let Some(existing) =
+            self.backends
+                .iter()
+                .find(|backend| backend.name == name)
+                .and_then(|backend| {
+                    backend.shell_sessions.iter().find(|session| {
+                        session.session_name == requested_name && session.mode == mode
+                    })
+                })
         {
             let mut reused = existing.clone();
             reused.reused = true;
@@ -347,7 +554,11 @@ impl RuntimeService {
             attached_pid: 0,
             reused: false,
         };
-        let io = provision_shell_io(&session.session_id, session.mode, &backend.vm.console_pipe_name)?;
+        let io = provision_shell_io(
+            &session.session_id,
+            session.mode,
+            &backend.vm.console_pipe_name,
+        )?;
         let session = ShellSession {
             console_pipe_name: io.console_pipe_name,
             stdin_pipe_name: io.stdin_pipe_name,
@@ -367,14 +578,22 @@ impl RuntimeService {
         Ok(backend.shell_sessions.clone())
     }
 
-    pub fn show_shell_session(&self, name: &str, session_id: &str) -> Result<ShellSession, AsldError> {
+    pub fn show_shell_session(
+        &self,
+        name: &str,
+        session_id: &str,
+    ) -> Result<ShellSession, AsldError> {
         self.list_shell_sessions(name)?
             .into_iter()
             .find(|session| session.session_id == session_id)
             .ok_or(AsldError::NotFound)
     }
 
-    pub fn close_shell_session(&mut self, name: &str, session_id: &str) -> Result<Vec<ShellSession>, AsldError> {
+    pub fn close_shell_session(
+        &mut self,
+        name: &str,
+        session_id: &str,
+    ) -> Result<Vec<ShellSession>, AsldError> {
         let backend = self
             .backend_mut(name)
             .ok_or(AsldError::InvalidState("distro runtime missing"))?;
@@ -451,29 +670,77 @@ impl RuntimeService {
         Ok(cleared)
     }
 
-    pub fn diagnose(&self, name: &str) -> Result<Vec<String>, AsldError> {
-        let status = self.store.get(name).ok_or(AsldError::NotFound)?;
-        let vm = self.vm_status(name)?;
-        let shells = self.list_shell_sessions(name)?;
-        let execs = self.list_execs(name)?;
-        let events = self.vm_events(name)?;
-        Ok(alloc::vec![
+    pub fn diagnose<S: ConfigStore>(
+        &mut self,
+        store: &mut S,
+        name: &str,
+    ) -> Result<Vec<String>, AsldError> {
+        let cfg = load_distro(store, name)?;
+        let status = self.store.get(name).cloned().unwrap_or_else(|| {
+            stopped_status(&cfg.name, cfg.resources.clone(), cfg.network.clone())
+        });
+        let mount_report = crate::mounts::validate_mount_set(&cfg.mounts);
+        let unhealthy_mounts = mount_report.iter().filter(|item| !item.valid).count();
+        let storage_report = crate::storage::validate_storage(&cfg.name, &cfg.storage);
+        let unhealthy_storage = storage_report.iter().filter(|item| !item.valid).count();
+        let network_report = self.validate_network(store, name)?;
+        let unhealthy_network = network_report.iter().filter(|item| !item.valid).count();
+        let mut lines = alloc::vec![
             format!("name\t{}", status.name),
             format!("state\t{}", status.state.as_str()),
             format!("health\t{}", status.health.as_str()),
             format!("agent\t{}", status.agent_state.as_str()),
-            format!("vm_backend\t{}", vm.backend),
-            format!("vm_run_state\t{}", vm.run_state.as_str()),
-            format!("vm_boot\t{}", vm.boot_summary),
-            format!("shell_sessions\t{}", shells.len()),
-            format!("execs\t{}", execs.len()),
-            format!("vm_events\t{}", events.len()),
-            format!("vm_total_exits\t{}", vm.total_exits),
-        ])
+            format!(
+                "resources\t{}vcpu\t{}MiB",
+                status.resources.vcpu_count, status.resources.memory_mb
+            ),
+            format!(
+                "network\t{}\tdns={}\toutbound={}",
+                cfg.network.mode, cfg.network.dns_mode, cfg.network.allow_outbound
+            ),
+            format!(
+                "storage_layout\t{}\tunhealthy={}",
+                cfg.storage.layout, unhealthy_storage
+            ),
+            format!(
+                "mounts\t{}\tunhealthy={}",
+                cfg.mounts.len(),
+                unhealthy_mounts
+            ),
+            format!(
+                "ports\t{}\tunhealthy={}",
+                cfg.port_forwards.len(),
+                unhealthy_network
+            ),
+        ];
+
+        if let Ok(vm) = self.vm_status(name) {
+            let shells = self.list_shell_sessions(name).unwrap_or_default();
+            let execs = self.list_execs(name).unwrap_or_default();
+            let events = self.vm_events(name).unwrap_or_default();
+            lines.extend(alloc::vec![
+                format!("vm_backend\t{}", vm.backend),
+                format!("vm_run_state\t{}", vm.run_state.as_str()),
+                format!("vm_boot\t{}", vm.boot_summary),
+                format!("shell_sessions\t{}", shells.len()),
+                format!("execs\t{}", execs.len()),
+                format!("vm_events\t{}", events.len()),
+                format!("vm_total_exits\t{}", vm.total_exits),
+            ]);
+        } else {
+            lines.push(String::from("vm_backend\tnone"));
+            lines.push(String::from("vm_run_state\tstopped"));
+        }
+
+        Ok(lines)
     }
 
     fn upsert_backend(&mut self, name: &str, vm: vm::VmInstance) {
-        if let Some(existing) = self.backends.iter_mut().find(|backend| backend.name == name) {
+        if let Some(existing) = self
+            .backends
+            .iter_mut()
+            .find(|backend| backend.name == name)
+        {
             existing.vm = vm;
             existing.boot_summary.clear();
             existing.exit_history.clear();
@@ -494,7 +761,9 @@ impl RuntimeService {
     }
 
     fn backend_mut(&mut self, name: &str) -> Option<&mut RuntimeBackend> {
-        self.backends.iter_mut().find(|backend| backend.name == name)
+        self.backends
+            .iter_mut()
+            .find(|backend| backend.name == name)
     }
 
     fn require_running(&self, name: &str) -> Result<&DistroStatus, AsldError> {
@@ -542,6 +811,52 @@ impl RuntimeService {
     }
 }
 
+fn ensure_port_listener_available<S: ConfigStore>(
+    store: &mut S,
+    distro_name: &str,
+    candidate: &PortForwardSpec,
+) -> Result<(), AsldError> {
+    for name in list_distros(store)? {
+        let cfg = load_distro(store, &name)?;
+        for existing in &cfg.port_forwards {
+            if name == distro_name && existing.id == candidate.id {
+                continue;
+            }
+            if crate::network::same_listener(existing, candidate) {
+                return Err(AsldError::InvalidState("port listener already configured"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn annotate_cross_distro_port_conflicts<S: ConfigStore>(
+    store: &mut S,
+    distro_name: &str,
+    report: &mut [NetworkValidation],
+    rules: &[PortForwardSpec],
+) -> Result<(), AsldError> {
+    for other_name in list_distros(store)? {
+        if other_name == distro_name {
+            continue;
+        }
+        let other = load_distro(store, &other_name)?;
+        for rule in rules {
+            if other
+                .port_forwards
+                .iter()
+                .any(|existing| crate::network::same_listener(existing, rule))
+            {
+                if let Some(item) = report.iter_mut().find(|item| item.id == rule.id) {
+                    item.valid = false;
+                    item.message = format!("listener conflicts with distro {}", other_name);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn select_session_mode(
     policy: &crate::model::AgentPolicy,
     fallback_console: bool,
@@ -572,6 +887,73 @@ fn join_command(argv: &[String]) -> String {
     out
 }
 
+fn format_config_lines(cfg: &DistroConfig) -> Vec<String> {
+    let mut lines = alloc::vec![
+        format!("schema_version\t{}", cfg.schema_version),
+        format!("id\t{}", cfg.id),
+        format!("name\t{}", cfg.name),
+        format!("owner\t{}", cfg.owner),
+        format!("base_image_ref\t{}", cfg.base_image_ref),
+        format!("kernel_profile\t{}", cfg.kernel_profile),
+        format!("resources.memory_mb\t{}", cfg.resources.memory_mb),
+        format!("resources.vcpu_count\t{}", cfg.resources.vcpu_count),
+        format!("resources.autostart\t{}", cfg.resources.autostart),
+        format!("storage.layout\t{}", cfg.storage.layout),
+        format!("storage.base_image_path\t{}", cfg.storage.base_image_path),
+        format!(
+            "storage.overlay_image_path\t{}",
+            cfg.storage.overlay_image_path
+        ),
+        format!("storage.state_image_path\t{}", cfg.storage.state_image_path),
+        format!(
+            "storage.state_image_enabled\t{}",
+            cfg.storage.state_image_enabled
+        ),
+        format!("network.mode\t{}", cfg.network.mode),
+        format!("network.dns_mode\t{}", cfg.network.dns_mode),
+        format!("network.allow_outbound\t{}", cfg.network.allow_outbound),
+        format!("agent.enabled\t{}", cfg.agent.enabled),
+        format!(
+            "agent.required_for_rich_integration\t{}",
+            cfg.agent.required_for_rich_integration
+        ),
+        format!(
+            "agent.fallback_console_enabled\t{}",
+            cfg.agent.fallback_console_enabled
+        ),
+        format!(
+            "lifecycle.restart_on_failure\t{}",
+            cfg.lifecycle.restart_on_failure
+        ),
+        format!(
+            "lifecycle.shutdown_timeout_ms\t{}",
+            cfg.lifecycle.shutdown_timeout_ms
+        ),
+        format!(
+            "lifecycle.boot_timeout_ms\t{}",
+            cfg.lifecycle.boot_timeout_ms
+        ),
+        format!("metadata.distro_family\t{}", cfg.metadata.distro_family),
+        format!("metadata.distro_version\t{}", cfg.metadata.distro_version),
+        format!("metadata.notes\t{}", cfg.metadata.notes),
+        format!("mounts.count\t{}", cfg.mounts.len()),
+        format!("port_forwards.count\t{}", cfg.port_forwards.len()),
+    ];
+    for mount in &cfg.mounts {
+        lines.push(format!(
+            "mount.{}\t{}\t{}\t{}",
+            mount.id, mount.host_path, mount.guest_path, mount.mode
+        ));
+    }
+    for rule in &cfg.port_forwards {
+        lines.push(format!(
+            "port.{}\t{}:{}\t{}\t{}",
+            rule.id, rule.listen_address, rule.listen_port, rule.guest_port, rule.protocol
+        ));
+    }
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::FakeStore;
@@ -582,7 +964,9 @@ mod tests {
     fn create_and_status_roundtrip() {
         let mut store = FakeStore::default();
         let mut runtime = RuntimeService::new();
-        let created = runtime.create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let created = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
         assert_eq!(created.state.as_str(), "stopped");
 
         let status = runtime.status(&mut store, "ubuntu-dev").unwrap();
@@ -593,7 +977,9 @@ mod tests {
     fn start_creates_running_backend_status() {
         let mut store = FakeStore::default();
         let mut runtime = RuntimeService::new();
-        let _ = runtime.create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
         let status = runtime.start(&mut store, "ubuntu-dev").unwrap();
         assert_eq!(status.state.as_str(), "ready");
         assert!(status.last_error.is_none());
@@ -603,7 +989,9 @@ mod tests {
     fn shell_session_reuses_named_session() {
         let mut store = FakeStore::default();
         let mut runtime = RuntimeService::new();
-        let _ = runtime.create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
         let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
         let first = runtime
             .open_shell_session(&mut store, "ubuntu-dev", Some("dev"), false)
@@ -620,7 +1008,9 @@ mod tests {
     fn exec_command_tracks_mode_and_command_line() {
         let mut store = FakeStore::default();
         let mut runtime = RuntimeService::new();
-        let _ = runtime.create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
         let _ = runtime.start(&mut store, "ubuntu-dev").unwrap();
         let exec = runtime
             .exec_command(
@@ -646,7 +1036,9 @@ mod tests {
     fn mount_management_roundtrip() {
         let mut store = FakeStore::default();
         let mut runtime = RuntimeService::new();
-        let _ = runtime.create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
         let mounts = runtime
             .add_mount(
                 &mut store,
@@ -665,15 +1057,26 @@ mod tests {
             )
             .unwrap();
         assert_eq!(mounts.len(), 1);
-        assert_eq!(runtime.show_mount(&mut store, "ubuntu-dev", "workspace").unwrap().guest_path, "/mnt/work");
-        assert!(runtime.remove_mount(&mut store, "ubuntu-dev", "workspace").unwrap().is_empty());
+        assert_eq!(
+            runtime
+                .show_mount(&mut store, "ubuntu-dev", "workspace")
+                .unwrap()
+                .guest_path,
+            "/mnt/work"
+        );
+        assert!(runtime
+            .remove_mount(&mut store, "ubuntu-dev", "workspace")
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn port_forward_management_roundtrip() {
         let mut store = FakeStore::default();
         let mut runtime = RuntimeService::new();
-        let _ = runtime.create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati").unwrap();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
         let rules = runtime
             .add_port_forward(
                 &mut store,
@@ -690,7 +1093,94 @@ mod tests {
             .unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].id, "web");
-        assert!(runtime.remove_port_forward(&mut store, "ubuntu-dev", "web").unwrap().is_empty());
+        assert!(runtime
+            .remove_port_forward(&mut store, "ubuntu-dev", "web")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn network_policy_update_and_validation_roundtrip() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+
+        let lines = runtime
+            .update_network(
+                &mut store,
+                "ubuntu-dev",
+                Some("nat"),
+                Some("host-broker"),
+                Some(false),
+            )
+            .unwrap();
+        assert!(lines
+            .iter()
+            .any(|line| line == "network.allow_outbound\tfalse"));
+
+        let policy = runtime.network_policy(&mut store, "ubuntu-dev").unwrap();
+        assert_eq!(policy.mode, "nat");
+        assert!(!policy.allow_outbound);
+
+        let report = runtime.validate_network(&mut store, "ubuntu-dev").unwrap();
+        assert_eq!(report[0].id, "policy");
+        assert!(report[0].valid);
+    }
+
+    #[test]
+    fn clone_export_and_storage_validation_roundtrip() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+
+        let cloned = runtime
+            .clone(
+                &mut store,
+                "ubuntu-dev",
+                "ubuntu-copy",
+                Some("ops"),
+                true,
+            )
+            .unwrap();
+        assert!(cloned.iter().any(|line| line == "name\tubuntu-copy"));
+        assert!(cloned
+            .iter()
+            .any(|line| line.contains("/ubuntu-copy/images/overlay.img")));
+
+        let export = runtime.export_lines(&mut store, "ubuntu-copy").unwrap();
+        assert!(export.iter().any(|line| line == "format\tasl-export-v1"));
+
+        let storage = runtime.validate_storage(&mut store, "ubuntu-copy").unwrap();
+        assert!(storage.iter().all(|item| item.valid));
+    }
+
+    #[test]
+    fn port_listener_conflict_is_rejected_across_distros() {
+        let mut store = FakeStore::default();
+        let mut runtime = RuntimeService::new();
+        let _ = runtime
+            .create(&mut store, "ubuntu-dev", "ubuntu-24.04-x86_64-v1", "strati")
+            .unwrap();
+        let _ = runtime
+            .create(&mut store, "debian-dev", "debian-13-x86_64-v1", "strati")
+            .unwrap();
+        let rule = crate::model::PortForwardSpec {
+            id: alloc::string::String::from("web"),
+            listen_address: alloc::string::String::from("127.0.0.1"),
+            listen_port: 3000,
+            guest_port: 3000,
+            protocol: alloc::string::String::from("tcp"),
+            description: alloc::string::String::from("Web"),
+        };
+        let _ = runtime
+            .add_port_forward(&mut store, "ubuntu-dev", &rule)
+            .unwrap();
+        let result = runtime.add_port_forward(&mut store, "debian-dev", &rule);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -756,7 +1246,11 @@ mod tests {
             .unwrap();
         assert_eq!(runtime.list_execs("ubuntu-dev").unwrap().len(), 1);
         assert_eq!(runtime.clear_vm_events("ubuntu-dev").unwrap(), 0);
-        assert!(runtime.diagnose("ubuntu-dev").unwrap().iter().any(|line| line.starts_with("vm_backend\t")));
+        assert!(runtime
+            .diagnose(&mut store, "ubuntu-dev")
+            .unwrap()
+            .iter()
+            .any(|line| line.starts_with("vm_backend\t")));
     }
 
     #[test]
@@ -793,11 +1287,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            runtime.show_shell_session("ubuntu-dev", &shell.session_id).unwrap().session_name,
+            runtime
+                .show_shell_session("ubuntu-dev", &shell.session_id)
+                .unwrap()
+                .session_name,
             "ops"
         );
         assert_eq!(
-            runtime.show_exec("ubuntu-dev", &exec.exec_id).unwrap().command_line,
+            runtime
+                .show_exec("ubuntu-dev", &exec.exec_id)
+                .unwrap()
+                .command_line,
             "uname"
         );
     }

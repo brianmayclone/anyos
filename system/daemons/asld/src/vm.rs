@@ -16,6 +16,8 @@ const BOOT_STACK_GUARD: usize = 0x2000;
 pub struct VmInstance {
     pub vm_id: u32,
     pub vcpu_id: u32,
+    pub vm_handle: u64,
+    pub vcpu_handle: u64,
     pub backend: String,
     pub console_pipe_name: String,
     pub guest_memory_addr: usize,
@@ -64,6 +66,8 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
     Ok(VmInstance {
         vm_id: 1,
         vcpu_id: 0,
+        vm_handle: 1,
+        vcpu_handle: 1,
         backend: String::from("host-stub"),
         console_pipe_name: format!("asl-console-{}", config.name),
         guest_memory_addr: 0,
@@ -95,85 +99,82 @@ fn poll_runtime_impl(_instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent
 
 #[cfg(not(target_os = "linux"))]
 fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
-    const SYS_VM_CREATE: u32 = 600;
-    const SYS_VM_DESTROY: u32 = 601;
-    const SYS_VM_SET_MEMORY: u32 = 602;
-    const SYS_VCPU_CREATE: u32 = 603;
-    const SYS_VM_HW_INFO: u32 = 613;
-
-    #[repr(C)]
-    struct MemRegionDesc {
-        guest_phys: u64,
-        size: u64,
-        host_phys: u64,
+    let avm = libavm::Avm::new();
+    avm.require_api_version()
+        .map_err(|_| AsldError::BackendUnavailable("avm api unavailable"))?;
+    let info = avm
+        .backend_info()
+        .map_err(|_| AsldError::BackendUnavailable("avm backend info failed"))?;
+    if info.backend_kind == 0 {
+        return Err(AsldError::BackendUnavailable(
+            "hardware virtualization not available",
+        ));
     }
 
-    let hw = libsyscall::syscall0(SYS_VM_HW_INFO) as u32;
-    if hw == 0 {
-        return Err(AsldError::BackendUnavailable("hardware virtualization not available"));
-    }
-
-    let vm_id = libsyscall::syscall0(SYS_VM_CREATE) as u32;
-    if vm_id == 0 || vm_id == u32::MAX {
-        return Err(AsldError::BackendUnavailable("vm_create failed"));
-    }
+    let vm = avm
+        .create_vm()
+        .map_err(|_| AsldError::BackendUnavailable("avm create_vm failed"))?;
+    let vm_id = (vm.raw_handle() & 0xFFFF_FFFF) as u32;
 
     let guest_memory_size = align_guest_memory_size(config.resources.memory_mb);
     let guest_memory = anyos_std::process::mmap(guest_memory_size);
     if guest_memory.is_null() {
-        let _ = libsyscall::syscall1(SYS_VM_DESTROY, vm_id as u64);
-        return Err(AsldError::BackendUnavailable("guest memory allocation failed"));
+        let _ = vm.destroy();
+        return Err(AsldError::BackendUnavailable(
+            "guest memory allocation failed",
+        ));
     }
     unsafe {
         *guest_memory = 0xf4;
     }
 
-    let memory_desc = MemRegionDesc {
-        guest_phys: 0,
-        size: guest_memory_size as u64,
-        host_phys: guest_memory as u64,
+    let memory_region = libavm::AvmUserspaceMemoryRegion {
+        slot: 0,
+        flags: 0,
+        guest_phys_addr: 0,
+        memory_size: guest_memory_size as u64,
+        userspace_addr: guest_memory as u64,
     };
-    let map_result = libsyscall::syscall3(
-        SYS_VM_SET_MEMORY,
-        vm_id as u64,
-        0,
-        (&memory_desc as *const MemRegionDesc) as u64,
-    ) as u32;
-    if map_result == u32::MAX {
+    if vm.set_user_memory_region(&memory_region).is_err() {
         let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
-        let _ = libsyscall::syscall1(SYS_VM_DESTROY, vm_id as u64);
-        return Err(AsldError::BackendUnavailable("vm_set_memory failed"));
+        let _ = vm.destroy();
+        return Err(AsldError::BackendUnavailable(
+            "avm set_user_memory_region failed",
+        ));
     }
 
     let vcpu_id = 0u32;
-    let create_vcpu_result =
-        libsyscall::syscall2(SYS_VCPU_CREATE, vm_id as u64, vcpu_id as u64) as u32;
-    if create_vcpu_result == u32::MAX {
-        let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
-        let _ = libsyscall::syscall1(SYS_VM_DESTROY, vm_id as u64);
-        return Err(AsldError::BackendUnavailable("vcpu_create failed"));
-    }
+    let vcpu = match vm.create_vcpu(vcpu_id) {
+        Ok(vcpu) => vcpu,
+        Err(_) => {
+            let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
+            let _ = vm.destroy();
+            return Err(AsldError::BackendUnavailable("avm create_vcpu failed"));
+        }
+    };
 
-    if let Err(err) = configure_boot_vcpu(vm_id, vcpu_id, guest_memory, guest_memory_size) {
+    if let Err(err) = configure_boot_vcpu(&vcpu, guest_memory, guest_memory_size) {
         let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
-        let _ = libsyscall::syscall1(SYS_VM_DESTROY, vm_id as u64);
+        let _ = vm.destroy();
         return Err(err);
     }
 
     let console_pipe_name = format!("asl-console-{}", config.name);
     if let Err(err) = ensure_pipe(&console_pipe_name) {
         let _ = anyos_std::process::munmap(guest_memory, guest_memory_size);
-        let _ = libsyscall::syscall1(SYS_VM_DESTROY, vm_id as u64);
+        let _ = vm.destroy();
         return Err(err);
     }
 
     Ok(VmInstance {
         vm_id,
         vcpu_id,
-        backend: if hw == 1 {
-            String::from("kernel-vmx")
-        } else {
-            String::from("kernel-svm")
+        vm_handle: vm.raw_handle(),
+        vcpu_handle: vcpu.raw_handle(),
+        backend: match info.backend_kind {
+            1 => String::from("avm-vmx"),
+            2 => String::from("avm-svm"),
+            _ => String::from("avm-unknown"),
         },
         console_pipe_name,
         guest_memory_addr: guest_memory as usize,
@@ -185,20 +186,14 @@ fn start_vm_impl(config: &DistroConfig) -> Result<VmInstance, AsldError> {
 
 #[cfg(not(target_os = "linux"))]
 fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError> {
-    const SYS_VCPU_RUN: u32 = 604;
     const MAX_BOOT_EXITS: usize = 8;
 
     let mut last_exit = VmExitInfo::default();
+    let vcpu = libavm::AvmVcpu::from_raw_handle(instance.vcpu_handle);
     for _ in 0..MAX_BOOT_EXITS {
         let mut exit = VmExitInfo::default();
-        let rc = libsyscall::syscall3(
-            SYS_VCPU_RUN,
-            instance.vm_id as u64,
-            instance.vcpu_id as u64,
-            (&mut exit as *mut VmExitInfo) as u64,
-        ) as u32;
-        if rc == u32::MAX {
-            return Err(AsldError::BackendUnavailable("vcpu_run failed"));
+        if vcpu.run(&mut exit).is_err() {
+            return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
         let assessment = assess_boot_exit(&exit);
         last_exit = exit;
@@ -235,24 +230,18 @@ fn boot_probe_impl(instance: &mut VmInstance) -> Result<VmBootReport, AsldError>
 
 #[cfg(not(target_os = "linux"))]
 fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>, AsldError> {
-    const SYS_VCPU_RUN: u32 = 604;
     const MAX_RUNTIME_EXITS: usize = 4;
 
     if instance.halted {
         return Ok(None);
     }
 
+    let vcpu = libavm::AvmVcpu::from_raw_handle(instance.vcpu_handle);
     for _ in 0..MAX_RUNTIME_EXITS {
         let mut exit = VmExitInfo::default();
-        let rc = libsyscall::syscall3(
-            SYS_VCPU_RUN,
-            instance.vm_id as u64,
-            instance.vcpu_id as u64,
-            (&mut exit as *mut VmExitInfo) as u64,
-        ) as u32;
-        if rc == u32::MAX {
+        if vcpu.run(&mut exit).is_err() {
             instance.run_state = VmRunState::Degraded;
-            return Err(AsldError::BackendUnavailable("vcpu_run failed"));
+            return Err(AsldError::BackendUnavailable("avm vcpu run failed"));
         }
         match assess_runtime_exit(&exit) {
             RuntimeExitAssessment::Continue => continue,
@@ -276,37 +265,21 @@ fn poll_runtime_impl(instance: &mut VmInstance) -> Result<Option<VmRuntimeEvent>
 
 #[cfg(not(target_os = "linux"))]
 fn configure_boot_vcpu(
-    vm_id: u32,
-    vcpu_id: u32,
+    vcpu: &libavm::AvmVcpu,
     guest_memory: *mut u8,
     guest_memory_size: usize,
 ) -> Result<(), AsldError> {
-    const SYS_VCPU_SET_REGS: u32 = 606;
-    const SYS_VCPU_SET_SREGS: u32 = 608;
-
     let bootstrap = BootstrapLayout::new(guest_memory_size)?;
     write_bootstrap_image(guest_memory, guest_memory_size, &bootstrap)?;
     let regs = bootstrap_gprs();
     let sregs = bootstrap_sregs(&bootstrap);
 
-    let regs_result = libsyscall::syscall3(
-        SYS_VCPU_SET_REGS,
-        vm_id as u64,
-        vcpu_id as u64,
-        (&regs as *const GuestGprs) as u64,
-    ) as u32;
-    if regs_result == u32::MAX {
-        return Err(AsldError::BackendUnavailable("vcpu_set_regs failed"));
+    if vcpu.set_regs(&regs).is_err() {
+        return Err(AsldError::BackendUnavailable("avm set_regs failed"));
     }
 
-    let sregs_result = libsyscall::syscall3(
-        SYS_VCPU_SET_SREGS,
-        vm_id as u64,
-        vcpu_id as u64,
-        (&sregs as *const GuestSregs) as u64,
-    ) as u32;
-    if sregs_result == u32::MAX {
-        return Err(AsldError::BackendUnavailable("vcpu_set_sregs failed"));
+    if vcpu.set_sregs(&sregs).is_err() {
+        return Err(AsldError::BackendUnavailable("avm set_sregs failed"));
     }
 
     Ok(())
@@ -314,13 +287,15 @@ fn configure_boot_vcpu(
 
 #[cfg(not(target_os = "linux"))]
 fn stop_vm_impl(instance: &VmInstance) -> Result<(), AsldError> {
-    const SYS_VM_DESTROY: u32 = 601;
     if instance.guest_memory_addr != 0 && instance.guest_memory_size != 0 {
-        let _ = anyos_std::process::munmap(instance.guest_memory_addr as *mut u8, instance.guest_memory_size);
+        let _ = anyos_std::process::munmap(
+            instance.guest_memory_addr as *mut u8,
+            instance.guest_memory_size,
+        );
     }
-    let rc = libsyscall::syscall1(SYS_VM_DESTROY, instance.vm_id as u64) as u32;
-    if rc == u32::MAX {
-        return Err(AsldError::BackendUnavailable("vm_destroy failed"));
+    let vm = libavm::AvmVm::from_raw_handle(instance.vm_handle);
+    if vm.destroy().is_err() {
+        return Err(AsldError::BackendUnavailable("avm destroy_vm failed"));
     }
     Ok(())
 }
@@ -337,33 +312,14 @@ fn ensure_pipe(pipe_name: &str) -> Result<(), AsldError> {
     }
     let created = anyos_std::ipc::pipe_create(pipe_name);
     if created == 0 || created == u32::MAX {
-        return Err(AsldError::BackendUnavailable("console pipe provisioning failed"));
+        return Err(AsldError::BackendUnavailable(
+            "console pipe provisioning failed",
+        ));
     }
     Ok(())
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-struct VmExitInfo {
-    reason: u32,
-    hw_reason: u32,
-    qualification: u64,
-    guest_phys_addr: u64,
-    guest_virt_addr: u64,
-    instruction_len: u32,
-    io_port: u16,
-    access_size: u8,
-    is_read: u8,
-    io_data: u64,
-    io_data2: u64,
-    msr_index: u32,
-    cpuid_function: u32,
-    cpuid_index: u32,
-    cr_number: u8,
-    cr_is_read: u8,
-    dr_number: u8,
-    dr_is_read: u8,
-}
+type VmExitInfo = libavm::AvmExitInfo;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ExitAssessment {
@@ -391,7 +347,9 @@ impl BootstrapLayout {
     fn new(guest_memory_size: usize) -> Result<Self, AsldError> {
         let min_required = BOOT_CODE_ADDR + PAGE_SIZE;
         if guest_memory_size < min_required + BOOT_STACK_GUARD {
-            return Err(AsldError::InvalidState("guest memory too small for bootstrap"));
+            return Err(AsldError::InvalidState(
+                "guest memory too small for bootstrap",
+            ));
         }
 
         let stack_top = guest_memory_size - BOOT_STACK_GUARD;
@@ -405,73 +363,8 @@ impl BootstrapLayout {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-struct GuestGprs {
-    rax: u64,
-    rbx: u64,
-    rcx: u64,
-    rdx: u64,
-    rsi: u64,
-    rdi: u64,
-    rbp: u64,
-    r8: u64,
-    r9: u64,
-    r10: u64,
-    r11: u64,
-    r12: u64,
-    r13: u64,
-    r14: u64,
-    r15: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-struct GuestSregs {
-    cs_selector: u16,
-    cs_base: u64,
-    cs_limit: u32,
-    cs_ar: u32,
-    ds_selector: u16,
-    ds_base: u64,
-    ds_limit: u32,
-    ds_ar: u32,
-    es_selector: u16,
-    es_base: u64,
-    es_limit: u32,
-    es_ar: u32,
-    fs_selector: u16,
-    fs_base: u64,
-    fs_limit: u32,
-    fs_ar: u32,
-    gs_selector: u16,
-    gs_base: u64,
-    gs_limit: u32,
-    gs_ar: u32,
-    ss_selector: u16,
-    ss_base: u64,
-    ss_limit: u32,
-    ss_ar: u32,
-    tr_selector: u16,
-    tr_base: u64,
-    tr_limit: u32,
-    tr_ar: u32,
-    ldtr_selector: u16,
-    ldtr_base: u64,
-    ldtr_limit: u32,
-    ldtr_ar: u32,
-    gdtr_base: u64,
-    gdtr_limit: u32,
-    idtr_base: u64,
-    idtr_limit: u32,
-    cr0: u64,
-    cr3: u64,
-    cr4: u64,
-    efer: u64,
-    rip: u64,
-    rsp: u64,
-    rflags: u64,
-}
+type GuestGprs = libavm::AvmRegs;
+type GuestSregs = libavm::AvmSregs;
 
 fn bootstrap_gprs() -> GuestGprs {
     GuestGprs::default()
@@ -631,14 +524,20 @@ fn assess_boot_exit(exit: &VmExitInfo) -> ExitAssessment {
                 ready: false,
                 should_continue: false,
                 halted: false,
-                summary: format!("guest failed to enter stable boot state ({})", describe_exit(exit)),
+                summary: format!(
+                    "guest failed to enter stable boot state ({})",
+                    describe_exit(exit)
+                ),
             }
         }
         _ => ExitAssessment {
             ready: false,
             should_continue: false,
             halted: false,
-            summary: format!("unexpected guest exit during boot ({})", describe_exit(exit)),
+            summary: format!(
+                "unexpected guest exit during boot ({})",
+                describe_exit(exit)
+            ),
         },
     }
 }
@@ -648,28 +547,18 @@ fn assess_runtime_exit(exit: &VmExitInfo) -> RuntimeExitAssessment {
         exit_reason::CPUID_EMULATED | exit_reason::CPUID | exit_reason::PAUSE => {
             RuntimeExitAssessment::Continue
         }
-        exit_reason::HLT | exit_reason::HLT_EMULATED => {
-            RuntimeExitAssessment::Record(build_runtime_event(
-                exit,
-                "guest halted after runtime dispatch",
-                false,
-                true,
-            ))
-        }
+        exit_reason::HLT | exit_reason::HLT_EMULATED => RuntimeExitAssessment::Record(
+            build_runtime_event(exit, "guest halted after runtime dispatch", false, true),
+        ),
         exit_reason::IO_INSTRUCTION => RuntimeExitAssessment::Record(build_runtime_event(
             exit,
             "guest triggered unsupported I/O instruction",
             true,
             false,
         )),
-        exit_reason::EPT_VIOLATION | exit_reason::EPT_MISCONFIG => {
-            RuntimeExitAssessment::Record(build_runtime_event(
-                exit,
-                "guest hit memory translation failure",
-                true,
-                false,
-            ))
-        }
+        exit_reason::EPT_VIOLATION | exit_reason::EPT_MISCONFIG => RuntimeExitAssessment::Record(
+            build_runtime_event(exit, "guest hit memory translation failure", true, false),
+        ),
         exit_reason::INVALID_GUEST_STATE | exit_reason::TRIPLE_FAULT | exit_reason::SHUTDOWN => {
             RuntimeExitAssessment::Record(build_runtime_event(
                 exit,
@@ -806,7 +695,7 @@ mod tests {
         align_guest_memory_size, assess_boot_exit, assess_runtime_exit, boot_probe, bootstrap_gprs,
         bootstrap_sregs, page_mut, poll_runtime, start_vm, stop_vm, write_bootstrap_image,
         BootstrapLayout, RuntimeExitAssessment, VmBootReport, VmExitInfo, VmRunState,
-        BOOT_CODE_ADDR, BOOT_PD_ADDR, BOOT_PDPT_ADDR, BOOT_PML4_ADDR,
+        BOOT_CODE_ADDR, BOOT_PDPT_ADDR, BOOT_PD_ADDR, BOOT_PML4_ADDR,
     };
 
     #[test]
@@ -874,10 +763,16 @@ mod tests {
         write_bootstrap_image(memory.as_mut_ptr(), guest_memory_size, &layout).unwrap();
 
         let pml4 = page_mut(&mut memory, BOOT_PML4_ADDR).unwrap();
-        assert_eq!(u64::from_le_bytes(pml4[0..8].try_into().unwrap()), (BOOT_PDPT_ADDR as u64) | 0x3);
+        assert_eq!(
+            u64::from_le_bytes(pml4[0..8].try_into().unwrap()),
+            (BOOT_PDPT_ADDR as u64) | 0x3
+        );
 
         let pdpt = page_mut(&mut memory, BOOT_PDPT_ADDR).unwrap();
-        assert_eq!(u64::from_le_bytes(pdpt[0..8].try_into().unwrap()), (BOOT_PD_ADDR as u64) | 0x3);
+        assert_eq!(
+            u64::from_le_bytes(pdpt[0..8].try_into().unwrap()),
+            (BOOT_PD_ADDR as u64) | 0x3
+        );
 
         let pd = page_mut(&mut memory, BOOT_PD_ADDR).unwrap();
         assert_eq!(u64::from_le_bytes(pd[0..8].try_into().unwrap()), 0x83);
