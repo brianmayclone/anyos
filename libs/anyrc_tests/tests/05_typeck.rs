@@ -79,6 +79,63 @@ fn primitive_assoc_try_from_is_result_typed() {
 }
 
 #[test]
+fn return_before_nested_item_keeps_block_diverging() {
+    assert_type_ok(r#"
+        struct Error {}
+        struct Span {}
+        struct String {}
+
+        fn new_error(span: Span, message: String) -> Error {
+            return make_error(span, message);
+
+            fn make_error(span: Span, message: String) -> Error {
+                Error {}
+            }
+        }
+    "#);
+}
+
+#[test]
+fn aliased_core_slice_iter_does_not_fall_back_to_local_iter() {
+    assert_type_ok(r#"
+        use core::slice;
+
+        trait IntoIterator {
+            type Item;
+            type IntoIter;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn iter(&self) -> slice::Iter<T> {
+                loop {}
+            }
+        }
+
+        struct ErrorMessage {}
+        struct Error {
+            messages: Vec<ErrorMessage>,
+        }
+
+        struct Iter<'a> {
+            messages: slice::Iter<'a, ErrorMessage>,
+        }
+
+        impl<'a> IntoIterator for &'a Error {
+            type Item = Error;
+            type IntoIter = Iter<'a>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                Iter {
+                    messages: self.messages.iter(),
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
 fn impl_method_body_resolves_self_enum_variants_against_impl_type() {
     assert_type_ok(r#"
         enum First {

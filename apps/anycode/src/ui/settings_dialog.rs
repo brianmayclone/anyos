@@ -392,9 +392,10 @@ pub fn show() {
         (t("Cargo Build"), config.ccargo_path.as_str()),
         (t("Make"), config.make_path.as_str()),
         (t("C Compiler"), config.cc_path.as_str()),
+        (t("C++ Compiler"), config.cxx_path.as_str()),
         (t("Git"), config.git_path.as_str()),
     ];
-    let mut tool_fields: [Option<ui::TextField>; 5] = [None, None, None, None, None];
+    let mut tool_fields: [Option<ui::TextField>; 6] = [None, None, None, None, None, None];
 
     for (idx, (name, path)) in tool_names.iter().enumerate() {
         let lbl = ui::Label::new(name);
@@ -558,6 +559,8 @@ pub fn show() {
             || q.contains("rust")
             || q.contains("cargo")
             || q.contains("ccargo")
+            || q.contains("c++")
+            || q.contains("cpp")
         {
             2
         } else if q.contains("terminal")
@@ -593,7 +596,8 @@ pub fn show() {
     let ccargo_id = tool_fields[1].as_ref().unwrap().id();
     let make_id = tool_fields[2].as_ref().unwrap().id();
     let cc_id = tool_fields[3].as_ref().unwrap().id();
-    let git_id = tool_fields[4].as_ref().unwrap().id();
+    let cxx_id = tool_fields[4].as_ref().unwrap().id();
+    let git_id = tool_fields[5].as_ref().unwrap().id();
 
     let fs_reset_id = font_size_field.id();
     let tw_reset_id = tab_width_field.id();
@@ -613,6 +617,7 @@ pub fn show() {
     let ccargo_reset_id = ccargo_id;
     let make_reset_id = make_id;
     let cc_reset_id = cc_id;
+    let cxx_reset_id = cxx_id;
     let git_reset_id = git_id;
 
     btn_reset.on_click(move |_| {
@@ -636,6 +641,7 @@ pub fn show() {
         ui::Control::from_id(ccargo_reset_id).set_text("");
         ui::Control::from_id(make_reset_id).set_text("");
         ui::Control::from_id(cc_reset_id).set_text("");
+        ui::Control::from_id(cxx_reset_id).set_text("");
         ui::Control::from_id(git_reset_id).set_text("");
     });
 
@@ -655,6 +661,7 @@ pub fn show() {
         cfg.ccargo_path = read_string(ccargo_id);
         cfg.make_path = read_string(make_id);
         cfg.cc_path = read_string(cc_id);
+        cfg.cxx_path = read_string(cxx_id);
         cfg.git_path = read_string(git_id);
         cfg.auto_discover();
         cfg.save();

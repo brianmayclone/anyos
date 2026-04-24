@@ -26,6 +26,7 @@ pub struct RunPanel {
     pub btn_configure: ui::PlainButton,
     pub run_config_label: ui::Label,
     pub run_command_label: ui::Label,
+    pub toolchain_label: ui::Label,
     pub debug_status_label: ui::Label,
     pub breakpoint_label: ui::Label,
     pub debug_tree: ui::TreeView,
@@ -67,6 +68,14 @@ impl RunPanel {
         run_command_label.set_text_color(tc.text_secondary);
         run_command_label.set_margin(10, 0, 8, 2);
         panel.add(&run_command_label);
+
+        let toolchain_label = ui::Label::new(t("Toolchain: not configured"));
+        toolchain_label.set_dock(ui::DOCK_TOP);
+        toolchain_label.set_size(200, 18);
+        toolchain_label.set_font_size(10);
+        toolchain_label.set_text_color(tc.text_secondary);
+        toolchain_label.set_margin(10, 0, 8, 4);
+        panel.add(&toolchain_label);
 
         let configure_bar = ui::FlowPanel::new();
         configure_bar.set_dock(ui::DOCK_TOP);
@@ -197,6 +206,7 @@ impl RunPanel {
             btn_configure,
             run_config_label,
             run_command_label,
+            toolchain_label,
             debug_status_label,
             breakpoint_label,
             debug_tree,
@@ -219,6 +229,7 @@ impl RunPanel {
             self.run_config_label.set_text(t("Select a run target"));
             self.run_command_label
                 .set_text(t("Configure Build Tools in Settings."));
+            self.toolchain_label.set_text(t("Toolchain: missing"));
             return;
         }
 
@@ -227,10 +238,27 @@ impl RunPanel {
             self.run_config_label
                 .set_text(&format!("Run: {}", run_task.name));
             self.run_command_label.set_text(&run_task.display_label);
+            self.toolchain_label.set_text(&format!(
+                "Toolchain: {} ({})",
+                run_task.toolchain_label(),
+                path::basename(&run_task.command)
+            ));
         } else {
             self.run_config_label.set_text(t("Select a run target"));
-            self.run_command_label
-                .set_text(t("No runnable target detected."));
+            if let Some(build_task) = task_mgr.selected_build() {
+                self.run_command_label
+                    .set_text(&format!("Build: {}", build_task.display_label));
+                self.toolchain_label.set_text(&format!(
+                    "Toolchain: {} ({})",
+                    build_task.toolchain_label(),
+                    path::basename(&build_task.command)
+                ));
+            } else {
+                self.run_command_label
+                    .set_text(t("No runnable target detected."));
+                self.toolchain_label
+                    .set_text(t("Toolchain: not configured"));
+            }
         }
 
         // Group tasks by category
@@ -429,6 +457,8 @@ impl RunPanel {
         self.run_config_label.set_text(t("Select a run target"));
         self.run_command_label
             .set_text(t("Open a workspace or configure build tools."));
+        self.toolchain_label
+            .set_text(t("Toolchain: not configured"));
         self.debug_status_label.set_text("Debugger: Idle");
         self.breakpoint_label.set_text("0 breakpoints");
         self.debug_tree.clear();

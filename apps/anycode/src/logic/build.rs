@@ -213,7 +213,8 @@ impl BuildRules {
 fn resolve_tool(name: &str, config: &Config) -> String {
     match name {
         "make" => config.make_path.clone(),
-        "cc" | "gcc" => config.cc_path.clone(),
+        "cc" | "gcc" | "clang" => config.cc_path.clone(),
+        "c++" | "g++" | "clang++" => config.cxx_path.clone(),
         "crust" | "rustc" | "anyrc" => config.crust_path.clone(),
         "ccargo" | "cargo" | "acargo" => config.ccargo_path.clone(),
         "git" => config.git_path.clone(),
@@ -258,14 +259,15 @@ pub struct ToolStatus {
 /// Check which development tools are installed.
 pub fn check_prerequisites() -> Vec<ToolStatus> {
     let mut results = Vec::new();
-    let tools: [(&str, &str, &[&str]); 6] = [
+    let tools: [(&str, &str, &[&str]); 7] = [
         ("crust", "Rust Compiler", &["crust", "rustc", "anyrc"]),
         (
             "ccargo",
             "Cargo Build System",
             &["ccargo", "cargo", "acargo"],
         ),
-        ("cc", "C Compiler", &["cc"]),
+        ("cc", "C Compiler", &["cc", "gcc", "clang"]),
+        ("c++", "C++ Compiler", &["c++", "g++", "clang++"]),
         ("make", "Make Build Tool", &["make"]),
         ("git", "Git Version Control", &["git", "cgit", "agit"]),
         ("nasm", "NASM Assembler", &["nasm"]),

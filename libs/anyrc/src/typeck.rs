@@ -1577,9 +1577,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 HirStmt::Semi(e, _) => {
                     let ty = self.check_expr(e);
-                    // If this is the last statement and the expression diverges,
-                    // the block type is Never (e.g. `return 42;`)
-                    if is_last && ty == TyKind::Never {
+                    // A diverging statement keeps the enclosing block diverging
+                    // even if local items follow it. Items do not execute and
+                    // must not turn `{ return x; fn helper() {} }` into `()`.
+                    if ty == TyKind::Never {
                         last_ty = TyKind::Never;
                     } else {
                         last_ty = TyKind::Unit;
@@ -1588,7 +1589,9 @@ impl<'a> TypeChecker<'a> {
                 HirStmt::Item(item) => {
                     self.collect_item(item);
                     self.check_item(item);
-                    last_ty = TyKind::Unit;
+                    if last_ty != TyKind::Never {
+                        last_ty = TyKind::Unit;
+                    }
                 }
             }
         }
@@ -3043,6 +3046,48 @@ impl<'a> TypeChecker<'a> {
             .cloned()
     }
 
+    fn expanded_type_path(&self, path: &str) -> String {
+        let Some((first, rest)) = path.split_once("::") else {
+            return path.to_string();
+        };
+
+        let module_key = self.module_key_from_symbols(&self.current_module_path);
+        if let Some(first_sym) = self.interner.lookup(first) {
+            if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key, first_sym)) {
+                return format!("{}::{}", alias_target, rest);
+            }
+        }
+
+        if let Some(alias_target) = self.module_aliases.get(first) {
+            return format!("{}::{}", alias_target, rest);
+        }
+
+        path.to_string()
+    }
+
+    fn std_slice_iter_ty(&self, path: &str, segment: &HirPathSegment) -> Option<TyKind> {
+        let expanded = self.expanded_type_path(path);
+        let mutability = match expanded.as_str() {
+            "core::slice::Iter" | "alloc::slice::Iter" | "std::slice::Iter" | "slice::Iter" => {
+                Mutability::Immutable
+            }
+            "core::slice::IterMut"
+            | "alloc::slice::IterMut"
+            | "std::slice::IterMut"
+            | "slice::IterMut" => Mutability::Mut,
+            _ => return None,
+        };
+        let elem_ty = self
+            .type_args_from_segment(segment)
+            .into_iter()
+            .last()
+            .unwrap_or_else(|| TyKind::Error);
+        Some(TyKind::Slice(Box::new(TyKind::Ref(
+            Box::new(elem_ty),
+            mutability,
+        ))))
+    }
+
     fn assoc_fn_candidates_on_path(&self, path: &HirPath) -> Option<Vec<DefId>> {
         if path.segments.len() < 2 {
             return None;
@@ -3407,6 +3452,9 @@ impl<'a> TypeChecker<'a> {
                     return TyKind::Param(idx);
                 }
                 if let Some(full_path) = &full_path {
+                    if let Some(iter_ty) = self.std_slice_iter_ty(full_path, last_segment) {
+                        return iter_ty;
+                    }
                     if let Some(alias_ty) = self.resolve_qualified_type_alias(full_path) {
                         let type_args = self.type_args_from_segment(last_segment);
                         return self.substitute_params(&alias_ty, &type_args);

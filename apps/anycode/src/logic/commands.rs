@@ -62,6 +62,16 @@ pub fn build() {
         execute_task_direct(&task_clone);
         return;
     }
+    if !can_use_legacy_build_fallback(s) {
+        s.status
+            .set_analysis_status("No build task: configure the project toolchain");
+        s.output.show_output();
+        s.output
+            .append_line("[Build] No valid build task was detected for this project.");
+        s.output
+            .append_line("[Build] Open Settings > Toolchains and configure ccargo/crust/cc.");
+        return;
+    }
     // Legacy fallback
     if let Some(ref proj) = s.current_project {
         s.output.clear();
@@ -100,6 +110,14 @@ pub fn run() {
     }
     s.status.set_analysis_status("No run target selected");
     if !s.task_mgr.tasks.is_empty() {
+        return;
+    }
+    if !can_use_legacy_build_fallback(s) {
+        s.output.show_output();
+        s.output
+            .append_line("[Run] No runnable target was detected for this project.");
+        s.output
+            .append_line("[Run] Select or configure a Run task in the Run and Debug panel.");
         return;
     }
     // Legacy fallback for old workspaces without detected tasks.
@@ -1432,6 +1450,14 @@ fn execute_task_direct(task: &tasks::Task) {
     s.output.append_line(&msg);
     s.output.show_output();
 
+    if task.command.is_empty() {
+        s.status
+            .set_analysis_status("Task has no command; configure the toolchain");
+        s.output
+            .append_line("[Task] Command is empty. Open Settings > Toolchains.");
+        return;
+    }
+
     if !task.working_dir.is_empty() {
         anyos_std::fs::chdir(&task.working_dir);
     }
@@ -1439,6 +1465,13 @@ fn execute_task_direct(task: &tasks::Task) {
     s.build_process = build::BuildProcess::spawn(&task.command, &task.args);
     if s.build_process.is_some() {
         crate::start_build_timer();
+    }
+}
+
+fn can_use_legacy_build_fallback(s: &AppState) -> bool {
+    match s.current_project.as_ref().map(|proj| proj.project_type) {
+        Some(project::ProjectType::Generic) | None => true,
+        _ => false,
     }
 }
 

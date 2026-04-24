@@ -20,6 +20,59 @@ pub enum TaskCategory {
     Custom,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum ToolchainKind {
+    Cargo,
+    RustCompiler,
+    CCompiler,
+    CxxCompiler,
+    Make,
+    CMake,
+    Ninja,
+    Python,
+    Node,
+    Shell,
+    Executable,
+    Unknown,
+}
+
+impl ToolchainKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Cargo => "ccargo",
+            Self::RustCompiler => "crust",
+            Self::CCompiler => "C",
+            Self::CxxCompiler => "C++",
+            Self::Make => "make",
+            Self::CMake => "cmake",
+            Self::Ninja => "ninja",
+            Self::Python => "python",
+            Self::Node => "npm",
+            Self::Shell => "shell",
+            Self::Executable => "executable",
+            Self::Unknown => "tool",
+        }
+    }
+
+    pub fn from_command(command: &str) -> Self {
+        let base = command_basename(command);
+        match base {
+            "ccargo" | "cargo" | "acargo" => Self::Cargo,
+            "crust" | "rustc" | "anyrc" => Self::RustCompiler,
+            "cc" | "gcc" | "clang" | "tcc" => Self::CCompiler,
+            "c++" | "g++" | "clang++" => Self::CxxCompiler,
+            "make" => Self::Make,
+            "cmake" => Self::CMake,
+            "ninja" | "cninja" => Self::Ninja,
+            "python" | "python3" => Self::Python,
+            "npm" | "node" => Self::Node,
+            "sh" | "bash" => Self::Shell,
+            _ if command.starts_with("./") || command.starts_with('/') => Self::Executable,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 impl TaskCategory {
     pub fn label(&self) -> &'static str {
         match self {
@@ -56,6 +109,8 @@ pub struct Task {
     pub target_name: Option<String>,
     /// Whether this task was auto-detected (vs user-defined).
     pub auto_detected: bool,
+    /// Structured toolchain classification for UI and safety checks.
+    pub toolchain: ToolchainKind,
     /// Display label for the UI (e.g. "cargo run --bin myapp").
     pub display_label: String,
 }
@@ -87,8 +142,13 @@ impl Task {
             working_dir: String::from(working_dir),
             target_name: None,
             auto_detected: true,
+            toolchain: ToolchainKind::from_command(command),
             display_label,
         }
+    }
+
+    pub fn toolchain_label(&self) -> &'static str {
+        self.toolchain.label()
     }
 }
 
@@ -135,6 +195,7 @@ impl TaskManager {
         let root = &project.root;
         let ccargo = find_first_tool_path(&["ccargo", "cargo", "acargo"], config);
         if ccargo.is_empty() {
+            self.detect_rust_fallback_tasks(project, config);
             return;
         }
         let cargo_name = command_basename(&ccargo);
@@ -259,6 +320,31 @@ impl TaskManager {
             .position(|t| t.category == TaskCategory::Run)
         {
             self.selected_run_task = idx;
+        }
+    }
+
+    fn detect_rust_fallback_tasks(&mut self, project: &Project, config: &Config) {
+        let root = &project.root;
+        let crust = find_first_tool_path(&["crust", "rustc", "anyrc"], config);
+        if crust.is_empty() {
+            return;
+        }
+
+        let main_rs = format!("{}/src/main.rs", root);
+        if crate::util::path::exists(&main_rs) {
+            let mut build = Task::new(
+                "Build (Rust single target)",
+                TaskCategory::Build,
+                &crust,
+                "src/main.rs -o main",
+                root,
+            );
+            build.display_label = format!("{} src/main.rs -o main", command_basename(&crust));
+            self.tasks.push(build);
+
+            let mut run = Task::new("Run main", TaskCategory::Run, "./main", "", root);
+            run.display_label = String::from("./main");
+            self.tasks.push(run);
         }
     }
 
@@ -585,7 +671,8 @@ fn find_tool_path(name: &str, config: &Config) -> String {
         }
         "crust" | "rustc" | "anyrc" if !config.crust_path.is_empty() => config.crust_path.clone(),
         "make" if !config.make_path.is_empty() => config.make_path.clone(),
-        "cc" | "gcc" if !config.cc_path.is_empty() => config.cc_path.clone(),
+        "cc" | "gcc" | "clang" if !config.cc_path.is_empty() => config.cc_path.clone(),
+        "c++" | "g++" | "clang++" if !config.cxx_path.is_empty() => config.cxx_path.clone(),
         "git" if !config.git_path.is_empty() => config.git_path.clone(),
         _ => crate::logic::config::find_tool(name),
     }

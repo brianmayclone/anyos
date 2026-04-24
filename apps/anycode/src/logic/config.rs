@@ -28,6 +28,7 @@ pub struct Config {
     pub ccargo_path: String,
     pub make_path: String,
     pub cc_path: String,
+    pub cxx_path: String,
     pub git_path: String,
     pub last_project: String,
     pub recent_projects: Vec<String>,
@@ -99,6 +100,7 @@ impl Config {
             ccargo_path: json_str(&val, "ccargo_path", ""),
             make_path: json_str(&val, "make_path", ""),
             cc_path: json_str(&val, "cc_path", ""),
+            cxx_path: json_str(&val, "cxx_path", ""),
             git_path: json_str(&val, "git_path", ""),
             last_project: json_str(&val, "last_project", ""),
             recent_projects: json_str_array(&val, "recent_projects"),
@@ -111,6 +113,7 @@ impl Config {
             || cfg.ccargo_path.is_empty()
             || cfg.make_path.is_empty()
             || cfg.cc_path.is_empty()
+            || cfg.cxx_path.is_empty()
             || cfg.git_path.is_empty()
         {
             cfg.auto_discover();
@@ -158,6 +161,7 @@ impl Config {
         obj.set("ccargo_path", Value::String(self.ccargo_path.clone()));
         obj.set("make_path", Value::String(self.make_path.clone()));
         obj.set("cc_path", Value::String(self.cc_path.clone()));
+        obj.set("cxx_path", Value::String(self.cxx_path.clone()));
         obj.set("git_path", Value::String(self.git_path.clone()));
         obj.set("last_project", Value::String(self.last_project.clone()));
         obj.set("recent_projects", json_string_array(&self.recent_projects));
@@ -197,6 +201,7 @@ impl Config {
             ccargo_path: String::new(),
             make_path: String::new(),
             cc_path: String::new(),
+            cxx_path: String::new(),
             git_path: String::new(),
             last_project: String::new(),
             recent_projects: Vec::new(),
@@ -218,7 +223,10 @@ impl Config {
             self.make_path = find_in_path("make");
         }
         if self.cc_path.is_empty() {
-            self.cc_path = find_in_path("cc");
+            self.cc_path = find_first_in_path(&["cc", "gcc", "clang"]);
+        }
+        if self.cxx_path.is_empty() {
+            self.cxx_path = find_first_in_path(&["c++", "g++", "clang++"]);
         }
         if self.git_path.is_empty() {
             self.git_path = find_in_path("git");
