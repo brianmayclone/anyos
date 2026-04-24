@@ -5,10 +5,9 @@ use anyrc::hir_lower::LoweringContext;
 use anyrc::resolve::Resolver;
 use anyrc::typeck::TypeChecker;
 use anyrc::mir_build::MirBuilder;
-use anyrc::mir::MirBody;
 use anyrc::borrowck::{self, BorrowckResult};
 
-fn build_and_check(src: &str) -> Vec<BorrowckResult> {
+fn build_and_check(src: &str) -> Vec<(String, BorrowckResult)> {
     let mut interner = Interner::new();
     let mut parser = Parser::new(src, &mut interner);
     let mut krate = parser.parse_crate();
@@ -21,20 +20,28 @@ fn build_and_check(src: &str) -> Vec<BorrowckResult> {
     let typeck_result = checker.check_crate(&hir);
 
     let bodies = MirBuilder::build_crate(&mut interner, &resolve_result, &typeck_result, &hir);
-    bodies.iter().map(|body| borrowck::check_borrows(body, &interner, &typeck_result.struct_defs)).collect()
+    bodies
+        .iter()
+        .map(|body| {
+            (
+                interner.resolve(body.name).to_string(),
+                borrowck::check_borrows(body, &interner, &typeck_result.struct_defs),
+            )
+        })
+        .collect()
 }
 
 fn assert_borrowck_ok(src: &str) {
     let results = build_and_check(src);
-    for result in &results {
+    for (body_name, result) in &results {
         assert!(result.errors.is_empty(), "unexpected borrow errors: {:?}",
-            result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+            result.errors.iter().map(|e| format!("in {}: {}", body_name, e.message)).collect::<Vec<_>>());
     }
 }
 
 fn assert_borrowck_error(src: &str, expected_msg: &str) {
     let results = build_and_check(src);
-    let all_errors: Vec<_> = results.iter().flat_map(|r| &r.errors).collect();
+    let all_errors: Vec<_> = results.iter().flat_map(|(_, r)| &r.errors).collect();
     assert!(!all_errors.is_empty(), "expected borrow error containing '{}'", expected_msg);
     assert!(all_errors.iter().any(|e| e.message.to_lowercase().contains(&expected_msg.to_lowercase())),
         "expected error containing '{}', got: {:?}", expected_msg,
@@ -87,4 +94,71 @@ fn borrowck_no_error_after_scope() {
 #[test]
 fn borrowck_slice_reference_can_be_reassigned_to_subslice() {
     assert_borrowck_ok("fn foo(mut buf: &[u8], n: usize) { buf = &buf[n..]; }");
+}
+
+#[test]
+fn borrowck_trait_default_copy_self_is_not_moved() {
+    assert_borrowck_ok(r#"
+        trait Copy {}
+
+        trait ConditionallySelectable: Copy {
+            fn conditional_select(a: &Self, b: &Self, choice: bool) -> Self;
+
+            fn conditional_assign(&mut self, other: &Self, choice: bool) {
+                *self = Self::conditional_select(self, other, choice);
+            }
+
+            fn conditional_swap(a: &mut Self, b: &mut Self, choice: bool) {
+                let t: Self = *a;
+                a.conditional_assign(&b, choice);
+                b.conditional_assign(&t, choice);
+            }
+        }
+    "#);
+}
+
+#[test]
+fn borrowck_mut_ref_call_arg_is_reborrowed_not_moved() {
+    assert_borrowck_ok(r#"
+        fn select(a: &i32, b: &i32) -> i32 { *a }
+
+        fn assign_through_ref(self_ref: &mut i32, other: &i32) {
+            *self_ref = select(self_ref, other);
+        }
+    "#);
+}
+
+#[test]
+fn borrowck_subtle_integer_conditional_assign_pattern() {
+    assert_borrowck_ok(r#"
+        struct Choice(u8);
+
+        impl Choice {
+            fn unwrap_u8(&self) -> u8 {
+                self.0
+            }
+        }
+
+        trait Copy {}
+
+        trait ConditionallySelectable: Copy {
+            fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self;
+
+            fn conditional_assign(&mut self, other: &Self, choice: Choice) {
+                *self = Self::conditional_select(self, other, choice);
+            }
+        }
+
+        impl ConditionallySelectable for u8 {
+            fn conditional_select(a: &Self, b: &Self, choice: Choice) -> Self {
+                let mask = -(choice.unwrap_u8() as i8) as u8;
+                a ^ (mask & (a ^ b))
+            }
+
+            fn conditional_assign(&mut self, other: &Self, choice: Choice) {
+                let mask = -(choice.unwrap_u8() as i8) as u8;
+                *self ^= mask & (*self ^ *other);
+            }
+        }
+    "#);
 }

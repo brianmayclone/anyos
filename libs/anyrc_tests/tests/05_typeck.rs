@@ -284,6 +284,64 @@ fn method_resolution_uses_argument_types_for_same_receiver_impls() {
 }
 
 #[test]
+fn binary_operator_uses_trait_output_type() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod ops {
+                pub trait Mul<Rhs> {
+                    type Output;
+                    fn mul(self, rhs: Rhs) -> Self::Output;
+                }
+            }
+        }
+
+        struct Aligned130 {}
+        struct PrecomputedMultiplier {}
+        struct Unreduced130 {}
+
+        impl core::ops::Mul<PrecomputedMultiplier> for Aligned130 {
+            type Output = Unreduced130;
+            fn mul(self, rhs: PrecomputedMultiplier) -> Self::Output {
+                Unreduced130 {}
+            }
+        }
+
+        fn multiply(lhs: Aligned130, rhs: PrecomputedMultiplier) -> Unreduced130 {
+            lhs * rhs
+        }
+    "#);
+}
+
+#[test]
+fn binary_operator_uses_reference_self_trait_output_type() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod ops {
+                pub trait Mul<Rhs> {
+                    type Output;
+                    fn mul(self, rhs: Rhs) -> Self::Output;
+                }
+            }
+        }
+
+        struct Aligned4x130 {}
+        struct PrecomputedMultiplier {}
+        struct Unreduced4x130 {}
+
+        impl core::ops::Mul<PrecomputedMultiplier> for &Aligned4x130 {
+            type Output = Unreduced4x130;
+            fn mul(self, rhs: PrecomputedMultiplier) -> Self::Output {
+                Unreduced4x130 {}
+            }
+        }
+
+        fn multiply(lhs: &Aligned4x130, rhs: PrecomputedMultiplier) -> Unreduced4x130 {
+            lhs * rhs
+        }
+    "#);
+}
+
+#[test]
 fn qualified_module_types_do_not_collide_by_leaf_name() {
     assert_type_ok(r#"
         mod fallback {

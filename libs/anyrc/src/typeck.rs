@@ -97,6 +97,14 @@ struct IndexImpl {
     output_ty: TyKind,
 }
 
+#[derive(Debug, Clone)]
+struct OperatorImpl {
+    op: BinOp,
+    self_ty: TyKind,
+    rhs_ty: TyKind,
+    output_ty: TyKind,
+}
+
 /// Compile-time evaluated constant value
 #[derive(Debug, Clone)]
 pub enum ConstVal {
@@ -158,6 +166,8 @@ pub struct TypeChecker<'a> {
     trait_default_methods: HashMap<DefId, bool>,
     /// `impl core::ops::Index<I> for T { type Output = O; }` summaries.
     index_impls: Vec<IndexImpl>,
+    /// `impl core::ops::{Add, Mul, ...}<Rhs> for T { type Output = O; }` summaries.
+    operator_impls: Vec<OperatorImpl>,
 
     next_infer: u32,
     infer_kinds: HashMap<InferVar, InferKind>,
@@ -205,6 +215,7 @@ impl<'a> TypeChecker<'a> {
             current_generic_bounds: HashMap::new(),
             trait_default_methods: HashMap::new(),
             index_impls: Vec::new(),
+            operator_impls: Vec::new(),
             next_infer: 0,
             infer_kinds: HashMap::new(),
             substitutions: HashMap::new(),
@@ -862,6 +873,10 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                 }
+                if let Some(trait_ref) = &ib.trait_ref {
+                    self.collect_index_impl(ib, trait_ref);
+                    self.collect_operator_impl(ib, trait_ref);
+                }
                 // Register Self as an alias for the impl'd type
                 if let HirTy::Path(p) = &ib.self_ty {
                     if !p.segments.is_empty() {
@@ -873,7 +888,6 @@ impl<'a> TypeChecker<'a> {
                         }
                         // If this is a trait impl, record the mapping
                         if let Some(trait_ref) = &ib.trait_ref {
-                            self.collect_index_impl(ib, trait_ref);
                             if !trait_ref.segments.is_empty() {
                                 let trait_name = trait_ref.segments[0].ident;
                                 if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
@@ -996,6 +1010,57 @@ impl<'a> TypeChecker<'a> {
         self.index_impls.push(IndexImpl { self_def_id, index_ty, output_ty });
     }
 
+    fn collect_operator_impl(&mut self, ib: &HirImplBlock, trait_ref: &HirPath) {
+        let Some(last) = trait_ref.segments.last() else {
+            return;
+        };
+        let Some(op) = self.operator_trait_to_binop(last.ident) else {
+            return;
+        };
+        let Some(output_sym) = self.interner.lookup("Output") else {
+            return;
+        };
+        let Some(output_hir_ty) = ib.items.iter().find_map(|item| {
+            if let HirItemKind::TypeAlias(ta) = &item.kind {
+                if ta.name == output_sym {
+                    return ta.ty.as_ref();
+                }
+            }
+            None
+        }) else {
+            return;
+        };
+
+        let self_ty = self.hir_ty_to_ty(&ib.self_ty);
+        let rhs_ty = last
+            .args
+            .as_ref()
+            .and_then(|args| args.args.first())
+            .and_then(|arg| match arg {
+                HirGenericArg::Type(ty) => Some(self.hir_ty_to_ty(ty)),
+                _ => None,
+            })
+            .unwrap_or_else(|| self_ty.clone());
+        let output_ty = self.hir_ty_to_ty(output_hir_ty);
+        self.operator_impls.push(OperatorImpl { op, self_ty, rhs_ty, output_ty });
+    }
+
+    fn operator_trait_to_binop(&self, trait_name: Symbol) -> Option<BinOp> {
+        match self.interner.resolve(trait_name) {
+            "Add" => Some(BinOp::Add),
+            "Sub" => Some(BinOp::Sub),
+            "Mul" => Some(BinOp::Mul),
+            "Div" => Some(BinOp::Div),
+            "Rem" => Some(BinOp::Rem),
+            "BitAnd" => Some(BinOp::BitAnd),
+            "BitOr" => Some(BinOp::BitOr),
+            "BitXor" => Some(BinOp::BitXor),
+            "Shl" => Some(BinOp::Shl),
+            "Shr" => Some(BinOp::Shr),
+            _ => None,
+        }
+    }
+
     fn lookup_index_output(&self, self_def_id: DefId, index_ty: &TyKind) -> Option<TyKind> {
         self.index_impls
             .iter()
@@ -1004,6 +1069,17 @@ impl<'a> TypeChecker<'a> {
                     && self.ty_matches_for_candidate(&impl_info.index_ty, index_ty)
             })
             .map(|impl_info| impl_info.output_ty.clone())
+    }
+
+    fn lookup_operator_impl(&self, op: BinOp, lhs_ty: &TyKind, rhs_ty: &TyKind) -> Option<OperatorImpl> {
+        self.operator_impls
+            .iter()
+            .find(|impl_info| {
+                impl_info.op == op
+                    && self.ty_matches_for_candidate(&impl_info.self_ty, lhs_ty)
+                    && self.ty_matches_for_candidate(&impl_info.rhs_ty, rhs_ty)
+            })
+            .cloned()
     }
 
     fn check_builtin_index_ty(&mut self, index_ty: &TyKind, span: Span, is_range: bool) {
@@ -1239,9 +1315,19 @@ impl<'a> TypeChecker<'a> {
                         TyKind::Bool
                     }
                     BinOp::Shl | BinOp::Shr => {
+                        if let Some(impl_info) = self.lookup_operator_impl(*op, &lty, &rty) {
+                            self.unify(&impl_info.self_ty, &lty, lhs.span);
+                            self.unify(&impl_info.rhs_ty, &rty, rhs.span);
+                            return impl_info.output_ty;
+                        }
                         lty
                     }
                     _ => {
+                        if let Some(impl_info) = self.lookup_operator_impl(*op, &lty, &rty) {
+                            self.unify(&impl_info.self_ty, &lty, lhs.span);
+                            self.unify(&impl_info.rhs_ty, &rty, rhs.span);
+                            return impl_info.output_ty;
+                        }
                         self.unify(&lty, &rty, expr.span);
                         lty
                     }

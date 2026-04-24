@@ -23,8 +23,8 @@ use anyui::Widget;
 use libanyui_client as anyui;
 
 use crate::logic::{
-    ai, build, config, debug_session, diagnostic_pipeline, diagnostics, file_manager, git, plugin,
-    project, symbol_index, tasks,
+    ai, build, config, debug_backend, debug_session, diagnostic_pipeline, diagnostics,
+    file_manager, git, plugin, project, symbol_index, tasks,
 };
 use crate::ui::{
     activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel, git_panel,
@@ -47,6 +47,7 @@ struct AppState {
     task_mgr: tasks::TaskManager,
     diagnostics: diagnostics::DiagnosticSet,
     symbol_index: symbol_index::SymbolIndex,
+    debug_backend: debug_backend::DebugBackend,
     debug_session: debug_session::DebugSession,
     plugin_mgr: plugin::PluginManager,
     ai_client: ai::AiClient,
@@ -55,6 +56,7 @@ struct AppState {
     build_process: Option<build::BuildProcess>,
     build_rules: build::BuildRules,
     build_timer_id: u32,
+    debug_timer_id: u32,
     build_output_buffer: String,
 
     // Live analysis
@@ -271,12 +273,14 @@ fn build_and_run(
             task_mgr,
             diagnostics: diagnostics::DiagnosticSet::new(),
             symbol_index: symbol_index::SymbolIndex::new(),
+            debug_backend: debug_backend::DebugBackend::new(),
             debug_session: debug_session::DebugSession::new(),
             plugin_mgr,
             ai_client: ai::AiClient::new(),
             build_process: None,
             build_rules,
             build_timer_id: 0,
+            debug_timer_id: 0,
             build_output_buffer: String::new(),
             live_check_process: None,
             live_check: diagnostic_pipeline::LiveCheckState::new(),
@@ -479,10 +483,14 @@ fn poll_build_output() {
             }
 
             if s.debug_session.status != debug_session::DebugSessionStatus::Idle {
+                if s.debug_backend.is_attached() {
+                    s.debug_backend.detach();
+                }
                 s.debug_session.stop();
                 s.output
                     .append_debug_line(&format!("process exited with code {}", exit_code));
                 s.run_panel.update_debug_session(&s.debug_session);
+                stop_debug_timer();
             }
 
             s.build_process = None;
@@ -490,6 +498,59 @@ fn poll_build_output() {
         }
     } else {
         stop_build_timer();
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Debug timer
+// ════════════════════════════════════════════════════════════════
+
+pub fn start_debug_timer() {
+    let s = app();
+    if s.debug_timer_id == 0 {
+        s.debug_timer_id = anyui::set_timer(100, poll_debug_events);
+    }
+}
+
+pub fn stop_debug_timer() {
+    let s = app();
+    if s.debug_timer_id != 0 {
+        anyui::kill_timer(s.debug_timer_id);
+        s.debug_timer_id = 0;
+    }
+}
+
+fn poll_debug_events() {
+    let s = app();
+    if !s.debug_backend.is_attached() {
+        stop_debug_timer();
+        return;
+    }
+
+    if let Some(event) = s.debug_backend.poll_event() {
+        let label = debug_backend::event_label(event.event_type);
+        s.output.append_debug_line(&format!(
+            "{} @ {}",
+            label,
+            anyos_std::fmt::hex64(event.addr)
+        ));
+
+        match event.event_type {
+            anyos_std::debug::EVENT_BREAKPOINT => {
+                s.debug_session.pause("breakpoint");
+                s.debug_session.apply_registers(&s.debug_backend.regs);
+            }
+            anyos_std::debug::EVENT_SINGLE_STEP => {
+                s.debug_session.pause("single step");
+                s.debug_session.apply_registers(&s.debug_backend.regs);
+            }
+            anyos_std::debug::EVENT_EXIT => {
+                s.debug_session.stop();
+                stop_debug_timer();
+            }
+            _ => {}
+        }
+        s.run_panel.update_debug_session(&s.debug_session);
     }
 }
 

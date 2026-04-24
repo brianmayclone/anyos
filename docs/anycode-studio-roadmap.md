@@ -42,7 +42,9 @@ Kernprobleme:
 - Der Editor kann erste Diagnostic-Ranges/Gutter-Marker zeichnen, aber noch
   keine Tooltips, Quick-Fixes, Breakpoints oder Inline-Hints.
 - Sprachefeatures sind keyword-/regex-nah, nicht projektsemantisch.
-- Debugging ist noch nicht als anyCode-Backend gekapselt.
+- Debugging hat jetzt ein erstes anyCode-Backend fuer Launch/Attach/Pause/
+  Continue/Step und Register-Snapshots; Source-Level-Breakpoint-Binding,
+  Memory/Disassembly und Watch-Auswertung fehlen noch.
 - UI ist funktionsreich, aber noch nicht dicht, konsistent und ergonomisch genug
   fuer taegliche Projektarbeit.
 
@@ -344,6 +346,11 @@ Status:
   schreiben dort Launch-, Breakpoint-, Pause-, Continue-, Step- und Exit-Events.
 - Gestartet: Continue, Pause und Step Over sind als Buttons und Command-Palette-
   Kommandos vorhanden.
+- Gestartet: `debug_backend.rs` kapselt die Kernel-Debug-Syscalls aus
+  `anyos_std::debug`; gestartete Prozesse werden per TID attached, gepollt und
+  mit echten RIP/RSP/Registerwerten im Debug-State-Tree angezeigt.
+- Gestartet: anyCode deklariert die `debug`-Capability explizit, damit der
+  Debugger nicht nur in System-Tools, sondern auch im Studio selbst laufen kann.
 
 ### Phase 7: Git und Review Workflow
 

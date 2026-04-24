@@ -172,6 +172,9 @@ pub fn clean() {
 
 pub fn stop() {
     let s = app();
+    if s.debug_backend.is_attached() {
+        s.debug_backend.detach();
+    }
     if let Some(ref mut proc) = s.build_process {
         proc.kill();
         s.output.append_line("\n[Process killed]");
@@ -187,6 +190,7 @@ pub fn stop() {
     s.output.append_debug_line("stop");
     s.run_panel.update_debug_session(&s.debug_session);
     crate::stop_build_timer();
+    crate::stop_debug_timer();
     crate::stop_live_check_timer();
 }
 
@@ -557,10 +561,36 @@ pub fn start_debugging() {
     }
 
     s.build_process = build::BuildProcess::spawn(&task.command, &task.args);
-    if s.build_process.is_some() {
-        s.debug_session.mark_running();
-        s.status.set_analysis_status("Debug session running");
-        s.output.append_debug_line("process started");
+    if let Some(ref proc) = s.build_process {
+        let tid = proc.tid;
+        s.output.append_debug_line(&format!("process started tid={}", tid));
+        if s.debug_backend.attach(tid) {
+            s.debug_session.mark_attached(tid, &s.debug_backend.regs);
+            s.output.append_debug_line(&format!(
+                "attached tid={} rip={}",
+                tid,
+                anyos_std::fmt::hex64(s.debug_backend.regs.rip)
+            ));
+            if s.debug_session.breakpoint_count() > 0 {
+                s.output.append_debug_line(
+                    "source breakpoints recorded; address binding is pending symbol mapping",
+                );
+            }
+            if s.debug_backend.resume() {
+                s.debug_session.mark_running();
+                s.status.set_analysis_status("Debug session attached and running");
+                s.output.append_debug_line("target resumed");
+            } else {
+                s.status.set_analysis_status("Debug session attached and paused");
+                s.output.append_debug_line("target paused at attach");
+            }
+            crate::start_debug_timer();
+        } else {
+            s.debug_session.mark_running();
+            s.status
+                .set_analysis_status("Debug attach failed; process is running");
+            s.output.append_debug_line("debug attach failed");
+        }
         crate::start_build_timer();
     } else {
         s.debug_session.stop();
@@ -572,27 +602,66 @@ pub fn start_debugging() {
 
 pub fn debug_continue() {
     let s = app();
-    s.debug_session.continue_execution();
-    s.status.set_analysis_status("Debug continue");
-    s.output.append_debug_line("continue");
+    if s.debug_backend.is_attached() {
+        if s.debug_backend.resume() {
+            s.debug_session.continue_execution();
+            s.status.set_analysis_status("Debug continue");
+            s.output.append_debug_line("continue");
+            crate::start_debug_timer();
+        } else {
+            s.status.set_analysis_status("Debug continue unavailable");
+            s.output.append_debug_line("continue failed");
+        }
+    } else {
+        s.debug_session.continue_execution();
+        s.status.set_analysis_status("Debug continue");
+        s.output.append_debug_line("continue");
+    }
     s.run_panel.update_debug_session(&s.debug_session);
     s.output.show_debug_console();
 }
 
 pub fn debug_pause() {
     let s = app();
-    s.debug_session.pause("user pause");
-    s.status.set_analysis_status("Debug paused");
-    s.output.append_debug_line("pause");
+    if s.debug_backend.is_attached() {
+        if s.debug_backend.suspend() {
+            s.debug_session.pause("user pause");
+            s.debug_session.apply_registers(&s.debug_backend.regs);
+            s.status.set_analysis_status("Debug paused");
+            s.output.append_debug_line(&format!(
+                "pause rip={}",
+                anyos_std::fmt::hex64(s.debug_backend.regs.rip)
+            ));
+        } else {
+            s.status.set_analysis_status("Debug pause unavailable");
+            s.output.append_debug_line("pause failed");
+        }
+    } else {
+        s.debug_session.pause("user pause");
+        s.status.set_analysis_status("Debug paused");
+        s.output.append_debug_line("pause");
+    }
     s.run_panel.update_debug_session(&s.debug_session);
     s.output.show_debug_console();
 }
 
 pub fn debug_step_over() {
     let s = app();
-    s.debug_session.step_over();
-    s.status.set_analysis_status("Debug step over");
-    s.output.append_debug_line("step over");
+    if s.debug_backend.is_attached() {
+        if s.debug_backend.is_suspended() && s.debug_backend.single_step() {
+            s.debug_session.step_started();
+            s.status.set_analysis_status("Debug step over");
+            s.output.append_debug_line("step over");
+            crate::start_debug_timer();
+        } else {
+            s.status.set_analysis_status("Debug step requires a paused target");
+            s.output.append_debug_line("step over unavailable");
+        }
+    } else {
+        s.debug_session.step_started();
+        s.status.set_analysis_status("Debug step over");
+        s.output.append_debug_line("step over");
+    }
     s.run_panel.update_debug_session(&s.debug_session);
     s.output.show_debug_console();
 }
@@ -1211,8 +1280,12 @@ fn reset_workspace_views() {
     s.side_editor_view
         .set_breadcrumb("Open a file to the side for reference");
     s.symbol_index.clear();
+    if s.debug_backend.is_attached() {
+        s.debug_backend.detach();
+    }
     s.debug_session.reset();
     s.run_panel.update_debug_session(&s.debug_session);
+    crate::stop_debug_timer();
 }
 
 pub fn refresh_symbols() {

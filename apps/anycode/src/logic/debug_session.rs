@@ -2,6 +2,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use anyos_std::debug::DebugRegs;
+use anyos_std::fmt::hex64;
+
 use crate::logic::tasks::Task;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -41,6 +44,7 @@ pub struct RegisterValue {
 
 pub struct DebugSession {
     pub status: DebugSessionStatus,
+    pub target_tid: u32,
     pub launch_name: String,
     pub target: String,
     pub breakpoints: Vec<Breakpoint>,
@@ -54,6 +58,7 @@ impl DebugSession {
     pub fn new() -> Self {
         Self {
             status: DebugSessionStatus::Idle,
+            target_tid: 0,
             launch_name: String::new(),
             target: String::new(),
             breakpoints: Vec::new(),
@@ -66,6 +71,7 @@ impl DebugSession {
 
     pub fn start_launch(&mut self, task: &Task) {
         self.status = DebugSessionStatus::Launching;
+        self.target_tid = 0;
         self.launch_name = task.name.clone();
         self.target = if task.args.is_empty() {
             task.command.clone()
@@ -79,14 +85,25 @@ impl DebugSession {
     pub fn mark_running(&mut self) {
         self.status = DebugSessionStatus::Running;
         self.paused_reason.clear();
-        self.refresh_preview_state();
+        if self.registers.is_empty() {
+            self.refresh_preview_state();
+        }
+    }
+
+    pub fn mark_attached(&mut self, tid: u32, regs: &DebugRegs) {
+        self.target_tid = tid;
+        self.status = DebugSessionStatus::Stopped;
+        self.paused_reason = String::from("attached");
+        self.apply_registers(regs);
     }
 
     pub fn pause(&mut self, reason: &str) {
         if self.status == DebugSessionStatus::Running {
             self.status = DebugSessionStatus::Stopped;
             self.paused_reason = String::from(reason);
-            self.refresh_preview_state();
+            if self.registers.is_empty() {
+                self.refresh_preview_state();
+            }
         }
     }
 
@@ -94,21 +111,19 @@ impl DebugSession {
         if self.status == DebugSessionStatus::Stopped {
             self.status = DebugSessionStatus::Running;
             self.paused_reason.clear();
-            self.refresh_preview_state();
         }
     }
 
-    pub fn step_over(&mut self) {
+    pub fn step_started(&mut self) {
         if self.status == DebugSessionStatus::Stopped {
-            if let Some(frame) = self.call_stack.get_mut(0) {
-                frame.line += 1;
-            }
+            self.status = DebugSessionStatus::Running;
             self.paused_reason = String::from("step");
         }
     }
 
     pub fn stop(&mut self) {
         self.status = DebugSessionStatus::Stopped;
+        self.target_tid = 0;
         self.launch_name.clear();
         self.target.clear();
         self.paused_reason = String::from("terminated");
@@ -119,6 +134,7 @@ impl DebugSession {
 
     pub fn reset(&mut self) {
         self.status = DebugSessionStatus::Idle;
+        self.target_tid = 0;
         self.launch_name.clear();
         self.target.clear();
         self.breakpoints.clear();
@@ -159,6 +175,61 @@ impl DebugSession {
             DebugSessionStatus::Running => format!("Debugger: Running {}", self.launch_name),
             DebugSessionStatus::Stopped => String::from("Debugger: Stopped"),
         }
+    }
+
+    pub fn apply_registers(&mut self, regs: &DebugRegs) {
+        self.call_stack.clear();
+        self.variables.clear();
+        self.registers.clear();
+
+        self.call_stack.push(StackFrame {
+            function: String::from("rip"),
+            file_path: hex64(regs.rip),
+            line: 0,
+        });
+
+        self.variables.push(DebugVariable {
+            name: String::from("tid"),
+            type_name: String::from("u32"),
+            value: format!("{}", self.target_tid),
+        });
+        self.variables.push(DebugVariable {
+            name: String::from("rip"),
+            type_name: String::from("u64"),
+            value: hex64(regs.rip),
+        });
+        self.variables.push(DebugVariable {
+            name: String::from("rsp"),
+            type_name: String::from("u64"),
+            value: hex64(regs.rsp),
+        });
+
+        self.push_register("RAX", regs.rax);
+        self.push_register("RBX", regs.rbx);
+        self.push_register("RCX", regs.rcx);
+        self.push_register("RDX", regs.rdx);
+        self.push_register("RSI", regs.rsi);
+        self.push_register("RDI", regs.rdi);
+        self.push_register("RBP", regs.rbp);
+        self.push_register("R8", regs.r8);
+        self.push_register("R9", regs.r9);
+        self.push_register("R10", regs.r10);
+        self.push_register("R11", regs.r11);
+        self.push_register("R12", regs.r12);
+        self.push_register("R13", regs.r13);
+        self.push_register("R14", regs.r14);
+        self.push_register("R15", regs.r15);
+        self.push_register("RSP", regs.rsp);
+        self.push_register("RIP", regs.rip);
+        self.push_register("RFLAGS", regs.rflags);
+        self.push_register("CR3", regs.cr3);
+    }
+
+    fn push_register(&mut self, name: &str, value: u64) {
+        self.registers.push(RegisterValue {
+            name: String::from(name),
+            value: hex64(value),
+        });
     }
 
     fn refresh_preview_state(&mut self) {

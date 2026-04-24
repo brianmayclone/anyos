@@ -9,6 +9,7 @@ pub mod language;
 pub mod tasks;
 pub mod symbols;
 pub mod symbol_index;
+pub mod debug_backend;
 pub mod debug_session;
 pub mod diagnostics;
 pub mod live_analysis;

@@ -792,15 +792,9 @@ impl<'a> MirBuilder<'a> {
             }
 
             HirExprKind::Deref(inner) => {
-                let op = self.lower_expr(inner);
-                // Put into a temp, then deref projection
-                let inner_ty = self.get_expr_ty(inner);
-                let tmp = self.alloc_temp(inner_ty, expr.span);
-                self.emit_assign(Place::local(tmp), Rvalue::Use(op), expr.span);
-                Operand::Copy(Place {
-                    local: tmp,
-                    projections: vec![Projection::Deref],
-                })
+                let mut place = self.lower_place(inner);
+                place.projections.push(Projection::Deref);
+                Operand::Copy(place)
             }
 
             HirExprKind::Struct(path, fields, _base) => {

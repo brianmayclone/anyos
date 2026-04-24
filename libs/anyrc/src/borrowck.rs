@@ -271,6 +271,9 @@ fn record_operand_move(
     struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
 ) {
     if let Operand::Move(place) = op {
+        if place.projections.iter().any(|proj| matches!(proj, Projection::Deref)) {
+            return;
+        }
         let ty = &locals[place.local.0].ty;
         if !is_copy_type(ty, struct_defs) {
             moved.insert(place.local.0);

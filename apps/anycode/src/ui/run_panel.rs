@@ -270,6 +270,10 @@ impl RunPanel {
             self.debug_tree
                 .add_child(session, &format!("Target: {}", debug.target));
         }
+        if debug.target_tid != 0 {
+            self.debug_tree
+                .add_child(session, &format!("Thread: {}", debug.target_tid));
+        }
 
         let bps = self
             .debug_tree
