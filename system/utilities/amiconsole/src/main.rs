@@ -15,9 +15,13 @@ const WIN_H: u32 = 660;
 const TOOLBAR_H: u32 = 38;
 const STATUS_H: u32 = 28;
 const DETAIL_H: u32 = 132;
+const SUMMARY_H: u32 = 54;
 const SIDEBAR_W: u32 = 220;
 const REFRESH_MS: u32 = 750;
-const HIGHLIGHT_MS: u32 = 4500;
+const HIGHLIGHT_MS: u32 = 850;
+const GRID_COLS: usize = 5;
+const MINI_ICON_SIZE: u32 = 12;
+const MINI_ICON_PIXELS: usize = 144;
 
 struct HighlightEntry {
     key: String,
@@ -44,6 +48,9 @@ struct App {
     status: ui::Label,
     heading: ui::Label,
     connection: ui::Label,
+    summary_total: ui::Label,
+    summary_visible: ui::Label,
+    summary_changed: ui::Label,
 }
 
 anyos_std::global_app_state!(App);
@@ -66,25 +73,66 @@ fn main() {
     let btn_refresh = toolbar.add_icon_button("");
     btn_refresh.set_icon(ui::ICON_REFRESH);
     btn_refresh.set_size(32, 28);
+    btn_refresh.set_tooltip("Refresh AMI snapshot");
 
     toolbar.add_separator();
 
     let title = toolbar.add_label("AMI Console");
-    title.set_font_size(15);
+    title.set_font_size(14);
     title.set_text_color(tc.text);
-    title.set_size(180, 26);
+    title.set_size(136, 26);
 
     toolbar.add_separator();
 
     let search = ui::SearchField::new();
     search.set_placeholder("Search keys, values, types...");
-    search.set_size(250, 28);
+    search.set_size(300, 28);
     toolbar.add(&search);
 
     let connection = toolbar.add_label("Connecting...");
     connection.set_font_size(12);
     connection.set_text_color(tc.warning);
-    connection.set_size(160, 22);
+    connection.set_size(132, 22);
+
+    let summary = ui::View::new();
+    summary.set_dock(ui::DOCK_TOP);
+    summary.set_size(WIN_W, SUMMARY_H);
+    summary.set_color(tc.window_bg);
+    summary.set_padding(14, 8, 14, 8);
+    win.add(&summary);
+
+    let summary_total = ui::Label::new("Keys\n-");
+    summary_total.set_position(14, 8);
+    summary_total.set_size(132, 36);
+    summary_total.set_font_size(12);
+    summary_total.set_text_color(tc.text);
+    summary.add(&summary_total);
+
+    let summary_visible = ui::Label::new("Visible\n-");
+    summary_visible.set_position(160, 8);
+    summary_visible.set_size(132, 36);
+    summary_visible.set_font_size(12);
+    summary_visible.set_text_color(tc.text);
+    summary.add(&summary_visible);
+
+    let summary_changed = ui::Label::new("Changes\n-");
+    summary_changed.set_position(306, 8);
+    summary_changed.set_size(160, 36);
+    summary_changed.set_font_size(12);
+    summary_changed.set_text_color(tc.text);
+    summary.add(&summary_changed);
+
+    let summary_hint = ui::Label::new("Live runtime state from amid");
+    summary_hint.set_position(500, 16);
+    summary_hint.set_size(280, 20);
+    summary_hint.set_font_size(12);
+    summary_hint.set_text_color(tc.text_secondary);
+    summary.add(&summary_hint);
+
+    let sep_summary = ui::Divider::new();
+    sep_summary.set_dock(ui::DOCK_TOP);
+    sep_summary.set_size(WIN_W, 1);
+    win.add(&sep_summary);
 
     let status_bar = ui::View::new();
     status_bar.set_dock(ui::DOCK_BOTTOM);
@@ -129,7 +177,10 @@ fn main() {
 
     let sidebar = ui::View::new();
     sidebar.set_dock(ui::DOCK_LEFT);
-    sidebar.set_size(SIDEBAR_W, WIN_H - TOOLBAR_H - DETAIL_H - STATUS_H - 1);
+    sidebar.set_size(
+        SIDEBAR_W,
+        WIN_H - TOOLBAR_H - SUMMARY_H - DETAIL_H - STATUS_H - 1,
+    );
     sidebar.set_color(tc.sidebar_bg);
     sidebar.set_padding(8, 8, 8, 8);
     win.add(&sidebar);
@@ -143,7 +194,10 @@ fn main() {
 
     let tree = ui::TreeView::new(SIDEBAR_W - 16, WIN_H);
     tree.set_dock(ui::DOCK_FILL);
-    tree.set_size(SIDEBAR_W - 16, WIN_H - TOOLBAR_H - DETAIL_H - STATUS_H - 40);
+    tree.set_size(
+        SIDEBAR_W - 16,
+        WIN_H - TOOLBAR_H - SUMMARY_H - DETAIL_H - STATUS_H - 40,
+    );
     tree.set_indent_width(14);
     tree.set_row_height(22);
     sidebar.add(&tree);
@@ -159,11 +213,17 @@ fn main() {
     grid.set_header_height(26);
     grid.set_font_size(12);
     let cols = alloc::vec![
-        ui::ColumnDef::new("Key").width(290),
-        ui::ColumnDef::new("Value").width(320),
+        ui::ColumnDef::new("Key").width(318),
+        ui::ColumnDef::new("Value").width(300),
         ui::ColumnDef::new("Type").width(70),
-        ui::ColumnDef::new("Version").width(72).align(ui::ALIGN_RIGHT).numeric(),
-        ui::ColumnDef::new("Updated").width(90).align(ui::ALIGN_RIGHT).numeric(),
+        ui::ColumnDef::new("Version")
+            .width(72)
+            .align(ui::ALIGN_RIGHT)
+            .numeric(),
+        ui::ColumnDef::new("Updated")
+            .width(90)
+            .align(ui::ALIGN_RIGHT)
+            .numeric(),
     ];
     grid.set_columns(&cols);
     win.add(&grid);
@@ -184,6 +244,9 @@ fn main() {
             status,
             heading,
             connection,
+            summary_total,
+            summary_visible,
+            summary_changed,
         });
     }
 
@@ -224,6 +287,7 @@ fn reload_snapshot() {
     let a = app();
     let tc = ui::theme::colors();
     let now = anyos_std::sys::uptime_ms();
+    let previous_scroll = a.grid.scroll_offset();
 
     if a.client.is_none() {
         match AmiClient::connect("ami-console") {
@@ -255,17 +319,21 @@ fn reload_snapshot() {
             a.client = None;
             a.connection.set_text("Retrying...");
             a.connection.set_text_color(tc.warning);
-            a.status.set_text("Lost connection to amid. Will retry automatically.");
+            a.status
+                .set_text("Lost connection to amid. Will retry automatically.");
             return;
         }
     };
 
+    let changed_count = count_changed_items(&a.items, &new_items);
     mark_highlights(&a.items, &new_items, &mut a.highlights, now);
     a.items = new_items;
     prune_highlights(&mut a.highlights, now);
     rebuild_tree(a);
     refresh_visible(a);
     restore_selection(a);
+    restore_scroll(a, previous_scroll);
+    update_summary(a, changed_count);
 }
 
 fn rebuild_tree(a: &mut App) {
@@ -275,14 +343,20 @@ fn rebuild_tree(a: &mut App) {
 
     let root = a.tree.add_root("All Keys");
     a.tree.set_node_style(root, ui::STYLE_BOLD);
-    a.tree_nodes.push(TreeNode { id: root, prefix: String::new() });
+    a.tree_nodes.push(TreeNode {
+        id: root,
+        prefix: String::new(),
+    });
 
     let roots = collect_roots(&a.items);
     for root_name in &roots {
         if root_name == "svc" {
             let node = a.tree.add_root("Services");
             a.tree.set_node_style(node, ui::STYLE_BOLD);
-            a.tree_nodes.push(TreeNode { id: node, prefix: String::from("svc.") });
+            a.tree_nodes.push(TreeNode {
+                id: node,
+                prefix: String::from("svc."),
+            });
             let services = collect_service_prefixes(&a.items);
             for service in &services {
                 let prefix = format!("svc.{}.", service);
@@ -316,8 +390,9 @@ fn refresh_visible(a: &mut App) {
 }
 
 fn populate_grid(a: &App) {
-    let mut text_colors = alloc::vec![0u32; a.visible.len() * 5];
-    let mut bg_colors = alloc::vec![0u32; a.visible.len() * 5];
+    let mut text_colors = alloc::vec![0u32; a.visible.len() * GRID_COLS];
+    let mut bg_colors = alloc::vec![0u32; a.visible.len() * GRID_COLS];
+    let mut minimap_colors = alloc::vec![0u32; a.visible.len()];
     let tc = ui::theme::colors();
     let now = anyos_std::sys::uptime_ms();
     a.grid.set_row_count(a.visible.len() as u32);
@@ -334,25 +409,56 @@ fn populate_grid(a: &App) {
         a.grid.set_cell(row as u32, 2, ty);
         a.grid.set_cell(row as u32, 3, &version_text);
         a.grid.set_cell(row as u32, 4, &updated_text);
+        set_value_icon(&a.grid, row as u32, &item.value, item.key.as_str(), tc);
 
-        let base = if row % 2 == 0 { tc.window_bg } else { tc.alt_row_bg };
+        let base = if row % 2 == 0 {
+            tc.window_bg
+        } else {
+            tc.alt_row_bg
+        };
         let highlight = highlight_bg_for_key(&a.highlights, &item.key, now, base, tc.accent);
-        for col in 0..5 {
-            bg_colors[row * 5 + col] = highlight;
+        if highlight != base {
+            minimap_colors[row] = tc.accent;
+        }
+        for col in 0..GRID_COLS {
+            bg_colors[row * GRID_COLS + col] = highlight;
         }
 
-        text_colors[row * 5 + 1] = semantic_value_color(&item.value, item.key.as_str(), tc);
-        text_colors[row * 5 + 2] = tc.text_secondary;
+        text_colors[row * GRID_COLS + 1] = semantic_value_color(&item.value, item.key.as_str(), tc);
+        text_colors[row * GRID_COLS + 2] = tc.text_secondary;
     }
 
     a.grid.set_cell_colors(&text_colors);
     a.grid.set_cell_bg_colors(&bg_colors);
+    a.grid.set_minimap_colors(&minimap_colors);
     a.status.set_text(&format!(
         "{} keys visible, {} total, prefix '{}'",
         a.visible.len(),
         a.items.len(),
-        if a.namespace_filter.is_empty() { "all" } else { a.namespace_filter.as_str() }
+        if a.namespace_filter.is_empty() {
+            "all"
+        } else {
+            a.namespace_filter.as_str()
+        }
     ));
+}
+
+fn restore_scroll(a: &App, previous_scroll: u32) {
+    if a.visible.is_empty() {
+        a.grid.set_scroll_offset(0);
+        return;
+    }
+    let max_scroll = (a.visible.len() as u32).saturating_sub(1);
+    a.grid.set_scroll_offset(previous_scroll.min(max_scroll));
+}
+
+fn update_summary(a: &App, changed_count: usize) {
+    a.summary_total
+        .set_text(&format!("Keys\n{}", a.items.len()));
+    a.summary_visible
+        .set_text(&format!("Visible\n{}", a.visible.len()));
+    a.summary_changed
+        .set_text(&format!("Changes\n{}", changed_count));
 }
 
 fn restore_selection(a: &mut App) {
@@ -461,7 +567,13 @@ fn ami_value_to_string(value: &AmiValue) -> String {
     match value {
         AmiValue::String(s) => String::from(s.as_str()),
         AmiValue::Int(v) => format!("{}", *v),
-        AmiValue::Bool(v) => if *v { String::from("true") } else { String::from("false") },
+        AmiValue::Bool(v) => {
+            if *v {
+                String::from("true")
+            } else {
+                String::from("false")
+            }
+        }
     }
 }
 
@@ -520,12 +632,27 @@ fn semantic_value_color(value: &AmiValue, key: &str, tc: &ui::theme::ThemeColors
     }
 }
 
-fn mark_highlights(old_items: &[AmiItem], new_items: &[AmiItem], highlights: &mut Vec<HighlightEntry>, now: u32) {
+fn mark_highlights(
+    old_items: &[AmiItem],
+    new_items: &[AmiItem],
+    highlights: &mut Vec<HighlightEntry>,
+    now: u32,
+) {
     for item in new_items {
         if item_changed(old_items, item) {
             upsert_highlight(highlights, &item.key, now.wrapping_add(HIGHLIGHT_MS));
         }
     }
+}
+
+fn count_changed_items(old_items: &[AmiItem], new_items: &[AmiItem]) -> usize {
+    let mut count = 0usize;
+    for item in new_items {
+        if item_changed(old_items, item) {
+            count += 1;
+        }
+    }
+    count
 }
 
 fn item_changed(old_items: &[AmiItem], new_item: &AmiItem) -> bool {
@@ -544,7 +671,10 @@ fn upsert_highlight(highlights: &mut Vec<HighlightEntry>, key: &str, until_ms: u
             return;
         }
     }
-    highlights.push(HighlightEntry { key: String::from(key), until_ms });
+    highlights.push(HighlightEntry {
+        key: String::from(key),
+        until_ms,
+    });
 }
 
 fn prune_highlights(highlights: &mut Vec<HighlightEntry>, now: u32) {
@@ -561,11 +691,48 @@ fn highlight_bg_for_key(
     for entry in highlights {
         if entry.key == key && entry.until_ms.wrapping_sub(now) < 0x8000_0000 {
             let remain = entry.until_ms.wrapping_sub(now).min(HIGHLIGHT_MS);
-            let strength = ((remain as u64) * 180 / (HIGHLIGHT_MS as u64)) as u8;
+            let strength = ((remain as u64) * 120 / (HIGHLIGHT_MS as u64)) as u8;
             return blend_colors(base, ui::theme::lighten(accent, 24), strength);
         }
     }
     base
+}
+
+fn set_value_icon(
+    grid: &ui::DataGrid,
+    row: u32,
+    value: &AmiValue,
+    key: &str,
+    tc: &ui::theme::ThemeColors,
+) {
+    let color = semantic_value_color(value, key, tc);
+    let pixels = mini_status_icon(color, tc.window_bg);
+    grid.set_cell_icon(row, 0, &pixels, MINI_ICON_SIZE, MINI_ICON_SIZE);
+}
+
+fn mini_status_icon(color: u32, bg: u32) -> [u32; MINI_ICON_PIXELS] {
+    let mut pixels = [0u32; MINI_ICON_PIXELS];
+    let size = MINI_ICON_SIZE as i32;
+    let center = size / 2;
+    let radius = 4i32;
+    let ring = ui::theme::lighten(color, 30);
+
+    for y in 0..size {
+        for x in 0..size {
+            let dx = x - center;
+            let dy = y - center;
+            let dist = dx * dx + dy * dy;
+            let idx = (y * size + x) as usize;
+            pixels[idx] = if dist <= radius * radius {
+                color
+            } else if dist <= (radius + 1) * (radius + 1) {
+                blend_colors(bg, ring, 150)
+            } else {
+                0x00000000
+            };
+        }
+    }
+    pixels
 }
 
 fn blend_colors(base: u32, overlay: u32, strength: u8) -> u32 {
