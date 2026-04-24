@@ -33,12 +33,21 @@ fn places_conflict(a: &Place, b: &Place) -> bool {
     true
 }
 
-pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>) -> BorrowckResult {
+pub fn check_borrows(
+    body: &MirBody,
+    interner: &Interner,
+    struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
+    copy_types: &HashSet<DefId>,
+) -> BorrowckResult {
     let mut errors = Vec::new();
     let mut moved: HashSet<usize> = HashSet::new();
+    let mut moved_at_block_entry: HashMap<usize, HashSet<usize>> = HashMap::new();
     let mut borrows: Vec<ActiveBorrow> = Vec::new();
 
-    for block in &body.basic_blocks {
+    for (block_idx, block) in body.basic_blocks.iter().enumerate() {
+        if let Some(entry_moved) = moved_at_block_entry.remove(&block_idx) {
+            moved = entry_moved;
+        }
         for stmt in &block.statements {
             match &stmt.kind {
                 StatementKind::Assign(place, rvalue) => {
@@ -142,8 +151,17 @@ pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<
                         }
                     }
 
-                    // Track moves in rvalue
-                    record_moves(rvalue, &mut moved, &body.locals, struct_defs);
+                    // Track moves in rvalue. Moves into compiler temporaries are often
+                    // the MIR builder's way to preserve a scrutinee for pattern tests;
+                    // user-visible moves are still recorded through named locals and calls.
+                    let assigns_to_named_local = body
+                        .locals
+                        .get(assign_local)
+                        .map(|local| local.name.is_some())
+                        .unwrap_or(false);
+                    if assigns_to_named_local {
+                        record_moves(rvalue, &mut moved, &body.locals, struct_defs, copy_types);
+                    }
                 }
                 StatementKind::StorageDead(local) => {
                     // End borrows and moves for this local
@@ -161,17 +179,28 @@ pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<
                 for arg in args {
                     check_operand_not_moved(arg, &moved, &body.locals, &mut errors, body.span);
                 }
-                record_operand_move(func, &mut moved, &body.locals, struct_defs);
+                record_operand_move(func, &mut moved, &body.locals, struct_defs, copy_types);
                 for arg in args {
-                    record_operand_move(arg, &mut moved, &body.locals, struct_defs);
+                    record_operand_move(arg, &mut moved, &body.locals, struct_defs, copy_types);
                 }
                 // Temporary borrows for call args end when the call returns
                 borrows.clear();
+                if let Terminator::Call { target, .. } = &block.terminator {
+                    merge_moved_entry(&mut moved_at_block_entry, target.0, &moved);
+                }
             }
-            Terminator::Goto(_)
-            | Terminator::SwitchInt { .. }
-            | Terminator::Return
-            | Terminator::Unreachable => {
+            Terminator::Goto(target) => {
+                end_temporary_borrows(&mut borrows, &body.locals, body.arg_count);
+                merge_moved_entry(&mut moved_at_block_entry, target.0, &moved);
+            }
+            Terminator::SwitchInt { targets, default, .. } => {
+                end_temporary_borrows(&mut borrows, &body.locals, body.arg_count);
+                for (_, target) in targets {
+                    merge_moved_entry(&mut moved_at_block_entry, target.0, &moved);
+                }
+                merge_moved_entry(&mut moved_at_block_entry, default.0, &moved);
+            }
+            Terminator::Return | Terminator::Unreachable => {
                 end_temporary_borrows(&mut borrows, &body.locals, body.arg_count);
             }
             _ => {}
@@ -179,6 +208,20 @@ pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<
     }
 
     BorrowckResult { errors }
+}
+
+fn merge_moved_entry(
+    moved_at_block_entry: &mut HashMap<usize, HashSet<usize>>,
+    block: usize,
+    moved: &HashSet<usize>,
+) {
+    if let Some(existing) = moved_at_block_entry.get_mut(&block) {
+        for local in moved {
+            existing.insert(*local);
+        }
+    } else {
+        moved_at_block_entry.insert(block, moved.clone());
+    }
 }
 
 fn end_temporary_borrows(
@@ -243,9 +286,15 @@ fn check_operand_not_moved(
     }
 }
 
-fn record_moves(rvalue: &Rvalue, moved: &mut HashSet<usize>, locals: &[LocalDecl], struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>) {
+fn record_moves(
+    rvalue: &Rvalue,
+    moved: &mut HashSet<usize>,
+    locals: &[LocalDecl],
+    struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
+    copy_types: &HashSet<DefId>,
+) {
     let mut check_op = |op: &Operand| {
-        record_operand_move(op, moved, locals, struct_defs);
+        record_operand_move(op, moved, locals, struct_defs, copy_types);
     };
     match rvalue {
         Rvalue::Use(op) => check_op(op),
@@ -269,19 +318,27 @@ fn record_operand_move(
     moved: &mut HashSet<usize>,
     locals: &[LocalDecl],
     struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
+    copy_types: &HashSet<DefId>,
 ) {
     if let Operand::Move(place) = op {
         if place.projections.iter().any(|proj| matches!(proj, Projection::Deref)) {
             return;
         }
         let ty = &locals[place.local.0].ty;
-        if !is_copy_type(ty, struct_defs) {
+        if matches!(ty, TyKind::Ref(_, _) | TyKind::RawPtr(_, _)) {
+            return;
+        }
+        if !is_copy_type(ty, struct_defs, copy_types) {
             moved.insert(place.local.0);
         }
     }
 }
 
-fn is_copy_type(ty: &TyKind, struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>) -> bool {
+fn is_copy_type(
+    ty: &TyKind,
+    struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>,
+    copy_types: &HashSet<DefId>,
+) -> bool {
     match ty {
         TyKind::Bool | TyKind::Char => true,
         TyKind::Int(_) | TyKind::Uint(_) | TyKind::Float(_) => true,
@@ -292,17 +349,20 @@ fn is_copy_type(ty: &TyKind, struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>
         TyKind::Projection(_, _, _) | TyKind::DynTrait(_) => true,
         TyKind::FnDef(_, _) | TyKind::FnPtr(_, _) => true,
         TyKind::Adt(def_id, _) => {
+            if copy_types.contains(def_id) {
+                return true;
+            }
             // A struct is Copy if all its fields are Copy
             if let Some(fields) = struct_defs.get(def_id) {
-                fields.iter().all(|(_, fty)| is_copy_type(fty, struct_defs))
+                fields.iter().all(|(_, fty)| is_copy_type(fty, struct_defs, copy_types))
             } else {
                 // External/intrinsic ADTs do not carry trait metadata yet, so
                 // move checking has to defer instead of rejecting generic code.
                 def_id.0 >= 10000
             }
         }
-        TyKind::Tuple(elems) => elems.iter().all(|e| is_copy_type(e, struct_defs)),
-        TyKind::Array(inner, _) => is_copy_type(inner, struct_defs),
+        TyKind::Tuple(elems) => elems.iter().all(|e| is_copy_type(e, struct_defs, copy_types)),
+        TyKind::Array(inner, _) => is_copy_type(inner, struct_defs, copy_types),
         _ => false,
     }
 }

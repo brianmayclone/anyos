@@ -414,6 +414,12 @@ Status:
 - Gestartet: Build-Tools sind in den Settings editierbar, inklusive
   Rust-Compiler (`crust`/`rustc`/`anyrc`) und Cargo-Build-System
   (`ccargo`/`cargo`/`acargo`).
+- Gestartet: Der Settings-Dialog wurde strukturell nachgezogen: Suche steht
+  oben in der Navigation, Kategorien liegen darunter, Content-Seiten haben
+  eigene Titel und die Toolchain-Felder bekommen mehr Raum.
+- Gestartet: Die Kategorien im Settings-Dialog verwenden jetzt chrome-lose
+  PlainButton-Hitflächen mit eigener Auswahlmarke statt glänzender
+  Standard-Buttons.
 
 ### Phase 9: Studio v1 Freeze
 

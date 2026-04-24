@@ -1310,6 +1310,109 @@ fn proc_macro_intrinsic_enum_variant_constructors_have_parent_type() {
 }
 
 #[test]
+fn proc_macro2_style_extend_maps_generic_into_iterator_item() {
+    assert_type_ok(r#"
+        trait IntoIterator {
+            type Item;
+            type IntoIter;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+
+        trait Extend<A> {
+            fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T);
+        }
+
+        struct Map<I, F> {
+            iter: I,
+            f: F,
+        }
+
+        struct Ident {}
+
+        mod imp {
+            pub enum TokenTree {
+                Ident(crate::Ident),
+            }
+
+            pub struct TokenStream {}
+
+            impl Extend<TokenTree> for TokenStream {
+                fn extend<I: IntoIterator<Item = TokenTree>>(&mut self, tokens: I) {}
+            }
+        }
+
+        struct TokenStream {
+            inner: imp::TokenStream,
+        }
+
+        impl Extend<Ident> for TokenStream {
+            fn extend<I: IntoIterator<Item = Ident>>(&mut self, tokens: I) {
+                self.inner.extend(tokens.into_iter().map(imp::TokenTree::Ident));
+            }
+        }
+    "#);
+}
+
+#[test]
+fn proc_macro2_style_wrapper_into_iter_preserves_fallback_variant_field_type() {
+    assert_type_ok(r#"
+        trait IntoIterator {
+            type Item;
+            type IntoIter;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+
+        struct RcVecIntoIter<T> {
+            item: T,
+        }
+
+        enum TokenTree {
+            Ident,
+        }
+
+        mod fallback {
+            use crate::{RcVecIntoIter, TokenTree};
+
+            pub struct TokenStream {}
+            pub type TokenTreeIter = RcVecIntoIter<TokenTree>;
+
+            impl IntoIterator for TokenStream {
+                type Item = TokenTree;
+                type IntoIter = TokenTreeIter;
+
+                fn into_iter(self) -> TokenTreeIter {
+                    RcVecIntoIter { item: TokenTree::Ident }
+                }
+            }
+        }
+
+        mod imp {
+            use crate::fallback;
+            use crate::TokenTree;
+
+            pub enum TokenStream {
+                Fallback(fallback::TokenStream),
+            }
+
+            pub enum TokenTreeIter {
+                Fallback(fallback::TokenTreeIter),
+            }
+
+            impl IntoIterator for TokenStream {
+                type Item = TokenTree;
+                type IntoIter = TokenTreeIter;
+
+                fn into_iter(self) -> TokenTreeIter {
+                    match self {
+                        TokenStream::Fallback(tts) => TokenTreeIter::Fallback(tts.into_iter()),
+                    }
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
 fn generic_array_style_index_uses_deref_slice_target() {
     assert_type_ok(r#"
         trait Deref {

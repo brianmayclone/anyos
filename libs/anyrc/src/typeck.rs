@@ -5,7 +5,7 @@ use crate::resolve::ResolveResult;
 use crate::intern::{Interner, Symbol};
 use crate::coerce::{self, CoercionKind};
 use crate::diagnostics::{Span, Diagnostic, Level};
-use anyos_std::collections::HashMap;
+use anyos_std::collections::{HashMap, HashSet};
 
 /// Internal type representation
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -91,6 +91,8 @@ pub struct TypeckResult {
     pub generic_param_bounds: HashMap<u32, Vec<DefId>>,
     /// Default trait method bodies: method DefId -> true if body exists in trait def
     pub trait_default_methods: HashMap<DefId, bool>,
+    /// ADTs known to be Copy through derives or impls.
+    pub copy_types: HashSet<DefId>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,6 +146,8 @@ pub struct TypeChecker<'a> {
     current_module_path: Vec<Symbol>,
     /// Generic type aliases lowered to TyKind with Param slots.
     type_aliases: HashMap<Symbol, TyKind>,
+    /// Module-qualified type aliases, e.g. `fallback::TokenTreeIter`.
+    qualified_type_aliases: HashMap<String, TyKind>,
     /// Enum variant field types: enum DefId -> vec of (variant_name, field_types)
     enum_variant_fields: HashMap<DefId, Vec<(Symbol, Vec<TyKind>)>>,
     enum_variant_named_fields: HashMap<(DefId, Symbol), Vec<(Symbol, TyKind)>>,
@@ -185,6 +189,8 @@ pub struct TypeChecker<'a> {
     deref_impls: Vec<DerefImpl>,
     /// `impl core::ops::{Add, Mul, ...}<Rhs> for T { type Output = O; }` summaries.
     operator_impls: Vec<OperatorImpl>,
+    /// ADTs known to be Copy through derives or impls.
+    copy_types: HashSet<DefId>,
 
     next_infer: u32,
     infer_kinds: HashMap<InferVar, InferKind>,
@@ -217,6 +223,7 @@ impl<'a> TypeChecker<'a> {
             scoped_type_aliases: HashMap::new(),
             current_module_path: Vec::new(),
             type_aliases: HashMap::new(),
+            qualified_type_aliases: HashMap::new(),
             enum_variant_fields: HashMap::new(),
             enum_variant_named_fields: HashMap::new(),
             resolver_variant_to_enum: HashMap::new(),
@@ -237,6 +244,7 @@ impl<'a> TypeChecker<'a> {
             index_impls: Vec::new(),
             deref_impls: Vec::new(),
             operator_impls: Vec::new(),
+            copy_types: HashSet::new(),
             next_infer: 0,
             infer_kinds: HashMap::new(),
             substitutions: HashMap::new(),
@@ -752,6 +760,7 @@ impl<'a> TypeChecker<'a> {
             assoc_types: core::mem::take(&mut self.assoc_types),
             generic_param_bounds: HashMap::new(),
             trait_default_methods: core::mem::take(&mut self.trait_default_methods),
+            copy_types: core::mem::take(&mut self.copy_types),
             type_def_to_name: self.type_name_to_def.iter()
                 .filter(|(name, _)| self.interner.resolve(**name) != "Self")
                 .map(|(name, &def_id)| (def_id, *name))
@@ -793,6 +802,16 @@ impl<'a> TypeChecker<'a> {
         let path = parts.join("::");
         self.qualified_type_names.insert(path.clone(), def_id);
         self.qualified_type_names.insert(format!("crate::{}", path), def_id);
+    }
+
+    fn qualified_name_for_current_module(&self, name: Symbol) -> String {
+        let mut parts = self
+            .current_module_path
+            .iter()
+            .map(|sym| self.interner.resolve(*sym).to_string())
+            .collect::<Vec<_>>();
+        parts.push(self.interner.resolve(name).to_string());
+        parts.join("::")
     }
 
     fn module_key_from_symbols(&self, prefix: &[Symbol]) -> String {
@@ -929,7 +948,7 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
             HirItemKind::Fn(f) => {
-                let (old_generics, old_bounds, added_generics) =
+                let (old_generics, old_bounds, old_assoc_bindings, added_generics) =
                     self.push_generic_scope(&f.generics.params);
                 if added_generics > 0 {
                     self.generic_fn_defs.insert(f.def_id, added_generics);
@@ -942,10 +961,10 @@ impl<'a> TypeChecker<'a> {
                     .map(|t| self.hir_ty_to_ty(t))
                     .unwrap_or(TyKind::Unit);
                 self.fn_sigs.insert(f.def_id, (params, ret));
-                self.pop_generic_scope(old_generics, old_bounds);
+                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Struct(s) => {
-                let (old_generics, old_bounds, _) = self.push_generic_scope(&s.generics.params);
+                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&s.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 let self_substs = s.generics.params.iter().filter_map(|param| {
                     if let HirGenericParam::Type(name, _, _, _) = param {
@@ -960,11 +979,14 @@ impl<'a> TypeChecker<'a> {
                     .collect();
                 self.struct_defs.insert(s.def_id, fields);
                 self.type_name_to_def.insert(s.name, s.def_id);
+                if s.derives_copy {
+                    self.copy_types.insert(s.def_id);
+                }
                 self.current_self_ty = saved_self_ty;
-                self.pop_generic_scope(old_generics, old_bounds);
+                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Enum(e) => {
-                let (old_generics, old_bounds, _) = self.push_generic_scope(&e.generics.params);
+                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&e.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 let self_substs = e.generics.params.iter().filter_map(|param| {
                     if let HirGenericParam::Type(name, _, _, _) = param {
@@ -975,6 +997,9 @@ impl<'a> TypeChecker<'a> {
                 }).collect::<Vec<_>>();
                 self.current_self_ty = Some(TyKind::Adt(e.def_id, self_substs));
                 self.type_name_to_def.insert(e.name, e.def_id);
+                if e.derives_copy {
+                    self.copy_types.insert(e.def_id);
+                }
                 // Collect variant field types
                 let mut variants = Vec::new();
                 for v in &e.variants {
@@ -1001,17 +1026,22 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.enum_variant_fields.insert(e.def_id, variants);
                 self.current_self_ty = saved_self_ty;
-                self.pop_generic_scope(old_generics, old_bounds);
+                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::TypeAlias(ta) => {
-                let (old_generics, old_bounds, _) = self.push_generic_scope(&ta.generics.params);
+                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&ta.generics.params);
                 if let Some(ty) = &ta.ty {
-                    self.type_aliases.insert(ta.name, self.hir_ty_to_ty(ty));
+                    let alias_ty = self.hir_ty_to_ty(ty);
+                    let qualified_name = self.qualified_name_for_current_module(ta.name);
+                    self.qualified_type_aliases.insert(qualified_name, alias_ty.clone());
+                    if self.current_module_path.is_empty() {
+                        self.type_aliases.insert(ta.name, alias_ty);
+                    }
                 }
-                self.pop_generic_scope(old_generics, old_bounds);
+                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Impl(ib) => {
-                let (old_generics, old_bounds, _) = self.push_generic_scope(&ib.generics.params);
+                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&ib.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 self.current_self_ty = Some(self.hir_ty_to_ty(&ib.self_ty));
                 if let Some(TyKind::Adt(self_def_id, _)) = self.current_self_ty.clone().map(|ty| self.shallow_resolve(ty)) {
@@ -1041,6 +1071,17 @@ impl<'a> TypeChecker<'a> {
                         // If this is a trait impl, record the mapping
                         if let Some(trait_ref) = &ib.trait_ref {
                             if let Some(trait_def_id) = self.resolve_trait_bound_def(trait_ref) {
+                                if trait_ref
+                                    .segments
+                                    .last()
+                                    .is_some_and(|seg| self.interner.resolve(seg.ident) == "Copy")
+                                {
+                                    if let Some(TyKind::Adt(def_id, _)) =
+                                        self.current_self_ty.clone().map(|ty| self.shallow_resolve(ty))
+                                    {
+                                        self.copy_types.insert(def_id);
+                                    }
+                                }
                                 let mut impl_methods = Vec::new();
                                 for sub in &ib.items {
                                     match &sub.kind {
@@ -1066,7 +1107,7 @@ impl<'a> TypeChecker<'a> {
                     self.collect_item(sub);
                 }
                 self.current_self_ty = saved_self_ty;
-                self.pop_generic_scope(old_generics, old_bounds);
+                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Const(c) => {
                 let ty = self.hir_ty_to_ty(&c.ty);
@@ -1092,7 +1133,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             HirItemKind::Trait(t) => {
-                let (old_generics, old_bounds, _) = self.push_generic_scope(&t.generics.params);
+                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&t.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 self.current_self_ty = Some(TyKind::Adt(t.def_id, vec![]));
                 // Register trait name so `dyn Trait` can resolve it
@@ -1124,7 +1165,7 @@ impl<'a> TypeChecker<'a> {
                 self.trait_assoc_types.insert(t.def_id, assoc_type_names);
                 self.trait_assoc_consts.insert(t.def_id, assoc_consts);
                 self.current_self_ty = saved_self_ty;
-                self.pop_generic_scope(old_generics, old_bounds);
+                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
             }
             _ => {}
         }
@@ -1449,7 +1490,7 @@ impl<'a> TypeChecker<'a> {
         match &item.kind {
             HirItemKind::Fn(f) => self.check_fn(f),
             HirItemKind::Impl(ib) => {
-                let (old_generics, old_bounds, _) = self.push_generic_scope(&ib.generics.params);
+                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&ib.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 let saved_assoc_types = self.current_impl_assoc_types.clone();
                 self.current_self_ty = Some(self.hir_ty_to_ty(&ib.self_ty));
@@ -1466,7 +1507,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.current_self_ty = saved_self_ty;
                 self.current_impl_assoc_types = saved_assoc_types;
-                self.pop_generic_scope(old_generics, old_bounds);
+                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Mod(m) => {
                 if let Some(sub_items) = &m.items {
@@ -1483,7 +1524,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_fn(&mut self, f: &HirFnDef) {
         // Set up generic params and bounds for this function's body
-        let (old_generics, old_bounds, _) = self.push_generic_scope(&f.generics.params);
+        let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&f.generics.params);
 
         let sig = self.fn_sigs.get(&f.def_id).cloned();
         let (param_tys, ret_ty) = sig.unwrap_or_else(|| (vec![], TyKind::Unit));
@@ -1504,7 +1545,7 @@ impl<'a> TypeChecker<'a> {
 
         self.current_fn_ret = old_ret;
         self.current_fn_name = old_fn_name;
-        self.pop_generic_scope(old_generics, old_bounds);
+        self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
     }
 
     fn check_block(&mut self, block: &HirBlock) -> TyKind {
@@ -2282,6 +2323,10 @@ impl<'a> TypeChecker<'a> {
                                     return TyKind::Slice(Box::new(body_ty));
                                 }
                             }
+                            let mapper_ty = self.get_expr_ty_cached(&args[0]);
+                            let mapped_ty = self.callable_output_ty(&mapper_ty)
+                                .unwrap_or_else(|| mapper_ty.clone());
+                            return TyKind::Slice(Box::new(mapped_ty));
                         }
                         "filter_map" if args.len() == 1 => {
                             if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
@@ -2464,12 +2509,17 @@ impl<'a> TypeChecker<'a> {
                 // Handle dyn Trait method calls
                 if let TyKind::DynTrait(trait_def_id) = &inner_ty {
                     if let Some(methods) = self.trait_methods.get(trait_def_id).cloned() {
-                        if let Some((_, method_def_id)) = methods.iter().find(|(n, _)| *n == *method_name) {
-                            if let Some((param_tys, ret_ty)) = self.fn_sigs.get(method_def_id).cloned() {
-                                let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
-                                if args.len() != user_params.len() {
-                                    self.error(expr.span, &format!(
-                                        "wrong number of arguments for method {}: expected {}, found {}",
+                if let Some((_, method_def_id)) = methods.iter().find(|(n, _)| *n == *method_name) {
+                    if let Some((param_tys, ret_ty)) = self.fn_sigs.get(method_def_id).cloned() {
+                        let param_tys = param_tys
+                            .iter()
+                            .map(|ty| self.substitute_trait_self(ty, *trait_def_id, &inner_ty))
+                            .collect::<Vec<_>>();
+                        let ret_ty = self.substitute_trait_self(&ret_ty, *trait_def_id, &inner_ty);
+                        let user_params = if !param_tys.is_empty() { &param_tys[1..] } else { &param_tys[..] };
+                        if args.len() != user_params.len() {
+                            self.error(expr.span, &format!(
+                                "wrong number of arguments for method {}: expected {}, found {}",
                                         self.interner.resolve(*method_name),
                                         user_params.len(),
                                         args.len(),
@@ -2878,7 +2928,11 @@ impl<'a> TypeChecker<'a> {
             .as_ref()
             .and_then(|path| self.trait_def_from_path(path));
 
-        TyKind::Projection(Box::new(self_ty), trait_def_id, assoc_segment.ident)
+        self.resolve_generic_assoc_binding(TyKind::Projection(
+            Box::new(self_ty),
+            trait_def_id,
+            assoc_segment.ident,
+        ))
     }
 
     fn projection_for_param_assoc(&self, param_idx: u32, assoc_name: Symbol) -> TyKind {
@@ -2892,7 +2946,11 @@ impl<'a> TypeChecker<'a> {
                         .is_some_and(|names| names.contains(&assoc_name))
                 })
             });
-        TyKind::Projection(Box::new(TyKind::Param(param_idx)), trait_def_id, assoc_name)
+        self.resolve_generic_assoc_binding(TyKind::Projection(
+            Box::new(TyKind::Param(param_idx)),
+            trait_def_id,
+            assoc_name,
+        ))
     }
 
     fn resolve_qualified_type_path(&self, path: &str) -> Option<DefId> {
@@ -2943,6 +3001,46 @@ impl<'a> TypeChecker<'a> {
             .get(&path)
             .copied()
             .or_else(|| self.type_name_to_def.get(&name).copied())
+    }
+
+    fn resolve_scoped_type_alias(&self, name: Symbol) -> Option<TyKind> {
+        let name_str = self.interner.resolve(name);
+        if !self.current_module_path.is_empty() {
+            let mut parts = self.current_module_path
+                .iter()
+                .map(|sym| self.interner.resolve(*sym).to_string())
+                .collect::<Vec<_>>();
+            parts.push(name_str.to_string());
+            let path = parts.join("::");
+            if let Some(ty) = self.qualified_type_aliases.get(&path) {
+                return Some(ty.clone());
+            }
+        }
+        self.type_aliases.get(&name).cloned()
+    }
+
+    fn resolve_qualified_type_alias(&self, path: &str) -> Option<TyKind> {
+        if let Some((first, rest)) = path.split_once("::") {
+            let module_key = self.module_key_from_symbols(&self.current_module_path);
+            if let Some(first_sym) = self.interner.lookup(first) {
+                if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key, first_sym)) {
+                    let expanded = format!("{}::{}", alias_target, rest);
+                    if let Some(ty) = self.qualified_type_aliases.get(&expanded) {
+                        return Some(ty.clone());
+                    }
+                }
+            }
+            if let Some(alias_target) = self.module_aliases.get(first) {
+                let expanded = format!("{}::{}", alias_target, rest);
+                if let Some(ty) = self.qualified_type_aliases.get(&expanded) {
+                    return Some(ty.clone());
+                }
+            }
+        }
+        self.qualified_type_aliases
+            .get(path)
+            .or_else(|| self.qualified_type_aliases.get(path.strip_prefix("crate::").unwrap_or(path)))
+            .cloned()
     }
 
     fn assoc_fn_candidates_on_path(&self, path: &HirPath) -> Option<Vec<DefId>> {
@@ -3159,13 +3257,29 @@ impl<'a> TypeChecker<'a> {
                     .map(|ty| self.substitute_trait_self(ty, trait_def_id, self_ty))
                     .collect(),
             ),
-            TyKind::Projection(inner, projection_trait, assoc_name) => TyKind::Projection(
-                Box::new(self.substitute_trait_self(inner, trait_def_id, self_ty)),
-                *projection_trait,
-                *assoc_name,
-            ),
+            TyKind::Projection(inner, projection_trait, assoc_name) => {
+                let projected = TyKind::Projection(
+                    Box::new(self.substitute_trait_self(inner, trait_def_id, self_ty)),
+                    *projection_trait,
+                    *assoc_name,
+                );
+                self.resolve_generic_assoc_binding(projected)
+            }
             _ => ty.clone(),
         }
+    }
+
+    fn resolve_generic_assoc_binding(&self, ty: TyKind) -> TyKind {
+        let TyKind::Projection(self_ty, Some(trait_def_id), assoc_name) = &ty else {
+            return ty;
+        };
+        let TyKind::Param(param_idx) = self.shallow_resolve(self_ty.as_ref().clone()) else {
+            return ty;
+        };
+        self.current_generic_assoc_bindings
+            .get(&(param_idx, *trait_def_id, *assoc_name))
+            .cloned()
+            .unwrap_or(ty)
     }
 
     fn instantiate_fn_sig(&mut self, def_id: DefId) -> Option<(Vec<TyKind>, TyKind)> {
@@ -3292,22 +3406,11 @@ impl<'a> TypeChecker<'a> {
                 if let Some(&idx) = self.current_generic_params.get(&sym) {
                     return TyKind::Param(idx);
                 }
-                if let Some(alias_ty) = self.type_aliases.get(&sym) {
-                    let type_args = if let Some(ref args) = last_segment.args {
-                        args.args
-                            .iter()
-                            .filter_map(|a| {
-                                if let HirGenericArg::Type(ty) = a {
-                                    Some(self.hir_ty_to_ty(ty))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                    } else {
-                        vec![]
-                    };
-                    return self.substitute_params(alias_ty, &type_args);
+                if let Some(full_path) = &full_path {
+                    if let Some(alias_ty) = self.resolve_qualified_type_alias(full_path) {
+                        let type_args = self.type_args_from_segment(last_segment);
+                        return self.substitute_params(&alias_ty, &type_args);
+                    }
                 }
                 if let Some(full_path) = &full_path {
                     if Self::is_extern_type_path(full_path) {
@@ -3365,6 +3468,9 @@ impl<'a> TypeChecker<'a> {
                         vec![]
                     };
                     TyKind::Adt(def_id, type_args)
+                } else if let Some(alias_ty) = self.resolve_scoped_type_alias(sym) {
+                    let type_args = self.type_args_from_segment(last_segment);
+                    self.substitute_params(&alias_ty, &type_args)
                 } else {
                     if let Some(full_path) = &full_path {
                         if let Some(def_id) = self.lookup_intrinsic_def_by_path(full_path) {
@@ -3378,6 +3484,22 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+    }
+
+    fn type_args_from_segment(&self, segment: &HirPathSegment) -> Vec<TyKind> {
+        segment
+            .args
+            .as_ref()
+            .map(|args| {
+                args.args
+                    .iter()
+                    .filter_map(|arg| match arg {
+                        HirGenericArg::Type(ty) => Some(self.hir_ty_to_ty(ty)),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn is_extern_type_path(path: &str) -> bool {
@@ -3555,6 +3677,46 @@ impl<'a> TypeChecker<'a> {
             TyKind::Slice(elem) | TyKind::Array(elem, _) => Some(elem.as_ref().clone()),
             TyKind::Adt(def_id, substs) if self.is_vec_def(*def_id) && substs.len() == 1 => {
                 Some(substs[0].clone())
+            }
+            TyKind::Projection(self_ty, Some(trait_def_id), assoc_name)
+                if self.trait_def_name_is(*trait_def_id, "IntoIterator")
+                    && self.symbol_name_is(*assoc_name, "IntoIter") =>
+            {
+                let TyKind::Param(param_idx) = self.shallow_resolve(self_ty.as_ref().clone()) else {
+                    return None;
+                };
+                let item_sym = self.interner.lookup("Item")?;
+                self.current_generic_assoc_bindings
+                    .get(&(param_idx, *trait_def_id, item_sym))
+                    .cloned()
+                    .or_else(|| {
+                        Some(TyKind::Projection(
+                            Box::new(TyKind::Param(param_idx)),
+                            Some(*trait_def_id),
+                            item_sym,
+                        ))
+                    })
+            }
+            _ => None,
+        }
+    }
+
+    fn symbol_name_is(&self, sym: Symbol, expected: &str) -> bool {
+        self.interner.resolve(sym) == expected
+    }
+
+    fn trait_def_name_is(&self, trait_def_id: DefId, expected: &str) -> bool {
+        self.trait_names
+            .get(&trait_def_id)
+            .is_some_and(|name| self.symbol_name_is(*name, expected))
+    }
+
+    fn callable_output_ty(&self, ty: &TyKind) -> Option<TyKind> {
+        match self.shallow_resolve(ty.clone()) {
+            TyKind::FnDef(def_id, _) => self.fn_sigs.get(&def_id).map(|(_, ret)| ret.clone()),
+            TyKind::FnPtr(_, ret) => Some(*ret),
+            TyKind::Adt(def_id, substs) if self.enum_variant_fields.contains_key(&def_id) => {
+                Some(TyKind::Adt(def_id, substs))
             }
             _ => None,
         }
@@ -4002,11 +4164,13 @@ impl<'a> TypeChecker<'a> {
             TyKind::Tuple(tys) => TyKind::Tuple(tys.into_iter().map(|t| self.resolve_ty_full(t)).collect()),
             TyKind::Array(inner, n) => TyKind::Array(Box::new(self.resolve_ty_full(*inner)), n),
             TyKind::Slice(inner) => TyKind::Slice(Box::new(self.resolve_ty_full(*inner))),
-            TyKind::Projection(self_ty, trait_def_id, assoc_name) => TyKind::Projection(
-                Box::new(self.resolve_ty_full(*self_ty)),
-                trait_def_id,
-                assoc_name,
-            ),
+            TyKind::Projection(self_ty, trait_def_id, assoc_name) => {
+                self.resolve_generic_assoc_binding(TyKind::Projection(
+                    Box::new(self.resolve_ty_full(*self_ty)),
+                    trait_def_id,
+                    assoc_name,
+                ))
+            }
             other => other,
         }
     }

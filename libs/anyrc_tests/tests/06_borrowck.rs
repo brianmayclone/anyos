@@ -25,7 +25,12 @@ fn build_and_check(src: &str) -> Vec<(String, BorrowckResult)> {
         .map(|body| {
             (
                 interner.resolve(body.name).to_string(),
-                borrowck::check_borrows(body, &interner, &typeck_result.struct_defs),
+                borrowck::check_borrows(
+                    body,
+                    &interner,
+                    &typeck_result.struct_defs,
+                    &typeck_result.copy_types,
+                ),
             )
         })
         .collect()
@@ -84,6 +89,70 @@ fn borrowck_assign_while_borrowed() {
 #[test]
 fn borrowck_copy_types_ok() {
     assert_borrowck_ok("fn foo() { let x: i32 = 5; let y: i32 = x; let z: i32 = x; }");
+}
+
+#[test]
+fn borrowck_derived_copy_adt_can_be_reused() {
+    assert_borrowck_ok(r#"
+        #[derive(Copy, Clone)]
+        struct Span {
+            lo: usize,
+            hi: usize,
+        }
+
+        fn take(span: Span) {}
+
+        fn foo() {
+            let span = Span { lo: 0, hi: 1 };
+            take(span);
+            take(span);
+        }
+    "#);
+}
+
+#[test]
+fn borrowck_match_scrutinee_can_be_used_in_wildcard_arm() {
+    assert_borrowck_ok(r#"
+        struct Token {}
+
+        fn take(token: Token) {}
+
+        fn foo(token: Token) {
+            match token {
+                _ => take(token),
+            }
+        }
+    "#);
+}
+
+#[test]
+fn borrowck_mut_ref_argument_is_reborrowed_for_calls() {
+    assert_borrowck_ok(r#"
+        fn write(f: &mut i32) {}
+
+        fn foo(f: &mut i32) {
+            write(f);
+            write(f);
+        }
+    "#);
+}
+
+#[test]
+fn borrowck_move_in_if_branch_does_not_poison_else_branch() {
+    assert_borrowck_ok(r#"
+        struct Token {}
+
+        fn take(token: Token) {}
+        fn cond() -> bool { true }
+
+        fn foo(token: Token) {
+            if cond() {
+                take(token);
+            } else {
+                take(token);
+            }
+        }
+    "#);
 }
 
 #[test]

@@ -6,29 +6,12 @@ use ui::Widget;
 use crate::logic::ai::{AiConfig, AiProvider};
 use crate::logic::config::Config;
 
-// ════════════════════════════════════════════════════════════════
-//  Settings Dialog — Full IDE configuration with side tabs
-//
-//  ┌─── Settings ───────────────────────────────────────────┐
-//  │ ┌──────────┐ ┌────────────────────────────────────────┐│
-//  │ │ Editor   │ │                                        ││
-//  │ │ ──────── │ │  Font Size     [13      ]              ││
-//  │ │ AI       │ │  Tab Width     [4       ]              ││
-//  │ │ ──────── │ │  Line Numbers  [✓]                     ││
-//  │ │ Build    │ │  ...                                   ││
-//  │ │ ──────── │ │                                        ││
-//  │ │ Layout   │ │                                        ││
-//  │ └──────────┘ └────────────────────────────────────────┘│
-//  │                            [Save]  [Cancel]            │
-//  └────────────────────────────────────────────────────────┘
-// ════════════════════════════════════════════════════════════════
-
-const DLG_W: u32 = 640;
-const DLG_H: u32 = 520;
-const TAB_W: u32 = 140;
-const LABEL_X: i32 = 24;
-const FIELD_X: i32 = 170;
-const FIELD_W: u32 = 280;
+const DLG_W: u32 = 740;
+const DLG_H: u32 = 540;
+const NAV_W: u32 = 176;
+const LABEL_X: i32 = 28;
+const FIELD_X: i32 = 190;
+const FIELD_W: u32 = 340;
 
 pub fn show() {
     let config = Config::load();
@@ -39,10 +22,9 @@ pub fn show() {
     let win = ui::Window::new(t("Settings"), -1, -1, DLG_W, DLG_H);
     let win_id = win.id();
 
-    // ── Header ──
     let header = ui::View::new();
     header.set_dock(ui::DOCK_TOP);
-    header.set_size(DLG_W, 44);
+    header.set_size(DLG_W, 56);
     header.set_color(tc.sidebar_bg);
     win.add(&header);
 
@@ -53,72 +35,116 @@ pub fn show() {
     header.add(&stripe);
 
     let title = ui::Label::new(t("Settings"));
-    title.set_position(20, 14);
-    title.set_font_size(16);
+    title.set_position(22, 15);
+    title.set_font_size(18);
     title.set_text_color(tc.text);
     header.add(&title);
 
-    let subtitle = ui::Label::new(t("Editor, workspace and AI preferences"));
-    subtitle.set_position(20, 30);
-    subtitle.set_font_size(10);
+    let subtitle = ui::Label::new(t(
+        "Configure editor, toolchains, AI and workspace behaviour.",
+    ));
+    subtitle.set_position(22, 37);
+    subtitle.set_font_size(11);
     subtitle.set_text_color(tc.text_secondary);
     header.add(&subtitle);
 
-    // ── Button bar (bottom) ──
     let btn_bar = ui::View::new();
     btn_bar.set_dock(ui::DOCK_BOTTOM);
-    btn_bar.set_size(DLG_W, 48);
+    btn_bar.set_size(DLG_W, 56);
     btn_bar.set_color(tc.sidebar_bg);
     win.add(&btn_bar);
 
     let btn_save = ui::Button::new(t("Save"));
-    btn_save.set_size(80, 32);
-    btn_save.set_position((DLG_W as i32) - 180, 8);
+    btn_save.set_size(92, 32);
+    btn_save.set_position((DLG_W as i32) - 210, 12);
     btn_save.set_color(tc.accent);
     btn_bar.add(&btn_save);
 
     let btn_cancel = ui::Button::new(t("Cancel"));
-    btn_cancel.set_size(80, 32);
-    btn_cancel.set_position((DLG_W as i32) - 90, 8);
+    btn_cancel.set_size(92, 32);
+    btn_cancel.set_position((DLG_W as i32) - 106, 12);
     btn_cancel.set_color(tc.control_bg);
     btn_bar.add(&btn_cancel);
 
     let btn_reset = ui::Button::new(t("Reset"));
-    btn_reset.set_size(80, 32);
-    btn_reset.set_position(12, 8);
+    btn_reset.set_size(92, 32);
+    btn_reset.set_position(16, 12);
     btn_reset.set_color(tc.control_bg);
     btn_bar.add(&btn_reset);
 
-    // ── Side tabs (left) ──
     let tab_bar = ui::View::new();
     tab_bar.set_dock(ui::DOCK_LEFT);
-    tab_bar.set_size(TAB_W, 400);
+    tab_bar.set_size(NAV_W, 400);
     tab_bar.set_color(tc.sidebar_bg);
     win.add(&tab_bar);
 
-    let tab_names = [t("Editor"), t("AI Assistant"), t("Build Tools"), t("Workbench")];
-    let mut tab_btns: [Option<ui::Button>; 4] = [None, None, None, None];
-
-    for (i, name) in tab_names.iter().enumerate() {
-        let btn = ui::Button::new(name);
-        btn.set_dock(ui::DOCK_TOP);
-        btn.set_size(TAB_W, 36);
-        btn.set_color(if i == 0 { tc.editor_bg } else { tc.sidebar_bg });
-        btn.set_margin(0, 0, 0, 0);
-        tab_bar.add(&btn);
-        tab_btns[i] = Some(btn);
-    }
-
     let settings_search = ui::TextField::new();
     settings_search.set_dock(ui::DOCK_TOP);
-    settings_search.set_size(TAB_W, 32);
-    settings_search.set_margin(8, 8, 8, 6);
+    settings_search.set_size(NAV_W, 34);
+    settings_search.set_margin(10, 10, 10, 8);
     settings_search.set_color(tc.control_bg);
     settings_search.set_text_color(tc.text);
     settings_search.set_placeholder(t("Search settings..."));
     tab_bar.add(&settings_search);
 
-    // ── Content area ──
+    let nav_title = ui::Label::new(t("Categories"));
+    nav_title.set_dock(ui::DOCK_TOP);
+    nav_title.set_size(NAV_W, 22);
+    nav_title.set_font_size(10);
+    nav_title.set_text_color(tc.text_secondary);
+    nav_title.set_margin(12, 0, 0, 2);
+    tab_bar.add(&nav_title);
+
+    let tab_names = [
+        t("Text Editor"),
+        t("AI Assistant"),
+        t("Toolchains"),
+        t("Workbench"),
+    ];
+    let mut tab_hit_btns: [Option<ui::PlainButton>; 4] = [None, None, None, None];
+    let mut tab_row_ids: [u32; 4] = [0, 0, 0, 0];
+    let mut tab_marker_ids: [u32; 4] = [0, 0, 0, 0];
+    let mut tab_label_ids: [u32; 4] = [0, 0, 0, 0];
+
+    for (i, name) in tab_names.iter().enumerate() {
+        let selected = i == 0;
+
+        let row = ui::View::new();
+        row.set_dock(ui::DOCK_TOP);
+        row.set_size(NAV_W, 38);
+        row.set_color(if selected {
+            tc.editor_bg
+        } else {
+            tc.sidebar_bg
+        });
+        row.set_margin(8, 2, 8, 0);
+        tab_bar.add(&row);
+
+        let marker = ui::View::new();
+        marker.set_position(0, 6);
+        marker.set_size(3, 24);
+        marker.set_color(if selected { tc.accent } else { tc.sidebar_bg });
+        row.add(&marker);
+
+        let label = ui::Label::new(name);
+        label.set_position(16, 10);
+        label.set_size(NAV_W - 32, 18);
+        label.set_font_size(12);
+        label.set_text_color(if selected { tc.text } else { tc.text_secondary });
+        row.add(&label);
+
+        let hit_btn = ui::PlainButton::new("");
+        hit_btn.set_position(0, 0);
+        hit_btn.set_size(NAV_W - 16, 38);
+        hit_btn.set_tooltip(name);
+        row.add(&hit_btn);
+
+        tab_row_ids[i] = row.id();
+        tab_marker_ids[i] = marker.id();
+        tab_label_ids[i] = label.id();
+        tab_hit_btns[i] = Some(hit_btn);
+    }
+
     let content_area = ui::View::new();
     content_area.set_dock(ui::DOCK_FILL);
     content_area.set_color(tc.editor_bg);
@@ -132,12 +158,19 @@ pub fn show() {
 
     let mut y: i32 = 20;
 
-    let editor_desc = ui::Label::new(t("Editor typography, spacing and save behaviour."));
+    let editor_title = ui::Label::new(t("Text Editor"));
+    editor_title.set_position(LABEL_X, y);
+    editor_title.set_font_size(16);
+    editor_title.set_text_color(tc.text);
+    page_editor.add(&editor_title);
+    y += 24;
+
+    let editor_desc = ui::Label::new(t("Typography, spacing and save behaviour."));
     editor_desc.set_position(LABEL_X, y);
     editor_desc.set_font_size(11);
     editor_desc.set_text_color(tc.text_secondary);
     page_editor.add(&editor_desc);
-    y += 26;
+    y += 34;
 
     let fs_label = ui::Label::new(t("Font Size"));
     fs_label.set_position(LABEL_X, y + 4);
@@ -220,12 +253,19 @@ pub fn show() {
 
     y = 20;
 
-    let ai_desc = ui::Label::new(t("Provider, model and endpoint used for AI features."));
+    let ai_title = ui::Label::new(t("AI Assistant"));
+    ai_title.set_position(LABEL_X, y);
+    ai_title.set_font_size(16);
+    ai_title.set_text_color(tc.text);
+    page_ai.add(&ai_title);
+    y += 24;
+
+    let ai_desc = ui::Label::new(t("Provider, model and endpoint used by AI features."));
     ai_desc.set_position(LABEL_X, y);
     ai_desc.set_font_size(11);
     ai_desc.set_text_color(tc.text_secondary);
     page_ai.add(&ai_desc);
-    y += 26;
+    y += 34;
 
     let prov_label = ui::Label::new(t("Provider"));
     prov_label.set_position(LABEL_X, y + 4);
@@ -331,12 +371,21 @@ pub fn show() {
 
     y = 20;
 
-    let build_desc = ui::Label::new(t("Toolchain paths used for Build, Run and diagnostics."));
+    let build_title = ui::Label::new(t("Toolchains"));
+    build_title.set_position(LABEL_X, y);
+    build_title.set_font_size(16);
+    build_title.set_text_color(tc.text);
+    page_build.add(&build_title);
+    y += 24;
+
+    let build_desc = ui::Label::new(t(
+        "Compilers and build tools used by Build, Run and diagnostics.",
+    ));
     build_desc.set_position(LABEL_X, y);
     build_desc.set_font_size(11);
     build_desc.set_text_color(tc.text_secondary);
     page_build.add(&build_desc);
-    y += 26;
+    y += 34;
 
     let tool_names = [
         (t("Rust Compiler"), config.crust_path.as_str()),
@@ -360,7 +409,11 @@ pub fn show() {
         field.set_font(4);
         field.set_font_size(11);
         field.set_color(tc.control_bg);
-        field.set_text_color(if path.is_empty() { tc.destructive } else { tc.text });
+        field.set_text_color(if path.is_empty() {
+            tc.destructive
+        } else {
+            tc.text
+        });
         field.set_placeholder(t("auto-detect"));
         if !path.is_empty() {
             field.set_text(path);
@@ -372,7 +425,9 @@ pub fn show() {
     }
 
     y += 10;
-    let tools_hint = ui::Label::new(t("Empty fields are auto-discovered from PATH and /System/bin/."));
+    let tools_hint = ui::Label::new(t(
+        "Empty fields are auto-discovered from PATH and /System/bin/.",
+    ));
     tools_hint.set_position(LABEL_X, y);
     tools_hint.set_font_size(11);
     tools_hint.set_text_color(tc.text_secondary);
@@ -387,12 +442,21 @@ pub fn show() {
 
     y = 20;
 
-    let wb_desc = ui::Label::new(t("Window layout, terminal readability and startup behaviour."));
+    let wb_title = ui::Label::new(t("Workbench"));
+    wb_title.set_position(LABEL_X, y);
+    wb_title.set_font_size(16);
+    wb_title.set_text_color(tc.text);
+    page_appearance.add(&wb_title);
+    y += 24;
+
+    let wb_desc = ui::Label::new(t(
+        "Window layout, terminal readability and startup behaviour.",
+    ));
     wb_desc.set_position(LABEL_X, y);
     wb_desc.set_font_size(11);
     wb_desc.set_text_color(tc.text_secondary);
     page_appearance.add(&wb_desc);
-    y += 26;
+    y += 34;
 
     let sw_label = ui::Label::new(t("Sidebar Width %"));
     sw_label.set_position(LABEL_X, y + 4);
@@ -454,39 +518,60 @@ pub fn show() {
     page_appearance.add(&reopen_toggle);
 
     // ── Page IDs for switching ──
-    let page_ids = [page_editor.id(), page_ai.id(), page_build.id(), page_appearance.id()];
-    let btn_ids: [u32; 4] = [
-        tab_btns[0].as_ref().unwrap().id(),
-        tab_btns[1].as_ref().unwrap().id(),
-        tab_btns[2].as_ref().unwrap().id(),
-        tab_btns[3].as_ref().unwrap().id(),
+    let page_ids = [
+        page_editor.id(),
+        page_ai.id(),
+        page_build.id(),
+        page_appearance.id(),
     ];
 
     // ── Tab switching ──
     for i in 0..4 {
         let pages = page_ids;
-        let btns = btn_ids;
+        let rows = tab_row_ids;
+        let markers = tab_marker_ids;
+        let labels = tab_label_ids;
         let idx = i;
-        tab_btns[i].as_ref().unwrap().on_click(move |_| {
-            switch_settings_page(pages, btns, idx);
+        tab_hit_btns[i].as_ref().unwrap().on_click(move |_| {
+            switch_settings_page(pages, rows, markers, labels, idx);
         });
     }
 
     let pages = page_ids;
-    let btns = btn_ids;
+    let rows = tab_row_ids;
+    let markers = tab_marker_ids;
+    let labels = tab_label_ids;
     settings_search.on_text_changed(move |_| {
         let query = read_string(ui::Control::from_id(settings_search.id()).id());
         let q = ascii_lower(&query);
-        let idx = if q.contains("ai") || q.contains("model") || q.contains("token") || q.contains("endpoint") {
+        let idx = if q.contains("ai")
+            || q.contains("model")
+            || q.contains("token")
+            || q.contains("endpoint")
+        {
             1
-        } else if q.contains("build") || q.contains("git") || q.contains("tool") || q.contains("compiler") {
+        } else if q.contains("build")
+            || q.contains("git")
+            || q.contains("tool")
+            || q.contains("compiler")
+            || q.contains("toolchain")
+            || q.contains("rust")
+            || q.contains("cargo")
+            || q.contains("ccargo")
+        {
             2
-        } else if q.contains("terminal") || q.contains("sidebar") || q.contains("project") || q.contains("startup") || q.contains("workbench") {
+        } else if q.contains("terminal")
+            || q.contains("sidebar")
+            || q.contains("project")
+            || q.contains("startup")
+            || q.contains("workbench")
+            || q.contains("layout")
+        {
             3
         } else {
             0
         };
-        switch_settings_page(pages, btns, idx);
+        switch_settings_page(pages, rows, markers, labels, idx);
     });
 
     // ── Save ──
@@ -539,7 +624,8 @@ pub fn show() {
         ui::Control::from_id(auto_save_reset_id).set_state(defaults.auto_save as u32);
         ui::Control::from_id(sw_reset_id).set_text(&format!("{}", defaults.sidebar_width));
         ui::Control::from_id(oh_reset_id).set_text(&format!("{}", defaults.output_height));
-        ui::Control::from_id(term_fs_reset_id).set_text(&format!("{}", defaults.terminal_font_size));
+        ui::Control::from_id(term_fs_reset_id)
+            .set_text(&format!("{}", defaults.terminal_font_size));
         ui::Control::from_id(reopen_reset_id).set_state(defaults.reopen_last_project as u32);
         ui::Control::from_id(ai_prov_reset_id).set_state(0);
         ui::Control::from_id(ai_model_reset_id).set_state(0);
@@ -575,11 +661,22 @@ pub fn show() {
 
         // Save AI config
         let prov_state = ui::Control::from_id(ai_prov_id).get_state();
-        let provider = if prov_state == 1 { AiProvider::Anthropic } else { AiProvider::OpenAI };
+        let provider = if prov_state == 1 {
+            AiProvider::Anthropic
+        } else {
+            AiProvider::OpenAI
+        };
 
         let model_state = ui::Control::from_id(ai_model_id).get_state();
-        let all_models = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini",
-                          "claude-sonnet-4-20250514", "claude-haiku-4-5-20251001", "claude-opus-4-20250514"];
+        let all_models = [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "o3-mini",
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-5-20251001",
+            "claude-opus-4-20250514",
+        ];
         let model = all_models.get(model_state as usize).unwrap_or(&"gpt-4o");
 
         let ai_cfg = AiConfig {
@@ -624,22 +721,32 @@ fn read_u32(id: u32, default: u32) -> u32 {
 fn read_string(id: u32) -> String {
     let mut buf = [0u8; 512];
     let len = ui::Control::from_id(id).get_text(&mut buf);
-    String::from(core::str::from_utf8(&buf[..len as usize]).unwrap_or("").trim())
+    String::from(
+        core::str::from_utf8(&buf[..len as usize])
+            .unwrap_or("")
+            .trim(),
+    )
 }
 
 fn find_model_index(items: &str, model: &str) -> u32 {
     for (i, item) in items.split('|').enumerate() {
-        if item == model { return i as u32; }
+        if item == model {
+            return i as u32;
+        }
     }
     0
 }
 
 fn parse_u32(s: &str) -> Option<u32> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut r: u32 = 0;
     for b in s.bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         r = r.checked_mul(10)?.checked_add((b - b'0') as u32)?;
     }
     Some(r)
@@ -657,10 +764,31 @@ fn ascii_lower(s: &str) -> String {
     out
 }
 
-fn switch_settings_page(pages: [u32; 4], btns: [u32; 4], idx: usize) {
+fn switch_settings_page(
+    pages: [u32; 4],
+    rows: [u32; 4],
+    markers: [u32; 4],
+    labels: [u32; 4],
+    idx: usize,
+) {
     let tc = ui::theme::colors();
     for j in 0..4 {
-        ui::Control::from_id(pages[j]).set_visible(j == idx);
-        ui::Control::from_id(btns[j]).set_color(if j == idx { tc.editor_bg } else { tc.sidebar_bg });
+        let selected = j == idx;
+        ui::Control::from_id(pages[j]).set_visible(selected);
+        ui::Control::from_id(rows[j]).set_color(if selected {
+            tc.editor_bg
+        } else {
+            tc.sidebar_bg
+        });
+        ui::Control::from_id(markers[j]).set_color(if selected {
+            tc.accent
+        } else {
+            tc.sidebar_bg
+        });
+        ui::Control::from_id(labels[j]).set_text_color(if selected {
+            tc.text
+        } else {
+            tc.text_secondary
+        });
     }
 }

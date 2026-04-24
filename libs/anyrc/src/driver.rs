@@ -188,7 +188,12 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
 
     // 7. Borrow check
     for body in &mir_bodies {
-        let result = check_borrows(body, &interner, &typeck_result.struct_defs);
+        let result = check_borrows(
+            body,
+            &interner,
+            &typeck_result.struct_defs,
+            &typeck_result.copy_types,
+        );
         if !result.errors.is_empty() {
             let fn_name = interner.resolve(body.name);
             let errors = result

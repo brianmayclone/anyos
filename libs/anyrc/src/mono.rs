@@ -1,10 +1,10 @@
-use crate::prelude::*;
 use crate::hir::*;
 use crate::intern::{Interner, Symbol};
 use crate::mir::*;
 use crate::mir_build::MirBuilder;
+use crate::prelude::*;
 use crate::resolve::ResolveResult;
-use crate::typeck::{TyKind, TypeckResult, IntTy, UintTy, FloatTy};
+use crate::typeck::{FloatTy, IntTy, TyKind, TypeckResult, UintTy};
 use anyos_std::collections::{HashMap, HashSet};
 
 /// Mangle a function name with its type arguments
@@ -110,9 +110,12 @@ pub fn monomorphize(
 
             // Substitute the fn signature
             if let Some((param_tys, ret_ty)) = typeck.fn_sigs.get(def_id) {
-                let concrete_params: Vec<TyKind> = param_tys.iter().map(|t| subst_ty(t, substs)).collect();
+                let concrete_params: Vec<TyKind> =
+                    param_tys.iter().map(|t| subst_ty(t, substs)).collect();
                 let concrete_ret = subst_ty(ret_ty, substs);
-                specialized_typeck.fn_sigs.insert(*def_id, (concrete_params, concrete_ret));
+                specialized_typeck
+                    .fn_sigs
+                    .insert(*def_id, (concrete_params, concrete_ret));
             }
 
             // Substitute types in expr_types that contain Param
@@ -154,7 +157,10 @@ pub fn monomorphize(
     let mut call_mangled: HashMap<DefId, Vec<(Vec<TyKind>, Symbol)>> = HashMap::new();
     for ((def_id, substs), mangled_name) in &instances {
         let mangled_sym = interner.intern(&mangled_name);
-        call_mangled.entry(*def_id).or_default().push((substs.clone(), mangled_sym));
+        call_mangled
+            .entry(*def_id)
+            .or_default()
+            .push((substs.clone(), mangled_sym));
     }
 
     // For each MIR body, rewrite Call terminators that reference generic fns
@@ -180,7 +186,10 @@ pub fn monomorphize(
 
     for body in &mut mir_bodies {
         for bb in &mut body.basic_blocks {
-            if let Terminator::Call { func, args, dest, .. } = &mut bb.terminator {
+            if let Terminator::Call {
+                func, args, dest, ..
+            } = &mut bb.terminator
+            {
                 if let Operand::Constant(c) = func {
                     if let ConstValue::FnItem(sym) = &c.value {
                         if let Some(&def_id) = name_to_def.get(sym) {
@@ -236,7 +245,12 @@ fn find_fn_in_item<'a>(item: &'a HirItem, target: DefId) -> Option<&'a HirFnDef>
     }
 }
 
-fn is_generic_fn_body(body: &MirBody, generic_def_ids: &HashSet<DefId>, typeck: &TypeckResult, interner: &Interner) -> bool {
+fn is_generic_fn_body(
+    body: &MirBody,
+    generic_def_ids: &HashSet<DefId>,
+    typeck: &TypeckResult,
+    interner: &Interner,
+) -> bool {
     let name = interner.resolve(body.name);
     for (&def_id, _) in &typeck.fn_sigs {
         if generic_def_ids.contains(&def_id) {
@@ -262,7 +276,10 @@ fn is_generic_fn_body(body: &MirBody, generic_def_ids: &HashSet<DefId>, typeck: 
 fn contains_param(ty: &TyKind) -> bool {
     match ty {
         TyKind::Param(_) => true,
-        TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) | TyKind::Slice(inner) | TyKind::Array(inner, _) => contains_param(inner),
+        TyKind::Ref(inner, _)
+        | TyKind::RawPtr(inner, _)
+        | TyKind::Slice(inner)
+        | TyKind::Array(inner, _) => contains_param(inner),
         TyKind::Tuple(tys) => tys.iter().any(contains_param),
         _ => false,
     }
@@ -289,6 +306,7 @@ impl TypeckResult {
             assoc_types: self.assoc_types.clone(),
             generic_param_bounds: self.generic_param_bounds.clone(),
             trait_default_methods: self.trait_default_methods.clone(),
+            copy_types: self.copy_types.clone(),
         }
     }
 }

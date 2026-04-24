@@ -75,6 +75,19 @@ impl<'a> LoweringContext<'a> {
         attrs.iter().any(|a| a.path.segments.len() == 1 && a.path.segments[0].ident == sym)
     }
 
+    fn has_derive(&mut self, attrs: &[ast::Attribute], name: &str) -> bool {
+        let derive_sym = self.interner.intern("derive");
+        let wanted = self.interner.intern(name);
+        attrs.iter().any(|attr| {
+            attr.path.segments.len() == 1
+                && attr.path.segments[0].ident == derive_sym
+                && matches!(&attr.args, ast::AttrArgs::Delimited(tokens) if tokens.iter().any(|tt| {
+                    matches!(tt, ast::TokenTree::Token(token)
+                        if matches!(token.kind, crate::lexer::TokenKind::Ident(sym) if sym == wanted))
+                }))
+        })
+    }
+
     fn lower_param(&mut self, p: &ast::Param) -> HirParam {
         HirParam {
             id: self.alloc_hir_id(),
@@ -92,6 +105,7 @@ impl<'a> LoweringContext<'a> {
             fields: s.fields.iter().map(|f| self.lower_field_def(f)).collect(),
             vis: s.vis,
             is_union: s.is_union,
+            derives_copy: self.has_derive(&s.attrs, "Copy"),
         }
     }
 
@@ -112,6 +126,7 @@ impl<'a> LoweringContext<'a> {
             generics: self.lower_generics(&e.generics),
             variants: e.variants.iter().map(|v| self.lower_variant(v)).collect(),
             vis: e.vis,
+            derives_copy: self.has_derive(&e.attrs, "Copy"),
         }
     }
 

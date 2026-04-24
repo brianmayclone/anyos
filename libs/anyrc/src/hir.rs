@@ -66,6 +66,7 @@ pub struct HirStructDef {
     pub fields: Vec<HirFieldDef>,
     pub vis: Visibility,
     pub is_union: bool,
+    pub derives_copy: bool,
 }
 
 pub struct HirFieldDef {
@@ -82,6 +83,7 @@ pub struct HirEnumDef {
     pub generics: HirGenerics,
     pub variants: Vec<HirVariant>,
     pub vis: Visibility,
+    pub derives_copy: bool,
 }
 
 pub struct HirVariant {
