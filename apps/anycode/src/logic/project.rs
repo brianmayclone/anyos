@@ -158,11 +158,12 @@ impl BuildConfiguration {
 impl Project {
     /// Open a folder as a project — auto-detects type and parses metadata.
     pub fn open(root_path: &str) -> Self {
-        let project_type = detect_project_type(root_path);
+        let root = discover_project_root(root_path);
+        let project_type = detect_project_type(&root);
         let mut proj = Self {
-            root: String::from(root_path),
+            root: root.clone(),
             project_type,
-            name: String::from(path::basename(root_path)),
+            name: String::from(path::basename(&root)),
             configurations: vec![BuildConfiguration::Debug, BuildConfiguration::Release],
             active_configuration: BuildConfiguration::Debug,
             cargo_targets: Vec::new(),
@@ -682,6 +683,42 @@ pub fn detect_project_type(root: &str) -> ProjectType {
     } else {
         ProjectType::Generic
     }
+}
+
+/// Find the closest project root at or above the selected folder.
+///
+/// This lets users open `src/` inside a Rust crate and still get Cargo/ccargo
+/// tasks instead of falling back to single-file C tasks.
+pub fn discover_project_root(root: &str) -> String {
+    let mut current = String::from(root.trim_end_matches('/'));
+    if current.is_empty() {
+        current = String::from("/");
+    }
+
+    loop {
+        if has_project_marker(&current) {
+            return current;
+        }
+        let parent = path::parent(&current);
+        if parent == current || parent == "." || parent.is_empty() {
+            break;
+        }
+        current = String::from(parent);
+    }
+
+    String::from(root)
+}
+
+fn has_project_marker(root: &str) -> bool {
+    path::exists(&format!("{}/Cargo.toml", root))
+        || path::exists(&format!("{}/CMakeLists.txt", root))
+        || path::exists(&format!("{}/Makefile", root))
+        || path::exists(&format!("{}/makefile", root))
+        || path::exists(&format!("{}/GNUmakefile", root))
+        || path::exists(&format!("{}/setup.py", root))
+        || path::exists(&format!("{}/pyproject.toml", root))
+        || path::exists(&format!("{}/requirements.txt", root))
+        || path::exists(&format!("{}/package.json", root))
 }
 
 /// Legacy compat: detect_build_system

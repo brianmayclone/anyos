@@ -331,7 +331,7 @@ pub fn show() {
 
     y = 20;
 
-    let build_desc = ui::Label::new(t("Detected toolchain from PATH and system directories."));
+    let build_desc = ui::Label::new(t("Toolchain paths used for Build, Run and diagnostics."));
     build_desc.set_position(LABEL_X, y);
     build_desc.set_font_size(11);
     build_desc.set_text_color(tc.text_secondary);
@@ -339,29 +339,40 @@ pub fn show() {
     y += 26;
 
     let tool_names = [
-        (t("Make"), &config.make_path),
-        (t("C Compiler"), &config.cc_path),
-        (t("Git"), &config.git_path),
+        (t("Rust Compiler"), config.crust_path.as_str()),
+        (t("Cargo Build"), config.ccargo_path.as_str()),
+        (t("Make"), config.make_path.as_str()),
+        (t("C Compiler"), config.cc_path.as_str()),
+        (t("Git"), config.git_path.as_str()),
     ];
+    let mut tool_fields: [Option<ui::TextField>; 5] = [None, None, None, None, None];
 
-    for (name, path) in &tool_names {
+    for (idx, (name, path)) in tool_names.iter().enumerate() {
         let lbl = ui::Label::new(name);
         lbl.set_position(LABEL_X, y + 4);
         lbl.set_font_size(13);
         lbl.set_text_color(tc.text);
         page_build.add(&lbl);
 
-        let val = ui::Label::new(if path.is_empty() { t("not found") } else { path.as_str() });
-        val.set_position(FIELD_X, y + 4);
-        val.set_font_size(12);
-        val.set_text_color(if path.is_empty() { tc.destructive } else { tc.success });
-        page_build.add(&val);
+        let field = ui::TextField::new();
+        field.set_position(FIELD_X, y);
+        field.set_size(FIELD_W, 28);
+        field.set_font(4);
+        field.set_font_size(11);
+        field.set_color(tc.control_bg);
+        field.set_text_color(if path.is_empty() { tc.destructive } else { tc.text });
+        field.set_placeholder(t("auto-detect"));
+        if !path.is_empty() {
+            field.set_text(path);
+        }
+        page_build.add(&field);
+        tool_fields[idx] = Some(field);
 
-        y += 30;
+        y += 34;
     }
 
     y += 10;
-    let tools_hint = ui::Label::new(t("Tools are auto-discovered from PATH and /System/bin/"));
+    let tools_hint = ui::Label::new(t("Empty fields are auto-discovered from PATH and /System/bin/."));
     tools_hint.set_position(LABEL_X, y);
     tools_hint.set_font_size(11);
     tools_hint.set_text_color(tc.text_secondary);
@@ -493,6 +504,11 @@ pub fn show() {
     let ai_model_id = ai_model.id();
     let ai_tok_id = ai_tokens.id();
     let ai_ep_id = ai_endpoint.id();
+    let crust_id = tool_fields[0].as_ref().unwrap().id();
+    let ccargo_id = tool_fields[1].as_ref().unwrap().id();
+    let make_id = tool_fields[2].as_ref().unwrap().id();
+    let cc_id = tool_fields[3].as_ref().unwrap().id();
+    let git_id = tool_fields[4].as_ref().unwrap().id();
 
     let fs_reset_id = font_size_field.id();
     let tw_reset_id = tab_width_field.id();
@@ -508,6 +524,11 @@ pub fn show() {
     let ai_tok_reset_id = ai_tokens.id();
     let ai_ep_reset_id = ai_endpoint.id();
     let ai_key_reset_id = ai_key.id();
+    let crust_reset_id = crust_id;
+    let ccargo_reset_id = ccargo_id;
+    let make_reset_id = make_id;
+    let cc_reset_id = cc_id;
+    let git_reset_id = git_id;
 
     btn_reset.on_click(move |_| {
         let defaults = Config::defaults();
@@ -525,6 +546,11 @@ pub fn show() {
         ui::Control::from_id(ai_tok_reset_id).set_text("4096");
         ui::Control::from_id(ai_ep_reset_id).set_text("");
         ui::Control::from_id(ai_key_reset_id).set_text("");
+        ui::Control::from_id(crust_reset_id).set_text("");
+        ui::Control::from_id(ccargo_reset_id).set_text("");
+        ui::Control::from_id(make_reset_id).set_text("");
+        ui::Control::from_id(cc_reset_id).set_text("");
+        ui::Control::from_id(git_reset_id).set_text("");
     });
 
     btn_save.on_click(move |_| {
@@ -539,6 +565,12 @@ pub fn show() {
         cfg.output_height = read_u32(oh_id, cfg.output_height);
         cfg.terminal_font_size = read_u32(term_fs_id, cfg.terminal_font_size);
         cfg.reopen_last_project = ui::Control::from_id(reopen_id).get_state() != 0;
+        cfg.crust_path = read_string(crust_id);
+        cfg.ccargo_path = read_string(ccargo_id);
+        cfg.make_path = read_string(make_id);
+        cfg.cc_path = read_string(cc_id);
+        cfg.git_path = read_string(git_id);
+        cfg.auto_discover();
         cfg.save();
 
         // Save AI config
@@ -567,6 +599,11 @@ pub fn show() {
         s.output.apply_config(&s.config);
         s.ai_client.config = AiConfig::load();
         s.ai_panel.set_provider(s.ai_client.config.provider);
+        if let Some(ref proj) = s.current_project {
+            s.task_mgr.detect_from_project(proj, &s.config);
+            s.run_panel.update(&s.task_mgr);
+            s.sidebar.populate_project(proj, &s.task_mgr);
+        }
 
         // Close
         ui::Control::from_id(win_id).set_visible(false);

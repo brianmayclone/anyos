@@ -920,6 +920,7 @@ impl<'a> Resolver<'a> {
                 for arg in &args.args {
                     match arg {
                         HirGenericArg::Type(ty) => self.resolve_ty(ty),
+                        HirGenericArg::AssocTypeBinding(_, ty) => self.resolve_ty(ty),
                         HirGenericArg::Const(e) => self.resolve_expr(e),
                         HirGenericArg::Lifetime(_) => {}
                     }
@@ -1151,6 +1152,7 @@ impl<'a> Resolver<'a> {
                 for arg in &args.args {
                     match arg {
                         HirGenericArg::Type(ty) => self.resolve_ty(ty),
+                        HirGenericArg::AssocTypeBinding(_, ty) => self.resolve_ty(ty),
                         HirGenericArg::Const(e) => self.resolve_expr(e),
                         HirGenericArg::Lifetime(_) => {}
                     }
@@ -1224,6 +1226,7 @@ impl<'a> Resolver<'a> {
                 for arg in &args.args {
                     match arg {
                         HirGenericArg::Type(ty) => self.resolve_ty(ty),
+                        HirGenericArg::AssocTypeBinding(_, ty) => self.resolve_ty(ty),
                         HirGenericArg::Const(e) => self.resolve_expr(e),
                         HirGenericArg::Lifetime(_) => {}
                     }

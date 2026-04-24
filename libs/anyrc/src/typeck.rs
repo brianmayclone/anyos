@@ -55,6 +55,9 @@ pub enum FloatTy { F32, F64 }
 const SYNTH_PARSED_ARGS_DEF_ID: DefId = DefId(0x7000_0001);
 const SYNTH_CMP_ORDERING_DEF_ID: DefId = DefId(0x7000_0002);
 const SYNTH_ATOMIC_ORDERING_DEF_ID: DefId = DefId(0x7000_0003);
+const SYNTH_PROC_MACRO_TOKEN_TREE_DEF_ID: DefId = DefId(0x7000_0004);
+const SYNTH_PROC_MACRO_SPACING_DEF_ID: DefId = DefId(0x7000_0005);
+const SYNTH_PROC_MACRO_DELIMITER_DEF_ID: DefId = DefId(0x7000_0006);
 
 pub struct TypeckResult {
     pub expr_types: HashMap<HirId, TyKind>,
@@ -1275,6 +1278,55 @@ impl<'a> TypeChecker<'a> {
             .map(|impl_info| impl_info.output_ty.clone())
     }
 
+    fn lookup_deref_target(&self, actual_ty: &TyKind) -> Option<TyKind> {
+        let actual_ty = self.shallow_resolve(actual_ty.clone());
+        let TyKind::Adt(actual_def, _) = &actual_ty else {
+            return None;
+        };
+        for impl_info in &self.deref_impls {
+            let TyKind::Adt(template_def, _) = self.shallow_resolve(impl_info.self_ty.clone()) else {
+                continue;
+            };
+            if &template_def != actual_def {
+                continue;
+            }
+            let mut substs = Vec::new();
+            self.collect_param_substs(&impl_info.self_ty, &actual_ty, &mut substs);
+            let substs = substs
+                .into_iter()
+                .map(|ty| ty.unwrap_or(TyKind::Error))
+                .collect::<Vec<_>>();
+            return Some(self.substitute_params(&impl_info.target_ty, &substs));
+        }
+        None
+    }
+
+    fn index_builtin_target(
+        &mut self,
+        target_ty: TyKind,
+        idx_ty: &TyKind,
+        is_range: bool,
+        idx_span: Span,
+        expr_span: Span,
+    ) -> Option<TyKind> {
+        let target_ty = match self.shallow_resolve(target_ty) {
+            TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
+            other => other,
+        };
+        match target_ty {
+            TyKind::Array(elem, _) | TyKind::Slice(elem) => {
+                self.check_builtin_index_ty(idx_ty, idx_span, is_range);
+                Some(if is_range { TyKind::Slice(elem) } else { *elem })
+            }
+            TyKind::Str if is_range => Some(TyKind::Str),
+            TyKind::Str => {
+                self.error(expr_span, "cannot index this type: str");
+                Some(TyKind::Error)
+            }
+            _ => None,
+        }
+    }
+
     fn lookup_operator_impl(&self, op: BinOp, lhs_ty: &TyKind, rhs_ty: &TyKind) -> Option<OperatorImpl> {
         self.operator_impls
             .iter()
@@ -1918,13 +1970,39 @@ impl<'a> TypeChecker<'a> {
                         } else if !is_range {
                             if let Some(output_ty) = self.lookup_index_output(def_id, &idx_ty) {
                                 output_ty
+                            } else if let Some(target_ty) =
+                                self.lookup_deref_target(&TyKind::Adt(def_id, substs.clone()))
+                            {
+                                self.index_builtin_target(
+                                    target_ty,
+                                    &idx_ty,
+                                    is_range,
+                                    idx.span,
+                                    expr.span,
+                                )
+                                .unwrap_or_else(|| {
+                                    self.error(expr.span, &format!("cannot index this type: {}", resolved_desc));
+                                    TyKind::Error
+                                })
                             } else {
                                 self.error(expr.span, &format!("cannot index this type: {}", resolved_desc));
                                 TyKind::Error
                             }
                         } else {
-                            self.error(expr.span, &format!("cannot index this type: {}", resolved_desc));
-                            TyKind::Error
+                            self.lookup_deref_target(&TyKind::Adt(def_id, substs.clone()))
+                                .and_then(|target_ty| {
+                                    self.index_builtin_target(
+                                        target_ty,
+                                        &idx_ty,
+                                        is_range,
+                                        idx.span,
+                                        expr.span,
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    self.error(expr.span, &format!("cannot index this type: {}", resolved_desc));
+                                    TyKind::Error
+                                })
                         }
                     }
                     _ => {
@@ -3201,6 +3279,27 @@ impl<'a> TypeChecker<'a> {
                     return self.substitute_params(alias_ty, &type_args);
                 }
                 if let Some(full_path) = &full_path {
+                    if Self::is_extern_type_path(full_path) {
+                        if let Some(def_id) = self.lookup_intrinsic_def_by_path(full_path) {
+                            let type_args = if let Some(ref args) = last_segment.args {
+                                args.args
+                                    .iter()
+                                    .filter_map(|a| {
+                                        if let HirGenericArg::Type(ty) = a {
+                                            Some(self.hir_ty_to_ty(ty))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect()
+                            } else {
+                                vec![]
+                            };
+                            return TyKind::Adt(def_id, type_args);
+                        }
+                    }
+                }
+                if let Some(full_path) = &full_path {
                     if let Some(def_id) = self.resolve_qualified_type_path(full_path) {
                         let type_args = if let Some(ref args) = last_segment.args {
                             args.args
@@ -3250,6 +3349,13 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn is_extern_type_path(path: &str) -> bool {
+        matches!(
+            path.split("::").next(),
+            Some("core" | "alloc" | "std" | "anyos_std" | "proc_macro")
+        )
+    }
+
     fn lookup_intrinsic_def_by_path(&self, full_path: &str) -> Option<DefId> {
         self.resolve
             .intrinsic_fns
@@ -3269,6 +3375,29 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     None
                 }
+            }
+            "proc_macro::TokenTree" if matches!(variant_name, "Group" | "Punct" | "Ident" | "Literal") => {
+                Some(TyKind::Adt(
+                    self.lookup_intrinsic_def_by_path(parent_path)
+                        .unwrap_or(SYNTH_PROC_MACRO_TOKEN_TREE_DEF_ID),
+                    vec![],
+                ))
+            }
+            "proc_macro::Spacing" if matches!(variant_name, "Joint" | "Alone") => {
+                Some(TyKind::Adt(
+                    self.lookup_intrinsic_def_by_path(parent_path)
+                        .unwrap_or(SYNTH_PROC_MACRO_SPACING_DEF_ID),
+                    vec![],
+                ))
+            }
+            "proc_macro::Delimiter"
+                if matches!(variant_name, "Parenthesis" | "Bracket" | "Brace" | "None") =>
+            {
+                Some(TyKind::Adt(
+                    self.lookup_intrinsic_def_by_path(parent_path)
+                        .unwrap_or(SYNTH_PROC_MACRO_DELIMITER_DEF_ID),
+                    vec![],
+                ))
             }
             _ => None,
         }

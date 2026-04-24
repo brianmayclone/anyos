@@ -388,12 +388,32 @@ Aufgaben:
 - Kein sichtbares Debug-Logging im normalen UI-Pfad.
 - Accessibility-Labels fuer wichtige Controls.
 - Performance bei grossen Projekten und Dateien messen.
+- Screenshot-Review als fester Qualitaetscheck: Welcome-Screen, Activity-Bar,
+  Run-and-Debug, Explorer, Editor und Bottom-Panel muessen vor jedem groesseren
+  Schritt sichtbar gegen Studio-Niveau geprueft werden.
 
 Akzeptanz:
 
 - Komplett per Tastatur nutzbar fuer Standardworkflow.
 - Keine sichtbaren Layoutspruenge beim Oeffnen/Schliessen von Panels.
 - 1000-Dateien-Projekt bleibt bedienbar.
+
+Status:
+
+- Gestartet: Der Welcome-Screen wurde von einer Feature-Checkliste auf eine
+  ruhigere Studio-Startflaeche mit Startaktionen, Tools, Recent Workspaces und
+  Workspace-Status umgebaut.
+- Gestartet: Die Activity-Bar entfernt den provisorischen `AC`-Kopf und wirkt
+  im leeren Workspace weniger wie Debug-/Platzhalter-UI.
+- Gestartet: Run-and-Debug benennt fehlende Run-Konfigurationen jetzt als
+  Auswahlzustand statt als Fehlerzustand.
+- Gestartet: Run/Build-Task-Erkennung wurde gehaertet: `Run` darf keine
+  Build-Tasks mehr ausfuehren, Generic-Projekte erzeugen C-Tasks nur noch bei
+  vorhandener `main.c`, und geoeffnete Unterordner steigen zur naechsten
+  Projektwurzel mit `Cargo.toml`/Make/CMake/etc. auf.
+- Gestartet: Build-Tools sind in den Settings editierbar, inklusive
+  Rust-Compiler (`crust`/`rustc`/`anyrc`) und Cargo-Build-System
+  (`ccargo`/`cargo`/`acargo`).
 
 ### Phase 9: Studio v1 Freeze
 

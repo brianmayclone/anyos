@@ -2862,11 +2862,12 @@ impl<'a> Parser<'a> {
                 && self.peek_kind() == &TokenKind::Eq
             {
                 // Associated type binding in generic args, e.g. Iterator<Item = T>.
-                // We don't model the binding name yet, but parsing the RHS keeps
-                // real-world trait bounds readable to later phases.
-                self.bump(); // binding name
+                let binding_name = match self.bump().kind {
+                    TokenKind::Ident(sym) => sym,
+                    _ => unreachable!(),
+                };
                 self.bump(); // =
-                args.push(GenericArg::Type(self.parse_ty()));
+                args.push(GenericArg::AssocTypeBinding(binding_name, self.parse_ty()));
             } else if self.at_const_generic_arg_start() {
                 args.push(GenericArg::Const(self.parse_const_generic_arg()));
             } else {

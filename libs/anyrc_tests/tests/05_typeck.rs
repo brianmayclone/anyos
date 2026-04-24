@@ -1256,6 +1256,94 @@ fn proc_macro2_style_scoped_fallback_imports_do_not_pick_root_wrappers() {
 }
 
 #[test]
+fn proc_macro2_style_qualified_enum_variant_pattern_binds_payload_type() {
+    assert_type_ok(r#"
+        pub mod fallback {
+            pub struct Span {}
+            pub struct Group {}
+
+            impl Group {
+                pub fn span(&self) -> Span { Span {} }
+            }
+        }
+
+        pub mod imp {
+            use crate::fallback;
+
+            pub enum Group {
+                Fallback(fallback::Group),
+            }
+
+            pub enum Span {
+                Fallback(fallback::Span),
+            }
+        }
+
+        mod extra {
+            use crate::fallback;
+            use crate::imp;
+
+            enum DelimSpanEnum {
+                Fallback(fallback::Span),
+            }
+
+            fn new(group: &imp::Group) -> DelimSpanEnum {
+                match group {
+                    imp::Group::Fallback(group) => DelimSpanEnum::Fallback(group.span()),
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn proc_macro_intrinsic_enum_variant_constructors_have_parent_type() {
+    assert_type_ok(r#"
+        fn into_compiler_token(g: proc_macro::Group, p: proc_macro::Punct) -> proc_macro::TokenTree {
+            if true {
+                proc_macro::TokenTree::Group(g)
+            } else {
+                proc_macro::TokenTree::Punct(p)
+            }
+        }
+    "#);
+}
+
+#[test]
+fn generic_array_style_index_uses_deref_slice_target() {
+    assert_type_ok(r#"
+        trait Deref {
+            type Target;
+        }
+
+        trait Unsigned {}
+        unsafe trait ArrayLength<T>: Unsigned {
+            type ArrayType;
+        }
+
+        struct UTerm {}
+        impl Unsigned for UTerm {}
+        unsafe impl<T> ArrayLength<T> for UTerm {
+            type ArrayType = [T; 0];
+        }
+
+        struct GenericArray<T, N: ArrayLength<T>> {
+            marker: T,
+            len: N,
+        }
+
+        impl<T, N: ArrayLength<T>> Deref for GenericArray<T, N> {
+            type Target = [T];
+        }
+
+        fn fmt<N: ArrayLength<u8>>(array: GenericArray<u8, N>) {
+            let byte: u8 = array[0];
+            let bytes = array[..1];
+        }
+    "#);
+}
+
+#[test]
 fn raw_pointer_add_result_can_initialize_local() {
     assert_type_ok(r#"
         struct Header {

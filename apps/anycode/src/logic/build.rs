@@ -200,6 +200,8 @@ fn resolve_tool(name: &str, config: &Config) -> String {
     match name {
         "make" => config.make_path.clone(),
         "cc" | "gcc" => config.cc_path.clone(),
+        "crust" | "rustc" | "anyrc" => config.crust_path.clone(),
+        "ccargo" | "cargo" | "acargo" => config.ccargo_path.clone(),
         "git" => config.git_path.clone(),
         _ => {
             if name.starts_with('/') || name.starts_with("./") {

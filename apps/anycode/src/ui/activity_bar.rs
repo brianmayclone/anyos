@@ -1,6 +1,5 @@
 use libanyui_client as ui;
 use ui::IconType;
-use ui::Widget;
 
 /// VS Code-style vertical activity bar on the left edge.
 /// Uses PlainButton — no border, no fill, only hover highlight.

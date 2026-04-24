@@ -23,7 +23,9 @@ pub struct RunPanel {
     pub btn_build: ui::Button,
     pub btn_test: ui::Button,
     pub btn_stop: ui::Button,
+    pub btn_configure: ui::Button,
     pub run_config_label: ui::Label,
+    pub run_command_label: ui::Label,
     pub debug_status_label: ui::Label,
     pub breakpoint_label: ui::Label,
     pub debug_tree: ui::TreeView,
@@ -49,7 +51,7 @@ impl RunPanel {
         panel.add(&header);
 
         // Run configuration label
-        let run_config_label = ui::Label::new(t("No run configuration"));
+        let run_config_label = ui::Label::new(t("Select a run target"));
         run_config_label.set_dock(ui::DOCK_TOP);
         run_config_label.set_size(200, 18);
         run_config_label.set_font_size(12);
@@ -57,7 +59,25 @@ impl RunPanel {
         run_config_label.set_margin(8, 2, 0, 4);
         panel.add(&run_config_label);
 
-        // Action buttons
+        let run_command_label = ui::Label::new("");
+        run_command_label.set_dock(ui::DOCK_TOP);
+        run_command_label.set_size(200, 18);
+        run_command_label.set_font_size(10);
+        run_command_label.set_text_color(tc.text_secondary);
+        run_command_label.set_margin(8, 0, 0, 6);
+        panel.add(&run_command_label);
+
+        let configure_bar = ui::FlowPanel::new();
+        configure_bar.set_dock(ui::DOCK_TOP);
+        configure_bar.set_size(200, 30);
+        configure_bar.set_color(tc.sidebar_bg);
+        panel.add(&configure_bar);
+
+        let btn_configure = ui::Button::new(t("Configure..."));
+        btn_configure.set_size(112, 24);
+        btn_configure.set_color(tc.control_bg);
+        configure_bar.add(&btn_configure);
+
         let btn_bar = ui::FlowPanel::new();
         btn_bar.set_dock(ui::DOCK_TOP);
         btn_bar.set_size(200, 34);
@@ -182,7 +202,9 @@ impl RunPanel {
             btn_build,
             btn_test,
             btn_stop,
+            btn_configure,
             run_config_label,
+            run_command_label,
             debug_status_label,
             breakpoint_label,
             debug_tree,
@@ -193,6 +215,7 @@ impl RunPanel {
     /// Update the task tree from the task manager.
     pub fn update(&mut self, task_mgr: &TaskManager) {
         let tc = ui::theme::colors();
+        let t = anyos_std::i18n::t;
         self.tree.clear();
         self.task_indices.clear();
 
@@ -201,13 +224,21 @@ impl RunPanel {
             let node = self.tree.add_root(t("No tasks detected"));
             self.tree.set_node_text_color(node, tc.text_secondary);
             self.task_indices.push(None);
-            self.run_config_label.set_text(t("No run configuration"));
+            self.run_config_label.set_text(t("Select a run target"));
+            self.run_command_label
+                .set_text(t("Configure Build Tools in Settings."));
             return;
         }
 
         // Update run config label
         if let Some(run_task) = task_mgr.selected_run() {
-            self.run_config_label.set_text(&format!("\u{25B6} {}", run_task.name));
+            self.run_config_label
+                .set_text(&format!("Run: {}", run_task.name));
+            self.run_command_label.set_text(&run_task.display_label);
+        } else {
+            self.run_config_label.set_text(t("Select a run target"));
+            self.run_command_label
+                .set_text(t("No runnable target detected."));
         }
 
         // Group tasks by category
@@ -384,7 +415,9 @@ impl RunPanel {
         let node = self.tree.add_root(t("Open a folder to detect tasks"));
         self.tree.set_node_text_color(node, tc.text_secondary);
         self.task_indices.push(None);
-        self.run_config_label.set_text(t("No run configuration"));
+        self.run_config_label.set_text(t("Select a run target"));
+        self.run_command_label
+            .set_text(t("Open a workspace or configure build tools."));
         self.debug_status_label.set_text("Debugger: Idle");
         self.breakpoint_label.set_text("0 breakpoints");
         self.debug_tree.clear();

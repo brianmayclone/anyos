@@ -339,6 +339,10 @@ pub fn wire_run_panel() {
     app().run_panel.btn_build.on_click(|_| commands::build());
     app().run_panel.btn_test.on_click(|_| commands::test());
     app().run_panel.btn_stop.on_click(|_| commands::stop());
+    app()
+        .run_panel
+        .btn_configure
+        .on_click(|_| commands::open_settings());
 
     app().run_panel.tree.on_selection_changed(|e| {
         let s = app();

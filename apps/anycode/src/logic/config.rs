@@ -24,6 +24,8 @@ pub struct Config {
     pub syntax_dir: String,
     pub plugin_dir: String,
     pub temp_dir: String,
+    pub crust_path: String,
+    pub ccargo_path: String,
     pub make_path: String,
     pub cc_path: String,
     pub git_path: String,
@@ -89,6 +91,8 @@ impl Config {
             syntax_dir: defaults.syntax_dir,
             plugin_dir: json_str(&val, "plugin_dir", &defaults.plugin_dir),
             temp_dir: json_str(&val, "temp_dir", &defaults.temp_dir),
+            crust_path: json_str(&val, "crust_path", ""),
+            ccargo_path: json_str(&val, "ccargo_path", ""),
             make_path: json_str(&val, "make_path", ""),
             cc_path: json_str(&val, "cc_path", ""),
             git_path: json_str(&val, "git_path", ""),
@@ -99,7 +103,12 @@ impl Config {
             session_active_file: json_str(&val, "session_active_file", ""),
         };
         // Re-discover any empty tool paths
-        if cfg.make_path.is_empty() || cfg.cc_path.is_empty() || cfg.git_path.is_empty() {
+        if cfg.crust_path.is_empty()
+            || cfg.ccargo_path.is_empty()
+            || cfg.make_path.is_empty()
+            || cfg.cc_path.is_empty()
+            || cfg.git_path.is_empty()
+        {
             cfg.auto_discover();
             cfg.save();
         }
@@ -123,6 +132,8 @@ impl Config {
         obj.set("syntax_dir", Value::String(self.syntax_dir.clone()));
         obj.set("plugin_dir", Value::String(self.plugin_dir.clone()));
         obj.set("temp_dir", Value::String(self.temp_dir.clone()));
+        obj.set("crust_path", Value::String(self.crust_path.clone()));
+        obj.set("ccargo_path", Value::String(self.ccargo_path.clone()));
         obj.set("make_path", Value::String(self.make_path.clone()));
         obj.set("cc_path", Value::String(self.cc_path.clone()));
         obj.set("git_path", Value::String(self.git_path.clone()));
@@ -154,6 +165,8 @@ impl Config {
             syntax_dir,
             plugin_dir: String::from("/Libraries/anycode/plugins"),
             temp_dir: String::from("/tmp"),
+            crust_path: String::new(),
+            ccargo_path: String::new(),
             make_path: String::new(),
             cc_path: String::new(),
             git_path: String::new(),
@@ -167,6 +180,12 @@ impl Config {
 
     /// Auto-discover paths for tools via PATH environment variable.
     pub fn auto_discover(&mut self) {
+        if self.crust_path.is_empty() {
+            self.crust_path = find_first_in_path(&["crust", "rustc", "anyrc"]);
+        }
+        if self.ccargo_path.is_empty() {
+            self.ccargo_path = find_first_in_path(&["ccargo", "cargo", "acargo"]);
+        }
         if self.make_path.is_empty() {
             self.make_path = find_in_path("make");
         }
@@ -247,6 +266,16 @@ fn find_in_path(name: &str) -> String {
         let candidate = format!("{}/{}", dir, name);
         if path::exists(&candidate) {
             return candidate;
+        }
+    }
+    String::new()
+}
+
+fn find_first_in_path(names: &[&str]) -> String {
+    for name in names {
+        let path = find_in_path(name);
+        if !path.is_empty() {
+            return path;
         }
     }
     String::new()

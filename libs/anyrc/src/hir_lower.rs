@@ -541,6 +541,9 @@ impl<'a> LoweringContext<'a> {
                 args: s.args.as_ref().map(|a| HirGenericArgs {
                     args: a.args.iter().map(|arg| match arg {
                         ast::GenericArg::Type(t) => HirGenericArg::Type(self.lower_ty(t)),
+                        ast::GenericArg::AssocTypeBinding(name, t) => {
+                            HirGenericArg::AssocTypeBinding(*name, self.lower_ty(t))
+                        }
                         ast::GenericArg::Lifetime(lt) => HirGenericArg::Lifetime(*lt),
                         ast::GenericArg::Const(e) => HirGenericArg::Const(self.lower_expr(e)),
                     }).collect(),

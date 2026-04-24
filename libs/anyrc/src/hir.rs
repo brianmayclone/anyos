@@ -345,6 +345,7 @@ pub struct HirGenericArgs {
 
 pub enum HirGenericArg {
     Type(HirTy),
+    AssocTypeBinding(Symbol, HirTy),
     Lifetime(Symbol),
     Const(HirExpr),
 }

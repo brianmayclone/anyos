@@ -261,7 +261,7 @@ fn build_and_run(
 
     let mut task_mgr = tasks::TaskManager::new();
     if let Some(ref proj) = current_project {
-        task_mgr.detect_from_project(proj);
+        task_mgr.detect_from_project(proj, &config);
     }
 
     // ── Init global state ──

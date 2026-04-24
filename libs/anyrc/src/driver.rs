@@ -837,9 +837,23 @@ fn render_item(
         }
         HirItemKind::Impl(ib) => {
             let impl_local_names = local_item_names(&ib.items);
-            let exported_items: Vec<&crate::hir::HirItem> = ib.items.iter()
-                .filter(|item| item_is_exported(item, false, &impl_local_names, interner))
-                .collect();
+            let exported_items: Vec<&crate::hir::HirItem> = if trait_impl_is_interface_relevant(ib, interner) {
+                ib.items.iter()
+                    .filter(|item| {
+                        matches!(
+                            item.kind,
+                            HirItemKind::Fn(_)
+                                | HirItemKind::TypeAlias(_)
+                                | HirItemKind::Const(_)
+                                | HirItemKind::Static(_)
+                        )
+                    })
+                    .collect()
+            } else {
+                ib.items.iter()
+                    .filter(|item| item_is_exported(item, false, &impl_local_names, interner))
+                    .collect()
+            };
             if exported_items.is_empty() {
                 return;
             }
@@ -1019,6 +1033,19 @@ fn item_is_exported(
             items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
         }
         crate::hir::HirItemKind::Impl(ib) => {
+            if trait_impl_is_interface_relevant(ib, interner)
+                && ib.items.iter().any(|item| {
+                    matches!(
+                        item.kind,
+                        crate::hir::HirItemKind::Fn(_)
+                            | crate::hir::HirItemKind::TypeAlias(_)
+                            | crate::hir::HirItemKind::Const(_)
+                            | crate::hir::HirItemKind::Static(_)
+                    )
+                })
+            {
+                return true;
+            }
             let nested_local_names = local_item_names(&ib.items);
             ib.items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
         }
@@ -1027,6 +1054,22 @@ fn item_is_exported(
             eb.items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
         }
     }
+}
+
+fn trait_impl_is_interface_relevant(
+    ib: &crate::hir::HirImplBlock,
+    interner: &Interner,
+) -> bool {
+    let Some(trait_ref) = &ib.trait_ref else {
+        return false;
+    };
+    let Some(last) = trait_ref.segments.last() else {
+        return false;
+    };
+    matches!(
+        interner.resolve(last.ident),
+        "Deref" | "DerefMut" | "Index"
+    )
 }
 
 fn local_item_names(items: &[crate::hir::HirItem]) -> Vec<crate::intern::Symbol> {
@@ -1251,6 +1294,7 @@ fn collect_const_refs_in_path(
             for arg in &args.args {
                 match arg {
                     crate::hir::HirGenericArg::Type(ty) => collect_const_refs_in_ty(ty, out),
+                    crate::hir::HirGenericArg::AssocTypeBinding(_, ty) => collect_const_refs_in_ty(ty, out),
                     crate::hir::HirGenericArg::Const(expr) => collect_const_refs_in_expr(expr, out),
                     crate::hir::HirGenericArg::Lifetime(_) => {}
                 }
@@ -1583,6 +1627,11 @@ fn render_path(path: &crate::hir::HirPath, interner: &Interner) -> String {
                 }
                 match arg {
                     crate::hir::HirGenericArg::Type(ty) => out.push_str(&render_ty(ty, interner)),
+                    crate::hir::HirGenericArg::AssocTypeBinding(name, ty) => {
+                        out.push_str(interner.resolve(*name));
+                        out.push_str(" = ");
+                        out.push_str(&render_ty(ty, interner));
+                    }
                     crate::hir::HirGenericArg::Lifetime(sym) => out.push_str(&render_lifetime(*sym, interner)),
                     crate::hir::HirGenericArg::Const(expr) => out.push_str(&render_expr(expr, interner)),
                 }

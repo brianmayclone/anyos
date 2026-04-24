@@ -98,7 +98,11 @@ pub fn run() {
         execute_task_direct(&task_clone);
         return;
     }
-    // Legacy fallback
+    s.status.set_analysis_status("No run target selected");
+    if !s.task_mgr.tasks.is_empty() {
+        return;
+    }
+    // Legacy fallback for old workspaces without detected tasks.
     if let Some(ref proj) = s.current_project {
         s.output.clear();
         let active_file = s
@@ -1288,7 +1292,7 @@ pub fn set_build_configuration(config: project::BuildConfiguration) {
     };
 
     if let Some(ref proj) = s.current_project {
-        s.task_mgr.detect_from_project(proj);
+        s.task_mgr.detect_from_project(proj, &s.config);
         s.run_panel.update(&s.task_mgr);
         s.run_panel.update_debug_session(&s.debug_session);
         s.sidebar.populate_project(proj, &s.task_mgr);
@@ -1327,27 +1331,28 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     reset_workspace_views();
     let proj = project::Project::open(folder);
     let project_context = proj.display_context();
+    let workspace_root = proj.root.clone();
 
-    s.task_mgr.detect_from_project(&proj);
+    s.task_mgr.detect_from_project(&proj, &s.config);
     s.run_panel.update(&s.task_mgr);
     s.run_panel.update_debug_session(&s.debug_session);
     s.sidebar.populate_project(&proj, &s.task_mgr);
     s.status.set_project_type(&project_context);
 
-    s.git_state.is_repo = git::is_git_repo(folder);
+    s.git_state.is_repo = git::is_git_repo(&workspace_root);
     if s.git_state.is_repo {
         crate::trigger_git_refresh();
     }
     s.status.set_branch("");
-    s.output.start_shell(folder);
+    s.output.start_shell(&workspace_root);
 
     s.current_project = Some(proj);
-    s.symbol_index.rebuild(folder);
+    s.symbol_index.rebuild(&workspace_root);
     let indexed_symbols = s.symbol_index.count();
     s.status
         .set_analysis_status(&format!("Symbol index: {} symbols", indexed_symbols));
-    s.config.last_project = String::from(folder);
-    s.config.push_recent_project(folder);
+    s.config.last_project = workspace_root.clone();
+    s.config.push_recent_project(&workspace_root);
     s.config.save();
     update_status();
 

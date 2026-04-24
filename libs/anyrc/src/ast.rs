@@ -387,6 +387,7 @@ pub struct GenericArgs {
 
 pub enum GenericArg {
     Type(Ty),
+    AssocTypeBinding(Symbol, Ty),
     Lifetime(Symbol),
     Const(Expr),
 }
