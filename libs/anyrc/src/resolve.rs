@@ -66,6 +66,9 @@ pub struct Resolver<'a> {
     extern_path_aliases: HashMap<(usize, Symbol), String>,
     /// Current impl self type symbol for resolving `Self::assoc` within impls.
     current_impl_self_ty: Option<Symbol>,
+    /// Module path and item used to make diagnostics useful for loaded modules.
+    current_module_path: Vec<Symbol>,
+    current_item_name: Option<Symbol>,
 }
 
 impl<'a> Resolver<'a> {
@@ -88,6 +91,8 @@ impl<'a> Resolver<'a> {
             intrinsic_fns: HashMap::new(),
             extern_path_aliases: HashMap::new(),
             current_impl_self_ty: None,
+            current_module_path: Vec::new(),
+            current_item_name: None,
         };
         this.bootstrap_prelude_intrinsics();
         this
@@ -121,6 +126,23 @@ impl<'a> Resolver<'a> {
         let id = DefId(self.next_synthetic_def_id);
         self.next_synthetic_def_id += 1;
         id
+    }
+
+    fn error(&mut self, span: Span, msg: &str) {
+        let mut path = self
+            .current_module_path
+            .iter()
+            .map(|sym| self.interner.resolve(*sym).to_string())
+            .collect::<Vec<_>>();
+        if let Some(item) = self.current_item_name {
+            path.push(self.interner.resolve(item).to_string());
+        }
+        let msg = if path.is_empty() {
+            msg.to_string()
+        } else {
+            format!("in {}: {}", path.join("::"), msg)
+        };
+        self.errors.push(Diagnostic::new(Level::Error, &msg, span));
     }
 
     fn resolve_assoc_item_on_type(
@@ -674,6 +696,18 @@ impl<'a> Resolver<'a> {
     }
 
     fn resolve_item(&mut self, item: &HirItem) {
+        let old_item_name = self.current_item_name;
+        self.current_item_name = match &item.kind {
+            HirItemKind::Fn(f) => Some(f.name),
+            HirItemKind::Struct(s) => Some(s.name),
+            HirItemKind::Enum(e) => Some(e.name),
+            HirItemKind::Trait(t) => Some(t.name),
+            HirItemKind::TypeAlias(t) => Some(t.name),
+            HirItemKind::Const(c) => Some(c.name),
+            HirItemKind::Static(s) => Some(s.name),
+            HirItemKind::Mod(m) => Some(m.name),
+            HirItemKind::Impl(_) | HirItemKind::Use(_) | HirItemKind::ExternBlock(_) => None,
+        };
         match &item.kind {
             HirItemKind::Fn(f) => self.resolve_fn(f),
             HirItemKind::Struct(s) => {
@@ -723,11 +757,16 @@ impl<'a> Resolver<'a> {
                 if let Some(sub_items) = &m.items {
                     if let Some(&scope_idx) = self.module_scopes.get(&m.def_id) {
                         let saved = self.current_scope;
+                        let saved_item_name = self.current_item_name;
                         self.current_scope = scope_idx;
                         self.module_stack.push(scope_idx);
+                        self.current_module_path.push(m.name);
+                        self.current_item_name = None;
                         for sub in sub_items {
                             self.resolve_item(sub);
                         }
+                        self.current_item_name = saved_item_name;
+                        self.current_module_path.pop();
                         self.module_stack.pop();
                         self.current_scope = saved;
                     }
@@ -740,6 +779,7 @@ impl<'a> Resolver<'a> {
                 }
             }
         }
+        self.current_item_name = old_item_name;
     }
 
     fn resolve_fn(&mut self, f: &HirFnDef) {
@@ -995,7 +1035,7 @@ impl<'a> Resolver<'a> {
                 self.resolve_path(path, Namespace::Value, HirId(u32::MAX));
                 for p in pats { self.resolve_pattern_binding(p); }
             }
-            HirPattern::Ref(p, _, _) => self.resolve_pattern_binding(p),
+            HirPattern::Ref(p, _, _) | HirPattern::RefBinding(p, _, _) => self.resolve_pattern_binding(p),
             HirPattern::Or(pats, _) => {
                 for p in pats { self.resolve_pattern_binding(p); }
             }
@@ -1199,11 +1239,7 @@ impl<'a> Resolver<'a> {
                         self.resolutions.insert(hir_id, def_id);
                     }
                 } else {
-                    self.errors.push(Diagnostic::new(
-                        Level::Error,
-                    &format!("`{}` not found in this scope", name_str),
-                        path.span,
-                    ));
+                    self.error(path.span, &format!("`{}` not found in this scope", name_str));
                 }
             }
         } else if path.segments.len() >= 2 {
@@ -1218,20 +1254,6 @@ impl<'a> Resolver<'a> {
             if path.segments.len() == 2 {
                 // Two-segment path: Enum::Variant or Type::method
                 let second_name = path.segments[1].ident;
-                if name_str == "Self" {
-                    if let Some(def_id) = self.lookup(second_name, Namespace::Type) {
-                        if hir_id != HirId(u32::MAX) {
-                            self.resolutions.insert(hir_id, def_id);
-                        }
-                        return;
-                    }
-                    if let Some(def_id) = self.lookup(second_name, Namespace::Value) {
-                        if hir_id != HirId(u32::MAX) {
-                            self.resolutions.insert(hir_id, def_id);
-                        }
-                        return;
-                    }
-                }
                 let type_name = if name_str == "Self" {
                     self.current_impl_self_ty.unwrap_or(name)
                 } else {
@@ -1250,11 +1272,7 @@ impl<'a> Resolver<'a> {
 
                 // Could not resolve
                 let second_str = self.interner.resolve(second_name);
-                self.errors.push(Diagnostic::new(
-                    Level::Error,
-                    &format!("`{}::{}` not found", name_str, second_str),
-                    path.span,
-                ));
+                self.error(path.span, &format!("`{}::{}` not found", name_str, second_str));
             }
             // else: 3+ segments without module match - skip (external paths)
         }
@@ -1358,11 +1376,7 @@ impl<'a> Resolver<'a> {
                     return;
                 }
                 let seg_str = self.interner.resolve(seg.ident);
-                self.errors.push(Diagnostic::new(
-                    Level::Error,
-                    &format!("`{}` not found in module", seg_str),
-                    path.span,
-                ));
+                self.error(path.span, &format!("`{}` not found in module", seg_str));
             } else {
                 // Intermediate segment: must be a module
                 if let Some(&mod_def_id) = self.scopes[scope].bindings.get(&(seg.ident, Namespace::Type)) {
@@ -1381,20 +1395,12 @@ impl<'a> Resolver<'a> {
                             return;
                         }
                         let seg_str = self.interner.resolve(seg.ident);
-                        self.errors.push(Diagnostic::new(
-                            Level::Error,
-                            &format!("`{}` is not a module", seg_str),
-                            path.span,
-                        ));
+                        self.error(path.span, &format!("`{}` is not a module", seg_str));
                         return;
                     }
                 } else {
                     let seg_str = self.interner.resolve(seg.ident);
-                    self.errors.push(Diagnostic::new(
-                        Level::Error,
-                        &format!("`{}` not found in module", seg_str),
-                        path.span,
-                    ));
+                    self.error(path.span, &format!("`{}` not found in module", seg_str));
                     return;
                 }
             }

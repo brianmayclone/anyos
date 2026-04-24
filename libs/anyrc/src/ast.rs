@@ -307,6 +307,7 @@ pub enum Pattern {
     Wildcard(Span),
     Rest(Span),
     Ref(Box<Pattern>, Mutability, Span),
+    RefBinding(Box<Pattern>, Mutability, Span),
     Or(Vec<Pattern>, Span),
     Range(Option<Box<Expr>>, Option<Box<Expr>>, bool, Span),
     Path(Path),

@@ -234,6 +234,10 @@ Status:
 - Gestartet: offene Dateien besitzen Dokumentversionen; alte externe
   Check-Ergebnisse werden verworfen, wenn der Editor inzwischen neueren Inhalt
   hat.
+- Gestartet: Live-Check-Zustand liegt in `diagnostic_pipeline.rs`; Analyse und
+  externe Check-Auswahl laufen ueber ein erstes `language_service.rs`.
+- Gestartet: Command Palette besitzt Analyse-Kommandos fuer aktive Datei,
+  Live-Analyse-Neustart und das gezielte Leeren der Problemansicht.
 
 ### Phase 4: Project Model und Build Backends
 

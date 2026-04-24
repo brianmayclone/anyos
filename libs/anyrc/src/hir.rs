@@ -275,6 +275,7 @@ pub enum HirPattern {
     Wildcard(Span),
     Rest(Span),
     Ref(Box<HirPattern>, Mutability, Span),
+    RefBinding(Box<HirPattern>, Mutability, Span),
     Or(Vec<HirPattern>, Span),
     Range(Option<Box<HirExpr>>, Option<Box<HirExpr>>, bool, Span),
     Path(HirPath),

@@ -10,5 +10,7 @@ pub mod tasks;
 pub mod symbols;
 pub mod diagnostics;
 pub mod live_analysis;
+pub mod diagnostic_pipeline;
+pub mod language_service;
 pub mod commands;
 pub mod ai;

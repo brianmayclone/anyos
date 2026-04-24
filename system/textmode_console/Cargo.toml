@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
 libconf_schema = { path = "../../libs/libconf_schema" }
+libshellcommon = { path = "../../libs/libshellcommon" }
 
 [profile.dev]
 panic = "abort"

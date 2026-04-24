@@ -521,6 +521,7 @@ impl<'a> LoweringContext<'a> {
             ast::Pattern::Wildcard(span) => HirPattern::Wildcard(*span),
             ast::Pattern::Rest(span) => HirPattern::Rest(*span),
             ast::Pattern::Ref(p, m, span) => HirPattern::Ref(Box::new(self.lower_pattern(p)), *m, *span),
+            ast::Pattern::RefBinding(p, m, span) => HirPattern::RefBinding(Box::new(self.lower_pattern(p)), *m, *span),
             ast::Pattern::Or(ps, span) => HirPattern::Or(ps.iter().map(|p| self.lower_pattern(p)).collect(), *span),
             ast::Pattern::Range(a, b, inc, span) => HirPattern::Range(
                 a.as_ref().map(|e| Box::new(self.lower_expr(e))),

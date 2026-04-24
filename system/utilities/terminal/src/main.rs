@@ -45,6 +45,7 @@ const SCROLLBAR_TRACK_COLOR: u32 = 0xFF2A2A2A;
 const SCROLLBAR_THUMB_COLOR: u32 = 0xFF606060;
 const SCROLLBAR_THUMB_HOVER_COLOR: u32 = 0xFF808080;
 const SCROLLBAR_MIN_THUMB_H: u32 = 20;
+const MAX_SCRIPT_DEPTH: u32 = 8;
 
 // ─── Font (Andale Mono via compositor's libfont, font_id=4) ──────────────────
 
@@ -2662,11 +2663,6 @@ impl TerminalApp {
 
 // ─── Environment / PATH helpers ──────────────────────────────────────────────
 
-/// Read a file into a buffer. Returns the number of bytes read.
-fn read_file_to_buf(path: &str, buf: &mut [u8]) -> usize {
-    libshellcommon::read_file_to_buf(path, buf)
-}
-
 /// Load system and user env files. Returns collected aliases as (name, value) tuples.
 fn load_dotenv() -> Vec<(String, String)> {
     let alias_defs = libshellcommon::load_dotenv();
@@ -2795,6 +2791,7 @@ struct Shell {
     /// foreground process to finish before continuing.
     pending_chain: Vec<(LogicalOp, String)>,
     chain_last_success: bool,
+    script_depth: u32,
 }
 
 impl Shell {
@@ -2812,6 +2809,7 @@ impl Shell {
             suppress_history: false,
             pending_chain: Vec::new(),
             chain_last_success: true,
+            script_depth: 0,
         }
     }
 
@@ -2877,8 +2875,14 @@ impl Shell {
 
     /// Execute command. Returns (should_continue, optional foreground process, optional pending su username).
     fn submit(&mut self, buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
+        self.submit_with_newline(buf, true)
+    }
+
+    fn submit_with_newline(&mut self, buf: &mut TerminalBuffer, echo_newline: bool) -> (bool, Option<ForegroundProcess>, Option<String>) {
         let raw_line = self.line.text.trim_matches(|c: char| c == ' ').to_string();
-        buf.write_char('\n');
+        if echo_newline {
+            buf.write_char('\n');
+        }
 
         if !raw_line.is_empty() && !self.suppress_history {
             self.history.push(&raw_line);
@@ -2927,6 +2931,16 @@ impl Shell {
             buf.capture = Some(String::new());
         }
 
+        if let Some((key, val)) = libshellcommon::parse_assignment(line.trim()) {
+            anyos_std::env::set(key, val);
+            if let Some(captured) = buf.capture.take() {
+                if let Some(ref mut redir) = redirect {
+                    write_redirect(redir, &captured);
+                }
+            }
+            return (true, None, None);
+        }
+
         // If there's an input redirect, read the file and make it available as stdin
         let input_data = if let Some(ref ir) = input_redir {
             fs::read_to_string(&ir.source).ok()
@@ -2951,6 +2965,10 @@ impl Shell {
                 buf.write_char('\n');
             }
             "clear" => buf.clear(),
+            "true" => {}
+            "false" => {
+                return (true, None, None);
+            }
             "uname" => {
                 buf.current_fg = COLOR_FG;
                 buf.write_str(".anyOS v");
@@ -2989,7 +3007,16 @@ impl Shell {
                 }
                 return (true, None, None);
             }
-            "source" | "." => self.cmd_source(args, buf),
+            "sh" | "source" | "." => {
+                if tokens.is_empty() {
+                    buf.current_fg = COLOR_FG;
+                    buf.write_str("sh: missing script path\n");
+                    return (true, None, None);
+                }
+                let script_path = tokens[0].clone();
+                let script_args: Vec<String> = tokens[1..].to_vec();
+                return self.execute_shell_script(&script_path, &script_args, buf);
+            }
             "su" => {
                 // Disable capture for su (interactive)
                 if let Some(captured) = buf.capture.take() {
@@ -3099,6 +3126,14 @@ impl Shell {
 
                 // POSIX-style expansions: tilde and glob
                 let mut bg_tokens = expand_args(raw_bg_args, &self.cwd);
+
+                if libshellcommon::is_shell_script_name(bg_cmd) {
+                    if background {
+                        buf.current_fg = COLOR_DIM;
+                        buf.write_str("[bg] script background not supported, running in foreground\n");
+                    }
+                    return self.execute_shell_script(bg_cmd, &bg_tokens, buf);
+                }
 
                 // Default args for specific commands (e.g. ls defaults to cwd)
                 if bg_tokens.is_empty() {
@@ -3303,11 +3338,109 @@ impl Shell {
         let saved_cursor = self.line.cursor;
         self.line.cursor_end();
         self.suppress_history = true;
-        let result = self.submit(buf);
+        let result = self.submit_with_newline(buf, false);
         self.suppress_history = false;
         self.line.text = saved_input;
         self.line.cursor = saved_cursor;
         result
+    }
+
+    fn execute_shell_script(&mut self, path: &str, args: &[String], buf: &mut TerminalBuffer) -> (bool, Option<ForegroundProcess>, Option<String>) {
+        if self.script_depth >= MAX_SCRIPT_DEPTH {
+            buf.current_fg = COLOR_FG;
+            buf.write_str("sh: maximum script recursion depth reached\n");
+            return (true, None, None);
+        }
+
+        let script = match libshellcommon::load_shell_script(path, &self.cwd) {
+            Ok(script) => script,
+            Err(err) => {
+                buf.current_fg = COLOR_FG;
+                buf.write_str(&err.message());
+                buf.write_char('\n');
+                return (true, None, None);
+            }
+        };
+
+        if script.commands.is_empty() {
+            return (true, None, None);
+        }
+
+        libshellcommon::set_script_args(&script.path, args);
+        let program = match libshellcommon::parse_shell_program(&script.commands) {
+            Ok(program) => program,
+            Err(err) => {
+                buf.current_fg = COLOR_FG;
+                buf.write_str(&err.message());
+                buf.write_char('\n');
+                return (true, None, None);
+            }
+        };
+
+        let saved_pending = core::mem::replace(&mut self.pending_chain, Vec::new());
+        let saved_chain_success = self.chain_last_success;
+        self.script_depth += 1;
+        let script_result = {
+            let mut executor = TerminalScriptExecutor { shell: self, buf };
+            libshellcommon::run_shell_program(&program, &mut executor)
+        };
+        self.script_depth -= 1;
+        self.pending_chain = saved_pending;
+        self.chain_last_success = saved_chain_success;
+
+        match script_result.control {
+            libshellcommon::ScriptControl::Exit => (false, None, None),
+            libshellcommon::ScriptControl::Break | libshellcommon::ScriptControl::Continue => {
+                buf.current_fg = COLOR_FG;
+                buf.write_str("sh: break/continue outside loop\n");
+                (true, None, None)
+            }
+            libshellcommon::ScriptControl::None => (true, None, None),
+        }
+    }
+
+    fn wait_foreground_blocking(&mut self, mut fp: ForegroundProcess, buf: &mut TerminalBuffer) -> u32 {
+        let mut read_buf = [0u8; 512];
+        loop {
+            if fp.pipe_id != 0 {
+                loop {
+                    let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
+                    if n == 0 || n == u32::MAX { break; }
+                    if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
+                        if let Some(ref mut redir) = fp.redirect {
+                            write_redirect(redir, s);
+                        } else {
+                            buf.current_fg = COLOR_FG;
+                            buf.write_str(s);
+                        }
+                    }
+                }
+            }
+
+            let status = process::try_waitpid(fp.tid);
+            if status != process::STILL_RUNNING {
+                if fp.pipe_id != 0 {
+                    loop {
+                        let n = ipc::pipe_read(fp.pipe_id, &mut read_buf);
+                        if n == 0 || n == u32::MAX { break; }
+                        if let Ok(s) = core::str::from_utf8(&read_buf[..n as usize]) {
+                            if let Some(ref mut redir) = fp.redirect {
+                                write_redirect(redir, s);
+                            } else {
+                                buf.current_fg = COLOR_FG;
+                                buf.write_str(s);
+                            }
+                        }
+                    }
+                    ipc::pipe_close(fp.pipe_id);
+                }
+                if fp.stdin_pipe != 0 { ipc::pipe_close(fp.stdin_pipe); }
+                for p in fp.extra_pipes { ipc::pipe_close(p); }
+                return status;
+            }
+
+            process::sleep(10);
+        }
     }
 
     /// Execute a pipeline (cmd1 | cmd2 | cmd3).
@@ -3390,6 +3523,9 @@ impl Shell {
         buf.write_str("    set      Umgebungsvariable setzen\n");
         buf.write_str("    export   Variable exportieren\n");
         buf.write_str("    unset    Variable loeschen\n");
+        buf.write_str("    sh       Shell-Script ausfuehren\n");
+        buf.write_str("    true     Erfolgreichen Status liefern\n");
+        buf.write_str("    false    Fehlerstatus liefern\n");
         buf.write_str("    alias    Alias definieren/auflisten\n");
         buf.write_str("    eval     Argumente ausfuehren\n");
         buf.write_str("    uname    Systemidentifikation\n");
@@ -3660,92 +3796,6 @@ impl Shell {
         update_tab_labels();
     }
 
-    fn cmd_source(&mut self, args: &str, buf: &mut TerminalBuffer) {
-        let path = args.trim();
-        if path.is_empty() {
-            buf.current_fg = COLOR_FG;
-            buf.write_str("usage: source <file>\n");
-            return;
-        }
-
-        let mut data = [0u8; 4096];
-        let total = read_file_to_buf(path, &mut data);
-        if total == 0 {
-            buf.current_fg = COLOR_FG;
-            buf.write_str("source: cannot read '");
-            buf.write_str(path);
-            buf.write_str("'\n");
-            return;
-        }
-
-        let text = match core::str::from_utf8(&data[..total]) {
-            Ok(s) => s,
-            Err(_) => {
-                buf.current_fg = COLOR_FG;
-                buf.write_str("source: invalid UTF-8\n");
-                return;
-            }
-        };
-
-        for line in text.split('\n') {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-
-            // Parse command and args
-            let mut parts = line.splitn(2, ' ');
-            let cmd = parts.next().unwrap_or("");
-            let cmd_args = parts.next().unwrap_or("");
-
-            match cmd {
-                "export" => self.cmd_export(cmd_args, buf),
-                "set" => self.cmd_set(cmd_args, buf),
-                "unset" => self.cmd_unset(cmd_args, buf),
-                "alias" => self.cmd_alias(cmd_args, buf),
-                "unalias" => self.cmd_unalias(cmd_args, buf),
-                "cd" => self.cmd_cd(cmd_args, buf),
-                "echo" => {
-                    buf.current_fg = COLOR_FG;
-                    buf.write_str(cmd_args);
-                    buf.write_char('\n');
-                }
-                "source" | "." => self.cmd_source(cmd_args, buf),
-                _ => {
-                    // Handle KEY=VALUE assignment (no command prefix)
-                    if let Some(eq) = line.find('=') {
-                        if !line[..eq].contains(' ') {
-                            let key = line[..eq].trim();
-                            let val = line[eq + 1..].trim();
-                            if !key.is_empty() {
-                                anyos_std::env::set(key, val);
-                            }
-                            continue;
-                        }
-                    }
-
-                    // External command — resolve path, spawn, and wait
-                    let resolved = resolve_cmd(cmd, &self.cwd.clone());
-
-                    let full_args = if cmd_args.is_empty() {
-                        String::from(cmd)
-                    } else {
-                        format!("{} {}", cmd, cmd_args)
-                    };
-
-                    if resolved.starts_with("/Applications/") {
-                        process::launch_app(&resolved, &full_args);
-                    } else {
-                        let tid = process::spawn(&resolved, &full_args);
-                        if tid != u32::MAX {
-                            process::waitpid(tid);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     /// Execute `su`. If password is given as argument, authenticate immediately.
     /// Otherwise, return the target username so the caller can prompt for a password.
     fn cmd_su(&self, args: &str, buf: &mut TerminalBuffer) -> Option<String> {
@@ -3787,14 +3837,118 @@ impl Shell {
     }
 }
 
+struct TerminalScriptExecutor<'a> {
+    shell: &'a mut Shell,
+    buf: &'a mut TerminalBuffer,
+}
+
+impl<'a> libshellcommon::ScriptExecutor for TerminalScriptExecutor<'a> {
+    fn run_command(&mut self, command: &str) -> libshellcommon::ScriptExecResult {
+        let trimmed = command.trim();
+        if trimmed.is_empty() || trimmed == "true" {
+            return libshellcommon::ScriptExecResult {
+                status: 0,
+                control: libshellcommon::ScriptControl::None,
+            };
+        }
+        if trimmed == "false" {
+            return libshellcommon::ScriptExecResult {
+                status: 1,
+                control: libshellcommon::ScriptControl::None,
+            };
+        }
+        if trimmed == "break" {
+            return libshellcommon::ScriptExecResult {
+                status: 0,
+                control: libshellcommon::ScriptControl::Break,
+            };
+        }
+        if trimmed == "continue" {
+            return libshellcommon::ScriptExecResult {
+                status: 0,
+                control: libshellcommon::ScriptControl::Continue,
+            };
+        }
+        if trimmed == "exit" || trimmed.starts_with("exit ") {
+            let status = trimmed.split_whitespace().nth(1)
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            return libshellcommon::ScriptExecResult {
+                status,
+                control: libshellcommon::ScriptControl::Exit,
+            };
+        }
+
+        let (cont, fg, su) = self.shell.execute_single_command(trimmed, self.buf);
+        if !cont {
+            return libshellcommon::ScriptExecResult {
+                status: 0,
+                control: libshellcommon::ScriptControl::Exit,
+            };
+        }
+        if su.is_some() {
+            return libshellcommon::ScriptExecResult {
+                status: 1,
+                control: libshellcommon::ScriptControl::None,
+            };
+        }
+
+        let mut status = if let Some(fp) = fg {
+            self.shell.wait_foreground_blocking(fp, self.buf)
+        } else {
+            0
+        };
+
+        while !self.shell.pending_chain.is_empty() {
+            self.shell.chain_last_success = status == 0;
+            let (cont, next_fg, next_su) = self.shell.resume_pending_chain(self.buf);
+            if !cont {
+                return libshellcommon::ScriptExecResult {
+                    status,
+                    control: libshellcommon::ScriptControl::Exit,
+                };
+            }
+            if next_su.is_some() {
+                status = 1;
+                break;
+            }
+            if let Some(fp) = next_fg {
+                status = self.shell.wait_foreground_blocking(fp, self.buf);
+            } else {
+                status = if self.shell.chain_last_success { 0 } else { 1 };
+                break;
+            }
+        }
+
+        libshellcommon::ScriptExecResult {
+            status,
+            control: libshellcommon::ScriptControl::None,
+        }
+    }
+
+    fn set_var(&mut self, name: &str, value: &str) {
+        anyos_std::env::set(name, value);
+    }
+
+    fn expand_words(&mut self, words: &str) -> Vec<String> {
+        expand_args(words, &self.shell.cwd)
+    }
+
+    fn error(&mut self, message: &str) {
+        self.buf.current_fg = COLOR_FG;
+        self.buf.write_str(message);
+        self.buf.write_char('\n');
+    }
+}
+
 // ─── Builtins & Completion ───────────────────────────────────────────────────
 
 /// All builtins supported by the Terminal's embedded shell.
 const TERMINAL_BUILTINS: &[&str] = &[
-    "alias", "bg", "cd", "clear", "echo", "exit", "export", "fg",
+    "alias", "bg", "cd", "clear", "echo", "exit", "export", "false", "fg",
     "help", "jobs", "kill", "poweroff", "profile", "pwd", "reboot",
-    "set", "shutdown", "source", "su", "theme", "opacity", "uname",
-    "unalias", "unset",
+    "set", "sh", "shutdown", "source", "su", "theme", "opacity", "uname",
+    "true", "unalias", "unset",
 ];
 
 /// Erase the input portion of the current display line and rewrite it.

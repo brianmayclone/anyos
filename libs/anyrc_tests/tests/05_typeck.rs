@@ -79,6 +79,109 @@ fn primitive_assoc_try_from_is_result_typed() {
 }
 
 #[test]
+fn impl_method_body_resolves_self_enum_variants_against_impl_type() {
+    assert_type_ok(r#"
+        enum First {
+            A,
+            B,
+        }
+
+        enum Second {
+            A,
+            B,
+        }
+
+        impl First {
+            fn from_u32(v: u32) -> Self {
+                match v {
+                    1 => Self::A,
+                    _ => Self::B,
+                }
+            }
+        }
+
+        impl Second {
+            fn from_u32(v: u32) -> Self {
+                match v {
+                    1 => Self::A,
+                    _ => Self::B,
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn self_enum_variant_resolution_wins_over_global_type_names() {
+    assert_type_ok(r#"
+        struct String {}
+
+        enum SortType {
+            String,
+            Numeric,
+        }
+
+        impl SortType {
+            fn from_u8(v: u8) -> Self {
+                match v {
+                    1 => Self::Numeric,
+                    _ => Self::String,
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn function_arg_autoderefs_nested_slice_references() {
+    assert_type_ok(r#"
+        fn takes_slice(item: &[u8]) -> bool {
+            true
+        }
+
+        fn main() {
+            let items: [&[u8]; 1] = [b"x"];
+            for item in &items {
+                let ok = takes_slice(item);
+            }
+        }
+    "#);
+}
+
+#[test]
+fn vec_u8_compares_with_byte_string_arrays() {
+    assert_type_ok(r#"
+        fn main() {
+            let t: Vec<u8> = Vec::new();
+            let is_time = &t == b"time";
+            let is_date = t == b"date";
+        }
+    "#);
+}
+
+#[test]
+fn if_arms_allow_byte_string_literals_with_different_lengths_for_slice_use() {
+    assert_type_ok(r#"
+        fn takes_slice(item: &[u8]) {}
+
+        fn main() {
+            let flag = true;
+            takes_slice(if flag { b"Folder" } else { b"File name" });
+        }
+    "#);
+}
+
+#[test]
+fn shift_rhs_accepts_usize_without_forcing_lhs_type() {
+    assert_type_ok(r#"
+        fn main() {
+            let index: usize = 3;
+            let mask = 1u64 << index;
+        }
+    "#);
+}
+
+#[test]
 fn qualified_module_types_do_not_collide_by_leaf_name() {
     assert_type_ok(r#"
         mod fallback {

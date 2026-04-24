@@ -22,7 +22,9 @@ use alloc::string::String;
 use anyui::Widget;
 use libanyui_client as anyui;
 
-use crate::logic::{ai, build, config, diagnostics, file_manager, git, plugin, project, tasks};
+use crate::logic::{
+    ai, build, config, diagnostic_pipeline, diagnostics, file_manager, git, plugin, project, tasks,
+};
 use crate::ui::{
     activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel, git_panel,
     output_panel, problems_panel, run_panel, search_panel, sidebar, splash, status_bar,
@@ -54,14 +56,7 @@ struct AppState {
 
     // Live analysis
     live_check_process: Option<build::BuildProcess>,
-    live_check_timer_id: u32,
-    live_check_debounce_ticks: u32,
-    live_check_pending_editor: Option<usize>,
-    live_check_pending_version: u32,
-    live_check_running_file: String,
-    live_check_running_version: u32,
-    live_check_output_buffer: String,
-    live_check_label: String,
+    live_check: diagnostic_pipeline::LiveCheckState,
 
     // Git
     git_state: git::GitState,
@@ -279,14 +274,7 @@ fn build_and_run(
             build_timer_id: 0,
             build_output_buffer: String::new(),
             live_check_process: None,
-            live_check_timer_id: 0,
-            live_check_debounce_ticks: 0,
-            live_check_pending_editor: None,
-            live_check_pending_version: 0,
-            live_check_running_file: String::new(),
-            live_check_running_version: 0,
-            live_check_output_buffer: String::new(),
-            live_check_label: String::new(),
+            live_check: diagnostic_pipeline::LiveCheckState::new(),
             git_state,
             git_process: None,
             git_pending_op: None,
@@ -498,16 +486,16 @@ fn poll_build_output() {
 
 pub fn start_live_check_timer() {
     let s = app();
-    if s.live_check_timer_id == 0 {
-        s.live_check_timer_id = anyui::set_timer(250, poll_live_check);
+    if s.live_check.timer_id == 0 {
+        s.live_check.timer_id = anyui::set_timer(250, poll_live_check);
     }
 }
 
 pub fn stop_live_check_timer() {
     let s = app();
-    if s.live_check_timer_id != 0 {
-        anyui::kill_timer(s.live_check_timer_id);
-        s.live_check_timer_id = 0;
+    if s.live_check.timer_id != 0 {
+        anyui::kill_timer(s.live_check.timer_id);
+        s.live_check.timer_id = 0;
     }
 }
 

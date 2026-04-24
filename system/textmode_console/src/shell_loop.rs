@@ -27,12 +27,20 @@ use anyos_std::shell;
 use anyos_std::String;
 use anyos_std::Vec;
 use anyos_std::format;
+use libshellcommon;
 
 use crate::io::println;
 use crate::login::hostname;
 use crate::paths::resolve_path;
 use crate::readline::read_line_interactive;
 use crate::runner::{run_external, run_pipeline, sync_term_size};
+
+const MAX_SCRIPT_DEPTH: u32 = 8;
+
+enum ExecResult {
+    Continue(u32),
+    Exit(u32),
+}
 
 /// Run the interactive shell for `username` until the user types `exit` or
 /// `logout`, then return so the caller can restart the login loop.
@@ -71,105 +79,231 @@ pub fn shell_loop(username: &str) {
         // ── Read input ─────────────────────────────────────────────────────
         let line = read_line_interactive(&prompt, &cwd);
         if line.is_empty() { continue; }
-        let line_trimmed = line.trim();
+        if matches!(execute_command_line(line.trim(), &mut cwd, &mut pipe_counter, 0), ExecResult::Exit(_)) {
+            return;
+        }
+    }
+}
 
-        // ── Parse redirects ────────────────────────────────────────────────
-        let (line_no_out, redirect)    = shell::parse_redirects(line_trimmed, &cwd);
-        let (cmd_line, input_redirect) = shell::parse_input_redirect(&line_no_out, &cwd);
-        let cmd_line = cmd_line.trim();
-        if cmd_line.is_empty() { continue; }
+fn execute_command_line(
+    line_trimmed: &str,
+    cwd: &mut String,
+    pipe_counter: &mut u32,
+    script_depth: u32,
+) -> ExecResult {
+    if line_trimmed.is_empty() {
+        return ExecResult::Continue(0);
+    }
 
-        // ── Background suffix (&) ─────────────────────────────────────────
-        let (cmd_line, background) = parse_background(cmd_line);
-        let cmd_line = cmd_line.trim();
-        if cmd_line.is_empty() { continue; }
+    // ── Parse redirects ────────────────────────────────────────────────────
+    let (line_no_out, redirect)    = shell::parse_redirects(line_trimmed, cwd);
+    let (cmd_line, input_redirect) = shell::parse_input_redirect(&line_no_out, cwd);
+    let cmd_line = cmd_line.trim();
+    if cmd_line.is_empty() {
+        return ExecResult::Continue(0);
+    }
 
-        // ── Input redirect data ────────────────────────────────────────────
-        let stdin_data: Option<String> = input_redirect.and_then(|ir| {
-            fs::read_to_string(&ir.source).ok()
-        });
+    if let Some((key, val)) = libshellcommon::parse_assignment(cmd_line) {
+        env::set(key, val);
+        return ExecResult::Continue(0);
+    }
 
-        // ── Expand arguments ───────────────────────────────────────────────
-        let expanded = shell::expand_args(cmd_line, &cwd);
-        if expanded.is_empty() { continue; }
-        let cmd = expanded[0].as_str();
-        let args_expanded = &expanded[1..];
+    // ── Background suffix (&) ─────────────────────────────────────────────
+    let (cmd_line, background) = parse_background(cmd_line);
+    let cmd_line = cmd_line.trim();
+    if cmd_line.is_empty() {
+        return ExecResult::Continue(0);
+    }
 
-        // ── Dispatch ───────────────────────────────────────────────────────
-        match cmd {
-            "exit" | "logout" => {
-                println("Logout.");
-                return;
+    // ── Input redirect data ────────────────────────────────────────────────
+    let stdin_data: Option<String> = input_redirect.and_then(|ir| {
+        fs::read_to_string(&ir.source).ok()
+    });
+
+    // ── Expand arguments ───────────────────────────────────────────────────
+    let expanded = shell::expand_args(cmd_line, cwd);
+    if expanded.is_empty() {
+        return ExecResult::Continue(0);
+    }
+    let cmd = expanded[0].as_str();
+    let args_expanded = &expanded[1..];
+
+    // ── Dispatch ───────────────────────────────────────────────────────────
+    match cmd {
+        "exit" | "logout" => {
+            println("Logout.");
+            let status = args_expanded.first()
+                .and_then(|s| s.parse::<u32>().ok())
+                .unwrap_or(0);
+            return ExecResult::Exit(status);
+        }
+
+        "cd" => return ExecResult::Continue(builtin_cd(cwd, args_expanded)),
+
+        "clear" => { anyos_std::sys::con_write("\x1b[2J\x1b[H"); return ExecResult::Continue(0); },
+
+        "true" => return ExecResult::Continue(0),
+
+        "false" => return ExecResult::Continue(1),
+
+        "export" | "set" => { builtin_export(args_expanded); return ExecResult::Continue(0); },
+
+        "unset" => {
+            for arg in args_expanded { env::unset(arg.as_str()); }
+            return ExecResult::Continue(0);
+        }
+
+        "sh" | "source" | "." => {
+            if args_expanded.is_empty() {
+                println("sh: missing script path");
+                return ExecResult::Continue(2);
+            } else {
+                return run_shell_script(args_expanded[0].as_str(), &args_expanded[1..], cwd, pipe_counter, script_depth);
             }
+        }
 
-            "cd" => builtin_cd(&mut cwd, args_expanded),
-
-            "clear" => { anyos_std::sys::con_write("\x1b[2J\x1b[H"); },
-
-            "export" | "set" => builtin_export(args_expanded),
-
-            "unset" => {
-                for arg in args_expanded { env::unset(arg.as_str()); }
-            }
-
-            _ => {
-                // Strip `nohup` prefix (anyOS has no SIGHUP, so it is a no-op
-                // except for the implied background execution).
-                let (cmd, args_expanded, background) = if cmd == "nohup" {
-                    if args_expanded.is_empty() {
-                        println("nohup: missing command");
-                        continue;
-                    }
-                    (args_expanded[0].as_str(), &args_expanded[1..], true)
-                } else {
-                    (cmd, args_expanded, background)
-                };
-
-                if shell::has_pipe(cmd_line) {
-                    if background {
-                        println("[bg] pipeline background not supported, running in foreground");
-                    }
-                    run_pipeline(cmd_line, &cwd, redirect, &mut pipe_counter);
-                    sync_term_size();
-                    continue;
+        _ => {
+            // Strip `nohup` prefix (anyOS has no SIGHUP, so it is a no-op
+            // except for the implied background execution).
+            let (cmd, args_expanded, background) = if cmd == "nohup" {
+                if args_expanded.is_empty() {
+                    println("nohup: missing command");
+                    return ExecResult::Continue(2);
                 }
+                (args_expanded[0].as_str(), &args_expanded[1..], true)
+            } else {
+                (cmd, args_expanded, background)
+            };
 
-                // Inject `cwd` for `ls` when no non-flag argument is given.
-                let mut effective_args: Vec<String> = args_expanded.to_vec();
-                if cmd == "ls" && effective_args.iter().all(|a| a.starts_with('-')) {
-                    effective_args.push(cwd.clone());
-                }
-
-                let args_str  = shell::join(&effective_args);
-                let full_args = if args_str.is_empty() {
-                    String::from(cmd)
-                } else {
-                    format!("{} {}", cmd, args_str)
-                };
-                let prog_path = shell::resolve_cmd_path(cmd, &cwd);
-
+            if libshellcommon::is_shell_script_name(cmd) {
                 if background {
-                    let tid = process::spawn(&prog_path, &full_args);
+                    println("[bg] script background not supported, running in foreground");
+                }
+                return run_shell_script(cmd, args_expanded, cwd, pipe_counter, script_depth);
+            }
+
+            if shell::has_pipe(cmd_line) {
+                if background {
+                    println("[bg] pipeline background not supported, running in foreground");
+                }
+                let status = run_pipeline(cmd_line, cwd, redirect, pipe_counter);
+                sync_term_size();
+                return ExecResult::Continue(status);
+            }
+
+            // Inject `cwd` for `ls` when no non-flag argument is given.
+            let mut effective_args: Vec<String> = args_expanded.to_vec();
+            if cmd == "ls" && effective_args.iter().all(|a| a.starts_with('-')) {
+                effective_args.push(cwd.clone());
+            }
+
+            let args_str  = shell::join(&effective_args);
+            let full_args = if args_str.is_empty() {
+                String::from(cmd)
+            } else {
+                format!("{} {}", cmd, args_str)
+            };
+            let prog_path = shell::resolve_cmd_path(cmd, cwd);
+
+            if background {
+                let tid = process::spawn(&prog_path, &full_args);
                     if tid == u32::MAX {
                         let msg = format!("{}: command not found", cmd);
                         println(&msg);
+                        return ExecResult::Continue(127);
                     } else {
                         let msg = format!("[bg] pid={}", tid);
                         println(&msg);
+                        return ExecResult::Continue(0);
                     }
                 } else {
-                    run_external(&prog_path, &full_args, redirect, stdin_data, &mut pipe_counter);
-                    sync_term_size();
-                }
+                let status = run_external(&prog_path, &full_args, redirect, stdin_data, pipe_counter);
+                sync_term_size();
+                return ExecResult::Continue(status);
             }
         }
+    }
+}
+
+fn run_shell_script(
+    path: &str,
+    args: &[String],
+    cwd: &mut String,
+    pipe_counter: &mut u32,
+    script_depth: u32,
+) -> ExecResult {
+    if script_depth >= MAX_SCRIPT_DEPTH {
+        println("sh: maximum script recursion depth reached");
+        return ExecResult::Continue(2);
+    }
+
+    let script = match libshellcommon::load_shell_script(path, cwd) {
+        Ok(script) => script,
+        Err(err) => {
+            let msg = err.message();
+            println(&msg);
+            return ExecResult::Continue(2);
+        }
+    };
+
+    libshellcommon::set_script_args(&script.path, args);
+    let program = match libshellcommon::parse_shell_program(&script.commands) {
+        Ok(program) => program,
+        Err(err) => {
+            let msg = err.message();
+            println(&msg);
+            return ExecResult::Continue(2);
+        }
+    };
+    let mut executor = TextScriptExecutor { cwd, pipe_counter, script_depth: script_depth + 1 };
+    let result = libshellcommon::run_shell_program(&program, &mut executor);
+    match result.control {
+        libshellcommon::ScriptControl::Exit => ExecResult::Exit(result.status),
+        libshellcommon::ScriptControl::Break | libshellcommon::ScriptControl::Continue => {
+            println("sh: break/continue outside loop");
+            ExecResult::Continue(2)
+        }
+        libshellcommon::ScriptControl::None => ExecResult::Continue(result.status),
+    }
+}
+
+struct TextScriptExecutor<'a> {
+    cwd: &'a mut String,
+    pipe_counter: &'a mut u32,
+    script_depth: u32,
+}
+
+impl<'a> libshellcommon::ScriptExecutor for TextScriptExecutor<'a> {
+    fn run_command(&mut self, command: &str) -> libshellcommon::ScriptExecResult {
+        match execute_command_line(command.trim(), self.cwd, self.pipe_counter, self.script_depth) {
+            ExecResult::Continue(status) => libshellcommon::ScriptExecResult {
+                status,
+                control: libshellcommon::ScriptControl::None,
+            },
+            ExecResult::Exit(status) => libshellcommon::ScriptExecResult {
+                status,
+                control: libshellcommon::ScriptControl::Exit,
+            },
+        }
+    }
+
+    fn set_var(&mut self, name: &str, value: &str) {
+        env::set(name, value);
+    }
+
+    fn expand_words(&mut self, words: &str) -> Vec<String> {
+        shell::expand_args(words, self.cwd)
+    }
+
+    fn error(&mut self, message: &str) {
+        println(message);
     }
 }
 
 // ─── Built-in implementations ────────────────────────────────────────────────
 
 /// `cd [path]` — change the current working directory.
-fn builtin_cd(cwd: &mut String, args: &[String]) {
+fn builtin_cd(cwd: &mut String, args: &[String]) -> u32 {
     let cd_home_buf: String;
     let dest = if args.is_empty() {
         let mut hbuf = [0u8; 128];
@@ -191,13 +325,16 @@ fn builtin_cd(cwd: &mut String, args: &[String]) {
             *cwd = resolved.clone();
             env::set("PWD", cwd);
             fs::chdir(&resolved);
+            return 0;
         } else {
             let msg = format!("cd: {}: Not a directory", dest);
             println(&msg);
+            return 1;
         }
     } else {
         let msg = format!("cd: {}: No such file or directory", dest);
         println(&msg);
+        return 1;
     }
 }
 

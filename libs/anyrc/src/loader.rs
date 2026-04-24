@@ -4,8 +4,9 @@
 //! Supports both `foo.rs` and `foo/mod.rs` layout conventions.
 
 use crate::prelude::*;
-use crate::ast::{Crate, Item, ModDef};
+use crate::ast::{Crate, Item, ModDef, TokenTree};
 use crate::intern::Interner;
+use crate::lexer::TokenKind;
 use crate::parser::Parser;
 use crate::macros::expand_macros;
 
@@ -82,6 +83,97 @@ pub fn resolve_modules(
     loaded
 }
 
+/// Resolve item-position `include!("file.rs")` macros by parsing the included
+/// file and splicing its items into the including module.
+pub fn resolve_includes(
+    krate: &mut Crate,
+    base_dir: &str,
+    interner: &mut Interner,
+    loader: &dyn FileLoader,
+) -> Vec<ModuleSource> {
+    let mut loaded = Vec::new();
+    resolve_includes_in_items(&mut krate.items, base_dir, interner, loader, &mut loaded);
+    loaded
+}
+
+fn resolve_includes_in_items(
+    items: &mut Vec<Item>,
+    dir: &str,
+    interner: &mut Interner,
+    loader: &dyn FileLoader,
+    loaded: &mut Vec<ModuleSource>,
+) {
+    let mut i = 0;
+    while i < items.len() {
+        let include_path = match &items[i] {
+            Item::MacroCall(path, args, _) if path.segments.len() == 1
+                && interner.resolve(path.segments[0].ident) == "include" =>
+            {
+                include_arg_path(args)
+            }
+            _ => None,
+        };
+
+        if let Some(path) = include_path {
+            let full_path = join_path(dir, &path);
+            if let Some(source) = loader.read_file(&full_path) {
+                let include_dir = parent_dir(&full_path);
+                let mut parser = Parser::new(&source, interner);
+                let mut sub_crate = parser.parse_crate();
+                expand_macros(&mut sub_crate, interner);
+                resolve_includes_in_items(&mut sub_crate.items, &include_dir, interner, loader, loaded);
+                loaded.push(ModuleSource { path: full_path, source });
+                items.splice(i..=i, sub_crate.items);
+                continue;
+            }
+        }
+
+        match &mut items[i] {
+            Item::Mod(mod_def) => {
+                if let Some(sub_items) = &mut mod_def.items {
+                    let sub_dir = format!("{}/{}", dir, interner.resolve(mod_def.name));
+                    resolve_includes_in_items(sub_items, &sub_dir, interner, loader, loaded);
+                }
+            }
+            Item::Impl(ib) => {
+                resolve_includes_in_items(&mut ib.items, dir, interner, loader, loaded);
+            }
+            Item::Trait(td) => {
+                resolve_includes_in_items(&mut td.items, dir, interner, loader, loaded);
+            }
+            Item::ExternBlock(eb) => {
+                resolve_includes_in_items(&mut eb.items, dir, interner, loader, loaded);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
+fn include_arg_path(args: &[TokenTree]) -> Option<String> {
+    match args.first() {
+        Some(TokenTree::Token(tok)) => match &tok.kind {
+            TokenKind::StringLit(path) => Some(path.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn join_path(dir: &str, path: &str) -> String {
+    if path.starts_with('/') || dir.is_empty() {
+        path.to_string()
+    } else {
+        format!("{}/{}", dir.trim_end_matches('/'), path)
+    }
+}
+
+fn parent_dir(path: &str) -> String {
+    path.rsplit_once('/')
+        .map(|(parent, _)| parent.to_string())
+        .unwrap_or_else(|| ".".to_string())
+}
+
 fn resolve_items(
     items: &mut Vec<Item>,
     dir: &str,
@@ -120,6 +212,7 @@ fn resolve_items(
                 let mut parser = Parser::new(&source, interner);
                 let mut sub_crate = parser.parse_crate();
                 expand_macros(&mut sub_crate, interner);
+                resolve_includes_in_items(&mut sub_crate.items, &sub_dir, interner, loader, loaded);
 
                 // Recursively resolve sub-modules
                 resolve_items(&mut sub_crate.items, &sub_dir, interner, loader, loaded);
@@ -134,6 +227,7 @@ fn resolve_items(
                 // Inline module `mod foo { ... }` — recurse into its items
                 if let Some(ref mut sub_items) = mod_def.items {
                     let sub_dir = format!("{}/{}", dir, interner.resolve(mod_def.name));
+                    resolve_includes_in_items(sub_items, &sub_dir, interner, loader, loaded);
                     resolve_items(sub_items, &sub_dir, interner, loader, loaded);
                 }
             }

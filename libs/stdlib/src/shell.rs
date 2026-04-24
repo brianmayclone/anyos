@@ -336,7 +336,25 @@ pub fn expand_vars(token: &str) -> String {
                     i = start;
                 }
             } else if bytes[i + 1] == b'?' {
-                result.push('0'); i += 2;
+                let mut val_buf = [0u8; 32];
+                let vlen = env::get("?", &mut val_buf);
+                if vlen != u32::MAX {
+                    if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
+                        result.push_str(v);
+                    }
+                } else {
+                    result.push('0');
+                }
+                i += 2;
+            } else if bytes[i + 1] == b'@' {
+                let mut val_buf = [0u8; 512];
+                let vlen = env::get("@", &mut val_buf);
+                if vlen != u32::MAX {
+                    if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
+                        result.push_str(v);
+                    }
+                }
+                i += 2;
             } else if bytes[i + 1] == b'$' {
                 result.push_str(&format!("{}", process::getpid()));
                 i += 2;

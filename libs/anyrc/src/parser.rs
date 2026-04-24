@@ -2490,6 +2490,9 @@ impl<'a> Parser<'a> {
                 return Ty::Infer(self.span_from(start));
             }
         }
+        if self.at_ident() && self.peek_kind() == &TokenKind::Not {
+            return self.parse_type_macro_ty(start);
+        }
         if self.at_exact(&TokenKind::Kw(Keyword::Mut)) {
             // This shouldn't happen in type position normally
         }
@@ -2511,8 +2514,55 @@ impl<'a> Parser<'a> {
         Ty::Path(path)
     }
 
+    fn parse_type_macro_ty(&mut self, start: Span) -> Ty {
+        let macro_name = if let TokenKind::Ident(sym) = self.bump().kind {
+            sym
+        } else {
+            unreachable!()
+        };
+        self.expect_exact(&TokenKind::Not);
+        self.expect_exact(&TokenKind::LParen);
+        let arg_ty = self.parse_ty();
+        self.expect_exact(&TokenKind::RParen);
+
+        if self.interner.resolve(macro_name) == "to_signed_int" {
+            if let Ty::Path(path) = &arg_ty {
+                if path.segments.len() == 1 {
+                    let name = self.interner.resolve(path.segments[0].ident);
+                    let mapped = match name {
+                        "u8" => Some("i8"),
+                        "u16" => Some("i16"),
+                        "u32" => Some("i32"),
+                        "u64" => Some("i64"),
+                        "u128" => Some("i128"),
+                        "usize" => Some("isize"),
+                        _ => None,
+                    };
+                    if let Some(mapped) = mapped {
+                        let ident = self.interner.intern(mapped);
+                        return Ty::Path(Path {
+                            segments: vec![PathSegment { ident, args: None }],
+                            span: self.span_from(start),
+                        });
+                    }
+                }
+            }
+            let ident = self.interner.intern("isize");
+            return Ty::Path(Path {
+                segments: vec![PathSegment { ident, args: None }],
+                span: self.span_from(start),
+            });
+        }
+
+        Ty::Path(Path {
+            segments: vec![PathSegment { ident: macro_name, args: None }],
+            span: self.span_from(start),
+        })
+    }
+
     fn parse_trait_object_ty(&mut self, start: Span) -> Ty {
         let first_start = self.current().span;
+        self.parse_optional_for_binder();
         let first = self.parse_path_ty();
         let mut bounds = vec![TraitBound {
             path: first,
@@ -2524,6 +2574,7 @@ impl<'a> Parser<'a> {
                 continue;
             }
             let bound_start = self.current().span;
+            self.parse_optional_for_binder();
             let path = self.parse_path_ty();
             self.parse_callable_trait_suffix();
             bounds.push(TraitBound {
@@ -2805,6 +2856,7 @@ impl<'a> Parser<'a> {
                 break;
             }
             let p_start = self.current().span;
+            self.parse_optional_for_binder();
             if matches!(self.current().kind, TokenKind::Lifetime(_)) {
                 if let TokenKind::Lifetime(sym) = self.bump().kind {
                     self.expect_exact(&TokenKind::Colon);
@@ -2845,6 +2897,7 @@ impl<'a> Parser<'a> {
                     }
                     let _relaxed_bound = self.eat_exact(&TokenKind::Question);
                     let b_start = self.current().span;
+                    self.parse_optional_for_binder();
                     let path = self.parse_path_ty();
                     self.parse_callable_trait_suffix();
                     bounds.push(TraitBound {
@@ -2865,6 +2918,23 @@ impl<'a> Parser<'a> {
             predicates,
             span: self.span_from(start),
         }
+    }
+
+    fn parse_optional_for_binder(&mut self) {
+        if !self.at_kw(Keyword::For) {
+            return;
+        }
+        self.bump();
+        if !self.eat_exact(&TokenKind::Lt) {
+            return;
+        }
+        while !self.at_exact(&TokenKind::Gt) && !self.at_exact(&TokenKind::Eof) {
+            self.bump();
+            if !self.eat_exact(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect_exact(&TokenKind::Gt);
     }
 
     // ── Patterns ──
@@ -2919,8 +2989,8 @@ impl<'a> Parser<'a> {
             return Pattern::Rest(self.span_from(start));
         }
 
-        // &pat, &mut pat / ref pat / ref mut pat
-        if self.at_exact(&TokenKind::Amp) || self.at_kw(Keyword::Ref) {
+        // &pat, &mut pat
+        if self.at_exact(&TokenKind::Amp) {
             self.bump();
             let mutability = if self.eat_exact(&TokenKind::Kw(Keyword::Mut)) {
                 Mutability::Mut
@@ -2929,6 +2999,18 @@ impl<'a> Parser<'a> {
             };
             let pat = self.parse_pattern_with_or(allow_or);
             return Pattern::Ref(Box::new(pat), mutability, self.span_from(start));
+        }
+
+        // ref pat, ref mut pat
+        if self.at_kw(Keyword::Ref) {
+            self.bump();
+            let mutability = if self.eat_exact(&TokenKind::Kw(Keyword::Mut)) {
+                Mutability::Mut
+            } else {
+                Mutability::Immutable
+            };
+            let pat = self.parse_pattern_with_or(allow_or);
+            return Pattern::RefBinding(Box::new(pat), mutability, self.span_from(start));
         }
 
         // `&&pat` is tokenized as `AndAnd`, but in pattern position it means
@@ -3159,9 +3241,27 @@ impl<'a> Parser<'a> {
                 break;
             }
             let f_start = self.current().span;
-            let name = self.expect_ident();
+            let (name, shorthand_pat) = if self.at_kw(Keyword::Ref) {
+                self.bump();
+                let mutability = if self.eat_exact(&TokenKind::Kw(Keyword::Mut)) {
+                    Mutability::Mut
+                } else {
+                    Mutability::Immutable
+                };
+                let name = self.expect_ident();
+                let ident = Pattern::Ident(name, Mutability::Immutable, None, self.span_from(f_start));
+                (name, Some(Pattern::RefBinding(Box::new(ident), mutability, self.span_from(f_start))))
+            } else if self.at_kw(Keyword::Mut) {
+                self.bump();
+                let name = self.expect_ident();
+                (name, Some(Pattern::Ident(name, Mutability::Mut, None, self.span_from(f_start))))
+            } else {
+                (self.expect_ident(), None)
+            };
             let pat = if self.eat_exact(&TokenKind::Colon) {
                 self.parse_pattern_with_or(allow_or)
+            } else if let Some(pat) = shorthand_pat {
+                pat
             } else {
                 // Shorthand: `name` means `name: name`
                 Pattern::Ident(name, Mutability::Immutable, None, self.span_from(f_start))
@@ -3382,7 +3482,7 @@ fn collect_pattern_bindings(pat: &Pattern, out: &mut Vec<(Symbol, Mutability, Sp
                 collect_pattern_bindings(&field.pat, out);
             }
         }
-        Pattern::Ref(inner, _, _) => collect_pattern_bindings(inner, out),
+        Pattern::Ref(inner, _, _) | Pattern::RefBinding(inner, _, _) => collect_pattern_bindings(inner, out),
         Pattern::Literal(_, _)
         | Pattern::Wildcard(_)
         | Pattern::Rest(_)

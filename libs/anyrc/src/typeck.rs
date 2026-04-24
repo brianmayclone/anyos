@@ -1084,9 +1084,12 @@ impl<'a> TypeChecker<'a> {
         match &item.kind {
             HirItemKind::Fn(f) => self.check_fn(f),
             HirItemKind::Impl(ib) => {
+                let saved_self_ty = self.current_self_ty.clone();
+                self.current_self_ty = Some(self.hir_ty_to_ty(&ib.self_ty));
                 for sub in &ib.items {
                     self.check_item(sub);
                 }
+                self.current_self_ty = saved_self_ty;
             }
             HirItemKind::Mod(m) => {
                 if let Some(sub_items) = &m.items {
@@ -1239,6 +1242,9 @@ impl<'a> TypeChecker<'a> {
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                         self.unify(&lty, &rty, expr.span);
                         TyKind::Bool
+                    }
+                    BinOp::Shl | BinOp::Shr => {
+                        lty
                     }
                     _ => {
                         self.unify(&lty, &rty, expr.span);
@@ -3016,6 +3022,14 @@ impl<'a> TypeChecker<'a> {
             }
 
             (TyKind::Ref(a, am), TyKind::Ref(b, bm)) if am == bm => {
+                if let TyKind::Ref(nested, _) = b.as_ref() {
+                    self.unify(a, nested, span);
+                    return;
+                }
+                if let (TyKind::Array(a_elem, _), TyKind::Array(b_elem, _)) = (a.as_ref(), b.as_ref()) {
+                    self.unify(a_elem, b_elem, span);
+                    return;
+                }
                 // Allow &T -> &dyn Trait coercion
                 if matches!(a.as_ref(), TyKind::DynTrait(_)) && matches!(b.as_ref(), TyKind::Adt(_, _)) {
                     return;
@@ -3043,6 +3057,21 @@ impl<'a> TypeChecker<'a> {
                         _ => {}
                     }
                 }
+                if let TyKind::Adt(def_id, substs) = a.as_ref() {
+                    if self.is_vec_def(*def_id) && substs.len() == 1 {
+                        match b.as_ref() {
+                            TyKind::Array(array_elem, _) => {
+                                self.unify(&substs[0], array_elem, span);
+                                return;
+                            }
+                            TyKind::Slice(slice_elem) => {
+                                self.unify(&substs[0], slice_elem, span);
+                                return;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 if let TyKind::Slice(slice_elem) = b.as_ref() {
                     match a.as_ref() {
                         TyKind::Array(array_elem, _) => {
@@ -3054,6 +3083,21 @@ impl<'a> TypeChecker<'a> {
                             return;
                         }
                         _ => {}
+                    }
+                }
+                if let TyKind::Adt(def_id, substs) = b.as_ref() {
+                    if self.is_vec_def(*def_id) && substs.len() == 1 {
+                        match a.as_ref() {
+                            TyKind::Array(array_elem, _) => {
+                                self.unify(&substs[0], array_elem, span);
+                                return;
+                            }
+                            TyKind::Slice(slice_elem) => {
+                                self.unify(&substs[0], slice_elem, span);
+                                return;
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 self.unify(a, b, span);
@@ -3126,6 +3170,26 @@ impl<'a> TypeChecker<'a> {
             {
                 self.unify(a, &substs[0], span);
                 return;
+            }
+
+            (TyKind::Adt(def_id, substs), TyKind::Array(elem, _))
+            | (TyKind::Array(elem, _), TyKind::Adt(def_id, substs))
+                if self.is_vec_def(*def_id) && substs.len() == 1 =>
+            {
+                self.unify(&substs[0], elem, span);
+                return;
+            }
+
+            (TyKind::Adt(def_id, substs), TyKind::Ref(actual_inner, Mutability::Immutable))
+                if self.is_vec_def(*def_id) && substs.len() == 1 =>
+            {
+                match actual_inner.as_ref() {
+                    TyKind::Array(elem, _) | TyKind::Slice(elem) => {
+                        self.unify(&substs[0], elem, span);
+                        return;
+                    }
+                    _ => {}
+                }
             }
 
             (TyKind::Str, TyKind::Adt(def_id, _)) | (TyKind::Adt(def_id, _), TyKind::Str)
@@ -3351,6 +3415,9 @@ impl<'a> TypeChecker<'a> {
                 if let TyKind::Ref(inner_ty, _) = resolved_ty {
                     self.bind_pattern(inner, *inner_ty);
                 }
+            }
+            HirPattern::RefBinding(inner, mutability, _) => {
+                self.bind_pattern(inner, TyKind::Ref(Box::new(ty), *mutability));
             }
             HirPattern::Struct(path, fields, _, _) => {
                 match &resolved_ty {

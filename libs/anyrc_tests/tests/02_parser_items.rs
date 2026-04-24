@@ -34,6 +34,28 @@ fn parse_generic_fn() {
 }
 
 #[test]
+fn parse_higher_ranked_where_predicate() {
+    let krate = parse("fn f<T>() where T: Copy, for<'a> &'a T: Clone {}");
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            assert_eq!(f.where_clause.predicates.len(), 2);
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
+fn parse_type_position_macro_in_cast_ty() {
+    let krate = parse("fn f(x: u8) -> u8 { (x as to_signed_int!(u8)) as u8 }");
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            assert!(f.body.is_some());
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
 fn parse_struct() {
     let krate = parse("pub struct Point { pub x: i32, pub y: i32 }");
     match &krate.items[0] {

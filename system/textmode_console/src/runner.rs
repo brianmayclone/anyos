@@ -36,14 +36,14 @@ pub fn run_external(
     redirect:     Option<Redirect>,
     stdin_data:   Option<String>,
     pipe_counter: &mut u32,
-) {
+) -> u32 {
     let pipe_name = format!("tc:{}", *pipe_counter);
     *pipe_counter = pipe_counter.wrapping_add(1);
     let stdout_pipe = ipc::pipe_create(&pipe_name);
     if stdout_pipe == 0 || stdout_pipe == u32::MAX {
         let msg = format!("{}: failed to create output pipe", path);
         println(&msg);
-        return;
+        return 1;
     }
 
     let stdin_name = format!("tc:in:{}", *pipe_counter);
@@ -57,7 +57,7 @@ pub fn run_external(
         let cmd = path.rsplit('/').next().unwrap_or(path);
         let msg = format!("{}: command not found", cmd);
         println(&msg);
-        return;
+        return 127;
     }
 
     // Feed stdin data for input redirection (`< file`).
@@ -65,11 +65,12 @@ pub fn run_external(
         ipc::pipe_write(stdin_pipe, data.as_bytes());
     }
 
-    pump_pipe(stdout_pipe, tid, redirect);
+    let status = pump_pipe(stdout_pipe, tid, redirect);
 
     ipc::pipe_close(stdout_pipe);
     ipc::pipe_close(stdin_pipe);
     sys::con_set_mode(0);
+    status
 }
 
 // ─── Pipeline ────────────────────────────────────────────────────────────────
@@ -81,17 +82,18 @@ pub fn run_pipeline(
     cwd:          &str,
     redirect:     Option<Redirect>,
     pipe_counter: &mut u32,
-) {
+) -> u32 {
     let result = match shell::run_pipeline(line, cwd, pipe_counter) {
         Some(r) => r,
-        None    => { println("pipeline: command not found"); return; }
+        None    => { println("pipeline: command not found"); return 127; }
     };
 
-    pump_pipe(result.display_pipe, result.last_tid, redirect);
+    let status = pump_pipe(result.display_pipe, result.last_tid, redirect);
 
     ipc::pipe_close(result.display_pipe);
     for p in result.extra_pipes { ipc::pipe_close(p); }
     sys::con_set_mode(0);
+    status
 }
 
 // ─── Terminal size sync ───────────────────────────────────────────────────────
@@ -113,11 +115,11 @@ pub fn sync_term_size() {
 
 /// Read all output from `pipe` and write it to the console (or `redirect`),
 /// handling Ctrl+C and process exit.
-fn pump_pipe(pipe: u32, tid: u32, redirect: Option<Redirect>) {
+fn pump_pipe(pipe: u32, tid: u32, redirect: Option<Redirect>) -> u32 {
     let mut redirect = redirect;
     let mut buf = [0u8; 512];
 
-    'pump: loop {
+    loop {
         // Drain all currently available bytes.
         loop {
             let n = ipc::pipe_read(pipe, &mut buf);
@@ -132,13 +134,14 @@ fn pump_pipe(pipe: u32, tid: u32, redirect: Option<Redirect>) {
             process::kill(tid);
             sys::con_write("\n^C\n");
             drain_pipe(pipe, &mut redirect, &mut buf);
-            break 'pump;
+            return 130;
         }
 
         // Child has exited: drain remaining output and stop.
-        if process::try_waitpid(tid) != process::STILL_RUNNING {
+        let child_status = process::try_waitpid(tid);
+        if child_status != process::STILL_RUNNING {
             drain_pipe(pipe, &mut redirect, &mut buf);
-            break;
+            return child_status;
         }
 
         process::sleep(10);

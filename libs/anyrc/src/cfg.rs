@@ -504,7 +504,9 @@ fn strip_pattern(pat: &mut Pattern, ctx: &CfgContext, interner: &Interner) {
                 strip_pattern(&mut field.pat, ctx, interner);
             }
         }
-        Pattern::Ref(inner, _, _) => strip_pattern(inner, ctx, interner),
+        Pattern::Ref(inner, _, _) | Pattern::RefBinding(inner, _, _) => {
+            strip_pattern(inner, ctx, interner);
+        }
         Pattern::Range(start, end, _, _) => {
             if let Some(start) = start {
                 strip_expr(start, ctx, interner);

@@ -12,9 +12,25 @@ pub struct BorrowckResult {
 }
 
 struct ActiveBorrow {
+    holder: Local,
     kind: BorrowKind,
-    place_local: Local,
+    place: Place,
     span: Span,
+}
+
+fn places_conflict(a: &Place, b: &Place) -> bool {
+    if a.local != b.local {
+        return false;
+    }
+    for (a_proj, b_proj) in a.projections.iter().zip(b.projections.iter()) {
+        match (a_proj, b_proj) {
+            (Projection::Field(a_idx), Projection::Field(b_idx)) if a_idx != b_idx => {
+                return false;
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<DefId, Vec<(Symbol, TyKind)>>) -> BorrowckResult {
@@ -26,67 +42,94 @@ pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<
         for stmt in &block.statements {
             match &stmt.kind {
                 StatementKind::Assign(place, rvalue) => {
+                    let assign_local = place.local.0;
+                    let self_reborrow_assignment = matches!(
+                        rvalue,
+                        Rvalue::Ref(_, borrowed_place) if borrowed_place.local.0 == assign_local
+                    );
+                    let local_ref_reassignment = matches!(
+                        body.locals.get(assign_local).map(|local| &local.ty),
+                        Some(TyKind::Ref(_, _) | TyKind::RawPtr(_, _))
+                    );
+                    if local_ref_reassignment {
+                        borrows.retain(|b| b.holder.0 != assign_local);
+                    }
+
                     // Check operands in rvalue aren't moved
                     check_rvalue_operands(rvalue, &moved, &body.locals, &mut errors, stmt.span);
 
                     // Check borrow-related rules
                     match rvalue {
                         Rvalue::Ref(kind, borrowed_place) => {
-                            let local_idx = borrowed_place.local.0;
-                            match kind {
-                                BorrowKind::Mutable => {
+                            let assigned_to_temp = body
+                                .locals
+                                .get(assign_local)
+                                .and_then(|local| local.name)
+                                .is_none();
+                            let temporary_projected_borrow =
+                                assigned_to_temp && !borrowed_place.projections.is_empty();
+                            if !self_reborrow_assignment && !temporary_projected_borrow {
+                                match kind {
+                                    BorrowKind::Mutable => {
                                     // No existing borrow (shared or mutable) on this local
                                     for b in &borrows {
-                                        if b.place_local.0 == local_idx {
-                                            errors.push(Diagnostic::new(
-                                                Level::Error,
-                                                &format!(
-                                                    "cannot borrow as mutable: already borrowed at {:?}",
-                                                    b.span
-                                                ),
-                                                stmt.span,
-                                            ));
-                                            break;
+                                            if places_conflict(&b.place, borrowed_place) {
+                                                errors.push(Diagnostic::new(
+                                                    Level::Error,
+                                                    &format!(
+                                                        "cannot borrow as mutable: already borrowed at {:?}",
+                                                        b.span
+                                                    ),
+                                                    stmt.span,
+                                                ));
+                                                break;
+                                            }
                                         }
+                                        borrows.push(ActiveBorrow {
+                                            holder: Local(assign_local),
+                                            kind: BorrowKind::Mutable,
+                                            place: borrowed_place.clone(),
+                                            span: stmt.span,
+                                        });
                                     }
-                                    borrows.push(ActiveBorrow {
-                                        kind: BorrowKind::Mutable,
-                                        place_local: Local(local_idx),
-                                        span: stmt.span,
-                                    });
-                                }
-                                BorrowKind::Shared => {
-                                    // No active mutable borrow on this local
-                                    for b in &borrows {
-                                        if b.place_local.0 == local_idx
-                                            && b.kind == BorrowKind::Mutable
-                                        {
-                                            errors.push(Diagnostic::new(
-                                                Level::Error,
-                                                &format!(
-                                                    "cannot borrow as shared: already mutably borrowed at {:?}",
-                                                    b.span
-                                                ),
-                                                stmt.span,
-                                            ));
-                                            break;
+                                    BorrowKind::Shared => {
+                                        // No active mutable borrow on this local
+                                        for b in &borrows {
+                                            if places_conflict(&b.place, borrowed_place)
+                                                && b.kind == BorrowKind::Mutable
+                                            {
+                                                errors.push(Diagnostic::new(
+                                                    Level::Error,
+                                                    &format!(
+                                                        "cannot borrow as shared: already mutably borrowed at {:?}",
+                                                        b.span
+                                                    ),
+                                                    stmt.span,
+                                                ));
+                                                break;
+                                            }
                                         }
+                                        borrows.push(ActiveBorrow {
+                                            holder: Local(assign_local),
+                                            kind: BorrowKind::Shared,
+                                            place: borrowed_place.clone(),
+                                            span: stmt.span,
+                                        });
                                     }
-                                    borrows.push(ActiveBorrow {
-                                        kind: BorrowKind::Shared,
-                                        place_local: Local(local_idx),
-                                        span: stmt.span,
-                                    });
                                 }
+                            } else {
+                                borrows.retain(|b| b.holder.0 != assign_local);
                             }
                         }
                         _ => {}
                     }
 
                     // If assigning to a place that has active borrows, error
-                    let assign_local = place.local.0;
                     for b in &borrows {
-                        if b.place_local.0 == assign_local {
+                        if places_conflict(&b.place, place)
+                            && !self_reborrow_assignment
+                            && !local_ref_reassignment
+                        {
                             errors.push(Diagnostic::new(
                                 Level::Error,
                                 &format!(
@@ -104,7 +147,7 @@ pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<
                 }
                 StatementKind::StorageDead(local) => {
                     // End borrows and moves for this local
-                    borrows.retain(|b| b.place_local.0 != local.0);
+                    borrows.retain(|b| b.holder.0 != local.0 && b.place.local.0 != local.0);
                     moved.remove(&local.0);
                 }
                 _ => {}
@@ -121,11 +164,30 @@ pub fn check_borrows(body: &MirBody, interner: &Interner, struct_defs: &HashMap<
                 // Temporary borrows for call args end when the call returns
                 borrows.clear();
             }
+            Terminator::Goto(_)
+            | Terminator::SwitchInt { .. }
+            | Terminator::Return
+            | Terminator::Unreachable => {
+                end_temporary_borrows(&mut borrows, &body.locals, body.arg_count);
+            }
             _ => {}
         }
     }
 
     BorrowckResult { errors }
+}
+
+fn end_temporary_borrows(
+    borrows: &mut Vec<ActiveBorrow>,
+    locals: &[LocalDecl],
+    arg_count: usize,
+) {
+    borrows.retain(|b| {
+        locals
+            .get(b.holder.0)
+            .map(|local| local.name.is_some() || b.holder.0 < arg_count)
+            .unwrap_or(false)
+    });
 }
 
 fn check_rvalue_operands(

@@ -126,6 +126,99 @@ fn extern_interface_preserves_private_scope_imports() {
 }
 
 #[test]
+fn extern_interface_preserves_private_consts_used_in_public_array_lengths() {
+    let lib_source = r#"
+        pub mod args {
+            const BASE: usize = 16;
+            const MAX_POSITIONAL: usize = BASE + 16;
+
+            pub struct ParsedArgs<'a> {
+                pub positional: [&'a str; MAX_POSITIONAL],
+            }
+        }
+    "#;
+    let lib_options = CompileOptions {
+        input: "provider.rs".to_string(),
+        output: "libprovider.rlib".to_string(),
+        emit: EmitKind::Rlib,
+        crate_type: CrateType::Lib,
+        crate_name: Some("provider".to_string()),
+        ..CompileOptions::default()
+    };
+    let rlib = compile(lib_source, "provider.rs", &lib_options)
+        .expect("provider compilation failed");
+
+    static COUNTER: AtomicU64 = AtomicU64::new(2000);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("anyrc_iface_const_test_{}_{}", std::process::id(), id));
+    std::fs::create_dir_all(&dir).unwrap();
+    let rlib_path = dir.join("libprovider.rlib");
+    {
+        let mut f = std::fs::File::create(&rlib_path).unwrap();
+        f.write_all(&rlib).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    let use_options = CompileOptions {
+        input: "consumer.rs".to_string(),
+        output: "consumer.o".to_string(),
+        emit: EmitKind::Obj,
+        crate_type: CrateType::Lib,
+        crate_name: Some("consumer".to_string()),
+        extern_crates: vec![ExternCrateSpec {
+            name: "provider".to_string(),
+            rlib_path: rlib_path.to_string_lossy().into_owned(),
+        }],
+        ..CompileOptions::default()
+    };
+    let result = compile("fn touch() {}", "consumer.rs", &use_options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_ok(),
+        "extern interface lost private array-length consts: {:?}",
+        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+    );
+}
+
+#[test]
+fn item_include_splices_source_before_resolve() {
+    static COUNTER: AtomicU64 = AtomicU64::new(2500);
+    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("anyrc_include_test_{}_{}", std::process::id(), id));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("included.rs"),
+        "pub struct Included { pub value: i32 }\n",
+    ).unwrap();
+
+    let source = r#"
+        mod child {
+            pub fn make() -> crate::Included {
+                crate::Included { value: 7 }
+            }
+        }
+
+        include!("included.rs");
+    "#;
+    let options = CompileOptions {
+        input: dir.join("lib.rs").to_string_lossy().into_owned(),
+        output: dir.join("out.o").to_string_lossy().into_owned(),
+        emit: EmitKind::Obj,
+        crate_type: CrateType::Lib,
+        crate_name: Some("include_test".to_string()),
+        src_dir: Some(dir.to_string_lossy().into_owned()),
+        ..CompileOptions::default()
+    };
+    let result = compile(source, "lib.rs", &options);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.is_ok(),
+        "item include was not visible during module resolution: {:?}",
+        result.err().map(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>())
+    );
+}
+
+#[test]
 fn nested_module_can_use_extern_crate_item() {
     let lib_source = r#"
         pub mod race {

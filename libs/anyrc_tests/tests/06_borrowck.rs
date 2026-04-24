@@ -83,3 +83,8 @@ fn borrowck_copy_types_ok() {
 fn borrowck_no_error_after_scope() {
     assert_borrowck_ok("fn foo() { let mut x: i32 = 5; let y: i32 = x; x = 6; }");
 }
+
+#[test]
+fn borrowck_slice_reference_can_be_reassigned_to_subslice() {
+    assert_borrowck_ok("fn foo(mut buf: &[u8], n: usize) { buf = &buf[n..]; }");
+}
