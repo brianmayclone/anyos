@@ -95,6 +95,53 @@ fn parse_struct_literal() {
 }
 
 #[test]
+fn parse_struct_literal_after_question_statement_in_if_block() {
+    let expr = parse_expr(
+        r#"
+        if meta.input.peek(Token![=]) {
+            let lifetimes = parse_lit_into_lifetimes(cx, &meta)?;
+            BorrowAttribute {
+                path: meta.path.clone(),
+                lifetimes: Some(lifetimes),
+            }
+        } else {
+            BorrowAttribute {
+                path: meta.path.clone(),
+                lifetimes: None,
+            }
+        }
+        "#,
+    );
+    assert!(matches!(expr, Expr::If(_, _, Some(_), _)));
+}
+
+#[test]
+fn parse_if_struct_literal_initializer_after_question_statement() {
+    let expr = parse_expr(
+        r#"
+        if meta.path == BORROW {
+            let borrow_attribute = if meta.input.peek(Token![=]) {
+                let lifetimes = parse_lit_into_lifetimes(cx, &meta)?;
+                BorrowAttribute {
+                    path: meta.path.clone(),
+                    lifetimes: Some(lifetimes),
+                }
+            } else {
+                BorrowAttribute {
+                    path: meta.path.clone(),
+                    lifetimes: None,
+                }
+            };
+            borrow.set(&meta.path, borrow_attribute);
+        } else {
+            other();
+        }
+        "#,
+    );
+    assert!(matches!(expr, Expr::If(_, _, Some(_), _)));
+}
+
+#[test]
 fn parse_index() {
     let expr = parse_expr("arr[0]");
     assert!(matches!(expr, Expr::Index(_, _, _)));

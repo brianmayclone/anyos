@@ -358,6 +358,26 @@ impl<'a> MirBuilder<'a> {
                     self.bind_let_pattern(inner, source, inner_ty, span);
                 }
             }
+            HirPattern::RefBinding(inner, mutability, _) => {
+                let ref_ty = TyKind::Ref(Box::new(ty.clone()), *mutability);
+                if let HirPattern::Ident(hir_id, name, _, _, _) = inner.as_ref() {
+                    let local = self.alloc_local(ref_ty, Some(*name), span);
+                    if let Some(&def_id) = self.resolve.resolutions.get(hir_id) {
+                        self.var_map.insert(def_id, local);
+                    }
+                    self.emit_stmt(Statement {
+                        kind: StatementKind::StorageLive(local),
+                        span,
+                    });
+                    let borrow_kind = match mutability {
+                        Mutability::Immutable => BorrowKind::Shared,
+                        Mutability::Mut => BorrowKind::Mutable,
+                    };
+                    self.emit_assign(Place::local(local), Rvalue::Ref(borrow_kind, source), span);
+                } else {
+                    self.bind_let_pattern(inner, source, ty, span);
+                }
+            }
             HirPattern::Wildcard(_)
             | HirPattern::Rest(_)
             | HirPattern::Literal(_, _)
@@ -772,15 +792,9 @@ impl<'a> MirBuilder<'a> {
             }
 
             HirExprKind::Deref(inner) => {
-                let op = self.lower_expr(inner);
-                // Put into a temp, then deref projection
-                let inner_ty = self.get_expr_ty(inner);
-                let tmp = self.alloc_temp(inner_ty, expr.span);
-                self.emit_assign(Place::local(tmp), Rvalue::Use(op), expr.span);
-                Operand::Copy(Place {
-                    local: tmp,
-                    projections: vec![Projection::Deref],
-                })
+                let mut place = self.lower_place(inner);
+                place.projections.push(Projection::Deref);
+                Operand::Copy(place)
             }
 
             HirExprKind::Struct(path, fields, _base) => {

@@ -1,7 +1,8 @@
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::format;
 use crate::util::path;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 // ════════════════════════════════════════════════════════════════
 //  Project type detection and metadata
@@ -10,12 +11,12 @@ use crate::util::path;
 /// Detected project type — determines available tasks, build commands, and UI behavior.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ProjectType {
-    Cargo,       // Rust project (Cargo.toml)
-    CMake,       // C/C++ project (CMakeLists.txt)
-    Make,        // Makefile-based project
-    Python,      // Python project (setup.py, pyproject.toml, requirements.txt)
-    NodeJS,      // Node.js project (package.json)
-    Generic,     // Unknown / single-file project
+    Cargo,   // Rust project (Cargo.toml)
+    CMake,   // C/C++ project (CMakeLists.txt)
+    Make,    // Makefile-based project
+    Python,  // Python project (setup.py, pyproject.toml, requirements.txt)
+    NodeJS,  // Node.js project (package.json)
+    Generic, // Unknown / single-file project
 }
 
 impl ProjectType {
@@ -114,6 +115,8 @@ pub struct Project {
     pub root: String,
     pub project_type: ProjectType,
     pub name: String,
+    pub configurations: Vec<BuildConfiguration>,
+    pub active_configuration: BuildConfiguration,
 
     // Cargo-specific
     pub cargo_targets: Vec<CargoTarget>,
@@ -137,14 +140,32 @@ pub enum BuildType {
     SingleFile,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum BuildConfiguration {
+    Debug,
+    Release,
+}
+
+impl BuildConfiguration {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Debug => "Debug",
+            Self::Release => "Release",
+        }
+    }
+}
+
 impl Project {
     /// Open a folder as a project — auto-detects type and parses metadata.
     pub fn open(root_path: &str) -> Self {
-        let project_type = detect_project_type(root_path);
+        let root = discover_project_root(root_path);
+        let project_type = detect_project_type(&root);
         let mut proj = Self {
-            root: String::from(root_path),
+            root: root.clone(),
             project_type,
-            name: String::from(path::basename(root_path)),
+            name: String::from(path::basename(&root)),
+            configurations: vec![BuildConfiguration::Debug, BuildConfiguration::Release],
+            active_configuration: BuildConfiguration::Debug,
             cargo_targets: Vec::new(),
             workspace_members: Vec::new(),
             is_workspace: false,
@@ -157,6 +178,30 @@ impl Project {
         };
         proj.scan_metadata();
         proj
+    }
+
+    pub fn display_context(&self) -> String {
+        format!(
+            "{} | {} | {}",
+            self.name,
+            self.project_type.display_name(),
+            self.active_configuration.display_name()
+        )
+    }
+
+    pub fn target_count(&self) -> usize {
+        self.cargo_targets.len()
+            + self.make_targets.len()
+            + self.npm_scripts.len()
+            + self
+                .workspace_members
+                .iter()
+                .map(|member| member.targets.len())
+                .sum::<usize>()
+    }
+
+    pub fn set_active_configuration(&mut self, config: BuildConfiguration) {
+        self.active_configuration = config;
     }
 
     /// Re-scan project metadata (e.g. after file changes).
@@ -210,7 +255,11 @@ impl Project {
         self.parse_cargo_bin_targets(&content);
 
         // If no explicit [[bin]], check for src/main.rs (implicit binary)
-        if self.cargo_targets.iter().all(|t| t.kind != TargetKind::Binary) {
+        if self
+            .cargo_targets
+            .iter()
+            .all(|t| t.kind != TargetKind::Binary)
+        {
             let main_rs = format!("{}/src/main.rs", self.root);
             if path::exists(&main_rs) {
                 self.cargo_targets.push(CargoTarget {
@@ -514,7 +563,9 @@ impl Project {
             if trimmed.starts_with("project(") || trimmed.starts_with("PROJECT(") {
                 if let Some(start) = trimmed.find('(') {
                     let rest = &trimmed[start + 1..];
-                    let name_end = rest.find(|c: char| c == ' ' || c == ')').unwrap_or(rest.len());
+                    let name_end = rest
+                        .find(|c: char| c == ' ' || c == ')')
+                        .unwrap_or(rest.len());
                     let project_name = &rest[..name_end];
                     if !project_name.is_empty() {
                         self.name = String::from(project_name);
@@ -640,11 +691,45 @@ pub fn detect_project_type(root: &str) -> ProjectType {
     }
 }
 
+/// Find the closest project root at or above the selected folder.
+///
+/// This lets users open `src/` inside a Rust crate and still get Cargo/ccargo
+/// tasks instead of falling back to single-file C tasks.
+pub fn discover_project_root(root: &str) -> String {
+    let mut current = String::from(root.trim_end_matches('/'));
+    if current.is_empty() {
+        current = String::from("/");
+    }
+
+    loop {
+        if has_project_marker(&current) {
+            return current;
+        }
+        let parent = path::parent(&current);
+        if parent == current || parent == "." || parent.is_empty() {
+            break;
+        }
+        current = String::from(parent);
+    }
+
+    String::from(root)
+}
+
+fn has_project_marker(root: &str) -> bool {
+    path::exists(&format!("{}/Cargo.toml", root))
+        || path::exists(&format!("{}/CMakeLists.txt", root))
+        || path::exists(&format!("{}/Makefile", root))
+        || path::exists(&format!("{}/makefile", root))
+        || path::exists(&format!("{}/GNUmakefile", root))
+        || path::exists(&format!("{}/setup.py", root))
+        || path::exists(&format!("{}/pyproject.toml", root))
+        || path::exists(&format!("{}/requirements.txt", root))
+        || path::exists(&format!("{}/package.json", root))
+}
+
 /// Legacy compat: detect_build_system
 pub fn detect_build_system(root: &str) -> BuildType {
-    if path::exists(&format!("{}/Makefile", root))
-        || path::exists(&format!("{}/makefile", root))
-    {
+    if path::exists(&format!("{}/Makefile", root)) || path::exists(&format!("{}/makefile", root)) {
         BuildType::Make
     } else {
         BuildType::SingleFile

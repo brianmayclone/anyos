@@ -1,6 +1,6 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 #[allow(unused_imports)]
 use libanyui_client as ui;
 
@@ -92,9 +92,7 @@ impl SymbolsPanel {
 
         // Add type definitions in groups
         for (kind, group_name) in kind_groups {
-            let group_symbols: Vec<&Symbol> = symbols.iter()
-                .filter(|s| s.kind == *kind)
-                .collect();
+            let group_symbols: Vec<&Symbol> = symbols.iter().filter(|s| s.kind == *kind).collect();
 
             if group_symbols.is_empty() {
                 continue;
@@ -114,16 +112,21 @@ impl SymbolsPanel {
                 self.symbol_lines.push(sym.line);
 
                 // Add methods that belong to this type
-                if sym.kind == SymbolKind::Impl || sym.kind == SymbolKind::Struct
+                if sym.kind == SymbolKind::Impl
+                    || sym.kind == SymbolKind::Struct
                     || sym.kind == SymbolKind::Class
                 {
-                    let methods: Vec<&Symbol> = symbols.iter()
-                        .filter(|s| s.kind == SymbolKind::Method && s.parent.as_deref() == Some(&sym.name))
+                    let methods: Vec<&Symbol> = symbols
+                        .iter()
+                        .filter(|s| {
+                            s.kind == SymbolKind::Method && s.parent.as_deref() == Some(&sym.name)
+                        })
                         .collect();
                     for method in &methods {
                         let m_label = format!("  {} {}", kind_prefix(method.kind), method.name);
                         let m_node = self.tree.add_child(node, &m_label);
-                        self.tree.set_node_text_color(m_node, method.kind.icon_color());
+                        self.tree
+                            .set_node_text_color(m_node, method.kind.icon_color());
                         self.symbol_lines.push(method.line);
                     }
                 }
@@ -131,7 +134,8 @@ impl SymbolsPanel {
         }
 
         // Add standalone functions (not methods)
-        let functions: Vec<&Symbol> = symbols.iter()
+        let functions: Vec<&Symbol> = symbols
+            .iter()
             .filter(|s| s.kind == SymbolKind::Function)
             .collect();
 
@@ -139,7 +143,8 @@ impl SymbolsPanel {
             let label = format!("Functions ({})", functions.len());
             let fn_node = self.tree.add_root(&label);
             self.tree.set_node_style(fn_node, STYLE_BOLD);
-            self.tree.set_node_text_color(fn_node, SymbolKind::Function.icon_color());
+            self.tree
+                .set_node_text_color(fn_node, SymbolKind::Function.icon_color());
             self.symbol_lines.push(0);
             self.tree.set_expanded(fn_node, true);
 
@@ -152,7 +157,8 @@ impl SymbolsPanel {
         }
 
         // Add constants
-        let constants: Vec<&Symbol> = symbols.iter()
+        let constants: Vec<&Symbol> = symbols
+            .iter()
             .filter(|s| s.kind == SymbolKind::Constant)
             .collect();
 
@@ -160,7 +166,8 @@ impl SymbolsPanel {
             let label = format!("Constants ({})", constants.len());
             let const_node = self.tree.add_root(&label);
             self.tree.set_node_style(const_node, STYLE_BOLD);
-            self.tree.set_node_text_color(const_node, SymbolKind::Constant.icon_color());
+            self.tree
+                .set_node_text_color(const_node, SymbolKind::Constant.icon_color());
             self.symbol_lines.push(0);
 
             for sym in &constants {
@@ -172,7 +179,8 @@ impl SymbolsPanel {
         }
 
         // Add modules
-        let modules: Vec<&Symbol> = symbols.iter()
+        let modules: Vec<&Symbol> = symbols
+            .iter()
             .filter(|s| s.kind == SymbolKind::Module)
             .collect();
 
@@ -180,7 +188,8 @@ impl SymbolsPanel {
             let label = format!("Modules ({})", modules.len());
             let mod_node = self.tree.add_root(&label);
             self.tree.set_node_style(mod_node, STYLE_BOLD);
-            self.tree.set_node_text_color(mod_node, SymbolKind::Module.icon_color());
+            self.tree
+                .set_node_text_color(mod_node, SymbolKind::Module.icon_color());
             self.symbol_lines.push(0);
 
             for sym in &modules {
@@ -192,7 +201,8 @@ impl SymbolsPanel {
         }
 
         // Add macros
-        let macros: Vec<&Symbol> = symbols.iter()
+        let macros: Vec<&Symbol> = symbols
+            .iter()
             .filter(|s| s.kind == SymbolKind::Macro)
             .collect();
 
@@ -200,7 +210,8 @@ impl SymbolsPanel {
             let label = format!("Macros ({})", macros.len());
             let macro_node = self.tree.add_root(&label);
             self.tree.set_node_style(macro_node, STYLE_BOLD);
-            self.tree.set_node_text_color(macro_node, SymbolKind::Macro.icon_color());
+            self.tree
+                .set_node_text_color(macro_node, SymbolKind::Macro.icon_color());
             self.symbol_lines.push(0);
 
             for sym in &macros {
@@ -214,7 +225,10 @@ impl SymbolsPanel {
 
     /// Get the line number for a tree node selection.
     pub fn line_for_node(&self, index: u32) -> Option<u32> {
-        self.symbol_lines.get(index as usize).copied().filter(|l| *l > 0)
+        self.symbol_lines
+            .get(index as usize)
+            .copied()
+            .filter(|l| *l > 0)
     }
 
     /// Clear the outline.
@@ -228,8 +242,8 @@ impl SymbolsPanel {
 /// Small prefix icon per symbol kind.
 fn kind_prefix(kind: SymbolKind) -> &'static str {
     match kind {
-        SymbolKind::Function => "\u{0192}",  // ƒ
-        SymbolKind::Method => "\u{0192}",    // ƒ
+        SymbolKind::Function => "\u{0192}", // ƒ
+        SymbolKind::Method => "\u{0192}",   // ƒ
         SymbolKind::Struct => "S",
         SymbolKind::Enum => "E",
         SymbolKind::Trait => "T",
@@ -239,9 +253,9 @@ fn kind_prefix(kind: SymbolKind) -> &'static str {
         SymbolKind::Constant => "#",
         SymbolKind::Variable => "$",
         SymbolKind::Module => "M",
-        SymbolKind::Import => "\u{2192}",    // →
+        SymbolKind::Import => "\u{2192}", // →
         SymbolKind::Macro => "!",
         SymbolKind::TypeAlias => "T",
-        SymbolKind::Field => "\u{2022}",     // •
+        SymbolKind::Field => "\u{2022}", // •
     }
 }

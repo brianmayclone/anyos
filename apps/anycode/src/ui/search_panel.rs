@@ -1,6 +1,6 @@
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 use libanyui_client as ui;
 
 use crate::logic::search::SearchResult;
@@ -113,11 +113,13 @@ impl SearchPanel {
         self.result_paths.clear();
 
         if results.is_empty() {
-            self.status_label.set_text(&format!("No results for \"{}\"", query));
+            self.status_label
+                .set_text(&format!("No results for \"{}\"", query));
             return;
         }
 
-        self.status_label.set_text(&format!("{} results in {} files",
+        self.status_label.set_text(&format!(
+            "{} results in {} files",
             results.len(),
             count_unique_files(results),
         ));
@@ -131,7 +133,10 @@ impl SearchPanel {
             if result.file_path != current_file {
                 // New file group
                 current_file = result.file_path.clone();
-                file_count = results.iter().filter(|r| r.file_path == current_file).count() as u32;
+                file_count = results
+                    .iter()
+                    .filter(|r| r.file_path == current_file)
+                    .count() as u32;
 
                 let basename = crate::util::path::basename(&result.file_path);
                 let label = format!("{} ({})", basename, file_count);
@@ -145,8 +150,10 @@ impl SearchPanel {
             // Add match line
             let line_label = format!("  {}:  {}", result.line_number, result.line_text.trim());
             let node = self.results_tree.add_child(file_node, &line_label);
-            self.results_tree.set_node_text_color(node, tc.text_secondary);
-            self.result_paths.push((result.file_path.clone(), result.line_number));
+            self.results_tree
+                .set_node_text_color(node, tc.text_secondary);
+            self.result_paths
+                .push((result.file_path.clone(), result.line_number));
         }
     }
 
@@ -159,7 +166,9 @@ impl SearchPanel {
 
     /// Get the file path and line number for a tree node selection.
     pub fn path_for_node(&self, index: u32) -> Option<(&str, u32)> {
-        self.result_paths.get(index as usize).map(|(p, l)| (p.as_str(), *l))
+        self.result_paths
+            .get(index as usize)
+            .map(|(p, l)| (p.as_str(), *l))
     }
 
     /// Get the search query text.

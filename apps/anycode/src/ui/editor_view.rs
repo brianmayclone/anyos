@@ -13,6 +13,10 @@ struct EditorTab {
 pub struct EditorView {
     pub tab_bar: ui::TabBar,
     pub panel: ui::View,
+    pub context_menu: ui::ContextMenu,
+    pub completion_panel: ui::View,
+    pub completion_list: ui::ListBox,
+    pub completion_detail: ui::Label,
     breadcrumb_bar: ui::View,
     breadcrumb_label: ui::Label,
     editors: Vec<EditorTab>,
@@ -43,9 +47,46 @@ impl EditorView {
         breadcrumb_label.set_text_color(tc.text_secondary);
         breadcrumb_bar.add(&breadcrumb_label);
 
+        let context_menu = ui::ContextMenu::new(
+            "Complete Word|Go to Definition|Peek Symbol|Fold Block|Cut|Copy|Paste|Select All|Explain with AI",
+        );
+        panel.add(&context_menu);
+
+        let completion_panel = ui::View::new();
+        completion_panel.set_position(54, 62);
+        completion_panel.set_size(360, 238);
+        completion_panel.set_color(tc.sidebar_bg);
+        completion_panel.set_visible(false);
+        panel.add(&completion_panel);
+
+        let completion_title = ui::Label::new("IntelliSense");
+        completion_title.set_dock(ui::DOCK_TOP);
+        completion_title.set_size(360, 24);
+        completion_title.set_font_size(11);
+        completion_title.set_text_color(tc.text_secondary);
+        completion_title.set_margin(10, 5, 0, 0);
+        completion_panel.add(&completion_title);
+
+        let completion_detail = ui::Label::new("");
+        completion_detail.set_dock(ui::DOCK_BOTTOM);
+        completion_detail.set_size(360, 42);
+        completion_detail.set_font_size(11);
+        completion_detail.set_text_color(tc.text_secondary);
+        completion_detail.set_margin(10, 4, 10, 6);
+        completion_panel.add(&completion_detail);
+
+        let completion_list = ui::ListBox::new("");
+        completion_list.set_dock(ui::DOCK_FILL);
+        completion_list.set_color(tc.editor_bg);
+        completion_panel.add(&completion_list);
+
         Self {
             tab_bar,
             panel,
+            context_menu,
+            completion_panel,
+            completion_list,
+            completion_detail,
             breadcrumb_bar,
             breadcrumb_label,
             editors: Vec::new(),
@@ -54,7 +95,12 @@ impl EditorView {
 
     /// Create a new TextEditor for an opened file and add it to the panel.
     /// Returns the editor index.
-    pub fn create_editor(&mut self, file_path: &str, content: Option<&[u8]>, config: &Config) -> usize {
+    pub fn create_editor(
+        &mut self,
+        file_path: &str,
+        content: Option<&[u8]>,
+        config: &Config,
+    ) -> usize {
         self.create_editor_with_mode(file_path, content, config, false)
     }
 
@@ -74,6 +120,7 @@ impl EditorView {
         editor.set_dock(ui::DOCK_FILL);
         config.apply_to_editor(&editor);
         editor.set_read_only(read_only);
+        editor.set_context_menu(&self.context_menu);
 
         // Load content
         if let Some(data) = content {
@@ -82,7 +129,11 @@ impl EditorView {
 
         // Load syntax highlighting
         let filename = path::basename(file_path);
-        anyos_std::println!("[SYNTAX] syntax_dir='{}', filename='{}'", config.syntax_dir, filename);
+        anyos_std::println!(
+            "[SYNTAX] syntax_dir='{}', filename='{}'",
+            config.syntax_dir,
+            filename
+        );
         if let Some(syn_path) = syntax_map::syntax_for_filename(&config.syntax_dir, filename) {
             anyos_std::println!("[SYNTAX] loading syn file: '{}'", syn_path);
             editor.load_syntax(&syn_path);
@@ -135,6 +186,21 @@ impl EditorView {
         for tab in &self.editors {
             config.apply_to_editor(&tab.editor);
         }
+    }
+
+    pub fn show_completions(&self, items: &str, detail: &str) {
+        self.completion_list.set_items(items);
+        self.completion_detail.set_text(detail);
+        self.completion_panel.set_visible(true);
+        self.completion_panel.bring_to_front();
+    }
+
+    pub fn hide_completions(&self) {
+        self.completion_panel.set_visible(false);
+    }
+
+    pub fn set_completion_detail(&self, detail: &str) {
+        self.completion_detail.set_text(detail);
     }
 
     /// Get the text content of an editor at the given index.

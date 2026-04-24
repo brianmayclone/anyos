@@ -1,6 +1,6 @@
-use crate::{Control, Widget, lib, KIND_TREE_VIEW};
 use crate::events;
 use crate::events::SelectionChangedEvent;
+use crate::{lib, Control, Widget, KIND_TREE_VIEW};
 
 leaf_control!(TreeView, KIND_TREE_VIEW);
 
@@ -13,12 +13,16 @@ impl TreeView {
     pub fn new(w: u32, h: u32) -> Self {
         let id = (lib().create_control)(KIND_TREE_VIEW, core::ptr::null(), 0);
         (lib().set_size)(id, w, h);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Wrap an existing control ID as a TreeView.
     pub fn from_id(id: u32) -> Self {
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Add a root-level node. Returns the node index.
@@ -49,7 +53,13 @@ impl TreeView {
     /// Set the icon of a node from an ICO file.
     pub fn set_node_icon_from_file(&self, index: u32, path: &str, size: u32) {
         if let Some(icon) = crate::Icon::load(path, size) {
-            (lib().treeview_set_node_icon)(self.ctrl.id, index, icon.pixels.as_ptr(), icon.width, icon.height);
+            (lib().treeview_set_node_icon)(
+                self.ctrl.id,
+                index,
+                icon.pixels.as_ptr(),
+                icon.width,
+                icon.height,
+            );
         }
     }
 

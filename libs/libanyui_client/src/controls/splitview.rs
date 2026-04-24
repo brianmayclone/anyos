@@ -1,12 +1,16 @@
-use crate::{Container, Control, Widget, lib, events, KIND_SPLIT_VIEW};
 use crate::events::ValueChangedEvent;
+use crate::{events, lib, Container, Control, Widget, KIND_SPLIT_VIEW};
 
 container_control!(SplitView, KIND_SPLIT_VIEW);
 
 impl SplitView {
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_SPLIT_VIEW, core::ptr::null(), 0);
-        Self { container: Container { ctrl: Control { id } } }
+        Self {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
     }
 
     pub fn set_orientation(&self, orientation: u32) {

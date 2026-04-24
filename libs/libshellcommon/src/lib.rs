@@ -31,6 +31,66 @@ pub const HISTORY_MAX: usize = 500;
 /// Default history file name (relative to $HOME).
 const HISTORY_FILENAME: &str = ".anysh_history";
 
+#[derive(Clone, Copy, PartialEq)]
+pub enum LogicalOp {
+    None,
+    And,
+    Or,
+    Semicolon,
+}
+
+/// Split a command line on unquoted `&&`, `||`, and `;` list operators.
+pub fn split_logical_operators(line: &str) -> Option<Vec<(LogicalOp, String)>> {
+    let bytes = line.as_bytes();
+    let len = bytes.len();
+    let mut result: Vec<(LogicalOp, String)> = Vec::new();
+    let mut current_op = LogicalOp::None;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut found_op = false;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    while i < len {
+        match bytes[i] {
+            b'\'' if !in_double_quote => { in_single_quote = !in_single_quote; i += 1; }
+            b'"' if !in_single_quote => { in_double_quote = !in_double_quote; i += 1; }
+            b'\\' if !in_single_quote => { i += 2; }
+            b'&' if !in_single_quote && !in_double_quote && i + 1 < len && bytes[i + 1] == b'&' => {
+                result.push((current_op, String::from(line[start..i].trim())));
+                current_op = LogicalOp::And;
+                i += 2;
+                start = i;
+                found_op = true;
+            }
+            b'|' if !in_single_quote && !in_double_quote && i + 1 < len && bytes[i + 1] == b'|' => {
+                result.push((current_op, String::from(line[start..i].trim())));
+                current_op = LogicalOp::Or;
+                i += 2;
+                start = i;
+                found_op = true;
+            }
+            b';' if !in_single_quote && !in_double_quote => {
+                result.push((current_op, String::from(line[start..i].trim())));
+                current_op = LogicalOp::Semicolon;
+                i += 1;
+                start = i;
+                found_op = true;
+            }
+            _ => i += 1,
+        }
+    }
+
+    if !found_op {
+        return None;
+    }
+    let tail = line[start..].trim();
+    if !tail.is_empty() {
+        result.push((current_op, String::from(tail)));
+    }
+    Some(result)
+}
+
 // ─── File / Directory Helpers ───────────────────────────────────────────────
 
 /// Read an entire file into a buffer.  Returns the number of bytes read.
@@ -75,6 +135,1178 @@ pub fn list_dir_entries(path: &str) -> Vec<(String, bool)> {
         }
     }
     entries
+}
+
+// ─── Shell Script Loading ───────────────────────────────────────────────────
+
+/// Parsed shell script ready for execution by a frontend shell.
+pub struct ShellScript {
+    pub path: String,
+    pub commands: Vec<String>,
+}
+
+#[derive(Clone)]
+pub enum ShellStmt {
+    Command(String),
+    Not(String),
+    If {
+        branches: Vec<(String, Vec<ShellStmt>)>,
+        else_branch: Vec<ShellStmt>,
+    },
+    While {
+        condition: String,
+        body: Vec<ShellStmt>,
+    },
+    Until {
+        condition: String,
+        body: Vec<ShellStmt>,
+    },
+    For {
+        var: String,
+        words: String,
+        body: Vec<ShellStmt>,
+    },
+    Case {
+        word: String,
+        arms: Vec<(Vec<String>, Vec<ShellStmt>)>,
+    },
+    Function {
+        name: String,
+        body: Vec<ShellStmt>,
+    },
+    Group(Vec<ShellStmt>),
+    Subshell(Vec<ShellStmt>),
+    Break,
+    Continue,
+    Return(String),
+}
+
+#[derive(Clone)]
+pub enum ScriptControl {
+    None,
+    Break,
+    Continue,
+    Exit,
+    Return,
+}
+
+pub struct ScriptExecResult {
+    pub status: u32,
+    pub control: ScriptControl,
+}
+
+pub trait ScriptExecutor {
+    fn run_command(&mut self, command: &str) -> ScriptExecResult;
+    fn set_var(&mut self, name: &str, value: &str);
+    fn unset_var(&mut self, name: &str) {
+        anyos_std::env::unset(name);
+    }
+    fn get_var(&mut self, name: &str) -> Option<String> {
+        let mut buf = [0u8; 512];
+        let len = anyos_std::env::get(name, &mut buf);
+        if len == u32::MAX {
+            return None;
+        }
+        core::str::from_utf8(&buf[..len as usize]).ok().map(String::from)
+    }
+    fn expand_words(&mut self, words: &str) -> Vec<String>;
+    fn error(&mut self, message: &str);
+}
+
+#[derive(Clone)]
+struct ShellFunction {
+    name: String,
+    body: Vec<ShellStmt>,
+}
+
+/// Errors returned while resolving or loading a shell script.
+pub enum ScriptError {
+    EmptyPath,
+    NotFound(String),
+    IsDirectory(String),
+    ReadFailed(String),
+    InvalidUtf8(String),
+    Parse(String),
+}
+
+impl ScriptError {
+    pub fn message(&self) -> String {
+        match self {
+            ScriptError::EmptyPath => String::from("sh: missing script path"),
+            ScriptError::NotFound(path) => format!("sh: {}: not found", path),
+            ScriptError::IsDirectory(path) => format!("sh: {}: is a directory", path),
+            ScriptError::ReadFailed(path) => format!("sh: {}: cannot read", path),
+            ScriptError::InvalidUtf8(path) => format!("sh: {}: invalid UTF-8", path),
+            ScriptError::Parse(message) => format!("sh: {}", message),
+        }
+    }
+}
+
+/// Return true for paths/commands that should be treated as shell scripts.
+pub fn is_shell_script_name(name: &str) -> bool {
+    name.ends_with(".sh")
+}
+
+/// Resolve a script path against the current working directory.
+pub fn resolve_script_path(path: &str, cwd: &str) -> String {
+    let expanded = anyos_std::shell::expand_tilde(path);
+    let p = expanded.as_str();
+    if p.starts_with('/') {
+        normalize_path(p)
+    } else if cwd == "/" {
+        normalize_path(&format!("/{}", p))
+    } else {
+        normalize_path(&format!("{}/{}", cwd, p))
+    }
+}
+
+/// Load and parse a UTF-8 shell script file.
+pub fn load_shell_script(path: &str, cwd: &str) -> Result<ShellScript, ScriptError> {
+    if path.trim().is_empty() {
+        return Err(ScriptError::EmptyPath);
+    }
+
+    let resolved = resolve_script_path(path.trim(), cwd);
+    let mut stat_buf = [0u32; 7];
+    if fs::stat(&resolved, &mut stat_buf) != 0 {
+        return Err(ScriptError::NotFound(resolved));
+    }
+    if stat_buf[0] == 1 {
+        return Err(ScriptError::IsDirectory(resolved));
+    }
+
+    let bytes = read_file_to_vec(&resolved)
+        .ok_or_else(|| ScriptError::ReadFailed(resolved.clone()))?;
+    let text = core::str::from_utf8(&bytes)
+        .map_err(|_| ScriptError::InvalidUtf8(resolved.clone()))?;
+    Ok(ShellScript {
+        path: resolved,
+        commands: parse_shell_script(text),
+    })
+}
+
+/// Parse shell script text into executable command lines.
+///
+/// This intentionally stays small and frontend-agnostic: shebangs, comments,
+/// blank lines, CRLF, and trailing `\` line continuations are handled here;
+/// command execution, builtins, pipes, redirects, and job control remain in the
+/// caller so Terminal.app and textmode_console can keep their own I/O model.
+pub fn parse_shell_script(text: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mut pending = String::new();
+
+    for (idx, raw) in text.split('\n').enumerate() {
+        let line = raw.trim_end_matches('\r');
+        if idx == 0 && line.starts_with("#!") {
+            continue;
+        }
+
+        let line = strip_inline_comment(line).trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if line_has_continuation(line) {
+            let continued = line[..line.len() - 1].trim_end();
+            pending.push_str(continued);
+            pending.push(' ');
+            continue;
+        }
+
+        if pending.is_empty() {
+            commands.push(String::from(line));
+        } else {
+            pending.push_str(line);
+            let cmd = pending.trim();
+            if !cmd.is_empty() {
+                commands.push(String::from(cmd));
+            }
+            pending.clear();
+        }
+    }
+
+    let tail = pending.trim();
+    if !tail.is_empty() {
+        commands.push(String::from(tail));
+    }
+
+    commands
+}
+
+/// Join parsed script commands into one shell chain separated by semicolons.
+pub fn script_commands_to_chain(commands: &[String]) -> String {
+    let mut out = String::new();
+    for (idx, cmd) in commands.iter().enumerate() {
+        if idx > 0 {
+            out.push_str("; ");
+        }
+        out.push_str(cmd);
+    }
+    out
+}
+
+pub fn parse_shell_program(commands: &[String]) -> Result<Vec<ShellStmt>, ScriptError> {
+    let commands = normalize_script_commands(commands);
+    let mut idx = 0usize;
+    let (program, stop) = parse_shell_block(&commands, &mut idx, &[]);
+    if let Some(token) = stop {
+        return Err(ScriptError::Parse(format!("unexpected '{}'", token)));
+    }
+    Ok(program)
+}
+
+pub fn run_shell_program(
+    program: &[ShellStmt],
+    executor: &mut dyn ScriptExecutor,
+) -> ScriptExecResult {
+    let mut functions = Vec::new();
+    run_shell_block(program, executor, &mut functions)
+}
+
+fn run_shell_block(
+    program: &[ShellStmt],
+    executor: &mut dyn ScriptExecutor,
+    functions: &mut Vec<ShellFunction>,
+) -> ScriptExecResult {
+    let mut status = 0u32;
+    for stmt in program {
+        let result = run_shell_stmt(stmt, executor, functions);
+        status = result.status;
+        executor.set_var("?", &format!("{}", status));
+        match result.control {
+            ScriptControl::None => {}
+            _ => return result,
+        }
+    }
+    ScriptExecResult { status, control: ScriptControl::None }
+}
+
+fn run_shell_stmt(
+    stmt: &ShellStmt,
+    executor: &mut dyn ScriptExecutor,
+    functions: &mut Vec<ShellFunction>,
+) -> ScriptExecResult {
+    match stmt {
+        ShellStmt::Command(command) => {
+            if let Some(result) = run_function_call(command, executor, functions) {
+                return result;
+            }
+            executor.run_command(command)
+        }
+        ShellStmt::Not(command) => {
+            let result = executor.run_command(command);
+            match result.control {
+                ScriptControl::None => ScriptExecResult {
+                    status: if result.status == 0 { 1 } else { 0 },
+                    control: ScriptControl::None,
+                },
+                _ => result,
+            }
+        }
+        ShellStmt::If { branches, else_branch } => {
+            for (condition, body) in branches {
+                let cond = executor.run_command(condition);
+                if matches!(cond.control, ScriptControl::Exit | ScriptControl::Return) {
+                    return cond;
+                }
+                if cond.status == 0 {
+                    return run_shell_block(body, executor, functions);
+                }
+            }
+            run_shell_block(else_branch, executor, functions)
+        }
+        ShellStmt::While { condition, body } => {
+            let mut status = 0u32;
+            loop {
+                let cond = executor.run_command(condition);
+                if matches!(cond.control, ScriptControl::Exit | ScriptControl::Return) {
+                    return cond;
+                }
+                if cond.status != 0 {
+                    return ScriptExecResult { status, control: ScriptControl::None };
+                }
+                let result = run_shell_block(body, executor, functions);
+                status = result.status;
+                match result.control {
+                    ScriptControl::None => {}
+                    ScriptControl::Continue => continue,
+                    ScriptControl::Break => return ScriptExecResult { status: 0, control: ScriptControl::None },
+                    ScriptControl::Exit => return result,
+                    ScriptControl::Return => return result,
+                }
+            }
+        }
+        ShellStmt::Until { condition, body } => {
+            let mut status = 0u32;
+            loop {
+                let cond = executor.run_command(condition);
+                if matches!(cond.control, ScriptControl::Exit | ScriptControl::Return) {
+                    return cond;
+                }
+                if cond.status == 0 {
+                    return ScriptExecResult { status, control: ScriptControl::None };
+                }
+                let result = run_shell_block(body, executor, functions);
+                status = result.status;
+                match result.control {
+                    ScriptControl::None => {}
+                    ScriptControl::Continue => continue,
+                    ScriptControl::Break => return ScriptExecResult { status: 0, control: ScriptControl::None },
+                    ScriptControl::Exit | ScriptControl::Return => return result,
+                }
+            }
+        }
+        ShellStmt::For { var, words, body } => {
+            let mut status = 0u32;
+            let values = executor.expand_words(words);
+            for value in values {
+                executor.set_var(var, &value);
+                let result = run_shell_block(body, executor, functions);
+                status = result.status;
+                match result.control {
+                    ScriptControl::None => {}
+                    ScriptControl::Continue => continue,
+                    ScriptControl::Break => return ScriptExecResult { status: 0, control: ScriptControl::None },
+                    ScriptControl::Exit => return result,
+                    ScriptControl::Return => return result,
+                }
+            }
+            ScriptExecResult { status, control: ScriptControl::None }
+        }
+        ShellStmt::Case { word, arms } => {
+            let expanded = executor.expand_words(word);
+            let subject_buf;
+            let subject = if let Some(first) = expanded.first() {
+                first.as_str()
+            } else {
+                subject_buf = String::new();
+                subject_buf.as_str()
+            };
+            for (patterns, body) in arms {
+                if patterns.iter().any(|p| shell_pattern_match(subject, p.trim())) {
+                    return run_shell_block(body, executor, functions);
+                }
+            }
+            ScriptExecResult { status: 0, control: ScriptControl::None }
+        }
+        ShellStmt::Function { name, body } => {
+            if let Some(existing) = functions.iter_mut().find(|f| f.name == *name) {
+                existing.body = body.clone();
+            } else {
+                functions.push(ShellFunction { name: name.clone(), body: body.clone() });
+            }
+            ScriptExecResult { status: 0, control: ScriptControl::None }
+        }
+        ShellStmt::Group(body) => run_shell_block(body, executor, functions),
+        ShellStmt::Subshell(body) => {
+            let mut local_functions = functions.clone();
+            run_shell_block(body, executor, &mut local_functions)
+        }
+        ShellStmt::Break => ScriptExecResult { status: 0, control: ScriptControl::Break },
+        ShellStmt::Continue => ScriptExecResult { status: 0, control: ScriptControl::Continue },
+        ShellStmt::Return(arg) => {
+            let status = if arg.trim().is_empty() {
+                executor.get_var("?").and_then(|s| s.parse::<u32>().ok()).unwrap_or(0)
+            } else {
+                executor.expand_words(arg).first()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0)
+            };
+            ScriptExecResult { status, control: ScriptControl::Return }
+        }
+    }
+}
+
+fn parse_shell_block(
+    commands: &[String],
+    idx: &mut usize,
+    stop_words: &[&str],
+) -> (Vec<ShellStmt>, Option<String>) {
+    let mut program = Vec::new();
+    while *idx < commands.len() {
+        let line = commands[*idx].trim();
+        if let Some(stop) = matching_stop_word(line, stop_words) {
+            return (program, Some(String::from(stop)));
+        }
+        if line.is_empty() {
+            *idx += 1;
+            continue;
+        }
+
+        if let Some(condition) = parse_header(line, "if", "then") {
+            *idx += 1;
+            skip_standalone_terminator(commands, idx, "then");
+            let (then_branch, stop) = parse_shell_block(commands, idx, &["elif", "else", "fi"]);
+            let mut branches = Vec::new();
+            branches.push((condition, then_branch));
+            let mut else_branch = Vec::new();
+            let mut current_stop = stop;
+
+            while let Some(stop_word) = current_stop {
+                if stop_word == "elif" {
+                    let elif_line = commands[*idx].trim();
+                    let elif_condition = parse_header(elif_line, "elif", "then")
+                        .unwrap_or_else(|| String::from(""));
+                    *idx += 1;
+                    skip_standalone_terminator(commands, idx, "then");
+                    let (branch, next_stop) = parse_shell_block(commands, idx, &["elif", "else", "fi"]);
+                    branches.push((elif_condition, branch));
+                    current_stop = next_stop;
+                    continue;
+                }
+                if stop_word == "else" {
+                    *idx += 1;
+                    let (branch, next_stop) = parse_shell_block(commands, idx, &["fi"]);
+                    else_branch = branch;
+                    current_stop = next_stop;
+                    continue;
+                }
+                if stop_word == "fi" {
+                    *idx += 1;
+                    break;
+                }
+                break;
+            }
+
+            program.push(ShellStmt::If { branches, else_branch });
+            continue;
+        }
+
+        if let Some(condition) = parse_header(line, "while", "do") {
+            *idx += 1;
+            skip_standalone_terminator(commands, idx, "do");
+            let (body, stop) = parse_shell_block(commands, idx, &["done"]);
+            if stop.is_some() {
+                *idx += 1;
+            }
+            program.push(ShellStmt::While { condition, body });
+            continue;
+        }
+
+        if let Some(condition) = parse_header(line, "until", "do") {
+            *idx += 1;
+            skip_standalone_terminator(commands, idx, "do");
+            let (body, stop) = parse_shell_block(commands, idx, &["done"]);
+            if stop.is_some() {
+                *idx += 1;
+            }
+            program.push(ShellStmt::Until { condition, body });
+            continue;
+        }
+
+        if let Some((var, words)) = parse_for_header(line) {
+            *idx += 1;
+            skip_standalone_terminator(commands, idx, "do");
+            let (body, stop) = parse_shell_block(commands, idx, &["done"]);
+            if stop.is_some() {
+                *idx += 1;
+            }
+            program.push(ShellStmt::For { var, words, body });
+            continue;
+        }
+
+        if let Some(word) = parse_header(line, "case", "in") {
+            *idx += 1;
+            skip_standalone_terminator(commands, idx, "in");
+            let arms = parse_case_arms(commands, idx);
+            program.push(ShellStmt::Case { word, arms });
+            continue;
+        }
+
+        if let Some((name, inline_open)) = parse_function_header(line) {
+            *idx += 1;
+            if !inline_open {
+                skip_standalone_terminator(commands, idx, "{");
+            }
+            let (body, stop) = parse_shell_block(commands, idx, &["}"]);
+            if stop.is_some() {
+                *idx += 1;
+            }
+            program.push(ShellStmt::Function { name, body });
+            continue;
+        }
+
+        if line == "{" {
+            *idx += 1;
+            let (body, stop) = parse_shell_block(commands, idx, &["}"]);
+            if stop.is_some() {
+                *idx += 1;
+            }
+            program.push(ShellStmt::Group(body));
+            continue;
+        }
+
+        if line == "(" {
+            *idx += 1;
+            let (body, stop) = parse_shell_block(commands, idx, &[")"]);
+            if stop.is_some() {
+                *idx += 1;
+            }
+            program.push(ShellStmt::Subshell(body));
+            continue;
+        }
+
+        if let Some(command) = line.strip_prefix("! ") {
+            program.push(ShellStmt::Not(String::from(command.trim())));
+            *idx += 1;
+            continue;
+        }
+
+        if line == "break" {
+            program.push(ShellStmt::Break);
+            *idx += 1;
+            continue;
+        }
+
+        if line == "continue" {
+            program.push(ShellStmt::Continue);
+            *idx += 1;
+            continue;
+        }
+
+        if line == "return" || line.starts_with("return ") {
+            let arg = line.strip_prefix("return").unwrap_or("").trim();
+            program.push(ShellStmt::Return(String::from(arg)));
+            *idx += 1;
+            continue;
+        }
+
+        program.push(ShellStmt::Command(String::from(line)));
+        *idx += 1;
+    }
+    (program, None)
+}
+
+fn run_function_call(
+    command: &str,
+    executor: &mut dyn ScriptExecutor,
+    functions: &mut Vec<ShellFunction>,
+) -> Option<ScriptExecResult> {
+    let (name, rest) = first_word_and_rest(command);
+    if name.is_empty() {
+        return None;
+    }
+    let body = functions.iter()
+        .find(|f| f.name == name)
+        .map(|f| f.body.clone())?;
+
+    let args = executor.expand_words(rest);
+    let frame = save_positional_args(executor);
+    set_function_args(executor, &name, &args);
+    let result = run_shell_block(&body, executor, functions);
+    restore_positional_args(executor, frame);
+
+    Some(match result.control {
+        ScriptControl::Return => ScriptExecResult { status: result.status, control: ScriptControl::None },
+        _ => result,
+    })
+}
+
+fn first_word_and_rest(command: &str) -> (String, &str) {
+    let trimmed = command.trim();
+    let bytes = trimmed.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    (String::from(&trimmed[..i]), trimmed[i..].trim())
+}
+
+struct PositionalFrame {
+    zero: Option<String>,
+    count: Option<String>,
+    all: Option<String>,
+    args: Vec<Option<String>>,
+}
+
+fn save_positional_args(executor: &mut dyn ScriptExecutor) -> PositionalFrame {
+    let mut args = Vec::new();
+    for i in 1..=9 {
+        args.push(executor.get_var(&format!("{}", i)));
+    }
+    PositionalFrame {
+        zero: executor.get_var("0"),
+        count: executor.get_var("#"),
+        all: executor.get_var("@"),
+        args,
+    }
+}
+
+fn restore_positional_args(executor: &mut dyn ScriptExecutor, frame: PositionalFrame) {
+    restore_var(executor, "0", frame.zero);
+    restore_var(executor, "#", frame.count);
+    restore_var(executor, "@", frame.all);
+    for (idx, value) in frame.args.into_iter().enumerate() {
+        restore_var(executor, &format!("{}", idx + 1), value);
+    }
+}
+
+fn restore_var(executor: &mut dyn ScriptExecutor, name: &str, value: Option<String>) {
+    if let Some(value) = value {
+        executor.set_var(name, &value);
+    } else {
+        executor.unset_var(name);
+    }
+}
+
+fn set_function_args(executor: &mut dyn ScriptExecutor, name: &str, args: &[String]) {
+    executor.set_var("0", name);
+    executor.set_var("#", &format!("{}", args.len()));
+    executor.set_var("@", &anyos_std::shell::join(args));
+    for i in 1..=9 {
+        executor.unset_var(&format!("{}", i));
+    }
+    for (idx, arg) in args.iter().take(9).enumerate() {
+        executor.set_var(&format!("{}", idx + 1), arg);
+    }
+}
+
+fn parse_case_arms(commands: &[String], idx: &mut usize) -> Vec<(Vec<String>, Vec<ShellStmt>)> {
+    let mut arms = Vec::new();
+    while *idx < commands.len() {
+        let line = commands[*idx].trim();
+        if line == "esac" {
+            *idx += 1;
+            break;
+        }
+        if line == ";;" || line == ";&" || line == ";;&" || line.is_empty() {
+            *idx += 1;
+            continue;
+        }
+        let (patterns, remainder) = match parse_case_arm_header(line) {
+            Some(v) => v,
+            None => {
+                *idx += 1;
+                continue;
+            }
+        };
+        *idx += 1;
+
+        let mut body_prefix = Vec::new();
+        let terminated_inline = if let Some((before, _term)) = split_case_terminator(&remainder) {
+            extend_inline_commands(&mut body_prefix, before.trim());
+            true
+        } else {
+            extend_inline_commands(&mut body_prefix, remainder.trim());
+            false
+        };
+
+        let mut body = Vec::new();
+        if !body_prefix.is_empty() {
+            let mut prefix_idx = 0usize;
+            let (prefix_body, _stop) = parse_shell_block(&body_prefix, &mut prefix_idx, &[]);
+            body.extend(prefix_body);
+        }
+
+        if !terminated_inline {
+            let (rest_body, stop) = parse_shell_block(commands, idx, &[";;", ";&", ";;&", "esac"]);
+            body.extend(rest_body);
+            if let Some(stop_word) = stop {
+                if stop_word == "esac" {
+                    *idx += 1;
+                    arms.push((patterns, body));
+                    break;
+                }
+                *idx += 1;
+            }
+        }
+
+        arms.push((patterns, body));
+    }
+    arms
+}
+
+fn parse_case_arm_header(line: &str) -> Option<(Vec<String>, String)> {
+    let bytes = line.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => { in_single = !in_single; i += 1; }
+            b'"' if !in_single => { in_double = !in_double; i += 1; }
+            b'\\' if !in_single => { i += 2; }
+            b')' if !in_single && !in_double => {
+                let mut pat = line[..i].trim();
+                if let Some(stripped) = pat.strip_prefix('(') {
+                    pat = stripped.trim();
+                }
+                let rest = line[i + 1..].trim();
+                return Some((split_case_patterns(pat), String::from(rest)));
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn split_case_patterns(patterns: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let bytes = patterns.as_bytes();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => { in_single = !in_single; i += 1; }
+            b'"' if !in_single => { in_double = !in_double; i += 1; }
+            b'\\' if !in_single => { i += 2; }
+            b'|' if !in_single && !in_double => {
+                out.push(String::from(patterns[start..i].trim()));
+                start = i + 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    let tail = patterns[start..].trim();
+    if !tail.is_empty() {
+        out.push(String::from(tail));
+    }
+    out
+}
+
+fn split_case_terminator(line: &str) -> Option<(&str, &str)> {
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i + 1 < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => { in_single = !in_single; i += 1; }
+            b'"' if !in_single => { in_double = !in_double; i += 1; }
+            b'\\' if !in_single => { i += 2; }
+            b';' if !in_single && !in_double && bytes[i + 1] == b';' => {
+                return Some((&line[..i], ";;"));
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn matching_stop_word<'a>(line: &str, stop_words: &'a [&str]) -> Option<&'a str> {
+    for word in stop_words {
+        if line == *word || line.starts_with(&format!("{} ", word)) {
+            return Some(*word);
+        }
+    }
+    None
+}
+
+fn parse_header(line: &str, keyword: &str, terminator: &str) -> Option<String> {
+    let rest = line.strip_prefix(keyword)?;
+    if !rest.starts_with(' ') && !rest.starts_with('\t') {
+        return None;
+    }
+    let rest = rest.trim();
+    if rest == terminator {
+        return Some(String::new());
+    }
+    if let Some(before) = strip_trailing_keyword(rest, terminator) {
+        return Some(before);
+    }
+    Some(String::from(rest))
+}
+
+fn parse_for_header(line: &str) -> Option<(String, String)> {
+    let rest = line.strip_prefix("for ")?;
+    let rest = rest.trim();
+    let rest = strip_trailing_keyword(rest, "do").unwrap_or_else(|| String::from(rest));
+    let mut parts = rest.splitn(2, char::is_whitespace);
+    let var = parts.next().unwrap_or("").trim();
+    if !is_valid_assignment_name(var) {
+        return None;
+    }
+    let tail = parts.next().unwrap_or("").trim();
+    if tail.is_empty() {
+        return Some((String::from(var), String::from("$@")));
+    }
+    if tail == "in" {
+        return Some((String::from(var), String::new()));
+    }
+    let words = tail.strip_prefix("in ").unwrap_or(tail).trim();
+    Some((String::from(var), String::from(words)))
+}
+
+fn parse_function_header(line: &str) -> Option<(String, bool)> {
+    let trimmed = line.trim();
+    if let Some(rest) = trimmed.strip_prefix("function ") {
+        let rest = rest.trim();
+        let mut parts = rest.split_whitespace();
+        let name = parts.next().unwrap_or("");
+        if !is_valid_assignment_name(name) {
+            return None;
+        }
+        let tail = rest[name.len()..].trim();
+        return Some((String::from(name), tail == "{"));
+    }
+
+    let paren = trimmed.find("()")?;
+    let name = trimmed[..paren].trim();
+    if !is_valid_assignment_name(name) {
+        return None;
+    }
+    let tail = trimmed[paren + 2..].trim();
+    if tail.is_empty() {
+        Some((String::from(name), false))
+    } else if tail == "{" {
+        Some((String::from(name), true))
+    } else {
+        None
+    }
+}
+
+fn skip_standalone_terminator(commands: &[String], idx: &mut usize, terminator: &str) {
+    if *idx < commands.len() && commands[*idx].trim() == terminator {
+        *idx += 1;
+    }
+}
+
+fn strip_trailing_keyword(text: &str, keyword: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed == keyword {
+        return Some(String::new());
+    }
+    let semi_keyword = format!("; {}", keyword);
+    if trimmed.ends_with(&semi_keyword) {
+        let len = trimmed.len() - semi_keyword.len();
+        return Some(String::from(trimmed[..len].trim()));
+    }
+    let bare_keyword = format!(" {}", keyword);
+    if trimmed.ends_with(&bare_keyword) {
+        let len = trimmed.len() - bare_keyword.len();
+        return Some(String::from(trimmed[..len].trim()));
+    }
+    None
+}
+
+fn normalize_script_commands(commands: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for command in commands {
+        extend_inline_commands(&mut out, command);
+    }
+    out
+}
+
+fn extend_inline_commands(out: &mut Vec<String>, command: &str) {
+    for part in split_script_semicolons(command) {
+        push_control_aware_command(out, part.trim());
+    }
+}
+
+fn push_control_aware_command(out: &mut Vec<String>, part: &str) {
+    if part.is_empty() {
+        return;
+    }
+    for keyword in ["then", "do", "else", "in"] {
+        if part == keyword {
+            out.push(String::from(keyword));
+            return;
+        }
+        let prefix = format!("{} ", keyword);
+        if let Some(rest) = part.strip_prefix(&prefix) {
+            out.push(String::from(keyword));
+            push_control_aware_command(out, rest.trim());
+            return;
+        }
+    }
+    out.push(String::from(part));
+}
+
+fn split_script_semicolons(line: &str) -> Vec<String> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => { in_single = !in_single; i += 1; }
+            b'"' if !in_single => { in_double = !in_double; i += 1; }
+            b'\\' if !in_single => { i += 2; }
+            b';' if !in_single && !in_double => {
+                let part = line[start..i].trim();
+                if !part.is_empty() {
+                    out.push(String::from(part));
+                }
+                if i + 1 < bytes.len() && bytes[i + 1] == b';' {
+                    out.push(String::from(";;"));
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    let tail = line[start..].trim();
+    if !tail.is_empty() {
+        out.push(String::from(tail));
+    }
+    out
+}
+
+/// Apply `$0`, `$1` ... `$9` and `$#` for a script invocation.
+pub fn set_script_args(script_path: &str, args: &[String]) {
+    anyos_std::env::set("0", script_path);
+    anyos_std::env::set("#", &format!("{}", args.len()));
+    anyos_std::env::set("@", &anyos_std::shell::join(args));
+    for i in 1..=9 {
+        anyos_std::env::unset(&format!("{}", i));
+    }
+    for (idx, arg) in args.iter().take(9).enumerate() {
+        anyos_std::env::set(&format!("{}", idx + 1), arg);
+    }
+}
+
+pub fn shift_positional_args(count: usize) -> u32 {
+    let total = get_env_usize("#").unwrap_or(0);
+    if count > total {
+        return 1;
+    }
+
+    let mut args = Vec::new();
+    for i in 1..=9 {
+        if let Some(value) = get_env_string(&format!("{}", i)) {
+            args.push(value);
+        }
+    }
+
+    let remaining = if count >= args.len() {
+        Vec::new()
+    } else {
+        args[count..].to_vec()
+    };
+    anyos_std::env::set("#", &format!("{}", total - count));
+    anyos_std::env::set("@", &anyos_std::shell::join(&remaining));
+    for i in 1..=9 {
+        anyos_std::env::unset(&format!("{}", i));
+    }
+    for (idx, arg) in remaining.iter().take(9).enumerate() {
+        anyos_std::env::set(&format!("{}", idx + 1), arg);
+    }
+    0
+}
+
+fn get_env_usize(name: &str) -> Option<usize> {
+    get_env_string(name).and_then(|s| s.parse::<usize>().ok())
+}
+
+fn get_env_string(name: &str) -> Option<String> {
+    let mut buf = [0u8; 512];
+    let len = anyos_std::env::get(name, &mut buf);
+    if len == u32::MAX {
+        return None;
+    }
+    core::str::from_utf8(&buf[..len as usize]).ok().map(String::from)
+}
+
+/// Return KEY=VALUE assignments that are valid standalone shell statements.
+pub fn parse_assignment(line: &str) -> Option<(&str, &str)> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.contains(' ') || trimmed.contains('\t') {
+        return None;
+    }
+    let eq = trimmed.find('=')?;
+    let key = &trimmed[..eq];
+    if !is_valid_assignment_name(key) {
+        return None;
+    }
+    Some((key, &trimmed[eq + 1..]))
+}
+
+fn read_file_to_vec(path: &str) -> Option<Vec<u8>> {
+    let fd = fs::open(path, 0);
+    if fd == u32::MAX {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut buf = [0u8; 512];
+    loop {
+        let n = fs::read(fd, &mut buf);
+        if n == u32::MAX {
+            fs::close(fd);
+            return None;
+        }
+        if n == 0 {
+            break;
+        }
+        for b in &buf[..n as usize] {
+            out.push(*b);
+        }
+    }
+    fs::close(fd);
+    Some(out)
+}
+
+fn strip_inline_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' if !in_double => { in_single = !in_single; i += 1; }
+            b'"' if !in_single => { in_double = !in_double; i += 1; }
+            b'\\' if !in_single => { i += 2; }
+            b'#' if !in_single && !in_double => {
+                if i == 0 || bytes[i - 1] == b' ' || bytes[i - 1] == b'\t' {
+                    return &line[..i];
+                }
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    line
+}
+
+fn line_has_continuation(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut count = 0usize;
+    let mut i = bytes.len();
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'\\' { count += 1; } else { break; }
+    }
+    count % 2 == 1
+}
+
+fn is_valid_assignment_name(name: &str) -> bool {
+    let mut chars = name.bytes();
+    let first = match chars.next() {
+        Some(c) => c,
+        None => return false,
+    };
+    if !(first == b'_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|c| c == b'_' || c.is_ascii_alphanumeric())
+}
+
+fn shell_pattern_match(text: &str, pattern: &str) -> bool {
+    let pattern = strip_optional_quotes(pattern.trim());
+    let pat = pattern.as_bytes();
+    let txt = text.as_bytes();
+    let mut pi = 0usize;
+    let mut ti = 0usize;
+    let mut star_pi = usize::MAX;
+    let mut star_ti = 0usize;
+
+    while ti < txt.len() {
+        if pi < pat.len() && pat[pi] == b'*' {
+            star_pi = pi;
+            star_ti = ti;
+            pi += 1;
+        } else if pi < pat.len() && pat[pi] == b'?' {
+            pi += 1;
+            ti += 1;
+        } else if pi < pat.len() && pat[pi] == b'[' {
+            if let Some((matched, next_pi)) = match_bracket(pat, pi, txt[ti]) {
+                pi = next_pi;
+                if matched {
+                    ti += 1;
+                } else if star_pi != usize::MAX {
+                    pi = star_pi + 1;
+                    star_ti += 1;
+                    ti = star_ti;
+                } else {
+                    return false;
+                }
+            } else if pat[pi] == txt[ti] {
+                pi += 1;
+                ti += 1;
+            } else if star_pi != usize::MAX {
+                pi = star_pi + 1;
+                star_ti += 1;
+                ti = star_ti;
+            } else {
+                return false;
+            }
+        } else if pi < pat.len() && pat[pi] == b'\\' && pi + 1 < pat.len() && pat[pi + 1] == txt[ti] {
+            pi += 2;
+            ti += 1;
+        } else if pi < pat.len() && pat[pi] == txt[ti] {
+            pi += 1;
+            ti += 1;
+        } else if star_pi != usize::MAX {
+            pi = star_pi + 1;
+            star_ti += 1;
+            ti = star_ti;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < pat.len() && pat[pi] == b'*' {
+        pi += 1;
+    }
+    pi == pat.len()
+}
+
+fn strip_optional_quotes(text: &str) -> &str {
+    let bytes = text.as_bytes();
+    if bytes.len() >= 2 {
+        let first = bytes[0];
+        let last = bytes[bytes.len() - 1];
+        if (first == b'\'' && last == b'\'') || (first == b'"' && last == b'"') {
+            return &text[1..text.len() - 1];
+        }
+    }
+    text
+}
+
+fn match_bracket(pattern: &[u8], start: usize, ch: u8) -> Option<(bool, usize)> {
+    let mut pi = start + 1;
+    if pi >= pattern.len() {
+        return None;
+    }
+    let negate = pattern[pi] == b'!' || pattern[pi] == b'^';
+    if negate {
+        pi += 1;
+    }
+    let mut matched = false;
+    while pi < pattern.len() && pattern[pi] != b']' {
+        if pi + 2 < pattern.len() && pattern[pi + 1] == b'-' && pattern[pi + 2] != b']' {
+            if ch >= pattern[pi] && ch <= pattern[pi + 2] {
+                matched = true;
+            }
+            pi += 3;
+        } else {
+            if ch == pattern[pi] {
+                matched = true;
+            }
+            pi += 1;
+        }
+    }
+    if pi >= pattern.len() {
+        return None;
+    }
+    Some((if negate { !matched } else { matched }, pi + 1))
+}
+
+fn normalize_path(path: &str) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => { parts.pop(); }
+            s => parts.push(s),
+        }
+    }
+    if parts.is_empty() {
+        return String::from("/");
+    }
+    let mut out = String::new();
+    for p in &parts {
+        out.push('/');
+        out.push_str(p);
+    }
+    out
 }
 
 // ─── Tab Completion ─────────────────────────────────────────────────────────

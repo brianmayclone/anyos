@@ -1,6 +1,6 @@
-use crate::{Control, Widget, lib, events, KIND_PLAIN_BUTTON};
 use crate::events::ClickEvent;
 use crate::icon::IconType;
+use crate::{events, lib, Control, Widget, KIND_PLAIN_BUTTON};
 
 leaf_control!(PlainButton, KIND_PLAIN_BUTTON);
 
@@ -8,13 +8,20 @@ impl PlainButton {
     /// Create a new borderless plain button (no background, icon-only).
     pub fn new(text: &str) -> Self {
         let id = (lib().create_control)(KIND_PLAIN_BUTTON, text.as_ptr(), text.len() as u32);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Set a system SVG icon by name from ico.pak.
     pub fn set_system_icon(&self, name: &str, icon_type: IconType, color: u32, size: u32) {
         if let Some(icon) = crate::icon::Icon::system(name, icon_type, color, size) {
-            (lib().iconbutton_set_pixels)(self.ctrl.id, icon.pixels.as_ptr(), icon.width, icon.height);
+            (lib().iconbutton_set_pixels)(
+                self.ctrl.id,
+                icon.pixels.as_ptr(),
+                icon.width,
+                icon.height,
+            );
         }
     }
 

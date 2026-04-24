@@ -42,7 +42,9 @@ Kernprobleme:
 - Der Editor kann erste Diagnostic-Ranges/Gutter-Marker zeichnen, aber noch
   keine Tooltips, Quick-Fixes, Breakpoints oder Inline-Hints.
 - Sprachefeatures sind keyword-/regex-nah, nicht projektsemantisch.
-- Debugging ist noch nicht als anyCode-Backend gekapselt.
+- Debugging hat jetzt ein erstes anyCode-Backend fuer Launch/Attach/Pause/
+  Continue/Step und Register-Snapshots; Source-Level-Breakpoint-Binding,
+  Memory/Disassembly und Watch-Auswertung fehlen noch.
 - UI ist funktionsreich, aber noch nicht dicht, konsistent und ergonomisch genug
   fuer taegliche Projektarbeit.
 
@@ -234,6 +236,16 @@ Status:
 - Gestartet: offene Dateien besitzen Dokumentversionen; alte externe
   Check-Ergebnisse werden verworfen, wenn der Editor inzwischen neueren Inhalt
   hat.
+- Gestartet: Live-Check-Zustand liegt in `diagnostic_pipeline.rs`; Analyse und
+  externe Check-Auswahl laufen ueber ein erstes `language_service.rs`.
+- Gestartet: Command Palette besitzt Analyse-Kommandos fuer aktive Datei,
+  Live-Analyse-Neustart und das gezielte Leeren der Problemansicht.
+- Gestartet: Problemnavigation via Command Palette (`Next Problem`/`Previous Problem`)
+  springt dateiuebergreifend zu Diagnosepositionen.
+- Gestartet: Problemansicht hat eine IDE-artige Filterleiste fuer alle Probleme,
+  Fehler, Warnungen und die aktive Datei; Navigation respektiert den Filter.
+- Gestartet: Error List sortiert sichtbare Diagnostics stabil nach Schweregrad,
+  Datei, Position, Quelle und Meldung.
 
 ### Phase 4: Project Model und Build Backends
 
@@ -259,6 +271,15 @@ Akzeptanz:
 - Buildfehler erscheinen strukturiert in Problems.
 - Letzter erfolgreicher Build liefert klickbare Artefakte.
 
+Status:
+
+- Gestartet: Solution Explorer zeigt eine Solution-/Projektstruktur statt nur
+  roher Dateien, inklusive Konfigurationen, Targets, Build-/Run-/Test-Tasks und
+  Dateiunterbaum.
+- Gestartet: Debug/Release-Konfigurationen sind im Projektmodell verankert,
+  koennen per Command Palette umgeschaltet werden und beeinflussen Cargo-Build-
+  Tasks.
+
 ### Phase 5: IntelliSense v1
 
 Ziel: Sprachefeatures, die beim echten Arbeiten tragen.
@@ -279,6 +300,13 @@ Akzeptanz:
 - Rust-Funktionen/Structs im Projekt sind completion- und navigierbar.
 - Outline aktualisiert live.
 - Rename erzeugt Vorschau und laesst sich abbrechen.
+
+Status:
+
+- Gestartet: `symbol_index.rs` baut beim Workspace-Oeffnen einen begrenzten
+  Workspace-Symbolindex fuer Rust, C/C++, Python, JS/TS, Shell und Makefiles.
+- Gestartet: Symbolindex kann per Command Palette neu aufgebaut werden und
+  meldet die Symbolzahl in Statusbar/Output.
 
 ### Phase 6: Debug Studio
 
@@ -305,7 +333,30 @@ Akzeptanz:
 - Breakpoint setzen.
 - Prozess haelt am Breakpoint.
 - Register und Memory werden angezeigt.
-- Step/Continue funktionieren.
+
+Status:
+
+- Gestartet: `debug_session.rs` haelt Debug-Status, Launch-Ziel und
+  Breakpoints, Call-Stack-Frames, Variables und Registerwerte.
+- Gestartet: Run-and-Debug-Panel besitzt einen Debug-Start, Session-Status und
+  Breakpoint-Zaehler; F9 toggelt Breakpoints an der aktuellen Editorzeile.
+- Gestartet: Run-and-Debug-Panel zeigt einen eigenen Debug-State-Tree fuer
+  Session, Breakpoints, Call Stack, Variables und Registers.
+- Gestartet: Bottom Panel besitzt eine eigene Debug Console; Debug-Kommandos
+  schreiben dort Launch-, Breakpoint-, Pause-, Continue-, Step- und Exit-Events.
+- Gestartet: Continue, Pause und Step Over sind als Buttons und Command-Palette-
+  Kommandos vorhanden.
+- Gestartet: `debug_backend.rs` kapselt die Kernel-Debug-Syscalls aus
+  `anyos_std::debug`; gestartete Prozesse werden per TID attached, gepollt und
+  mit echten RIP/RSP/Registerwerten im Debug-State-Tree angezeigt.
+- Gestartet: anyCode deklariert die `debug`-Capability explizit, damit der
+  Debugger nicht nur in System-Tools, sondern auch im Studio selbst laufen kann.
+- Gestartet: Debug-Snapshots lesen jetzt Zielprozess-Speicher ueber das Backend
+  und zeigen Disassembly-Vorschau um RIP sowie Stack-Memory um RSP im
+  Run-and-Debug-Tree an.
+- Gestartet: Das Run-and-Debug-Panel nutzt einen vertikalen Split fuer Debug-
+  Details und Tasks, mit kompakteren Disassembly-/Memory-Zeilen, damit die
+  Sidebar trotz Register- und Speicheransichten lesbar bleibt.
 
 ### Phase 7: Git und Review Workflow
 
@@ -337,12 +388,38 @@ Aufgaben:
 - Kein sichtbares Debug-Logging im normalen UI-Pfad.
 - Accessibility-Labels fuer wichtige Controls.
 - Performance bei grossen Projekten und Dateien messen.
+- Screenshot-Review als fester Qualitaetscheck: Welcome-Screen, Activity-Bar,
+  Run-and-Debug, Explorer, Editor und Bottom-Panel muessen vor jedem groesseren
+  Schritt sichtbar gegen Studio-Niveau geprueft werden.
 
 Akzeptanz:
 
 - Komplett per Tastatur nutzbar fuer Standardworkflow.
 - Keine sichtbaren Layoutspruenge beim Oeffnen/Schliessen von Panels.
 - 1000-Dateien-Projekt bleibt bedienbar.
+
+Status:
+
+- Gestartet: Der Welcome-Screen wurde von einer Feature-Checkliste auf eine
+  ruhigere Studio-Startflaeche mit Startaktionen, Tools, Recent Workspaces und
+  Workspace-Status umgebaut.
+- Gestartet: Die Activity-Bar entfernt den provisorischen `AC`-Kopf und wirkt
+  im leeren Workspace weniger wie Debug-/Platzhalter-UI.
+- Gestartet: Run-and-Debug benennt fehlende Run-Konfigurationen jetzt als
+  Auswahlzustand statt als Fehlerzustand.
+- Gestartet: Run/Build-Task-Erkennung wurde gehaertet: `Run` darf keine
+  Build-Tasks mehr ausfuehren, Generic-Projekte erzeugen C-Tasks nur noch bei
+  vorhandener `main.c`, und geoeffnete Unterordner steigen zur naechsten
+  Projektwurzel mit `Cargo.toml`/Make/CMake/etc. auf.
+- Gestartet: Build-Tools sind in den Settings editierbar, inklusive
+  Rust-Compiler (`crust`/`rustc`/`anyrc`) und Cargo-Build-System
+  (`ccargo`/`cargo`/`acargo`).
+- Gestartet: Der Settings-Dialog wurde strukturell nachgezogen: Suche steht
+  oben in der Navigation, Kategorien liegen darunter, Content-Seiten haben
+  eigene Titel und die Toolchain-Felder bekommen mehr Raum.
+- Gestartet: Die Kategorien im Settings-Dialog verwenden jetzt chrome-lose
+  PlainButton-Hitflächen mit eigener Auswahlmarke statt glänzender
+  Standard-Buttons.
 
 ### Phase 9: Studio v1 Freeze
 

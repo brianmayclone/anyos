@@ -1,5 +1,5 @@
-use alloc::string::String;
 use alloc::format;
+use alloc::string::String;
 
 /// Map a file extension to its syntax definition filename.
 fn syntax_filename_for_extension(ext: &str) -> Option<&'static str> {

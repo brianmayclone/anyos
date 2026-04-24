@@ -1,4 +1,4 @@
-pub use anyos_std::path::{basename, extension, parent, join};
+pub use anyos_std::path::{basename, extension, join, parent};
 
 /// Check if a file or directory exists.
 pub fn exists(path: &str) -> bool {

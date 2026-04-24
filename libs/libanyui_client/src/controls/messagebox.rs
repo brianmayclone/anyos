@@ -25,8 +25,10 @@ impl MessageBox {
         let btn = button_text.unwrap_or("OK");
         (lib().message_box)(
             msg_type as u32,
-            text.as_ptr(), text.len() as u32,
-            btn.as_ptr(), btn.len() as u32,
+            text.as_ptr(),
+            text.len() as u32,
+            btn.as_ptr(),
+            btn.len() as u32,
         );
     }
 }

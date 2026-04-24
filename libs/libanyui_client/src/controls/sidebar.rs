@@ -1,12 +1,16 @@
-use crate::{Container, Control, Widget, lib, events, KIND_SIDEBAR};
 use crate::events::SelectionChangedEvent;
+use crate::{events, lib, Container, Control, Widget, KIND_SIDEBAR};
 
 container_control!(Sidebar, KIND_SIDEBAR);
 
 impl Sidebar {
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_SIDEBAR, core::ptr::null(), 0);
-        Self { container: Container { ctrl: Control { id } } }
+        Self {
+            container: Container {
+                ctrl: Control { id },
+            },
+        }
     }
 
     pub fn on_selection_changed(&self, mut f: impl FnMut(&SelectionChangedEvent) + 'static) {

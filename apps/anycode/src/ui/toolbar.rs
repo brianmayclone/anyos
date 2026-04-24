@@ -29,20 +29,76 @@ impl AppToolbar {
 
         let t = anyos_std::i18n::t;
 
-        let btn_new = make_plain_btn(&toolbar, "file-plus", tc.text, t("New File"), toolbar_h, icon_sz);
-        let btn_open = make_plain_btn(&toolbar, "folder-open", tc.text, t("Open Folder"), toolbar_h, icon_sz);
-        let btn_save = make_plain_btn(&toolbar, "device-floppy", tc.text, t("Save"), toolbar_h, icon_sz);
-        let btn_save_all = make_plain_btn(&toolbar, "files", tc.text, t("Save All"), toolbar_h, icon_sz);
+        let btn_new = make_plain_btn(
+            &toolbar,
+            "file-plus",
+            tc.text,
+            t("New File"),
+            toolbar_h,
+            icon_sz,
+        );
+        let btn_open = make_plain_btn(
+            &toolbar,
+            "folder-open",
+            tc.text,
+            t("Open Folder"),
+            toolbar_h,
+            icon_sz,
+        );
+        let btn_save = make_plain_btn(
+            &toolbar,
+            "device-floppy",
+            tc.text,
+            t("Save"),
+            toolbar_h,
+            icon_sz,
+        );
+        let btn_save_all = make_plain_btn(
+            &toolbar,
+            "files",
+            tc.text,
+            t("Save All"),
+            toolbar_h,
+            icon_sz,
+        );
 
         toolbar.add_separator();
 
-        let btn_build = make_plain_btn(&toolbar, "hammer", tc.accent, t("Build"), toolbar_h, icon_sz);
-        let btn_run = make_plain_btn(&toolbar, "player-play", tc.success, t("Run"), toolbar_h, icon_sz);
-        let btn_stop = make_plain_btn(&toolbar, "player-stop", tc.text_secondary, t("Stop"), toolbar_h, icon_sz);
+        let btn_build = make_plain_btn(
+            &toolbar,
+            "hammer",
+            tc.accent,
+            t("Build"),
+            toolbar_h,
+            icon_sz,
+        );
+        let btn_run = make_plain_btn(
+            &toolbar,
+            "player-play",
+            tc.success,
+            t("Run"),
+            toolbar_h,
+            icon_sz,
+        );
+        let btn_stop = make_plain_btn(
+            &toolbar,
+            "player-stop",
+            tc.text_secondary,
+            t("Stop"),
+            toolbar_h,
+            icon_sz,
+        );
 
         toolbar.add_separator();
 
-        let btn_settings = make_plain_btn(&toolbar, "settings", tc.text, t("Settings"), toolbar_h, icon_sz);
+        let btn_settings = make_plain_btn(
+            &toolbar,
+            "settings",
+            tc.text,
+            t("Settings"),
+            toolbar_h,
+            icon_sz,
+        );
 
         Self {
             toolbar,

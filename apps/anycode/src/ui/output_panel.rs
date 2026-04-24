@@ -2,7 +2,7 @@ use libanyui_client as ui;
 
 use crate::logic::config::Config;
 
-/// The bottom panel with Output, Problems, and Terminal tabs.
+/// The bottom panel with Output, Problems, Terminal, and Debug Console tabs.
 pub struct OutputPanel {
     pub panel: ui::View,
     pub tab_bar: ui::TabBar,
@@ -15,6 +15,9 @@ pub struct OutputPanel {
     terminal_panel: ui::View,
     terminal_area: ui::TextArea,
     pub terminal_input: ui::TextField,
+    // Debug console sub-panel
+    debug_console_panel: ui::View,
+    debug_console_area: ui::TextArea,
     // Shell process state
     pub shell_stdout_pipe: u32,
     pub shell_stdin_pipe: u32,
@@ -28,9 +31,15 @@ impl OutputPanel {
         let panel = ui::View::new();
         panel.set_color(tc.editor_bg);
 
-        // Tab bar for switching Output / Problems / Terminal
+        // Tab bar for switching Output / Problems / Terminal / Debug Console
         let t = anyos_std::i18n::t;
-        let tabs = alloc::format!("{}|{}|{}", t("Output"), t("Problems"), t("Terminal"));
+        let tabs = alloc::format!(
+            "{}|{}|{}|{}",
+            t("Output"),
+            t("Problems"),
+            t("Terminal"),
+            t("Debug Console")
+        );
         let tab_bar = ui::TabBar::new(&tabs);
         tab_bar.set_dock(ui::DOCK_TOP);
         tab_bar.set_size(400, 28);
@@ -83,8 +92,28 @@ impl OutputPanel {
         terminal_input.set_placeholder("$ ");
         terminal_panel.add(&terminal_input);
 
-        // Wire tab switching (Output, Problems, Terminal)
-        tab_bar.connect_panels(&[&output_panel_view, &problems_panel_view, &terminal_panel]);
+        // ── Debug Console sub-panel ──
+        let debug_console_panel = ui::View::new();
+        debug_console_panel.set_dock(ui::DOCK_FILL);
+        debug_console_panel.set_color(tc.editor_bg);
+        debug_console_panel.set_visible(false);
+        panel.add(&debug_console_panel);
+
+        let debug_console_area = ui::TextArea::new();
+        debug_console_area.set_dock(ui::DOCK_FILL);
+        debug_console_area.set_font(4);
+        debug_console_area.set_font_size(config.terminal_font_size);
+        debug_console_area.set_color(tc.editor_bg);
+        debug_console_area.set_text_color(tc.text);
+        debug_console_panel.add(&debug_console_area);
+
+        // Wire tab switching (Output, Problems, Terminal, Debug Console)
+        tab_bar.connect_panels(&[
+            &output_panel_view,
+            &problems_panel_view,
+            &terminal_panel,
+            &debug_console_panel,
+        ]);
 
         Self {
             panel,
@@ -95,6 +124,8 @@ impl OutputPanel {
             terminal_panel,
             terminal_area,
             terminal_input,
+            debug_console_panel,
+            debug_console_area,
             shell_stdout_pipe: 0,
             shell_stdin_pipe: 0,
             shell_tid: 0,
@@ -151,10 +182,36 @@ impl OutputPanel {
         self.tab_bar.set_state(2);
     }
 
+    /// Switch to the debug console tab.
+    pub fn show_debug_console(&self) {
+        self.tab_bar.set_state(3);
+    }
+
     pub fn apply_config(&self, config: &Config) {
         self.output_area.set_font_size(config.terminal_font_size);
         self.terminal_area.set_font_size(config.terminal_font_size);
         self.terminal_input.set_font_size(config.terminal_font_size);
+        self.debug_console_area
+            .set_font_size(config.terminal_font_size);
+    }
+
+    pub fn clear_debug_console(&self) {
+        self.debug_console_area.set_text("");
+    }
+
+    pub fn append_debug_line(&self, text: &str) {
+        let mut buf = [0u8; 32768];
+        let existing = self.debug_console_area.get_text(&mut buf) as usize;
+        let add = text.len().min(buf.len() - existing - 1);
+        buf[existing..existing + add].copy_from_slice(&text.as_bytes()[..add]);
+        let mut total = existing + add;
+        if total < buf.len() {
+            buf[total] = b'\n';
+            total += 1;
+        }
+        if let Ok(full) = core::str::from_utf8(&buf[..total]) {
+            self.debug_console_area.set_text(full);
+        }
     }
 
     // ── Terminal methods ──
@@ -178,7 +235,10 @@ impl OutputPanel {
 
         anyos_std::fs::chdir(working_dir);
         let tid = anyos_std::process::spawn_piped_full(
-            "/System/bin/sh", "sh -i", stdout_pipe, stdin_pipe,
+            "/System/bin/sh",
+            "sh -i",
+            stdout_pipe,
+            stdin_pipe,
         );
         if tid == u32::MAX {
             anyos_std::ipc::pipe_close(stdout_pipe);

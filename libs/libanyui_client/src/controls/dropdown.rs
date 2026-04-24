@@ -1,5 +1,5 @@
-use crate::{Control, Widget, lib, events, KIND_DROP_DOWN};
 use crate::events::SelectionChangedEvent;
+use crate::{events, lib, Control, Widget, KIND_DROP_DOWN};
 
 leaf_control!(DropDown, KIND_DROP_DOWN);
 
@@ -7,7 +7,9 @@ impl DropDown {
     /// Create a drop-down control.  Items are pipe-separated, e.g. `"640x480|800x600|1024x768"`.
     pub fn new(items: &str) -> Self {
         let id = (lib().create_control)(KIND_DROP_DOWN, items.as_ptr(), items.len() as u32);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Replace the item list (pipe-separated).

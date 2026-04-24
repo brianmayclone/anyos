@@ -60,7 +60,11 @@ impl ComboBox {
                 start = i + 1;
             }
         }
-        if seg == index { &text[start..] } else { &[] }
+        if seg == index {
+            &text[start..]
+        } else {
+            &[]
+        }
     }
 
     pub(crate) fn set_items(&mut self, items: &[u8]) {
@@ -132,8 +136,8 @@ impl ComboBox {
         let pos = self.cursor_pos.min(self.text_base.text.len());
         let (cursor_px, _) =
             crate::draw::measure_text_ex(&self.text_base.text[..pos], 0, font_size);
-        let field_w = crate::theme::scale(self.text_base.base.w)
-            .saturating_sub(crate::theme::scale(34));
+        let field_w =
+            crate::theme::scale(self.text_base.base.w).saturating_sub(crate::theme::scale(34));
         let cursor_x = cursor_px as i32 - self.scroll_x;
         if cursor_x < 0 {
             self.scroll_x = cursor_px as i32;
@@ -256,7 +260,11 @@ impl Control for ComboBox {
             13
         };
         let font_size = crate::draw::scale_font(logical_fs);
-        let text_color = if ctx.disabled { tc.text_disabled } else { tc.text };
+        let text_color = if ctx.disabled {
+            tc.text_disabled
+        } else {
+            tc.text
+        };
         let text_x = x + crate::theme::scale_i32(10);
         let ty = y + (h as i32 - font_size as i32) / 2;
 
@@ -282,8 +290,11 @@ impl Control for ComboBox {
 
         if self.editable && ctx.focused && !ctx.disabled {
             let cursor_px = if self.cursor_pos > 0 && self.cursor_pos <= self.text_base.text.len() {
-                let (tw, _) =
-                    crate::draw::measure_text_ex(&self.text_base.text[..self.cursor_pos], 0, font_size);
+                let (tw, _) = crate::draw::measure_text_ex(
+                    &self.text_base.text[..self.cursor_pos],
+                    0,
+                    font_size,
+                );
                 tw as i32
             } else {
                 0

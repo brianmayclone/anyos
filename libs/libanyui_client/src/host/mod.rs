@@ -480,6 +480,14 @@ impl core::ops::Deref for Label { type Target = Control; fn deref(&self) -> &Con
 impl Widget for Label { fn id(&self) -> u32 { self.ctrl.id } }
 impl Label { pub fn new(_text: &str) -> Self { Label { ctrl: Control { id: next_id() } } } }
 
+pub struct LinkLabel { ctrl: Control }
+impl core::ops::Deref for LinkLabel { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
+impl Widget for LinkLabel { fn id(&self) -> u32 { self.ctrl.id } }
+impl LinkLabel {
+    pub fn new(_text: &str) -> Self { LinkLabel { ctrl: Control { id: next_id() } } }
+    pub fn on_click(&self, _f: impl FnMut(&ClickEvent) + 'static) {}
+}
+
 pub struct Button { ctrl: Control }
 impl core::ops::Deref for Button { type Target = Control; fn deref(&self) -> &Control { &self.ctrl } }
 impl Widget for Button { fn id(&self) -> u32 { self.ctrl.id } }

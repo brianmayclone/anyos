@@ -151,7 +151,8 @@ impl AiSettingsDialog {
         content.add(&model_label);
 
         let models_openai = "gpt-4o|gpt-4o-mini|gpt-4-turbo|o3-mini";
-        let models_anthropic = "claude-sonnet-4-20250514|claude-haiku-4-5-20251001|claude-opus-4-20250514";
+        let models_anthropic =
+            "claude-sonnet-4-20250514|claude-haiku-4-5-20251001|claude-opus-4-20250514";
         let model_items = match config.provider {
             AiProvider::OpenAI => models_openai,
             AiProvider::Anthropic => models_anthropic,
@@ -254,14 +255,25 @@ impl AiSettingsDialog {
 
         // ── Status indicator ──
         let status_text = if config.is_configured() {
-            format!("\u{2713} {} — {}", t("Configured"), config.provider.display_name())
+            format!(
+                "\u{2713} {} — {}",
+                t("Configured"),
+                config.provider.display_name()
+            )
         } else {
-            format!("\u{2717} {}", t("Not configured — enter your API key above"))
+            format!(
+                "\u{2717} {}",
+                t("Not configured — enter your API key above")
+            )
         };
         let status_label = ui::Label::new(&status_text);
         status_label.set_position(LABEL_X, DLG_H as i32 - 110);
         status_label.set_font_size(12);
-        status_label.set_text_color(if config.is_configured() { tc.success } else { tc.warning });
+        status_label.set_text_color(if config.is_configured() {
+            tc.success
+        } else {
+            tc.warning
+        });
         content.add(&status_label);
 
         // ── Button bar ──
@@ -312,7 +324,9 @@ impl AiSettingsDialog {
         let status_id = status_label.id();
 
         btn_save.on_click(move |_| {
-            save_config(prov_id, key_id, model_id, tokens_id, temp_id, ep_id, status_id);
+            save_config(
+                prov_id, key_id, model_id, tokens_id, temp_id, ep_id, status_id,
+            );
             ui::Control::from_id(win_id).set_visible(false);
         });
 
@@ -336,20 +350,30 @@ impl AiSettingsDialog {
 }
 
 fn save_config(
-    prov_id: u32, key_id: u32, model_id: u32,
-    tokens_id: u32, temp_id: u32, ep_id: u32,
+    prov_id: u32,
+    key_id: u32,
+    model_id: u32,
+    tokens_id: u32,
+    temp_id: u32,
+    ep_id: u32,
     status_id: u32,
 ) {
     let tc = ui::theme::colors();
 
     // Read provider
     let prov_state = ui::Control::from_id(prov_id).get_state();
-    let provider = if prov_state == 1 { AiProvider::Anthropic } else { AiProvider::OpenAI };
+    let provider = if prov_state == 1 {
+        AiProvider::Anthropic
+    } else {
+        AiProvider::OpenAI
+    };
 
     // Read API key
     let mut key_buf = [0u8; 256];
     let key_len = ui::Control::from_id(key_id).get_text(&mut key_buf);
-    let api_key = core::str::from_utf8(&key_buf[..key_len as usize]).unwrap_or("").trim();
+    let api_key = core::str::from_utf8(&key_buf[..key_len as usize])
+        .unwrap_or("")
+        .trim();
 
     // Read model
     let model_state = ui::Control::from_id(model_id).get_state();
@@ -382,7 +406,9 @@ fn save_config(
     // Read endpoint
     let mut ep_buf = [0u8; 256];
     let ep_len = ui::Control::from_id(ep_id).get_text(&mut ep_buf);
-    let endpoint = core::str::from_utf8(&ep_buf[..ep_len as usize]).unwrap_or("").trim();
+    let endpoint = core::str::from_utf8(&ep_buf[..ep_len as usize])
+        .unwrap_or("")
+        .trim();
 
     // Build and save config
     let config = AiConfig {
@@ -404,7 +430,11 @@ fn save_config(
     if config.is_configured() {
         let t = anyos_std::i18n::t;
         let status = ui::Control::from_id(status_id);
-        status.set_text(&format!("\u{2713} {} — {}", t("Saved"), provider.display_name()));
+        status.set_text(&format!(
+            "\u{2713} {} — {}",
+            t("Saved"),
+            provider.display_name()
+        ));
         status.set_text_color(tc.success);
     }
 }
@@ -416,7 +446,11 @@ fn test_connection(prov_id: u32, key_id: u32, status_id: u32) {
 
     // Read current field values
     let prov_state = ui::Control::from_id(prov_id).get_state();
-    let provider = if prov_state == 1 { AiProvider::Anthropic } else { AiProvider::OpenAI };
+    let provider = if prov_state == 1 {
+        AiProvider::Anthropic
+    } else {
+        AiProvider::OpenAI
+    };
 
     let mut key_buf = [0u8; 256];
     let key_len = ui::Control::from_id(key_id).get_text(&mut key_buf);
@@ -449,7 +483,11 @@ fn test_connection(prov_id: u32, key_id: u32, status_id: u32) {
 
     match client.chat("Say 'ok'") {
         Ok(_) => {
-            status.set_text(&format!("\u{2713} {} — {}", t("Connection successful"), provider.display_name()));
+            status.set_text(&format!(
+                "\u{2713} {} — {}",
+                t("Connection successful"),
+                provider.display_name()
+            ));
             status.set_text_color(tc.success);
         }
         Err(e) => {
@@ -471,10 +509,14 @@ fn find_model_index(items: &str, model: &str) -> u32 {
 
 fn parse_u32(s: &str) -> Option<u32> {
     let s = s.trim();
-    if s.is_empty() { return None; }
+    if s.is_empty() {
+        return None;
+    }
     let mut result: u32 = 0;
     for b in s.bytes() {
-        if b < b'0' || b > b'9' { return None; }
+        if b < b'0' || b > b'9' {
+            return None;
+        }
         result = result.checked_mul(10)?.checked_add((b - b'0') as u32)?;
     }
     Some(result)

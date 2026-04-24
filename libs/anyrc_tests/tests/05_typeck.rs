@@ -79,6 +79,1001 @@ fn primitive_assoc_try_from_is_result_typed() {
 }
 
 #[test]
+fn return_before_nested_item_keeps_block_diverging() {
+    assert_type_ok(r#"
+        struct Error {}
+        struct Span {}
+        struct String {}
+
+        fn new_error(span: Span, message: String) -> Error {
+            return make_error(span, message);
+
+            fn make_error(span: Span, message: String) -> Error {
+                Error {}
+            }
+        }
+    "#);
+}
+
+#[test]
+fn aliased_core_slice_iter_does_not_fall_back_to_local_iter() {
+    assert_type_ok(r#"
+        use core::slice;
+
+        trait IntoIterator {
+            type Item;
+            type IntoIter;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn iter(&self) -> slice::Iter<T> {
+                loop {}
+            }
+        }
+
+        struct ErrorMessage {}
+        struct Error {
+            messages: Vec<ErrorMessage>,
+        }
+
+        struct Iter<'a> {
+            messages: slice::Iter<'a, ErrorMessage>,
+        }
+
+        impl<'a> IntoIterator for &'a Error {
+            type Item = Error;
+            type IntoIter = Iter<'a>;
+
+            fn into_iter(self) -> Self::IntoIter {
+                Iter {
+                    messages: self.messages.iter(),
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn ref_to_box_str_coerces_to_ref_str() {
+    assert_type_ok(r#"
+        struct Box<T> {}
+
+        struct Repr {
+            suffix: Box<str>,
+        }
+
+        struct Lit {
+            repr: Box<Repr>,
+        }
+
+        impl Lit {
+            fn suffix(&self) -> &str {
+                &self.repr.suffix
+            }
+        }
+    "#);
+}
+
+#[test]
+fn question_operator_unwraps_option_for_tuple_patterns() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct Box<T> {}
+
+        fn parse_inner(input: &str) -> Option<(Box<str>, Box<str>)> {
+            loop {}
+        }
+
+        fn parse_outer(input: &str) -> Option<(Box<str>, Box<str>)> {
+            let (value, suffix) = parse_inner(input)?;
+            Some((value, suffix))
+        }
+    "#);
+}
+
+#[test]
+fn syn_lit_style_option_parser_uses_question_on_string_get() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct Box<T> {}
+        struct String {}
+
+        impl String {
+            fn new() -> Self { String {} }
+            fn push(&mut self, ch: char) {}
+            fn into_boxed_str(self) -> Box<str> { loop {} }
+        }
+
+        impl str {
+            fn get(&self, range: core::ops::RangeFrom<usize>) -> Option<&str> { loop {} }
+        }
+
+        fn byte(s: &str, offset: usize) -> u8 { 0 }
+        fn next_chr(s: &str) -> char { 'x' }
+
+        fn parse_lit_str_cooked(mut s: &str) -> Option<(Box<str>, Box<str>)> {
+            s = s.get(1..)?;
+
+            let mut content = String::new();
+            loop {
+                let ch = match byte(s, 0) {
+                    b'"' => break,
+                    _ => {
+                        let ch = next_chr(s);
+                        s = s.get(1..)?;
+                        ch
+                    }
+                };
+                content.push(ch);
+            }
+
+            let content = content.into_boxed_str();
+            let suffix = s.get(1..)?.to_owned().into_boxed_str();
+            Some((content, suffix))
+        }
+    "#);
+}
+
+#[test]
+fn option_some_and_none_in_loop_parser_infer_same_payload() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct Box<T> {}
+        struct String {}
+
+        impl String {
+            fn new() -> Self { String {} }
+            fn push(&mut self, ch: char) {}
+            fn into_boxed_str(self) -> Box<str> { loop {} }
+        }
+
+        fn byte(s: &str, offset: usize) -> u8 { 0 }
+        fn next_chr(s: &str) -> char { 'x' }
+
+        fn parse_lit_str_cooked(mut s: &str) -> Option<(Box<str>, Box<str>)> {
+            let mut content = String::new();
+            loop {
+                let ch = match byte(s, 0) {
+                    b'"' => break,
+                    b'\\' => {
+                        let b = byte(s, 1);
+                        match b {
+                            b'n' => '\n',
+                            _ => return None,
+                        }
+                    }
+                    _ => {
+                        let ch = next_chr(s);
+                        ch
+                    }
+                };
+                content.push(ch);
+            }
+
+            let content = content.into_boxed_str();
+            let suffix = content;
+            Some((content, suffix))
+        }
+    "#);
+}
+
+#[test]
+fn assign_op_allows_adt_receiver_with_primitive_rhs() {
+    assert_type_ok(r#"
+        struct BigInt {}
+
+        fn parse_lit_int() {
+            let mut value = BigInt {};
+            let digit: u8 = 7;
+            value += digit;
+        }
+    "#);
+}
+
+#[test]
+fn unreachable_macro_diverges_in_match_arm() {
+    assert_type_ok(r#"
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        struct Box<T> {}
+
+        fn cooked(s: &str) -> Option<(Box<str>, Box<str>)> { loop {} }
+        fn raw(s: &str) -> Option<(Box<str>, Box<str>)> { loop {} }
+        fn byte(s: &str, offset: usize) -> u8 { 0 }
+
+        fn parse_lit_str(s: &str) -> Option<(Box<str>, Box<str>)> {
+            match byte(s, 0) {
+                b'"' => cooked(s),
+                b'r' => raw(s),
+                _ => unreachable!(),
+            }
+        }
+    "#);
+}
+
+#[test]
+fn for_loop_over_token_stream_binds_token_tree_items() {
+    assert_type_ok(r#"
+        struct Span {}
+
+        mod proc_macro2 {
+            pub struct TokenStream {}
+            pub enum TokenTree {
+                Group,
+                Ident,
+            }
+        }
+
+        use proc_macro2::{TokenStream, TokenTree};
+
+        trait IntoIterator {
+            type Item;
+            type IntoIter;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+
+        fn respan_token_tree(token: TokenTree, span: Span) -> TokenTree {
+            token
+        }
+
+        fn parse_spanned(tokens: TokenStream, span: Span) {
+            for token in tokens {
+                respan_token_tree(token, span);
+            }
+        }
+    "#);
+}
+
+#[test]
+fn impl_method_body_resolves_self_enum_variants_against_impl_type() {
+    assert_type_ok(r#"
+        enum First {
+            A,
+            B,
+        }
+
+        enum Second {
+            A,
+            B,
+        }
+
+        impl First {
+            fn from_u32(v: u32) -> Self {
+                match v {
+                    1 => Self::A,
+                    _ => Self::B,
+                }
+            }
+        }
+
+        impl Second {
+            fn from_u32(v: u32) -> Self {
+                match v {
+                    1 => Self::A,
+                    _ => Self::B,
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn self_enum_variant_resolution_wins_over_global_type_names() {
+    assert_type_ok(r#"
+        struct String {}
+
+        enum SortType {
+            String,
+            Numeric,
+        }
+
+        impl SortType {
+            fn from_u8(v: u8) -> Self {
+                match v {
+                    1 => Self::Numeric,
+                    _ => Self::String,
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn function_arg_autoderefs_nested_slice_references() {
+    assert_type_ok(r#"
+        fn takes_slice(item: &[u8]) -> bool {
+            true
+        }
+
+        fn main() {
+            let items: [&[u8]; 1] = [b"x"];
+            for item in &items {
+                let ok = takes_slice(item);
+            }
+        }
+    "#);
+}
+
+#[test]
+fn vec_u8_compares_with_byte_string_arrays() {
+    assert_type_ok(r#"
+        fn main() {
+            let t: Vec<u8> = Vec::new();
+            let is_time = &t == b"time";
+            let is_date = t == b"date";
+        }
+    "#);
+}
+
+#[test]
+fn if_arms_allow_byte_string_literals_with_different_lengths_for_slice_use() {
+    assert_type_ok(r#"
+        fn takes_slice(item: &[u8]) {}
+
+        fn main() {
+            let flag = true;
+            takes_slice(if flag { b"Folder" } else { b"File name" });
+        }
+    "#);
+}
+
+#[test]
+fn shift_rhs_accepts_usize_without_forcing_lhs_type() {
+    assert_type_ok(r#"
+        fn main() {
+            let index: usize = 3;
+            let mask = 1u64 << index;
+        }
+    "#);
+}
+
+#[test]
+fn binary_ops_autoderef_shared_primitive_refs() {
+    assert_type_ok(r#"
+        fn f(a: &u8, b: &u8) -> u8 {
+            a ^ b
+        }
+    "#);
+}
+
+#[test]
+fn binary_ops_autoderef_mixed_primitive_ref_and_value() {
+    assert_type_ok(r#"
+        fn f(a: &u8, b: u8) -> u8 {
+            a ^ b
+        }
+    "#);
+}
+
+#[test]
+fn impl_generic_params_are_visible_in_method_bodies() {
+    assert_type_ok(r#"
+        trait Add<Rhs> {
+            type Output;
+        }
+
+        struct B0 {}
+        struct UTerm {}
+        struct UInt<U, B> { msb: U, lsb: B }
+
+        impl<U, B> UInt<U, B> {
+            fn new() -> Self {
+                UInt { msb: UTerm, lsb: B0 }
+            }
+        }
+
+        impl<U, B> Add<B0> for UInt<U, B> {
+            type Output = UInt<U, B>;
+
+            fn add(self, _: B0) -> Self::Output {
+                UInt::new()
+            }
+        }
+    "#);
+}
+
+#[test]
+fn self_type_is_available_in_struct_fields() {
+    assert_type_ok(r#"
+        struct Block<T> { value: T }
+        struct BlockCtx<BS> {
+            block: Block<Self>,
+            marker: BS,
+        }
+    "#);
+}
+
+#[test]
+fn self_output_uses_current_impl_associated_type() {
+    assert_type_ok(r#"
+        trait Trait {
+            type Output;
+        }
+
+        struct A {}
+        struct B {}
+        struct X {}
+        struct Y {}
+
+        impl Trait for A {
+            type Output = X;
+
+            fn get(self) -> Self::Output {
+                X {}
+            }
+        }
+
+        impl Trait for B {
+            type Output = Y;
+
+            fn get(self) -> Self::Output {
+                Y {}
+            }
+        }
+    "#);
+}
+
+#[test]
+fn method_resolution_uses_argument_types_for_same_receiver_impls() {
+    assert_type_ok(r#"
+        trait BitOr<Rhs> {
+            type Output;
+            fn bitor(self, rhs: Rhs) -> Self::Output;
+        }
+
+        struct B0 {}
+        struct B1 {}
+
+        impl BitOr<B0> for B0 {
+            type Output = B0;
+            fn bitor(self, _: B0) -> Self::Output { B0 {} }
+        }
+
+        impl BitOr<B1> for B0 {
+            type Output = B1;
+            fn bitor(self, _: B1) -> Self::Output { B1 {} }
+        }
+
+        fn f(lhs: B0, rhs: B1) -> B1 {
+            lhs.bitor(rhs)
+        }
+    "#);
+}
+
+#[test]
+fn binary_operator_uses_trait_output_type() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod ops {
+                pub trait Mul<Rhs> {
+                    type Output;
+                    fn mul(self, rhs: Rhs) -> Self::Output;
+                }
+            }
+        }
+
+        struct Aligned130 {}
+        struct PrecomputedMultiplier {}
+        struct Unreduced130 {}
+
+        impl core::ops::Mul<PrecomputedMultiplier> for Aligned130 {
+            type Output = Unreduced130;
+            fn mul(self, rhs: PrecomputedMultiplier) -> Self::Output {
+                Unreduced130 {}
+            }
+        }
+
+        fn multiply(lhs: Aligned130, rhs: PrecomputedMultiplier) -> Unreduced130 {
+            lhs * rhs
+        }
+    "#);
+}
+
+#[test]
+fn binary_operator_uses_reference_self_trait_output_type() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod ops {
+                pub trait Mul<Rhs> {
+                    type Output;
+                    fn mul(self, rhs: Rhs) -> Self::Output;
+                }
+            }
+        }
+
+        struct Aligned4x130 {}
+        struct PrecomputedMultiplier {}
+        struct Unreduced4x130 {}
+
+        impl core::ops::Mul<PrecomputedMultiplier> for &Aligned4x130 {
+            type Output = Unreduced4x130;
+            fn mul(self, rhs: PrecomputedMultiplier) -> Self::Output {
+                Unreduced4x130 {}
+            }
+        }
+
+        fn multiply(lhs: &Aligned4x130, rhs: PrecomputedMultiplier) -> Unreduced4x130 {
+            lhs * rhs
+        }
+    "#);
+}
+
+#[test]
+fn generic_param_associated_function_uses_trait_bound_signature() {
+    assert_type_ok(r#"
+        mod marker_traits {
+            pub trait Bit {
+                const U8: u8;
+                fn to_u8() -> u8;
+            }
+
+            pub trait Unsigned {
+                const U8: u8;
+                const U16: u16;
+                fn to_u8() -> u8;
+                fn to_u16() -> u16;
+            }
+        }
+
+        use crate::marker_traits::{Bit, Unsigned};
+
+        struct B0 {}
+        struct UTerm {}
+        struct UInt<U, B> { msb: U, lsb: B }
+
+        impl Bit for B0 {
+            const U8: u8 = 0;
+            fn to_u8() -> u8 { 0 }
+        }
+
+        impl Unsigned for UTerm {
+            const U8: u8 = 0;
+            const U16: u16 = 0;
+            fn to_u8() -> u8 { 0 }
+            fn to_u16() -> u16 { 0 }
+        }
+
+        impl<U: Unsigned, B: Bit> Unsigned for UInt<U, B> {
+            const U8: u8 = B::U8 | U::U8 << 1;
+            const U16: u16 = B::U8 as u16 | U::U16 << 1;
+
+            fn to_u8() -> u8 {
+                let bit: u8 = B::to_u8();
+                let rest: u8 = U::to_u8();
+                B::to_u8() | U::to_u8() << 1
+            }
+
+            fn to_u16() -> u16 {
+                let bit: u8 = B::to_u8();
+                let rest: u16 = U::to_u16();
+                u16::from(B::to_u8()) | U::to_u16() << 1
+            }
+        }
+    "#);
+}
+
+#[test]
+fn generic_param_associated_const_mismatch_is_reported_from_bound() {
+    assert_type_error(r#"
+        mod bit {
+            pub trait Bit {
+                const U8: u8;
+                fn to_u8() -> u8;
+            }
+
+            pub struct B0 {}
+
+            impl Bit for B0 {
+                const U8: u8 = 0;
+                fn to_u8() -> u8 { 0 }
+            }
+        }
+
+        mod marker_traits {
+            pub trait Unsigned {
+                const U16: u16;
+                fn to_u16() -> u16;
+            }
+        }
+
+        mod uint {
+            use crate::{bit::{Bit, B0}, marker_traits::Unsigned};
+
+            pub struct UTerm {}
+            pub struct UInt<U, B> { msb: U, lsb: B }
+
+            impl Unsigned for UTerm {
+                const U16: u16 = 0;
+                fn to_u16() -> u16 { 0 }
+            }
+
+            impl<U: Unsigned, B: Bit> UInt<U, B> {
+                fn broken_const() -> u16 {
+                    B::U8
+                }
+            }
+        }
+    "#, "mismatch");
+}
+
+#[test]
+fn generic_param_associated_fn_mismatch_is_reported_from_bound() {
+    assert_type_error(r#"
+        mod bit {
+            pub trait Bit {
+                const U8: u8;
+                fn to_u8() -> u8;
+            }
+
+            pub struct B0 {}
+
+            impl Bit for B0 {
+                const U8: u8 = 0;
+                fn to_u8() -> u8 { 0 }
+            }
+        }
+
+        mod marker_traits {
+            pub trait Unsigned {
+                const U16: u16;
+                fn to_u16() -> u16;
+            }
+        }
+
+        mod uint {
+            use crate::{bit::{Bit, B0}, marker_traits::Unsigned};
+
+            pub struct UTerm {}
+            pub struct UInt<U, B> { msb: U, lsb: B }
+
+            impl Unsigned for UTerm {
+                const U16: u16 = 0;
+                fn to_u16() -> u16 { 0 }
+            }
+
+            impl<U: Unsigned, B: Bit> UInt<U, B> {
+                fn broken_fn() -> u16 {
+                    B::to_u8()
+                }
+            }
+        }
+    "#, "mismatch");
+}
+
+#[test]
+fn typenum_style_primitive_powi_impls_typecheck() {
+    assert_type_ok(r#"
+        trait Bit {}
+        trait Unsigned {
+            fn to_u32() -> u32;
+        }
+
+        trait Pow<Exp> {
+            type Output;
+            fn powi(self, exp: Exp) -> Self::Output;
+        }
+
+        struct UTerm {}
+        struct UInt<U, B> { msb: U, lsb: B }
+        struct B0 {}
+
+        impl Bit for B0 {}
+
+        impl Unsigned for UTerm {
+            fn to_u32() -> u32 { 0 }
+        }
+
+        impl<U: Unsigned, B: Bit> Unsigned for UInt<U, B> {
+            fn to_u32() -> u32 {
+                U::to_u32() << 1
+            }
+        }
+
+        impl Pow<UTerm> for f32 {
+            type Output = f32;
+            fn powi(self, _: UTerm) -> Self::Output {
+                1.0
+            }
+        }
+
+        impl<U: Unsigned, B: Bit> Pow<UInt<U, B>> for f32 {
+            type Output = f32;
+            fn powi(self, _: UInt<U, B>) -> Self::Output {
+                let mut exp = <UInt<U, B> as Unsigned>::to_u32();
+                let mut base = self;
+
+                if exp == 0 {
+                    return 1.0;
+                }
+
+                while exp & 1 == 0 {
+                    base *= base;
+                    exp >>= 1;
+                }
+
+                base
+            }
+        }
+    "#);
+}
+
+#[test]
+fn typenum_style_recursive_primitive_powi_macro_typechecks() {
+    assert_type_ok(r#"
+        trait Bit {}
+        trait Unsigned {
+            fn to_u32() -> u32;
+        }
+
+        trait Pow<Exp> {
+            type Output;
+            fn powi(self, exp: Exp) -> Self::Output;
+        }
+
+        struct UTerm {}
+        struct UInt<U, B> { msb: U, lsb: B }
+        struct B0 {}
+
+        impl Bit for B0 {}
+
+        impl Unsigned for UTerm {
+            fn to_u32() -> u32 { 0 }
+        }
+
+        impl<U: Unsigned, B: Bit> Unsigned for UInt<U, B> {
+            fn to_u32() -> u32 {
+                U::to_u32() << 1
+            }
+        }
+
+        macro_rules! impl_pow_i {
+            () => ();
+            ($t: ty $(, $tail:tt)*) => (
+                impl Pow<UTerm> for $t {
+                    type Output = $t;
+                    fn powi(self, _: UTerm) -> Self::Output {
+                        1
+                    }
+                }
+
+                impl<U: Unsigned, B: Bit> Pow<UInt<U, B>> for $t {
+                    type Output = $t;
+                    fn powi(self, _: UInt<U, B>) -> Self::Output {
+                        self.pow(<UInt<U, B> as Unsigned>::to_u32())
+                    }
+                }
+
+                impl_pow_i!($($tail),*);
+            );
+        }
+
+        impl_pow_i!(u8, u16, u32);
+    "#);
+}
+
+#[test]
+fn typenum_style_float_powi_macro_typechecks() {
+    assert_type_ok(r#"
+        trait Bit {}
+        trait Unsigned {
+            fn to_u32() -> u32;
+        }
+
+        trait Pow<Exp> {
+            type Output;
+            fn powi(self, exp: Exp) -> Self::Output;
+        }
+
+        struct UTerm {}
+        struct UInt<U, B> { msb: U, lsb: B }
+        struct B0 {}
+        struct PInt<U> { inner: U }
+        struct NInt<U> { inner: U }
+
+        trait NonZero {}
+
+        impl Bit for B0 {}
+
+        impl PInt<UTerm> {
+            fn new() -> Self { PInt { inner: UTerm {} } }
+        }
+
+        impl Unsigned for UTerm {
+            fn to_u32() -> u32 { 0 }
+        }
+
+        impl<U: Unsigned, B: Bit> Unsigned for UInt<U, B> {
+            fn to_u32() -> u32 {
+                U::to_u32() << 1
+            }
+        }
+
+        macro_rules! impl_pow_f {
+            ($t:ty) => {
+                impl Pow<UTerm> for $t {
+                    type Output = $t;
+                    fn powi(self, _: UTerm) -> Self::Output {
+                        1.0
+                    }
+                }
+
+                impl<U: Unsigned, B: Bit> Pow<UInt<U, B>> for $t {
+                    type Output = $t;
+                    fn powi(self, _: UInt<U, B>) -> Self::Output {
+                        let mut exp = <UInt<U, B> as Unsigned>::to_u32();
+                        let mut base = self;
+
+                        if exp == 0 {
+                            return 1.0;
+                        }
+
+                        while exp & 1 == 0 {
+                            base *= base;
+                            exp >>= 1;
+                        }
+                        if exp == 1 {
+                            return base;
+                        }
+
+                        let mut acc = base.clone();
+                        while exp > 1 {
+                            exp >>= 1;
+                            base *= base;
+                            if exp & 1 == 1 {
+                                acc *= base.clone();
+                            }
+                        }
+                        acc
+                    }
+                }
+
+                impl<U: Unsigned + NonZero> Pow<NInt<U>> for $t {
+                    type Output = $t;
+                    fn powi(self, _: NInt<U>) -> Self::Output {
+                        <$t as Pow<PInt<U>>>::powi(self, PInt::new()).recip()
+                    }
+                }
+            };
+        }
+
+        impl_pow_f!(f32);
+        impl_pow_f!(f64);
+    "#);
+}
+
+#[test]
+fn typenum_style_generic_rem_uses_projection_not_concrete_operator_impl() {
+    assert_type_ok(r#"
+        trait Rem<Rhs = Self> {
+            type Output;
+            fn rem(self, rhs: Rhs) -> Self::Output;
+        }
+
+        trait Unsigned {}
+        trait NonZero {}
+        trait Bit {}
+
+        mod bit {
+            pub struct B0 {}
+            impl crate::Bit for B0 {}
+        }
+
+        mod uint {
+            use crate::bit::B0;
+            use crate::{Bit, Rem, Unsigned};
+
+            pub struct UTerm {}
+            pub struct UInt<U: Unsigned, B: Bit> {
+                pub msb: U,
+                pub lsb: B,
+            }
+
+            impl Unsigned for UTerm {}
+
+            impl<Ur: Unsigned, Br: Bit> Rem<UInt<Ur, Br>> for UTerm {
+                type Output = UTerm;
+
+                fn rem(self, rhs: UInt<Ur, Br>) -> Self::Output {
+                    UTerm {}
+                }
+            }
+        }
+
+        mod consts {
+            pub type U0 = crate::uint::UTerm;
+        }
+
+        mod int {
+            use crate::consts::U0;
+            use crate::uint::Unsigned;
+            use crate::{NonZero, Rem};
+
+            pub struct Z0;
+            pub struct PInt<U: Unsigned + NonZero> {
+                pub n: U,
+            }
+
+            pub trait PrivateRem<URem, Divisor> {
+                type Output;
+                fn private_rem(self, rem: URem, divisor: Divisor) -> Self::Output;
+            }
+
+            impl<I: NonZero> Rem<I> for Z0 {
+                type Output = Z0;
+
+                fn rem(self, rhs: I) -> Self::Output {
+                    Z0
+                }
+            }
+
+            impl<Ul: Unsigned + NonZero, Ur: Unsigned + NonZero> PrivateRem<U0, PInt<Ur>> for PInt<Ul> {
+                type Output = Z0;
+
+                fn private_rem(self, rem: U0, rhs: PInt<Ur>) -> Self::Output {
+                    Z0
+                }
+            }
+
+            impl<Ul: Unsigned + NonZero, Ur: Unsigned + NonZero> Rem<PInt<Ur>> for PInt<Ul>
+            where
+                Ul: Rem<Ur>,
+                PInt<Ul>: PrivateRem<<Ul as Rem<Ur>>::Output, PInt<Ur>>,
+            {
+                type Output = <PInt<Ul> as PrivateRem<<Ul as Rem<Ur>>::Output, PInt<Ur>>>::Output;
+
+                fn rem(self, rhs: PInt<Ur>) -> Self::Output {
+                    self.private_rem(self.n % rhs.n, rhs)
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn qualified_associated_type_projection_is_not_global_impl_output() {
+    assert_type_ok(r#"
+        trait Trait {
+            type Output;
+        }
+
+        struct B0 {}
+        struct UTerm {}
+        struct Wrap<T> { value: T }
+
+        impl<T> Trait for Wrap<T> {
+            type Output = T;
+        }
+
+        impl Trait for B0 {
+            type Output = B0;
+        }
+
+        type Out<T> = <Wrap<T> as Trait>::Output;
+
+        fn f(x: UTerm) -> Out<UTerm> {
+            x
+        }
+    "#);
+}
+
+#[test]
 fn qualified_module_types_do_not_collide_by_leaf_name() {
     assert_type_ok(r#"
         mod fallback {
@@ -416,6 +1411,302 @@ fn proc_macro2_style_wrapper_from_overloads_typecheck() {
     "#, &["wrap_proc_macro"]);
     assert!(result.errors.is_empty(), "unexpected errors: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn proc_macro2_style_scoped_fallback_imports_do_not_pick_root_wrappers() {
+    let (result, _) = typecheck_with_cfg(r#"
+        pub mod fallback {
+            pub struct TokenStream {}
+            pub struct TokenStreamBuilder {}
+            pub struct Group {}
+            pub struct Span {}
+            pub struct Literal {}
+
+            impl TokenStreamBuilder {
+                pub fn new() -> TokenStreamBuilder { TokenStreamBuilder {} }
+                pub fn build(self) -> TokenStream { TokenStream {} }
+                pub fn push_token_from_parser(&mut self, token: crate::TokenTree) {}
+            }
+
+            impl Group {
+                pub fn new() -> Group { Group {} }
+                pub fn span(&self) -> Span { Span {} }
+            }
+
+            impl Span {
+                pub fn call_site() -> Span { Span {} }
+            }
+
+            impl Literal {
+                pub fn new() -> Literal { Literal {} }
+            }
+        }
+
+        #[cfg(not(wrap_proc_macro))]
+        use crate::fallback as imp;
+
+        pub struct TokenStream {
+            inner: imp::TokenStream,
+        }
+
+        pub struct Group {
+            inner: imp::Group,
+        }
+
+        pub struct Span {
+            inner: imp::Span,
+        }
+
+        pub struct Literal {
+            inner: imp::Literal,
+        }
+
+        pub enum TokenTree {
+            Group(Group),
+            Literal(Literal),
+        }
+
+        impl TokenStream {
+            fn _new_fallback(inner: fallback::TokenStream) -> Self {
+                TokenStream { inner: imp::TokenStream::from(inner) }
+            }
+        }
+
+        impl Group {
+            fn _new_fallback(inner: fallback::Group) -> Self {
+                Group { inner }
+            }
+        }
+
+        impl Span {
+            fn _new_fallback(inner: fallback::Span) -> Self {
+                Span { inner }
+            }
+        }
+
+        impl Literal {
+            fn _new_fallback(inner: fallback::Literal) -> Self {
+                Literal { inner }
+            }
+        }
+
+        mod parse {
+            use crate::fallback::{
+                self, Group, Literal, Span, TokenStream, TokenStreamBuilder,
+            };
+            use crate::TokenTree;
+
+            fn token_stream() -> TokenStream {
+                let mut tokens = TokenStreamBuilder::new();
+                let g = Group::new();
+                tokens.push_token_from_parser(TokenTree::Group(crate::Group::_new_fallback(g)));
+                tokens.build()
+            }
+
+            fn leaf_token() -> TokenTree {
+                let literal = Literal::new();
+                TokenTree::Literal(crate::Literal::_new_fallback(literal))
+            }
+
+            fn doc_comment(tokens: &mut TokenStreamBuilder) {
+                let span = crate::Span::_new_fallback(Span::call_site());
+            }
+        }
+    "#, &[]);
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn proc_macro2_style_qualified_enum_variant_pattern_binds_payload_type() {
+    assert_type_ok(r#"
+        pub mod fallback {
+            pub struct Span {}
+            pub struct Group {}
+
+            impl Group {
+                pub fn span(&self) -> Span { Span {} }
+            }
+        }
+
+        pub mod imp {
+            use crate::fallback;
+
+            pub enum Group {
+                Fallback(fallback::Group),
+            }
+
+            pub enum Span {
+                Fallback(fallback::Span),
+            }
+        }
+
+        mod extra {
+            use crate::fallback;
+            use crate::imp;
+
+            enum DelimSpanEnum {
+                Fallback(fallback::Span),
+            }
+
+            fn new(group: &imp::Group) -> DelimSpanEnum {
+                match group {
+                    imp::Group::Fallback(group) => DelimSpanEnum::Fallback(group.span()),
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn proc_macro_intrinsic_enum_variant_constructors_have_parent_type() {
+    assert_type_ok(r#"
+        fn into_compiler_token(g: proc_macro::Group, p: proc_macro::Punct) -> proc_macro::TokenTree {
+            if true {
+                proc_macro::TokenTree::Group(g)
+            } else {
+                proc_macro::TokenTree::Punct(p)
+            }
+        }
+    "#);
+}
+
+#[test]
+fn proc_macro2_style_extend_maps_generic_into_iterator_item() {
+    assert_type_ok(r#"
+        trait IntoIterator {
+            type Item;
+            type IntoIter;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+
+        trait Extend<A> {
+            fn extend<T: IntoIterator<Item = A>>(&mut self, iter: T);
+        }
+
+        struct Map<I, F> {
+            iter: I,
+            f: F,
+        }
+
+        struct Ident {}
+
+        mod imp {
+            pub enum TokenTree {
+                Ident(crate::Ident),
+            }
+
+            pub struct TokenStream {}
+
+            impl Extend<TokenTree> for TokenStream {
+                fn extend<I: IntoIterator<Item = TokenTree>>(&mut self, tokens: I) {}
+            }
+        }
+
+        struct TokenStream {
+            inner: imp::TokenStream,
+        }
+
+        impl Extend<Ident> for TokenStream {
+            fn extend<I: IntoIterator<Item = Ident>>(&mut self, tokens: I) {
+                self.inner.extend(tokens.into_iter().map(imp::TokenTree::Ident));
+            }
+        }
+    "#);
+}
+
+#[test]
+fn proc_macro2_style_wrapper_into_iter_preserves_fallback_variant_field_type() {
+    assert_type_ok(r#"
+        trait IntoIterator {
+            type Item;
+            type IntoIter;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+
+        struct RcVecIntoIter<T> {
+            item: T,
+        }
+
+        enum TokenTree {
+            Ident,
+        }
+
+        mod fallback {
+            use crate::{RcVecIntoIter, TokenTree};
+
+            pub struct TokenStream {}
+            pub type TokenTreeIter = RcVecIntoIter<TokenTree>;
+
+            impl IntoIterator for TokenStream {
+                type Item = TokenTree;
+                type IntoIter = TokenTreeIter;
+
+                fn into_iter(self) -> TokenTreeIter {
+                    RcVecIntoIter { item: TokenTree::Ident }
+                }
+            }
+        }
+
+        mod imp {
+            use crate::fallback;
+            use crate::TokenTree;
+
+            pub enum TokenStream {
+                Fallback(fallback::TokenStream),
+            }
+
+            pub enum TokenTreeIter {
+                Fallback(fallback::TokenTreeIter),
+            }
+
+            impl IntoIterator for TokenStream {
+                type Item = TokenTree;
+                type IntoIter = TokenTreeIter;
+
+                fn into_iter(self) -> TokenTreeIter {
+                    match self {
+                        TokenStream::Fallback(tts) => TokenTreeIter::Fallback(tts.into_iter()),
+                    }
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn generic_array_style_index_uses_deref_slice_target() {
+    assert_type_ok(r#"
+        trait Deref {
+            type Target;
+        }
+
+        trait Unsigned {}
+        unsafe trait ArrayLength<T>: Unsigned {
+            type ArrayType;
+        }
+
+        struct UTerm {}
+        impl Unsigned for UTerm {}
+        unsafe impl<T> ArrayLength<T> for UTerm {
+            type ArrayType = [T; 0];
+        }
+
+        struct GenericArray<T, N: ArrayLength<T>> {
+            marker: T,
+            len: N,
+        }
+
+        impl<T, N: ArrayLength<T>> Deref for GenericArray<T, N> {
+            type Target = [T];
+        }
+
+        fn fmt<N: ArrayLength<u8>>(array: GenericArray<u8, N>) {
+            let byte: u8 = array[0];
+            let bytes = array[..1];
+        }
+    "#);
 }
 
 #[test]

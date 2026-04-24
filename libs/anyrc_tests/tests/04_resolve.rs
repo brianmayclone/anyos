@@ -106,6 +106,73 @@ fn resolve_generic_params() {
 }
 
 #[test]
+fn resolve_forward_generic_param_in_bounds() {
+    assert_resolves(r#"
+        trait Cmp<Rhs> {}
+        trait Unsigned {}
+        struct PInt<U> { n: U }
+        impl<Pl: Cmp<Pr> + Unsigned, Pr: Unsigned> Cmp<PInt<Pr>> for PInt<Pl> {}
+    "#);
+}
+
+#[test]
+fn resolve_self_in_struct_body() {
+    assert_resolves(r#"
+        struct Block<T> { value: T }
+        struct BlockCtx<BS> {
+            block: Block<Self>,
+        }
+    "#);
+}
+
+#[test]
+fn resolve_core_convert_prelude_traits() {
+    assert_resolves(r#"
+        struct Wrapper<T> { inner: T }
+
+        impl<T, Z> AsRef<T> for Wrapper<Z>
+        where
+            Z: AsRef<T>,
+        {
+            fn as_ref(&self) -> &T {
+                self.inner.as_ref()
+            }
+        }
+
+        impl<T, Z> AsMut<T> for Wrapper<Z>
+        where
+            Z: AsMut<T>,
+        {
+            fn as_mut(&mut self) -> &mut T {
+                self.inner.as_mut()
+            }
+        }
+
+        impl<T, Z> TryInto<T> for Wrapper<Z>
+        where
+            Z: TryInto<T>,
+        {
+            type Error = ();
+
+            fn try_into(self) -> Result<T, Self::Error> {
+                self.inner.try_into()
+            }
+        }
+    "#);
+}
+
+#[test]
+fn resolve_core_arch_intrinsics_as_compiler_known_names() {
+    assert_resolves(r#"
+        use core::arch::x86_64::*;
+
+        fn add(a: __m256i, b: __m256i) {
+            let c = _mm256_add_epi64(a, b);
+        }
+    "#);
+}
+
+#[test]
 fn resolve_trait_def() {
     assert_resolves("trait Foo { fn foo(&self) -> i32; }");
 }

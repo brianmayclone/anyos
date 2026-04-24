@@ -2172,6 +2172,7 @@ version = "0.1.0"
 dependencies = [
  "anyos_std",
  "libconf_schema",
+ "libshellcommon",
 ]
 
 [[package]]

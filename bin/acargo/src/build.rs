@@ -207,9 +207,13 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
             node.manifest.opt_level_dev
         };
 
-        // Collect extern crate references
+        // Collect extern crate references. anyrc currently consumes source
+        // interface wrappers, so re-exported APIs need transitive dependency
+        // interfaces to be visible to downstream crates.
         let mut externs = Vec::new();
-        for &dep_idx in &node.deps {
+        let mut extern_indices = Vec::new();
+        collect_transitive_dep_indices(&nodes, idx, &mut extern_indices);
+        for dep_idx in extern_indices {
             let dep_norm = nodes[dep_idx].name.replace('-', "_");
             if let Some(rlib_path) = built_rlibs.get(&dep_norm) {
                 externs.push(anyrc::driver::ExternCrateSpec {
@@ -289,5 +293,15 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         success: true,
         bin_path: final_bin_path,
         compiled,
+    }
+}
+
+fn collect_transitive_dep_indices(nodes: &[BuildNode], idx: usize, out: &mut Vec<usize>) {
+    for &dep_idx in &nodes[idx].deps {
+        if out.contains(&dep_idx) {
+            continue;
+        }
+        collect_transitive_dep_indices(nodes, dep_idx, out);
+        out.push(dep_idx);
     }
 }

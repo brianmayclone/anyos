@@ -1,7 +1,7 @@
-use alloc::string::String;
 use alloc::format;
+use alloc::string::String;
 use alloc::vec::Vec;
-use anyos_std::json::{Value, Number};
+use anyos_std::json::{Number, Value};
 use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 
 use crate::util::path;
@@ -24,8 +24,11 @@ pub struct Config {
     pub syntax_dir: String,
     pub plugin_dir: String,
     pub temp_dir: String,
+    pub crust_path: String,
+    pub ccargo_path: String,
     pub make_path: String,
     pub cc_path: String,
+    pub cxx_path: String,
     pub git_path: String,
     pub last_project: String,
     pub recent_projects: Vec<String>,
@@ -80,7 +83,11 @@ impl Config {
             tab_width: json_u32(&val, "tab_width", defaults.tab_width),
             show_line_numbers: json_bool(&val, "show_line_numbers", defaults.show_line_numbers),
             auto_save: json_bool(&val, "auto_save", defaults.auto_save),
-            reopen_last_project: json_bool(&val, "reopen_last_project", defaults.reopen_last_project),
+            reopen_last_project: json_bool(
+                &val,
+                "reopen_last_project",
+                defaults.reopen_last_project,
+            ),
             terminal_font_size: json_u32(&val, "terminal_font_size", defaults.terminal_font_size),
             sidebar_width: json_u32(&val, "sidebar_width", defaults.sidebar_width),
             output_height: json_u32(&val, "output_height", defaults.output_height),
@@ -89,8 +96,11 @@ impl Config {
             syntax_dir: defaults.syntax_dir,
             plugin_dir: json_str(&val, "plugin_dir", &defaults.plugin_dir),
             temp_dir: json_str(&val, "temp_dir", &defaults.temp_dir),
+            crust_path: json_str(&val, "crust_path", ""),
+            ccargo_path: json_str(&val, "ccargo_path", ""),
             make_path: json_str(&val, "make_path", ""),
             cc_path: json_str(&val, "cc_path", ""),
+            cxx_path: json_str(&val, "cxx_path", ""),
             git_path: json_str(&val, "git_path", ""),
             last_project: json_str(&val, "last_project", ""),
             recent_projects: json_str_array(&val, "recent_projects"),
@@ -99,7 +109,13 @@ impl Config {
             session_active_file: json_str(&val, "session_active_file", ""),
         };
         // Re-discover any empty tool paths
-        if cfg.make_path.is_empty() || cfg.cc_path.is_empty() || cfg.git_path.is_empty() {
+        if cfg.crust_path.is_empty()
+            || cfg.ccargo_path.is_empty()
+            || cfg.make_path.is_empty()
+            || cfg.cc_path.is_empty()
+            || cfg.cxx_path.is_empty()
+            || cfg.git_path.is_empty()
+        {
             cfg.auto_discover();
             cfg.save();
         }
@@ -109,28 +125,55 @@ impl Config {
     /// Save settings to disk.
     pub fn save(&self) {
         let mut obj = Value::new_object();
-        obj.set("font_size", Value::Number(Number::Int(self.font_size as i64)));
-        obj.set("line_height", Value::Number(Number::Int(self.line_height as i64)));
+        obj.set(
+            "font_size",
+            Value::Number(Number::Int(self.font_size as i64)),
+        );
+        obj.set(
+            "line_height",
+            Value::Number(Number::Int(self.line_height as i64)),
+        );
         obj.set("font_id", Value::Number(Number::Int(self.font_id as i64)));
-        obj.set("tab_width", Value::Number(Number::Int(self.tab_width as i64)));
+        obj.set(
+            "tab_width",
+            Value::Number(Number::Int(self.tab_width as i64)),
+        );
         obj.set("show_line_numbers", Value::Bool(self.show_line_numbers));
         obj.set("auto_save", Value::Bool(self.auto_save));
         obj.set("reopen_last_project", Value::Bool(self.reopen_last_project));
-        obj.set("terminal_font_size", Value::Number(Number::Int(self.terminal_font_size as i64)));
-        obj.set("sidebar_width", Value::Number(Number::Int(self.sidebar_width as i64)));
-        obj.set("output_height", Value::Number(Number::Int(self.output_height as i64)));
+        obj.set(
+            "terminal_font_size",
+            Value::Number(Number::Int(self.terminal_font_size as i64)),
+        );
+        obj.set(
+            "sidebar_width",
+            Value::Number(Number::Int(self.sidebar_width as i64)),
+        );
+        obj.set(
+            "output_height",
+            Value::Number(Number::Int(self.output_height as i64)),
+        );
         obj.set("settings_path", Value::String(self.settings_path.clone()));
         obj.set("syntax_dir", Value::String(self.syntax_dir.clone()));
         obj.set("plugin_dir", Value::String(self.plugin_dir.clone()));
         obj.set("temp_dir", Value::String(self.temp_dir.clone()));
+        obj.set("crust_path", Value::String(self.crust_path.clone()));
+        obj.set("ccargo_path", Value::String(self.ccargo_path.clone()));
         obj.set("make_path", Value::String(self.make_path.clone()));
         obj.set("cc_path", Value::String(self.cc_path.clone()));
+        obj.set("cxx_path", Value::String(self.cxx_path.clone()));
         obj.set("git_path", Value::String(self.git_path.clone()));
         obj.set("last_project", Value::String(self.last_project.clone()));
         obj.set("recent_projects", json_string_array(&self.recent_projects));
-        obj.set("session_project", Value::String(self.session_project.clone()));
+        obj.set(
+            "session_project",
+            Value::String(self.session_project.clone()),
+        );
         obj.set("session_files", json_string_array(&self.session_files));
-        obj.set("session_active_file", Value::String(self.session_active_file.clone()));
+        obj.set(
+            "session_active_file",
+            Value::String(self.session_active_file.clone()),
+        );
         let json = obj.to_json_string_pretty();
         let _ = ANYCODE_SCHEMA.write_string("config/settings_json", &json);
     }
@@ -154,8 +197,11 @@ impl Config {
             syntax_dir,
             plugin_dir: String::from("/Libraries/anycode/plugins"),
             temp_dir: String::from("/tmp"),
+            crust_path: String::new(),
+            ccargo_path: String::new(),
             make_path: String::new(),
             cc_path: String::new(),
+            cxx_path: String::new(),
             git_path: String::new(),
             last_project: String::new(),
             recent_projects: Vec::new(),
@@ -167,11 +213,20 @@ impl Config {
 
     /// Auto-discover paths for tools via PATH environment variable.
     pub fn auto_discover(&mut self) {
+        if self.crust_path.is_empty() {
+            self.crust_path = find_first_in_path(&["crust", "rustc", "anyrc"]);
+        }
+        if self.ccargo_path.is_empty() {
+            self.ccargo_path = find_first_in_path(&["ccargo", "cargo", "acargo"]);
+        }
         if self.make_path.is_empty() {
             self.make_path = find_in_path("make");
         }
         if self.cc_path.is_empty() {
-            self.cc_path = find_in_path("cc");
+            self.cc_path = find_first_in_path(&["cc", "gcc", "clang"]);
+        }
+        if self.cxx_path.is_empty() {
+            self.cxx_path = find_first_in_path(&["c++", "g++", "clang++"]);
         }
         if self.git_path.is_empty() {
             self.git_path = find_in_path("git");
@@ -247,6 +302,16 @@ fn find_in_path(name: &str) -> String {
         let candidate = format!("{}/{}", dir, name);
         if path::exists(&candidate) {
             return candidate;
+        }
+    }
+    String::new()
+}
+
+fn find_first_in_path(names: &[&str]) -> String {
+    for name in names {
+        let path = find_in_path(name);
+        if !path.is_empty() {
+            return path;
         }
     }
     String::new()

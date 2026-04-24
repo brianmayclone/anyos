@@ -256,7 +256,7 @@ static int copy_directory(const char *src_dir, const char *dst_dir) {
 static const char *VALID_CAPS[] = {
     "all", "filesystem", "network", "audio", "display", "device",
     "process", "pipe", "shm", "event", "compositor", "system",
-    "dll", "thread", "manage_perms", NULL
+    "dll", "thread", "manage_perms", "debug", NULL
 };
 
 static int is_valid_capability(const char *cap) {
@@ -403,7 +403,7 @@ static int validate_info_conf(const char *path, InfoConf *info) {
             "  the user for access. Add capabilities=... to grant permissions.\n"
             "  Available: filesystem, network, audio, display, device, process,\n"
             "             pipe, shm, event, compositor, system, dll, thread,\n"
-            "             manage_perms, all\n");
+            "             manage_perms, debug, all\n");
     }
 
     return errors > 0 ? -1 : 0;

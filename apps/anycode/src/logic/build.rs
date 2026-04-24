@@ -1,10 +1,10 @@
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::format;
 use crate::logic::config::Config;
 use crate::logic::project::BuildType;
 use crate::logic::tasks::Task;
 use crate::util::path;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// A running build/run process with pipe output capture.
 pub struct BuildProcess {
@@ -109,7 +109,11 @@ impl BuildRules {
                     rules.push(BuildRule {
                         pattern: String::from(parts[0]),
                         build_cmd: String::from(parts[1]),
-                        run_cmd: if parts.len() > 2 { String::from(parts[2]) } else { String::new() },
+                        run_cmd: if parts.len() > 2 {
+                            String::from(parts[2])
+                        } else {
+                            String::new()
+                        },
                     });
                 }
             }
@@ -159,7 +163,12 @@ impl BuildRules {
     }
 
     /// Get the build command based on rules and active file.
-    pub fn build_command(&self, active_file: &str, project_root: &str, config: &Config) -> Option<(String, String)> {
+    pub fn build_command(
+        &self,
+        active_file: &str,
+        project_root: &str,
+        config: &Config,
+    ) -> Option<(String, String)> {
         let rule = self.find_match(active_file, project_root)?;
         if rule.build_cmd.is_empty() {
             return None;
@@ -177,7 +186,12 @@ impl BuildRules {
     }
 
     /// Get the run command based on rules and active file.
-    pub fn run_command(&self, active_file: &str, project_root: &str, config: &Config) -> Option<(String, String)> {
+    pub fn run_command(
+        &self,
+        active_file: &str,
+        project_root: &str,
+        config: &Config,
+    ) -> Option<(String, String)> {
         let rule = self.find_match(active_file, project_root)?;
         if rule.run_cmd.is_empty() {
             return None;
@@ -199,7 +213,10 @@ impl BuildRules {
 fn resolve_tool(name: &str, config: &Config) -> String {
     match name {
         "make" => config.make_path.clone(),
-        "cc" | "gcc" => config.cc_path.clone(),
+        "cc" | "gcc" | "clang" => config.cc_path.clone(),
+        "c++" | "g++" | "clang++" => config.cxx_path.clone(),
+        "crust" | "rustc" | "anyrc" => config.crust_path.clone(),
+        "ccargo" | "cargo" | "acargo" => config.ccargo_path.clone(),
         "git" => config.git_path.clone(),
         _ => {
             if name.starts_with('/') || name.starts_with("./") {
@@ -242,10 +259,15 @@ pub struct ToolStatus {
 /// Check which development tools are installed.
 pub fn check_prerequisites() -> Vec<ToolStatus> {
     let mut results = Vec::new();
-    let tools: [(&str, &str, &[&str]); 6] = [
+    let tools: [(&str, &str, &[&str]); 7] = [
         ("crust", "Rust Compiler", &["crust", "rustc", "anyrc"]),
-        ("ccargo", "Cargo Build System", &["ccargo", "cargo", "acargo"]),
-        ("cc", "C Compiler", &["cc"]),
+        (
+            "ccargo",
+            "Cargo Build System",
+            &["ccargo", "cargo", "acargo"],
+        ),
+        ("cc", "C Compiler", &["cc", "gcc", "clang"]),
+        ("c++", "C++ Compiler", &["c++", "g++", "clang++"]),
         ("make", "Make Build Tool", &["make"]),
         ("git", "Git Version Control", &["git", "cgit", "agit"]),
         ("nasm", "NASM Assembler", &["nasm"]),
@@ -267,9 +289,9 @@ pub fn check_prerequisites() -> Vec<ToolStatus> {
 /// Check if the essential tools (crust, ccargo, cc, make) are all available.
 pub fn has_essential_tools(statuses: &[ToolStatus]) -> bool {
     let essential = ["crust", "ccargo", "cc", "make"];
-    essential.iter().all(|name| {
-        statuses.iter().any(|s| s.name == *name && s.available)
-    })
+    essential
+        .iter()
+        .all(|name| statuses.iter().any(|s| s.name == *name && s.available))
 }
 
 fn find_first_available_tool(names: &[&str]) -> String {

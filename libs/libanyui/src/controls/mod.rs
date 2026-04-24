@@ -18,6 +18,7 @@ pub mod colorwell;
 pub mod combobox;
 pub mod context_menu;
 pub mod data_grid;
+pub mod date_time_picker;
 pub mod divider;
 pub mod dropdown;
 pub mod expander;
@@ -26,7 +27,10 @@ pub mod groupbox;
 pub mod icon_button;
 pub mod image_view;
 pub mod label;
+pub mod link_label;
+pub mod list_box;
 pub mod navbar;
+pub mod plain_button;
 pub mod progress_bar;
 pub mod radio_button;
 pub mod radio_group;
@@ -48,9 +52,6 @@ pub mod text_editor;
 pub mod textarea;
 pub mod textfield;
 pub mod toggle;
-pub mod plain_button;
-pub mod date_time_picker;
-pub mod list_box;
 pub mod toolbar;
 pub mod tooltip;
 pub mod tree_view;
@@ -121,6 +122,9 @@ pub fn create_control(
 
         // Text controls — wrap ControlBase in TextControlBase with text
         ControlKind::Label => Box::new(label::Label::new(
+            TextControlBase::new(base).with_text(text),
+        )),
+        ControlKind::LinkLabel => Box::new(link_label::LinkLabel::new(
             TextControlBase::new(base).with_text(text),
         )),
         ControlKind::Button => Box::new(button::Button::new(

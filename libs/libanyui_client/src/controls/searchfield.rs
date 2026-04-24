@@ -1,12 +1,14 @@
-use crate::{Control, Widget, lib, events, KIND_SEARCH_FIELD};
-use crate::events::{TextChangedEvent, SubmitEvent};
+use crate::events::{SubmitEvent, TextChangedEvent};
+use crate::{events, lib, Control, Widget, KIND_SEARCH_FIELD};
 
 leaf_control!(SearchField, KIND_SEARCH_FIELD);
 
 impl SearchField {
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_SEARCH_FIELD, core::ptr::null(), 0);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     pub fn set_placeholder(&self, text: &str) {

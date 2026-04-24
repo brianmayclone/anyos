@@ -71,6 +71,24 @@ fn expand_macro_with_repetition() {
 }
 
 #[test]
+fn expand_unseparated_ty_repetition() {
+    let krate = parse_and_expand(r#"
+        trait SeekNum {}
+
+        macro_rules! impl_seek_num {
+            {$($t:ty )*} => {
+                $(
+                    impl SeekNum for $t {}
+                )*
+            };
+        }
+
+        impl_seek_num! { i32 u32 u64 u128 usize }
+    "#);
+    assert_eq!(krate.items.len(), 7);
+}
+
+#[test]
 fn expand_macro_with_ident_arg() {
     let krate = parse_and_expand(r#"
         macro_rules! make_fn {
@@ -83,6 +101,28 @@ fn expand_macro_with_ident_arg() {
 }
 
 #[test]
+fn expand_syn_style_ast_struct_keyword_idents_and_meta_attrs() {
+    let krate = parse_and_expand(r#"
+        macro_rules! ast_struct {
+            (
+                $(#[$attr:meta])*
+                $pub:ident $struct:ident $name:ident $body:tt
+            ) => {
+                $(#[$attr])* $pub $struct $name $body
+            };
+        }
+
+        ast_struct! {
+            #[doc = "demo"]
+            pub struct LitStr {
+                repr: usize,
+            }
+        }
+    "#);
+    assert!(krate.items.iter().any(|item| matches!(item, Item::Struct(s) if s.fields.len() == 1)));
+}
+
+#[test]
 fn macro_not_found_is_preserved() {
     // Unknown macros should remain as MacroCall (or could be an error)
     let krate = parse_and_expand(r#"
@@ -90,6 +130,20 @@ fn macro_not_found_is_preserved() {
     "#);
     // Should not crash
     assert_eq!(krate.items.len(), 1);
+}
+
+#[test]
+fn empty_expr_macro_expansion_is_not_parsed_as_expr() {
+    let krate = parse_and_expand(r#"
+        macro_rules! maybe_empty {
+            () => {}
+        }
+
+        fn main() {
+            maybe_empty!();
+        }
+    "#);
+    assert_eq!(krate.items.len(), 2);
 }
 
 #[test]
@@ -112,5 +166,17 @@ fn expand_cfg_if_items() {
             Item::Mod(m) => assert_eq!(m.attrs.len(), 1),
             _ => panic!("expected cfg_if expansion item"),
         }
+    }
+}
+
+#[test]
+fn expand_cpufeatures_new_item_macro() {
+    let krate = parse_and_expand(r#"
+        cpufeatures::new!(avx2_cpuid, "avx2");
+    "#);
+    assert_eq!(krate.items.len(), 1);
+    match &krate.items[0] {
+        Item::Mod(m) => assert!(m.items.as_ref().is_some_and(|items| items.len() >= 4)),
+        _ => panic!("expected generated module"),
     }
 }

@@ -22,7 +22,10 @@ use alloc::string::String;
 use anyui::Widget;
 use libanyui_client as anyui;
 
-use crate::logic::{ai, build, config, diagnostics, file_manager, git, plugin, project, tasks};
+use crate::logic::{
+    ai, build, config, debug_backend, debug_session, diagnostic_pipeline, diagnostics,
+    file_manager, git, plugin, project, symbol_index, tasks,
+};
 use crate::ui::{
     activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel, git_panel,
     output_panel, problems_panel, run_panel, search_panel, sidebar, splash, status_bar,
@@ -43,6 +46,11 @@ struct AppState {
     // Subsystems
     task_mgr: tasks::TaskManager,
     diagnostics: diagnostics::DiagnosticSet,
+    symbol_index: symbol_index::SymbolIndex,
+    active_completions: alloc::vec::Vec<crate::logic::intellisense::CompletionItem>,
+    active_completion_prefix: String,
+    debug_backend: debug_backend::DebugBackend,
+    debug_session: debug_session::DebugSession,
     plugin_mgr: plugin::PluginManager,
     ai_client: ai::AiClient,
 
@@ -50,18 +58,12 @@ struct AppState {
     build_process: Option<build::BuildProcess>,
     build_rules: build::BuildRules,
     build_timer_id: u32,
+    debug_timer_id: u32,
     build_output_buffer: String,
 
     // Live analysis
     live_check_process: Option<build::BuildProcess>,
-    live_check_timer_id: u32,
-    live_check_debounce_ticks: u32,
-    live_check_pending_editor: Option<usize>,
-    live_check_pending_version: u32,
-    live_check_running_file: String,
-    live_check_running_version: u32,
-    live_check_output_buffer: String,
-    live_check_label: String,
+    live_check: diagnostic_pipeline::LiveCheckState,
 
     // Git
     git_state: git::GitState,
@@ -261,7 +263,7 @@ fn build_and_run(
 
     let mut task_mgr = tasks::TaskManager::new();
     if let Some(ref proj) = current_project {
-        task_mgr.detect_from_project(proj);
+        task_mgr.detect_from_project(proj, &config);
     }
 
     // ── Init global state ──
@@ -272,21 +274,20 @@ fn build_and_run(
             current_project,
             task_mgr,
             diagnostics: diagnostics::DiagnosticSet::new(),
+            symbol_index: symbol_index::SymbolIndex::new(),
+            active_completions: alloc::vec::Vec::new(),
+            active_completion_prefix: String::new(),
+            debug_backend: debug_backend::DebugBackend::new(),
+            debug_session: debug_session::DebugSession::new(),
             plugin_mgr,
             ai_client: ai::AiClient::new(),
             build_process: None,
             build_rules,
             build_timer_id: 0,
+            debug_timer_id: 0,
             build_output_buffer: String::new(),
             live_check_process: None,
-            live_check_timer_id: 0,
-            live_check_debounce_ticks: 0,
-            live_check_pending_editor: None,
-            live_check_pending_version: 0,
-            live_check_running_file: String::new(),
-            live_check_running_version: 0,
-            live_check_output_buffer: String::new(),
-            live_check_label: String::new(),
+            live_check: diagnostic_pipeline::LiveCheckState::new(),
             git_state,
             git_process: None,
             git_pending_op: None,
@@ -420,11 +421,12 @@ fn build_and_run(
         } else {
             s.run_panel.show_no_project();
         }
+        s.run_panel.update_debug_session(&s.debug_session);
 
         s.extensions_panel.update(&s.plugin_mgr);
 
         if let Some(ref proj) = s.current_project {
-            s.status.set_project_type(proj.project_type.display_name());
+            s.status.set_project_type(&proj.display_context());
             s.output.start_shell(&proj.root);
         }
 
@@ -484,6 +486,17 @@ fn poll_build_output() {
                 s.output.show_problems();
             }
 
+            if s.debug_session.status != debug_session::DebugSessionStatus::Idle {
+                if s.debug_backend.is_attached() {
+                    s.debug_backend.detach();
+                }
+                s.debug_session.stop();
+                s.output
+                    .append_debug_line(&format!("process exited with code {}", exit_code));
+                s.run_panel.update_debug_session(&s.debug_session);
+                stop_debug_timer();
+            }
+
             s.build_process = None;
             stop_build_timer();
         }
@@ -493,21 +506,74 @@ fn poll_build_output() {
 }
 
 // ════════════════════════════════════════════════════════════════
+//  Debug timer
+// ════════════════════════════════════════════════════════════════
+
+pub fn start_debug_timer() {
+    let s = app();
+    if s.debug_timer_id == 0 {
+        s.debug_timer_id = anyui::set_timer(100, poll_debug_events);
+    }
+}
+
+pub fn stop_debug_timer() {
+    let s = app();
+    if s.debug_timer_id != 0 {
+        anyui::kill_timer(s.debug_timer_id);
+        s.debug_timer_id = 0;
+    }
+}
+
+fn poll_debug_events() {
+    let s = app();
+    if !s.debug_backend.is_attached() {
+        stop_debug_timer();
+        return;
+    }
+
+    if let Some(event) = s.debug_backend.poll_event() {
+        let label = debug_backend::event_label(event.event_type);
+        s.output.append_debug_line(&format!(
+            "{} @ {}",
+            label,
+            anyos_std::fmt::hex64(event.addr)
+        ));
+
+        match event.event_type {
+            anyos_std::debug::EVENT_BREAKPOINT => {
+                s.debug_session.pause("breakpoint");
+                logic::commands::refresh_debug_snapshot(s);
+            }
+            anyos_std::debug::EVENT_SINGLE_STEP => {
+                s.debug_session.pause("single step");
+                logic::commands::refresh_debug_snapshot(s);
+            }
+            anyos_std::debug::EVENT_EXIT => {
+                s.debug_session.stop();
+                stop_debug_timer();
+            }
+            _ => {}
+        }
+        s.run_panel.update_debug_session(&s.debug_session);
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
 //  Live analysis timer
 // ════════════════════════════════════════════════════════════════
 
 pub fn start_live_check_timer() {
     let s = app();
-    if s.live_check_timer_id == 0 {
-        s.live_check_timer_id = anyui::set_timer(250, poll_live_check);
+    if s.live_check.timer_id == 0 {
+        s.live_check.timer_id = anyui::set_timer(250, poll_live_check);
     }
 }
 
 pub fn stop_live_check_timer() {
     let s = app();
-    if s.live_check_timer_id != 0 {
-        anyui::kill_timer(s.live_check_timer_id);
-        s.live_check_timer_id = 0;
+    if s.live_check.timer_id != 0 {
+        anyui::kill_timer(s.live_check.timer_id);
+        s.live_check.timer_id = 0;
     }
 }
 

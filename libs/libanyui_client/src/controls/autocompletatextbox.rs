@@ -5,9 +5,9 @@
 //! Extends TextField with a suggestions list that can be filtered and displayed
 //! in a popup as the user types. Suggestions are pipe-separated strings.
 
-use alloc::string::String;
-use crate::{Control, Widget, lib, events, KIND_AUTO_COMPLETE_TEXT_FIELD};
 use crate::events::TextChangedEvent;
+use crate::{events, lib, Control, Widget, KIND_AUTO_COMPLETE_TEXT_FIELD};
+use alloc::string::String;
 
 /// Event fired when a suggestion is selected from the autocomplete popup.
 pub struct SuggestionSelectedEvent {
@@ -21,7 +21,9 @@ impl AutoCompleteTextField {
     /// Create a new autocomplete text field.
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_AUTO_COMPLETE_TEXT_FIELD, core::ptr::null(), 0);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Set the placeholder text shown when the field is empty.

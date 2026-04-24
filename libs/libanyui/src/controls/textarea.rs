@@ -338,7 +338,9 @@ impl Control for TextArea {
                         if let Some((sel_start, sel_end)) = selection {
                             let draw_start = sel_start.max(line_start).min(i);
                             let draw_end = sel_end.max(line_start).min(i);
-                            if draw_start < draw_end || (line_idx > first_vis && sel_start < line_start && sel_end > i) {
+                            if draw_start < draw_end
+                                || (line_idx > first_vis && sel_start < line_start && sel_end > i)
+                            {
                                 let start_col = draw_start.saturating_sub(line_start);
                                 let end_col = draw_end.saturating_sub(line_start);
                                 let start_px = crate::draw::text_width_n_at(
@@ -583,7 +585,11 @@ impl Control for TextArea {
             return EventResponse::CONSUMED;
         }
 
-        if shift && matches!(keycode, KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN | KEY_HOME | KEY_END)
+        if shift
+            && matches!(
+                keycode,
+                KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN | KEY_HOME | KEY_END
+            )
         {
             if !self.has_selection() {
                 self.sel_anchor = self.cursor_pos;

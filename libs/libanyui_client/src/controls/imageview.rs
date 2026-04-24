@@ -1,6 +1,6 @@
+use crate::{lib, Control, Widget, KIND_IMAGE_VIEW};
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::{Control, Widget, lib, KIND_IMAGE_VIEW};
 
 /// Scale mode constants (must match server-side values).
 pub const SCALE_NONE: u32 = 0;
@@ -15,7 +15,9 @@ impl ImageView {
     pub fn new(w: u32, h: u32) -> Self {
         let id = (lib().create_control)(KIND_IMAGE_VIEW, core::ptr::null(), 0);
         (lib().set_size)(id, w, h);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Create an ImageView and load an image from a file path.
@@ -42,7 +44,12 @@ impl ImageView {
             let mut pixels = vec![0u32; pixel_count];
             let mut scratch = vec![0u8; info.scratch_needed as usize];
             if libimage_client::decode(data, &mut pixels, &mut scratch).is_ok() {
-                (lib().imageview_set_pixels)(self.ctrl.id, pixels.as_ptr(), info.width, info.height);
+                (lib().imageview_set_pixels)(
+                    self.ctrl.id,
+                    pixels.as_ptr(),
+                    info.width,
+                    info.height,
+                );
             }
         }
     }
@@ -61,8 +68,20 @@ impl ImageView {
                 let pixel_count = (info.width as usize) * (info.height as usize);
                 let mut pixels = vec![0u32; pixel_count];
                 let mut scratch = vec![0u8; info.scratch_needed as usize];
-                if libimage_client::decode_ico_size(&data, preferred_size, &mut pixels, &mut scratch).is_ok() {
-                    (lib().imageview_set_pixels)(self.ctrl.id, pixels.as_ptr(), info.width, info.height);
+                if libimage_client::decode_ico_size(
+                    &data,
+                    preferred_size,
+                    &mut pixels,
+                    &mut scratch,
+                )
+                .is_ok()
+                {
+                    (lib().imageview_set_pixels)(
+                        self.ctrl.id,
+                        pixels.as_ptr(),
+                        info.width,
+                        info.height,
+                    );
                 }
             }
         }

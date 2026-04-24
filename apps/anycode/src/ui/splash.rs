@@ -1,7 +1,7 @@
 use alloc::format;
 use alloc::string::String;
-use libanyui_client as anyui;
 use anyui::Widget;
+use libanyui_client as anyui;
 
 use crate::logic::build::ToolStatus;
 
@@ -19,8 +19,16 @@ pub fn show(tool_status: &[ToolStatus]) -> bool {
 
     // Center on screen
     let (sw, sh) = anyui::screen_size();
-    let x = if sw > SPLASH_W { (sw - SPLASH_W) / 2 } else { 0 } as i32;
-    let y = if sh > SPLASH_H { (sh - SPLASH_H) / 2 } else { 0 } as i32;
+    let x = if sw > SPLASH_W {
+        (sw - SPLASH_W) / 2
+    } else {
+        0
+    } as i32;
+    let y = if sh > SPLASH_H {
+        (sh - SPLASH_H) / 2
+    } else {
+        0
+    } as i32;
 
     // Borderless window with shadow
     let flags = anyui::WIN_FLAG_BORDERLESS | anyui::WIN_FLAG_SHADOW | anyui::WIN_FLAG_NOT_RESIZABLE;
@@ -65,7 +73,11 @@ pub fn show(tool_status: &[ToolStatus]) -> bool {
 
     for tool in tool_status {
         let is_essential = ESSENTIAL_TOOLS.contains(&tool.name);
-        let icon = if tool.available { "\u{2713}" } else { "\u{2717}" };
+        let icon = if tool.available {
+            "\u{2713}"
+        } else {
+            "\u{2717}"
+        };
         let text = format!("{} {}", icon, tool.description);
 
         let lbl = anyui::Label::new(&text);
@@ -75,7 +87,9 @@ pub fn show(tool_status: &[ToolStatus]) -> bool {
             0xFF6A9955
         } else if is_essential {
             all_essential_ok = false;
-            if !missing.is_empty() { missing.push_str(", "); }
+            if !missing.is_empty() {
+                missing.push_str(", ");
+            }
             missing.push_str(tool.name);
             0xFFF44747
         } else {
@@ -102,7 +116,11 @@ pub fn show(tool_status: &[ToolStatus]) -> bool {
     });
     loading.set_position(38, (SPLASH_H as i32) - 26);
     loading.set_font_size(11);
-    loading.set_text_color(if all_essential_ok { 0xFF569CD6 } else { 0xFFF44747 });
+    loading.set_text_color(if all_essential_ok {
+        0xFF569CD6
+    } else {
+        0xFFF44747
+    });
     bg.add(&loading);
 
     let copy = anyui::Label::new("anyOS Project");

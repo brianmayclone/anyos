@@ -1,4 +1,4 @@
-use crate::{Control, Widget, lib, KIND_SPINNER};
+use crate::{lib, Control, Widget, KIND_SPINNER};
 
 leaf_control!(Spinner, KIND_SPINNER);
 
@@ -6,7 +6,9 @@ impl Spinner {
     /// Create a new spinner control (initially stopped).
     pub fn new() -> Self {
         let id = (lib().create_control)(KIND_SPINNER, core::ptr::null(), 0);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Start the spinner animation.

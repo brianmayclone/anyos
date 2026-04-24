@@ -167,6 +167,14 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                     }
                 }
 
+                if macro_name == "new" && is_path_named(path, interner, "cpufeatures::new") {
+                    if let Some(expanded) = expand_builtin_cpufeatures_new(args, interner) {
+                        items.splice(i..=i, expanded);
+                        *changed = true;
+                        continue;
+                    }
+                }
+
                 if let Some(def) = find_macro(defs, path) {
                     if let Some(expanded) = try_expand_to_items(def, args, interner) {
                         items.splice(i..=i, expanded);
@@ -209,6 +217,51 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
         });
         i += 1;
     }
+}
+
+fn is_path_named(path: &Path, interner: &Interner, expected: &str) -> bool {
+    path.segments
+        .iter()
+        .map(|seg| interner.resolve(seg.ident))
+        .collect::<Vec<_>>()
+        .join("::")
+        == expected
+}
+
+fn expand_builtin_cpufeatures_new(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {
+    let module_name = args.iter().find_map(|tt| match tt {
+        TokenTree::Token(Token { kind: TokenKind::Ident(sym), .. }) => Some(*sym),
+        _ => None,
+    })?;
+    let module_name = interner.resolve(module_name).to_string();
+    let src = format!(
+        r#"
+        mod {module_name} {{
+            #[derive(Copy, Clone, Debug)]
+            pub struct InitToken(());
+
+            impl InitToken {{
+                pub fn get(&self) -> bool {{
+                    false
+                }}
+            }}
+
+            pub fn init_get() -> (InitToken, bool) {{
+                (InitToken(()), false)
+            }}
+
+            pub fn init() -> InitToken {{
+                init_get().0
+            }}
+
+            pub fn get() -> bool {{
+                init_get().1
+            }}
+        }}
+        "#
+    );
+    let mut parser = Parser::new(&src, interner);
+    Some(parser.parse_crate().items)
 }
 
 /// Helper to modify an item in place without needing to take ownership.
@@ -377,7 +430,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     *changed = true;
                     return;
                 }
-                "panic" => {
+                "panic" | "unreachable" => {
                     *expr = Expr::Loop(Block { stmts: Vec::new(), span: *span }, None, *span);
                     *changed = true;
                     return;
@@ -1290,7 +1343,7 @@ fn match_pattern(
     pattern: &[TokenTree],
     input: &[TokenTree],
     interner: &Interner,
-    captures: &mut HashMap<Symbol, Capture>,
+    captures: &mut HashMap<String, Capture>,
 ) -> bool {
     let mut pm = PatternMatcher { interner, captures };
     let (p_rest, i_rest) = pm.match_seq(pattern, input);
@@ -1299,7 +1352,56 @@ fn match_pattern(
 
 struct PatternMatcher<'a> {
     interner: &'a Interner,
-    captures: &'a mut HashMap<Symbol, Capture>,
+    captures: &'a mut HashMap<String, Capture>,
+}
+
+fn macro_var_name(kind: &TokenKind, interner: &Interner) -> Option<String> {
+    match kind {
+        TokenKind::Ident(sym) => Some(interner.resolve(*sym).to_string()),
+        TokenKind::Kw(kw) => Some(keyword_name(*kw).to_string()),
+        _ => None,
+    }
+}
+
+fn keyword_name(keyword: Keyword) -> &'static str {
+    match keyword {
+        Keyword::Fn => "fn",
+        Keyword::Let => "let",
+        Keyword::Mut => "mut",
+        Keyword::Pub => "pub",
+        Keyword::Struct => "struct",
+        Keyword::Enum => "enum",
+        Keyword::Impl => "impl",
+        Keyword::Trait => "trait",
+        Keyword::Type => "type",
+        Keyword::Use => "use",
+        Keyword::Mod => "mod",
+        Keyword::Crate => "crate",
+        Keyword::SelfValue => "self",
+        Keyword::SelfType => "Self",
+        Keyword::Super => "super",
+        Keyword::As => "as",
+        Keyword::In => "in",
+        Keyword::For => "for",
+        Keyword::While => "while",
+        Keyword::Loop => "loop",
+        Keyword::If => "if",
+        Keyword::Else => "else",
+        Keyword::Match => "match",
+        Keyword::Return => "return",
+        Keyword::Break => "break",
+        Keyword::Continue => "continue",
+        Keyword::Where => "where",
+        Keyword::Const => "const",
+        Keyword::Static => "static",
+        Keyword::Unsafe => "unsafe",
+        Keyword::Extern => "extern",
+        Keyword::Ref => "ref",
+        Keyword::Move => "move",
+        Keyword::True => "true",
+        Keyword::False => "false",
+        Keyword::Dyn => "dyn",
+    }
 }
 
 impl<'a> PatternMatcher<'a> {
@@ -1318,7 +1420,7 @@ impl<'a> PatternMatcher<'a> {
                     pi += 2 + skip;
 
                     // Match repetition
-                    let mut rep_captures: HashMap<Symbol, Vec<Vec<TokenTree>>> = HashMap::new();
+                    let mut rep_captures: HashMap<String, Vec<Vec<TokenTree>>> = HashMap::new();
                     let mut count = 0;
                     loop {
                         // Try matching one iteration
@@ -1386,17 +1488,17 @@ impl<'a> PatternMatcher<'a> {
                     (&pattern[pi + 1], &pattern[pi + 2])
                 {
                     if colon_tok.kind == TokenKind::Colon {
-                        if let TokenKind::Ident(name_sym) = name_tok.kind {
+                        if let Some(name) = macro_var_name(&name_tok.kind, self.interner) {
                             if pi + 3 < pattern.len() {
                                 if let TokenTree::Token(frag_tok) = &pattern[pi + 3] {
                                     if let TokenKind::Ident(frag_sym) = frag_tok.kind {
                                         let frag = self.interner.resolve(frag_sym);
-                                        if matches!(frag, "expr" | "ident" | "ty" | "pat" | "tt" | "literal" | "stmt" | "block" | "vis") {
+                                        if matches!(frag, "expr" | "ident" | "meta" | "ty" | "pat" | "tt" | "literal" | "stmt" | "block" | "vis") {
                                             pi += 4;
                                             // Capture based on fragment type
                                             let captured = self.capture_fragment(frag, &input[ii..]);
                                             if let Some((tts, consumed)) = captured {
-                                                self.captures.insert(name_sym, Capture::Single(tts));
+                                                self.captures.insert(name, Capture::Single(tts));
                                                 ii += consumed;
                                                 continue;
                                             } else {
@@ -1460,7 +1562,7 @@ impl<'a> PatternMatcher<'a> {
             }
             "ident" => {
                 if let TokenTree::Token(t) = &input[0] {
-                    if matches!(t.kind, TokenKind::Ident(_)) {
+                    if matches!(t.kind, TokenKind::Ident(_) | TokenKind::Kw(_)) {
                         return Some((vec![input[0].clone()], 1));
                     }
                 }
@@ -1482,29 +1584,32 @@ impl<'a> PatternMatcher<'a> {
                 }
                 None
             }
-            "expr" | "ty" | "pat" | "stmt" => {
+            "ty" => {
+                if input.len() >= 2 {
+                    if let (TokenTree::Token(first), TokenTree::Token(second)) = (&input[0], &input[1]) {
+                        let simple_first = matches!(
+                            first.kind,
+                            TokenKind::Ident(_) | TokenKind::Kw(Keyword::SelfType)
+                        );
+                        let starts_next_ty = matches!(
+                            second.kind,
+                            TokenKind::Ident(_)
+                                | TokenKind::Kw(Keyword::SelfType)
+                                | TokenKind::Amp
+                                | TokenKind::Star
+                        );
+                        if simple_first && starts_next_ty {
+                            return Some((vec![input[0].clone()], 1));
+                        }
+                    }
+                }
+                self.capture_greedy_fragment(input)
+            }
+            "expr" | "meta" | "pat" | "stmt" => {
                 // Greedy: capture as many tokens as possible that form a valid unit.
                 // Simple heuristic: take tokens until we hit a comma, semicolon,
                 // or closing delimiter that isn't matched.
-                let mut depth = 0i32;
-                let mut end = 0;
-                for (i, tt) in input.iter().enumerate() {
-                    match tt {
-                        TokenTree::Token(t) => {
-                            match t.kind {
-                                TokenKind::Comma | TokenKind::Semi | TokenKind::FatArrow if depth == 0 => break,
-                                TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket if depth == 0 => break,
-                                TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => depth += 1,
-                                TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => depth -= 1,
-                                _ => {}
-                            }
-                        }
-                        TokenTree::Delimited(..) => {}
-                    }
-                    end = i + 1;
-                }
-                if end == 0 { return None; }
-                Some((input[..end].to_vec(), end))
+                self.capture_greedy_fragment(input)
             }
             "vis" => {
                 if let TokenTree::Token(t) = &input[0] {
@@ -1520,6 +1625,28 @@ impl<'a> PatternMatcher<'a> {
             }
             _ => None,
         }
+    }
+
+    fn capture_greedy_fragment(&self, input: &[TokenTree]) -> Option<(Vec<TokenTree>, usize)> {
+        let mut depth = 0i32;
+        let mut end = 0;
+        for (i, tt) in input.iter().enumerate() {
+            match tt {
+                TokenTree::Token(t) => {
+                    match t.kind {
+                        TokenKind::Comma | TokenKind::Semi | TokenKind::FatArrow if depth == 0 => break,
+                        TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket if depth == 0 => break,
+                        TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => depth += 1,
+                        TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => depth -= 1,
+                        _ => {}
+                    }
+                }
+                TokenTree::Delimited(..) => {}
+            }
+            end = i + 1;
+        }
+        if end == 0 { return None; }
+        Some((input[..end].to_vec(), end))
     }
 }
 
@@ -1564,7 +1691,7 @@ fn tokens_match(a: &TokenKind, b: &TokenKind) -> bool {
 
 // ── Substitution ──
 
-fn substitute(body: &[TokenTree], captures: &HashMap<Symbol, Capture>, interner: &Interner) -> Vec<TokenTree> {
+fn substitute(body: &[TokenTree], captures: &HashMap<String, Capture>, interner: &Interner) -> Vec<TokenTree> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < body.len() {
@@ -1589,8 +1716,9 @@ fn substitute(body: &[TokenTree], captures: &HashMap<Symbol, Capture>, interner:
                 continue;
             }
             // Check for $name substitution
-            if let TokenTree::Token(Token { kind: TokenKind::Ident(name), .. }) = &body[i + 1] {
-                if let Some(cap) = captures.get(name) {
+            if let TokenTree::Token(Token { kind, .. }) = &body[i + 1] {
+                if let Some(name) = macro_var_name(kind, interner) {
+                if let Some(cap) = captures.get(&name) {
                     match cap {
                         Capture::Single(tts) => out.extend(tts.iter().cloned()),
                         Capture::Repeated(reps) => {
@@ -1600,6 +1728,7 @@ fn substitute(body: &[TokenTree], captures: &HashMap<Symbol, Capture>, interner:
                     }
                     i += 2;
                     continue;
+                }
                 }
             }
         }
@@ -1617,7 +1746,7 @@ fn substitute(body: &[TokenTree], captures: &HashMap<Symbol, Capture>, interner:
     out
 }
 
-fn substitute_rep(body: &[TokenTree], captures: &HashMap<Symbol, Capture>, interner: &Interner, iter: usize) -> Vec<TokenTree> {
+fn substitute_rep(body: &[TokenTree], captures: &HashMap<String, Capture>, interner: &Interner, iter: usize) -> Vec<TokenTree> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < body.len() {
@@ -1637,8 +1766,9 @@ fn substitute_rep(body: &[TokenTree], captures: &HashMap<Symbol, Capture>, inter
                 }
                 continue;
             }
-            if let TokenTree::Token(Token { kind: TokenKind::Ident(name), .. }) = &body[i + 1] {
-                if let Some(cap) = captures.get(name) {
+            if let TokenTree::Token(Token { kind, .. }) = &body[i + 1] {
+                if let Some(name) = macro_var_name(kind, interner) {
+                if let Some(cap) = captures.get(&name) {
                     match cap {
                         Capture::Single(tts) => out.extend(tts.iter().cloned()),
                         Capture::Repeated(reps) => {
@@ -1649,6 +1779,7 @@ fn substitute_rep(body: &[TokenTree], captures: &HashMap<Symbol, Capture>, inter
                     }
                     i += 2;
                     continue;
+                }
                 }
             }
         }
@@ -1664,13 +1795,15 @@ fn substitute_rep(body: &[TokenTree], captures: &HashMap<Symbol, Capture>, inter
     out
 }
 
-fn find_rep_count(rep_body: &[TokenTree], captures: &HashMap<Symbol, Capture>, interner: &Interner) -> usize {
+fn find_rep_count(rep_body: &[TokenTree], captures: &HashMap<String, Capture>, interner: &Interner) -> usize {
     // Look for $name references in the rep body and find their repetition count
     for i in 0..rep_body.len() {
         if is_dollar(&rep_body[i]) && i + 1 < rep_body.len() {
-            if let TokenTree::Token(Token { kind: TokenKind::Ident(name), .. }) = &rep_body[i + 1] {
-                if let Some(Capture::Repeated(reps)) = captures.get(name) {
+            if let TokenTree::Token(Token { kind, .. }) = &rep_body[i + 1] {
+                if let Some(name) = macro_var_name(kind, interner) {
+                if let Some(Capture::Repeated(reps)) = captures.get(&name) {
                     return reps.len();
+                }
                 }
             }
         }
@@ -1702,6 +1835,9 @@ fn try_expand_to_expr(def: &MacroDef, args: &[TokenTree], interner: &mut Interne
             }
             let src = token_trees_to_string(&expanded, interner);
             if has_unexpanded_dollar(&src) {
+                return None;
+            }
+            if src.trim().is_empty() {
                 return None;
             }
             let mut parser = Parser::new(&src, interner);

@@ -301,7 +301,20 @@ pub fn expand_vars(token: &str) -> String {
     let mut i = 0;
     while i < len {
         if bytes[i] == b'$' && i + 1 < len {
-            if bytes[i + 1] == b'(' {
+            if bytes[i + 1] == b'(' && i + 2 < len && bytes[i + 2] == b'(' {
+                let start = i + 3;
+                let mut end = start;
+                while end + 1 < len && !(bytes[end] == b')' && bytes[end + 1] == b')') {
+                    end += 1;
+                }
+                if end + 1 < len {
+                    result.push_str(&format!("{}", eval_arithmetic(&token[start..end])));
+                    i = end + 2;
+                } else {
+                    result.push('$'); result.push('('); result.push('(');
+                    i = start;
+                }
+            } else if bytes[i + 1] == b'(' {
                 let start = i + 2;
                 let mut depth = 1;
                 let mut end = start;
@@ -322,21 +335,70 @@ pub fn expand_vars(token: &str) -> String {
                 let mut end = start;
                 while end < len && bytes[end] != b'}' { end += 1; }
                 if end < len {
-                    let var_name = &token[start..end];
-                    let mut val_buf = [0u8; 512];
-                    let vlen = env::get(var_name, &mut val_buf);
-                    if vlen != u32::MAX {
-                        if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
-                            result.push_str(v);
-                        }
-                    }
+                    result.push_str(&expand_braced_param(&token[start..end]));
                     i = end + 1;
                 } else {
                     result.push('$'); result.push('{');
                     i = start;
                 }
             } else if bytes[i + 1] == b'?' {
-                result.push('0'); i += 2;
+                let mut val_buf = [0u8; 32];
+                let vlen = env::get("?", &mut val_buf);
+                if vlen != u32::MAX {
+                    if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
+                        result.push_str(v);
+                    }
+                } else {
+                    result.push('0');
+                }
+                i += 2;
+            } else if bytes[i + 1] == b'@' {
+                let mut val_buf = [0u8; 512];
+                let vlen = env::get("@", &mut val_buf);
+                if vlen != u32::MAX {
+                    if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
+                        result.push_str(v);
+                    }
+                }
+                i += 2;
+            } else if bytes[i + 1] == b'*' {
+                let mut val_buf = [0u8; 512];
+                let vlen = env::get("@", &mut val_buf);
+                if vlen != u32::MAX {
+                    if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
+                        result.push_str(v);
+                    }
+                }
+                i += 2;
+            } else if bytes[i + 1] == b'#' {
+                let mut val_buf = [0u8; 32];
+                let vlen = env::get("#", &mut val_buf);
+                if vlen != u32::MAX {
+                    if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
+                        result.push_str(v);
+                    }
+                } else {
+                    result.push('0');
+                }
+                i += 2;
+            } else if bytes[i + 1] == b'!' {
+                let mut val_buf = [0u8; 32];
+                let vlen = env::get("!", &mut val_buf);
+                if vlen != u32::MAX {
+                    if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
+                        result.push_str(v);
+                    }
+                }
+                i += 2;
+            } else if bytes[i + 1] == b'-' {
+                let mut val_buf = [0u8; 32];
+                let vlen = env::get("-", &mut val_buf);
+                if vlen != u32::MAX {
+                    if let Ok(v) = core::str::from_utf8(&val_buf[..vlen as usize]) {
+                        result.push_str(v);
+                    }
+                }
+                i += 2;
             } else if bytes[i + 1] == b'$' {
                 result.push_str(&format!("{}", process::getpid()));
                 i += 2;
@@ -374,6 +436,166 @@ pub fn expand_vars(token: &str) -> String {
         }
     }
     result
+}
+
+fn expand_braced_param(expr: &str) -> String {
+    if let Some(name) = expr.strip_prefix('#') {
+        return format!("{}", read_env(name).unwrap_or_default().len());
+    }
+
+    for op in [":-", ":=", ":?", ":+", "-", "=", "?", "+"] {
+        if let Some(pos) = expr.find(op) {
+            let name = expr[..pos].trim();
+            let word = &expr[pos + op.len()..];
+            let value = read_env(name);
+            let is_set = value.is_some();
+            let is_nonempty = value.as_ref().map(|v| !v.is_empty()).unwrap_or(false);
+            let colon = op.starts_with(':');
+            let use_default = if colon { !is_nonempty } else { !is_set };
+            return match op {
+                ":-" | "-" => {
+                    if use_default { expand_vars(word) } else { value.unwrap_or_default() }
+                }
+                ":=" | "=" => {
+                    if use_default {
+                        let expanded = expand_vars(word);
+                        env::set(name, &expanded);
+                        expanded
+                    } else {
+                        value.unwrap_or_default()
+                    }
+                }
+                ":?" | "?" => {
+                    if use_default { String::new() } else { value.unwrap_or_default() }
+                }
+                ":+" | "+" => {
+                    if use_default { String::new() } else { expand_vars(word) }
+                }
+                _ => String::new(),
+            };
+        }
+    }
+
+    read_env(expr).unwrap_or_default()
+}
+
+fn read_env(name: &str) -> Option<String> {
+    let mut val_buf = [0u8; 512];
+    let vlen = env::get(name, &mut val_buf);
+    if vlen == u32::MAX {
+        return None;
+    }
+    core::str::from_utf8(&val_buf[..vlen as usize]).ok().map(String::from)
+}
+
+fn eval_arithmetic(expr: &str) -> i64 {
+    let mut parser = ArithParser { bytes: expr.as_bytes(), pos: 0 };
+    parser.parse_expr()
+}
+
+struct ArithParser<'a> {
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> ArithParser<'a> {
+    fn parse_expr(&mut self) -> i64 {
+        let mut value = self.parse_term();
+        loop {
+            self.skip_ws();
+            if self.eat(b'+') {
+                value += self.parse_term();
+            } else if self.eat(b'-') {
+                value -= self.parse_term();
+            } else {
+                return value;
+            }
+        }
+    }
+
+    fn parse_term(&mut self) -> i64 {
+        let mut value = self.parse_factor();
+        loop {
+            self.skip_ws();
+            if self.eat(b'*') {
+                value *= self.parse_factor();
+            } else if self.eat(b'/') {
+                let rhs = self.parse_factor();
+                value = if rhs == 0 { 0 } else { value / rhs };
+            } else if self.eat(b'%') {
+                let rhs = self.parse_factor();
+                value = if rhs == 0 { 0 } else { value % rhs };
+            } else {
+                return value;
+            }
+        }
+    }
+
+    fn parse_factor(&mut self) -> i64 {
+        self.skip_ws();
+        if self.eat(b'(') {
+            let value = self.parse_expr();
+            let _ = self.eat(b')');
+            return value;
+        }
+        if self.eat(b'-') {
+            return -self.parse_factor();
+        }
+        if self.eat(b'+') {
+            return self.parse_factor();
+        }
+        if self.peek_is_name_start() {
+            let name = self.parse_name();
+            return read_env(&name).and_then(|s| s.parse::<i64>().ok()).unwrap_or(0);
+        }
+        self.parse_number()
+    }
+
+    fn parse_number(&mut self) -> i64 {
+        self.skip_ws();
+        let start = self.pos;
+        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_digit() {
+            self.pos += 1;
+        }
+        core::str::from_utf8(&self.bytes[start..self.pos])
+            .ok()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(0)
+    }
+
+    fn parse_name(&mut self) -> String {
+        let start = self.pos;
+        self.pos += 1;
+        while self.pos < self.bytes.len()
+            && (self.bytes[self.pos] == b'_' || self.bytes[self.pos].is_ascii_alphanumeric())
+        {
+            self.pos += 1;
+        }
+        core::str::from_utf8(&self.bytes[start..self.pos]).unwrap_or("").into()
+    }
+
+    fn peek_is_name_start(&self) -> bool {
+        self.pos < self.bytes.len()
+            && (self.bytes[self.pos] == b'_' || self.bytes[self.pos].is_ascii_alphabetic())
+    }
+
+    fn eat(&mut self, ch: u8) -> bool {
+        self.skip_ws();
+        if self.pos < self.bytes.len() && self.bytes[self.pos] == ch {
+            self.pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn skip_ws(&mut self) {
+        while self.pos < self.bytes.len()
+            && (self.bytes[self.pos] == b' ' || self.bytes[self.pos] == b'\t')
+        {
+            self.pos += 1;
+        }
+    }
 }
 
 fn expand_vars_vec(tokens: Vec<String>) -> Vec<String> {

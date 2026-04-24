@@ -66,6 +66,7 @@ pub struct HirStructDef {
     pub fields: Vec<HirFieldDef>,
     pub vis: Visibility,
     pub is_union: bool,
+    pub derives_copy: bool,
 }
 
 pub struct HirFieldDef {
@@ -82,6 +83,7 @@ pub struct HirEnumDef {
     pub generics: HirGenerics,
     pub variants: Vec<HirVariant>,
     pub vis: Visibility,
+    pub derives_copy: bool,
 }
 
 pub struct HirVariant {
@@ -275,6 +277,7 @@ pub enum HirPattern {
     Wildcard(Span),
     Rest(Span),
     Ref(Box<HirPattern>, Mutability, Span),
+    RefBinding(Box<HirPattern>, Mutability, Span),
     Or(Vec<HirPattern>, Span),
     Range(Option<Box<HirExpr>>, Option<Box<HirExpr>>, bool, Span),
     Path(HirPath),
@@ -298,6 +301,7 @@ pub enum HirTy {
     Slice(Box<HirTy>, Span),
     FnPtr(Vec<HirTy>, Option<Box<HirTy>>, Span),
     DynTrait(Vec<HirTraitBound>, Span),
+    MacroCall(Symbol, Span),
     Infer(Span),
     Never(Span),
 }
@@ -344,6 +348,7 @@ pub struct HirGenericArgs {
 
 pub enum HirGenericArg {
     Type(HirTy),
+    AssocTypeBinding(Symbol, HirTy),
     Lifetime(Symbol),
     Const(HirExpr),
 }

@@ -1,6 +1,6 @@
+use crate::util::path;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::util::path;
 
 /// A single search result.
 pub struct SearchResult {

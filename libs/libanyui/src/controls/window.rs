@@ -6,11 +6,15 @@ pub struct Window {
 
 impl Window {
     pub fn new(base: ControlBase) -> Self {
-        Self { tb: TextControlBase::new(base) }
+        Self {
+            tb: TextControlBase::new(base),
+        }
     }
 
     pub fn new_with_title(base: ControlBase, title: &[u8]) -> Self {
-        Self { tb: TextControlBase::new(base).with_text(title) }
+        Self {
+            tb: TextControlBase::new(base).with_text(title),
+        }
     }
 }
 

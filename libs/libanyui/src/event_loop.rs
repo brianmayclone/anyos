@@ -327,7 +327,9 @@ pub fn run_once() -> u32 {
                                                 if let Some(cb_idx) =
                                                     control::find_idx(&st.controls, cb_id)
                                                 {
-                                                    if let Some(cb) = control::cast_mut::<crate::controls::combobox::ComboBox>(
+                                                    if let Some(cb) = control::cast_mut::<
+                                                        crate::controls::combobox::ComboBox,
+                                                    >(
                                                         &mut st.controls[cb_idx],
                                                         ControlKind::ComboBox,
                                                     ) {
@@ -379,8 +381,10 @@ pub fn run_once() -> u32 {
                                 let owner_ac = st.popup.as_ref().and_then(|p| p.owner_autocomplete);
                                 if owner_ac.is_none() {
                                     if let Some(menu_id) = menu_id {
-                                        if let Some(idx) = control::find_idx(&st.controls, menu_id) {
-                                            let resp = st.controls[idx].handle_key_down(keycode, 0, 0);
+                                        if let Some(idx) = control::find_idx(&st.controls, menu_id)
+                                        {
+                                            let resp =
+                                                st.controls[idx].handle_key_down(keycode, 0, 0);
                                             st.controls[idx].base_mut().mark_dirty();
                                             if let Some(ref mut popup) = st.popup {
                                                 popup.dirty = true;
@@ -674,8 +678,7 @@ pub fn run_once() -> u32 {
                         if desired_cursor != st.current_cursor {
                             st.current_cursor = desired_cursor;
                             // CMD_SET_CURSOR = 0x1018
-                            let cmd: [u32; 5] =
-                                [0x1018, comp_window_id, desired_cursor, 0, 0];
+                            let cmd: [u32; 5] = [0x1018, comp_window_id, desired_cursor, 0, 0];
                             crate::syscall::evt_chan_emit(st.channel_id, &cmd);
                         }
                     }
@@ -1179,7 +1182,9 @@ pub fn run_once() -> u32 {
 
                                         if st.controls[idx2].kind() == ControlKind::ComboBox {
                                             let (should_open, items_text, cb_w, cb_h, cb_abs) =
-                                                if let Some(cb) = control::cast_mut::<crate::controls::combobox::ComboBox>(
+                                                if let Some(cb) = control::cast_mut::<
+                                                    crate::controls::combobox::ComboBox,
+                                                >(
                                                     &mut st.controls[idx2],
                                                     ControlKind::ComboBox,
                                                 ) {
@@ -1191,7 +1196,10 @@ pub fn run_once() -> u32 {
                                                         cb.popup_items(),
                                                         cb.text_base.base.w,
                                                         cb.text_base.base.h,
-                                                        control::abs_position(&st.controls, target_id),
+                                                        control::abs_position(
+                                                            &st.controls,
+                                                            target_id,
+                                                        ),
                                                     )
                                                 } else {
                                                     (false, alloc::vec::Vec::new(), 0, 0, (0, 0))
@@ -1218,38 +1226,48 @@ pub fn run_once() -> u32 {
                                                     if let Some(mi) =
                                                         control::find_idx(&st.controls, menu_id)
                                                     {
-                                                        let menu_w = st.controls[mi].base().w.max(cb_w);
+                                                        let menu_w =
+                                                            st.controls[mi].base().w.max(cb_w);
                                                         st.controls[mi].base_mut().w = menu_w;
                                                         let menu_h = st.controls[mi].base().h;
                                                         let margin: i32 = 16;
                                                         let popup_w = menu_w + (margin as u32) * 2;
                                                         let popup_h = menu_h + (margin as u32) * 2;
-                                                        let phys_popup_w = crate::theme::scale(popup_w);
-                                                        let phys_popup_h = crate::theme::scale(popup_h);
+                                                        let phys_popup_w =
+                                                            crate::theme::scale(popup_w);
+                                                        let phys_popup_h =
+                                                            crate::theme::scale(popup_h);
                                                         let (content_x, content_y) =
                                                             compositor::get_window_position(
                                                                 st.channel_id,
                                                                 st.sub_id,
                                                                 comp_window_id,
                                                             );
-                                                        let phys_cb_x = crate::theme::scale_i32(cb_abs.0);
-                                                        let phys_cb_y = crate::theme::scale_i32(cb_abs.1);
+                                                        let phys_cb_x =
+                                                            crate::theme::scale_i32(cb_abs.0);
+                                                        let phys_cb_y =
+                                                            crate::theme::scale_i32(cb_abs.1);
                                                         let phys_cb_h = crate::theme::scale(cb_h);
                                                         let phys_margin =
                                                             crate::theme::scale_i32(margin);
-                                                        let phys_menu_h = crate::theme::scale(menu_h);
+                                                        let phys_menu_h =
+                                                            crate::theme::scale(menu_h);
                                                         let mut popup_x =
                                                             content_x + phys_cb_x - phys_margin;
-                                                        let mut popup_y =
-                                                            content_y + phys_cb_y + phys_cb_h as i32
-                                                                - phys_margin;
-                                                        let (scr_w, scr_h) = compositor::screen_size();
-                                                        if popup_x + phys_popup_w as i32 > scr_w as i32
+                                                        let mut popup_y = content_y
+                                                            + phys_cb_y
+                                                            + phys_cb_h as i32
+                                                            - phys_margin;
+                                                        let (scr_w, scr_h) =
+                                                            compositor::screen_size();
+                                                        if popup_x + phys_popup_w as i32
+                                                            > scr_w as i32
                                                         {
                                                             popup_x =
                                                                 scr_w as i32 - phys_popup_w as i32;
                                                         }
-                                                        if popup_y + phys_popup_h as i32 > scr_h as i32
+                                                        if popup_y + phys_popup_h as i32
+                                                            > scr_h as i32
                                                         {
                                                             popup_y = content_y + phys_cb_y
                                                                 - phys_menu_h as i32
@@ -1263,19 +1281,22 @@ pub fn run_once() -> u32 {
                                                         }
                                                         let popup_flags: u32 =
                                                             0x01 | 0x02 | 0x04 | 0x100;
-                                                        if let Some((popup_win_id, shm_id, surface)) =
-                                                            compositor::create_window(
-                                                                st.channel_id,
-                                                                st.sub_id,
-                                                                popup_x,
-                                                                popup_y,
-                                                                phys_popup_w,
-                                                                phys_popup_h,
-                                                                popup_flags,
-                                                            )
-                                                        {
+                                                        if let Some((
+                                                            popup_win_id,
+                                                            shm_id,
+                                                            surface,
+                                                        )) = compositor::create_window(
+                                                            st.channel_id,
+                                                            st.sub_id,
+                                                            popup_x,
+                                                            popup_y,
+                                                            phys_popup_w,
+                                                            phys_popup_h,
+                                                            popup_flags,
+                                                        ) {
                                                             st.controls[mi].set_position(0, 0);
-                                                            st.controls[mi].base_mut().visible = false;
+                                                            st.controls[mi].base_mut().visible =
+                                                                false;
                                                             let back_buffer = alloc::vec![
                                                                 0u32;
                                                                 (phys_popup_w * phys_popup_h) as usize
@@ -1513,9 +1534,10 @@ pub fn run_once() -> u32 {
                     if let Some(focus_id) = st.focused {
                         if let Some(idx) = control::find_idx(&st.controls, focus_id) {
                             let (triggered_popup, matches, cb_w, cb_h, nav, accept) =
-                                if let Some(cb) = control::cast_mut::<crate::controls::combobox::ComboBox>(
-                                    &mut st.controls[idx],
-                                    ControlKind::ComboBox,
+                                if let Some(cb) = control::cast_mut::<
+                                    crate::controls::combobox::ComboBox,
+                                >(
+                                    &mut st.controls[idx], ControlKind::ComboBox
                                 ) {
                                     let nav = cb.popup_nav;
                                     cb.popup_nav = 0;
@@ -1560,11 +1582,12 @@ pub fn run_once() -> u32 {
                                         let popup_h = menu_h + (margin as u32) * 2;
                                         let phys_popup_w = crate::theme::scale(popup_w);
                                         let phys_popup_h = crate::theme::scale(popup_h);
-                                        let (content_x, content_y) = compositor::get_window_position(
-                                            st.channel_id,
-                                            st.sub_id,
-                                            comp_window_id,
-                                        );
+                                        let (content_x, content_y) =
+                                            compositor::get_window_position(
+                                                st.channel_id,
+                                                st.sub_id,
+                                                comp_window_id,
+                                            );
                                         let phys_cb_x = crate::theme::scale_i32(cb_abs.0);
                                         let phys_cb_y = crate::theme::scale_i32(cb_abs.1);
                                         let phys_cb_h = crate::theme::scale(cb_h);
@@ -1578,8 +1601,9 @@ pub fn run_once() -> u32 {
                                         }
                                         if popup_y + phys_popup_h as i32 > scr_h as i32 {
                                             let phys_menu_h = crate::theme::scale(menu_h);
-                                            popup_y =
-                                                content_y + phys_cb_y - phys_menu_h as i32 - phys_margin;
+                                            popup_y = content_y + phys_cb_y
+                                                - phys_menu_h as i32
+                                                - phys_margin;
                                         }
                                         if popup_x < 0 {
                                             popup_x = 0;
@@ -1601,8 +1625,7 @@ pub fn run_once() -> u32 {
                                         {
                                             st.controls[mi].set_position(0, 0);
                                             st.controls[mi].base_mut().visible = false;
-                                            let back_buffer =
-                                                alloc::vec![0u32; (phys_popup_w * phys_popup_h) as usize];
+                                            let back_buffer = alloc::vec![0u32; (phys_popup_w * phys_popup_h) as usize];
                                             st.popup = Some(crate::PopupInfo {
                                                 window_id: popup_win_id,
                                                 shm_id,
@@ -1688,9 +1711,12 @@ pub fn run_once() -> u32 {
                                             .and_then(|s| s.parse::<usize>().ok());
                                         dismiss_popup(st);
                                         if let Some(actual_idx) = actual_idx {
-                                            if let Some(idx2) = control::find_idx(&st.controls, focus_id)
+                                            if let Some(idx2) =
+                                                control::find_idx(&st.controls, focus_id)
                                             {
-                                                if let Some(cb2) = control::cast_mut::<crate::controls::combobox::ComboBox>(
+                                                if let Some(cb2) = control::cast_mut::<
+                                                    crate::controls::combobox::ComboBox,
+                                                >(
                                                     &mut st.controls[idx2],
                                                     ControlKind::ComboBox,
                                                 ) {
@@ -1716,7 +1742,9 @@ pub fn run_once() -> u32 {
                     if let Some(focus_id) = st.focused {
                         if let Some(idx) = control::find_idx(&st.controls, focus_id) {
                             let (triggered_suggest, matches, ac_w, ac_h, nav, accept) =
-                                if let Some(ac) = control::cast_mut::<crate::controls::autocomplete_textfield::AutoCompleteTextField>(
+                                if let Some(ac) = control::cast_mut::<
+                                    crate::controls::autocomplete_textfield::AutoCompleteTextField,
+                                >(
                                     &mut st.controls[idx],
                                     ControlKind::AutoCompleteTextField,
                                 ) {
@@ -1767,11 +1795,12 @@ pub fn run_once() -> u32 {
                                         let phys_popup_w = crate::theme::scale(popup_w);
                                         let phys_popup_h = crate::theme::scale(popup_h);
 
-                                        let (content_x, content_y) = compositor::get_window_position(
-                                            st.channel_id,
-                                            st.sub_id,
-                                            comp_window_id,
-                                        );
+                                        let (content_x, content_y) =
+                                            compositor::get_window_position(
+                                                st.channel_id,
+                                                st.sub_id,
+                                                comp_window_id,
+                                            );
                                         let phys_ac_x = crate::theme::scale_i32(ac_abs.0);
                                         let phys_ac_y = crate::theme::scale_i32(ac_abs.1);
                                         let phys_ac_h = crate::theme::scale(ac_h);
@@ -1786,8 +1815,9 @@ pub fn run_once() -> u32 {
                                         }
                                         if popup_y + phys_popup_h as i32 > scr_h as i32 {
                                             let phys_menu_h = crate::theme::scale(menu_h);
-                                            popup_y =
-                                                content_y + phys_ac_y - phys_menu_h as i32 - phys_margin;
+                                            popup_y = content_y + phys_ac_y
+                                                - phys_menu_h as i32
+                                                - phys_margin;
                                         }
                                         if popup_x < 0 {
                                             popup_x = 0;
@@ -1810,8 +1840,7 @@ pub fn run_once() -> u32 {
                                         {
                                             st.controls[mi].set_position(0, 0);
                                             st.controls[mi].base_mut().visible = false;
-                                            let back_buffer =
-                                                alloc::vec![0u32; (phys_popup_w * phys_popup_h) as usize];
+                                            let back_buffer = alloc::vec![0u32; (phys_popup_w * phys_popup_h) as usize];
                                             st.popup = Some(crate::PopupInfo {
                                                 window_id: popup_win_id,
                                                 shm_id,
@@ -1886,16 +1915,17 @@ pub fn run_once() -> u32 {
                                             .nth(selected_idx)
                                             .unwrap_or(&[])
                                             .to_vec();
-                                        let label =
-                                            if let Some(sep) = full_item.iter().position(|&b| b == 0x1F)
-                                            {
-                                                full_item[sep + 1..].to_vec()
-                                            } else {
-                                                full_item
-                                            };
+                                        let label = if let Some(sep) =
+                                            full_item.iter().position(|&b| b == 0x1F)
+                                        {
+                                            full_item[sep + 1..].to_vec()
+                                        } else {
+                                            full_item
+                                        };
                                         dismiss_popup(st);
                                         if !label.is_empty() {
-                                            if let Some(idx2) = control::find_idx(&st.controls, focus_id)
+                                            if let Some(idx2) =
+                                                control::find_idx(&st.controls, focus_id)
                                             {
                                                 if let Some(ac2) = control::cast_mut::<crate::controls::autocomplete_textfield::AutoCompleteTextField>(
                                                     &mut st.controls[idx2],
@@ -2213,7 +2243,8 @@ pub fn run_once() -> u32 {
     // ── Phase 2.9: Accessibility pipe — poll & inject ──────────────
     {
         let st = crate::state();
-        let mut acc_events: alloc::vec::Vec<(crate::control::ControlId, u32)> = alloc::vec::Vec::new();
+        let mut acc_events: alloc::vec::Vec<(crate::control::ControlId, u32)> =
+            alloc::vec::Vec::new();
         // Temporarily take `acc` out of `st` to satisfy the borrow checker:
         // poll_and_handle needs &mut AccState (from st.acc) AND &mut AnyuiState.
         if let Some(mut acc) = st.acc.take() {
@@ -2465,14 +2496,22 @@ pub(crate) fn external_resize(
     let phys_h = crate::theme::scale(logical_h);
 
     // Find the comp_window index.
-    let wi = match st.comp_windows.iter().position(|cw| cw.window_id == comp_window_id) {
+    let wi = match st
+        .comp_windows
+        .iter()
+        .position(|cw| cw.window_id == comp_window_id)
+    {
         Some(i) => i,
         None => return,
     };
 
-    if let Some((new_shm_id, new_surface)) =
-        compositor::resize_shm(st.channel_id, comp_window_id, st.comp_windows[wi].shm_id, phys_w, phys_h)
-    {
+    if let Some((new_shm_id, new_surface)) = compositor::resize_shm(
+        st.channel_id,
+        comp_window_id,
+        st.comp_windows[wi].shm_id,
+        phys_w,
+        phys_h,
+    ) {
         st.comp_windows[wi].shm_id = new_shm_id;
         st.comp_windows[wi].surface = new_surface;
     }
@@ -2480,12 +2519,18 @@ pub(crate) fn external_resize(
     st.comp_windows[wi].height = phys_h;
     st.comp_windows[wi].logical_width = logical_w;
     st.comp_windows[wi].logical_height = logical_h;
-    st.comp_windows[wi].back_buffer.resize((phys_w as usize) * (phys_h as usize), 0);
+    st.comp_windows[wi]
+        .back_buffer
+        .resize((phys_w as usize) * (phys_h as usize), 0);
     st.comp_windows[wi].dirty = true;
     st.comp_windows[wi].dirty_rect = None;
 
     // Update the Window control and re-layout.
-    let win_id = if wi < st.windows.len() { st.windows[wi] } else { return };
+    let win_id = if wi < st.windows.len() {
+        st.windows[wi]
+    } else {
+        return;
+    };
     if let Some(idx) = control::find_idx(&st.controls, win_id) {
         st.controls[idx].set_size(logical_w, logical_h);
         crate::layout::perform_layout(&mut st.controls, win_id);
@@ -2527,7 +2572,11 @@ fn nearest_draggable(
             if base.draggable && base.visible && !base.disabled {
                 return Some(cur);
             }
-            id = if base.parent == 0 { None } else { Some(base.parent) };
+            id = if base.parent == 0 {
+                None
+            } else {
+                Some(base.parent)
+            };
         } else {
             return None;
         }
@@ -2553,7 +2602,11 @@ fn nearest_drop_target(
             {
                 return Some(cur);
             }
-            id = if base.parent == 0 { None } else { Some(base.parent) };
+            id = if base.parent == 0 {
+                None
+            } else {
+                Some(base.parent)
+            };
         } else {
             return None;
         }
@@ -2622,7 +2675,10 @@ fn maybe_begin_drag(
     }
     crate::log!(
         "[dnd] threshold crossed pressed={} dx={} dy={} btn={}",
-        pressed_id, dx, dy, st.pressed_button
+        pressed_id,
+        dx,
+        dy,
+        st.pressed_button
     );
     // Resolve the actual drag source: walk up from the pressed control
     // until we find a draggable ancestor. Lets a child widget (e.g. a
@@ -2739,11 +2795,7 @@ fn update_drag_target(
 /// ancestor whose control opts in as a drag-autoscroll target. Quiet when
 /// no drag is active or no scrollable ancestor exists.
 fn drag_autoscroll(st: &mut crate::AnyuiState, mx: i32, my: i32) {
-    let mut cur = st
-        .drag
-        .as_ref()
-        .and_then(|d| d.target_id)
-        .or(st.hovered);
+    let mut cur = st.drag.as_ref().and_then(|d| d.target_id).or(st.hovered);
     while let Some(id) = cur {
         let idx = match control::find_idx(&st.controls, id) {
             Some(i) => i,
@@ -2766,7 +2818,6 @@ fn drag_autoscroll(st: &mut crate::AnyuiState, mx: i32, my: i32) {
         cur = if parent == 0 { None } else { Some(parent) };
     }
 }
-
 
 /// Build a cascaded tab sort key for a control: (parent_tab_index, own_tab_index, insertion_order).
 /// This ensures controls are grouped by parent tab_index first, then sorted within the group.

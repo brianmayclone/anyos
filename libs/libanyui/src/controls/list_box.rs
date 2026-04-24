@@ -228,7 +228,9 @@ impl Control for ListBox {
             let thumb_h = ((h as f32 / content_h as f32) * track_h).max(16.0) as i32;
             let max_scroll = content_h - h as i32;
             let thumb_y = if max_scroll > 0 {
-                inner_y + ((self.scroll_y as f32 / max_scroll as f32) * (track_h - thumb_h as f32)) as i32
+                inner_y
+                    + ((self.scroll_y as f32 / max_scroll as f32) * (track_h - thumb_h as f32))
+                        as i32
             } else {
                 inner_y
             };

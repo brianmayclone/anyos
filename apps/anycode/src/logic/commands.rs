@@ -5,9 +5,10 @@ use alloc::vec::Vec;
 
 use crate::app;
 use crate::logic::{
-    ai, build, config, diagnostics, file_manager, git, language, live_analysis, project, search,
-    symbols, tasks,
+    ai, build, debug_session, diagnostics, file_manager, git, intellisense, language,
+    language_service, live_analysis, project, search, symbols, tasks,
 };
+use crate::ui::problems_panel::ProblemFilter;
 use crate::util::path;
 use crate::AppState;
 
@@ -61,6 +62,16 @@ pub fn build() {
         execute_task_direct(&task_clone);
         return;
     }
+    if !can_use_legacy_build_fallback(s) {
+        s.status
+            .set_analysis_status("No build task: configure the project toolchain");
+        s.output.show_output();
+        s.output
+            .append_line("[Build] No valid build task was detected for this project.");
+        s.output
+            .append_line("[Build] Open Settings > Toolchains and configure ccargo/crust/cc.");
+        return;
+    }
     // Legacy fallback
     if let Some(ref proj) = s.current_project {
         s.output.clear();
@@ -97,7 +108,19 @@ pub fn run() {
         execute_task_direct(&task_clone);
         return;
     }
-    // Legacy fallback
+    s.status.set_analysis_status("No run target selected");
+    if !s.task_mgr.tasks.is_empty() {
+        return;
+    }
+    if !can_use_legacy_build_fallback(s) {
+        s.output.show_output();
+        s.output
+            .append_line("[Run] No runnable target was detected for this project.");
+        s.output
+            .append_line("[Run] Select or configure a Run task in the Run and Debug panel.");
+        return;
+    }
+    // Legacy fallback for old workspaces without detected tasks.
     if let Some(ref proj) = s.current_project {
         s.output.clear();
         let active_file = s
@@ -171,6 +194,9 @@ pub fn clean() {
 
 pub fn stop() {
     let s = app();
+    if s.debug_backend.is_attached() {
+        s.debug_backend.detach();
+    }
     if let Some(ref mut proc) = s.build_process {
         proc.kill();
         s.output.append_line("\n[Process killed]");
@@ -181,13 +207,12 @@ pub fn stop() {
     }
     s.build_process = None;
     s.live_check_process = None;
-    s.live_check_pending_editor = None;
-    s.live_check_pending_version = 0;
-    s.live_check_running_file.clear();
-    s.live_check_running_version = 0;
-    s.live_check_output_buffer.clear();
-    s.live_check_label.clear();
+    s.live_check.reset();
+    s.debug_session.stop();
+    s.output.append_debug_line("stop");
+    s.run_panel.update_debug_session(&s.debug_session);
     crate::stop_build_timer();
+    crate::stop_debug_timer();
     crate::stop_live_check_timer();
 }
 
@@ -294,6 +319,183 @@ pub fn ai_action(action: ai::CodeAction) {
 /// Open the AI settings dialog.
 pub fn ai_settings() {
     crate::ui::ai_settings_dialog::AiSettingsDialog::show();
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Editor intelligence
+// ════════════════════════════════════════════════════════════════
+
+pub fn show_completion_list() {
+    let s = app();
+    let (file_path, text, row, col) = match active_editor_context() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+
+    let set = intellisense::completions_for_cursor(&file_path, &text, row, col, &s.symbol_index);
+    if set.items.is_empty() {
+        s.editor_view.hide_completions();
+        s.status.set_analysis_status("IntelliSense: no suggestions");
+        return;
+    }
+
+    let detail = String::from(
+        set.items
+            .first()
+            .map(|item| item.detail.as_str())
+            .unwrap_or(""),
+    );
+    let list_text = intellisense::completion_list_text(&set.items);
+    s.active_completions = set.items;
+    s.active_completion_prefix = set.prefix;
+    s.editor_view.show_completions(&list_text, &detail);
+    s.status.set_analysis_status(&format!(
+        "IntelliSense: {} suggestions",
+        s.active_completions.len()
+    ));
+}
+
+pub fn accept_completion(index: usize) {
+    let s = app();
+    if s.file_mgr.count() == 0 || index >= s.active_completions.len() {
+        return;
+    }
+
+    let insert_text = s.active_completions[index].insert_text.clone();
+    let prefix_len = s.active_completion_prefix.len();
+    let suffix = if insert_text.len() >= prefix_len
+        && insert_text[..prefix_len].eq_ignore_ascii_case(&s.active_completion_prefix)
+    {
+        String::from(&insert_text[prefix_len..])
+    } else {
+        insert_text
+    };
+
+    if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+        editor.insert_text(&suffix);
+        editor.focus();
+    }
+    s.editor_view.hide_completions();
+    s.active_completions.clear();
+    s.active_completion_prefix.clear();
+    schedule_live_check(s.file_mgr.active);
+}
+
+pub fn update_completion_detail(index: usize) {
+    let s = app();
+    if let Some(item) = s.active_completions.get(index) {
+        s.editor_view.set_completion_detail(&item.detail);
+    }
+}
+
+pub fn update_editor_hover() {
+    let s = app();
+    let (file_path, text, row, col) = match active_editor_context() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+    let hover = intellisense::hover_for_cursor(&file_path, &text, row, col, &s.symbol_index);
+    if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+        editor.set_tooltip(&hover);
+    }
+}
+
+pub fn go_to_definition_at_cursor() {
+    let s = app();
+    let (file_path, text, row, col) = match active_editor_context() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+    let word = intellisense::word_at_cursor(&text, row, col);
+    if word.is_empty() {
+        s.status.set_analysis_status("No symbol under cursor");
+        return;
+    }
+    let Some(symbol) = intellisense::best_symbol_for_word(&file_path, &word, &s.symbol_index)
+    else {
+        s.status
+            .set_analysis_status(&format!("No definition found for {}", word));
+        return;
+    };
+
+    let target_name = symbol.name.clone();
+    let target_path = symbol.file_path.clone();
+    let target_line = symbol.line;
+    open_file(&target_path);
+    if let Some(editor) = app().editor_view.editor_widget(app().file_mgr.active) {
+        editor.set_cursor(target_line, 0);
+        editor.ensure_line_visible(target_line);
+    }
+    app().status.set_analysis_status(&format!(
+        "Definition: {} in {}",
+        target_name,
+        path::basename(&target_path)
+    ));
+}
+
+pub fn peek_symbol_at_cursor() {
+    let s = app();
+    let (file_path, text, row, col) = match active_editor_context() {
+        Some(ctx) => ctx,
+        None => return,
+    };
+    let word = intellisense::word_at_cursor(&text, row, col);
+    if let Some(symbol) = intellisense::best_symbol_for_word(&file_path, &word, &s.symbol_index) {
+        s.output.show_output();
+        s.output.append_line(&format!(
+            "[Symbol] {} {} at {}:{}",
+            symbol.kind.label(),
+            symbol.detail,
+            symbol.file_path,
+            symbol.line + 1
+        ));
+    }
+}
+
+pub fn fold_block_at_cursor() {
+    let s = app();
+    if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+        editor.toggle_fold_at_cursor();
+        editor.focus();
+    }
+}
+
+pub fn editor_cut() {
+    let s = app();
+    if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+        editor.cut();
+    }
+}
+
+pub fn editor_copy() {
+    let s = app();
+    if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+        editor.copy();
+    }
+}
+
+pub fn editor_paste() {
+    let s = app();
+    if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+        editor.paste();
+    }
+}
+
+pub fn editor_select_all() {
+    let s = app();
+    if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+        editor.select_all();
+    }
+}
+
+fn active_editor_context() -> Option<(String, String, u32, u32)> {
+    let s = app();
+    let file = s.file_mgr.active_file()?;
+    let mut buf = vec![0u8; 128 * 1024];
+    let len = s.editor_view.get_editor_text(s.file_mgr.active, &mut buf);
+    let text = core::str::from_utf8(&buf[..len as usize]).ok()?;
+    let (row, col) = s.editor_view.get_cursor(s.file_mgr.active);
+    Some((file.path.clone(), String::from(text), row, col))
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -442,6 +644,14 @@ pub fn autosave_editor(index: usize) {
 //  Live analysis
 // ════════════════════════════════════════════════════════════════
 
+#[derive(Clone)]
+struct ProblemTarget {
+    file_path: String,
+    line: u32,
+    column: u32,
+    message: String,
+}
+
 pub fn schedule_live_check(editor_index: usize) {
     run_static_analysis_for_editor(editor_index);
 
@@ -454,11 +664,582 @@ pub fn schedule_live_check(editor_index: usize) {
     let file_version = file.version;
     s.diagnostics
         .remove_source_for_file(live_analysis::LIVE_CHECK_SOURCE, &file_path);
-    s.live_check_pending_editor = Some(editor_index);
-    s.live_check_pending_version = file_version;
-    s.live_check_debounce_ticks = 3;
+    s.live_check.queue(editor_index, file_version, 3);
     refresh_problem_views();
     crate::start_live_check_timer();
+}
+
+pub fn analyze_active_file() {
+    let active = {
+        let s = app();
+        if s.file_mgr.count() == 0 {
+            s.status.set_analysis_status("No file to analyze");
+            return;
+        }
+        s.file_mgr.active
+    };
+    schedule_live_check(active);
+    app().output.show_problems();
+    update_status();
+}
+
+pub fn restart_live_analysis() {
+    let active = {
+        let s = app();
+        if s.file_mgr.count() == 0 {
+            s.status.set_analysis_status("No file to analyze");
+            return;
+        }
+        if let Some(proc) = s.live_check_process.as_mut() {
+            proc.kill();
+        }
+        s.live_check_process = None;
+        s.live_check.reset();
+        s.diagnostics.remove_source(live_analysis::LIVE_SOURCE);
+        s.diagnostics
+            .remove_source(live_analysis::LIVE_CHECK_SOURCE);
+        s.status.set_analysis_status("Live analysis restarted");
+        s.file_mgr.active
+    };
+    crate::stop_live_check_timer();
+    refresh_problem_views();
+    schedule_live_check(active);
+    app().output.show_problems();
+    update_status();
+}
+
+pub fn clear_problems() {
+    {
+        let s = app();
+        if let Some(proc) = s.live_check_process.as_mut() {
+            proc.kill();
+        }
+        s.live_check_process = None;
+        s.diagnostics.clear();
+        s.live_check.reset();
+        s.status.set_analysis_status("Problems cleared");
+    }
+    crate::stop_live_check_timer();
+    refresh_problem_views();
+    update_status();
+    app().output.show_problems();
+}
+
+pub fn start_debugging() {
+    let task = {
+        let s = app();
+        match s.task_mgr.selected_run() {
+            Some(task) => task.clone(),
+            None => {
+                s.status
+                    .set_analysis_status("No run configuration selected");
+                return;
+            }
+        }
+    };
+
+    let s = app();
+    s.output.clear();
+    s.output.clear_debug_console();
+    s.diagnostics.clear();
+    s.build_output_buffer.clear();
+    s.debug_session.start_launch(&task);
+    s.run_panel.update_debug_session(&s.debug_session);
+    s.output
+        .append_line(&format!("[Debug] Launching {}", task.display_label));
+    s.output
+        .append_debug_line(&format!("launch {}", task.display_label));
+    if s.debug_session.breakpoint_count() > 0 {
+        s.output.append_debug_line(&format!(
+            "{} breakpoint(s) armed",
+            s.debug_session.breakpoint_count()
+        ));
+    }
+    s.output.show_output();
+
+    if !task.working_dir.is_empty() {
+        anyos_std::fs::chdir(&task.working_dir);
+    }
+
+    s.build_process = build::BuildProcess::spawn(&task.command, &task.args);
+    if let Some(ref proc) = s.build_process {
+        let tid = proc.tid;
+        s.output
+            .append_debug_line(&format!("process started tid={}", tid));
+        if s.debug_backend.attach(tid) {
+            s.debug_session.mark_attached(tid, &s.debug_backend.regs);
+            refresh_debug_snapshot(s);
+            s.output.append_debug_line(&format!(
+                "attached tid={} rip={}",
+                tid,
+                anyos_std::fmt::hex64(s.debug_backend.regs.rip)
+            ));
+            if s.debug_session.breakpoint_count() > 0 {
+                s.output.append_debug_line(
+                    "source breakpoints recorded; address binding is pending symbol mapping",
+                );
+            }
+            if s.debug_backend.resume() {
+                s.debug_session.mark_running();
+                s.status
+                    .set_analysis_status("Debug session attached and running");
+                s.output.append_debug_line("target resumed");
+            } else {
+                s.status
+                    .set_analysis_status("Debug session attached and paused");
+                s.output.append_debug_line("target paused at attach");
+            }
+            crate::start_debug_timer();
+        } else {
+            s.debug_session.mark_running();
+            s.status
+                .set_analysis_status("Debug attach failed; process is running");
+            s.output.append_debug_line("debug attach failed");
+        }
+        crate::start_build_timer();
+    } else {
+        s.debug_session.stop();
+        s.status.set_analysis_status("Debug launch failed");
+        s.output.append_debug_line("launch failed");
+    }
+    s.run_panel.update_debug_session(&s.debug_session);
+}
+
+pub fn debug_continue() {
+    let s = app();
+    if s.debug_backend.is_attached() {
+        if s.debug_backend.resume() {
+            s.debug_session.continue_execution();
+            s.status.set_analysis_status("Debug continue");
+            s.output.append_debug_line("continue");
+            crate::start_debug_timer();
+        } else {
+            s.status.set_analysis_status("Debug continue unavailable");
+            s.output.append_debug_line("continue failed");
+        }
+    } else {
+        s.debug_session.continue_execution();
+        s.status.set_analysis_status("Debug continue");
+        s.output.append_debug_line("continue");
+    }
+    s.run_panel.update_debug_session(&s.debug_session);
+    s.output.show_debug_console();
+}
+
+pub fn debug_pause() {
+    let s = app();
+    if s.debug_backend.is_attached() {
+        if s.debug_backend.suspend() {
+            s.debug_session.pause("user pause");
+            refresh_debug_snapshot(s);
+            s.status.set_analysis_status("Debug paused");
+            s.output.append_debug_line(&format!(
+                "pause rip={}",
+                anyos_std::fmt::hex64(s.debug_backend.regs.rip)
+            ));
+        } else {
+            s.status.set_analysis_status("Debug pause unavailable");
+            s.output.append_debug_line("pause failed");
+        }
+    } else {
+        s.debug_session.pause("user pause");
+        s.status.set_analysis_status("Debug paused");
+        s.output.append_debug_line("pause");
+    }
+    s.run_panel.update_debug_session(&s.debug_session);
+    s.output.show_debug_console();
+}
+
+pub fn debug_step_over() {
+    let s = app();
+    if s.debug_backend.is_attached() {
+        if s.debug_backend.is_suspended() && s.debug_backend.single_step() {
+            s.debug_session.step_started();
+            s.status.set_analysis_status("Debug step over");
+            s.output.append_debug_line("step over");
+            crate::start_debug_timer();
+        } else {
+            s.status
+                .set_analysis_status("Debug step requires a paused target");
+            s.output.append_debug_line("step over unavailable");
+        }
+    } else {
+        s.debug_session.step_started();
+        s.status.set_analysis_status("Debug step over");
+        s.output.append_debug_line("step over");
+    }
+    s.run_panel.update_debug_session(&s.debug_session);
+    s.output.show_debug_console();
+}
+
+pub fn refresh_debug_snapshot(s: &mut AppState) {
+    if !s.debug_backend.is_attached() {
+        return;
+    }
+
+    s.debug_backend.refresh_regs();
+    let regs = s.debug_backend.regs;
+    let disassembly = disassembly_preview(&s.debug_backend, regs.rip);
+    let memory_rows = memory_preview(&s.debug_backend, regs.rsp);
+
+    s.debug_session.apply_registers(&regs);
+    s.debug_session.disassembly = disassembly;
+    s.debug_session.memory_rows = memory_rows;
+}
+
+fn disassembly_preview(
+    backend: &crate::logic::debug_backend::DebugBackend,
+    rip: u64,
+) -> Vec<debug_session::DisassemblyLine> {
+    let mut buf = [0u8; 96];
+    let read = backend.read_mem(rip, &mut buf);
+    let mut lines = Vec::new();
+    let mut offset = 0usize;
+
+    while offset < read && lines.len() < 10 {
+        let addr = rip + offset as u64;
+        let (len, text) = decode_simple_instr(&buf[offset..read], addr);
+        let len = len.max(1).min(read - offset);
+        lines.push(debug_session::DisassemblyLine {
+            address: anyos_std::fmt::hex64(addr),
+            bytes: format_bytes(&buf[offset..offset + len]),
+            text,
+            current: offset == 0,
+        });
+        offset += len;
+    }
+
+    lines
+}
+
+fn memory_preview(
+    backend: &crate::logic::debug_backend::DebugBackend,
+    rsp: u64,
+) -> Vec<debug_session::MemoryRow> {
+    let mut buf = [0u8; 64];
+    let read = backend.read_mem(rsp, &mut buf);
+    let mut rows = Vec::new();
+    let mut offset = 0usize;
+
+    while offset < read && rows.len() < 8 {
+        let end = (offset + 8).min(read);
+        rows.push(debug_session::MemoryRow {
+            address: anyos_std::fmt::hex64(rsp + offset as u64),
+            bytes: format_bytes(&buf[offset..end]),
+            ascii: ascii_preview(&buf[offset..end]),
+        });
+        offset += 8;
+    }
+
+    rows
+}
+
+fn decode_simple_instr(bytes: &[u8], rip: u64) -> (usize, String) {
+    if bytes.is_empty() {
+        return (1, String::from("db ?"));
+    }
+
+    match bytes[0] {
+        0x55 => (1, String::from("push rbp")),
+        0x5D => (1, String::from("pop rbp")),
+        0x90 => (1, String::from("nop")),
+        0xC3 => (1, String::from("ret")),
+        0xCC => (1, String::from("int3")),
+        0xE8 if bytes.len() >= 5 => {
+            let rel = i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+            let target = (rip as i64 + 5 + rel as i64) as u64;
+            (5, format!("call {}", anyos_std::fmt::hex64(target)))
+        }
+        0xE9 if bytes.len() >= 5 => {
+            let rel = i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+            let target = (rip as i64 + 5 + rel as i64) as u64;
+            (5, format!("jmp {}", anyos_std::fmt::hex64(target)))
+        }
+        0xEB if bytes.len() >= 2 => {
+            let rel = bytes[1] as i8 as i64;
+            let target = (rip as i64 + 2 + rel) as u64;
+            (2, format!("jmp {}", anyos_std::fmt::hex64(target)))
+        }
+        0x0F if bytes.len() >= 2 && bytes[1] == 0x05 => (2, String::from("syscall")),
+        0x48 if bytes.len() >= 3 && bytes[1] == 0x89 && bytes[2] == 0xE5 => {
+            (3, String::from("mov rbp, rsp"))
+        }
+        0x48 if bytes.len() >= 4 && bytes[1] == 0x83 && bytes[2] == 0xEC => {
+            (4, format!("sub rsp, {:#x}", bytes[3]))
+        }
+        0x48 if bytes.len() >= 4 && bytes[1] == 0x83 && bytes[2] == 0xC4 => {
+            (4, format!("add rsp, {:#x}", bytes[3]))
+        }
+        0x48 if bytes.len() >= 10 && (0xB8..=0xBF).contains(&bytes[1]) => {
+            let imm = u64::from_le_bytes([
+                bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9],
+            ]);
+            let reg = reg_name((bytes[1] - 0xB8) as usize);
+            (10, format!("mov {}, {}", reg, anyos_std::fmt::hex64(imm)))
+        }
+        0xB8..=0xBF if bytes.len() >= 5 => {
+            let imm = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+            let reg = reg32_name((bytes[0] - 0xB8) as usize);
+            (5, format!("mov {}, 0x{:08x}", reg, imm))
+        }
+        b => (1, format!("db 0x{:02x}", b)),
+    }
+}
+
+fn reg_name(idx: usize) -> &'static str {
+    match idx {
+        0 => "rax",
+        1 => "rcx",
+        2 => "rdx",
+        3 => "rbx",
+        4 => "rsp",
+        5 => "rbp",
+        6 => "rsi",
+        7 => "rdi",
+        _ => "r?",
+    }
+}
+
+fn reg32_name(idx: usize) -> &'static str {
+    match idx {
+        0 => "eax",
+        1 => "ecx",
+        2 => "edx",
+        3 => "ebx",
+        4 => "esp",
+        5 => "ebp",
+        6 => "esi",
+        7 => "edi",
+        _ => "e?",
+    }
+}
+
+fn format_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::new();
+    for (idx, byte) in bytes.iter().enumerate() {
+        if idx > 0 {
+            out.push(' ');
+        }
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0F) as usize] as char);
+    }
+    out
+}
+
+fn ascii_preview(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for byte in bytes {
+        if (0x20..=0x7E).contains(byte) {
+            out.push(*byte as char);
+        } else {
+            out.push('.');
+        }
+    }
+    out
+}
+
+pub fn toggle_breakpoint_at_cursor() {
+    let s = app();
+    let file_path = match s.file_mgr.active_file() {
+        Some(file) if !file.is_untitled => file.path.clone(),
+        _ => {
+            s.status.set_analysis_status("No saved file for breakpoint");
+            return;
+        }
+    };
+    let (line, _col) = s.editor_view.get_cursor(s.file_mgr.active);
+    let enabled = s.debug_session.toggle_breakpoint(&file_path, line);
+    let action = if enabled { "Added" } else { "Removed" };
+    s.status
+        .set_analysis_status(&format!("{} breakpoint at line {}", action, line + 1));
+    s.output.append_line(&format!(
+        "[Debug] {} breakpoint: {}:{}",
+        action,
+        path::basename(&file_path),
+        line + 1
+    ));
+    s.output.append_debug_line(&format!(
+        "{} breakpoint {}:{}",
+        action,
+        path::basename(&file_path),
+        line + 1
+    ));
+    s.run_panel.update_debug_session(&s.debug_session);
+}
+
+pub fn set_problem_filter(filter: ProblemFilter) {
+    {
+        let s = app();
+        s.problems_panel.set_filter(filter);
+        s.status.set_analysis_status(problem_filter_status(filter));
+    }
+    refresh_problem_views();
+    app().output.show_problems();
+}
+
+fn problem_filter_status(filter: ProblemFilter) -> &'static str {
+    match filter {
+        ProblemFilter::All => "Error List: all problems",
+        ProblemFilter::Errors => "Error List: errors",
+        ProblemFilter::Warnings => "Error List: warnings",
+        ProblemFilter::CurrentFile => "Error List: current file",
+    }
+}
+
+pub fn next_problem() {
+    navigate_problem(ProblemDirection::Next);
+}
+
+pub fn previous_problem() {
+    navigate_problem(ProblemDirection::Previous);
+}
+
+#[derive(Clone, Copy)]
+enum ProblemDirection {
+    Next,
+    Previous,
+}
+
+fn navigate_problem(direction: ProblemDirection) {
+    let (targets, active_file, cursor_line, cursor_col) = {
+        let s = app();
+        let project_root = s.current_project.as_ref().map(|p| p.root.as_str());
+        let filter = s.problems_panel.filter();
+        let active_path = s.file_mgr.active_file().map(|f| f.path.as_str());
+        let mut targets = Vec::new();
+        for diag in &s.diagnostics.diagnostics {
+            if !diag.has_location() {
+                continue;
+            }
+            let resolved = resolve_diagnostic_path(&diag.file_path, project_root);
+            if !problem_filter_accepts(filter, diag.severity, &resolved, active_path) {
+                continue;
+            }
+            targets.push(ProblemTarget {
+                file_path: resolved,
+                line: diag.line,
+                column: diag.column,
+                message: diag.message.clone(),
+            });
+        }
+        targets.sort_by(|a, b| {
+            a.file_path
+                .cmp(&b.file_path)
+                .then(a.line.cmp(&b.line))
+                .then(a.column.cmp(&b.column))
+        });
+
+        let active_file = s.file_mgr.active_file().map(|f| f.path.clone());
+        let (row, col) = if active_file.is_some() {
+            s.editor_view.get_cursor(s.file_mgr.active)
+        } else {
+            (0, 0)
+        };
+        (targets, active_file, row + 1, col + 1)
+    };
+
+    if targets.is_empty() {
+        let s = app();
+        s.status.set_analysis_status("No problems");
+        s.output.show_problems();
+        return;
+    }
+
+    let idx = select_problem_target(
+        &targets,
+        active_file.as_deref(),
+        cursor_line,
+        cursor_col,
+        direction,
+    );
+    open_problem_target(&targets[idx]);
+}
+
+fn select_problem_target(
+    targets: &[ProblemTarget],
+    active_file: Option<&str>,
+    cursor_line: u32,
+    cursor_col: u32,
+    direction: ProblemDirection,
+) -> usize {
+    let active_file = match active_file {
+        Some(file) => file,
+        None => {
+            return match direction {
+                ProblemDirection::Next => 0,
+                ProblemDirection::Previous => targets.len() - 1,
+            };
+        }
+    };
+
+    match direction {
+        ProblemDirection::Next => targets
+            .iter()
+            .position(|target| problem_after(target, active_file, cursor_line, cursor_col))
+            .unwrap_or(0),
+        ProblemDirection::Previous => targets
+            .iter()
+            .rposition(|target| problem_before(target, active_file, cursor_line, cursor_col))
+            .unwrap_or(targets.len() - 1),
+    }
+}
+
+fn problem_after(target: &ProblemTarget, file_path: &str, line: u32, column: u32) -> bool {
+    target.file_path.as_str() > file_path
+        || (target.file_path == file_path
+            && (target.line > line || (target.line == line && target.column > column)))
+}
+
+fn problem_before(target: &ProblemTarget, file_path: &str, line: u32, column: u32) -> bool {
+    target.file_path.as_str() < file_path
+        || (target.file_path == file_path
+            && (target.line < line || (target.line == line && target.column < column)))
+}
+
+fn open_problem_target(target: &ProblemTarget) {
+    open_file(&target.file_path);
+    {
+        let s = app();
+        if let Some(editor) = s.editor_view.editor_widget(s.file_mgr.active) {
+            editor.set_cursor(
+                target.line.saturating_sub(1),
+                target.column.saturating_sub(1),
+            );
+        }
+        let label = format!("Problem: {}", target.message);
+        s.status.set_analysis_status(&label);
+        s.output.show_problems();
+    }
+    update_status();
+}
+
+fn problem_filter_accepts(
+    filter: ProblemFilter,
+    severity: diagnostics::Severity,
+    file_path: &str,
+    active_file: Option<&str>,
+) -> bool {
+    match filter {
+        ProblemFilter::All => true,
+        ProblemFilter::Errors => severity == diagnostics::Severity::Error,
+        ProblemFilter::Warnings => severity == diagnostics::Severity::Warning,
+        ProblemFilter::CurrentFile => active_file
+            .map(|active| {
+                file_path == active || path::basename(file_path) == path::basename(active)
+            })
+            .unwrap_or(false),
+    }
+}
+
+fn resolve_diagnostic_path(file_path: &str, project_root: Option<&str>) -> String {
+    if file_path.starts_with('/') {
+        return String::from(file_path);
+    }
+    if let Some(root) = project_root {
+        return path::join(root, file_path);
+    }
+    String::from(file_path)
 }
 
 pub fn poll_live_check() {
@@ -470,13 +1251,13 @@ pub fn poll_live_check() {
             let mut buf = [0u8; 1024];
             while let Some(n) = proc.poll_output(&mut buf) {
                 if let Ok(text) = core::str::from_utf8(&buf[..n]) {
-                    s.live_check_output_buffer.push_str(text);
+                    s.live_check.output_buffer.push_str(text);
                 }
             }
             if proc.check_finished().is_some() {
-                finished_output = Some(s.live_check_output_buffer.clone());
+                finished_output = Some(s.live_check.output_buffer.clone());
                 s.live_check_process = None;
-                s.live_check_output_buffer.clear();
+                s.live_check.output_buffer.clear();
             }
         }
     }
@@ -490,26 +1271,23 @@ pub fn poll_live_check() {
         return;
     }
 
-    if s.live_check_debounce_ticks > 0 {
-        s.live_check_debounce_ticks -= 1;
+    if s.live_check.debounce_ticks > 0 {
+        s.live_check.debounce_ticks -= 1;
         return;
     }
 
-    if let Some(editor_idx) = s.live_check_pending_editor.take() {
-        let expected_version = s.live_check_pending_version;
+    if let Some(check) = s.live_check.take_pending() {
         if s.build_process.is_some() {
-            s.live_check_pending_editor = Some(editor_idx);
-            s.live_check_pending_version = expected_version;
-            s.live_check_debounce_ticks = 2;
+            s.live_check.requeue(check, 2);
             s.status.set_analysis_status("Analysis waiting");
             return;
         }
-        if start_external_live_check(editor_idx, expected_version) {
+        if start_external_live_check(check.editor_index, check.version) {
             return;
         }
     }
 
-    if s.live_check_pending_editor.is_none() && s.live_check_process.is_none() {
+    if s.live_check.pending.is_none() && s.live_check_process.is_none() {
         crate::stop_live_check_timer();
     }
 }
@@ -521,8 +1299,6 @@ fn run_static_analysis_for_editor(editor_index: usize) {
         None => return,
     };
     let file_path = file.path.clone();
-    let filename = path::basename(&file_path);
-    let lang = language::language_for_filename(filename);
 
     let mut buf = vec![0u8; 256 * 1024];
     let len = s.editor_view.get_editor_text(editor_index, &mut buf);
@@ -547,7 +1323,7 @@ fn run_static_analysis_for_editor(editor_index: usize) {
         }
     };
 
-    let live_diags = live_analysis::analyze_buffer(&file_path, text, lang.id);
+    let live_diags = language_service::analyze_document(&file_path, text);
     s.diagnostics
         .remove_source_for_file(live_analysis::LIVE_SOURCE, &file_path);
     s.diagnostics.append_many(live_diags);
@@ -561,9 +1337,7 @@ fn start_external_live_check(editor_index: usize, expected_version: u32) -> bool
         None => return false,
     };
     if file.version != expected_version {
-        s.live_check_pending_editor = Some(editor_index);
-        s.live_check_pending_version = file.version;
-        s.live_check_debounce_ticks = 2;
+        s.live_check.queue(editor_index, file.version, 2);
         s.status.set_analysis_status("Analysis queued");
         crate::start_live_check_timer();
         return true;
@@ -577,7 +1351,12 @@ fn start_external_live_check(editor_index: usize, expected_version: u32) -> bool
         return false;
     }
 
-    let cmd = match external_check_command_for_file(&file.path) {
+    let ctx = language_service::ServiceContext {
+        config: &s.config,
+        project: s.current_project.as_ref(),
+        task_mgr: &s.task_mgr,
+    };
+    let cmd = match language_service::check_command(&file.path, &ctx) {
         Some(cmd) => cmd,
         None => {
             s.status.set_analysis_status("Live analysis");
@@ -588,10 +1367,8 @@ fn start_external_live_check(editor_index: usize, expected_version: u32) -> bool
     if !cmd.working_dir.is_empty() {
         anyos_std::fs::chdir(&cmd.working_dir);
     }
-    s.live_check_output_buffer.clear();
-    s.live_check_label = cmd.label.clone();
-    s.live_check_running_file = file.path.clone();
-    s.live_check_running_version = file.version;
+    s.live_check
+        .begin_running(&file.path, file.version, &cmd.label);
     s.live_check_process = build::BuildProcess::spawn(&cmd.command, &cmd.args);
     if s.live_check_process.is_some() {
         s.status
@@ -599,31 +1376,30 @@ fn start_external_live_check(editor_index: usize, expected_version: u32) -> bool
         true
     } else {
         s.status.set_analysis_status("Live check failed");
-        s.live_check_running_file.clear();
-        s.live_check_running_version = 0;
+        s.live_check.finish_running();
         false
     }
 }
 
 fn finish_external_live_check(output: &str) {
     let s = app();
-    let running_file = s.live_check_running_file.clone();
-    let running_version = s.live_check_running_version;
-    let is_stale = !running_file.is_empty()
-        && s.file_mgr
+    let is_stale = if let Some(ref running) = s.live_check.running {
+        s.file_mgr
             .files
             .iter()
-            .any(|file| file.path == running_file && file.version != running_version);
+            .any(|file| file.path == running.file_path && file.version != running.version)
+    } else {
+        false
+    };
     if is_stale {
-        s.live_check_running_file.clear();
-        s.live_check_running_version = 0;
-        s.live_check_label.clear();
+        s.live_check.finish_running();
         s.status.set_analysis_status("Stale check discarded");
         refresh_problem_views();
         return;
     }
 
-    s.diagnostics.remove_source(live_analysis::LIVE_CHECK_SOURCE);
+    s.diagnostics
+        .remove_source(live_analysis::LIVE_CHECK_SOURCE);
     if !output.trim().is_empty() {
         let mut parsed = diagnostics::DiagnosticSet::new();
         parsed.parse_output(output);
@@ -633,120 +1409,20 @@ fn finish_external_live_check(output: &str) {
         s.diagnostics.append_many(parsed.diagnostics);
     }
 
-    let label = if s.live_check_label.is_empty() {
+    let label = if s.live_check.label.is_empty() {
         String::from("Live analysis")
     } else {
-        format!("Checked: {}", s.live_check_label)
+        format!("Checked: {}", s.live_check.label)
     };
     s.status.set_analysis_status(&label);
-    s.live_check_label.clear();
-    s.live_check_running_file.clear();
-    s.live_check_running_version = 0;
+    s.live_check.finish_running();
     refresh_problem_views();
-}
-
-fn external_check_command_for_file(file_path: &str) -> Option<live_analysis::CheckCommand> {
-    let s = app();
-    if let Some(task) = s
-        .task_mgr
-        .tasks
-        .iter()
-        .find(|task| task.category == tasks::TaskCategory::Check)
-    {
-        return Some(live_analysis::CheckCommand {
-            command: task.command.clone(),
-            args: task.args.clone(),
-            working_dir: task.working_dir.clone(),
-            label: task.display_label.clone(),
-        });
-    }
-
-    let filename = path::basename(file_path);
-    let lang = language::language_for_filename(filename);
-    match lang.id {
-        language::LanguageId::C | language::LanguageId::Cpp => {
-            if s.config.cc_path.is_empty() {
-                return None;
-            }
-            Some(live_analysis::CheckCommand {
-                command: s.config.cc_path.clone(),
-                args: format!("-fsyntax-only {}", file_path),
-                working_dir: project_root_or_parent(file_path),
-                label: String::from("cc -fsyntax-only"),
-            })
-        }
-        language::LanguageId::Python => {
-            let python = find_first_tool(&["python3", "python"]);
-            if python.is_empty() {
-                return None;
-            }
-            Some(live_analysis::CheckCommand {
-                command: python,
-                args: format!("-m py_compile {}", file_path),
-                working_dir: project_root_or_parent(file_path),
-                label: String::from("python py_compile"),
-            })
-        }
-        language::LanguageId::Shell => {
-            let shell = find_first_tool(&["sh", "bash"]);
-            if shell.is_empty() {
-                return None;
-            }
-            Some(live_analysis::CheckCommand {
-                command: shell,
-                args: format!("-n {}", file_path),
-                working_dir: project_root_or_parent(file_path),
-                label: String::from("shell syntax"),
-            })
-        }
-        language::LanguageId::JavaScript => {
-            let node = config::find_tool("node");
-            if node.is_empty() {
-                return None;
-            }
-            Some(live_analysis::CheckCommand {
-                command: node,
-                args: format!("--check {}", file_path),
-                working_dir: project_root_or_parent(file_path),
-                label: String::from("node --check"),
-            })
-        }
-        language::LanguageId::TypeScript => {
-            let tsc = config::find_tool("tsc");
-            if tsc.is_empty() {
-                return None;
-            }
-            Some(live_analysis::CheckCommand {
-                command: tsc,
-                args: format!("--noEmit {}", file_path),
-                working_dir: project_root_or_parent(file_path),
-                label: String::from("tsc --noEmit"),
-            })
-        }
-        _ => None,
-    }
-}
-
-fn find_first_tool(names: &[&str]) -> String {
-    for name in names {
-        let path = config::find_tool(name);
-        if !path.is_empty() {
-            return path;
-        }
-    }
-    String::new()
-}
-
-fn project_root_or_parent(file_path: &str) -> String {
-    let s = app();
-    if let Some(ref proj) = s.current_project {
-        return proj.root.clone();
-    }
-    String::from(path::parent(file_path))
 }
 
 fn refresh_problem_views() {
     let s = app();
+    let active_path = s.file_mgr.active_file().map(|f| f.path.clone());
+    s.problems_panel.set_current_file(active_path.as_deref());
     s.problems_panel.update(&s.diagnostics);
     refresh_editor_diagnostics();
     update_status();
@@ -774,6 +1450,14 @@ fn execute_task_direct(task: &tasks::Task) {
     s.output.append_line(&msg);
     s.output.show_output();
 
+    if task.command.is_empty() {
+        s.status
+            .set_analysis_status("Task has no command; configure the toolchain");
+        s.output
+            .append_line("[Task] Command is empty. Open Settings > Toolchains.");
+        return;
+    }
+
     if !task.working_dir.is_empty() {
         anyos_std::fs::chdir(&task.working_dir);
     }
@@ -781,6 +1465,13 @@ fn execute_task_direct(task: &tasks::Task) {
     s.build_process = build::BuildProcess::spawn(&task.command, &task.args);
     if s.build_process.is_some() {
         crate::start_build_timer();
+    }
+}
+
+fn can_use_legacy_build_fallback(s: &AppState) -> bool {
+    match s.current_project.as_ref().map(|proj| proj.project_type) {
+        Some(project::ProjectType::Generic) | None => true,
+        _ => false,
     }
 }
 
@@ -812,26 +1503,82 @@ pub fn show_recent_projects() {
         .show_recent_projects(&s.config.recent_projects);
 }
 
+pub fn set_build_configuration(config: project::BuildConfiguration) {
+    let s = app();
+    let project_context = {
+        let proj = match s.current_project.as_mut() {
+            Some(proj) => proj,
+            None => {
+                s.status.set_analysis_status("No workspace open");
+                return;
+            }
+        };
+        proj.set_active_configuration(config);
+        proj.display_context()
+    };
+
+    if let Some(ref proj) = s.current_project {
+        s.task_mgr.detect_from_project(proj, &s.config);
+        s.run_panel.update(&s.task_mgr);
+        s.run_panel.update_debug_session(&s.debug_session);
+        s.sidebar.populate_project(proj, &s.task_mgr);
+        s.status.set_project_type(&project_context);
+    }
+}
+
+pub fn rebuild_symbol_index() {
+    let root = {
+        let s = app();
+        match s.current_project.as_ref() {
+            Some(proj) => proj.root.clone(),
+            None => {
+                s.status.set_analysis_status("No workspace open");
+                return;
+            }
+        }
+    };
+
+    let count = {
+        let s = app();
+        s.status.set_analysis_status("Indexing workspace...");
+        s.symbol_index.rebuild(&root);
+        s.symbol_index.count()
+    };
+
+    let s = app();
+    s.status
+        .set_analysis_status(&format!("Symbol index: {} symbols", count));
+    s.output
+        .append_line(&format!("[IntelliSense] Indexed {} symbols", count));
+}
+
 pub fn open_workspace(folder: &str, should_restore_session: bool) {
     let s = app();
     reset_workspace_views();
-    s.sidebar.populate(folder);
     let proj = project::Project::open(folder);
-    s.status.set_project_type(proj.project_type.display_name());
+    let project_context = proj.display_context();
+    let workspace_root = proj.root.clone();
 
-    s.task_mgr.detect_from_project(&proj);
+    s.task_mgr.detect_from_project(&proj, &s.config);
     s.run_panel.update(&s.task_mgr);
+    s.run_panel.update_debug_session(&s.debug_session);
+    s.sidebar.populate_project(&proj, &s.task_mgr);
+    s.status.set_project_type(&project_context);
 
-    s.git_state.is_repo = git::is_git_repo(folder);
+    s.git_state.is_repo = git::is_git_repo(&workspace_root);
     if s.git_state.is_repo {
         crate::trigger_git_refresh();
     }
     s.status.set_branch("");
-    s.output.start_shell(folder);
+    s.output.start_shell(&workspace_root);
 
     s.current_project = Some(proj);
-    s.config.last_project = String::from(folder);
-    s.config.push_recent_project(folder);
+    s.symbol_index.rebuild(&workspace_root);
+    let indexed_symbols = s.symbol_index.count();
+    s.status
+        .set_analysis_status(&format!("Symbol index: {} symbols", indexed_symbols));
+    s.config.last_project = workspace_root.clone();
+    s.config.push_recent_project(&workspace_root);
     s.config.save();
     update_status();
 
@@ -911,14 +1658,10 @@ fn reset_workspace_views() {
         proc.kill();
     }
     s.live_check_process = None;
-    s.live_check_pending_editor = None;
-    s.live_check_pending_version = 0;
-    s.live_check_running_file.clear();
-    s.live_check_running_version = 0;
-    s.live_check_output_buffer.clear();
-    s.live_check_label.clear();
+    s.live_check.reset();
     s.diagnostics.remove_source(live_analysis::LIVE_SOURCE);
-    s.diagnostics.remove_source(live_analysis::LIVE_CHECK_SOURCE);
+    s.diagnostics
+        .remove_source(live_analysis::LIVE_CHECK_SOURCE);
     s.status.set_analysis_status("");
     crate::stop_live_check_timer();
 
@@ -937,6 +1680,13 @@ fn reset_workspace_views() {
     s.side_editor_view.update_tab_labels("", 0);
     s.side_editor_view
         .set_breadcrumb("Open a file to the side for reference");
+    s.symbol_index.clear();
+    if s.debug_backend.is_attached() {
+        s.debug_backend.detach();
+    }
+    s.debug_session.reset();
+    s.run_panel.update_debug_session(&s.debug_session);
+    crate::stop_debug_timer();
 }
 
 pub fn refresh_symbols() {

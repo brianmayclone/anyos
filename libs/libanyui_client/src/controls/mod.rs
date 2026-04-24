@@ -1,125 +1,135 @@
 //! Individual control type modules — one file per control.
 
 // ── Leaf controls (no children) ──
-mod label;
+mod autocompletatextbox;
+mod badge;
 mod button;
+mod canvas;
+mod checkbox;
+mod colorwell;
+mod combobox;
+mod datagrid;
+mod datetimepicker;
+mod divider;
+mod dropdown;
+mod iconbutton;
+mod imagebutton;
+mod imageview;
+mod label;
+mod linklabel;
+mod listbox;
+mod menubar;
+mod plainbutton;
+mod progressbar;
+mod radiobutton;
+mod searchfield;
+mod segmented;
+mod slider;
+mod spinner;
+mod statusindicator;
+mod stepper;
+mod tag;
+mod textarea;
+mod texteditor;
 mod textfield;
 mod toggle;
-mod checkbox;
-mod slider;
-mod radiobutton;
-mod progressbar;
-mod spinner;
-mod stepper;
-mod segmented;
-mod divider;
-mod imageview;
-mod statusindicator;
-mod colorwell;
-mod searchfield;
-mod textarea;
-mod iconbutton;
-mod plainbutton;
-mod badge;
-mod tag;
-mod imagebutton;
-mod canvas;
-mod datagrid;
-mod texteditor;
-mod treeview;
-mod dropdown;
-mod combobox;
-mod autocompletatextbox;
-mod datetimepicker;
-mod listbox;
 mod trayicon;
-mod menubar;
+mod treeview;
 
 // ── Container controls (can have children) ──
-mod expander;
-mod tooltip;
-mod window;
-mod view;
+mod alert;
 mod card;
+mod contextmenu;
+mod expander;
+mod flowpanel;
 mod groupbox;
-mod splitview;
+mod navigationbar;
+mod radiogroup;
 mod scrollview;
 mod sidebar;
-mod navigationbar;
-mod tabbar;
-mod toolbar;
-mod alert;
-mod contextmenu;
-mod tableview;
+mod splitview;
 mod stackpanel;
-mod flowpanel;
+mod tabbar;
 mod tablelayout;
-mod radiogroup;
+mod tableview;
+mod toolbar;
+mod tooltip;
+mod view;
+mod window;
 
 // ── Static dialogs ──
-mod messagebox;
 mod filedialog;
+mod messagebox;
 
 // ── Re-exports ──
-pub use label::{Label, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER, TEXT_ALIGN_RIGHT};
+pub use badge::Badge;
 pub use button::Button;
+pub use canvas::Canvas;
+pub use checkbox::Checkbox;
+pub use colorwell::ColorWell;
+pub use datagrid::{
+    ColumnDef, DataGrid, ALIGN_CENTER, ALIGN_LEFT, ALIGN_RIGHT, SELECTION_MULTI, SELECTION_SINGLE,
+    SORT_ASCENDING, SORT_DESCENDING, SORT_NONE, SORT_NUMERIC, SORT_STRING,
+};
+pub use divider::Divider;
+pub use iconbutton::{
+    IconButton, ICON_BUILD, ICON_FILES, ICON_FOLDER_OPEN, ICON_GIT_BRANCH, ICON_NEW_FILE,
+    ICON_PLAY, ICON_REFRESH, ICON_SAVE, ICON_SAVE_ALL, ICON_SEARCH, ICON_SETTINGS, ICON_STOP,
+};
+pub use imagebutton::ImageButton;
+pub use imageview::ImageView;
+pub use label::{Label, TEXT_ALIGN_CENTER, TEXT_ALIGN_LEFT, TEXT_ALIGN_RIGHT};
+pub use linklabel::LinkLabel;
+pub use plainbutton::PlainButton;
+pub use progressbar::ProgressBar;
+pub use radiobutton::RadioButton;
+pub use searchfield::SearchField;
+pub use segmented::SegmentedControl;
+pub use slider::Slider;
+pub use spinner::Spinner;
+pub use statusindicator::StatusIndicator;
+pub use stepper::Stepper;
+pub use tag::Tag;
+pub use textarea::TextArea;
+pub use texteditor::TextEditor;
 pub use textfield::TextField;
 pub use toggle::Toggle;
-pub use checkbox::Checkbox;
-pub use slider::Slider;
-pub use radiobutton::RadioButton;
-pub use progressbar::ProgressBar;
-pub use spinner::Spinner;
-pub use stepper::Stepper;
-pub use segmented::SegmentedControl;
-pub use divider::Divider;
 pub use tooltip::Tooltip;
-pub use imageview::ImageView;
-pub use statusindicator::StatusIndicator;
-pub use colorwell::ColorWell;
-pub use searchfield::SearchField;
-pub use textarea::TextArea;
-pub use iconbutton::{IconButton, ICON_NEW_FILE, ICON_FOLDER_OPEN, ICON_SAVE, ICON_SAVE_ALL,
-    ICON_BUILD, ICON_PLAY, ICON_STOP, ICON_SETTINGS, ICON_FILES, ICON_GIT_BRANCH, ICON_SEARCH,
-    ICON_REFRESH};
-pub use plainbutton::PlainButton;
-pub use badge::Badge;
-pub use imagebutton::ImageButton;
-pub use tag::Tag;
-pub use canvas::Canvas;
-pub use datagrid::{DataGrid, ColumnDef, ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT,
-    SELECTION_SINGLE, SELECTION_MULTI, SORT_NONE, SORT_ASCENDING, SORT_DESCENDING,
-    SORT_STRING, SORT_NUMERIC};
-pub use texteditor::TextEditor;
-pub use treeview::{TreeView, STYLE_NORMAL, STYLE_BOLD};
+pub use treeview::{TreeView, STYLE_BOLD, STYLE_NORMAL};
 
-pub use expander::Expander;
-pub use window::{Window, WIN_FLAG_BORDERLESS, WIN_FLAG_NOT_RESIZABLE, WIN_FLAG_ALWAYS_ON_TOP,
-    WIN_FLAG_NO_CLOSE, WIN_FLAG_NO_MINIMIZE, WIN_FLAG_NO_MAXIMIZE, WIN_FLAG_SHADOW};
-pub use view::View;
+pub use alert::Alert;
+pub use autocompletatextbox::AutoCompleteTextField;
 pub use card::Card;
+pub use combobox::ComboBox;
+pub use contextmenu::ContextMenu;
+pub use datetimepicker::{
+    pack as datetime_pack, unpack as datetime_unpack, DatePicker, DateTimePicker, TimePicker,
+};
+pub use dropdown::DropDown;
+pub use expander::Expander;
+pub use flowpanel::FlowPanel;
 pub use groupbox::GroupBox;
-pub use splitview::SplitView;
+pub use listbox::ListBox;
+pub use navigationbar::NavigationBar;
+pub use radiogroup::RadioGroup;
 pub use scrollview::ScrollView;
 pub use sidebar::Sidebar;
-pub use navigationbar::NavigationBar;
-pub use tabbar::TabBar;
-pub use toolbar::Toolbar;
-pub use alert::Alert;
-pub use contextmenu::ContextMenu;
-pub use tableview::TableView;
+pub use splitview::SplitView;
 pub use stackpanel::StackPanel;
-pub use flowpanel::FlowPanel;
+pub use tabbar::TabBar;
 pub use tablelayout::TableLayout;
-pub use radiogroup::RadioGroup;
-pub use dropdown::DropDown;
-pub use combobox::ComboBox;
-pub use autocompletatextbox::AutoCompleteTextField;
-pub use datetimepicker::{DateTimePicker, DatePicker, TimePicker, pack as datetime_pack, unpack as datetime_unpack};
-pub use listbox::ListBox;
+pub use tableview::TableView;
+pub use toolbar::Toolbar;
+pub use view::View;
+pub use window::{
+    Window, WIN_FLAG_ALWAYS_ON_TOP, WIN_FLAG_BORDERLESS, WIN_FLAG_NOT_RESIZABLE, WIN_FLAG_NO_CLOSE,
+    WIN_FLAG_NO_MAXIMIZE, WIN_FLAG_NO_MINIMIZE, WIN_FLAG_SHADOW,
+};
 
-pub use messagebox::{MessageBox, MessageBoxType};
 pub use filedialog::FileDialog;
+pub use menubar::{
+    MenuBar, MenuBarBuilder, MenuBuilder, MenuItemEvent, MENU_FLAG_CHECKED, MENU_FLAG_DISABLED,
+    MENU_FLAG_SEPARATOR,
+};
+pub use messagebox::{MessageBox, MessageBoxType};
 pub use trayicon::TrayIcon;
-pub use menubar::{MenuBar, MenuBarBuilder, MenuBuilder, MenuItemEvent,
-    MENU_FLAG_DISABLED, MENU_FLAG_SEPARATOR, MENU_FLAG_CHECKED};

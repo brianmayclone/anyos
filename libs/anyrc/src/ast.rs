@@ -307,6 +307,7 @@ pub enum Pattern {
     Wildcard(Span),
     Rest(Span),
     Ref(Box<Pattern>, Mutability, Span),
+    RefBinding(Box<Pattern>, Mutability, Span),
     Or(Vec<Pattern>, Span),
     Range(Option<Box<Expr>>, Option<Box<Expr>>, bool, Span),
     Path(Path),
@@ -330,6 +331,7 @@ pub enum Ty {
     Slice(Box<Ty>, Span),
     FnPtr(Vec<Ty>, Option<Box<Ty>>, Span),
     DynTrait(Vec<TraitBound>, Span),
+    MacroCall(Symbol, Vec<TokenTree>, Span),
     Infer(Span),
     Never(Span),
 }
@@ -386,6 +388,7 @@ pub struct GenericArgs {
 
 pub enum GenericArg {
     Type(Ty),
+    AssocTypeBinding(Symbol, Ty),
     Lifetime(Symbol),
     Const(Expr),
 }

@@ -1,5 +1,5 @@
-use crate::{Control, Widget, lib, events, KIND_DATE_TIME_PICKER};
 use crate::events::ValueChangedEvent;
+use crate::{events, lib, Control, Widget, KIND_DATE_TIME_PICKER};
 
 // ── DateTimePicker (DD.MM.YYYY HH:MM) ─────────────────────────────
 
@@ -9,7 +9,9 @@ impl DateTimePicker {
     pub fn new() -> Self {
         let mode = b"datetime";
         let id = (lib().create_control)(KIND_DATE_TIME_PICKER, mode.as_ptr(), mode.len() as u32);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     /// Set the date and time.
@@ -22,11 +24,26 @@ impl DateTimePicker {
         self.ctrl.get_state()
     }
 
-    pub fn day(&self) -> u32 { let (_, _, d, _, _) = unpack(self.ctrl.get_state()); d }
-    pub fn month(&self) -> u32 { let (_, m, _, _, _) = unpack(self.ctrl.get_state()); m }
-    pub fn year(&self) -> u32 { let (y, _, _, _, _) = unpack(self.ctrl.get_state()); y }
-    pub fn hour(&self) -> u32 { let (_, _, _, h, _) = unpack(self.ctrl.get_state()); h }
-    pub fn minute(&self) -> u32 { let (_, _, _, _, m) = unpack(self.ctrl.get_state()); m }
+    pub fn day(&self) -> u32 {
+        let (_, _, d, _, _) = unpack(self.ctrl.get_state());
+        d
+    }
+    pub fn month(&self) -> u32 {
+        let (_, m, _, _, _) = unpack(self.ctrl.get_state());
+        m
+    }
+    pub fn year(&self) -> u32 {
+        let (y, _, _, _, _) = unpack(self.ctrl.get_state());
+        y
+    }
+    pub fn hour(&self) -> u32 {
+        let (_, _, _, h, _) = unpack(self.ctrl.get_state());
+        h
+    }
+    pub fn minute(&self) -> u32 {
+        let (_, _, _, _, m) = unpack(self.ctrl.get_state());
+        m
+    }
 
     pub fn on_changed(&self, mut f: impl FnMut(&ValueChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| {
@@ -45,16 +62,27 @@ impl DatePicker {
     pub fn new() -> Self {
         let mode = b"date";
         let id = (lib().create_control)(KIND_DATE_TIME_PICKER, mode.as_ptr(), mode.len() as u32);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     pub fn set_date(&self, day: u32, month: u32, year: u32) {
         self.ctrl.set_state(pack(year, month, day, 0, 0));
     }
 
-    pub fn day(&self) -> u32 { let (_, _, d, _, _) = unpack(self.ctrl.get_state()); d }
-    pub fn month(&self) -> u32 { let (_, m, _, _, _) = unpack(self.ctrl.get_state()); m }
-    pub fn year(&self) -> u32 { let (y, _, _, _, _) = unpack(self.ctrl.get_state()); y }
+    pub fn day(&self) -> u32 {
+        let (_, _, d, _, _) = unpack(self.ctrl.get_state());
+        d
+    }
+    pub fn month(&self) -> u32 {
+        let (_, m, _, _, _) = unpack(self.ctrl.get_state());
+        m
+    }
+    pub fn year(&self) -> u32 {
+        let (y, _, _, _, _) = unpack(self.ctrl.get_state());
+        y
+    }
 
     pub fn on_changed(&self, mut f: impl FnMut(&ValueChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| {
@@ -73,15 +101,23 @@ impl TimePicker {
     pub fn new() -> Self {
         let mode = b"time";
         let id = (lib().create_control)(KIND_DATE_TIME_PICKER, mode.as_ptr(), mode.len() as u32);
-        Self { ctrl: Control { id } }
+        Self {
+            ctrl: Control { id },
+        }
     }
 
     pub fn set_time(&self, hour: u32, minute: u32) {
         self.ctrl.set_state(pack(0, 0, 0, hour, minute));
     }
 
-    pub fn hour(&self) -> u32 { let (_, _, _, h, _) = unpack(self.ctrl.get_state()); h }
-    pub fn minute(&self) -> u32 { let (_, _, _, _, m) = unpack(self.ctrl.get_state()); m }
+    pub fn hour(&self) -> u32 {
+        let (_, _, _, h, _) = unpack(self.ctrl.get_state());
+        h
+    }
+    pub fn minute(&self) -> u32 {
+        let (_, _, _, _, m) = unpack(self.ctrl.get_state());
+        m
+    }
 
     pub fn on_changed(&self, mut f: impl FnMut(&ValueChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| {

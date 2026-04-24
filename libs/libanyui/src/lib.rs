@@ -2550,6 +2550,17 @@ pub extern "C" fn anyui_texteditor_ensure_line_visible(id: ControlId, line: u32)
     }
 }
 
+/// Toggle folding for the block around the current cursor line.
+#[no_mangle]
+pub extern "C" fn anyui_texteditor_toggle_fold_at_cursor(id: ControlId) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        if let Some(te) = as_text_editor(ctrl) {
+            te.toggle_fold_at_cursor();
+        }
+    }
+}
+
 // ── TreeView ──────────────────────────────────────────────────────────
 
 fn as_tree_view(
