@@ -116,6 +116,16 @@ fn resolve_forward_generic_param_in_bounds() {
 }
 
 #[test]
+fn resolve_self_in_struct_body() {
+    assert_resolves(r#"
+        struct Block<T> { value: T }
+        struct BlockCtx<BS> {
+            block: Block<Self>,
+        }
+    "#);
+}
+
+#[test]
 fn resolve_core_convert_prelude_traits() {
     assert_resolves(r#"
         struct Wrapper<T> { inner: T }
@@ -135,6 +145,17 @@ fn resolve_core_convert_prelude_traits() {
         {
             fn as_mut(&mut self) -> &mut T {
                 self.inner.as_mut()
+            }
+        }
+
+        impl<T, Z> TryInto<T> for Wrapper<Z>
+        where
+            Z: TryInto<T>,
+        {
+            type Error = ();
+
+            fn try_into(self) -> Result<T, Self::Error> {
+                self.inner.try_into()
             }
         }
     "#);

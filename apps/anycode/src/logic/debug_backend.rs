@@ -92,6 +92,13 @@ impl DebugBackend {
         self.target_tid != 0 && debug::get_regs(self.target_tid, &mut self.regs)
     }
 
+    pub fn read_mem(&self, addr: u64, buf: &mut [u8]) -> usize {
+        if self.target_tid == 0 {
+            return 0;
+        }
+        debug::read_mem(self.target_tid, addr, buf)
+    }
+
     pub fn poll_event(&mut self) -> Option<DebugEvent> {
         if self.target_tid == 0 {
             return None;

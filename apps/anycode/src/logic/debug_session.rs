@@ -42,6 +42,21 @@ pub struct RegisterValue {
     pub value: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct DisassemblyLine {
+    pub address: String,
+    pub bytes: String,
+    pub text: String,
+    pub current: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct MemoryRow {
+    pub address: String,
+    pub bytes: String,
+    pub ascii: String,
+}
+
 pub struct DebugSession {
     pub status: DebugSessionStatus,
     pub target_tid: u32,
@@ -51,6 +66,8 @@ pub struct DebugSession {
     pub call_stack: Vec<StackFrame>,
     pub variables: Vec<DebugVariable>,
     pub registers: Vec<RegisterValue>,
+    pub disassembly: Vec<DisassemblyLine>,
+    pub memory_rows: Vec<MemoryRow>,
     pub paused_reason: String,
 }
 
@@ -65,6 +82,8 @@ impl DebugSession {
             call_stack: Vec::new(),
             variables: Vec::new(),
             registers: Vec::new(),
+            disassembly: Vec::new(),
+            memory_rows: Vec::new(),
             paused_reason: String::new(),
         }
     }
@@ -130,6 +149,8 @@ impl DebugSession {
         self.call_stack.clear();
         self.variables.clear();
         self.registers.clear();
+        self.disassembly.clear();
+        self.memory_rows.clear();
     }
 
     pub fn reset(&mut self) {
@@ -141,6 +162,8 @@ impl DebugSession {
         self.call_stack.clear();
         self.variables.clear();
         self.registers.clear();
+        self.disassembly.clear();
+        self.memory_rows.clear();
         self.paused_reason.clear();
     }
 

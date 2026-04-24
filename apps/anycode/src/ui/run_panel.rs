@@ -126,27 +126,50 @@ impl RunPanel {
         btn_step_over.set_size(50, 24);
         control_bar.add(&btn_step_over);
 
-        let debug_tree = ui::TreeView::new(200, 150);
-        debug_tree.set_dock(ui::DOCK_TOP);
-        debug_tree.set_size(200, 150);
-        debug_tree.set_indent_width(16);
-        debug_tree.set_row_height(20);
-        panel.add(&debug_tree);
+        let content_split = ui::SplitView::new();
+        content_split.set_dock(ui::DOCK_FILL);
+        content_split.set_orientation(ui::ORIENTATION_VERTICAL);
+        content_split.set_split_ratio(64);
+        content_split.set_min_split(35);
+        content_split.set_max_split(82);
+        panel.add(&content_split);
 
-        // Separator
-        let sep = ui::View::new();
-        sep.set_dock(ui::DOCK_TOP);
-        sep.set_size(200, 1);
-        sep.set_color(tc.tab_border_active);
-        sep.set_margin(0, 4, 0, 4);
-        panel.add(&sep);
+        let debug_section = ui::View::new();
+        debug_section.set_color(tc.sidebar_bg);
+        content_split.add(&debug_section);
+
+        let debug_heading = ui::Label::new(t("DEBUG DETAILS"));
+        debug_heading.set_dock(ui::DOCK_TOP);
+        debug_heading.set_size(200, 20);
+        debug_heading.set_font_size(10);
+        debug_heading.set_text_color(tc.text_secondary);
+        debug_heading.set_margin(8, 4, 0, 0);
+        debug_section.add(&debug_heading);
+
+        let debug_tree = ui::TreeView::new(200, 320);
+        debug_tree.set_dock(ui::DOCK_FILL);
+        debug_tree.set_indent_width(16);
+        debug_tree.set_row_height(18);
+        debug_section.add(&debug_tree);
+
+        let task_section = ui::View::new();
+        task_section.set_color(tc.sidebar_bg);
+        content_split.add(&task_section);
+
+        let task_heading = ui::Label::new(t("TASKS"));
+        task_heading.set_dock(ui::DOCK_TOP);
+        task_heading.set_size(200, 20);
+        task_heading.set_font_size(10);
+        task_heading.set_text_color(tc.text_secondary);
+        task_heading.set_margin(8, 4, 0, 0);
+        task_section.add(&task_heading);
 
         // Tasks tree
         let tree = ui::TreeView::new(200, 300);
         tree.set_dock(ui::DOCK_FILL);
         tree.set_indent_width(16);
         tree.set_row_height(22);
-        panel.add(&tree);
+        task_section.add(&tree);
 
         Self {
             panel,
@@ -320,6 +343,36 @@ impl RunPanel {
             self.debug_tree
                 .add_child(regs, &format!("{} = {}", reg.name, reg.value));
         }
+
+        let disasm = self
+            .debug_tree
+            .add_root(&format!("Disassembly ({})", debug.disassembly.len()));
+        self.debug_tree.set_node_style(disasm, STYLE_BOLD);
+        self.debug_tree.set_expanded(disasm, true);
+        for line in &debug.disassembly {
+            let marker = if line.current { "=>" } else { "  " };
+            self.debug_tree.add_child(
+                disasm,
+                &format!(
+                    "{} {}  {:<14} {}",
+                    marker,
+                    compact_hex(&line.address),
+                    line.bytes,
+                    line.text
+                ),
+            );
+        }
+
+        let memory = self
+            .debug_tree
+            .add_root(&format!("Stack Memory ({})", debug.memory_rows.len()));
+        self.debug_tree.set_node_style(memory, STYLE_BOLD);
+        for row in &debug.memory_rows {
+            self.debug_tree.add_child(
+                memory,
+                &format!("{}  {:<24} {}", compact_hex(&row.address), row.bytes, row.ascii),
+            );
+        }
     }
 
     /// Show a "no project" message.
@@ -335,5 +388,13 @@ impl RunPanel {
         self.debug_status_label.set_text("Debugger: Idle");
         self.breakpoint_label.set_text("0 breakpoints");
         self.debug_tree.clear();
+    }
+}
+
+fn compact_hex(value: &str) -> &str {
+    if value.len() > 10 {
+        &value[value.len() - 8..]
+    } else {
+        value
     }
 }

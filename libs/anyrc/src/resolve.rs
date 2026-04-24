@@ -721,12 +721,21 @@ impl<'a> Resolver<'a> {
         match &item.kind {
             HirItemKind::Fn(f) => self.resolve_fn(f),
             HirItemKind::Struct(s) => {
+                self.push_scope();
+                if let Some(self_sym) = self.find_symbol("Self") {
+                    self.define(self_sym, Namespace::Type, s.def_id);
+                }
                 self.resolve_generics(&s.generics);
                 for field in &s.fields {
                     self.resolve_ty(&field.ty);
                 }
+                self.pop_scope();
             }
             HirItemKind::Enum(e) => {
+                self.push_scope();
+                if let Some(self_sym) = self.find_symbol("Self") {
+                    self.define(self_sym, Namespace::Type, e.def_id);
+                }
                 self.resolve_generics(&e.generics);
                 for v in &e.variants {
                     match &v.fields {
@@ -742,6 +751,7 @@ impl<'a> Resolver<'a> {
                         self.resolve_expr(disc);
                     }
                 }
+                self.pop_scope();
             }
             HirItemKind::Impl(ib) => self.resolve_impl(ib),
             HirItemKind::Trait(t) => self.resolve_trait(t),

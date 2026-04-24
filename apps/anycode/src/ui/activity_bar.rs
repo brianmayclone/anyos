@@ -2,8 +2,6 @@ use libanyui_client as ui;
 use ui::IconType;
 use ui::Widget;
 
-use crate::logic::config::Config;
-
 /// VS Code-style vertical activity bar on the left edge.
 /// Uses PlainButton — no border, no fill, only hover highlight.
 pub struct ActivityBar {
@@ -45,7 +43,7 @@ const TOOLTIP_KEYS: [&str; BUTTON_COUNT] = [
 ];
 
 impl ActivityBar {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(_config: &crate::logic::config::Config) -> Self {
         let tc = ui::theme::colors();
         let panel = ui::View::new();
         panel.set_dock(ui::DOCK_LEFT);
@@ -54,13 +52,11 @@ impl ActivityBar {
 
         let t = anyos_std::i18n::t;
 
-        let header = ui::Label::new("AC");
-        header.set_dock(ui::DOCK_TOP);
-        header.set_size(BAR_WIDTH, 28);
-        header.set_font_size((config.font_size.saturating_sub(1)).max(11));
-        header.set_text_color(tc.text_secondary);
-        header.set_margin(0, 8, 0, 8);
-        panel.add(&header);
+        let top_spacer = ui::View::new();
+        top_spacer.set_dock(ui::DOCK_TOP);
+        top_spacer.set_size(BAR_WIDTH, 14);
+        top_spacer.set_color(tc.window_bg);
+        panel.add(&top_spacer);
 
         let mut buttons: [Option<ui::PlainButton>; BUTTON_COUNT] = Default::default();
         let mut indicators: [Option<ui::View>; BUTTON_COUNT] = Default::default();

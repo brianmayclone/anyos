@@ -538,11 +538,11 @@ fn poll_debug_events() {
         match event.event_type {
             anyos_std::debug::EVENT_BREAKPOINT => {
                 s.debug_session.pause("breakpoint");
-                s.debug_session.apply_registers(&s.debug_backend.regs);
+                logic::commands::refresh_debug_snapshot(s);
             }
             anyos_std::debug::EVENT_SINGLE_STEP => {
                 s.debug_session.pause("single step");
-                s.debug_session.apply_registers(&s.debug_backend.regs);
+                logic::commands::refresh_debug_snapshot(s);
             }
             anyos_std::debug::EVENT_EXIT => {
                 s.debug_session.stop();

@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 
 use crate::app;
 use crate::logic::{
-    ai, build, diagnostics, file_manager, git, language, language_service, live_analysis, project,
-    search, symbols, tasks,
+    ai, build, debug_session, diagnostics, file_manager, git, language, language_service,
+    live_analysis, project, search, symbols, tasks,
 };
 use crate::ui::problems_panel::ProblemFilter;
 use crate::util::path;
@@ -566,6 +566,7 @@ pub fn start_debugging() {
         s.output.append_debug_line(&format!("process started tid={}", tid));
         if s.debug_backend.attach(tid) {
             s.debug_session.mark_attached(tid, &s.debug_backend.regs);
+            refresh_debug_snapshot(s);
             s.output.append_debug_line(&format!(
                 "attached tid={} rip={}",
                 tid,
@@ -626,7 +627,7 @@ pub fn debug_pause() {
     if s.debug_backend.is_attached() {
         if s.debug_backend.suspend() {
             s.debug_session.pause("user pause");
-            s.debug_session.apply_registers(&s.debug_backend.regs);
+            refresh_debug_snapshot(s);
             s.status.set_analysis_status("Debug paused");
             s.output.append_debug_line(&format!(
                 "pause rip={}",
@@ -664,6 +665,174 @@ pub fn debug_step_over() {
     }
     s.run_panel.update_debug_session(&s.debug_session);
     s.output.show_debug_console();
+}
+
+pub fn refresh_debug_snapshot(s: &mut AppState) {
+    if !s.debug_backend.is_attached() {
+        return;
+    }
+
+    s.debug_backend.refresh_regs();
+    let regs = s.debug_backend.regs;
+    let disassembly = disassembly_preview(&s.debug_backend, regs.rip);
+    let memory_rows = memory_preview(&s.debug_backend, regs.rsp);
+
+    s.debug_session.apply_registers(&regs);
+    s.debug_session.disassembly = disassembly;
+    s.debug_session.memory_rows = memory_rows;
+}
+
+fn disassembly_preview(
+    backend: &crate::logic::debug_backend::DebugBackend,
+    rip: u64,
+) -> Vec<debug_session::DisassemblyLine> {
+    let mut buf = [0u8; 96];
+    let read = backend.read_mem(rip, &mut buf);
+    let mut lines = Vec::new();
+    let mut offset = 0usize;
+
+    while offset < read && lines.len() < 10 {
+        let addr = rip + offset as u64;
+        let (len, text) = decode_simple_instr(&buf[offset..read], addr);
+        let len = len.max(1).min(read - offset);
+        lines.push(debug_session::DisassemblyLine {
+            address: anyos_std::fmt::hex64(addr),
+            bytes: format_bytes(&buf[offset..offset + len]),
+            text,
+            current: offset == 0,
+        });
+        offset += len;
+    }
+
+    lines
+}
+
+fn memory_preview(
+    backend: &crate::logic::debug_backend::DebugBackend,
+    rsp: u64,
+) -> Vec<debug_session::MemoryRow> {
+    let mut buf = [0u8; 64];
+    let read = backend.read_mem(rsp, &mut buf);
+    let mut rows = Vec::new();
+    let mut offset = 0usize;
+
+    while offset < read && rows.len() < 8 {
+        let end = (offset + 8).min(read);
+        rows.push(debug_session::MemoryRow {
+            address: anyos_std::fmt::hex64(rsp + offset as u64),
+            bytes: format_bytes(&buf[offset..end]),
+            ascii: ascii_preview(&buf[offset..end]),
+        });
+        offset += 8;
+    }
+
+    rows
+}
+
+fn decode_simple_instr(bytes: &[u8], rip: u64) -> (usize, String) {
+    if bytes.is_empty() {
+        return (1, String::from("db ?"));
+    }
+
+    match bytes[0] {
+        0x55 => (1, String::from("push rbp")),
+        0x5D => (1, String::from("pop rbp")),
+        0x90 => (1, String::from("nop")),
+        0xC3 => (1, String::from("ret")),
+        0xCC => (1, String::from("int3")),
+        0xE8 if bytes.len() >= 5 => {
+            let rel = i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+            let target = (rip as i64 + 5 + rel as i64) as u64;
+            (5, format!("call {}", anyos_std::fmt::hex64(target)))
+        }
+        0xE9 if bytes.len() >= 5 => {
+            let rel = i32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+            let target = (rip as i64 + 5 + rel as i64) as u64;
+            (5, format!("jmp {}", anyos_std::fmt::hex64(target)))
+        }
+        0xEB if bytes.len() >= 2 => {
+            let rel = bytes[1] as i8 as i64;
+            let target = (rip as i64 + 2 + rel) as u64;
+            (2, format!("jmp {}", anyos_std::fmt::hex64(target)))
+        }
+        0x0F if bytes.len() >= 2 && bytes[1] == 0x05 => (2, String::from("syscall")),
+        0x48 if bytes.len() >= 3 && bytes[1] == 0x89 && bytes[2] == 0xE5 => {
+            (3, String::from("mov rbp, rsp"))
+        }
+        0x48 if bytes.len() >= 4 && bytes[1] == 0x83 && bytes[2] == 0xEC => {
+            (4, format!("sub rsp, {:#x}", bytes[3]))
+        }
+        0x48 if bytes.len() >= 4 && bytes[1] == 0x83 && bytes[2] == 0xC4 => {
+            (4, format!("add rsp, {:#x}", bytes[3]))
+        }
+        0x48 if bytes.len() >= 10 && (0xB8..=0xBF).contains(&bytes[1]) => {
+            let imm = u64::from_le_bytes([
+                bytes[2], bytes[3], bytes[4], bytes[5],
+                bytes[6], bytes[7], bytes[8], bytes[9],
+            ]);
+            let reg = reg_name((bytes[1] - 0xB8) as usize);
+            (10, format!("mov {}, {}", reg, anyos_std::fmt::hex64(imm)))
+        }
+        0xB8..=0xBF if bytes.len() >= 5 => {
+            let imm = u32::from_le_bytes([bytes[1], bytes[2], bytes[3], bytes[4]]);
+            let reg = reg32_name((bytes[0] - 0xB8) as usize);
+            (5, format!("mov {}, 0x{:08x}", reg, imm))
+        }
+        b => (1, format!("db 0x{:02x}", b)),
+    }
+}
+
+fn reg_name(idx: usize) -> &'static str {
+    match idx {
+        0 => "rax",
+        1 => "rcx",
+        2 => "rdx",
+        3 => "rbx",
+        4 => "rsp",
+        5 => "rbp",
+        6 => "rsi",
+        7 => "rdi",
+        _ => "r?",
+    }
+}
+
+fn reg32_name(idx: usize) -> &'static str {
+    match idx {
+        0 => "eax",
+        1 => "ecx",
+        2 => "edx",
+        3 => "ebx",
+        4 => "esp",
+        5 => "ebp",
+        6 => "esi",
+        7 => "edi",
+        _ => "e?",
+    }
+}
+
+fn format_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::new();
+    for (idx, byte) in bytes.iter().enumerate() {
+        if idx > 0 {
+            out.push(' ');
+        }
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0F) as usize] as char);
+    }
+    out
+}
+
+fn ascii_preview(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for byte in bytes {
+        if (0x20..=0x7E).contains(byte) {
+            out.push(*byte as char);
+        } else {
+            out.push('.');
+        }
+    }
+    out
 }
 
 pub fn toggle_breakpoint_at_cursor() {

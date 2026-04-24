@@ -351,6 +351,12 @@ Status:
   mit echten RIP/RSP/Registerwerten im Debug-State-Tree angezeigt.
 - Gestartet: anyCode deklariert die `debug`-Capability explizit, damit der
   Debugger nicht nur in System-Tools, sondern auch im Studio selbst laufen kann.
+- Gestartet: Debug-Snapshots lesen jetzt Zielprozess-Speicher ueber das Backend
+  und zeigen Disassembly-Vorschau um RIP sowie Stack-Memory um RSP im
+  Run-and-Debug-Tree an.
+- Gestartet: Das Run-and-Debug-Panel nutzt einen vertikalen Split fuer Debug-
+  Details und Tasks, mit kompakteren Disassembly-/Memory-Zeilen, damit die
+  Sidebar trotz Register- und Speicheransichten lesbar bleibt.
 
 ### Phase 7: Git und Review Workflow
 

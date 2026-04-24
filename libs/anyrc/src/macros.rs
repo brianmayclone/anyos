@@ -1535,29 +1535,32 @@ impl<'a> PatternMatcher<'a> {
                 }
                 None
             }
-            "expr" | "ty" | "pat" | "stmt" => {
+            "ty" => {
+                if input.len() >= 2 {
+                    if let (TokenTree::Token(first), TokenTree::Token(second)) = (&input[0], &input[1]) {
+                        let simple_first = matches!(
+                            first.kind,
+                            TokenKind::Ident(_) | TokenKind::Kw(Keyword::SelfType)
+                        );
+                        let starts_next_ty = matches!(
+                            second.kind,
+                            TokenKind::Ident(_)
+                                | TokenKind::Kw(Keyword::SelfType)
+                                | TokenKind::Amp
+                                | TokenKind::Star
+                        );
+                        if simple_first && starts_next_ty {
+                            return Some((vec![input[0].clone()], 1));
+                        }
+                    }
+                }
+                self.capture_greedy_fragment(input)
+            }
+            "expr" | "pat" | "stmt" => {
                 // Greedy: capture as many tokens as possible that form a valid unit.
                 // Simple heuristic: take tokens until we hit a comma, semicolon,
                 // or closing delimiter that isn't matched.
-                let mut depth = 0i32;
-                let mut end = 0;
-                for (i, tt) in input.iter().enumerate() {
-                    match tt {
-                        TokenTree::Token(t) => {
-                            match t.kind {
-                                TokenKind::Comma | TokenKind::Semi | TokenKind::FatArrow if depth == 0 => break,
-                                TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket if depth == 0 => break,
-                                TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => depth += 1,
-                                TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => depth -= 1,
-                                _ => {}
-                            }
-                        }
-                        TokenTree::Delimited(..) => {}
-                    }
-                    end = i + 1;
-                }
-                if end == 0 { return None; }
-                Some((input[..end].to_vec(), end))
+                self.capture_greedy_fragment(input)
             }
             "vis" => {
                 if let TokenTree::Token(t) = &input[0] {
@@ -1573,6 +1576,28 @@ impl<'a> PatternMatcher<'a> {
             }
             _ => None,
         }
+    }
+
+    fn capture_greedy_fragment(&self, input: &[TokenTree]) -> Option<(Vec<TokenTree>, usize)> {
+        let mut depth = 0i32;
+        let mut end = 0;
+        for (i, tt) in input.iter().enumerate() {
+            match tt {
+                TokenTree::Token(t) => {
+                    match t.kind {
+                        TokenKind::Comma | TokenKind::Semi | TokenKind::FatArrow if depth == 0 => break,
+                        TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket if depth == 0 => break,
+                        TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => depth += 1,
+                        TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => depth -= 1,
+                        _ => {}
+                    }
+                }
+                TokenTree::Delimited(..) => {}
+            }
+            end = i + 1;
+        }
+        if end == 0 { return None; }
+        Some((input[..end].to_vec(), end))
     }
 }
 

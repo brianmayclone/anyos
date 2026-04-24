@@ -71,6 +71,24 @@ fn expand_macro_with_repetition() {
 }
 
 #[test]
+fn expand_unseparated_ty_repetition() {
+    let krate = parse_and_expand(r#"
+        trait SeekNum {}
+
+        macro_rules! impl_seek_num {
+            {$($t:ty )*} => {
+                $(
+                    impl SeekNum for $t {}
+                )*
+            };
+        }
+
+        impl_seek_num! { i32 u32 u64 u128 usize }
+    "#);
+    assert_eq!(krate.items.len(), 7);
+}
+
+#[test]
 fn expand_macro_with_ident_arg() {
     let krate = parse_and_expand(r#"
         macro_rules! make_fn {

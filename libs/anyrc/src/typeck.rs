@@ -98,6 +98,12 @@ struct IndexImpl {
 }
 
 #[derive(Debug, Clone)]
+struct DerefImpl {
+    self_ty: TyKind,
+    target_ty: TyKind,
+}
+
+#[derive(Debug, Clone)]
 struct OperatorImpl {
     op: BinOp,
     self_ty: TyKind,
@@ -129,6 +135,8 @@ pub struct TypeChecker<'a> {
     qualified_type_names: HashMap<String, DefId>,
     /// Simple module aliases introduced by `use crate::module as alias`.
     module_aliases: HashMap<String, String>,
+    /// Type imports introduced by `use` in a specific module.
+    scoped_type_aliases: HashMap<(String, Symbol), String>,
     /// Module path used while collecting/checking items.
     current_module_path: Vec<Symbol>,
     /// Generic type aliases lowered to TyKind with Param slots.
@@ -160,12 +168,16 @@ pub struct TypeChecker<'a> {
     assoc_types: HashMap<(DefId, Symbol), TyKind>,
     /// Associated type declarations: trait DefId -> associated type names
     trait_assoc_types: HashMap<DefId, Vec<Symbol>>,
+    /// Associated const declarations: trait DefId -> (const name, const type)
+    trait_assoc_consts: HashMap<DefId, Vec<(Symbol, TyKind)>>,
     /// Trait bounds on current function's generic params: param_index -> list of trait DefIds
     current_generic_bounds: HashMap<u32, Vec<DefId>>,
     /// Default trait method bodies: method DefId -> true if body exists in trait def
     trait_default_methods: HashMap<DefId, bool>,
     /// `impl core::ops::Index<I> for T { type Output = O; }` summaries.
     index_impls: Vec<IndexImpl>,
+    /// `impl core::ops::Deref for T { type Target = U; }` summaries.
+    deref_impls: Vec<DerefImpl>,
     /// `impl core::ops::{Add, Mul, ...}<Rhs> for T { type Output = O; }` summaries.
     operator_impls: Vec<OperatorImpl>,
 
@@ -197,6 +209,7 @@ impl<'a> TypeChecker<'a> {
             type_name_to_def: HashMap::new(),
             qualified_type_names: HashMap::new(),
             module_aliases: HashMap::new(),
+            scoped_type_aliases: HashMap::new(),
             current_module_path: Vec::new(),
             type_aliases: HashMap::new(),
             enum_variant_fields: HashMap::new(),
@@ -212,9 +225,11 @@ impl<'a> TypeChecker<'a> {
             trait_names: HashMap::new(),
             assoc_types: HashMap::new(),
             trait_assoc_types: HashMap::new(),
+            trait_assoc_consts: HashMap::new(),
             current_generic_bounds: HashMap::new(),
             trait_default_methods: HashMap::new(),
             index_impls: Vec::new(),
+            deref_impls: Vec::new(),
             operator_impls: Vec::new(),
             next_infer: 0,
             infer_kinds: HashMap::new(),
@@ -370,11 +385,8 @@ impl<'a> TypeChecker<'a> {
                 self.current_generic_params.insert(*name, next_idx);
                 let mut bound_def_ids = Vec::new();
                 for bound in bounds {
-                    if !bound.path.segments.is_empty() {
-                        let trait_name = bound.path.segments[0].ident;
-                        if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
-                            bound_def_ids.push(trait_def_id);
-                        }
+                    if let Some(trait_def_id) = self.resolve_trait_bound_def(&bound.path) {
+                        bound_def_ids.push(trait_def_id);
                     }
                 }
                 if !bound_def_ids.is_empty() {
@@ -464,6 +476,25 @@ impl<'a> TypeChecker<'a> {
             .map(|seg| self.interner.resolve(seg.ident))
             .collect::<Vec<_>>()
             .join("::")
+    }
+
+    fn resolve_trait_bound_def(&self, path: &HirPath) -> Option<DefId> {
+        if path.segments.is_empty() {
+            return None;
+        }
+
+        let full_path = self.path_to_string(path);
+        if let Some(def_id) = self.resolve_qualified_type_path(&full_path) {
+            return Some(def_id);
+        }
+
+        let first = path.segments.first()?.ident;
+        if let Some(&def_id) = self.type_name_to_def.get(&first) {
+            return Some(def_id);
+        }
+
+        let last = path.segments.last()?.ident;
+        self.type_name_to_def.get(&last).copied()
     }
 
     fn const_range_len(&self, expr: &HirExpr) -> Option<usize> {
@@ -702,7 +733,10 @@ impl<'a> TypeChecker<'a> {
                 HirItemKind::Struct(s) => self.register_qualified_type(prefix, s.name, s.def_id),
                 HirItemKind::Enum(e) => self.register_qualified_type(prefix, e.name, e.def_id),
                 HirItemKind::Trait(t) => self.register_qualified_type(prefix, t.name, t.def_id),
-                HirItemKind::Use(u) => self.collect_module_alias(u),
+                HirItemKind::Use(u) => {
+                    self.collect_module_alias(u);
+                    self.collect_scoped_type_alias(prefix, u);
+                }
                 HirItemKind::Mod(m) => {
                     self.register_qualified_type(prefix, m.name, m.def_id);
                     if let Some(sub_items) = &m.items {
@@ -725,6 +759,69 @@ impl<'a> TypeChecker<'a> {
         let path = parts.join("::");
         self.qualified_type_names.insert(path.clone(), def_id);
         self.qualified_type_names.insert(format!("crate::{}", path), def_id);
+    }
+
+    fn module_key_from_symbols(&self, prefix: &[Symbol]) -> String {
+        prefix
+            .iter()
+            .map(|sym| self.interner.resolve(*sym).to_string())
+            .collect::<Vec<_>>()
+            .join("::")
+    }
+
+    fn normalize_crate_path(&self, path: &[Symbol]) -> String {
+        path.iter()
+            .filter_map(|sym| {
+                let part = self.interner.resolve(*sym);
+                if part == "crate" { None } else { Some(part.to_string()) }
+            })
+            .collect::<Vec<_>>()
+            .join("::")
+    }
+
+    fn collect_scoped_type_alias(&mut self, module_prefix: &[Symbol], use_tree: &HirUseTree) {
+        match &use_tree.kind {
+            HirUseTreeKind::Simple(alias) => {
+                let trailing_self = use_tree
+                    .path
+                    .last()
+                    .map(|sym| self.interner.resolve(*sym) == "self")
+                    .unwrap_or(false);
+                let full_path: Vec<Symbol> = if trailing_self && use_tree.path.len() >= 2 {
+                    use_tree.path[..use_tree.path.len() - 1].to_vec()
+                } else {
+                    use_tree.path.clone()
+                };
+                let local_name = alias.unwrap_or_else(|| {
+                    if trailing_self && use_tree.path.len() >= 2 {
+                        use_tree.path[use_tree.path.len() - 2]
+                    } else {
+                        *use_tree.path.last().unwrap()
+                    }
+                });
+                let target = self.normalize_crate_path(&full_path);
+                if target.is_empty() {
+                    return;
+                }
+                let module_key = self.module_key_from_symbols(module_prefix);
+                self.scoped_type_aliases.insert((module_key, local_name), target);
+            }
+            HirUseTreeKind::Nested(trees) => {
+                for sub in trees {
+                    let mut path = use_tree.path.clone();
+                    path.extend_from_slice(&sub.path);
+                    let combined = HirUseTree {
+                        id: sub.id,
+                        vis: sub.vis,
+                        path,
+                        kind: sub.kind.clone(),
+                        span: sub.span,
+                    };
+                    self.collect_scoped_type_alias(module_prefix, &combined);
+                }
+            }
+            HirUseTreeKind::Glob => {}
+        }
     }
 
     fn collect_module_alias(&mut self, use_tree: &HirUseTree) {
@@ -815,15 +912,34 @@ impl<'a> TypeChecker<'a> {
             }
             HirItemKind::Struct(s) => {
                 let (old_generics, old_bounds, _) = self.push_generic_scope(&s.generics.params);
+                let saved_self_ty = self.current_self_ty.clone();
+                let self_substs = s.generics.params.iter().filter_map(|param| {
+                    if let HirGenericParam::Type(name, _, _, _) = param {
+                        self.current_generic_params.get(name).copied().map(TyKind::Param)
+                    } else {
+                        None
+                    }
+                }).collect::<Vec<_>>();
+                self.current_self_ty = Some(TyKind::Adt(s.def_id, self_substs));
                 let fields: Vec<(Symbol, TyKind)> = s.fields.iter()
                     .map(|f| (f.name, self.hir_ty_to_ty(&f.ty)))
                     .collect();
                 self.struct_defs.insert(s.def_id, fields);
                 self.type_name_to_def.insert(s.name, s.def_id);
+                self.current_self_ty = saved_self_ty;
                 self.pop_generic_scope(old_generics, old_bounds);
             }
             HirItemKind::Enum(e) => {
                 let (old_generics, old_bounds, _) = self.push_generic_scope(&e.generics.params);
+                let saved_self_ty = self.current_self_ty.clone();
+                let self_substs = e.generics.params.iter().filter_map(|param| {
+                    if let HirGenericParam::Type(name, _, _, _) = param {
+                        self.current_generic_params.get(name).copied().map(TyKind::Param)
+                    } else {
+                        None
+                    }
+                }).collect::<Vec<_>>();
+                self.current_self_ty = Some(TyKind::Adt(e.def_id, self_substs));
                 self.type_name_to_def.insert(e.name, e.def_id);
                 // Collect variant field types
                 let mut variants = Vec::new();
@@ -850,6 +966,7 @@ impl<'a> TypeChecker<'a> {
                     variants.push((v.name, field_tys));
                 }
                 self.enum_variant_fields.insert(e.def_id, variants);
+                self.current_self_ty = saved_self_ty;
                 self.pop_generic_scope(old_generics, old_bounds);
             }
             HirItemKind::TypeAlias(ta) => {
@@ -875,6 +992,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 if let Some(trait_ref) = &ib.trait_ref {
                     self.collect_index_impl(ib, trait_ref);
+                    self.collect_deref_impl(ib, trait_ref);
                     self.collect_operator_impl(ib, trait_ref);
                 }
                 // Register Self as an alias for the impl'd type
@@ -888,27 +1006,24 @@ impl<'a> TypeChecker<'a> {
                         }
                         // If this is a trait impl, record the mapping
                         if let Some(trait_ref) = &ib.trait_ref {
-                            if !trait_ref.segments.is_empty() {
-                                let trait_name = trait_ref.segments[0].ident;
-                                if let Some(&trait_def_id) = self.type_name_to_def.get(&trait_name) {
-                                    let mut impl_methods = Vec::new();
-                                    for sub in &ib.items {
-                                        match &sub.kind {
-                                            HirItemKind::Fn(f) => {
-                                                impl_methods.push((f.name, f.def_id));
-                                            }
-                                            HirItemKind::TypeAlias(ta) => {
-                                                // Associated type: `type Item = Foo;`
-                                                if let Some(ref ty) = ta.ty {
-                                                    let resolved_ty = self.hir_ty_to_ty(ty);
-                                                    self.assoc_types.insert((trait_def_id, ta.name), resolved_ty);
-                                                }
-                                            }
-                                            _ => {}
+                            if let Some(trait_def_id) = self.resolve_trait_bound_def(trait_ref) {
+                                let mut impl_methods = Vec::new();
+                                for sub in &ib.items {
+                                    match &sub.kind {
+                                        HirItemKind::Fn(f) => {
+                                            impl_methods.push((f.name, f.def_id));
                                         }
+                                        HirItemKind::TypeAlias(ta) => {
+                                            // Associated type: `type Item = Foo;`
+                                            if let Some(ref ty) = ta.ty {
+                                                let resolved_ty = self.hir_ty_to_ty(ty);
+                                                self.assoc_types.insert((trait_def_id, ta.name), resolved_ty);
+                                            }
+                                        }
+                                        _ => {}
                                     }
-                                    self.trait_impls.insert((self_ty_name, trait_def_id), impl_methods);
                                 }
+                                self.trait_impls.insert((self_ty_name, trait_def_id), impl_methods);
                             }
                         }
                     }
@@ -955,6 +1070,7 @@ impl<'a> TypeChecker<'a> {
                 // Register trait method signatures and ordering
                 let mut methods = Vec::new();
                 let mut assoc_type_names = Vec::new();
+                let mut assoc_consts = Vec::new();
                 for sub in &t.items {
                     match &sub.kind {
                         HirItemKind::Fn(f) => {
@@ -963,12 +1079,16 @@ impl<'a> TypeChecker<'a> {
                             self.trait_default_methods.insert(f.def_id, f.body.is_some());
                         }
                         HirItemKind::TypeAlias(ta) => assoc_type_names.push(ta.name),
+                        HirItemKind::Const(c) => {
+                            assoc_consts.push((c.name, self.hir_ty_to_ty(&c.ty)));
+                        }
                         _ => {}
                     }
                     self.collect_item(sub);
                 }
                 self.trait_methods.insert(t.def_id, methods);
                 self.trait_assoc_types.insert(t.def_id, assoc_type_names);
+                self.trait_assoc_consts.insert(t.def_id, assoc_consts);
                 self.current_self_ty = saved_self_ty;
                 self.pop_generic_scope(old_generics, old_bounds);
             }
@@ -1008,6 +1128,32 @@ impl<'a> TypeChecker<'a> {
         let index_ty = self.hir_ty_to_ty(index_hir_ty);
         let output_ty = self.hir_ty_to_ty(output_hir_ty);
         self.index_impls.push(IndexImpl { self_def_id, index_ty, output_ty });
+    }
+
+    fn collect_deref_impl(&mut self, ib: &HirImplBlock, trait_ref: &HirPath) {
+        let Some(last) = trait_ref.segments.last() else {
+            return;
+        };
+        let trait_name = self.interner.resolve(last.ident);
+        if trait_name != "Deref" && trait_name != "DerefMut" {
+            return;
+        }
+        let Some(target_sym) = self.interner.lookup("Target") else {
+            return;
+        };
+        let Some(target_hir_ty) = ib.items.iter().find_map(|item| {
+            if let HirItemKind::TypeAlias(ta) = &item.kind {
+                if ta.name == target_sym {
+                    return ta.ty.as_ref();
+                }
+            }
+            None
+        }) else {
+            return;
+        };
+        let self_ty = self.hir_ty_to_ty(&ib.self_ty);
+        let target_ty = self.hir_ty_to_ty(target_hir_ty);
+        self.deref_impls.push(DerefImpl { self_ty, target_ty });
     }
 
     fn collect_operator_impl(&mut self, ib: &HirImplBlock, trait_ref: &HirPath) {
@@ -1059,6 +1205,64 @@ impl<'a> TypeChecker<'a> {
             "Shr" => Some(BinOp::Shr),
             _ => None,
         }
+    }
+
+    fn operator_trait_name_for_binop(&self, op: BinOp) -> Option<&'static str> {
+        match op {
+            BinOp::Add => Some("Add"),
+            BinOp::Sub => Some("Sub"),
+            BinOp::Mul => Some("Mul"),
+            BinOp::Div => Some("Div"),
+            BinOp::Rem => Some("Rem"),
+            BinOp::BitAnd => Some("BitAnd"),
+            BinOp::BitOr => Some("BitOr"),
+            BinOp::BitXor => Some("BitXor"),
+            BinOp::Shl => Some("Shl"),
+            BinOp::Shr => Some("Shr"),
+            _ => None,
+        }
+    }
+
+    fn operator_trait_def_for_binop(&self, op: BinOp) -> Option<DefId> {
+        let trait_name = self.operator_trait_name_for_binop(op)?;
+        self.trait_names
+            .iter()
+            .find_map(|(def_id, name)| {
+                (self.interner.resolve(*name) == trait_name).then_some(*def_id)
+            })
+    }
+
+    fn contains_generic_projection_input(ty: &TyKind) -> bool {
+        match ty {
+            TyKind::Param(_) | TyKind::Projection(_, _, _) => true,
+            TyKind::Tuple(tys) => tys.iter().any(Self::contains_generic_projection_input),
+            TyKind::Array(inner, _)
+            | TyKind::Slice(inner)
+            | TyKind::Ref(inner, _)
+            | TyKind::RawPtr(inner, _) => Self::contains_generic_projection_input(inner),
+            TyKind::FnDef(_, substs) | TyKind::Adt(_, substs) => {
+                substs.iter().any(Self::contains_generic_projection_input)
+            }
+            TyKind::FnPtr(params, ret) => {
+                params.iter().any(Self::contains_generic_projection_input)
+                    || Self::contains_generic_projection_input(ret)
+            }
+            _ => false,
+        }
+    }
+
+    fn generic_operator_output(&self, op: BinOp, lhs_ty: &TyKind, rhs_ty: &TyKind) -> Option<TyKind> {
+        if !Self::contains_generic_projection_input(lhs_ty)
+            && !Self::contains_generic_projection_input(rhs_ty)
+        {
+            return None;
+        }
+        let output_sym = self.interner.lookup("Output")?;
+        Some(TyKind::Projection(
+            Box::new(lhs_ty.clone()),
+            self.operator_trait_def_for_binop(op),
+            output_sym,
+        ))
     }
 
     fn lookup_index_output(&self, self_def_id: DefId, index_ty: &TyKind) -> Option<TyKind> {
@@ -1315,6 +1519,9 @@ impl<'a> TypeChecker<'a> {
                         TyKind::Bool
                     }
                     BinOp::Shl | BinOp::Shr => {
+                        if let Some(output_ty) = self.generic_operator_output(*op, &lty, &rty) {
+                            return output_ty;
+                        }
                         if let Some(impl_info) = self.lookup_operator_impl(*op, &lty, &rty) {
                             self.unify(&impl_info.self_ty, &lty, lhs.span);
                             self.unify(&impl_info.rhs_ty, &rty, rhs.span);
@@ -1323,6 +1530,9 @@ impl<'a> TypeChecker<'a> {
                         lty
                     }
                     _ => {
+                        if let Some(output_ty) = self.generic_operator_output(*op, &lty, &rty) {
+                            return output_ty;
+                        }
                         if let Some(impl_info) = self.lookup_operator_impl(*op, &lty, &rty) {
                             self.unify(&impl_info.self_ty, &lty, lhs.span);
                             self.unify(&impl_info.rhs_ty, &rty, rhs.span);
@@ -1371,6 +1581,13 @@ impl<'a> TypeChecker<'a> {
                         _ => {}
                     }
                     if let Some(ret_ty) = self.check_assoc_fn_call_on_path(path, args, expr.span, callee) {
+                        return ret_ty;
+                    }
+                }
+                if let HirExprKind::QualifiedPath(qpath) = &callee.kind {
+                    if let Some(ret_ty) =
+                        self.check_assoc_fn_call_on_qualified_path(qpath, args, expr.span, callee)
+                    {
                         return ret_ty;
                     }
                 }
@@ -2436,6 +2653,10 @@ impl<'a> TypeChecker<'a> {
     // ── Path type inference ──
 
     fn infer_path_type(&mut self, path: &HirPath, expr_id: HirId) -> TyKind {
+        if let Some(ty) = self.generic_param_assoc_const_type(path) {
+            return ty;
+        }
+
         if let Some(&def_id) = self.resolve.resolutions.get(&expr_id) {
             // Intrinsic function from core/alloc, or primitive associated constant?
             if let Some(path_str) = self.resolve.intrinsic_fns.get(&def_id) {
@@ -2488,6 +2709,24 @@ impl<'a> TypeChecker<'a> {
         TyKind::Error
     }
 
+    fn generic_param_assoc_const_type(&self, path: &HirPath) -> Option<TyKind> {
+        if path.segments.len() != 2 {
+            return None;
+        }
+        let param = path.segments[0].ident;
+        let assoc_name = path.segments[1].ident;
+        let param_idx = *self.current_generic_params.get(&param)?;
+        self.current_generic_bounds
+            .get(&param_idx)?
+            .iter()
+            .find_map(|trait_def_id| {
+                self.trait_assoc_consts
+                    .get(trait_def_id)?
+                    .iter()
+                    .find_map(|(name, ty)| (*name == assoc_name).then(|| ty.clone()))
+            })
+    }
+
     fn infer_qualified_path_type(&mut self, qpath: &HirQualifiedPath, expr_id: HirId) -> TyKind {
         if let Some(&def_id) = self.resolve.resolutions.get(&expr_id) {
             if let Some(path_str) = self.resolve.intrinsic_fns.get(&def_id) {
@@ -2517,8 +2756,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn trait_def_from_path(&self, path: &HirPath) -> Option<DefId> {
-        let first = path.segments.first()?.ident;
-        self.type_name_to_def.get(&first).copied()
+        self.resolve_trait_bound_def(path)
     }
 
     fn qualified_path_to_ty(&self, qpath: &HirQualifiedPath) -> TyKind {
@@ -2530,12 +2768,6 @@ impl<'a> TypeChecker<'a> {
             .trait_path
             .as_ref()
             .and_then(|path| self.trait_def_from_path(path));
-
-        if let Some(trait_def_id) = trait_def_id {
-            if let Some(concrete_ty) = self.assoc_types.get(&(trait_def_id, assoc_segment.ident)) {
-                return concrete_ty.clone();
-            }
-        }
 
         TyKind::Projection(Box::new(self_ty), trait_def_id, assoc_segment.ident)
     }
@@ -2573,6 +2805,17 @@ impl<'a> TypeChecker<'a> {
 
     fn resolve_scoped_type_name(&self, name: Symbol) -> Option<DefId> {
         let name_str = self.interner.resolve(name);
+        let module_key = self.module_key_from_symbols(&self.current_module_path);
+        if let Some(target) = self.scoped_type_aliases.get(&(module_key, name)) {
+            if let Some(def_id) = self
+                .qualified_type_names
+                .get(target)
+                .or_else(|| self.qualified_type_names.get(&format!("crate::{}", target)))
+                .copied()
+            {
+                return Some(def_id);
+            }
+        }
         if self.current_module_path.is_empty() {
             return self.qualified_type_names
                 .get(name_str)
@@ -2619,6 +2862,20 @@ impl<'a> TypeChecker<'a> {
     ) -> Option<TyKind> {
         let method_name = path.segments.last()?.ident;
         let method_name_str = self.interner.resolve(method_name);
+        if let Some(def_id) = self.generic_param_assoc_fn_on_path(path) {
+            let arg_tys = args.iter().map(|arg| self.check_expr(arg)).collect::<Vec<_>>();
+            let Some((param_tys, ret_ty)) = self.instantiate_fn_sig(def_id) else {
+                return None;
+            };
+            if param_tys.len() == arg_tys.len() {
+                for (arg, param) in arg_tys.iter().zip(param_tys.iter()) {
+                    self.unify(param, arg, span);
+                }
+                self.expr_types.insert(callee.id, TyKind::FnDef(def_id, vec![]));
+                return Some(ret_ty);
+            }
+        }
+
         let candidates = self.assoc_fn_candidates_on_path(path).unwrap_or_default();
         if !candidates.is_empty() {
             let arg_tys = args.iter().map(|arg| self.check_expr(arg)).collect::<Vec<_>>();
@@ -2679,6 +2936,127 @@ impl<'a> TypeChecker<'a> {
         }
 
         None
+    }
+
+    fn generic_param_assoc_fn_on_path(&self, path: &HirPath) -> Option<DefId> {
+        if path.segments.len() != 2 {
+            return None;
+        }
+        let param = path.segments[0].ident;
+        let method_name = path.segments[1].ident;
+        let param_idx = *self.current_generic_params.get(&param)?;
+        self.current_generic_bounds
+            .get(&param_idx)?
+            .iter()
+            .find_map(|trait_def_id| {
+                self.trait_methods
+                    .get(trait_def_id)?
+                    .iter()
+                    .find_map(|(name, def_id)| (*name == method_name).then_some(*def_id))
+            })
+    }
+
+    fn check_assoc_fn_call_on_qualified_path(
+        &mut self,
+        qpath: &HirQualifiedPath,
+        args: &[HirExpr],
+        span: Span,
+        callee: &HirExpr,
+    ) -> Option<TyKind> {
+        let trait_path = qpath.trait_path.as_ref()?;
+        let trait_def_id = self.resolve_trait_bound_def(trait_path)?;
+        let method_name = qpath.path.segments.last()?.ident;
+        let method_def_id = self
+            .trait_methods
+            .get(&trait_def_id)?
+            .iter()
+            .find_map(|(name, def_id)| (*name == method_name).then_some(*def_id))?;
+        let (param_tys, ret_ty) = self.fn_sigs.get(&method_def_id).cloned()?;
+        let trait_substs = trait_path
+            .segments
+            .last()
+            .and_then(|segment| segment.args.as_ref())
+            .map(|args| {
+                args.args
+                    .iter()
+                    .filter_map(|arg| match arg {
+                        HirGenericArg::Type(ty) => Some(self.hir_ty_to_ty(ty)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let self_ty = self.hir_ty_to_ty(&qpath.self_ty);
+        let param_tys = param_tys
+            .iter()
+            .map(|ty| {
+                let ty = self.substitute_params(ty, &trait_substs);
+                self.substitute_trait_self(&ty, trait_def_id, &self_ty)
+            })
+            .collect::<Vec<_>>();
+        let ret_ty = {
+            let ty = self.substitute_params(&ret_ty, &trait_substs);
+            self.substitute_trait_self(&ty, trait_def_id, &self_ty)
+        };
+        if param_tys.len() != args.len() {
+            return None;
+        }
+        let arg_tys = args.iter().map(|arg| self.check_expr(arg)).collect::<Vec<_>>();
+        for (arg, param) in arg_tys.iter().zip(param_tys.iter()) {
+            self.unify(param, arg, span);
+        }
+        self.expr_types.insert(callee.id, TyKind::FnDef(method_def_id, vec![]));
+        Some(ret_ty)
+    }
+
+    fn substitute_trait_self(&self, ty: &TyKind, trait_def_id: DefId, self_ty: &TyKind) -> TyKind {
+        match ty {
+            TyKind::Adt(def_id, substs) if *def_id == trait_def_id && substs.is_empty() => self_ty.clone(),
+            TyKind::Ref(inner, m) => {
+                TyKind::Ref(Box::new(self.substitute_trait_self(inner, trait_def_id, self_ty)), *m)
+            }
+            TyKind::RawPtr(inner, m) => {
+                TyKind::RawPtr(Box::new(self.substitute_trait_self(inner, trait_def_id, self_ty)), *m)
+            }
+            TyKind::Tuple(tys) => TyKind::Tuple(
+                tys.iter()
+                    .map(|ty| self.substitute_trait_self(ty, trait_def_id, self_ty))
+                    .collect(),
+            ),
+            TyKind::Array(inner, n) => {
+                TyKind::Array(Box::new(self.substitute_trait_self(inner, trait_def_id, self_ty)), *n)
+            }
+            TyKind::Slice(inner) => {
+                TyKind::Slice(Box::new(self.substitute_trait_self(inner, trait_def_id, self_ty)))
+            }
+            TyKind::FnDef(def_id, substs) => TyKind::FnDef(
+                *def_id,
+                substs
+                    .iter()
+                    .map(|ty| self.substitute_trait_self(ty, trait_def_id, self_ty))
+                    .collect(),
+            ),
+            TyKind::FnPtr(params, ret) => TyKind::FnPtr(
+                params
+                    .iter()
+                    .map(|ty| self.substitute_trait_self(ty, trait_def_id, self_ty))
+                    .collect(),
+                Box::new(self.substitute_trait_self(ret, trait_def_id, self_ty)),
+            ),
+            TyKind::Adt(def_id, substs) => TyKind::Adt(
+                *def_id,
+                substs
+                    .iter()
+                    .map(|ty| self.substitute_trait_self(ty, trait_def_id, self_ty))
+                    .collect(),
+            ),
+            TyKind::Projection(inner, projection_trait, assoc_name) => TyKind::Projection(
+                Box::new(self.substitute_trait_self(inner, trait_def_id, self_ty)),
+                *projection_trait,
+                *assoc_name,
+            ),
+            _ => ty.clone(),
+        }
     }
 
     fn instantiate_fn_sig(&mut self, def_id: DefId) -> Option<(Vec<TyKind>, TyKind)> {
