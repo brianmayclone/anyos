@@ -519,11 +519,9 @@ fn send_command(command: &ClientCommand<'_>) -> Result<WireResponse, &'static st
 
     let request = format!("{}\t{}\n", pid, command.as_wire());
     if anyos_std::ipc::pipe_write(request_pipe, request.as_bytes()) == u32::MAX {
-        let _ = anyos_std::ipc::pipe_close(request_pipe);
         let _ = anyos_std::ipc::pipe_close(reply_pipe);
         return Err("failed to write request");
     }
-    let _ = anyos_std::ipc::pipe_close(request_pipe);
 
     let mut raw = String::new();
     let mut buf = [0u8; 1024];

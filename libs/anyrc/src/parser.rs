@@ -146,6 +146,25 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn token_window(&self) -> String {
+        let start = self.pos.saturating_sub(5);
+        let end = (self.pos + 6).min(self.tokens.len());
+        let mut out = String::new();
+        for idx in start..end {
+            if idx > start {
+                out.push(' ');
+            }
+            if idx == self.pos {
+                out.push_str(">>");
+            }
+            out.push_str(&format!("{:?}@{:?}", self.tokens[idx].kind, self.tokens[idx].span));
+            if idx == self.pos {
+                out.push_str("<<");
+            }
+        }
+        out
+    }
+
     fn expect_ident_or_self(&mut self) -> Symbol {
         match self.current().kind {
             TokenKind::Ident(sym) => {
@@ -582,9 +601,10 @@ impl<'a> Parser<'a> {
         }
 
         panic!(
-            "unexpected token in expression: {:?} at {:?}",
+            "unexpected token in expression: {:?} at {:?}; near {}",
             self.current().kind,
-            self.current().span
+            self.current().span,
+            self.token_window()
         );
     }
 
