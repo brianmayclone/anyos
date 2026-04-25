@@ -224,6 +224,85 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
+    fn ty_layout_size(&self, ty: &TyKind) -> i32 {
+        regalloc::ty_layout_size(ty, self.struct_sizes).max(1)
+    }
+
+    fn aggregate_field_layout(
+        &self,
+        place: &Place,
+        agg_kind: &AggregateKind,
+        field_idx: usize,
+    ) -> (i32, i32) {
+        match agg_kind {
+            AggregateKind::Adt(def_id, _) => {
+                let offset = self.field_offsets
+                    .get(def_id)
+                    .and_then(|offs| offs.get(field_idx))
+                    .copied()
+                    .unwrap_or((field_idx as i32) * 8);
+                let size = self.field_types
+                    .get(def_id)
+                    .and_then(|fields| fields.get(field_idx))
+                    .map(|ty| self.ty_layout_size(ty))
+                    .unwrap_or(8);
+                (offset, size)
+            }
+            AggregateKind::Array => {
+                let elem_size = match &self.body.locals[place.local.0].ty {
+                    TyKind::Array(elem, _) => self.ty_layout_size(elem),
+                    _ => 8,
+                };
+                ((field_idx as i32) * elem_size, elem_size)
+            }
+            AggregateKind::Tuple => {
+                if let TyKind::Tuple(elems) = &self.body.locals[place.local.0].ty {
+                    let offset = elems
+                        .iter()
+                        .take(field_idx)
+                        .map(|ty| self.ty_layout_size(ty))
+                        .sum();
+                    let size = elems
+                        .get(field_idx)
+                        .map(|ty| self.ty_layout_size(ty))
+                        .unwrap_or(8);
+                    (offset, size)
+                } else {
+                    ((field_idx as i32) * 8, 8)
+                }
+            }
+        }
+    }
+
+    fn copy_stack_bytes(&mut self, dst_base: Reg, dst_off: i32, src_slot: i32, size: i32) {
+        let mut copied = 0;
+        while copied < size {
+            let chunk = (size - copied).min(8);
+            if chunk == 8 {
+                self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + copied);
+                self.asm.mov_mr(dst_base, dst_off + copied, Reg::RAX);
+            } else {
+                self.asm.movzx_rm_sized(Reg::RAX, Reg::RBP, src_slot + copied, chunk);
+                self.asm.mov_mr_sized(dst_base, dst_off + copied, Reg::RAX, chunk);
+            }
+            copied += chunk;
+        }
+    }
+
+    fn store_operand_to_stack_offset(&mut self, op: &Operand, dst_base: Reg, dst_off: i32, size: i32) {
+        let size = size.max(1);
+        if let Operand::Copy(p) | Operand::Move(p) = op {
+            if p.projections.is_empty() && size > 8 {
+                let src_slot = self.alloc.stack_slots[p.local.0];
+                self.copy_stack_bytes(dst_base, dst_off, src_slot, size);
+                return;
+            }
+        }
+
+        self.load_operand(op, Reg::RAX);
+        self.asm.mov_mr_sized(dst_base, dst_off, Reg::RAX, size);
+    }
+
     fn emit_prologue(&mut self) {
         self.asm.push(Reg::RBP);
         self.asm.mov_rr(Reg::RBP, Reg::RSP);
@@ -449,37 +528,9 @@ impl<'a> CodeEmitter<'a> {
                 if let Rvalue::Aggregate(agg_kind, operands) = rvalue {
                     if place.projections.is_empty() {
                         let base_slot = self.alloc.stack_slots[place.local.0];
-                        let def_id = match agg_kind {
-                            AggregateKind::Adt(did, _) => Some(*did),
-                            _ => None,
-                        };
                         for (i, op) in operands.iter().enumerate() {
-                            let field_off = def_id
-                                .and_then(|did| self.field_offsets.get(&did))
-                                .and_then(|offs| offs.get(i).copied())
-                                .unwrap_or((i as i32) * 8);
-                            // Check if operand is multi-slot (e.g. an array field)
-                            let op_size = match op {
-                                Operand::Copy(p) | Operand::Move(p) if p.projections.is_empty() => {
-                                    self.alloc.local_sizes[p.local.0]
-                                }
-                                _ => 8,
-                            };
-                            if op_size > 8 {
-                                // Multi-slot copy
-                                if let Operand::Copy(p) | Operand::Move(p) = op {
-                                    let src_slot = self.alloc.stack_slots[p.local.0];
-                                    let n_slots = Self::slots_for_size(op_size);
-                                    for s in 0..n_slots {
-                                        let byte_off = (s as i32) * 8;
-                                        self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + byte_off);
-                                        self.asm.mov_mr(Reg::RBP, base_slot + field_off + byte_off, Reg::RAX);
-                                    }
-                                }
-                            } else {
-                                self.load_operand(op, Reg::RAX);
-                                self.asm.mov_mr(Reg::RBP, base_slot + field_off, Reg::RAX);
-                            }
+                            let (field_off, field_size) = self.aggregate_field_layout(place, agg_kind, i);
+                            self.store_operand_to_stack_offset(op, Reg::RBP, base_slot + field_off, field_size);
                         }
                         return;
                     }
