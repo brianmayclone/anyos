@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use crate::app;
 use crate::logic::{
-    ai, build, debug_session, diagnostics, file_manager, git, intellisense, language,
+    ai, build, debug_session, designer, diagnostics, file_manager, git, intellisense, language,
     language_service, live_analysis, project, search, symbols, tasks,
 };
 use crate::ui::problems_panel::ProblemFilter;
@@ -664,6 +664,7 @@ pub fn open_file(file_path: &str) {
     if let Some(idx) = s.file_mgr.find_open(file_path) {
         s.file_mgr.set_active(idx);
         s.editor_view.set_active(idx);
+        refresh_inspector_for_file(file_path);
         schedule_live_check(idx);
         return;
     }
@@ -676,8 +677,75 @@ pub fn open_file(file_path: &str) {
     s.editor_view
         .update_tab_labels(&s.file_mgr.tab_labels(), s.file_mgr.active);
     refresh_editor_diagnostics();
+    refresh_inspector_for_file(file_path);
     schedule_live_check(idx);
     persist_session();
+}
+
+fn refresh_inspector_for_file(file_path: &str) {
+    let s = app();
+    if designer::is_designer_file(file_path) {
+        if let Some(doc) = designer::load_designer(file_path) {
+            s.inspector_panel.show_designer(&doc);
+            return;
+        }
+    }
+    s.inspector_panel.show_file(file_path);
+}
+
+pub fn toggle_inspector() {
+    let s = app();
+    s.config.inspector_visible = !s.config.inspector_visible;
+    s.inspector_panel
+        .panel
+        .set_visible(s.config.inspector_visible);
+    s.config.save();
+}
+
+pub fn show_new_ui_form_dialog() {
+    let s = app();
+    let root = match s.current_project.as_ref() {
+        Some(project) => project.root.clone(),
+        None => {
+            s.status.set_analysis_status("Open a Rust project first");
+            return;
+        }
+    };
+    let default_name = designer::next_form_name(&root, "MainForm");
+    crate::ui::new_form_dialog::show(&default_name);
+}
+
+pub fn create_ui_form_named(form_name: String) {
+    let s = app();
+    let root = match s.current_project.as_ref() {
+        Some(project) => project.root.clone(),
+        None => {
+            s.status.set_analysis_status("Open a Rust project first");
+            return;
+        }
+    };
+    if !designer::is_valid_form_name(&form_name) {
+        s.status
+            .set_analysis_status("Use a valid Rust type name, for example MainForm");
+        return;
+    }
+    if designer::form_exists(&root, &form_name) {
+        s.status
+            .set_analysis_status("A UI form with this name already exists");
+        return;
+    }
+    match designer::create_form_files(&root, &form_name) {
+        Ok(()) => {
+            let designer_path = designer::designer_file_path(&root, &form_name);
+            s.status
+                .set_analysis_status("Created Rust UI form and designer files");
+            open_file(&designer_path);
+            if let Some(ref project) = s.current_project {
+                s.sidebar.populate_project(project, &s.task_mgr);
+            }
+        }
+        Err(err) => s.status.set_analysis_status(err),
+    }
 }
 
 pub fn open_file_to_side(file_path: &str) {

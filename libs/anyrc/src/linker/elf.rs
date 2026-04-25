@@ -385,7 +385,11 @@ fn write_section_header(
 
 /// Write an ELF64 executable from merged code with a given entry point.
 pub fn write_executable(code: &[u8], data: &[u8], entry_offset: u64) -> Vec<u8> {
-    let base_addr: u64 = 0x400000;
+    write_executable_at(code, data, entry_offset, 0x400000)
+}
+
+/// Write an ELF64 executable loaded at `base_addr`.
+pub fn write_executable_at(code: &[u8], data: &[u8], entry_offset: u64, base_addr: u64) -> Vec<u8> {
     // Layout:
     // ELF header (64 bytes)
     // Program header (56 bytes)

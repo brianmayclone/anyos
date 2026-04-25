@@ -160,8 +160,8 @@ pub struct TypeChecker<'a> {
     type_name_to_def: HashMap<Symbol, DefId>,
     /// Fully qualified type paths such as `fallback::TokenStream`.
     qualified_type_names: HashMap<String, DefId>,
-    /// Simple module aliases introduced by `use crate::module as alias`.
-    module_aliases: HashMap<String, String>,
+    /// Simple module aliases introduced by `use crate::module as alias`, scoped per module.
+    module_aliases: HashMap<(String, String), String>,
     /// Type imports introduced by `use` in a specific module.
     scoped_type_aliases: HashMap<(String, Symbol), String>,
     /// Module path used while collecting/checking items.
@@ -907,7 +907,7 @@ impl<'a> TypeChecker<'a> {
                 HirItemKind::Enum(e) => self.register_qualified_type(prefix, e.name, e.def_id),
                 HirItemKind::Trait(t) => self.register_qualified_type(prefix, t.name, t.def_id),
                 HirItemKind::Use(u) => {
-                    self.collect_module_alias(u);
+                    self.collect_module_alias(prefix, u);
                     self.collect_scoped_type_alias(prefix, u);
                 }
                 HirItemKind::Mod(m) => {
@@ -932,6 +932,10 @@ impl<'a> TypeChecker<'a> {
         let path = parts.join("::");
         self.qualified_type_names.insert(path.clone(), def_id);
         self.qualified_type_names.insert(format!("crate::{}", path), def_id);
+    }
+
+    fn register_simple_type_name(&mut self, name: Symbol, def_id: DefId) {
+        self.type_name_to_def.entry(name).or_insert(def_id);
     }
 
     fn collect_qualified_const_names(&mut self, items: &[HirItem], prefix: &mut Vec<Symbol>) {
@@ -1061,7 +1065,7 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn collect_module_alias(&mut self, use_tree: &HirUseTree) {
+    fn collect_module_alias(&mut self, module_prefix: &[Symbol], use_tree: &HirUseTree) {
         match &use_tree.kind {
             HirUseTreeKind::Simple(alias) => {
                 let trailing_self = use_tree
@@ -1094,7 +1098,8 @@ impl<'a> TypeChecker<'a> {
                     .collect::<Vec<_>>()
                     .join("::");
                 if !target.is_empty() {
-                    self.module_aliases.insert(local, target);
+                    let module_key = self.module_key_from_symbols(module_prefix);
+                    self.module_aliases.insert((module_key, local), target);
                 }
             }
             HirUseTreeKind::Nested(trees) => {
@@ -1108,7 +1113,7 @@ impl<'a> TypeChecker<'a> {
                         kind: sub.kind.clone(),
                         span: sub.span,
                     };
-                    self.collect_module_alias(&combined);
+                    self.collect_module_alias(module_prefix, &combined);
                 }
             }
             HirUseTreeKind::Glob => {}
@@ -1175,7 +1180,7 @@ impl<'a> TypeChecker<'a> {
                     .map(|f| (f.name, self.hir_ty_to_ty(&f.ty)))
                     .collect();
                 self.struct_defs.insert(s.def_id, fields);
-                self.type_name_to_def.insert(s.name, s.def_id);
+                self.register_simple_type_name(s.name, s.def_id);
                 self.adt_generic_counts.insert(s.def_id, adt_generic_count);
                 if s.derives_copy {
                     self.copy_types.insert(s.def_id);
@@ -1195,7 +1200,7 @@ impl<'a> TypeChecker<'a> {
                 }).collect::<Vec<_>>();
                 let adt_generic_count = self_substs.len();
                 self.current_self_ty = Some(TyKind::Adt(e.def_id, self_substs));
-                self.type_name_to_def.insert(e.name, e.def_id);
+                self.register_simple_type_name(e.name, e.def_id);
                 self.adt_generic_counts.insert(e.def_id, adt_generic_count);
                 if e.derives_copy {
                     self.copy_types.insert(e.def_id);
@@ -1267,7 +1272,9 @@ impl<'a> TypeChecker<'a> {
                 if let HirTy::Path(p) = &ib.self_ty {
                     if !p.segments.is_empty() {
                         let self_ty_name = p.segments[0].ident;
-                        if let Some(&def_id) = self.type_name_to_def.get(&self_ty_name) {
+                        if let Some(TyKind::Adt(def_id, _)) =
+                            self.current_self_ty.clone().map(|ty| self.shallow_resolve(ty))
+                        {
                             if let Some(self_sym) = self.interner.lookup("Self") {
                                 self.type_name_to_def.insert(self_sym, def_id);
                             }
@@ -1358,7 +1365,7 @@ impl<'a> TypeChecker<'a> {
                 let saved_self_ty = self.current_self_ty.clone();
                 self.current_self_ty = Some(TyKind::Adt(t.def_id, vec![]));
                 // Register trait name so `dyn Trait` can resolve it
-                self.type_name_to_def.insert(t.name, t.def_id);
+                self.register_simple_type_name(t.name, t.def_id);
                 self.trait_names.insert(t.def_id, t.name);
                 if let Some(self_sym) = self.interner.lookup("Self") {
                     self.type_name_to_def.insert(self_sym, t.def_id);
@@ -1955,12 +1962,12 @@ impl<'a> TypeChecker<'a> {
 
         let module_key = self.module_key_from_symbols(&self.current_module_path);
         if let Some(first_sym) = self.interner.lookup(first) {
-            if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key, first_sym)) {
+            if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key.clone(), first_sym)) {
                 return format!("{}::{}", alias_target, rest);
             }
         }
 
-        if let Some(alias_target) = self.module_aliases.get(first) {
+        if let Some(alias_target) = self.module_aliases.get(&(module_key, first.to_string())) {
             return format!("{}::{}", alias_target, rest);
         }
 
@@ -2405,7 +2412,7 @@ impl<'a> TypeChecker<'a> {
                                 let field = self.interner.resolve(*field_name).to_string();
                                 self.error(
                                     expr.span,
-                                    &format!("no such field `{}` on {:?}", field, resolved),
+                                    &format!("no such field `{}` on {}", field, self.describe_ty(&resolved)),
                                 );
                             }
                             return TyKind::Error;
@@ -2695,7 +2702,7 @@ impl<'a> TypeChecker<'a> {
                     TyKind::Adt(def_id, substs) => {
                         if self.is_vec_def(def_id) && substs.len() == 1 {
                             self.check_builtin_index_ty(&idx_ty, idx.span, is_range);
-                            let elem_ty = self.resolve_ty_full(substs[0].clone());
+                            let elem_ty = self.shallow_resolve(substs[0].clone());
                             if is_range {
                                 TyKind::Slice(Box::new(elem_ty))
                             } else {
@@ -2947,7 +2954,7 @@ impl<'a> TypeChecker<'a> {
                                 if let Some(&vec_def_id) = self.type_name_to_def.get(&vec_sym) {
                                     return TyKind::Adt(
                                         vec_def_id,
-                                        vec![self.resolve_ty_full(elem.as_ref().clone())],
+                                        vec![self.shallow_resolve(elem.as_ref().clone())],
                                     );
                                 }
                             }
@@ -2972,7 +2979,7 @@ impl<'a> TypeChecker<'a> {
                         }
                     }
                     if self.is_vec_def(*def_id) && substs.len() == 1 {
-                        let elem_ty = self.resolve_ty_full(substs[0].clone());
+                        let elem_ty = self.shallow_resolve(substs[0].clone());
                         match method_str {
                             "iter" if args.is_empty() => {
                                 return TyKind::Slice(Box::new(TyKind::Ref(
@@ -3193,7 +3200,7 @@ impl<'a> TypeChecker<'a> {
 
                 if let TyKind::Adt(def_id, substs) = &inner_ty {
                     if self.is_vec_def(*def_id) && substs.len() == 1 {
-                        let elem_ty = self.resolve_ty_full(substs[0].clone());
+                        let elem_ty = self.shallow_resolve(substs[0].clone());
                         match method_str {
                             "len" if args.is_empty() => return TyKind::Uint(UintTy::Usize),
                             "is_empty" if args.is_empty() => return TyKind::Bool,
@@ -3754,7 +3761,7 @@ impl<'a> TypeChecker<'a> {
         if let Some((first, rest)) = path.split_once("::") {
             let module_key = self.module_key_from_symbols(&self.current_module_path);
             if let Some(first_sym) = self.interner.lookup(first) {
-                if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key, first_sym)) {
+                if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key.clone(), first_sym)) {
                     let expanded = format!("{}::{}", alias_target, rest);
                     if let Some(def_id) = self.qualified_type_names
                         .get(&expanded)
@@ -3765,7 +3772,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
             }
-            if let Some(alias_target) = self.module_aliases.get(first) {
+            if let Some(alias_target) = self.module_aliases.get(&(module_key.clone(), first.to_string())) {
                 let expanded = format!("{}::{}", alias_target, rest);
                 if let Some(def_id) = self.qualified_type_names
                     .get(&expanded)
@@ -3842,14 +3849,14 @@ impl<'a> TypeChecker<'a> {
         if let Some((first, rest)) = path.split_once("::") {
             let module_key = self.module_key_from_symbols(&self.current_module_path);
             if let Some(first_sym) = self.interner.lookup(first) {
-                if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key, first_sym)) {
+                if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key.clone(), first_sym)) {
                     let expanded = format!("{}::{}", alias_target, rest);
                     if let Some(ty) = self.qualified_type_aliases.get(&expanded) {
                         return Some(ty.clone());
                     }
                 }
             }
-            if let Some(alias_target) = self.module_aliases.get(first) {
+            if let Some(alias_target) = self.module_aliases.get(&(module_key.clone(), first.to_string())) {
                 let expanded = format!("{}::{}", alias_target, rest);
                 if let Some(ty) = self.qualified_type_aliases.get(&expanded) {
                     return Some(ty.clone());
@@ -3869,12 +3876,12 @@ impl<'a> TypeChecker<'a> {
 
         let module_key = self.module_key_from_symbols(&self.current_module_path);
         if let Some(first_sym) = self.interner.lookup(first) {
-            if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key, first_sym)) {
+            if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key.clone(), first_sym)) {
                 return format!("{}::{}", alias_target, rest);
             }
         }
 
-        if let Some(alias_target) = self.module_aliases.get(first) {
+        if let Some(alias_target) = self.module_aliases.get(&(module_key, first.to_string())) {
             return format!("{}::{}", alias_target, rest);
         }
 
@@ -4746,6 +4753,8 @@ impl<'a> TypeChecker<'a> {
             .lookup("Result")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
+            || self.local_type_name_is(def_id, "Result")
+            || self.is_known_type_path(def_id, "Result")
     }
 
     fn is_option_def(&self, def_id: DefId) -> bool {
@@ -4753,6 +4762,8 @@ impl<'a> TypeChecker<'a> {
             .lookup("Option")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
+            || self.local_type_name_is(def_id, "Option")
+            || self.is_known_type_path(def_id, "Option")
     }
 
     fn is_box_def(&self, def_id: DefId) -> bool {

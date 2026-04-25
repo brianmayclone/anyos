@@ -19,6 +19,8 @@ pub struct Config {
     pub terminal_font_size: u32,
     pub sidebar_width: u32,
     pub output_height: u32,
+    pub inspector_width: u32,
+    pub inspector_visible: bool,
     // Path settings (auto-discovered on first launch)
     pub settings_path: String,
     pub syntax_dir: String,
@@ -98,12 +100,28 @@ const ANYCODE_RUST_MANIFEST: libconf_schema::RegistryManifest<'static> = manifes
 const ANYCODE_RUST_SCHEMA: ServiceSchema<'static> =
     ServiceSchema::new("anycode", &ANYCODE_RUST_MANIFEST);
 
+const ANYCODE_LAYOUT_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_string("config/dock_layout_json", ""),
+    default_bool("config/inspector_visible", true),
+];
+const ANYCODE_LAYOUT_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/anycode_layout",
+    RegistryScope::User,
+    1,
+    &["config"],
+    ANYCODE_LAYOUT_DEFAULTS,
+    &[],
+);
+const ANYCODE_LAYOUT_SCHEMA: ServiceSchema<'static> =
+    ServiceSchema::new("anycode", &ANYCODE_LAYOUT_MANIFEST);
+
 impl Config {
     /// Load settings from disk, or return defaults with auto-discovery.
     pub fn load() -> Self {
         let _ = ANYCODE_SCHEMA.register();
         let _ = ANYCODE_SYSTEM_SCHEMA.register();
         let _ = ANYCODE_RUST_SCHEMA.register();
+        let _ = ANYCODE_LAYOUT_SCHEMA.register();
         let defaults = Self::defaults();
         let data = match ANYCODE_SCHEMA.read_string("config/settings_json") {
             Some(s) if !s.is_empty() => s,
@@ -140,6 +158,8 @@ impl Config {
             terminal_font_size: json_u32(&val, "terminal_font_size", defaults.terminal_font_size),
             sidebar_width: json_u32(&val, "sidebar_width", defaults.sidebar_width),
             output_height: json_u32(&val, "output_height", defaults.output_height),
+            inspector_width: json_u32(&val, "inspector_width", defaults.inspector_width),
+            inspector_visible: json_bool(&val, "inspector_visible", defaults.inspector_visible),
             settings_path: json_str(&val, "settings_path", DEFAULT_SETTINGS_PATH),
             // Always derive syntax_dir from current bundle (path changes between installs)
             syntax_dir: defaults.syntax_dir,
@@ -216,6 +236,11 @@ impl Config {
             "output_height",
             Value::Number(Number::Int(self.output_height as i64)),
         );
+        obj.set(
+            "inspector_width",
+            Value::Number(Number::Int(self.inspector_width as i64)),
+        );
+        obj.set("inspector_visible", Value::Bool(self.inspector_visible));
         obj.set("settings_path", Value::String(self.settings_path.clone()));
         obj.set("syntax_dir", Value::String(self.syntax_dir.clone()));
         obj.set("plugin_dir", Value::String(self.plugin_dir.clone()));
@@ -257,6 +282,10 @@ impl Config {
         let _ = ANYCODE_RUST_SCHEMA.write_bool("config/format_on_save", self.rust_format_on_save);
         let _ =
             ANYCODE_RUST_SCHEMA.write_bool("config/use_anyrc_library", self.rust_use_anyrc_library);
+        let layout = self.layout_json();
+        let _ = ANYCODE_LAYOUT_SCHEMA.write_string("config/dock_layout_json", &layout);
+        let _ =
+            ANYCODE_LAYOUT_SCHEMA.write_bool("config/inspector_visible", self.inspector_visible);
     }
 
     pub fn defaults() -> Self {
@@ -274,6 +303,8 @@ impl Config {
             terminal_font_size: 12,
             sidebar_width: 28,
             output_height: 25,
+            inspector_width: 22,
+            inspector_visible: true,
             settings_path: String::from(DEFAULT_SETTINGS_PATH),
             syntax_dir,
             plugin_dir: String::from(
@@ -315,7 +346,35 @@ impl Config {
         if let Some(v) = ANYCODE_RUST_SCHEMA.read_bool("config/use_anyrc_library") {
             self.rust_use_anyrc_library = v;
         }
+        if let Some(layout) = ANYCODE_LAYOUT_SCHEMA.read_string("config/dock_layout_json") {
+            self.apply_layout_json(&layout);
+        }
+        if let Some(v) = ANYCODE_LAYOUT_SCHEMA.read_bool("config/inspector_visible") {
+            self.inspector_visible = v;
+        }
         self.plugin_dir = format!("{}|{}", self.system_plugin_dir, self.user_plugin_dir);
+    }
+
+    fn layout_json(&self) -> String {
+        format!(
+            "{{\"sidebar_width\":{},\"output_height\":{},\"inspector_width\":{},\"inspector_visible\":{}}}",
+            self.sidebar_width,
+            self.output_height,
+            self.inspector_width,
+            if self.inspector_visible { "true" } else { "false" }
+        )
+    }
+
+    fn apply_layout_json(&mut self, data: &str) {
+        if data.is_empty() {
+            return;
+        }
+        if let Ok(value) = Value::parse(data) {
+            self.sidebar_width = json_u32(&value, "sidebar_width", self.sidebar_width);
+            self.output_height = json_u32(&value, "output_height", self.output_height);
+            self.inspector_width = json_u32(&value, "inspector_width", self.inspector_width);
+            self.inspector_visible = json_bool(&value, "inspector_visible", self.inspector_visible);
+        }
     }
 
     /// Auto-discover paths for tools via PATH environment variable.

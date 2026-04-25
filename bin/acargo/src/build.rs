@@ -178,8 +178,6 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
             }
             for (key, val) in &bs_output.env_vars {
                 crate_env_vars.push((key.clone(), val.clone()));
-                // Also set in process env for subsequent build scripts
-                anyos_std::env::set(key, val);
             }
         }
 
@@ -235,6 +233,65 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
                     name: dep_norm,
                     rlib_path: rlib_path.clone(),
                 });
+            }
+        }
+
+        if is_root && !is_lib {
+            let implicit_lib_src = format!("{}/src/lib.rs", node.manifest_dir);
+            if fs::file_exists(&implicit_lib_src) && !built_rlibs.contains_key(&norm_name) {
+                let implicit_lib_output = format!("{}/lib{}.rlib", deps_dir, norm_name);
+                let implicit_lib_source = match fs::read_file(&implicit_lib_src) {
+                    Some(s) => s,
+                    None => {
+                        println!("error[E0001]: cannot read `{}`", implicit_lib_src);
+                        return BuildResult { success: false, bin_path: None, compiled };
+                    }
+                };
+                let implicit_lib_src_dir = format!("{}/src", node.manifest_dir);
+                if config.verbose {
+                    println!("   Compiling {} v{} (lib)", node.name, node.manifest.version);
+                }
+                let implicit_lib_options = anyrc::driver::CompileOptions {
+                    input: implicit_lib_src.clone(),
+                    output: implicit_lib_output.clone(),
+                    emit: anyrc::driver::EmitKind::Rlib,
+                    opt_level: opt,
+                    crate_type: anyrc::driver::CrateType::Lib,
+                    crate_name: Some(norm_name.clone()),
+                    src_dir: Some(implicit_lib_src_dir),
+                    extern_crates: externs.clone(),
+                    cfg_flags: crate_cfg_flags.clone(),
+                    linker_script: None,
+                    link_args: Vec::new(),
+                    env_vars: crate_env_vars.clone(),
+                    features: resolved_features.clone(),
+                };
+                match anyrc::driver::compile(
+                    &implicit_lib_source,
+                    &implicit_lib_src,
+                    &implicit_lib_options,
+                ) {
+                    Ok(bytes) => {
+                        fs::write_file(&implicit_lib_output, &bytes);
+                        built_rlibs.insert(norm_name.clone(), implicit_lib_output.clone());
+                        externs.push(anyrc::driver::ExternCrateSpec {
+                            name: norm_name.clone(),
+                            rlib_path: implicit_lib_output,
+                        });
+                        compiled += 1;
+                    }
+                    Err(diags) => {
+                        let source_map = anyrc::diagnostics::SourceMap::new(
+                            implicit_lib_src.clone(),
+                            implicit_lib_source,
+                        );
+                        println!("error: could not compile `{}`", node.name);
+                        for diag in diags {
+                            println!("{}", diag.render(&source_map));
+                        }
+                        return BuildResult { success: false, bin_path: None, compiled };
+                    }
+                }
             }
         }
 

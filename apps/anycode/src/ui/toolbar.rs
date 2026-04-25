@@ -14,6 +14,11 @@ pub struct AppToolbar {
     pub run_config: ui::DropDown,
     pub btn_run_config: ui::PlainButton,
     pub btn_run: ui::PlainButton,
+    pub debug_profile: ui::DropDown,
+    pub btn_debug: ui::PlainButton,
+    pub btn_debug_continue: ui::PlainButton,
+    pub btn_debug_pause: ui::PlainButton,
+    pub btn_debug_step: ui::PlainButton,
     pub btn_stop: ui::PlainButton,
     pub btn_settings: ui::PlainButton,
 }
@@ -129,6 +134,42 @@ impl AppToolbar {
             toolbar_h,
             icon_sz,
         );
+        let debug_profile = ui::DropDown::new("Debug|Release");
+        debug_profile.set_size(104, toolbar_h.saturating_sub(10).max(28));
+        debug_profile.set_tooltip(t("Build profile for debugging"));
+        toolbar.add(&debug_profile);
+        let btn_debug = make_plain_btn(
+            &toolbar,
+            "bug",
+            tc.warning,
+            t("Start Debugging"),
+            toolbar_h,
+            icon_sz,
+        );
+        let btn_debug_continue = make_plain_btn(
+            &toolbar,
+            "player-skip-forward",
+            tc.text_secondary,
+            t("Continue"),
+            toolbar_h,
+            icon_sz.saturating_sub(2).max(16),
+        );
+        let btn_debug_pause = make_plain_btn(
+            &toolbar,
+            "player-pause",
+            tc.text_secondary,
+            t("Pause"),
+            toolbar_h,
+            icon_sz.saturating_sub(2).max(16),
+        );
+        let btn_debug_step = make_plain_btn(
+            &toolbar,
+            "corner-down-right",
+            tc.text_secondary,
+            t("Step Over"),
+            toolbar_h,
+            icon_sz.saturating_sub(2).max(16),
+        );
         let btn_stop = make_plain_btn(
             &toolbar,
             "player-stop",
@@ -173,6 +214,11 @@ impl AppToolbar {
             run_config,
             btn_run_config,
             btn_run,
+            debug_profile,
+            btn_debug,
+            btn_debug_continue,
+            btn_debug_pause,
+            btn_debug_step,
             btn_stop,
             btn_settings,
         }

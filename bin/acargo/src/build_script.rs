@@ -41,7 +41,7 @@ pub fn run_build_script(
     manifest_dir: &str,
     crate_name: &str,
     target_dir: &str,
-    release: bool,
+    _release: bool,
     features: &[String],
 ) -> Option<BuildScriptOutput> {
     let build_rs = format!("{}/build.rs", manifest_dir);
@@ -51,16 +51,6 @@ pub fn run_build_script(
 
     // Read build.rs source
     let source = fs::read_file(&build_rs)?;
-    anyos_std::env::set("CARGO_MANIFEST_DIR", manifest_dir);
-    anyos_std::env::set("OUT_DIR", &format!("{}/out", target_dir));
-    anyos_std::env::set("TARGET", "x86_64-anyos");
-    anyos_std::env::set("HOST", "x86_64-anyos");
-    anyos_std::env::set("PROFILE", if release { "release" } else { "debug" });
-    anyos_std::env::set("OPT_LEVEL", if release { "2" } else { "0" });
-    for feature in features {
-        let key = format!("CARGO_FEATURE_{}", feature_env_name(feature));
-        anyos_std::env::set(&key, "1");
-    }
     fs::mkdir_p(&format!("{}/out", target_dir));
 
     Some(emulate_build_script_output(&source, manifest_dir, crate_name, features))
@@ -177,14 +167,6 @@ fn push_cfg_once(cfg_flags: &mut Vec<String>, flag: &str) {
     if !cfg_flags.iter().any(|existing| existing == flag) {
         cfg_flags.push(String::from(flag));
     }
-}
-
-fn feature_env_name(feature: &str) -> String {
-    feature
-        .chars()
-        .map(|ch| if ch == '-' { '_' } else { ch })
-        .flat_map(|ch| ch.to_uppercase())
-        .collect()
 }
 
 fn find_stdlib_linker_script(manifest_dir: &str) -> Option<String> {

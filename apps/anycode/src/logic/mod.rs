@@ -4,6 +4,7 @@ pub mod commands;
 pub mod config;
 pub mod debug_backend;
 pub mod debug_session;
+pub mod designer;
 pub mod diagnostic_pipeline;
 pub mod diagnostics;
 pub mod file_manager;

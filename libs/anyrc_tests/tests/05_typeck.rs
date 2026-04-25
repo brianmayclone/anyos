@@ -155,6 +155,18 @@ fn scoped_use_prefers_local_type_over_same_named_external_type() {
                     pub name: String,
                     pub size: u32,
                 }
+
+                pub fn metadata_size(entry: DirEntry) -> u32 {
+                    entry.size
+                }
+            }
+        }
+
+        mod dependency_prelude_like {
+            use crate::anyos_std::fs::{self, DirEntry};
+
+            pub fn keep_imports_live(entry: DirEntry) -> u32 {
+                fs::metadata_size(entry)
             }
         }
     "#);
@@ -214,6 +226,58 @@ fn vec_push_pop_last_truncate_are_typed() {
             values.truncate(0);
         }
     "#);
+}
+
+#[test]
+fn vec_macro_integer_element_infers_from_later_push() {
+    assert_type_ok(r#"
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn push(&mut self, value: T) {}
+        }
+        impl<T> [T] {
+            fn to_vec(&self) -> Vec<T> { loop {} }
+        }
+
+        fn main() {
+            let mut values = vec![0];
+            let offset: u32 = 1;
+            values.push(offset);
+        }
+    "#);
+}
+
+#[test]
+fn vec_new_element_infers_from_index_assignment() {
+    assert_type_ok(r#"
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn new() -> Self { loop {} }
+        }
+
+        fn main() {
+            let mut code = Vec::new();
+            code[0] = 1u8;
+        }
+    "#);
+}
+
+#[test]
+fn cfg_strips_false_tail_block_so_true_tail_returns() {
+    let (result, _) = typecheck_with_cfg(
+        r#"
+            fn arch() -> &'static str {
+                #[cfg(target_arch = "x86_64")]  { "x86_64" }
+                #[cfg(target_arch = "aarch64")] { "aarch64" }
+            }
+        "#,
+        &["target_arch=\"x86_64\""],
+    );
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]

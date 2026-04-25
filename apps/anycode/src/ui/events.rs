@@ -164,6 +164,18 @@ pub fn wire_toolbar(tb: &AppToolbar) {
     tb.btn_run_config
         .on_click(|_| commands::configure_run_profiles());
     tb.btn_run.on_click(|_| commands::run());
+    tb.debug_profile.on_selection_changed(|e| {
+        if e.index == 1 {
+            commands::set_build_configuration(crate::logic::project::BuildConfiguration::Release);
+        } else {
+            commands::set_build_configuration(crate::logic::project::BuildConfiguration::Debug);
+        }
+    });
+    tb.btn_debug.on_click(|_| commands::start_debugging());
+    tb.btn_debug_continue
+        .on_click(|_| commands::debug_continue());
+    tb.btn_debug_pause.on_click(|_| commands::debug_pause());
+    tb.btn_debug_step.on_click(|_| commands::debug_step_over());
     tb.btn_stop.on_click(|_| commands::stop());
     tb.btn_settings.on_click(|_| commands::open_settings());
 }
@@ -179,6 +191,7 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
         5 => anyui::quit(),
         10..=13 => {}
         14 => commands::switch_sidebar_view(2),
+        15 => commands::show_new_ui_form_dialog(),
         20 => commands::switch_sidebar_view(0),
         21 => commands::switch_sidebar_view(1),
         22 => commands::switch_sidebar_view(2),
@@ -188,6 +201,7 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
         26 => app().output.show_output(),
         27 => app().output.show_problems(),
         28 => app().output.show_terminal(),
+        29 => commands::toggle_inspector(),
         30 => commands::build(),
         31 => commands::run(),
         32 => commands::test(),

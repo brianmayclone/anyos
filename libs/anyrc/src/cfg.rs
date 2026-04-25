@@ -299,6 +299,7 @@ fn strip_stmts(stmts: &mut Vec<Stmt>, ctx: &CfgContext, interner: &Interner) {
         match stmt {
             Stmt::Item(item) => should_keep_item_attrs(item_attrs(item), ctx, interner),
             Stmt::Attributed(attrs, _, _) => should_keep_item_attrs(attrs, ctx, interner),
+            Stmt::Expr(expr) | Stmt::Semi(expr, _) => should_keep_expr_attrs(expr, ctx, interner),
             _ => true,
         }
     });
@@ -307,12 +308,18 @@ fn strip_stmts(stmts: &mut Vec<Stmt>, ctx: &CfgContext, interner: &Interner) {
             let replacement = match stmt {
                 Stmt::Attributed(_, inner, span) => {
                     let placeholder = Stmt::Expr(Expr::Tuple(Vec::new(), *span));
-                    Some(core::mem::replace(inner, Box::new(placeholder)))
+                    let unwrapped = *core::mem::replace(inner, Box::new(placeholder));
+                    Some(match unwrapped {
+                        Stmt::Semi(expr, _) if expr_can_end_stmt_without_semicolon(&expr) => {
+                            Stmt::Expr(expr)
+                        }
+                        other => other,
+                    })
                 }
                 _ => None,
             };
             if let Some(inner) = replacement {
-                *stmt = *inner;
+                *stmt = inner;
             } else {
                 break;
             }
@@ -521,6 +528,21 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
 
 fn should_keep_expr_attrs(expr: &Expr, ctx: &CfgContext, interner: &Interner) -> bool {
     !is_cfg_disabled_expr(expr, ctx, interner)
+}
+
+fn expr_can_end_stmt_without_semicolon(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Block(_)
+            | Expr::If(_, _, _, _)
+            | Expr::IfLet(_, _, _, _, _)
+            | Expr::Match(_, _, _)
+            | Expr::Loop(_, _, _)
+            | Expr::While(_, _, _, _)
+            | Expr::WhileLet(_, _, _, _, _)
+            | Expr::For(_, _, _, _, _)
+            | Expr::Unsafe(_, _)
+    )
 }
 
 fn is_cfg_disabled_expr(expr: &Expr, ctx: &CfgContext, interner: &Interner) -> bool {

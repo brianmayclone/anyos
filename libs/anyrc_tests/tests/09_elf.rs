@@ -7,7 +7,7 @@ use anyrc::typeck::TypeChecker;
 use anyrc::mir_build::MirBuilder;
 use anyrc::codegen::regalloc;
 use anyrc::codegen::emit::CodeEmitter;
-use anyrc::linker::elf::{self, ObjectFile, Section, ElfSymbol, ElfRelocation};
+use anyrc::linker::elf::{self, ObjectFile, Section, ElfSymbol};
 
 fn compile_to_object(src: &str) -> Vec<u8> {
     let mut interner = Interner::new();
@@ -67,6 +67,24 @@ fn compile_and_link(src: &str) -> Vec<u8> {
     compile(src, "test.rs", &options).unwrap()
 }
 
+fn compile_and_link_anyos(src: &str) -> Vec<u8> {
+    use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        cfg_flags: vec![
+            "target_os=\"anyos\"".to_string(),
+            "target_arch=\"x86_64\"".to_string(),
+        ],
+        ..CompileOptions::default()
+    };
+    compile(src, "test.rs", &options).unwrap()
+}
+
 #[test]
 fn generate_valid_elf_object() {
     let obj = compile_to_object("fn foo() -> i32 { 42 }");
@@ -102,4 +120,14 @@ fn linked_executable_has_entry() {
     let exe = compile_and_link("fn main() -> i32 { 42 }");
     let entry = u64::from_le_bytes(exe[24..32].try_into().unwrap());
     assert_ne!(entry, 0);
+}
+
+#[test]
+fn anyos_executable_loads_above_identity_map_boundary() {
+    let exe = compile_and_link_anyos("fn main() -> i32 { 0 }");
+    let entry = u64::from_le_bytes(exe[24..32].try_into().unwrap());
+    let phoff = u64::from_le_bytes(exe[32..40].try_into().unwrap()) as usize;
+    let vaddr = u64::from_le_bytes(exe[phoff + 16..phoff + 24].try_into().unwrap());
+    assert_eq!(vaddr, 0x08000000);
+    assert!(entry >= 0x08000000);
 }

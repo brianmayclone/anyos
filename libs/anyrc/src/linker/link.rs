@@ -35,6 +35,16 @@ pub enum TargetAbi {
     Linux,
 }
 
+const LINUX_USER_BASE: u64 = 0x400000;
+const ANYOS_USER_BASE: u64 = 0x08000000;
+
+fn default_base_address(target_abi: TargetAbi) -> u64 {
+    match target_abi {
+        TargetAbi::AnyOs => ANYOS_USER_BASE,
+        TargetAbi::Linux => LINUX_USER_BASE,
+    }
+}
+
 /// Link one or more ELF object files into an executable (extended version).
 pub fn link_ext(objects: &[Vec<u8>], _output_name: &str, no_main: bool, opts: &LinkOptions) -> Vec<u8> {
     // Merge extra objects into the object list
@@ -44,7 +54,9 @@ pub fn link_ext(objects: &[Vec<u8>], _output_name: &str, no_main: bool, opts: &L
     }
 
     // Parse linker script for base address and entry point
-    let mut base_addr = opts.base_address.unwrap_or(0x400000);
+    let mut base_addr = opts
+        .base_address
+        .unwrap_or_else(|| default_base_address(opts.target_abi));
     let mut entry_name = opts.entry_symbol.clone().unwrap_or_else(|| "_start".to_string());
 
     if let Some(ref script_path) = opts.linker_script {
@@ -64,11 +76,11 @@ pub fn link_ext(objects: &[Vec<u8>], _output_name: &str, no_main: bool, opts: &L
 /// Link one or more ELF object files into an executable.
 /// Returns the raw bytes of the ELF executable.
 pub fn link(objects: &[Vec<u8>], _output_name: &str, no_main: bool) -> Vec<u8> {
-    link_impl(objects, no_main, 0x400000, "_start", TargetAbi::AnyOs)
+    link_impl(objects, no_main, ANYOS_USER_BASE, "_start", TargetAbi::AnyOs)
 }
 
 pub fn link_for_target(objects: &[Vec<u8>], _output_name: &str, no_main: bool, target_abi: TargetAbi) -> Vec<u8> {
-    link_impl(objects, no_main, 0x400000, "_start", target_abi)
+    link_impl(objects, no_main, default_base_address(target_abi), "_start", target_abi)
 }
 
 fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &str, target_abi: TargetAbi) -> Vec<u8> {
@@ -219,7 +231,7 @@ fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &st
     // Entry point
     let entry_offset = *global_symbols.get(entry_name).unwrap_or(&0);
 
-    elf::write_executable(&merged_code, &merged_data, entry_offset)
+    elf::write_executable_at(&merged_code, &merged_data, entry_offset, base_addr)
 }
 
 /// Minimal linker script info extracted from a `.ld` file.

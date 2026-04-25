@@ -28,8 +28,8 @@ use crate::logic::{
 };
 use crate::ui::{
     activity_bar, ai_panel, command_palette, editor_view, events, extensions_panel, git_panel,
-    output_panel, problems_panel, run_panel, search_panel, sidebar, splash, status_bar,
-    symbols_panel, toolbar, welcome_tab,
+    inspector_panel, output_panel, problems_panel, run_panel, search_panel, sidebar, splash,
+    status_bar, symbols_panel, toolbar, welcome_tab,
 };
 use crate::util::path;
 
@@ -84,6 +84,7 @@ struct AppState {
     extensions_panel: extensions_panel::ExtensionsPanel,
     output: output_panel::OutputPanel,
     problems_panel: problems_panel::ProblemsPanel,
+    inspector_panel: inspector_panel::InspectorPanel,
     status: status_bar::StatusBar,
     activity_bar: activity_bar::ActivityBar,
     command_palette: command_palette::CommandPalette,
@@ -92,6 +93,7 @@ struct AppState {
     split_visible: bool,
     panel_ids: [u32; 7], // Explorer, Git, Search, Run, Outline, AI, Extensions
     run_config_dropdown_id: u32,
+    debug_profile_dropdown_id: u32,
 }
 
 anyos_std::global_app_state!(AppState);
@@ -215,13 +217,20 @@ fn build_and_run(
 
     main_split.add(&sidebar_container);
 
+    // ── Workbench split: editor/output | inspector ──
+    let workbench_split = anyui::SplitView::new();
+    workbench_split.set_split_ratio(100 - config.inspector_width);
+    workbench_split.set_min_split(55);
+    workbench_split.set_max_split(95);
+    main_split.add(&workbench_split);
+
     // ── Editor + Output split ──
     let editor_split = anyui::SplitView::new();
     editor_split.set_orientation(anyui::ORIENTATION_VERTICAL);
     editor_split.set_split_ratio(100 - config.output_height);
     editor_split.set_min_split(50);
     editor_split.set_max_split(95);
-    main_split.add(&editor_split);
+    workbench_split.add(&editor_split);
 
     let editor_groups_split = anyui::SplitView::new();
     editor_groups_split.set_dock(anyui::DOCK_FILL);
@@ -248,6 +257,10 @@ fn build_and_run(
 
     let problems_panel = problems_panel::ProblemsPanel::new();
     output.problems_panel_view.add(&problems_panel.panel);
+
+    let inspector_panel = inspector_panel::InspectorPanel::new();
+    inspector_panel.panel.set_visible(config.inspector_visible);
+    workbench_split.add(&inspector_panel.panel);
 
     // ── Project setup ──
     let current_project = open_folder.as_deref().map(|folder| {
@@ -305,6 +318,7 @@ fn build_and_run(
             extensions_panel,
             output,
             problems_panel,
+            inspector_panel,
             status,
             activity_bar,
             command_palette: command_palette::CommandPalette::new(&win),
@@ -313,6 +327,7 @@ fn build_and_run(
             split_visible: false,
             panel_ids,
             run_config_dropdown_id: tb.run_config.id(),
+            debug_profile_dropdown_id: tb.debug_profile.id(),
         });
     }
 
@@ -345,6 +360,8 @@ fn build_and_run(
         .separator()
         .item(13, t("Select All"), 0)
         .item(14, t("Find in Files..."), 0)
+        .separator()
+        .item(15, t("New UI Form..."), 0)
         .end_menu()
         .menu(t("View"))
         .item(20, t("Explorer"), 0)
@@ -357,6 +374,7 @@ fn build_and_run(
         .item(26, t("Output"), 0)
         .item(27, t("Problems"), 0)
         .item(28, t("Terminal"), 0)
+        .item(29, t("Properties"), 0)
         .end_menu()
         .menu(t("Build"))
         .item(30, t("Build"), 0)
