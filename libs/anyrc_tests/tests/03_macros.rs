@@ -268,6 +268,40 @@ fn expand_syn_style_punctuation_struct_repetition() {
 }
 
 #[test]
+fn expand_prefers_local_macro_definition_over_same_named_macro_elsewhere() {
+    let (krate, interner) = parse_and_expand_with_interner(r#"
+        mod a {
+            macro_rules! make {
+                () => {
+                    struct A {}
+                }
+            }
+        }
+
+        mod b {
+            macro_rules! make {
+                () => {
+                    struct B {}
+                }
+            }
+
+            make!();
+        }
+    "#);
+
+    let Item::Mod(module) = &krate.items[1] else {
+        panic!("expected module");
+    };
+    let items = module.items.as_ref().expect("module should have items");
+    assert!(items.iter().any(|item| {
+        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "B")
+    }));
+    assert!(!items.iter().any(|item| {
+        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "A")
+    }));
+}
+
+#[test]
 fn macro_not_found_is_preserved() {
     // Unknown macros should remain as MacroCall (or could be an error)
     let krate = parse_and_expand(r#"

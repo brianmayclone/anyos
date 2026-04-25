@@ -4214,3 +4214,91 @@ fn vec_new_infers_element_type_through_slice_coercion() {
         }
     "#);
 }
+
+#[test]
+fn trait_assoc_fn_self_is_inferred_from_expected_return_type() {
+    assert_type_ok(r#"
+        trait DeError {
+            fn custom<T>(msg: T) -> Self;
+        }
+
+        trait SerError {
+            fn custom<T>(msg: T) -> Self;
+        }
+
+        struct Error;
+
+        impl DeError for Error {
+            fn custom<T>(msg: T) -> Self {
+                Error
+            }
+        }
+
+        impl SerError for Error {
+            fn custom<T>(msg: T) -> Self {
+                DeError::custom(msg)
+            }
+        }
+    "#);
+}
+
+#[test]
+fn generic_bound_method_prefers_matching_trait_with_self_receiver() {
+    assert_type_ok(r#"
+        trait Deserialize {
+            fn deserialize<D>(deserializer: D) -> Self;
+        }
+
+        trait DeserializeSeed {
+            type Value;
+            fn deserialize<D>(self, deserializer: D) -> Self::Value;
+        }
+
+        struct Seed;
+        struct Deserializer;
+        struct Value;
+
+        impl DeserializeSeed for Seed {
+            type Value = Value;
+
+            fn deserialize<D>(self, deserializer: D) -> Self::Value {
+                let _ = deserializer;
+                Value
+            }
+        }
+
+        fn use_seed<T>(seed: T, de: Deserializer) -> T::Value
+        where
+            T: DeserializeSeed,
+        {
+            seed.deserialize(de)
+        }
+    "#);
+}
+
+#[test]
+fn glob_reexported_module_path_does_not_fall_back_to_local_same_named_type() {
+    assert_type_ok(r#"
+        mod lib {
+            pub use core::*;
+            pub use self::fmt::{self};
+        }
+
+        mod ser {
+            trait Error {
+                fn custom() -> Self;
+            }
+
+            mod fmt_impl {
+                use crate::lib::*;
+                use crate::ser::Error;
+
+                impl Error for fmt::Error {
+                    fn custom() -> Self {
+                        fmt::Error
+                    }
+                }
+            }
+        }
+    "#);
+}

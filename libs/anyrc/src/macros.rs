@@ -8,6 +8,7 @@ use crate::parser::Parser;
 use anyos_std::collections::HashMap;
 
 /// A registered macro definition.
+#[derive(Clone)]
 struct MacroDef {
     name: Symbol,
     rules: Vec<MacroRule>,
@@ -142,6 +143,15 @@ fn collect_macro_defs_from_items(items: &[Item], defs: &mut Vec<MacroDef>) {
 // ── AST walking and expansion ──
 
 fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interner, changed: &mut bool) {
+    let mut scoped_defs = defs.to_vec();
+    scoped_defs.extend(items.iter().filter_map(|item| {
+        if let Item::MacroDef(md) = item {
+            Some(MacroDef { name: md.name, rules: md.rules.clone() })
+        } else {
+            None
+        }
+    }));
+
     let mut i = 0;
     while i < items.len() {
         // Try to expand macro calls at item position
@@ -234,7 +244,7 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                     }
                 }
 
-                if let Some(def) = find_macro(defs, &path) {
+                if let Some(def) = find_macro(&scoped_defs, &path) {
                     if let Some(mut expanded) = try_expand_to_items(def, &args, interner) {
                         prepend_attrs_to_first_item(&mut expanded, attrs, interner);
                         items.splice(i..i, expanded);
@@ -253,24 +263,24 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
             match item {
                 Item::Fn(ref mut f) => {
                     if let Some(ref mut body) = f.body {
-                        expand_block(body, defs, interner, changed);
+                        expand_block(body, &scoped_defs, interner, changed);
                     }
                 }
-                Item::Impl(ref mut ib) => expand_items(&mut ib.items, defs, interner, changed),
-                Item::Trait(ref mut td) => expand_items(&mut td.items, defs, interner, changed),
+                Item::Impl(ref mut ib) => expand_items(&mut ib.items, &scoped_defs, interner, changed),
+                Item::Trait(ref mut td) => expand_items(&mut td.items, &scoped_defs, interner, changed),
                 Item::Mod(ref mut md) => {
                     if let Some(ref mut items) = md.items {
-                        expand_items(items, defs, interner, changed);
+                        expand_items(items, &scoped_defs, interner, changed);
                     }
                 }
                 Item::Const(ref mut c) => {
                     if let Some(ref mut value) = c.value {
-                        expand_expr(value, defs, interner, changed);
+                        expand_expr(value, &scoped_defs, interner, changed);
                     }
                 }
                 Item::Static(ref mut s) => {
                     if let Some(ref mut value) = s.value {
-                        expand_expr(value, defs, interner, changed);
+                        expand_expr(value, &scoped_defs, interner, changed);
                     }
                 }
                 _ => {}
@@ -792,7 +802,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
 fn find_macro<'a>(defs: &'a [MacroDef], path: &Path) -> Option<&'a MacroDef> {
     if path.segments.len() == 1 {
         let name = path.segments[0].ident;
-        defs.iter().find(|d| d.name == name)
+        defs.iter().rev().find(|d| d.name == name)
     } else {
         None
     }

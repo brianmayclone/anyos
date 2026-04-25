@@ -12,7 +12,43 @@ pub const TOOLBOX_CONTROLS: &[ToolboxControl] = &[
         category: "General",
     },
     ToolboxControl {
+        name: "Alert",
+        category: "Feedback",
+    },
+    ToolboxControl {
+        name: "Badge",
+        category: "Feedback",
+    },
+    ToolboxControl {
+        name: "StatusIndicator",
+        category: "Feedback",
+    },
+    ToolboxControl {
+        name: "Spinner",
+        category: "Feedback",
+    },
+    ToolboxControl {
+        name: "Tag",
+        category: "Feedback",
+    },
+    ToolboxControl {
+        name: "Tooltip",
+        category: "Feedback",
+    },
+    ToolboxControl {
         name: "Button",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "IconButton",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "ImageButton",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "PlainButton",
         category: "Common Controls",
     },
     ToolboxControl {
@@ -20,7 +56,19 @@ pub const TOOLBOX_CONTROLS: &[ToolboxControl] = &[
         category: "Common Controls",
     },
     ToolboxControl {
+        name: "LinkLabel",
+        category: "Common Controls",
+    },
+    ToolboxControl {
         name: "TextField",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "AutoCompleteTextField",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "SearchField",
         category: "Common Controls",
     },
     ToolboxControl {
@@ -28,11 +76,63 @@ pub const TOOLBOX_CONTROLS: &[ToolboxControl] = &[
         category: "Common Controls",
     },
     ToolboxControl {
+        name: "TextEditor",
+        category: "Common Controls",
+    },
+    ToolboxControl {
         name: "CheckBox",
         category: "Common Controls",
     },
     ToolboxControl {
+        name: "RadioButton",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "Toggle",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "ProgressBar",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "Slider",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "Stepper",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "ColorWell",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "DatePicker",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "DateTimePicker",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "TimePicker",
+        category: "Common Controls",
+    },
+    ToolboxControl {
         name: "DropDown",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "ComboBox",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "RadioGroup",
+        category: "Common Controls",
+    },
+    ToolboxControl {
+        name: "SegmentedControl",
         category: "Common Controls",
     },
     ToolboxControl {
@@ -44,15 +144,55 @@ pub const TOOLBOX_CONTROLS: &[ToolboxControl] = &[
         category: "Data",
     },
     ToolboxControl {
-        name: "TabBar",
-        category: "Containers",
+        name: "DataGrid",
+        category: "Data",
+    },
+    ToolboxControl {
+        name: "TableView",
+        category: "Data",
     },
     ToolboxControl {
         name: "Toolbar",
         category: "Menus & Toolbars",
     },
     ToolboxControl {
+        name: "NavigationBar",
+        category: "Menus & Toolbars",
+    },
+    ToolboxControl {
+        name: "TabBar",
+        category: "Menus & Toolbars",
+    },
+    ToolboxControl {
+        name: "Card",
+        category: "Containers",
+    },
+    ToolboxControl {
+        name: "Expander",
+        category: "Containers",
+    },
+    ToolboxControl {
+        name: "FlowPanel",
+        category: "Containers",
+    },
+    ToolboxControl {
+        name: "GroupBox",
+        category: "Containers",
+    },
+    ToolboxControl {
+        name: "ScrollView",
+        category: "Containers",
+    },
+    ToolboxControl {
         name: "SplitView",
+        category: "Containers",
+    },
+    ToolboxControl {
+        name: "StackPanel",
+        category: "Containers",
+    },
+    ToolboxControl {
+        name: "TableLayout",
         category: "Containers",
     },
     ToolboxControl {
@@ -60,16 +200,16 @@ pub const TOOLBOX_CONTROLS: &[ToolboxControl] = &[
         category: "Containers",
     },
     ToolboxControl {
-        name: "ImageView",
+        name: "Divider",
+        category: "Containers",
+    },
+    ToolboxControl {
+        name: "Canvas",
         category: "Media",
     },
     ToolboxControl {
-        name: "ProgressBar",
-        category: "Common Controls",
-    },
-    ToolboxControl {
-        name: "Slider",
-        category: "Common Controls",
+        name: "ImageView",
+        category: "Media",
     },
 ];
 

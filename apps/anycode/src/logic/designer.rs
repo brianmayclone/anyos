@@ -4,83 +4,318 @@ use alloc::vec::Vec;
 
 #[derive(Clone, Debug)]
 pub enum DesignerControlKind {
+    Alert,
+    AutoCompleteTextField,
+    Badge,
     Button,
+    Canvas,
+    Card,
     Label,
+    LinkLabel,
+    PlainButton,
     TextField,
+    TextArea,
+    TextEditor,
+    SearchField,
     CheckBox,
+    RadioButton,
+    RadioGroup,
+    ComboBox,
+    DropDown,
+    ListBox,
+    TreeView,
+    DataGrid,
+    TableView,
+    ColorWell,
+    DatePicker,
+    DateTimePicker,
+    TimePicker,
+    Divider,
+    Expander,
+    FlowPanel,
+    GroupBox,
+    IconButton,
+    ImageButton,
+    ImageView,
+    NavigationBar,
     Panel,
+    ProgressBar,
+    ScrollView,
+    SegmentedControl,
+    Slider,
+    Spinner,
+    SplitView,
+    StackPanel,
+    StatusIndicator,
+    Stepper,
+    TabBar,
+    TableLayout,
+    Tag,
+    Toggle,
+    Toolbar,
+    Tooltip,
 }
+
+const TEXTUAL_PROPERTIES: &[&str] = &[
+    "Text",
+    "X",
+    "Y",
+    "Width",
+    "Height",
+    "Enabled",
+    "Visible",
+    "Tooltip",
+    "FontSize",
+    "TextColor",
+    "BackgroundColor",
+];
+const LABEL_PROPERTIES: &[&str] = &[
+    "Text",
+    "X",
+    "Y",
+    "Width",
+    "Height",
+    "Enabled",
+    "Visible",
+    "Tooltip",
+    "TextAlign",
+    "FontSize",
+    "FontWeight",
+    "TextColor",
+    "BackgroundColor",
+];
+const TEXT_INPUT_PROPERTIES: &[&str] = &[
+    "Text",
+    "X",
+    "Y",
+    "Width",
+    "Height",
+    "Enabled",
+    "Visible",
+    "Tooltip",
+    "Placeholder",
+    "ReadOnly",
+    "Password",
+    "MaxLength",
+    "PrefixIcon",
+    "PostfixIcon",
+];
+const CHOICE_PROPERTIES: &[&str] = &[
+    "Text",
+    "Items",
+    "SelectedIndex",
+    "X",
+    "Y",
+    "Width",
+    "Height",
+    "Enabled",
+    "Visible",
+    "Tooltip",
+];
+const VALUE_PROPERTIES: &[&str] = &[
+    "Value", "Min", "Max", "Step", "X", "Y", "Width", "Height", "Enabled", "Visible", "Tooltip",
+];
+const DATA_PROPERTIES: &[&str] = &[
+    "Columns",
+    "Rows",
+    "SelectedIndex",
+    "SelectionMode",
+    "RowHeight",
+    "HeaderHeight",
+    "IndentWidth",
+    "X",
+    "Y",
+    "Width",
+    "Height",
+    "Enabled",
+    "Visible",
+    "Tooltip",
+];
+const CONTAINER_PROPERTIES: &[&str] = &[
+    "X",
+    "Y",
+    "Width",
+    "Height",
+    "Enabled",
+    "Visible",
+    "Dock",
+    "Padding",
+    "Margin",
+    "Orientation",
+    "Spacing",
+    "BackgroundColor",
+    "BorderColor",
+];
+const MEDIA_PROPERTIES: &[&str] = &[
+    "Source",
+    "ScaleMode",
+    "Interactive",
+    "X",
+    "Y",
+    "Width",
+    "Height",
+    "Enabled",
+    "Visible",
+    "Tooltip",
+];
 
 impl DesignerControlKind {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Alert => "Alert",
+            Self::AutoCompleteTextField => "AutoCompleteTextField",
+            Self::Badge => "Badge",
             Self::Button => "Button",
+            Self::Canvas => "Canvas",
+            Self::Card => "Card",
             Self::Label => "Label",
+            Self::LinkLabel => "LinkLabel",
+            Self::PlainButton => "PlainButton",
             Self::TextField => "TextField",
+            Self::TextArea => "TextArea",
+            Self::TextEditor => "TextEditor",
+            Self::SearchField => "SearchField",
             Self::CheckBox => "CheckBox",
+            Self::RadioButton => "RadioButton",
+            Self::RadioGroup => "RadioGroup",
+            Self::ComboBox => "ComboBox",
+            Self::DropDown => "DropDown",
+            Self::ListBox => "ListBox",
+            Self::TreeView => "TreeView",
+            Self::DataGrid => "DataGrid",
+            Self::TableView => "TableView",
+            Self::ColorWell => "ColorWell",
+            Self::DatePicker => "DatePicker",
+            Self::DateTimePicker => "DateTimePicker",
+            Self::TimePicker => "TimePicker",
+            Self::Divider => "Divider",
+            Self::Expander => "Expander",
+            Self::FlowPanel => "FlowPanel",
+            Self::GroupBox => "GroupBox",
+            Self::IconButton => "IconButton",
+            Self::ImageButton => "ImageButton",
+            Self::ImageView => "ImageView",
+            Self::NavigationBar => "NavigationBar",
             Self::Panel => "Panel",
+            Self::ProgressBar => "ProgressBar",
+            Self::ScrollView => "ScrollView",
+            Self::SegmentedControl => "SegmentedControl",
+            Self::Slider => "Slider",
+            Self::Spinner => "Spinner",
+            Self::SplitView => "SplitView",
+            Self::StackPanel => "StackPanel",
+            Self::StatusIndicator => "StatusIndicator",
+            Self::Stepper => "Stepper",
+            Self::TabBar => "TabBar",
+            Self::TableLayout => "TableLayout",
+            Self::Tag => "Tag",
+            Self::Toggle => "Toggle",
+            Self::Toolbar => "Toolbar",
+            Self::Tooltip => "Tooltip",
         }
     }
 
     fn from_str(value: &str) -> Self {
         match value {
+            "Alert" => Self::Alert,
+            "AutoCompleteTextField" => Self::AutoCompleteTextField,
+            "Badge" => Self::Badge,
+            "Button" => Self::Button,
+            "Canvas" => Self::Canvas,
+            "Card" => Self::Card,
             "Label" => Self::Label,
+            "LinkLabel" => Self::LinkLabel,
+            "PlainButton" => Self::PlainButton,
             "TextField" => Self::TextField,
+            "TextArea" => Self::TextArea,
+            "TextEditor" => Self::TextEditor,
+            "SearchField" => Self::SearchField,
             "CheckBox" => Self::CheckBox,
+            "RadioButton" => Self::RadioButton,
+            "RadioGroup" => Self::RadioGroup,
+            "ComboBox" => Self::ComboBox,
+            "DropDown" => Self::DropDown,
+            "ListBox" => Self::ListBox,
+            "TreeView" => Self::TreeView,
+            "DataGrid" => Self::DataGrid,
+            "TableView" => Self::TableView,
+            "ColorWell" => Self::ColorWell,
+            "DatePicker" => Self::DatePicker,
+            "DateTimePicker" => Self::DateTimePicker,
+            "TimePicker" => Self::TimePicker,
+            "Divider" => Self::Divider,
+            "Expander" => Self::Expander,
+            "FlowPanel" => Self::FlowPanel,
+            "GroupBox" => Self::GroupBox,
+            "IconButton" => Self::IconButton,
+            "ImageButton" => Self::ImageButton,
+            "ImageView" => Self::ImageView,
+            "NavigationBar" => Self::NavigationBar,
             "Panel" => Self::Panel,
+            "ProgressBar" => Self::ProgressBar,
+            "ScrollView" => Self::ScrollView,
+            "SegmentedControl" => Self::SegmentedControl,
+            "Slider" => Self::Slider,
+            "Spinner" => Self::Spinner,
+            "SplitView" => Self::SplitView,
+            "StackPanel" => Self::StackPanel,
+            "StatusIndicator" => Self::StatusIndicator,
+            "Stepper" => Self::Stepper,
+            "TabBar" => Self::TabBar,
+            "TableLayout" => Self::TableLayout,
+            "Tag" => Self::Tag,
+            "Toggle" => Self::Toggle,
+            "Toolbar" => Self::Toolbar,
+            "Tooltip" => Self::Tooltip,
             _ => Self::Button,
         }
     }
 
     pub fn property_names(&self) -> &'static [&'static str] {
         match self {
-            Self::Button => &[
-                "Text", "X", "Y", "Width", "Height", "Enabled", "Visible", "Tooltip", "Accent",
-                "Default",
+            Self::Alert
+            | Self::Badge
+            | Self::Button
+            | Self::IconButton
+            | Self::LinkLabel
+            | Self::NavigationBar
+            | Self::PlainButton
+            | Self::StatusIndicator
+            | Self::Tag
+            | Self::Tooltip => TEXTUAL_PROPERTIES,
+            Self::Label => LABEL_PROPERTIES,
+            Self::AutoCompleteTextField
+            | Self::SearchField
+            | Self::TextArea
+            | Self::TextEditor
+            | Self::TextField => TEXT_INPUT_PROPERTIES,
+            Self::CheckBox | Self::RadioButton | Self::Toggle => &[
+                "Text", "Checked", "X", "Y", "Width", "Height", "Enabled", "Visible", "Tooltip",
             ],
-            Self::Label => &[
-                "Text",
-                "X",
-                "Y",
-                "Width",
-                "Height",
-                "Enabled",
-                "Visible",
-                "Tooltip",
-                "TextAlign",
-                "FontSize",
-                "FontWeight",
-                "TextColor",
-            ],
-            Self::TextField => &[
-                "Text",
-                "X",
-                "Y",
-                "Width",
-                "Height",
-                "Enabled",
-                "Visible",
-                "Tooltip",
-                "Placeholder",
-                "ReadOnly",
-                "Password",
-                "MaxLength",
-            ],
-            Self::CheckBox => &[
-                "Text", "X", "Y", "Width", "Height", "Enabled", "Visible", "Tooltip", "Checked",
-            ],
-            Self::Panel => &[
-                "X",
-                "Y",
-                "Width",
-                "Height",
-                "Enabled",
-                "Visible",
-                "Dock",
-                "Padding",
-                "BackgroundColor",
-                "BorderColor",
-            ],
+            Self::ComboBox
+            | Self::DatePicker
+            | Self::DateTimePicker
+            | Self::DropDown
+            | Self::ListBox
+            | Self::RadioGroup
+            | Self::SegmentedControl
+            | Self::TabBar
+            | Self::TimePicker => CHOICE_PROPERTIES,
+            Self::DataGrid | Self::TableView | Self::TreeView => DATA_PROPERTIES,
+            Self::ColorWell | Self::ProgressBar | Self::Slider | Self::Stepper => VALUE_PROPERTIES,
+            Self::Canvas | Self::ImageButton | Self::ImageView => MEDIA_PROPERTIES,
+            Self::Card
+            | Self::Divider
+            | Self::Expander
+            | Self::FlowPanel
+            | Self::GroupBox
+            | Self::Panel
+            | Self::ScrollView
+            | Self::Spinner
+            | Self::SplitView
+            | Self::StackPanel
+            | Self::TableLayout
+            | Self::Toolbar => CONTAINER_PROPERTIES,
         }
     }
 }
@@ -341,7 +576,10 @@ impl DesignerDocument {
         out.push_str("    pub fn new() -> Self {\n");
         out.push_str(&format!("        let ui = {}::build();\n", ui_struct));
         for control in &self.controls {
-            if matches!(control.kind, DesignerControlKind::Button) {
+            if matches!(
+                control.kind.as_str(),
+                "Button" | "IconButton" | "ImageButton" | "LinkLabel" | "PlainButton"
+            ) {
                 out.push_str(&format!(
                     "        ui.{}.on_click(|_| events::{}());\n",
                     control.name,
@@ -360,7 +598,10 @@ impl DesignerDocument {
     pub fn events_rs(&self) -> String {
         let mut out = String::new();
         for control in &self.controls {
-            if matches!(control.kind, DesignerControlKind::Button) {
+            if matches!(
+                control.kind.as_str(),
+                "Button" | "IconButton" | "ImageButton" | "LinkLabel" | "PlainButton"
+            ) {
                 out.push_str(&format!("pub fn {}() {{\n", control.event_name()));
                 out.push_str("    // TODO: handle event\n");
                 out.push_str("}\n\n");
@@ -554,18 +795,85 @@ pub fn ensure_event_handler(
 
 fn rust_control_type(kind: &DesignerControlKind) -> &'static str {
     match kind {
+        DesignerControlKind::Alert => "Alert",
+        DesignerControlKind::AutoCompleteTextField => "AutoCompleteTextField",
+        DesignerControlKind::Badge => "Badge",
         DesignerControlKind::Button => "Button",
+        DesignerControlKind::Canvas => "Canvas",
+        DesignerControlKind::Card => "Card",
         DesignerControlKind::Label => "Label",
+        DesignerControlKind::LinkLabel => "LinkLabel",
+        DesignerControlKind::PlainButton => "PlainButton",
         DesignerControlKind::TextField => "TextField",
+        DesignerControlKind::TextArea => "TextArea",
+        DesignerControlKind::TextEditor => "TextEditor",
+        DesignerControlKind::SearchField => "SearchField",
         DesignerControlKind::CheckBox => "Checkbox",
+        DesignerControlKind::RadioButton => "RadioButton",
+        DesignerControlKind::RadioGroup => "RadioGroup",
+        DesignerControlKind::ComboBox => "ComboBox",
+        DesignerControlKind::DropDown => "DropDown",
+        DesignerControlKind::ListBox => "ListBox",
+        DesignerControlKind::TreeView => "TreeView",
+        DesignerControlKind::DataGrid => "DataGrid",
+        DesignerControlKind::TableView => "TableView",
+        DesignerControlKind::ColorWell => "ColorWell",
+        DesignerControlKind::DatePicker => "DatePicker",
+        DesignerControlKind::DateTimePicker => "DateTimePicker",
+        DesignerControlKind::TimePicker => "TimePicker",
+        DesignerControlKind::Divider => "Divider",
+        DesignerControlKind::Expander => "Expander",
+        DesignerControlKind::FlowPanel => "FlowPanel",
+        DesignerControlKind::GroupBox => "GroupBox",
+        DesignerControlKind::IconButton => "IconButton",
+        DesignerControlKind::ImageButton => "ImageButton",
+        DesignerControlKind::ImageView => "ImageView",
+        DesignerControlKind::NavigationBar => "NavigationBar",
         DesignerControlKind::Panel => "View",
+        DesignerControlKind::ProgressBar => "ProgressBar",
+        DesignerControlKind::ScrollView => "ScrollView",
+        DesignerControlKind::SegmentedControl => "SegmentedControl",
+        DesignerControlKind::Slider => "Slider",
+        DesignerControlKind::Spinner => "Spinner",
+        DesignerControlKind::SplitView => "SplitView",
+        DesignerControlKind::StackPanel => "StackPanel",
+        DesignerControlKind::StatusIndicator => "StatusIndicator",
+        DesignerControlKind::Stepper => "Stepper",
+        DesignerControlKind::TabBar => "TabBar",
+        DesignerControlKind::TableLayout => "TableLayout",
+        DesignerControlKind::Tag => "Tag",
+        DesignerControlKind::Toggle => "Toggle",
+        DesignerControlKind::Toolbar => "Toolbar",
+        DesignerControlKind::Tooltip => "Tooltip",
     }
 }
 
 fn control_constructor(control: &DesignerControl) -> String {
-    match control.kind {
-        DesignerControlKind::TextField => {
-            let mut out = format!("        let {} = ui::TextField::new();\n", control.name);
+    match &control.kind {
+        DesignerControlKind::AutoCompleteTextField
+        | DesignerControlKind::ComboBox
+        | DesignerControlKind::DatePicker
+        | DesignerControlKind::DateTimePicker
+        | DesignerControlKind::FlowPanel
+        | DesignerControlKind::RadioGroup
+        | DesignerControlKind::ScrollView
+        | DesignerControlKind::SearchField
+        | DesignerControlKind::Spinner
+        | DesignerControlKind::SplitView
+        | DesignerControlKind::Stepper
+        | DesignerControlKind::TableView
+        | DesignerControlKind::TimePicker
+        | DesignerControlKind::Toolbar => format!(
+            "        let {} = ui::{}::new();\n",
+            control.name,
+            rust_control_type(&control.kind)
+        ),
+        DesignerControlKind::TextArea | DesignerControlKind::TextField => {
+            let mut out = format!(
+                "        let {} = ui::{}::new();\n",
+                control.name,
+                rust_control_type(&control.kind)
+            );
             if !control.text.is_empty() {
                 out.push_str(&format!(
                     "        {}.set_text(\"{}\");\n",
@@ -575,7 +883,61 @@ fn control_constructor(control: &DesignerControl) -> String {
             }
             out
         }
+        DesignerControlKind::Canvas
+        | DesignerControlKind::ImageButton
+        | DesignerControlKind::ImageView
+        | DesignerControlKind::TextEditor
+        | DesignerControlKind::TreeView => format!(
+            "        let {} = ui::{}::new({}, {});\n",
+            control.name,
+            rust_control_type(&control.kind),
+            control.width,
+            control.height
+        ),
+        DesignerControlKind::ProgressBar | DesignerControlKind::Slider => {
+            format!(
+                "        let {} = ui::{}::new(0);\n",
+                control.name,
+                rust_control_type(&control.kind)
+            )
+        }
+        DesignerControlKind::Toggle => {
+            format!("        let {} = ui::Toggle::new(false);\n", control.name)
+        }
+        DesignerControlKind::StackPanel => {
+            format!("        let {} = ui::StackPanel::new(0);\n", control.name)
+        }
+        DesignerControlKind::TableLayout => {
+            format!("        let {} = ui::TableLayout::new(2);\n", control.name)
+        }
         DesignerControlKind::Panel => format!("        let {} = ui::View::new();\n", control.name),
+        DesignerControlKind::Card
+        | DesignerControlKind::ColorWell
+        | DesignerControlKind::Divider => format!(
+            "        let {} = ui::{}::new();\n",
+            control.name,
+            rust_control_type(&control.kind)
+        ),
+        DesignerControlKind::DataGrid => format!(
+            "        let {} = ui::DataGrid::new(\"Name|Value\");\n",
+            control.name
+        ),
+        DesignerControlKind::DropDown
+        | DesignerControlKind::ListBox
+        | DesignerControlKind::SegmentedControl
+        | DesignerControlKind::TabBar => {
+            let items = if control.text.is_empty() {
+                String::from("Item 1|Item 2")
+            } else {
+                escape(&control.text)
+            };
+            format!(
+                "        let {} = ui::{}::new(\"{}\");\n",
+                control.name,
+                rust_control_type(&control.kind),
+                items
+            )
+        }
         _ => format!(
             "        let {} = ui::{}::new(\"{}\");\n",
             control.name,
