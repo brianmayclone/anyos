@@ -292,6 +292,22 @@ impl EditorView {
             }
         }
     }
+
+    pub fn update_designer_document(
+        &mut self,
+        file_path: &str,
+        doc: crate::logic::designer::DesignerDocument,
+        selected_control: Option<&str>,
+    ) {
+        for tab in &mut self.editors {
+            if let EditorTab::Designer { surface } = tab {
+                if surface.file_path() == file_path {
+                    surface.set_document(doc, selected_control);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 impl EditorTab {

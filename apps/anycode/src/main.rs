@@ -94,6 +94,8 @@ struct AppState {
     panel_ids: [u32; 7], // Explorer, Git, Search, Run, Outline, AI, Extensions
     run_config_dropdown_id: u32,
     debug_profile_dropdown_id: u32,
+    selected_designer_file: String,
+    selected_designer_control: String,
 }
 
 anyos_std::global_app_state!(AppState);
@@ -328,6 +330,8 @@ fn build_and_run(
             panel_ids,
             run_config_dropdown_id: tb.run_config.id(),
             debug_profile_dropdown_id: tb.debug_profile.id(),
+            selected_designer_file: String::new(),
+            selected_designer_control: String::new(),
         });
     }
 
@@ -419,6 +423,7 @@ fn build_and_run(
     events::wire_problems_panel();
     events::wire_git_panel();
     events::wire_ai_panel();
+    events::wire_inspector();
     events::wire_editor();
     events::wire_welcome_tab();
     events::wire_command_palette();

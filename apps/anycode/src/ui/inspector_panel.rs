@@ -8,9 +8,13 @@ const STYLE_BOLD: u32 = 1;
 
 pub struct InspectorPanel {
     pub panel: ui::View,
+    pub property_dropdown: ui::DropDown,
+    pub property_value: ui::TextField,
+    pub btn_apply_property: ui::Button,
     title: ui::Label,
     subtitle: ui::Label,
     tree: ui::TreeView,
+    property_editor: ui::View,
 }
 
 impl InspectorPanel {
@@ -46,11 +50,47 @@ impl InspectorPanel {
         tree.set_row_height(20);
         panel.add(&tree);
 
+        let property_editor = ui::View::new();
+        property_editor.set_dock(ui::DOCK_BOTTOM);
+        property_editor.set_size(240, 118);
+        property_editor.set_color(tc.sidebar_bg);
+        property_editor.set_visible(false);
+        panel.add(&property_editor);
+
+        let property_title = ui::Label::new("Edit Property");
+        property_title.set_position(12, 8);
+        property_title.set_size(210, 18);
+        property_title.set_font_size(11);
+        property_title.set_text_color(tc.text_secondary);
+        property_editor.add(&property_title);
+
+        let property_dropdown = ui::DropDown::new("Text|X|Y|Width|Height");
+        property_dropdown.set_position(12, 30);
+        property_dropdown.set_size(216, 26);
+        property_editor.add(&property_dropdown);
+
+        let property_value = ui::TextField::new();
+        property_value.set_position(12, 62);
+        property_value.set_size(128, 28);
+        property_value.set_color(tc.control_bg);
+        property_value.set_text_color(tc.text);
+        property_editor.add(&property_value);
+
+        let btn_apply_property = ui::Button::new("Apply");
+        btn_apply_property.set_position(148, 62);
+        btn_apply_property.set_size(80, 28);
+        btn_apply_property.set_color(tc.accent);
+        property_editor.add(&btn_apply_property);
+
         let this = Self {
             panel,
+            property_dropdown,
+            property_value,
+            btn_apply_property,
             title,
             subtitle,
             tree,
+            property_editor,
         };
         this.show_empty();
         this
@@ -60,6 +100,7 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Properties");
         self.subtitle.set_text("No selection");
+        self.property_editor.set_visible(false);
         self.tree.clear();
         let root = self.tree.add_root("Inspector");
         self.tree.set_node_style(root, STYLE_BOLD);
@@ -74,6 +115,7 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Properties");
         self.subtitle.set_text(file_path);
+        self.property_editor.set_visible(false);
         self.tree.clear();
         let root = self.tree.add_root("File");
         self.tree.set_node_style(root, STYLE_BOLD);
@@ -86,6 +128,7 @@ impl InspectorPanel {
         let tc = ui::theme::colors();
         self.title.set_text("Designer Properties");
         self.subtitle.set_text(&doc.form_name);
+        self.property_editor.set_visible(false);
         self.tree.clear();
 
         let form = self.tree.add_root(&format!("Form: {}", doc.form_name));
@@ -138,6 +181,9 @@ impl InspectorPanel {
         self.title.set_text("Properties");
         self.subtitle
             .set_text(&format!("{} / {}", doc.form_name, control.name));
+        self.property_editor.set_visible(true);
+        self.property_dropdown.set_state(0);
+        self.property_value.set_text(&control.text);
         self.tree.clear();
 
         let root = self.tree.add_root(&control.name);
@@ -168,5 +214,38 @@ impl InspectorPanel {
         self.tree.set_node_style(toolbox, STYLE_BOLD);
         self.tree.set_node_text_color(toolbox, tc.text_secondary);
         designer_toolbox::populate_toolbox_tree(&self.tree, toolbox);
+    }
+
+    pub fn update_property_value_from_selection(&self, doc: &DesignerDocument, control_name: &str) {
+        let Some(control) = doc.controls.iter().find(|c| c.name == control_name) else {
+            return;
+        };
+        let value = match self.property_dropdown.get_state() {
+            1 => format!("{}", control.x),
+            2 => format!("{}", control.y),
+            3 => format!("{}", control.width),
+            4 => format!("{}", control.height),
+            _ => control.text.clone(),
+        };
+        self.property_value.set_text(&value);
+    }
+
+    pub fn selected_property_name(&self) -> &'static str {
+        match self.property_dropdown.get_state() {
+            1 => "x",
+            2 => "y",
+            3 => "width",
+            4 => "height",
+            _ => "text",
+        }
+    }
+
+    pub fn property_value_text(&self) -> alloc::string::String {
+        let mut buf = [0u8; 512];
+        let len = self.property_value.get_text(&mut buf);
+        core::str::from_utf8(&buf[..len as usize])
+            .unwrap_or("")
+            .trim()
+            .into()
     }
 }

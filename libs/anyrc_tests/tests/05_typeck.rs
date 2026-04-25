@@ -177,13 +177,22 @@ fn nested_use_of_root_reexport_chases_alias_target() {
     assert_type_ok(r#"
         mod token {
             pub struct Type {}
+            pub struct Macro {}
         }
 
         mod ty {
             pub struct Type {}
         }
 
+        mod mac {
+            pub struct Macro {
+                pub path: usize,
+                pub bang_token: usize,
+            }
+        }
+
         pub use crate::ty::Type;
+        pub use crate::mac::Macro;
 
         mod parse_quote {
             use crate::Type;
@@ -192,6 +201,23 @@ fn nested_use_of_root_reexport_chases_alias_target() {
 
             fn parse(value: Type) {
                 takes_ty(value);
+            }
+        }
+
+        mod gen {
+            mod clone {
+                trait Clone {
+                    fn clone(&self) -> Self;
+                }
+
+                impl Clone for crate::Macro {
+                    fn clone(&self) -> Self {
+                        crate::Macro {
+                            path: self.path,
+                            bang_token: self.bang_token,
+                        }
+                    }
+                }
             }
         }
     "#);

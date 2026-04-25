@@ -112,6 +112,11 @@ impl DesignerSurface {
     pub fn file_path(&self) -> &str {
         &self.file_path
     }
+
+    pub fn set_document(&mut self, doc: DesignerDocument, selected_control: Option<&str>) {
+        self.doc = doc;
+        self.render(selected_control);
+    }
 }
 
 pub fn hit_test_doc(doc: &DesignerDocument, x: i32, y: i32) -> Option<String> {

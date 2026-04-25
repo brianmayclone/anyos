@@ -700,12 +700,16 @@ pub fn select_designer_control_at(file_path: &str, x: i32, y: i32) {
         None => return,
     };
     if let Some(control_name) = crate::ui::designer_surface::hit_test_doc(&doc, x, y) {
+        s.selected_designer_file = String::from(file_path);
+        s.selected_designer_control = control_name.clone();
         s.inspector_panel.show_designer_control(&doc, &control_name);
         s.editor_view
             .select_designer_control(file_path, &control_name);
         s.status
             .set_analysis_status(&format!("Selected {}", control_name));
     } else {
+        s.selected_designer_file.clear();
+        s.selected_designer_control.clear();
         s.inspector_panel.show_designer(&doc);
         s.status.set_analysis_status("Selected form surface");
     }
@@ -731,6 +735,8 @@ pub fn designer_double_click_at(file_path: &str, x: i32, y: i32) {
     };
     match designer::ensure_event_handler(file_path, control) {
         Ok(events_path) => {
+            s.selected_designer_file = String::from(file_path);
+            s.selected_designer_control = control_name.clone();
             s.inspector_panel.show_designer_control(&doc, &control_name);
             open_file(&events_path);
             s.status
@@ -738,6 +744,51 @@ pub fn designer_double_click_at(file_path: &str, x: i32, y: i32) {
         }
         Err(err) => s.status.set_analysis_status(err),
     }
+}
+
+pub fn designer_property_selection_changed() {
+    let s = app();
+    if s.selected_designer_file.is_empty() || s.selected_designer_control.is_empty() {
+        return;
+    }
+    let Some(doc) = designer::load_designer(&s.selected_designer_file) else {
+        return;
+    };
+    s.inspector_panel
+        .update_property_value_from_selection(&doc, &s.selected_designer_control);
+}
+
+pub fn apply_designer_property() {
+    let s = app();
+    if s.selected_designer_file.is_empty() || s.selected_designer_control.is_empty() {
+        s.status
+            .set_analysis_status("Select a designer control first");
+        return;
+    }
+    let file_path = s.selected_designer_file.clone();
+    let control_name = s.selected_designer_control.clone();
+    let property_name = s.inspector_panel.selected_property_name();
+    let value = s.inspector_panel.property_value_text();
+    let mut doc = match designer::load_designer(&file_path) {
+        Some(doc) => doc,
+        None => {
+            s.status.set_analysis_status("Could not load designer file");
+            return;
+        }
+    };
+    if let Err(err) = doc.update_control_property(&control_name, property_name, &value) {
+        s.status.set_analysis_status(err);
+        return;
+    }
+    if let Err(err) = designer::save_designer(&file_path, &doc) {
+        s.status.set_analysis_status(err);
+        return;
+    }
+    s.editor_view
+        .update_designer_document(&file_path, doc.clone(), Some(&control_name));
+    s.inspector_panel.show_designer_control(&doc, &control_name);
+    s.status
+        .set_analysis_status(&format!("Updated {}.{}", control_name, property_name));
 }
 
 pub fn toggle_inspector() {

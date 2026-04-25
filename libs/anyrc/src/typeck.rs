@@ -3805,7 +3805,11 @@ impl<'a> TypeChecker<'a> {
     fn resolve_reexported_qualified_type_path(&self, path: &str) -> Option<DefId> {
         let (module_path, local_name) = path.rsplit_once("::")?;
         let local_sym = self.interner.lookup(local_name)?;
-        let normalized_module = module_path.strip_prefix("crate::").unwrap_or(module_path);
+        let normalized_module = if module_path == "crate" {
+            ""
+        } else {
+            module_path.strip_prefix("crate::").unwrap_or(module_path)
+        };
         let alias_target = self
             .scoped_type_aliases
             .get(&(normalized_module.to_string(), local_sym))?;

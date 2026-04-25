@@ -228,6 +228,30 @@ impl DesignerDocument {
     pub fn module_rs(&self) -> String {
         format!("mod view;\n\npub use view::{};\n", self.form_name)
     }
+
+    pub fn update_control_property(
+        &mut self,
+        control_name: &str,
+        property_name: &str,
+        value: &str,
+    ) -> Result<(), &'static str> {
+        let Some(control) = self
+            .controls
+            .iter_mut()
+            .find(|control| control.name == control_name)
+        else {
+            return Err("Designer control not found");
+        };
+        match property_name {
+            "text" => control.text = String::from(value),
+            "x" => control.x = parse_i32(value).ok_or("X must be a number")?,
+            "y" => control.y = parse_i32(value).ok_or("Y must be a number")?,
+            "width" => control.width = parse_u32(value).ok_or("Width must be a number")?,
+            "height" => control.height = parse_u32(value).ok_or("Height must be a number")?,
+            _ => return Err("Unsupported designer property"),
+        }
+        Ok(())
+    }
 }
 
 pub fn is_designer_file(file_path: &str) -> bool {
@@ -237,6 +261,35 @@ pub fn is_designer_file(file_path: &str) -> bool {
 pub fn load_designer(file_path: &str) -> Option<DesignerDocument> {
     let data = anyos_std::fs::read_to_string(file_path).ok()?;
     Some(DesignerDocument::parse(&data))
+}
+
+pub fn save_designer(file_path: &str, doc: &DesignerDocument) -> Result<(), &'static str> {
+    anyos_std::fs::write_bytes(file_path, doc.to_designer_metadata().as_bytes())
+        .map_err(|_| "Could not write designer metadata")?;
+    regenerate_generated_files(file_path, doc)
+}
+
+pub fn regenerate_generated_files(
+    designer_file_path: &str,
+    doc: &DesignerDocument,
+) -> Result<(), &'static str> {
+    let form_dir = match designer_file_path.rfind('/') {
+        Some(pos) => &designer_file_path[..pos],
+        None => return Err("Invalid designer path"),
+    };
+    anyos_std::fs::write_bytes(
+        &format!("{}/designer.rs", form_dir),
+        doc.designer_rs().as_bytes(),
+    )
+    .map_err(|_| "Could not update generated designer")?;
+    anyos_std::fs::write_bytes(
+        &format!("{}/view.rs", form_dir),
+        doc.codebehind_rs().as_bytes(),
+    )
+    .map_err(|_| "Could not update codebehind")?;
+    anyos_std::fs::write_bytes(&format!("{}/mod.rs", form_dir), doc.module_rs().as_bytes())
+        .map_err(|_| "Could not update form module")?;
+    Ok(())
 }
 
 pub fn create_form_files(project_root: &str, form_name: &str) -> Result<(), &'static str> {

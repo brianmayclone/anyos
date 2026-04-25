@@ -180,6 +180,17 @@ pub fn wire_toolbar(tb: &AppToolbar) {
     tb.btn_settings.on_click(|_| commands::open_settings());
 }
 
+pub fn wire_inspector() {
+    app()
+        .inspector_panel
+        .property_dropdown
+        .on_selection_changed(|_| commands::designer_property_selection_changed());
+    app()
+        .inspector_panel
+        .btn_apply_property
+        .on_click(|_| commands::apply_designer_property());
+}
+
 // ── Menu bar ───────────────────────────────────────────────────
 
 pub fn wire_menu(menu: &anyui::MenuBar) {
