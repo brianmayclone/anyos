@@ -1,7 +1,7 @@
 use alloc::format;
 use libanyui_client as ui;
 
-use crate::logic::designer::DesignerDocument;
+use crate::logic::designer::{DesignerControl, DesignerDocument};
 use crate::ui::designer_toolbox;
 
 const STYLE_BOLD: u32 = 1;
@@ -123,5 +123,50 @@ impl InspectorPanel {
         self.tree.set_node_text_color(toolbox, tc.accent);
         designer_toolbox::populate_toolbox_tree(&self.tree, toolbox);
         self.tree.set_expanded(toolbox, true);
+    }
+
+    pub fn show_designer_control(&self, doc: &DesignerDocument, control_name: &str) {
+        if let Some(control) = doc.controls.iter().find(|c| c.name == control_name) {
+            self.show_control_properties(doc, control);
+        } else {
+            self.show_designer(doc);
+        }
+    }
+
+    fn show_control_properties(&self, doc: &DesignerDocument, control: &DesignerControl) {
+        let tc = ui::theme::colors();
+        self.title.set_text("Properties");
+        self.subtitle
+            .set_text(&format!("{} / {}", doc.form_name, control.name));
+        self.tree.clear();
+
+        let root = self.tree.add_root(&control.name);
+        self.tree.set_node_style(root, STYLE_BOLD);
+        self.tree.set_node_text_color(root, tc.accent);
+        self.tree
+            .add_child(root, &format!("Type: {}", control.kind.as_str()));
+        self.tree
+            .add_child(root, &format!("Name: {}", control.name));
+        self.tree
+            .add_child(root, &format!("Text: {}", control.text));
+        self.tree.add_child(root, &format!("X: {}", control.x));
+        self.tree.add_child(root, &format!("Y: {}", control.y));
+        self.tree
+            .add_child(root, &format!("Width: {}", control.width));
+        self.tree
+            .add_child(root, &format!("Height: {}", control.height));
+        self.tree.set_expanded(root, true);
+
+        let events = self.tree.add_root("Events");
+        self.tree.set_node_style(events, STYLE_BOLD);
+        self.tree.set_node_text_color(events, tc.text);
+        self.tree
+            .add_child(events, &format!("Default: {}", control.event_name()));
+        self.tree.set_expanded(events, true);
+
+        let toolbox = self.tree.add_root("Toolbox");
+        self.tree.set_node_style(toolbox, STYLE_BOLD);
+        self.tree.set_node_text_color(toolbox, tc.text_secondary);
+        designer_toolbox::populate_toolbox_tree(&self.tree, toolbox);
     }
 }

@@ -693,6 +693,53 @@ fn refresh_inspector_for_file(file_path: &str) {
     s.inspector_panel.show_file(file_path);
 }
 
+pub fn select_designer_control_at(file_path: &str, x: i32, y: i32) {
+    let s = app();
+    let doc = match designer::load_designer(file_path) {
+        Some(doc) => doc,
+        None => return,
+    };
+    if let Some(control_name) = crate::ui::designer_surface::hit_test_doc(&doc, x, y) {
+        s.inspector_panel.show_designer_control(&doc, &control_name);
+        s.editor_view
+            .select_designer_control(file_path, &control_name);
+        s.status
+            .set_analysis_status(&format!("Selected {}", control_name));
+    } else {
+        s.inspector_panel.show_designer(&doc);
+        s.status.set_analysis_status("Selected form surface");
+    }
+}
+
+pub fn designer_double_click_at(file_path: &str, x: i32, y: i32) {
+    let s = app();
+    let doc = match designer::load_designer(file_path) {
+        Some(doc) => doc,
+        None => return,
+    };
+    let control_name = match crate::ui::designer_surface::hit_test_doc(&doc, x, y) {
+        Some(name) => name,
+        None => return,
+    };
+    let control = match doc
+        .controls
+        .iter()
+        .find(|control| control.name == control_name)
+    {
+        Some(control) => control,
+        None => return,
+    };
+    match designer::ensure_event_handler(file_path, control) {
+        Ok(events_path) => {
+            s.inspector_panel.show_designer_control(&doc, &control_name);
+            open_file(&events_path);
+            s.status
+                .set_analysis_status(&format!("Opened handler {}", control.event_name()));
+        }
+        Err(err) => s.status.set_analysis_status(err),
+    }
+}
+
 pub fn toggle_inspector() {
     let s = app();
     s.config.inspector_visible = !s.config.inspector_visible;

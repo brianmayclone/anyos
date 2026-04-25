@@ -310,6 +310,35 @@ pub fn form_exists(project_root: &str, form_name: &str) -> bool {
     crate::util::path::exists(&designer_file_path(project_root, form_name))
 }
 
+pub fn events_file_for_designer(designer_file_path: &str) -> String {
+    match designer_file_path.rfind('/') {
+        Some(pos) => format!("{}/events.rs", &designer_file_path[..pos]),
+        None => String::from("events.rs"),
+    }
+}
+
+pub fn ensure_event_handler(
+    designer_file_path: &str,
+    control: &DesignerControl,
+) -> Result<String, &'static str> {
+    let events_path = events_file_for_designer(designer_file_path);
+    let handler = control.event_name();
+    let signature = format!("pub fn {}()", handler);
+    let mut data = anyos_std::fs::read_to_string(&events_path).unwrap_or_default();
+    if !data.contains(&signature) {
+        if !data.ends_with('\n') {
+            data.push('\n');
+        }
+        data.push_str(&format!(
+            "\npub fn {}() {{\n    // TODO: handle event\n}}\n",
+            handler
+        ));
+        anyos_std::fs::write_bytes(&events_path, data.as_bytes())
+            .map_err(|_| "Could not update event handler")?;
+    }
+    Ok(events_path)
+}
+
 fn rust_control_type(kind: &DesignerControlKind) -> &'static str {
     match kind {
         DesignerControlKind::Button => "Button",

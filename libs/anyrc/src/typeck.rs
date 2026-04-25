@@ -3758,6 +3758,18 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn resolve_qualified_type_path(&self, path: &str) -> Option<DefId> {
+        if !path.contains("::") {
+            if let Some(sym) = self.interner.lookup(path) {
+                if let Some(target) = self.scoped_type_aliases.get(&(String::new(), sym)) {
+                    if target != path {
+                        if let Some(def_id) = self.resolve_qualified_type_path(target) {
+                            return Some(def_id);
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some((first, rest)) = path.split_once("::") {
             let module_key = self.module_key_from_symbols(&self.current_module_path);
             if let Some(first_sym) = self.interner.lookup(first) {

@@ -173,7 +173,7 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                     );
                     let mut parser = Parser::new(entry_src, interner);
                     let mut krate = parser.parse_crate();
-                    prepend_attrs_to_first_item(&mut krate.items, attrs);
+                    prepend_attrs_to_first_item(&mut krate.items, attrs, interner);
                     items.splice(i..i, krate.items);
                     *changed = true;
                     continue;
@@ -191,7 +191,7 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                         );
                         let mut parser = Parser::new(&state_src, interner);
                         let mut krate = parser.parse_crate();
-                        prepend_attrs_to_first_item(&mut krate.items, attrs);
+                        prepend_attrs_to_first_item(&mut krate.items, attrs, interner);
                         items.splice(i..i, krate.items);
                         *changed = true;
                         continue;
@@ -200,7 +200,7 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
 
                 if macro_name == "dll_exports" {
                     if let Some(mut expanded) = expand_builtin_dll_exports(&args, interner) {
-                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        prepend_attrs_to_first_item(&mut expanded, attrs, interner);
                         items.splice(i..i, expanded);
                         *changed = true;
                         continue;
@@ -209,7 +209,7 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
 
                 if macro_name == "define_cast" {
                     if let Some(mut expanded) = expand_builtin_define_cast(&args, interner) {
-                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        prepend_attrs_to_first_item(&mut expanded, attrs, interner);
                         items.splice(i..i, expanded);
                         *changed = true;
                         continue;
@@ -218,7 +218,7 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
 
                 if macro_name == "cfg_if" {
                     if let Some(mut expanded) = expand_builtin_cfg_if(&args, interner) {
-                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        prepend_attrs_to_first_item(&mut expanded, attrs, interner);
                         items.splice(i..i, expanded);
                         *changed = true;
                         continue;
@@ -227,7 +227,7 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
 
                 if macro_name == "new" && is_path_named(&path, interner, "cpufeatures::new") {
                     if let Some(mut expanded) = expand_builtin_cpufeatures_new(&args, interner) {
-                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        prepend_attrs_to_first_item(&mut expanded, attrs, interner);
                         items.splice(i..i, expanded);
                         *changed = true;
                         continue;
@@ -236,7 +236,7 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
 
                 if let Some(def) = find_macro(defs, &path) {
                     if let Some(mut expanded) = try_expand_to_items(def, &args, interner) {
-                        prepend_attrs_to_first_item(&mut expanded, attrs);
+                        prepend_attrs_to_first_item(&mut expanded, attrs, interner);
                         items.splice(i..i, expanded);
                         *changed = true;
                         continue;
@@ -350,7 +350,7 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
                     };
                     if macro_name == "cfg_if" {
                         if let Some(mut stmts) = expand_builtin_cfg_if_stmts(args, interner) {
-                            prepend_attrs_to_first_stmt(&mut stmts, attrs, attr_span);
+                            prepend_attrs_to_first_stmt(&mut stmts, attrs, attr_span, interner);
                             block.stmts.splice(i..=i, stmts);
                             *changed = true;
                             continue;
@@ -358,7 +358,7 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
                     }
                     if macro_name == "define_cast" {
                         if let Some(mut items) = expand_builtin_define_cast(args, interner) {
-                            prepend_attrs_to_first_item(&mut items, attrs);
+                            prepend_attrs_to_first_item(&mut items, attrs, interner);
                             block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
                             *changed = true;
                             continue;
@@ -366,7 +366,7 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
                     }
                     if let Some(def) = find_macro(defs, path) {
                         if let Some(mut items) = try_expand_to_items(def, args, interner) {
-                            prepend_attrs_to_first_item(&mut items, attrs);
+                            prepend_attrs_to_first_item(&mut items, attrs, interner);
                             block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
                             *changed = true;
                             continue;
@@ -425,7 +425,7 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
                 if macro_name == "cfg_if" {
                     if let Some(mut stmts) = expand_builtin_cfg_if_stmts(&args, interner) {
                         if !attrs.is_empty() {
-                            prepend_attrs_to_first_stmt(&mut stmts, attrs, span);
+                            prepend_attrs_to_first_stmt(&mut stmts, attrs, span, interner);
                         }
                         block.stmts.splice(i..=i, stmts);
                         *changed = true;
@@ -434,7 +434,7 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
                 }
                 if macro_name == "define_cast" {
                     if let Some(mut items) = expand_builtin_define_cast(&args, interner) {
-                        prepend_attrs_to_first_item(&mut items, attrs);
+                        prepend_attrs_to_first_item(&mut items, attrs, interner);
                         block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
                         *changed = true;
                         continue;
@@ -442,7 +442,7 @@ fn expand_block(block: &mut Block, defs: &[MacroDef], interner: &mut Interner, c
                 }
                 if let Some(def) = find_macro(defs, &path) {
                     if let Some(mut items) = try_expand_to_items(def, &args, interner) {
-                        prepend_attrs_to_first_item(&mut items, attrs);
+                        prepend_attrs_to_first_item(&mut items, attrs, interner);
                         block.stmts.splice(i..=i, items.into_iter().map(Stmt::Item));
                         *changed = true;
                         continue;
@@ -1016,6 +1016,10 @@ fn comma_tt() -> TokenTree {
 }
 
 fn prepend_cfg_attr(item: &mut Item, attr: Attribute) {
+    prepend_attr_to_item(item, attr);
+}
+
+fn prepend_attr_to_item(item: &mut Item, attr: Attribute) {
     match item {
         Item::Fn(f) => f.attrs.insert(0, attr),
         Item::Struct(s) => s.attrs.insert(0, attr),
@@ -1029,31 +1033,48 @@ fn prepend_cfg_attr(item: &mut Item, attr: Attribute) {
         Item::Mod(m) => m.attrs.insert(0, attr),
         Item::MacroDef(m) => m.attrs.insert(0, attr),
         Item::ExternBlock(e) => e.attrs.insert(0, attr),
-        Item::ExternCrate(_) | Item::MacroCall(_, _, _, _) => {}
+        Item::MacroCall(_, _, attrs, _) => attrs.insert(0, attr),
+        Item::ExternCrate(_) => {}
     }
 }
 
-fn prepend_attrs_to_first_item(items: &mut [Item], attrs: Vec<Attribute>) {
+fn prepend_attrs_to_first_item(
+    items: &mut [Item],
+    attrs: Vec<Attribute>,
+    interner: &Interner,
+) {
     if attrs.is_empty() {
+        return;
+    }
+    let (cfg_attrs, other_attrs) = split_cfg_attrs(attrs, interner);
+    if !cfg_attrs.is_empty() {
+        for item in items.iter_mut() {
+            for attr in cfg_attrs.iter().rev() {
+                prepend_attr_to_item(item, clone_cfg_attr(attr));
+            }
+        }
+    }
+    if other_attrs.is_empty() {
         return;
     }
     let Some(first) = items.first_mut() else {
         return;
     };
     match first {
-        Item::Fn(f) => prepend_attrs(&mut f.attrs, attrs),
-        Item::Struct(s) => prepend_attrs(&mut s.attrs, attrs),
-        Item::Enum(e) => prepend_attrs(&mut e.attrs, attrs),
-        Item::Impl(i) => prepend_attrs(&mut i.attrs, attrs),
-        Item::Trait(t) => prepend_attrs(&mut t.attrs, attrs),
-        Item::TypeAlias(t) => prepend_attrs(&mut t.attrs, attrs),
-        Item::Const(c) => prepend_attrs(&mut c.attrs, attrs),
-        Item::Static(s) => prepend_attrs(&mut s.attrs, attrs),
-        Item::Use(u) => prepend_attrs(&mut u.attrs, attrs),
-        Item::Mod(m) => prepend_attrs(&mut m.attrs, attrs),
-        Item::MacroDef(m) => prepend_attrs(&mut m.attrs, attrs),
-        Item::ExternBlock(e) => prepend_attrs(&mut e.attrs, attrs),
-        Item::ExternCrate(_) | Item::MacroCall(_, _, _, _) => {}
+        Item::Fn(f) => prepend_attrs(&mut f.attrs, other_attrs),
+        Item::Struct(s) => prepend_attrs(&mut s.attrs, other_attrs),
+        Item::Enum(e) => prepend_attrs(&mut e.attrs, other_attrs),
+        Item::Impl(i) => prepend_attrs(&mut i.attrs, other_attrs),
+        Item::Trait(t) => prepend_attrs(&mut t.attrs, other_attrs),
+        Item::TypeAlias(t) => prepend_attrs(&mut t.attrs, other_attrs),
+        Item::Const(c) => prepend_attrs(&mut c.attrs, other_attrs),
+        Item::Static(s) => prepend_attrs(&mut s.attrs, other_attrs),
+        Item::Use(u) => prepend_attrs(&mut u.attrs, other_attrs),
+        Item::Mod(m) => prepend_attrs(&mut m.attrs, other_attrs),
+        Item::MacroDef(m) => prepend_attrs(&mut m.attrs, other_attrs),
+        Item::ExternBlock(e) => prepend_attrs(&mut e.attrs, other_attrs),
+        Item::MacroCall(_, _, attrs, _) => prepend_attrs(attrs, other_attrs),
+        Item::ExternCrate(_) => {}
     }
 }
 
@@ -1062,8 +1083,24 @@ fn prepend_attrs(existing: &mut Vec<Attribute>, mut attrs: Vec<Attribute>) {
     *existing = attrs;
 }
 
-fn prepend_attrs_to_first_stmt(stmts: &mut [Stmt], attrs: Vec<Attribute>, span: Span) {
+fn prepend_attrs_to_first_stmt(
+    stmts: &mut [Stmt],
+    attrs: Vec<Attribute>,
+    span: Span,
+    interner: &Interner,
+) {
     if attrs.is_empty() {
+        return;
+    }
+    let (cfg_attrs, other_attrs) = split_cfg_attrs(attrs, interner);
+    if !cfg_attrs.is_empty() {
+        for stmt in stmts.iter_mut() {
+            let placeholder = Stmt::Expr(Expr::Tuple(Vec::new(), span));
+            let inner = core::mem::replace(stmt, placeholder);
+            *stmt = Stmt::Attributed(clone_cfg_attrs(&cfg_attrs), Box::new(inner), span);
+        }
+    }
+    if other_attrs.is_empty() {
         return;
     }
     let Some(first) = stmts.first_mut() else {
@@ -1071,7 +1108,53 @@ fn prepend_attrs_to_first_stmt(stmts: &mut [Stmt], attrs: Vec<Attribute>, span: 
     };
     let placeholder = Stmt::Expr(Expr::Tuple(Vec::new(), span));
     let stmt = core::mem::replace(first, placeholder);
-    *first = Stmt::Attributed(attrs, Box::new(stmt), span);
+    *first = Stmt::Attributed(other_attrs, Box::new(stmt), span);
+}
+
+fn split_cfg_attrs(
+    attrs: Vec<Attribute>,
+    interner: &Interner,
+) -> (Vec<Attribute>, Vec<Attribute>) {
+    let mut cfg_attrs = Vec::new();
+    let mut other_attrs = Vec::new();
+    for attr in attrs {
+        if attr.path.segments.len() == 1
+            && interner.resolve(attr.path.segments[0].ident) == "cfg"
+        {
+            cfg_attrs.push(attr);
+        } else {
+            other_attrs.push(attr);
+        }
+    }
+    (cfg_attrs, other_attrs)
+}
+
+fn clone_cfg_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
+    attrs.iter().map(clone_cfg_attr).collect()
+}
+
+fn clone_cfg_attr(attr: &Attribute) -> Attribute {
+    let args = match &attr.args {
+        AttrArgs::Empty => AttrArgs::Empty,
+        AttrArgs::Delimited(tokens) => AttrArgs::Delimited(tokens.clone()),
+        AttrArgs::Eq(_) => AttrArgs::Empty,
+    };
+    Attribute {
+        path: Path {
+            segments: attr
+                .path
+                .segments
+                .iter()
+                .map(|seg| PathSegment {
+                    ident: seg.ident,
+                    args: None,
+                })
+                .collect(),
+            span: attr.path.span,
+        },
+        args,
+        span: attr.span,
+    }
 }
 
 fn expand_builtin_define_cast(args: &[TokenTree], interner: &mut Interner) -> Option<Vec<Item>> {

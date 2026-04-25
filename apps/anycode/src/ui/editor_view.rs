@@ -2,11 +2,14 @@ use alloc::vec::Vec;
 use libanyui_client as ui;
 
 use crate::logic::config::Config;
+use crate::logic::designer;
+use crate::ui::designer_surface::DesignerSurface;
 use crate::util::{path, syntax_map};
 
 /// UI wrapper for a single open editor tab.
-struct EditorTab {
-    editor: ui::TextEditor,
+enum EditorTab {
+    Text { editor: ui::TextEditor },
+    Designer { surface: DesignerSurface },
 }
 
 /// Manages the tab bar and TextEditor instances (UI layer).
@@ -141,7 +144,17 @@ impl EditorView {
     ) -> usize {
         // Hide current active editor
         if let Some(last) = self.editors.last() {
-            last.editor.set_visible(false);
+            last.set_visible(false);
+        }
+
+        if designer::is_designer_file(file_path) {
+            if let Some(doc) = designer::load_designer(file_path) {
+                let surface = DesignerSurface::new(file_path, doc);
+                self.panel.add(&surface.panel);
+                let idx = self.editors.len();
+                self.editors.push(EditorTab::Designer { surface });
+                return idx;
+            }
         }
 
         let editor = ui::TextEditor::new(600, 400);
@@ -173,7 +186,7 @@ impl EditorView {
         self.panel.add(&editor);
 
         let idx = self.editors.len();
-        self.editors.push(EditorTab { editor });
+        self.editors.push(EditorTab::Text { editor });
 
         // Wire text-changed event for modification tracking
         if !read_only {
@@ -186,7 +199,7 @@ impl EditorView {
     /// Switch to a specific editor tab (hide others, show this one).
     pub fn set_active(&self, index: usize) {
         for (i, tab) in self.editors.iter().enumerate() {
-            tab.editor.set_visible(i == index);
+            tab.set_visible(i == index);
         }
         self.tab_bar.set_state(index as u32);
     }
@@ -194,7 +207,7 @@ impl EditorView {
     /// Remove an editor tab at the given index.
     pub fn remove_editor(&mut self, index: usize) {
         if index < self.editors.len() {
-            self.editors[index].editor.remove();
+            self.editors[index].remove();
             self.editors.remove(index);
         }
     }
@@ -212,7 +225,9 @@ impl EditorView {
 
     pub fn apply_config(&self, config: &Config) {
         for tab in &self.editors {
-            config.apply_to_editor(&tab.editor);
+            if let EditorTab::Text { editor } = tab {
+                config.apply_to_editor(editor);
+            }
         }
     }
 
@@ -234,7 +249,10 @@ impl EditorView {
     /// Get the text content of an editor at the given index.
     pub fn get_editor_text(&self, index: usize, buf: &mut [u8]) -> u32 {
         if let Some(tab) = self.editors.get(index) {
-            tab.editor.get_text(buf)
+            match tab {
+                EditorTab::Text { editor } => editor.get_text(buf),
+                EditorTab::Designer { .. } => 0,
+            }
         } else {
             0
         }
@@ -243,7 +261,10 @@ impl EditorView {
     /// Get cursor position of the active editor.
     pub fn get_cursor(&self, index: usize) -> (u32, u32) {
         if let Some(tab) = self.editors.get(index) {
-            tab.editor.cursor()
+            match tab {
+                EditorTab::Text { editor } => editor.cursor(),
+                EditorTab::Designer { .. } => (0, 0),
+            }
         } else {
             (0, 0)
         }
@@ -251,12 +272,41 @@ impl EditorView {
 
     /// Get the active editor's TextEditor widget (for event wiring).
     pub fn editor_widget(&self, index: usize) -> Option<&ui::TextEditor> {
-        self.editors.get(index).map(|t| &t.editor)
+        self.editors.get(index).and_then(|tab| match tab {
+            EditorTab::Text { editor } => Some(editor),
+            EditorTab::Designer { .. } => None,
+        })
     }
 
     /// Get the count of editor tabs.
     pub fn count(&self) -> usize {
         self.editors.len()
+    }
+
+    pub fn select_designer_control(&self, file_path: &str, control_name: &str) {
+        for tab in &self.editors {
+            if let EditorTab::Designer { surface } = tab {
+                if surface.file_path() == file_path {
+                    surface.render(Some(control_name));
+                }
+            }
+        }
+    }
+}
+
+impl EditorTab {
+    fn set_visible(&self, visible: bool) {
+        match self {
+            EditorTab::Text { editor } => editor.set_visible(visible),
+            EditorTab::Designer { surface } => surface.set_visible(visible),
+        }
+    }
+
+    fn remove(&self) {
+        match self {
+            EditorTab::Text { editor } => editor.remove(),
+            EditorTab::Designer { surface } => surface.remove(),
+        }
     }
 }
 

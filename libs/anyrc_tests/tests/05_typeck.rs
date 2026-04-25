@@ -173,6 +173,31 @@ fn scoped_use_prefers_local_type_over_same_named_external_type() {
 }
 
 #[test]
+fn nested_use_of_root_reexport_chases_alias_target() {
+    assert_type_ok(r#"
+        mod token {
+            pub struct Type {}
+        }
+
+        mod ty {
+            pub struct Type {}
+        }
+
+        pub use crate::ty::Type;
+
+        mod parse_quote {
+            use crate::Type;
+
+            fn takes_ty(_: crate::ty::Type) {}
+
+            fn parse(value: Type) {
+                takes_ty(value);
+            }
+        }
+    "#);
+}
+
+#[test]
 fn trait_self_associated_type_projection_in_method_signature_is_typed() {
     assert_type_ok(r#"
         struct NonNull<T> {}

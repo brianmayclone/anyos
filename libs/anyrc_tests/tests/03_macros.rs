@@ -315,6 +315,35 @@ fn expand_cfg_if_items() {
 }
 
 #[test]
+fn expand_cfg_if_protects_macro_calls_inside_item_branches() {
+    let krate = parse_and_expand(r#"
+        macro_rules! platform_items {
+            () => {
+                mod selected_a;
+                mod selected_b;
+            }
+        }
+
+        cfg_if::cfg_if! {
+            if #[cfg(target_os = "switch")] {
+                platform_items!();
+            } else {
+                mod fallback;
+            }
+        }
+    "#);
+
+    let mut cfg_protected_mods = 0;
+    for item in &krate.items {
+        if let Item::Mod(m) = item {
+            assert_eq!(m.attrs.len(), 1);
+            cfg_protected_mods += 1;
+        }
+    }
+    assert_eq!(cfg_protected_mods, 3);
+}
+
+#[test]
 fn expand_cfg_if_statements() {
     let krate = parse_and_expand(r#"
         fn main() {
