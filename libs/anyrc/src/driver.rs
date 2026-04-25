@@ -581,7 +581,56 @@ fn inject_extern_crate_interfaces(
 }
 
 fn relativize_extern_interface_source(source: &str, crate_name: &str) -> String {
-    source.replace("crate::", &format!("crate::{}::", crate_name))
+    let mut out = String::with_capacity(source.len());
+    let bytes = source.as_bytes();
+    let mut pos = 0;
+
+    while let Some(rel) = source[pos..].find("crate::") {
+        let start = pos + rel;
+        if start > 0 && is_ident_byte(bytes[start - 1]) {
+            out.push_str(&source[pos..start + "crate::".len()]);
+            pos = start + "crate::".len();
+            continue;
+        }
+
+        out.push_str(&source[pos..start]);
+        let after_prefix = start + "crate::".len();
+        let mut seg_end = after_prefix;
+        while seg_end < bytes.len() && is_ident_byte(bytes[seg_end]) {
+            seg_end += 1;
+        }
+        let first_segment = &source[after_prefix..seg_end];
+        if is_compiler_known_external_crate(first_segment) {
+            out.push_str("crate::");
+        } else {
+            out.push_str("crate::");
+            out.push_str(crate_name);
+            out.push_str("::");
+        }
+        pos = after_prefix;
+    }
+
+    out.push_str(&source[pos..]);
+    out
+}
+
+fn is_ident_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn is_compiler_known_external_crate(name: &str) -> bool {
+    matches!(
+        name,
+        "core"
+            | "alloc"
+            | "std"
+            | "anyos_std"
+            | "proc_macro"
+            | "proc_macro2"
+            | "quote"
+            | "syn"
+            | "serde"
+    )
 }
 
 fn build_public_interface_source(hir: &crate::hir::HirCrate, interner: &Interner) -> String {
