@@ -23,6 +23,23 @@ fn parse_simple_fn() {
 }
 
 #[test]
+fn parse_inner_doc_comment_in_inline_module() {
+    let krate = parse(r#"
+        pub mod hash_map {
+            //! A hash map implemented with quadratic probing.
+            pub use crate::map::HashMap;
+        }
+    "#);
+    match &krate.items[0] {
+        Item::Mod(m) => {
+            assert_eq!(m.attrs.len(), 1);
+            assert!(matches!(m.items.as_ref(), Some(items) if items.len() == 1));
+        }
+        _ => panic!("expected module"),
+    }
+}
+
+#[test]
 fn parse_generic_fn() {
     let krate = parse("fn max<T>(a: T, b: T) -> T { a }");
     match &krate.items[0] {

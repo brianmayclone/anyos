@@ -12,6 +12,7 @@ struct BitReader<'a> {
     pos: usize,
     bit_buf: u32,
     bit_count: u8,
+    overread: bool,
 }
 
 impl<'a> BitReader<'a> {
@@ -21,6 +22,7 @@ impl<'a> BitReader<'a> {
             pos: 0,
             bit_buf: 0,
             bit_count: 0,
+            overread: false,
         }
     }
 
@@ -31,6 +33,7 @@ impl<'a> BitReader<'a> {
                 self.pos += 1;
                 b
             } else {
+                self.overread = true;
                 0
             };
             self.bit_buf |= (byte as u32) << self.bit_count;
@@ -74,6 +77,7 @@ impl<'a> BitReader<'a> {
             self.pos += 1;
             b
         } else {
+            self.overread = true;
             0
         }
     }
@@ -380,6 +384,9 @@ pub fn inflate_counted_limited(compressed: &[u8], max_output: usize) -> Option<(
 
     // Calculate consumed bytes: pos is how far we read, minus buffered bits
     let consumed = reader.bytes_consumed();
+    if reader.overread {
+        return None;
+    }
     Some((output, consumed))
 }
 

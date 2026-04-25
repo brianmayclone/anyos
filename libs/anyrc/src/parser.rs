@@ -1454,7 +1454,20 @@ impl<'a> Parser<'a> {
     // ── Items ──
 
     pub fn parse_crate(&mut self) -> Crate {
-        // Parse inner attributes (#![...])
+        let attrs = self.parse_inner_attrs();
+        let mut items = Vec::new();
+        while !self.at_exact(&TokenKind::Eof) {
+            if let Some(item) = self.parse_item() {
+                items.push(item);
+            } else {
+                break;
+            }
+        }
+        Crate { attrs, items }
+    }
+
+    fn parse_inner_attrs(&mut self) -> Vec<Attribute> {
+        // Parse inner attributes (#![...]) and inner doc comments (`//!`, `/*! ... */`).
         let mut attrs = Vec::new();
         while (self.at_exact(&TokenKind::Hash) && self.peek_kind_at(1) == Some(&TokenKind::Not))
             || matches!(self.current().kind, TokenKind::DocComment(_, true))
@@ -1482,16 +1495,7 @@ impl<'a> Parser<'a> {
             self.expect_exact(&TokenKind::RBracket);
             attrs.push(Attribute { path, args, span: self.span_from(start) });
         }
-
-        let mut items = Vec::new();
-        while !self.at_exact(&TokenKind::Eof) {
-            if let Some(item) = self.parse_item() {
-                items.push(item);
-            } else {
-                break;
-            }
-        }
-        Crate { attrs, items }
+        attrs
     }
 
     fn parse_item(&mut self) -> Option<Item> {
@@ -2276,11 +2280,12 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn parse_mod_def(&mut self, vis: Visibility, attrs: Vec<Attribute>, start: Span) -> ModDef {
+    fn parse_mod_def(&mut self, vis: Visibility, mut attrs: Vec<Attribute>, start: Span) -> ModDef {
         self.expect_exact(&TokenKind::Kw(Keyword::Mod));
         let name = self.expect_ident();
         let items = if self.at_exact(&TokenKind::LBrace) {
             self.bump();
+            attrs.extend(self.parse_inner_attrs());
             let mut items = Vec::new();
             while !self.at_exact(&TokenKind::RBrace) && !self.at_exact(&TokenKind::Eof) {
                 if let Some(item) = self.parse_item() {

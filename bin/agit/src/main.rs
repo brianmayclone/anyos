@@ -60,7 +60,7 @@ fn main() {
         "show" => cmd_show(&args),
         "rev-parse" => cmd_rev_parse(&args),
         "hash-object" => cmd_hash_object(&args),
-        "cat-file" => cmd_cat_file(&args),
+        "cat-file" => cmd_cat_file(&tokens),
         _ => anyos_std::println!("git: '{}' is not a git command. See 'git --help'.", cmd),
     }
 }
@@ -1315,8 +1315,8 @@ fn cmd_hash_object(args: &anyos_std::args::ParsedArgs) {
 
 // ── git cat-file ────────────────────────────────────────────────────────────
 
-fn cmd_cat_file(args: &anyos_std::args::ParsedArgs) {
-    if args.pos_count < 3 {
+fn cmd_cat_file(tokens: &[String]) {
+    if tokens.len() < 3 {
         anyos_std::println!("usage: git cat-file (-t | -s | -p) <object>");
         return;
     }
@@ -1329,8 +1329,8 @@ fn cmd_cat_file(args: &anyos_std::args::ParsedArgs) {
         }
     };
 
-    let flag = args.positional[1];
-    let rev = args.positional[2];
+    let flag = tokens[1].as_str();
+    let rev = tokens[2].as_str();
 
     let oid = match repo_util::resolve_rev(&repo, rev) {
         Some(o) => o,

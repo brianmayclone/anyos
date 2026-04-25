@@ -393,7 +393,13 @@ fn stream_parse_objects(
                     data: inflated.clone(),
                 };
                 let _ = repo.write_object(&obj);
-                push_delta_cache(&mut resolved, &mut resolved_bytes, oid, inflated, obj_type_raw);
+                push_delta_cache(
+                    &mut resolved,
+                    &mut resolved_bytes,
+                    oid,
+                    inflated,
+                    obj_type_raw,
+                );
                 count += 1;
             }
             OBJ_REF_DELTA => {
@@ -441,16 +447,19 @@ fn stream_parse_objects(
                 let delta_data =
                     crate::pack::inflate_from_stream(stream, size).map_err(|e| Error::Other(e))?;
 
-                if let Some((_, base_data, base_type)) = resolved.last() {
-                    let result = crate::pack::apply_delta(base_data, &delta_data);
-                    let obj_type = crate::pack::pack_type_to_object_type(*base_type);
+                if let Some((base_data, base_type)) = resolved
+                    .last()
+                    .map(|(_, data, obj_type)| (data.clone(), *obj_type))
+                {
+                    let result = crate::pack::apply_delta(&base_data, &delta_data);
+                    let obj_type = crate::pack::pack_type_to_object_type(base_type);
                     let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
                     let obj = Object {
                         obj_type,
                         data: result.clone(),
                     };
                     let _ = repo.write_object(&obj);
-                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, *base_type);
+                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, base_type);
                     count += 1;
                 }
             }

@@ -446,7 +446,11 @@ impl Drop for HttpStream {
 fn host_spool_path() -> PathBuf {
     let seq = HOST_SPOOL_ID.fetch_add(1, Ordering::Relaxed);
     let mut path = std::env::temp_dir();
-    path.push(format!("agit-upload-pack-{}-{}.bin", std::process::id(), seq));
+    path.push(format!(
+        "agit-upload-pack-{}-{}.bin",
+        std::process::id(),
+        seq
+    ));
     path
 }
 

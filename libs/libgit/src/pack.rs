@@ -113,7 +113,13 @@ pub fn parse_pack_streamed(
                 repo.write_object(&obj)
                     .map_err(|e| alloc::format!("write: {}", e))?;
 
-                push_delta_cache(&mut resolved, &mut resolved_bytes, oid, inflated, obj_type_raw);
+                push_delta_cache(
+                    &mut resolved,
+                    &mut resolved_bytes,
+                    oid,
+                    inflated,
+                    obj_type_raw,
+                );
                 count += 1;
             }
             OBJ_REF_DELTA => {
@@ -127,11 +133,13 @@ pub fn parse_pack_streamed(
                 let delta_data = inflate_from_stream(stream, uncompressed_size)?;
 
                 // Find base object
-                if let Some((_, base_data, base_type)) =
-                    resolved.iter().find(|(o, _, _)| *o == base_oid)
+                if let Some((base_data, base_type)) = resolved
+                    .iter()
+                    .find(|(o, _, _)| *o == base_oid)
+                    .map(|(_, data, obj_type)| (data.clone(), *obj_type))
                 {
-                    let result = apply_delta(base_data, &delta_data);
-                    let obj_type = pack_type_to_object_type(*base_type);
+                    let result = apply_delta(&base_data, &delta_data);
+                    let obj_type = pack_type_to_object_type(base_type);
                     let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &result));
                     let obj = Object {
                         obj_type,
@@ -139,7 +147,7 @@ pub fn parse_pack_streamed(
                     };
                     repo.write_object(&obj)
                         .map_err(|e| alloc::format!("write: {}", e))?;
-                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, *base_type);
+                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, base_type);
                     count += 1;
                 } else {
                     // Base not found — try reading from repo (thin pack)
@@ -159,7 +167,13 @@ pub fn parse_pack_streamed(
                         };
                         repo.write_object(&obj)
                             .map_err(|e| alloc::format!("write: {}", e))?;
-                        push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, base_type);
+                        push_delta_cache(
+                            &mut resolved,
+                            &mut resolved_bytes,
+                            oid,
+                            result,
+                            base_type,
+                        );
                         count += 1;
                     } else if verbose() {
                         anyos_std::println!(
@@ -176,9 +190,12 @@ pub fn parse_pack_streamed(
 
                 // OFS_DELTA: base is at a byte offset in the pack.
                 // In streaming mode we can't seek back, so use last resolved object as heuristic.
-                if let Some((_, base_data, base_type)) = resolved.last() {
-                    let result = apply_delta(base_data, &delta_data);
-                    let obj_type = pack_type_to_object_type(*base_type);
+                if let Some((base_data, base_type)) = resolved
+                    .last()
+                    .map(|(_, data, obj_type)| (data.clone(), *obj_type))
+                {
+                    let result = apply_delta(&base_data, &delta_data);
+                    let obj_type = pack_type_to_object_type(base_type);
                     let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &result));
                     let obj = Object {
                         obj_type,
@@ -186,7 +203,7 @@ pub fn parse_pack_streamed(
                     };
                     repo.write_object(&obj)
                         .map_err(|e| alloc::format!("write: {}", e))?;
-                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, *base_type);
+                    push_delta_cache(&mut resolved, &mut resolved_bytes, oid, result, base_type);
                     count += 1;
                 }
             }
@@ -295,6 +312,10 @@ pub(crate) fn inflate_from_stream(
             expected_size
         ));
     }
+    let max_compressed = expected_size
+        .saturating_add(core::cmp::max(expected_size / 4, 1024 * 1024))
+        .saturating_add(64 * 1024)
+        .min(MAX_PACK_OBJECT_OUTPUT);
 
     // Read enough data to inflate. We don't know the compressed size upfront,
     // so read in chunks and try to inflate. When inflate succeeds (BFINAL block
@@ -351,6 +372,13 @@ pub(crate) fn inflate_from_stream(
             }
             None => {
                 // Need more data — read another chunk
+                if compressed.len() > max_compressed {
+                    return Err(alloc::format!(
+                        "compressed object too large: expected output {}, read {} compressed bytes",
+                        expected_size,
+                        compressed.len()
+                    ));
+                }
                 let n = stream.read(&mut buf);
                 if n == 0 {
                     return Err(alloc::string::String::from(
@@ -403,12 +431,12 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
         );
     }
 
-    let mut entries = Vec::with_capacity(num_objects);
+    let mut entries = Vec::new();
     let mut pos = 12;
 
     // We need to store all resolved objects for delta resolution
-    let mut resolved: Vec<(Oid, Vec<u8>, u8)> = Vec::with_capacity(num_objects);
-    let mut offsets: Vec<usize> = Vec::with_capacity(num_objects);
+    let mut resolved: Vec<(Oid, Vec<u8>, u8)> = Vec::new();
+    let mut offsets: Vec<usize> = Vec::new();
 
     for _ in 0..num_objects {
         if pos >= data.len() {
@@ -442,9 +470,13 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 } else {
                     0
                 };
-                let (inflated, consumed) = match inflate::inflate_counted(&data[pos + zlib_skip..])
-                {
-                    Some(r) => r,
+                let (inflated, consumed) = match inflate::inflate_counted_limited(
+                    &data[pos + zlib_skip..],
+                    uncompressed_size,
+                ) {
+                    Some((inflated, consumed)) if inflated.len() == uncompressed_size => {
+                        (inflated, consumed)
+                    }
                     None => {
                         if verbose() {
                             anyos_std::println!(
@@ -455,8 +487,12 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                         }
                         break;
                     }
+                    Some(_) => break,
                 };
                 pos += zlib_skip + consumed;
+                if zlib_skip != 0 {
+                    pos += 4;
+                }
 
                 let obj_type = match obj_type_raw {
                     OBJ_COMMIT => ObjectType::Commit,
@@ -507,17 +543,22 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 } else {
                     0
                 };
-                let (delta_data, consumed) =
-                    match inflate::inflate_counted(&data[pos + zlib_skip..]) {
-                        Some(r) => (r.0, r.1 + zlib_skip),
-                        None => {
-                            if verbose() {
-                                anyos_std::println!("[pack]   REF_DELTA inflate FAILED");
-                            }
-                            break;
+                let (delta_data, consumed) = match inflate::inflate_counted_limited(
+                    &data[pos + zlib_skip..],
+                    uncompressed_size,
+                ) {
+                    Some(r) => (r.0, r.1 + zlib_skip),
+                    None => {
+                        if verbose() {
+                            anyos_std::println!("[pack]   REF_DELTA inflate FAILED");
                         }
-                    };
+                        break;
+                    }
+                };
                 pos += consumed;
+                if zlib_skip != 0 {
+                    pos += 4;
+                }
 
                 // Find base object and apply delta
                 if let Some((_, base_data, base_type)) =
@@ -547,12 +588,17 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 } else {
                     0
                 };
-                let (delta_data, consumed) =
-                    match inflate::inflate_counted(&data[pos + zlib_skip..]) {
-                        Some(r) => (r.0, r.1 + zlib_skip),
-                        None => break,
-                    };
+                let (delta_data, consumed) = match inflate::inflate_counted_limited(
+                    &data[pos + zlib_skip..],
+                    uncompressed_size,
+                ) {
+                    Some(r) => (r.0, r.1 + zlib_skip),
+                    None => break,
+                };
                 pos += consumed;
+                if zlib_skip != 0 {
+                    pos += 4;
+                }
 
                 // Base object is at absolute pack offset (entry_start - offset)
                 // We need to find which resolved object was at that offset.
