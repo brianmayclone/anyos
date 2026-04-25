@@ -176,8 +176,8 @@ pub fn render_thread_entry() {
                 crate::compositor::Compositor::submit_cmds(gpu_cmds);
 
                 // VSync callback — notify apps that their frame is on screen.
-                for (sub_id, window_id) in frame_acks {
-                    anyos_std::ipc::evt_chan_emit_to(channel, sub_id, &[
+                for (target, window_id) in frame_acks {
+                    anyos_std::ipc::evt_chan_emit_to(target.channel_id, target.sub_id, &[
                         crate::ipc_protocol::EVT_FRAME_ACK, window_id, 0, 0, 0,
                     ]);
                 }

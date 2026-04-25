@@ -38,7 +38,7 @@ pub fn set_compositor_clipboard(comp_chan: u32, text: &[u8]) {
 }
 
 /// Get the compositor clipboard contents. Returns number of bytes written to `buf`.
-pub fn get_compositor_clipboard(comp_chan: u32, sub_id: u32, buf: &mut [u8]) -> usize {
+pub fn get_compositor_clipboard(comp_chan: u32, reply_chan: u32, sub_id: u32, buf: &mut [u8]) -> usize {
     if buf.is_empty() {
         return 0;
     }
@@ -50,7 +50,7 @@ pub fn get_compositor_clipboard(comp_chan: u32, sub_id: u32, buf: &mut [u8]) -> 
 
     let mut response = [0u32; 5];
     for _ in 0..50 {
-        while ipc::evt_chan_poll(comp_chan, sub_id, &mut response) {
+        while ipc::evt_chan_poll(reply_chan, sub_id, &mut response) {
             if response[0] == RESP_CLIPBOARD_DATA && response[4] == tid {
                 let comp_shm_id = response[1];
                 let result_len = response[2] as usize;

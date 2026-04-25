@@ -54,6 +54,7 @@ const VD_AGENT_CAP_CLIPBOARD_SELECTION: u32 = 3;
 
 const CMD_SET_CLIPBOARD: u32 = 0x1011;
 const CMD_GET_CLIPBOARD: u32 = 0x1012;
+const CMD_REGISTER_SUB: u32 = 0x100C;
 const RESP_CLIPBOARD_DATA: u32 = 0x2010;
 const MAX_CLIPBOARD_SIZE: usize = 65536;
 
@@ -89,7 +90,7 @@ fn set_compositor_clipboard(comp_chan: u32, text: &[u8]) {
     ipc::shm_destroy(shm_id);
 }
 
-fn get_compositor_clipboard(comp_chan: u32, sub_id: u32, buf: &mut [u8]) -> usize {
+fn get_compositor_clipboard(comp_chan: u32, reply_chan: u32, sub_id: u32, buf: &mut [u8]) -> usize {
     if buf.is_empty() { return 0; }
     let cap = buf.len().min(MAX_CLIPBOARD_SIZE) as u32;
     let tid = process::getpid();
@@ -99,7 +100,7 @@ fn get_compositor_clipboard(comp_chan: u32, sub_id: u32, buf: &mut [u8]) -> usiz
 
     let mut response = [0u32; 5];
     for _ in 0..50 {
-        while ipc::evt_chan_poll(comp_chan, sub_id, &mut response) {
+        while ipc::evt_chan_poll(reply_chan, sub_id, &mut response) {
             if response[0] == RESP_CLIPBOARD_DATA && response[4] == tid {
                 let comp_shm_id = response[1];
                 let result_len = response[2] as usize;
@@ -210,6 +211,7 @@ fn read_u64_le(buf: &[u8], offset: usize) -> u64 {
 fn handle_agent_message(
     fd: u32,
     comp_chan: u32,
+    reply_chan: u32,
     sub_id: u32,
     msg_type: u32,
     payload: &[u8],
@@ -237,7 +239,7 @@ fn handle_agent_message(
             // Host is requesting our clipboard data.
             println!("vdagent: host requests clipboard data");
             let mut clip_buf = [0u8; 4096];
-            let clip_len = get_compositor_clipboard(comp_chan, sub_id, &mut clip_buf);
+            let clip_len = get_compositor_clipboard(comp_chan, reply_chan, sub_id, &mut clip_buf);
             if clip_len > 0 {
                 send_clipboard_data(fd, &clip_buf[..clip_len]);
             } else {
@@ -302,7 +304,10 @@ fn main() {
 
     // Connect to compositor event channel.
     let comp_chan = ipc::evt_chan_create("compositor");
-    let sub_id = ipc::evt_chan_subscribe(comp_chan, 0);
+    let reply_chan = ipc::evt_chan_create("vdagent.reply");
+    let sub_id = ipc::evt_chan_subscribe(reply_chan, 0);
+    let tid = process::getpid();
+    ipc::evt_chan_emit(comp_chan, &[CMD_REGISTER_SUB, tid, sub_id, reply_chan, 0]);
     println!("vdagent: connected to compositor");
 
     // Announce our capabilities to the host.
@@ -357,7 +362,7 @@ fn main() {
                     let payload = &chunk_data[payload_start..payload_end];
 
                     handle_agent_message(
-                        fd, comp_chan, sub_id, msg_type, payload,
+                        fd, comp_chan, reply_chan, sub_id, msg_type, payload,
                         &mut host_has_clipboard,
                     );
                 }
@@ -374,7 +379,7 @@ fn main() {
             last_clipboard_check = now;
 
             let mut clip_buf = [0u8; 4096];
-            let clip_len = get_compositor_clipboard(comp_chan, sub_id, &mut clip_buf);
+            let clip_len = get_compositor_clipboard(comp_chan, reply_chan, sub_id, &mut clip_buf);
             if clip_len > 0 {
                 let clip_data = &clip_buf[..clip_len];
                 if clip_data != last_clipboard.as_slice() {

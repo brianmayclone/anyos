@@ -28,6 +28,10 @@ static DEMAND_PAGE_LOCK: AtomicBool = AtomicBool::new(false);
 /// partially initialized paging structures to other CPUs.
 static PAGE_TABLE_LOCK: AtomicBool = AtomicBool::new(false);
 
+/// Serialize use of the fixed temporary kernel mapping used to initialize
+/// freshly allocated physical frames.
+static ZERO_FRAME_LOCK: AtomicBool = AtomicBool::new(false);
+
 // =============================================================================
 // PCID (Process Context Identifier) support
 // =============================================================================
@@ -520,6 +524,36 @@ pub fn map_page(virt: VirtAddr, phys: PhysAddr, flags: u64) -> bool {
     }
     unlock_page_table_mutation(saved_flags);
     true
+}
+
+/// Zero a physical frame through a private kernel mapping.
+///
+/// User pages must not be initialized by writing through their eventual user
+/// virtual address: a stale PCID/TLB entry or a CR3 mismatch can turn that into
+/// a kernel page fault on a lower-half address.  Initializing via a kernel temp
+/// mapping is independent of the target address space.
+pub fn zero_frame(phys: PhysAddr) -> bool {
+    let temp = VirtAddr::new(0xFFFF_FFFF_BFF1_0000);
+
+    while ZERO_FRAME_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+
+    let ok = if map_page(temp, phys, PAGE_WRITABLE) {
+        unsafe {
+            core::ptr::write_bytes(temp.as_u64() as *mut u8, 0, FRAME_SIZE);
+        }
+        unmap_page(temp);
+        true
+    } else {
+        false
+    };
+
+    ZERO_FRAME_LOCK.store(false, Ordering::Release);
+    ok
 }
 
 /// Unmap a single 4K page.
@@ -1454,6 +1488,13 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
         }
     };
 
+    // Zero through a kernel alias before exposing the frame at its final VA.
+    if !zero_frame(phys) {
+        physical::free_frame(phys);
+        DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+        return false;
+    }
+
     // Map the page (Present + Writable, kernel-only)
     if !map_page(page_addr, phys, 0x03) {
         physical::free_frame(phys);
@@ -1466,11 +1507,63 @@ pub fn handle_heap_demand_page(vaddr: u64) -> bool {
     // lock was the main bottleneck: 4 KiB memset blocked all other demand faults.
     DEMAND_PAGE_LOCK.store(false, Ordering::Release);
 
-    // Zero the page (demand-paged pages must be zeroed for security/correctness)
-    unsafe {
-        core::ptr::write_bytes(page_addr.as_u64() as *mut u8, 0, FRAME_SIZE);
+    true
+}
+
+/// Handle a demand-page fault for a live userspace mmap VMA.
+///
+/// `sys_mmap` normally maps pages eagerly. This path is a conservative repair
+/// for cases where a valid VMA is visible to userspace but one leaf PTE is
+/// missing, e.g. after cross-CPU page-table visibility races. Faults outside a
+/// registered VMA are still fatal and are not papered over.
+pub fn handle_user_mmap_demand_page(vaddr: u64) -> bool {
+    let pd = match crate::task::scheduler::current_thread_page_directory() {
+        Some(pd) => pd,
+        None => return false,
+    };
+
+    if !crate::memory::vma::contains_addr(pd, vaddr) {
+        return false;
     }
 
+    let page_addr = VirtAddr::new(vaddr & !(FRAME_SIZE as u64 - 1));
+
+    while DEMAND_PAGE_LOCK
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+
+    if is_page_mapped(page_addr) {
+        DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+        unsafe {
+            asm!("invlpg [{}]", in(reg) page_addr.as_u64(), options(nostack, preserves_flags));
+        }
+        return true;
+    }
+
+    let phys = match physical::alloc_frame() {
+        Some(phys) => phys,
+        None => {
+            DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+            return false;
+        }
+    };
+
+    if !zero_frame(phys) {
+        physical::free_frame(phys);
+        DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+        return false;
+    }
+
+    if !map_page(page_addr, phys, PAGE_WRITABLE | PAGE_USER) {
+        physical::free_frame(phys);
+        DEMAND_PAGE_LOCK.store(false, Ordering::Release);
+        return false;
+    }
+
+    DEMAND_PAGE_LOCK.store(false, Ordering::Release);
     true
 }
 

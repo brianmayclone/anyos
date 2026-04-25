@@ -6,7 +6,9 @@ use crate::config;
 use crate::ipc_protocol;
 use crate::render::{acquire_lock, desktop_ref, release_lock};
 
-pub(crate) fn handle_system_events(compositor_channel: u32, sys_sub: u32) -> bool {
+use super::ipc::emit_to_registered_apps;
+
+pub(crate) fn handle_system_events(_compositor_channel: u32, sys_sub: u32) -> bool {
     let mut sys_buf = [0u32; 5];
     let mut had_work = false;
     while ipc::evt_sys_poll(sys_sub, &mut sys_buf) {
@@ -18,10 +20,7 @@ pub(crate) fn handle_system_events(compositor_channel: u32, sys_sub: u32) -> boo
             desktop.on_process_exit(exited_tid);
 
             release_lock();
-            ipc::evt_chan_emit(
-                compositor_channel,
-                &[ipc_protocol::EVT_WINDOW_CLOSED, exited_tid, 0, 0, 0],
-            );
+            emit_to_registered_apps(&[ipc_protocol::EVT_WINDOW_CLOSED, exited_tid, 0, 0, 0]);
         } else if sys_buf[0] == 0x0040 {
             let new_w = sys_buf[1];
             let new_h = sys_buf[2];

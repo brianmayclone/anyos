@@ -95,6 +95,7 @@ struct DockApp {
     dock_chan: u32,
     dock_sub: u32,
     compositor_chan: u32,
+    compositor_reply_chan: u32,
     compositor_sub: u32,
     // Adaptive timer: 16ms when active, 200ms when idle
     timer_id: u32,
@@ -292,11 +293,11 @@ fn update_auto_hide_hot_from_cursor() {
 
 fn poll_compositor_cursor() {
     let a = app();
-    let request = [CMD_GET_CURSOR_POS, a.compositor_sub, 0, 0, 0];
+    let request = [CMD_GET_CURSOR_POS, a.compositor_sub, a.compositor_reply_chan, 0, 0];
     anyos_std::ipc::evt_chan_emit(a.compositor_chan, &request);
 
     let mut buf = [0u32; 5];
-    while anyos_std::ipc::evt_chan_poll(a.compositor_chan, a.compositor_sub, &mut buf) {
+    while anyos_std::ipc::evt_chan_poll(a.compositor_reply_chan, a.compositor_sub, &mut buf) {
         if buf[0] == EVT_CURSOR_POS {
             let a = app();
             a.screen_mouse_x = buf[1] as i32;
@@ -407,8 +408,9 @@ fn main() {
     // Create IPC channel for dock reload notifications (from Finder etc.)
     let dock_chan = anyos_std::ipc::evt_chan_create(DOCK_CHANNEL_NAME);
     let dock_sub = anyos_std::ipc::evt_chan_subscribe(dock_chan, 0);
-    let compositor_chan = anyui::get_compositor_channel();
-    let compositor_sub = anyos_std::ipc::evt_chan_subscribe(compositor_chan, EVT_CURSOR_POS);
+    let compositor_cmd_chan = anyui::get_compositor_channel();
+    let compositor_reply_chan = anyos_std::ipc::evt_chan_create("dock.reply");
+    let compositor_sub = anyos_std::ipc::evt_chan_subscribe(compositor_reply_chan, EVT_CURSOR_POS);
 
     // Load dock items from config + icons (Finder is always present)
     let mut items = load_dock_config();
@@ -448,7 +450,8 @@ fn main() {
             drag_active: false,
             dock_chan,
             dock_sub,
-            compositor_chan,
+            compositor_chan: compositor_cmd_chan,
+            compositor_reply_chan,
             compositor_sub,
             timer_id: 0,
             fast_timer: false,

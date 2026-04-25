@@ -40,6 +40,97 @@ const RESP_FULLSCREEN_ENTERED: u32 = 0x2020;
 const RESP_FULLSCREEN_EXITED: u32 = 0x2021;
 
 const NUM_EXPORTS: u32 = 28;
+const PENDING_EVENT_CAP: usize = 64;
+
+static mut PENDING_EVENTS: [[u32; 5]; PENDING_EVENT_CAP] = [[0; 5]; PENDING_EVENT_CAP];
+static mut PENDING_EVENT_HEAD: usize = 0;
+static mut PENDING_EVENT_LEN: usize = 0;
+static mut REPLY_CHANNEL_ID: u32 = 0;
+
+fn set_reply_channel_id(channel_id: u32) {
+    unsafe {
+        REPLY_CHANNEL_ID = channel_id;
+    }
+}
+
+fn reply_channel_id() -> u32 {
+    unsafe { REPLY_CHANNEL_ID }
+}
+
+fn make_reply_channel_name(tid: u32) -> ([u8; 32], u32) {
+    let prefix = b"compositor.reply.";
+    let mut name = [0u8; 32];
+    let mut pos = 0usize;
+    while pos < prefix.len() {
+        name[pos] = prefix[pos];
+        pos += 1;
+    }
+
+    if tid == 0 {
+        name[pos] = b'0';
+        pos += 1;
+    } else {
+        let mut digits = [0u8; 10];
+        let mut n = tid;
+        let mut d = 0usize;
+        while n > 0 {
+            digits[d] = b'0' + (n % 10) as u8;
+            n /= 10;
+            d += 1;
+        }
+        while d > 0 {
+            d -= 1;
+            name[pos] = digits[d];
+            pos += 1;
+        }
+    }
+
+    (name, pos as u32)
+}
+
+fn stash_pending_event(event: [u32; 5]) {
+    unsafe {
+        if PENDING_EVENT_LEN < PENDING_EVENT_CAP {
+            let idx = (PENDING_EVENT_HEAD + PENDING_EVENT_LEN) % PENDING_EVENT_CAP;
+            PENDING_EVENTS[idx] = event;
+            PENDING_EVENT_LEN += 1;
+        } else {
+            PENDING_EVENTS[PENDING_EVENT_HEAD] = event;
+            PENDING_EVENT_HEAD = (PENDING_EVENT_HEAD + 1) % PENDING_EVENT_CAP;
+        }
+    }
+}
+
+fn pending_event_matches(event: &[u32; 5], window_id: u32) -> bool {
+    (event[0] >= 0x3000 && event[1] == window_id) || event[0] < 0x1000
+}
+
+fn take_pending_event(window_id: u32, out: *mut [u32; 5]) -> u32 {
+    unsafe {
+        let mut i = 0usize;
+        while i < PENDING_EVENT_LEN {
+            let idx = (PENDING_EVENT_HEAD + i) % PENDING_EVENT_CAP;
+            if pending_event_matches(&PENDING_EVENTS[idx], window_id) {
+                *out = PENDING_EVENTS[idx];
+
+                let mut j = i;
+                while j + 1 < PENDING_EVENT_LEN {
+                    let dst = (PENDING_EVENT_HEAD + j) % PENDING_EVENT_CAP;
+                    let src = (PENDING_EVENT_HEAD + j + 1) % PENDING_EVENT_CAP;
+                    PENDING_EVENTS[dst] = PENDING_EVENTS[src];
+                    j += 1;
+                }
+                PENDING_EVENT_LEN -= 1;
+                if PENDING_EVENT_LEN == 0 {
+                    PENDING_EVENT_HEAD = 0;
+                }
+                return 1;
+            }
+            i += 1;
+        }
+    }
+    0
+}
 
 #[repr(C)]
 pub struct LibcompositorExports {
@@ -251,22 +342,29 @@ pub static LIBCOMPOSITOR_EXPORTS: LibcompositorExports = LibcompositorExports {
 // ── Export Implementations ───────────────────────────────────────────────────
 
 extern "C" fn export_init(out_sub_id: *mut u32) -> u32 {
-    // Find/create the "compositor" event channel
+    // Find/create the compositor command channel.
     let name = b"compositor";
     let channel_id = syscall::evt_chan_create(name.as_ptr(), name.len() as u32);
     if channel_id == 0 {
         return 0;
     }
-    // Subscribe to receive responses and events
-    let sub_id = syscall::evt_chan_subscribe(channel_id, 0);
+
+    // Every client owns a dedicated reply channel. The shared "compositor"
+    // channel is command ingress only.
+    let tid = syscall::get_tid();
+    let (reply_name, reply_name_len) = make_reply_channel_name(tid);
+    let reply_channel_id = syscall::evt_chan_create(reply_name.as_ptr(), reply_name_len);
+    if reply_channel_id == 0 {
+        return 0;
+    }
+    let sub_id = syscall::evt_chan_subscribe(reply_channel_id, 0);
+    set_reply_channel_id(reply_channel_id);
     unsafe {
         *out_sub_id = sub_id;
     }
 
-    // Register our subscription ID with the compositor so it can use
-    // targeted (unicast) event delivery instead of broadcasting to all apps.
-    let tid = syscall::get_tid();
-    let cmd: [u32; 5] = [CMD_REGISTER_SUB, tid, sub_id, 0, 0];
+    // Register the dedicated reply channel with the compositor.
+    let cmd: [u32; 5] = [CMD_REGISTER_SUB, tid, sub_id, reply_channel_id, 0];
     syscall::evt_chan_emit(channel_id, &cmd);
 
     channel_id
@@ -331,7 +429,7 @@ extern "C" fn export_create_window(
     let mut response = [0u32; 5];
     for _ in 0..400 {
         // Drain entire queue looking for our response
-        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+        while syscall::evt_chan_poll(reply_channel_id(), sub_id, &mut response) {
             if response[0] == RESP_WINDOW_CREATED && response[3] == tid {
                 let window_id = response[1];
                 unsafe {
@@ -340,7 +438,11 @@ extern "C" fn export_create_window(
                 }
                 return window_id;
             }
-            // Not our response — discard and try next
+            // Not our response. Keep input/frame events available for callers
+            // that poll through this client after the synchronous create call.
+            if response[0] >= 0x3000 || response[0] < 0x1000 {
+                stash_pending_event(response);
+            }
         }
         syscall::sleep(5);
     }
@@ -386,11 +488,15 @@ extern "C" fn export_poll_event(
     buf: *mut [u32; 5],
 ) -> u32 {
     let mut tmp = [0u32; 5];
+    if take_pending_event(window_id, buf) != 0 {
+        return 1;
+    }
+
     // Drain the subscription queue until we find an event for our window
     // or a broadcast event (theme change, etc.).
     // Non-matching events (for other windows) are discarded from OUR copy
     // of the queue — each subscriber has an independent queue, so this is safe.
-    while syscall::evt_chan_poll(channel_id, sub_id, &mut tmp) {
+    while syscall::evt_chan_poll(reply_channel_id(), sub_id, &mut tmp) {
         if tmp[0] >= 0x3000 && tmp[1] == window_id {
             // Window-specific event (mouse, key, resize, etc.)
             unsafe { *buf = tmp; }
@@ -604,7 +710,7 @@ extern "C" fn export_tray_poll_event(
     buf: *mut [u32; 5],
 ) -> u32 {
     let mut tmp = [0u32; 5];
-    if syscall::evt_chan_poll(channel_id, sub_id, &mut tmp) {
+    if syscall::evt_chan_poll(reply_channel_id(), sub_id, &mut tmp) {
         unsafe { *buf = tmp; }
         1
     } else {
@@ -665,7 +771,7 @@ extern "C" fn export_get_clipboard(
     // Poll for RESP_CLIPBOARD_DATA
     let mut response = [0u32; 5];
     for _ in 0..50 {
-        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+        while syscall::evt_chan_poll(reply_channel_id(), sub_id, &mut response) {
             if response[0] == RESP_CLIPBOARD_DATA && response[4] == tid {
                 let comp_shm_id = response[1];
                 let result_len = response[2];
@@ -731,7 +837,7 @@ extern "C" fn export_create_vram_window(
     // Poll for response
     let mut response = [0u32; 5];
     for _ in 0..100 {
-        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+        while syscall::evt_chan_poll(reply_channel_id(), sub_id, &mut response) {
             if response[3] == tid {
                 if response[0] == RESP_VRAM_WINDOW_CREATED {
                     let window_id = response[1];
@@ -858,7 +964,7 @@ extern "C" fn export_get_window_position(
     // Poll for RESP_WINDOW_POS
     let mut response = [0u32; 5];
     for _ in 0..50 {
-        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+        while syscall::evt_chan_poll(reply_channel_id(), sub_id, &mut response) {
             if response[0] == RESP_WINDOW_POS && response[4] == tid {
                 unsafe {
                     *out_x = response[2] as i32;
@@ -907,7 +1013,7 @@ extern "C" fn export_request_fullscreen(
     // Poll for RESP_FULLSCREEN_ENTERED
     let mut response = [0u32; 5];
     for _ in 0..100 {
-        while syscall::evt_chan_poll(channel_id, sub_id, &mut response) {
+        while syscall::evt_chan_poll(reply_channel_id(), sub_id, &mut response) {
             if response[0] == RESP_FULLSCREEN_ENTERED && response[1] == window_id {
                 let packed_size = response[2];
                 let w = packed_size >> 16;

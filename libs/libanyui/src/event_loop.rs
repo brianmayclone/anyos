@@ -24,6 +24,7 @@ use alloc::vec::Vec;
 
 /// Double-click threshold in milliseconds (standard: 400ms).
 const DOUBLE_CLICK_MS: u32 = 400;
+const FRAME_ACK_TIMEOUT_MS: u32 = 100;
 
 /// A pending callback to fire after all event processing.
 struct PendingCallback {
@@ -75,7 +76,7 @@ pub fn run() {
 
         if min_wait > 0 {
             // Block until compositor sends event OR timer timeout
-            crate::syscall::evt_chan_wait(st.channel_id, st.sub_id, min_wait);
+            crate::syscall::evt_chan_wait(st.reply_channel_id, st.sub_id, min_wait);
         }
     }
 }
@@ -137,7 +138,7 @@ pub fn run_once() -> u32 {
     let mut all_events: Vec<[u32; 5]> = Vec::new();
     {
         let mut tmp = [0u32; 5];
-        while crate::syscall::evt_chan_poll(st.channel_id, st.sub_id, &mut tmp) {
+        while crate::syscall::evt_chan_poll(st.reply_channel_id, st.sub_id, &mut tmp) {
             all_events.push(tmp);
             tmp = [0u32; 5];
         }
@@ -859,14 +860,20 @@ pub fn run_once() -> u32 {
                     let button = ev[4] & 0xFF;
                     st.last_modifiers = (ev[4] >> 8) & 0xFF;
 
-                    if let Some(drag) = st.drag.take() {
-                        if let Some(target_id) = drag.target_id {
+                    if let Some(drag) = st.drag.as_ref() {
+                        // Snapshot fields we need without consuming the
+                        // session — DROP handlers need to be able to call
+                        // anyui_drag_get_payload, which reads st.drag.
+                        let source_id = drag.source_id;
+                        let target_id = drag.target_id;
+                        let target_accepted = drag.target_accepted;
+                        if let Some(target_id) = target_id {
                             set_drop_hover(&mut st.controls, target_id, false);
                             // Only dispatch DROP when the target opted in via
                             // anyui_drag_accept during ENTER/DRAG. Rejected
                             // drops still fire DRAG_LEAVE + DRAG_END so apps
                             // can cleanly tear down any preview state.
-                            if drag.target_accepted {
+                            if target_accepted {
                                 fire_event_callback(
                                     &st.controls,
                                     target_id,
@@ -883,7 +890,7 @@ pub fn run_once() -> u32 {
                         }
                         fire_event_callback(
                             &st.controls,
-                            drag.source_id,
+                            source_id,
                             control::EVENT_DRAG_END,
                             &mut pending_cbs,
                         );
@@ -895,6 +902,9 @@ pub fn run_once() -> u32 {
                         }
                         st.pressed = None;
                         st.pressed_button = 0;
+                        // Defer st.drag = None until after Phase 3 so the
+                        // DROP callback can still read the payload.
+                        st.drag_release_pending = true;
                         continue;
                     }
 
@@ -2262,6 +2272,16 @@ pub fn run_once() -> u32 {
         (pcb.cb)(pcb.id, pcb.event_type, pcb.userdata);
     }
 
+    // Tear down a finished drag session now that DROP / DRAG_END callbacks
+    // had a chance to read the payload via anyui_drag_get_payload.
+    {
+        let st = crate::state();
+        if st.drag_release_pending {
+            st.drag = None;
+            st.drag_release_pending = false;
+        }
+    }
+
     // Re-acquire state (callbacks may have modified it)
     let st = crate::state();
     if st.quit_requested || st.windows.is_empty() {
@@ -2307,6 +2327,13 @@ pub fn run_once() -> u32 {
     let channel_id = st.channel_id;
     for wi in 0..st.windows.len() {
         let win_id = st.windows[wi];
+
+        let now_ms = crate::syscall::uptime_ms();
+        if st.comp_windows[wi].frame_presented
+            && now_ms.wrapping_sub(st.comp_windows[wi].last_present_ms) > FRAME_ACK_TIMEOUT_MS
+        {
+            st.comp_windows[wi].frame_presented = false;
+        }
 
         let frame_presented = st.comp_windows[wi].frame_presented;
         let needs_render = st.comp_windows[wi].dirty;
@@ -2706,6 +2733,7 @@ fn maybe_begin_drag(
         pointer_x: mx,
         pointer_y: my,
         modifiers: dnd_modifier_bits(st),
+        accept_modifiers: 0,
     });
     fire_event_callback(&st.controls, source_id, control::EVENT_DRAG_START, pending);
 
@@ -2774,13 +2802,17 @@ fn update_drag_target(
             fire_event_callback(&st.controls, new_id, control::EVENT_DRAG_ENTER, pending);
         }
     } else if let Some(target_id) = new_target {
-        // Same target: reset acceptance per event so the target must re-opt-in.
-        // This lets the target reject mid-drag based on modifiers or position.
+        // Same target: keep prior acceptance so simple targets don't have to
+        // re-accept on every move. Reset only when modifiers changed since
+        // the last accept, so modifier-aware targets still get a chance to
+        // re-negotiate Copy/Move/Link via their EVENT_DRAG handler.
         if let Some(drag) = st.drag.as_mut() {
-            drag.target_accepted = false;
-            drag.negotiated_effect = crate::dnd::DND_EFFECT_NONE;
+            if drag.modifiers != drag.accept_modifiers {
+                drag.target_accepted = false;
+                drag.negotiated_effect = crate::dnd::DND_EFFECT_NONE;
+            }
         }
-        // Fire a DRAG (over) event so the target can re-accept.
+        // Fire a DRAG (over) event so modifier-aware targets can re-accept.
         fire_event_callback(&st.controls, target_id, control::EVENT_DRAG, pending);
     }
 

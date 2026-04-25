@@ -222,6 +222,20 @@ pub fn set_mmap_hint(pd: PhysAddr, hint: u32) {
     }
 }
 
+/// Return true if `addr` lies inside a live mmap VMA for `pd`.
+pub fn contains_addr(pd: PhysAddr, addr: u64) -> bool {
+    let reg = VMA_REGISTRY.lock();
+    let proc = match reg.iter().find(|p| p.pd == pd) {
+        Some(proc) => proc,
+        None => return false,
+    };
+
+    proc.vmas
+        .range(..=addr)
+        .next_back()
+        .map_or(false, |(_, vma)| addr < vma.start + vma.size)
+}
+
 // ─────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────

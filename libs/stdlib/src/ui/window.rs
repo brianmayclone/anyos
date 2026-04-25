@@ -151,6 +151,7 @@ struct WinInfo {
 
 struct CompState {
     channel_id: u32,
+    reply_channel_id: u32,
     sub_id: u32,
     windows: Vec<Box<WinInfo>>,
 }
@@ -168,13 +169,50 @@ fn ensure_init() -> bool {
         if channel_id == 0 {
             return false;
         }
+        let (reply_name, reply_len) = make_compositor_reply_channel_name(crate::process::getpid());
+        let reply_channel_id = crate::ipc::evt_chan_create(
+            core::str::from_utf8(&reply_name[..reply_len as usize]).unwrap_or(""),
+        );
+        if reply_channel_id == 0 {
+            return false;
+        }
         COMP = Some(CompState {
             channel_id,
+            reply_channel_id,
             sub_id,
             windows: Vec::new(),
         });
         true
     }
+}
+
+fn make_compositor_reply_channel_name(tid: u32) -> ([u8; 32], u32) {
+    let prefix = b"compositor.reply.";
+    let mut name = [0u8; 32];
+    let mut pos = 0usize;
+    while pos < prefix.len() {
+        name[pos] = prefix[pos];
+        pos += 1;
+    }
+    if tid == 0 {
+        name[pos] = b'0';
+        pos += 1;
+    } else {
+        let mut digits = [0u8; 10];
+        let mut n = tid;
+        let mut d = 0usize;
+        while n > 0 {
+            digits[d] = b'0' + (n % 10) as u8;
+            n /= 10;
+            d += 1;
+        }
+        while d > 0 {
+            d -= 1;
+            name[pos] = digits[d];
+            pos += 1;
+        }
+    }
+    (name, pos as u32)
 }
 
 #[inline(always)]
@@ -664,6 +702,15 @@ pub fn compositor_channel() -> (u32, u32) {
     }
     let st = state();
     (st.channel_id, st.sub_id)
+}
+
+/// Get the compositor reply channel ID and subscription ID.
+pub fn compositor_reply_channel() -> (u32, u32) {
+    if !ensure_init() {
+        return (0, 0);
+    }
+    let st = state();
+    (st.reply_channel_id, st.sub_id)
 }
 
 /// Get screen dimensions. Returns (width, height).

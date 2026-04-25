@@ -15,7 +15,7 @@ fn main() {
     let _ = window::screen_size();
 
     // Get compositor channel for receiving focus-change broadcasts
-    let (comp_chan, comp_sub) = window::compositor_channel();
+    let (comp_chan, comp_sub) = window::compositor_reply_channel();
 
     // Subscribe to system events (process spawn/exit)
     let sys_sub = ipc::evt_sys_subscribe(0);

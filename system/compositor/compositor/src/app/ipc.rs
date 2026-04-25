@@ -4,9 +4,29 @@ use anyos_std::ipc;
 use anyos_std::Vec;
 
 use crate::config;
-use crate::desktop;
+use crate::desktop::{self, AppIpcTarget};
 use crate::ipc_protocol;
 use crate::render::{acquire_lock, desktop_ref, release_lock, signal_render};
+
+pub(crate) fn emit_to_target(target: AppIpcTarget, event: &[u32; 5]) {
+    ipc::evt_chan_emit_to(target.channel_id, target.sub_id, event);
+}
+
+pub(crate) fn emit_to_registered_apps(event: &[u32; 5]) {
+    let targets = {
+        acquire_lock();
+        let desktop = unsafe { desktop_ref() };
+        let mut out = Vec::with_capacity(desktop.app_subs.len());
+        for &(_, target) in &desktop.app_subs {
+            out.push(target);
+        }
+        release_lock();
+        out
+    };
+    for target in targets {
+        emit_to_target(target, event);
+    }
+}
 
 pub(crate) fn handle_ipc_commands(
     compositor_channel: u32,
@@ -26,7 +46,7 @@ pub(crate) fn handle_ipc_commands(
         return false;
     }
 
-    let mut responses: Vec<(Option<u32>, [u32; 5])> = Vec::new();
+    let mut responses: Vec<(Option<AppIpcTarget>, [u32; 5])> = Vec::new();
 
     let mut i = 0;
     while i < cmd_count {
@@ -101,7 +121,7 @@ pub(crate) fn handle_ipc_commands(
                             raw_x,
                             raw_y,
                         );
-                        let target = desktop.get_sub_id_for_tid(app_tid);
+                        let target = desktop.get_ipc_target_for_tid(app_tid);
                         release_lock();
 
                         responses.push((
@@ -130,10 +150,7 @@ pub(crate) fn handle_ipc_commands(
                 if new_mode != old_mode {
                     desktop::set_font_smoothing(new_mode);
                     config::save_font_smoothing(new_mode);
-                    ipc::evt_chan_emit(
-                        compositor_channel,
-                        &[ipc_protocol::EVT_FONT_SMOOTHING_CHANGED, new_mode, 0, 0, 0],
-                    );
+                    emit_to_registered_apps(&[ipc_protocol::EVT_FONT_SMOOTHING_CHANGED, new_mode, 0, 0, 0]);
                     acquire_lock();
                     let desktop = unsafe { desktop_ref() };
                     desktop.compositor.damage_all();
@@ -152,10 +169,7 @@ pub(crate) fn handle_ipc_commands(
                     let desktop = unsafe { desktop_ref() };
                     desktop.on_theme_change();
                     release_lock();
-                    ipc::evt_chan_emit(
-                        compositor_channel,
-                        &[ipc_protocol::EVT_THEME_CHANGED, new_theme, old_theme, 0, 0],
-                    );
+                    emit_to_registered_apps(&[ipc_protocol::EVT_THEME_CHANGED, new_theme, old_theme, 0, 0]);
                     signal_render();
                 }
                 i += 1;
@@ -166,10 +180,7 @@ pub(crate) fn handle_ipc_commands(
                 if new_scale != old_scale && (100..=300).contains(&new_scale) {
                     desktop::theme::set_scale_factor(new_scale);
                     config::save_scale_factor(new_scale);
-                    ipc::evt_chan_emit(
-                        compositor_channel,
-                        &[ipc_protocol::EVT_SCALE_CHANGED, new_scale, old_scale, 0, 0],
-                    );
+                    emit_to_registered_apps(&[ipc_protocol::EVT_SCALE_CHANGED, new_scale, old_scale, 0, 0]);
                     acquire_lock();
                     let desktop = unsafe { desktop_ref() };
                     desktop.handle_scale_change();
@@ -201,23 +212,19 @@ pub(crate) fn handle_ipc_commands(
                 let target = {
                     acquire_lock();
                     let desktop = unsafe { desktop_ref() };
-                    let t = desktop.get_sub_id_for_tid(requester_tid);
+                    let t = desktop.get_ipc_target_for_tid(requester_tid);
                     release_lock();
                     t
                 };
                 for &tid in &tids {
                     let entry = [ipc_protocol::EVT_WINDOW_LIST_ENTRY, tid, 0, 0, 0];
-                    if let Some(sub_id) = target {
-                        ipc::evt_chan_emit_to(compositor_channel, sub_id, &entry);
-                    } else {
-                        ipc::evt_chan_emit(compositor_channel, &entry);
+                    if let Some(target) = target {
+                        emit_to_target(target, &entry);
                     }
                 }
                 let end = [ipc_protocol::EVT_WINDOW_LIST_END, tids.len() as u32, 0, 0, 0];
-                if let Some(sub_id) = target {
-                    ipc::evt_chan_emit_to(compositor_channel, sub_id, &end);
-                } else {
-                    ipc::evt_chan_emit(compositor_channel, &end);
+                if let Some(target) = target {
+                    emit_to_target(target, &end);
                 }
                 i += 1;
             }
@@ -251,25 +258,17 @@ pub(crate) fn handle_ipc_commands(
     }
 
     for (target_sub, response) in &responses {
-        if let Some(sub_id) = target_sub {
-            ipc::evt_chan_emit_to(compositor_channel, *sub_id, response);
-        } else {
-            ipc::evt_chan_emit(compositor_channel, response);
+        if let Some(target) = target_sub {
+            emit_to_target(*target, response);
         }
 
         if response[0] == ipc_protocol::RESP_WINDOW_CREATED {
-            ipc::evt_chan_emit(
-                compositor_channel,
-                &[ipc_protocol::EVT_WINDOW_OPENED, response[3], response[1], 0, 0],
-            );
+            emit_to_registered_apps(&[ipc_protocol::EVT_WINDOW_OPENED, response[3], response[1], 0, 0]);
         } else if response[0] == ipc_protocol::RESP_WINDOW_DESTROYED {
             let app_tid = response[2];
             let remaining_windows = response[3];
             if remaining_windows == 0 {
-                ipc::evt_chan_emit(
-                    compositor_channel,
-                    &[ipc_protocol::EVT_WINDOW_CLOSED, app_tid, 0, 0, 0],
-                );
+                emit_to_registered_apps(&[ipc_protocol::EVT_WINDOW_CLOSED, app_tid, 0, 0, 0]);
             }
         }
     }

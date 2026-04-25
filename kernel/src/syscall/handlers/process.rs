@@ -254,11 +254,14 @@ pub fn sys_sbrk(increment: i32) -> u32 {
             // Skip pages already mapped (another thread sharing this PD may have mapped them)
             if !virtual_mem::is_page_mapped(VirtAddr::new(addr as u64)) {
                 if let Some(phys) = physical::alloc_frame() {
+                    if !virtual_mem::zero_frame(phys) {
+                        physical::free_frame(phys);
+                        return u32::MAX;
+                    }
                     if !virtual_mem::map_page(VirtAddr::new(addr as u64), phys, 0x02 | 0x04) {
                         physical::free_frame(phys);
                         return u32::MAX;
                     }
-                    unsafe { core::ptr::write_bytes(addr as *mut u8, 0, page_size as usize); }
                     pages_mapped += 1;
                 } else {
                     return u32::MAX;
@@ -380,12 +383,26 @@ fn sys_mmap_impl(size: u64, high: bool) -> u64 {
     let mut addr = base;
     for _ in 0..num_pages {
         if let Some(phys) = physical::alloc_frame() {
+            if !virtual_mem::zero_frame(phys) {
+                physical::free_frame(phys);
+                let mut cleanup = base;
+                while cleanup < addr {
+                    let pte = virtual_mem::read_pte(VirtAddr::new(cleanup as u64));
+                    if pte & 1 != 0 {
+                        let phys_addr = crate::memory::address::PhysAddr::new(pte & 0x000F_FFFF_FFFF_F000);
+                        virtual_mem::unmap_page(VirtAddr::new(cleanup as u64));
+                        physical::free_frame(phys_addr);
+                    }
+                    cleanup += PAGE_SIZE;
+                }
+                crate::memory::vma::free_region64(pd, base, aligned_size);
+                return u64::MAX;
+            }
             if virtual_mem::map_page(
                 VirtAddr::new(addr as u64),
                 phys,
                 0x02 | 0x04, // PAGE_WRITABLE | PAGE_USER
             ) {
-                unsafe { core::ptr::write_bytes(addr as *mut u8, 0, PAGE_SIZE as usize); }
             } else {
                 physical::free_frame(phys);
                 let mut cleanup = base;

@@ -126,10 +126,10 @@ pub const CMD_FOCUS_BY_TID: u32 = 0x100A;
 /// App creates the new SHM, compositor maps it and unmaps the old one.
 pub const CMD_RESIZE_SHM: u32 = 0x100B;
 
-/// Register an app's subscription ID for targeted event delivery.
-/// [CMD, app_tid, sub_id, 0, 0]
-/// Sent by the DLL during init so the compositor can use unicast emit
-/// instead of broadcasting window events to all subscribers.
+/// Register an app's dedicated reply channel for targeted event delivery.
+/// [CMD, app_tid, reply_sub_id, reply_channel_id, 0]
+/// Sent by the DLL during init. The shared "compositor" channel is command
+/// ingress only; responses, input events and frame ACKs go to this reply target.
 pub const CMD_REGISTER_SUB: u32 = 0x100C;
 
 /// Set system theme (dark/light).
@@ -269,8 +269,8 @@ pub const CMD_FLUSH_DISPLAY: u32 = 0x1033;
 pub const CMD_LIST_WINDOW_TIDS: u32 = 0x1034;
 
 /// Request the current global mouse cursor position.
-/// [CMD, target_sub_id, 0, 0, 0]
-/// Compositor responds with EVT_CURSOR_POS targeted to `target_sub_id`.
+/// [CMD, reply_sub_id, reply_channel_id, 0, 0]
+/// Compositor responds with EVT_CURSOR_POS on that reply target.
 pub const CMD_GET_CURSOR_POS: u32 = 0x1035;
 
 // ── Compositor → App: Notification Events ────────────────────────────────

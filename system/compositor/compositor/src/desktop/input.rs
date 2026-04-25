@@ -283,10 +283,22 @@ impl Desktop {
         } else {
             let mx = self.mouse_x;
             let my = self.mouse_y;
-            let mut shape = CursorShape::Arrow;
-            if let Some((_, hit)) = self.topmost_window_hit(mx, my, false) {
-                shape = self.cursor_for_hit(hit);
-            }
+            let hit = self.topmost_window_hit(mx, my, false);
+            // Honour an app-requested cursor override while the pointer is
+            // still on the focused window's content area. This lets an app
+            // keep e.g. the Move cursor during its own drag operation
+            // without us snapping it back to Arrow on the next motion event.
+            let app_override = self.app_cursor.filter(|_| {
+                matches!(
+                    hit,
+                    Some((win_id, HitTest::Content))
+                        if Some(win_id) == self.focused_window
+                )
+            });
+            let shape = app_override.unwrap_or_else(|| match hit {
+                Some((_, h)) => self.cursor_for_hit(h),
+                None => CursorShape::Arrow,
+            });
             self.set_cursor_shape(shape);
         }
 
@@ -408,7 +420,12 @@ impl Desktop {
     }
 
     pub(crate) fn handle_mouse_button(&mut self, buttons: u32, down: bool) {
+        let previous_buttons = self.mouse_buttons;
+
         if down {
+            if buttons == previous_buttons || (buttons & !previous_buttons) == 0 {
+                return;
+            }
             self.mouse_buttons = buttons;
 
             // Check if clicking within the shortcut overlay
@@ -657,13 +674,22 @@ impl Desktop {
                         self.push_event(win_id, [EVENT_FOCUS_LOST, 0, 0, 0, 0]);
                     }
                     self.focused_window = None;
+                    self.app_cursor = None;
                     self.compositor.set_focused_layer(None);
                     self.emit_focus_changed(0, 0);
                 }
             }
         } else {
             // Mouse up
-            self.mouse_buttons = 0;
+            if previous_buttons == buttons || previous_buttons == 0 {
+                return;
+            }
+            let released_buttons = previous_buttons & !buttons;
+            if released_buttons == 0 {
+                self.mouse_buttons = buttons;
+                return;
+            }
+            self.mouse_buttons = buttons;
 
             if let Some((wid, btn)) = self.btn_pressed.take() {
                 if self.has_gpu_accel {

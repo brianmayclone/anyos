@@ -1078,8 +1078,12 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
     // Adaptive frame interval: fast when active, slow when idle.
     let mut consecutive_clean: u32 = 0;
 
-    // Clipboard state: subscribe to compositor channel for clipboard polling.
-    let sub_id = ipc::evt_chan_subscribe(comp_chan, 0);
+    // Clipboard state: use a dedicated compositor reply channel.
+    const CMD_REGISTER_SUB: u32 = 0x100C;
+    let reply_chan = ipc::evt_chan_create("vncd.reply");
+    let sub_id = ipc::evt_chan_subscribe(reply_chan, 0);
+    let tid = process::getpid();
+    ipc::evt_chan_emit(comp_chan, &[CMD_REGISTER_SUB, tid, sub_id, reply_chan, 0]);
     let mut last_clipboard: anyos_std::Vec<u8> = anyos_std::Vec::new();
     let mut last_clipboard_check: u32 = 0;
     const CLIPBOARD_POLL_MS: u32 = 500;
@@ -1286,7 +1290,7 @@ pub fn run_session(sock: u32, cfg: &VncConfig, comp_chan: u32) {
         if clip_now.wrapping_sub(last_clipboard_check) >= CLIPBOARD_POLL_MS {
             last_clipboard_check = clip_now;
             let mut clip_buf = [0u8; 4096];
-            let clip_len = crate::clipboard::get_compositor_clipboard(comp_chan, sub_id, &mut clip_buf);
+            let clip_len = crate::clipboard::get_compositor_clipboard(comp_chan, reply_chan, sub_id, &mut clip_buf);
             if clip_len > 0 {
                 let clip_data = &clip_buf[..clip_len];
                 if clip_data != last_clipboard.as_slice() {

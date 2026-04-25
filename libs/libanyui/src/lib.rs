@@ -168,10 +168,13 @@ pub(crate) struct DragSession {
     /// Bitmask of effects the source is willing to allow (`dnd::DND_EFFECT_*`).
     pub allowed_effects: u32,
     /// Effect the current target accepted; `DND_EFFECT_NONE` until the target
-    /// calls `anyui_drag_accept`. Reset on every enter / over event.
+    /// calls `anyui_drag_accept`. Persists across over-events on the same
+    /// target as long as modifiers stay unchanged; reset on target change or
+    /// modifier change so apps can re-negotiate.
     pub negotiated_effect: u32,
-    /// True after the current target called `anyui_drag_accept` for this
-    /// enter/over cycle. Drops are silently rejected if this is false.
+    /// True after the current target called `anyui_drag_accept`. Persists
+    /// across over-events on the same target as long as modifiers stay
+    /// unchanged. Drops are silently rejected if this is false.
     pub target_accepted: bool,
     /// Current pointer position in logical window-relative pixels.
     pub pointer_x: i32,
@@ -179,6 +182,10 @@ pub(crate) struct DragSession {
     /// Ctrl/Shift modifier bits from the latest pointer event (bit 0 = Ctrl,
     /// bit 1 = Shift). Used by `dnd::negotiate_effect`.
     pub modifiers: u32,
+    /// Modifier bits captured the last time the target accepted. When
+    /// `modifiers` differs from this, acceptance is reset so the target's
+    /// `EVENT_DRAG` handler can re-evaluate based on the new modifiers.
+    pub accept_modifiers: u32,
 }
 
 // ── Modal dialog tracking ─────────────────────────────────────────────
@@ -209,6 +216,7 @@ pub(crate) struct AnyuiState {
 
     // ── Compositor connection ────────────────────────────────────────
     pub channel_id: u32,
+    pub reply_channel_id: u32,
     pub sub_id: u32,
 
     // ── Event tracking ──────────────────────────────────────────────
@@ -248,6 +256,11 @@ pub(crate) struct AnyuiState {
     pub popup: Option<PopupInfo>,
     /// Active drag-and-drop session, if a drag gesture is in progress.
     pub drag: Option<DragSession>,
+    /// Set when the drag has ended (mouse-up) but the DROP / DRAG_END
+    /// callbacks are still queued. The session is kept alive across the
+    /// callback dispatch so handlers can still call `anyui_drag_get_payload`
+    /// and friends; cleared at the end of the event-loop iteration.
+    pub drag_release_pending: bool,
 
     // ── Timers ───────────────────────────────────────────────────────
     pub timers: timer::TimerState,
@@ -342,6 +355,35 @@ pub(crate) static FULLSCREEN_INFO: core::sync::atomic::AtomicU64 =
 pub(crate) static FULLSCREEN_FB_PTR: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
 
+fn make_compositor_reply_channel_name(tid: u32) -> ([u8; 32], u32) {
+    let prefix = b"compositor.reply.";
+    let mut name = [0u8; 32];
+    let mut pos = 0usize;
+    while pos < prefix.len() {
+        name[pos] = prefix[pos];
+        pos += 1;
+    }
+    if tid == 0 {
+        name[pos] = b'0';
+        pos += 1;
+    } else {
+        let mut digits = [0u8; 10];
+        let mut n = tid;
+        let mut d = 0usize;
+        while n > 0 {
+            digits[d] = b'0' + (n % 10) as u8;
+            n /= 10;
+            d += 1;
+        }
+        while d > 0 {
+            d -= 1;
+            name[pos] = digits[d];
+            pos += 1;
+        }
+    }
+    (name, pos as u32)
+}
+
 // ══════════════════════════════════════════════════════════════════════
 //  Exported C API
 // ══════════════════════════════════════════════════════════════════════
@@ -353,6 +395,11 @@ pub extern "C" fn anyui_init() -> u32 {
     let mut sub_id: u32 = 0;
     let channel_id = compositor::init(&mut sub_id);
     if channel_id == 0 {
+        return 0;
+    }
+    let (reply_name, reply_len) = make_compositor_reply_channel_name(syscall::get_tid());
+    let reply_channel_id = syscall::evt_chan_create(reply_name.as_ptr(), reply_len);
+    if reply_channel_id == 0 {
         return 0;
     }
 
@@ -373,6 +420,7 @@ pub extern "C" fn anyui_init() -> u32 {
             comp_windows: Vec::new(),
             quit_requested: false,
             channel_id,
+            reply_channel_id,
             sub_id,
             focused: None,
             pressed: None,
@@ -390,6 +438,7 @@ pub extern "C" fn anyui_init() -> u32 {
             tooltip_hover_start: 0,
             popup: None,
             drag: None,
+            drag_release_pending: false,
             timers: timer::TimerState::new(),
             needs_repaint: true,
             needs_layout: true,
@@ -2930,6 +2979,7 @@ pub extern "C" fn anyui_drag_accept(requested_effects: u32) -> u32 {
     if let Some(drag) = st.drag.as_mut() {
         drag.negotiated_effect = effect;
         drag.target_accepted = effect != dnd::DND_EFFECT_NONE;
+        drag.accept_modifiers = mods;
     }
     effect
 }

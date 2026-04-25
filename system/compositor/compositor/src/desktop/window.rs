@@ -599,6 +599,7 @@ impl Desktop {
 
             if self.focused_window == Some(id) {
                 self.focused_window = None;
+                self.app_cursor = None;
                 self.compositor.set_focused_layer(None);
                 if let Some(last) = self.windows.last() {
                     let next_id = last.id;
@@ -708,6 +709,8 @@ impl Desktop {
                     self.render_titlebar(win_id);
                     self.push_event(win_id, [EVENT_FOCUS_LOST, 0, 0, 0, 0]);
                 }
+                // Drop the previous app's cursor override on focus change.
+                self.app_cursor = None;
             }
         }
 
@@ -747,6 +750,7 @@ impl Desktop {
                     self.render_titlebar(win_id);
                     self.push_event(win_id, [EVENT_FOCUS_LOST, 0, 0, 0, 0]);
                 }
+                self.app_cursor = None;
             }
         }
 

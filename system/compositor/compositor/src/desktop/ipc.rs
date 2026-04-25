@@ -8,7 +8,7 @@ use crate::ipc_protocol as proto;
 use crate::menu::MenuBarDef;
 
 use super::window::*;
-use super::Desktop;
+use super::{AppIpcTarget, Desktop};
 
 // ── Desktop IPC Methods ────────────────────────────────────────────────────
 
@@ -22,8 +22,8 @@ impl Desktop {
     }
 
     /// Forward all queued window events to apps via the event channel.
-    /// Returns `(target_sub_id, event)` pairs.
-    pub fn drain_ipc_events(&mut self) -> Vec<(Option<u32>, [u32; 5])> {
+    /// Returns `(target, event)` pairs.
+    pub fn drain_ipc_events(&mut self) -> Vec<(Option<AppIpcTarget>, [u32; 5])> {
         let mut out = Vec::new();
         for win in &mut self.windows {
             if win.owner_tid == 0 {
@@ -31,7 +31,7 @@ impl Desktop {
             }
             let target_sub = self.app_subs.iter()
                 .find(|(t, _)| *t == win.owner_tid)
-                .map(|(_, s)| *s);
+                .map(|(_, target)| *target);
 
             while let Some(evt) = win.events.pop_front() {
                 let ipc_type = match evt[0] {
@@ -58,13 +58,16 @@ impl Desktop {
         out
     }
 
-    /// Look up the event channel subscription ID for an app by TID.
-    pub fn get_sub_id_for_tid(&self, tid: u32) -> Option<u32> {
-        self.app_subs.iter().find(|(t, _)| *t == tid).map(|(_, s)| *s)
+    /// Look up the reply-channel target for an app by TID.
+    pub fn get_ipc_target_for_tid(&self, tid: u32) -> Option<AppIpcTarget> {
+        self.app_subs
+            .iter()
+            .find(|(t, _)| *t == tid)
+            .map(|(_, target)| *target)
     }
 
     /// Process an IPC command from an app.
-    pub fn handle_ipc_command(&mut self, cmd: &[u32; 5]) -> Option<(Option<u32>, [u32; 5])> {
+    pub fn handle_ipc_command(&mut self, cmd: &[u32; 5]) -> Option<(Option<AppIpcTarget>, [u32; 5])> {
         match cmd[0] {
             proto::CMD_CREATE_WINDOW => {
                 let app_tid = cmd[1];
@@ -100,7 +103,7 @@ impl Desktop {
                     raw_y,
                 );
 
-                let target = self.get_sub_id_for_tid(app_tid);
+                let target = self.get_ipc_target_for_tid(app_tid);
                 Some((target, [proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0]))
             }
             proto::CMD_DESTROY_WINDOW => {
@@ -122,7 +125,7 @@ impl Desktop {
                     }
                     self.destroy_window(window_id);
                     let remaining = self.windows.iter().filter(|w| w.owner_tid == app_tid).count() as u32;
-                    let target = self.get_sub_id_for_tid(app_tid);
+                    let target = self.get_ipc_target_for_tid(app_tid);
                     Some((target, [proto::RESP_WINDOW_DESTROYED, window_id, app_tid, remaining, 0]))
                 } else {
                     None
@@ -217,7 +220,7 @@ impl Desktop {
                     .find(|w| w.id == window_id)
                     .map(|w| w.owner_tid)
                     .unwrap_or(0);
-                let target = self.get_sub_id_for_tid(owner_tid);
+                let target = self.get_ipc_target_for_tid(owner_tid);
                 Some((target, [proto::RESP_MENU_SET, window_id, 0, owner_tid, 0]))
             }
             proto::CMD_ADD_STATUS_ICON => {
@@ -322,10 +325,12 @@ impl Desktop {
             proto::CMD_REGISTER_SUB => {
                 let app_tid = cmd[1];
                 let sub_id = cmd[2];
+                let channel_id = cmd[3];
+                let target = AppIpcTarget { channel_id, sub_id };
                 if let Some(entry) = self.app_subs.iter_mut().find(|(t, _)| *t == app_tid) {
-                    entry.1 = sub_id;
+                    entry.1 = target;
                 } else {
-                    self.app_subs.push((app_tid, sub_id));
+                    self.app_subs.push((app_tid, target));
                 }
                 None
             }
@@ -418,6 +423,14 @@ impl Desktop {
                     0xFF => super::cursors::CursorShape::Hidden,
                     _ => super::cursors::CursorShape::Arrow,
                 };
+                // Track app-requested override so apply_mouse_move's
+                // auto-cursor logic doesn't reset it on every motion event.
+                // Arrow clears the override (app is back to default).
+                self.app_cursor = if matches!(shape, super::cursors::CursorShape::Arrow) {
+                    None
+                } else {
+                    Some(shape)
+                };
                 self.set_cursor_shape(shape);
                 None
             }
@@ -437,11 +450,11 @@ impl Desktop {
 
                 // Try to allocate VRAM and create the window
                 if let Some(result) = self.create_vram_window(app_tid, width, height, flags, raw_x, raw_y) {
-                    let target = self.get_sub_id_for_tid(app_tid);
+                    let target = self.get_ipc_target_for_tid(app_tid);
                     Some((target, result))
                 } else {
                     // VRAM allocation failed — tell app to fall back to SHM
-                    let target = self.get_sub_id_for_tid(app_tid);
+                    let target = self.get_ipc_target_for_tid(app_tid);
                     Some((target, [proto::RESP_VRAM_WINDOW_FAILED, 0, 0, app_tid, 0]))
                 }
             }
@@ -474,7 +487,7 @@ impl Desktop {
                 let _legacy_shm = cmd[1];
                 let capacity = cmd[2] as usize;
                 let requester_tid = cmd[3];
-                let target = self.get_sub_id_for_tid(requester_tid);
+                let target = self.get_ipc_target_for_tid(requester_tid);
 
                 let copy_len = self.clipboard_data.len().min(if capacity > 0 { capacity } else { 65536 });
                 if copy_len == 0 {
@@ -572,10 +585,10 @@ impl Desktop {
                     } else {
                         win.y + title_bar_height() as i32
                     };
-                    let target = self.get_sub_id_for_tid(requester_tid);
+                    let target = self.get_ipc_target_for_tid(requester_tid);
                     Some((target, [proto::RESP_WINDOW_POS, window_id, content_x as u32, content_y as u32, requester_tid]))
                 } else {
-                    let target = self.get_sub_id_for_tid(requester_tid);
+                    let target = self.get_ipc_target_for_tid(requester_tid);
                     Some((target, [proto::RESP_WINDOW_POS, window_id, 0, 0, requester_tid]))
                 }
             }
@@ -699,16 +712,19 @@ impl Desktop {
                         .map(|w| w.owner_tid)
                         .unwrap_or(0);
                     self.exit_fullscreen();
-                    let target = self.get_sub_id_for_tid(tid);
+                    let target = self.get_ipc_target_for_tid(tid);
                     Some((target, [proto::RESP_FULLSCREEN_EXITED, window_id, 0, 0, 0]))
                 } else {
                     None
                 }
             }
             proto::CMD_GET_CURSOR_POS => {
-                let target_sub = cmd[1];
+                let target = AppIpcTarget {
+                    channel_id: cmd[2],
+                    sub_id: cmd[1],
+                };
                 Some((
-                    Some(target_sub),
+                    Some(target),
                     [
                         proto::EVT_CURSOR_POS,
                         self.mouse_x as u32,
@@ -746,7 +762,7 @@ impl Desktop {
         &mut self,
         cmd: &[u32; 5],
         shm_addr: usize,
-    ) -> Option<(Option<u32>, [u32; 5])> {
+    ) -> Option<(Option<AppIpcTarget>, [u32; 5])> {
         let app_tid = cmd[1];
         let wh = cmd[2];
         let width = wh >> 16;
@@ -773,7 +789,7 @@ impl Desktop {
             raw_y,
         );
 
-        let target = self.get_sub_id_for_tid(app_tid);
+        let target = self.get_ipc_target_for_tid(app_tid);
         Some((target, [proto::RESP_WINDOW_CREATED, win_id, shm_id, app_tid, 0]))
     }
 
@@ -919,7 +935,7 @@ impl Desktop {
         &mut self,
         cmd: &[u32; 5],
         new_shm_addr: usize,
-    ) -> Option<(Option<u32>, [u32; 5])> {
+    ) -> Option<(Option<AppIpcTarget>, [u32; 5])> {
         let window_id = cmd[1];
         let new_shm_id = cmd[2];
         let new_w = cmd[3];

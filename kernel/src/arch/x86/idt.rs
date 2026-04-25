@@ -1107,6 +1107,14 @@ pub extern "C" fn isr_handler(frame: &InterruptFrame) {
                 }
             }
 
+            // Userspace mmap repair/demand paging: if the fault falls inside a
+            // live VMA but the leaf PTE is missing, map a zero page and retry.
+            if err_not_present && is_user_mode {
+                if crate::memory::virtual_mem::handle_user_mmap_demand_page(cr2) {
+                    return;
+                }
+            }
+
             // DLL demand paging: if an unmapped DLL page is accessed, map the
             // shared physical frame on-demand and retry the instruction.
             // This must also handle kernel-mode faults (e.g. sys_write reading

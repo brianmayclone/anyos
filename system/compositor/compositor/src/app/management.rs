@@ -10,7 +10,7 @@ use crate::config;
 use crate::render::{acquire_lock, desktop_ref, release_lock, signal_render};
 use libconf::{ConfClient, ConfValue, RegistryScope};
 
-use super::ipc::handle_ipc_commands;
+use super::ipc::{emit_to_registered_apps, emit_to_target, handle_ipc_commands};
 use super::session::perform_logout;
 use super::shutdown::perform_shutdown;
 use super::system_events::handle_system_events;
@@ -212,10 +212,7 @@ pub(crate) fn management_loop(
         if !reaped_tids.is_empty() {
             mgmt_sys += 1;
             for tid in &reaped_tids {
-                ipc::evt_chan_emit(
-                    compositor_channel,
-                    &[crate::ipc_protocol::EVT_WINDOW_CLOSED, *tid, 0, 0, 0],
-                );
+                emit_to_registered_apps(&[crate::ipc_protocol::EVT_WINDOW_CLOSED, *tid, 0, 0, 0]);
             }
         }
         if event_count == 0 && !had_ipc && !had_sys && reaped_tids.is_empty() {
@@ -253,10 +250,8 @@ pub(crate) fn management_loop(
                 events
             };
             for (target_sub, evt) in &ipc_events {
-                if let Some(sub_id) = target_sub {
-                    ipc::evt_chan_emit_to(compositor_channel, *sub_id, evt);
-                } else {
-                    ipc::evt_chan_emit(compositor_channel, evt);
+                if let Some(target) = target_sub {
+                    emit_to_target(*target, evt);
                 }
             }
         }

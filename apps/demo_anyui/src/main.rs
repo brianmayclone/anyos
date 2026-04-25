@@ -1090,3 +1090,4 @@ extern "C" fn text_over_thunk_c(_id: u32, _ev: u32, _ud: u64) {
     // Re-accept on every over event so modifier changes update the effect.
     ui::drag_accept(ui::DND_EFFECT_COPY | ui::DND_EFFECT_MOVE);
 }
+

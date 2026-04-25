@@ -28,6 +28,12 @@ use cursors::CURSOR_W;
 use theme::*;
 use window::*;
 
+#[derive(Clone, Copy)]
+pub(crate) struct AppIpcTarget {
+    pub channel_id: u32,
+    pub sub_id: u32,
+}
+
 const MAX_WINDOW_DIM: u32 = 8192;
 const MAX_WINDOW_PIXELS: u64 = 16 * 1024 * 1024;
 
@@ -131,6 +137,12 @@ pub struct Desktop {
 
     // HW cursor
     pub(crate) current_cursor: CursorShape,
+    /// Cursor shape requested by the focused app via CMD_SET_CURSOR.
+    /// While `Some`, overrides the compositor's auto-cursor logic on content
+    /// areas (so an app doing its own drag can keep the Move cursor across
+    /// pointer moves). Cleared when the app sends Arrow, the focused window
+    /// changes, or that window is closed.
+    pub(crate) app_cursor: Option<CursorShape>,
 
     // Menu bar system
     pub(crate) menu_bar: MenuBar,
@@ -144,12 +156,12 @@ pub struct Desktop {
     pub(crate) has_gpu_accel: bool,
     /// Whether GPU hardware cursor is available (cached at init).
     pub(crate) has_hw_cursor: bool,
-    /// Per-app subscription IDs for targeted event delivery: (tid, sub_id).
-    pub(crate) app_subs: Vec<(u32, u32)>,
+    /// Per-app reply channels for targeted event delivery: (tid, target).
+    pub(crate) app_subs: Vec<(u32, AppIpcTarget)>,
     /// Deferred wallpaper reload after resolution change.
     pub(crate) wallpaper_pending: bool,
     /// Tray icon events for windowless apps.
-    pub(crate) tray_ipc_events: Vec<(Option<u32>, [u32; 5])>,
+    pub(crate) tray_ipc_events: Vec<(Option<AppIpcTarget>, [u32; 5])>,
     /// Current wallpaper path (for reload on resolution change).
     pub(crate) wallpaper_path: [u8; 128],
     pub(crate) wallpaper_path_len: usize,
@@ -163,9 +175,9 @@ pub struct Desktop {
     pub(crate) clipboard_shm_cap: u32,
     /// Volume HUD overlay (centered-bottom).
     pub(crate) volume_hud: volume_hud::VolumeHud,
-    /// Frame ACK queue: (sub_id, window_id) pairs to emit after compose.
+    /// Frame ACK queue: (reply target, window_id) pairs to emit after compose.
     /// Populated during compose(), drained by render thread via evt_chan_emit_to.
-    pub(crate) frame_ack_queue: Vec<(u32, u32)>,
+    pub(crate) frame_ack_queue: Vec<(AppIpcTarget, u32)>,
 
     /// Set to true when the user selects "Log Out" from the system menu.
     /// The management loop checks this flag and initiates the logout sequence.
@@ -260,6 +272,7 @@ impl Desktop {
             screen_height: height,
             last_clock_min: u32::MAX,
             current_cursor: CursorShape::Arrow,
+            app_cursor: None,
             menu_bar: MenuBar::new(),
             btn_hover: None,
             btn_pressed: None,
@@ -1077,8 +1090,8 @@ impl Desktop {
         if had_damage {
             for win in &mut self.windows {
                 if win.needs_frame_ack && win.owner_tid != 0 {
-                    if let Some((_, sub_id)) = self.app_subs.iter().find(|(t, _)| *t == win.owner_tid) {
-                        self.frame_ack_queue.push((*sub_id, win.id));
+                    if let Some((_, target)) = self.app_subs.iter().find(|(t, _)| *t == win.owner_tid) {
+                        self.frame_ack_queue.push((*target, win.id));
                     }
                     win.needs_frame_ack = false;
                 }
