@@ -194,3 +194,100 @@ fn codegen_port_io_bytes() {
     assert!(obj_bytes.contains(&0xEE),
         "expected 'out dx, al' (0xEE) in generated object code");
 }
+
+#[test]
+fn codegen_inline_syscall_bytes() {
+    let src = r#"
+        fn raw() {
+            unsafe { asm!("push rbx", "mov rbx, rdi", "syscall", "pop rbx"); }
+        }
+        fn main() -> i32 { raw(); 0 }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Obj,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
+    for pos in obj_bytes.windows(2).enumerate().filter_map(|(i, w)| (w == [0x0f, 0x05]).then_some(i)) {
+        let start = pos.saturating_sub(24);
+        let end = (pos + 24).min(obj_bytes.len());
+        eprintln!("syscall at {pos}: {:02x?}", &obj_bytes[start..end]);
+    }
+    assert!(
+        obj_bytes.windows(7).any(|w| w == [0x53, 0x48, 0x89, 0xfb, 0x0f, 0x05, 0x5b]),
+        "expected push rbx; mov rbx,rdi; syscall; pop rbx in generated object code",
+    );
+}
+
+#[test]
+fn codegen_raw_syscall_intrinsic_uses_native_anyos_abi() {
+    let src = r#"
+        fn syscall3(num: u32, a1: u64, a2: u64, a3: u64) -> u32 { 0 }
+        fn main() -> i32 {
+            let _n = syscall3(2, 1, 0x1000, 4);
+            0
+        }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Obj,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
+    assert!(
+        obj_bytes.windows(16).any(|w| {
+            w == [
+                0x53,             // push rbx
+                0x48, 0x89, 0xf8, // mov rax, rdi
+                0x48, 0x89, 0xf3, // mov rbx, rsi
+                0x49, 0x89, 0xd2, // mov r10, rdx
+                0x48, 0x89, 0xca, // mov rdx, rcx
+                0x0f, 0x05,       // syscall
+                0x5b,             // pop rbx
+            ]
+        }),
+        "expected raw syscall intrinsic to marshal SysV args into anyOS syscall registers",
+    );
+}
+
+#[test]
+fn codegen_fixed_syscall_intrinsic_uses_native_anyos_abi() {
+    let src = r#"
+        fn main() -> i32 {
+            let _n = anyos_std::fs::write(1, 0x1000, 4);
+            0
+        }
+    "#;
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Obj,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        ..CompileOptions::default()
+    };
+    let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
+    assert!(
+        obj_bytes.windows(20).any(|w| {
+            w == [
+                0x53,                                                 // push rbx
+                0x48, 0xb8, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // mov rax, 2
+                0x48, 0x89, 0xfb,                                     // mov rbx, rdi
+                0x49, 0x89, 0xf2,                                     // mov r10, rsi
+                0x0f, 0x05,                                           // syscall
+                0x5b,                                                 // pop rbx
+            ]
+        }),
+        "expected fixed syscall intrinsic to marshal SysV args into anyOS syscall registers",
+    );
+}

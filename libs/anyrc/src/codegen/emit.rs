@@ -666,6 +666,11 @@ impl<'a> CodeEmitter<'a> {
 
     /// Try to emit an intrinsic call. Returns true if the function was recognized as an intrinsic.
     fn try_emit_intrinsic(&mut self, fn_name: &str, args: &[Operand], dest: &Place) -> bool {
+        if let Some(argc) = Self::raw_syscall_arg_count(fn_name) {
+            self.emit_anyos_raw_syscall(argc, dest);
+            return true;
+        }
+
         match fn_name {
             "u8::from" | "u16::from" | "u32::from" | "u64::from" | "u128::from" | "usize::from"
             | "i8::from" | "i16::from" | "i32::from" | "i64::from" | "i128::from" | "isize::from" => {
@@ -1321,113 +1326,144 @@ impl<'a> CodeEmitter<'a> {
                 true
             }
 
-            // ── anyOS syscall intrinsics ──
-            // anyos_std::fs, anyos_std::process, etc.
-            // anyOS syscalls use INT 0x80 with: RAX=syscall_nr, RDI=arg0, RSI=arg1, RDX=arg2
-
-            // ── anyOS syscall intrinsics ──
-            // anyOS syscalls use INT 0x80: RAX=syscall_nr, RDI=arg0, RSI=arg1, RDX=arg2
-            // Syscall numbers from libs/stdlib/src/raw.rs
-
             // SYS_EXIT = 1
             "exit" | "anyos_std::process::exit" => {
-                self.asm.mov_ri(Reg::RAX, 1);
-                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.emit_anyos_fixed_syscall(1, 1, dest);
                 true
             }
 
             // SYS_WRITE = 2: write(fd, buf_ptr, len) -> n
             "anyos_std::fs::write" => {
-                self.asm.mov_ri(Reg::RAX, 2);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_fixed_syscall(2, 3, dest);
                 true
             }
 
             // SYS_READ = 3: read(fd, buf_ptr, len) -> n
             "anyos_std::fs::read" => {
-                self.asm.mov_ri(Reg::RAX, 3);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_fixed_syscall(3, 3, dest);
                 true
             }
 
             // SYS_OPEN = 4: open(path_ptr, flags) -> fd
             "anyos_std::fs::open" => {
-                self.asm.mov_ri(Reg::RAX, 4);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_fixed_syscall(4, 2, dest);
                 true
             }
 
             // SYS_CLOSE = 5: close(fd) -> 0
             "anyos_std::fs::close" => {
-                self.asm.mov_ri(Reg::RAX, 5);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_fixed_syscall(5, 1, dest);
                 true
             }
 
             // SYS_SBRK = 9: sbrk(increment) -> old_break
             "anyos_std::heap::init" | "heap::init" => {
                 self.asm.xor_rr(Reg::RDI, Reg::RDI);
-                self.asm.mov_ri(Reg::RAX, 9);
-                self.asm.emit_raw(&[0xCD, 0x80]);
+                self.emit_anyos_fixed_syscall(9, 1, dest);
                 true
             }
 
             // SYS_EXEC = 11: exec(path_ptr, args_ptr) -> pid
             "exec" | "anyos_std::process::exec" => {
-                self.asm.mov_ri(Reg::RAX, 11);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_fixed_syscall(11, 2, dest);
                 true
             }
 
             // SYS_READDIR = 23: readdir(path_ptr, buf_ptr) -> count
             "anyos_std::fs::readdir" | "readdir" => {
-                self.asm.mov_ri(Reg::RAX, 23);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_fixed_syscall(23, 2, dest);
                 true
             }
 
             // SYS_GETARGS = 28: getargs(buf_ptr) -> len
             "args" | "anyos_std::process::args" => {
-                self.asm.mov_ri(Reg::RAX, 28);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_fixed_syscall(28, 1, dest);
                 true
             }
 
             // SYS_MKDIR = 90
             "anyos_std::fs::mkdir" | "mkdir" => {
-                self.asm.mov_ri(Reg::RAX, 90);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_fixed_syscall(90, 1, dest);
                 true
             }
 
             // SYS_UNLINK = 91
             "anyos_std::fs::unlink" | "unlink" => {
-                self.asm.mov_ri(Reg::RAX, 91);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_fixed_syscall(91, 1, dest);
                 true
             }
 
             // Raw syscall passthrough
             "syscall" | "anyos_std::raw::syscall" => {
-                self.asm.mov_rr(Reg::RAX, Reg::RDI);
-                self.asm.mov_rr(Reg::RDI, Reg::RSI);
-                self.asm.mov_rr(Reg::RSI, Reg::RDX);
-                self.asm.mov_rr(Reg::RDX, Reg::RCX);
-                self.asm.emit_raw(&[0xCD, 0x80]);
-                self.store_place(dest, Reg::RAX);
+                self.emit_anyos_raw_syscall(6, dest);
                 true
             }
 
             _ => false,
+        }
+    }
+
+    fn raw_syscall_arg_count(fn_name: &str) -> Option<usize> {
+        let short = fn_name.rsplit("::").next().unwrap_or(fn_name);
+        match short {
+            "syscall0" => Some(1),
+            "syscall1" | "syscall1_u64" => Some(2),
+            "syscall2" | "syscall2_u64" => Some(3),
+            "syscall3" => Some(4),
+            "syscall4" => Some(5),
+            "syscall5" => Some(6),
+            _ => None,
+        }
+    }
+
+    fn emit_anyos_fixed_syscall(&mut self, num: u32, arg_count: usize, dest: &Place) {
+        self.asm.push(Reg::RBX);
+        self.asm.mov_ri(Reg::RAX, num as i64);
+        self.move_fixed_sysv_args_to_anyos_syscall(arg_count);
+        self.asm.syscall();
+        self.asm.pop(Reg::RBX);
+        self.store_place(dest, Reg::RAX);
+    }
+
+    fn emit_anyos_raw_syscall(&mut self, arg_count: usize, dest: &Place) {
+        self.asm.push(Reg::RBX);
+        self.asm.mov_rr(Reg::RAX, Reg::RDI);
+        self.move_sysv_args_to_anyos_syscall(arg_count);
+        self.asm.syscall();
+        self.asm.pop(Reg::RBX);
+        self.store_place(dest, Reg::RAX);
+    }
+
+    fn move_fixed_sysv_args_to_anyos_syscall(&mut self, arg_count: usize) {
+        if arg_count > 0 {
+            self.asm.mov_rr(Reg::RBX, Reg::RDI);
+        }
+        if arg_count > 1 {
+            self.asm.mov_rr(Reg::R10, Reg::RSI);
+        }
+        if arg_count > 3 {
+            self.asm.mov_rr(Reg::RSI, Reg::RCX);
+        }
+        if arg_count > 4 {
+            self.asm.mov_rr(Reg::RDI, Reg::R8);
+        }
+    }
+
+    fn move_sysv_args_to_anyos_syscall(&mut self, arg_count: usize) {
+        if arg_count > 1 {
+            self.asm.mov_rr(Reg::RBX, Reg::RSI);
+        }
+        if arg_count > 2 {
+            self.asm.mov_rr(Reg::R10, Reg::RDX);
+        }
+        if arg_count > 3 {
+            self.asm.mov_rr(Reg::RDX, Reg::RCX);
+        }
+        if arg_count > 4 {
+            self.asm.mov_rr(Reg::RSI, Reg::R8);
+        }
+        if arg_count > 5 {
+            self.asm.mov_rr(Reg::RDI, Reg::R9);
         }
     }
 
@@ -1531,6 +1567,7 @@ impl<'a> CodeEmitter<'a> {
             "ret" => vec![0xC3],
             "iretq" => vec![0x48, 0xCF],
             "swapgs" => vec![0x0F, 0x01, 0xF8],
+            "syscall" => vec![0x0F, 0x05],
             "wrmsr" => vec![0x0F, 0x30],
             "rdmsr" => vec![0x0F, 0x32],
             "cpuid" => vec![0x0F, 0xA2],
@@ -1583,6 +1620,12 @@ impl<'a> CodeEmitter<'a> {
             let args: Vec<&str> = parts[1].split(',').map(|s| s.trim()).collect();
 
             if mnemonic == "mov" && args.len() == 2 {
+                if let (Some(dst), Some(src)) = (Self::reg_num_64(args[0]), Self::reg_num_64(args[1])) {
+                    let rex = 0x48
+                        | if src >= 8 { 0x04 } else { 0 }
+                        | if dst >= 8 { 0x01 } else { 0 };
+                    return vec![rex, 0x89, 0xC0 | ((src & 7) << 3) | (dst & 7)];
+                }
                 // mov reg, crN
                 if args[1].starts_with("cr") {
                     if let (Some(reg), Some(cr)) = (Self::reg_num_64(args[0]), Self::cr_num(args[1])) {
@@ -1596,6 +1639,28 @@ impl<'a> CodeEmitter<'a> {
                         // 0F 22 /r — MOV CRn, r64
                         return vec![0x0F, 0x22, 0xC0 | (cr << 3) | reg];
                     }
+                }
+            }
+
+            if mnemonic == "push" && args.len() == 1 {
+                if let Some(reg) = Self::reg_num_64(args[0]) {
+                    let mut out = Vec::new();
+                    if reg >= 8 {
+                        out.push(0x41);
+                    }
+                    out.push(0x50 + (reg & 7));
+                    return out;
+                }
+            }
+
+            if mnemonic == "pop" && args.len() == 1 {
+                if let Some(reg) = Self::reg_num_64(args[0]) {
+                    let mut out = Vec::new();
+                    if reg >= 8 {
+                        out.push(0x41);
+                    }
+                    out.push(0x58 + (reg & 7));
+                    return out;
                 }
             }
 
@@ -1622,6 +1687,14 @@ impl<'a> CodeEmitter<'a> {
             "rbp" | "ebp" => Some(5),
             "rsi" | "esi" => Some(6),
             "rdi" | "edi" => Some(7),
+            "r8" | "r8d" => Some(8),
+            "r9" | "r9d" => Some(9),
+            "r10" | "r10d" => Some(10),
+            "r11" | "r11d" => Some(11),
+            "r12" | "r12d" => Some(12),
+            "r13" | "r13d" => Some(13),
+            "r14" | "r14d" => Some(14),
+            "r15" | "r15d" => Some(15),
             _ => None,
         }
     }

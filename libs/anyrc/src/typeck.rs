@@ -1913,9 +1913,36 @@ impl<'a> TypeChecker<'a> {
 
     fn has_partial_eq_impl(&self, lhs_ty: &TyKind, rhs_ty: &TyKind) -> bool {
         self.partial_eq_impls.iter().any(|impl_info| {
-            self.ty_matches_for_candidate(&impl_info.lhs_ty, lhs_ty)
-                && self.ty_matches_for_candidate(&impl_info.rhs_ty, rhs_ty)
+            self.partial_eq_candidate_matches(impl_info, lhs_ty, rhs_ty)
         })
+    }
+
+    fn partial_eq_candidate_matches(
+        &self,
+        impl_info: &PartialEqImpl,
+        lhs_ty: &TyKind,
+        rhs_ty: &TyKind,
+    ) -> bool {
+        if self.ty_matches_for_candidate(&impl_info.lhs_ty, lhs_ty)
+            && self.ty_matches_for_candidate(&impl_info.rhs_ty, rhs_ty)
+        {
+            return true;
+        }
+        if let TyKind::Ref(inner, _) = self.shallow_resolve(lhs_ty.clone()) {
+            if self.ty_matches_for_candidate(&impl_info.lhs_ty, &inner)
+                && self.ty_matches_for_candidate(&impl_info.rhs_ty, rhs_ty)
+            {
+                return true;
+            }
+        }
+        if let TyKind::Ref(inner, _) = self.shallow_resolve(rhs_ty.clone()) {
+            if self.ty_matches_for_candidate(&impl_info.lhs_ty, lhs_ty)
+                && self.ty_matches_for_candidate(&impl_info.rhs_ty, &inner)
+            {
+                return true;
+            }
+        }
+        false
     }
 
     fn ty_matches_for_operator_candidate(&self, expected: &TyKind, actual: &TyKind) -> bool {
@@ -2269,7 +2296,7 @@ impl<'a> TypeChecker<'a> {
         if let (TyKind::Adt(expected_def, _), TyKind::FnDef(actual_def, _)) =
             (self.shallow_resolve(expected.clone()), self.shallow_resolve(ty.clone()))
         {
-            if expected_def == actual_def {
+            if expected_def == actual_def || self.def_ids_share_intrinsic_path(expected_def, actual_def) {
                 self.expr_types.insert(expr.id, expected.clone());
                 return expected.clone();
             }
@@ -4796,6 +4823,16 @@ impl<'a> TypeChecker<'a> {
             .find_map(|(&def_id, path)| if path == full_path { Some(def_id) } else { None })
     }
 
+    fn def_ids_share_intrinsic_path(&self, a: DefId, b: DefId) -> bool {
+        let Some(a_path) = self.resolve.intrinsic_fns.get(&a) else {
+            return false;
+        };
+        self.resolve
+            .intrinsic_fns
+            .get(&b)
+            .is_some_and(|b_path| a_path == b_path)
+    }
+
     fn intrinsic_enum_variant_type(&self, path_str: &str) -> Option<TyKind> {
         let (parent_path, variant_name) = path_str.rsplit_once("::")?;
         match parent_path {
@@ -5331,7 +5368,9 @@ impl<'a> TypeChecker<'a> {
             (TyKind::Projection(_, _, _), _) | (_, TyKind::Projection(_, _, _)) => return,
             (TyKind::Param(_), _) | (_, TyKind::Param(_)) => return,
             (TyKind::DynTrait(_), TyKind::Param(_)) | (TyKind::Param(_), TyKind::DynTrait(_)) => return,
-            (TyKind::Adt(expected_def, _), TyKind::FnDef(actual_def, _)) if expected_def == actual_def => return,
+            (TyKind::Adt(expected_def, _), TyKind::FnDef(actual_def, _))
+                if expected_def == actual_def
+                    || self.def_ids_share_intrinsic_path(*expected_def, *actual_def) => return,
 
             (TyKind::Infer(v), _) => {
                 self.bind_infer_var(*v, &expected, actual, span);

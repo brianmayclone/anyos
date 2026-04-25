@@ -4302,3 +4302,20 @@ fn glob_reexported_module_path_does_not_fall_back_to_local_same_named_type() {
         }
     "#);
 }
+
+#[test]
+fn partial_eq_impl_on_owned_type_accepts_referenced_lhs() {
+    assert_type_ok(r#"
+        struct Ident;
+
+        impl<T> PartialEq<T> for Ident {
+            fn eq(&self, other: &T) -> bool {
+                true
+            }
+        }
+
+        fn eq_ident(ident: &Ident) -> bool {
+            ident == "serde"
+        }
+    "#);
+}
