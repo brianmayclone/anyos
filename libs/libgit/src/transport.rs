@@ -5,13 +5,13 @@
 //! - Upload-pack (fetch) via POST /git-upload-pack
 //! - Receive-pack (push) via POST /git-receive-pack
 
+use crate::oid::Oid;
+use crate::pack::{OBJ_BLOB, OBJ_COMMIT, OBJ_OFS_DELTA, OBJ_REF_DELTA, OBJ_TAG, OBJ_TREE};
+use crate::remote::GitUrl;
+use crate::repo::{Error, Result};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
-use crate::pack::{OBJ_COMMIT, OBJ_TREE, OBJ_BLOB, OBJ_TAG, OBJ_REF_DELTA, OBJ_OFS_DELTA};
-use crate::oid::Oid;
-use crate::remote::GitUrl;
-use crate::repo::{Result, Error};
 
 /// A reference advertised by the remote.
 #[derive(Debug, Clone)]
@@ -159,11 +159,7 @@ fn parse_ref_discovery(text: &str, _service: &str) -> Result<(Vec<RemoteRef>, Ca
 }
 
 /// Build an upload-pack request body (want/have negotiation).
-pub fn build_upload_pack_request(
-    wants: &[Oid],
-    haves: &[Oid],
-    caps: &Capabilities,
-) -> Vec<u8> {
+pub fn build_upload_pack_request(wants: &[Oid], haves: &[Oid], caps: &Capabilities) -> Vec<u8> {
     let mut body = Vec::new();
 
     // Minimal capabilities for initial clone (no haves)
@@ -205,7 +201,13 @@ pub fn build_receive_pack_request(
     let cap_str = "report-status side-band-64k";
     for (i, (old, new, refname)) in updates.iter().enumerate() {
         let line = if i == 0 {
-            format!("{} {} {}\0{}\n", old.to_hex(), new.to_hex(), refname, cap_str)
+            format!(
+                "{} {} {}\0{}\n",
+                old.to_hex(),
+                new.to_hex(),
+                refname,
+                cap_str
+            )
         } else {
             format!("{} {} {}\n", old.to_hex(), new.to_hex(), refname)
         };
@@ -241,7 +243,12 @@ pub fn fetch_pack_streamed(
     let extra_headers = "Accept: application/x-git-upload-pack-result\r\n";
 
     if crate::pack::verbose() {
-        anyos_std::println!("[fetch] POST https://{}{} ({} bytes)", url.host, service_path, request_body.len());
+        anyos_std::println!(
+            "[fetch] POST https://{}{} ({} bytes)",
+            url.host,
+            service_path,
+            request_body.len()
+        );
     }
 
     let mut stream = crate::stream::HttpStream::post(
@@ -250,7 +257,8 @@ pub fn fetch_pack_streamed(
         &request_body,
         "application/x-git-upload-pack-request",
         extra_headers,
-    ).map_err(|e| Error::Other(e))?;
+    )
+    .map_err(|e| Error::Other(e))?;
 
     // Step 4: Skip pkt-line NAK/ACK before PACK data
     // Read until we find "PACK" magic
@@ -273,8 +281,10 @@ pub fn fetch_pack_streamed(
         let mut one = [0u8; 1];
         if !stream.read_exact(&mut one) {
             if crate::pack::verbose() {
-                anyos_std::println!("[fetch] EOF scanning for PACK. Got: {:?}",
-                    core::str::from_utf8(&debug_buf).unwrap_or("(binary)"));
+                anyos_std::println!(
+                    "[fetch] EOF scanning for PACK. Got: {:?}",
+                    core::str::from_utf8(&debug_buf).unwrap_or("(binary)")
+                );
             }
             return Err(Error::Other(String::from("EOF before PACK header")));
         }
@@ -287,14 +297,18 @@ pub fn fetch_pack_streamed(
             anyos_std::print!("First 64 bytes (hex): ");
             for (i, b) in debug_buf.iter().take(64).enumerate() {
                 anyos_std::print!("{:02x} ", b);
-                if (i + 1) % 16 == 0 { anyos_std::println!(); }
+                if (i + 1) % 16 == 0 {
+                    anyos_std::println!();
+                }
             }
             anyos_std::println!();
             // Also try as text
             if let Ok(text) = core::str::from_utf8(&debug_buf[..debug_buf.len().min(128)]) {
                 anyos_std::println!("As text: {}", text);
             }
-            return Err(Error::Other(String::from("PACK header not found in first 1KB")));
+            return Err(Error::Other(String::from(
+                "PACK header not found in first 1KB",
+            )));
         }
     }
 
@@ -314,14 +328,22 @@ pub fn fetch_pack_streamed(
     let num_objects = crate::pack::read_u32_be(&pack_hdr[4..8]);
 
     if crate::pack::verbose() {
-        anyos_std::println!("[fetch] PACK v{} with {} objects (streaming)", version, num_objects);
+        anyos_std::println!(
+            "[fetch] PACK v{} with {} objects (streaming)",
+            version,
+            num_objects
+        );
     }
 
     // Step 6: Stream-parse objects directly into the repository
     let count = stream_parse_objects(&mut stream, repo, num_objects)?;
 
     if crate::pack::verbose() {
-        anyos_std::println!("[fetch] {} objects written, {} bytes received", count, stream.total_read);
+        anyos_std::println!(
+            "[fetch] {} objects written, {} bytes received",
+            count,
+            stream.total_read
+        );
     }
 
     // Stream is closed on drop
@@ -340,17 +362,22 @@ fn stream_parse_objects(
     let mut count = 0u32;
 
     for i in 0..num_objects {
-        let (obj_type_raw, _size) = crate::pack::read_entry_header_stream(stream)
-            .map_err(|e| Error::Other(e))?;
+        let (obj_type_raw, _size) =
+            crate::pack::read_entry_header_stream(stream).map_err(|e| Error::Other(e))?;
 
         if i % 200 == 0 || i == num_objects - 1 {
-            anyos_std::print!("\rReceiving objects: {}% ({}/{})", (i + 1) * 100 / num_objects, i + 1, num_objects);
+            anyos_std::print!(
+                "\rReceiving objects: {}% ({}/{})",
+                (i + 1) * 100 / num_objects,
+                i + 1,
+                num_objects
+            );
         }
 
         match obj_type_raw {
             OBJ_COMMIT | OBJ_TREE | OBJ_BLOB | OBJ_TAG => {
-                let inflated = crate::pack::inflate_from_stream(stream)
-                    .map_err(|e| Error::Other(e))?;
+                let inflated =
+                    crate::pack::inflate_from_stream(stream).map_err(|e| Error::Other(e))?;
 
                 let obj_type = match obj_type_raw {
                     OBJ_COMMIT => ObjectType::Commit,
@@ -360,7 +387,10 @@ fn stream_parse_objects(
                 };
 
                 let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &inflated));
-                let obj = Object { obj_type, data: inflated.clone() };
+                let obj = Object {
+                    obj_type,
+                    data: inflated.clone(),
+                };
                 let _ = repo.write_object(&obj);
                 resolved.push((oid, inflated, obj_type_raw));
                 count += 1;
@@ -372,10 +402,12 @@ fn stream_parse_objects(
                 }
                 let base_oid = Oid::from_bytes(base_sha);
 
-                let delta_data = crate::pack::inflate_from_stream(stream)
-                    .map_err(|e| Error::Other(e))?;
+                let delta_data =
+                    crate::pack::inflate_from_stream(stream).map_err(|e| Error::Other(e))?;
 
-                let base = resolved.iter().find(|(o, _, _)| *o == base_oid)
+                let base = resolved
+                    .iter()
+                    .find(|(o, _, _)| *o == base_oid)
                     .map(|(_, d, t)| (d.clone(), *t))
                     .or_else(|| {
                         repo.read_object(&base_oid).ok().map(|o| {
@@ -393,23 +425,29 @@ fn stream_parse_objects(
                     let result = crate::pack::apply_delta(&base_data, &delta_data);
                     let obj_type = crate::pack::pack_type_to_object_type(base_type);
                     let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
-                    let obj = Object { obj_type, data: result.clone() };
+                    let obj = Object {
+                        obj_type,
+                        data: result.clone(),
+                    };
                     let _ = repo.write_object(&obj);
                     resolved.push((oid, result, base_type));
                     count += 1;
                 }
             }
             OBJ_OFS_DELTA => {
-                let _offset = crate::pack::read_ofs_offset_stream(stream)
-                    .map_err(|e| Error::Other(e))?;
-                let delta_data = crate::pack::inflate_from_stream(stream)
-                    .map_err(|e| Error::Other(e))?;
+                let _offset =
+                    crate::pack::read_ofs_offset_stream(stream).map_err(|e| Error::Other(e))?;
+                let delta_data =
+                    crate::pack::inflate_from_stream(stream).map_err(|e| Error::Other(e))?;
 
                 if let Some((_, base_data, base_type)) = resolved.last() {
                     let result = crate::pack::apply_delta(base_data, &delta_data);
                     let obj_type = crate::pack::pack_type_to_object_type(*base_type);
                     let oid = Oid::from_bytes(crate::sha1::hash_object(obj_type.as_str(), &result));
-                    let obj = Object { obj_type, data: result.clone() };
+                    let obj = Object {
+                        obj_type,
+                        data: result.clone(),
+                    };
                     let _ = repo.write_object(&obj);
                     resolved.push((oid, result, *base_type));
                     count += 1;
@@ -424,16 +462,16 @@ fn stream_parse_objects(
         }
     }
 
-    anyos_std::println!("\rReceiving objects: 100% ({}/{}), done.", num_objects, num_objects);
+    anyos_std::println!(
+        "\rReceiving objects: 100% ({}/{}), done.",
+        num_objects,
+        num_objects
+    );
     Ok(count)
 }
 
 /// Perform git-receive-pack (push objects to remote).
-pub fn push_pack(
-    url: &GitUrl,
-    updates: &[(Oid, Oid, String)],
-    pack_data: &[u8],
-) -> Result<String> {
+pub fn push_pack(url: &GitUrl, updates: &[(Oid, Oid, String)], pack_data: &[u8]) -> Result<String> {
     let request_body = build_receive_pack_request(updates, pack_data);
     let service_url = url.service_url("git-receive-pack");
     let content_type = "application/x-git-receive-pack-request";
