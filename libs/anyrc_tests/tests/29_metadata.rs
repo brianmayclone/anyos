@@ -103,6 +103,49 @@ fn rlib_emit_includes_structured_public_interface() {
         .any(|item| item.name == "PrivateThing"));
 }
 
+#[test]
+fn rlib_interface_exports_conversion_and_comparison_trait_impls() {
+    let source = r#"
+        pub trait From<T> {
+            fn from(value: T) -> Self;
+        }
+
+        pub trait PartialEq<Rhs> {
+            fn eq(&self, rhs: &Rhs) -> bool;
+        }
+
+        pub struct TokenTree;
+        pub struct Ident;
+
+        impl From<Ident> for TokenTree {
+            fn from(value: Ident) -> Self {
+                TokenTree
+            }
+        }
+
+        impl<T> PartialEq<T> for Ident {
+            fn eq(&self, rhs: &T) -> bool {
+                true
+            }
+        }
+    "#;
+    let options = CompileOptions {
+        input: "lib.rs".to_string(),
+        output: "libsample.rlib".to_string(),
+        emit: EmitKind::Rlib,
+        opt_level: 0,
+        crate_type: CrateType::Lib,
+        crate_name: Some("sample".to_string()),
+        ..CompileOptions::default()
+    };
+
+    let rlib = compile(source, "lib.rs", &options).expect("rlib compilation should succeed");
+    let (_, meta) = unpack_rlib(&rlib).expect("rlib should unpack");
+
+    assert!(meta.interface_source.contains("impl From<Ident> for TokenTree"));
+    assert!(meta.interface_source.contains("impl<T> PartialEq<T> for Ident"));
+}
+
 fn push_str16(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(&(s.len() as u16).to_le_bytes());
     out.extend_from_slice(s.as_bytes());

@@ -370,6 +370,11 @@ impl<'a> LoweringContext<'a> {
                 };
                 (HirExprKind::InlineAsm(hir_asm), asm.span)
             }
+            ast::Expr::Attributed(_, inner, span) => {
+                let mut lowered = self.lower_expr(inner);
+                lowered.span = *span;
+                return lowered;
+            }
             // Desugar if let → match with two arms
             ast::Expr::IfLet(pat, scrutinee, then_block, else_branch, span) => {
                 let hir_scrutinee = self.lower_expr(scrutinee);

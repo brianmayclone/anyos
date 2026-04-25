@@ -70,6 +70,74 @@ fn resolve_impl_methods() {
 }
 
 #[test]
+fn resolve_float_primitive_assoc_items() {
+    assert_resolves(r#"
+        fn main() {
+            let a = f32::MAX;
+            let b = f32::MIN;
+            let c = f64::MAX;
+            let d = f64::MIN;
+            let e = f64::MIN_POSITIVE;
+            let f = f64::from_bits(0);
+        }
+    "#);
+}
+
+#[test]
+fn resolve_extern_ordering_glob_variants() {
+    assert_resolves(r#"
+        fn main() {
+            use core::cmp::Ordering::*;
+            let a = Less;
+            let b = Greater;
+        }
+    "#);
+}
+
+#[test]
+fn resolve_root_module_alias_from_nested_module() {
+    assert_resolves(r#"
+        mod libgl_client {
+            pub const GL_DEPTH_TEST: u32 = 1;
+            pub fn init() -> bool { true }
+        }
+
+        mod workloads {
+            mod gl3d_common {
+                use libgl_client as gl;
+
+                fn ensure_gl_init() {
+                    if !gl::init() {}
+                    let mode = gl::GL_DEPTH_TEST;
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn resolve_self_associated_type_projection_in_trait() {
+    assert_resolves(r#"
+        struct NonNull<T> {}
+        struct DstLayout {}
+
+        pub unsafe trait KnownLayout {
+            fn only_derive_is_allowed_to_implement_this_trait()
+            where
+                Self: Sized;
+
+            type PointerMetadata: PointerMetadata;
+            type MaybeUninit: ?Sized + KnownLayout<PointerMetadata = Self::PointerMetadata>;
+            const LAYOUT: DstLayout;
+            fn raw_from_ptr_len(bytes: NonNull<u8>, meta: Self::PointerMetadata) -> NonNull<Self>;
+            fn pointer_to_metadata(ptr: *mut Self) -> Self::PointerMetadata;
+        }
+
+        trait PointerMetadata {}
+    "#);
+}
+
+#[test]
 fn resolve_nested_scopes() {
     assert_resolves(r#"
         fn main() {
@@ -260,6 +328,27 @@ fn resolve_crate_prefixed_extern_crate_imports() {
 
         fn needs_layout(layout: Layout) {
             handle_alloc_error(layout);
+        }
+    "#);
+}
+
+#[test]
+fn resolve_dynlink_imports_as_external_crate_items() {
+    assert_resolves(r#"
+        use dynlink::{dl_open, dl_sym, DlHandle};
+
+        unsafe fn resolve(handle: &DlHandle, name: &str) {
+            dl_sym(handle, name);
+        }
+
+        fn init() {
+            let handle = match dl_open("/Libraries/libgl.so") {
+                Some(h) => h,
+                None => return,
+            };
+            unsafe {
+                resolve(&handle, "gl_init");
+            }
         }
     "#);
 }

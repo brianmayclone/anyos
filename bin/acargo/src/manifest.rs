@@ -245,6 +245,52 @@ fn parse_profile_panic(toml: &Table, profile: &str) -> Option<String> {
     p.get("panic").and_then(|v| v.as_str()).map(|s| s.to_string())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::toml;
+
+    #[test]
+    fn parses_multiline_dependency_feature_arrays() {
+        let table = toml::parse(
+            r#"
+            [package]
+            name = "serde_derive"
+
+            [dependencies.syn]
+            version = "2"
+            features = [
+                "clone-impls",
+                "derive",
+                "parsing",
+                "printing",
+                "proc-macro",
+            ]
+            default-features = false
+            "#,
+        );
+
+        let manifest = parse(&table);
+        let syn = manifest
+            .dependencies
+            .iter()
+            .find(|dep| dep.name == "syn")
+            .expect("syn dependency");
+
+        assert_eq!(
+            syn.features,
+            vec![
+                String::from("clone-impls"),
+                String::from("derive"),
+                String::from("parsing"),
+                String::from("printing"),
+                String::from("proc-macro"),
+            ],
+        );
+        assert!(!syn.default_features);
+    }
+}
+
 /// Determine the source file for a crate given its manifest and directory.
 pub fn source_file(manifest: &Manifest, manifest_dir: &str) -> String {
     if manifest.crate_type == CrateKind::Lib {

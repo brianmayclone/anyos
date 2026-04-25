@@ -85,7 +85,252 @@ fn primitive_endian_assoc_methods_are_typed() {
 
 #[test]
 fn primitive_float_epsilon_consts_are_typed() {
-    assert_type_ok("fn main() { let x: f64 = f64::EPSILON; let y: f32 = f32::EPSILON; }");
+    assert_type_ok("fn main() { let x: f64 = f64::EPSILON; let y: f32 = f32::EPSILON; let z: f64 = f64::MIN_POSITIVE; }");
+}
+
+#[test]
+fn primitive_float_from_bits_is_typed() {
+    assert_type_ok("fn main() { let x: f64 = f64::from_bits(0); let y: f32 = f32::from_bits(0); }");
+}
+
+#[test]
+fn trait_self_associated_type_projection_in_method_signature_is_typed() {
+    assert_type_ok(r#"
+        struct NonNull<T> {}
+        struct DstLayout {}
+
+        pub unsafe trait KnownLayout {
+            fn only_derive_is_allowed_to_implement_this_trait()
+            where
+                Self: Sized;
+
+            type PointerMetadata: PointerMetadata;
+            type MaybeUninit: ?Sized + KnownLayout<PointerMetadata = Self::PointerMetadata>;
+            const LAYOUT: DstLayout;
+            fn raw_from_ptr_len(bytes: NonNull<u8>, meta: Self::PointerMetadata) -> NonNull<Self>;
+            fn pointer_to_metadata(ptr: *mut Self) -> Self::PointerMetadata;
+        }
+
+        trait PointerMetadata {}
+    "#);
+}
+
+#[test]
+fn core_float_consts_are_typed() {
+    assert_type_ok(r#"
+        fn main() {
+            let a: f64 = core::f64::consts::LN_2;
+            let b: f64 = core::f64::consts::FRAC_PI_2;
+            let c: f32 = core::f32::consts::PI;
+        }
+    "#);
+}
+
+#[test]
+fn vec_push_pop_last_truncate_are_typed() {
+    assert_type_ok(r#"
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn new() -> Vec<T> { Vec {} }
+            fn push(&mut self, value: T) {}
+            fn pop(&mut self) -> Option<T> { None }
+            fn last(&self) -> Option<&T> { None }
+            fn truncate(&mut self, len: usize) {}
+        }
+        enum Option<T> { Some(T), None }
+
+        fn main() {
+            let mut values: Vec<u32> = Vec::new();
+            values.push(1);
+            let x: u32 = values.pop().unwrap_or(0);
+            let y: Option<&u32> = values.last();
+            values.truncate(0);
+        }
+    "#);
+}
+
+#[test]
+fn loop_tail_match_does_not_force_arm_values_to_function_return() {
+    assert_type_ok(r#"
+        enum Op { Value, Unit }
+
+        fn value() -> u32 { 1 }
+
+        fn run(op: Op) -> u32 {
+            loop {
+                match op {
+                    Op::Value => value(),
+                    Op::Unit => {},
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn nested_match_expression_inside_loop_keeps_its_value_type() {
+    assert_type_ok(r#"
+        enum Op { Yes, No }
+
+        fn run(op: Op) -> bool {
+            loop {
+                let value = {
+                    match op {
+                        Op::Yes => true,
+                        Op::No => false,
+                    }
+                };
+                if value {
+                    return true;
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn nested_match_inside_discarded_loop_tail_match_keeps_value_type() {
+    assert_type_ok(r#"
+        enum Outer { Run, Done }
+        enum Inner { Yes, No }
+
+        fn run(outer: Outer, inner: Inner) -> bool {
+            loop {
+                match outer {
+                    Outer::Run => {
+                        let value = {
+                            match inner {
+                                Inner::Yes => true,
+                                Inner::No => false,
+                            }
+                        };
+                        if value {
+                            return true;
+                        }
+                    }
+                    Outer::Done => return false,
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn let_rebinding_from_if_branch_with_module_function_preserves_value_type() {
+    assert_type_ok(r#"
+        mod promise {
+            use super::Value;
+
+            pub fn resolve(value: Value) -> Value {
+                value
+            }
+        }
+
+        enum Value { Undefined, Object }
+
+        fn run(is_async: bool, value: Value) -> Value {
+            let ret = if is_async {
+                promise::resolve(value)
+            } else {
+                value
+            };
+            return ret;
+        }
+    "#);
+}
+
+#[test]
+fn constructor_return_style_if_block_keeps_tail_value_after_continue_guard() {
+    assert_type_ok(r#"
+        enum Value { Undefined, Object }
+
+        impl Value {
+            fn is_object(&self) -> bool { true }
+        }
+
+        struct Frame {
+            this_val: Value,
+            is_constructor: bool,
+        }
+
+        fn run(frame: Frame, val: Value) -> Value {
+            let ret = if frame.is_constructor && !val.is_object() {
+                let is_derived = true;
+                if is_derived {
+                    continue;
+                }
+                frame.this_val
+            } else {
+                val
+            };
+            return ret;
+        }
+    "#);
+}
+
+#[test]
+fn break_inside_for_does_not_define_enclosing_loop_type() {
+    assert_type_ok(r#"
+        fn run() -> u32 {
+            loop {
+                for i in 0..4 {
+                    break;
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn multiline_match_guard_condition_is_typed_as_bool() {
+    assert_type_ok(r#"
+        enum Value {
+            Object(u32),
+            Other,
+        }
+
+        fn is_match(value: Value) -> bool {
+            match value {
+                Value::Object(ref inner)
+                    if *inner
+                        == 7 => true,
+                _ => false,
+            }
+        }
+    "#);
+}
+
+#[test]
+fn match_arm_return_and_continue_paths_do_not_poison_numeric_arms() {
+    assert_type_ok(r#"
+        enum Option<T> { Some(T), None }
+
+        fn parse_digit(bytes: &[u8], pos: &mut usize) -> Option<u32> {
+            let d = match bytes[*pos] {
+                b'0'..=b'9' => (bytes[*pos] - b'0') as u32,
+                _ => return None,
+            };
+            *pos += 1;
+            Some(d)
+        }
+    "#);
+}
+
+#[test]
+fn ref_mut_tuple_variant_pattern_on_mut_ref_binds_inner_mut_ref() {
+    assert_type_ok(r#"
+        enum Op {
+            Jump(i32),
+            Other,
+        }
+
+        fn patch(op: &mut Op, target: i32) {
+            match op {
+                Op::Jump(ref mut off) => *off = target,
+                _ => {}
+            }
+        }
+    "#);
 }
 
 #[test]
@@ -225,6 +470,156 @@ fn nested_module_array_lengths_resolve_local_const_path_expressions() {
 pub fn make_tag() -> [u8; TAG_SIZE] {
                     [0u8; 16]
                 }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn imported_module_const_paths_work_in_array_lengths() {
+    assert_type_ok(r#"
+        mod crypto {
+            pub mod sha256 {
+                pub const DIGEST_SIZE: usize = 32;
+
+                pub struct Sha256 {}
+
+                impl Sha256 {
+                    pub fn finalize(self) -> [u8; DIGEST_SIZE] {
+                        [0u8; 32]
+                    }
+                }
+            }
+
+            pub mod hmac {
+                use crate::crypto::sha256::{self, Sha256};
+
+                pub fn finalize(ctx: Sha256) -> [u8; sha256::DIGEST_SIZE] {
+                    ctx.finalize()
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn imported_consts_work_in_array_repeat_lengths() {
+    assert_type_ok(r#"
+        mod panel {
+            use crate::fs::{path_join, MAX_PATH};
+
+            pub fn selected_paths() -> ([([u8; MAX_PATH], usize); 64], usize) {
+                let mut result = [([0u8; MAX_PATH], 0usize); 64];
+                result[0] = path_join();
+                (result, 1usize)
+            }
+        }
+
+        mod fs {
+            pub const MAX_PATH: usize = 512;
+
+            pub fn path_join() -> ([u8; MAX_PATH], usize) {
+                let buf = [0u8; MAX_PATH];
+                (buf, 0usize)
+            }
+        }
+    "#);
+}
+
+#[test]
+fn fn_items_coerce_to_fn_pointer_in_arrays_and_matches() {
+    assert_type_ok(r#"
+        fn a(_: u32) {}
+        fn b(_: u32) {}
+        fn c(_: u32) {}
+
+        fn call(f: fn(u32)) {
+            f(1);
+        }
+
+        fn run(which: u32) {
+            let tests: [fn(u32); 3] = [a, b, c];
+            tests[0](1);
+
+            let selected = match which {
+                0 => a,
+                1 => b,
+                _ => c,
+            };
+            call(selected);
+        }
+    "#);
+}
+
+#[test]
+fn float_primitive_assoc_min_max_consts_typecheck() {
+    assert_type_ok(r#"
+        fn use_float_consts() {
+            let a: f32 = f32::MAX;
+            let b: f32 = f32::MIN;
+            let c: f64 = f64::MAX;
+            let d: f64 = f64::MIN;
+        }
+    "#);
+}
+
+#[test]
+fn loop_expression_uses_break_value_type() {
+    assert_type_ok(r#"
+        fn recv() {
+            let plaintext = loop {
+                let pt: Vec<u8> = Vec::new();
+                break pt;
+            };
+            let byte: u8 = plaintext[0];
+        }
+    "#);
+}
+
+#[test]
+fn shift_mask_inherits_integer_type_from_bitand_lhs() {
+    assert_type_ok(r#"
+        fn read_bits(bit_buf: u32, count: u8) -> u32 {
+            bit_buf & ((1 << count) - 1)
+        }
+    "#);
+}
+
+#[test]
+fn shift_assign_allows_different_integer_rhs_type() {
+    assert_type_ok(r#"
+        fn read_bits(mut bit_buf: u32, count: u8) -> u32 {
+            bit_buf >>= count;
+            bit_buf
+        }
+    "#);
+}
+
+#[test]
+fn struct_literal_prefers_resolved_local_use_over_same_name_global_type() {
+    assert_type_ok(r#"
+        mod object {
+            pub struct Object {
+                pub data: u8,
+            }
+        }
+
+        mod anyos_std {
+            pub mod json {
+                pub struct Object {
+                    pub json: u8,
+                }
+            }
+        }
+
+        mod transport {
+            fn write_object(_: crate::object::Object) {}
+
+            fn stream_parse_objects() {
+                use crate::object::Object;
+
+                let obj = Object { data: 1u8 };
+                write_object(obj);
             }
         }
     "#);
@@ -1138,6 +1533,138 @@ fn comparison_operator_uses_partial_eq_impl() {
 
         fn is_zero(value: Wrapped<Big>) -> bool {
             value == 0
+        }
+    "#);
+}
+
+#[test]
+fn function_arguments_allow_from_impl_into_expected_type() {
+    assert_type_ok(r#"
+        trait From<T> {}
+
+        struct TokenTree {}
+        struct Ident {}
+
+        impl From<Ident> for TokenTree {}
+
+        fn append(token: TokenTree) {}
+
+        fn main() {
+            append(Ident {});
+        }
+    "#);
+}
+
+#[test]
+fn comparison_operator_uses_generic_partial_eq_rhs() {
+    assert_type_ok(r#"
+        trait PartialEq<Rhs> {
+            fn eq(&self, rhs: &Rhs) -> bool;
+        }
+
+        struct Ident {}
+
+        impl<T> PartialEq<T> for Ident {
+            fn eq(&self, rhs: &T) -> bool {
+                true
+            }
+        }
+
+        fn is_keyword(ident: Ident, token: &str) -> bool {
+            ident == token
+        }
+    "#);
+}
+
+#[test]
+fn module_alias_assoc_fn_resolves_same_named_type_in_target_module() {
+    assert_type_ok(r#"
+        mod internals {
+            pub mod attr {
+                use crate::internals::Ctxt;
+
+                pub struct Container {}
+
+                impl Container {
+                    pub fn from_ast(cx: Ctxt, item: &Item) -> Self {
+                        Container {}
+                    }
+                }
+
+                pub struct Ctxt {}
+                pub struct Item {}
+                pub struct Field {}
+            }
+
+            pub mod ast {
+                use crate::internals::{attr, Ctxt, Derive};
+
+                pub struct Container<'a> {
+                    attrs: attr::Container,
+                    original: &'a attr::Item,
+                }
+
+                pub struct Field<'a> {
+                    attrs: attr::Field,
+                    original: &'a syn::Field,
+                }
+
+                impl<'a> Container<'a> {
+                    pub fn from_ast(
+                        cx: Ctxt,
+                        item: &'a attr::Item,
+                        derive: Derive,
+                        private: Ident,
+                    ) -> Self {
+                        let attrs = attr::Container::from_ast(cx, item);
+                        Container {
+                            attrs,
+                            original: item,
+                        }
+                    }
+                }
+
+                fn takes_attr_container(attrs: &attr::Container) {}
+
+                pub fn use_attrs(cont: &Container) {
+                    takes_attr_container(&cont.attrs);
+                }
+
+                pub struct Derive {}
+                pub struct Ident {}
+            }
+
+            pub struct Ctxt {}
+            pub struct Derive {}
+        }
+
+        mod de {
+            use crate::internals::ast::Container;
+            use crate::internals::attr;
+
+            fn takes_attr_container(attrs: &attr::Container) {}
+
+            fn deserialize_body(cont: &Container) {
+                takes_attr_container(&cont.attrs);
+            }
+        }
+
+        mod syn {
+            pub mod data {
+                pub struct Field {
+                    pub ty: u8,
+                }
+            }
+
+            pub use crate::syn::data::Field;
+        }
+
+        mod bound {
+            use crate::internals::ast::Field;
+
+            fn visit_field(field: &Field) -> u8 {
+                field.original.ty
+            }
         }
     "#);
 }
@@ -2455,6 +2982,38 @@ fn proc_macro2_style_wrapper_into_iter_preserves_fallback_variant_field_type() {
 }
 
 #[test]
+fn proc_macro2_style_into_iter_struct_name_wins_over_assoc_type_in_return_annotation() {
+    assert_type_ok(r#"
+        trait IntoIterator {
+            type Item;
+            type IntoIter;
+            fn into_iter(self) -> Self::IntoIter;
+        }
+
+        enum TokenTree { Ident }
+
+        mod token_stream {
+            use crate::TokenTree;
+
+            pub struct TokenStream {}
+
+            pub struct IntoIter {
+                item: TokenTree,
+            }
+
+            impl IntoIterator for TokenStream {
+                type Item = TokenTree;
+                type IntoIter = IntoIter;
+
+                fn into_iter(self) -> IntoIter {
+                    IntoIter { item: TokenTree::Ident }
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
 fn field_access_autoderefs_nested_references() {
     assert_type_ok(r#"
         struct Package {
@@ -2790,6 +3349,86 @@ fn cfg_attributed_panic_macro_is_expanded_after_strip() {
             }
         }
     "#, &[]);
+
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn cfg_false_strips_call_arguments() {
+    let (result, _) = typecheck_with_cfg(r#"
+        fn one(_: i32) -> i32 { 1 }
+        fn missing() -> bool { true }
+
+        fn main() {
+            let _: i32 = one(
+                1,
+                #[cfg(feature = "full")]
+                missing(),
+            );
+        }
+    "#, &[]);
+
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn cfg_false_strips_function_parameters() {
+    let (result, _) = typecheck_with_cfg(r#"
+        struct Missing;
+
+        fn one(
+            value: i32,
+            #[cfg(feature = "full")]
+            missing: Missing,
+        ) -> i32 {
+            value
+        }
+
+        fn main() {
+            let _: i32 = one(1);
+        }
+    "#, &[]);
+
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn from_impl_allows_into_parameter_coercion() {
+    let (result, _) = typecheck(r#"
+        trait From<T> {}
+        struct TokenTree {}
+        struct Ident {}
+
+        impl From<Ident> for TokenTree {}
+
+        fn append(_: TokenTree) {}
+
+        fn main() {
+            append(Ident {});
+        }
+    "#);
+
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn generic_partial_eq_impl_allows_different_rhs() {
+    let (result, _) = typecheck(r#"
+        trait PartialEq<Rhs> {}
+        struct Ident {}
+
+        impl<T> PartialEq<T> for Ident {}
+
+        fn main() {
+            let ident = Ident {};
+            let text: &str = "x";
+            if ident == text {}
+        }
+    "#);
 
     assert!(result.errors.is_empty(), "unexpected errors: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());

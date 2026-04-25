@@ -630,6 +630,7 @@ fn is_compiler_known_external_crate(name: &str) -> bool {
             | "quote"
             | "syn"
             | "serde"
+            | "dynlink"
     )
 }
 
@@ -1125,7 +1126,7 @@ fn trait_impl_is_interface_relevant(
     };
     matches!(
         interner.resolve(last.ident),
-        "Deref" | "DerefMut" | "Index"
+        "Deref" | "DerefMut" | "Index" | "From" | "PartialEq"
     )
 }
 

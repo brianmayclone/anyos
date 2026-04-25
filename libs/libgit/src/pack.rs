@@ -7,13 +7,13 @@
 //! - OBJ_COMMIT (1), OBJ_TREE (2), OBJ_BLOB (3), OBJ_TAG (4)
 //! - OBJ_OFS_DELTA (6), OBJ_REF_DELTA (7)
 
-use alloc::vec::Vec;
-use alloc::string::String;
-use crate::oid::Oid;
-use crate::object::{Object, ObjectType};
-use crate::sha1;
-use crate::inflate;
 use crate::deflate;
+use crate::inflate;
+use crate::object::{Object, ObjectType};
+use crate::oid::Oid;
+use crate::sha1;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -85,7 +85,12 @@ pub fn parse_pack_streamed(
 
         // Progress
         if i % 100 == 0 || i == num_objects - 1 {
-            anyos_std::print!("\rReceiving objects: {}% ({}/{})", (i + 1) * 100 / num_objects, i + 1, num_objects);
+            anyos_std::print!(
+                "\rReceiving objects: {}% ({}/{})",
+                (i + 1) * 100 / num_objects,
+                i + 1,
+                num_objects
+            );
         }
 
         match obj_type_raw {
@@ -100,8 +105,12 @@ pub fn parse_pack_streamed(
                 };
 
                 let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &inflated));
-                let obj = Object { obj_type, data: inflated.clone() };
-                repo.write_object(&obj).map_err(|e| alloc::format!("write: {}", e))?;
+                let obj = Object {
+                    obj_type,
+                    data: inflated.clone(),
+                };
+                repo.write_object(&obj)
+                    .map_err(|e| alloc::format!("write: {}", e))?;
 
                 resolved.push((oid, inflated, obj_type_raw));
                 count += 1;
@@ -117,31 +126,45 @@ pub fn parse_pack_streamed(
                 let delta_data = inflate_from_stream(stream)?;
 
                 // Find base object
-                if let Some((_, base_data, base_type)) = resolved.iter().find(|(o, _, _)| *o == base_oid) {
+                if let Some((_, base_data, base_type)) =
+                    resolved.iter().find(|(o, _, _)| *o == base_oid)
+                {
                     let result = apply_delta(base_data, &delta_data);
                     let obj_type = pack_type_to_object_type(*base_type);
                     let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &result));
-                    let obj = Object { obj_type, data: result.clone() };
-                    repo.write_object(&obj).map_err(|e| alloc::format!("write: {}", e))?;
+                    let obj = Object {
+                        obj_type,
+                        data: result.clone(),
+                    };
+                    repo.write_object(&obj)
+                        .map_err(|e| alloc::format!("write: {}", e))?;
                     resolved.push((oid, result, *base_type));
                     count += 1;
                 } else {
                     // Base not found — try reading from repo (thin pack)
                     if let Ok(base_obj) = repo.read_object(&base_oid) {
                         let result = apply_delta(&base_obj.data, &delta_data);
-                        let oid = Oid::from_bytes(sha1::hash_object(base_obj.obj_type.as_str(), &result));
+                        let oid =
+                            Oid::from_bytes(sha1::hash_object(base_obj.obj_type.as_str(), &result));
                         let base_type = match base_obj.obj_type {
                             ObjectType::Commit => OBJ_COMMIT,
                             ObjectType::Tree => OBJ_TREE,
                             ObjectType::Blob => OBJ_BLOB,
                             ObjectType::Tag => OBJ_TAG,
                         };
-                        let obj = Object { obj_type: base_obj.obj_type, data: result.clone() };
-                        repo.write_object(&obj).map_err(|e| alloc::format!("write: {}", e))?;
+                        let obj = Object {
+                            obj_type: base_obj.obj_type,
+                            data: result.clone(),
+                        };
+                        repo.write_object(&obj)
+                            .map_err(|e| alloc::format!("write: {}", e))?;
                         resolved.push((oid, result, base_type));
                         count += 1;
                     } else if verbose() {
-                        anyos_std::println!("\n[pack-stream] WARNING: base {} not found", base_oid.short());
+                        anyos_std::println!(
+                            "\n[pack-stream] WARNING: base {} not found",
+                            base_oid.short()
+                        );
                     }
                 }
             }
@@ -156,8 +179,12 @@ pub fn parse_pack_streamed(
                     let result = apply_delta(base_data, &delta_data);
                     let obj_type = pack_type_to_object_type(*base_type);
                     let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &result));
-                    let obj = Object { obj_type, data: result.clone() };
-                    repo.write_object(&obj).map_err(|e| alloc::format!("write: {}", e))?;
+                    let obj = Object {
+                        obj_type,
+                        data: result.clone(),
+                    };
+                    repo.write_object(&obj)
+                        .map_err(|e| alloc::format!("write: {}", e))?;
                     resolved.push((oid, result, *base_type));
                     count += 1;
                 }
@@ -176,13 +203,19 @@ pub fn parse_pack_streamed(
         }
     }
 
-    anyos_std::println!("\rReceiving objects: 100% ({}/{}), done.", num_objects, num_objects);
+    anyos_std::println!(
+        "\rReceiving objects: 100% ({}/{}), done.",
+        num_objects,
+        num_objects
+    );
 
     Ok(count)
 }
 
 /// Read a pack entry header from a stream (variable-length encoding).
-pub(crate) fn read_entry_header_stream(stream: &mut crate::stream::HttpStream) -> Result<(u8, usize), alloc::string::String> {
+pub(crate) fn read_entry_header_stream(
+    stream: &mut crate::stream::HttpStream,
+) -> Result<(u8, usize), alloc::string::String> {
     let mut byte = [0u8; 1];
     if !stream.read_exact(&mut byte) {
         return Err(alloc::string::String::from("truncated entry header"));
@@ -206,7 +239,9 @@ pub(crate) fn read_entry_header_stream(stream: &mut crate::stream::HttpStream) -
 }
 
 /// Read an OFS_DELTA offset from a stream.
-pub(crate) fn read_ofs_offset_stream(stream: &mut crate::stream::HttpStream) -> Result<usize, alloc::string::String> {
+pub(crate) fn read_ofs_offset_stream(
+    stream: &mut crate::stream::HttpStream,
+) -> Result<usize, alloc::string::String> {
     let mut byte = [0u8; 1];
     if !stream.read_exact(&mut byte) {
         return Err(alloc::string::String::from("truncated ofs offset"));
@@ -227,7 +262,9 @@ pub(crate) fn read_ofs_offset_stream(stream: &mut crate::stream::HttpStream) -> 
 
 /// Inflate zlib-compressed data from a stream.
 /// Reads the zlib header (if present), then feeds chunks to the DEFLATE inflater.
-pub(crate) fn inflate_from_stream(stream: &mut crate::stream::HttpStream) -> Result<Vec<u8>, alloc::string::String> {
+pub(crate) fn inflate_from_stream(
+    stream: &mut crate::stream::HttpStream,
+) -> Result<Vec<u8>, alloc::string::String> {
     // Read enough data to inflate. We don't know the compressed size upfront,
     // so read in chunks and try to inflate. When inflate succeeds (BFINAL block
     // found), we know how many bytes were consumed and can "push back" the rest.
@@ -242,7 +279,11 @@ pub(crate) fn inflate_from_stream(stream: &mut crate::stream::HttpStream) -> Res
     compressed.extend_from_slice(&buf[..n]);
 
     // Skip zlib header if present
-    let zlib_skip = if compressed.len() >= 2 && compressed[0] == 0x78 { 2 } else { 0 };
+    let zlib_skip = if compressed.len() >= 2 && compressed[0] == 0x78 {
+        2
+    } else {
+        0
+    };
 
     // Try inflating, read more data if needed
     loop {
@@ -251,9 +292,11 @@ pub(crate) fn inflate_from_stream(stream: &mut crate::stream::HttpStream) -> Res
                 // Put unconsumed bytes back into the stream buffer
                 let total_consumed = zlib_skip + consumed;
                 if total_consumed < compressed.len() {
-                    let leftover = compressed[total_consumed..].to_vec();
+                    let mut leftover = compressed[total_consumed..].to_vec();
+                    if stream.buf_pos < stream.buf.len() {
+                        leftover.extend_from_slice(&stream.buf[stream.buf_pos..]);
+                    }
                     stream.buf = leftover;
-                    stream.buf.extend_from_slice(&stream.buf[stream.buf_pos..].to_vec());
                     stream.buf_pos = 0;
                 }
                 return Ok(data);
@@ -262,7 +305,9 @@ pub(crate) fn inflate_from_stream(stream: &mut crate::stream::HttpStream) -> Res
                 // Need more data — read another chunk
                 let n = stream.read(&mut buf);
                 if n == 0 {
-                    return Err(alloc::string::String::from("EOF during inflate (incomplete)"));
+                    return Err(alloc::string::String::from(
+                        "EOF during inflate (incomplete)",
+                    ));
                 }
                 compressed.extend_from_slice(&buf[..n]);
             }
@@ -286,7 +331,10 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
     // Header
     if &data[0..4] != b"PACK" {
         if verbose() {
-            anyos_std::println!("[pack] ERROR: no PACK header, got {:?}", &data[0..4.min(data.len())]);
+            anyos_std::println!(
+                "[pack] ERROR: no PACK header, got {:?}",
+                &data[0..4.min(data.len())]
+            );
         }
         return None;
     }
@@ -299,7 +347,12 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
     }
     let num_objects = read_u32_be(&data[8..12]) as usize;
     if verbose() {
-        anyos_std::println!("[pack] version={} objects={} total_size={}", version, num_objects, data.len());
+        anyos_std::println!(
+            "[pack] version={} objects={} total_size={}",
+            version,
+            num_objects,
+            data.len()
+        );
     }
 
     let mut entries = Vec::with_capacity(num_objects);
@@ -320,8 +373,15 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
         pos += header_len;
 
         if verbose() {
-            anyos_std::println!("[pack] obj {}/{}: offset={} type={} size={} hdr_len={}",
-                entries.len() + 1, num_objects, entry_start, obj_type_raw, uncompressed_size, header_len);
+            anyos_std::println!(
+                "[pack] obj {}/{}: offset={} type={} size={} hdr_len={}",
+                entries.len() + 1,
+                num_objects,
+                entry_start,
+                obj_type_raw,
+                uncompressed_size,
+                header_len
+            );
         }
 
         match obj_type_raw {
@@ -329,12 +389,21 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 // Non-delta object: inflate the zlib-compressed data.
                 // Git pack objects use zlib (RFC 1950): 2-byte header + deflate + 4-byte adler32.
                 // Skip the zlib header before inflating raw DEFLATE.
-                let zlib_skip = if pos + 2 <= data.len() && data[pos] == 0x78 { 2 } else { 0 };
-                let (inflated, consumed) = match inflate::inflate_counted(&data[pos + zlib_skip..]) {
+                let zlib_skip = if pos + 2 <= data.len() && data[pos] == 0x78 {
+                    2
+                } else {
+                    0
+                };
+                let (inflated, consumed) = match inflate::inflate_counted(&data[pos + zlib_skip..])
+                {
                     Some(r) => r,
                     None => {
                         if verbose() {
-                            anyos_std::println!("[pack]   inflate FAILED at pos={} remaining={}", pos, data.len() - pos);
+                            anyos_std::println!(
+                                "[pack]   inflate FAILED at pos={} remaining={}",
+                                pos,
+                                data.len() - pos
+                            );
                         }
                         break;
                     }
@@ -351,8 +420,13 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
 
                 let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &inflated));
                 if verbose() {
-                    anyos_std::println!("[pack]   OK: {} {} bytes compressed={} oid={}",
-                        obj_type.as_str(), inflated.len(), consumed, oid.short());
+                    anyos_std::println!(
+                        "[pack]   OK: {} {} bytes compressed={} oid={}",
+                        obj_type.as_str(),
+                        inflated.len(),
+                        consumed,
+                        oid.short()
+                    );
                 }
                 resolved.push((oid, inflated.clone(), obj_type_raw));
                 offsets.push(entry_start);
@@ -366,7 +440,9 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
             OBJ_REF_DELTA => {
                 // REF_DELTA: 20-byte base object SHA-1 + delta data
                 if pos + 20 > data.len() {
-                    if verbose() { anyos_std::println!("[pack]   REF_DELTA: not enough data for base sha"); }
+                    if verbose() {
+                        anyos_std::println!("[pack]   REF_DELTA: not enough data for base sha");
+                    }
                     break;
                 }
                 let mut base_sha = [0u8; 20];
@@ -378,25 +454,31 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                     anyos_std::println!("[pack]   REF_DELTA base={}", base_oid.short());
                 }
 
-                let zlib_skip = if pos + 2 <= data.len() && data[pos] == 0x78 { 2 } else { 0 };
-                let (delta_data, consumed) = match inflate::inflate_counted(&data[pos + zlib_skip..]) {
-                    Some(r) => (r.0, r.1 + zlib_skip),
-                    None => {
-                        if verbose() { anyos_std::println!("[pack]   REF_DELTA inflate FAILED"); }
-                        break;
-                    }
+                let zlib_skip = if pos + 2 <= data.len() && data[pos] == 0x78 {
+                    2
+                } else {
+                    0
                 };
+                let (delta_data, consumed) =
+                    match inflate::inflate_counted(&data[pos + zlib_skip..]) {
+                        Some(r) => (r.0, r.1 + zlib_skip),
+                        None => {
+                            if verbose() {
+                                anyos_std::println!("[pack]   REF_DELTA inflate FAILED");
+                            }
+                            break;
+                        }
+                    };
                 pos += consumed;
 
                 // Find base object and apply delta
-                if let Some((_, base_data, base_type)) = resolved.iter().find(|(oid, _, _)| *oid == base_oid) {
+                if let Some((_, base_data, base_type)) =
+                    resolved.iter().find(|(oid, _, _)| *oid == base_oid)
+                {
                     let result = apply_delta(base_data, &delta_data);
                     let obj_type = pack_type_to_object_type(*base_type);
 
-                    let oid = Oid::from_bytes(sha1::hash_object(
-                        obj_type.as_str(),
-                        &result,
-                    ));
+                    let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &result));
                     resolved.push((oid, result.clone(), *base_type));
                     offsets.push(entry_start);
 
@@ -412,11 +494,16 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 let (offset, offset_bytes) = read_ofs_delta_offset(&data[pos..]);
                 pos += offset_bytes;
 
-                let zlib_skip = if pos + 2 <= data.len() && data[pos] == 0x78 { 2 } else { 0 };
-                let (delta_data, consumed) = match inflate::inflate_counted(&data[pos + zlib_skip..]) {
-                    Some(r) => (r.0, r.1 + zlib_skip),
-                    None => break,
+                let zlib_skip = if pos + 2 <= data.len() && data[pos] == 0x78 {
+                    2
+                } else {
+                    0
                 };
+                let (delta_data, consumed) =
+                    match inflate::inflate_counted(&data[pos + zlib_skip..]) {
+                        Some(r) => (r.0, r.1 + zlib_skip),
+                        None => break,
+                    };
                 pos += consumed;
 
                 // Base object is at absolute pack offset (entry_start - offset)
@@ -424,7 +511,8 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                 // Use the offsets we recorded.
                 let base_abs = entry_start.saturating_sub(offset);
                 // Find the resolved object whose pack offset matches
-                if let Some((_, base_data, base_type)) = offsets.iter()
+                if let Some((_, base_data, base_type)) = offsets
+                    .iter()
                     .zip(resolved.iter())
                     .find(|(off, _)| **off == base_abs)
                     .map(|(_, res)| res)
@@ -432,10 +520,7 @@ pub fn parse_pack(data: &[u8]) -> Option<PackFile> {
                     let result = apply_delta(base_data, &delta_data);
                     let obj_type = pack_type_to_object_type(*base_type);
 
-                    let oid = Oid::from_bytes(sha1::hash_object(
-                        obj_type.as_str(),
-                        &result,
-                    ));
+                    let oid = Oid::from_bytes(sha1::hash_object(obj_type.as_str(), &result));
                     resolved.push((oid, result.clone(), *base_type));
                     offsets.push(entry_start);
 
@@ -580,14 +665,35 @@ pub(crate) fn apply_delta(base: &[u8], delta: &[u8]) -> Vec<u8> {
             let mut offset = 0usize;
             let mut size = 0usize;
 
-            if cmd & 0x01 != 0 { offset = delta.get(pos).copied().unwrap_or(0) as usize; pos += 1; }
-            if cmd & 0x02 != 0 { offset |= (delta.get(pos).copied().unwrap_or(0) as usize) << 8; pos += 1; }
-            if cmd & 0x04 != 0 { offset |= (delta.get(pos).copied().unwrap_or(0) as usize) << 16; pos += 1; }
-            if cmd & 0x08 != 0 { offset |= (delta.get(pos).copied().unwrap_or(0) as usize) << 24; pos += 1; }
+            if cmd & 0x01 != 0 {
+                offset = delta.get(pos).copied().unwrap_or(0) as usize;
+                pos += 1;
+            }
+            if cmd & 0x02 != 0 {
+                offset |= (delta.get(pos).copied().unwrap_or(0) as usize) << 8;
+                pos += 1;
+            }
+            if cmd & 0x04 != 0 {
+                offset |= (delta.get(pos).copied().unwrap_or(0) as usize) << 16;
+                pos += 1;
+            }
+            if cmd & 0x08 != 0 {
+                offset |= (delta.get(pos).copied().unwrap_or(0) as usize) << 24;
+                pos += 1;
+            }
 
-            if cmd & 0x10 != 0 { size = delta.get(pos).copied().unwrap_or(0) as usize; pos += 1; }
-            if cmd & 0x20 != 0 { size |= (delta.get(pos).copied().unwrap_or(0) as usize) << 8; pos += 1; }
-            if cmd & 0x40 != 0 { size |= (delta.get(pos).copied().unwrap_or(0) as usize) << 16; pos += 1; }
+            if cmd & 0x10 != 0 {
+                size = delta.get(pos).copied().unwrap_or(0) as usize;
+                pos += 1;
+            }
+            if cmd & 0x20 != 0 {
+                size |= (delta.get(pos).copied().unwrap_or(0) as usize) << 8;
+                pos += 1;
+            }
+            if cmd & 0x40 != 0 {
+                size |= (delta.get(pos).copied().unwrap_or(0) as usize) << 16;
+                pos += 1;
+            }
 
             if size == 0 {
                 size = 0x10000;
@@ -699,19 +805,40 @@ fn emit_copy(delta: &mut Vec<u8>, mut offset: usize, mut size: usize) {
     let mut cmd = 0x80u8;
     let mut extra = Vec::new();
 
-    if offset & 0xFF != 0 || (offset >> 8) == 0 { cmd |= 0x01; extra.push((offset & 0xFF) as u8); }
+    if offset & 0xFF != 0 || (offset >> 8) == 0 {
+        cmd |= 0x01;
+        extra.push((offset & 0xFF) as u8);
+    }
     offset >>= 8;
-    if offset & 0xFF != 0 { cmd |= 0x02; extra.push((offset & 0xFF) as u8); }
+    if offset & 0xFF != 0 {
+        cmd |= 0x02;
+        extra.push((offset & 0xFF) as u8);
+    }
     offset >>= 8;
-    if offset & 0xFF != 0 { cmd |= 0x04; extra.push((offset & 0xFF) as u8); }
+    if offset & 0xFF != 0 {
+        cmd |= 0x04;
+        extra.push((offset & 0xFF) as u8);
+    }
     offset >>= 8;
-    if offset & 0xFF != 0 { cmd |= 0x08; extra.push((offset & 0xFF) as u8); }
+    if offset & 0xFF != 0 {
+        cmd |= 0x08;
+        extra.push((offset & 0xFF) as u8);
+    }
 
-    if size & 0xFF != 0 || size < 0x10000 { cmd |= 0x10; extra.push((size & 0xFF) as u8); }
+    if size & 0xFF != 0 || size < 0x10000 {
+        cmd |= 0x10;
+        extra.push((size & 0xFF) as u8);
+    }
     size >>= 8;
-    if size & 0xFF != 0 { cmd |= 0x20; extra.push((size & 0xFF) as u8); }
+    if size & 0xFF != 0 {
+        cmd |= 0x20;
+        extra.push((size & 0xFF) as u8);
+    }
     size >>= 8;
-    if size & 0xFF != 0 { cmd |= 0x40; extra.push((size & 0xFF) as u8); }
+    if size & 0xFF != 0 {
+        cmd |= 0x40;
+        extra.push((size & 0xFF) as u8);
+    }
 
     delta.push(cmd);
     delta.extend_from_slice(&extra);

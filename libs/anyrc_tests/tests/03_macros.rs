@@ -62,6 +62,24 @@ fn expand_macro_with_expr_arg() {
 }
 
 #[test]
+fn expand_global_app_state_builtin_item_macro() {
+    let (krate, interner) = parse_and_expand_with_interner(r#"
+        struct AppState {}
+        anyos_std::global_app_state!(AppState);
+    "#);
+
+    assert_eq!(krate.items.len(), 3);
+    match &krate.items[1] {
+        Item::Static(s) => assert_eq!(interner.resolve(s.name), "APP"),
+        _ => panic!("expected generated APP static"),
+    }
+    match &krate.items[2] {
+        Item::Fn(f) => assert_eq!(interner.resolve(f.name), "app"),
+        _ => panic!("expected generated app accessor"),
+    }
+}
+
+#[test]
 fn expand_format_macro_preserves_escaped_quotes_in_string_args() {
     let krate = parse_and_expand(r#"
         fn main(attr_name: i32, meta_item_name: i32) {
@@ -217,6 +235,36 @@ fn expand_syn_style_ast_struct_keyword_idents_and_meta_attrs() {
         }
     "#);
     assert!(krate.items.iter().any(|item| matches!(item, Item::Struct(s) if s.fields.len() == 1)));
+}
+
+#[test]
+fn expand_syn_style_punctuation_struct_repetition() {
+    let (krate, interner) = parse_and_expand_with_interner(r#"
+        struct Span;
+
+        macro_rules! define_punctuation_structs {
+            ($($token:literal pub struct $name:ident/$len:tt #[doc = $usage:literal])*) => {
+                $(
+                    #[doc = concat!("Token `", $token, "`.")]
+                    pub struct $name {
+                        pub spans: [Span; $len],
+                    }
+                )*
+            };
+        }
+
+        define_punctuation_structs! {
+            "_" pub struct Underscore/1 /// wildcard patterns
+            "(" pub struct Paren/1 /// parentheses
+        }
+    "#);
+
+    assert!(krate.items.iter().any(|item| {
+        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "Underscore")
+    }));
+    assert!(krate.items.iter().any(|item| {
+        matches!(item, Item::Struct(s) if interner.resolve(s.name) == "Paren")
+    }));
 }
 
 #[test]

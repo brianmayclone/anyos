@@ -179,6 +179,25 @@ fn expand_items(items: &mut Vec<Item>, defs: &[MacroDef], interner: &mut Interne
                     continue;
                 }
 
+                if macro_name == "global_app_state" {
+                    let ty_src = token_trees_to_string(&args, interner).trim().to_string();
+                    if !ty_src.is_empty() {
+                        let state_src = format!(
+                            "static mut APP: Option<{}> = None;\n\
+                             fn app() -> &'static mut {} {{\n\
+                             unsafe {{ APP.as_mut().expect(\"global app state not initialized\") }}\n\
+                             }}\n",
+                            ty_src, ty_src
+                        );
+                        let mut parser = Parser::new(&state_src, interner);
+                        let mut krate = parser.parse_crate();
+                        prepend_attrs_to_first_item(&mut krate.items, attrs);
+                        items.splice(i..i, krate.items);
+                        *changed = true;
+                        continue;
+                    }
+                }
+
                 if macro_name == "dll_exports" {
                     if let Some(mut expanded) = expand_builtin_dll_exports(&args, interner) {
                         prepend_attrs_to_first_item(&mut expanded, attrs);
@@ -2173,6 +2192,15 @@ fn token_to_string(kind: &TokenKind, interner: &Interner, out: &mut String) {
         TokenKind::StringLit(s) => push_escaped_string_literal(out, s),
         TokenKind::CharLit(c) => push_escaped_char_literal(out, *c),
         TokenKind::ByteStringLit(_) => out.push_str("b\"...\""),
+        TokenKind::DocComment(text, inner) => {
+            out.push('#');
+            if *inner {
+                out.push('!');
+            }
+            out.push_str("[doc = ");
+            push_escaped_string_literal(out, text);
+            out.push(']');
+        }
         TokenKind::Lifetime(sym) => { out.push('\''); out.push_str(interner.resolve(*sym)); }
         TokenKind::Kw(kw) => out.push_str(match kw {
             Keyword::Fn => "fn", Keyword::Let => "let", Keyword::Mut => "mut",

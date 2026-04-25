@@ -124,6 +124,18 @@ struct OperatorImpl {
     output_ty: TyKind,
 }
 
+#[derive(Debug, Clone)]
+struct FromImpl {
+    from_ty: TyKind,
+    into_ty: TyKind,
+}
+
+#[derive(Debug, Clone)]
+struct PartialEqImpl {
+    lhs_ty: TyKind,
+    rhs_ty: TyKind,
+}
+
 /// Compile-time evaluated constant value
 #[derive(Debug, Clone)]
 pub enum ConstVal {
@@ -208,6 +220,10 @@ pub struct TypeChecker<'a> {
     assoc_type_impls: Vec<AssocTypeImpl>,
     /// `impl core::ops::{Add, Mul, ...}<Rhs> for T { type Output = O; }` summaries.
     operator_impls: Vec<OperatorImpl>,
+    /// `impl From<Source> for Target` summaries used for `Into<T>` coercions.
+    from_impls: Vec<FromImpl>,
+    /// `impl PartialEq<Rhs> for Lhs` summaries used by comparison operators.
+    partial_eq_impls: Vec<PartialEqImpl>,
     /// ADTs known to be Copy through derives or impls.
     copy_types: HashSet<DefId>,
 
@@ -219,6 +235,11 @@ pub struct TypeChecker<'a> {
     current_fn_name: Option<Symbol>,
     current_self_ty: Option<TyKind>,
     current_impl_assoc_types: HashMap<Symbol, TyKind>,
+    loop_break_tys: Vec<Vec<TyKind>>,
+    block_depth: usize,
+    discard_loop_tail_block_depths: Vec<usize>,
+    match_depth: usize,
+    discard_match_arm_value_depths: Vec<usize>,
     errors: Vec<Diagnostic>,
 
     /// Synthetic DefIds for closure expressions: HirId -> DefId
@@ -269,6 +290,8 @@ impl<'a> TypeChecker<'a> {
             deref_impls: Vec::new(),
             assoc_type_impls: Vec::new(),
             operator_impls: Vec::new(),
+            from_impls: Vec::new(),
+            partial_eq_impls: Vec::new(),
             copy_types: HashSet::new(),
             next_infer: 0,
             infer_kinds: HashMap::new(),
@@ -277,6 +300,11 @@ impl<'a> TypeChecker<'a> {
             current_fn_name: None,
             current_self_ty: None,
             current_impl_assoc_types: HashMap::new(),
+            loop_break_tys: Vec::new(),
+            block_depth: 0,
+            discard_loop_tail_block_depths: Vec::new(),
+            match_depth: 0,
+            discard_match_arm_value_depths: Vec::new(),
             errors: Vec::new(),
             closure_defs: HashMap::new(),
             next_closure_def_id: 0x8000_0000,
@@ -739,6 +767,8 @@ impl<'a> TypeChecker<'a> {
             "i64::from_le_bytes" => Some(TyKind::Int(IntTy::I64)),
             "i128::from_le_bytes" => Some(TyKind::Int(IntTy::I128)),
             "isize::from_le_bytes" => Some(TyKind::Int(IntTy::Isize)),
+            "f32::from_bits" => Some(TyKind::Float(FloatTy::F32)),
+            "f64::from_bits" => Some(TyKind::Float(FloatTy::F64)),
             "char::from_u32" => self.option_of(TyKind::Char),
             "u8::from_str_radix" => self.result_of(TyKind::Uint(UintTy::U8)),
             "u16::from_str_radix" => self.result_of(TyKind::Uint(UintTy::U16)),
@@ -802,6 +832,8 @@ impl<'a> TypeChecker<'a> {
 
         self.bootstrap_stdlib_shims();
         self.collect_qualified_type_names(&krate.items, &mut Vec::new());
+        self.collect_qualified_const_names(&krate.items, &mut Vec::new());
+        self.collect_const_values(&krate.items);
 
         // Pass 1: collect signatures
         for item in &krate.items {
@@ -886,6 +918,60 @@ impl<'a> TypeChecker<'a> {
         let path = parts.join("::");
         self.qualified_type_names.insert(path.clone(), def_id);
         self.qualified_type_names.insert(format!("crate::{}", path), def_id);
+    }
+
+    fn collect_qualified_const_names(&mut self, items: &[HirItem], prefix: &mut Vec<Symbol>) {
+        for item in items {
+            match &item.kind {
+                HirItemKind::Const(c) => {
+                    let mut parts = prefix
+                        .iter()
+                        .map(|sym| self.interner.resolve(*sym).to_string())
+                        .collect::<Vec<_>>();
+                    parts.push(self.interner.resolve(c.name).to_string());
+                    let path = parts.join("::");
+                    self.qualified_const_names.insert(path.clone(), c.def_id);
+                    self.qualified_const_names.insert(format!("crate::{}", path), c.def_id);
+                    if prefix.is_empty() {
+                        self.const_name_to_def.insert(c.name, c.def_id);
+                    }
+                }
+                HirItemKind::Mod(m) => {
+                    if let Some(sub_items) = &m.items {
+                        prefix.push(m.name);
+                        self.collect_qualified_const_names(sub_items, prefix);
+                        prefix.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn collect_const_values(&mut self, items: &[HirItem]) {
+        for item in items {
+            match &item.kind {
+                HirItemKind::Const(c) => {
+                    if self.const_values.contains_key(&c.def_id) {
+                        continue;
+                    }
+                    let ty = self.hir_ty_to_ty(&c.ty);
+                    if let Some(val_expr) = &c.value {
+                        if let Some(cv) = self.eval_const_expr(val_expr) {
+                            self.const_values.insert(c.def_id, (cv, ty));
+                        }
+                    }
+                }
+                HirItemKind::Mod(m) => {
+                    if let Some(sub_items) = &m.items {
+                        self.current_module_path.push(m.name);
+                        self.collect_const_values(sub_items);
+                        self.current_module_path.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn qualified_name_for_current_module(&self, name: Symbol) -> String {
@@ -1160,6 +1246,8 @@ impl<'a> TypeChecker<'a> {
                     self.collect_index_impl(ib, trait_ref);
                     self.collect_deref_impl(ib, trait_ref);
                     self.collect_operator_impl(ib, trait_ref);
+                    self.collect_from_impl(trait_ref);
+                    self.collect_partial_eq_impl(trait_ref);
                 }
                 // Register Self as an alias for the impl'd type
                 if let HirTy::Path(p) = &ib.self_ty {
@@ -1214,7 +1302,9 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 for sub in &ib.items {
-                    self.collect_item(sub);
+                    if !matches!(sub.kind, HirItemKind::TypeAlias(_)) {
+                        self.collect_item(sub);
+                    }
                 }
                 self.current_self_ty = saved_self_ty;
                 self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
@@ -1402,6 +1492,52 @@ impl<'a> TypeChecker<'a> {
             .unwrap_or_else(|| self_ty.clone());
         let output_ty = self.hir_ty_to_ty(output_hir_ty);
         self.operator_impls.push(OperatorImpl { op, self_ty, rhs_ty, output_ty });
+    }
+
+    fn collect_from_impl(&mut self, trait_ref: &HirPath) {
+        let Some(last) = trait_ref.segments.last() else {
+            return;
+        };
+        if self.interner.resolve(last.ident) != "From" {
+            return;
+        }
+        let Some(from_ty) = last
+            .args
+            .as_ref()
+            .and_then(|args| args.args.first())
+            .and_then(|arg| match arg {
+                HirGenericArg::Type(ty) => Some(self.hir_ty_to_ty(ty)),
+                _ => None,
+            })
+        else {
+            return;
+        };
+        let Some(into_ty) = self.current_self_ty.clone() else {
+            return;
+        };
+        self.from_impls.push(FromImpl { from_ty, into_ty });
+    }
+
+    fn collect_partial_eq_impl(&mut self, trait_ref: &HirPath) {
+        let Some(last) = trait_ref.segments.last() else {
+            return;
+        };
+        if self.interner.resolve(last.ident) != "PartialEq" {
+            return;
+        }
+        let Some(lhs_ty) = self.current_self_ty.clone() else {
+            return;
+        };
+        let rhs_ty = last
+            .args
+            .as_ref()
+            .and_then(|args| args.args.first())
+            .and_then(|arg| match arg {
+                HirGenericArg::Type(ty) => Some(self.hir_ty_to_ty(ty)),
+                _ => None,
+            })
+            .unwrap_or_else(|| lhs_ty.clone());
+        self.partial_eq_impls.push(PartialEqImpl { lhs_ty, rhs_ty });
     }
 
     fn operator_trait_to_binop(&self, trait_name: Symbol) -> Option<BinOp> {
@@ -1625,6 +1761,20 @@ impl<'a> TypeChecker<'a> {
             })
     }
 
+    fn has_from_conversion(&self, actual: &TyKind, expected: &TyKind) -> bool {
+        self.from_impls.iter().any(|impl_info| {
+            self.ty_matches_for_candidate(&impl_info.from_ty, actual)
+                && self.ty_matches_for_candidate(&impl_info.into_ty, expected)
+        })
+    }
+
+    fn has_partial_eq_impl(&self, lhs_ty: &TyKind, rhs_ty: &TyKind) -> bool {
+        self.partial_eq_impls.iter().any(|impl_info| {
+            self.ty_matches_for_candidate(&impl_info.lhs_ty, lhs_ty)
+                && self.ty_matches_for_candidate(&impl_info.rhs_ty, rhs_ty)
+        })
+    }
+
     fn ty_matches_for_operator_candidate(&self, expected: &TyKind, actual: &TyKind) -> bool {
         let expected = self.shallow_resolve(expected.clone());
         let actual = self.shallow_resolve(actual.clone());
@@ -1742,6 +1892,12 @@ impl<'a> TypeChecker<'a> {
                     return self.const_values.get(def_id);
                 }
             }
+            let module_key = self.module_key_from_symbols(&self.current_module_path);
+            if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key, name)) {
+                if let Some(value) = self.lookup_qualified_const_value(alias_target) {
+                    return Some(value);
+                }
+            }
             if let Some(def_id) = self.const_name_to_def.get(&name) {
                 return self.const_values.get(def_id);
             }
@@ -1753,13 +1909,48 @@ impl<'a> TypeChecker<'a> {
             .map(|seg| self.interner.resolve(seg.ident).to_string())
             .collect::<Vec<_>>()
             .join("::");
+        self.resolve_qualified_const_value(&path_str)
+    }
+
+    fn resolve_qualified_const_value(&self, path: &str) -> Option<&(ConstVal, TyKind)> {
+        if let Some(value) = self.lookup_qualified_const_value(path) {
+            return Some(value);
+        }
+
+        let expanded = self.expanded_value_path(path);
+        if expanded != path {
+            return self.lookup_qualified_const_value(&expanded);
+        }
+
+        None
+    }
+
+    fn lookup_qualified_const_value(&self, path: &str) -> Option<&(ConstVal, TyKind)> {
+        let normalized = path.strip_prefix("crate::").unwrap_or(path);
         self.qualified_const_names
-            .get(&path_str)
-            .or_else(|| {
-                self.qualified_const_names
-                    .get(path_str.strip_prefix("crate::").unwrap_or(&path_str))
-            })
+            .get(path)
+            .or_else(|| self.qualified_const_names.get(normalized))
+            .or_else(|| self.qualified_const_names.get(&format!("crate::{}", normalized)))
             .and_then(|def_id| self.const_values.get(def_id))
+    }
+
+    fn expanded_value_path(&self, path: &str) -> String {
+        let Some((first, rest)) = path.split_once("::") else {
+            return path.to_string();
+        };
+
+        let module_key = self.module_key_from_symbols(&self.current_module_path);
+        if let Some(first_sym) = self.interner.lookup(first) {
+            if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key, first_sym)) {
+                return format!("{}::{}", alias_target, rest);
+            }
+        }
+
+        if let Some(alias_target) = self.module_aliases.get(first) {
+            return format!("{}::{}", alias_target, rest);
+        }
+
+        path.to_string()
     }
 
     // ── Pass 2: Check ──
@@ -1827,6 +2018,8 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn check_block(&mut self, block: &HirBlock) -> TyKind {
+        self.block_depth += 1;
+        let current_block_depth = self.block_depth;
         let mut last_ty = TyKind::Unit;
         for (i, stmt) in block.stmts.iter().enumerate() {
             let is_last = i == block.stmts.len() - 1;
@@ -1850,7 +2043,24 @@ impl<'a> TypeChecker<'a> {
                     last_ty = TyKind::Unit;
                 }
                 HirStmt::Expr(e) => {
-                    let ty = self.check_expr(e);
+                    let ty = if is_last
+                        && self
+                            .discard_loop_tail_block_depths
+                            .last()
+                            .copied()
+                            == Some(current_block_depth)
+                    {
+                        if matches!(e.kind, HirExprKind::Match(_, _)) {
+                            self.discard_match_arm_value_depths.push(self.match_depth + 1);
+                            let ty = self.check_expr(e);
+                            self.discard_match_arm_value_depths.pop();
+                            ty
+                        } else {
+                            self.check_expr(e)
+                        }
+                    } else {
+                        self.check_expr(e)
+                    };
                     last_ty = if is_last { ty } else { TyKind::Unit };
                 }
                 HirStmt::Semi(e, _) => {
@@ -1873,6 +2083,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
         }
+        self.block_depth -= 1;
         last_ty
     }
 
@@ -1923,6 +2134,9 @@ impl<'a> TypeChecker<'a> {
                         if let Some(impl_info) = self.lookup_operator_impl(*op, &lty, &rty) {
                             self.unify(&impl_info.self_ty, &lty, lhs.span);
                             self.unify(&impl_info.rhs_ty, &rty, rhs.span);
+                            return TyKind::Bool;
+                        }
+                        if matches!(op, BinOp::Eq | BinOp::Ne) && self.has_partial_eq_impl(&lty, &rty) {
                             return TyKind::Bool;
                         }
                         self.unify(&lty, &rty, expr.span);
@@ -2174,7 +2388,8 @@ impl<'a> TypeChecker<'a> {
                                 continue;
                             }
                             if self.struct_defs.contains_key(&def_id) {
-                                self.error(expr.span, "no such field");
+                                let field = self.interner.resolve(*field_name).to_string();
+                                self.error(expr.span, &format!("no such field `{}`", field));
                             }
                             return TyKind::Error;
                         }
@@ -2229,15 +2444,20 @@ impl<'a> TypeChecker<'a> {
                     return enum_ty;
                 }
 
-                let adt_ty = match self.shallow_resolve(self.path_segments_to_ty(&path.segments)) {
-                    TyKind::Adt(def_id, substs) => Some(self.fresh_adt_ty(def_id, substs)),
-                    _ => self
-                        .resolve
-                        .resolutions
-                        .get(&expr.id)
-                        .copied()
-                        .map(|def_id| self.fresh_adt_ty(def_id, Vec::new())),
-                };
+                let resolved_ty = self.resolve.resolutions.get(&expr.id).copied().map(|def_id| {
+                    let type_args = path
+                        .segments
+                        .last()
+                        .map(|segment| self.type_args_from_segment(segment))
+                        .unwrap_or_default();
+                    self.fresh_adt_ty(def_id, type_args)
+                });
+                let adt_ty = resolved_ty.or_else(|| {
+                    match self.shallow_resolve(self.path_segments_to_ty(&path.segments)) {
+                        TyKind::Adt(def_id, substs) => Some(self.fresh_adt_ty(def_id, substs)),
+                        _ => None,
+                    }
+                });
 
                 if let Some(TyKind::Adt(def_id, substs)) = adt_ty {
                     if let Some(expected_fields) = self.struct_defs.get(&def_id).cloned() {
@@ -2274,26 +2494,50 @@ impl<'a> TypeChecker<'a> {
             }
 
             HirExprKind::Match(scrutinee, arms) => {
+                self.match_depth += 1;
+                let current_match_depth = self.match_depth;
                 let scr_ty = self.check_expr(scrutinee);
-                if arms.is_empty() {
-                    return TyKind::Never;
-                }
-                self.bind_pattern(&arms[0].pat, scr_ty.clone());
-                if let Some(guard) = &arms[0].guard {
-                    let guard_ty = self.check_expr(guard);
-                    self.unify(&TyKind::Bool, &guard_ty, guard.span);
-                }
-                let first_ty = self.check_expr(&arms[0].body);
-                for arm in &arms[1..] {
-                    self.bind_pattern(&arm.pat, scr_ty.clone());
-                    if let Some(guard) = &arm.guard {
+                let result_ty = if arms.is_empty() {
+                    TyKind::Never
+                } else if self
+                    .discard_match_arm_value_depths
+                    .last()
+                    .copied()
+                    == Some(current_match_depth)
+                {
+                    for arm in arms {
+                        self.bind_pattern(&arm.pat, scr_ty.clone());
+                        if let Some(guard) = &arm.guard {
+                            let guard_ty = self.check_expr(guard);
+                            self.unify(&TyKind::Bool, &guard_ty, guard.span);
+                        }
+                        self.check_expr(&arm.body);
+                    }
+                    TyKind::Unit
+                } else {
+                    self.bind_pattern(&arms[0].pat, scr_ty.clone());
+                    if let Some(guard) = &arms[0].guard {
                         let guard_ty = self.check_expr(guard);
                         self.unify(&TyKind::Bool, &guard_ty, guard.span);
                     }
-                    let arm_ty = self.check_expr(&arm.body);
-                    self.unify(&first_ty, &arm_ty, arm.span);
-                }
-                first_ty
+                    let mut result_ty = self.check_expr(&arms[0].body);
+                    for arm in &arms[1..] {
+                        self.bind_pattern(&arm.pat, scr_ty.clone());
+                        if let Some(guard) = &arm.guard {
+                            let guard_ty = self.check_expr(guard);
+                            self.unify(&TyKind::Bool, &guard_ty, guard.span);
+                        }
+                        let arm_ty = self.check_expr(&arm.body);
+                        if let Some(coerced) = self.common_fn_item_ty(&result_ty, &arm_ty, arm.span) {
+                            result_ty = coerced;
+                        } else {
+                            self.unify(&result_ty, &arm_ty, arm.span);
+                        }
+                    }
+                    result_ty
+                };
+                self.match_depth -= 1;
+                result_ty
             }
 
             HirExprKind::Assign(lhs, rhs) => {
@@ -2308,6 +2552,19 @@ impl<'a> TypeChecker<'a> {
                 let raw_rty = self.check_expr(rhs);
                 let lty = self.binary_operand_ty(raw_lty);
                 let rty = self.binary_operand_ty(raw_rty);
+                if matches!(op, BinOp::Shl | BinOp::Shr) {
+                    if self.generic_operator_output(*op, &lty, &rty).is_some()
+                        || self.lookup_operator_impl(*op, &lty, &rty).is_some()
+                        || matches!(self.shallow_resolve(lty.clone()), TyKind::Adt(_, _))
+                    {
+                        return TyKind::Unit;
+                    }
+                    match self.shallow_resolve(rty.clone()) {
+                        TyKind::Int(_) | TyKind::Uint(_) | TyKind::Infer(_) | TyKind::Param(_) => {}
+                        _ => self.unify(&TyKind::Uint(UintTy::Usize), &rty, rhs.span),
+                    }
+                    return TyKind::Unit;
+                }
                 if self.generic_operator_output(*op, &lty, &rty).is_some()
                     || self.lookup_operator_impl(*op, &lty, &rty).is_some()
                     || matches!(self.shallow_resolve(lty.clone()), TyKind::Adt(_, _))
@@ -2377,12 +2634,16 @@ impl<'a> TypeChecker<'a> {
                 if es.is_empty() {
                     return TyKind::Array(Box::new(self.fresh_infer(InferKind::General)), 0);
                 }
-                let first = self.check_expr(&es[0]);
+                let mut elem_ty = self.check_expr(&es[0]);
                 for e in &es[1..] {
                     let t = self.check_expr(e);
-                    self.unify(&first, &t, e.span);
+                    if let Some(coerced) = self.common_fn_item_ty(&elem_ty, &t, e.span) {
+                        elem_ty = coerced;
+                    } else {
+                        self.unify(&elem_ty, &t, e.span);
+                    }
                 }
-                TyKind::Array(Box::new(first), es.len())
+                TyKind::Array(Box::new(elem_ty), es.len())
             }
 
             HirExprKind::Index(base, idx) => {
@@ -2480,12 +2741,28 @@ impl<'a> TypeChecker<'a> {
             }
 
             HirExprKind::Loop(block, _) => {
+                self.loop_break_tys.push(Vec::new());
+                self.discard_loop_tail_block_depths.push(self.block_depth + 1);
                 self.check_block(block);
-                TyKind::Never
+                self.discard_loop_tail_block_depths.pop();
+                let break_tys = self.loop_break_tys.pop().unwrap_or_default();
+                let Some(first) = break_tys.first().cloned() else {
+                    return TyKind::Never;
+                };
+                for ty in break_tys.iter().skip(1) {
+                    self.unify(&first, ty, expr.span);
+                }
+                self.resolve_ty_full(first)
             }
 
             HirExprKind::Break(_, val) => {
-                if let Some(v) = val { self.check_expr(v); }
+                let ty = val
+                    .as_ref()
+                    .map(|v| self.check_expr(v))
+                    .unwrap_or(TyKind::Unit);
+                if let Some(loop_break_tys) = self.loop_break_tys.last_mut() {
+                    loop_break_tys.push(ty);
+                }
                 TyKind::Never
             }
 
@@ -2895,6 +3172,40 @@ impl<'a> TypeChecker<'a> {
                         match method_str {
                             "len" if args.is_empty() => return TyKind::Uint(UintTy::Usize),
                             "is_empty" if args.is_empty() => return TyKind::Bool,
+                            "push" if args.len() == 1 => {
+                                let arg_ty = self.get_expr_ty_cached(&args[0]);
+                                self.unify(&elem_ty, &arg_ty, args[0].span);
+                                return TyKind::Unit;
+                            }
+                            "pop" if args.is_empty() => {
+                                return self.option_of(elem_ty.clone())
+                                    .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                            }
+                            "last" if args.is_empty() => {
+                                return self.option_of(TyKind::Ref(
+                                    Box::new(elem_ty.clone()),
+                                    Mutability::Immutable,
+                                ))
+                                    .unwrap_or_else(|| self.fresh_infer(InferKind::General));
+                            }
+                            "truncate" if args.len() == 1 => {
+                                let arg_ty = self.get_expr_ty_cached(&args[0]);
+                                self.unify(&TyKind::Uint(UintTy::Usize), &arg_ty, args[0].span);
+                                return TyKind::Unit;
+                            }
+                            "clear" if args.is_empty() => return TyKind::Unit,
+                            "remove" if args.len() == 1 => {
+                                let arg_ty = self.get_expr_ty_cached(&args[0]);
+                                self.unify(&TyKind::Uint(UintTy::Usize), &arg_ty, args[0].span);
+                                return elem_ty.clone();
+                            }
+                            "insert" if args.len() == 2 => {
+                                let idx_ty = self.get_expr_ty_cached(&args[0]);
+                                let val_ty = self.get_expr_ty_cached(&args[1]);
+                                self.unify(&TyKind::Uint(UintTy::Usize), &idx_ty, args[0].span);
+                                self.unify(&elem_ty, &val_ty, args[1].span);
+                                return TyKind::Unit;
+                            }
                             "retain" if args.len() == 1 => {
                                 if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
                                     if params.len() == 1 {
@@ -3217,7 +3528,9 @@ impl<'a> TypeChecker<'a> {
                     _ => self.iterable_elem_ty(iter, iter_ty),
                 };
                 self.bind_pattern(pat, elem_ty);
+                self.loop_break_tys.push(Vec::new());
                 self.check_block(body);
+                self.loop_break_tys.pop();
                 TyKind::Unit
             }
 
@@ -3244,6 +3557,16 @@ impl<'a> TypeChecker<'a> {
     // ── Path type inference ──
 
     fn infer_path_type(&mut self, path: &HirPath, expr_id: HirId) -> TyKind {
+        let path_str = path
+            .segments
+            .iter()
+            .map(|seg| self.interner.resolve(seg.ident).to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        if let Some(ty) = Self::primitive_assoc_const_type(&path_str) {
+            return ty;
+        }
+
         if let Some(ty) = self.generic_param_assoc_const_type(path) {
             return ty;
         }
@@ -3319,6 +3642,23 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn infer_qualified_path_type(&mut self, qpath: &HirQualifiedPath, expr_id: HirId) -> TyKind {
+        if qpath.trait_path.is_none() {
+            if let HirTy::Path(self_path) = qpath.self_ty.as_ref() {
+                if let (Some(base), Some(assoc)) =
+                    (self_path.segments.last(), qpath.path.segments.last())
+                {
+                    let path_str = format!(
+                        "{}::{}",
+                        self.interner.resolve(base.ident),
+                        self.interner.resolve(assoc.ident)
+                    );
+                    if let Some(ty) = Self::primitive_assoc_const_type(&path_str) {
+                        return ty;
+                    }
+                }
+            }
+        }
+
         if let Some(&def_id) = self.resolve.resolutions.get(&expr_id) {
             if let Some(path_str) = self.resolve.intrinsic_fns.get(&def_id) {
                 if let Some(ty) = Self::primitive_assoc_const_type(path_str) {
@@ -3387,6 +3727,19 @@ impl<'a> TypeChecker<'a> {
 
     fn resolve_qualified_type_path(&self, path: &str) -> Option<DefId> {
         if let Some((first, rest)) = path.split_once("::") {
+            let module_key = self.module_key_from_symbols(&self.current_module_path);
+            if let Some(first_sym) = self.interner.lookup(first) {
+                if let Some(alias_target) = self.scoped_type_aliases.get(&(module_key, first_sym)) {
+                    let expanded = format!("{}::{}", alias_target, rest);
+                    if let Some(def_id) = self.qualified_type_names
+                        .get(&expanded)
+                        .or_else(|| self.qualified_type_names.get(&format!("crate::{}", expanded)))
+                        .copied()
+                    {
+                        return Some(def_id);
+                    }
+                }
+            }
             if let Some(alias_target) = self.module_aliases.get(first) {
                 let expanded = format!("{}::{}", alias_target, rest);
                 if let Some(def_id) = self.qualified_type_names
@@ -3399,7 +3752,23 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
-        self.qualified_type_names.get(path).copied()
+        self.qualified_type_names
+            .get(path)
+            .copied()
+            .or_else(|| self.resolve_reexported_qualified_type_path(path))
+    }
+
+    fn resolve_reexported_qualified_type_path(&self, path: &str) -> Option<DefId> {
+        let (module_path, local_name) = path.rsplit_once("::")?;
+        let local_sym = self.interner.lookup(local_name)?;
+        let normalized_module = module_path.strip_prefix("crate::").unwrap_or(module_path);
+        let alias_target = self
+            .scoped_type_aliases
+            .get(&(normalized_module.to_string(), local_sym))?;
+        self.qualified_type_names
+            .get(alias_target)
+            .or_else(|| self.qualified_type_names.get(&format!("crate::{}", alias_target)))
+            .copied()
     }
 
     fn resolve_scoped_type_name(&self, name: Symbol) -> Option<DefId> {
@@ -4042,7 +4411,10 @@ impl<'a> TypeChecker<'a> {
     fn is_extern_type_path(path: &str) -> bool {
         matches!(
             path.split("::").next(),
-            Some("core" | "alloc" | "std" | "anyos_std" | "proc_macro" | "proc_macro2" | "quote" | "syn" | "serde")
+            Some(
+                "core" | "alloc" | "std" | "anyos_std" | "proc_macro" | "proc_macro2"
+                | "quote" | "syn" | "serde" | "dynlink",
+            )
         )
     }
 
@@ -4162,12 +4534,50 @@ impl<'a> TypeChecker<'a> {
             "i64::MAX" | "i64::MIN" => Some(TyKind::Int(IntTy::I64)),
             "i128::MAX" | "i128::MIN" => Some(TyKind::Int(IntTy::I128)),
             "isize::MAX" | "isize::MIN" => Some(TyKind::Int(IntTy::Isize)),
-            "f32::INFINITY" | "f32::NEG_INFINITY" | "f32::NAN" | "f32::EPSILON" => {
+            "f32::MAX" | "f32::MIN" | "f32::MIN_POSITIVE"
+            | "f32::INFINITY" | "f32::NEG_INFINITY" | "f32::NAN" | "f32::EPSILON" => {
                 Some(TyKind::Float(FloatTy::F32))
             }
-            "f64::INFINITY" | "f64::NEG_INFINITY" | "f64::NAN" | "f64::EPSILON" => {
+            "f64::MAX" | "f64::MIN" | "f64::MIN_POSITIVE"
+            | "f64::INFINITY" | "f64::NEG_INFINITY" | "f64::NAN" | "f64::EPSILON" => {
                 Some(TyKind::Float(FloatTy::F64))
             }
+            "core::f64::consts::E"
+            | "core::f64::consts::FRAC_1_PI"
+            | "core::f64::consts::FRAC_1_SQRT_2"
+            | "core::f64::consts::FRAC_2_PI"
+            | "core::f64::consts::FRAC_2_SQRT_PI"
+            | "core::f64::consts::FRAC_PI_2"
+            | "core::f64::consts::FRAC_PI_3"
+            | "core::f64::consts::FRAC_PI_4"
+            | "core::f64::consts::FRAC_PI_6"
+            | "core::f64::consts::FRAC_PI_8"
+            | "core::f64::consts::LN_2"
+            | "core::f64::consts::LN_10"
+            | "core::f64::consts::LOG2_10"
+            | "core::f64::consts::LOG2_E"
+            | "core::f64::consts::LOG10_2"
+            | "core::f64::consts::LOG10_E"
+            | "core::f64::consts::PI"
+            | "core::f64::consts::SQRT_2" => Some(TyKind::Float(FloatTy::F64)),
+            "core::f32::consts::E"
+            | "core::f32::consts::FRAC_1_PI"
+            | "core::f32::consts::FRAC_1_SQRT_2"
+            | "core::f32::consts::FRAC_2_PI"
+            | "core::f32::consts::FRAC_2_SQRT_PI"
+            | "core::f32::consts::FRAC_PI_2"
+            | "core::f32::consts::FRAC_PI_3"
+            | "core::f32::consts::FRAC_PI_4"
+            | "core::f32::consts::FRAC_PI_6"
+            | "core::f32::consts::FRAC_PI_8"
+            | "core::f32::consts::LN_2"
+            | "core::f32::consts::LN_10"
+            | "core::f32::consts::LOG2_10"
+            | "core::f32::consts::LOG2_E"
+            | "core::f32::consts::LOG10_2"
+            | "core::f32::consts::LOG10_E"
+            | "core::f32::consts::PI"
+            | "core::f32::consts::SQRT_2" => Some(TyKind::Float(FloatTy::F32)),
             "anyos_std::fs::O_READ" | "anyos_std::fs::O_WRITE" | "anyos_std::fs::O_CREATE"
             | "anyos_std::fs::O_TRUNC" | "anyos_std::fs::O_APPEND" | "anyos_std::fs::O_SYNC" => {
                 Some(TyKind::Uint(UintTy::U32))
@@ -4439,6 +4849,36 @@ impl<'a> TypeChecker<'a> {
 
     // ── Unification ──
 
+    fn fn_def_as_fn_ptr(&self, ty: &TyKind) -> Option<TyKind> {
+        match self.shallow_resolve(ty.clone()) {
+            TyKind::FnPtr(params, ret) => Some(TyKind::FnPtr(params, ret)),
+            TyKind::FnDef(def_id, _) => {
+                let (params, ret) = self.fn_sigs.get(&def_id)?.clone();
+                Some(TyKind::FnPtr(params, Box::new(ret)))
+            }
+            _ => None,
+        }
+    }
+
+    fn common_fn_item_ty(&mut self, a: &TyKind, b: &TyKind, span: Span) -> Option<TyKind> {
+        let a_ptr = self.fn_def_as_fn_ptr(a)?;
+        let b_ptr = self.fn_def_as_fn_ptr(b)?;
+        let TyKind::FnPtr(a_params, a_ret) = &a_ptr else {
+            return None;
+        };
+        let TyKind::FnPtr(b_params, b_ret) = &b_ptr else {
+            return None;
+        };
+        if a_params.len() != b_params.len() {
+            return None;
+        }
+        for (ap, bp) in a_params.iter().zip(b_params.iter()) {
+            self.unify(ap, bp, span);
+        }
+        self.unify(a_ret, b_ret, span);
+        Some(a_ptr)
+    }
+
     fn unify(&mut self, expected: &TyKind, actual: &TyKind, span: Span) {
         let expected = self.shallow_resolve(expected.clone());
         let actual = self.shallow_resolve(actual.clone());
@@ -4463,6 +4903,7 @@ impl<'a> TypeChecker<'a> {
             }
 
             _ if Self::contains_deferred_ty(&expected) || Self::contains_deferred_ty(&actual) => return,
+            _ if self.has_from_conversion(&actual, &expected) => return,
 
             (TyKind::Ref(a, am), TyKind::Ref(b, bm)) if am == bm => {
                 if let TyKind::Ref(nested, _) = b.as_ref() {
@@ -4850,6 +5291,19 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn referenced_pattern_field_ty(
+        &self,
+        ptr_ty: &TyKind,
+        pat: &HirPattern,
+        inner: TyKind,
+    ) -> TyKind {
+        if matches!(pat, HirPattern::RefBinding(_, _, _)) {
+            inner
+        } else {
+            self.wrap_pattern_binding_ty(ptr_ty, inner)
+        }
+    }
+
     fn bind_pattern(&mut self, pat: &HirPattern, ty: TyKind) {
         let resolved_ty = self.shallow_resolve(ty.clone());
         match pat {
@@ -4871,7 +5325,7 @@ impl<'a> TypeChecker<'a> {
                     TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
                         if let TyKind::Tuple(tys) = self.shallow_resolve(inner.as_ref().clone()) {
                             for (p, t) in pats.iter().zip(tys.iter()) {
-                                let wrapped = self.wrap_pattern_binding_ty(&resolved_ty, t.clone());
+                                let wrapped = self.referenced_pattern_field_ty(&resolved_ty, p, t.clone());
                                 self.bind_pattern(p, wrapped);
                             }
                         }
@@ -4891,8 +5345,9 @@ impl<'a> TypeChecker<'a> {
                         match self.shallow_resolve(inner.as_ref().clone()) {
                             TyKind::Array(elem_ty, _) | TyKind::Slice(elem_ty) => {
                                 for p in non_rest {
-                                    let wrapped = self.wrap_pattern_binding_ty(
+                                    let wrapped = self.referenced_pattern_field_ty(
                                         &resolved_ty,
+                                        p,
                                         elem_ty.as_ref().clone(),
                                     );
                                     self.bind_pattern(p, wrapped);
@@ -4902,7 +5357,7 @@ impl<'a> TypeChecker<'a> {
                                 let elem_ty = self.fresh_infer(InferKind::General);
                                 for p in non_rest {
                                     let wrapped =
-                                        self.wrap_pattern_binding_ty(&resolved_ty, elem_ty.clone());
+                                        self.referenced_pattern_field_ty(&resolved_ty, p, elem_ty.clone());
                                     self.bind_pattern(p, wrapped);
                                 }
                             }
@@ -4936,7 +5391,11 @@ impl<'a> TypeChecker<'a> {
                                     field_tys.iter().find(|(name, _)| *name == field.name)
                                 {
                                     let wrapped =
-                                        self.wrap_pattern_binding_ty(&resolved_ty, field_ty.clone());
+                                        self.referenced_pattern_field_ty(
+                                            &resolved_ty,
+                                            &field.pat,
+                                            field_ty.clone(),
+                                        );
                                     self.bind_pattern(&field.pat, wrapped);
                                 }
                             }
@@ -4961,7 +5420,7 @@ impl<'a> TypeChecker<'a> {
                         if let Some(field_tys) = self.pattern_variant_tys(path, inner.as_ref()) {
                             for (pat, field_ty) in pats.iter().filter(|p| !matches!(p, HirPattern::Rest(_))).zip(field_tys.iter()) {
                                 let wrapped =
-                                    self.wrap_pattern_binding_ty(&resolved_ty, field_ty.clone());
+                                    self.referenced_pattern_field_ty(&resolved_ty, pat, field_ty.clone());
                                 self.bind_pattern(pat, wrapped);
                             }
                         }
@@ -5162,10 +5621,23 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             HirExprKind::Path(path) => {
+                if let Some(&def_id) = self.resolve.resolutions.get(&expr.id) {
+                    if let Some((ConstVal::Int(value), _)) = self.const_values.get(&def_id) {
+                        return *value as usize;
+                    }
+                }
                 match self.resolve_const_value_by_path(path) {
                     Some((ConstVal::Int(value), _)) => *value as usize,
                     _ => 0,
                 }
+            }
+            HirExprKind::QualifiedPath(_) => {
+                if let Some(&def_id) = self.resolve.resolutions.get(&expr.id) {
+                    if let Some((ConstVal::Int(value), _)) = self.const_values.get(&def_id) {
+                        return *value as usize;
+                    }
+                }
+                0
             }
             _ => 0,
         }

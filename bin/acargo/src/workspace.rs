@@ -126,16 +126,12 @@ pub fn resolve_features(
 
     // Add default features
     if use_defaults {
-        for (feat_name, _) in &manifest.features {
+        for (feat_name, deps) in &manifest.features {
             if feat_name == "default" {
                 // Expand default feature dependencies
-                for (_, deps) in &manifest.features {
-                    if feat_name == "default" {
-                        for dep in deps {
-                            if !active.contains(dep) {
-                                active.push(dep.clone());
-                            }
-                        }
+                for dep in deps {
+                    if !active.contains(dep) {
+                        active.push(dep.clone());
                     }
                 }
             }
@@ -170,4 +166,64 @@ pub fn resolve_features(
     }
 
     active
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::manifest::{CrateKind, Manifest};
+
+    fn manifest_with_features(features: Vec<(&str, Vec<&str>)>) -> Manifest {
+        Manifest {
+            name: String::from("demo"),
+            version: String::from("0.1.0"),
+            edition: String::from("2021"),
+            dependencies: Vec::new(),
+            crate_type: CrateKind::Lib,
+            bin_name: None,
+            bin_path: None,
+            lib_name: None,
+            opt_level_dev: 0,
+            opt_level_release: 2,
+            panic: String::from("abort"),
+            workspace_members: Vec::new(),
+            workspace_excludes: Vec::new(),
+            features: features
+                .into_iter()
+                .map(|(name, deps)| {
+                    (
+                        name.to_string(),
+                        deps.into_iter().map(|dep| dep.to_string()).collect(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn default_features_do_not_enable_every_feature_dependency() {
+        let manifest = manifest_with_features(vec![
+            ("default", Vec::new()),
+            ("host", vec!["anyos_std/host"]),
+        ]);
+
+        let active = resolve_features(&manifest, &[]);
+
+        assert!(!active.contains(&String::from("host")));
+        assert!(!active.contains(&String::from("anyos_std/host")));
+    }
+
+    #[test]
+    fn default_features_expand_only_default_dependencies() {
+        let manifest = manifest_with_features(vec![
+            ("default", vec!["serde"]),
+            ("host", vec!["anyos_std/host"]),
+        ]);
+
+        let active = resolve_features(&manifest, &[]);
+
+        assert!(active.contains(&String::from("serde")));
+        assert!(!active.contains(&String::from("host")));
+        assert!(!active.contains(&String::from("anyos_std/host")));
+    }
 }

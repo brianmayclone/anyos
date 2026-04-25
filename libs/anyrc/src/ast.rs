@@ -43,6 +43,7 @@ pub struct FnDef {
 pub struct Param {
     pub pat: Pattern,
     pub ty: Ty,
+    pub attrs: Vec<Attribute>,
     pub span: Span,
 }
 
@@ -232,6 +233,7 @@ pub enum Expr {
     Unsafe(Block, Span),
     Paren(Box<Expr>, Span),
     InlineAsm(InlineAsm),
+    Attributed(Vec<Attribute>, Box<Expr>, Span),
     IfLet(Pattern, Box<Expr>, Block, Option<Box<Expr>>, Span),
     WhileLet(Pattern, Box<Expr>, Block, Option<Symbol>, Span),
 }

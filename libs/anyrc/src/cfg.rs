@@ -270,6 +270,7 @@ fn strip_items(items: &mut Vec<Item>, ctx: &CfgContext, interner: &Interner) {
                 }
             }
             Item::Fn(f) => {
+                f.params.retain(|param| should_keep_item_attrs(&param.attrs, ctx, interner));
                 if let Some(ref mut body) = f.body {
                     strip_block(body, ctx, interner);
                 }
@@ -383,13 +384,18 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
         | Expr::Paren(inner, _)
         | Expr::Cast(inner, _, _) => strip_expr(inner, ctx, interner),
         Expr::Call(callee, args, _) => {
+            if is_cfg_disabled_expr(callee, ctx, interner) {
+                return;
+            }
             strip_expr(callee, ctx, interner);
+            args.retain(|arg| should_keep_expr_attrs(arg, ctx, interner));
             for arg in args {
                 strip_expr(arg, ctx, interner);
             }
         }
         Expr::MethodCall(recv, _, _, args, _) => {
             strip_expr(recv, ctx, interner);
+            args.retain(|arg| should_keep_expr_attrs(arg, ctx, interner));
             for arg in args {
                 strip_expr(arg, ctx, interner);
             }
@@ -430,6 +436,7 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
             strip_block(body, ctx, interner);
         }
         Expr::Closure(params, _, body, _, _) => {
+            params.retain(|param| should_keep_item_attrs(&param.attrs, ctx, interner));
             for param in params {
                 strip_pattern(&mut param.pat, ctx, interner);
             }
@@ -450,6 +457,7 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
             }
         }
         Expr::Tuple(items, _) | Expr::Array(items, _) => {
+            items.retain(|item| should_keep_expr_attrs(item, ctx, interner));
             for item in items {
                 strip_expr(item, ctx, interner);
             }
@@ -495,12 +503,34 @@ fn strip_expr(expr: &mut Expr, ctx: &CfgContext, interner: &Interner) {
                 }
             }
         }
+        Expr::Attributed(attrs, inner, span) => {
+            if should_keep_item_attrs(attrs, ctx, interner) {
+                strip_expr(inner, ctx, interner);
+            } else {
+                *expr = Expr::Tuple(Vec::new(), *span);
+            }
+        }
         Expr::Lit(_, _)
         | Expr::Path(_)
         | Expr::QualifiedPath(_)
         | Expr::Continue(_, _)
         | Expr::Return(None, _)
         | Expr::MacroCall(_, _, _) => {}
+    }
+}
+
+fn should_keep_expr_attrs(expr: &Expr, ctx: &CfgContext, interner: &Interner) -> bool {
+    !is_cfg_disabled_expr(expr, ctx, interner)
+}
+
+fn is_cfg_disabled_expr(expr: &Expr, ctx: &CfgContext, interner: &Interner) -> bool {
+    match expr {
+        Expr::Attributed(attrs, _, _) => !should_keep_item_attrs(attrs, ctx, interner),
+        // Outer expression attributes are parsed before postfix operators, so
+        // `#[cfg(FALSE)] f()` becomes a call whose callee carries the attrs.
+        Expr::Call(callee, _, _) => is_cfg_disabled_expr(callee, ctx, interner),
+        Expr::MethodCall(receiver, _, _, _, _) => is_cfg_disabled_expr(receiver, ctx, interner),
+        _ => false,
     }
 }
 

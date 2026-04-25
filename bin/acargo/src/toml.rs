@@ -39,8 +39,9 @@ pub fn parse(input: &str) -> Table {
     let mut root = Table::new();
     let mut current_path: Vec<String> = Vec::new();
     let mut current_is_array = false;
+    let mut lines = input.lines();
 
-    for raw_line in input.lines() {
+    while let Some(raw_line) = lines.next() {
         let line = raw_line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
@@ -67,7 +68,21 @@ pub fn parse(input: &str) -> Table {
         // Key = value
         if let Some(eq_pos) = find_equals(line) {
             let key = line[..eq_pos].trim();
-            let val_str = strip_inline_comment(line[eq_pos + 1..].trim());
+            let mut val_str = strip_inline_comment(line[eq_pos + 1..].trim());
+            if starts_unclosed_array(&val_str) {
+                for next_line in lines.by_ref() {
+                    let part = strip_inline_comment(next_line.trim());
+                    if !part.is_empty() {
+                        if !val_str.is_empty() {
+                            val_str.push(' ');
+                        }
+                        val_str.push_str(&part);
+                    }
+                    if array_is_closed(&val_str) {
+                        break;
+                    }
+                }
+            }
             let value = parse_value(&val_str);
 
             if current_is_array {
@@ -85,6 +100,40 @@ pub fn parse(input: &str) -> Table {
     }
 
     root
+}
+
+fn starts_unclosed_array(s: &str) -> bool {
+    s.trim_start().starts_with('[') && !array_is_closed(s)
+}
+
+fn array_is_closed(s: &str) -> bool {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape = false;
+    for ch in s.chars() {
+        if in_string {
+            if escape {
+                escape = false;
+            } else if ch == '\\' {
+                escape = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn find_equals(line: &str) -> Option<usize> {

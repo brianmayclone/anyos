@@ -230,13 +230,15 @@ impl<'a> Resolver<'a> {
                 | ("i8", "MAX") | ("i16", "MAX") | ("i32", "MAX") | ("i64", "MAX") | ("i128", "MAX") | ("isize", "MAX")
                 | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")
                 | ("u8", "MIN") | ("u16", "MIN") | ("u32", "MIN") | ("u64", "MIN") | ("u128", "MIN") | ("usize", "MIN")
+                | ("f32", "MAX") | ("f32", "MIN") | ("f32", "MIN_POSITIVE")
                 | ("f32", "INFINITY") | ("f32", "NEG_INFINITY") | ("f32", "NAN") | ("f32", "EPSILON")
+                | ("f64", "MAX") | ("f64", "MIN") | ("f64", "MIN_POSITIVE")
                 | ("f64", "INFINITY") | ("f64", "NEG_INFINITY") | ("f64", "NAN") | ("f64", "EPSILON")
             );
             let is_assoc_fn = matches!(
                 assoc_str,
                 "from" | "try_from" | "from_le" | "from_be" | "to_le" | "to_be"
-                    | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_str_radix"
+                    | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_bits" | "from_str_radix"
                     | "min" | "max" | "to_string"
             )
                 || (type_name_str == "char" && assoc_str == "from_u32");
@@ -508,6 +510,18 @@ impl<'a> Resolver<'a> {
                 "LinkedList",
                 "VecDeque",
             ],
+            "core::cmp::Ordering" => &[
+                "Less",
+                "Equal",
+                "Greater",
+            ],
+            "core::sync::atomic::Ordering" => &[
+                "Relaxed",
+                "Release",
+                "Acquire",
+                "AcqRel",
+                "SeqCst",
+            ],
             "serde::de" => &[
                 "Deserialize",
                 "DeserializeOwned",
@@ -569,6 +583,7 @@ impl<'a> Resolver<'a> {
                 | "quote"
                 | "syn"
                 | "serde"
+                | "dynlink"
         )
     }
 
@@ -668,13 +683,23 @@ impl<'a> Resolver<'a> {
             let is_last = i == path.len() - start_idx - 1;
             if is_last {
                 // Last segment: look up as value or type
-                if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg, ns)) {
+                let direct = if i == 0 && start_idx == 0 {
+                    self.lookup_from_scope(scope, seg, ns)
+                } else {
+                    self.scopes[scope].bindings.get(&(seg, ns)).copied()
+                };
+                if let Some(def_id) = direct {
                     return Some((def_id, ns));
                 }
                 // Try enum variant
                 if ns == Namespace::Value {
                     // Try type ns for the segment - might be an enum/struct
-                    if let Some(&def_id) = self.scopes[scope].bindings.get(&(seg, Namespace::Type)) {
+                    let direct_ty = if i == 0 && start_idx == 0 {
+                        self.lookup_from_scope(scope, seg, Namespace::Type)
+                    } else {
+                        self.scopes[scope].bindings.get(&(seg, Namespace::Type)).copied()
+                    };
+                    if let Some(def_id) = direct_ty {
                         return Some((def_id, Namespace::Type));
                     }
                 }
@@ -972,7 +997,13 @@ impl<'a> Resolver<'a> {
     fn resolve_impl(&mut self, ib: &HirImplBlock) {
         self.push_scope();
         self.resolve_generics(&ib.generics);
-        self.register_assoc_items_in_current_scope(&ib.items);
+        for item in &ib.items {
+            match &item.kind {
+                HirItemKind::Const(c) => self.define(c.name, Namespace::Value, c.def_id),
+                HirItemKind::Static(s) => self.define(s.name, Namespace::Value, s.def_id),
+                _ => {}
+            }
+        }
 
         let saved_impl_self_ty = self.current_impl_self_ty;
         let saved_impl_self_def_id = self.current_impl_self_def_id;
@@ -1007,8 +1038,14 @@ impl<'a> Resolver<'a> {
             self.resolve_path(tr, Namespace::Type, ib.id);
         }
         for item in &ib.items {
-            // Register methods in impl scope for potential use
-            self.resolve_item(item);
+            match &item.kind {
+                HirItemKind::TypeAlias(ta) => {
+                    if let Some(ty) = &ta.ty {
+                        self.resolve_ty(ty);
+                    }
+                }
+                _ => self.resolve_item(item),
+            }
         }
         self.current_impl_self_ty = saved_impl_self_ty;
         self.current_impl_self_def_id = saved_impl_self_def_id;
@@ -1464,6 +1501,9 @@ impl<'a> Resolver<'a> {
             if path.segments.len() == 2 {
                 // Two-segment path: Enum::Variant or Type::method
                 let second_name = path.segments[1].ident;
+                if name_str == "Self" && ns == Namespace::Type {
+                    return;
+                }
                 let type_name = if name_str == "Self" {
                     if let Some(def_id) = self.current_impl_self_def_id {
                         if self.resolve_assoc_item_on_type_def(def_id, second_name, hir_id) {

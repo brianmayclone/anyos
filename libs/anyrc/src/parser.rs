@@ -179,6 +179,12 @@ impl<'a> Parser<'a> {
                     self.interner.resolve(sym),
                     self.tokens[idx].span
                 )),
+                TokenKind::DocComment(ref text, inner) => out.push_str(&format!(
+                    "DocComment(inner={}, {:?})@{:?}",
+                    inner,
+                    text,
+                    self.tokens[idx].span
+                )),
                 _ => out.push_str(&format!("{:?}@{:?}", self.tokens[idx].kind, self.tokens[idx].span)),
             }
             if idx == self.pos {
@@ -318,8 +324,9 @@ impl<'a> Parser<'a> {
 
         // Outer expression attributes, e.g. `foo(#[inline(always)] |x| x)`.
         if self.at_exact(&TokenKind::Hash) {
-            let _attrs = self.parse_attrs();
-            return self.parse_prefix_expr();
+            let attrs = self.parse_attrs();
+            let expr = self.parse_prefix_expr();
+            return Expr::Attributed(attrs, Box::new(expr), self.span_from(start));
         }
 
         // Unary minus
@@ -784,6 +791,7 @@ impl<'a> Parser<'a> {
             let mut params = Vec::new();
             while !self.at_exact(&TokenKind::Pipe) && !self.at_exact(&TokenKind::Eof) {
                 let p_start = self.current().span;
+                let attrs = self.parse_attrs();
                 let pat = self.parse_pattern_no_or();
                 let ty = if self.eat_exact(&TokenKind::Colon) {
                     self.parse_ty()
@@ -793,6 +801,7 @@ impl<'a> Parser<'a> {
                 params.push(Param {
                     pat,
                     ty,
+                    attrs,
                     span: self.span_from(p_start),
                 });
                 if !self.eat_exact(&TokenKind::Comma) {
@@ -916,7 +925,10 @@ impl<'a> Parser<'a> {
     fn collect_token_trees(&mut self, close: &TokenKind) -> Vec<TokenTree> {
         let mut tts = Vec::new();
         while !self.at_exact(close) && !self.at_exact(&TokenKind::Eof) {
-            if self.at_exact(&TokenKind::LParen) {
+            if let TokenKind::DocComment(text, inner) = self.current().kind.clone() {
+                let span = self.bump().span;
+                tts.extend(self.doc_comment_token_trees(text, inner, span));
+            } else if self.at_exact(&TokenKind::LParen) {
                 self.bump();
                 let inner = self.collect_token_trees(&TokenKind::RParen);
                 self.expect_exact(&TokenKind::RParen);
@@ -936,6 +948,39 @@ impl<'a> Parser<'a> {
             }
         }
         tts
+    }
+
+    fn doc_comment_token_trees(&mut self, text: String, inner: bool, span: Span) -> Vec<TokenTree> {
+        let doc = self.interner.intern("doc");
+        let mut out = Vec::new();
+        out.push(TokenTree::Token(Token { kind: TokenKind::Hash, span }));
+        if inner {
+            out.push(TokenTree::Token(Token { kind: TokenKind::Not, span }));
+        }
+        out.push(TokenTree::Delimited(
+            Delimiter::Bracket,
+            vec![
+                TokenTree::Token(Token { kind: TokenKind::Ident(doc), span }),
+                TokenTree::Token(Token { kind: TokenKind::Eq, span }),
+                TokenTree::Token(Token { kind: TokenKind::StringLit(text), span }),
+            ],
+        ));
+        out
+    }
+
+    fn doc_comment_attr(&mut self, text: String, span: Span) -> Attribute {
+        let doc = self.interner.intern("doc");
+        Attribute {
+            path: Path {
+                segments: vec![PathSegment {
+                    ident: doc,
+                    args: None,
+                }],
+                span,
+            },
+            args: AttrArgs::Eq(Box::new(Expr::Lit(Literal::String(text), span))),
+            span,
+        }
     }
 
     fn parse_path_expr(&mut self) -> Path {
@@ -1214,7 +1259,7 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Stmt {
         let start = self.current().span;
 
-        if self.at_exact(&TokenKind::Hash) {
+        if self.at_exact(&TokenKind::Hash) || matches!(self.current().kind, TokenKind::DocComment(_, false)) {
             let attrs = self.parse_attrs();
             let vis = self.parse_visibility();
             if self.at_item_start_after_leading() {
@@ -1411,7 +1456,14 @@ impl<'a> Parser<'a> {
     pub fn parse_crate(&mut self) -> Crate {
         // Parse inner attributes (#![...])
         let mut attrs = Vec::new();
-        while self.at_exact(&TokenKind::Hash) && self.peek_kind_at(1) == Some(&TokenKind::Not) {
+        while (self.at_exact(&TokenKind::Hash) && self.peek_kind_at(1) == Some(&TokenKind::Not))
+            || matches!(self.current().kind, TokenKind::DocComment(_, true))
+        {
+            if let TokenKind::DocComment(text, true) = self.current().kind.clone() {
+                let span = self.bump().span;
+                attrs.push(self.doc_comment_attr(text, span));
+                continue;
+            }
             let start = self.current().span;
             self.bump(); // #
             self.bump(); // !
@@ -1676,6 +1728,7 @@ impl<'a> Parser<'a> {
         let mut params = Vec::new();
         while !self.at_exact(&TokenKind::RParen) && !self.at_exact(&TokenKind::Eof) {
             let p_start = self.current().span;
+            let attrs = self.parse_attrs();
 
             // C variadics in extern function declarations: `...`.
             if self.consume_c_variadic_marker() {
@@ -1735,6 +1788,7 @@ impl<'a> Parser<'a> {
                 params.push(Param {
                     pat,
                     ty: self_ty,
+                    attrs,
                     span: self.span_from(p_start),
                 });
                 if !self.eat_exact(&TokenKind::Comma) {
@@ -1759,6 +1813,7 @@ impl<'a> Parser<'a> {
                 params.push(Param {
                     pat,
                     ty: self_ty,
+                    attrs,
                     span: self.span_from(p_start),
                 });
                 if !self.eat_exact(&TokenKind::Comma) {
@@ -1776,6 +1831,7 @@ impl<'a> Parser<'a> {
                 params.push(Param {
                     pat,
                     ty,
+                    attrs,
                     span: self.span_from(p_start),
                 });
                 if !self.eat_exact(&TokenKind::Comma) {
@@ -1799,6 +1855,7 @@ impl<'a> Parser<'a> {
                 params.push(Param {
                     pat,
                     ty: self_ty,
+                    attrs,
                     span: self.span_from(p_start),
                 });
                 if !self.eat_exact(&TokenKind::Comma) {
@@ -1813,6 +1870,7 @@ impl<'a> Parser<'a> {
             params.push(Param {
                 pat,
                 ty,
+                attrs,
                 span: self.span_from(p_start),
             });
             if !self.eat_exact(&TokenKind::Comma) {
@@ -2394,7 +2452,12 @@ impl<'a> Parser<'a> {
 
     fn parse_attrs(&mut self) -> Vec<Attribute> {
         let mut attrs = Vec::new();
-        while self.at_exact(&TokenKind::Hash) {
+        while self.at_exact(&TokenKind::Hash) || matches!(self.current().kind, TokenKind::DocComment(_, false)) {
+            if let TokenKind::DocComment(text, false) = self.current().kind.clone() {
+                let span = self.bump().span;
+                attrs.push(self.doc_comment_attr(text, span));
+                continue;
+            }
             let start = self.current().span;
             self.bump(); // #
             let _inner = self.eat_exact(&TokenKind::Not);

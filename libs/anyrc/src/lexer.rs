@@ -77,6 +77,7 @@ pub enum TokenKind {
     StringLit(String),
     CharLit(char),
     ByteStringLit(Vec<u8>),
+    DocComment(String, bool),
     // Identifiers
     Ident(Symbol),
     Lifetime(Symbol),
@@ -142,6 +143,9 @@ impl<'a> Lexer<'a> {
             }
             // line comment
             if self.peek() == b'/' && self.peek_at(1) == b'/' {
+                if matches!(self.peek_at(2), b'/' | b'!') {
+                    break;
+                }
                 self.pos += 2;
                 while self.pos < self.src.len() && self.peek() != b'\n' {
                     self.pos += 1;
@@ -150,6 +154,9 @@ impl<'a> Lexer<'a> {
             }
             // block comment (nested)
             if self.peek() == b'/' && self.peek_at(1) == b'*' {
+                if matches!(self.peek_at(2), b'*' | b'!') {
+                    break;
+                }
                 self.pos += 2;
                 let mut depth = 1u32;
                 while self.pos < self.src.len() && depth > 0 {
@@ -275,6 +282,50 @@ impl<'a> Lexer<'a> {
             self.pos += 1; // skip closing '
         }
         value
+    }
+
+    fn lex_line_doc_comment(&mut self) -> TokenKind {
+        // The first `/` has already been consumed. We are positioned at the
+        // second `/`, followed by either `/` or `!`.
+        self.pos += 1; // second /
+        let inner = self.peek() == b'!';
+        self.pos += 1; // doc marker
+        let start = self.pos;
+        while self.pos < self.src.len() && self.peek() != b'\n' {
+            self.pos += 1;
+        }
+        let mut text = core::str::from_utf8(&self.src[start..self.pos])
+            .unwrap_or("")
+            .to_string();
+        if text.starts_with(' ') {
+            text.remove(0);
+        }
+        TokenKind::DocComment(text, inner)
+    }
+
+    fn lex_block_doc_comment(&mut self) -> TokenKind {
+        // The first `/` has already been consumed. We are positioned at `*`,
+        // followed by either `*` or `!`.
+        self.pos += 1; // *
+        let inner = self.peek() == b'!';
+        self.pos += 1; // doc marker
+        let start = self.pos;
+        while self.pos + 1 < self.src.len() {
+            if self.peek() == b'*' && self.peek_at(1) == b'/' {
+                let text = core::str::from_utf8(&self.src[start..self.pos])
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                self.pos += 2;
+                return TokenKind::DocComment(text, inner);
+            }
+            self.pos += 1;
+        }
+        let text = core::str::from_utf8(&self.src[start..self.pos])
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        TokenKind::DocComment(text, inner)
     }
 
     fn lex_number(&mut self, start: usize) -> TokenKind {
@@ -525,7 +576,18 @@ impl<'a> Lexer<'a> {
                 _ => TokenKind::Minus,
             },
             b'*' => if self.peek() == b'=' { self.pos += 1; TokenKind::StarEq } else { TokenKind::Star },
-            b'/' => if self.peek() == b'=' { self.pos += 1; TokenKind::SlashEq } else { TokenKind::Slash },
+            b'/' => {
+                if self.peek() == b'/' && matches!(self.peek_at(1), b'/' | b'!') {
+                    self.lex_line_doc_comment()
+                } else if self.peek() == b'*' && matches!(self.peek_at(1), b'*' | b'!') {
+                    self.lex_block_doc_comment()
+                } else if self.peek() == b'=' {
+                    self.pos += 1;
+                    TokenKind::SlashEq
+                } else {
+                    TokenKind::Slash
+                }
+            }
             b'%' => if self.peek() == b'=' { self.pos += 1; TokenKind::PercentEq } else { TokenKind::Percent },
             b'&' => match self.peek() {
                 b'&' => { self.pos += 1; TokenKind::AndAnd }
