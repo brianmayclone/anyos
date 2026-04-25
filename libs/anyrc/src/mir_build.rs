@@ -2072,6 +2072,7 @@ impl<'a> MirBuilder<'a> {
                         // Keep full names where the final segment is too generic
                         // or where codegen needs the owning primitive/ADT.
                         let fn_name = if intrinsic_path.contains("Atomic")
+                            || intrinsic_path.starts_with("anyos_std::")
                             || Self::is_primitive_assoc_fn_path(&intrinsic_path)
                         {
                             self.interner.intern(&intrinsic_path)

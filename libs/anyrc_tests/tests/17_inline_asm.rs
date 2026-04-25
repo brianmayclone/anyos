@@ -1,6 +1,8 @@
 use anyrc::driver::{compile, CompileOptions, EmitKind, CrateType};
 use anyrc::parser::Parser;
 use anyrc::intern::Interner;
+use anyrc::codegen::regalloc;
+use anyrc::typeck::{TyKind, UintTy};
 
 // ── Parser tests ──
 
@@ -213,11 +215,6 @@ fn codegen_inline_syscall_bytes() {
         ..CompileOptions::default()
     };
     let obj_bytes = compile(src, "test.rs", &options).expect("compilation failed");
-    for pos in obj_bytes.windows(2).enumerate().filter_map(|(i, w)| (w == [0x0f, 0x05]).then_some(i)) {
-        let start = pos.saturating_sub(24);
-        let end = (pos + 24).min(obj_bytes.len());
-        eprintln!("syscall at {pos}: {:02x?}", &obj_bytes[start..end]);
-    }
     assert!(
         obj_bytes.windows(7).any(|w| w == [0x53, 0x48, 0x89, 0xfb, 0x0f, 0x05, 0x5b]),
         "expected push rbx; mov rbx,rdi; syscall; pop rbx in generated object code",
@@ -290,4 +287,38 @@ fn codegen_fixed_syscall_intrinsic_uses_native_anyos_abi() {
         }),
         "expected fixed syscall intrinsic to marshal SysV args into anyOS syscall registers",
     );
+}
+
+#[test]
+fn codegen_anyos_exe_runtime_uses_native_syscall_only() {
+    let src = "fn main() -> i32 { 7 }";
+    let options = CompileOptions {
+        input: "test.rs".to_string(),
+        output: "test".to_string(),
+        emit: EmitKind::Exe,
+        opt_level: 0,
+        crate_type: CrateType::Bin,
+        crate_name: None,
+        cfg_flags: vec![
+            "target_os=\"anyos\"".to_string(),
+            "target_arch=\"x86_64\"".to_string(),
+        ],
+        ..CompileOptions::default()
+    };
+    let exe_bytes = compile(src, "test.rs", &options).expect("compilation failed");
+    assert!(
+        exe_bytes.windows(2).any(|w| w == [0x0f, 0x05]),
+        "expected native syscall instruction in generated anyOS executable",
+    );
+    assert!(
+        !exe_bytes.windows(2).any(|w| w == [0xcd, 0x80]),
+        "generated anyOS executable must not contain legacy int 0x80 syscall stubs",
+    );
+}
+
+#[test]
+fn codegen_u8_arrays_use_byte_sized_stack_layout() {
+    let sizes = Default::default();
+    let ty = TyKind::Array(Box::new(TyKind::Uint(UintTy::U8)), 65536);
+    assert_eq!(regalloc::ty_size(&ty, &sizes), 65536);
 }

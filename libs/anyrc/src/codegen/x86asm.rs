@@ -176,11 +176,62 @@ impl X86Assembler {
         self.emit_mem_modrm(Self::reg_code(dst), base, disp);
     }
 
+    pub fn movzx_rm_sized(&mut self, dst: Reg, base: Reg, disp: i32, size: i32) {
+        match size {
+            1 => {
+                // MOVZX r64, r/m8: REX.W 0F B6 /r
+                self.rex(true, dst, base);
+                self.code.push(0x0F);
+                self.code.push(0xB6);
+                self.emit_mem_modrm(Self::reg_code(dst), base, disp);
+            }
+            2 => {
+                // MOVZX r64, r/m16: REX.W 0F B7 /r
+                self.rex(true, dst, base);
+                self.code.push(0x0F);
+                self.code.push(0xB7);
+                self.emit_mem_modrm(Self::reg_code(dst), base, disp);
+            }
+            4 => {
+                // MOV r32, r/m32 zero-extends into the 64-bit destination.
+                self.rex(false, dst, base);
+                self.code.push(0x8B);
+                self.emit_mem_modrm(Self::reg_code(dst), base, disp);
+            }
+            _ => self.mov_rm(dst, base, disp),
+        }
+    }
+
     pub fn mov_mr(&mut self, base: Reg, disp: i32, src: Reg) {
         // MOV [base+disp], r64: REX.W 89 /r
         self.rex(true, src, base);
         self.code.push(0x89);
         self.emit_mem_modrm(Self::reg_code(src), base, disp);
+    }
+
+    pub fn mov_mr_sized(&mut self, base: Reg, disp: i32, src: Reg, size: i32) {
+        match size {
+            1 => {
+                // MOV r/m8, r8: 88 /r
+                self.rex(false, src, base);
+                self.code.push(0x88);
+                self.emit_mem_modrm(Self::reg_code(src), base, disp);
+            }
+            2 => {
+                // MOV r/m16, r16: 66 89 /r
+                self.code.push(0x66);
+                self.rex(false, src, base);
+                self.code.push(0x89);
+                self.emit_mem_modrm(Self::reg_code(src), base, disp);
+            }
+            4 => {
+                // MOV r/m32, r32: 89 /r
+                self.rex(false, src, base);
+                self.code.push(0x89);
+                self.emit_mem_modrm(Self::reg_code(src), base, disp);
+            }
+            _ => self.mov_mr(base, disp, src),
+        }
     }
 
     pub fn mov_mi(&mut self, base: Reg, disp: i32, imm: i32) {
@@ -233,6 +284,14 @@ impl X86Assembler {
         self.code.push(0x0F);
         self.code.push(0xAF);
         self.code.push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(src)));
+    }
+
+    pub fn imul_ri(&mut self, dst: Reg, imm: i64) {
+        // IMUL r64, r/m64, imm32: REX.W 69 /r id
+        self.rex(true, dst, dst);
+        self.code.push(0x69);
+        self.code.push(Self::modrm(0b11, Self::reg_code(dst), Self::reg_code(dst)));
+        self.code.extend_from_slice(&(imm as i32).to_le_bytes());
     }
 
     pub fn cqo(&mut self) {

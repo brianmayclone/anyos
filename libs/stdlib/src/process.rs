@@ -23,8 +23,9 @@ pub fn exit(code: u32) -> ! {
     unsafe {
         #[cfg(target_arch = "x86_64")]
         asm!(
+            "push rbx",
             "mov rbx, {code}",
-            "int 0x80",
+            "syscall",
             code = in(reg) code as u64,
             in("rax") SYS_EXIT as u64,
             options(noreturn)

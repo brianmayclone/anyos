@@ -24,19 +24,13 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         code.extend_from_slice(&[0x48, 0x83, 0xC7, 0x07]); // add rdi, 7
         code.extend_from_slice(&[0x48, 0x83, 0xE7, 0xF8]); // and rdi, -8
 
-        // syscall SYS_SBRK (9) with the size
-        code.extend_from_slice(&[0x48, 0x89, 0xFE]);       // mov rsi, rdi (size)
-        code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x00, 0x00, 0x00, 0x00]); // mov rdi, 0 (query current break)
+        // anyOS native syscall ABI: RAX=syscall, RBX=arg1, R10=arg2, ...
+        // SYS_SBRK takes an increment and returns the old break.
+        code.extend_from_slice(&[0x53]);                     // push rbx
+        code.extend_from_slice(&[0x48, 0x89, 0xFB]);         // mov rbx, rdi (increment)
         code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x09, 0x00, 0x00, 0x00]); // mov rax, 9 (SYS_SBRK)
-        code.extend_from_slice(&[0xCD, 0x80]);              // syscall
-        // RAX = old break (this is our allocation pointer)
-        // Now bump the break by size
-        code.extend_from_slice(&[0x48, 0x89, 0xC7]);       // mov rdi, rax (current break)
-        code.extend_from_slice(&[0x48, 0x01, 0xF7]);       // add rdi, rsi (break + size)
-        code.extend_from_slice(&[0x50]);                     // push rax (save our ptr)
-        code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x09, 0x00, 0x00, 0x00]); // mov rax, 9
-        code.extend_from_slice(&[0xCD, 0x80]);              // syscall (set new break)
-        code.extend_from_slice(&[0x58]);                     // pop rax (restore ptr)
+        code.extend_from_slice(&[0x0F, 0x05]);               // syscall
+        code.extend_from_slice(&[0x5B]);                     // pop rbx
         code.extend_from_slice(&[0xC3]);                     // ret
         code
     }));
@@ -244,6 +238,7 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
     // On anyOS: SYS_WRITE = 2, fd=1 (stdout)
     stubs.push(("__anyrc_println".to_string(), {
         let mut code = Vec::new();
+        code.extend_from_slice(&[0x53]);                     // push rbx
         // First, compute string length (scan for null terminator)
         code.extend_from_slice(&[0x48, 0x89, 0xFE]);         // mov rsi, rdi (save ptr)
         code.extend_from_slice(&[0x48, 0x31, 0xC9]);         // xor rcx, rcx (len = 0)
@@ -255,17 +250,19 @@ pub fn runtime_stubs() -> Vec<(String, Vec<u8>)> {
         // .done_scan: rcx = len, rsi = ptr
         // SYS_WRITE(fd=1, buf=rsi, len=rcx)
         code.extend_from_slice(&[0x48, 0x89, 0xCA]);         // mov rdx, rcx (len)
-        code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x01, 0x00, 0x00, 0x00]); // mov rdi, 1 (stdout fd)
+        code.extend_from_slice(&[0x49, 0x89, 0xF2]);         // mov r10, rsi (buf)
+        code.extend_from_slice(&[0x48, 0xC7, 0xC3, 0x01, 0x00, 0x00, 0x00]); // mov rbx, 1 (stdout fd)
         code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x02, 0x00, 0x00, 0x00]); // mov rax, 2 (SYS_WRITE)
-        code.extend_from_slice(&[0xCD, 0x80]);               // INT 0x80
+        code.extend_from_slice(&[0x0F, 0x05]);               // syscall
         // Write newline
         code.extend_from_slice(&[0x6A, 0x0A]);               // push 0x0A ('\n')
-        code.extend_from_slice(&[0x48, 0x89, 0xE6]);         // mov rsi, rsp (ptr to '\n')
+        code.extend_from_slice(&[0x49, 0x89, 0xE2]);         // mov r10, rsp (ptr to '\n')
         code.extend_from_slice(&[0x48, 0xC7, 0xC2, 0x01, 0x00, 0x00, 0x00]); // mov rdx, 1
-        code.extend_from_slice(&[0x48, 0xC7, 0xC7, 0x01, 0x00, 0x00, 0x00]); // mov rdi, 1
+        code.extend_from_slice(&[0x48, 0xC7, 0xC3, 0x01, 0x00, 0x00, 0x00]); // mov rbx, 1
         code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x02, 0x00, 0x00, 0x00]); // mov rax, 2 (SYS_WRITE)
-        code.extend_from_slice(&[0xCD, 0x80]);               // INT 0x80
+        code.extend_from_slice(&[0x0F, 0x05]);               // syscall
         code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x08]);   // add rsp, 8 (clean up push)
+        code.extend_from_slice(&[0x5B]);                     // pop rbx
         code.push(0xC3);
         code
     }));

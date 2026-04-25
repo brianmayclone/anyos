@@ -217,25 +217,25 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         }
     }
 
-    // 9. Build struct size map: DefId → size in 8-byte slots
+    // 9. Build struct size map: DefId -> stack storage size in bytes
     //    Uses typeck struct_defs for field types to compute accurate sizes.
     let struct_sizes = {
         use crate::hir::{HirItemKind, HirVariantFields, HirItem};
         use crate::codegen::regalloc::ty_size;
 
-        // First pass: collect field counts as fallback for structs not in typeck
+        // First pass: collect field storage as fallback for structs not in typeck
         let mut map: anyos_std::collections::HashMap<crate::hir::DefId, usize> = anyos_std::collections::HashMap::new();
         fn collect_struct_counts(items: &[HirItem], map: &mut anyos_std::collections::HashMap<crate::hir::DefId, usize>) {
             for item in items {
                 match &item.kind {
-                    HirItemKind::Struct(s) => { map.insert(s.def_id, s.fields.len()); }
+                    HirItemKind::Struct(s) => { map.insert(s.def_id, s.fields.len().max(1) * 8); }
                     HirItemKind::Enum(e) => {
                         let max_fields = e.variants.iter().map(|v| match &v.fields {
                             HirVariantFields::Unit => 0,
                             HirVariantFields::Tuple(tys) => tys.len(),
                             HirVariantFields::Struct(fields) => fields.len(),
                         }).max().unwrap_or(0);
-                        if max_fields > 0 { map.insert(e.def_id, 1 + max_fields); }
+                        if max_fields > 0 { map.insert(e.def_id, (1 + max_fields) * 8); }
                     }
                     HirItemKind::Mod(m) => {
                         if let Some(sub_items) = &m.items { collect_struct_counts(sub_items, map); }
@@ -246,14 +246,12 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         }
         collect_struct_counts(&hir.items, &mut map);
 
-        // Second pass: compute accurate sizes from field types
-        // We compute size as sum of field sizes (in 8-byte slots)
+        // Second pass: compute accurate storage sizes from field types.
         for (def_id, fields) in &typeck_result.struct_defs {
             let total_bytes: i32 = fields.iter()
                 .map(|(_, ty)| ty_size(ty, &map))
                 .sum();
-            let slots = (total_bytes / 8).max(1) as usize;
-            map.insert(*def_id, slots);
+            map.insert(*def_id, total_bytes.max(8) as usize);
         }
         map
     };
@@ -392,7 +390,7 @@ fn codegen_to_object_with_statics(bodies: &[MirBody], interner: &Interner, struc
 
     for body in bodies {
         let alloc = regalloc::allocate(body, struct_sizes);
-        let (code, relocs) = CodeEmitter::emit_fn(body, &alloc, interner, field_offsets);
+        let (code, relocs) = CodeEmitter::emit_fn(body, &alloc, interner, struct_sizes, field_offsets);
 
         let fn_offset = text_data.len() as u64;
         let fn_size = code.len() as u64;

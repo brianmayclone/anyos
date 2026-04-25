@@ -105,9 +105,10 @@ fn link_impl(objects: &[Vec<u8>], no_main: bool, base_addr: u64, entry_name: &st
         merged_code.extend_from_slice(&[0x48, 0x89, 0xC7]);
         match target_abi {
             TargetAbi::AnyOs => {
-                // mov rax, 1 (SYS_EXIT), int 0x80
+                // anyOS native syscall ABI: RAX=SYS_EXIT, RBX=exit code
+                merged_code.extend_from_slice(&[0x48, 0x89, 0xFB]); // mov rbx, rdi
                 merged_code.extend_from_slice(&[0x48, 0xC7, 0xC0, 0x01, 0x00, 0x00, 0x00]);
-                merged_code.extend_from_slice(&[0xCD, 0x80]);
+                merged_code.extend_from_slice(&[0x0F, 0x05]);
             }
             TargetAbi::Linux => {
                 // mov rax, 60 (SYS_exit), syscall

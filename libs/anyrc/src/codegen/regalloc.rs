@@ -13,33 +13,45 @@ pub struct RegAlloc {
     pub frame_size: i32,
 }
 
-/// Map from struct DefId to size in 8-byte slots.
+/// Map from struct DefId to stack storage size in bytes.
 pub type StructSizes = HashMap<DefId, usize>;
 
 /// Map from struct DefId to byte offset of each field.
 pub type StructFieldOffsets = HashMap<DefId, Vec<i32>>;
 
-/// Return the size in bytes for a type on the stack (each field/element = 8 bytes).
-pub fn ty_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {
+fn align_to(value: i32, align: i32) -> i32 {
+    ((value + align - 1) / align) * align
+}
+
+/// Return the natural in-memory size for a type.
+pub fn ty_layout_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {
     match ty {
+        TyKind::Bool => 1,
+        TyKind::Char => 4,
+        TyKind::Int(crate::typeck::IntTy::I8) | TyKind::Uint(crate::typeck::UintTy::U8) => 1,
+        TyKind::Int(crate::typeck::IntTy::I16) | TyKind::Uint(crate::typeck::UintTy::U16) => 2,
+        TyKind::Int(crate::typeck::IntTy::I32)
+        | TyKind::Uint(crate::typeck::UintTy::U32)
+        | TyKind::Float(crate::typeck::FloatTy::F32) => 4,
+        TyKind::Int(crate::typeck::IntTy::I128) | TyKind::Uint(crate::typeck::UintTy::U128) => 16,
         TyKind::Tuple(elems) => {
-            if elems.is_empty() { 8 } else { elems.len() as i32 * 8 }
-        }
-        TyKind::Adt(def_id, _) => {
-            if let Some(&field_count) = struct_sizes.get(def_id) {
-                (field_count as i32).max(1) * 8
+            if elems.is_empty() {
+                0
             } else {
-                8
+                elems.iter().map(|ty| ty_size(ty, struct_sizes)).sum()
             }
         }
-        TyKind::Array(_, len) => (*len as i32).max(1) * 8,
-        // Fat pointer: &dyn Trait is 16 bytes (data_ptr + vtable_ptr)
-        TyKind::Ref(inner, _) => {
-            if matches!(inner.as_ref(), TyKind::DynTrait(_)) { 16 } else { 8 }
-        }
-        TyKind::DynTrait(_) => 16, // unlikely to appear standalone, but be safe
+        TyKind::Adt(def_id, _) => struct_sizes.get(def_id).copied().unwrap_or(8) as i32,
+        TyKind::Array(elem, len) => ty_layout_size(elem, struct_sizes).max(1) * (*len as i32),
+        TyKind::Slice(_) | TyKind::Str | TyKind::DynTrait(_) => 16,
+        TyKind::Unit | TyKind::Never => 0,
         _ => 8,
     }
+}
+
+/// Return the size in bytes reserved for a type on the stack.
+pub fn ty_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {
+    align_to(ty_layout_size(ty, struct_sizes).max(1), 8)
 }
 
 pub fn allocate(body: &MirBody, struct_sizes: &StructSizes) -> RegAlloc {
@@ -52,7 +64,10 @@ pub fn allocate(body: &MirBody, struct_sizes: &StructSizes) -> RegAlloc {
             if let crate::mir::StatementKind::Assign(place, rvalue) = &stmt.kind {
                 if place.projections.is_empty() {
                     match rvalue {
-                        crate::mir::Rvalue::Aggregate(_, operands) if operands.len() > 1 => {
+                        crate::mir::Rvalue::Aggregate(_, operands)
+                            if operands.len() > 1
+                                && !matches!(body.locals[place.local.0].ty, TyKind::Array(_, _)) =>
+                        {
                             let needed = operands.len() as i32 * 8;
                             if needed > local_sizes[place.local.0] {
                                 local_sizes[place.local.0] = needed;

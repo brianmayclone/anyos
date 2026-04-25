@@ -1,6 +1,6 @@
 use crate::prelude::*;
 use crate::ast::BinOp;
-use crate::codegen::regalloc::{RegAlloc, StructFieldOffsets};
+use crate::codegen::regalloc::{self, RegAlloc, StructFieldOffsets, StructSizes};
 use crate::codegen::x86asm::{CondCode, Label, Reg, Relocation, X86Assembler};
 use crate::hir::DefId;
 use crate::intern::Interner;
@@ -15,6 +15,7 @@ pub struct CodeEmitter<'a> {
     alloc: &'a RegAlloc,
     body: &'a MirBody,
     interner: &'a Interner,
+    struct_sizes: &'a StructSizes,
     field_offsets: &'a StructFieldOffsets,
     block_labels: Vec<Label>,
 }
@@ -24,6 +25,7 @@ impl<'a> CodeEmitter<'a> {
         body: &MirBody,
         alloc: &RegAlloc,
         interner: &Interner,
+        struct_sizes: &StructSizes,
         field_offsets: &StructFieldOffsets,
     ) -> (Vec<u8>, Vec<Relocation>) {
         let mut asm = X86Assembler::new();
@@ -38,6 +40,7 @@ impl<'a> CodeEmitter<'a> {
             alloc,
             body,
             interner,
+            struct_sizes,
             field_offsets,
             block_labels,
         };
@@ -109,6 +112,79 @@ impl<'a> CodeEmitter<'a> {
         }
     }
 
+    fn slots_for_size(size: i32) -> usize {
+        ((size.max(1) + 7) / 8) as usize
+    }
+
+    fn projection_ty_before(&self, place: &Place, projection_index: usize) -> TyKind {
+        let mut ty = self.body.locals[place.local.0].ty.clone();
+        for proj in &place.projections[..projection_index] {
+            match proj {
+                Projection::Deref => {
+                    ty = match ty {
+                        TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => *inner,
+                        _ => TyKind::Error,
+                    };
+                }
+                Projection::Field(idx) => {
+                    ty = match ty {
+                        TyKind::Tuple(elems) => elems.get(*idx).cloned().unwrap_or(TyKind::Error),
+                        _ => TyKind::Error,
+                    };
+                }
+                Projection::Index(_) => {
+                    ty = match ty {
+                        TyKind::Array(elem, _) => *elem,
+                        _ => TyKind::Error,
+                    };
+                }
+            }
+        }
+        ty
+    }
+
+    fn projection_value_ty(&self, place: &Place) -> TyKind {
+        let mut ty = self.body.locals[place.local.0].ty.clone();
+        for proj in &place.projections {
+            match proj {
+                Projection::Deref => {
+                    ty = match ty {
+                        TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => *inner,
+                        _ => TyKind::Error,
+                    };
+                }
+                Projection::Field(idx) => {
+                    ty = match ty {
+                        TyKind::Tuple(elems) => elems.get(*idx).cloned().unwrap_or(TyKind::Error),
+                        _ => TyKind::Error,
+                    };
+                }
+                Projection::Index(_) => {
+                    ty = match ty {
+                        TyKind::Array(elem, _) => *elem,
+                        _ => TyKind::Error,
+                    };
+                }
+            }
+        }
+        ty
+    }
+
+    fn index_stride(&self, place: &Place, projection_index: usize) -> i32 {
+        match self.projection_ty_before(place, projection_index) {
+            TyKind::Array(elem, _) => regalloc::ty_layout_size(&elem, self.struct_sizes).max(1),
+            _ => 8,
+        }
+    }
+
+    fn place_value_size(&self, place: &Place) -> i32 {
+        if place.projections.is_empty() {
+            self.alloc.local_sizes[place.local.0]
+        } else {
+            regalloc::ty_layout_size(&self.projection_value_ty(place), self.struct_sizes).max(1)
+        }
+    }
+
     fn emit_prologue(&mut self) {
         self.asm.push(Reg::RBP);
         self.asm.mov_rr(Reg::RBP, Reg::RSP);
@@ -131,7 +207,7 @@ impl<'a> CodeEmitter<'a> {
             let local = i + 1; // arguments start at local 1
             if local < self.alloc.stack_slots.len() {
                 let slot = self.alloc.stack_slots[local];
-                let n_slots = (self.alloc.local_sizes[local] / 8) as usize;
+                let n_slots = Self::slots_for_size(self.alloc.local_sizes[local]);
                 for s in 0..n_slots {
                     if reg_idx < ARG_REGS.len() {
                         self.asm.mov_mr(Reg::RBP, slot + (s as i32) * 8, ARG_REGS[reg_idx]);
@@ -146,7 +222,7 @@ impl<'a> CodeEmitter<'a> {
         match op {
             Operand::Copy(place) | Operand::Move(place) | Operand::Ref(place, _) => {
                 if place.projections.is_empty() {
-                    (self.alloc.local_sizes[place.local.0] / 8) as usize
+                    Self::slots_for_size(self.alloc.local_sizes[place.local.0])
                 } else {
                     1
                 }
@@ -249,12 +325,15 @@ impl<'a> CodeEmitter<'a> {
                             // dst already holds the address
                         }
                     }
-                    // Scale index by 8: R11 = R11 * 8
-                    self.asm.shl_ri(Reg::R11, 3);
-                    // dst = dst + R11 (base + index*8)
+                    let stride = self.index_stride(place, i);
+                    if stride == 8 {
+                        self.asm.shl_ri(Reg::R11, 3);
+                    } else if stride != 1 {
+                        self.asm.imul_ri(Reg::R11, stride as i64);
+                    }
                     self.asm.add_rr(dst, Reg::R11);
                     // Load the value at [dst]
-                    self.asm.mov_rm(dst, dst, 0);
+                    self.asm.movzx_rm_sized(dst, dst, 0, self.place_value_size(place));
                     base = Base::Reg;
                 }
             }
@@ -303,19 +382,24 @@ impl<'a> CodeEmitter<'a> {
                         via_reg = true;
                         offset = 0;
                     }
-                    // Add index * 8
+                    let stride = self.index_stride(place, i);
                     self.asm.mov_rm(Reg::RCX, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
-                    self.asm.shl_ri(Reg::RCX, 3);
+                    if stride == 8 {
+                        self.asm.shl_ri(Reg::RCX, 3);
+                    } else if stride != 1 {
+                        self.asm.imul_ri(Reg::RCX, stride as i64);
+                    }
                     self.asm.add_rr(Reg::R11, Reg::RCX);
                 }
             }
         }
 
         // Final store
+        let value_size = self.place_value_size(place);
         if via_reg {
-            self.asm.mov_mr(Reg::R11, 0, src);
+            self.asm.mov_mr_sized(Reg::R11, 0, src, value_size);
         } else {
-            self.asm.mov_mr(Reg::RBP, offset, src);
+            self.asm.mov_mr_sized(Reg::RBP, offset, src, value_size);
         }
     }
 
@@ -346,10 +430,11 @@ impl<'a> CodeEmitter<'a> {
                                 // Multi-slot copy
                                 if let Operand::Copy(p) | Operand::Move(p) = op {
                                     let src_slot = self.alloc.stack_slots[p.local.0];
-                                    let n_slots = op_size / 8;
+                                    let n_slots = Self::slots_for_size(op_size);
                                     for s in 0..n_slots {
-                                        self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + s * 8);
-                                        self.asm.mov_mr(Reg::RBP, base_slot + field_off + s * 8, Reg::RAX);
+                                        let byte_off = (s as i32) * 8;
+                                        self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + byte_off);
+                                        self.asm.mov_mr(Reg::RBP, base_slot + field_off + byte_off, Reg::RAX);
                                     }
                                 }
                             } else {
@@ -381,10 +466,11 @@ impl<'a> CodeEmitter<'a> {
                         if copy_size > 8 {
                             let dst_slot = self.alloc.stack_slots[place.local.0];
                             let src_slot = self.alloc.stack_slots[src.local.0];
-                            let n_slots = copy_size / 8;
+                            let n_slots = Self::slots_for_size(copy_size);
                             for i in 0..n_slots {
-                                self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + i * 8);
-                                self.asm.mov_mr(Reg::RBP, dst_slot + i * 8, Reg::RAX);
+                                let byte_off = (i as i32) * 8;
+                                self.asm.mov_rm(Reg::RAX, Reg::RBP, src_slot + byte_off);
+                                self.asm.mov_mr(Reg::RBP, dst_slot + byte_off, Reg::RAX);
                             }
                             return;
                         }
@@ -528,9 +614,14 @@ impl<'a> CodeEmitter<'a> {
                                         // dst already holds the address
                                     }
                                 }
-                                // Load index, scale by 8, add to base
+                                // Load index, scale by the array element stride, add to base
                                 self.asm.mov_rm(Reg::R11, Reg::RBP, self.alloc.stack_slots[idx_local.0]);
-                                self.asm.shl_ri(Reg::R11, 3);
+                                let stride = self.index_stride(place, i);
+                                if stride == 8 {
+                                    self.asm.shl_ri(Reg::R11, 3);
+                                } else if stride != 1 {
+                                    self.asm.imul_ri(Reg::R11, stride as i64);
+                                }
                                 self.asm.add_rr(dst, Reg::R11);
                                 base = Base::Reg;
                             }
