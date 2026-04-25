@@ -55,5 +55,5 @@ fi
 
 exec scripts/run.sh \
     --kvm --kbd ch --fwd 2121:21 --ram 12G --virtio --tempdisk --clipboard \
-    --disk "/daten1/development/brian/anyos/scripts/debian.corefs.img" \
+    --disk "scripts/debian.corefs.img" \
     --system-fs corefs
