@@ -45,6 +45,7 @@ pub fn ty_layout_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {
             }
         }
         TyKind::Adt(def_id, _) => struct_sizes.get(def_id).copied().unwrap_or(8) as i32,
+        TyKind::Array(elem, len) if *len > (1usize << 30) => ty_layout_size(elem, struct_sizes).max(1),
         TyKind::Array(elem, len) => ty_layout_size(elem, struct_sizes).max(1) * (*len as i32),
         TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _)
             if matches!(inner.as_ref(), TyKind::Slice(_) | TyKind::Str | TyKind::DynTrait(_)) =>

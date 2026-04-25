@@ -90,7 +90,8 @@ impl GitProcess {
         if pipe_id == 0 {
             return None;
         }
-        let tid = anyos_std::process::spawn_piped(git_path, args, pipe_id);
+        let full_args = full_argv_string(git_path, args);
+        let tid = anyos_std::process::spawn_piped(git_path, &full_args, pipe_id);
         if tid == u32::MAX {
             anyos_std::ipc::pipe_close(pipe_id);
             return None;
@@ -137,6 +138,15 @@ impl GitProcess {
     /// Get the collected output as a string.
     pub fn output_str(&self) -> &str {
         core::str::from_utf8(&self.output).unwrap_or("")
+    }
+}
+
+fn full_argv_string(cmd: &str, args: &str) -> String {
+    let argv0 = path::basename(cmd);
+    if args.trim().is_empty() {
+        String::from(argv0)
+    } else {
+        format!("{} {}", argv0, args)
     }
 }
 

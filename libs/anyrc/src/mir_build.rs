@@ -1795,7 +1795,11 @@ impl<'a> MirBuilder<'a> {
 
             HirExprKind::ArrayRepeat(val, _count) => {
                 let ty = self.get_expr_ty(expr);
-                let n = if let TyKind::Array(_, n) = &ty { *n } else { 0 };
+                let n = if let TyKind::Array(_, n) = &ty {
+                    if *n > (1usize << 30) { 0 } else { *n }
+                } else {
+                    0
+                };
                 let val_op = self.lower_expr(val);
                 let ops: Vec<Operand> = (0..n).map(|_| val_op.clone()).collect();
                 let tmp = self.alloc_temp(ty, expr.span);
@@ -2189,6 +2193,7 @@ impl<'a> MirBuilder<'a> {
             }
             TyKind::Ref(_, _) | TyKind::RawPtr(_, _) => 8,
             TyKind::Int(IntTy::I128) | TyKind::Uint(UintTy::U128) => 16,
+            TyKind::Array(inner, n) if *n > (1usize << 30) => self.estimate_ty_size(inner.as_ref()),
             TyKind::Array(inner, n) => self.estimate_ty_size(inner.as_ref()) * *n,
             TyKind::Slice(_) | TyKind::Str => 16,
             TyKind::Projection(_, _, _) => 8,

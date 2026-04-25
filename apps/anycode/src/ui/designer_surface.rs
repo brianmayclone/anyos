@@ -59,8 +59,10 @@ impl DesignerSurface {
 
     pub fn render(&self, selected_control: Option<&str>) {
         let tc = ui::theme::colors();
+        let canvas_w = self.canvas.get_stride().max(1);
+        let canvas_h = self.canvas.get_height().max(1);
         self.canvas.clear(tc.editor_bg);
-        draw_grid(&self.canvas, tc.separator);
+        draw_grid(&self.canvas, canvas_w, canvas_h, tc.separator);
 
         let shadow = 0x22000000;
         self.canvas.fill_rect(
@@ -101,7 +103,7 @@ impl DesignerSurface {
 
         self.canvas.draw_text(
             16,
-            (SURFACE_H as i32) - 26,
+            (canvas_h as i32) - 26,
             tc.text_secondary,
             0,
             11,
@@ -132,15 +134,15 @@ pub fn hit_test_doc(doc: &DesignerDocument, x: i32, y: i32) -> Option<String> {
     None
 }
 
-fn draw_grid(canvas: &ui::Canvas, color: u32) {
+fn draw_grid(canvas: &ui::Canvas, width: u32, height: u32, color: u32) {
     let mut x = 0;
-    while x < SURFACE_W as i32 {
-        canvas.draw_line(x, 0, x, SURFACE_H as i32, color);
+    while x < width as i32 {
+        canvas.draw_line(x, 0, x, height as i32, color);
         x += 16;
     }
     let mut y = 0;
-    while y < SURFACE_H as i32 {
-        canvas.draw_line(0, y, SURFACE_W as i32, y, color);
+    while y < height as i32 {
+        canvas.draw_line(0, y, width as i32, y, color);
         y += 16;
     }
 }

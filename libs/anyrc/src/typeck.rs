@@ -180,6 +180,8 @@ pub struct TypeChecker<'a> {
     resolver_variant_to_enum: HashMap<DefId, DefId>,
     /// Current function's generic param symbols -> param index
     current_generic_params: HashMap<Symbol, u32>,
+    /// Current function's const generic param symbols -> param index
+    current_const_generic_params: HashMap<Symbol, u32>,
     /// Per call-site: (callee DefId, concrete type args)
     generic_call_substs: HashMap<HirId, (DefId, Vec<TyKind>)>,
     /// Generic function defs: DefId -> number of type params
@@ -187,6 +189,8 @@ pub struct TypeChecker<'a> {
     /// Generic function param slots. Function params inside generic impls do
     /// not necessarily start at Param(0), so keep their real indices.
     generic_fn_param_indices: HashMap<DefId, Vec<u32>>,
+    /// Generic function const param slots, used for array-length substitution.
+    generic_fn_const_param_indices: HashMap<DefId, Vec<u32>>,
     /// Generic ADT defs: DefId -> number of type params
     adt_generic_counts: HashMap<DefId, usize>,
 
@@ -274,9 +278,11 @@ impl<'a> TypeChecker<'a> {
             enum_variant_named_fields: HashMap::new(),
             resolver_variant_to_enum: HashMap::new(),
             current_generic_params: HashMap::new(),
+            current_const_generic_params: HashMap::new(),
             generic_call_substs: HashMap::new(),
             generic_fn_defs: HashMap::new(),
             generic_fn_param_indices: HashMap::new(),
+            generic_fn_const_param_indices: HashMap::new(),
             adt_generic_counts: HashMap::new(),
             const_values: HashMap::new(),
             const_name_to_def: HashMap::new(),
@@ -465,51 +471,70 @@ impl<'a> TypeChecker<'a> {
         params: &[HirGenericParam],
     ) -> (
         HashMap<Symbol, u32>,
+        HashMap<Symbol, u32>,
         HashMap<u32, Vec<DefId>>,
         HashMap<(u32, DefId, Symbol), TyKind>,
         usize,
     ) {
         let old_generics = self.current_generic_params.clone();
+        let old_const_generics = self.current_const_generic_params.clone();
         let old_bounds = self.current_generic_bounds.clone();
         let old_assoc_bindings = self.current_generic_assoc_bindings.clone();
-        let mut next_idx = self
+        let next_type_idx = self
             .current_generic_params
             .values()
             .copied()
             .max()
             .map(|idx| idx + 1)
             .unwrap_or(0);
+        let next_const_idx = self
+            .current_const_generic_params
+            .values()
+            .copied()
+            .max()
+            .map(|idx| idx + 1)
+            .unwrap_or(0);
+        let mut next_idx = next_type_idx.max(next_const_idx);
         let mut added = 0usize;
         for gp in params {
-            if let HirGenericParam::Type(name, bounds, _, _) = gp {
-                self.current_generic_params.insert(*name, next_idx);
-                let mut bound_def_ids = Vec::new();
-                for bound in bounds {
-                    if let Some(trait_def_id) = self.resolve_trait_bound_def(&bound.path) {
-                        bound_def_ids.push(trait_def_id);
-                        for (assoc_name, assoc_ty) in self.trait_bound_assoc_bindings(&bound.path) {
-                            self.current_generic_assoc_bindings
-                                .insert((next_idx, trait_def_id, assoc_name), assoc_ty);
+            match gp {
+                HirGenericParam::Type(name, bounds, _, _) => {
+                    self.current_generic_params.insert(*name, next_idx);
+                    let mut bound_def_ids = Vec::new();
+                    for bound in bounds {
+                        if let Some(trait_def_id) = self.resolve_trait_bound_def(&bound.path) {
+                            bound_def_ids.push(trait_def_id);
+                            for (assoc_name, assoc_ty) in self.trait_bound_assoc_bindings(&bound.path) {
+                                self.current_generic_assoc_bindings
+                                    .insert((next_idx, trait_def_id, assoc_name), assoc_ty);
+                            }
                         }
                     }
+                    if !bound_def_ids.is_empty() {
+                        self.current_generic_bounds.insert(next_idx, bound_def_ids);
+                    }
+                    next_idx += 1;
+                    added += 1;
                 }
-                if !bound_def_ids.is_empty() {
-                    self.current_generic_bounds.insert(next_idx, bound_def_ids);
+                HirGenericParam::Const(name, _, _) => {
+                    self.current_const_generic_params.insert(*name, next_idx);
+                    next_idx += 1;
                 }
-                next_idx += 1;
-                added += 1;
+                HirGenericParam::Lifetime(_, _, _) => {}
             }
         }
-        (old_generics, old_bounds, old_assoc_bindings, added)
+        (old_generics, old_const_generics, old_bounds, old_assoc_bindings, added)
     }
 
     fn pop_generic_scope(
         &mut self,
         old_generics: HashMap<Symbol, u32>,
+        old_const_generics: HashMap<Symbol, u32>,
         old_bounds: HashMap<u32, Vec<DefId>>,
         old_assoc_bindings: HashMap<(u32, DefId, Symbol), TyKind>,
     ) {
         self.current_generic_params = old_generics;
+        self.current_const_generic_params = old_const_generics;
         self.current_generic_bounds = old_bounds;
         self.current_generic_assoc_bindings = old_assoc_bindings;
     }
@@ -568,7 +593,11 @@ impl<'a> TypeChecker<'a> {
                     self.collect_param_substs(t_ty, a_ty, substs);
                 }
             }
-            (TyKind::Array(t_inner, t_len), TyKind::Array(a_inner, a_len)) if t_len == a_len => {
+            (TyKind::Array(t_inner, t_len), TyKind::Array(a_inner, a_len))
+                if t_len == a_len
+                    || Self::const_len_param_idx(*t_len).is_some()
+                    || Self::const_len_param_idx(*a_len).is_some() =>
+            {
                 self.collect_param_substs(t_inner, a_inner, substs);
             }
             (TyKind::Slice(t_inner), TyKind::Slice(a_inner)) => {
@@ -1269,7 +1298,7 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
             HirItemKind::Fn(f) => {
-                let (old_generics, old_bounds, old_assoc_bindings, added_generics) =
+                let (old_generics, old_const_generics, old_bounds, old_assoc_bindings, added_generics) =
                     self.push_generic_scope(&f.generics.params);
                 if added_generics > 0 {
                     self.generic_fn_defs.insert(f.def_id, added_generics);
@@ -1286,6 +1315,20 @@ impl<'a> TypeChecker<'a> {
                         .collect::<Vec<_>>();
                     self.generic_fn_param_indices.insert(f.def_id, indices);
                 }
+                let const_indices = f
+                    .generics
+                    .params
+                    .iter()
+                    .filter_map(|gp| match gp {
+                        HirGenericParam::Const(name, _, _) => {
+                            self.current_const_generic_params.get(name).copied()
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !const_indices.is_empty() {
+                    self.generic_fn_const_param_indices.insert(f.def_id, const_indices);
+                }
 
                 let params: Vec<TyKind> = f.params.iter()
                     .map(|p| self.hir_ty_to_ty(&p.ty))
@@ -1294,10 +1337,10 @@ impl<'a> TypeChecker<'a> {
                     .map(|t| self.hir_ty_to_ty(t))
                     .unwrap_or(TyKind::Unit);
                 self.fn_sigs.insert(f.def_id, (params, ret));
-                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
+                self.pop_generic_scope(old_generics, old_const_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Struct(s) => {
-                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&s.generics.params);
+                let (old_generics, old_const_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&s.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 let self_substs = s.generics.params.iter().filter_map(|param| {
                     if let HirGenericParam::Type(name, _, _, _) = param {
@@ -1318,10 +1361,10 @@ impl<'a> TypeChecker<'a> {
                     self.copy_types.insert(s.def_id);
                 }
                 self.current_self_ty = saved_self_ty;
-                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
+                self.pop_generic_scope(old_generics, old_const_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Enum(e) => {
-                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&e.generics.params);
+                let (old_generics, old_const_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&e.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 let self_substs = e.generics.params.iter().filter_map(|param| {
                     if let HirGenericParam::Type(name, _, _, _) = param {
@@ -1363,10 +1406,10 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.enum_variant_fields.insert(e.def_id, variants);
                 self.current_self_ty = saved_self_ty;
-                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
+                self.pop_generic_scope(old_generics, old_const_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::TypeAlias(ta) => {
-                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&ta.generics.params);
+                let (old_generics, old_const_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&ta.generics.params);
                 if let Some(ty) = &ta.ty {
                     let alias_ty = self.hir_ty_to_ty(ty);
                     let qualified_name = self.qualified_name_for_current_module(ta.name);
@@ -1376,10 +1419,10 @@ impl<'a> TypeChecker<'a> {
                         self.type_aliases.insert(ta.name, alias_ty);
                     }
                 }
-                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
+                self.pop_generic_scope(old_generics, old_const_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Impl(ib) => {
-                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&ib.generics.params);
+                let (old_generics, old_const_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&ib.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 self.current_self_ty = Some(self.hir_ty_to_ty(&ib.self_ty));
                 for sub in &ib.items {
@@ -1492,7 +1535,7 @@ impl<'a> TypeChecker<'a> {
                     }
                 }
                 self.current_self_ty = saved_self_ty;
-                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
+                self.pop_generic_scope(old_generics, old_const_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Const(c) => {
                 let ty = self.hir_ty_to_ty(&c.ty);
@@ -1525,7 +1568,7 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             HirItemKind::Trait(t) => {
-                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&t.generics.params);
+                let (old_generics, old_const_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&t.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 self.current_self_ty = Some(TyKind::Adt(t.def_id, vec![]));
                 // Register trait name so `dyn Trait` can resolve it
@@ -1557,7 +1600,7 @@ impl<'a> TypeChecker<'a> {
                 self.trait_assoc_types.insert(t.def_id, assoc_type_names);
                 self.trait_assoc_consts.insert(t.def_id, assoc_consts);
                 self.current_self_ty = saved_self_ty;
-                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
+                self.pop_generic_scope(old_generics, old_const_generics, old_bounds, old_assoc_bindings);
             }
             _ => {}
         }
@@ -2191,7 +2234,7 @@ impl<'a> TypeChecker<'a> {
         match &item.kind {
             HirItemKind::Fn(f) => self.check_fn(f),
             HirItemKind::Impl(ib) => {
-                let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&ib.generics.params);
+                let (old_generics, old_const_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&ib.generics.params);
                 let saved_self_ty = self.current_self_ty.clone();
                 let saved_assoc_types = self.current_impl_assoc_types.clone();
                 self.current_self_ty = Some(self.hir_ty_to_ty(&ib.self_ty));
@@ -2208,7 +2251,7 @@ impl<'a> TypeChecker<'a> {
                 }
                 self.current_self_ty = saved_self_ty;
                 self.current_impl_assoc_types = saved_assoc_types;
-                self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
+                self.pop_generic_scope(old_generics, old_const_generics, old_bounds, old_assoc_bindings);
             }
             HirItemKind::Mod(m) => {
                 if let Some(sub_items) = &m.items {
@@ -2225,7 +2268,7 @@ impl<'a> TypeChecker<'a> {
 
     fn check_fn(&mut self, f: &HirFnDef) {
         // Set up generic params and bounds for this function's body
-        let (old_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&f.generics.params);
+        let (old_generics, old_const_generics, old_bounds, old_assoc_bindings, _) = self.push_generic_scope(&f.generics.params);
 
         let sig = self.fn_sigs.get(&f.def_id).cloned();
         let (param_tys, ret_ty) = sig.unwrap_or_else(|| (vec![], TyKind::Unit));
@@ -2246,7 +2289,7 @@ impl<'a> TypeChecker<'a> {
 
         self.current_fn_ret = old_ret;
         self.current_fn_name = old_fn_name;
-        self.pop_generic_scope(old_generics, old_bounds, old_assoc_bindings);
+        self.pop_generic_scope(old_generics, old_const_generics, old_bounds, old_assoc_bindings);
     }
 
     fn check_block(&mut self, block: &HirBlock) -> TyKind {
@@ -2549,6 +2592,16 @@ impl<'a> TypeChecker<'a> {
                             return self.fresh_infer(InferKind::General);
                         }
                         if let Some((param_tys, ret_ty)) = self.fn_sigs.get(&def_id).cloned() {
+                            let const_substs = if let HirExprKind::Path(path) = &callee.kind {
+                                self.explicit_const_arg_substs_for_path(def_id, path)
+                            } else {
+                                HashMap::new()
+                            };
+                            let param_tys: Vec<TyKind> = param_tys
+                                .iter()
+                                .map(|ty| self.substitute_const_params(ty, &const_substs))
+                                .collect();
+                            let ret_ty = self.substitute_const_params(&ret_ty, &const_substs);
                             // If this is a generic function, create fresh infer vars for each type param
                             let n_generics = self.generic_fn_defs.get(&def_id).copied().unwrap_or(0);
                             let (param_tys, ret_ty) = if n_generics > 0 {
@@ -4906,7 +4959,10 @@ impl<'a> TypeChecker<'a> {
                     && a.iter().zip(b.iter()).all(|(a, b)| self.ty_matches_for_candidate(a, b))
             }
             (TyKind::Array(a, a_len), TyKind::Array(b, b_len)) => {
-                a_len == b_len && self.ty_matches_for_candidate(a, b)
+                (a_len == b_len
+                    || Self::const_len_param_idx(*a_len).is_some()
+                    || Self::const_len_param_idx(*b_len).is_some())
+                    && self.ty_matches_for_candidate(a, b)
             }
             (TyKind::Slice(a), TyKind::Slice(b)) => self.ty_matches_for_candidate(a, b),
             _ => expected == actual,
@@ -5827,7 +5883,11 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
 
-            (TyKind::Array(a, an), TyKind::Array(b, bn)) if an == bn => {
+            (TyKind::Array(a, an), TyKind::Array(b, bn))
+                if an == bn
+                    || Self::const_len_param_idx(*an).is_some()
+                    || Self::const_len_param_idx(*bn).is_some() =>
+            {
                 self.unify(a, b, span);
                 return;
             }
@@ -5926,9 +5986,11 @@ impl<'a> TypeChecker<'a> {
             return;
         }
 
+        let kind = self.infer_kinds.get(&var).copied().unwrap_or(InferKind::General);
         self.error(span, &format!(
-            "type mismatch: expected {}, found {}",
+            "type mismatch: expected {} ({:?}), found {}",
             self.describe_ty(infer_ty),
+            kind,
             self.describe_ty(&concrete_ty),
         ));
     }
@@ -6357,6 +6419,82 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
+    fn const_param_len(idx: u32) -> usize {
+        usize::MAX - idx as usize
+    }
+
+    fn const_len_param_idx(len: usize) -> Option<u32> {
+        let idx = usize::MAX.wrapping_sub(len);
+        (idx < 1024).then_some(idx as u32)
+    }
+
+    fn substitute_const_params(&self, ty: &TyKind, substs: &HashMap<u32, usize>) -> TyKind {
+        match ty {
+            TyKind::Ref(inner, m) => {
+                TyKind::Ref(Box::new(self.substitute_const_params(inner, substs)), *m)
+            }
+            TyKind::RawPtr(inner, m) => {
+                TyKind::RawPtr(Box::new(self.substitute_const_params(inner, substs)), *m)
+            }
+            TyKind::Tuple(items) => {
+                TyKind::Tuple(items.iter().map(|item| self.substitute_const_params(item, substs)).collect())
+            }
+            TyKind::Array(inner, len) => {
+                let len = Self::const_len_param_idx(*len)
+                    .and_then(|idx| substs.get(&idx).copied())
+                    .unwrap_or(*len);
+                TyKind::Array(Box::new(self.substitute_const_params(inner, substs)), len)
+            }
+            TyKind::Slice(inner) => {
+                TyKind::Slice(Box::new(self.substitute_const_params(inner, substs)))
+            }
+            TyKind::FnDef(def_id, fn_substs) => TyKind::FnDef(
+                *def_id,
+                fn_substs.iter().map(|ty| self.substitute_const_params(ty, substs)).collect(),
+            ),
+            TyKind::FnPtr(params, ret) => TyKind::FnPtr(
+                params.iter().map(|ty| self.substitute_const_params(ty, substs)).collect(),
+                Box::new(self.substitute_const_params(ret, substs)),
+            ),
+            TyKind::Adt(def_id, adt_substs) => TyKind::Adt(
+                *def_id,
+                adt_substs.iter().map(|ty| self.substitute_const_params(ty, substs)).collect(),
+            ),
+            TyKind::Projection(self_ty, trait_def_id, assoc_name) => TyKind::Projection(
+                Box::new(self.substitute_const_params(self_ty, substs)),
+                *trait_def_id,
+                *assoc_name,
+            ),
+            _ => ty.clone(),
+        }
+    }
+
+    fn explicit_const_arg_substs_for_path(&self, def_id: DefId, path: &HirPath) -> HashMap<u32, usize> {
+        let mut substs = HashMap::new();
+        let Some(indices) = self.generic_fn_const_param_indices.get(&def_id) else {
+            return substs;
+        };
+        let Some(segment) = path.segments.last() else {
+            return substs;
+        };
+        let Some(args) = &segment.args else {
+            return substs;
+        };
+        let mut const_values = args.args.iter().filter_map(|arg| {
+            if let HirGenericArg::Const(expr) = arg {
+                Some(self.eval_const_usize(expr))
+            } else {
+                None
+            }
+        });
+        for idx in indices {
+            if let Some(value) = const_values.next() {
+                substs.insert(*idx, value);
+            }
+        }
+        substs
+    }
+
     // ── HIR type to TyKind ──
 
     fn hir_ty_to_ty(&self, ty: &HirTy) -> TyKind {
@@ -6430,6 +6568,11 @@ impl<'a> TypeChecker<'a> {
                 }
             }
             HirExprKind::Path(path) => {
+                if path.segments.len() == 1 {
+                    if let Some(idx) = self.current_const_generic_params.get(&path.segments[0].ident) {
+                        return Self::const_param_len(*idx);
+                    }
+                }
                 if let Some(&def_id) = self.resolve.resolutions.get(&expr.id) {
                     if let Some((ConstVal::Int(value), _)) = self.const_values.get(&def_id) {
                         return *value as usize;

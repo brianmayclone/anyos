@@ -1121,6 +1121,20 @@ fn array_lengths_resolve_const_path_expressions() {
 }
 
 #[test]
+fn const_generic_array_return_substitutes_explicit_const_arg() {
+    assert_type_ok(r#"
+        fn take<const N: usize>() -> [u8; N] {
+            [0u8; N]
+        }
+
+        fn main() {
+            let uuid: [u8; 16] = take::<16>();
+            let label: [u8; 32] = take::<32>();
+        }
+    "#);
+}
+
+#[test]
 fn module_array_lengths_resolve_local_const_path_expressions() {
     assert_type_ok(r#"
         mod crypto {

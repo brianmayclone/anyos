@@ -412,15 +412,32 @@ impl Control for Canvas {
     }
 
     fn set_size(&mut self, w: u32, h: u32) {
-        let b = self.base_mut();
-        if b.w != w || b.h != h {
-            b.w = w;
-            b.h = h;
-            b.mark_dirty();
-            // Resize pixel buffer to match new dimensions
+        if self.base.w != w || self.base.h != h {
+            let old_w = self.base.w;
+            let old_h = self.base.h;
+            let old_pixels = core::mem::take(&mut self.pixels);
+            self.base.w = w;
+            self.base.h = h;
+            self.base.mark_dirty();
+
+            // Re-stride the pixel buffer when layout changes the canvas size.
+            // A plain Vec::resize preserves the old linear memory layout, which
+            // corrupts rows visually when the stride changes after docking.
             let expected = (w * h) as usize;
-            if expected > 0 && self.pixels.len() != expected {
-                self.pixels.resize(expected, 0xFF000000);
+            self.pixels = vec![0xFF000000; expected];
+            if expected > 0 && old_w > 0 && old_h > 0 && !old_pixels.is_empty() {
+                let copy_w = old_w.min(w) as usize;
+                let copy_h = old_h.min(h) as usize;
+                let old_stride = old_w as usize;
+                let new_stride = w as usize;
+                for row in 0..copy_h {
+                    let src = row * old_stride;
+                    let dst = row * new_stride;
+                    if src + copy_w <= old_pixels.len() && dst + copy_w <= self.pixels.len() {
+                        self.pixels[dst..dst + copy_w]
+                            .copy_from_slice(&old_pixels[src..src + copy_w]);
+                    }
+                }
             }
         }
     }
