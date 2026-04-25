@@ -25,6 +25,7 @@ use std::io::Read;
 use std::sync::{Arc, Mutex, mpsc};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::net::{TcpListener, TcpStream};
 use minifb::{Key, KeyRepeat, Window, WindowOptions, MouseMode, MouseButton};
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
@@ -37,12 +38,14 @@ struct Args {
     fullpage: bool,
     delay_ms: u64,
     y_range: Option<(u32, u32)>, // (start, end) in pixels
+    minifb: bool,
+    remote_listen: Option<String>,
 }
 
 fn parse_args() -> Args {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 || args[1].starts_with('-') {
-        eprintln!("Usage: surf-host <url> [options]");
+    if args.iter().any(|arg| arg == "--help" || arg == "-?") {
+        eprintln!("Usage: surf-host [url] [options]");
         eprintln!();
         eprintln!("Options:");
         eprintln!("  --screenshot <path.png>   Save screenshot and exit");
@@ -51,22 +54,32 @@ fn parse_args() -> Args {
         eprintln!("  --delay <ms>              Wait before screenshot (default: 0)");
         eprintln!("  --width <px>              Viewport width (default: 1024)");
         eprintln!("  --height <px>             Viewport height (default: 768)");
+        eprintln!("  --minifb                  Use the legacy minifb window instead of egui");
+        eprintln!("  --remote-listen <addr>    Listen for text commands (default: 127.0.0.1:8787)");
         eprintln!();
-        eprintln!("In window mode: F5=screenshot, F6=full-page screenshot, Esc=quit.");
+        eprintln!("Remote commands: open <url>, reload, scroll <y>, screenshot <path>, fullpage <path>, status");
         std::process::exit(1);
     }
 
+    let mut url = String::from("about:blank");
+    let mut i = 1;
+    if args.get(1).is_some_and(|arg| !arg.starts_with('-')) {
+        url = args[1].clone();
+        i = 2;
+    }
+
     let mut a = Args {
-        url: args[1].clone(),
+        url,
         width: 1024,
         height: 768,
         screenshot: None,
         fullpage: false,
         delay_ms: 0,
         y_range: None,
+        minifb: false,
+        remote_listen: Some(String::from("127.0.0.1:8787")),
     };
 
-    let mut i = 2;
     while i < args.len() {
         match args[i].as_str() {
             "--screenshot" | "-s" => {
@@ -102,6 +115,23 @@ fn parse_args() -> Args {
             "--height" | "-h" => {
                 i += 1;
                 a.height = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(768);
+            }
+            "--minifb" => {
+                a.minifb = true;
+                i += 1;
+                continue;
+            }
+            "--no-remote" => {
+                a.remote_listen = None;
+                i += 1;
+                continue;
+            }
+            "--remote-listen" => {
+                i += 1;
+                a.remote_listen = Some(args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("--remote-listen requires an address, e.g. 127.0.0.1:8787");
+                    std::process::exit(1);
+                }));
             }
             _ => {
                 eprintln!("Unknown option: {}", args[i]);

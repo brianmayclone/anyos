@@ -1,6 +1,7 @@
 #![cfg_attr(not(feature = "host"), no_std)]
 #![cfg_attr(not(feature = "host"), no_main)]
 
+#[cfg(feature = "host")]
 extern crate alloc;
 extern crate std;
 
@@ -13,6 +14,7 @@ use libgit::tree::parse_tree;
 use libgit::{Commit, Index, Object, ObjectType, Oid, Repository};
 
 mod cli;
+mod repo_util;
 mod status;
 
 #[cfg(not(feature = "host"))]
@@ -487,8 +489,8 @@ fn cmd_commit(args: &anyos_std::args::ParsedArgs) {
         Err(_) => Vec::new(),
     };
 
-    let (name, email) = get_user_info(&repo);
-    let timestamp = get_timestamp();
+    let (name, email) = repo_util::get_user_info(&repo);
+    let timestamp = repo_util::get_timestamp();
     let author_line = format!("{} <{}> {} +0000", name, email, timestamp);
 
     let commit = Commit {
@@ -714,7 +716,7 @@ fn cmd_checkout(args: &anyos_std::args::ParsedArgs) {
 
     // Check if target is a branch
     let branch_ref = format!("refs/heads/{}", target);
-    if let Ok(oid) = libgit::refs::resolve_ref(&repo, &branch_ref) {
+    if libgit::refs::resolve_ref(&repo, &branch_ref).is_ok() {
         let _ = libgit::refs::update_head(&repo, target);
         match libgit::checkout::checkout_head(&repo) {
             Ok(n) => anyos_std::println!("Switched to branch '{}' ({} files)", target, n),
@@ -1161,7 +1163,7 @@ fn cmd_rm(args: &anyos_std::args::ParsedArgs) {
 
 // ── git reset ───────────────────────────────────────────────────────────────
 
-fn cmd_reset(args: &anyos_std::args::ParsedArgs) {
+fn cmd_reset(_args: &anyos_std::args::ParsedArgs) {
     let repo = match Repository::open(".") {
         Ok(r) => r,
         Err(e) => {
@@ -1219,7 +1221,7 @@ fn cmd_show(args: &anyos_std::args::ParsedArgs) {
     };
 
     let rev = args.pos(1).unwrap_or("HEAD");
-    let oid = resolve_rev(&repo, rev);
+    let oid = repo_util::resolve_rev(&repo, rev);
 
     let oid = match oid {
         Some(o) => o,
@@ -1290,7 +1292,7 @@ fn cmd_rev_parse(args: &anyos_std::args::ParsedArgs) {
 
     for i in 1..args.pos_count {
         let rev = args.positional[i];
-        match resolve_rev(&repo, rev) {
+        match repo_util::resolve_rev(&repo, rev) {
             Some(oid) => anyos_std::println!("{}", oid.to_hex()),
             None => anyos_std::println!("fatal: bad revision '{}'", rev),
         }
@@ -1330,7 +1332,7 @@ fn cmd_cat_file(args: &anyos_std::args::ParsedArgs) {
     let flag = args.positional[1];
     let rev = args.positional[2];
 
-    let oid = match resolve_rev(&repo, rev) {
+    let oid = match repo_util::resolve_rev(&repo, rev) {
         Some(o) => o,
         None => {
             anyos_std::println!("fatal: bad object {}", rev);
@@ -1357,62 +1359,5 @@ fn cmd_cat_file(args: &anyos_std::args::ParsedArgs) {
             }
         }
         _ => anyos_std::println!("error: unknown flag '{}'", flag),
-    }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-fn resolve_rev(repo: &Repository, rev: &str) -> Option<Oid> {
-    // HEAD
-    if rev == "HEAD" {
-        return repo.head().ok();
-    }
-    // Branch name
-    if let Ok(oid) = libgit::refs::resolve_ref(repo, &format!("refs/heads/{}", rev)) {
-        return Some(oid);
-    }
-    // Tag name
-    if let Ok(oid) = libgit::refs::resolve_ref(repo, &format!("refs/tags/{}", rev)) {
-        return Some(oid);
-    }
-    // Full hex SHA
-    Oid::from_hex(rev)
-}
-
-fn get_user_info(repo: &Repository) -> (String, String) {
-    let config = libgit::config::read_config(repo).ok();
-    let global_config = libgit::config::read_global_config();
-    let name = config
-        .as_ref()
-        .and_then(|c| c.user_name())
-        .or_else(|| global_config.as_ref().and_then(|c| c.user_name()))
-        .unwrap_or("Unknown");
-    let email = config
-        .as_ref()
-        .and_then(|c| c.user_email())
-        .or_else(|| global_config.as_ref().and_then(|c| c.user_email()))
-        .unwrap_or("unknown@unknown");
-    (String::from(name), String::from(email))
-}
-
-fn get_timestamp() -> u64 {
-    let mut buf = [0u8; 8];
-    anyos_std::sys::time(&mut buf);
-    let year = buf[0] as u64 | ((buf[1] as u64) << 8);
-    let month = buf[2] as u64;
-    let day = buf[3] as u64;
-    let hour = buf[4] as u64;
-    let min = buf[5] as u64;
-    let sec = buf[6] as u64;
-    let days = (year - 1970) * 365 + (year - 1969) / 4 + month_days(month) + day - 1;
-    days * 86400 + hour * 3600 + min * 60 + sec
-}
-
-fn month_days(month: u64) -> u64 {
-    const C: [u64; 13] = [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
-    if month < 13 {
-        C[month as usize]
-    } else {
-        0
     }
 }

@@ -55,6 +55,16 @@ fn collect_macro_call_args(tokens: &[TokenTree], interner: &mut Interner) -> Vec
     }
 }
 
+fn collect_format_macro_args(tokens: &[TokenTree], interner: &mut Interner) -> Vec<Expr> {
+    collect_macro_call_args(tokens, interner)
+        .into_iter()
+        .map(|arg| match arg {
+            Expr::Assign(lhs, rhs, _) if matches!(*lhs, Expr::Path(_)) => *rhs,
+            other => other,
+        })
+        .collect()
+}
+
 fn make_intrinsic_path(interner: &mut Interner, name: &str) -> Path {
     Path {
         segments: vec![PathSegment {
@@ -422,7 +432,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     // format!("...", args...) → __anyrc_format("...", args...)
                     // Expand to a call to __anyrc_format intrinsic
                     let fn_path = make_intrinsic_path(interner, "__anyrc_format");
-                    let call_args = collect_macro_call_args(args, interner);
+                    let call_args = collect_format_macro_args(args, interner);
                     *expr = Expr::Call(
                         Box::new(Expr::Path(fn_path)),
                         call_args,
@@ -433,7 +443,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                 }
                 "format_args" => {
                     let fn_path = make_intrinsic_path(interner, "__anyrc_format_args");
-                    let call_args = collect_macro_call_args(args, interner);
+                    let call_args = collect_format_macro_args(args, interner);
                     *expr = Expr::Call(
                         Box::new(Expr::Path(fn_path)),
                         call_args,
@@ -470,7 +480,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                 "println" | "eprintln" => {
                     // println!("...", args...) → __anyrc_println("...", args...)
                     let fn_path = make_intrinsic_path(interner, "__anyrc_println");
-                    let call_args = collect_macro_call_args(args, interner);
+                    let call_args = collect_format_macro_args(args, interner);
                     *expr = Expr::Call(
                         Box::new(Expr::Path(fn_path)),
                         call_args,
@@ -480,7 +490,7 @@ fn expand_expr(expr: &mut Expr, defs: &[MacroDef], interner: &mut Interner, chan
                     return;
                 }
                 "write" | "writeln" => {
-                    let mut call_args = collect_macro_call_args(args, interner);
+                    let mut call_args = collect_format_macro_args(args, interner);
                     if call_args.is_empty() {
                         *expr = Expr::Tuple(vec![], *span);
                         *changed = true;

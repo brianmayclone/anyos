@@ -91,6 +91,34 @@ fn expand_format_macro_preserves_escaped_quotes_in_string_args() {
 }
 
 #[test]
+fn expand_format_macro_strips_named_argument_labels() {
+    let (krate, interner) = parse_and_expand_with_interner(r#"
+        fn main(name: &str) {
+            format!("hello {name}", name = name);
+        }
+    "#);
+
+    match &krate.items[0] {
+        Item::Fn(f) => {
+            let body = f.body.as_ref().unwrap();
+            let Stmt::Semi(Expr::Call(_, args, _), _) = &body.stmts[0] else {
+                panic!("expected expanded format call");
+            };
+            assert_eq!(args.len(), 2);
+            match &args[1] {
+                Expr::Path(path) => {
+                    let ident = path.segments.last().unwrap().ident;
+                    assert_eq!(interner.resolve(ident), "name");
+                }
+                Expr::Assign(_, _, _) => panic!("named format argument label leaked as assignment"),
+                _ => panic!("expected named argument value to be preserved as a path"),
+            }
+        }
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
 fn expand_quote_macros_to_proc_macro2_token_stream_constructor() {
     let krate = parse_and_expand(r#"
         fn main(span: i32) {

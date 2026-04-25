@@ -148,6 +148,68 @@ fn match_ref_enum_variant_fields_bind_by_reference() {
 }
 
 #[test]
+fn iterator_filter_preserves_borrowed_item_type() {
+    assert_type_ok(r#"
+        enum Pattern {
+            Rest,
+            Other,
+        }
+
+        fn take_pattern_ref(_: &Pattern) {}
+
+        fn walk(pats: Vec<Pattern>) {
+            let non_rest = pats.iter().filter(|p| true);
+            for pat in non_rest {
+                take_pattern_ref(pat);
+            }
+        }
+    "#);
+}
+
+#[test]
+fn vec_retain_on_mutably_borrowed_field_expects_bool_closure() {
+    assert_type_ok(r#"
+        struct Statement {}
+
+        struct Block {
+            statements: Vec<Statement>,
+        }
+
+        fn keep(stmt: &Statement) -> bool {
+            true
+        }
+
+        fn optimize(block: &mut Block) {
+            block.statements.retain(|stmt| {
+                keep(stmt)
+            });
+        }
+    "#);
+}
+
+#[test]
+fn return_inside_retain_closure_targets_closure_return_type() {
+    assert_type_ok(r#"
+        struct Statement {
+            keep: bool,
+        }
+
+        struct Block {
+            statements: Vec<Statement>,
+        }
+
+        fn optimize(block: &mut Block) {
+            block.statements.retain(|stmt| {
+                if stmt.keep {
+                    return true;
+                }
+                false
+            });
+        }
+    "#);
+}
+
+#[test]
 fn return_before_nested_item_keeps_block_diverging() {
     assert_type_ok(r#"
         struct Error {}

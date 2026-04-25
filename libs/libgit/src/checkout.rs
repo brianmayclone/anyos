@@ -5,8 +5,6 @@ use crate::oid::Oid;
 use crate::repo::{Error, Repository, Result};
 use crate::tree;
 use alloc::format;
-use alloc::string::String;
-use std::path::Path;
 
 /// Checkout a tree object into the working directory.
 pub fn checkout_tree(repo: &Repository, tree_oid: &Oid) -> Result<u32> {

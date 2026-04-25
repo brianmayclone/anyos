@@ -2441,7 +2441,7 @@ impl<'a> TypeChecker<'a> {
                 let method_str = self.interner.resolve(*method_name);
                 let defer_closure_args = matches!(
                     method_str,
-                    "sort_by" | "find" | "position" | "any" | "all" | "map" | "filter_map" | "retain"
+                    "sort_by" | "find" | "position" | "any" | "all" | "map" | "filter" | "filter_map" | "retain"
                 ) && matches!(args.first().map(|arg| &arg.kind), Some(HirExprKind::Closure(..)));
                 if !defer_closure_args {
                     for a in args { self.check_expr(a); }
@@ -2646,13 +2646,13 @@ impl<'a> TypeChecker<'a> {
                                     self.bind_closure_param(param, expected_ty);
                                 }
 
-                                let body_ty = self.check_expr(body);
                                 let ordering_ty = self.comparison_ordering_ty();
-                                self.unify(&ordering_ty, &body_ty, body.span);
-                                if let Some(ret_ty) = ret_ty {
-                                    let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
-                                    self.unify(&ordering_ty, &annotated_ret_ty, expr.span);
-                                }
+                                self.check_closure_body_return(
+                                    ret_ty.as_deref(),
+                                    Some(ordering_ty),
+                                    body,
+                                    expr.span,
+                                );
                                 return TyKind::Unit;
                             }
                         }
@@ -2665,12 +2665,12 @@ impl<'a> TypeChecker<'a> {
                             if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
                                 if params.len() == 1 {
                                     self.bind_closure_param(&params[0], item_ty.clone());
-                                    let body_ty = self.check_expr(body);
-                                    self.unify(&TyKind::Bool, &body_ty, body.span);
-                                    if let Some(ret_ty) = ret_ty {
-                                        let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
-                                        self.unify(&TyKind::Bool, &annotated_ret_ty, expr.span);
-                                    }
+                                    self.check_closure_body_return(
+                                        ret_ty.as_deref(),
+                                        Some(TyKind::Bool),
+                                        body,
+                                        expr.span,
+                                    );
                                     return match method_str {
                                         "find" => self.option_of(item_ty).unwrap_or_else(|| self.fresh_infer(InferKind::General)),
                                         "position" => self.option_of(TyKind::Uint(UintTy::Usize)).unwrap_or_else(|| self.fresh_infer(InferKind::General)),
@@ -2683,11 +2683,12 @@ impl<'a> TypeChecker<'a> {
                             if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
                                 if params.len() == 1 {
                                     self.bind_closure_param(&params[0], item_ty.clone());
-                                    let body_ty = self.check_expr(body);
-                                    if let Some(ret_ty) = ret_ty {
-                                        let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
-                                        self.unify(&annotated_ret_ty, &body_ty, expr.span);
-                                    }
+                                    let body_ty = self.check_closure_body_return(
+                                        ret_ty.as_deref(),
+                                        None,
+                                        body,
+                                        expr.span,
+                                    );
                                     return TyKind::Slice(Box::new(body_ty));
                                 }
                             }
@@ -2696,15 +2697,30 @@ impl<'a> TypeChecker<'a> {
                                 .unwrap_or_else(|| mapper_ty.clone());
                             return TyKind::Slice(Box::new(mapped_ty));
                         }
+                        "filter" if args.len() == 1 => {
+                            if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
+                                if params.len() == 1 {
+                                    self.bind_closure_param(&params[0], item_ty.clone());
+                                    self.check_closure_body_return(
+                                        ret_ty.as_deref(),
+                                        Some(TyKind::Bool),
+                                        body,
+                                        expr.span,
+                                    );
+                                }
+                            }
+                            return TyKind::Slice(Box::new(item_ty));
+                        }
                         "filter_map" if args.len() == 1 => {
                             if let HirExprKind::Closure(params, ret_ty, body, _) = &args[0].kind {
                                 if params.len() == 1 {
                                     self.bind_closure_param(&params[0], item_ty.clone());
-                                    let body_ty = self.check_expr(body);
-                                    if let Some(ret_ty) = ret_ty {
-                                        let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
-                                        self.unify(&annotated_ret_ty, &body_ty, expr.span);
-                                    }
+                                    let body_ty = self.check_closure_body_return(
+                                        ret_ty.as_deref(),
+                                        None,
+                                        body,
+                                        expr.span,
+                                    );
                                     if let Some(mapped_ty) = self.option_inner_ty(&body_ty) {
                                         return TyKind::Slice(Box::new(mapped_ty));
                                     }
@@ -2750,7 +2766,8 @@ impl<'a> TypeChecker<'a> {
                         if let HirExprKind::Closure(params, _, body, _) = &args[0].kind {
                             if params.len() == 1 {
                                 self.bind_closure_param(&params[0], inner_option_ty);
-                                let body_ty = self.check_expr(body);
+                                let body_ty =
+                                    self.check_closure_body_return(None, None, body, expr.span);
                                 return self.option_of(body_ty)
                                     .unwrap_or_else(|| self.fresh_infer(InferKind::General));
                             }
@@ -2828,12 +2845,12 @@ impl<'a> TypeChecker<'a> {
                                             &params[0],
                                             TyKind::Ref(Box::new(elem_ty.clone()), Mutability::Immutable),
                                         );
-                                        let body_ty = self.check_expr(body);
-                                        self.unify(&TyKind::Bool, &body_ty, body.span);
-                                        if let Some(ret_ty) = ret_ty {
-                                            let annotated_ret_ty = self.hir_ty_to_ty(ret_ty);
-                                            self.unify(&TyKind::Bool, &annotated_ret_ty, expr.span);
-                                        }
+                                        self.check_closure_body_return(
+                                            ret_ty.as_deref(),
+                                            Some(TyKind::Bool),
+                                            body,
+                                            expr.span,
+                                        );
                                         return TyKind::Unit;
                                     }
                                 }
@@ -3104,17 +3121,7 @@ impl<'a> TypeChecker<'a> {
                     ty
                 }).collect();
 
-                // Check body
-                let body_ty = self.check_expr(body);
-
-                // Return type: explicit annotation or inferred from body
-                let ret = if let Some(rt) = ret_ty {
-                    let rt_ty = self.hir_ty_to_ty(rt);
-                    self.unify(&rt_ty, &body_ty, expr.span);
-                    rt_ty
-                } else {
-                    body_ty
-                };
+                let ret = self.check_closure_body_return(ret_ty.as_deref(), None, body, expr.span);
 
                 // Register fn signature for this closure
                 self.fn_sigs.insert(closure_def_id, (param_tys, ret));
@@ -4297,6 +4304,41 @@ impl<'a> TypeChecker<'a> {
             }
         } else {
             self.bind_pattern(&param.pat, expected_ty);
+        }
+    }
+
+    fn check_closure_body_return(
+        &mut self,
+        annotated_ret_ty: Option<&HirTy>,
+        expected_ret_ty: Option<TyKind>,
+        body: &HirExpr,
+        span: Span,
+    ) -> TyKind {
+        let has_known_ret = annotated_ret_ty.is_some() || expected_ret_ty.is_some();
+        let target_ret = match annotated_ret_ty {
+            Some(ty) => {
+                let annotated = self.hir_ty_to_ty(ty);
+                if let Some(expected) = expected_ret_ty {
+                    self.unify(&expected, &annotated, span);
+                }
+                annotated
+            }
+            None => expected_ret_ty.unwrap_or_else(|| self.fresh_infer(InferKind::General)),
+        };
+
+        let old_ret = self.current_fn_ret.replace(target_ret.clone());
+        let body_ty = self.check_expr(body);
+        self.current_fn_ret = old_ret;
+
+        if body_ty != TyKind::Never {
+            self.unify(&target_ret, &body_ty, body.span);
+        }
+
+        let resolved = self.shallow_resolve(target_ret);
+        if body_ty == TyKind::Never && !has_known_ret && Self::is_deferred_ty(&resolved) {
+            TyKind::Never
+        } else {
+            resolved
         }
     }
 
