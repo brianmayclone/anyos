@@ -11,7 +11,7 @@ Usage:
 
 Default:
   scripts/test-agit.sh
-    clones https://github.com/brianmayclone/anyos with the host-built agit/cgit,
+    clones https://github.com/brianmayclone/serodesk with the host-built agit/cgit,
     verifies refs, HEAD, remote config, object resolution, and clean checkout,
     then deletes the temporary clone.
 
@@ -22,7 +22,7 @@ Environment:
 
 Examples:
   scripts/test-agit.sh
-  AGIT_KEEP_TMP=1 scripts/test-agit.sh https://github.com/brianmayclone/anyos
+  AGIT_KEEP_TMP=1 scripts/test-agit.sh https://github.com/brianmayclone/serodesk
 EOF
 }
 
@@ -31,7 +31,7 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   exit 0
 fi
 
-repo_url="${1:-${AGIT_TEST_REPO:-https://github.com/brianmayclone/anyos}}"
+repo_url="${1:-${AGIT_TEST_REPO:-https://github.com/brianmayclone/serodesk}}"
 tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/agit-github-test.XXXXXX")"
 clone_dir="$tmp_root/anyos"
 

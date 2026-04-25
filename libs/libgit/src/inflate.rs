@@ -16,7 +16,12 @@ struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     fn new(data: &'a [u8]) -> Self {
-        BitReader { data, pos: 0, bit_buf: 0, bit_count: 0 }
+        BitReader {
+            data,
+            pos: 0,
+            bit_buf: 0,
+            bit_count: 0,
+        }
     }
 
     fn ensure_bits(&mut self, count: u8) {
@@ -39,6 +44,15 @@ impl<'a> BitReader<'a> {
         self.bit_buf >>= count;
         self.bit_count -= count;
         val
+    }
+
+    fn peek_bits(&self, count: u8) -> u32 {
+        self.bit_buf & ((1 << count) - 1)
+    }
+
+    fn consume_bits(&mut self, count: u8) {
+        self.bit_buf >>= count;
+        self.bit_count -= count;
     }
 
     /// Return the number of input bytes actually consumed.
@@ -78,6 +92,10 @@ const MAX_SYMBOLS: usize = 288;
 struct HuffmanTable {
     counts: [u16; MAX_BITS + 1],
     symbols: [u16; MAX_SYMBOLS],
+    lengths: [u8; MAX_SYMBOLS],
+    codes: [u16; MAX_SYMBOLS],
+    fast: [u16; 512],
+    num_symbols: usize,
 }
 
 impl HuffmanTable {
@@ -85,6 +103,10 @@ impl HuffmanTable {
         HuffmanTable {
             counts: [0; MAX_BITS + 1],
             symbols: [0; MAX_SYMBOLS],
+            lengths: [0; MAX_SYMBOLS],
+            codes: [0; MAX_SYMBOLS],
+            fast: [0; 512],
+            num_symbols: 0,
         }
     }
 
@@ -98,7 +120,7 @@ impl HuffmanTable {
             }
         }
 
-        // Compute offsets
+        // Compute offsets and canonical codes
         let mut offsets = [0u16; MAX_BITS + 1];
         let mut total = 0u16;
         for i in 1..=MAX_BITS {
@@ -106,51 +128,93 @@ impl HuffmanTable {
             total += table.counts[i];
         }
 
+        let mut next_code = [0u16; MAX_BITS + 1];
+        let mut code = 0u16;
+        for bits in 1..=MAX_BITS {
+            code = (code + table.counts[bits - 1]) << 1;
+            next_code[bits] = code;
+        }
+
         // Assign symbols sorted by code
         for i in 0..num_symbols {
             let len = lengths[i] as usize;
             if len > 0 && len <= MAX_BITS {
+                let canonical = next_code[len];
+                next_code[len] += 1;
+                let reversed = bit_reverse(canonical as u32, len as u8) as u16;
+                table.lengths[i] = len as u8;
+                table.codes[i] = reversed;
                 table.symbols[offsets[len] as usize] = i as u16;
                 offsets[len] += 1;
+
+                if len <= 9 {
+                    let entry = ((len as u16) << 9) | (i as u16 + 1);
+                    let fill = 1usize << (9 - len);
+                    for suffix in 0..fill {
+                        table.fast[reversed as usize | (suffix << len)] = entry;
+                    }
+                }
             }
         }
 
+        table.num_symbols = num_symbols;
         table
     }
 
     fn decode(&self, reader: &mut BitReader) -> u16 {
-        let mut code: u32 = 0;
-        let mut first: u32 = 0;
-        let mut index: u32 = 0;
+        reader.ensure_bits(9);
+        let fast = self.fast[reader.peek_bits(9) as usize];
+        if fast != 0 {
+            let len = (fast >> 9) as u8;
+            reader.consume_bits(len);
+            return (fast & 0x01ff) - 1;
+        }
 
+        let mut code: u32 = 0;
         for len in 1..=MAX_BITS {
-            code |= reader.read_bits(1);
-            let count = self.counts[len] as u32;
-            if code < first + count {
-                return self.symbols[(index + code - first) as usize];
+            code |= reader.read_bits(1) << (len - 1);
+            for sym in 0..self.num_symbols {
+                if self.lengths[sym] as usize == len && self.codes[sym] as u32 == code {
+                    return sym as u16;
+                }
             }
-            index += count;
-            first = (first + count) << 1;
-            code <<= 1;
         }
         0 // Should not happen with valid data
     }
+}
+
+fn bit_reverse(code: u32, len: u8) -> u32 {
+    let mut result = 0;
+    for i in 0..len {
+        result = (result << 1) | ((code >> i) & 1);
+    }
+    result
 }
 
 // ─── Fixed Huffman Tables ───────────────────────────────────────────────────
 
 fn build_fixed_literal_table() -> HuffmanTable {
     let mut lengths = [0u8; 288];
-    for i in 0..=143 { lengths[i] = 8; }
-    for i in 144..=255 { lengths[i] = 9; }
-    for i in 256..=279 { lengths[i] = 7; }
-    for i in 280..=287 { lengths[i] = 8; }
+    for i in 0..=143 {
+        lengths[i] = 8;
+    }
+    for i in 144..=255 {
+        lengths[i] = 9;
+    }
+    for i in 256..=279 {
+        lengths[i] = 7;
+    }
+    for i in 280..=287 {
+        lengths[i] = 8;
+    }
     HuffmanTable::build(&lengths, 288)
 }
 
 fn build_fixed_distance_table() -> HuffmanTable {
     let mut lengths = [0u8; 32];
-    for i in 0..32 { lengths[i] = 5; }
+    for i in 0..32 {
+        lengths[i] = 5;
+    }
     HuffmanTable::build(&lengths, 32)
 }
 
@@ -158,30 +222,25 @@ fn build_fixed_distance_table() -> HuffmanTable {
 
 /// Length base values for codes 257..285.
 const LENGTH_BASE: [u16; 29] = [
-    3, 4, 5, 6, 7, 8, 9, 10, 11, 13,
-    15, 17, 19, 23, 27, 31, 35, 43, 51, 59,
-    67, 83, 99, 115, 131, 163, 195, 227, 258,
+    3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131,
+    163, 195, 227, 258,
 ];
 
 /// Extra bits for length codes 257..285.
 const LENGTH_EXTRA: [u8; 29] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 1, 1,
-    1, 1, 2, 2, 2, 2, 3, 3, 3, 3,
-    4, 4, 4, 4, 5, 5, 5, 5, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 5, 5, 5, 5, 0,
 ];
 
 /// Distance base values for codes 0..29.
 const DIST_BASE: [u16; 30] = [
-    1, 2, 3, 4, 5, 7, 9, 13, 17, 25,
-    33, 49, 65, 97, 129, 193, 257, 385, 513, 769,
-    1025, 1537, 2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
+    1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129, 193, 257, 385, 513, 769, 1025, 1537,
+    2049, 3073, 4097, 6145, 8193, 12289, 16385, 24577,
 ];
 
 /// Extra bits for distance codes 0..29.
 const DIST_EXTRA: [u8; 30] = [
-    0, 0, 0, 0, 1, 1, 2, 2, 3, 3,
-    4, 4, 5, 5, 6, 6, 7, 7, 8, 8,
-    9, 9, 10, 10, 11, 11, 12, 12, 13, 13,
+    0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13,
+    13,
 ];
 
 // ─── Code Length Order ──────────────────────────────────────────────────────
@@ -256,21 +315,30 @@ pub fn inflate_counted(compressed: &[u8]) -> Option<(Vec<u8>, usize)> {
                             let repeat = reader.read_bits(2) as usize + 3;
                             let prev = if i > 0 { lengths[i - 1] } else { 0 };
                             for _ in 0..repeat {
-                                if i < total { lengths[i] = prev; i += 1; }
+                                if i < total {
+                                    lengths[i] = prev;
+                                    i += 1;
+                                }
                             }
                         }
                         17 => {
                             // Repeat 0 for 3..10 times
                             let repeat = reader.read_bits(3) as usize + 3;
                             for _ in 0..repeat {
-                                if i < total { lengths[i] = 0; i += 1; }
+                                if i < total {
+                                    lengths[i] = 0;
+                                    i += 1;
+                                }
                             }
                         }
                         18 => {
                             // Repeat 0 for 11..138 times
                             let repeat = reader.read_bits(7) as usize + 11;
                             for _ in 0..repeat {
-                                if i < total { lengths[i] = 0; i += 1; }
+                                if i < total {
+                                    lengths[i] = 0;
+                                    i += 1;
+                                }
                             }
                         }
                         _ => return None,
@@ -317,15 +385,15 @@ fn decode_block(
             if len_idx >= 29 {
                 return None;
             }
-            let length = LENGTH_BASE[len_idx] as usize
-                + reader.read_bits(LENGTH_EXTRA[len_idx]) as usize;
+            let length =
+                LENGTH_BASE[len_idx] as usize + reader.read_bits(LENGTH_EXTRA[len_idx]) as usize;
 
             let dist_sym = dist_table.decode(reader) as usize;
             if dist_sym >= 30 {
                 return None;
             }
-            let distance = DIST_BASE[dist_sym] as usize
-                + reader.read_bits(DIST_EXTRA[dist_sym]) as usize;
+            let distance =
+                DIST_BASE[dist_sym] as usize + reader.read_bits(DIST_EXTRA[dist_sym]) as usize;
 
             // Copy from sliding window
             if distance > output.len() {

@@ -3775,12 +3775,7 @@ impl<'a> TypeChecker<'a> {
         let name_str = self.interner.resolve(name);
         let module_key = self.module_key_from_symbols(&self.current_module_path);
         if let Some(target) = self.scoped_type_aliases.get(&(module_key, name)) {
-            if let Some(def_id) = self
-                .qualified_type_names
-                .get(target)
-                .or_else(|| self.qualified_type_names.get(&format!("crate::{}", target)))
-                .copied()
-            {
+            if let Some(def_id) = self.resolve_qualified_type_path(target) {
                 return Some(def_id);
             }
         }
@@ -3798,9 +3793,7 @@ impl<'a> TypeChecker<'a> {
             .collect::<Vec<_>>();
         parts.push(name_str.to_string());
         let path = parts.join("::");
-        self.qualified_type_names
-            .get(&path)
-            .copied()
+        self.resolve_qualified_type_path(&path)
             .or_else(|| self.type_name_to_def.get(&name).copied())
     }
 

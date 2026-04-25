@@ -1654,9 +1654,20 @@ fn module_alias_assoc_fn_resolves_same_named_type_in_target_module() {
                 pub struct Field {
                     pub ty: u8,
                 }
+
+                pub struct Variant {
+                    pub fields: u8,
+                }
             }
 
-            pub use crate::syn::data::Field;
+            pub mod derive {
+                pub struct DeriveInput {
+                    pub attrs: u8,
+                }
+            }
+
+            pub use crate::syn::data::{Field, Variant};
+            pub use crate::syn::derive::DeriveInput;
         }
 
         mod bound {
@@ -1665,6 +1676,27 @@ fn module_alias_assoc_fn_resolves_same_named_type_in_target_module() {
             fn visit_field(field: &Field) -> u8 {
                 field.original.ty
             }
+        }
+
+        mod deprecated {
+            use crate::syn::DeriveInput;
+
+            fn should_allow_deprecated(input: &DeriveInput) -> u8 {
+                input.attrs
+            }
+        }
+
+        mod alias_user {
+            use crate::syn::Variant;
+
+            fn variant_fields(variant: &Variant) -> u8 {
+                variant.fields
+            }
+        }
+
+        mod wrong_names {
+            pub struct DeriveInput {}
+            pub struct Variant {}
         }
     "#);
 }

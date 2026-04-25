@@ -290,7 +290,17 @@ pub(crate) fn inflate_from_stream(
         match inflate::inflate_counted(&compressed[zlib_skip..]) {
             Some((data, consumed)) => {
                 // Put unconsumed bytes back into the stream buffer
-                let total_consumed = zlib_skip + consumed;
+                let mut total_consumed = zlib_skip + consumed;
+                if zlib_skip != 0 {
+                    while compressed.len() < total_consumed + 4 {
+                        let n = stream.read(&mut buf);
+                        if n == 0 {
+                            return Err(alloc::string::String::from("EOF during zlib checksum"));
+                        }
+                        compressed.extend_from_slice(&buf[..n]);
+                    }
+                    total_consumed += 4;
+                }
                 if total_consumed < compressed.len() {
                     let mut leftover = compressed[total_consumed..].to_vec();
                     if stream.buf_pos < stream.buf.len() {
