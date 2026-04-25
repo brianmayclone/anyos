@@ -7,8 +7,9 @@ edition = "2021"
 crate-type = ["staticlib"]
 
 [dependencies]
-libheap = { path = "../libheap" }
+anyos_std = { path = "../stdlib" }
 libsyscall = { path = "../libsyscall" }
 libimage_client = { path = "../libimage_client" }
+libconf_schema = { path = "../libconf_schema" }
 
 [workspace]

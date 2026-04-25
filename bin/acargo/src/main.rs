@@ -66,6 +66,7 @@ fn main() {
     let mut after_dashdash = false;
     let mut features: Vec<String> = Vec::new();
     let mut target: Option<String> = None;
+    let mut bin: Option<String> = None;
     let mut jobs: u32 = 1;
 
     let mut i = 1;
@@ -96,6 +97,14 @@ fn main() {
             if i < args.len() {
                 target = Some(String::from(args[i]));
             }
+        } else if args[i] == "--bin" {
+            i += 1;
+            if i < args.len() {
+                bin = Some(String::from(args[i]));
+            } else {
+                println!("ccargo: --bin expects a binary target name");
+                return;
+            }
         } else if args[i] == "--jobs" || args[i] == "-j" {
             i += 1;
             if i < args.len() {
@@ -120,10 +129,10 @@ fn main() {
 
     match command {
         "build" | "b" => {
-            cmd_build(&positional, release, verbose, &features, target);
+            cmd_build(&positional, release, verbose, &features, target, bin);
         }
         "run" => {
-            cmd_run(&positional, &run_args, release, verbose, &features, target);
+            cmd_run(&positional, &run_args, release, verbose, &features, target, bin);
         }
         "new" => {
             cmd_new(&positional, is_lib);
@@ -135,10 +144,10 @@ fn main() {
             cmd_clean(&positional);
         }
         "check" | "c" => {
-            cmd_check(&positional, release, &features, target);
+            cmd_check(&positional, release, &features, target, bin);
         }
         "test" | "t" => {
-            cmd_test(&positional, release, &features, target);
+            cmd_test(&positional, release, &features, target, bin);
         }
         "bench" => {
             cmd_bench(&positional, &features, target);
@@ -180,7 +189,7 @@ fn is_ccargo_argv0(arg: &str) -> bool {
     matches!(name, "ccargo" | "cargo" | "acargo")
 }
 
-fn make_config(release: bool, features: &[String], target: Option<String>) -> build::BuildConfig {
+fn make_config(release: bool, features: &[String], target: Option<String>, bin: Option<String>) -> build::BuildConfig {
     build::BuildConfig {
         release,
         verbose: true,
@@ -191,21 +200,22 @@ fn make_config(release: bool, features: &[String], target: Option<String>) -> bu
         link_args: Vec::new(),
         env_vars: Vec::new(),
         target,
+        bin,
     }
 }
 
-fn cmd_build(positional: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>) {
+fn cmd_build(positional: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>, bin: Option<String>) {
     let dir = if positional.is_empty() { "." } else { positional[0] };
-    let config = make_config(release, features, target);
+    let config = make_config(release, features, target, bin);
     let result = build::build(dir, &config);
     if !result.success {
         anyos_std::process::exit(1);
     }
 }
 
-fn cmd_run(positional: &[&str], run_args: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>) {
+fn cmd_run(positional: &[&str], run_args: &[&str], release: bool, verbose: bool, features: &[String], target: Option<String>, bin: Option<String>) {
     let dir = ".";
-    let config = make_config(release, features, target);
+    let config = make_config(release, features, target, bin);
     let result = build::build(dir, &config);
     if !result.success {
         anyos_std::process::exit(1);
@@ -247,10 +257,10 @@ fn cmd_clean(positional: &[&str]) {
     println!("     Removed target directory");
 }
 
-fn cmd_check(positional: &[&str], release: bool, features: &[String], target: Option<String>) {
+fn cmd_check(positional: &[&str], release: bool, features: &[String], target: Option<String>, bin: Option<String>) {
     let dir = if positional.is_empty() { "." } else { positional[0] };
     // Check mode: compile but emit object files only (no linking)
-    let mut config = make_config(release, features, target);
+    let mut config = make_config(release, features, target, bin);
     let result = build::build(dir, &config);
     if result.success {
         println!("    Finished checking {} crate(s)", result.compiled);
@@ -259,14 +269,14 @@ fn cmd_check(positional: &[&str], release: bool, features: &[String], target: Op
     }
 }
 
-fn cmd_test(positional: &[&str], release: bool, features: &[String], target: Option<String>) {
+fn cmd_test(positional: &[&str], release: bool, features: &[String], target: Option<String>, bin: Option<String>) {
     let dir = if positional.is_empty() { "." } else { positional[0] };
     let mut feat = features.to_vec();
     // Automatically enable kunit feature for test builds if available
     if !feat.iter().any(|f| f == "kunit") {
         feat.push(String::from("kunit"));
     }
-    let config = make_config(release, &feat, target);
+    let config = make_config(release, &feat, target, bin);
     let result = build::build(dir, &config);
     if !result.success {
         anyos_std::process::exit(1);
@@ -512,6 +522,7 @@ fn print_usage() {
     println!("  --all-features         Enable all features");
     println!("  --no-default-features  Disable default features");
     println!("  --target <SPEC>        Target specification");
+    println!("  --bin <NAME>           Select binary target");
     println!("  --jobs, -j <N>         Number of parallel jobs");
     println!("  --lib                  Create a library project (with new/init)");
     println!("  --                     Pass remaining args to the binary (with run)");

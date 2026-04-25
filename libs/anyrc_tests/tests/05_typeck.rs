@@ -94,6 +94,73 @@ fn primitive_float_from_bits_is_typed() {
 }
 
 #[test]
+fn primitive_char_is_whitespace_assoc_fn_is_typed() {
+    assert_type_ok("fn main() { let x: bool = char::is_whitespace(' '); }");
+}
+
+#[test]
+fn scoped_use_prefers_local_type_over_same_named_external_type() {
+    assert_type_ok(r#"
+        mod fs {
+            #[derive(Clone, Copy)]
+            pub struct DirEntry {
+                pub name_len: usize,
+            }
+
+            impl DirEntry {
+                pub const EMPTY: Self = Self { name_len: 0 };
+
+                pub fn name_len(&self) -> usize {
+                    self.name_len
+                }
+            }
+
+            pub const MAX_ENTRIES: usize = 4;
+
+            pub fn read_dir(out: &mut [DirEntry; MAX_ENTRIES]) -> usize {
+                out[0] = DirEntry::EMPTY;
+                1
+            }
+        }
+
+        mod panel {
+            use crate::fs::{self, DirEntry, MAX_ENTRIES};
+
+            pub struct Panel {
+                pub entries: [DirEntry; MAX_ENTRIES],
+                pub entry_count: usize,
+            }
+
+            impl Panel {
+                pub fn new() -> Self {
+                    let mut panel = Self {
+                        entries: [DirEntry::EMPTY; MAX_ENTRIES],
+                        entry_count: 0,
+                    };
+                    panel.reload();
+                    panel
+                }
+
+                pub fn reload(&mut self) {
+                    self.entry_count = fs::read_dir(&mut self.entries);
+                    let n = self.entries[0].name_len();
+                    self.entry_count = self.entry_count + n;
+                }
+            }
+        }
+
+        mod anyos_std {
+            pub mod fs {
+                pub struct DirEntry {
+                    pub name: String,
+                    pub size: u32,
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
 fn trait_self_associated_type_projection_in_method_signature_is_typed() {
     assert_type_ok(r#"
         struct NonNull<T> {}
@@ -345,6 +412,248 @@ fn string_like_to_string_and_deref_are_typed() {
             let owned: String = s.to_string();
             let owned_again: String = str::to_string(s);
             take_str(&*owned);
+        }
+    "#);
+}
+
+#[test]
+fn string_like_as_str_returns_ref_str() {
+    assert_type_ok(r#"
+        struct String {}
+
+        fn take_str(_: &str) {}
+
+        fn main() {
+            let owned = String {};
+            let s: &str = owned.as_str();
+            take_str(s.trim());
+            match s {
+                "solid" => {},
+                _ => {},
+            }
+        }
+    "#);
+}
+
+#[test]
+fn string_range_index_trim_passes_ref_str() {
+    assert_type_ok(r#"
+        fn take_str(_: &str) {}
+
+        fn main() {
+            let kw: &str = "auto 16/9";
+            let pos: usize = 7;
+            let w = kw[..pos]
+                .trim()
+                .trim_start_matches("auto")
+                .trim_end_matches("auto")
+                .trim();
+            take_str(w);
+        }
+    "#);
+}
+
+#[test]
+fn string_like_comparisons_normalize_refs_and_slices() {
+    assert_type_ok(r#"
+        struct String {}
+
+        fn main() {
+            let owned = String {};
+            let mut mutable = String {};
+            let borrowed: &str = "auto";
+            let _a: bool = owned.as_str() == "auto";
+            let _b: bool = borrowed[..borrowed.len()] == "auto";
+            let _c: bool = &mut mutable == "auto";
+            let _d: &str = borrowed[..borrowed.len()];
+        }
+    "#);
+}
+
+#[test]
+fn borrowed_field_ref_enum_string_pattern_matches_css_style_use() {
+    assert_type_ok(r#"
+        struct String {}
+
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        enum CssValue {
+            Keyword(String),
+            Number(i32),
+        }
+
+        enum Property {
+            AspectRatio,
+        }
+
+        struct Declaration {
+            property: Property,
+            value: CssValue,
+        }
+
+        fn try_parse_simple_float(_: &str) -> Option<i32> {
+            Option::None
+        }
+
+        fn apply_declaration(decl: &Declaration) {
+            match decl.property {
+                Property::AspectRatio => {
+                    if let CssValue::Keyword(ref kw) = decl.value {
+                        if kw == "auto" {
+                        } else if let Some(pos) = kw.find('/') {
+                            let w_str = kw[..pos]
+                                .trim()
+                                .trim_start_matches("auto")
+                                .trim_end_matches("auto")
+                                .trim();
+                            let h_str = kw[pos + 1..]
+                                .trim()
+                                .trim_start_matches("auto")
+                                .trim_end_matches("auto")
+                                .trim();
+                            if let (Some(w), Some(h)) =
+                                (try_parse_simple_float(w_str), try_parse_simple_float(h_str))
+                            {
+                                let _ratio = w * 100 / h;
+                            }
+                        } else if let Some(v) =
+                            try_parse_simple_float(kw.trim().trim_start_matches("auto").trim())
+                        {
+                            let _ratio = v;
+                        }
+                    } else if let CssValue::Number(v) = decl.value {
+                        let _ratio = v;
+                    }
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn string_match_assigns_enum_field_from_string_patterns() {
+    assert_type_ok(r#"
+        struct String {}
+
+        enum CssValue {
+            Keyword(String),
+        }
+
+        enum TextDecorationStyle {
+            Solid,
+            Double,
+            Dotted,
+            Dashed,
+            Wavy,
+        }
+
+        struct ComputedStyle {
+            text_decoration_style: TextDecorationStyle,
+        }
+
+        struct Declaration {
+            value: CssValue,
+        }
+
+        fn apply_declaration(style: &mut ComputedStyle, decl: &Declaration) {
+            if let CssValue::Keyword(ref kw) = decl.value {
+                style.text_decoration_style = match kw.as_str() {
+                    "solid" => TextDecorationStyle::Solid,
+                    "double" => TextDecorationStyle::Double,
+                    "dotted" => TextDecorationStyle::Dotted,
+                    "dashed" => TextDecorationStyle::Dashed,
+                    "wavy" => TextDecorationStyle::Wavy,
+                    _ => style.text_decoration_style,
+                };
+            }
+        }
+    "#);
+}
+
+#[test]
+fn string_match_assigns_enum_field_through_glob_imported_style_type() {
+    assert_type_ok(r#"
+        struct String {}
+
+        enum CssValue {
+            Keyword(String),
+        }
+
+        struct Declaration {
+            value: CssValue,
+        }
+
+        mod style {
+            pub mod types {
+                #[derive(Clone, Copy)]
+                pub enum TextDecorationStyle {
+                    Solid,
+                    Double,
+                    Dotted,
+                    Dashed,
+                    Wavy,
+                }
+
+                pub struct ComputedStyle {
+                    pub text_decoration_style: TextDecorationStyle,
+                }
+            }
+
+            pub mod engine {
+                use super::types::*;
+                use crate::{CssValue, Declaration};
+
+                pub fn apply_declaration(style: &mut ComputedStyle, decl: &Declaration) {
+                    if let CssValue::Keyword(ref kw) = decl.value {
+                        style.text_decoration_style = match kw.as_str() {
+                            "solid" => TextDecorationStyle::Solid,
+                            "double" => TextDecorationStyle::Double,
+                            "dotted" => TextDecorationStyle::Dotted,
+                            "dashed" => TextDecorationStyle::Dashed,
+                            "wavy" => TextDecorationStyle::Wavy,
+                            _ => style.text_decoration_style,
+                        };
+                    }
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
+fn match_tuple_arms_coerce_function_items_to_fn_pointer_fields() {
+    assert_type_ok(r#"
+        enum WorkerClass {
+            A,
+            B,
+        }
+
+        fn worker_a() {}
+        fn worker_b() {}
+
+        fn ensure_worker(class: WorkerClass) {
+            let (entry, thread_name): (fn(), &str) = match class {
+                WorkerClass::A => (worker_a, "a"),
+                WorkerClass::B => (worker_b, "b"),
+            };
+        }
+    "#);
+}
+
+#[test]
+fn for_ref_pattern_over_u8_slice_binds_u8() {
+    assert_type_ok(r#"
+        fn parse_decimal(b: &[u8]) -> u32 {
+            let mut n: u32 = 0;
+            for &c in b {
+                if c >= b'0' && c <= b'9' {
+                    n = n * 10 + (c - b'0') as u32;
+                }
+            }
+            n
         }
     "#);
 }
@@ -902,6 +1211,29 @@ fn unary_deref_uses_deref_target_impl() {
 
         fn use_guard<T, F>(guard: ScopeGuard<T, F>) {
             consume(*guard);
+        }
+    "#);
+}
+
+#[test]
+fn ref_argument_coerces_through_deref_target() {
+    assert_type_ok(r#"
+        trait Deref {
+            type Target;
+        }
+
+        struct Control {}
+        struct TextField {}
+
+        impl Deref for TextField {
+            type Target = Control;
+        }
+
+        fn get_field_text(_: &Control) {}
+
+        fn main() {
+            let field = TextField {};
+            get_field_text(&field);
         }
     "#);
 }

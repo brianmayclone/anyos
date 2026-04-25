@@ -658,8 +658,9 @@ fn collect_interface_items(
     in_trait: bool,
 ) {
     let local_names = local_item_names(items);
+    let public_type_names = local_public_type_names(items);
     for item in items {
-        if !item_is_exported(item, in_trait, &local_names, interner) {
+        if !item_is_exported(item, in_trait, &local_names, &public_type_names, interner) {
             continue;
         }
         let mut signature = String::new();
@@ -738,10 +739,13 @@ fn render_items(
     in_trait: bool,
 ) {
     let local_names = local_item_names(items);
-    let needed_private_consts = needed_private_const_names(items, &local_names, interner, in_trait);
-    let needed_private_types = needed_private_type_names(items, &local_names, interner, in_trait);
+    let public_type_names = local_public_type_names(items);
+    let needed_private_consts =
+        needed_private_const_names(items, &local_names, &public_type_names, interner, in_trait);
+    let needed_private_types =
+        needed_private_type_names(items, &local_names, &public_type_names, interner, in_trait);
     for item in items {
-        if !item_is_exported(item, in_trait, &local_names, interner)
+        if !item_is_exported(item, in_trait, &local_names, &public_type_names, interner)
             && !private_const_is_needed(item, &needed_private_consts)
             && !private_type_is_needed(item, &needed_private_types)
         {
@@ -896,6 +900,7 @@ fn render_item(
         }
         HirItemKind::Impl(ib) => {
             let impl_local_names = local_item_names(&ib.items);
+            let impl_public_type_names = local_public_type_names(&ib.items);
             let exported_items: Vec<&crate::hir::HirItem> = if trait_impl_is_interface_relevant(ib, interner) {
                 ib.items.iter()
                     .filter(|item| {
@@ -910,7 +915,15 @@ fn render_item(
                     .collect()
             } else {
                 ib.items.iter()
-                    .filter(|item| item_is_exported(item, false, &impl_local_names, interner))
+                    .filter(|item| {
+                        item_is_exported(
+                            item,
+                            false,
+                            &impl_local_names,
+                            &impl_public_type_names,
+                            interner,
+                        )
+                    })
                     .collect()
             };
             if exported_items.is_empty() {
@@ -1018,8 +1031,17 @@ fn render_item(
         }
         HirItemKind::ExternBlock(eb) => {
             let extern_local_names = local_item_names(&eb.items);
+            let extern_public_type_names = local_public_type_names(&eb.items);
             let exported_items: Vec<&crate::hir::HirItem> = eb.items.iter()
-                .filter(|item| item_is_exported(item, false, &extern_local_names, interner))
+                .filter(|item| {
+                    item_is_exported(
+                        item,
+                        false,
+                        &extern_local_names,
+                        &extern_public_type_names,
+                        interner,
+                    )
+                })
                 .collect();
             if exported_items.is_empty() {
                 return;
@@ -1070,6 +1092,7 @@ fn item_is_exported(
     item: &crate::hir::HirItem,
     in_trait: bool,
     local_names: &[crate::intern::Symbol],
+    public_type_names: &[crate::intern::Symbol],
     interner: &Interner,
 ) -> bool {
     match &item.kind {
@@ -1089,9 +1112,23 @@ fn item_is_exported(
                 return false;
             };
             let nested_local_names = local_item_names(items);
-            items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
+            let nested_public_type_names = local_public_type_names(items);
+            items.iter().any(|item| {
+                item_is_exported(
+                    item,
+                    false,
+                    &nested_local_names,
+                    &nested_public_type_names,
+                    interner,
+                )
+            })
         }
         crate::hir::HirItemKind::Impl(ib) => {
+            if ib.trait_ref.is_none()
+                && inherent_impl_self_is_private_local(ib, local_names, public_type_names)
+            {
+                return false;
+            }
             if trait_impl_is_interface_relevant(ib, interner)
                 && ib.items.iter().any(|item| {
                     matches!(
@@ -1106,11 +1143,29 @@ fn item_is_exported(
                 return true;
             }
             let nested_local_names = local_item_names(&ib.items);
-            ib.items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
+            let nested_public_type_names = local_public_type_names(&ib.items);
+            ib.items.iter().any(|item| {
+                item_is_exported(
+                    item,
+                    false,
+                    &nested_local_names,
+                    &nested_public_type_names,
+                    interner,
+                )
+            })
         }
         crate::hir::HirItemKind::ExternBlock(eb) => {
             let nested_local_names = local_item_names(&eb.items);
-            eb.items.iter().any(|item| item_is_exported(item, false, &nested_local_names, interner))
+            let nested_public_type_names = local_public_type_names(&eb.items);
+            eb.items.iter().any(|item| {
+                item_is_exported(
+                    item,
+                    false,
+                    &nested_local_names,
+                    &nested_public_type_names,
+                    interner,
+                )
+            })
         }
     }
 }
@@ -1135,6 +1190,19 @@ fn local_item_names(items: &[crate::hir::HirItem]) -> Vec<crate::intern::Symbol>
     items.iter().filter_map(item_declared_name).collect()
 }
 
+fn local_public_type_names(items: &[crate::hir::HirItem]) -> Vec<crate::intern::Symbol> {
+    items
+        .iter()
+        .filter_map(|item| match &item.kind {
+            crate::hir::HirItemKind::Struct(s) if is_public_vis(s.vis) => Some(s.name),
+            crate::hir::HirItemKind::Enum(e) if is_public_vis(e.vis) => Some(e.name),
+            crate::hir::HirItemKind::Trait(t) if is_public_vis(t.vis) => Some(t.name),
+            crate::hir::HirItemKind::TypeAlias(t) if is_public_vis(t.vis) => Some(t.name),
+            _ => None,
+        })
+        .collect()
+}
+
 fn item_declared_name(item: &crate::hir::HirItem) -> Option<crate::intern::Symbol> {
     match &item.kind {
         crate::hir::HirItemKind::Fn(f) => Some(f.name),
@@ -1147,6 +1215,20 @@ fn item_declared_name(item: &crate::hir::HirItem) -> Option<crate::intern::Symbo
         crate::hir::HirItemKind::Mod(m) => Some(m.name),
         _ => None,
     }
+}
+
+fn inherent_impl_self_is_private_local(
+    ib: &crate::hir::HirImplBlock,
+    local_names: &[crate::intern::Symbol],
+    public_type_names: &[crate::intern::Symbol],
+) -> bool {
+    let crate::hir::HirTy::Path(path) = &ib.self_ty else {
+        return false;
+    };
+    let Some(first) = path.segments.first() else {
+        return false;
+    };
+    local_names.contains(&first.ident) && !public_type_names.contains(&first.ident)
 }
 
 fn private_const_is_needed(
@@ -1185,12 +1267,13 @@ fn private_type_is_needed(
 fn needed_private_type_names(
     items: &[crate::hir::HirItem],
     local_names: &[crate::intern::Symbol],
+    public_type_names: &[crate::intern::Symbol],
     interner: &Interner,
     in_trait: bool,
 ) -> HashSet<crate::intern::Symbol> {
     let mut needed = HashSet::new();
     for item in items {
-        if item_is_exported(item, in_trait, local_names, interner) {
+        if item_is_exported(item, in_trait, local_names, public_type_names, interner) {
             collect_signature_type_refs(item, &mut needed);
         }
     }
@@ -1385,12 +1468,13 @@ fn collect_type_refs_in_path(
 fn needed_private_const_names(
     items: &[crate::hir::HirItem],
     local_names: &[crate::intern::Symbol],
+    public_type_names: &[crate::intern::Symbol],
     interner: &Interner,
     in_trait: bool,
 ) -> HashSet<crate::intern::Symbol> {
     let mut needed = HashSet::new();
     for item in items {
-        if item_is_exported(item, in_trait, local_names, interner) {
+        if item_is_exported(item, in_trait, local_names, public_type_names, interner) {
             collect_signature_const_refs(item, &mut needed);
         }
     }

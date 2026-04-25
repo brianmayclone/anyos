@@ -8,6 +8,7 @@ pub mod extensions_panel;
 pub mod git_panel;
 pub mod output_panel;
 pub mod problems_panel;
+pub mod run_config_dialog;
 pub mod run_panel;
 pub mod search_panel;
 pub mod settings_dialog;

@@ -180,6 +180,7 @@ impl TaskManager {
 
         match project.project_type {
             ProjectType::Cargo => self.detect_cargo_tasks(project, config),
+            ProjectType::RustFolder => self.detect_rust_folder_tasks(project, config),
             ProjectType::CMake | ProjectType::Make | ProjectType::NodeJS => {
                 // Studio v1 is intentionally Rust-first. C/TCC/Make and JS tasks
                 // are kept out of the active auto-detection path for this phase.
@@ -189,6 +190,129 @@ impl TaskManager {
         }
 
         self.normalize_selection();
+    }
+
+    fn detect_rust_folder_tasks(&mut self, project: &Project, config: &Config) {
+        let rust_backend = RustBuildBackend::from_config(config);
+        let ccargo = rust_backend.ccargo_path.clone();
+        if ccargo.is_empty() {
+            return;
+        }
+        let cargo_name = command_basename(&ccargo);
+
+        for cargo_project in &project.cargo_projects {
+            let build_args = match project.active_configuration {
+                BuildConfiguration::Debug => "build",
+                BuildConfiguration::Release => "build --release",
+            };
+            let mut build = Task::new(
+                &format!("Build: {}", cargo_project.name),
+                TaskCategory::Build,
+                &ccargo,
+                build_args,
+                &cargo_project.root,
+            );
+            build.display_label =
+                format!("{} {} ({})", cargo_name, build_args, cargo_project.rel_path);
+            self.tasks.push(build);
+
+            let mut check = Task::new(
+                &format!("Check: {}", cargo_project.name),
+                TaskCategory::Check,
+                &ccargo,
+                "check",
+                &cargo_project.root,
+            );
+            check.display_label = format!("{} check ({})", cargo_name, cargo_project.rel_path);
+            self.tasks.push(check);
+
+            let mut test = Task::new(
+                &format!("Test: {}", cargo_project.name),
+                TaskCategory::Test,
+                &ccargo,
+                "test",
+                &cargo_project.root,
+            );
+            test.display_label = format!("{} test ({})", cargo_name, cargo_project.rel_path);
+            self.tasks.push(test);
+
+            for target in &cargo_project.targets {
+                match target.kind {
+                    TargetKind::Binary => {
+                        let args = format!("run --bin {}", target.name);
+                        let label = format!("Run: {} / {}", cargo_project.name, target.name);
+                        let mut task = Task::new(
+                            &label,
+                            TaskCategory::Run,
+                            &ccargo,
+                            &args,
+                            &cargo_project.root,
+                        );
+                        task.target_name = Some(target.name.clone());
+                        task.display_label = format!(
+                            "{} run --bin {} ({})",
+                            cargo_name, target.name, cargo_project.rel_path
+                        );
+                        self.tasks.push(task);
+                    }
+                    TargetKind::Example => {
+                        let args = format!("run --example {}", target.name);
+                        let label = format!("Example: {} / {}", cargo_project.name, target.name);
+                        let mut task = Task::new(
+                            &label,
+                            TaskCategory::Run,
+                            &ccargo,
+                            &args,
+                            &cargo_project.root,
+                        );
+                        task.target_name = Some(target.name.clone());
+                        task.display_label = format!(
+                            "{} run --example {} ({})",
+                            cargo_name, target.name, cargo_project.rel_path
+                        );
+                        self.tasks.push(task);
+                    }
+                    _ => {}
+                }
+            }
+
+            for run_config in &cargo_project.run_configs {
+                let mut args = String::from("run");
+                if run_config.profile == BuildConfiguration::Release {
+                    args.push_str(" --release");
+                }
+                match run_config.kind {
+                    TargetKind::Example => args.push_str(" --example "),
+                    TargetKind::Bench => args.push_str(" --bench "),
+                    TargetKind::Test => args.push_str(" --test "),
+                    _ => args.push_str(" --bin "),
+                }
+                args.push_str(&run_config.target);
+                if !run_config.args.trim().is_empty() {
+                    args.push_str(" -- ");
+                    args.push_str(run_config.args.trim());
+                }
+                let mut task = Task::new(
+                    &format!("{} / {}", cargo_project.name, run_config.name),
+                    TaskCategory::Run,
+                    &ccargo,
+                    &args,
+                    &cargo_project.root,
+                );
+                task.auto_detected = false;
+                task.target_name = Some(run_config.target.clone());
+                task.display_label =
+                    format!("{} {} ({})", cargo_name, args, cargo_project.rel_path);
+                if !run_config.working_dir.is_empty() && run_config.working_dir != "." {
+                    task.working_dir = if run_config.working_dir.starts_with('/') {
+                        run_config.working_dir.clone()
+                    } else {
+                        format!("{}/{}", cargo_project.root, run_config.working_dir)
+                    };
+                }
+                self.tasks.push(task);
+            }
+        }
     }
 
     // ── Cargo tasks ────────────────────────────────────────────
@@ -320,6 +444,40 @@ impl TaskManager {
                     self.tasks.push(task);
                 }
             }
+        }
+
+        for config in &project.run_configs {
+            let mut args = String::from("run");
+            if config.profile == BuildConfiguration::Release {
+                args.push_str(" --release");
+            }
+            if !config.package.is_empty() {
+                args.push_str(" -p ");
+                args.push_str(&config.package);
+            }
+            match config.kind {
+                TargetKind::Example => args.push_str(" --example "),
+                TargetKind::Bench => args.push_str(" --bench "),
+                TargetKind::Test => args.push_str(" --test "),
+                _ => args.push_str(" --bin "),
+            }
+            args.push_str(&config.target);
+            if !config.args.trim().is_empty() {
+                args.push_str(" -- ");
+                args.push_str(config.args.trim());
+            }
+            let mut task = Task::new(&config.name, TaskCategory::Run, &ccargo, &args, root);
+            task.auto_detected = false;
+            task.target_name = Some(config.target.clone());
+            task.display_label = format!("{} {}", cargo_name, args);
+            if !config.working_dir.is_empty() && config.working_dir != "." {
+                task.working_dir = if config.working_dir.starts_with('/') {
+                    config.working_dir.clone()
+                } else {
+                    format!("{}/{}", root, config.working_dir)
+                };
+            }
+            self.tasks.push(task);
         }
 
         // Set defaults — first build task and first run task
@@ -574,16 +732,46 @@ impl TaskManager {
     /// Build the run configuration label string for dropdown display.
     pub fn run_config_labels(&self) -> String {
         let mut labels = String::new();
-        for (i, task) in self.tasks.iter().enumerate() {
+        for task in &self.tasks {
             if task.category == TaskCategory::Run {
                 if !labels.is_empty() {
                     labels.push('|');
                 }
                 labels.push_str(&task.name);
-                let _ = i; // used for selection tracking
             }
         }
+        if labels.is_empty() {
+            labels.push_str("No run target");
+        }
         labels
+    }
+
+    pub fn run_task_index_for_dropdown(&self, run_index: usize) -> Option<usize> {
+        let mut seen = 0usize;
+        for (idx, task) in self.tasks.iter().enumerate() {
+            if task.category != TaskCategory::Run {
+                continue;
+            }
+            if seen == run_index {
+                return Some(idx);
+            }
+            seen += 1;
+        }
+        None
+    }
+
+    pub fn selected_run_dropdown_index(&self) -> u32 {
+        let mut seen = 0u32;
+        for (idx, task) in self.tasks.iter().enumerate() {
+            if task.category != TaskCategory::Run {
+                continue;
+            }
+            if idx == self.selected_run_task {
+                return seen;
+            }
+            seen += 1;
+        }
+        0
     }
 
     /// Select a run task by name.

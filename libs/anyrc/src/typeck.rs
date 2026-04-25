@@ -240,6 +240,7 @@ pub struct TypeChecker<'a> {
     discard_loop_tail_block_depths: Vec<usize>,
     match_depth: usize,
     discard_match_arm_value_depths: Vec<usize>,
+    current_unify_context: Option<String>,
     errors: Vec<Diagnostic>,
 
     /// Synthetic DefIds for closure expressions: HirId -> DefId
@@ -305,6 +306,7 @@ impl<'a> TypeChecker<'a> {
             discard_loop_tail_block_depths: Vec::new(),
             match_depth: 0,
             discard_match_arm_value_depths: Vec::new(),
+            current_unify_context: None,
             errors: Vec::new(),
             closure_defs: HashMap::new(),
             next_closure_def_id: 0x8000_0000,
@@ -319,6 +321,11 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn error(&mut self, span: Span, msg: &str) {
+        let msg = if let Some(context) = &self.current_unify_context {
+            format!("{} while {}", msg, context)
+        } else {
+            msg.to_string()
+        };
         let msg = if let Some(fn_name) = self.current_fn_name {
             let mut path = self
                 .current_module_path
@@ -328,7 +335,7 @@ impl<'a> TypeChecker<'a> {
             path.push(self.interner.resolve(fn_name).to_string());
             format!("in {}: {}", path.join("::"), msg)
         } else {
-            msg.to_string()
+            msg
         };
         self.errors.push(Diagnostic::new(Level::Error, &msg, span));
     }
@@ -776,6 +783,7 @@ impl<'a> TypeChecker<'a> {
             "f32::from_bits" => Some(TyKind::Float(FloatTy::F32)),
             "f64::from_bits" => Some(TyKind::Float(FloatTy::F64)),
             "char::from_u32" => self.option_of(TyKind::Char),
+            "char::is_whitespace" => Some(TyKind::Bool),
             "u8::from_str_radix" => self.result_of(TyKind::Uint(UintTy::U8)),
             "u16::from_str_radix" => self.result_of(TyKind::Uint(UintTy::U16)),
             "u32::from_str_radix" => self.result_of(TyKind::Uint(UintTy::U32)),
@@ -2014,7 +2022,7 @@ impl<'a> TypeChecker<'a> {
         if let Some(body) = &f.body {
             let body_ty = self.check_block(body);
             if body_ty != TyKind::Never {
-                self.unify(&ret_ty, &body_ty, body.span);
+                self.unify_with_context(&ret_ty, &body_ty, body.span, "checking function return type");
             }
         }
 
@@ -2035,7 +2043,7 @@ impl<'a> TypeChecker<'a> {
                         let init_ty = self.check_expr(init);
                         if let Some(ann) = ty_ann {
                             let ann_ty = self.hir_ty_to_ty(ann);
-                            self.unify(&ann_ty, &init_ty, *span);
+                            self.unify_with_context(&ann_ty, &init_ty, *span, "checking let initializer type");
                             ann_ty
                         } else {
                             init_ty
@@ -2145,7 +2153,7 @@ impl<'a> TypeChecker<'a> {
                         if matches!(op, BinOp::Eq | BinOp::Ne) && self.has_partial_eq_impl(&lty, &rty) {
                             return TyKind::Bool;
                         }
-                        self.unify(&lty, &rty, expr.span);
+                        self.unify_with_context(&lty, &rty, expr.span, "checking comparison operands");
                         TyKind::Bool
                     }
                     BinOp::Shl | BinOp::Shr => {
@@ -2168,7 +2176,7 @@ impl<'a> TypeChecker<'a> {
                             self.unify(&impl_info.rhs_ty, &rty, rhs.span);
                             return impl_info.output_ty;
                         }
-                        self.unify(&lty, &rty, expr.span);
+                        self.unify_with_context(&lty, &rty, expr.span, "checking binary operands");
                         lty
                     }
                 }
@@ -2491,11 +2499,11 @@ impl<'a> TypeChecker<'a> {
 
             HirExprKind::If(cond, then_block, else_expr) => {
                 let cond_ty = self.check_expr(cond);
-                self.unify(&TyKind::Bool, &cond_ty, cond.span);
+                self.unify_with_context(&TyKind::Bool, &cond_ty, cond.span, "checking if condition");
                 let then_ty = self.check_block(then_block);
                 if let Some(else_e) = else_expr {
                     let else_ty = self.check_expr(else_e);
-                    self.unify(&then_ty, &else_ty, expr.span);
+                    self.unify_with_context(&then_ty, &else_ty, expr.span, "checking if branch types");
                     then_ty
                 } else {
                     TyKind::Unit
@@ -2518,7 +2526,7 @@ impl<'a> TypeChecker<'a> {
                         self.bind_pattern(&arm.pat, scr_ty.clone());
                         if let Some(guard) = &arm.guard {
                             let guard_ty = self.check_expr(guard);
-                            self.unify(&TyKind::Bool, &guard_ty, guard.span);
+                            self.unify_with_context(&TyKind::Bool, &guard_ty, guard.span, "checking match guard");
                         }
                         self.check_expr(&arm.body);
                     }
@@ -2527,20 +2535,25 @@ impl<'a> TypeChecker<'a> {
                     self.bind_pattern(&arms[0].pat, scr_ty.clone());
                     if let Some(guard) = &arms[0].guard {
                         let guard_ty = self.check_expr(guard);
-                        self.unify(&TyKind::Bool, &guard_ty, guard.span);
+                        self.unify_with_context(&TyKind::Bool, &guard_ty, guard.span, "checking match guard");
                     }
                     let mut result_ty = self.check_expr(&arms[0].body);
                     for arm in &arms[1..] {
                         self.bind_pattern(&arm.pat, scr_ty.clone());
                         if let Some(guard) = &arm.guard {
                             let guard_ty = self.check_expr(guard);
-                            self.unify(&TyKind::Bool, &guard_ty, guard.span);
+                            self.unify_with_context(&TyKind::Bool, &guard_ty, guard.span, "checking match guard");
                         }
                         let arm_ty = self.check_expr(&arm.body);
-                        if let Some(coerced) = self.common_fn_item_ty(&result_ty, &arm_ty, arm.span) {
+                        if let Some(coerced) = self.common_coerced_ty(&result_ty, &arm_ty, arm.span) {
                             result_ty = coerced;
                         } else {
-                            self.unify(&result_ty, &arm_ty, arm.span);
+                            self.unify_with_context(
+                                &result_ty,
+                                &arm_ty,
+                                arm.span,
+                                "checking match arm result type",
+                            );
                         }
                     }
                     result_ty
@@ -2552,7 +2565,7 @@ impl<'a> TypeChecker<'a> {
             HirExprKind::Assign(lhs, rhs) => {
                 let lty = self.check_expr(lhs);
                 let rty = self.check_expr(rhs);
-                self.unify(&lty, &rty, expr.span);
+                self.unify_with_context(&lty, &rty, expr.span, "checking assignment type");
                 TyKind::Unit
             }
 
@@ -2646,7 +2659,7 @@ impl<'a> TypeChecker<'a> {
                 let mut elem_ty = self.check_expr(&es[0]);
                 for e in &es[1..] {
                     let t = self.check_expr(e);
-                    if let Some(coerced) = self.common_fn_item_ty(&elem_ty, &t, e.span) {
+                    if let Some(coerced) = self.common_coerced_ty(&elem_ty, &t, e.span) {
                         elem_ty = coerced;
                     } else {
                         self.unify(&elem_ty, &t, e.span);
@@ -2868,6 +2881,9 @@ impl<'a> TypeChecker<'a> {
 
                 if inner_is_string_like {
                     match method_str {
+                        "as_str" if args.is_empty() => {
+                            return TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable);
+                        }
                         "contains" | "starts_with" | "ends_with" if args.len() == 1 => {
                             return TyKind::Bool;
                         }
@@ -4977,6 +4993,51 @@ impl<'a> TypeChecker<'a> {
         Some(a_ptr)
     }
 
+    fn common_coerced_ty(&mut self, a: &TyKind, b: &TyKind, span: Span) -> Option<TyKind> {
+        if let Some(fn_ptr) = self.common_fn_item_ty(a, b, span) {
+            return Some(fn_ptr);
+        }
+
+        let a = self.shallow_resolve(a.clone());
+        let b = self.shallow_resolve(b.clone());
+        match (&a, &b) {
+            (TyKind::Tuple(a_tys), TyKind::Tuple(b_tys)) if a_tys.len() == b_tys.len() => {
+                let mut elems = Vec::new();
+                for (a_ty, b_ty) in a_tys.iter().zip(b_tys.iter()) {
+                    if let Some(coerced) = self.common_coerced_ty(a_ty, b_ty, span) {
+                        elems.push(coerced);
+                    } else if self.ty_matches_for_candidate(a_ty, b_ty) {
+                        elems.push(a_ty.clone());
+                    } else if self.ty_matches_for_candidate(b_ty, a_ty) {
+                        elems.push(b_ty.clone());
+                    } else {
+                        return None;
+                    }
+                }
+                Some(TyKind::Tuple(elems))
+            }
+            _ => None,
+        }
+    }
+
+    fn ref_deref_target_matches(&mut self, expected_inner: &TyKind, actual_inner: &TyKind, span: Span) -> bool {
+        let mut current = self.shallow_resolve(actual_inner.clone());
+        for _ in 0..8 {
+            let Some(target) = self.lookup_deref_target(&current) else {
+                return false;
+            };
+            let target = self.shallow_resolve(target);
+            if self.ty_matches_for_candidate(expected_inner, &target) {
+                return true;
+            }
+            if target == current {
+                return false;
+            }
+            current = target;
+        }
+        false
+    }
+
     fn unify(&mut self, expected: &TyKind, actual: &TyKind, span: Span) {
         let expected = self.shallow_resolve(expected.clone());
         let actual = self.shallow_resolve(actual.clone());
@@ -5024,6 +5085,9 @@ impl<'a> TypeChecker<'a> {
                 if matches!(b.as_ref(), TyKind::Str)
                     && matches!(a.as_ref(), TyKind::Adt(def_id, _) if self.is_string_def(*def_id))
                 {
+                    return;
+                }
+                if self.ref_deref_target_matches(a, b, span) {
                     return;
                 }
                 if let TyKind::Slice(slice_elem) = a.as_ref() {
@@ -5139,6 +5203,18 @@ impl<'a> TypeChecker<'a> {
                 return;
             }
 
+            (TyKind::Str, TyKind::Ref(actual_inner, Mutability::Immutable))
+                if matches!(actual_inner.as_ref(), TyKind::Str) =>
+            {
+                return;
+            }
+
+            (TyKind::Ref(expected_inner, Mutability::Immutable), TyKind::Str)
+                if matches!(expected_inner.as_ref(), TyKind::Str) =>
+            {
+                return;
+            }
+
             (TyKind::Tuple(a), TyKind::Tuple(b)) if a.len() == b.len() => {
                 for (x, y) in a.clone().iter().zip(b.clone().iter()) {
                     self.unify(x, y, span);
@@ -5225,6 +5301,12 @@ impl<'a> TypeChecker<'a> {
             self.describe_ty(&expected),
             self.describe_ty(&actual),
         ));
+    }
+
+    fn unify_with_context(&mut self, expected: &TyKind, actual: &TyKind, span: Span, context: &str) {
+        let old = self.current_unify_context.replace(context.to_string());
+        self.unify(expected, actual, span);
+        self.current_unify_context = old;
     }
 
     fn bind_infer_var(&mut self, var: InferVar, infer_ty: &TyKind, concrete_ty: TyKind, span: Span) {
@@ -5334,12 +5416,16 @@ impl<'a> TypeChecker<'a> {
     fn binary_operand_ty(&self, ty: TyKind) -> TyKind {
         let resolved = self.shallow_resolve(ty);
         match resolved {
-            TyKind::Ref(inner, Mutability::Immutable) => {
+            TyKind::Ref(inner, mutability) => {
                 let inner = self.shallow_resolve(*inner);
-                if Self::is_primitive_scalar_ty(&inner) {
+                if matches!(&inner, TyKind::Str)
+                    || matches!(&inner, TyKind::Adt(def_id, _) if self.is_string_def(*def_id))
+                {
+                    TyKind::Str
+                } else if mutability == Mutability::Immutable && Self::is_primitive_scalar_ty(&inner) {
                     inner
                 } else {
-                    TyKind::Ref(Box::new(inner), Mutability::Immutable)
+                    TyKind::Ref(Box::new(inner), mutability)
                 }
             }
             other => other,

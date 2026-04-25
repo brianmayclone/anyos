@@ -712,6 +712,7 @@ pub fn show() {
             s.task_mgr.detect_from_project(proj, &s.config);
             s.run_panel.update(&s.task_mgr);
             s.sidebar.populate_project(proj, &s.task_mgr);
+            crate::logic::commands::refresh_run_config_selector();
         }
 
         // Close

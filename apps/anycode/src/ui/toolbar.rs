@@ -11,6 +11,8 @@ pub struct AppToolbar {
     pub btn_save: ui::PlainButton,
     pub btn_save_all: ui::PlainButton,
     pub btn_build: ui::PlainButton,
+    pub run_config: ui::DropDown,
+    pub btn_run_config: ui::PlainButton,
     pub btn_run: ui::PlainButton,
     pub btn_stop: ui::PlainButton,
     pub btn_settings: ui::PlainButton,
@@ -107,6 +109,18 @@ impl AppToolbar {
             toolbar_h,
             icon_sz,
         );
+        let run_config = ui::DropDown::new(t("No run target"));
+        run_config.set_size(190, toolbar_h.saturating_sub(10).max(28));
+        run_config.set_tooltip(t("Active run configuration"));
+        toolbar.add(&run_config);
+        let btn_run_config = make_plain_btn(
+            &toolbar,
+            "settings",
+            tc.text_secondary,
+            t("Configure Run Profiles"),
+            toolbar_h,
+            icon_sz.saturating_sub(2).max(16),
+        );
         let btn_run = make_plain_btn(
             &toolbar,
             "player-play",
@@ -156,6 +170,8 @@ impl AppToolbar {
             btn_save,
             btn_save_all,
             btn_build,
+            run_config,
+            btn_run_config,
             btn_run,
             btn_stop,
             btn_settings,

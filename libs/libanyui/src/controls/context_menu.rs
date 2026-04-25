@@ -37,7 +37,6 @@ fn strip_disabled_prefix(item: &[u8]) -> (&[u8], bool) {
 
 /// Load an .ico file at a preferred size, returning (pixels, w, h).
 fn load_icon_pixels(path: &str, preferred_size: u32) -> (alloc::vec::Vec<u32>, u32, u32) {
-    // Read file using raw syscalls (libanyui has no anyos_std)
     let data = match read_file_raw(path) {
         Some(d) => d,
         None => return (alloc::vec::Vec::new(), 0, 0),
@@ -65,25 +64,21 @@ fn load_icon_pixels(path: &str, preferred_size: u32) -> (alloc::vec::Vec<u32>, u
     (alloc::vec::Vec::new(), 0, 0)
 }
 
-/// Read a file into a Vec<u8> using libsyscall.
+/// Read a reasonably small icon file into memory.
 fn read_file_raw(path: &str) -> Option<alloc::vec::Vec<u8>> {
-    let fd = libsyscall::open(path, 0);
-    if fd == u32::MAX {
-        return None;
-    }
-    let mut stat = [0u32; 4];
-    if libsyscall::fstat(fd, &mut stat) == u32::MAX {
-        libsyscall::close(fd);
-        return None;
-    }
-    let size = stat[1] as usize;
+    use anyos_std::fs::{File, Read};
+
+    let mut file = File::open(path).ok()?;
+    let size = file
+        .metadata()
+        .ok()
+        .map(|meta| meta[1] as usize)
+        .unwrap_or(0);
     if size == 0 || size > 256 * 1024 {
-        libsyscall::close(fd);
         return None;
     }
     let mut data = alloc::vec![0u8; size];
-    let n = libsyscall::read(fd, &mut data) as usize;
-    libsyscall::close(fd);
+    let n = file.read(&mut data).ok()?;
     if n > 0 && n <= size {
         data.truncate(n);
         Some(data)

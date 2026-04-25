@@ -10,8 +10,10 @@ use crate::control::{
 use crate::controls;
 use crate::{event_loop, state, syscall};
 use alloc::format;
+use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
 
 // ── Dialog state (module-level statics) ──────────────────────────────
 
@@ -44,10 +46,18 @@ static mut DIALOG_INITIAL_DIR: [u8; 257] = [0; 257];
 static mut DIALOG_INITIAL_DIR_LEN: usize = 0;
 static mut DIALOG_DIR_COUNT: usize = 0;
 static mut DIALOG_FILE_COUNT: usize = 0;
-static mut DIALOG_PLACE_BUTTON_IDS: [ControlId; 6] = [0; 6];
+static mut DIALOG_PLACE_BUTTON_IDS: [ControlId; PLACE_COUNT] = [0; PLACE_COUNT];
+static mut DIALOG_RECENT_PLACE_PATHS: [[u8; 257]; RECENT_PLACE_COUNT] =
+    [[0; 257]; RECENT_PLACE_COUNT];
+static mut DIALOG_RECENT_PLACE_LENS: [usize; RECENT_PLACE_COUNT] = [0; RECENT_PLACE_COUNT];
+static mut DIALOG_RECENT_PLACE_COUNT: usize = 0;
 
 const PLACE_CURRENT: usize = 0;
-const PLACE_LABELS: [&[u8]; 6] = [
+const STATIC_PLACE_COUNT: usize = 6;
+const RECENT_PLACE_COUNT: usize = 4;
+const PLACE_COUNT: usize = STATIC_PLACE_COUNT + RECENT_PLACE_COUNT;
+
+const PLACE_LABELS: [&[u8]; STATIC_PLACE_COUNT] = [
     b"Working Dir",
     b"Root",
     b"Applications",
@@ -56,7 +66,7 @@ const PLACE_LABELS: [&[u8]; 6] = [
     b"Libraries",
 ];
 
-const PLACE_PATHS: [&[u8]; 6] = [
+const PLACE_PATHS: [&[u8]; STATIC_PLACE_COUNT] = [
     b"",
     b"/",
     b"/Applications",
@@ -64,6 +74,22 @@ const PLACE_PATHS: [&[u8]; 6] = [
     b"/System",
     b"/Libraries",
 ];
+
+const FILE_DIALOG_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] =
+    &[default_string("config/recent_places", "")];
+const FILE_DIALOG_MIGRATIONS: &[libconf_schema::MigrationStep<'static>] = &[];
+const FILE_DIALOG_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "system/filedialog",
+    RegistryScope::User,
+    1,
+    &["config"],
+    FILE_DIALOG_DEFAULTS,
+    FILE_DIALOG_MIGRATIONS,
+);
+
+fn dialog_schema() -> ServiceSchema<'static> {
+    ServiceSchema::new("libanyui.filedialog", &FILE_DIALOG_MANIFEST)
+}
 
 // ── Directory entry ──────────────────────────────────────────────────
 
@@ -178,11 +204,128 @@ fn set_control_disabled(id: ControlId, disabled: bool) {
     }
 }
 
+fn load_recent_places() {
+    unsafe {
+        DIALOG_RECENT_PLACE_PATHS = [[0; 257]; RECENT_PLACE_COUNT];
+        DIALOG_RECENT_PLACE_LENS = [0; RECENT_PLACE_COUNT];
+        DIALOG_RECENT_PLACE_COUNT = 0;
+    }
+    let schema = dialog_schema();
+    let _ = schema.register();
+    let Some(serialized) = schema.read_string("config/recent_places") else {
+        return;
+    };
+
+    for part in serialized.split('|') {
+        if part.is_empty() || !part.starts_with('/') {
+            continue;
+        }
+        unsafe {
+            if DIALOG_RECENT_PLACE_COUNT >= RECENT_PLACE_COUNT {
+                break;
+            }
+            let idx = DIALOG_RECENT_PLACE_COUNT;
+            let bytes = part.as_bytes();
+            let len = bytes.len().min(256);
+            DIALOG_RECENT_PLACE_PATHS[idx][..len].copy_from_slice(&bytes[..len]);
+            DIALOG_RECENT_PLACE_PATHS[idx][len] = 0;
+            DIALOG_RECENT_PLACE_LENS[idx] = len;
+            DIALOG_RECENT_PLACE_COUNT += 1;
+        }
+    }
+}
+
+fn recent_place_index(path: &[u8]) -> Option<usize> {
+    unsafe {
+        for i in 0..DIALOG_RECENT_PLACE_COUNT {
+            if DIALOG_RECENT_PLACE_LENS[i] == path.len()
+                && &DIALOG_RECENT_PLACE_PATHS[i][..DIALOG_RECENT_PLACE_LENS[i]] == path
+            {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+fn store_recent_places() {
+    let mut serialized = String::new();
+    unsafe {
+        for i in 0..DIALOG_RECENT_PLACE_COUNT {
+            if DIALOG_RECENT_PLACE_LENS[i] == 0 {
+                continue;
+            }
+            if !serialized.is_empty() {
+                serialized.push('|');
+            }
+            if let Ok(path) =
+                core::str::from_utf8(&DIALOG_RECENT_PLACE_PATHS[i][..DIALOG_RECENT_PLACE_LENS[i]])
+            {
+                serialized.push_str(path);
+            }
+        }
+    }
+    let schema = dialog_schema();
+    let _ = schema.register();
+    let _ = schema.write_string("config/recent_places", &serialized);
+}
+
+fn push_recent_place(path: &[u8]) {
+    if path.is_empty() || path[0] != b'/' {
+        return;
+    }
+    if path == b"/" || PLACE_PATHS.iter().any(|p| !p.is_empty() && *p == path) {
+        return;
+    }
+
+    unsafe {
+        if let Some(existing) = recent_place_index(path) {
+            for i in (1..=existing).rev() {
+                DIALOG_RECENT_PLACE_PATHS[i] = DIALOG_RECENT_PLACE_PATHS[i - 1];
+                DIALOG_RECENT_PLACE_LENS[i] = DIALOG_RECENT_PLACE_LENS[i - 1];
+            }
+        } else if DIALOG_RECENT_PLACE_COUNT < RECENT_PLACE_COUNT {
+            for i in (1..=DIALOG_RECENT_PLACE_COUNT).rev() {
+                DIALOG_RECENT_PLACE_PATHS[i] = DIALOG_RECENT_PLACE_PATHS[i - 1];
+                DIALOG_RECENT_PLACE_LENS[i] = DIALOG_RECENT_PLACE_LENS[i - 1];
+            }
+            DIALOG_RECENT_PLACE_COUNT += 1;
+        } else {
+            for i in (1..RECENT_PLACE_COUNT).rev() {
+                DIALOG_RECENT_PLACE_PATHS[i] = DIALOG_RECENT_PLACE_PATHS[i - 1];
+                DIALOG_RECENT_PLACE_LENS[i] = DIALOG_RECENT_PLACE_LENS[i - 1];
+            }
+        }
+
+        let len = path.len().min(256);
+        DIALOG_RECENT_PLACE_PATHS[0][..len].copy_from_slice(&path[..len]);
+        DIALOG_RECENT_PLACE_PATHS[0][len] = 0;
+        DIALOG_RECENT_PLACE_LENS[0] = len;
+    }
+    store_recent_places();
+}
+
+fn push_current_dir_recent() {
+    let path = unsafe { &DIALOG_CURRENT_DIR[..DIALOG_CURRENT_DIR_LEN] };
+    push_recent_place(path);
+}
+
 fn place_path(index: usize) -> &'static [u8] {
-    if index == PLACE_CURRENT {
-        unsafe { &DIALOG_INITIAL_DIR[..DIALOG_INITIAL_DIR_LEN] }
+    if index < STATIC_PLACE_COUNT {
+        if index == PLACE_CURRENT {
+            unsafe { &DIALOG_INITIAL_DIR[..DIALOG_INITIAL_DIR_LEN] }
+        } else {
+            PLACE_PATHS[index]
+        }
     } else {
-        PLACE_PATHS[index]
+        let recent_idx = index - STATIC_PLACE_COUNT;
+        unsafe {
+            if recent_idx < DIALOG_RECENT_PLACE_COUNT {
+                &DIALOG_RECENT_PLACE_PATHS[recent_idx][..DIALOG_RECENT_PLACE_LENS[recent_idx]]
+            } else {
+                &[]
+            }
+        }
     }
 }
 
@@ -206,14 +349,16 @@ fn sync_place_buttons() {
         if btn_id == 0 {
             continue;
         }
+        let active = place_is_active(index);
         if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == btn_id) {
-            ctrl.set_color(if place_is_active(index) { tc.accent } else { 0 });
+            ctrl.set_color(if active {
+                crate::theme::with_alpha(tc.accent, 44)
+            } else {
+                0
+            });
             if let Some(tb) = ctrl.text_base_mut() {
-                tb.text_style.text_color = if place_is_active(index) {
-                    0xFFFFFFFF
-                } else {
-                    tc.text
-                };
+                tb.text_style.text_color = if active { tc.text } else { tc.text_secondary };
+                tb.text_style.font_id = if active { 1 } else { 0 };
             }
         }
     }
@@ -573,6 +718,7 @@ fn confirm_open_folder() {
                     DIALOG_RESULT_LEN = full_len;
                     DIALOG_DISMISSED = true;
                 }
+                push_recent_place(&full[..full_len]);
                 return;
             }
         }
@@ -584,6 +730,7 @@ fn confirm_open_folder() {
         DIALOG_RESULT_LEN = len;
         DIALOG_DISMISSED = true;
     }
+    push_current_dir_recent();
 }
 
 fn confirm_open_file() {
@@ -613,6 +760,7 @@ fn confirm_open_file() {
                 DIALOG_RESULT_LEN = full_len;
                 DIALOG_DISMISSED = true;
             }
+            push_current_dir_recent();
         }
     }
 }
@@ -639,6 +787,7 @@ fn confirm_save_file() {
             DIALOG_RESULT_LEN = full_len;
             DIALOG_DISMISSED = true;
         }
+        push_current_dir_recent();
     }
 }
 
@@ -670,6 +819,7 @@ fn confirm_create_folder() {
                 DIALOG_RESULT_LEN = full_len;
                 DIALOG_DISMISSED = true;
             }
+            push_recent_place(&full[..full_len]);
         }
     }
 }
@@ -680,10 +830,14 @@ extern "C" fn dialog_up_clicked(_id: u32, _event_type: u32, _userdata: u64) {
 
 extern "C" fn dialog_place_clicked(_id: u32, _event_type: u32, userdata: u64) {
     let index = userdata as usize;
-    if index >= PLACE_PATHS.len() {
+    if index >= PLACE_COUNT {
         return;
     }
-    copy_path_to_dialog(place_path(index));
+    let path = place_path(index);
+    if path.is_empty() {
+        return;
+    }
+    copy_path_to_dialog(path);
     populate_file_list(unsafe { DIALOG_SHOW_FILES });
     refresh_dialog_state(false);
 }
@@ -798,6 +952,7 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
 
     // Initialize current directory from the process cwd.
     let cwd_len = init_dialog_dir();
+    load_recent_places();
     unsafe {
         DIALOG_SHOW_FILES = show_files;
         DIALOG_RESULT_LEN = 0;
@@ -808,11 +963,11 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
         DIALOG_CONFIRM_BTN_ID = 0;
         DIALOG_DIR_COUNT = 0;
         DIALOG_FILE_COUNT = 0;
-        DIALOG_PLACE_BUTTON_IDS = [0; 6];
+        DIALOG_PLACE_BUTTON_IDS = [0; PLACE_COUNT];
     }
 
     // ── Create standalone dialog window, centered on owner ──────────
-    // Flags: NOT_RESIZABLE(0x02) | NO_MINIMIZE(0x10) | NO_MAXIMIZE(0x20)
+    // Modal system dialogs remain non-minimizable, but file dialogs are resizable.
     let (dlg_x, dlg_y) = match owner_win_id {
         Some(id) => crate::center_on_owner(id, dlg_w, dlg_h),
         None => (-1, -1),
@@ -824,7 +979,7 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
         dlg_y,
         dlg_w,
         dlg_h,
-        0x02 | 0x10 | 0x20,
+        0x10 | 0x20,
     );
     if dialog_win_id == 0 {
         return 0;
@@ -937,9 +1092,14 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
     } else {
         0
     };
-    let mut place_btn_ids = [0u32; 6];
+    let mut place_btn_ids = [0u32; PLACE_COUNT];
     if !is_create_folder {
-        for id in &mut place_btn_ids {
+        for (index, id) in place_btn_ids.iter_mut().enumerate() {
+            if index >= STATIC_PLACE_COUNT
+                && index - STATIC_PLACE_COUNT >= unsafe { DIALOG_RECENT_PLACE_COUNT }
+            {
+                continue;
+            }
             *id = st.next_id;
             st.next_id += 1;
         }
@@ -1034,7 +1194,7 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
     add_child_to_parent(header_id, path_label_id);
 
     // ── Footer ────────────────────────────────────────────────────────
-    let footer_h = if has_name_field { 104 } else { 60 };
+    let footer_h = if has_name_field { 92 } else { 50 };
     let mut footer = controls::create_control(
         ControlKind::View,
         footer_id,
@@ -1058,13 +1218,13 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
             0,
             0,
             dlg_w,
-            42,
+            38,
             &[],
         );
         name_row.base_mut().dock = DockStyle::Top;
         name_row.base_mut().margin.left = 18;
         name_row.base_mut().margin.right = 18;
-        name_row.base_mut().margin.top = 12;
+        name_row.base_mut().margin.top = 8;
         st.controls.push(name_row);
         add_child_to_parent(footer_id, name_row_id);
 
@@ -1123,13 +1283,13 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
         footer_id,
         0,
         0,
-        94,
-        32,
+        76,
+        28,
         b"Cancel",
     );
     cancel_btn.base_mut().dock = DockStyle::Right;
     cancel_btn.base_mut().margin.right = 18;
-    cancel_btn.base_mut().margin.bottom = 10;
+    cancel_btn.base_mut().margin.bottom = 9;
     st.controls.push(cancel_btn);
     add_child_to_parent(footer_id, cancel_btn_id);
 
@@ -1139,13 +1299,13 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
         footer_id,
         0,
         0,
-        104,
-        32,
+        86,
+        28,
         confirm_label,
     );
     confirm_btn.base_mut().dock = DockStyle::Right;
     confirm_btn.base_mut().margin.right = 10;
-    confirm_btn.base_mut().margin.bottom = 10;
+    confirm_btn.base_mut().margin.bottom = 9;
     confirm_btn.set_color(tc.accent);
     st.controls.push(confirm_btn);
     add_child_to_parent(footer_id, confirm_btn_id);
@@ -1194,7 +1354,7 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
             body_id,
             0,
             0,
-            196,
+            206,
             dlg_h,
             &[],
         );
@@ -1214,7 +1374,7 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
             0,
             160,
             24,
-            b"Places",
+            b"Favorites",
         );
         sidebar_title.base_mut().dock = DockStyle::Top;
         sidebar_title.base_mut().margin.left = 14;
@@ -1227,24 +1387,44 @@ fn run_file_dialog(dialog_type: DialogType, default_name: &[u8]) -> usize {
         st.controls.push(sidebar_title);
         add_child_to_parent(sidebar_id, sidebar_title_id);
 
-        for (index, (&btn_id, &label)) in place_btn_ids.iter().zip(PLACE_LABELS.iter()).enumerate()
-        {
+        for (index, &btn_id) in place_btn_ids.iter().enumerate() {
+            if btn_id == 0 {
+                continue;
+            }
+            let path = place_path(index);
+            if path.is_empty() {
+                continue;
+            }
+            let label = if index < STATIC_PLACE_COUNT {
+                PLACE_LABELS[index]
+            } else {
+                path
+            };
             let mut btn = controls::create_control(
-                ControlKind::Button,
+                ControlKind::LinkLabel,
                 btn_id,
                 sidebar_id,
                 0,
                 0,
-                156,
-                32,
+                172,
+                28,
                 label,
             );
             btn.base_mut().dock = DockStyle::Top;
-            btn.base_mut().margin.left = 12;
-            btn.base_mut().margin.right = 12;
-            btn.base_mut().margin.bottom = 8;
+            btn.base_mut().margin.left = 10;
+            btn.base_mut().margin.right = 10;
+            btn.base_mut().margin.bottom = 4;
+            btn.base_mut().padding.left = 10;
+            btn.base_mut().style.hover_bg = crate::theme::with_alpha(tc.control_hover, 92);
+            btn.base_mut().style.radius = 6;
             if index == PLACE_CURRENT {
                 btn.base_mut().margin.top = 2;
+            } else if index == STATIC_PLACE_COUNT {
+                btn.base_mut().margin.top = 12;
+            }
+            if let Some(tb) = btn.text_base_mut() {
+                tb.text_style.font_size = 12;
+                tb.text_style.text_color = tc.text_secondary;
             }
             st.controls.push(btn);
             add_child_to_parent(sidebar_id, btn_id);

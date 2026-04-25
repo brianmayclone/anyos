@@ -91,6 +91,7 @@ struct AppState {
     side_file_mgr: file_manager::FileManager,
     split_visible: bool,
     panel_ids: [u32; 7], // Explorer, Git, Search, Run, Outline, AI, Extensions
+    run_config_dropdown_id: u32,
 }
 
 anyos_std::global_app_state!(AppState);
@@ -311,6 +312,7 @@ fn build_and_run(
             side_file_mgr: file_manager::FileManager::new(),
             split_visible: false,
             panel_ids,
+            run_config_dropdown_id: tb.run_config.id(),
         });
     }
 
@@ -364,6 +366,8 @@ fn build_and_run(
         .separator()
         .item(34, t("Stop"), 0)
         .item(35, t("Clean"), 0)
+        .separator()
+        .item(36, t("Run Configurations..."), 0)
         .end_menu()
         .menu(t("AI"))
         .item(50, t("AI Assistant"), 0)
@@ -418,8 +422,10 @@ fn build_and_run(
 
         if s.current_project.is_some() {
             s.run_panel.update(&s.task_mgr);
+            logic::commands::refresh_run_config_selector();
         } else {
             s.run_panel.show_no_project();
+            logic::commands::refresh_run_config_selector();
         }
         s.run_panel.update_debug_session(&s.debug_session);
 

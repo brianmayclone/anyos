@@ -147,6 +147,42 @@ fn rlib_interface_exports_conversion_and_comparison_trait_impls() {
 }
 
 #[test]
+fn rlib_interface_omits_inherent_impls_for_private_local_types() {
+    let source = r#"
+        mod inner {
+            pub struct PublicThing;
+
+            struct PrivateHelper;
+
+            impl PublicThing {
+                pub fn new() -> Self { PublicThing }
+            }
+
+            impl PrivateHelper {
+                pub fn leaked() -> Self { PrivateHelper }
+            }
+        }
+
+        pub use inner::PublicThing;
+    "#;
+    let options = CompileOptions {
+        input: "lib.rs".to_string(),
+        output: "libsample.rlib".to_string(),
+        emit: EmitKind::Rlib,
+        opt_level: 0,
+        crate_type: CrateType::Lib,
+        crate_name: Some("sample".to_string()),
+        ..CompileOptions::default()
+    };
+
+    let rlib = compile(source, "lib.rs", &options).expect("rlib compilation should succeed");
+    let (_, meta) = unpack_rlib(&rlib).expect("rlib should unpack");
+
+    assert!(meta.interface_source.contains("impl PublicThing"));
+    assert!(!meta.interface_source.contains("impl PrivateHelper"));
+}
+
+#[test]
 fn rlib_interface_includes_items_from_loaded_macro_rules_module() {
     let unique = format!(
         "anyrc_meta_macro_{}_{}",

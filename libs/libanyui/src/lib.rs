@@ -342,21 +342,6 @@ pub(crate) static FULLSCREEN_INFO: core::sync::atomic::AtomicU64 =
 pub(crate) static FULLSCREEN_FB_PTR: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
 
-// ── Allocator ────────────────────────────────────────────────────────
-
-libheap::dll_allocator!(
-    crate::syscall::sbrk,
-    crate::syscall::mmap,
-    crate::syscall::munmap
-);
-
-// ── Panic handler ────────────────────────────────────────────────────
-
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo) -> ! {
-    syscall::exit(1);
-}
-
 // ══════════════════════════════════════════════════════════════════════
 //  Exported C API
 // ══════════════════════════════════════════════════════════════════════

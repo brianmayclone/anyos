@@ -159,6 +159,10 @@ pub fn wire_toolbar(tb: &AppToolbar) {
     tb.btn_save.on_click(|_| commands::save());
     tb.btn_save_all.on_click(|_| commands::save_all());
     tb.btn_build.on_click(|_| commands::build());
+    tb.run_config
+        .on_selection_changed(|e| commands::select_run_config_from_toolbar(e.index as usize));
+    tb.btn_run_config
+        .on_click(|_| commands::configure_run_profiles());
     tb.btn_run.on_click(|_| commands::run());
     tb.btn_stop.on_click(|_| commands::stop());
     tb.btn_settings.on_click(|_| commands::open_settings());
@@ -190,6 +194,7 @@ pub fn wire_menu(menu: &anyui::MenuBar) {
         33 => commands::check(),
         34 => commands::stop(),
         35 => commands::clean(),
+        36 => commands::configure_run_profiles(),
         40 => commands::about(),
         41 => app().command_palette.show_commands(),
         50 => commands::switch_sidebar_view(5),
@@ -348,7 +353,7 @@ pub fn wire_run_panel() {
     app()
         .run_panel
         .btn_configure
-        .on_click(|_| commands::open_settings());
+        .on_click(|_| commands::configure_run_profiles());
 
     app().run_panel.tree.on_selection_changed(|e| {
         let s = app();

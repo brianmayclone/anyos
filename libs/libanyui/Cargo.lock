@@ -3,12 +3,35 @@
 version = 4
 
 [[package]]
-name = "libanyui"
+name = "anyos_std"
 version = "0.1.0"
 dependencies = [
  "libheap",
+]
+
+[[package]]
+name = "libanyui"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libconf_schema",
  "libimage_client",
  "libsyscall",
+]
+
+[[package]]
+name = "libconf"
+version = "0.1.0"
+dependencies = [
+ "anyos_std",
+ "libsyscall",
+]
+
+[[package]]
+name = "libconf_schema"
+version = "0.1.0"
+dependencies = [
+ "libconf",
 ]
 
 [[package]]

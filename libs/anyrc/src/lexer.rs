@@ -368,6 +368,11 @@ impl<'a> Lexer<'a> {
                 return TokenKind::FloatLit(parse_float(&text));
             }
         }
+        if self.peek_float_suffix() {
+            self.eat_float_suffix();
+            let text = self.num_text(start);
+            return TokenKind::FloatLit(parse_float(&text));
+        }
         // integer - skip suffix
         let suffix = self.eat_int_suffix();
         let text = self.num_text(start);
@@ -412,10 +417,15 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn peek_float_suffix(&self) -> bool {
+        self.peek() == b'f'
+            && ((self.peek_at(1) == b'3' && self.peek_at(2) == b'2')
+                || (self.peek_at(1) == b'6' && self.peek_at(2) == b'4'))
+    }
+
     fn eat_float_suffix(&mut self) {
-        if self.peek() == b'f' {
-            let n = self.peek_at(1);
-            if n == b'3' || n == b'6' { self.pos += 3; }
+        if self.peek_float_suffix() {
+            self.pos += 3;
         }
     }
 

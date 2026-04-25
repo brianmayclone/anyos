@@ -252,6 +252,23 @@ fn borrowck_slice_reference_can_be_reassigned_to_subslice() {
 }
 
 #[test]
+fn borrowck_str_slice_values_are_reusable() {
+    assert_borrowck_ok(r#"
+        struct String {}
+
+        impl String {
+            fn from(_: &str) -> String { String {} }
+        }
+
+        fn foo(segment: &str) {
+            let cmd = segment.trim();
+            let path = String::from(cmd);
+            let failed = String::from(cmd);
+        }
+    "#);
+}
+
+#[test]
 fn borrowck_trait_default_copy_self_is_not_moved() {
     assert_borrowck_ok(r#"
         trait Copy {}

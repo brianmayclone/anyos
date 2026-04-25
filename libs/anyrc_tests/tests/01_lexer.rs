@@ -79,11 +79,13 @@ fn lex_integer_literals() {
 
 #[test]
 fn lex_float_literal() {
-    let tokens = lex("3.14 1e10 2.5e-3");
-    assert_eq!(tokens.len(), 3);
+    let tokens = lex("3.14 1e10 2.5e-3 0f32 1f64");
+    assert_eq!(tokens.len(), 5);
     assert!(matches!(tokens[0], TokenKind::FloatLit(f) if (f - 3.14).abs() < 1e-10));
     assert!(matches!(tokens[1], TokenKind::FloatLit(f) if (f - 1e10).abs() < 1.0));
     assert!(matches!(tokens[2], TokenKind::FloatLit(f) if (f - 2.5e-3).abs() < 1e-10));
+    assert!(matches!(tokens[3], TokenKind::FloatLit(f) if f == 0.0));
+    assert!(matches!(tokens[4], TokenKind::FloatLit(f) if f == 1.0));
 }
 
 #[test]

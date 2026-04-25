@@ -211,6 +211,18 @@ fn parse_array() {
 }
 
 #[test]
+fn parse_array_repeat_with_float_suffix_literal() {
+    let expr = parse_expr("[0f32; 4]");
+    match expr {
+        Expr::ArrayRepeat(elem, len, _) => {
+            assert!(matches!(*elem, Expr::Lit(Literal::Float(f), _) if f == 0.0));
+            assert!(matches!(*len, Expr::Lit(Literal::Int(4), _)));
+        }
+        _ => panic!("expected repeat array"),
+    }
+}
+
+#[test]
 fn parse_tuple() {
     let expr = parse_expr("(1, 2, 3)");
     match expr {

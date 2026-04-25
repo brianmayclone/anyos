@@ -11,12 +11,13 @@ use alloc::vec::Vec;
 /// Detected project type — determines available tasks, build commands, and UI behavior.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ProjectType {
-    Cargo,   // Rust project (Cargo.toml)
-    CMake,   // C/C++ project (CMakeLists.txt)
-    Make,    // Makefile-based project
-    Python,  // Python project (setup.py, pyproject.toml, requirements.txt)
-    NodeJS,  // Node.js project (package.json)
-    Generic, // Unknown / single-file project
+    Cargo,      // Rust project (Cargo.toml)
+    RustFolder, // Folder containing multiple Rust/Cargo projects
+    CMake,      // C/C++ project (CMakeLists.txt)
+    Make,       // Makefile-based project
+    Python,     // Python project (setup.py, pyproject.toml, requirements.txt)
+    NodeJS,     // Node.js project (package.json)
+    Generic,    // Unknown / single-file project
 }
 
 impl ProjectType {
@@ -24,6 +25,7 @@ impl ProjectType {
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Cargo => "Cargo (Rust)",
+            Self::RustFolder => "Rust Folder",
             Self::CMake => "CMake",
             Self::Make => "Makefile",
             Self::Python => "Python",
@@ -36,6 +38,7 @@ impl ProjectType {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Cargo => "Rust",
+            Self::RustFolder => "Rust",
             Self::CMake => "C/C++",
             Self::Make => "Make",
             Self::Python => "Python",
@@ -76,6 +79,18 @@ pub struct CargoTarget {
     pub kind: TargetKind,
 }
 
+#[derive(Clone, Debug)]
+pub struct CargoRunConfig {
+    pub id: String,
+    pub name: String,
+    pub target: String,
+    pub kind: TargetKind,
+    pub profile: BuildConfiguration,
+    pub args: String,
+    pub working_dir: String,
+    pub package: String,
+}
+
 // ════════════════════════════════════════════════════════════════
 //  Workspace member (for Cargo workspaces)
 // ════════════════════════════════════════════════════════════════
@@ -85,6 +100,15 @@ pub struct WorkspaceMember {
     pub path: String,
     pub name: String,
     pub targets: Vec<CargoTarget>,
+}
+
+#[derive(Clone, Debug)]
+pub struct CargoProject {
+    pub root: String,
+    pub rel_path: String,
+    pub name: String,
+    pub targets: Vec<CargoTarget>,
+    pub run_configs: Vec<CargoRunConfig>,
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -121,6 +145,8 @@ pub struct Project {
     // Cargo-specific
     pub cargo_targets: Vec<CargoTarget>,
     pub workspace_members: Vec<WorkspaceMember>,
+    pub run_configs: Vec<CargoRunConfig>,
+    pub cargo_projects: Vec<CargoProject>,
     pub is_workspace: bool,
 
     // Makefile-specific
@@ -168,6 +194,8 @@ impl Project {
             active_configuration: BuildConfiguration::Debug,
             cargo_targets: Vec::new(),
             workspace_members: Vec::new(),
+            run_configs: Vec::new(),
+            cargo_projects: Vec::new(),
             is_workspace: false,
             make_targets: Vec::new(),
             npm_scripts: Vec::new(),
@@ -181,6 +209,14 @@ impl Project {
     }
 
     pub fn display_context(&self) -> String {
+        if self.project_type == ProjectType::RustFolder {
+            return format!(
+                "{} | {} projects | {}",
+                self.name,
+                self.cargo_projects.len(),
+                self.active_configuration.display_name()
+            );
+        }
         format!(
             "{} | {} | {}",
             self.name,
@@ -191,6 +227,11 @@ impl Project {
 
     pub fn target_count(&self) -> usize {
         self.cargo_targets.len()
+            + self
+                .cargo_projects
+                .iter()
+                .map(|project| project.targets.len() + project.run_configs.len())
+                .sum::<usize>()
             + self.make_targets.len()
             + self.npm_scripts.len()
             + self
@@ -213,6 +254,8 @@ impl Project {
         };
         self.cargo_targets.clear();
         self.workspace_members.clear();
+        self.run_configs.clear();
+        self.cargo_projects.clear();
         self.make_targets.clear();
         self.npm_scripts.clear();
         self.is_workspace = false;
@@ -223,6 +266,7 @@ impl Project {
     fn scan_metadata(&mut self) {
         match self.project_type {
             ProjectType::Cargo => self.scan_cargo(),
+            ProjectType::RustFolder => self.scan_rust_folder(),
             ProjectType::Make => self.scan_makefile(),
             ProjectType::CMake => self.scan_cmake(),
             ProjectType::NodeJS => self.scan_nodejs(),
@@ -244,6 +288,8 @@ impl Project {
         if let Some(name) = toml_value(&content, "package", "name") {
             self.name = name;
         }
+
+        self.parse_cargo_run_configs(&content);
 
         // Check for workspace
         if content.contains("[workspace]") {
@@ -323,6 +369,24 @@ impl Project {
                         });
                     }
                 }
+            }
+        }
+    }
+
+    fn parse_cargo_run_configs(&mut self, content: &str) {
+        self.run_configs.extend(parse_cargo_run_configs(content));
+    }
+
+    fn scan_rust_folder(&mut self) {
+        let roots = find_cargo_project_roots(&self.root, 3, 32);
+        if roots.is_empty() {
+            return;
+        }
+        self.name = String::from(path::basename(&self.root));
+        self.is_workspace = roots.len() > 1;
+        for project_root in roots {
+            if let Some(project) = scan_cargo_project_at(&self.root, &project_root) {
+                self.cargo_projects.push(project);
             }
         }
     }
@@ -672,6 +736,8 @@ pub fn detect_project_type(root: &str) -> ProjectType {
     // Priority order: Cargo > CMake > Make > Python > Node > Generic
     if path::exists(&format!("{}/Cargo.toml", root)) {
         ProjectType::Cargo
+    } else if has_nested_cargo_project(root, 3) {
+        ProjectType::RustFolder
     } else if path::exists(&format!("{}/CMakeLists.txt", root)) {
         ProjectType::CMake
     } else if path::exists(&format!("{}/Makefile", root))
@@ -725,6 +791,10 @@ fn has_project_marker(root: &str) -> bool {
         || path::exists(&format!("{}/pyproject.toml", root))
         || path::exists(&format!("{}/requirements.txt", root))
         || path::exists(&format!("{}/package.json", root))
+}
+
+fn has_nested_cargo_project(root: &str, max_depth: u32) -> bool {
+    !find_cargo_project_roots(root, max_depth, 1).is_empty()
 }
 
 /// Legacy compat: detect_build_system
@@ -784,4 +854,353 @@ fn parse_toml_kv(line: &str, expected_key: &str) -> Option<String> {
     } else {
         Some(String::from(val))
     }
+}
+
+fn parse_cargo_run_configs(content: &str) -> Vec<CargoRunConfig> {
+    let mut configs = Vec::new();
+    let mut current: Option<CargoRunConfig> = None;
+
+    for line in content.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            if let Some(cfg) = current.take() {
+                push_valid_run_config(&mut configs, cfg);
+            }
+            current = run_config_id_from_header(trimmed).map(|id| CargoRunConfig {
+                name: id.clone(),
+                id,
+                target: String::new(),
+                kind: TargetKind::Binary,
+                profile: BuildConfiguration::Debug,
+                args: String::new(),
+                working_dir: String::from("."),
+                package: String::new(),
+            });
+            continue;
+        }
+
+        let Some(cfg) = current.as_mut() else {
+            continue;
+        };
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(val) = parse_toml_kv(trimmed, "name") {
+            cfg.name = val;
+        } else if let Some(val) = parse_toml_kv(trimmed, "target") {
+            cfg.target = val;
+        } else if let Some(val) = parse_toml_kv(trimmed, "kind") {
+            cfg.kind = match val.as_str() {
+                "example" => TargetKind::Example,
+                "bench" => TargetKind::Bench,
+                "test" => TargetKind::Test,
+                _ => TargetKind::Binary,
+            };
+        } else if let Some(val) = parse_toml_kv(trimmed, "profile") {
+            cfg.profile = if val == "release" {
+                BuildConfiguration::Release
+            } else {
+                BuildConfiguration::Debug
+            };
+        } else if let Some(val) = parse_toml_kv(trimmed, "args") {
+            cfg.args = val;
+        } else if let Some(val) = parse_toml_kv(trimmed, "working_dir") {
+            cfg.working_dir = val;
+        } else if let Some(val) = parse_toml_kv(trimmed, "package") {
+            cfg.package = val;
+        }
+    }
+
+    if let Some(cfg) = current.take() {
+        push_valid_run_config(&mut configs, cfg);
+    }
+    configs
+}
+
+fn push_valid_run_config(out: &mut Vec<CargoRunConfig>, mut cfg: CargoRunConfig) {
+    if cfg.id.is_empty() {
+        cfg.id = run_config_id(&cfg.name);
+    }
+    if cfg.name.is_empty() {
+        cfg.name = cfg.id.clone();
+    }
+    if cfg.working_dir.is_empty() {
+        cfg.working_dir = String::from(".");
+    }
+    if !cfg.target.is_empty() {
+        out.push(cfg);
+    }
+}
+
+fn scan_cargo_project_at(workspace_root: &str, project_root: &str) -> Option<CargoProject> {
+    let manifest_path = format!("{}/Cargo.toml", project_root);
+    let content = anyos_std::fs::read_to_string(&manifest_path).ok()?;
+    let rel_path = relative_path(workspace_root, project_root);
+    let name = toml_value(&content, "package", "name")
+        .unwrap_or_else(|| String::from(path::basename(project_root)));
+    let targets = discover_cargo_targets(project_root, &content, &name);
+    let run_configs = parse_cargo_run_configs(&content);
+    Some(CargoProject {
+        root: String::from(project_root),
+        rel_path,
+        name,
+        targets,
+        run_configs,
+    })
+}
+
+fn discover_cargo_targets(root: &str, content: &str, package_name: &str) -> Vec<CargoTarget> {
+    let mut targets = Vec::new();
+    append_explicit_bin_targets(&mut targets, content);
+    if targets.iter().all(|t| t.kind != TargetKind::Binary)
+        && path::exists(&format!("{}/src/main.rs", root))
+    {
+        targets.push(CargoTarget {
+            name: String::from(package_name),
+            kind: TargetKind::Binary,
+        });
+    }
+    if path::exists(&format!("{}/src/lib.rs", root)) {
+        targets.push(CargoTarget {
+            name: String::from(package_name),
+            kind: TargetKind::Library,
+        });
+    }
+    append_rs_dir_targets(&mut targets, root, "examples", TargetKind::Example);
+    append_rs_dir_targets(&mut targets, root, "tests", TargetKind::Test);
+    append_rs_dir_targets(&mut targets, root, "benches", TargetKind::Bench);
+    targets
+}
+
+fn append_explicit_bin_targets(targets: &mut Vec<CargoTarget>, content: &str) {
+    let mut in_bin_section = false;
+    let mut current_name = String::new();
+    for line in content.split('\n') {
+        let trimmed = line.trim();
+        if trimmed == "[[bin]]" {
+            if in_bin_section && !current_name.is_empty() {
+                targets.push(CargoTarget {
+                    name: current_name.clone(),
+                    kind: TargetKind::Binary,
+                });
+            }
+            in_bin_section = true;
+            current_name.clear();
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            if in_bin_section && !current_name.is_empty() {
+                targets.push(CargoTarget {
+                    name: current_name.clone(),
+                    kind: TargetKind::Binary,
+                });
+            }
+            in_bin_section = false;
+            current_name.clear();
+            continue;
+        }
+        if in_bin_section {
+            if let Some(val) = parse_toml_kv(trimmed, "name") {
+                current_name = val;
+            }
+        }
+    }
+    if in_bin_section && !current_name.is_empty() {
+        targets.push(CargoTarget {
+            name: current_name,
+            kind: TargetKind::Binary,
+        });
+    }
+}
+
+fn append_rs_dir_targets(targets: &mut Vec<CargoTarget>, root: &str, dir: &str, kind: TargetKind) {
+    let full_dir = format!("{}/{}", root, dir);
+    if !path::is_directory(&full_dir) {
+        return;
+    }
+    if let Ok(entries) = anyos_std::fs::read_dir(&full_dir) {
+        for entry in entries {
+            if entry.name.ends_with(".rs") && entry.name != "." && entry.name != ".." {
+                let name = &entry.name[..entry.name.len() - 3];
+                targets.push(CargoTarget {
+                    name: String::from(name),
+                    kind: kind.clone(),
+                });
+            }
+        }
+    }
+}
+
+fn find_cargo_project_roots(root: &str, max_depth: u32, max_count: usize) -> Vec<String> {
+    let mut roots = Vec::new();
+    collect_cargo_project_roots(root, root, 0, max_depth, max_count, &mut roots);
+    roots
+}
+
+fn collect_cargo_project_roots(
+    workspace_root: &str,
+    dir: &str,
+    depth: u32,
+    max_depth: u32,
+    max_count: usize,
+    roots: &mut Vec<String>,
+) {
+    if roots.len() >= max_count || depth > max_depth {
+        return;
+    }
+    if dir != workspace_root && path::exists(&format!("{}/Cargo.toml", dir)) {
+        roots.push(String::from(dir));
+        return;
+    }
+    if depth == max_depth {
+        return;
+    }
+    let Ok(entries) = anyos_std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries {
+        if roots.len() >= max_count {
+            break;
+        }
+        if !entry.is_dir() || should_skip_project_dir(&entry.name) {
+            continue;
+        }
+        collect_cargo_project_roots(
+            workspace_root,
+            &format!("{}/{}", dir, entry.name),
+            depth + 1,
+            max_depth,
+            max_count,
+            roots,
+        );
+    }
+}
+
+fn should_skip_project_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "." | ".." | ".git" | "target" | "build" | "node_modules" | ".cache"
+    )
+}
+
+fn relative_path(root: &str, path: &str) -> String {
+    let prefix = if root.ends_with('/') {
+        String::from(root)
+    } else {
+        format!("{}/", root)
+    };
+    if let Some(rel) = path.strip_prefix(&prefix) {
+        String::from(rel)
+    } else {
+        String::from(path)
+    }
+}
+
+fn run_config_id_from_header(header: &str) -> Option<String> {
+    let inner = header.trim_matches(|c| c == '[' || c == ']');
+    let prefix_workspace = "workspace.metadata.anycode.run.";
+    let prefix_package = "package.metadata.anycode.run.";
+    let id = inner
+        .strip_prefix(prefix_workspace)
+        .or_else(|| inner.strip_prefix(prefix_package))?;
+    let clean = id.trim().trim_matches('"').trim_matches('\'');
+    if clean.is_empty() {
+        None
+    } else {
+        Some(String::from(clean))
+    }
+}
+
+pub fn run_config_id(name: &str) -> String {
+    let mut id = String::new();
+    for b in name.bytes() {
+        let c = match b {
+            b'a'..=b'z' | b'0'..=b'9' => b as char,
+            b'A'..=b'Z' => (b + 32) as char,
+            b'-' | b'_' => b as char,
+            _ => '-',
+        };
+        if c == '-' && id.ends_with('-') {
+            continue;
+        }
+        id.push(c);
+    }
+    while id.ends_with('-') {
+        id.pop();
+    }
+    if id.is_empty() {
+        String::from("run")
+    } else {
+        id
+    }
+}
+
+pub fn save_cargo_run_config(root: &str, config: &CargoRunConfig) -> Result<(), &'static str> {
+    let manifest_path = format!("{}/Cargo.toml", root);
+    let content =
+        anyos_std::fs::read_to_string(&manifest_path).map_err(|_| "Cargo.toml not readable")?;
+    let id = run_config_id(&config.name);
+    let header = if content.contains("[workspace]") {
+        format!("[workspace.metadata.anycode.run.{}]", id)
+    } else {
+        format!("[package.metadata.anycode.run.{}]", id)
+    };
+    let content = remove_run_config_section(&content, &id);
+    let mut out = String::from(content.trim_end());
+    out.push_str("\n\n");
+    out.push_str(&header);
+    out.push('\n');
+    out.push_str(&format!("name = \"{}\"\n", toml_escape(&config.name)));
+    out.push_str(&format!("target = \"{}\"\n", toml_escape(&config.target)));
+    out.push_str(&format!("kind = \"{}\"\n", config.kind.label()));
+    out.push_str(&format!(
+        "profile = \"{}\"\n",
+        match config.profile {
+            BuildConfiguration::Debug => "debug",
+            BuildConfiguration::Release => "release",
+        }
+    ));
+    out.push_str(&format!("args = \"{}\"\n", toml_escape(&config.args)));
+    out.push_str(&format!(
+        "working_dir = \"{}\"\n",
+        toml_escape(&config.working_dir)
+    ));
+    if !config.package.is_empty() {
+        out.push_str(&format!("package = \"{}\"\n", toml_escape(&config.package)));
+    }
+    anyos_std::fs::write_bytes(&manifest_path, out.as_bytes())
+        .map_err(|_| "Cargo.toml not writable")
+}
+
+fn remove_run_config_section(content: &str, id: &str) -> String {
+    let mut out = String::new();
+    let mut skipping = false;
+    for line in content.split('\n') {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            let matches = run_config_id_from_header(trimmed)
+                .map(|section_id| section_id == id)
+                .unwrap_or(false);
+            skipping = matches;
+        }
+        if !skipping {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn toml_escape(value: &str) -> String {
+    let mut out = String::new();
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => {}
+            _ => out.push(ch),
+        }
+    }
+    out
 }

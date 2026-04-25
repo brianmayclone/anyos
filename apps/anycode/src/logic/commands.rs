@@ -240,6 +240,102 @@ pub fn open_settings() {
     crate::ui::settings_dialog::show();
 }
 
+pub fn configure_run_profiles() {
+    crate::ui::run_config_dialog::show();
+}
+
+pub fn save_run_configuration(
+    name: String,
+    target: String,
+    kind_index: u32,
+    profile_index: u32,
+    args: String,
+    working_dir: String,
+    package: String,
+) {
+    let s = app();
+    if name.trim().is_empty() || target.trim().is_empty() {
+        s.status
+            .set_analysis_status("Run configuration needs a name and Cargo target");
+        return;
+    }
+    let Some(ref mut proj) = s.current_project else {
+        s.status.set_analysis_status("No Cargo workspace open");
+        return;
+    };
+    if proj.project_type != project::ProjectType::Cargo
+        && proj.project_type != project::ProjectType::RustFolder
+    {
+        s.status
+            .set_analysis_status("Run configurations are stored in Cargo.toml");
+        return;
+    }
+    let manifest_root = if proj.project_type == project::ProjectType::RustFolder {
+        match find_run_config_project_root(proj, &target, &package) {
+            Some(root) => root,
+            None => {
+                s.status
+                    .set_analysis_status("Select a Cargo target from a discovered Rust project");
+                return;
+            }
+        }
+    } else {
+        proj.root.clone()
+    };
+    let cfg = project::CargoRunConfig {
+        id: project::run_config_id(&name),
+        name,
+        target,
+        kind: match kind_index {
+            1 => project::TargetKind::Example,
+            2 => project::TargetKind::Test,
+            3 => project::TargetKind::Bench,
+            _ => project::TargetKind::Binary,
+        },
+        profile: if profile_index == 1 {
+            project::BuildConfiguration::Release
+        } else {
+            project::BuildConfiguration::Debug
+        },
+        args,
+        working_dir,
+        package,
+    };
+    match project::save_cargo_run_config(&manifest_root, &cfg) {
+        Ok(()) => {
+            proj.refresh();
+            s.task_mgr.detect_from_project(proj, &s.config);
+            s.task_mgr.select_run_by_name(&cfg.name);
+            s.run_panel.update(&s.task_mgr);
+            s.run_panel.update_debug_session(&s.debug_session);
+            s.sidebar.populate_project(proj, &s.task_mgr);
+            refresh_run_config_selector();
+            s.status
+                .set_analysis_status(&format!("Run configuration saved: {}", cfg.name));
+        }
+        Err(err) => s.status.set_analysis_status(err),
+    }
+}
+
+fn find_run_config_project_root(
+    proj: &project::Project,
+    target: &str,
+    package: &str,
+) -> Option<String> {
+    for cargo_project in &proj.cargo_projects {
+        if !package.is_empty() && cargo_project.name != package && cargo_project.rel_path != package
+        {
+            continue;
+        }
+        if cargo_project.targets.iter().any(|t| t.name == target) {
+            return Some(cargo_project.root.clone());
+        }
+    }
+    proj.cargo_projects
+        .first()
+        .map(|cargo_project| cargo_project.root.clone())
+}
+
 // ════════════════════════════════════════════════════════════════
 //  AI commands
 // ════════════════════════════════════════════════════════════════
@@ -1581,6 +1677,24 @@ pub fn set_build_configuration(config: project::BuildConfiguration) {
         s.run_panel.update_debug_session(&s.debug_session);
         s.sidebar.populate_project(proj, &s.task_mgr);
         s.status.set_project_type(&project_context);
+        refresh_run_config_selector();
+    }
+}
+
+pub fn refresh_run_config_selector() {
+    let s = app();
+    let dropdown = libanyui_client::Control::from_id(s.run_config_dropdown_id);
+    dropdown.set_text(&s.task_mgr.run_config_labels());
+    dropdown.set_state(s.task_mgr.selected_run_dropdown_index());
+}
+
+pub fn select_run_config_from_toolbar(index: usize) {
+    let s = app();
+    if let Some(task_idx) = s.task_mgr.run_task_index_for_dropdown(index) {
+        s.task_mgr.selected_run_task = task_idx;
+        s.run_panel.update(&s.task_mgr);
+        s.run_panel.update_debug_session(&s.debug_session);
+        refresh_run_config_selector();
     }
 }
 
@@ -1621,6 +1735,7 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     s.run_panel.update(&s.task_mgr);
     s.run_panel.update_debug_session(&s.debug_session);
     s.sidebar.populate_project(&proj, &s.task_mgr);
+    refresh_run_config_selector();
     s.status.set_project_type(&project_context);
 
     s.git_state.is_repo = git::is_git_repo(&workspace_root);

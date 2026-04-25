@@ -2339,7 +2339,7 @@ impl<'a> MirBuilder<'a> {
                 assoc,
                 "from" | "try_from" | "from_le" | "from_be" | "to_le" | "to_be"
                     | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_str_radix"
-                    | "from_u32" | "min" | "max" | "to_string"
+                    | "from_u32" | "is_whitespace" | "min" | "max" | "to_string"
             )
     }
 

@@ -133,6 +133,7 @@ fn resolve_float_primitive_assoc_items() {
             let d = f64::MIN;
             let e = f64::MIN_POSITIVE;
             let f = f64::from_bits(0);
+            let g = char::is_whitespace(' ');
         }
     "#);
 }
@@ -771,13 +772,23 @@ fn resolve_macro_generated_file_module_trait_import_in_submodule() {
             }}
         }}
 
+        pub trait StdError {{}}
+
+        #[cfg(feature = "std")]
+        declare_error_trait!(Error: Sized + StdError);
+
         #[cfg(not(feature = "std"))]
         declare_error_trait!(Error: Sized + Debug + Display);
+
+        pub trait Deserialize {{}}
+        pub trait Deserializer {{}}
+        pub struct Unexpected;
+        pub trait Visitor {{}}
     "#).unwrap();
 
     let mut impls = std::fs::File::create(tmp.join("de").join("impls.rs")).unwrap();
     write!(impls, r#"
-        use crate::de::{{Error}};
+        use crate::de::{{Deserialize, Deserializer, Error, Unexpected, Visitor}};
 
         fn visit<E>() -> E
         where
@@ -799,6 +810,7 @@ fn resolve_macro_generated_file_module_trait_import_in_submodule() {
 
     let (result, _) = resolve_file_crate(src, tmp.to_str().unwrap(), &[
         "target_os=\"anyos\"",
+        "feature=\"std\"",
     ]);
     let _ = std::fs::remove_dir_all(&tmp);
 

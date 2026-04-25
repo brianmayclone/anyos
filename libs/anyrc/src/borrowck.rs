@@ -66,7 +66,7 @@ pub fn check_borrows(
                     }
 
                     // Check operands in rvalue aren't moved
-                    check_rvalue_operands(rvalue, &moved, &body.locals, &mut errors, stmt.span);
+                    check_rvalue_operands(rvalue, &moved, &body.locals, interner, &mut errors, stmt.span);
 
                     // Check borrow-related rules
                     match rvalue {
@@ -176,9 +176,9 @@ pub fn check_borrows(
         // Check operands in terminator
         match &block.terminator {
             Terminator::Call { args, func, .. } => {
-                check_operand_not_moved(func, &moved, &body.locals, &mut errors, body.span);
+                check_operand_not_moved(func, &moved, &body.locals, interner, &mut errors, body.span);
                 for arg in args {
-                    check_operand_not_moved(arg, &moved, &body.locals, &mut errors, body.span);
+                    check_operand_not_moved(arg, &moved, &body.locals, interner, &mut errors, body.span);
                 }
                 record_operand_move(func, &mut moved, &body.locals, struct_defs, enum_variants, copy_types);
                 for arg in args {
@@ -242,20 +242,21 @@ fn check_rvalue_operands(
     rvalue: &Rvalue,
     moved: &HashSet<usize>,
     locals: &[LocalDecl],
+    interner: &Interner,
     errors: &mut Vec<Diagnostic>,
     span: Span,
 ) {
     match rvalue {
-        Rvalue::Use(op) => check_operand_not_moved(op, moved, locals, errors, span),
+        Rvalue::Use(op) => check_operand_not_moved(op, moved, locals, interner, errors, span),
         Rvalue::BinaryOp(_, l, r) => {
-            check_operand_not_moved(l, moved, locals, errors, span);
-            check_operand_not_moved(r, moved, locals, errors, span);
+            check_operand_not_moved(l, moved, locals, interner, errors, span);
+            check_operand_not_moved(r, moved, locals, interner, errors, span);
         }
-        Rvalue::UnaryOp(_, op) => check_operand_not_moved(op, moved, locals, errors, span),
-        Rvalue::Cast(op, _) => check_operand_not_moved(op, moved, locals, errors, span),
+        Rvalue::UnaryOp(_, op) => check_operand_not_moved(op, moved, locals, interner, errors, span),
+        Rvalue::Cast(op, _) => check_operand_not_moved(op, moved, locals, interner, errors, span),
         Rvalue::Aggregate(_, ops) => {
             for op in ops {
-                check_operand_not_moved(op, moved, locals, errors, span);
+                check_operand_not_moved(op, moved, locals, interner, errors, span);
             }
         }
         Rvalue::Ref(_, _) | Rvalue::Discriminant(_) | Rvalue::Len(_) | Rvalue::MakeVtable(_) => {}
@@ -266,6 +267,7 @@ fn check_operand_not_moved(
     op: &Operand,
     moved: &HashSet<usize>,
     locals: &[LocalDecl],
+    interner: &Interner,
     errors: &mut Vec<Diagnostic>,
     span: Span,
 ) {
@@ -274,7 +276,7 @@ fn check_operand_not_moved(
             if moved.contains(&place.local.0) {
                 let name = locals[place.local.0]
                     .name
-                    .map(|_| "value")
+                    .map(|sym| interner.resolve(sym))
                     .unwrap_or("value");
                 errors.push(Diagnostic::new(
                     Level::Error,
@@ -344,7 +346,7 @@ fn is_copy_type(
     copy_types: &HashSet<DefId>,
 ) -> bool {
     match ty {
-        TyKind::Bool | TyKind::Char => true,
+        TyKind::Bool | TyKind::Char | TyKind::Str => true,
         TyKind::Int(_) | TyKind::Uint(_) | TyKind::Float(_) => true,
         TyKind::Ref(_, crate::ast::Mutability::Immutable) => true,
         TyKind::Ref(_, crate::ast::Mutability::Mut) => false,

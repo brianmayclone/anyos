@@ -34,11 +34,24 @@ impl Control for LinkLabel {
     fn render(&self, surface: &crate::draw::Surface, ax: i32, ay: i32) {
         let b = &self.text_base.base;
         let p = crate::draw::scale_bounds(ax, ay, b.x, b.y, b.w, b.h);
-        let (x, y, _w, h) = (p.x, p.y, p.w, p.h);
+        let (x, y, w, h) = (p.x, p.y, p.w, p.h);
         let tc = crate::theme::colors();
         let font_size = crate::draw::scale_font(self.text_base.text_style.font_size);
         let fid = self.text_base.text_style.font_id;
         let (tw, th) = crate::draw::measure_text_ex(&self.text_base.text, fid, font_size);
+
+        let radius = if b.style.radius != 0 {
+            crate::theme::scale(b.style.radius)
+        } else {
+            0
+        }
+        .min(h.saturating_sub(2) / 2);
+        if b.color != 0 {
+            crate::draw::fill_rounded_rect(surface, x, y, w, h, radius, b.color);
+        } else if b.hovered && b.style.hover_bg != 0 && !b.disabled {
+            crate::draw::fill_rounded_rect(surface, x, y, w, h, radius, b.style.hover_bg);
+        }
+
         let text_color = if b.disabled {
             tc.text_disabled
         } else if self.text_base.text_style.text_color != 0 {
@@ -62,7 +75,7 @@ impl Control for LinkLabel {
             font_size,
         );
 
-        if b.hovered && !b.disabled {
+        if b.hovered && !b.disabled && b.style.hover_bg == 0 {
             let underline_y = ty + th as i32 + crate::theme::scale_i32(1);
             let line_h = crate::theme::scale(1).max(1);
             crate::draw::fill_rect(surface, tx, underline_y, tw, line_h, text_color);

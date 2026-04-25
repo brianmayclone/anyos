@@ -30,6 +30,8 @@ pub struct BuildConfig {
     pub env_vars: Vec<(String, String)>,
     /// Target specification (e.g. "x86_64-anyos").
     pub target: Option<String>,
+    /// Selected binary target from `--bin`.
+    pub bin: Option<String>,
 }
 
 /// Build result.
@@ -113,11 +115,24 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         let resolved_features = node.active_features.clone();
         let is_lib = node.manifest.crate_type == CrateKind::Lib;
         let norm_name = node.name.replace('-', "_");
+        let is_root = node.manifest_dir == root_dir;
 
         let output_path = if is_lib {
             format!("{}/lib{}.rlib", deps_dir, norm_name)
         } else {
             let bin_name = node.manifest.bin_name.as_deref().unwrap_or(&node.name);
+            if is_root {
+                if let Some(ref selected_bin) = config.bin {
+                    if selected_bin != bin_name {
+                        println!(
+                            "ccargo: error: binary target `{}` not found; available binary target is `{}`",
+                            selected_bin,
+                            bin_name,
+                        );
+                        return BuildResult { success: false, bin_path: None, compiled };
+                    }
+                }
+            }
             let path = format!("{}/{}", profile_dir, bin_name);
             final_bin_path = Some(path.clone());
             path

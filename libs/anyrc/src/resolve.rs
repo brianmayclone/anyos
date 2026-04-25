@@ -241,7 +241,7 @@ impl<'a> Resolver<'a> {
                     | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_bits" | "from_str_radix"
                     | "min" | "max" | "to_string"
             )
-                || (type_name_str == "char" && assoc_str == "from_u32");
+                || (type_name_str == "char" && matches!(assoc_str, "from_u32" | "is_whitespace"));
             if is_assoc_const || is_assoc_fn {
                 let full_path = format!("{}::{}", type_name_str, assoc_str);
                 let def_id = self.alloc_synthetic_def_id();
