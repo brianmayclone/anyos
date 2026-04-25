@@ -1543,10 +1543,7 @@ impl<'a> TypeChecker<'a> {
         idx_span: Span,
         expr_span: Span,
     ) -> Option<TyKind> {
-        let target_ty = match self.shallow_resolve(target_ty) {
-            TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
-            other => other,
-        };
+        let target_ty = self.index_target_ty(target_ty);
         match target_ty {
             TyKind::Array(elem, _) | TyKind::Slice(elem) => {
                 self.check_builtin_index_ty(idx_ty, idx_span, is_range);
@@ -1558,6 +1555,17 @@ impl<'a> TypeChecker<'a> {
                 Some(TyKind::Error)
             }
             _ => None,
+        }
+    }
+
+    fn index_target_ty(&self, mut ty: TyKind) -> TyKind {
+        loop {
+            match self.shallow_resolve(ty) {
+                TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
+                    ty = *inner;
+                }
+                other => return other,
+            }
         }
     }
 
@@ -2289,11 +2297,7 @@ impl<'a> TypeChecker<'a> {
                 let base_ty = self.check_expr(base);
                 let idx_ty_raw = self.check_expr(idx);
                 let idx_ty = self.shallow_resolve(idx_ty_raw);
-                let resolved = self.shallow_resolve(base_ty);
-                let resolved = match resolved {
-                    TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => self.shallow_resolve(*inner),
-                    other => other,
-                };
+                let resolved = self.index_target_ty(base_ty);
                 let is_range = matches!(idx.kind, HirExprKind::Range(_, _, _));
                 let resolved_desc = self.describe_ty(&resolved);
                 match resolved {
@@ -4071,6 +4075,7 @@ impl<'a> TypeChecker<'a> {
             .lookup("Vec")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
+            || self.is_known_type_path(def_id, "Vec")
     }
 
     fn is_string_def(&self, def_id: DefId) -> bool {
@@ -4078,6 +4083,17 @@ impl<'a> TypeChecker<'a> {
             .lookup("String")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
+            || self.is_known_type_path(def_id, "String")
+    }
+
+    fn is_known_type_path(&self, def_id: DefId, name: &str) -> bool {
+        self.resolve
+            .intrinsic_fns
+            .get(&def_id)
+            .is_some_and(|path| path == name || path.ends_with(&format!("::{name}")))
+            || self.qualified_type_names.iter().any(|(path, candidate)| {
+                *candidate == def_id && (path == name || path.ends_with(&format!("::{name}")))
+            })
     }
 
     fn is_result_def(&self, def_id: DefId) -> bool {

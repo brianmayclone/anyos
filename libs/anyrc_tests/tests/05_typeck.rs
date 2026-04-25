@@ -157,6 +157,48 @@ fn ref_to_box_str_coerces_to_ref_str() {
 }
 
 #[test]
+fn qualified_anyos_std_vec_and_string_use_builtin_coercions() {
+    assert_type_ok(r#"
+        mod anyos_std {
+            pub struct String {}
+
+            pub struct Vec<T> {}
+
+            impl<T> Vec<T> {
+                pub fn new() -> Vec<T> {
+                    Vec {}
+                }
+
+                pub fn push(&mut self, value: T) {}
+            }
+        }
+
+        fn takes_str(value: &str) {}
+        fn takes_slice(values: &[&str]) {}
+
+        fn main() {
+            let s = anyos_std::String {};
+            takes_str(&s);
+
+            let mut values: anyos_std::Vec<&str> = anyos_std::Vec::new();
+            values.push("hello");
+            takes_slice(&values);
+
+            let first: &str = values[0];
+        }
+    "#);
+}
+
+#[test]
+fn str_range_indexing_autoderefs_nested_refs() {
+    assert_type_ok(r#"
+        fn suffix(name: &&str, pos: usize) -> &str {
+            &name[pos + 1..]
+        }
+    "#);
+}
+
+#[test]
 fn question_operator_unwraps_option_for_tuple_patterns() {
     assert_type_ok(r#"
         enum Option<T> {

@@ -2059,7 +2059,10 @@ fn try_expand_to_items(def: &MacroDef, args: &[TokenTree], interner: &mut Intern
             }
             let mut parser = Parser::new(&src, interner);
             let krate = parser.parse_crate();
-            return Some(krate.items);
+            if !krate.items.is_empty() || src.trim().is_empty() {
+                return Some(krate.items);
+            }
+            return None;
         }
     }
     None
