@@ -79,6 +79,75 @@ fn primitive_assoc_try_from_is_result_typed() {
 }
 
 #[test]
+fn primitive_endian_assoc_methods_are_typed() {
+    assert_type_ok("fn main() { let n: u16 = 7; let x: u16 = u16::from_le(n); }");
+}
+
+#[test]
+fn primitive_float_epsilon_consts_are_typed() {
+    assert_type_ok("fn main() { let x: f64 = f64::EPSILON; let y: f32 = f32::EPSILON; }");
+}
+
+#[test]
+fn string_like_to_string_and_deref_are_typed() {
+    assert_type_ok(r#"
+        struct String {}
+
+        fn take_str(_: &str) {}
+
+        fn main() {
+            let s: &str = "hello";
+            let owned: String = s.to_string();
+            let owned_again: String = str::to_string(s);
+            take_str(&*owned);
+        }
+    "#);
+}
+
+#[test]
+fn intrinsic_box_preserves_type_argument_for_deref() {
+    assert_type_ok(r#"
+        fn take_boxed(value: Box<u8>) {
+            let byte: u8 = *value;
+        }
+
+        fn box_new_preserves_inner_type() {
+            let value = Box::new(7u8);
+            let byte: u8 = *value;
+        }
+    "#);
+}
+
+#[test]
+fn match_ref_enum_variant_fields_bind_by_reference() {
+    assert_type_ok(r#"
+        enum Pattern {
+            Ident(Option<Box<Pattern>>),
+            Or(Vec<Pattern>),
+            Other,
+        }
+
+        fn take_pattern_ref(_: &Pattern) {}
+
+        fn walk(pat: &Pattern) {
+            match pat {
+                Pattern::Ident(sub) => {
+                    if let Some(sub) = sub {
+                        take_pattern_ref(sub);
+                    }
+                }
+                Pattern::Or(pats) => {
+                    for pat in pats {
+                        take_pattern_ref(pat);
+                    }
+                }
+                Pattern::Other => {}
+            }
+        }
+    "#);
+}
+
+#[test]
 fn return_before_nested_item_keeps_block_diverging() {
     assert_type_ok(r#"
         struct Error {}
@@ -185,6 +254,37 @@ fn qualified_anyos_std_vec_and_string_use_builtin_coercions() {
             takes_slice(&values);
 
             let first: &str = values[0];
+        }
+    "#);
+}
+
+#[test]
+fn qualified_anyos_std_consts_resolve_from_module_interface() {
+    assert_type_ok(r#"
+        mod anyos_std {
+            pub mod sys {
+                pub const CON_MODE_HIDE_CURSOR: u32 = 1;
+                pub const CON_MODE_NO_AUTOSCROLL: u32 = 2;
+            }
+
+            pub mod net {
+                pub const NET_TRACE_ENTRY_SIZE: usize = 24;
+                pub const NET_TRACE_DIR_RX: u8 = 0;
+                pub const NET_TRACE_DIR_TX: u8 = 1;
+            }
+        }
+
+        struct Entry {
+            direction: u8,
+        }
+
+        fn main() {
+            let flags: u32 =
+                anyos_std::sys::CON_MODE_HIDE_CURSOR
+                | anyos_std::sys::CON_MODE_NO_AUTOSCROLL;
+            let mut raw = [0u8; anyos_std::net::NET_TRACE_ENTRY_SIZE * 4];
+            let entry = Entry { direction: anyos_std::net::NET_TRACE_DIR_RX };
+            let is_tx = entry.direction == anyos_std::net::NET_TRACE_DIR_TX;
         }
     "#);
 }

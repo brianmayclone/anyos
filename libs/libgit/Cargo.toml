@@ -3,9 +3,19 @@ name = "libgit"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["anyos-libstd"]
+anyos-libstd = ["dep:std"]
+host = [
+  "anyos_std/host",
+  "dynlink/host",
+  "libhttp_client/host",
+  "libtls/host",
+]
+
 [dependencies]
 anyos_std = { path = "../stdlib" }
-std = { package = "libstd", path = "../libstd" }
+std = { package = "libstd", path = "../libstd", optional = true }
 libtls = { path = "../libtls" }
 libhttp_client = { path = "../libhttp_client" }
 dynlink = { path = "../dynlink" }

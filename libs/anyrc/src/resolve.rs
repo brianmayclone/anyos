@@ -230,13 +230,14 @@ impl<'a> Resolver<'a> {
                 | ("i8", "MAX") | ("i16", "MAX") | ("i32", "MAX") | ("i64", "MAX") | ("i128", "MAX") | ("isize", "MAX")
                 | ("i8", "MIN") | ("i16", "MIN") | ("i32", "MIN") | ("i64", "MIN") | ("i128", "MIN") | ("isize", "MIN")
                 | ("u8", "MIN") | ("u16", "MIN") | ("u32", "MIN") | ("u64", "MIN") | ("u128", "MIN") | ("usize", "MIN")
-                | ("f32", "INFINITY") | ("f32", "NEG_INFINITY") | ("f32", "NAN")
-                | ("f64", "INFINITY") | ("f64", "NEG_INFINITY") | ("f64", "NAN")
+                | ("f32", "INFINITY") | ("f32", "NEG_INFINITY") | ("f32", "NAN") | ("f32", "EPSILON")
+                | ("f64", "INFINITY") | ("f64", "NEG_INFINITY") | ("f64", "NAN") | ("f64", "EPSILON")
             );
             let is_assoc_fn = matches!(
                 assoc_str,
-                "from" | "try_from" | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes"
-                    | "from_str_radix" | "min" | "max"
+                "from" | "try_from" | "from_le" | "from_be" | "to_le" | "to_be"
+                    | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_str_radix"
+                    | "min" | "max" | "to_string"
             )
                 || (type_name_str == "char" && assoc_str == "from_u32");
             if is_assoc_const || is_assoc_fn {
@@ -575,6 +576,12 @@ impl<'a> Resolver<'a> {
         let (&first, rest) = path.split_first()?;
         let first_str = self.interner.resolve(first);
         if Self::is_compiler_known_external_crate(first_str) {
+            if self
+                .lookup(first, Namespace::Type)
+                .is_some_and(|def_id| self.module_scopes.contains_key(&def_id))
+            {
+                return None;
+            }
             return Some(self.path_to_string(path));
         }
 
@@ -1410,6 +1417,9 @@ impl<'a> Resolver<'a> {
         // Handle sysroot and anyOS runtime crate paths as compiler-known intrinsics.
         if path.segments.len() >= 2
             && Self::is_compiler_known_external_crate(name_str.as_str())
+            && !self
+                .lookup(name, Namespace::Type)
+                .is_some_and(|def_id| self.module_scopes.contains_key(&def_id))
         {
             let full_path = path.segments.iter()
                 .map(|s| self.interner.resolve(s.ident).to_string())

@@ -2287,8 +2287,9 @@ impl<'a> MirBuilder<'a> {
         is_primitive
             && matches!(
                 assoc,
-                "from" | "try_from" | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes"
-                    | "from_str_radix" | "from_u32" | "min" | "max"
+                "from" | "try_from" | "from_le" | "from_be" | "to_le" | "to_be"
+                    | "from_le_bytes" | "from_be_bytes" | "from_ne_bytes" | "from_str_radix"
+                    | "from_u32" | "min" | "max" | "to_string"
             )
     }
 

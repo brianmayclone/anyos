@@ -1,11 +1,11 @@
 //! Working tree checkout — materialize a tree into the filesystem.
 
-use alloc::string::String;
-use alloc::format;
-use crate::oid::Oid;
 use crate::object::ObjectType;
+use crate::oid::Oid;
+use crate::repo::{Error, Repository, Result};
 use crate::tree;
-use crate::repo::{Repository, Result, Error};
+use alloc::format;
+use alloc::string::String;
 use std::path::Path;
 
 /// Checkout a tree object into the working directory.
@@ -48,10 +48,16 @@ fn checkout_tree_recursive(repo: &Repository, tree_oid: &Oid, prefix: &str) -> R
 
             // Set executable permission if needed
             if entry.is_executable() {
-                let _ = std::fs::set_permissions(
-                    &file_path,
-                    std::fs::Permissions { mode: 0o755 },
-                );
+                #[cfg(feature = "host")]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(
+                        &file_path,
+                        std::fs::Permissions::from_mode(0o755),
+                    );
+                }
+                #[cfg(not(feature = "host"))]
+                let _ = std::fs::set_permissions(&file_path, std::fs::Permissions { mode: 0o755 });
             }
 
             count += 1;
@@ -93,12 +99,8 @@ fn build_index_recursive(
         } else {
             // Read blob to get its size
             let blob = repo.read_object(&entry.oid)?;
-            let index_entry = crate::index::IndexEntry::new(
-                &path,
-                entry.oid,
-                entry.mode,
-                blob.data.len() as u32,
-            );
+            let index_entry =
+                crate::index::IndexEntry::new(&path, entry.oid, entry.mode, blob.data.len() as u32);
             index.add(index_entry);
         }
     }
@@ -110,8 +112,7 @@ fn build_index_recursive(
 pub fn checkout_head(repo: &Repository) -> Result<u32> {
     let head_oid = repo.head()?;
     let commit_obj = repo.read_object(&head_oid)?;
-    let commit = crate::object::Commit::parse(&commit_obj.data)
-        .ok_or(Error::InvalidObject)?;
+    let commit = crate::object::Commit::parse(&commit_obj.data).ok_or(Error::InvalidObject)?;
 
     let count = checkout_tree(repo, &commit.tree)?;
 

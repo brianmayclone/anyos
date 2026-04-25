@@ -229,7 +229,7 @@ impl Config {
             self.cxx_path = find_first_in_path(&["c++", "g++", "clang++"]);
         }
         if self.git_path.is_empty() {
-            self.git_path = find_in_path("git");
+            self.git_path = find_first_in_path(&["agit", "git", "cgit"]);
         }
     }
 

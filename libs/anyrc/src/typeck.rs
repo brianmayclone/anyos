@@ -678,6 +678,18 @@ impl<'a> TypeChecker<'a> {
             "i64::from" => Some(TyKind::Int(IntTy::I64)),
             "i128::from" => Some(TyKind::Int(IntTy::I128)),
             "isize::from" => Some(TyKind::Int(IntTy::Isize)),
+            "u8::from_le" | "u8::from_be" | "u8::to_le" | "u8::to_be" => Some(TyKind::Uint(UintTy::U8)),
+            "u16::from_le" | "u16::from_be" | "u16::to_le" | "u16::to_be" => Some(TyKind::Uint(UintTy::U16)),
+            "u32::from_le" | "u32::from_be" | "u32::to_le" | "u32::to_be" => Some(TyKind::Uint(UintTy::U32)),
+            "u64::from_le" | "u64::from_be" | "u64::to_le" | "u64::to_be" => Some(TyKind::Uint(UintTy::U64)),
+            "u128::from_le" | "u128::from_be" | "u128::to_le" | "u128::to_be" => Some(TyKind::Uint(UintTy::U128)),
+            "usize::from_le" | "usize::from_be" | "usize::to_le" | "usize::to_be" => Some(TyKind::Uint(UintTy::Usize)),
+            "i8::from_le" | "i8::from_be" | "i8::to_le" | "i8::to_be" => Some(TyKind::Int(IntTy::I8)),
+            "i16::from_le" | "i16::from_be" | "i16::to_le" | "i16::to_be" => Some(TyKind::Int(IntTy::I16)),
+            "i32::from_le" | "i32::from_be" | "i32::to_le" | "i32::to_be" => Some(TyKind::Int(IntTy::I32)),
+            "i64::from_le" | "i64::from_be" | "i64::to_le" | "i64::to_be" => Some(TyKind::Int(IntTy::I64)),
+            "i128::from_le" | "i128::from_be" | "i128::to_le" | "i128::to_be" => Some(TyKind::Int(IntTy::I128)),
+            "isize::from_le" | "isize::from_be" | "isize::to_le" | "isize::to_be" => Some(TyKind::Int(IntTy::Isize)),
             "u8::try_from" => self.result_of(TyKind::Uint(UintTy::U8)),
             "u16::try_from" => self.result_of(TyKind::Uint(UintTy::U16)),
             "u32::try_from" => self.result_of(TyKind::Uint(UintTy::U32)),
@@ -707,6 +719,7 @@ impl<'a> TypeChecker<'a> {
             "core::any::type_name" | "any::type_name" => {
                 Some(TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable))
             }
+            "str::to_string" => self.string_ty(),
             "core::hint::unreachable_unchecked" | "hint::unreachable_unchecked" => {
                 Some(TyKind::Never)
             }
@@ -1893,6 +1906,19 @@ impl<'a> TypeChecker<'a> {
                     crate::ast::UnOp::Deref => {
                         match self.shallow_resolve(ty) {
                             TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => *inner,
+                            TyKind::Adt(def_id, substs) => {
+                                let adt_ty = TyKind::Adt(def_id, substs);
+                                if self.is_string_def(def_id)
+                                    || self.describe_ty(&adt_ty).rsplit("::").next() == Some("String")
+                                {
+                                    TyKind::Str
+                                } else {
+                                    self.lookup_deref_target(&adt_ty).unwrap_or_else(|| {
+                                        self.error(expr.span, "cannot dereference this type");
+                                        TyKind::Error
+                                    })
+                                }
+                            }
                             _ => {
                                 self.error(expr.span, "cannot dereference this type");
                                 TyKind::Error
@@ -1938,7 +1964,7 @@ impl<'a> TypeChecker<'a> {
                     TyKind::FnDef(def_id, _) => {
                         // Intrinsic functions: accept any args
                         if let Some(intrinsic_path) = self.resolve.intrinsic_fns.get(&def_id).cloned() {
-                            for a in args { self.check_expr(a); }
+                            let arg_tys = args.iter().map(|a| self.check_expr(a)).collect::<Vec<_>>();
                             if let Some(ty) = self.intrinsic_call_return_type(&intrinsic_path) {
                                 return ty;
                             }
@@ -1952,6 +1978,9 @@ impl<'a> TypeChecker<'a> {
                                                 type_def_id,
                                                 vec![self.fresh_infer(InferKind::General)],
                                             );
+                                        }
+                                        if type_name == "Box" && arg_tys.len() == 1 {
+                                            return TyKind::Adt(type_def_id, vec![arg_tys[0].clone()]);
                                         }
                                         return TyKind::Adt(type_def_id, vec![]);
                                     }
@@ -2256,14 +2285,20 @@ impl<'a> TypeChecker<'a> {
                         substs[0].clone()
                     }
                     TyKind::Adt(def_id, substs) => {
-                        self.lookup_deref_target(&TyKind::Adt(def_id, substs.clone()))
-                            .unwrap_or_else(|| {
+                        let adt_ty = TyKind::Adt(def_id, substs);
+                        if self.is_string_def(def_id)
+                            || self.describe_ty(&adt_ty).rsplit("::").next() == Some("String")
+                        {
+                            TyKind::Str
+                        } else {
+                            self.lookup_deref_target(&adt_ty).unwrap_or_else(|| {
                                 self.error(expr.span, &format!(
                                     "cannot dereference this type: {}",
-                                    self.describe_ty(&TyKind::Adt(def_id, substs))
+                                    self.describe_ty(&adt_ty)
                                 ));
                                 TyKind::Error
                             })
+                        }
                     }
                     other => {
                         if Self::is_deferred_ty(&other) {
@@ -2504,6 +2539,9 @@ impl<'a> TypeChecker<'a> {
                         }
                         "trim_matches" | "trim_start_matches" | "trim_end_matches" if args.len() == 1 => {
                             return TyKind::Ref(Box::new(TyKind::Str), Mutability::Immutable);
+                        }
+                        "to_string" | "to_owned" if args.is_empty() => {
+                            return self.string_ty().unwrap_or_else(|| self.fresh_infer(InferKind::General));
                         }
                         "as_bytes" if args.is_empty() => {
                             return TyKind::Ref(
@@ -3909,11 +3947,11 @@ impl<'a> TypeChecker<'a> {
                 } else {
                     if let Some(full_path) = &full_path {
                         if let Some(def_id) = self.lookup_intrinsic_def_by_path(full_path) {
-                            return TyKind::Adt(def_id, vec![]);
+                            return TyKind::Adt(def_id, self.type_args_from_segment(last_segment));
                         }
                     }
                     if let Some(def_id) = self.lookup_intrinsic_def_by_path(name) {
-                        return TyKind::Adt(def_id, vec![]);
+                        return TyKind::Adt(def_id, self.type_args_from_segment(last_segment));
                     }
                     TyKind::Error
                 }
@@ -4060,8 +4098,12 @@ impl<'a> TypeChecker<'a> {
             "i64::MAX" | "i64::MIN" => Some(TyKind::Int(IntTy::I64)),
             "i128::MAX" | "i128::MIN" => Some(TyKind::Int(IntTy::I128)),
             "isize::MAX" | "isize::MIN" => Some(TyKind::Int(IntTy::Isize)),
-            "f32::INFINITY" | "f32::NEG_INFINITY" | "f32::NAN" => Some(TyKind::Float(FloatTy::F32)),
-            "f64::INFINITY" | "f64::NEG_INFINITY" | "f64::NAN" => Some(TyKind::Float(FloatTy::F64)),
+            "f32::INFINITY" | "f32::NEG_INFINITY" | "f32::NAN" | "f32::EPSILON" => {
+                Some(TyKind::Float(FloatTy::F32))
+            }
+            "f64::INFINITY" | "f64::NEG_INFINITY" | "f64::NAN" | "f64::EPSILON" => {
+                Some(TyKind::Float(FloatTy::F64))
+            }
             "anyos_std::fs::O_READ" | "anyos_std::fs::O_WRITE" | "anyos_std::fs::O_CREATE"
             | "anyos_std::fs::O_TRUNC" | "anyos_std::fs::O_APPEND" | "anyos_std::fs::O_SYNC" => {
                 Some(TyKind::Uint(UintTy::U32))
@@ -4075,6 +4117,7 @@ impl<'a> TypeChecker<'a> {
             .lookup("Vec")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
+            || self.local_type_name_is(def_id, "Vec")
             || self.is_known_type_path(def_id, "Vec")
     }
 
@@ -4083,7 +4126,15 @@ impl<'a> TypeChecker<'a> {
             .lookup("String")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
+            || self.local_type_name_is(def_id, "String")
             || self.is_known_type_path(def_id, "String")
+    }
+
+    fn string_ty(&self) -> Option<TyKind> {
+        self.interner
+            .lookup("String")
+            .and_then(|sym| self.type_name_to_def.get(&sym).copied())
+            .map(|def_id| TyKind::Adt(def_id, vec![]))
     }
 
     fn is_known_type_path(&self, def_id: DefId, name: &str) -> bool {
@@ -4094,6 +4145,12 @@ impl<'a> TypeChecker<'a> {
             || self.qualified_type_names.iter().any(|(path, candidate)| {
                 *candidate == def_id && (path == name || path.ends_with(&format!("::{name}")))
             })
+    }
+
+    fn local_type_name_is(&self, def_id: DefId, name: &str) -> bool {
+        self.type_name_to_def
+            .iter()
+            .any(|(sym, candidate)| *candidate == def_id && self.interner.resolve(*sym) == name)
     }
 
     fn is_result_def(&self, def_id: DefId) -> bool {
@@ -4115,6 +4172,8 @@ impl<'a> TypeChecker<'a> {
             .lookup("Box")
             .and_then(|sym| self.type_name_to_def.get(&sym).copied())
             == Some(def_id)
+            || self.local_type_name_is(def_id, "Box")
+            || self.is_known_type_path(def_id, "Box")
     }
 
     fn is_nonzero_usize_def(&self, def_id: DefId) -> bool {

@@ -269,7 +269,7 @@ pub fn check_prerequisites() -> Vec<ToolStatus> {
         ("cc", "C Compiler", &["cc", "gcc", "clang"]),
         ("c++", "C++ Compiler", &["c++", "g++", "clang++"]),
         ("make", "Make Build Tool", &["make"]),
-        ("git", "Git Version Control", &["git", "cgit", "agit"]),
+        ("agit", "Git Version Control", &["agit", "git", "cgit"]),
         ("nasm", "NASM Assembler", &["nasm"]),
     ];
 

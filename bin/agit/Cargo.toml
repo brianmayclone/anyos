@@ -3,14 +3,25 @@ name = "agit"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["anyos-libstd"]
+anyos-libstd = [
+  "dep:std",
+  "libgit/anyos-libstd",
+]
+host = [
+  "anyos_std/host",
+  "libgit/host",
+]
+
 [[bin]]
 name = "cgit"
 path = "src/main.rs"
 
 [dependencies]
 anyos_std = { path = "../../libs/stdlib" }
-std = { package = "libstd", path = "../../libs/libstd" }
-libgit = { path = "../../libs/libgit" }
+std = { package = "libstd", path = "../../libs/libstd", optional = true }
+libgit = { path = "../../libs/libgit", default-features = false }
 
 [profile.dev]
 panic = "abort"

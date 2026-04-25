@@ -46,3 +46,4 @@ x
 *.backup
 *.old
 *.orig
+*.lock
