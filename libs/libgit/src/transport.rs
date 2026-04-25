@@ -257,26 +257,16 @@ pub fn fetch_pack_streamed(
     let mut prefix = [0u8; 4];
     let mut skipped = 0;
     let mut debug_buf = Vec::new();
+    if !stream.read_exact(&mut prefix) {
+        return Err(Error::Other(String::from("EOF before PACK header")));
+    }
+    debug_buf.extend_from_slice(&prefix);
     loop {
-        if !stream.read_exact(&mut prefix) {
-            if crate::pack::verbose() {
-                anyos_std::println!("[fetch] EOF before PACK. Got {} bytes: {:?}",
-                    debug_buf.len(),
-                    core::str::from_utf8(&debug_buf).unwrap_or("(binary)"));
-            }
-            return Err(Error::Other(String::from("EOF before PACK header")));
-        }
-        if skipped == 0 {
-            debug_buf.extend_from_slice(&prefix);
-        }
         if &prefix == b"PACK" {
             break;
         }
-        // Not PACK yet — skip one byte and try again (slide window)
+        // Not PACK yet: advance one byte and keep the 4-byte rolling window.
         skipped += 1;
-        if skipped <= 256 {
-            debug_buf.push(prefix[0]);
-        }
         prefix[0] = prefix[1];
         prefix[1] = prefix[2];
         prefix[2] = prefix[3];

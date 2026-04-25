@@ -12,7 +12,8 @@ Standalone Linux-Build der anyOS Surf Rendering-Engine. Rendert Webseiten mit de
 - **CSS**: Cascade, Selectors, Flexbox, Grid, Table-Layout
 - **DOM-basierte Ressourcenerkennung**: CSS, Bilder, @font-face, @import — identisch zu anyOS Surf
 - **Screenshot-Modus**: Headless Screenshots (Viewport, Full-Page, Y-Range)
-- **Interaktiver Modus**: minifb-Fenster mit Mausrad-Scrolling
+- **Interaktiver Modus**: egui-Fenster mit URL-Leiste, Mausrad-Scrolling und Screenshot-Button
+- **Fernsteuerung fuer Hosttests**: localhost-Control-Port mit `open`, `reload`, `scroll`, `screenshot`, `fullpage`, `status`
 
 ## Voraussetzungen
 
@@ -36,7 +37,7 @@ Wichtig: Wird mit `cargo +stable` gebaut. Die anyOS-spezifischen `build-std`-Fla
 ### Interaktiver Modus (Fenster)
 
 ```bash
-# Standard-Viewport (1024x768)
+# Standard-Viewport (1024x768), egui ist der Standard
 ./build.sh run https://www.wikipedia.de
 
 # Benutzerdefinierter Viewport
@@ -44,18 +45,47 @@ Wichtig: Wird mit `cargo +stable` gebaut. Die anyOS-spezifischen `build-std`-Fla
 
 # Lokale HTML-Datei
 ./build.sh run file:///tmp/test.html
+
+# Ohne Start-URL oeffnet Surf Host eine lokale about:blank-Startseite
+cargo +stable run --release
+
+# Legacy-Fenster ohne egui
+./build.sh run https://www.wikipedia.de --minifb
 ```
 
-**Tastenbelegung im Fenster:**
+**Fensterbedienung:**
 
-| Taste     | Funktion                          |
-|-----------|-----------------------------------|
-| Mausrad   | Scrollen                          |
-| F5        | Screenshot (aktueller Viewport)   |
-| F6        | Full-Page Screenshot (ganze Seite)|
-| Esc       | Beenden                           |
+- URL in die Leiste eingeben und Enter oder `Go` druecken
+- `Reload` laedt die aktuelle Seite neu
+- Mausrad scrollt den gerenderten WebView
+- `Shot` speichert den aktuellen Viewport als `screenshot_1.png`, `screenshot_2.png`, ...
+- Links und einfache Formulare werden an die libwebview-Hit-Tests weitergereicht
 
-Screenshots werden als `screenshot_1.png`, `screenshot_2.png`, ... im aktuellen Verzeichnis gespeichert.
+Der alte minifb-Modus bleibt mit `--minifb` verfuegbar. Dort gelten weiterhin F5/F6/Esc.
+
+### Fernsteuerung
+
+Im egui-Modus lauscht surf-host standardmaessig auf `127.0.0.1:8787`. Hosttests koennen pro TCP-Verbindung genau einen Textbefehl senden:
+
+```bash
+printf 'open file:///tmp/test.html\n' | nc 127.0.0.1 8787
+printf 'scroll 800\n' | nc 127.0.0.1 8787
+printf 'screenshot /tmp/surf.png\n' | nc 127.0.0.1 8787
+printf 'status\n' | nc 127.0.0.1 8787
+```
+
+Befehle:
+
+| Befehl             | Wirkung                                  |
+|--------------------|-------------------------------------------|
+| `open <url>`       | Navigiert zur URL                         |
+| `reload`           | Laedt die aktuelle Seite neu              |
+| `scroll <y>`       | Setzt den Dokument-Scrolloffset           |
+| `screenshot <png>` | Speichert den aktuellen Viewport          |
+| `fullpage <png>`   | Speichert die gesamte Dokumenthoehe       |
+| `status`           | Gibt URL, Viewport und Dokumenthoehe aus  |
+
+Mit `--remote-listen <addr>` kann der Port geaendert werden, mit `--no-remote` wird er abgeschaltet.
 
 ### Screenshot-Modus (Headless)
 
@@ -99,7 +129,7 @@ cargo +stable build --release
 **CLI-Optionen:**
 
 ```
-surf-host <url> [options]
+surf-host [url] [options]
 
   --screenshot <pfad.png>   Screenshot speichern und beenden
   --fullpage                Gesamte Seitenhoehe erfassen
@@ -107,6 +137,9 @@ surf-host <url> [options]
   --delay <ms>              Wartezeit vor Screenshot
   --width <px>              Viewport-Breite (Default: 1024)
   --height <px>             Viewport-Hoehe (Default: 768)
+  --minifb                  Legacy-minifb-Fenster statt egui
+  --remote-listen <addr>    Fernsteuer-Port (Default: 127.0.0.1:8787)
+  --no-remote               Fernsteuer-Port deaktivieren
 ```
 
 ## Architektur

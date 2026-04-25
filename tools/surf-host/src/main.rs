@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::{TcpListener, TcpStream};
+use eframe::egui;
 use minifb::{Key, KeyRepeat, Window, WindowOptions, MouseMode, MouseButton};
 
 // ── CLI args ─────────────────────────────────────────────────────────────────
@@ -371,6 +372,413 @@ fn debug_log_image_bounds(wv: &mut libwebview::WebView) {
 
 }
 
+// ── egui host shell ─────────────────────────────────────────────────────────
+
+enum RemoteCommand {
+    Open(String),
+    Reload,
+    Scroll(i32),
+    Screenshot(String),
+    FullPage(String),
+    Status,
+}
+
+struct RemoteRequest {
+    command: RemoteCommand,
+    reply: TcpStream,
+}
+
+struct BrowserHostApp {
+    wv: libwebview::WebView,
+    pending: PendingImages,
+    current_url: String,
+    url_input: String,
+    framebuffer: Vec<u32>,
+    scroll_y: i32,
+    texture: Option<egui::TextureHandle>,
+    focused_control: Option<(u32, String)>,
+    remote_rx: Option<mpsc::Receiver<RemoteRequest>>,
+    screenshot_count: u32,
+    status: String,
+    needs_redraw: bool,
+}
+
+impl BrowserHostApp {
+    fn new(
+        wv: libwebview::WebView,
+        pending: PendingImages,
+        current_url: String,
+        remote_rx: Option<mpsc::Receiver<RemoteRequest>>,
+    ) -> Self {
+        let width = wv.viewport_width().max(1) as u32;
+        let height = wv.viewport_height().max(1);
+        Self {
+            wv,
+            pending,
+            current_url: current_url.clone(),
+            url_input: current_url,
+            framebuffer: vec![0xFFFFFFFFu32; (width * height) as usize],
+            scroll_y: 0,
+            texture: None,
+            focused_control: None,
+            remote_rx,
+            screenshot_count: 0,
+            status: String::from("ready"),
+            needs_redraw: true,
+        }
+    }
+
+    fn navigate(&mut self, url: &str) {
+        let abs = if self.current_url == "about:blank" {
+            resolve_url("https://example.com/", url)
+        } else {
+            resolve_url(&self.current_url, url)
+        };
+        self.status = format!("loading {}", abs);
+        self.current_url = abs.clone();
+        self.url_input = abs.clone();
+        self.focused_control = None;
+        self.pending = load_page(&mut self.wv, &abs);
+        self.scroll_y = 0;
+        self.needs_redraw = true;
+        self.status = format!("loaded {}", abs);
+    }
+
+    fn reload(&mut self) {
+        let url = self.current_url.clone();
+        self.navigate(&url);
+    }
+
+    fn clamp_scroll(&mut self) {
+        let max_scroll = (self.wv.total_height() - self.wv.viewport_height() as i32).max(0);
+        self.scroll_y = self.scroll_y.clamp(0, max_scroll);
+    }
+
+    fn process_remote(&mut self, ctx: &egui::Context) {
+        let Some(rx) = self.remote_rx.take() else { return; };
+        while let Ok(mut req) = rx.try_recv() {
+            let response = match req.command {
+                RemoteCommand::Open(url) => {
+                    self.navigate(&url);
+                    format!("OK open {}\n", self.current_url)
+                }
+                RemoteCommand::Reload => {
+                    self.reload();
+                    format!("OK reload {}\n", self.current_url)
+                }
+                RemoteCommand::Scroll(y) => {
+                    self.scroll_y = y;
+                    self.clamp_scroll();
+                    self.needs_redraw = true;
+                    format!("OK scroll {}\n", self.scroll_y)
+                }
+                RemoteCommand::Screenshot(path) => {
+                    self.render_framebuffer();
+                    save_screenshot(
+                        &self.framebuffer,
+                        self.wv.viewport_width().max(1) as u32,
+                        self.wv.viewport_height().max(1),
+                        &path,
+                    );
+                    format!("OK screenshot {}\n", path)
+                }
+                RemoteCommand::FullPage(path) => {
+                    let width = self.wv.viewport_width().max(1) as u32;
+                    save_fullpage_screenshot(&mut self.wv, width, &path);
+                    self.needs_redraw = true;
+                    format!("OK fullpage {}\n", path)
+                }
+                RemoteCommand::Status => {
+                    format!(
+                        "OK url={} scroll={} viewport={}x{} doc_h={}\n",
+                        self.current_url,
+                        self.scroll_y,
+                        self.wv.viewport_width(),
+                        self.wv.viewport_height(),
+                        self.wv.total_height()
+                    )
+                }
+            };
+            let _ = std::io::Write::write_all(&mut req.reply, response.as_bytes());
+            ctx.request_repaint();
+        }
+        self.remote_rx = Some(rx);
+    }
+
+    fn poll_page_work(&mut self) {
+        if !self.pending.is_done() {
+            let results = self.pending.poll();
+            if !results.is_empty() {
+                for r in results {
+                    self.wv.add_image(&r.src_attr, r.pixels, r.width, r.height);
+                }
+                self.wv.relayout();
+                self.needs_redraw = true;
+            }
+        }
+        if self.wv.has_timers() {
+            self.wv.run_timers(16);
+            self.wv.tick(16);
+            self.wv.relayout();
+            self.needs_redraw = true;
+            for line in self.wv.js_console() {
+                eprintln!("[js:console:egui] {}", line);
+            }
+        }
+    }
+
+    fn render_framebuffer(&mut self) {
+        self.clamp_scroll();
+        let width = self.wv.viewport_width().max(1) as usize;
+        let height = self.wv.viewport_height().max(1) as usize;
+        if self.framebuffer.len() != width * height {
+            self.framebuffer.resize(width * height, 0xFFFFFFFF);
+        }
+        self.framebuffer.fill(0xFFFFFFFF);
+        extract_pixels(&self.wv, &mut self.framebuffer, width, height, self.scroll_y);
+        draw_form_control_texts(
+            &mut self.framebuffer,
+            &self.wv,
+            width,
+            height,
+            self.scroll_y,
+            self.focused_control.as_ref().map(|(id, _)| *id),
+        );
+        if let Some((ctrl_id, _)) = self.focused_control {
+            draw_focus_outline(
+                &mut self.framebuffer,
+                &self.wv,
+                width,
+                height,
+                self.scroll_y,
+                ctrl_id,
+            );
+        }
+        self.needs_redraw = false;
+    }
+
+    fn color_image(&self) -> egui::ColorImage {
+        let width = self.wv.viewport_width().max(1) as usize;
+        let height = self.wv.viewport_height().max(1) as usize;
+        let mut rgba = Vec::with_capacity(width * height * 4);
+        for &argb in &self.framebuffer {
+            rgba.push(((argb >> 16) & 0xFF) as u8);
+            rgba.push(((argb >> 8) & 0xFF) as u8);
+            rgba.push((argb & 0xFF) as u8);
+            rgba.push(((argb >> 24) & 0xFF) as u8);
+        }
+        egui::ColorImage::from_rgba_unmultiplied([width, height], &rgba)
+    }
+
+    fn update_texture(&mut self, ctx: &egui::Context) {
+        if self.needs_redraw {
+            self.render_framebuffer();
+            let image = self.color_image();
+            let options = egui::TextureOptions::NEAREST;
+            if let Some(texture) = &mut self.texture {
+                texture.set(image, options);
+            } else {
+                self.texture = Some(ctx.load_texture("surf-webview", image, options));
+            }
+        }
+    }
+
+    fn handle_browser_click(&mut self, pos: egui::Pos2, origin: egui::Pos2) {
+        let mx = (pos.x - origin.x).round() as i32;
+        let my = (pos.y - origin.y).round() as i32;
+        if let Some(ctrl_id) = self.wv.hit_test_form_control_viewport(mx, my, self.scroll_y) {
+            let text = self.wv.get_form_control_text(ctrl_id);
+            self.focused_control = Some((ctrl_id, text));
+            self.needs_redraw = true;
+        } else if let Some(node_id) = self.wv.hit_test_submit_viewport(mx, my, self.scroll_y) {
+            self.focused_control = None;
+            if let Some((action, method, _enctype)) = self.wv.form_action_for_node(node_id) {
+                let data = self.wv.collect_form_data_for_node(node_id);
+                let query = form_encode(&data);
+                let base = if action.is_empty() {
+                    self.current_url.clone()
+                } else {
+                    resolve_url(&self.current_url, &action)
+                };
+                let nav_url = if method == "GET" && !query.is_empty() {
+                    format!("{}?{}", base, query)
+                } else {
+                    base
+                };
+                self.navigate(&nav_url);
+            }
+        } else if let Some(href) = self.wv.hit_test_link_viewport(mx, my, self.scroll_y) {
+            let href = href.to_string();
+            self.focused_control = None;
+            self.navigate(&href);
+        } else {
+            self.focused_control = None;
+            self.needs_redraw = true;
+        }
+    }
+}
+
+impl eframe::App for BrowserHostApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.process_remote(ctx);
+        self.poll_page_work();
+
+        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("Reload").clicked() {
+                    self.reload();
+                }
+                let response = ui.add(
+                    egui::TextEdit::singleline(&mut self.url_input)
+                        .desired_width(f32::INFINITY)
+                        .hint_text("URL"),
+                );
+                if response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    let url = self.url_input.clone();
+                    self.navigate(&url);
+                }
+                if ui.button("Go").clicked() {
+                    let url = self.url_input.clone();
+                    self.navigate(&url);
+                }
+                if ui.button("Shot").clicked() {
+                    self.screenshot_count += 1;
+                    let path = format!("screenshot_{}.png", self.screenshot_count);
+                    self.render_framebuffer();
+                    save_screenshot(
+                        &self.framebuffer,
+                        self.wv.viewport_width().max(1) as u32,
+                        self.wv.viewport_height().max(1),
+                        &path,
+                    );
+                    self.status = format!("saved {}", path);
+                }
+            });
+        });
+
+        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(&self.status);
+                ui.separator();
+                ui.label(format!(
+                    "{}x{} scroll {} / {}",
+                    self.wv.viewport_width(),
+                    self.wv.viewport_height(),
+                    self.scroll_y,
+                    self.wv.total_height()
+                ));
+            });
+        });
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let available = ui.available_size();
+            let new_w = available.x.max(1.0).round() as u32;
+            let new_h = available.y.max(1.0).round() as u32;
+            if new_w != self.wv.viewport_width().max(1) as u32 || new_h != self.wv.viewport_height().max(1) {
+                self.wv.resize(new_w, new_h);
+                self.framebuffer.resize((new_w * new_h) as usize, 0xFFFFFFFF);
+                self.needs_redraw = true;
+            }
+
+            let scroll_delta = ui.input(|i| i.raw_scroll_delta.y);
+            if scroll_delta.abs() > 0.0 && ui.rect_contains_pointer(ui.max_rect()) {
+                self.scroll_y = (self.scroll_y - scroll_delta.round() as i32).max(0);
+                self.clamp_scroll();
+                self.needs_redraw = true;
+            }
+
+            self.update_texture(ctx);
+            if let Some(texture) = &self.texture {
+                let size = egui::vec2(
+                    self.wv.viewport_width().max(1) as f32,
+                    self.wv.viewport_height().max(1) as f32,
+                );
+                let response = ui.add(egui::Image::new(texture).fit_to_exact_size(size));
+                if response.clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        self.handle_browser_click(pos, response.rect.min);
+                    }
+                }
+            }
+        });
+
+        if self.pending.is_done() && !self.wv.has_timers() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        } else {
+            ctx.request_repaint();
+        }
+    }
+}
+
+fn start_remote_listener(addr: &str) -> Option<mpsc::Receiver<RemoteRequest>> {
+    let listener = match TcpListener::bind(addr) {
+        Ok(listener) => listener,
+        Err(e) => {
+            eprintln!("[surf-host] remote listen failed on {}: {}", addr, e);
+            return None;
+        }
+    };
+    eprintln!("[surf-host] remote control listening on {}", addr);
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue; };
+            let mut line = String::new();
+            let _ = std::io::Read::read_to_string(&mut stream, &mut line);
+            match parse_remote_command(line.trim()) {
+                Some(command) => {
+                    if tx.send(RemoteRequest { command, reply: stream }).is_err() {
+                        break;
+                    }
+                }
+                None => {
+                    let _ = std::io::Write::write_all(&mut stream, b"ERR unknown command\n");
+                }
+            }
+        }
+    });
+    Some(rx)
+}
+
+fn parse_remote_command(line: &str) -> Option<RemoteCommand> {
+    let (cmd, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+    let rest = rest.trim();
+    match cmd {
+        "open" | "navigate" if !rest.is_empty() => Some(RemoteCommand::Open(rest.to_string())),
+        "reload" => Some(RemoteCommand::Reload),
+        "scroll" => rest.parse().ok().map(RemoteCommand::Scroll),
+        "screenshot" if !rest.is_empty() => Some(RemoteCommand::Screenshot(rest.to_string())),
+        "fullpage" if !rest.is_empty() => Some(RemoteCommand::FullPage(rest.to_string())),
+        "status" => Some(RemoteCommand::Status),
+        _ => None,
+    }
+}
+
+fn run_egui_browser(
+    wv: libwebview::WebView,
+    pending: PendingImages,
+    current_url: String,
+    width: u32,
+    height: u32,
+    remote_listen: Option<String>,
+) {
+    let remote_rx = remote_listen.as_deref().and_then(start_remote_listener);
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([width as f32, height as f32])
+            .with_title(format!("surf-host — {}", current_url)),
+        renderer: eframe::Renderer::Glow,
+        hardware_acceleration: eframe::HardwareAcceleration::Off,
+        ..Default::default()
+    };
+    let app = BrowserHostApp::new(wv, pending, current_url, remote_rx);
+    let _ = eframe::run_native(
+        "surf-host",
+        native_options,
+        Box::new(move |_cc| Box::new(app)),
+    );
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -447,6 +855,18 @@ fn main() {
             save_screenshot(&framebuffer, width, height, path);
         }
         eprintln!("[surf-host] screenshot saved: {}", path);
+        return;
+    }
+
+    if !args.minifb {
+        run_egui_browser(
+            wv,
+            pending,
+            current_url,
+            width,
+            height,
+            args.remote_listen.clone(),
+        );
         return;
     }
 
@@ -984,7 +1404,12 @@ fn url_cache_key(url: &str) -> String {
 }
 
 fn fetch_page(url: &str) -> (String, String) {
-    if url.starts_with("file://") {
+    if url == "about:blank" {
+        (
+            String::from("<!doctype html><title>Surf Host</title><style>body{font:16px sans-serif;padding:32px;color:#202124} input{font:inherit;padding:8px;width:24em}</style><h1>Surf Host</h1><p>Enter a URL in the toolbar to start browsing.</p>"),
+            String::from("about:blank"),
+        )
+    } else if url.starts_with("file://") {
         let path = &url[7..];
         let html = std::fs::read_to_string(path).unwrap_or_else(|e| {
             format!("<h1>Error</h1><p>Failed to read {}: {}</p>", path, e)

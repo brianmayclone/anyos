@@ -3,7 +3,7 @@
 #
 # Usage:
 #   ./build.sh                                Build only
-#   ./build.sh run <url>                      Build + run with default viewport
+#   ./build.sh run [url]                      Build + run with default viewport
 #   ./build.sh run <url> 1280x960             Build + run with custom viewport
 #   ./build.sh run <url> --screenshot out.png Build + run with screenshot
 #   ./build.sh screenshot <url> out.png       Build + screenshot (shorthand)
@@ -40,8 +40,18 @@ case "${1:-build}" in
     run)
         build
         shift
-        URL="${1:?Usage: build.sh run <url> [WxH] [extra args...]}"
-        shift || true
+
+        if [[ "${SURF_HOST_GL:-software}" != "system" ]]; then
+            export WINIT_UNIX_BACKEND="${WINIT_UNIX_BACKEND:-x11}"
+            export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+            export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
+        fi
+
+        URL=""
+        if [[ -n "${1:-}" && ! "${1:-}" =~ ^([0-9]+)x([0-9]+)$ && "${1:-}" != --* ]]; then
+            URL="$1"
+            shift || true
+        fi
 
         # Check if next arg is a viewport size (e.g. 1280x960)
         EXTRA_ARGS=()
@@ -50,7 +60,11 @@ case "${1:-build}" in
             shift || true
         fi
 
-        exec "./$BINARY" "$URL" "${EXTRA_ARGS[@]}" "$@"
+        if [[ -n "$URL" ]]; then
+            exec "./$BINARY" "$URL" "${EXTRA_ARGS[@]}" "$@"
+        else
+            exec "./$BINARY" "${EXTRA_ARGS[@]}" "$@"
+        fi
         ;;
 
     screenshot)
@@ -84,7 +98,7 @@ case "${1:-build}" in
     *)
         echo "Usage:"
         echo "  ./build.sh                                     Build only"
-        echo "  ./build.sh run <url> [WxH]                    Build + open in window"
+        echo "  ./build.sh run [url] [WxH]                    Build + open in window"
         echo "  ./build.sh screenshot <url> [opts...]         Build + save screenshot"
         echo "  ./build.sh clean                              Clean build"
         echo ""
@@ -96,6 +110,7 @@ case "${1:-build}" in
         echo "  3000          Delay in ms before capture"
         echo ""
         echo "Examples:"
+        echo "  ./build.sh run"
         echo "  ./build.sh run https://www.wikipedia.de"
         echo "  ./build.sh run https://www.wikipedia.de 1280x960"
         echo "  ./build.sh screenshot https://example.com"

@@ -188,6 +188,49 @@ fn vec_retain_on_mutably_borrowed_field_expects_bool_closure() {
 }
 
 #[test]
+fn array_lengths_resolve_const_path_expressions() {
+    assert_type_ok(r#"
+        const TAG_SIZE: usize = 16;
+
+        fn make_tag() -> [u8; TAG_SIZE] {
+            [0u8; TAG_SIZE]
+        }
+
+        fn take_tag(tag: &mut [u8; TAG_SIZE]) {
+            *tag = make_tag();
+        }
+    "#);
+}
+
+#[test]
+fn module_array_lengths_resolve_local_const_path_expressions() {
+    assert_type_ok(r#"
+        mod crypto {
+            pub const TAG_SIZE: usize = 16;
+
+            pub fn make_tag() -> [u8; TAG_SIZE] {
+                [0u8; TAG_SIZE]
+            }
+        }
+    "#);
+}
+
+#[test]
+fn nested_module_array_lengths_resolve_local_const_path_expressions() {
+    assert_type_ok(r#"
+        mod crypto {
+            pub mod poly1305 {
+                pub const TAG_SIZE: usize = 16;
+
+pub fn make_tag() -> [u8; TAG_SIZE] {
+                    [0u8; 16]
+                }
+            }
+        }
+    "#);
+}
+
+#[test]
 fn return_inside_retain_closure_targets_closure_return_type() {
     assert_type_ok(r#"
         struct Statement {
@@ -2407,6 +2450,47 @@ fn proc_macro2_style_wrapper_into_iter_preserves_fallback_variant_field_type() {
                     }
                 }
             }
+        }
+    "#);
+}
+
+#[test]
+fn field_access_autoderefs_nested_references() {
+    assert_type_ok(r#"
+        struct Package {
+            name: String,
+            version: String,
+        }
+
+        fn read(pkg: &&Package) -> String {
+            pkg.name
+        }
+    "#);
+}
+
+#[test]
+fn sort_by_vec_of_refs_binds_double_ref_closure_params() {
+    assert_type_ok(r#"
+        struct Ordering {}
+        struct Package {
+            name: String,
+            version: String,
+        }
+
+        impl String {
+            fn cmp(&self, other: &String) -> Ordering {
+                Ordering {}
+            }
+        }
+
+        impl Ordering {
+            fn then(self, other: Ordering) -> Ordering {
+                other
+            }
+        }
+
+        fn sort(sorted: &mut Vec<&Package>) {
+            sorted.sort_by(|a, b| a.name.cmp(&b.name).then(a.version.cmp(&b.version)));
         }
     "#);
 }

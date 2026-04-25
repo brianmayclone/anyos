@@ -177,6 +177,8 @@ pub struct TypeChecker<'a> {
 
     /// Evaluated const values
     const_values: HashMap<DefId, (ConstVal, TyKind)>,
+    const_name_to_def: HashMap<Symbol, DefId>,
+    qualified_const_names: HashMap<String, DefId>,
     /// Static definitions
     static_defs: HashMap<DefId, (Symbol, TyKind, ConstVal, bool)>,
 
@@ -251,6 +253,8 @@ impl<'a> TypeChecker<'a> {
             generic_fn_param_indices: HashMap::new(),
             adt_generic_counts: HashMap::new(),
             const_values: HashMap::new(),
+            const_name_to_def: HashMap::new(),
+            qualified_const_names: HashMap::new(),
             static_defs: HashMap::new(),
             trait_methods: HashMap::new(),
             trait_impls: HashMap::new(),
@@ -1222,6 +1226,13 @@ impl<'a> TypeChecker<'a> {
                         self.const_values.insert(c.def_id, (cv, ty.clone()));
                     }
                 }
+                let qualified_name = self.qualified_name_for_current_module(c.name);
+                self.qualified_const_names.insert(qualified_name.clone(), c.def_id);
+                self.qualified_const_names
+                    .insert(format!("crate::{}", qualified_name), c.def_id);
+                if self.current_module_path.is_empty() {
+                    self.const_name_to_def.insert(c.name, c.def_id);
+                }
                 // Register type so paths can resolve
                 self.local_types.insert(c.def_id, ty);
             }
@@ -1701,10 +1712,54 @@ impl<'a> TypeChecker<'a> {
                         return Some(cv.clone());
                     }
                 }
+                if let HirExprKind::Path(path) = &expr.kind {
+                    if let Some((cv, _)) = self.resolve_const_value_by_path(path) {
+                        return Some(cv.clone());
+                    }
+                }
                 None
             }
             _ => None,
         }
+    }
+
+    fn resolve_const_value_by_path(&self, path: &HirPath) -> Option<&(ConstVal, TyKind)> {
+        if path.segments.is_empty() {
+            return None;
+        }
+
+        if path.segments.len() == 1 {
+            let name = path.segments[0].ident;
+            if !self.current_module_path.is_empty() {
+                let mut parts = self
+                    .current_module_path
+                    .iter()
+                    .map(|sym| self.interner.resolve(*sym).to_string())
+                    .collect::<Vec<_>>();
+                parts.push(self.interner.resolve(name).to_string());
+                let qualified = parts.join("::");
+                if let Some(def_id) = self.qualified_const_names.get(&qualified) {
+                    return self.const_values.get(def_id);
+                }
+            }
+            if let Some(def_id) = self.const_name_to_def.get(&name) {
+                return self.const_values.get(def_id);
+            }
+        }
+
+        let path_str = path
+            .segments
+            .iter()
+            .map(|seg| self.interner.resolve(seg.ident).to_string())
+            .collect::<Vec<_>>()
+            .join("::");
+        self.qualified_const_names
+            .get(&path_str)
+            .or_else(|| {
+                self.qualified_const_names
+                    .get(path_str.strip_prefix("crate::").unwrap_or(&path_str))
+            })
+            .and_then(|def_id| self.const_values.get(def_id))
     }
 
     // ── Pass 2: Check ──
@@ -2093,15 +2148,17 @@ impl<'a> TypeChecker<'a> {
                 let base_ty = self.check_expr(base);
                 let mut resolved = self.shallow_resolve(base_ty);
                 for _ in 0..8 {
-                    resolved = match resolved {
+                    match resolved {
                         TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _) => {
-                            self.shallow_resolve(inner.as_ref().clone())
+                            resolved = self.shallow_resolve(inner.as_ref().clone());
+                            continue;
                         }
                         TyKind::Adt(def_id, substs) if self.is_box_def(def_id) && substs.len() == 1 => {
-                            self.shallow_resolve(substs[0].clone())
+                            resolved = self.shallow_resolve(substs[0].clone());
+                            continue;
                         }
-                        other => other,
-                    };
+                        other => resolved = other,
+                    }
 
                     match resolved.clone() {
                         TyKind::Adt(def_id, substs) => {
@@ -5101,6 +5158,12 @@ impl<'a> TypeChecker<'a> {
                     BinOp::BitAnd => l & r,
                     BinOp::BitOr => l | r,
                     BinOp::BitXor => l ^ r,
+                    _ => 0,
+                }
+            }
+            HirExprKind::Path(path) => {
+                match self.resolve_const_value_by_path(path) {
+                    Some((ConstVal::Int(value), _)) => *value as usize,
                     _ => 0,
                 }
             }

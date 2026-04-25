@@ -45,7 +45,9 @@ fn build_host_ccargo(root: &Path) -> PathBuf {
 }
 
 fn assert_ccargo_builds(crate_path: &str) {
-    let _guard = CCARGO_LOCK.lock().unwrap();
+    let _guard = CCARGO_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let root = repo_root();
     let ccargo = host_ccargo(&root);
 
