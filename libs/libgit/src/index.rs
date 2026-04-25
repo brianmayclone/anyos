@@ -3,11 +3,11 @@
 //! The index (staging area) tracks files to be included in the next commit.
 //! Format: https://git-scm.com/docs/index-format
 
+use crate::oid::Oid;
+use crate::repo::{Error, Repository, Result};
+use crate::sha1;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::oid::Oid;
-use crate::repo::{Repository, Result, Error};
-use crate::sha1;
 
 /// An entry in the git index.
 #[derive(Debug, Clone)]
@@ -58,7 +58,9 @@ pub struct Index {
 impl Index {
     /// Create an empty index.
     pub fn new() -> Self {
-        Index { entries: Vec::new() }
+        Index {
+            entries: Vec::new(),
+        }
     }
 
     /// Read the index from .git/index.
@@ -87,38 +89,46 @@ impl Index {
 
         let mut entries = Vec::with_capacity(count);
         let mut pos = 12;
+        let entries_end = data.len().saturating_sub(20);
 
         for _ in 0..count {
-            if pos + 62 > data.len() {
+            let entry_start = pos;
+            if entry_start + 62 > entries_end {
                 break;
             }
 
-            let ctime_s = read_u32(&data[pos..]);
-            let ctime_ns = read_u32(&data[pos + 4..]);
-            let mtime_s = read_u32(&data[pos + 8..]);
-            let mtime_ns = read_u32(&data[pos + 12..]);
-            let dev = read_u32(&data[pos + 16..]);
-            let ino = read_u32(&data[pos + 20..]);
-            let mode = read_u32(&data[pos + 24..]);
-            let uid = read_u32(&data[pos + 28..]);
-            let gid = read_u32(&data[pos + 32..]);
-            let size = read_u32(&data[pos + 36..]);
+            let ctime_s = read_u32(&data[entry_start..]);
+            let ctime_ns = read_u32(&data[entry_start + 4..]);
+            let mtime_s = read_u32(&data[entry_start + 8..]);
+            let mtime_ns = read_u32(&data[entry_start + 12..]);
+            let dev = read_u32(&data[entry_start + 16..]);
+            let ino = read_u32(&data[entry_start + 20..]);
+            let mode = read_u32(&data[entry_start + 24..]);
+            let uid = read_u32(&data[entry_start + 28..]);
+            let gid = read_u32(&data[entry_start + 32..]);
+            let size = read_u32(&data[entry_start + 36..]);
 
             let mut sha = [0u8; 20];
-            sha.copy_from_slice(&data[pos + 40..pos + 60]);
+            sha.copy_from_slice(&data[entry_start + 40..entry_start + 60]);
             let oid = Oid::from_bytes(sha);
 
-            let flags = u16::from_be_bytes([data[pos + 60], data[pos + 61]]);
+            let flags = u16::from_be_bytes([data[entry_start + 60], data[entry_start + 61]]);
             let name_len = (flags & 0xFFF) as usize;
 
-            let name_start = pos + 62;
+            let name_start = entry_start + 62;
             let name_end = if name_len < 0xFFF {
-                name_start + name_len
+                let end = name_start + name_len;
+                if end > entries_end {
+                    return Err(Error::InvalidIndex);
+                }
+                end
             } else {
                 // Name is longer than 0xFFF, find null terminator
-                data[name_start..].iter().position(|&b| b == 0)
+                data[name_start..entries_end]
+                    .iter()
+                    .position(|&b| b == 0)
                     .map(|i| name_start + i)
-                    .unwrap_or(data.len())
+                    .ok_or(Error::InvalidIndex)?
             };
 
             let name = core::str::from_utf8(&data[name_start..name_end])
@@ -126,17 +136,26 @@ impl Index {
                 .into();
 
             entries.push(IndexEntry {
-                ctime_s, ctime_ns, mtime_s, mtime_ns,
-                dev, ino, mode, uid, gid, size,
-                oid, flags, name,
+                ctime_s,
+                ctime_ns,
+                mtime_s,
+                mtime_ns,
+                dev,
+                ino,
+                mode,
+                uid,
+                gid,
+                size,
+                oid,
+                flags,
+                name,
             });
 
-            // Entries are padded to 8-byte boundaries
-            let entry_len = 62 + name_end - name_start + 1; // +1 for null
-            pos = name_start + ((entry_len + 7) & !7);
-            // Actually, pos should align to 8 bytes from the start of entry
-            let total_entry = pos - (pos - 12) % 8; // Approximate padding
-            pos = (name_end + 8) & !7; // Align to next 8-byte boundary
+            let entry_len = 62 + (name_end - name_start) + 1;
+            pos = entry_start + ((entry_len + 7) & !7);
+            if pos > entries_end {
+                return Err(Error::InvalidIndex);
+            }
         }
 
         Ok(Index { entries })
@@ -145,8 +164,7 @@ impl Index {
     /// Write the index to .git/index.
     pub fn write(&self, repo: &Repository) -> Result<()> {
         let data = self.serialize();
-        std::fs::write(&repo.gitdir.join("index"), &data)
-            .map_err(|_| Error::IoError)
+        std::fs::write(&repo.gitdir.join("index"), &data).map_err(|_| Error::IoError)
     }
 
     /// Serialize the index to bytes.

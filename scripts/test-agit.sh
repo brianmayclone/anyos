@@ -165,4 +165,51 @@ if [[ -n "$status" ]]; then
   fail "working tree is not clean after clone"
 fi
 
+probe_file="agit-status-probe.txt"
+printf 'one\n' >"$clone_dir/$probe_file"
+status="$(capture_agit "$clone_dir" "status untracked probe" status --porcelain)"
+[[ "$status" == "?? $probe_file" ]] || fail "untracked file status was '$status'"
+
+run_agit "$clone_dir" "add probe" add "$probe_file"
+status="$(capture_agit "$clone_dir" "status added probe" status --porcelain)"
+[[ "$status" == "A  $probe_file" ]] || fail "added file status was '$status'"
+
+printf 'two\n' >"$clone_dir/$probe_file"
+status="$(capture_agit "$clone_dir" "status modified staged probe" status --porcelain)"
+grep -qx "A  $probe_file" <<<"$status" || fail "staged add missing after modify: '$status'"
+grep -qx " M $probe_file" <<<"$status" || fail "unstaged modify missing after modify: '$status'"
+
+run_agit "$clone_dir" "add modified probe" add "$probe_file"
+status="$(capture_agit "$clone_dir" "status restaged probe" status --porcelain)"
+[[ "$status" == "A  $probe_file" ]] || fail "restaged file status was '$status'"
+
+local_repo="$tmp_root/local-status-repo"
+mkdir "$local_repo"
+run_agit "$local_repo" "init local status repo" init .
+printf 'base\n' >"$local_repo/base.txt"
+run_agit "$local_repo" "add local base" add base.txt
+run_agit "$local_repo" "commit local base" commit -m "base"
+status="$(capture_agit "$local_repo" "status after local base commit" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after base commit: '$status'"
+
+printf 'probe\n' >"$local_repo/probe.txt"
+status="$(capture_agit "$local_repo" "status local untracked" status --porcelain)"
+[[ "$status" == "?? probe.txt" ]] || fail "local untracked status was '$status'"
+
+run_agit "$local_repo" "add local probe" add probe.txt
+status="$(capture_agit "$local_repo" "status local added" status --porcelain)"
+[[ "$status" == "A  probe.txt" ]] || fail "local added status was '$status'"
+
+run_agit "$local_repo" "commit local probe" commit -m "probe"
+status="$(capture_agit "$local_repo" "status after local probe commit" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after probe commit: '$status'"
+
+printf 'changed\n' >"$local_repo/probe.txt"
+status="$(capture_agit "$local_repo" "status local modified tracked" status --porcelain)"
+[[ "$status" == " M probe.txt" ]] || fail "local modified tracked status was '$status'"
+
+rm "$local_repo/probe.txt"
+status="$(capture_agit "$local_repo" "status local deleted tracked" status --porcelain)"
+[[ "$status" == " D probe.txt" ]] || fail "local deleted tracked status was '$status'"
+
 printf 'agit GitHub clone test passed.\n'

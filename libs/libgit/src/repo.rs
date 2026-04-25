@@ -3,15 +3,15 @@
 //! Handles the .git directory structure, object storage (loose objects),
 //! and high-level operations like init, read/write objects.
 
+use crate::deflate;
+use crate::inflate;
+use crate::object::{Object, ObjectType};
+use crate::oid::Oid;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::io::{Read, Write, Seek, SeekFrom};
-use crate::oid::Oid;
-use crate::object::{Object, ObjectType};
-use crate::inflate;
-use crate::deflate;
 
 /// A git repository handle.
 pub struct Repository {
@@ -65,10 +65,7 @@ impl Repository {
         mkdir_p(&gitdir.join("refs/tags"))?;
 
         // Write HEAD
-        write_file(
-            &gitdir.join("HEAD"),
-            b"ref: refs/heads/main\n",
-        )?;
+        write_file(&gitdir.join("HEAD"), b"ref: refs/heads/main\n")?;
 
         // Write config
         write_file(
@@ -77,10 +74,7 @@ impl Repository {
         )?;
 
         // Write description
-        write_file(
-            &gitdir.join("description"),
-            b"Unnamed repository\n",
-        )?;
+        write_file(&gitdir.join("description"), b"Unnamed repository\n")?;
 
         Ok(Repository { workdir, gitdir })
     }
@@ -106,10 +100,7 @@ impl Repository {
     /// Read a loose object by its OID.
     pub fn read_object(&self, oid: &Oid) -> Result<Object> {
         let hex = oid.to_hex();
-        let path = self.gitdir
-            .join("objects")
-            .join(&hex[..2])
-            .join(&hex[2..]);
+        let path = self.gitdir.join("objects").join(&hex[..2]).join(&hex[2..]);
 
         let compressed = read_file(&path)?;
         // Skip zlib header (2 bytes: CMF + FLG) if present
@@ -137,13 +128,16 @@ impl Repository {
         }
 
         let raw = obj.serialize();
-        let compressed = deflate::deflate(&raw);
+        let compressed = deflate::store(&raw);
+        let checksum = adler32(&raw);
 
-        // Write with zlib header (0x78, 0x01)
-        let mut zlib_data = Vec::with_capacity(2 + compressed.len());
+        // Write a zlib stream with stored DEFLATE blocks. This favors correctness
+        // and interoperability over compression ratio.
+        let mut zlib_data = Vec::with_capacity(2 + compressed.len() + 4);
         zlib_data.push(0x78);
         zlib_data.push(0x01);
         zlib_data.extend_from_slice(&compressed);
+        zlib_data.extend_from_slice(&checksum.to_be_bytes());
 
         write_file(&path, &zlib_data)?;
         Ok(oid)
@@ -239,18 +233,22 @@ impl Repository {
                 anyos_std::println!("[store_pack] header: {:?}", &pack_data[..12]);
             }
             if pack_data.len() < 12 {
-                anyos_std::println!("[store_pack] ERROR: pack data too small ({} bytes)", pack_data.len());
+                anyos_std::println!(
+                    "[store_pack] ERROR: pack data too small ({} bytes)",
+                    pack_data.len()
+                );
                 // Dump first bytes for debugging
                 let show = core::cmp::min(pack_data.len(), 64);
                 for i in 0..show {
                     anyos_std::print!("{:02x} ", pack_data[i]);
-                    if (i + 1) % 16 == 0 { anyos_std::println!(); }
+                    if (i + 1) % 16 == 0 {
+                        anyos_std::println!();
+                    }
                 }
                 anyos_std::println!();
             }
         }
-        let pack = crate::pack::parse_pack(pack_data)
-            .ok_or(Error::InvalidObject)?;
+        let pack = crate::pack::parse_pack(pack_data).ok_or(Error::InvalidObject)?;
 
         let mut count = 0u32;
         for entry in &pack.entries {
@@ -278,12 +276,17 @@ impl Repository {
             if let Some(slash) = entry.name.find('/') {
                 let dir = &entry.name[..slash];
                 let rest = &entry.name[slash + 1..];
-                trees.entry(String::from(dir))
+                trees
+                    .entry(String::from(dir))
                     .or_insert_with(Vec::new)
                     .push((String::from(rest), entry));
             } else {
                 direct_entries.push(TreeEntry {
-                    mode: if entry.mode == 0o100755 { 100755 } else { 100644 },
+                    mode: if entry.mode == 0o100755 {
+                        100755
+                    } else {
+                        100644
+                    },
                     name: entry.name.clone(),
                     oid: entry.oid,
                 });
@@ -295,10 +298,7 @@ impl Repository {
             let mut sub_index = crate::index::Index::new();
             for (name, entry) in sub_entries {
                 sub_index.add(crate::index::IndexEntry::new(
-                    name,
-                    entry.oid,
-                    entry.mode,
-                    entry.size,
+                    name, entry.oid, entry.mode, entry.size,
                 ));
             }
             let sub_tree_oid = self.write_tree_recursive(&sub_index)?;
@@ -381,4 +381,17 @@ fn read_file(path: &Path) -> Result<Vec<u8>> {
 
 fn read_file_string(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).map_err(|_| Error::NotFound)
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    const MOD: u32 = 65_521;
+    let mut a = 1u32;
+    let mut b = 0u32;
+
+    for byte in data {
+        a = (a + *byte as u32) % MOD;
+        b = (b + a) % MOD;
+    }
+
+    (b << 16) | a
 }

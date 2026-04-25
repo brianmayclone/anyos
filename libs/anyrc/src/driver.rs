@@ -150,6 +150,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
     expand_macros(&mut krate, &mut interner);
     let _included_sources = crate::loader::resolve_includes(&mut krate, &src_dir, &mut interner, &loader);
+    let _loaded_modules = crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
     crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
     let (public_interface_source, public_interface) = {
         let mut interface_lower_ctx = LoweringContext::new(&mut interner);

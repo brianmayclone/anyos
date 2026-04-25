@@ -146,6 +146,146 @@ fn rlib_interface_exports_conversion_and_comparison_trait_impls() {
     assert!(meta.interface_source.contains("impl<T> PartialEq<T> for Ident"));
 }
 
+#[test]
+fn rlib_interface_includes_items_from_loaded_macro_rules_module() {
+    let unique = format!(
+        "anyrc_meta_macro_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    );
+    let dir = std::env::temp_dir().join(unique);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("crate_root.rs"),
+        r#"
+            macro_rules! crate_root {
+                () => {
+                    pub mod de {
+                        pub trait Deserialize<'de> {}
+                        pub trait Visitor<'de> {}
+                    }
+
+                    pub mod ser {
+                        pub trait Serialize {}
+                    }
+
+                    pub use crate::de::{Deserialize, Visitor};
+                    pub use crate::ser::Serialize;
+                };
+            }
+        "#,
+    )
+    .unwrap();
+    let root = r#"
+        #[macro_use]
+        mod crate_root;
+
+        crate_root!();
+    "#;
+    std::fs::write(dir.join("lib.rs"), root).unwrap();
+
+    let options = CompileOptions {
+        input: dir.join("lib.rs").to_string_lossy().into_owned(),
+        output: dir.join("libsample.rlib").to_string_lossy().into_owned(),
+        emit: EmitKind::Rlib,
+        opt_level: 0,
+        crate_type: CrateType::Lib,
+        crate_name: Some("sample".to_string()),
+        src_dir: Some(dir.to_string_lossy().into_owned()),
+        ..CompileOptions::default()
+    };
+
+    let rlib = compile(root, "lib.rs", &options).expect("rlib compilation should succeed");
+    let (_, meta) = unpack_rlib(&rlib).expect("rlib should unpack");
+
+    assert!(meta.interface_source.contains("pub mod de"));
+    assert!(meta.interface_source.contains("pub trait Deserialize"));
+    assert!(meta.interface_source.contains("pub trait Visitor"));
+    assert!(meta.interface_source.contains("pub trait Serialize"));
+    assert!(meta
+        .interface_source
+        .contains("pub use crate::de::{Deserialize, Visitor};"));
+    assert!(meta.interface_source.contains("pub use crate::ser::Serialize;"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn rlib_interface_resolves_modules_created_by_macro_expansion() {
+    let unique = format!(
+        "anyrc_meta_macro_files_{}_{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    );
+    let dir = std::env::temp_dir().join(unique);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("crate_root.rs"),
+        r#"
+            macro_rules! crate_root {
+                () => {
+                    pub mod de;
+                    pub mod ser;
+
+                    pub use crate::de::{Deserialize, Visitor};
+                    pub use crate::ser::Serialize;
+                };
+            }
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("de.rs"),
+        r#"
+            pub trait Deserialize<'de> {}
+            pub trait Visitor<'de> {}
+        "#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("ser.rs"),
+        r#"
+            pub trait Serialize {}
+        "#,
+    )
+    .unwrap();
+    let root = r#"
+        #[macro_use]
+        mod crate_root;
+
+        crate_root!();
+    "#;
+    std::fs::write(dir.join("lib.rs"), root).unwrap();
+
+    let options = CompileOptions {
+        input: dir.join("lib.rs").to_string_lossy().into_owned(),
+        output: dir.join("libsample.rlib").to_string_lossy().into_owned(),
+        emit: EmitKind::Rlib,
+        opt_level: 0,
+        crate_type: CrateType::Lib,
+        crate_name: Some("sample".to_string()),
+        src_dir: Some(dir.to_string_lossy().into_owned()),
+        ..CompileOptions::default()
+    };
+
+    let rlib = compile(root, "lib.rs", &options).expect("rlib compilation should succeed");
+    let (_, meta) = unpack_rlib(&rlib).expect("rlib should unpack");
+
+    assert!(meta.interface_source.contains("pub mod de"));
+    assert!(meta.interface_source.contains("pub trait Deserialize"));
+    assert!(meta.interface_source.contains("pub trait Visitor"));
+    assert!(meta.interface_source.contains("pub mod ser"));
+    assert!(meta.interface_source.contains("pub trait Serialize"));
+    assert!(meta
+        .interface_source
+        .contains("pub use crate::de::{Deserialize, Visitor};"));
+    assert!(meta.interface_source.contains("pub use crate::ser::Serialize;"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn push_str16(out: &mut Vec<u8>, s: &str) {
     out.extend_from_slice(&(s.len() as u16).to_le_bytes());
     out.extend_from_slice(s.as_bytes());
