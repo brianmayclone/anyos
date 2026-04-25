@@ -3,6 +3,7 @@ use anyrc::intern::Interner;
 use anyrc::macros::expand_macros;
 use anyrc::hir_lower::LoweringContext;
 use anyrc::resolve::Resolver;
+use std::io::Write;
 
 fn resolve_src(src: &str) -> (anyrc::resolve::ResolveResult, Interner) {
     let mut interner = Interner::new();
@@ -28,6 +29,31 @@ fn assert_resolve_error(src: &str, expected_msg: &str) {
     assert!(result.errors.iter().any(|e| e.message.contains(expected_msg)),
         "expected error containing '{}', got: {:?}", expected_msg,
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+fn resolve_file_crate(src: &str, src_dir: &str, cfg_flags: &[&str]) -> (anyrc::resolve::ResolveResult, Interner) {
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(src, &mut interner);
+    let mut krate = parser.parse_crate();
+    let cfg_ctx = anyrc::cfg::CfgContext::from_flags(
+        &cfg_flags.iter().map(|flag| flag.to_string()).collect::<Vec<_>>(),
+    );
+    let loader = anyrc::loader::OsFileLoader;
+    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    expand_macros(&mut krate, &mut interner);
+    anyrc::loader::resolve_includes(&mut krate, src_dir, &mut interner, &loader);
+    anyrc::loader::resolve_modules(&mut krate, src_dir, &mut interner, &loader);
+    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+    expand_macros(&mut krate, &mut interner);
+    anyrc::loader::resolve_includes(&mut krate, src_dir, &mut interner, &loader);
+    anyrc::loader::resolve_modules(&mut krate, src_dir, &mut interner, &loader);
+    anyrc::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
+
+    let mut ctx = LoweringContext::new(&mut interner);
+    let hir = ctx.lower_crate(&krate);
+    let mut resolver = Resolver::new(&mut interner);
+    let result = resolver.resolve_crate(&hir);
+    (result, interner)
 }
 
 #[test]
@@ -318,6 +344,243 @@ fn resolve_known_external_glob_imports() {
         {
         }
     "#);
+}
+
+#[test]
+fn resolve_extern_glob_reexports_through_local_facade_module() {
+    assert_resolves(r#"
+        mod lib {
+            mod core {
+                pub use std::*;
+            }
+
+            pub use self::core::fmt::{self, Display};
+            pub use self::core::marker::PhantomData;
+        }
+
+        mod value {
+            use crate::lib::*;
+
+            struct UnitDeserializer<E> {
+                marker: PhantomData<E>,
+            }
+
+            fn fmt_value(f: &mut fmt::Formatter) {
+            }
+
+            trait UsesDisplay: Display {}
+        }
+    "#);
+}
+
+#[test]
+fn resolve_extern_glob_reexports_from_macro_generated_facade_module() {
+    assert_resolves(r#"
+        macro_rules! crate_root {
+            () => {
+                mod lib {
+                    mod core {
+                        pub use std::*;
+                    }
+
+                    pub use self::core::{iter, num, str};
+                    pub use self::core::{cmp, mem};
+                    pub use self::core::cell::{Cell, RefCell};
+                    pub use self::core::cmp::Reverse;
+                    pub use self::core::fmt::{self, Debug, Display, Write as FmtWrite};
+                    pub use self::core::marker::PhantomData;
+                    pub use self::core::num::{Saturating, Wrapping};
+                    pub use self::core::ops::{Bound, Range, RangeFrom, RangeInclusive, RangeTo};
+                    pub use self::core::time::Duration;
+                }
+            };
+        }
+
+        crate_root!();
+
+        mod value {
+            use crate::lib::*;
+
+            struct UnitDeserializer<E> {
+                marker: PhantomData<E>,
+            }
+
+            fn fmt_value(f: &mut fmt::Formatter) -> fmt::Result {
+                fmt::Result
+            }
+
+            fn use_modules<T>(it: iter::Fuse<T>) {
+                let _ = num::Wrapping(1);
+                let _ = str::from_utf8;
+                let _ = cmp::min;
+                let _ = mem::size_of::<usize>;
+            }
+
+            trait UsesDisplay: Display {}
+            trait UsesDebug: Debug {}
+        }
+    "#);
+}
+
+#[test]
+fn resolve_extern_glob_reexports_from_macro_facade_into_file_modules() {
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_resolve_facade_files_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("de")).unwrap();
+
+    std::fs::write(
+        dir.join("de").join("mod.rs"),
+        r#"
+            use crate::lib::*;
+
+            pub mod value;
+
+            trait UsesDisplay: Display {}
+            fn fmt_de(f: &mut fmt::Formatter) -> fmt::Result {
+                fmt::Result
+            }
+        "#,
+    ).unwrap();
+
+    let mut value_file = std::fs::File::create(dir.join("de").join("value.rs")).unwrap();
+    value_file.write_all(
+        br#"
+            use crate::lib::*;
+
+            struct UnitDeserializer<E> {
+                marker: PhantomData<E>,
+            }
+
+            fn fmt_value(f: &mut fmt::Formatter) -> fmt::Result {
+                fmt::Result
+            }
+
+            fn use_modules<T>(it: iter::Fuse<T>) {
+                let _ = num::Wrapping(1);
+                let _ = str::from_utf8;
+                let _ = cmp::min;
+                let _ = mem::size_of::<usize>;
+            }
+        "#,
+    ).unwrap();
+
+    let root = r#"
+        macro_rules! crate_root {
+            () => {
+                mod lib {
+                    mod core {
+                        #[cfg(not(feature = "std"))]
+                        pub use core::*;
+                        #[cfg(feature = "std")]
+                        pub use std::*;
+                    }
+
+                    pub use self::core::{iter, num, str};
+                    #[cfg(any(feature = "std", feature = "alloc"))]
+                    pub use self::core::{cmp, mem};
+                    pub use self::core::fmt::{self, Debug, Display, Write as FmtWrite};
+                    pub use self::core::marker::PhantomData;
+                }
+
+                pub mod de;
+            };
+        }
+
+        crate_root!();
+    "#;
+
+    let src_dir = dir.to_string_lossy().to_string();
+    let (result, _) = resolve_file_crate(
+        root,
+        &src_dir,
+        &["feature=\"std\"", "target_os=\"anyos\"", "target_arch=\"x86_64\""],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn resolve_macro_use_file_module_facade_into_file_modules() {
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_resolve_macro_use_facade_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("de")).unwrap();
+
+    std::fs::write(
+        dir.join("crate_root.rs"),
+        r#"
+            macro_rules! crate_root {
+                () => {
+                    mod lib {
+                        mod core {
+                            #[cfg(feature = "std")]
+                            pub use std::*;
+                        }
+
+                        pub use self::core::{iter, num, str};
+                        pub use self::core::{cmp, mem};
+                        pub use self::core::fmt::{self, Display};
+                        pub use self::core::marker::PhantomData;
+                    }
+
+                    pub mod de;
+                };
+            }
+        "#,
+    ).unwrap();
+
+    std::fs::write(
+        dir.join("de").join("mod.rs"),
+        r#"
+            use crate::lib::*;
+            pub mod value;
+            trait UsesDisplay: Display {}
+        "#,
+    ).unwrap();
+
+    std::fs::write(
+        dir.join("de").join("value.rs"),
+        r#"
+            use crate::lib::*;
+
+            struct UnitDeserializer<E> {
+                marker: PhantomData<E>,
+            }
+
+            fn fmt_value(f: &mut fmt::Formatter) -> fmt::Result {
+                fmt::Result
+            }
+        "#,
+    ).unwrap();
+
+    let root = r#"
+        #[macro_use]
+        mod crate_root;
+
+        crate_root!();
+    "#;
+
+    let src_dir = dir.to_string_lossy().to_string();
+    let (result, _) = resolve_file_crate(
+        root,
+        &src_dir,
+        &["feature=\"std\"", "target_os=\"anyos\"", "target_arch=\"x86_64\""],
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        result.errors.is_empty(),
+        "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
+    );
 }
 
 #[test]

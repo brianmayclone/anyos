@@ -111,12 +111,53 @@ pub fn checkout_head(repo: &Repository) -> Result<u32> {
     let head_oid = repo.head()?;
     let commit_obj = repo.read_object(&head_oid)?;
     let commit = crate::object::Commit::parse(&commit_obj.data).ok_or(Error::InvalidObject)?;
+    let old_index = crate::index::Index::read(repo).unwrap_or_else(|_| crate::index::Index::new());
 
     let count = checkout_tree(repo, &commit.tree)?;
 
     // Update index to match
     let index = build_index_from_tree(repo, &commit.tree)?;
+    remove_tracked_paths_not_in_target(repo, &old_index, &index);
     index.write(repo)?;
 
     Ok(count)
+}
+
+fn remove_tracked_paths_not_in_target(
+    repo: &Repository,
+    old_index: &crate::index::Index,
+    new_index: &crate::index::Index,
+) {
+    for entry in &old_index.entries {
+        if new_index.find(&entry.name).is_some() || !is_safe_relative_path(&entry.name) {
+            continue;
+        }
+
+        let path = repo.workdir_path(&entry.name);
+        let should_remove = match std::fs::read(&path) {
+            Ok(data) => crate::object::Object::blob(data).id() == entry.oid,
+            Err(_) => false,
+        };
+        if should_remove {
+            let _ = std::fs::remove_file(&path);
+            remove_empty_parent_dirs(repo, &entry.name);
+        }
+    }
+}
+
+fn remove_empty_parent_dirs(repo: &Repository, path: &str) {
+    let mut current = repo.workdir_path(path);
+    while current.pop() && current != repo.workdir {
+        match std::fs::remove_dir(&current) {
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+}
+
+fn is_safe_relative_path(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    !p.is_absolute()
+        && p.components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
 }

@@ -206,6 +206,11 @@ fn format_capabilities(caps: &[PluginCapability]) -> String {
             PluginCapability::Linter => "Linter",
             PluginCapability::Snippets => "Snippets",
             PluginCapability::ProjectType => "Project",
+            PluginCapability::Command => "Command",
+            PluginCapability::Panel => "Panel",
+            PluginCapability::CodeAction => "Code Action",
+            PluginCapability::Test => "Test",
+            PluginCapability::AiTool => "AI Tool",
         };
         parts.push(label);
     }

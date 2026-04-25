@@ -2,7 +2,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use anyos_std::json::{Number, Value};
-use libconf_schema::{default_string, manifest, RegistryScope, ServiceSchema};
+use libconf_schema::{default_bool, default_string, manifest, RegistryScope, ServiceSchema};
 
 use crate::util::path;
 
@@ -23,6 +23,8 @@ pub struct Config {
     pub settings_path: String,
     pub syntax_dir: String,
     pub plugin_dir: String,
+    pub system_plugin_dir: String,
+    pub user_plugin_dir: String,
     pub temp_dir: String,
     pub crust_path: String,
     pub ccargo_path: String,
@@ -35,6 +37,9 @@ pub struct Config {
     pub session_project: String,
     pub session_files: Vec<String>,
     pub session_active_file: String,
+    pub rust_check_on_save: bool,
+    pub rust_format_on_save: bool,
+    pub rust_use_anyrc_library: bool,
 }
 
 const DEFAULT_SETTINGS_PATH: &str = "/Users/settings/anycode.json";
@@ -53,15 +58,58 @@ const ANYCODE_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
 );
 const ANYCODE_SCHEMA: ServiceSchema<'static> = ServiceSchema::new("anycode", &ANYCODE_MANIFEST);
 
+const ANYCODE_SYSTEM_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_string(
+        "config/system_plugin_dir",
+        "/System/Library/anycode/plugins",
+    ),
+    default_string(
+        "config/user_plugin_dir",
+        "/Users/Shared/Library/anycode/plugins",
+    ),
+    default_string("config/allowed_ai_providers", "openai"),
+    default_bool("config/allow_user_plugins", true),
+];
+const ANYCODE_SYSTEM_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/anycode",
+    RegistryScope::System,
+    1,
+    &["config"],
+    ANYCODE_SYSTEM_DEFAULTS,
+    &[],
+);
+const ANYCODE_SYSTEM_SCHEMA: ServiceSchema<'static> =
+    ServiceSchema::new("anycode", &ANYCODE_SYSTEM_MANIFEST);
+
+const ANYCODE_RUST_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] = &[
+    default_bool("config/check_on_save", true),
+    default_bool("config/format_on_save", false),
+    default_bool("config/use_anyrc_library", true),
+    default_string("config/check_command", "ccargo check"),
+];
+const ANYCODE_RUST_MANIFEST: libconf_schema::RegistryManifest<'static> = manifest(
+    "apps/anycode_rust",
+    RegistryScope::User,
+    1,
+    &["config"],
+    ANYCODE_RUST_DEFAULTS,
+    &[],
+);
+const ANYCODE_RUST_SCHEMA: ServiceSchema<'static> =
+    ServiceSchema::new("anycode", &ANYCODE_RUST_MANIFEST);
+
 impl Config {
     /// Load settings from disk, or return defaults with auto-discovery.
     pub fn load() -> Self {
         let _ = ANYCODE_SCHEMA.register();
+        let _ = ANYCODE_SYSTEM_SCHEMA.register();
+        let _ = ANYCODE_RUST_SCHEMA.register();
         let defaults = Self::defaults();
         let data = match ANYCODE_SCHEMA.read_string("config/settings_json") {
             Some(s) if !s.is_empty() => s,
             _ => {
                 let mut cfg = defaults;
+                cfg.apply_scoped_confd();
                 cfg.auto_discover();
                 cfg.save();
                 return cfg;
@@ -71,6 +119,7 @@ impl Config {
             Ok(v) => v,
             Err(_) => {
                 let mut cfg = defaults;
+                cfg.apply_scoped_confd();
                 cfg.auto_discover();
                 cfg.save();
                 return cfg;
@@ -95,6 +144,8 @@ impl Config {
             // Always derive syntax_dir from current bundle (path changes between installs)
             syntax_dir: defaults.syntax_dir,
             plugin_dir: json_str(&val, "plugin_dir", &defaults.plugin_dir),
+            system_plugin_dir: json_str(&val, "system_plugin_dir", &defaults.system_plugin_dir),
+            user_plugin_dir: json_str(&val, "user_plugin_dir", &defaults.user_plugin_dir),
             temp_dir: json_str(&val, "temp_dir", &defaults.temp_dir),
             crust_path: json_str(&val, "crust_path", ""),
             ccargo_path: json_str(&val, "ccargo_path", ""),
@@ -107,7 +158,19 @@ impl Config {
             session_project: json_str(&val, "session_project", ""),
             session_files: json_str_array(&val, "session_files"),
             session_active_file: json_str(&val, "session_active_file", ""),
+            rust_check_on_save: json_bool(&val, "rust_check_on_save", defaults.rust_check_on_save),
+            rust_format_on_save: json_bool(
+                &val,
+                "rust_format_on_save",
+                defaults.rust_format_on_save,
+            ),
+            rust_use_anyrc_library: json_bool(
+                &val,
+                "rust_use_anyrc_library",
+                defaults.rust_use_anyrc_library,
+            ),
         };
+        cfg.apply_scoped_confd();
         // Re-discover any empty tool paths
         if cfg.crust_path.is_empty()
             || cfg.ccargo_path.is_empty()
@@ -156,6 +219,14 @@ impl Config {
         obj.set("settings_path", Value::String(self.settings_path.clone()));
         obj.set("syntax_dir", Value::String(self.syntax_dir.clone()));
         obj.set("plugin_dir", Value::String(self.plugin_dir.clone()));
+        obj.set(
+            "system_plugin_dir",
+            Value::String(self.system_plugin_dir.clone()),
+        );
+        obj.set(
+            "user_plugin_dir",
+            Value::String(self.user_plugin_dir.clone()),
+        );
         obj.set("temp_dir", Value::String(self.temp_dir.clone()));
         obj.set("crust_path", Value::String(self.crust_path.clone()));
         obj.set("ccargo_path", Value::String(self.ccargo_path.clone()));
@@ -174,8 +245,18 @@ impl Config {
             "session_active_file",
             Value::String(self.session_active_file.clone()),
         );
+        obj.set("rust_check_on_save", Value::Bool(self.rust_check_on_save));
+        obj.set("rust_format_on_save", Value::Bool(self.rust_format_on_save));
+        obj.set(
+            "rust_use_anyrc_library",
+            Value::Bool(self.rust_use_anyrc_library),
+        );
         let json = obj.to_json_string_pretty();
         let _ = ANYCODE_SCHEMA.write_string("config/settings_json", &json);
+        let _ = ANYCODE_RUST_SCHEMA.write_bool("config/check_on_save", self.rust_check_on_save);
+        let _ = ANYCODE_RUST_SCHEMA.write_bool("config/format_on_save", self.rust_format_on_save);
+        let _ =
+            ANYCODE_RUST_SCHEMA.write_bool("config/use_anyrc_library", self.rust_use_anyrc_library);
     }
 
     pub fn defaults() -> Self {
@@ -195,7 +276,11 @@ impl Config {
             output_height: 25,
             settings_path: String::from(DEFAULT_SETTINGS_PATH),
             syntax_dir,
-            plugin_dir: String::from("/Libraries/anycode/plugins"),
+            plugin_dir: String::from(
+                "/System/Library/anycode/plugins|/Users/Shared/Library/anycode/plugins",
+            ),
+            system_plugin_dir: String::from("/System/Library/anycode/plugins"),
+            user_plugin_dir: String::from("/Users/Shared/Library/anycode/plugins"),
             temp_dir: String::from("/tmp"),
             crust_path: String::new(),
             ccargo_path: String::new(),
@@ -208,7 +293,29 @@ impl Config {
             session_project: String::new(),
             session_files: Vec::new(),
             session_active_file: String::new(),
+            rust_check_on_save: true,
+            rust_format_on_save: false,
+            rust_use_anyrc_library: true,
         }
+    }
+
+    fn apply_scoped_confd(&mut self) {
+        if let Some(dir) = ANYCODE_SYSTEM_SCHEMA.read_string("config/system_plugin_dir") {
+            self.system_plugin_dir = dir;
+        }
+        if let Some(dir) = ANYCODE_SYSTEM_SCHEMA.read_string("config/user_plugin_dir") {
+            self.user_plugin_dir = dir;
+        }
+        if let Some(v) = ANYCODE_RUST_SCHEMA.read_bool("config/check_on_save") {
+            self.rust_check_on_save = v;
+        }
+        if let Some(v) = ANYCODE_RUST_SCHEMA.read_bool("config/format_on_save") {
+            self.rust_format_on_save = v;
+        }
+        if let Some(v) = ANYCODE_RUST_SCHEMA.read_bool("config/use_anyrc_library") {
+            self.rust_use_anyrc_library = v;
+        }
+        self.plugin_dir = format!("{}|{}", self.system_plugin_dir, self.user_plugin_dir);
     }
 
     /// Auto-discover paths for tools via PATH environment variable.

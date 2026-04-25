@@ -318,7 +318,7 @@ pub fn show() {
     model_label.set_text_color(tc.text);
     page_ai.add(&model_label);
 
-    let model_items = "gpt-4o|gpt-4o-mini|gpt-4-turbo|o3-mini|claude-sonnet-4-20250514|claude-haiku-4-5-20251001|claude-opus-4-20250514";
+    let model_items = "gpt-5.3-codex|gpt-5.4|gpt-5.4-mini|gpt-4o|claude-sonnet-4-20250514|claude-haiku-4-5-20251001|claude-opus-4-20250514";
     let ai_model = ui::DropDown::new(model_items);
     ai_model.set_position(FIELD_X, y);
     ai_model.set_size(FIELD_W, 28);
@@ -676,22 +676,27 @@ pub fn show() {
 
         let model_state = ui::Control::from_id(ai_model_id).get_state();
         let all_models = [
+            "gpt-5.3-codex",
+            "gpt-5.4",
+            "gpt-5.4-mini",
             "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "o3-mini",
             "claude-sonnet-4-20250514",
             "claude-haiku-4-5-20251001",
             "claude-opus-4-20250514",
         ];
-        let model = all_models.get(model_state as usize).unwrap_or(&"gpt-4o");
+        let model = all_models
+            .get(model_state as usize)
+            .unwrap_or(&"gpt-5.3-codex");
 
         let ai_cfg = AiConfig {
             provider,
             api_key: read_string(ai_key_id),
             model: String::from(*model),
             max_tokens: read_u32(ai_tok_id, 4096),
-            temperature: 0.7,
+            temperature: 0.2,
+            reasoning_effort: String::from("medium"),
+            privacy_mode: true,
+            require_patch_review: true,
             custom_endpoint: read_string(ai_ep_id),
         };
         ai_cfg.save();

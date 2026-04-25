@@ -150,7 +150,7 @@ impl AiSettingsDialog {
         model_label.set_text_color(tc.text);
         content.add(&model_label);
 
-        let models_openai = "gpt-4o|gpt-4o-mini|gpt-4-turbo|o3-mini";
+        let models_openai = "gpt-5.3-codex|gpt-5.4|gpt-5.4-mini|gpt-4o";
         let models_anthropic =
             "claude-sonnet-4-20250514|claude-haiku-4-5-20251001|claude-opus-4-20250514";
         let model_items = match config.provider {
@@ -379,11 +379,11 @@ fn save_config(
     let model_state = ui::Control::from_id(model_id).get_state();
     let model = match provider {
         AiProvider::OpenAI => match model_state {
-            0 => "gpt-4o",
-            1 => "gpt-4o-mini",
-            2 => "gpt-4-turbo",
-            3 => "o3-mini",
-            _ => "gpt-4o",
+            0 => "gpt-5.3-codex",
+            1 => "gpt-5.4",
+            2 => "gpt-5.4-mini",
+            3 => "gpt-4o",
+            _ => "gpt-5.3-codex",
         },
         AiProvider::Anthropic => match model_state {
             0 => "claude-sonnet-4-20250514",
@@ -417,6 +417,9 @@ fn save_config(
         model: String::from(model),
         max_tokens,
         temperature,
+        reasoning_effort: String::from("medium"),
+        privacy_mode: true,
+        require_patch_review: true,
         custom_endpoint: String::from(endpoint),
     };
     config.save();
@@ -472,6 +475,9 @@ fn test_connection(prov_id: u32, key_id: u32, status_id: u32) {
         model: String::from(provider.default_model()),
         max_tokens: 10,
         temperature: 0.0,
+        reasoning_effort: String::from("medium"),
+        privacy_mode: true,
+        require_patch_review: true,
         custom_endpoint: String::new(),
     };
 

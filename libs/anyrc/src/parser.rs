@@ -2108,6 +2108,7 @@ impl<'a> Parser<'a> {
                     continue;
                 }
                 let b_start = self.current().span;
+                self.parse_optional_for_binder();
                 let path = self.parse_path_ty();
                 supertraits.push(TraitBound {
                     path,
@@ -3208,6 +3209,22 @@ impl<'a> Parser<'a> {
             return Pattern::Rest(self.span_from(start));
         }
 
+        if self.at_ident() && self.peek_kind() == &TokenKind::Not {
+            let macro_name = match self.current().kind {
+                TokenKind::Ident(sym) => sym,
+                _ => unreachable!(),
+            };
+            if self.interner.resolve(macro_name) == "stringify" {
+                self.bump();
+                self.expect_exact(&TokenKind::Not);
+                let args = self.parse_macro_args();
+                return Pattern::Literal(
+                    Literal::String(self.stringify_token_trees(&args)),
+                    self.span_from(start),
+                );
+            }
+        }
+
         // &pat, &mut pat
         if self.at_exact(&TokenKind::Amp) {
             self.bump();
@@ -3446,6 +3463,108 @@ impl<'a> Parser<'a> {
             self.current().span,
             self.token_window()
         );
+    }
+
+    fn stringify_token_trees(&self, tts: &[TokenTree]) -> String {
+        let mut out = String::new();
+        for (idx, tt) in tts.iter().enumerate() {
+            if idx > 0 {
+                out.push(' ');
+            }
+            self.stringify_token_tree(tt, &mut out);
+        }
+        out
+    }
+
+    fn stringify_token_tree(&self, tt: &TokenTree, out: &mut String) {
+        match tt {
+            TokenTree::Token(tok) => self.stringify_token(&tok.kind, out),
+            TokenTree::Delimited(delim, inner) => {
+                out.push(match delim {
+                    Delimiter::Paren => '(',
+                    Delimiter::Bracket => '[',
+                    Delimiter::Brace => '{',
+                });
+                for (idx, tt) in inner.iter().enumerate() {
+                    if idx > 0 {
+                        out.push(' ');
+                    }
+                    self.stringify_token_tree(tt, out);
+                }
+                out.push(match delim {
+                    Delimiter::Paren => ')',
+                    Delimiter::Bracket => ']',
+                    Delimiter::Brace => '}',
+                });
+            }
+        }
+    }
+
+    fn stringify_token(&self, kind: &TokenKind, out: &mut String) {
+        match kind {
+            TokenKind::Ident(sym) => out.push_str(self.interner.resolve(*sym)),
+            TokenKind::Lifetime(sym) => {
+                out.push('\'');
+                out.push_str(self.interner.resolve(*sym));
+            }
+            TokenKind::Kw(kw) => out.push_str(match kw {
+                Keyword::Fn => "fn",
+                Keyword::Let => "let",
+                Keyword::Mut => "mut",
+                Keyword::Pub => "pub",
+                Keyword::Struct => "struct",
+                Keyword::Enum => "enum",
+                Keyword::Impl => "impl",
+                Keyword::Trait => "trait",
+                Keyword::Type => "type",
+                Keyword::Use => "use",
+                Keyword::Mod => "mod",
+                Keyword::Crate => "crate",
+                Keyword::SelfValue => "self",
+                Keyword::SelfType => "Self",
+                Keyword::Super => "super",
+                Keyword::As => "as",
+                Keyword::In => "in",
+                Keyword::For => "for",
+                Keyword::While => "while",
+                Keyword::Loop => "loop",
+                Keyword::If => "if",
+                Keyword::Else => "else",
+                Keyword::Match => "match",
+                Keyword::Return => "return",
+                Keyword::Break => "break",
+                Keyword::Continue => "continue",
+                Keyword::Where => "where",
+                Keyword::Const => "const",
+                Keyword::Static => "static",
+                Keyword::Unsafe => "unsafe",
+                Keyword::Extern => "extern",
+                Keyword::Ref => "ref",
+                Keyword::Move => "move",
+                Keyword::True => "true",
+                Keyword::False => "false",
+                Keyword::Dyn => "dyn",
+            }),
+            TokenKind::IntLit(value, _) => out.push_str(&value.to_string()),
+            TokenKind::StringLit(value) => out.push_str(value),
+            TokenKind::CharLit(value) => out.push(*value),
+            TokenKind::ColonColon => out.push_str("::"),
+            TokenKind::FatArrow => out.push_str("=>"),
+            TokenKind::Arrow => out.push_str("->"),
+            TokenKind::Comma => out.push(','),
+            TokenKind::Semi => out.push(';'),
+            TokenKind::Colon => out.push(':'),
+            TokenKind::Not => out.push('!'),
+            TokenKind::Lt => out.push('<'),
+            TokenKind::Gt => out.push('>'),
+            TokenKind::Amp => out.push('&'),
+            TokenKind::Star => out.push('*'),
+            TokenKind::Plus => out.push('+'),
+            TokenKind::Minus => out.push('-'),
+            TokenKind::Eq => out.push('='),
+            TokenKind::Dot => out.push('.'),
+            _ => {}
+        }
     }
 
     fn parse_struct_pattern(&mut self, path: Path, start: Span, allow_or: bool) -> Pattern {

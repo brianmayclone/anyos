@@ -231,7 +231,7 @@ pub fn search_in_project() {
 pub fn about() {
     libanyui_client::MessageBox::show(
         libanyui_client::MessageBoxType::Info,
-        "anyOS Code v2.0\n\nProfessional IDE for anyOS\n\nSupports: Rust, C, C++, Python, JavaScript,\nTypeScript, Shell, Makefile\n\nFeatures:\n- Multi-project detection\n- Automatic task/target discovery\n- Symbol outline\n- Diagnostics parsing\n- Git integration\n- Plugin system\n- Project-wide search & replace",
+        "anyOS Code v2.0\n\nRust-first professional IDE for anyOS\n\nSupports: Rust, ccargo, crust, anyrc\n\nFeatures:\n- Rust project and target discovery\n- Live diagnostics\n- Symbol outline\n- Codex integration\n- Native plugin foundation\n- Git integration\n- Project-wide search & replace",
         Some("OK"),
     );
 }
@@ -1323,7 +1323,7 @@ fn run_static_analysis_for_editor(editor_index: usize) {
         }
     };
 
-    let live_diags = language_service::analyze_document(&file_path, text);
+    let live_diags = language_service::analyze_document_with_config(&file_path, text, &s.config);
     s.diagnostics
         .remove_source_for_file(live_analysis::LIVE_SOURCE, &file_path);
     s.diagnostics.append_many(live_diags);

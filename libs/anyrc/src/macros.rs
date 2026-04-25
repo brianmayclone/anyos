@@ -2057,7 +2057,7 @@ fn try_expand_to_expr(def: &MacroDef, args: &[TokenTree], interner: &mut Interne
         let mut captures = HashMap::new();
         if match_pattern(&rule.pattern, args, interner, &mut captures) {
             let expanded = substitute(&rule.body, &captures, interner);
-            if has_unexpanded_dollar_tts(&expanded) {
+            if has_unexpanded_dollar_tts(&expanded, interner) {
                 return None;
             }
             let src = token_trees_to_string(&expanded, interner);
@@ -2079,13 +2079,10 @@ fn try_expand_to_items(def: &MacroDef, args: &[TokenTree], interner: &mut Intern
         let mut captures = HashMap::new();
         if match_pattern(&rule.pattern, args, interner, &mut captures) {
             let expanded = substitute(&rule.body, &captures, interner);
-            if has_unexpanded_dollar_tts(&expanded) {
+            if has_unexpanded_dollar_tts(&expanded, interner) {
                 return None;
             }
             let src = token_trees_to_string(&expanded, interner);
-            if has_unexpanded_dollar(&src) {
-                return None;
-            }
             let mut parser = Parser::new(&src, interner);
             let krate = parser.parse_crate();
             if !krate.items.is_empty() || src.trim().is_empty() {
@@ -2113,9 +2110,15 @@ fn has_unexpanded_dollar(src: &str) -> bool {
     false
 }
 
-fn has_unexpanded_dollar_tts(tts: &[TokenTree]) -> bool {
+fn has_unexpanded_dollar_tts(tts: &[TokenTree], interner: &Interner) -> bool {
     let mut i = 0;
     while i < tts.len() {
+        if token_tree_is_macro_rules(&tts[i], interner) {
+            if let Some(next_i) = skip_macro_rules_def(tts, i) {
+                i = next_i;
+                continue;
+            }
+        }
         match &tts[i] {
             TokenTree::Token(Token { kind: TokenKind::Dollar, .. }) => {
                 if matches!(
@@ -2128,7 +2131,7 @@ fn has_unexpanded_dollar_tts(tts: &[TokenTree]) -> bool {
                 return true;
             }
             TokenTree::Delimited(_, inner) => {
-                if has_unexpanded_dollar_tts(inner) {
+                if has_unexpanded_dollar_tts(inner, interner) {
                     return true;
                 }
             }
@@ -2137,6 +2140,31 @@ fn has_unexpanded_dollar_tts(tts: &[TokenTree]) -> bool {
         i += 1;
     }
     false
+}
+
+fn token_tree_is_macro_rules(tt: &TokenTree, interner: &Interner) -> bool {
+    matches!(
+        tt,
+        TokenTree::Token(Token { kind: TokenKind::Ident(sym), .. })
+            if interner.resolve(*sym) == "macro_rules"
+    )
+}
+
+fn skip_macro_rules_def(tts: &[TokenTree], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    if matches!(tts.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Not, .. }))) {
+        i += 1;
+    }
+    if matches!(tts.get(i), Some(TokenTree::Token(Token { kind: TokenKind::Ident(_), .. }))) {
+        i += 1;
+    } else {
+        return None;
+    }
+    if matches!(tts.get(i), Some(TokenTree::Delimited(_, _))) {
+        Some(i + 1)
+    } else {
+        None
+    }
 }
 
 // ── Token tree to string conversion ──

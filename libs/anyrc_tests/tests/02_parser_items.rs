@@ -86,6 +86,26 @@ fn parse_higher_ranked_where_predicate() {
 }
 
 #[test]
+fn parse_higher_ranked_supertrait_bound() {
+    let krate = parse("pub trait DeserializeOwned: for<'de> Deserialize<'de> {}");
+    match &krate.items[0] {
+        Item::Trait(t) => {
+            assert_eq!(t.supertraits.len(), 1);
+        }
+        _ => panic!("expected trait"),
+    }
+}
+
+#[test]
+fn parse_stringify_macro_pattern_as_literal() {
+    let krate = parse(r#"fn f(value: &str) -> i32 { match value { stringify!(Unix) => 1, _ => 0 } }"#);
+    match &krate.items[0] {
+        Item::Fn(f) => assert!(f.body.is_some()),
+        _ => panic!("expected fn"),
+    }
+}
+
+#[test]
 fn parse_type_position_macro_in_cast_ty() {
     let krate = parse("fn f(x: u8) -> u8 { (x as to_signed_int!(u8)) as u8 }");
     match &krate.items[0] {

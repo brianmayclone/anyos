@@ -211,5 +211,121 @@ status="$(capture_agit "$local_repo" "status local modified tracked" status --po
 rm "$local_repo/probe.txt"
 status="$(capture_agit "$local_repo" "status local deleted tracked" status --porcelain)"
 [[ "$status" == " D probe.txt" ]] || fail "local deleted tracked status was '$status'"
+diff_out="$(capture_agit "$local_repo" "diff local deleted tracked" diff)"
+grep -q '^-probe' <<<"$diff_out" || fail "deleted diff did not contain removed line: '$diff_out'"
+
+run_agit "$local_repo" "add local deleted probe" add probe.txt
+run_agit "$local_repo" "commit local deleted probe" commit -m "delete probe"
+status="$(capture_agit "$local_repo" "status after local delete commit" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after delete commit: '$status'"
+
+run_agit "$local_repo" "remote add local origin" remote add origin https://example.invalid/repo.git
+remote_verbose="$(capture_agit "$local_repo" "remote -v local" remote -v)"
+grep -q "origin[[:space:]]https://example.invalid/repo.git (fetch)" <<<"$remote_verbose" || fail "remote -v did not show origin fetch URL: '$remote_verbose'"
+run_agit "$local_repo" "remote set-url local origin" remote set-url origin https://example.invalid/other.git
+remote_verbose="$(capture_agit "$local_repo" "remote -v local after set-url" remote -v)"
+grep -q "origin[[:space:]]https://example.invalid/other.git (fetch)" <<<"$remote_verbose" || fail "remote set-url did not update origin: '$remote_verbose'"
+mkdir -p "$local_repo/.git/refs/remotes/origin"
+capture_agit "$local_repo" "rev-parse local main before remote-ref" rev-parse main >"$local_repo/.git/refs/remotes/origin/main"
+remote_ref_oid="$(capture_agit "$local_repo" "rev-parse local origin/main" rev-parse origin/main | tr -d '\r\n')"
+main_ref_oid="$(capture_agit "$local_repo" "rev-parse local main after remote-ref" rev-parse main | tr -d '\r\n')"
+[[ "$remote_ref_oid" == "$main_ref_oid" ]] || fail "origin/main did not resolve to remote-tracking ref"
+
+printf 'base changed\n' >"$local_repo/base.txt"
+diff_out="$(capture_agit "$local_repo" "diff local unstaged" diff)"
+grep -q '^+base changed' <<<"$diff_out" || fail "unstaged diff did not contain changed line: '$diff_out'"
+
+run_agit "$local_repo" "add local changed base" add base.txt
+diff_out="$(capture_agit "$local_repo" "diff local cached" diff --cached)"
+grep -q '^+base changed' <<<"$diff_out" || fail "cached diff did not contain changed line: '$diff_out'"
+run_agit "$local_repo" "commit local changed base" commit -m "change base"
+status="$(capture_agit "$local_repo" "status after local changed base commit" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after changed base commit: '$status'"
+
+printf 'stashed\n' >"$local_repo/base.txt"
+printf 'scratch\n' >"$local_repo/scratch.txt"
+run_agit "$local_repo" "stash push local" stash push -u -m "stash probe"
+status="$(capture_agit "$local_repo" "status after stash push" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after stash push: '$status'"
+stash_list="$(capture_agit "$local_repo" "stash list local" stash list)"
+grep -q 'stash probe' <<<"$stash_list" || fail "stash list did not contain message: '$stash_list'"
+run_agit "$local_repo" "stash pop local" stash pop
+status="$(capture_agit "$local_repo" "status after stash pop" status --porcelain)"
+grep -qx " M base.txt" <<<"$status" || fail "stash pop did not restore tracked change: '$status'"
+grep -qx "?? scratch.txt" <<<"$status" || fail "stash pop did not restore untracked file: '$status'"
+rm "$local_repo/scratch.txt"
+run_agit "$local_repo" "add local stashed base" add base.txt
+run_agit "$local_repo" "commit local stashed base" commit -m "stashed base"
+status="$(capture_agit "$local_repo" "status after local stash commit" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after stash commit: '$status'"
+
+run_agit "$local_repo" "branch local feature" branch feature
+run_agit "$local_repo" "checkout local feature" checkout feature
+printf 'feature\n' >"$local_repo/feature.txt"
+run_agit "$local_repo" "add local feature file" add feature.txt
+run_agit "$local_repo" "commit local feature file" commit -m "feature"
+feature_oid="$(capture_agit "$local_repo" "rev-parse local feature" rev-parse HEAD | tr -d '\r\n')"
+run_agit "$local_repo" "checkout local main before merge" checkout main
+[[ ! -e "$local_repo/feature.txt" ]] || fail "checkout main left feature-only tracked file in working tree"
+run_agit "$local_repo" "merge local feature" merge feature
+merged_oid="$(capture_agit "$local_repo" "rev-parse local merged main" rev-parse HEAD | tr -d '\r\n')"
+[[ "$merged_oid" == "$feature_oid" ]] || fail "merge did not fast-forward main to feature"
+[[ -f "$local_repo/feature.txt" ]] || fail "fast-forward merge did not restore feature file"
+status="$(capture_agit "$local_repo" "status after local merge" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after merge: '$status'"
+
+run_agit "$local_repo" "branch local topic" branch topic
+run_agit "$local_repo" "checkout local main for rebase target" checkout main
+printf 'main advance\n' >"$local_repo/rebase-target.txt"
+run_agit "$local_repo" "add local rebase target" add rebase-target.txt
+run_agit "$local_repo" "commit local rebase target" commit -m "rebase target"
+target_oid="$(capture_agit "$local_repo" "rev-parse local rebase target" rev-parse HEAD | tr -d '\r\n')"
+run_agit "$local_repo" "checkout local topic before rebase" checkout topic
+run_agit "$local_repo" "rebase local topic onto main" rebase main
+rebased_oid="$(capture_agit "$local_repo" "rev-parse local rebased topic" rev-parse HEAD | tr -d '\r\n')"
+[[ "$rebased_oid" == "$target_oid" ]] || fail "rebase did not fast-forward topic to main"
+status="$(capture_agit "$local_repo" "status after local rebase" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after rebase: '$status'"
+
+run_agit "$local_repo" "checkout local main before non-ff merge" checkout main
+run_agit "$local_repo" "branch local merge-side" branch merge-side
+run_agit "$local_repo" "checkout local merge-side" checkout merge-side
+printf 'side\n' >"$local_repo/side.txt"
+run_agit "$local_repo" "add local merge-side file" add side.txt
+run_agit "$local_repo" "commit local merge-side file" commit -m "merge side"
+side_oid="$(capture_agit "$local_repo" "rev-parse local merge-side" rev-parse HEAD | tr -d '\r\n')"
+run_agit "$local_repo" "checkout local main before non-ff merge commit" checkout main
+[[ ! -e "$local_repo/side.txt" ]] || fail "checkout main left side-only tracked file in working tree"
+printf 'main only\n' >"$local_repo/main-only.txt"
+run_agit "$local_repo" "add local main-only file" add main-only.txt
+run_agit "$local_repo" "commit local main-only file" commit -m "main only"
+main_before_merge_oid="$(capture_agit "$local_repo" "rev-parse local main before non-ff merge" rev-parse HEAD | tr -d '\r\n')"
+run_agit "$local_repo" "merge local non-ff side" merge merge-side
+merged_oid="$(capture_agit "$local_repo" "rev-parse local non-ff merged main" rev-parse HEAD | tr -d '\r\n')"
+[[ "$merged_oid" != "$side_oid" ]] || fail "non-ff merge incorrectly fast-forwarded to side"
+[[ "$merged_oid" != "$main_before_merge_oid" ]] || fail "non-ff merge did not create a new commit"
+[[ -f "$local_repo/side.txt" ]] || fail "non-ff merge did not check out side file"
+[[ -f "$local_repo/main-only.txt" ]] || fail "non-ff merge lost main-only file"
+status="$(capture_agit "$local_repo" "status after local non-ff merge" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after non-ff merge: '$status'"
+
+run_agit "$local_repo" "branch local rebase-linear" branch rebase-linear
+run_agit "$local_repo" "checkout local rebase-linear" checkout rebase-linear
+printf 'linear side\n' >"$local_repo/linear-side.txt"
+run_agit "$local_repo" "add local linear side" add linear-side.txt
+run_agit "$local_repo" "commit local linear side" commit -m "linear side"
+old_linear_oid="$(capture_agit "$local_repo" "rev-parse local old linear side" rev-parse HEAD | tr -d '\r\n')"
+run_agit "$local_repo" "checkout local main before linear rebase" checkout main
+printf 'linear main\n' >"$local_repo/linear-main.txt"
+run_agit "$local_repo" "add local linear main" add linear-main.txt
+run_agit "$local_repo" "commit local linear main" commit -m "linear main"
+run_agit "$local_repo" "checkout local rebase-linear before nonlinear rebase" checkout rebase-linear
+run_agit "$local_repo" "rebase local linear branch onto main" rebase main
+new_linear_oid="$(capture_agit "$local_repo" "rev-parse local rebased linear side" rev-parse HEAD | tr -d '\r\n')"
+[[ "$new_linear_oid" != "$old_linear_oid" ]] || fail "linear rebase did not rewrite branch commit"
+[[ -f "$local_repo/linear-side.txt" ]] || fail "linear rebase lost side file"
+[[ -f "$local_repo/linear-main.txt" ]] || fail "linear rebase did not include upstream file"
+status="$(capture_agit "$local_repo" "status after local linear rebase" status --porcelain)"
+[[ -z "$status" ]] || fail "local working tree not clean after linear rebase: '$status'"
 
 printf 'agit GitHub clone test passed.\n'

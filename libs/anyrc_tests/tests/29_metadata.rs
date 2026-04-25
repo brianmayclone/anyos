@@ -226,6 +226,15 @@ fn rlib_interface_resolves_modules_created_by_macro_expansion() {
         r#"
             macro_rules! crate_root {
                 () => {
+                    macro_rules! tri {
+                        ($expr:expr) => {
+                            match $expr {
+                                Ok(value) => value,
+                                Err(err) => return Err(err),
+                            }
+                        };
+                    }
+
                     pub mod de;
                     pub mod ser;
 

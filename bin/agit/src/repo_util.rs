@@ -12,8 +12,18 @@ pub fn resolve_rev(repo: &Repository, rev: &str) -> Option<Oid> {
         return Some(oid);
     }
 
+    if let Ok(oid) = libgit::refs::resolve_ref(repo, &format!("refs/remotes/{}", rev)) {
+        return Some(oid);
+    }
+
     if let Ok(oid) = libgit::refs::resolve_ref(repo, &format!("refs/tags/{}", rev)) {
         return Some(oid);
+    }
+
+    if rev.starts_with("refs/") {
+        if let Ok(oid) = libgit::refs::resolve_ref(repo, rev) {
+            return Some(oid);
+        }
     }
 
     Oid::from_hex(rev)

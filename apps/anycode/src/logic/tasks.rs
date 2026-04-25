@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 
 use crate::logic::config::Config;
 use crate::logic::project::{BuildConfiguration, Project, ProjectType, TargetKind};
+use crate::logic::rust_backend::RustBuildBackend;
 
 // ════════════════════════════════════════════════════════════════
 //  Task definitions — run configurations for the IDE
@@ -179,10 +180,11 @@ impl TaskManager {
 
         match project.project_type {
             ProjectType::Cargo => self.detect_cargo_tasks(project, config),
-            ProjectType::CMake => self.detect_cmake_tasks(project, config),
-            ProjectType::Make => self.detect_make_tasks(project, config),
-            ProjectType::Python => self.detect_python_tasks(project, config),
-            ProjectType::NodeJS => self.detect_nodejs_tasks(project, config),
+            ProjectType::CMake | ProjectType::Make | ProjectType::NodeJS => {
+                // Studio v1 is intentionally Rust-first. C/TCC/Make and JS tasks
+                // are kept out of the active auto-detection path for this phase.
+            }
+            ProjectType::Python => {}
             ProjectType::Generic => self.detect_generic_tasks(project, config),
         }
 
@@ -193,7 +195,8 @@ impl TaskManager {
 
     fn detect_cargo_tasks(&mut self, project: &Project, config: &Config) {
         let root = &project.root;
-        let ccargo = find_first_tool_path(&["ccargo", "cargo", "acargo"], config);
+        let rust_backend = RustBuildBackend::from_config(config);
+        let ccargo = rust_backend.ccargo_path.clone();
         if ccargo.is_empty() {
             self.detect_rust_fallback_tasks(project, config);
             return;
@@ -243,6 +246,19 @@ impl TaskManager {
         let mut test = Task::new("Test", TaskCategory::Test, &ccargo, "test", root);
         test.display_label = format!("{} test", cargo_name);
         self.tasks.push(test);
+
+        for case in RustBuildBackend::discover_tests(root) {
+            let args = format!("test {}", case.display_name);
+            let mut task = Task::new(
+                &format!("Test: {}", case.display_name),
+                TaskCategory::Test,
+                &ccargo,
+                &args,
+                root,
+            );
+            task.display_label = format!("{} {}", cargo_name, args);
+            self.tasks.push(task);
+        }
 
         // Run targets — one per binary
         for target in &project.cargo_targets {
@@ -518,41 +534,7 @@ impl TaskManager {
             return;
         }
 
-        // C single file
-        let cc = find_tool_path("cc", config);
-        if crate::util::path::exists(&format!("{}/main.c", root)) && !cc.is_empty() {
-            let mut build = Task::new(
-                "Build (C)",
-                TaskCategory::Build,
-                &cc,
-                "main.c -o main",
-                root,
-            );
-            build.display_label = format!("{} main.c -o main", command_basename(&cc));
-            self.tasks.push(build);
-
-            let mut run = Task::new("Run", TaskCategory::Run, "./main", "", root);
-            run.display_label = String::from("./main");
-            self.tasks.push(run);
-        }
-
-        // C++ single file
-        let cxx = find_first_tool_path(&["c++", "g++", "clang++"], config);
-        if crate::util::path::exists(&format!("{}/main.cpp", root)) && !cxx.is_empty() {
-            let mut build = Task::new(
-                "Build (C++)",
-                TaskCategory::Build,
-                &cxx,
-                "main.cpp -o main",
-                root,
-            );
-            build.display_label = format!("{} main.cpp -o main", command_basename(&cxx));
-            self.tasks.push(build);
-
-            let mut run = Task::new("Run", TaskCategory::Run, "./main", "", root);
-            run.display_label = String::from("./main");
-            self.tasks.push(run);
-        }
+        // C/TCC/Make and JavaScript are intentionally outside the Rust-first v1 path.
     }
 
     // ── Accessors ──────────────────────────────────────────────

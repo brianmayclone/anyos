@@ -430,6 +430,14 @@ impl<'a> Resolver<'a> {
                     self.define(local_name, Namespace::Type, def_id);
                     return;
                 }
+                if let Some(full_path) = self.resolve_extern_backed_path_string(&full_path) {
+                    let def_id = self.alloc_synthetic_def_id();
+                    self.intrinsic_fns.insert(def_id, full_path.clone());
+                    self.define(local_name, Namespace::Value, def_id);
+                    self.define(local_name, Namespace::Type, def_id);
+                    self.extern_path_aliases.insert((self.current_scope, local_name), full_path);
+                    return;
+                }
                 // use a::b::c; or use a::b::c as d;
                 if let Some((def_id, ns)) = self.resolve_use_path(&full_path, use_tree.span) {
                     self.define(local_name, ns, def_id);
@@ -472,6 +480,19 @@ impl<'a> Resolver<'a> {
                         for ((name, ns), def_id) in bindings {
                             self.define(name, ns, def_id);
                         }
+                        let aliases: Vec<_> = self.extern_path_aliases
+                            .iter()
+                            .filter_map(|(&(scope, name), path)| {
+                                if scope == scope_idx {
+                                    Some((name, path.clone()))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        for (name, path) in aliases {
+                            self.extern_path_aliases.insert((self.current_scope, name), path);
+                        }
                     }
                 } else if let Some((type_def_id, _)) = self.resolve_use_path_ns(&use_tree.path, Namespace::Type) {
                     if let Some(enum_info) = self.enum_variants.get(&type_def_id) {
@@ -498,11 +519,51 @@ impl<'a> Resolver<'a> {
                 .insert(def_id, format!("{}::{}", path_str, name));
             self.define(sym, Namespace::Value, def_id);
             self.define(sym, Namespace::Type, def_id);
+            self.extern_path_aliases
+                .insert((self.current_scope, sym), format!("{}::{}", path_str, name));
         }
     }
 
     fn extern_glob_names(path: &str) -> &'static [&'static str] {
         match path {
+            "core" | "std" => &[
+                "borrow",
+                "boxed",
+                "cell",
+                "cmp",
+                "collections",
+                "error",
+                "f32",
+                "f64",
+                "ffi",
+                "fmt",
+                "hash",
+                "io",
+                "iter",
+                "marker",
+                "mem",
+                "net",
+                "num",
+                "ops",
+                "path",
+                "rc",
+                "result",
+                "str",
+                "string",
+                "sync",
+                "time",
+                "vec",
+            ],
+            "alloc" => &[
+                "borrow",
+                "boxed",
+                "collections",
+                "ffi",
+                "rc",
+                "string",
+                "sync",
+                "vec",
+            ],
             "alloc::collections" | "std::collections" => &[
                 "BinaryHeap",
                 "BTreeMap",
@@ -645,6 +706,56 @@ impl<'a> Resolver<'a> {
             }
             scope = self.scopes[scope_idx].parent;
         }
+        None
+    }
+
+    fn resolve_extern_backed_path_string(&self, path: &[Symbol]) -> Option<String> {
+        if path.is_empty() {
+            return None;
+        }
+
+        let first_str = self.interner.resolve(path[0]);
+        let (mut scope, start_idx) = if first_str == "crate" {
+            (self.root_scope, 1)
+        } else if first_str == "super" {
+            let parent_scope = if self.module_stack.len() >= 2 {
+                self.module_stack[self.module_stack.len() - 2]
+            } else {
+                self.root_scope
+            };
+            (parent_scope, 1)
+        } else if first_str == "self" {
+            (*self.module_stack.last().unwrap_or(&self.root_scope), 1)
+        } else {
+            (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
+        };
+
+        let segments = &path[start_idx..];
+        for (idx, &seg) in segments.iter().enumerate() {
+            if let Some(prefix) = self.extern_path_aliases.get(&(scope, seg)) {
+                let suffix = segments[idx + 1..]
+                    .iter()
+                    .map(|sym| self.interner.resolve(*sym).to_string())
+                    .collect::<Vec<_>>();
+                if suffix.is_empty() {
+                    return Some(prefix.clone());
+                }
+                return Some(format!("{}::{}", prefix, suffix.join("::")));
+            }
+
+            if let Some(mod_def_id) = self.scopes[scope]
+                .bindings
+                .get(&(seg, Namespace::Type))
+                .copied()
+            {
+                if let Some(&mod_scope) = self.module_scopes.get(&mod_def_id) {
+                    scope = mod_scope;
+                    continue;
+                }
+            }
+            break;
+        }
+
         None
     }
 
@@ -1434,6 +1545,14 @@ impl<'a> Resolver<'a> {
         if path.segments.len() >= 2 {
             let symbols = path.segments.iter().map(|seg| seg.ident).collect::<Vec<_>>();
             if let Some(full_path) = self.extern_crate_path_string(&symbols) {
+                let def_id = self.alloc_synthetic_def_id();
+                self.intrinsic_fns.insert(def_id, full_path);
+                if hir_id != HirId(u32::MAX) {
+                    self.resolutions.insert(hir_id, def_id);
+                }
+                return;
+            }
+            if let Some(full_path) = self.resolve_extern_backed_path_string(&symbols) {
                 let def_id = self.alloc_synthetic_def_id();
                 self.intrinsic_fns.insert(def_id, full_path);
                 if hir_id != HirId(u32::MAX) {
