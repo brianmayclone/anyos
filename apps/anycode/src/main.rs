@@ -696,6 +696,19 @@ fn poll_git() {
                     s.git_state.timeline = git::parse_timeline(&output);
                     s.git_panel.update(&s.git_state);
                 }
+                git::GitOp::Init => {
+                    if !output.is_empty() {
+                        s.output.append(&output);
+                    }
+                    if let Some(ref proj) = s.current_project {
+                        if let Some(repo_root) = git::find_repository_root(&proj.root) {
+                            s.git_state.is_repo = true;
+                            s.git_state.root = repo_root;
+                        }
+                    }
+                    s.output.append_line("\n[Repository initialized]");
+                    trigger_git_refresh();
+                }
                 git::GitOp::Add | git::GitOp::Commit => {
                     trigger_git_refresh();
                 }

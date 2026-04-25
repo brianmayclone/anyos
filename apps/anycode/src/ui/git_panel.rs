@@ -2,6 +2,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use libanyui_client as ui;
+use ui::IconType;
 
 use crate::logic::git::{ChangedFile, FileStatus, GitState};
 
@@ -14,9 +15,10 @@ pub struct GitPanel {
     pub commit_field: ui::TextField,
     pub btn_commit: ui::Button,
     pub btn_stage_all: ui::Button,
-    pub btn_push: ui::Button,
-    pub btn_pull: ui::Button,
-    pub btn_refresh: ui::Button,
+    pub btn_init: ui::Button,
+    pub btn_push: ui::PlainButton,
+    pub btn_pull: ui::PlainButton,
+    pub btn_refresh: ui::PlainButton,
     pub tree: ui::TreeView,
     pub timeline_tree: ui::TreeView,
     file_paths: Vec<String>,
@@ -61,28 +63,41 @@ impl GitPanel {
         btn_bar.set_dock(ui::DOCK_TOP);
         btn_bar.set_size(200, 32);
         btn_bar.set_color(tc.sidebar_bg);
+        btn_bar.set_padding(6, 0, 4, 0);
         panel.add(&btn_bar);
 
         let btn_commit = ui::Button::new(t("Commit"));
-        btn_commit.set_size(55, 24);
+        btn_commit.set_size(58, 24);
         btn_commit.set_color(tc.accent);
+        btn_commit.set_tooltip(t("Commit staged changes"));
         btn_bar.add(&btn_commit);
 
         let btn_stage_all = ui::Button::new(t("Stage All"));
-        btn_stage_all.set_size(60, 24);
+        btn_stage_all.set_size(66, 24);
+        btn_stage_all.set_tooltip(t("Stage all changes"));
         btn_bar.add(&btn_stage_all);
 
-        let btn_push = ui::Button::new(t("Push"));
-        btn_push.set_size(40, 24);
-        btn_bar.add(&btn_push);
+        let btn_refresh = icon_button("refresh", tc.text_secondary, t("Refresh"));
+        btn_bar.add(&btn_refresh);
 
-        let btn_pull = ui::Button::new(t("Pull"));
-        btn_pull.set_size(40, 24);
+        let btn_pull = icon_button("arrow-down", tc.text_secondary, t("Pull"));
         btn_bar.add(&btn_pull);
 
-        let btn_refresh = ui::Button::new(t("Refresh"));
-        btn_refresh.set_size(55, 24);
-        btn_bar.add(&btn_refresh);
+        let btn_push = icon_button("arrow-up", tc.text_secondary, t("Push"));
+        btn_bar.add(&btn_push);
+
+        let init_bar = ui::FlowPanel::new();
+        init_bar.set_dock(ui::DOCK_TOP);
+        init_bar.set_size(200, 30);
+        init_bar.set_color(tc.sidebar_bg);
+        init_bar.set_padding(6, 0, 6, 0);
+        panel.add(&init_bar);
+
+        let btn_init = ui::Button::new(t("Initialize Repository"));
+        btn_init.set_size(168, 24);
+        btn_init.set_color(tc.accent);
+        btn_init.set_tooltip(t("Create a Git repository in the current project root"));
+        init_bar.add(&btn_init);
 
         // Repository timeline graph at the bottom of source control.
         let timeline_panel = ui::View::new();
@@ -118,6 +133,7 @@ impl GitPanel {
             commit_field,
             btn_commit,
             btn_stage_all,
+            btn_init,
             btn_push,
             btn_pull,
             btn_refresh,
@@ -139,6 +155,12 @@ impl GitPanel {
             let text = format!("{}: {}", t("Branch"), state.branch);
             self.branch_label.set_text(&text);
         }
+        self.btn_init.set_enabled(!state.is_repo);
+        self.btn_commit.set_enabled(state.is_repo);
+        self.btn_stage_all.set_enabled(state.is_repo);
+        self.btn_pull.set_enabled(state.is_repo);
+        self.btn_push.set_enabled(state.is_repo);
+        self.btn_refresh.set_enabled(state.is_repo);
 
         // Rebuild tree
         self.tree.clear();
@@ -206,6 +228,12 @@ impl GitPanel {
         let tc = ui::theme::colors();
         let t = anyos_std::i18n::t;
         self.branch_label.set_text(t("git not found"));
+        self.btn_init.set_enabled(false);
+        self.btn_commit.set_enabled(false);
+        self.btn_stage_all.set_enabled(false);
+        self.btn_pull.set_enabled(false);
+        self.btn_push.set_enabled(false);
+        self.btn_refresh.set_enabled(false);
         self.tree.clear();
         self.file_paths.clear();
         let node = self
@@ -223,9 +251,15 @@ impl GitPanel {
         let tc = ui::theme::colors();
         let t = anyos_std::i18n::t;
         self.branch_label.set_text(t("No repository"));
+        self.btn_init.set_enabled(true);
+        self.btn_commit.set_enabled(false);
+        self.btn_stage_all.set_enabled(false);
+        self.btn_pull.set_enabled(false);
+        self.btn_push.set_enabled(false);
+        self.btn_refresh.set_enabled(false);
         self.tree.clear();
         self.file_paths.clear();
-        let node = self.tree.add_root(t("Open a folder with a git repository"));
+        let node = self.tree.add_root(t("Initialize this folder or open a Git repository"));
         self.tree.set_node_text_color(node, tc.text_secondary);
         self.file_paths.push(String::new());
         self.timeline_tree.clear();
@@ -264,6 +298,14 @@ fn status_char(s: FileStatus) -> char {
         FileStatus::Untracked => '?',
         FileStatus::Conflicted => 'U',
     }
+}
+
+fn icon_button(icon: &str, color: u32, tooltip: &str) -> ui::PlainButton {
+    let btn = ui::PlainButton::new("");
+    btn.set_size(24, 24);
+    btn.set_system_icon(icon, IconType::Outline, color, 17);
+    btn.set_tooltip(tooltip);
+    btn
 }
 
 fn status_color(s: FileStatus) -> u32 {

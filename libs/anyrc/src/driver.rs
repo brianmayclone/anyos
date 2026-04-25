@@ -1217,7 +1217,7 @@ fn trait_impl_is_interface_relevant(
     };
     matches!(
         interner.resolve(last.ident),
-        "Deref" | "DerefMut" | "Index" | "From" | "PartialEq"
+        "Deref" | "DerefMut" | "Index" | "From" | "PartialEq" | "Iterator" | "IntoIterator"
     )
 }
 

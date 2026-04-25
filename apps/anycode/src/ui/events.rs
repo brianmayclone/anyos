@@ -559,6 +559,24 @@ pub fn wire_git_panel() {
         .btn_refresh
         .on_click(|_| crate::trigger_git_refresh());
 
+    app().git_panel.btn_init.on_click(|_| {
+        let s = app();
+        if s.git_process.is_some() || !s.config.has_git() {
+            return;
+        }
+        if let Some(ref proj) = s.current_project {
+            if git::find_repository_root(&proj.root).is_some() {
+                crate::trigger_git_refresh();
+                return;
+            }
+            anyos_std::fs::chdir(&proj.root);
+            s.git_process = git::GitProcess::spawn(&s.config.git_path, "init");
+            s.git_pending_op = Some(git::GitOp::Init);
+            s.output.clear();
+            s.output.append_line("$ cgit init");
+        }
+    });
+
     app().git_panel.btn_stage_all.on_click(|_| {
         let s = app();
         if s.git_process.is_some() {

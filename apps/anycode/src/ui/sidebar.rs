@@ -163,7 +163,7 @@ impl Sidebar {
         self.remember_virtual(files_node);
         self.tree.set_node_style(files_node, STYLE_BOLD);
         self.tree.set_node_text_color(files_node, tc.text);
-        self.set_folder_icon(files_node);
+        self.set_system_icon(files_node, "files", tc.text_secondary);
         self.tree.set_expanded(files_node, true);
 
         let root_name = path::basename(&project.root);
@@ -172,7 +172,7 @@ impl Sidebar {
         self.tree.set_node_style(root_node, STYLE_BOLD);
         self.tree.set_node_text_color(root_node, tc.text);
         self.set_folder_icon(root_node);
-        self.add_dir_entries(root_node, &project.root, 0);
+        self.add_dir_entries(root_node, &project.root, 0, false);
         self.tree.set_expanded(root_node, true);
     }
 
@@ -185,9 +185,10 @@ impl Sidebar {
         self.remember_virtual(crates_node);
         self.tree.set_node_style(crates_node, STYLE_BOLD);
         self.tree.set_node_text_color(crates_node, tc.accent);
-        self.set_folder_icon(crates_node);
+        self.set_system_icon(crates_node, "package", tc.accent);
         let manage_node = self.tree.add_child(crates_node, "Manage Crates...");
         self.remember_path(manage_node, "anycode://manage-crates", true);
+        self.set_system_icon(manage_node, "package-search", tc.text_secondary);
 
         for kind in [
             crate::logic::crates::DependencyKind::Normal,
@@ -196,16 +197,18 @@ impl Sidebar {
         ] {
             let section = self.tree.add_child(crates_node, kind.display_name());
             self.remember_virtual(section);
+            self.set_system_icon(section, "boxes", tc.text_secondary);
             for dep in deps.iter().filter(|dep| dep.kind == kind) {
                 let node = self.tree.add_child(
                     section,
                     &format!("{} {} ({})", dep.name, dep.version, dep.package_name),
                 );
                 self.remember_virtual(node);
+                self.set_system_icon(node, "box", tc.text_secondary);
             }
-            self.tree.set_expanded(section, true);
+            self.tree.set_expanded(section, false);
         }
-        self.tree.set_expanded(crates_node, true);
+        self.tree.set_expanded(crates_node, false);
     }
 
     /// Populate the tree from a root directory.
@@ -223,7 +226,7 @@ impl Sidebar {
         // Folder icon for root
         self.set_folder_icon(root_node);
 
-        self.add_dir_entries(root_node, root, 0);
+        self.add_dir_entries(root_node, root, 0, false);
         self.tree.set_expanded(root_node, true);
     }
 
@@ -502,6 +505,13 @@ impl Sidebar {
         }
     }
 
+    fn set_system_icon(&self, node: u32, name: &str, color: u32) {
+        if let Some(icon) = ui::Icon::system(name, ui::IconType::Outline, color, 16) {
+            self.tree
+                .set_node_icon(node, &icon.pixels, icon.width, icon.height);
+        }
+    }
+
     /// Set a file icon on a tree node based on its filename extension.
     fn set_file_icon(&mut self, node: u32, filename: &str) {
         let ext = match filename.rsplit('.').next() {
@@ -514,7 +524,13 @@ impl Sidebar {
         }
     }
 
-    fn add_dir_entries(&mut self, parent_node: u32, dir_path: &str, depth: u32) {
+    fn add_dir_entries(
+        &mut self,
+        parent_node: u32,
+        dir_path: &str,
+        depth: u32,
+        parent_is_source: bool,
+    ) {
         if depth > 8 {
             return;
         }
@@ -553,7 +569,9 @@ impl Sidebar {
             self.tree.set_node_style(node, STYLE_BOLD);
             self.tree.set_node_text_color(node, tc.text);
             self.set_folder_icon(node);
-            self.add_dir_entries(node, full_path, depth + 1);
+            let source_dir = parent_is_source || is_source_dir(name);
+            self.add_dir_entries(node, full_path, depth + 1, source_dir);
+            self.tree.set_expanded(node, source_dir);
         }
 
         for (name, full_path) in &files {
@@ -576,7 +594,8 @@ impl Sidebar {
         self.remember_virtual(root);
         self.tree.set_node_style(root, STYLE_BOLD);
         self.tree.set_node_text_color(root, tc.text);
-        self.tree.set_expanded(root, true);
+        self.set_system_icon(root, "settings", tc.text_secondary);
+        self.tree.set_expanded(root, false);
 
         for config in &project.configurations {
             let prefix = if *config == project.active_configuration {
@@ -587,6 +606,7 @@ impl Sidebar {
             let label = format!("{}{}", prefix, config.display_name());
             let node = self.tree.add_child(root, &label);
             self.remember_virtual(node);
+            self.set_system_icon(node, "sliders-horizontal", tc.text_secondary);
             self.tree.set_node_text_color(
                 node,
                 if *config == project.active_configuration {
@@ -606,12 +626,14 @@ impl Sidebar {
         self.remember_virtual(root);
         self.tree.set_node_style(root, STYLE_BOLD);
         self.tree.set_node_text_color(root, tc.text);
-        self.tree.set_expanded(root, true);
+        self.set_system_icon(root, "crosshair", tc.text_secondary);
+        self.tree.set_expanded(root, false);
 
         for target in &project.cargo_targets {
             let label = format!("{} {}", target.kind.label(), target.name);
             let node = self.tree.add_child(root, &label);
             self.remember_virtual(node);
+            self.set_system_icon(node, icon_for_target_kind(&target.kind), target_color(&target.kind));
             self.tree
                 .set_node_text_color(node, target_color(&target.kind));
         }
@@ -623,14 +645,20 @@ impl Sidebar {
             self.tree.set_node_style(member_node, STYLE_BOLD);
             self.tree
                 .set_node_text_color(member_node, tc.text_secondary);
+            self.set_system_icon(member_node, "folder-git-2", tc.text_secondary);
             for target in &member.targets {
                 let label = format!("{} {}", target.kind.label(), target.name);
                 let node = self.tree.add_child(member_node, &label);
                 self.remember_virtual(node);
+                self.set_system_icon(
+                    node,
+                    icon_for_target_kind(&target.kind),
+                    target_color(&target.kind),
+                );
                 self.tree
                     .set_node_text_color(node, target_color(&target.kind));
             }
-            self.tree.set_expanded(member_node, true);
+            self.tree.set_expanded(member_node, false);
         }
 
         for target in &project.make_targets {
@@ -641,6 +669,7 @@ impl Sidebar {
             };
             let node = self.tree.add_child(root, &label);
             self.remember_virtual(node);
+            self.set_system_icon(node, "terminal", tc.text_secondary);
             self.tree.set_node_text_color(node, tc.text_secondary);
         }
 
@@ -648,6 +677,7 @@ impl Sidebar {
             let label = format!("npm {} - {}", script.name, script.command);
             let node = self.tree.add_child(root, &label);
             self.remember_virtual(node);
+            self.set_system_icon(node, "terminal", tc.text_secondary);
             self.tree.set_node_text_color(node, tc.text_secondary);
         }
     }
@@ -659,7 +689,8 @@ impl Sidebar {
         self.remember_virtual(root);
         self.tree.set_node_style(root, STYLE_BOLD);
         self.tree.set_node_text_color(root, tc.text);
-        self.tree.set_expanded(root, true);
+        self.set_system_icon(root, "play", tc.text_secondary);
+        self.tree.set_expanded(root, false);
 
         for category in [
             TaskCategory::Build,
@@ -678,10 +709,12 @@ impl Sidebar {
             self.remember_virtual(cat_node);
             self.tree.set_node_style(cat_node, STYLE_BOLD);
             self.tree.set_node_text_color(cat_node, tc.text_secondary);
-            self.tree.set_expanded(cat_node, true);
+            self.set_system_icon(cat_node, icon_for_task_category(category), tc.text_secondary);
+            self.tree.set_expanded(cat_node, false);
             for task in tasks {
                 let node = self.tree.add_child(cat_node, &task.display_label);
                 self.remember_virtual(node);
+                self.set_system_icon(node, icon_for_task_category(category), tc.text_secondary);
                 self.tree.set_node_text_color(node, tc.text_secondary);
             }
         }
@@ -712,6 +745,45 @@ fn target_color(kind: &TargetKind) -> u32 {
         TargetKind::Test => 0xFFB5CEA8,
         TargetKind::Bench => 0xFFC586C0,
     }
+}
+
+fn icon_for_target_kind(kind: &TargetKind) -> &'static str {
+    match kind {
+        TargetKind::Binary => "terminal",
+        TargetKind::Library => "library",
+        TargetKind::Example => "flask-conical",
+        TargetKind::Test => "test-tube",
+        TargetKind::Bench => "gauge",
+    }
+}
+
+fn icon_for_task_category(category: TaskCategory) -> &'static str {
+    match category {
+        TaskCategory::Build => "hammer",
+        TaskCategory::Run => "play",
+        TaskCategory::Test => "test-tube",
+        TaskCategory::Check => "check-circle",
+        TaskCategory::Clean => "trash-2",
+        TaskCategory::Custom => "terminal",
+    }
+}
+
+fn is_source_dir(name: &str) -> bool {
+    matches!(
+        name,
+        "src"
+            | "tests"
+            | "test"
+            | "examples"
+            | "example"
+            | "benches"
+            | "bench"
+            | "crates"
+            | "libs"
+            | "lib"
+            | "apps"
+            | "app"
+    )
 }
 
 fn ascii_lower(s: &str) -> String {

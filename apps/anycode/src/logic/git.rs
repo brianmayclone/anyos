@@ -64,6 +64,7 @@ pub enum GitOp {
     Status,
     Branch,
     Timeline,
+    Init,
     Add,
     Commit,
     Push,

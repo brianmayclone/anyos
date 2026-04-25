@@ -147,6 +147,48 @@ fn rlib_interface_exports_conversion_and_comparison_trait_impls() {
 }
 
 #[test]
+fn rlib_interface_exports_iterator_associated_item_impls() {
+    let source = r#"
+        pub enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        pub trait Iterator {
+            type Item;
+            fn next(&mut self) -> Option<Self::Item>;
+        }
+
+        pub struct Values<K, V> {
+            marker: K,
+            value: V,
+        }
+
+        impl<K, V> Iterator for Values<K, V> {
+            type Item = &V;
+            fn next(&mut self) -> Option<Self::Item> {
+                None
+            }
+        }
+    "#;
+    let options = CompileOptions {
+        input: "lib.rs".to_string(),
+        output: "libsample.rlib".to_string(),
+        emit: EmitKind::Rlib,
+        opt_level: 0,
+        crate_type: CrateType::Lib,
+        crate_name: Some("sample".to_string()),
+        ..CompileOptions::default()
+    };
+
+    let rlib = compile(source, "lib.rs", &options).expect("rlib compilation should succeed");
+    let (_, meta) = unpack_rlib(&rlib).expect("rlib should unpack");
+
+    assert!(meta.interface_source.contains("impl<K, V> Iterator for Values<K, V>"));
+    assert!(meta.interface_source.contains("type Item = &V;"));
+}
+
+#[test]
 fn rlib_interface_omits_inherent_impls_for_private_local_types() {
     let source = r#"
         mod inner {
