@@ -269,7 +269,49 @@ impl Control for TabBar {
         let max_tab_w = crate::theme::scale_i32(MAX_TAB_WIDTH);
         let nav_btn_size = crate::theme::scale_i32(NAV_BTN_SIZE);
         let nav_font = crate::draw::scale_font(11);
-        let track_corner = crate::theme::scale(8).min(h.saturating_sub(2) / 2);
+        let style = b.style;
+        let track_bg = if style.bg != 0 {
+            style.bg
+        } else {
+            tc.tab_inactive_bg
+        };
+        let border = if style.border != 0 {
+            style.border
+        } else {
+            tc.separator
+        };
+        let active_bg = if style.active_bg != 0 {
+            style.active_bg
+        } else {
+            tc.editor_bg
+        };
+        let active_text = if style.active_text != 0 {
+            style.active_text
+        } else {
+            tc.text
+        };
+        let inactive_bg = if style.inactive_bg != 0 {
+            style.inactive_bg
+        } else {
+            track_bg
+        };
+        let inactive_text = if style.inactive_text != 0 {
+            style.inactive_text
+        } else {
+            tc.text_secondary
+        };
+        let hover_bg = if style.hover_bg != 0 {
+            style.hover_bg
+        } else {
+            crate::controls::chrome::blend(inactive_bg, tc.control_hover, 92)
+        };
+        let accent = if style.accent != 0 {
+            style.accent
+        } else {
+            tc.tab_border_active
+        };
+        let track_corner = crate::theme::scale(if style.radius != 0 { style.radius } else { 6 })
+            .min(h.saturating_sub(2) / 2);
         let nav_corner = track_corner.saturating_sub(crate::theme::scale(1));
 
         let (has_overflow, show_left, show_right, visible, _, _) = self.overflow_info();
@@ -278,8 +320,10 @@ impl Control for TabBar {
         let n = self.labels.len() as i32;
         let tab_h = (h as i32 - top_margin) as u32;
 
-        let track_palette = crate::controls::chrome::neutral_palette(false, false, false);
-        crate::controls::chrome::draw_surface(surface, x, y, w, h, track_corner, track_palette);
+        crate::draw::fill_rect(surface, x, y, w, h, track_bg);
+        if h > 0 {
+            crate::draw::fill_rect(surface, x, y + h as i32 - 1, w, 1, border);
+        }
 
         // Right-side nav area (both arrows + plus button)
         let plus_reserve_s = if self.show_plus {
@@ -324,27 +368,46 @@ impl Control for TabBar {
             let is_active = i == active;
             let is_hovered = self.hover_tab == i as i32;
 
-            // Tab background — keep the selected tab aligned with the track radius.
+            // Tab background — flat IDE tab styling with a clear active edge.
             let tab_corner = track_corner.saturating_sub(crate::theme::scale(1));
-            let palette = if is_active {
-                crate::controls::chrome::accent_palette(
-                    tc.tab_border_active,
-                    is_hovered,
-                    false,
-                    false,
-                )
+            let tab_fill = if is_active {
+                active_bg
+            } else if is_hovered {
+                hover_bg
             } else {
-                crate::controls::chrome::neutral_palette(is_hovered, false, false)
+                inactive_bg
             };
-            crate::controls::chrome::draw_surface(
+            crate::draw::fill_rounded_rect(
                 surface,
                 tab_x,
                 tab_y,
                 tab_w as u32,
                 tab_h,
                 tab_corner,
-                palette,
+                tab_fill,
             );
+            if is_active || is_hovered {
+                crate::draw::draw_rounded_border(
+                    surface,
+                    tab_x,
+                    tab_y,
+                    tab_w as u32,
+                    tab_h,
+                    tab_corner,
+                    if is_active { border } else { hover_bg },
+                );
+            }
+            if is_active && tab_w > 8 {
+                crate::draw::fill_rounded_rect(
+                    surface,
+                    tab_x + 4,
+                    tab_y,
+                    (tab_w as u32).saturating_sub(8),
+                    crate::theme::scale(2).max(1),
+                    1,
+                    accent,
+                );
+            }
 
             // Close button
             let close_x = tab_x + tab_w - tab_pad_x - close_btn_size;
@@ -362,14 +425,14 @@ impl Control for TabBar {
 
             let (full_tw, _) = crate::draw::text_size_at(label, tab_font);
             let text_color = if is_active {
-                0xFFFFFFFF
+                active_text
             } else {
-                tc.text_secondary
+                inactive_text
             };
             let text_y = tab_y + (tab_h as i32 - tab_font as i32) / 2;
 
             if (full_tw as i32) <= text_area_w {
-                let text_x = text_area_left + (text_area_w - full_tw as i32) / 2;
+                let text_x = text_area_left;
                 crate::draw::draw_text_sized(surface, text_x, text_y, text_color, label, tab_font);
             } else {
                 // Truncate with "..."
@@ -394,8 +457,7 @@ impl Control for TabBar {
                 } else {
                     (0, 0)
                 };
-                let total_trunc_w = trunc_w + dots_w;
-                let text_x = text_area_left + (text_area_w - total_trunc_w as i32).max(0) / 2;
+                let text_x = text_area_left;
                 if fit_len > 0 {
                     crate::draw::draw_text_sized(
                         surface,

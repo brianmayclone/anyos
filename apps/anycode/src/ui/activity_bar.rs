@@ -12,6 +12,7 @@ pub struct ActivityBar {
     pub btn_outline: ui::PlainButton,
     pub btn_ai: ui::PlainButton,
     pub btn_extensions: ui::PlainButton,
+    rows: [ui::View; BUTTON_COUNT],
     indicators: [ui::View; BUTTON_COUNT],
     active_index: u32,
 }
@@ -58,12 +59,14 @@ impl ActivityBar {
         panel.add(&top_spacer);
 
         let mut buttons: [Option<ui::PlainButton>; BUTTON_COUNT] = Default::default();
+        let mut rows: [Option<ui::View>; BUTTON_COUNT] = Default::default();
         let mut indicators: [Option<ui::View>; BUTTON_COUNT] = Default::default();
 
         for i in 0..BUTTON_COUNT {
             let row = ui::View::new();
             row.set_dock(ui::DOCK_TOP);
             row.set_size(BAR_WIDTH, BTN_SIZE);
+            row.set_color(if i == 0 { tc.sidebar_bg } else { tc.window_bg });
 
             let ind = ui::View::new();
             ind.set_dock(ui::DOCK_LEFT);
@@ -80,6 +83,7 @@ impl ActivityBar {
             row.add(&btn);
 
             panel.add(&row);
+            rows[i] = Some(row);
             buttons[i] = Some(btn);
             indicators[i] = Some(ind);
         }
@@ -93,6 +97,15 @@ impl ActivityBar {
             btn_outline: buttons[4].take().unwrap(),
             btn_ai: buttons[5].take().unwrap(),
             btn_extensions: buttons[6].take().unwrap(),
+            rows: [
+                rows[0].take().unwrap(),
+                rows[1].take().unwrap(),
+                rows[2].take().unwrap(),
+                rows[3].take().unwrap(),
+                rows[4].take().unwrap(),
+                rows[5].take().unwrap(),
+                rows[6].take().unwrap(),
+            ],
             indicators: [
                 indicators[0].take().unwrap(),
                 indicators[1].take().unwrap(),
@@ -131,6 +144,13 @@ impl ActivityBar {
                 tc.check_mark
             } else {
                 0x00000000
+            });
+        }
+        for (i, row) in self.rows.iter().enumerate() {
+            row.set_color(if i as u32 == index {
+                tc.sidebar_bg
+            } else {
+                tc.window_bg
             });
         }
     }

@@ -8,7 +8,6 @@ use crate::ast::{Crate, Item, ModDef, TokenTree};
 use crate::intern::Interner;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
-use crate::macros::expand_macros;
 
 /// Loaded module source: (module_path, source_code)
 pub struct ModuleSource {
@@ -120,7 +119,6 @@ fn resolve_includes_in_items(
                 let include_dir = parent_dir(&full_path);
                 let mut parser = Parser::new(&source, interner);
                 let mut sub_crate = parser.parse_crate();
-                expand_macros(&mut sub_crate, interner);
                 resolve_includes_in_items(&mut sub_crate.items, &include_dir, interner, loader, loaded);
                 loaded.push(ModuleSource { path: full_path, source });
                 items.splice(i..=i, sub_crate.items);
@@ -211,7 +209,6 @@ fn resolve_items(
                 // Parse the loaded source
                 let mut parser = Parser::new(&source, interner);
                 let mut sub_crate = parser.parse_crate();
-                expand_macros(&mut sub_crate, interner);
                 resolve_includes_in_items(&mut sub_crate.items, &sub_dir, interner, loader, loaded);
 
                 // Recursively resolve sub-modules

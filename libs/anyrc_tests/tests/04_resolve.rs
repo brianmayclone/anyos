@@ -96,6 +96,34 @@ fn resolve_impl_methods() {
 }
 
 #[test]
+fn resolve_macro_generated_trait_assoc_fn_through_module_path() {
+    assert_resolves(r#"
+        macro_rules! declare_trait {
+            () => {
+                pub trait Error: Sized {
+                    fn custom<T>(msg: T) -> Self
+                    where
+                        T: Display;
+                    #[cold]
+                    fn invalid_value() -> Self {
+                        Error::custom()
+                    }
+                }
+            }
+        }
+
+        mod de {
+            pub trait Display {}
+            declare_trait!();
+        }
+
+        fn visit() {
+            de::Error::invalid_value();
+        }
+    "#);
+}
+
+#[test]
 fn resolve_float_primitive_assoc_items() {
     assert_resolves(r#"
         fn main() {
@@ -634,6 +662,148 @@ fn resolve_item_macro_generated_by_block_macro_expansion() {
             use_kind!();
         }
     "#);
+}
+
+#[test]
+fn resolve_trait_associated_functions_through_trait_path() {
+    assert_resolves(r#"
+        trait Display {}
+
+        trait Error: Sized {
+            fn custom<T>(msg: T) -> Self
+            where
+                T: Display;
+
+            fn invalid_value<T>(msg: T) -> Self
+            where
+                T: Display,
+            {
+                Error::custom(msg)
+            }
+        }
+
+        struct Unexpected;
+
+        fn make_error<E: Error>(value: Unexpected) -> E {
+            Error::invalid_value(value)
+        }
+    "#);
+}
+
+#[test]
+fn cfg_false_strips_file_module_item_macro_invocation_before_expansion() {
+    let tmp = std::env::temp_dir().join(format!(
+        "anyrc-cfg-file-module-macro-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+    let module_path = tmp.join("impls.rs");
+    let mut module = std::fs::File::create(&module_path).unwrap();
+    write!(module, r#"
+        macro_rules! make_kind {{
+            () => {{
+                enum OsStringKind {{
+                    Unix,
+                    Windows,
+                }}
+
+                impl OsStringKind {{
+                    fn from_u64(value: u64) -> OsStringKind {{
+                        match value {{
+                            0 => OsStringKind::Unix,
+                            _ => OsStringKind::Windows,
+                        }}
+                    }}
+                }}
+            }};
+        }}
+
+        #[cfg(all(feature = "std", any(unix, windows)))]
+        make_kind!();
+
+        #[cfg(all(feature = "std", any(unix, windows)))]
+        fn decode(value: u64) -> OsStringKind {{
+            OsStringKind::from_u64(value)
+        }}
+
+        fn always_available() -> u64 {{
+            0
+        }}
+    "#).unwrap();
+
+    let src = r#"
+        mod impls;
+        fn main() {}
+    "#;
+    let (result, _) = resolve_file_crate(src, tmp.to_str().unwrap(), &[
+        "target_os=\"anyos\"",
+        "feature=\"std\"",
+    ]);
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
+fn resolve_macro_generated_file_module_trait_import_in_submodule() {
+    let tmp = std::env::temp_dir().join(format!(
+        "anyrc-file-module-trait-import-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(tmp.join("de")).unwrap();
+
+    let mut de_mod = std::fs::File::create(tmp.join("de.rs")).unwrap();
+    write!(de_mod, r#"
+        mod impls;
+
+        macro_rules! declare_error_trait {{
+            (Error: Sized $(+ $($supertrait:ident)::+)*) => {{
+                pub trait Error: Sized $(+ $($supertrait)::+)* {{
+                    fn custom() -> Self;
+
+                    fn invalid_value() -> Self {{
+                        Error::custom()
+                    }}
+                }}
+            }}
+        }}
+
+        #[cfg(not(feature = "std"))]
+        declare_error_trait!(Error: Sized + Debug + Display);
+    "#).unwrap();
+
+    let mut impls = std::fs::File::create(tmp.join("de").join("impls.rs")).unwrap();
+    write!(impls, r#"
+        use crate::de::{{Error}};
+
+        fn visit<E>() -> E
+        where
+            E: Error,
+        {{
+            Error::invalid_value()
+        }}
+    "#).unwrap();
+
+    let src = r#"
+        macro_rules! crate_root {
+            () => {
+                pub mod de;
+            }
+        }
+
+        crate_root!();
+    "#;
+
+    let (result, _) = resolve_file_crate(src, tmp.to_str().unwrap(), &[
+        "target_os=\"anyos\"",
+    ]);
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
 }
 
 #[test]

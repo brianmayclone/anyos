@@ -42,8 +42,17 @@ impl OutputPanel {
         );
         let tab_bar = ui::TabBar::new(&tabs);
         tab_bar.set_dock(ui::DOCK_TOP);
-        tab_bar.set_size(400, 28);
-        tab_bar.set_color(tc.sidebar_bg);
+        tab_bar.set_size(400, 30);
+        tab_bar.set_color(tc.toolbar_bg);
+        tab_bar.set_style(ui::STYLE_BG, tc.toolbar_bg);
+        tab_bar.set_style(ui::STYLE_BORDER, tc.separator);
+        tab_bar.set_style(ui::STYLE_ACTIVE_BG, tc.editor_bg);
+        tab_bar.set_style(ui::STYLE_ACTIVE_TEXT, tc.text);
+        tab_bar.set_style(ui::STYLE_INACTIVE_BG, tc.toolbar_bg);
+        tab_bar.set_style(ui::STYLE_INACTIVE_TEXT, tc.text_secondary);
+        tab_bar.set_style(ui::STYLE_HOVER_BG, tc.sidebar_bg);
+        tab_bar.set_style(ui::STYLE_ACCENT, tc.accent);
+        tab_bar.set_style(ui::STYLE_RADIUS, 6);
         panel.add(&tab_bar);
 
         // ── Output sub-panel ──
@@ -51,6 +60,14 @@ impl OutputPanel {
         output_panel_view.set_dock(ui::DOCK_FILL);
         output_panel_view.set_color(tc.editor_bg);
         panel.add(&output_panel_view);
+
+        let output_status = ui::Label::new("Build output");
+        output_status.set_dock(ui::DOCK_TOP);
+        output_status.set_size(400, 22);
+        output_status.set_font_size(11);
+        output_status.set_text_color(tc.text_secondary);
+        output_status.set_margin(10, 4, 0, 0);
+        output_panel_view.add(&output_status);
 
         let output_area = ui::TextArea::new();
         output_area.set_dock(ui::DOCK_FILL);
@@ -73,6 +90,14 @@ impl OutputPanel {
         terminal_panel.set_color(tc.editor_bg);
         terminal_panel.set_visible(false);
         panel.add(&terminal_panel);
+
+        let terminal_status = ui::Label::new("Interactive shell");
+        terminal_status.set_dock(ui::DOCK_TOP);
+        terminal_status.set_size(400, 22);
+        terminal_status.set_font_size(11);
+        terminal_status.set_text_color(tc.text_secondary);
+        terminal_status.set_margin(10, 4, 0, 0);
+        terminal_panel.add(&terminal_status);
 
         let terminal_area = ui::TextArea::new();
         terminal_area.set_dock(ui::DOCK_FILL);
@@ -98,6 +123,14 @@ impl OutputPanel {
         debug_console_panel.set_color(tc.editor_bg);
         debug_console_panel.set_visible(false);
         panel.add(&debug_console_panel);
+
+        let debug_status = ui::Label::new("Debug console");
+        debug_status.set_dock(ui::DOCK_TOP);
+        debug_status.set_size(400, 22);
+        debug_status.set_font_size(11);
+        debug_status.set_text_color(tc.text_secondary);
+        debug_status.set_margin(10, 4, 0, 0);
+        debug_console_panel.add(&debug_status);
 
         let debug_console_area = ui::TextArea::new();
         debug_console_area.set_dock(ui::DOCK_FILL);

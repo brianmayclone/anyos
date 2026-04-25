@@ -63,6 +63,18 @@ pub const DOCK_LEFT: u32 = 3;
 pub const DOCK_RIGHT: u32 = 4;
 pub const DOCK_FILL: u32 = 5;
 
+// ── Generic style keys for Control::set_style() ─────────────────────
+
+pub const STYLE_BG: u32 = 1;
+pub const STYLE_BORDER: u32 = 2;
+pub const STYLE_ACTIVE_BG: u32 = 3;
+pub const STYLE_ACTIVE_TEXT: u32 = 4;
+pub const STYLE_INACTIVE_BG: u32 = 5;
+pub const STYLE_INACTIVE_TEXT: u32 = 6;
+pub const STYLE_HOVER_BG: u32 = 7;
+pub const STYLE_RADIUS: u32 = 8;
+pub const STYLE_ACCENT: u32 = 9;
+
 // ── Orientation constants ───────────────────────────────────────────
 
 pub const ORIENTATION_VERTICAL: u32 = 0;
@@ -118,6 +130,7 @@ struct AnyuiLib {
     set_size: extern "C" fn(u32, u32, u32),
     set_visible: extern "C" fn(u32, u32),
     set_color: extern "C" fn(u32, u32),
+    set_style: Option<extern "C" fn(u32, u32, u32)>,
     set_state: extern "C" fn(u32, u32),
     get_state: extern "C" fn(u32) -> u32,
     on_event_fn: extern "C" fn(u32, u32, Callback, u64),
@@ -438,6 +451,7 @@ pub fn init() -> bool {
             set_size: resolve(&handle, "anyui_set_size"),
             set_visible: resolve(&handle, "anyui_set_visible"),
             set_color: resolve(&handle, "anyui_set_color"),
+            set_style: resolve_optional(&handle, "anyui_set_style"),
             set_state: resolve(&handle, "anyui_set_state"),
             get_state: resolve(&handle, "anyui_get_state"),
             on_event_fn: resolve(&handle, "anyui_on_event"),
@@ -862,6 +876,12 @@ impl Control {
 
     pub fn set_color(&self, color: u32) {
         (lib().set_color)(self.id, color);
+    }
+
+    pub fn set_style(&self, key: u32, value: u32) {
+        if let Some(set_style) = lib().set_style {
+            set_style(self.id, key, value);
+        }
     }
 
     // ── Text ──

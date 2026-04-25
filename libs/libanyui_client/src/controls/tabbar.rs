@@ -35,6 +35,11 @@ impl TabBar {
         (lib().tabbar_show_plus)(self.container.ctrl.id, if show { 1 } else { 0 });
     }
 
+    /// Set one visual style property. Keys are `STYLE_*` constants.
+    pub fn set_style(&self, key: u32, value: u32) {
+        self.container.ctrl.set_style(key, value);
+    }
+
     /// Register a callback for double-click on a tab (e.g. for rename).
     pub fn on_double_click(&self, mut f: impl FnMut(&SelectionChangedEvent) + 'static) {
         let (thunk, ud) = events::register(move |id, _| {

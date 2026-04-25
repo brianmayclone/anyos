@@ -36,6 +36,16 @@ pub const DOCK_LEFT: u32 = 3;
 pub const DOCK_RIGHT: u32 = 4;
 pub const DOCK_FILL: u32 = 5;
 
+pub const STYLE_BG: u32 = 1;
+pub const STYLE_BORDER: u32 = 2;
+pub const STYLE_ACTIVE_BG: u32 = 3;
+pub const STYLE_ACTIVE_TEXT: u32 = 4;
+pub const STYLE_INACTIVE_BG: u32 = 5;
+pub const STYLE_INACTIVE_TEXT: u32 = 6;
+pub const STYLE_HOVER_BG: u32 = 7;
+pub const STYLE_RADIUS: u32 = 8;
+pub const STYLE_ACCENT: u32 = 9;
+
 pub const EVENT_CLICK: u32 = 1;
 pub const EVENT_CHANGE: u32 = 2;
 pub const EVENT_KEY: u32 = 3;
@@ -120,6 +130,7 @@ impl Control {
     pub fn get_position(&self) -> (i32, i32) { (0, 0) }
     pub fn set_visible(&self, _visible: bool) {}
     pub fn set_color(&self, _color: u32) {}
+    pub fn set_style(&self, _key: u32, _value: u32) {}
     pub fn set_text(&self, text: &str) {
         let entry = get_control_text_mut(self.id);
         entry.text.clear();

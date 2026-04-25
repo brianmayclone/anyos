@@ -12,6 +12,7 @@ EXPORTS
     anyui_set_size
     anyui_set_visible
     anyui_set_color
+    anyui_set_style
     anyui_set_state
     anyui_get_state
     anyui_on_event

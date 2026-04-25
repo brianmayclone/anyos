@@ -3502,6 +3502,30 @@ fn generic_partial_eq_impl_allows_different_rhs() {
 }
 
 #[test]
+fn trait_path_self_receiver_infers_self_from_first_argument() {
+    let (result, _) = typecheck(r#"
+        trait AsAddress {
+            fn addr(self) -> usize;
+        }
+
+        struct Unit;
+
+        impl<T> AsAddress for *const T {
+            fn addr(self) -> usize {
+                0
+            }
+        }
+
+        fn display_verbose_extras(addr: *const Unit) -> usize {
+            AsAddress::addr(addr)
+        }
+    "#);
+
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
+#[test]
 fn infer_fn_return() {
     assert_type_ok("fn foo() -> i32 { 42 } fn main() { let x: i32 = foo(); }");
 }

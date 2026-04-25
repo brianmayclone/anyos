@@ -904,6 +904,7 @@ impl<'a> Resolver<'a> {
             }
             HirItemKind::Trait(t) => {
                 self.define(t.name, Namespace::Type, t.def_id);
+                self.register_trait_assoc_items(t);
             }
             HirItemKind::TypeAlias(ta) => {
                 self.define(ta.name, Namespace::Type, ta.def_id);
@@ -986,6 +987,38 @@ impl<'a> Resolver<'a> {
                 HirItemKind::TypeAlias(ta) => {
                     self.impl_assoc_types
                         .entry(self_ty_name)
+                        .or_default()
+                        .push((ta.name, ta.def_id));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn register_trait_assoc_items(&mut self, trait_def: &HirTraitDef) {
+        for item in &trait_def.items {
+            match &item.kind {
+                HirItemKind::Fn(f) => {
+                    self.impl_methods
+                        .entry(trait_def.name)
+                        .or_default()
+                        .push((f.name, f.def_id));
+                }
+                HirItemKind::Const(c) => {
+                    self.impl_assoc_values
+                        .entry(trait_def.name)
+                        .or_default()
+                        .push((c.name, c.def_id));
+                }
+                HirItemKind::Static(s) => {
+                    self.impl_assoc_values
+                        .entry(trait_def.name)
+                        .or_default()
+                        .push((s.name, s.def_id));
+                }
+                HirItemKind::TypeAlias(ta) => {
+                    self.impl_assoc_types
+                        .entry(trait_def.name)
                         .or_default()
                         .push((ta.name, ta.def_id));
                 }

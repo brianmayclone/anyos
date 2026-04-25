@@ -705,6 +705,15 @@ pub extern "C" fn anyui_set_color(id: ControlId, color: u32) {
 }
 
 #[no_mangle]
+pub extern "C" fn anyui_set_style(id: ControlId, key: u32, value: u32) {
+    let st = state();
+    if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {
+        ctrl.base_mut().style.set(key, value);
+        ctrl.base_mut().mark_dirty();
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn anyui_set_state(id: ControlId, value: u32) {
     let st = state();
     if let Some(ctrl) = st.controls.iter_mut().find(|c| c.id() == id) {

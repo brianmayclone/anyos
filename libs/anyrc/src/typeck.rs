@@ -3928,6 +3928,10 @@ impl<'a> TypeChecker<'a> {
             }
         }
 
+        if let Some(ret_ty) = self.check_trait_path_assoc_fn_call(path, args, span, callee) {
+            return Some(ret_ty);
+        }
+
         let candidates = self.assoc_fn_candidates_on_path(path).unwrap_or_default();
         if !candidates.is_empty() {
             let arg_tys = args.iter().map(|arg| self.check_expr(arg)).collect::<Vec<_>>();
@@ -3997,6 +4001,87 @@ impl<'a> TypeChecker<'a> {
         }
 
         None
+    }
+
+    fn check_trait_path_assoc_fn_call(
+        &mut self,
+        path: &HirPath,
+        args: &[HirExpr],
+        span: Span,
+        callee: &HirExpr,
+    ) -> Option<TyKind> {
+        if path.segments.len() < 2 {
+            return None;
+        }
+        let method_name = path.segments.last()?.ident;
+        let parent_ty = self.path_segments_to_ty(&path.segments[..path.segments.len() - 1]);
+        let TyKind::Adt(trait_def_id, _) = self.shallow_resolve(parent_ty) else {
+            return None;
+        };
+        let method_def_id = self
+            .trait_methods
+            .get(&trait_def_id)?
+            .iter()
+            .find_map(|(name, def_id)| (*name == method_name).then_some(*def_id))?;
+        let (param_tys, ret_ty) = self.instantiate_fn_sig(method_def_id)?;
+        if param_tys.len() != args.len() {
+            return None;
+        }
+
+        let arg_tys = args.iter().map(|arg| self.check_expr(arg)).collect::<Vec<_>>();
+        let self_ty = param_tys
+            .first()
+            .zip(arg_tys.first())
+            .and_then(|(param, arg)| self.infer_trait_self_from_receiver_arg(param, trait_def_id, arg))
+            .unwrap_or(TyKind::Adt(trait_def_id, vec![]));
+        let param_tys = param_tys
+            .iter()
+            .map(|ty| self.substitute_trait_self(ty, trait_def_id, &self_ty))
+            .collect::<Vec<_>>();
+        let ret_ty = self.substitute_trait_self(&ret_ty, trait_def_id, &self_ty);
+        for (arg, param) in arg_tys.iter().zip(param_tys.iter()) {
+            self.unify(param, arg, span);
+        }
+        self.expr_types.insert(callee.id, TyKind::FnDef(method_def_id, vec![]));
+        Some(ret_ty)
+    }
+
+    fn infer_trait_self_from_receiver_arg(
+        &self,
+        param: &TyKind,
+        trait_def_id: DefId,
+        arg: &TyKind,
+    ) -> Option<TyKind> {
+        match self.shallow_resolve(param.clone()) {
+            TyKind::Adt(def_id, substs) if def_id == trait_def_id && substs.is_empty() => {
+                Some(self.shallow_resolve(arg.clone()))
+            }
+            TyKind::Ref(inner, _) => {
+                if matches!(
+                    self.shallow_resolve(inner.as_ref().clone()),
+                    TyKind::Adt(def_id, ref substs) if def_id == trait_def_id && substs.is_empty()
+                ) {
+                    return match self.shallow_resolve(arg.clone()) {
+                        TyKind::Ref(arg_inner, _) => Some(*arg_inner),
+                        other => Some(other),
+                    };
+                }
+                None
+            }
+            TyKind::RawPtr(inner, _) => {
+                if matches!(
+                    self.shallow_resolve(inner.as_ref().clone()),
+                    TyKind::Adt(def_id, ref substs) if def_id == trait_def_id && substs.is_empty()
+                ) {
+                    return match self.shallow_resolve(arg.clone()) {
+                        TyKind::RawPtr(arg_inner, _) => Some(*arg_inner),
+                        other => Some(other),
+                    };
+                }
+                None
+            }
+            _ => None,
+        }
     }
 
     fn assoc_parent_ty_for_path(&mut self, path: &HirPath) -> Option<TyKind> {
@@ -5227,10 +5312,17 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn shallow_resolve(&self, ty: TyKind) -> TyKind {
+        self.shallow_resolve_depth(ty, 0)
+    }
+
+    fn shallow_resolve_depth(&self, ty: TyKind, depth: usize) -> TyKind {
+        if depth > 256 {
+            return TyKind::Error;
+        }
         match &ty {
             TyKind::Infer(v) => {
                 if let Some(resolved) = self.substitutions.get(v) {
-                    self.shallow_resolve(resolved.clone())
+                    self.shallow_resolve_depth(resolved.clone(), depth + 1)
                 } else {
                     ty
                 }
@@ -5266,6 +5358,13 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn resolve_ty_full(&self, ty: TyKind) -> TyKind {
+        self.resolve_ty_full_depth(ty, 0)
+    }
+
+    fn resolve_ty_full_depth(&self, ty: TyKind, depth: usize) -> TyKind {
+        if depth > 256 {
+            return TyKind::Error;
+        }
         match self.shallow_resolve(ty) {
             TyKind::Infer(v) => {
                 match self.infer_kinds.get(&v) {
@@ -5274,14 +5373,14 @@ impl<'a> TypeChecker<'a> {
                     _ => TyKind::Error,
                 }
             }
-            TyKind::Ref(inner, m) => TyKind::Ref(Box::new(self.resolve_ty_full(*inner)), m),
-            TyKind::RawPtr(inner, m) => TyKind::RawPtr(Box::new(self.resolve_ty_full(*inner)), m),
-            TyKind::Tuple(tys) => TyKind::Tuple(tys.into_iter().map(|t| self.resolve_ty_full(t)).collect()),
-            TyKind::Array(inner, n) => TyKind::Array(Box::new(self.resolve_ty_full(*inner)), n),
-            TyKind::Slice(inner) => TyKind::Slice(Box::new(self.resolve_ty_full(*inner))),
+            TyKind::Ref(inner, m) => TyKind::Ref(Box::new(self.resolve_ty_full_depth(*inner, depth + 1)), m),
+            TyKind::RawPtr(inner, m) => TyKind::RawPtr(Box::new(self.resolve_ty_full_depth(*inner, depth + 1)), m),
+            TyKind::Tuple(tys) => TyKind::Tuple(tys.into_iter().map(|t| self.resolve_ty_full_depth(t, depth + 1)).collect()),
+            TyKind::Array(inner, n) => TyKind::Array(Box::new(self.resolve_ty_full_depth(*inner, depth + 1)), n),
+            TyKind::Slice(inner) => TyKind::Slice(Box::new(self.resolve_ty_full_depth(*inner, depth + 1))),
             TyKind::Projection(self_ty, trait_def_id, assoc_name) => {
                 self.resolve_generic_assoc_binding(TyKind::Projection(
-                    Box::new(self.resolve_ty_full(*self_ty)),
+                    Box::new(self.resolve_ty_full_depth(*self_ty, depth + 1)),
                     trait_def_id,
                     assoc_name,
                 ))

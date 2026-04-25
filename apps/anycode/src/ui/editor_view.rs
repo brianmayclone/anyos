@@ -32,17 +32,33 @@ impl EditorView {
         let tab_bar = ui::TabBar::new("");
         tab_bar.set_dock(ui::DOCK_TOP);
         tab_bar.set_size(600, 32);
-        tab_bar.set_color(tc.tab_inactive_bg);
+        tab_bar.set_color(tc.toolbar_bg);
+        tab_bar.set_style(ui::STYLE_BG, tc.toolbar_bg);
+        tab_bar.set_style(ui::STYLE_BORDER, tc.separator);
+        tab_bar.set_style(ui::STYLE_ACTIVE_BG, tc.editor_bg);
+        tab_bar.set_style(ui::STYLE_ACTIVE_TEXT, tc.text);
+        tab_bar.set_style(ui::STYLE_INACTIVE_BG, tc.toolbar_bg);
+        tab_bar.set_style(ui::STYLE_INACTIVE_TEXT, tc.text_secondary);
+        tab_bar.set_style(ui::STYLE_HOVER_BG, tc.sidebar_bg);
+        tab_bar.set_style(ui::STYLE_ACCENT, tc.accent);
+        tab_bar.set_style(ui::STYLE_RADIUS, 6);
         panel.add(&tab_bar);
 
         let breadcrumb_bar = ui::View::new();
         breadcrumb_bar.set_dock(ui::DOCK_TOP);
         breadcrumb_bar.set_size(600, 24);
-        breadcrumb_bar.set_color(tc.sidebar_bg);
+        breadcrumb_bar.set_color(tc.toolbar_bg);
         panel.add(&breadcrumb_bar);
 
+        let breadcrumb_accent = ui::View::new();
+        breadcrumb_accent.set_dock(ui::DOCK_BOTTOM);
+        breadcrumb_accent.set_size(600, 1);
+        breadcrumb_accent.set_color(tc.separator);
+        breadcrumb_bar.add(&breadcrumb_accent);
+
         let breadcrumb_label = ui::Label::new("No file open");
-        breadcrumb_label.set_position(10, 4);
+        breadcrumb_label.set_position(12, 4);
+        breadcrumb_label.set_size(560, 15);
         breadcrumb_label.set_font_size(11);
         breadcrumb_label.set_text_color(tc.text_secondary);
         breadcrumb_bar.add(&breadcrumb_label);
@@ -54,26 +70,38 @@ impl EditorView {
 
         let completion_panel = ui::View::new();
         completion_panel.set_position(54, 62);
-        completion_panel.set_size(360, 238);
+        completion_panel.set_size(380, 252);
         completion_panel.set_color(tc.sidebar_bg);
         completion_panel.set_visible(false);
         panel.add(&completion_panel);
 
-        let completion_title = ui::Label::new("IntelliSense");
+        let completion_accent = ui::View::new();
+        completion_accent.set_dock(ui::DOCK_LEFT);
+        completion_accent.set_size(3, 252);
+        completion_accent.set_color(tc.accent);
+        completion_panel.add(&completion_accent);
+
+        let completion_title = ui::Label::new("Rust Intelligence");
         completion_title.set_dock(ui::DOCK_TOP);
-        completion_title.set_size(360, 24);
-        completion_title.set_font_size(11);
-        completion_title.set_text_color(tc.text_secondary);
-        completion_title.set_margin(10, 5, 0, 0);
+        completion_title.set_size(380, 30);
+        completion_title.set_font_size(12);
+        completion_title.set_text_color(tc.text);
+        completion_title.set_margin(12, 7, 0, 0);
         completion_panel.add(&completion_title);
 
         let completion_detail = ui::Label::new("");
         completion_detail.set_dock(ui::DOCK_BOTTOM);
-        completion_detail.set_size(360, 42);
+        completion_detail.set_size(380, 48);
         completion_detail.set_font_size(11);
         completion_detail.set_text_color(tc.text_secondary);
-        completion_detail.set_margin(10, 4, 10, 6);
+        completion_detail.set_margin(14, 5, 12, 7);
         completion_panel.add(&completion_detail);
+
+        let completion_detail_rule = ui::View::new();
+        completion_detail_rule.set_dock(ui::DOCK_BOTTOM);
+        completion_detail_rule.set_size(380, 1);
+        completion_detail_rule.set_color(tc.separator);
+        completion_panel.add(&completion_detail_rule);
 
         let completion_list = ui::ListBox::new("");
         completion_list.set_dock(ui::DOCK_FILL);

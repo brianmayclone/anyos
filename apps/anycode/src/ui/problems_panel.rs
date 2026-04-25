@@ -53,44 +53,50 @@ impl ProblemsPanel {
         // Header row with error/warning counts
         let header = ui::View::new();
         header.set_dock(ui::DOCK_TOP);
-        header.set_size(400, 48);
-        header.set_color(tc.sidebar_bg);
+        header.set_size(400, 52);
+        header.set_color(tc.toolbar_bg);
         panel.add(&header);
 
+        let accent = ui::View::new();
+        accent.set_dock(ui::DOCK_LEFT);
+        accent.set_size(3, 52);
+        accent.set_color(tc.accent);
+        header.add(&accent);
+
         let error_label = ui::Label::new("0 Errors");
-        error_label.set_position(8, 3);
+        error_label.set_position(12, 4);
         error_label.set_font_size(11);
         error_label.set_text_color(0xFFF44747); // Red
         header.add(&error_label);
 
         let warning_label = ui::Label::new("0 Warnings");
-        warning_label.set_position(120, 3);
+        warning_label.set_position(124, 4);
         warning_label.set_font_size(11);
         warning_label.set_text_color(0xFFCCA700); // Yellow
         header.add(&warning_label);
 
         let visible_label = ui::Label::new("0 Visible");
-        visible_label.set_position(240, 3);
+        visible_label.set_position(244, 4);
         visible_label.set_font_size(11);
         visible_label.set_text_color(tc.text);
         header.add(&visible_label);
 
         let summary_label = ui::Label::new("No problems");
-        summary_label.set_position(330, 3);
+        summary_label.set_position(340, 4);
         summary_label.set_font_size(11);
         summary_label.set_text_color(tc.text_secondary);
         header.add(&summary_label);
 
-        let btn_all = filter_button("All", 8);
+        let btn_all = filter_button("All", 12);
         header.add(&btn_all);
 
-        let btn_errors = filter_button("Errors", 72);
+        let btn_errors = filter_button("Errors", 76);
         header.add(&btn_errors);
 
-        let btn_warnings = filter_button("Warnings", 148);
+        let btn_warnings = filter_button("Warnings", 152);
         header.add(&btn_warnings);
 
-        let btn_current_file = filter_button("Current File", 244);
+        let btn_current_file = filter_button("Current File", 248);
         btn_current_file.set_size(92, 20);
         header.add(&btn_current_file);
 

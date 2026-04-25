@@ -171,6 +171,52 @@ pub struct TextStyle {
     pub text_color: u32,
 }
 
+/// Generic visual style overrides shared by controls.
+///
+/// Zero means "use the control/theme default" for every color and metric. The
+/// key/value ABI keeps new styling surface backward-compatible: clients can set
+/// only the properties a control understands, and older controls simply ignore
+/// unknown keys.
+#[derive(Clone, Copy, Default)]
+pub struct ControlStyle {
+    pub bg: u32,
+    pub border: u32,
+    pub active_bg: u32,
+    pub active_text: u32,
+    pub inactive_bg: u32,
+    pub inactive_text: u32,
+    pub hover_bg: u32,
+    pub radius: u32,
+    pub accent: u32,
+}
+
+impl ControlStyle {
+    pub fn set(&mut self, key: u32, value: u32) {
+        match key {
+            STYLE_BG => self.bg = value,
+            STYLE_BORDER => self.border = value,
+            STYLE_ACTIVE_BG => self.active_bg = value,
+            STYLE_ACTIVE_TEXT => self.active_text = value,
+            STYLE_INACTIVE_BG => self.inactive_bg = value,
+            STYLE_INACTIVE_TEXT => self.inactive_text = value,
+            STYLE_HOVER_BG => self.hover_bg = value,
+            STYLE_RADIUS => self.radius = value,
+            STYLE_ACCENT => self.accent = value,
+            _ => {}
+        }
+    }
+}
+
+pub const STYLE_BG: u32 = 1;
+pub const STYLE_BORDER: u32 = 2;
+pub const STYLE_ACTIVE_BG: u32 = 3;
+pub const STYLE_ACTIVE_TEXT: u32 = 4;
+pub const STYLE_INACTIVE_BG: u32 = 5;
+pub const STYLE_INACTIVE_TEXT: u32 = 6;
+pub const STYLE_HOVER_BG: u32 = 7;
+pub const STYLE_RADIUS: u32 = 8;
+pub const STYLE_ACCENT: u32 = 9;
+
 impl Default for TextStyle {
     fn default() -> Self {
         Self {
@@ -395,6 +441,7 @@ pub struct ControlBase {
     pub visible: bool,
     pub color: u32,
     pub state: u32,
+    pub style: ControlStyle,
 
     /// Whether this control needs to be redrawn.
     pub dirty: bool,
@@ -473,6 +520,7 @@ impl ControlBase {
             visible: true,
             color: 0,
             state: 0,
+            style: ControlStyle::default(),
             dirty: true,
             hovered: false,
             focused: false,

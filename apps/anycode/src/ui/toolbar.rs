@@ -3,7 +3,7 @@ use ui::IconType;
 
 use crate::logic::config::Config;
 
-/// Toolbar with PlainButton (borderless flat icon buttons).
+/// Main IDE toolbar with product context and borderless action buttons.
 pub struct AppToolbar {
     pub toolbar: ui::Toolbar,
     pub btn_new: ui::PlainButton,
@@ -25,7 +25,42 @@ impl AppToolbar {
         toolbar.set_dock(ui::DOCK_TOP);
         toolbar.set_size(1024, toolbar_h);
         toolbar.set_color(tc.toolbar_bg);
-        toolbar.set_padding(8, 4, 8, 4);
+        toolbar.set_padding(10, 5, 10, 5);
+
+        let brand = ui::View::new();
+        brand.set_size(188, toolbar_h.saturating_sub(10).max(30));
+        brand.set_color(tc.toolbar_bg);
+
+        let brand_accent = ui::View::new();
+        brand_accent.set_dock(ui::DOCK_LEFT);
+        brand_accent.set_size(3, toolbar_h.saturating_sub(10).max(30));
+        brand_accent.set_color(tc.accent);
+        brand.add(&brand_accent);
+
+        let brand_title = ui::Label::new("anyCode");
+        brand_title.set_position(12, 2);
+        brand_title.set_size(82, 15);
+        brand_title.set_font_size(13);
+        brand_title.set_text_color(tc.text);
+        brand.add(&brand_title);
+
+        let brand_subtitle = ui::Label::new("Rust Studio");
+        brand_subtitle.set_position(12, 18);
+        brand_subtitle.set_size(112, 12);
+        brand_subtitle.set_font_size(10);
+        brand_subtitle.set_text_color(tc.text_secondary);
+        brand.add(&brand_subtitle);
+
+        let brand_pill = ui::Label::new("ccargo");
+        brand_pill.set_position(124, 8);
+        brand_pill.set_size(58, 16);
+        brand_pill.set_font_size(10);
+        brand_pill.set_text_color(tc.accent);
+        brand_pill.set_text_align(ui::TEXT_ALIGN_CENTER);
+        brand.add(&brand_pill);
+
+        toolbar.add(&brand);
+        toolbar.add_separator();
 
         let t = anyos_std::i18n::t;
 
@@ -88,6 +123,20 @@ impl AppToolbar {
             toolbar_h,
             icon_sz,
         );
+
+        toolbar.add_separator();
+
+        let spacer = ui::View::new();
+        spacer.set_size(18, toolbar_h.saturating_sub(8).max(30));
+        spacer.set_color(tc.toolbar_bg);
+        toolbar.add(&spacer);
+
+        let status = ui::Label::new("Ready");
+        status.set_size(68, toolbar_h.saturating_sub(10).max(28));
+        status.set_font_size(11);
+        status.set_text_color(tc.text_secondary);
+        status.set_text_align(ui::TEXT_ALIGN_CENTER);
+        toolbar.add(&status);
 
         toolbar.add_separator();
 
