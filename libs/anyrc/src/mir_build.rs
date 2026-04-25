@@ -2179,11 +2179,15 @@ impl<'a> MirBuilder<'a> {
             | TyKind::Uint(UintTy::U64)
             | TyKind::Uint(UintTy::Usize)
             | TyKind::Float(FloatTy::F64)
-            | TyKind::Ref(_, _)
-            | TyKind::RawPtr(_, _)
             | TyKind::FnDef(_, _)
             | TyKind::FnPtr(_, _)
             | TyKind::DynTrait(_) => 8,
+            TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _)
+                if matches!(inner.as_ref(), TyKind::Slice(_) | TyKind::Str | TyKind::DynTrait(_)) =>
+            {
+                16
+            }
+            TyKind::Ref(_, _) | TyKind::RawPtr(_, _) => 8,
             TyKind::Int(IntTy::I128) | TyKind::Uint(UintTy::U128) => 16,
             TyKind::Array(inner, n) => self.estimate_ty_size(inner.as_ref()) * *n,
             TyKind::Slice(_) | TyKind::Str => 16,

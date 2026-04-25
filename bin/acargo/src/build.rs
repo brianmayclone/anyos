@@ -149,6 +149,7 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
         let build_script_output = build_script::run_build_script(
             &node.manifest_dir,
             &norm_name,
+            &node.manifest.version,
             &build_dir,
             config.release,
             &resolved_features,
@@ -191,6 +192,7 @@ pub fn build(root_dir: &str, config: &BuildConfig) -> BuildResult {
             if config.release { node.manifest.opt_level_release } else { node.manifest.opt_level_dev },
             &crate_cfg_flags,
             &resolved_features,
+            &crate_env_vars,
             config.release,
         );
 

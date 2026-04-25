@@ -1,6 +1,6 @@
 use crate::prelude::*;
 use crate::ast::BinOp;
-use crate::codegen::regalloc::{self, RegAlloc, StructFieldOffsets, StructSizes};
+use crate::codegen::regalloc::{self, RegAlloc, StructFieldOffsets, StructFieldTypes, StructSizes};
 use crate::codegen::x86asm::{CondCode, Label, Reg, Relocation, X86Assembler};
 use crate::hir::DefId;
 use crate::intern::Interner;
@@ -17,6 +17,7 @@ pub struct CodeEmitter<'a> {
     interner: &'a Interner,
     struct_sizes: &'a StructSizes,
     field_offsets: &'a StructFieldOffsets,
+    field_types: &'a StructFieldTypes,
     block_labels: Vec<Label>,
 }
 
@@ -27,6 +28,7 @@ impl<'a> CodeEmitter<'a> {
         interner: &Interner,
         struct_sizes: &StructSizes,
         field_offsets: &StructFieldOffsets,
+        field_types: &StructFieldTypes,
     ) -> (Vec<u8>, Vec<Relocation>) {
         let mut asm = X86Assembler::new();
 
@@ -42,6 +44,7 @@ impl<'a> CodeEmitter<'a> {
             interner,
             struct_sizes,
             field_offsets,
+            field_types,
             block_labels,
         };
 
@@ -64,6 +67,43 @@ impl<'a> CodeEmitter<'a> {
 
     /// Get the byte offset of a field within its parent struct.
     /// Walks the projection chain up to the Field to determine the struct type.
+    fn substitute_params(ty: &TyKind, substs: &[TyKind]) -> TyKind {
+        match ty {
+            TyKind::Param(idx) => substs.get(*idx as usize).cloned().unwrap_or_else(|| ty.clone()),
+            TyKind::Ref(inner, m) => TyKind::Ref(Box::new(Self::substitute_params(inner, substs)), *m),
+            TyKind::RawPtr(inner, m) => TyKind::RawPtr(Box::new(Self::substitute_params(inner, substs)), *m),
+            TyKind::Tuple(items) => {
+                TyKind::Tuple(items.iter().map(|item| Self::substitute_params(item, substs)).collect())
+            }
+            TyKind::Array(inner, len) => TyKind::Array(Box::new(Self::substitute_params(inner, substs)), *len),
+            TyKind::Slice(inner) => TyKind::Slice(Box::new(Self::substitute_params(inner, substs))),
+            TyKind::Adt(def_id, args) => {
+                TyKind::Adt(*def_id, args.iter().map(|arg| Self::substitute_params(arg, substs)).collect())
+            }
+            TyKind::FnDef(def_id, args) => {
+                TyKind::FnDef(*def_id, args.iter().map(|arg| Self::substitute_params(arg, substs)).collect())
+            }
+            TyKind::FnPtr(params, ret) => TyKind::FnPtr(
+                params.iter().map(|param| Self::substitute_params(param, substs)).collect(),
+                Box::new(Self::substitute_params(ret, substs)),
+            ),
+            TyKind::Projection(self_ty, trait_def, assoc) => TyKind::Projection(
+                Box::new(Self::substitute_params(self_ty, substs)),
+                *trait_def,
+                *assoc,
+            ),
+            _ => ty.clone(),
+        }
+    }
+
+    fn adt_field_ty(&self, def_id: DefId, substs: &[TyKind], field_idx: usize) -> TyKind {
+        self.field_types
+            .get(&def_id)
+            .and_then(|fields| fields.get(field_idx))
+            .map(|ty| Self::substitute_params(ty, substs))
+            .unwrap_or(TyKind::Error)
+    }
+
     fn field_byte_offset(&self, place: &Place, field_proj_index: usize) -> i32 {
         let field_idx = match &place.projections[field_proj_index] {
             Projection::Field(idx) => *idx,
@@ -81,10 +121,7 @@ impl<'a> CodeEmitter<'a> {
                 }
                 Projection::Field(idx) => {
                     ty = match &ty {
-                        TyKind::Adt(def_id, _) => {
-                            // We don't easily have field types here; approximate
-                            TyKind::Error
-                        }
+                        TyKind::Adt(def_id, substs) => self.adt_field_ty(*def_id, substs, *idx),
                         TyKind::Tuple(elems) => {
                             elems.get(*idx).cloned().unwrap_or(TyKind::Error)
                         }
@@ -129,6 +166,7 @@ impl<'a> CodeEmitter<'a> {
                 Projection::Field(idx) => {
                     ty = match ty {
                         TyKind::Tuple(elems) => elems.get(*idx).cloned().unwrap_or(TyKind::Error),
+                        TyKind::Adt(def_id, substs) => self.adt_field_ty(def_id, &substs, *idx),
                         _ => TyKind::Error,
                     };
                 }
@@ -156,6 +194,7 @@ impl<'a> CodeEmitter<'a> {
                 Projection::Field(idx) => {
                     ty = match ty {
                         TyKind::Tuple(elems) => elems.get(*idx).cloned().unwrap_or(TyKind::Error),
+                        TyKind::Adt(def_id, substs) => self.adt_field_ty(def_id, &substs, *idx),
                         _ => TyKind::Error,
                     };
                 }

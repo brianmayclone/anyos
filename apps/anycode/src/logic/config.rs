@@ -45,6 +45,7 @@ pub struct Config {
 }
 
 const DEFAULT_SETTINGS_PATH: &str = "/Users/settings/anycode.json";
+const SYSTEM_CGIT_PATH: &str = "/System/bin/cgit";
 const FONT_MONO: u32 = 4;
 const ANYCODE_DIRS: &[&str] = &["config"];
 const ANYCODE_DEFAULTS: &[libconf_schema::DefaultEntry<'static>] =
@@ -172,7 +173,7 @@ impl Config {
             make_path: json_str(&val, "make_path", ""),
             cc_path: json_str(&val, "cc_path", ""),
             cxx_path: json_str(&val, "cxx_path", ""),
-            git_path: json_str(&val, "git_path", ""),
+            git_path: json_str(&val, "git_path", SYSTEM_CGIT_PATH),
             last_project: json_str(&val, "last_project", ""),
             recent_projects: json_str_array(&val, "recent_projects"),
             session_project: json_str(&val, "session_project", ""),
@@ -191,13 +192,13 @@ impl Config {
             ),
         };
         cfg.apply_scoped_confd();
+        cfg.git_path = String::from(SYSTEM_CGIT_PATH);
         // Re-discover any empty tool paths
         if cfg.crust_path.is_empty()
             || cfg.ccargo_path.is_empty()
             || cfg.make_path.is_empty()
             || cfg.cc_path.is_empty()
             || cfg.cxx_path.is_empty()
-            || cfg.git_path.is_empty()
         {
             cfg.auto_discover();
             cfg.save();
@@ -318,7 +319,7 @@ impl Config {
             make_path: String::new(),
             cc_path: String::new(),
             cxx_path: String::new(),
-            git_path: String::new(),
+            git_path: String::from(SYSTEM_CGIT_PATH),
             last_project: String::new(),
             recent_projects: Vec::new(),
             session_project: String::new(),
@@ -394,14 +395,12 @@ impl Config {
         if self.cxx_path.is_empty() {
             self.cxx_path = find_first_in_path(&["c++", "g++", "clang++"]);
         }
-        if self.git_path.is_empty() {
-            self.git_path = find_first_in_path(&["agit", "git", "cgit"]);
-        }
+        self.git_path = String::from(SYSTEM_CGIT_PATH);
     }
 
-    /// Check whether git was discovered.
+    /// Check whether the system cgit binary is available.
     pub fn has_git(&self) -> bool {
-        !self.git_path.is_empty()
+        self.git_path == SYSTEM_CGIT_PATH && path::exists(SYSTEM_CGIT_PATH)
     }
 
     pub fn push_recent_project(&mut self, project: &str) {

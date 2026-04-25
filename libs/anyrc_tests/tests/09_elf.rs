@@ -27,9 +27,11 @@ fn compile_to_object(src: &str) -> Vec<u8> {
 
     let struct_sizes = regalloc::StructSizes::new();
     let field_offsets = regalloc::StructFieldOffsets::new();
+    let field_types = regalloc::StructFieldTypes::new();
     for body in &bodies {
         let alloc = regalloc::allocate(body, &struct_sizes);
-        let (code, _relocs) = CodeEmitter::emit_fn(body, &alloc, &interner, &field_offsets);
+        let (code, _relocs) =
+            CodeEmitter::emit_fn(body, &alloc, &interner, &struct_sizes, &field_offsets, &field_types);
         let fn_offset = text_data.len() as u64;
         let fn_size = code.len() as u64;
         let fn_name = interner.resolve(body.name).to_string();

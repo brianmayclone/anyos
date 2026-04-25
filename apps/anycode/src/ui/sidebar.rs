@@ -98,7 +98,13 @@ impl Sidebar {
         explorer_panel.add(&tree);
 
         // Context menu for folders
-        let ctx_items = alloc::format!("{}|{}|-|{}", t("New File"), t("New Folder"), t("Delete"));
+        let ctx_items = alloc::format!(
+            "{}|{}|{}|-|{}",
+            t("New File"),
+            t("New UI Form..."),
+            t("New Folder"),
+            t("Delete")
+        );
         let context_menu = ui::ContextMenu::new(&ctx_items);
         tree.set_context_menu(&context_menu);
         explorer_panel.add(&context_menu);

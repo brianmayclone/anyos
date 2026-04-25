@@ -272,7 +272,10 @@ fn build_and_run(
 
     let mut git_state = git::GitState::empty();
     if let Some(ref proj) = current_project {
-        git_state.is_repo = git::is_git_repo(&proj.root);
+        if let Some(root) = git::find_repository_root(&proj.root) {
+            git_state.is_repo = true;
+            git_state.root = root;
+        }
     }
 
     let build_rules = build::BuildRules::load(&config::bundle_path("build.conf"));
@@ -437,8 +440,10 @@ fn build_and_run(
 
         if !s.config.has_git() {
             s.git_panel.show_not_installed();
+            s.activity_bar.set_git_change_count(0);
         } else if !s.git_state.is_repo {
             s.git_panel.show_no_repo();
+            s.activity_bar.set_git_change_count(0);
         } else {
             trigger_git_refresh();
             s.git_timer_id = anyui::set_timer(5000, poll_git);
@@ -621,13 +626,27 @@ fn poll_live_check() {
 
 pub fn trigger_git_refresh() {
     let s = app();
-    if s.git_process.is_some() || !s.git_state.is_repo || !s.config.has_git() {
+    if s.git_process.is_some() || !s.config.has_git() {
         return;
     }
     if let Some(ref proj) = s.current_project {
-        anyos_std::fs::chdir(&proj.root);
+        let repo_root = match git::find_repository_root(&proj.root) {
+            Some(root) => root,
+            None => {
+                s.git_state = git::GitState::empty();
+                s.git_panel.show_no_repo();
+                s.activity_bar.set_git_change_count(0);
+                return;
+            }
+        };
+        s.git_state.is_repo = true;
+        s.git_state.root = repo_root.clone();
+        anyos_std::fs::chdir(&repo_root);
         s.git_process = git::GitProcess::spawn(&s.config.git_path, "branch --show-current");
         s.git_pending_op = Some(git::GitOp::Branch);
+        if s.git_timer_id == 0 {
+            s.git_timer_id = anyui::set_timer(5000, poll_git);
+        }
     }
 }
 
@@ -646,14 +665,35 @@ fn poll_git() {
                     s.git_state.branch = git::parse_branch(&output);
                     s.status.set_branch(&s.git_state.branch);
                     if let Some(ref proj) = s.current_project {
-                        anyos_std::fs::chdir(&proj.root);
-                        s.git_process =
-                            git::GitProcess::spawn(&s.config.git_path, "status --porcelain");
-                        s.git_pending_op = Some(git::GitOp::Status);
+                        if let Some(repo_root) = git::find_repository_root(&proj.root) {
+                            anyos_std::fs::chdir(&repo_root);
+                            s.git_process =
+                                git::GitProcess::spawn(&s.config.git_path, "status --porcelain");
+                            s.git_pending_op = Some(git::GitOp::Status);
+                        }
                     }
                 }
                 git::GitOp::Status => {
                     s.git_state.changed_files = git::parse_status_porcelain(&output);
+                    s.activity_bar
+                        .set_git_change_count(s.git_state.changed_files.len());
+                    if let Some(ref proj) = s.current_project {
+                        if let Some(repo_root) = git::find_repository_root(&proj.root) {
+                            anyos_std::fs::chdir(&repo_root);
+                            s.git_process = git::GitProcess::spawn(
+                                &s.config.git_path,
+                                "log --graph --decorate --oneline --all -n 32",
+                            );
+                            s.git_pending_op = Some(git::GitOp::Timeline);
+                        } else {
+                            s.git_panel.update(&s.git_state);
+                        }
+                    } else {
+                        s.git_panel.update(&s.git_state);
+                    }
+                }
+                git::GitOp::Timeline => {
+                    s.git_state.timeline = git::parse_timeline(&output);
                     s.git_panel.update(&s.git_state);
                 }
                 git::GitOp::Add | git::GitOp::Commit => {

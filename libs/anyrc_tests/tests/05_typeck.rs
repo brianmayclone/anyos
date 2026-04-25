@@ -99,6 +99,117 @@ fn primitive_char_is_whitespace_assoc_fn_is_typed() {
 }
 
 #[test]
+fn primitive_trait_assoc_fn_call_is_typed() {
+    assert_type_ok(r#"
+        trait Decode {
+            fn decode() -> Self;
+        }
+
+        impl Decode for u64 {
+            fn decode() -> Self {
+                7
+            }
+        }
+
+        fn main() {
+            let x: u64 = u64::decode();
+        }
+    "#);
+}
+
+#[test]
+fn primitive_generic_trait_assoc_fn_call_result_is_typed() {
+    assert_type_ok(r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        trait Decoder {}
+
+        trait Decode<Context> {
+            fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, u8>;
+        }
+
+        impl<Context> Decode<Context> for u64 {
+            fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, u8> {
+                Result::Ok(7)
+            }
+        }
+
+        fn read<D: Decoder>(decoder: &mut D) {
+            let value: u64 = u64::decode(decoder)?;
+        }
+    "#);
+}
+
+#[test]
+fn trait_path_assoc_fn_infers_self_from_expected_result() {
+    assert_type_ok(r#"
+        enum Result<T, E> {
+            Ok(T),
+            Err(E),
+        }
+
+        trait Decoder {}
+
+        trait Decode<Context> {
+            fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, u8>;
+        }
+
+        impl<Context> Decode<Context> for u64 {
+            fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, u8> {
+                Result::Ok(7)
+            }
+        }
+
+        impl<Context> Decode<Context> for u32 {
+            fn decode<D: Decoder>(decoder: &mut D) -> Result<Self, u8> {
+                Result::Ok(7)
+            }
+        }
+
+        trait BorrowDecode<'de, Context> {
+            fn borrow_decode<D: Decoder>(decoder: &mut D) -> Result<Self, u8>;
+        }
+
+        impl<'de, __Context> BorrowDecode<'de, __Context> for u64 {
+            fn borrow_decode<D: Decoder>(decoder: &mut D) -> Result<Self, u8> {
+                Decode::decode(decoder)
+            }
+        }
+    "#);
+}
+
+#[test]
+fn blanket_trait_impl_does_not_shadow_inherent_method_arity() {
+    assert_type_ok(r#"
+        trait Peek {
+            fn peek(&self) -> bool;
+        }
+
+        impl<T> Peek for T {
+            fn peek(&self) -> bool {
+                true
+            }
+        }
+
+        struct Input {}
+
+        impl Input {
+            fn peek<T>(&self, _: T) -> bool {
+                true
+            }
+        }
+
+        fn main() {
+            let input = Input {};
+            let ok = input.peek(1);
+        }
+    "#);
+}
+
+#[test]
 fn scoped_use_prefers_local_type_over_same_named_external_type() {
     assert_type_ok(r#"
         mod fs {
@@ -948,6 +1059,32 @@ fn iterator_filter_preserves_borrowed_item_type() {
 }
 
 #[test]
+fn iterator_filter_closure_receives_reference_to_item() {
+    assert_type_ok(r#"
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn iter(&self) -> Iter<T> { Iter {} }
+        }
+        struct Iter<T> {}
+        enum Option<T> { Some(T), None }
+
+        trait Iterator {
+            type Item;
+            fn next(&mut self) -> Option<Self::Item>;
+        }
+
+        impl<T> Iterator for Iter<T> {
+            type Item = &T;
+            fn next(&mut self) -> Option<&T> { None }
+        }
+
+        fn scan(values: Vec<u16>) {
+            let non_zero = values.iter().filter(|c| **c > 0);
+        }
+    "#);
+}
+
+#[test]
 fn vec_retain_on_mutably_borrowed_field_expects_bool_closure() {
     assert_type_ok(r#"
         struct Statement {}
@@ -1493,6 +1630,68 @@ fn for_loop_uses_concrete_into_iterator_item_type() {
 }
 
 #[test]
+fn for_loop_uses_assoc_item_from_unresolved_external_into_iterator_path() {
+    assert_type_ok(r#"
+        mod core {
+            pub mod iter {}
+        }
+
+        struct BitMask {}
+        struct BitMaskIter {}
+
+        impl core::iter::IntoIterator for BitMask {
+            type Item = usize;
+            type IntoIter = BitMaskIter;
+
+            fn into_iter(self) -> BitMaskIter {
+                BitMaskIter {}
+            }
+        }
+
+        fn scan(mask: BitMask) {
+            for bit in mask {
+                let index: usize = 1 + bit;
+            }
+        }
+    "#);
+}
+
+#[test]
+fn for_loop_uses_iterator_assoc_item_from_values_type() {
+    assert_type_ok(r#"
+        struct Values<K, V> {}
+        struct Entry {
+            ref_count: u32,
+        }
+
+        enum Option<T> {
+            Some(T),
+            None,
+        }
+
+        trait Iterator {
+            type Item;
+            fn next(&mut self) -> Option<Self::Item>;
+        }
+
+        impl<K, V> Iterator for Values<K, V> {
+            type Item = &V;
+            fn next(&mut self) -> Option<&V> { None }
+        }
+
+        fn values<K, V>() -> Values<K, V> {
+            Values {}
+        }
+
+        fn main() {
+            for entry in values::<u32, Entry>() {
+                let rc: u32 = entry.ref_count;
+            }
+        }
+    "#);
+}
+
+#[test]
 fn for_loop_uses_iterator_item_type_through_blanket_into_iterator() {
     assert_type_ok(r#"
         trait Iterator {
@@ -1902,6 +2101,42 @@ fn vec_u8_compares_with_byte_string_arrays() {
             let t: Vec<u8> = Vec::new();
             let is_time = &t == b"time";
             let is_date = t == b"date";
+        }
+    "#);
+}
+
+#[test]
+fn vec_reference_coerces_to_slice_argument() {
+    assert_type_ok(r#"
+        struct Vec<T> {}
+        impl<T> Vec<T> {
+            fn new() -> Vec<T> { Vec {} }
+        }
+
+        fn takes_slice(bytes: &[u8]) {}
+
+        fn main() {
+            let mut buf: Vec<u8> = Vec::new();
+            takes_slice(&buf);
+        }
+    "#);
+}
+
+#[test]
+fn struct_literal_through_type_alias_has_aliased_type() {
+    assert_type_ok(r#"
+        struct FreeExtentRecord {
+            device_block: u64,
+            allocated_blocks: u64,
+        }
+
+        type FreeExtent = FreeExtentRecord;
+
+        fn main() {
+            let extent: FreeExtentRecord = FreeExtent {
+                device_block: 1,
+                allocated_blocks: 2,
+            };
         }
     "#);
 }

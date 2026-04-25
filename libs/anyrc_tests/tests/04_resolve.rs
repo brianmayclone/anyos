@@ -31,6 +31,55 @@ fn assert_resolve_error(src: &str, expected_msg: &str) {
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
 }
 
+#[test]
+fn resolve_include_concat_env_out_dir() {
+    let dir = std::env::temp_dir().join(format!(
+        "anyrc_include_env_test_{}_{}",
+        std::process::id(),
+        line!(),
+    ));
+    let out_dir = dir.join("out");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&out_dir).unwrap();
+    std::fs::write(
+        out_dir.join("generated.rs"),
+        "pub fn generated_value() -> i32 { 7 }",
+    )
+    .unwrap();
+
+    let mut interner = Interner::new();
+    let mut parser = Parser::new(
+        r#"
+            include!(concat!(env!("OUT_DIR"), "/generated.rs"));
+            fn main() { generated_value(); }
+        "#,
+        &mut interner,
+    );
+    let mut krate = parser.parse_crate();
+    expand_macros(&mut krate, &mut interner);
+    let loader = anyrc::loader::OsFileLoader;
+    let env_vars = vec![(
+        String::from("OUT_DIR"),
+        out_dir.to_string_lossy().to_string(),
+    )];
+    let included = anyrc::loader::resolve_includes_with_env(
+        &mut krate,
+        &dir.to_string_lossy(),
+        &mut interner,
+        &loader,
+        &env_vars,
+    );
+    assert_eq!(included.len(), 1);
+
+    let mut ctx = LoweringContext::new(&mut interner);
+    let hir = ctx.lower_crate(&krate);
+    let mut resolver = Resolver::new(&mut interner);
+    let result = resolver.resolve_crate(&hir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(result.errors.is_empty(), "unexpected errors: {:?}",
+        result.errors.iter().map(|e| &e.message).collect::<Vec<_>>());
+}
+
 fn resolve_file_crate(src: &str, src_dir: &str, cfg_flags: &[&str]) -> (anyrc::resolve::ResolveResult, Interner) {
     let mut interner = Interner::new();
     let mut parser = Parser::new(src, &mut interner);
@@ -386,6 +435,7 @@ fn resolve_extern_glob_reexports_through_local_facade_module() {
 
             pub use self::core::fmt::{self, Display};
             pub use self::core::marker::PhantomData;
+            pub use self::core::{ptr, slice};
         }
 
         mod value {
@@ -398,7 +448,58 @@ fn resolve_extern_glob_reexports_through_local_facade_module() {
             fn fmt_value(f: &mut fmt::Formatter) {
             }
 
+            fn iter_value(xs: slice::Iter<i32>) {
+            }
+
+            fn ptr_value(p: ptr::NonNull<i32>) {
+            }
+
             trait UsesDisplay: Display {}
+        }
+    "#);
+}
+
+#[test]
+fn resolve_glob_from_reexported_external_module_alias() {
+    assert_resolves(r#"
+        mod serde_core {
+            pub mod de {
+                pub trait Deserializer {}
+                pub trait SeqAccess {}
+            }
+        }
+
+        mod serde {
+            pub use serde_core::de;
+        }
+
+        mod feature {
+            use serde::de::*;
+
+            fn needs_traits<T: Deserializer + SeqAccess>() {
+            }
+        }
+    "#);
+}
+
+#[test]
+fn extern_prelude_path_wins_over_same_named_nested_module() {
+    assert_resolves(r#"
+        mod features {
+            mod serde {
+                mod de_borrowed {
+                    use serde::de::*;
+
+                    fn needs_deserializer<T: Deserializer>() {
+                    }
+                }
+            }
+        }
+
+        mod serde {
+            pub mod de {
+                pub trait Deserializer {}
+            }
         }
     "#);
 }

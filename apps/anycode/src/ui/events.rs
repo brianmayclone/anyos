@@ -298,13 +298,16 @@ pub fn wire_sidebar() {
                 }
             }
             1 => {
+                commands::show_new_ui_form_dialog();
+            }
+            2 => {
                 let new_path = path::join(&dir, "new_folder");
                 let _ = anyos_std::fs::mkdir(&new_path);
                 if let Some(ref proj) = s.current_project {
                     s.sidebar.populate_project(proj, &s.task_mgr);
                 }
             }
-            3 => {
+            4 => {
                 let sel = s.sidebar.tree.selected();
                 if sel != u32::MAX {
                     if let Some(p) = s.sidebar.path_for_node(sel) {
@@ -539,7 +542,12 @@ pub fn wire_git_panel() {
         let s = app();
         if let Some(rel_path) = s.git_panel.path_for_node(e.index) {
             if let Some(ref proj) = s.current_project {
-                let full = path::join(&proj.root, rel_path);
+                let root = if s.git_state.root.is_empty() {
+                    proj.root.as_str()
+                } else {
+                    s.git_state.root.as_str()
+                };
+                let full = path::join(root, rel_path);
                 commands::open_file(&full);
                 commands::update_status();
             }
@@ -557,9 +565,11 @@ pub fn wire_git_panel() {
             return;
         }
         if let Some(ref proj) = s.current_project {
-            anyos_std::fs::chdir(&proj.root);
-            s.git_process = git::GitProcess::spawn(&s.config.git_path, "add -A");
-            s.git_pending_op = Some(git::GitOp::Add);
+            if let Some(repo_root) = git::find_repository_root(&proj.root) {
+                anyos_std::fs::chdir(&repo_root);
+                s.git_process = git::GitProcess::spawn(&s.config.git_path, "add -A");
+                s.git_pending_op = Some(git::GitOp::Add);
+            }
         }
     });
 
@@ -581,11 +591,13 @@ pub fn wire_git_panel() {
             return;
         }
         if let Some(ref proj) = s.current_project {
-            let args = format!("commit -m \"{}\"", msg.trim());
-            anyos_std::fs::chdir(&proj.root);
-            s.git_process = git::GitProcess::spawn(&s.config.git_path, &args);
-            s.git_pending_op = Some(git::GitOp::Commit);
-            s.git_panel.commit_field.set_text("");
+            if let Some(repo_root) = git::find_repository_root(&proj.root) {
+                let args = format!("commit -m \"{}\"", msg.trim());
+                anyos_std::fs::chdir(&repo_root);
+                s.git_process = git::GitProcess::spawn(&s.config.git_path, &args);
+                s.git_pending_op = Some(git::GitOp::Commit);
+                s.git_panel.commit_field.set_text("");
+            }
         }
     });
 
@@ -595,11 +607,13 @@ pub fn wire_git_panel() {
             return;
         }
         if let Some(ref proj) = s.current_project {
-            anyos_std::fs::chdir(&proj.root);
-            s.git_process = git::GitProcess::spawn(&s.config.git_path, "push");
-            s.git_pending_op = Some(git::GitOp::Push);
-            s.output.clear();
-            s.output.append_line("$ git push");
+            if let Some(repo_root) = git::find_repository_root(&proj.root) {
+                anyos_std::fs::chdir(&repo_root);
+                s.git_process = git::GitProcess::spawn(&s.config.git_path, "push");
+                s.git_pending_op = Some(git::GitOp::Push);
+                s.output.clear();
+                s.output.append_line("$ cgit push");
+            }
         }
     });
 
@@ -609,11 +623,13 @@ pub fn wire_git_panel() {
             return;
         }
         if let Some(ref proj) = s.current_project {
-            anyos_std::fs::chdir(&proj.root);
-            s.git_process = git::GitProcess::spawn(&s.config.git_path, "pull");
-            s.git_pending_op = Some(git::GitOp::Pull);
-            s.output.clear();
-            s.output.append_line("$ git pull");
+            if let Some(repo_root) = git::find_repository_root(&proj.root) {
+                anyos_std::fs::chdir(&repo_root);
+                s.git_process = git::GitProcess::spawn(&s.config.git_path, "pull");
+                s.git_pending_op = Some(git::GitOp::Pull);
+                s.output.clear();
+                s.output.append_line("$ cgit pull");
+            }
         }
     });
 }

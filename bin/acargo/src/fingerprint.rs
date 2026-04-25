@@ -86,6 +86,7 @@ pub fn hash_options(
     opt_level: u32,
     cfg_flags: &[String],
     features: &[String],
+    env_vars: &[(String, String)],
     release: bool,
 ) -> u64 {
     let mut h: u64 = 0xcbf29ce484222325; // FNV offset basis
@@ -104,6 +105,16 @@ pub fn hash_options(
     }
     for feat in features {
         for b in feat.bytes() {
+            mix(&mut h, b);
+        }
+        mix(&mut h, 0);
+    }
+    for (key, value) in env_vars {
+        for b in key.bytes() {
+            mix(&mut h, b);
+        }
+        mix(&mut h, b'=');
+        for b in value.bytes() {
             mix(&mut h, b);
         }
         mix(&mut h, 0);

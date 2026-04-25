@@ -1,3 +1,5 @@
+use alloc::string::String;
+
 use libanyui_client as ui;
 use ui::IconType;
 
@@ -12,6 +14,7 @@ pub struct ActivityBar {
     pub btn_outline: ui::PlainButton,
     pub btn_ai: ui::PlainButton,
     pub btn_extensions: ui::PlainButton,
+    git_badge: ui::Badge,
     rows: [ui::View; BUTTON_COUNT],
     indicators: [ui::View; BUTTON_COUNT],
     active_index: u32,
@@ -88,6 +91,17 @@ impl ActivityBar {
             indicators[i] = Some(ind);
         }
 
+        let git_badge = ui::Badge::new("");
+        git_badge.set_size(18, 16);
+        git_badge.set_position(30, 4);
+        git_badge.set_color(tc.badge_red);
+        git_badge.set_text_color(0xFFFFFFFF);
+        git_badge.set_font_size(10);
+        git_badge.set_visible(false);
+        if let Some(ref row) = rows[1] {
+            row.add(&git_badge);
+        }
+
         Self {
             panel,
             btn_files: buttons[0].take().unwrap(),
@@ -97,6 +111,7 @@ impl ActivityBar {
             btn_outline: buttons[4].take().unwrap(),
             btn_ai: buttons[5].take().unwrap(),
             btn_extensions: buttons[6].take().unwrap(),
+            git_badge,
             rows: [
                 rows[0].take().unwrap(),
                 rows[1].take().unwrap(),
@@ -153,5 +168,21 @@ impl ActivityBar {
                 tc.window_bg
             });
         }
+    }
+
+    pub fn set_git_change_count(&self, count: usize) {
+        if count == 0 {
+            self.git_badge.set_visible(false);
+            self.git_badge.set_text("");
+            return;
+        }
+        let text = if count > 99 {
+            String::from("99+")
+        } else {
+            alloc::format!("{}", count)
+        };
+        self.git_badge.set_size(if count > 9 { 24 } else { 18 }, 16);
+        self.git_badge.set_text(&text);
+        self.git_badge.set_visible(true);
     }
 }

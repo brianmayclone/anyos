@@ -2,9 +2,9 @@
 //!
 //! Tree entries are stored as: "mode name\0<20-byte-sha1>" concatenated.
 
+use crate::oid::Oid;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::oid::Oid;
 
 /// A single entry in a tree object.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,27 +17,33 @@ pub struct TreeEntry {
 impl TreeEntry {
     /// Check if this entry is a directory (subtree).
     pub fn is_tree(&self) -> bool {
-        self.mode == 40000
+        self.mode == 0o40000 || self.mode == 40000
     }
 
     /// Check if this entry is a regular file.
     pub fn is_blob(&self) -> bool {
-        self.mode == 100644 || self.mode == 100755
+        self.mode == 0o100644 || self.mode == 0o100755 || self.mode == 100644 || self.mode == 100755
     }
 
     /// Check if this entry is executable.
     pub fn is_executable(&self) -> bool {
-        self.mode == 100755
+        self.mode == 0o100755 || self.mode == 100755
     }
 
     /// Check if this entry is a symlink.
     pub fn is_symlink(&self) -> bool {
-        self.mode == 120000
+        self.mode == 0o120000 || self.mode == 120000
     }
 
     /// Get the mode as a string for serialization.
     pub fn mode_str(&self) -> String {
-        alloc::format!("{}", self.mode)
+        match self.mode {
+            0o40000 | 40000 => String::from("40000"),
+            0o100644 | 100644 => String::from("100644"),
+            0o100755 | 100755 => String::from("100755"),
+            0o120000 | 120000 => String::from("120000"),
+            _ => alloc::format!("{:o}", self.mode),
+        }
     }
 }
 
@@ -106,7 +112,7 @@ pub fn build_tree(entries: &mut [TreeEntry]) -> Vec<u8> {
     let mut buf = Vec::new();
     for entry in entries {
         // Mode (no leading zeros for trees: "40000", but "100644" for files)
-        let mode_str = alloc::format!("{}", entry.mode);
+        let mode_str = entry.mode_str();
         buf.extend_from_slice(mode_str.as_bytes());
         buf.push(b' ');
         buf.extend_from_slice(entry.name.as_bytes());

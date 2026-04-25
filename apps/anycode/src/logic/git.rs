@@ -23,19 +23,29 @@ pub struct ChangedFile {
     pub path: String,
 }
 
+/// A compact commit entry for the source-control timeline graph.
+#[derive(Clone)]
+pub struct GitTimelineEntry {
+    pub line: String,
+}
+
 /// Aggregated state of a git repository.
 pub struct GitState {
     pub is_repo: bool,
+    pub root: String,
     pub branch: String,
     pub changed_files: Vec<ChangedFile>,
+    pub timeline: Vec<GitTimelineEntry>,
 }
 
 impl GitState {
     pub fn empty() -> Self {
         Self {
             is_repo: false,
+            root: String::new(),
             branch: String::new(),
             changed_files: Vec::new(),
+            timeline: Vec::new(),
         }
     }
 
@@ -53,6 +63,7 @@ impl GitState {
 pub enum GitOp {
     Status,
     Branch,
+    Timeline,
     Add,
     Commit,
     Push,
@@ -78,8 +89,7 @@ impl GitProcess {
         if pipe_id == 0 {
             return None;
         }
-        let full_args = format!("git {}", args);
-        let tid = anyos_std::process::spawn_piped(git_path, &full_args, pipe_id);
+        let tid = anyos_std::process::spawn_piped(git_path, args, pipe_id);
         if tid == u32::MAX {
             anyos_std::ipc::pipe_close(pipe_id);
             return None;
@@ -129,10 +139,35 @@ impl GitProcess {
     }
 }
 
-/// Check if a directory is a git repository by looking for `.git/`.
+/// Find the repository root for a workspace path.
+///
+/// This handles regular repositories (`.git/`), worktrees/submodules where
+/// `.git` can be a file, and folders opened below the repository root.
+pub fn find_repository_root(start: &str) -> Option<String> {
+    if start.is_empty() {
+        return None;
+    }
+
+    let mut current = String::from(start);
+    loop {
+        let dot_git = format!("{}/.git", current);
+        if path::exists(&dot_git) {
+            return Some(current);
+        }
+
+        let parent = String::from(path::parent(&current));
+        if parent.is_empty() || parent == current {
+            break;
+        }
+        current = parent;
+    }
+
+    None
+}
+
+/// Check if a directory belongs to a git repository.
 pub fn is_git_repo(root: &str) -> bool {
-    let git_dir = format!("{}/.git", root);
-    path::is_directory(&git_dir)
+    find_repository_root(root).is_some()
 }
 
 /// Parse the output of `git status --porcelain` into a list of changed files.
@@ -187,4 +222,19 @@ fn char_to_status(c: u8) -> FileStatus {
 pub fn parse_branch(output: &str) -> String {
     let trimmed = output.trim();
     String::from(trimmed)
+}
+
+/// Parse `git log --graph --decorate --oneline` output for timeline display.
+pub fn parse_timeline(output: &str) -> Vec<GitTimelineEntry> {
+    let mut entries = Vec::new();
+    for line in output.split('\n') {
+        let trimmed = line.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        entries.push(GitTimelineEntry {
+            line: String::from(trimmed),
+        });
+    }
+    entries
 }

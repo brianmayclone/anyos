@@ -19,6 +19,9 @@ pub type StructSizes = HashMap<DefId, usize>;
 /// Map from struct DefId to byte offset of each field.
 pub type StructFieldOffsets = HashMap<DefId, Vec<i32>>;
 
+/// Map from struct DefId to the type of each field.
+pub type StructFieldTypes = HashMap<DefId, Vec<TyKind>>;
+
 fn align_to(value: i32, align: i32) -> i32 {
     ((value + align - 1) / align) * align
 }
@@ -43,6 +46,11 @@ pub fn ty_layout_size(ty: &TyKind, struct_sizes: &StructSizes) -> i32 {
         }
         TyKind::Adt(def_id, _) => struct_sizes.get(def_id).copied().unwrap_or(8) as i32,
         TyKind::Array(elem, len) => ty_layout_size(elem, struct_sizes).max(1) * (*len as i32),
+        TyKind::Ref(inner, _) | TyKind::RawPtr(inner, _)
+            if matches!(inner.as_ref(), TyKind::Slice(_) | TyKind::Str | TyKind::DynTrait(_)) =>
+        {
+            16
+        }
         TyKind::Slice(_) | TyKind::Str | TyKind::DynTrait(_) => 16,
         TyKind::Unit | TyKind::Never => 0,
         _ => 8,

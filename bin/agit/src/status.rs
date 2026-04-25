@@ -73,7 +73,11 @@ pub fn collect_untracked(
                         continue;
                     }
                     if ft.is_dir() {
-                        collect_untracked(repo, index, &rel_path, out, gitignore);
+                        if index_has_prefix(index, &rel_path) {
+                            collect_untracked(repo, index, &rel_path, out, gitignore);
+                        } else {
+                            out.push(format!("{}/", rel_path));
+                        }
                     } else if ft.is_file() && index.find(&rel_path).is_none() {
                         out.push(rel_path);
                     }
@@ -81,6 +85,14 @@ pub fn collect_untracked(
             }
         }
     }
+}
+
+fn index_has_prefix(index: &Index, dir: &str) -> bool {
+    let prefix = format!("{}/", dir);
+    index
+        .entries
+        .iter()
+        .any(|entry| entry.name.starts_with(&prefix))
 }
 
 pub fn head_tree_flat(repo: &Repository) -> Vec<(String, Oid)> {

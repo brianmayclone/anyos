@@ -11,6 +11,7 @@ pub mod extensions_panel;
 pub mod git_panel;
 pub mod inspector_panel;
 pub mod new_form_dialog;
+pub mod new_item_dialog;
 pub mod output_panel;
 pub mod problems_panel;
 pub mod run_config_dialog;

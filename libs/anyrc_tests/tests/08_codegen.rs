@@ -28,8 +28,9 @@ fn compile_fn_with_relocs(src: &str) -> (Vec<u8>, Vec<anyrc::codegen::x86asm::Re
     let body = &bodies[0];
     let struct_sizes = regalloc::StructSizes::new();
     let field_offsets = regalloc::StructFieldOffsets::new();
+    let field_types = regalloc::StructFieldTypes::new();
     let alloc = regalloc::allocate(body, &struct_sizes);
-    CodeEmitter::emit_fn(body, &alloc, &interner, &field_offsets)
+    CodeEmitter::emit_fn(body, &alloc, &interner, &struct_sizes, &field_offsets, &field_types)
 }
 
 #[test]

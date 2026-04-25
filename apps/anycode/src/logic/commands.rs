@@ -17,6 +17,10 @@ use crate::AppState;
 // ════════════════════════════════════════════════════════════════
 
 pub fn new_file() {
+    crate::ui::new_item_dialog::show();
+}
+
+pub fn new_text_file() {
     let s = app();
     let (_idx, ref p) = s.file_mgr.add_untitled(&s.config.temp_dir);
     s.editor_view.create_editor(p, None, &s.config);
@@ -1978,14 +1982,24 @@ pub fn open_workspace(folder: &str, should_restore_session: bool) {
     refresh_run_config_selector();
     s.status.set_project_type(&project_context);
 
-    s.git_state.is_repo = git::is_git_repo(&workspace_root);
-    if s.git_state.is_repo {
-        crate::trigger_git_refresh();
-    }
     s.status.set_branch("");
     s.output.start_shell(&workspace_root);
 
     s.current_project = Some(proj);
+    s.git_state = git::GitState::empty();
+    if let Some(repo_root) = git::find_repository_root(&workspace_root) {
+        s.git_state.is_repo = true;
+        s.git_state.root = repo_root;
+    }
+    if !s.config.has_git() {
+        s.git_panel.show_not_installed();
+        s.activity_bar.set_git_change_count(0);
+    } else if s.git_state.is_repo {
+        crate::trigger_git_refresh();
+    } else {
+        s.git_panel.show_no_repo();
+        s.activity_bar.set_git_change_count(0);
+    }
     check_crate_updates_on_open();
     s.symbol_index.rebuild(&workspace_root);
     let indexed_symbols = s.symbol_index.count();

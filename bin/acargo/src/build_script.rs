@@ -40,6 +40,7 @@ pub struct BuildScriptOutput {
 pub fn run_build_script(
     manifest_dir: &str,
     crate_name: &str,
+    crate_version: &str,
     target_dir: &str,
     _release: bool,
     features: &[String],
@@ -53,7 +54,14 @@ pub fn run_build_script(
     let source = fs::read_file(&build_rs)?;
     fs::mkdir_p(&format!("{}/out", target_dir));
 
-    Some(emulate_build_script_output(&source, manifest_dir, crate_name, features))
+    Some(emulate_build_script_output(
+        &source,
+        manifest_dir,
+        crate_name,
+        crate_version,
+        target_dir,
+        features,
+    ))
 }
 
 /// Parse cargo: directives from build script stdout.
@@ -105,6 +113,8 @@ fn emulate_build_script_output(
     source: &str,
     manifest_dir: &str,
     crate_name: &str,
+    crate_version: &str,
+    target_dir: &str,
     features: &[String],
 ) -> BuildScriptOutput {
     let mut result = BuildScriptOutput::default();
@@ -129,6 +139,7 @@ fn emulate_build_script_output(
     }
 
     emulate_known_cfg_build_script(source, crate_name, features, &mut result);
+    emulate_known_generated_build_script(source, crate_name, crate_version, target_dir, &mut result);
 
     if result.cfg_flags.is_empty()
         && result.link_args.is_empty()
@@ -143,6 +154,40 @@ fn emulate_build_script_output(
     }
 
     result
+}
+
+fn emulate_known_generated_build_script(
+    source: &str,
+    crate_name: &str,
+    crate_version: &str,
+    target_dir: &str,
+    result: &mut BuildScriptOutput,
+) {
+    if (crate_name == "serde" || crate_name == "serde_core") && source.contains("private.rs") {
+        let out_dir = format!("{}/{}/out", target_dir, crate_name.replace('-', "_"));
+        fs::mkdir_p(&out_dir);
+        let patch = version_patch(crate_version);
+        let private_mod = format!("__private{}", patch);
+        let generated = if crate_name == "serde" {
+            format!(
+                "#[doc(hidden)]\npub mod {} {{\n    #[doc(hidden)]\n    pub use crate::private::*;\n}}\nuse serde_core::{} as serde_core_private;\n",
+                private_mod,
+                private_mod,
+            )
+        } else {
+            format!(
+                "#[doc(hidden)]\npub mod {} {{\n    #[doc(hidden)]\n    pub use crate::private::*;\n}}\n",
+                private_mod,
+            )
+        };
+        fs::write_file(&format!("{}/private.rs", out_dir), generated.as_bytes());
+        result.env_vars.push((String::from("OUT_DIR"), out_dir));
+        result.env_vars.push((
+            String::from("CARGO_PKG_VERSION_PATCH"),
+            patch.to_string(),
+        ));
+        push_cfg_once(&mut result.cfg_flags, "if_docsrs_then_no_serde_core");
+    }
 }
 
 fn emulate_known_cfg_build_script(
@@ -167,6 +212,10 @@ fn push_cfg_once(cfg_flags: &mut Vec<String>, flag: &str) {
     if !cfg_flags.iter().any(|existing| existing == flag) {
         cfg_flags.push(String::from(flag));
     }
+}
+
+fn version_patch(version: &str) -> &str {
+    version.rsplit('.').next().unwrap_or("0")
 }
 
 fn find_stdlib_linker_script(manifest_dir: &str) -> Option<String> {

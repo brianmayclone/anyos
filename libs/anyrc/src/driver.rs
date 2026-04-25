@@ -144,9 +144,21 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         crate::cfg::strip_cfg(&mut krate, &cfg_ctx, &interner);
         expand_macros(&mut krate, &mut interner);
         let included_sources =
-            crate::loader::resolve_includes(&mut krate, &src_dir, &mut interner, &loader);
+            crate::loader::resolve_includes_with_env(
+                &mut krate,
+                &src_dir,
+                &mut interner,
+                &loader,
+                &options.env_vars,
+            );
         let loaded_modules =
-            crate::loader::resolve_modules(&mut krate, &src_dir, &mut interner, &loader);
+            crate::loader::resolve_modules_with_env(
+                &mut krate,
+                &src_dir,
+                &mut interner,
+                &loader,
+                &options.env_vars,
+            );
         if included_sources.is_empty() && loaded_modules.is_empty() {
             break;
         }
@@ -272,6 +284,17 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
         offsets
     };
 
+    let field_types: regalloc::StructFieldTypes = typeck_result
+        .struct_defs
+        .iter()
+        .map(|(def_id, fields)| {
+            (
+                *def_id,
+                fields.iter().map(|(_, ty)| ty.clone()).collect::<Vec<_>>(),
+            )
+        })
+        .collect();
+
     // 9b. Collect static data from typeck results
     let static_data: Vec<StaticData> = typeck_result.static_defs.values().map(|(name, _ty, val, _is_mut)| {
         let name_str = interner.resolve(*name).to_string();
@@ -286,11 +309,11 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
     // 10. Emit based on type
     match options.emit {
         EmitKind::Obj => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &static_data);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data);
             Ok(elf::write_object(&obj))
         }
         EmitKind::Exe => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &static_data);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data);
             let obj_bytes = elf::write_object(&obj);
             // Collect all object files: our code + extern crate .rlib objects + runtime stubs
             let mut all_objects = vec![obj_bytes];
@@ -332,7 +355,7 @@ pub fn compile(source: &str, _filename: &str, options: &CompileOptions) -> Resul
             }
         }
         EmitKind::Rlib => {
-            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &static_data);
+            let obj = codegen_to_object_with_statics(&mir_bodies, &interner, &struct_sizes, &field_offsets, &field_types, &static_data);
             let obj_bytes = elf::write_object(&obj);
             let crate_name = options.crate_name.as_deref().unwrap_or("unknown");
             // Collect exported public symbols
@@ -373,8 +396,14 @@ fn target_abi_from_cfg(cfg_flags: &[String]) -> link::TargetAbi {
     }
 }
 
-fn codegen_to_object(bodies: &[MirBody], interner: &Interner, struct_sizes: &regalloc::StructSizes, field_offsets: &regalloc::StructFieldOffsets) -> ObjectFile {
-    codegen_to_object_with_statics(bodies, interner, struct_sizes, field_offsets, &[])
+fn codegen_to_object(
+    bodies: &[MirBody],
+    interner: &Interner,
+    struct_sizes: &regalloc::StructSizes,
+    field_offsets: &regalloc::StructFieldOffsets,
+    field_types: &regalloc::StructFieldTypes,
+) -> ObjectFile {
+    codegen_to_object_with_statics(bodies, interner, struct_sizes, field_offsets, field_types, &[])
 }
 
 /// Static data entry: (symbol_name, initial_bytes)
@@ -383,14 +412,22 @@ pub struct StaticData {
     pub data: Vec<u8>,
 }
 
-fn codegen_to_object_with_statics(bodies: &[MirBody], interner: &Interner, struct_sizes: &regalloc::StructSizes, field_offsets: &regalloc::StructFieldOffsets, statics: &[StaticData]) -> ObjectFile {
+fn codegen_to_object_with_statics(
+    bodies: &[MirBody],
+    interner: &Interner,
+    struct_sizes: &regalloc::StructSizes,
+    field_offsets: &regalloc::StructFieldOffsets,
+    field_types: &regalloc::StructFieldTypes,
+    statics: &[StaticData],
+) -> ObjectFile {
     let mut text_data = Vec::new();
     let mut symbols = Vec::new();
     let mut relocations = Vec::new();
 
     for body in bodies {
         let alloc = regalloc::allocate(body, struct_sizes);
-        let (code, relocs) = CodeEmitter::emit_fn(body, &alloc, interner, struct_sizes, field_offsets);
+        let (code, relocs) =
+            CodeEmitter::emit_fn(body, &alloc, interner, struct_sizes, field_offsets, field_types);
 
         let fn_offset = text_data.len() as u64;
         let fn_size = code.len() as u64;

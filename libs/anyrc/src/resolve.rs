@@ -465,6 +465,24 @@ impl<'a> Resolver<'a> {
                 }
             }
             HirUseTreeKind::Glob => {
+                if let Some(first) = use_tree.path.first() {
+                    let first_name = self.interner.resolve(*first);
+                    let path_str = self.path_to_string(&use_tree.path);
+                    if Self::is_compiler_known_external_crate(first_name)
+                        && !Self::extern_glob_names(&path_str).is_empty()
+                    {
+                        self.import_extern_glob_by_name(&path_str);
+                        return;
+                    }
+                }
+                if let Some(full_path) = self.resolve_extern_backed_path_string(&use_tree.path) {
+                    self.import_extern_glob_by_name(&full_path);
+                    return;
+                }
+                if let Some(full_path) = self.resolve_extern_alias_use_path(&use_tree.path) {
+                    self.import_extern_glob_by_name(&full_path);
+                    return;
+                }
                 if self.is_extern_crate_path(&use_tree.path) {
                     self.import_extern_glob(&use_tree.path);
                     return;
@@ -512,6 +530,10 @@ impl<'a> Resolver<'a> {
 
     fn import_extern_glob(&mut self, path: &[Symbol]) {
         let path_str = self.path_to_string(path);
+        self.import_extern_glob_by_name(&path_str);
+    }
+
+    fn import_extern_glob_by_name(&mut self, path_str: &str) {
         for name in Self::extern_glob_names(&path_str) {
             let sym = self.interner.intern(name);
             let def_id = self.alloc_synthetic_def_id();
@@ -546,8 +568,10 @@ impl<'a> Resolver<'a> {
                 "num",
                 "ops",
                 "path",
+                "ptr",
                 "rc",
                 "result",
+                "slice",
                 "str",
                 "string",
                 "sync",
@@ -583,7 +607,7 @@ impl<'a> Resolver<'a> {
                 "AcqRel",
                 "SeqCst",
             ],
-            "serde::de" => &[
+            "serde::de" | "serde_core::de" => &[
                 "Deserialize",
                 "DeserializeOwned",
                 "DeserializeSeed",
@@ -599,7 +623,7 @@ impl<'a> Resolver<'a> {
                 "VariantAccess",
                 "Visitor",
             ],
-            "serde::ser" => &[
+            "serde::ser" | "serde_core::ser" => &[
                 "Error",
                 "Impossible",
                 "Serialize",
@@ -728,6 +752,13 @@ impl<'a> Resolver<'a> {
             (parent_scope, 1)
         } else if first_str == "self" {
             (*self.module_stack.last().unwrap_or(&self.root_scope), 1)
+        } else if Self::is_compiler_known_external_crate(first_str)
+            && self.scopes[self.root_scope]
+                .bindings
+                .get(&(path[0], Namespace::Type))
+                .is_some_and(|def_id| self.module_scopes.contains_key(def_id))
+        {
+            (self.root_scope, 0)
         } else {
             (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
         };
@@ -787,6 +818,13 @@ impl<'a> Resolver<'a> {
             (parent_scope, 1)
         } else if first_str == "self" {
             (*self.module_stack.last().unwrap_or(&self.root_scope), 1)
+        } else if Self::is_compiler_known_external_crate(first_str)
+            && self.scopes[self.root_scope]
+                .bindings
+                .get(&(path[0], Namespace::Type))
+                .is_some_and(|def_id| self.module_scopes.contains_key(def_id))
+        {
+            (self.root_scope, 0)
         } else {
             (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
         };
@@ -853,6 +891,13 @@ impl<'a> Resolver<'a> {
             (parent_scope, 1)
         } else if first_str == "self" {
             (*self.module_stack.last().unwrap_or(&self.root_scope), 1)
+        } else if Self::is_compiler_known_external_crate(first_str)
+            && self.scopes[self.root_scope]
+                .bindings
+                .get(&(path[0], Namespace::Type))
+                .is_some_and(|def_id| self.module_scopes.contains_key(def_id))
+        {
+            (self.root_scope, 0)
         } else {
             (*self.module_stack.last().unwrap_or(&self.root_scope), 0)
         };
@@ -1641,6 +1686,8 @@ impl<'a> Resolver<'a> {
                     }
                 } else if self.resolve_arch_intrinsic_symbol(name, hir_id) {
                     return;
+                } else if self.is_inside_injected_extern_interface() {
+                    return;
                 } else {
                     self.error(path.span, &format!("`{}` not found in this scope", name_str));
                 }
@@ -1687,6 +1734,18 @@ impl<'a> Resolver<'a> {
             }
             // else: 3+ segments without module match - skip (external paths)
         }
+    }
+
+    fn is_inside_injected_extern_interface(&self) -> bool {
+        let Some(first) = self.current_module_path.first() else {
+            return false;
+        };
+        let first_name = self.interner.resolve(*first);
+        Self::is_compiler_known_external_crate(first_name)
+            && self.scopes[self.root_scope]
+                .bindings
+                .get(&(*first, Namespace::Type))
+                .is_some_and(|def_id| self.module_scopes.contains_key(def_id))
     }
 
     fn resolve_arch_intrinsic_symbol(&mut self, name: Symbol, hir_id: HirId) -> bool {

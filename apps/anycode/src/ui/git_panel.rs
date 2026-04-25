@@ -18,6 +18,7 @@ pub struct GitPanel {
     pub btn_pull: ui::Button,
     pub btn_refresh: ui::Button,
     pub tree: ui::TreeView,
+    pub timeline_tree: ui::TreeView,
     file_paths: Vec<String>,
 }
 
@@ -83,6 +84,27 @@ impl GitPanel {
         btn_refresh.set_size(55, 24);
         btn_bar.add(&btn_refresh);
 
+        // Repository timeline graph at the bottom of source control.
+        let timeline_panel = ui::View::new();
+        timeline_panel.set_dock(ui::DOCK_BOTTOM);
+        timeline_panel.set_size(200, 170);
+        timeline_panel.set_color(tc.sidebar_bg);
+        panel.add(&timeline_panel);
+
+        let timeline_header = ui::Label::new(t("TIMELINE"));
+        timeline_header.set_dock(ui::DOCK_TOP);
+        timeline_header.set_size(200, 20);
+        timeline_header.set_font_size(11);
+        timeline_header.set_text_color(tc.text_secondary);
+        timeline_header.set_margin(8, 6, 0, 2);
+        timeline_panel.add(&timeline_header);
+
+        let timeline_tree = ui::TreeView::new(200, 140);
+        timeline_tree.set_dock(ui::DOCK_FILL);
+        timeline_tree.set_indent_width(12);
+        timeline_tree.set_row_height(20);
+        timeline_panel.add(&timeline_tree);
+
         // Tree view for changed files
         let tree = ui::TreeView::new(200, 300);
         tree.set_dock(ui::DOCK_FILL);
@@ -100,6 +122,7 @@ impl GitPanel {
             btn_pull,
             btn_refresh,
             tree,
+            timeline_tree,
             file_paths: Vec::new(),
         }
     }
@@ -166,6 +189,8 @@ impl GitPanel {
             self.tree.set_node_text_color(node, tc.text_secondary);
             self.file_paths.push(String::new());
         }
+
+        self.update_timeline(state);
     }
 
     /// Get the file path for a tree node index.
@@ -188,6 +213,9 @@ impl GitPanel {
             .add_root(t("Install git to enable source control"));
         self.tree.set_node_text_color(node, tc.text_secondary);
         self.file_paths.push(String::new());
+        self.timeline_tree.clear();
+        let tnode = self.timeline_tree.add_root(t("No timeline available"));
+        self.timeline_tree.set_node_text_color(tnode, tc.text_secondary);
     }
 
     /// Show a "no repo" message.
@@ -200,6 +228,30 @@ impl GitPanel {
         let node = self.tree.add_root(t("Open a folder with a git repository"));
         self.tree.set_node_text_color(node, tc.text_secondary);
         self.file_paths.push(String::new());
+        self.timeline_tree.clear();
+        let tnode = self.timeline_tree.add_root(t("No timeline available"));
+        self.timeline_tree.set_node_text_color(tnode, tc.text_secondary);
+    }
+
+    fn update_timeline(&mut self, state: &GitState) {
+        let tc = ui::theme::colors();
+        let t = anyos_std::i18n::t;
+        self.timeline_tree.clear();
+        if !state.is_repo {
+            let node = self.timeline_tree.add_root(t("No timeline available"));
+            self.timeline_tree.set_node_text_color(node, tc.text_secondary);
+            return;
+        }
+        if state.timeline.is_empty() {
+            let node = self.timeline_tree.add_root(t("No commits detected"));
+            self.timeline_tree.set_node_text_color(node, tc.text_secondary);
+            return;
+        }
+
+        for entry in &state.timeline {
+            let node = self.timeline_tree.add_root(&entry.line);
+            self.timeline_tree.set_node_text_color(node, tc.text);
+        }
     }
 }
 

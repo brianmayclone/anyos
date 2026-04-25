@@ -4,7 +4,7 @@
 //! Supports both `foo.rs` and `foo/mod.rs` layout conventions.
 
 use crate::prelude::*;
-use crate::ast::{Crate, Item, ModDef, TokenTree};
+use crate::ast::{Crate, Delimiter, Item, ModDef, TokenTree};
 use crate::intern::Interner;
 use crate::lexer::TokenKind;
 use crate::parser::Parser;
@@ -77,8 +77,18 @@ pub fn resolve_modules(
     interner: &mut Interner,
     loader: &dyn FileLoader,
 ) -> Vec<ModuleSource> {
+    resolve_modules_with_env(krate, base_dir, interner, loader, &[])
+}
+
+pub fn resolve_modules_with_env(
+    krate: &mut Crate,
+    base_dir: &str,
+    interner: &mut Interner,
+    loader: &dyn FileLoader,
+    env_vars: &[(String, String)],
+) -> Vec<ModuleSource> {
     let mut loaded = Vec::new();
-    resolve_items(&mut krate.items, base_dir, interner, loader, &mut loaded);
+    resolve_items(&mut krate.items, base_dir, interner, loader, env_vars, &mut loaded);
     loaded
 }
 
@@ -90,8 +100,25 @@ pub fn resolve_includes(
     interner: &mut Interner,
     loader: &dyn FileLoader,
 ) -> Vec<ModuleSource> {
+    resolve_includes_with_env(krate, base_dir, interner, loader, &[])
+}
+
+pub fn resolve_includes_with_env(
+    krate: &mut Crate,
+    base_dir: &str,
+    interner: &mut Interner,
+    loader: &dyn FileLoader,
+    env_vars: &[(String, String)],
+) -> Vec<ModuleSource> {
     let mut loaded = Vec::new();
-    resolve_includes_in_items(&mut krate.items, base_dir, interner, loader, &mut loaded);
+    resolve_includes_in_items(
+        &mut krate.items,
+        base_dir,
+        interner,
+        loader,
+        env_vars,
+        &mut loaded,
+    );
     loaded
 }
 
@@ -100,6 +127,7 @@ fn resolve_includes_in_items(
     dir: &str,
     interner: &mut Interner,
     loader: &dyn FileLoader,
+    env_vars: &[(String, String)],
     loaded: &mut Vec<ModuleSource>,
 ) {
     let mut i = 0;
@@ -108,7 +136,7 @@ fn resolve_includes_in_items(
             Item::MacroCall(path, args, _, _) if path.segments.len() == 1
                 && interner.resolve(path.segments[0].ident) == "include" =>
             {
-                include_arg_path(args)
+                include_arg_path(args, interner, env_vars)
             }
             _ => None,
         };
@@ -119,7 +147,14 @@ fn resolve_includes_in_items(
                 let include_dir = parent_dir(&full_path);
                 let mut parser = Parser::new(&source, interner);
                 let mut sub_crate = parser.parse_crate();
-                resolve_includes_in_items(&mut sub_crate.items, &include_dir, interner, loader, loaded);
+                resolve_includes_in_items(
+                    &mut sub_crate.items,
+                    &include_dir,
+                    interner,
+                    loader,
+                    env_vars,
+                    loaded,
+                );
                 loaded.push(ModuleSource { path: full_path, source });
                 items.splice(i..=i, sub_crate.items);
                 continue;
@@ -130,17 +165,17 @@ fn resolve_includes_in_items(
             Item::Mod(mod_def) => {
                 if let Some(sub_items) = &mut mod_def.items {
                     let sub_dir = format!("{}/{}", dir, interner.resolve(mod_def.name));
-                    resolve_includes_in_items(sub_items, &sub_dir, interner, loader, loaded);
+                    resolve_includes_in_items(sub_items, &sub_dir, interner, loader, env_vars, loaded);
                 }
             }
             Item::Impl(ib) => {
-                resolve_includes_in_items(&mut ib.items, dir, interner, loader, loaded);
+                resolve_includes_in_items(&mut ib.items, dir, interner, loader, env_vars, loaded);
             }
             Item::Trait(td) => {
-                resolve_includes_in_items(&mut td.items, dir, interner, loader, loaded);
+                resolve_includes_in_items(&mut td.items, dir, interner, loader, env_vars, loaded);
             }
             Item::ExternBlock(eb) => {
-                resolve_includes_in_items(&mut eb.items, dir, interner, loader, loaded);
+                resolve_includes_in_items(&mut eb.items, dir, interner, loader, env_vars, loaded);
             }
             _ => {}
         }
@@ -148,14 +183,111 @@ fn resolve_includes_in_items(
     }
 }
 
-fn include_arg_path(args: &[TokenTree]) -> Option<String> {
+fn include_arg_path(
+    args: &[TokenTree],
+    interner: &Interner,
+    env_vars: &[(String, String)],
+) -> Option<String> {
     match args.first() {
         Some(TokenTree::Token(tok)) => match &tok.kind {
             TokenKind::StringLit(path) => Some(path.clone()),
+            TokenKind::Ident(sym) if interner.resolve(*sym) == "concat" => {
+                eval_string_macro(args, interner, env_vars)
+            }
+            TokenKind::Ident(sym) if interner.resolve(*sym) == "env" => {
+                eval_string_macro(args, interner, env_vars)
+            }
             _ => None,
         },
         _ => None,
     }
+}
+
+fn eval_string_macro(
+    args: &[TokenTree],
+    interner: &Interner,
+    env_vars: &[(String, String)],
+) -> Option<String> {
+    let name = match args.first() {
+        Some(TokenTree::Token(tok)) => match &tok.kind {
+            TokenKind::Ident(sym) => interner.resolve(*sym),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    if !matches!(args.get(1), Some(TokenTree::Token(tok)) if tok.kind == TokenKind::Not) {
+        return None;
+    }
+    let inner = match args.get(2) {
+        Some(TokenTree::Delimited(Delimiter::Paren, inner)) => inner,
+        _ => return None,
+    };
+    match name {
+        "concat" => {
+            let mut out = String::new();
+            for piece in split_token_args(inner) {
+                out.push_str(&eval_string_piece(&piece, interner, env_vars)?);
+            }
+            Some(out)
+        }
+        "env" => {
+            let key = match inner.first() {
+                Some(TokenTree::Token(tok)) => match &tok.kind {
+                    TokenKind::StringLit(key) => key,
+                    _ => return None,
+                },
+                _ => return None,
+            };
+            lookup_env_var(key, env_vars)
+        }
+        _ => None,
+    }
+}
+
+fn eval_string_piece(
+    tokens: &[TokenTree],
+    interner: &Interner,
+    env_vars: &[(String, String)],
+) -> Option<String> {
+    if tokens.len() == 1 {
+        if let TokenTree::Token(tok) = &tokens[0] {
+            if let TokenKind::StringLit(value) = &tok.kind {
+                return Some(value.clone());
+            }
+        }
+    }
+    eval_string_macro(tokens, interner, env_vars)
+}
+
+fn split_token_args(tokens: &[TokenTree]) -> Vec<Vec<TokenTree>> {
+    let mut args = Vec::new();
+    let mut current = Vec::new();
+    for token in tokens {
+        if matches!(token, TokenTree::Token(tok) if tok.kind == TokenKind::Comma) {
+            args.push(current);
+            current = Vec::new();
+        } else {
+            current.push(token.clone());
+        }
+    }
+    if !current.is_empty() || !args.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
+fn lookup_env_var(key: &str, env_vars: &[(String, String)]) -> Option<String> {
+    for (env_key, value) in env_vars.iter().rev() {
+        if env_key == key {
+            return Some(value.clone());
+        }
+    }
+    let mut buf = [0u8; 1024];
+    let len = anyos_std::env::get(key, &mut buf);
+    if len == u32::MAX || len as usize > buf.len() {
+        return None;
+    }
+    core::str::from_utf8(&buf[..len as usize]).ok().map(String::from)
 }
 
 fn join_path(dir: &str, path: &str) -> String {
@@ -177,6 +309,7 @@ fn resolve_items(
     dir: &str,
     interner: &mut Interner,
     loader: &dyn FileLoader,
+    env_vars: &[(String, String)],
     loaded: &mut Vec<ModuleSource>,
 ) {
     for item in items.iter_mut() {
@@ -209,10 +342,17 @@ fn resolve_items(
                 // Parse the loaded source
                 let mut parser = Parser::new(&source, interner);
                 let mut sub_crate = parser.parse_crate();
-                resolve_includes_in_items(&mut sub_crate.items, &sub_dir, interner, loader, loaded);
+                resolve_includes_in_items(
+                    &mut sub_crate.items,
+                    &sub_dir,
+                    interner,
+                    loader,
+                    env_vars,
+                    loaded,
+                );
 
                 // Recursively resolve sub-modules
-                resolve_items(&mut sub_crate.items, &sub_dir, interner, loader, loaded);
+                resolve_items(&mut sub_crate.items, &sub_dir, interner, loader, env_vars, loaded);
 
                 // Set the module's items
                 mod_def.items = Some(sub_crate.items);
@@ -224,8 +364,8 @@ fn resolve_items(
                 // Inline module `mod foo { ... }` — recurse into its items
                 if let Some(ref mut sub_items) = mod_def.items {
                     let sub_dir = format!("{}/{}", dir, interner.resolve(mod_def.name));
-                    resolve_includes_in_items(sub_items, &sub_dir, interner, loader, loaded);
-                    resolve_items(sub_items, &sub_dir, interner, loader, loaded);
+                    resolve_includes_in_items(sub_items, &sub_dir, interner, loader, env_vars, loaded);
+                    resolve_items(sub_items, &sub_dir, interner, loader, env_vars, loaded);
                 }
             }
         }

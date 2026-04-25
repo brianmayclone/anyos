@@ -393,7 +393,7 @@ pub fn show() {
         (t("Make"), config.make_path.as_str()),
         (t("C Compiler"), config.cc_path.as_str()),
         (t("C++ Compiler"), config.cxx_path.as_str()),
-        (t("Git"), config.git_path.as_str()),
+        (t("Git"), "/System/bin/cgit"),
     ];
     let mut tool_fields: [Option<ui::TextField>; 6] = [None, None, None, None, None, None];
 
@@ -419,6 +419,9 @@ pub fn show() {
         if !path.is_empty() {
             field.set_text(path);
         }
+        if idx == 5 {
+            field.set_enabled(false);
+        }
         page_build.add(&field);
         tool_fields[idx] = Some(field);
 
@@ -427,7 +430,7 @@ pub fn show() {
 
     y += 10;
     let tools_hint = ui::Label::new(t(
-        "Empty fields are auto-discovered from PATH and /System/bin/.",
+        "Empty fields are auto-discovered from PATH and /System/bin/. Git uses /System/bin/cgit.",
     ));
     tools_hint.set_position(LABEL_X, y);
     tools_hint.set_font_size(11);
@@ -662,7 +665,7 @@ pub fn show() {
         cfg.make_path = read_string(make_id);
         cfg.cc_path = read_string(cc_id);
         cfg.cxx_path = read_string(cxx_id);
-        cfg.git_path = read_string(git_id);
+        cfg.git_path = String::from("/System/bin/cgit");
         cfg.auto_discover();
         cfg.save();
 

@@ -204,6 +204,21 @@ run_agit "$local_repo" "commit local probe" commit -m "probe"
 status="$(capture_agit "$local_repo" "status after local probe commit" status --porcelain)"
 [[ -z "$status" ]] || fail "local working tree not clean after probe commit: '$status'"
 
+mkdir -p "$local_repo/big-untracked/a/b/c"
+printf 'deep\n' >"$local_repo/big-untracked/a/b/c/file.txt"
+status="$(capture_agit "$local_repo" "status local untracked dir collapsed" status --porcelain)"
+[[ "$status" == "?? big-untracked/" ]] || fail "untracked directory was not collapsed: '$status'"
+rm -rf "$local_repo/big-untracked"
+
+mkdir -p "$local_repo/tracked-dir"
+printf 'tracked\n' >"$local_repo/tracked-dir/tracked.txt"
+run_agit "$local_repo" "add local tracked dir file" add tracked-dir/tracked.txt
+run_agit "$local_repo" "commit local tracked dir file" commit -m "tracked dir"
+printf 'nested\n' >"$local_repo/tracked-dir/nested-untracked.txt"
+status="$(capture_agit "$local_repo" "status local nested untracked in tracked dir" status --porcelain)"
+[[ "$status" == "?? tracked-dir/nested-untracked.txt" ]] || fail "nested untracked in tracked dir was wrong: '$status'"
+rm "$local_repo/tracked-dir/nested-untracked.txt"
+
 printf 'changed\n' >"$local_repo/probe.txt"
 status="$(capture_agit "$local_repo" "status local modified tracked" status --porcelain)"
 [[ "$status" == " M probe.txt" ]] || fail "local modified tracked status was '$status'"
